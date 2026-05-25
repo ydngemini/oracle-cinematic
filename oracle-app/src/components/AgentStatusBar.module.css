@@ -1,0 +1,59 @@
+.bar {
+  font-family: 'PP Neue Montreal', 'Inter', -apple-system, sans-serif;
+  position: fixed;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 1000;
+  background: rgba(10, 10, 12, 0.35);
+  backdrop-filter: blur(40px);
+  border: 1px solid rgba(255, 255, 255, 0.04);
+  border-radius: 1px;
+  padding: 0.55rem 2.4rem;
+  min-width: 520px;
+}
+
+.phases {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 2.5rem;
+}
+
+.phase {
+  font-size: 0.52rem;
+  letter-spacing: 0.35em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.12);
+  font-weight: 400;
+  transition: color 0.6s cubic-bezier(0.16, 1, 0.3, 1),
+              text-shadow 0.6s cubic-bezier(0.16, 1, 0.3, 1);
+  position: relative;
+}
+
+.phase[data-active="true"] {
+  color: rgba(255, 255, 255, 0.95);
+  text-shadow:
+    0 0 8px rgba(255, 255, 255, 0.6),
+    0 0 20px rgba(255, 255, 255, 0.2);
+  background: linear-gradient(
+    90deg,
+    rgba(255, 255, 255, 0.95) 0%,
+    rgba(255, 255, 255, 0.4) 50%,
+    rgba(255, 255, 255, 0.95) 100%
+  );
+  background-size: 200% 100%;
+  background-clip: text;
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: shimmer 3s linear infinite;
+}
+
+@keyframes shimmer {
+  0% {
+    background-position: 200% center;
+  }
+  100% {
+    background-position: -200% center;
+  }
+}

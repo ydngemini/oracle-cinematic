@@ -1,5 +1,15 @@
-.next/
 node_modules/
+dist/
+dist-ssr/
+.next/
 out/
 *.tsbuildinfo
+__pycache__/
+*.pyc
+.env
 .env*.local
+*.local
+.DS_Store
+*.log
+venv/
+oracle-cinematic/

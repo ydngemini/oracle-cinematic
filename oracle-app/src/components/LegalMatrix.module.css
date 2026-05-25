@@ -1,0 +1,272 @@
+/* ─── LegalMatrix panel ──────────────────────────────────────── */
+
+.panel {
+  position: fixed;
+  top: 0;
+  right: 0;
+  width: 380px;
+  height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  background: rgba(8, 10, 14, 0.85);
+  backdrop-filter: blur(32px);
+  -webkit-backdrop-filter: blur(32px);
+  border-left: 1px solid rgba(255, 184, 0, 0.12);
+  border-radius: 2px 0 0 2px;
+  font-family: 'PP Neue Montreal', 'Inter', system-ui, sans-serif;
+  color: rgba(255, 255, 255, 0.88);
+  z-index: 200;
+
+  /* slide-in */
+  transform: translateX(100%);
+  transition: transform 0.8s cubic-bezier(0.16, 1, 0.3, 1);
+  will-change: transform;
+}
+
+.panel[data-visible='true'] {
+  transform: translateX(0);
+}
+
+/* ─── Header ─────────────────────────────────────────────────── */
+
+.header {
+  flex-shrink: 0;
+  padding: 28px 24px 18px;
+  border-bottom: 1px solid rgba(255, 184, 0, 0.10);
+}
+
+.kicker {
+  display: block;
+  font-size: 9px;
+  font-weight: 300;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: rgba(255, 184, 0, 0.60);
+  margin-bottom: 6px;
+}
+
+.headline {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 400;
+  letter-spacing: 0.03em;
+  color: rgba(255, 255, 255, 0.95);
+  line-height: 1.2;
+}
+
+/* ─── Scrollable body ────────────────────────────────────────── */
+
+.body {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 20px 24px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 184, 0, 0.20) transparent;
+}
+
+.body::-webkit-scrollbar {
+  width: 3px;
+}
+
+.body::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.body::-webkit-scrollbar-thumb {
+  background: rgba(255, 184, 0, 0.20);
+  border-radius: 2px;
+}
+
+/* ─── Sections ───────────────────────────────────────────────── */
+
+.section {
+  margin-bottom: 28px;
+}
+
+.sectionTitle {
+  margin: 0 0 12px;
+  font-size: 9px;
+  font-weight: 300;
+  letter-spacing: 0.20em;
+  text-transform: uppercase;
+  color: rgba(255, 184, 0, 0.60);
+}
+
+/* ─── Contract fields grid ───────────────────────────────────── */
+
+.fieldGrid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 2px 8px;
+  margin: 0 0 14px;
+}
+
+.fieldRow {
+  display: contents;
+}
+
+.fieldLabel {
+  font-size: 10px;
+  font-weight: 300;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.38);
+  padding: 5px 0;
+  align-self: start;
+}
+
+.fieldValue {
+  font-size: 12px;
+  font-weight: 400;
+  letter-spacing: 0.01em;
+  color: rgba(255, 255, 255, 0.82);
+  padding: 5px 0;
+  text-align: right;
+  margin: 0;
+  word-break: break-word;
+}
+
+/* ─── Contingencies ──────────────────────────────────────────── */
+
+.contingenciesBlock {
+  margin-top: 10px;
+}
+
+.contingencies {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 0;
+}
+
+.contingencyItem {
+  font-size: 11px;
+  font-weight: 300;
+  letter-spacing: 0.01em;
+  color: rgba(255, 255, 255, 0.72);
+  padding: 4px 0 4px 14px;
+  position: relative;
+  line-height: 1.4;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.contingencyItem::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 4px;
+  height: 4px;
+  background: rgba(255, 184, 0, 0.45);
+  border-radius: 50%;
+}
+
+/* ─── Disclosure checklist ───────────────────────────────────── */
+
+.disclosureList {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.disclosureGroup {
+  border: 1px solid rgba(255, 184, 0, 0.08);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.categoryHeader {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  width: 100%;
+  padding: 10px 12px;
+  background: rgba(255, 184, 0, 0.04);
+  border: none;
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.2s ease;
+}
+
+.categoryHeader:hover {
+  background: rgba(255, 184, 0, 0.08);
+}
+
+.categoryName {
+  font-size: 10px;
+  font-weight: 400;
+  letter-spacing: 0.10em;
+  text-transform: uppercase;
+  color: rgba(255, 184, 0, 0.60);
+}
+
+.chevron {
+  font-size: 14px;
+  font-weight: 200;
+  color: rgba(255, 184, 0, 0.45);
+  line-height: 1;
+  transition: color 0.2s ease;
+  user-select: none;
+}
+
+.chevron[data-open='true'] {
+  color: rgba(255, 184, 0, 0.70);
+}
+
+.disclosureItems {
+  list-style: none;
+  margin: 0;
+  padding: 6px 12px 10px;
+  background: rgba(0, 0, 0, 0.15);
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.disclosureItem {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 11px;
+  font-weight: 300;
+  letter-spacing: 0.01em;
+  color: rgba(255, 255, 255, 0.80);
+  line-height: 1.4;
+}
+
+.disclosureDot {
+  flex-shrink: 0;
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: rgba(255, 184, 0, 0.35);
+  margin-top: 5px;
+}
+
+/* ─── Footer ─────────────────────────────────────────────────── */
+
+.footer {
+  flex-shrink: 0;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 14px 24px 18px;
+  border-top: 1px solid rgba(255, 184, 0, 0.08);
+}
+
+.footerTimestamp {
+  font-size: 9px;
+  font-weight: 300;
+  letter-spacing: 0.08em;
+  color: rgba(255, 255, 255, 0.28);
+  text-transform: uppercase;
+}
+
+.footerAgent {
+  font-size: 9px;
+  font-weight: 400;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: rgba(255, 184, 0, 0.50);
+}

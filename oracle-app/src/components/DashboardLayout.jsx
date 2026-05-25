@@ -1,0 +1,27 @@
+import { AgentStatusBar } from './AgentStatusBar';
+import { PropertySpecs } from './PropertySpecs';
+import { LiveTranscript } from './LiveTranscript';
+import { PropertyCanvas } from './PropertyCanvas';
+import styles from './DashboardLayout.module.css';
+
+export function DashboardLayout() {
+  return (
+    <div className={styles.viewport}>
+      <PropertyCanvas />
+
+      <div className={styles.hud}>
+        <div className={styles.topBar}>
+          <AgentStatusBar />
+        </div>
+
+        <div className={styles.leftPanel}>
+          <PropertySpecs />
+        </div>
+
+        <div className={styles.bottomPanel}>
+          <LiveTranscript />
+        </div>
+      </div>
+    </div>
+  );
+}

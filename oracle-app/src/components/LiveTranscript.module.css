@@ -1,0 +1,238 @@
+.panel {
+  font-family: 'PP Neue Montreal', 'Inter', -apple-system, sans-serif;
+  background: rgba(10, 10, 12, 0.4);
+  backdrop-filter: blur(40px);
+  border: 1px solid rgba(255, 255, 255, 0.03);
+  border-radius: 2px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 1.6rem 1.4rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+  min-height: 180px;
+  max-height: 320px;
+}
+
+.body::-webkit-scrollbar {
+  width: 2px;
+}
+
+.body::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.body::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.idle {
+  font-size: 0.7rem;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.15);
+}
+
+.line {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  animation: slideUp 0.6s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+@keyframes slideUp {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.agent {
+  font-size: 0.5rem;
+  letter-spacing: 0.3em;
+  text-transform: uppercase;
+  color: #ffb800;
+  font-weight: 400;
+}
+
+.text {
+  font-size: 0.8rem;
+  color: rgba(255, 255, 255, 0.92);
+  font-weight: 300;
+  line-height: 1.55;
+  letter-spacing: -0.005em;
+}
+
+/* Whisper instruction lines */
+.whisperLine .agent {
+  color: rgba(120, 200, 255, 0.8);
+}
+
+.whisperLine .text {
+  color: rgba(120, 200, 255, 0.7);
+  font-style: italic;
+}
+
+/* Jarvis command lines */
+.jarvisLine .agent {
+  color: rgba(180, 130, 255, 0.8);
+}
+
+.jarvisLine .text {
+  color: rgba(180, 130, 255, 0.7);
+}
+
+/* ─── Jarvis Listening Bar ──────────────────────────────────────────────── */
+
+.jarvisBar {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.6rem 1.4rem;
+  background: rgba(180, 130, 255, 0.04);
+  border-top: 1px solid rgba(180, 130, 255, 0.12);
+  border-bottom: 1px solid rgba(180, 130, 255, 0.12);
+  animation: jarvisFadeIn 0.3s ease;
+}
+
+@keyframes jarvisFadeIn {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.jarvisPulse {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: rgba(180, 130, 255, 0.9);
+  box-shadow: 0 0 12px rgba(180, 130, 255, 0.6);
+  animation: jarvisDot 0.8s ease-in-out infinite;
+}
+
+@keyframes jarvisDot {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(1.4); opacity: 0.6; }
+}
+
+.jarvisLabel {
+  font-size: 0.55rem;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: rgba(180, 130, 255, 0.8);
+  font-weight: 400;
+}
+
+/* ─── Whisper Input ─────────────────────────────────────────────────────── */
+
+.whisperInput {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  padding: 0.5rem 0.8rem;
+  border-top: 1px solid rgba(255, 255, 255, 0.03);
+  background: rgba(6, 6, 10, 0.6);
+  backdrop-filter: blur(24px);
+}
+
+.whisperField {
+  flex: 1;
+  border: none;
+  outline: none;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 2px;
+  padding: 0.55rem 0.9rem;
+  font-family: inherit;
+  font-size: 0.72rem;
+  font-weight: 300;
+  color: rgba(255, 255, 255, 0.9);
+  letter-spacing: 0.01em;
+  transition: border-color 0.3s, background 0.3s;
+}
+
+.whisperField::placeholder {
+  color: rgba(255, 255, 255, 0.18);
+  font-style: italic;
+  letter-spacing: 0.02em;
+}
+
+.whisperField:focus {
+  background: rgba(255, 255, 255, 0.05);
+  border-color: rgba(120, 200, 255, 0.25);
+  box-shadow: 0 0 12px rgba(120, 200, 255, 0.05);
+}
+
+.whisperSend {
+  border: none;
+  background: rgba(120, 200, 255, 0.08);
+  border: 1px solid rgba(120, 200, 255, 0.2);
+  color: rgba(120, 200, 255, 0.8);
+  font-family: inherit;
+  font-size: 0.5rem;
+  font-weight: 500;
+  letter-spacing: 0.25em;
+  text-transform: uppercase;
+  padding: 0.55rem 1rem;
+  margin-left: 0.5rem;
+  border-radius: 2px;
+  cursor: pointer;
+  transition: all 0.3s;
+}
+
+.whisperSend:hover:not(:disabled) {
+  background: rgba(120, 200, 255, 0.15);
+  border-color: rgba(120, 200, 255, 0.4);
+  box-shadow: 0 0 16px rgba(120, 200, 255, 0.1);
+}
+
+.whisperSend:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+
+/* ─── Footer ────────────────────────────────────────────────────────────── */
+
+.footer {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.8rem 1.4rem;
+  border-top: 1px solid rgba(255, 255, 255, 0.03);
+}
+
+.pulse {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.9);
+  animation: pulseDot 2.4s ease-in-out infinite;
+}
+
+@keyframes pulseDot {
+  0%, 100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.3;
+    transform: scale(0.7);
+  }
+}
+
+.linkLabel {
+  font-size: 0.45rem;
+  letter-spacing: 0.3em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.2);
+  font-weight: 400;
+}

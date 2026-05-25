@@ -1,0 +1,181 @@
+.container {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+}
+
+.canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+/* ─── AR Spatial Anchor Layer ───────────────────────────────────────────── */
+
+.anchorLayer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 5;
+  overflow: hidden;
+}
+
+.anchorCard {
+  position: absolute;
+  top: 0;
+  left: 0;
+  will-change: transform, opacity;
+  transition: opacity 0.4s ease;
+
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  padding: 0.6rem 1rem;
+  border-radius: 2px;
+
+  background: rgba(8, 10, 18, 0.72);
+  backdrop-filter: blur(32px);
+  border: 1px solid rgba(255, 255, 255, 0.04);
+  box-shadow:
+    0 12px 40px rgba(0, 0, 0, 0.5),
+    inset 0 1px 0 rgba(255, 255, 255, 0.02);
+
+  animation: anchorFadeIn 0.8s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+@keyframes anchorFadeIn {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -100%) translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, -100%) translateY(0);
+  }
+}
+
+.anchorLabel {
+  font-size: 0.45rem;
+  letter-spacing: 0.35em;
+  text-transform: uppercase;
+  color: rgba(200, 180, 140, 0.6);
+  font-weight: 500;
+}
+
+.anchorValue {
+  font-size: 0.7rem;
+  font-weight: 300;
+  color: rgba(240, 238, 232, 0.92);
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+}
+
+.anchorStem {
+  position: absolute;
+  bottom: -12px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 1px;
+  height: 12px;
+  background: linear-gradient(
+    to bottom,
+    rgba(200, 160, 80, 0.6),
+    rgba(200, 160, 80, 0.0)
+  );
+}
+
+/* ─── GIS Boundary Indicator ────────────────────────────────────────────── */
+
+.gisIndicator {
+  position: absolute;
+  top: 1.2rem;
+  left: 1.5rem;
+  z-index: 6;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  pointer-events: none;
+}
+
+.gisIndicatorDot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: rgba(210, 148, 30, 0.9);
+  box-shadow: 0 0 8px rgba(210, 148, 30, 0.6);
+  animation: gisPulse 2s ease-in-out infinite;
+}
+
+@keyframes gisPulse {
+  0%, 100% { opacity: 0.6; box-shadow: 0 0 4px rgba(210, 148, 30, 0.3); }
+  50% { opacity: 1; box-shadow: 0 0 12px rgba(210, 148, 30, 0.8); }
+}
+
+.gisIndicatorText {
+  font-size: 0.5rem;
+  letter-spacing: 0.3em;
+  text-transform: uppercase;
+  color: rgba(210, 148, 30, 0.7);
+  font-weight: 500;
+}
+
+/* ─── Existing Styles ───────────────────────────────────────────────────── */
+
+.overlay {
+  position: absolute;
+  bottom: 1.5rem;
+  right: 1.5rem;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.6s;
+  display: flex;
+  gap: 0.5rem;
+  z-index: 6;
+}
+
+.overlay[data-furnished="true"] {
+  opacity: 1;
+}
+
+.badge {
+  font-size: 0.6rem;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  padding: 0.4rem 1rem;
+  border-radius: 6px;
+  background: rgba(57, 255, 20, 0.08);
+  border: 1px solid rgba(57, 255, 20, 0.35);
+  color: #39ff14;
+  text-shadow: 0 0 10px rgba(57, 255, 20, 0.5);
+  backdrop-filter: blur(12px);
+  animation: glowPulse 2s ease-in-out infinite;
+}
+
+@keyframes glowPulse {
+  0%, 100% { box-shadow: 0 0 8px rgba(57, 255, 20, 0.2); }
+  50% { box-shadow: 0 0 20px rgba(57, 255, 20, 0.4); }
+}
+
+.loadingOverlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(8px);
+  z-index: 10;
+}
+
+.loadingText {
+  font-size: 0.7rem;
+  letter-spacing: 0.3em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.7);
+  animation: loadPulse 1.5s ease-in-out infinite;
+}
+
+@keyframes loadPulse {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 1; }
+}

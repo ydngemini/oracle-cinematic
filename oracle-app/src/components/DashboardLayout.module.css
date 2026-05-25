@@ -1,0 +1,63 @@
+.viewport {
+  position: relative;
+  width: 100vw;
+  height: 100vh;
+  overflow: hidden;
+  background: radial-gradient(
+    ellipse at 30% 20%,
+    #0a1628 0%,
+    #050812 60%,
+    #020408 100%
+  );
+}
+
+.hud {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  padding: 1.5rem;
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  grid-template-columns: 320px 1fr;
+  grid-template-areas:
+    "top    top"
+    "left   center"
+    "bottom bottom";
+  gap: 1.5rem;
+}
+
+.hud > * {
+  pointer-events: auto;
+}
+
+.topBar {
+  grid-area: top;
+}
+
+.leftPanel {
+  grid-area: left;
+  align-self: start;
+}
+
+.bottomPanel {
+  grid-area: bottom;
+}
+
+@media (max-width: 900px) {
+  .hud {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto auto 1fr auto;
+    grid-template-areas:
+      "top"
+      "left"
+      "center"
+      "bottom";
+    padding: 1rem;
+    gap: 1rem;
+  }
+
+  .leftPanel {
+    max-width: 100%;
+  }
+}
