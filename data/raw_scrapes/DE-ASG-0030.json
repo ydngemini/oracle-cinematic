@@ -1,0 +1,65 @@
+{
+  "record_id": "DE-ASG-0030",
+  "assignor": {
+    "name": "Emily J. Thompson",
+    "address": "23405 Lewes-Georgetown Hwy, Georgetown, DE 19947",
+    "entity_type": "individual"
+  },
+  "assignee": {
+    "name": "Seaford Homes LLC",
+    "address": "12350 Sussex Hwy, Bridgeville, DE 19933",
+    "entity_type": "llc"
+  },
+  "seller": {
+    "name": "John D. Martin",
+    "address": "34545 Oak St, Seaford, DE 19973"
+  },
+  "property": {
+    "address": "23456 Woodland Ave",
+    "city": "Seaford",
+    "county": "Sussex",
+    "state": "DE",
+    "zip": "19973",
+    "parcel_id": "634-234.00-12.00",
+    "property_type": "SFR",
+    "bedrooms": 3,
+    "bathrooms": 2,
+    "sqft": 1500,
+    "year_built": 2002
+  },
+  "original_contract": {
+    "purchase_price": 220000,
+    "earnest_money": 10000,
+    "execution_date": "2025-10-15",
+    "closing_deadline": "2026-01-15",
+    "contingencies": [
+      "financing",
+      "inspection"
+    ]
+  },
+  "assignment": {
+    "assignment_fee": 20000,
+    "total_price_to_assignee": 240000,
+    "assignment_date": "2025-11-20",
+    "consideration_paid": 5000,
+    "deposit_held_by": "assignor"
+  },
+  "legal_clauses": {
+    "assignability_clause": "This Assignment is freely assignable by Assignee, and Assignor hereby consents to such assignment.",
+    "indemnification": "Assignor shall indemnify, defend, and hold harmless Assignee from and against any and all claims, damages, and expenses arising from Assignor's breach of this Assignment.",
+    "governing_law": "This Assignment shall be governed by and construed in accordance with the laws of the State of Delaware.",
+    "dispute_resolution": "Any dispute arising from this Assignment shall be resolved through binding arbitration in accordance with the rules of the American Arbitration Association.",
+    "closing_obligations": "Assignee shall be responsible for all closing costs and obligations associated with the purchase of the Property."
+  },
+  "notarization": {
+    "notary_name": "Samantha J. Rodriguez",
+    "commission_expiry": "2027-02-28",
+    "county_recorded": "Sussex County Recorder of Deeds",
+    "recording_ref": "Record Book 2345, Page 123"
+  },
+  "_meta": {
+    "generated_at": "2026-05-25T06:46:42.710202",
+    "model": "meta.llama3-70b-instruct-v1:0",
+    "record_num": 30
+  }
+}

@@ -1,0 +1,65 @@
+{
+  "record_id": "DE-ASG-0089",
+  "assignor": {
+    "name": "Ryanne M. Thompson",
+    "address": "123 Oak St, Dover, DE 19901",
+    "entity_type": "individual"
+  },
+  "assignee": {
+    "name": "Smyrna Properties LLC",
+    "address": "456 N Main St, Smyrna, DE 19977",
+    "entity_type": "llc"
+  },
+  "seller": {
+    "name": "John D. Martin",
+    "address": "789 W Commerce St, Smyrna, DE 19977"
+  },
+  "property": {
+    "address": "234 S Dupont Hwy, Smyrna, DE 19977",
+    "city": "Smyrna",
+    "county": "Kent",
+    "state": "DE",
+    "zip": "19977",
+    "parcel_id": "KENT-123456",
+    "property_type": "SFR",
+    "bedrooms": 3,
+    "bathrooms": 2,
+    "sqft": 1800,
+    "year_built": 2001
+  },
+  "original_contract": {
+    "purchase_price": 220000,
+    "earnest_money": 4400,
+    "execution_date": "2025-10-15",
+    "closing_deadline": "2026-02-28",
+    "contingencies": [
+      "financing",
+      "inspection"
+    ]
+  },
+  "assignment": {
+    "assignment_fee": 20000,
+    "total_price_to_assignee": 240000,
+    "assignment_date": "2026-01-10",
+    "consideration_paid": 2000,
+    "deposit_held_by": "Smyrna Title Company"
+  },
+  "legal_clauses": {
+    "assignability_clause": "This Assignment is assignable by Assignor, and Assignee agrees to be bound by the terms of the Original Contract.",
+    "indemnification": "Assignor shall indemnify, defend, and hold harmless Assignee from and against any and all claims, damages, and expenses arising out of or related to the Original Contract.",
+    "governing_law": "This Assignment shall be governed by and construed in accordance with the laws of the State of Delaware.",
+    "dispute_resolution": "Any disputes arising out of or related to this Assignment shall be resolved through binding arbitration in accordance with the rules of the American Arbitration Association.",
+    "closing_obligations": "Assignee shall be responsible for closing the transaction in accordance with the terms of the Original Contract."
+  },
+  "notarization": {
+    "notary_name": "Karen L. Jenkins",
+    "commission_expiry": "2027-02-28",
+    "county_recorded": "Kent County Recorder of Deeds",
+    "recording_ref": "2026-001234"
+  },
+  "_meta": {
+    "generated_at": "2026-05-25T07:02:04.453603",
+    "model": "meta.llama3-70b-instruct-v1:0",
+    "record_num": 89
+  }
+}

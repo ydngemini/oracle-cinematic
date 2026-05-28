@@ -1,0 +1,65 @@
+{
+  "record_id": "DE-ASG-0011",
+  "assignor": {
+    "name": "Jessica L. Sanchez",
+    "address": "234 N Main St, Dover, DE 19901",
+    "entity_type": "individual"
+  },
+  "assignee": {
+    "name": "Kings Landing Properties LLC",
+    "address": "1234 W Division St, Wilmington, DE 19802",
+    "entity_type": "llc"
+  },
+  "seller": {
+    "name": "Ryan M. Thompson",
+    "address": "456 E Walnut St, Harrington, DE 19952"
+  },
+  "property": {
+    "address": "1423 W Liberty St",
+    "city": "Harrington",
+    "county": "Kent",
+    "state": "DE",
+    "zip": "19952",
+    "parcel_id": "KENT-001234",
+    "property_type": "SFR",
+    "bedrooms": 3,
+    "bathrooms": 2,
+    "sqft": 1800,
+    "year_built": 2002
+  },
+  "original_contract": {
+    "purchase_price": 220000,
+    "earnest_money": 5000,
+    "execution_date": "2025-10-15",
+    "closing_deadline": "2026-02-28",
+    "contingencies": [
+      "financing",
+      "inspection"
+    ]
+  },
+  "assignment": {
+    "assignment_fee": 20000,
+    "total_price_to_assignee": 240000,
+    "assignment_date": "2026-01-10",
+    "consideration_paid": 1000,
+    "deposit_held_by": "assignor"
+  },
+  "legal_clauses": {
+    "assignability_clause": "This Assignment is assignable by Assignee, and Assignor hereby consents to such assignment.",
+    "indemnification": "Assignor shall indemnify, defend, and hold harmless Assignee from and against any and all claims, damages, and expenses arising out of or related to the Original Contract.",
+    "governing_law": "This Assignment shall be governed by and construed in accordance with the laws of the State of Delaware.",
+    "dispute_resolution": "Any dispute arising out of or related to this Assignment shall be resolved through binding arbitration in accordance with the rules of the American Arbitration Association.",
+    "closing_obligations": "Assignee shall comply with all closing obligations and requirements set forth in the Original Contract."
+  },
+  "notarization": {
+    "notary_name": "Samantha J. Lee",
+    "commission_expiry": "2027-02-28",
+    "county_recorded": "Kent County Recorder of Deeds",
+    "recording_ref": "Instrument #2026-001234"
+  },
+  "_meta": {
+    "generated_at": "2026-05-25T06:41:53.869474",
+    "model": "meta.llama3-70b-instruct-v1:0",
+    "record_num": 11
+  }
+}

@@ -1,0 +1,65 @@
+{
+  "record_id": "DE-ASG-0035",
+  "assignor": {
+    "name": "Emily J. Wilson",
+    "address": "123 Main St, Wilmington, DE 19801",
+    "entity_type": "individual"
+  },
+  "assignee": {
+    "name": "Hockessin Homes LLC",
+    "address": "456 Creek Rd, Hockessin, DE 19707",
+    "entity_type": "llc"
+  },
+  "seller": {
+    "name": "John D. Smith",
+    "address": "789 Brandywine Dr, Wilmington, DE 19809"
+  },
+  "property": {
+    "address": "1345 Valley Rd",
+    "city": "Hockessin",
+    "county": "New Castle",
+    "state": "DE",
+    "zip": "19707",
+    "parcel_id": "060134001",
+    "property_type": "SFR",
+    "bedrooms": 4,
+    "bathrooms": 2.5,
+    "sqft": 2200,
+    "year_built": 2001
+  },
+  "original_contract": {
+    "purchase_price": 240000,
+    "earnest_money": 5000,
+    "execution_date": "2025-10-15",
+    "closing_deadline": "2025-12-15",
+    "contingencies": [
+      "financing",
+      "inspection"
+    ]
+  },
+  "assignment": {
+    "assignment_fee": 15000,
+    "total_price_to_assignee": 255000,
+    "assignment_date": "2025-11-01",
+    "consideration_paid": 5000,
+    "deposit_held_by": "assignor"
+  },
+  "legal_clauses": {
+    "assignability_clause": "This Assignment of Contract is freely assignable by Assignee, and Assignor shall not unreasonably withhold consent to any assignment.",
+    "indemnification": "Assignor shall indemnify, defend, and hold harmless Assignee against any claims, damages, or expenses arising from Assignor's breach of this Assignment.",
+    "governing_law": "This Assignment shall be governed by and construed in accordance with the laws of the State of Delaware.",
+    "dispute_resolution": "Any disputes arising from this Assignment shall be resolved through binding arbitration in accordance with the rules of the American Arbitration Association.",
+    "closing_obligations": "Assignee shall be responsible for all closing costs and obligations, including but not limited to title insurance, settlement fees, and transfer taxes."
+  },
+  "notarization": {
+    "notary_name": "Karen M. Johnson",
+    "commission_expiry": "2027-02-28",
+    "county_recorded": "New Castle",
+    "recording_ref": "2025-001234"
+  },
+  "_meta": {
+    "generated_at": "2026-05-25T06:48:28.193729",
+    "model": "meta.llama3-70b-instruct-v1:0",
+    "record_num": 35
+  }
+}

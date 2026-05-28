@@ -1,0 +1,65 @@
+{
+  "record_id": "DE-ASG-0016",
+  "assignor": {
+    "name": "Jessica L. Thompson",
+    "address": "123 Main St, Dover, DE 19901",
+    "entity_type": "individual"
+  },
+  "assignee": {
+    "name": "Camden Investments LLC",
+    "address": "456 N. DuPont Hwy, Camden, DE 19934",
+    "entity_type": "llc"
+  },
+  "seller": {
+    "name": "John and Mary Smith",
+    "address": "789 S. Old Mill Rd, Camden, DE 19934"
+  },
+  "property": {
+    "address": "234 E. Camden Wyckoff Rd",
+    "city": "Camden",
+    "county": "Kent",
+    "state": "DE",
+    "zip": "19934",
+    "parcel_id": "KENT-123456",
+    "property_type": "SFR",
+    "bedrooms": 3,
+    "bathrooms": 2,
+    "sqft": 1800,
+    "year_built": 2002
+  },
+  "original_contract": {
+    "purchase_price": 220000,
+    "earnest_money": 5000,
+    "execution_date": "2025-10-15",
+    "closing_deadline": "2025-12-15",
+    "contingencies": [
+      "financing",
+      "inspection"
+    ]
+  },
+  "assignment": {
+    "assignment_fee": 20000,
+    "total_price_to_assignee": 240000,
+    "assignment_date": "2026-01-10",
+    "consideration_paid": 10000,
+    "deposit_held_by": "assignor"
+  },
+  "legal_clauses": {
+    "assignability_clause": "This Assignment is freely assignable by the Assignee, and the Assignor hereby consents to such assignment.",
+    "indemnification": "The Assignor shall indemnify, defend, and hold harmless the Assignee from and against any and all claims, demands, or causes of action arising from the Assignor's breach of this Assignment.",
+    "governing_law": "This Assignment shall be governed by and construed in accordance with the laws of the State of Delaware.",
+    "dispute_resolution": "Any disputes arising from this Assignment shall be resolved through binding arbitration in accordance with the rules of the American Arbitration Association.",
+    "closing_obligations": "The Assignee shall be responsible for all closing costs and obligations associated with the purchase of the Property."
+  },
+  "notarization": {
+    "notary_name": "Samantha J. Brown",
+    "commission_expiry": "2027-02-28",
+    "county_recorded": "Kent County Recorder of Deeds",
+    "recording_ref": "Instrument #2026-001234"
+  },
+  "_meta": {
+    "generated_at": "2026-05-25T06:43:12.130780",
+    "model": "meta.llama3-70b-instruct-v1:0",
+    "record_num": 16
+  }
+}

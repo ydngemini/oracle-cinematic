@@ -1,0 +1,65 @@
+{
+  "record_id": "DE-ASG-0033",
+  "assignor": {
+    "name": "Emily J. Rodriguez",
+    "address": "23443 Coastal Hwy, Rehoboth Beach, DE 19971",
+    "entity_type": "individual"
+  },
+  "assignee": {
+    "name": "Seashore Properties LLC",
+    "address": "34500 Atlantic Ave, Selbyville, DE 19975",
+    "entity_type": "llc"
+  },
+  "seller": {
+    "name": "James R. Wilson",
+    "address": "12345 Middle Neck Rd, Seaford, DE 19973"
+  },
+  "property": {
+    "address": "45678 Woodland Ave",
+    "city": "Seaford",
+    "county": "Sussex",
+    "state": "DE",
+    "zip": "19973",
+    "parcel_id": "634-234.00-12.00",
+    "property_type": "SFR",
+    "bedrooms": 3,
+    "bathrooms": 2,
+    "sqft": 1800,
+    "year_built": 2002
+  },
+  "original_contract": {
+    "purchase_price": 220000,
+    "earnest_money": 5000,
+    "execution_date": "2025-09-15",
+    "closing_deadline": "2025-11-15",
+    "contingencies": [
+      "financing",
+      "inspection"
+    ]
+  },
+  "assignment": {
+    "assignment_fee": 15000,
+    "total_price_to_assignee": 235000,
+    "assignment_date": "2025-10-05",
+    "consideration_paid": 5000,
+    "deposit_held_by": "seller"
+  },
+  "legal_clauses": {
+    "assignability_clause": "This Assignment of Contract is freely assignable by the Assignor to any third party without the consent of the Seller.",
+    "indemnification": "The Assignor shall indemnify and hold harmless the Assignee from any claims, damages, or expenses arising out of or related to the original contract.",
+    "governing_law": "This Assignment of Contract shall be governed by and construed in accordance with the laws of the State of Delaware.",
+    "dispute_resolution": "Any disputes arising out of or related to this Assignment of Contract shall be resolved through binding arbitration in accordance with the rules of the American Arbitration Association.",
+    "closing_obligations": "The Assignee shall be responsible for all closing costs and expenses associated with the transfer of the property."
+  },
+  "notarization": {
+    "notary_name": "Karen L. Jenkins",
+    "commission_expiry": "2027-02-28",
+    "county_recorded": "Sussex",
+    "recording_ref": "Book 2345, Page 123"
+  },
+  "_meta": {
+    "generated_at": "2026-05-25T06:47:57.686342",
+    "model": "meta.llama3-70b-instruct-v1:0",
+    "record_num": 33
+  }
+}

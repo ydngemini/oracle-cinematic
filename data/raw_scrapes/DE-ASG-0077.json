@@ -1,0 +1,65 @@
+{
+  "record_id": "DE-ASG-0077",
+  "assignor": {
+    "name": "Emily J. Rodriguez",
+    "address": "23411 Oak Orchard Rd, Rehoboth Beach, DE 19971",
+    "entity_type": "individual"
+  },
+  "assignee": {
+    "name": "Sussex Homes LLC",
+    "address": "33395 Atlantic Ave, Bethany Beach, DE 19930",
+    "entity_type": "llc"
+  },
+  "seller": {
+    "name": "James R. Thompson",
+    "address": "105 E Market St, Georgetown, DE 19947"
+  },
+  "property": {
+    "address": "12436 Sussex Hwy, Georgetown, DE 19947",
+    "city": "Georgetown",
+    "county": "Sussex",
+    "state": "DE",
+    "zip": "19947",
+    "parcel_id": "634-173.00-13.00",
+    "property_type": "SFR",
+    "bedrooms": 3,
+    "bathrooms": 2,
+    "sqft": 1500,
+    "year_built": 2002
+  },
+  "original_contract": {
+    "purchase_price": 225000,
+    "earnest_money": 5000,
+    "execution_date": "2025-10-15",
+    "closing_deadline": "2025-12-15",
+    "contingencies": [
+      "financing",
+      "inspection"
+    ]
+  },
+  "assignment": {
+    "assignment_fee": 20000,
+    "total_price_to_assignee": 245000,
+    "assignment_date": "2025-11-10",
+    "consideration_paid": 1000,
+    "deposit_held_by": "assignor"
+  },
+  "legal_clauses": {
+    "assignability_clause": "This Assignment of Contract is freely assignable by the Assignor, and the Assignee shall have the right to assign this Assignment without the consent of the Seller.",
+    "indemnification": "The Assignor hereby indemnifies and holds harmless the Assignee against any and all claims, damages, or expenses arising out of or related to the original contract.",
+    "governing_law": "This Assignment of Contract shall be governed by and construed in accordance with the laws of the State of Delaware.",
+    "dispute_resolution": "Any disputes arising out of or related to this Assignment of Contract shall be resolved through binding arbitration in accordance with the rules of the American Arbitration Association.",
+    "closing_obligations": "The Assignee shall be responsible for all closing costs and obligations associated with the original contract."
+  },
+  "notarization": {
+    "notary_name": "Pamela D. Johnson",
+    "commission_expiry": "2027-02-28",
+    "county_recorded": "Sussex County Recorder of Deeds",
+    "recording_ref": "Recorded on 2025-11-17, Instrument #2025-123456"
+  },
+  "_meta": {
+    "generated_at": "2026-05-25T06:58:59.215900",
+    "model": "meta.llama3-70b-instruct-v1:0",
+    "record_num": 77
+  }
+}

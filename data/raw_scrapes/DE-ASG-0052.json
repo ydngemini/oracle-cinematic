@@ -1,0 +1,65 @@
+{
+  "record_id": "DE-ASG-0052",
+  "assignor": {
+    "name": "Ava M. Rodriguez",
+    "address": "23445 Bayshore Dr, Rehoboth Beach, DE 19971",
+    "entity_type": "individual"
+  },
+  "assignee": {
+    "name": "Rehoboth Real Estate Investments LLC",
+    "address": "34567 Highway One, Rehoboth Beach, DE 19971",
+    "entity_type": "llc"
+  },
+  "seller": {
+    "name": "John D. Smith",
+    "address": "123 Main St, Rehoboth Beach, DE 19971"
+  },
+  "property": {
+    "address": "456 Ocean View Dr, Rehoboth Beach, DE 19971",
+    "city": "Rehoboth Beach",
+    "county": "Sussex",
+    "state": "DE",
+    "zip": "19971",
+    "parcel_id": "634-234.00-22.00",
+    "property_type": "SFR",
+    "bedrooms": 3,
+    "bathrooms": 2,
+    "sqft": 1800,
+    "year_built": 2005
+  },
+  "original_contract": {
+    "purchase_price": 220000,
+    "earnest_money": 4400,
+    "execution_date": "2025-11-15",
+    "closing_deadline": "2026-01-15",
+    "contingencies": [
+      "financing",
+      "inspection"
+    ]
+  },
+  "assignment": {
+    "assignment_fee": 18000,
+    "total_price_to_assignee": 238000,
+    "assignment_date": "2026-01-10",
+    "consideration_paid": 5000,
+    "deposit_held_by": "Rehoboth Real Estate Investments LLC"
+  },
+  "legal_clauses": {
+    "assignability_clause": "This Assignment is freely assignable by the Assignee, and any such assignment shall not relieve the Assignor of its obligations hereunder.",
+    "indemnification": "The Assignor shall indemnify and hold harmless the Assignee from and against any and all claims, damages, and expenses arising out of or related to the breach of any representation, warranty, or covenant made by the Assignor in this Assignment.",
+    "governing_law": "This Assignment shall be governed by and construed in accordance with the laws of the State of Delaware.",
+    "dispute_resolution": "Any dispute arising out of or related to this Assignment shall be resolved through binding arbitration in accordance with the rules of the American Arbitration Association.",
+    "closing_obligations": "The Assignee shall be responsible for ensuring that all closing obligations are fulfilled, including but not limited to the payment of all closing costs and the delivery of the deed."
+  },
+  "notarization": {
+    "notary_name": "Samantha J. Lee",
+    "commission_expiry": "2027-02-28",
+    "county_recorded": "Sussex County Recorder of Deeds",
+    "recording_ref": "Record Book 2345, Page 123"
+  },
+  "_meta": {
+    "generated_at": "2026-05-25T06:52:47.179964",
+    "model": "meta.llama3-70b-instruct-v1:0",
+    "record_num": 52
+  }
+}

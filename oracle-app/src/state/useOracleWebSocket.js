@@ -107,6 +107,22 @@ export function useOracleWebSocket() {
             payload: msg.comps || [],
           });
           break;
+
+        case 'AGENT_THOUGHT':
+          if (msg.mode === 'start') {
+            dispatch({
+              type: ACTIONS.WALKER_THOUGHT_START,
+              payload: { agent: msg.agent, token: msg.token },
+            });
+          } else if (msg.mode === 'stream') {
+            dispatch({
+              type: ACTIONS.WALKER_THOUGHT_TOKEN,
+              payload: { token: msg.token },
+            });
+          } else if (msg.mode === 'end') {
+            dispatch({ type: ACTIONS.WALKER_THOUGHT_END });
+          }
+          break;
       }
     };
 

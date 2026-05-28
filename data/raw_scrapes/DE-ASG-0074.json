@@ -1,0 +1,65 @@
+{
+  "record_id": "DE-ASG-0074",
+  "assignor": {
+    "name": "Emily J. Rodriguez",
+    "address": "23445 Coastal Hwy, Rehoboth Beach, DE 19971",
+    "entity_type": "individual"
+  },
+  "assignee": {
+    "name": "Coastal Dreams LLC",
+    "address": "34500 Atlantic Ave, Bethany Beach, DE 19930",
+    "entity_type": "llc"
+  },
+  "seller": {
+    "name": "James R. Thompson",
+    "address": "10545 Concord Rd, Seaford, DE 19973"
+  },
+  "property": {
+    "address": "23434 Woodland Ave",
+    "city": "Seaford",
+    "county": "Sussex",
+    "state": "DE",
+    "zip": "19973",
+    "parcel_id": "634-234.00-12.00",
+    "property_type": "SFR",
+    "bedrooms": 3,
+    "bathrooms": 2,
+    "sqft": 1800,
+    "year_built": 2001
+  },
+  "original_contract": {
+    "purchase_price": 220000,
+    "earnest_money": 2200,
+    "execution_date": "2025-02-15",
+    "closing_deadline": "2025-04-15",
+    "contingencies": [
+      "financing",
+      "inspection"
+    ]
+  },
+  "assignment": {
+    "assignment_fee": 18000,
+    "total_price_to_assignee": 238000,
+    "assignment_date": "2025-03-01",
+    "consideration_paid": 5000,
+    "deposit_held_by": "assignor"
+  },
+  "legal_clauses": {
+    "assignability_clause": "This Assignment is freely assignable by Assignee, and Assignor hereby acknowledges and agrees that Assignee may assign its rights under this Assignment without the consent of Assignor.",
+    "indemnification": "Assignor shall indemnify and hold harmless Assignee from and against any and all claims, damages, and expenses arising out of or related to any breach of this Assignment by Assignor.",
+    "governing_law": "This Assignment shall be governed by and construed in accordance with the laws of the State of Delaware.",
+    "dispute_resolution": "Any disputes arising out of or related to this Assignment shall be resolved through binding arbitration in accordance with the rules of the American Arbitration Association.",
+    "closing_obligations": "Assignee shall be responsible for closing the transaction and fulfilling all obligations under the Original Contract."
+  },
+  "notarization": {
+    "notary_name": "Patricia A. Davis",
+    "commission_expiry": "2027-02-15",
+    "county_recorded": "Sussex County Recorder of Deeds",
+    "recording_ref": "2025-003456"
+  },
+  "_meta": {
+    "generated_at": "2026-05-25T06:58:15.512787",
+    "model": "meta.llama3-70b-instruct-v1:0",
+    "record_num": 74
+  }
+}

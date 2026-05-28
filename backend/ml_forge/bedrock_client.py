@@ -19,7 +19,9 @@ from botocore.exceptions import ClientError, BotoCoreError
 
 logger = logging.getLogger("oracle.ml_forge.bedrock")
 
-AWS_REGION = os.environ.get("BEDROCK_REGION", "us-east-1")
+AWS_REGION = os.environ.get("BEDROCK_REGION", "us-east-2")
+PRIMARY_MODEL = "meta.llama3-3-70b-instruct-v1:0"
+SECONDARY_MODEL = "meta.llama3-1-8b-instruct-v1:0"
 MAX_RETRIES = 6
 BASE_DELAY = 1.0
 MAX_DELAY = 64.0

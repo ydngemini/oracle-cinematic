@@ -1,0 +1,65 @@
+{
+  "record_id": "DE-ASG-0012",
+  "assignor": {
+    "name": "Emily J. Rodriguez",
+    "address": "234 N. Washington St, Wilmington, DE 19801",
+    "entity_type": "individual"
+  },
+  "assignee": {
+    "name": "Wilmington Realty Investments, LLC",
+    "address": "123 E. 11th St, Wilmington, DE 19801",
+    "entity_type": "llc"
+  },
+  "seller": {
+    "name": "Michael T. Lee",
+    "address": "456 S. Harrison St, Wilmington, DE 19805"
+  },
+  "property": {
+    "address": "1913 W. 9th St",
+    "city": "Wilmington",
+    "county": "New Castle",
+    "state": "DE",
+    "zip": "19805",
+    "parcel_id": "06-035-020",
+    "property_type": "SFR",
+    "bedrooms": 3,
+    "bathrooms": 2,
+    "sqft": 1800,
+    "year_built": 1990
+  },
+  "original_contract": {
+    "purchase_price": 240000,
+    "earnest_money": 5000,
+    "execution_date": "2025-10-15",
+    "closing_deadline": "2025-12-15",
+    "contingencies": [
+      "financing",
+      "inspection"
+    ]
+  },
+  "assignment": {
+    "assignment_fee": 15000,
+    "total_price_to_assignee": 255000,
+    "assignment_date": "2025-11-10",
+    "consideration_paid": 5000,
+    "deposit_held_by": "seller"
+  },
+  "legal_clauses": {
+    "assignability_clause": "This Assignment is freely assignable by Assignee, and Assignor shall not unreasonably withhold consent to any such assignment.",
+    "indemnification": "Assignor shall indemnify and hold harmless Assignee against any claims, damages, or expenses arising from any breach of this Assignment.",
+    "governing_law": "This Assignment shall be governed by and construed in accordance with the laws of the State of Delaware.",
+    "dispute_resolution": "Any disputes arising from this Assignment shall be resolved through binding arbitration in accordance with the rules of the American Arbitration Association.",
+    "closing_obligations": "Assignee shall be responsible for closing the transaction with Seller, and shall comply with all applicable laws and regulations."
+  },
+  "notarization": {
+    "notary_name": "Jane Doe",
+    "commission_expiry": "2027-02-28",
+    "county_recorded": "New Castle County Recorder of Deeds",
+    "recording_ref": "2025-123456"
+  },
+  "_meta": {
+    "generated_at": "2026-05-25T06:42:10.052892",
+    "model": "meta.llama3-70b-instruct-v1:0",
+    "record_num": 12
+  }
+}

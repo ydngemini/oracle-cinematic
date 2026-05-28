@@ -1,0 +1,63 @@
+{
+  "record_id": "DE-ASG-TEST-002",
+  "assignor": {
+    "name": "Janice R. Patel",
+    "address": "300 S. State St, Dover, DE 19901",
+    "entity_type": "individual"
+  },
+  "assignee": {
+    "name": "Nexum Capital Holdings, LLC",
+    "address": "1201 N. Orange St, Suite 800, Wilmington, DE 19801",
+    "entity_type": "llc"
+  },
+  "seller": {
+    "name": "Robert K. Simmons Estate",
+    "address": "c/o Delaware Trust & Estates, 100 W. Loockerman St, Dover, DE 19901"
+  },
+  "property": {
+    "address": "717 Forest St",
+    "city": "Dover",
+    "county": "Kent",
+    "state": "DE",
+    "zip": "19904",
+    "parcel_id": "ED-05-076.00-01-22",
+    "property_type": "SFR",
+    "bedrooms": 3,
+    "bathrooms": 1,
+    "sqft": 1200,
+    "year_built": 2005,
+    "condition_notes": "Estate sale, mostly turnkey, minor cosmetic work needed, newer mechanicals, good bones"
+  },
+  "original_contract": {
+    "purchase_price": 95000,
+    "earnest_money": 2000,
+    "execution_date": "2026-05-01",
+    "closing_deadline": "2026-08-01",
+    "contingencies": ["clear_title", "estate_probate_clearance"]
+  },
+  "assignment": {
+    "assignment_fee": 12000,
+    "total_price_to_assignee": 107000,
+    "assignment_date": "2026-05-20",
+    "consideration_paid": 2000,
+    "deposit_held_by": "Title Company"
+  },
+  "legal_clauses": {
+    "assignability_clause": "Assignee may freely assign this contract without Seller consent, subject to probate court approval of the original contract.",
+    "indemnification": "Standard mutual indemnification applies.",
+    "governing_law": "Delaware law governs.",
+    "dispute_resolution": "Kent County Court of Chancery.",
+    "closing_obligations": "Assignee responsible for all costs beyond Seller's existing title obligations."
+  },
+  "notarization": {
+    "notary_name": "Angela D. Torres",
+    "commission_expiry": "2027-09-30",
+    "county_recorded": "Kent County Recorder of Deeds",
+    "recording_ref": "Book 4521, Page 0088"
+  },
+  "_meta": {
+    "purpose": "test_deal",
+    "expected_verdict": "PROCEED",
+    "rationale": "ARV ~$186K (1200sqft * $155/sqft Kent), Rehab ~$7.2K (2005 build, light cosmetic), MAO = $186K*0.70 - $7.2K = $123K. Asking $107K is well under MAO. Clear PROCEED with $16K margin."
+  }
+}

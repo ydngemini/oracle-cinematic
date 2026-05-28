@@ -1,0 +1,65 @@
+{
+  "record_id": "DE-ASG-0062",
+  "assignor": {
+    "name": "Jessica L. Rodriguez",
+    "address": "1234 N. DuPont Hwy, Dover, DE 19901",
+    "entity_type": "individual"
+  },
+  "assignee": {
+    "name": "Smyrna Homes LLC",
+    "address": "456 E. Glenwood Ave, Smyrna, DE 19977",
+    "entity_type": "llc"
+  },
+  "seller": {
+    "name": "John D. Smith",
+    "address": "789 S. Main St, Smyrna, DE 19977"
+  },
+  "property": {
+    "address": "3456 W. Mt Vernon St",
+    "city": "Smyrna",
+    "county": "Kent",
+    "state": "DE",
+    "zip": "19977",
+    "parcel_id": "KENT-123456",
+    "property_type": "SFR",
+    "bedrooms": 3,
+    "bathrooms": 2,
+    "sqft": 1800,
+    "year_built": 2002
+  },
+  "original_contract": {
+    "purchase_price": 220000,
+    "earnest_money": 2000,
+    "execution_date": "2025-10-15",
+    "closing_deadline": "2025-12-15",
+    "contingencies": [
+      "financing",
+      "inspection"
+    ]
+  },
+  "assignment": {
+    "assignment_fee": 15000,
+    "total_price_to_assignee": 235000,
+    "assignment_date": "2025-11-10",
+    "consideration_paid": 1000,
+    "deposit_held_by": "Assignor"
+  },
+  "legal_clauses": {
+    "assignability_clause": "This Assignment is freely assignable by Assignee, and Assignor shall not unreasonably withhold consent to any such assignment.",
+    "indemnification": "Assignor shall indemnify and hold harmless Assignee from any and all claims, damages, or expenses arising from any breach of this Assignment.",
+    "governing_law": "This Assignment shall be governed by and construed in accordance with the laws of the State of Delaware.",
+    "dispute_resolution": "Any disputes arising from this Assignment shall be resolved through binding arbitration in accordance with the rules of the American Arbitration Association.",
+    "closing_obligations": "Assignee shall be responsible for all closing costs and obligations associated with the purchase of the Property."
+  },
+  "notarization": {
+    "notary_name": "Karen J. Johnson",
+    "commission_expiry": "2027-02-28",
+    "county_recorded": "Kent County Recorder of Deeds",
+    "recording_ref": "Doc. No. 2025001234"
+  },
+  "_meta": {
+    "generated_at": "2026-05-25T06:55:18.653421",
+    "model": "meta.llama3-70b-instruct-v1:0",
+    "record_num": 62
+  }
+}

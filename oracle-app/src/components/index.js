@@ -5,3 +5,4 @@ export { LiveTranscript } from './LiveTranscript';
 export { PropertyCanvas } from './PropertyCanvas';
 export { LoginVault } from './LoginVault';
 export { BillingOverlay } from './BillingOverlay';
+export { WalkerBubble } from './WalkerBubble';

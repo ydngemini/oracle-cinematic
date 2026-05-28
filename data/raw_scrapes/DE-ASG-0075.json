@@ -1,0 +1,65 @@
+{
+  "record_id": "DE-ASG-0075",
+  "assignor": {
+    "name": "Ava M. Rodriguez",
+    "address": "123 W 4th St, Wilmington, DE 19801",
+    "entity_type": "individual"
+  },
+  "assignee": {
+    "name": "New Castle Properties LLC",
+    "address": "456 N Market St, Wilmington, DE 19801",
+    "entity_type": "llc"
+  },
+  "seller": {
+    "name": "Emily J. Thompson",
+    "address": "789 S Governors Ave, Dover, DE 19904"
+  },
+  "property": {
+    "address": "1425 W 7th St",
+    "city": "New Castle",
+    "county": "New Castle",
+    "state": "DE",
+    "zip": "19720",
+    "parcel_id": "06-035-050",
+    "property_type": "SFR",
+    "bedrooms": 3,
+    "bathrooms": 2,
+    "sqft": 1800,
+    "year_built": 1995
+  },
+  "original_contract": {
+    "purchase_price": 220000,
+    "earnest_money": 4400,
+    "execution_date": "2025-10-15",
+    "closing_deadline": "2025-12-15",
+    "contingencies": [
+      "financing",
+      "inspection"
+    ]
+  },
+  "assignment": {
+    "assignment_fee": 20000,
+    "total_price_to_assignee": 240000,
+    "assignment_date": "2026-01-20",
+    "consideration_paid": 20000,
+    "deposit_held_by": "assignor"
+  },
+  "legal_clauses": {
+    "assignability_clause": "This Assignment of Contract shall be binding upon and inure to the benefit of the parties and their respective successors, assigns, and personal representatives.",
+    "indemnification": "The Assignor shall indemnify, defend, and hold harmless the Assignee against any and all claims, damages, and expenses arising from any breach of the Original Contract.",
+    "governing_law": "This Assignment of Contract shall be governed by and construed in accordance with the laws of the State of Delaware.",
+    "dispute_resolution": "Any dispute arising from this Assignment of Contract shall be resolved through binding arbitration in accordance with the rules of the American Arbitration Association.",
+    "closing_obligations": "The Assignee shall be responsible for closing the transaction and ensuring that all necessary documents are recorded in the land records of New Castle County, Delaware."
+  },
+  "notarization": {
+    "notary_name": "Samantha J. Lee",
+    "commission_expiry": "2027-02-28",
+    "county_recorded": "New Castle County",
+    "recording_ref": "2026-001234"
+  },
+  "_meta": {
+    "generated_at": "2026-05-25T06:58:30.060869",
+    "model": "meta.llama3-70b-instruct-v1:0",
+    "record_num": 75
+  }
+}

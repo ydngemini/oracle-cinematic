@@ -1,0 +1,65 @@
+{
+  "record_id": "DE-ASG-0076",
+  "assignor": {
+    "name": "Jessica R. Nelson",
+    "address": "123 Main St, Dover, DE 19901",
+    "entity_type": "individual"
+  },
+  "assignee": {
+    "name": "Harrington Homes LLC",
+    "address": "456 Sussex Hwy, Seaford, DE 19973",
+    "entity_type": "llc"
+  },
+  "seller": {
+    "name": "John D. Smith",
+    "address": "789 US-13, Camden-Wyoming, DE 19934"
+  },
+  "property": {
+    "address": "234 Clark St, Harrington, DE 19952",
+    "city": "Harrington",
+    "county": "Kent",
+    "state": "DE",
+    "zip": "19952",
+    "parcel_id": "KENT-123456",
+    "property_type": "SFR",
+    "bedrooms": 3,
+    "bathrooms": 2,
+    "sqft": 1800,
+    "year_built": 2002
+  },
+  "original_contract": {
+    "purchase_price": 220000,
+    "earnest_money": 10000,
+    "execution_date": "2025-11-15",
+    "closing_deadline": "2026-01-15",
+    "contingencies": [
+      "financing",
+      "inspection"
+    ]
+  },
+  "assignment": {
+    "assignment_fee": 20000,
+    "total_price_to_assignee": 240000,
+    "assignment_date": "2025-12-01",
+    "consideration_paid": 5000,
+    "deposit_held_by": "assignor"
+  },
+  "legal_clauses": {
+    "assignability_clause": "This Assignment is freely assignable by the Assignee without the consent of the Seller or the Assignor.",
+    "indemnification": "The Assignor and the Seller shall jointly and severally indemnify the Assignee against any claims, damages, or expenses arising out of or related to the Original Contract or this Assignment.",
+    "governing_law": "This Assignment shall be governed by and construed in accordance with the laws of the State of Delaware.",
+    "dispute_resolution": "Any disputes arising out of or related to this Assignment shall be resolved through binding arbitration in accordance with the rules of the American Arbitration Association.",
+    "closing_obligations": "The Assignee shall be responsible for ensuring that the closing of the transaction occurs in accordance with the terms of the Original Contract and this Assignment."
+  },
+  "notarization": {
+    "notary_name": "Samantha J. Davis",
+    "commission_expiry": "2027-02-28",
+    "county_recorded": "Kent County Recorder of Deeds",
+    "recording_ref": "KENT-2026-001234"
+  },
+  "_meta": {
+    "generated_at": "2026-05-25T06:58:44.016855",
+    "model": "meta.llama3-70b-instruct-v1:0",
+    "record_num": 76
+  }
+}

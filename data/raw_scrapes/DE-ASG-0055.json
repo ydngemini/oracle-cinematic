@@ -1,0 +1,65 @@
+{
+  "record_id": "DE-ASG-0055",
+  "assignor": {
+    "name": "Emily J. Wilson",
+    "address": "123 Main St, Middletown, DE 19709",
+    "entity_type": "individual"
+  },
+  "assignee": {
+    "name": "Dover Investment Properties LLC",
+    "address": "456 N DuPont Hwy, Dover, DE 19901",
+    "entity_type": "llc"
+  },
+  "seller": {
+    "name": "Michael T. Brown",
+    "address": "789 S Bay Rd, Dover, DE 19901"
+  },
+  "property": {
+    "address": "1423 W North St, Dover, DE 19904",
+    "city": "Dover",
+    "county": "Kent",
+    "state": "DE",
+    "zip": "19904",
+    "parcel_id": "KENT-001234",
+    "property_type": "SFR",
+    "bedrooms": 3,
+    "bathrooms": 2,
+    "sqft": 1800,
+    "year_built": 1995
+  },
+  "original_contract": {
+    "purchase_price": 220000,
+    "earnest_money": 5000,
+    "execution_date": "2025-11-15",
+    "closing_deadline": "2026-01-15",
+    "contingencies": [
+      "financing",
+      "inspection"
+    ]
+  },
+  "assignment": {
+    "assignment_fee": 15000,
+    "total_price_to_assignee": 235000,
+    "assignment_date": "2025-12-01",
+    "consideration_paid": 1000,
+    "deposit_held_by": "assignor"
+  },
+  "legal_clauses": {
+    "assignability_clause": "This Assignment is freely assignable by Assignee, and Assignor hereby consents to such assignment.",
+    "indemnification": "Assignor shall indemnify and hold harmless Assignee from any and all claims, damages, or liabilities arising from Assignor's breach of this Assignment.",
+    "governing_law": "This Assignment shall be governed by and construed in accordance with the laws of the State of Delaware.",
+    "dispute_resolution": "Any disputes arising from this Assignment shall be resolved through binding arbitration in accordance with the rules of the American Arbitration Association.",
+    "closing_obligations": "Assignee shall be responsible for completing all closing obligations, including obtaining title insurance and paying all closing costs."
+  },
+  "notarization": {
+    "notary_name": "Susan M. Johnson",
+    "commission_expiry": "2027-02-28",
+    "county_recorded": "Kent County Recorder of Deeds",
+    "recording_ref": "Book 1234, Page 567"
+  },
+  "_meta": {
+    "generated_at": "2026-05-25T06:53:31.562482",
+    "model": "meta.llama3-70b-instruct-v1:0",
+    "record_num": 55
+  }
+}

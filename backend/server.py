@@ -14,6 +14,7 @@ from legal_agent import format_for_websocket
 from spatial_agent import reconstruct_property, should_trigger_reconstruction
 from workflow_engine import WorkflowEngine
 from qwen_voice_agent import QwenVoiceAgent
+from agent_mind import MindService
 
 app = FastAPI()
 
@@ -37,6 +38,7 @@ splats_dir.mkdir(parents=True, exist_ok=True)
 app.mount("/public/splats", StaticFiles(directory=str(splats_dir)), name="splats")
 
 graph = PropertyGraph()
+mind_service = MindService()
 
 DELAWARE_STREETS = [
     "Silverside Rd", "Concord Pike", "Kirkwood Hwy", "Old Baltimore Pike",
@@ -203,12 +205,51 @@ async def data_ingestion_loop(websocket: WebSocket):
         await asyncio.sleep(interval)
 
 
+async def monologue_loop(websocket: WebSocket):
+    """Continuously streams agent inner thoughts to the Walker speech bubble."""
+    await mind_service.start()
+
+    agent_cycle = ["SCOUT", "ANALYST", "CLOSER", "LEGAL"]
+    idx = 0
+
+    while True:
+        await asyncio.sleep(6.0)
+        agent_id = agent_cycle[idx % len(agent_cycle)]
+        idx += 1
+
+        tokens_sent = 0
+        async for token in mind_service.stream_monologue(agent_id):
+            if tokens_sent == 0:
+                await websocket.send_text(json.dumps({
+                    "type": "AGENT_THOUGHT",
+                    "agent": agent_id,
+                    "mode": "start",
+                    "token": token,
+                }))
+            else:
+                await websocket.send_text(json.dumps({
+                    "type": "AGENT_THOUGHT",
+                    "agent": agent_id,
+                    "mode": "stream",
+                    "token": token,
+                }))
+            tokens_sent += 1
+
+        if tokens_sent > 0:
+            await websocket.send_text(json.dumps({
+                "type": "AGENT_THOUGHT",
+                "agent": agent_id,
+                "mode": "end",
+                "token": "",
+            }))
+
+
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
 
     voice_agent = QwenVoiceAgent(websocket=websocket)
-    engine = WorkflowEngine(websocket=websocket)
+    engine = WorkflowEngine(websocket=websocket, mind_service=mind_service)
 
     async def listen_for_client_messages():
         while True:
@@ -220,11 +261,18 @@ async def websocket_endpoint(websocket: WebSocket):
 
             if msg.get("type") == "WHISPER_INSTRUCT":
                 await voice_agent.handle_whisper_instruct(msg)
+            elif msg.get("type") == "OBSERVE":
+                mind_service.observe(
+                    msg.get("agent", "SCOUT"),
+                    msg.get("content", ""),
+                    msg.get("importance", 0.5),
+                )
 
     try:
         await asyncio.gather(
             engine.start(),
             listen_for_client_messages(),
+            monologue_loop(websocket),
         )
     except WebSocketDisconnect:
         print("Client disconnected")

@@ -1,0 +1,65 @@
+{
+  "record_id": "DE-ASG-0005",
+  "assignor": {
+    "name": "Emily J. Rodriguez",
+    "address": "123 Main St, Dover, DE 19901",
+    "entity_type": "individual"
+  },
+  "assignee": {
+    "name": "Camden Investments LLC",
+    "address": "456 N. DuPont Hwy, Camden, DE 19934",
+    "entity_type": "llc"
+  },
+  "seller": {
+    "name": "James R. Thompson",
+    "address": "789 S. Governors Ave, Dover, DE 19904"
+  },
+  "property": {
+    "address": "234 E. Camden Wyoming Ave, Camden, DE 19934",
+    "city": "Camden",
+    "county": "Kent",
+    "state": "DE",
+    "zip": "19934",
+    "parcel_id": "KENT-123456",
+    "property_type": "SFR",
+    "bedrooms": 3,
+    "bathrooms": 2,
+    "sqft": 1800,
+    "year_built": 2001
+  },
+  "original_contract": {
+    "purchase_price": 220000,
+    "earnest_money": 4400,
+    "execution_date": "2025-10-15",
+    "closing_deadline": "2025-12-15",
+    "contingencies": [
+      "financing",
+      "inspection"
+    ]
+  },
+  "assignment": {
+    "assignment_fee": 20000,
+    "total_price_to_assignee": 240000,
+    "assignment_date": "2025-11-10",
+    "consideration_paid": 1000,
+    "deposit_held_by": "seller"
+  },
+  "legal_clauses": {
+    "assignability_clause": "This Assignment is freely assignable by Assignee, and Assignor shall not unreasonably withhold consent to any such assignment.",
+    "indemnification": "Assignor shall indemnify and hold harmless Assignee against any claims, damages, or expenses arising from Assignor's breach of this Assignment.",
+    "governing_law": "This Assignment shall be governed by and construed in accordance with the laws of the State of Delaware.",
+    "dispute_resolution": "Any disputes arising from this Assignment shall be resolved through binding arbitration in accordance with the rules of the American Arbitration Association.",
+    "closing_obligations": "Assignee shall be responsible for all closing costs and expenses associated with the transfer of the Property."
+  },
+  "notarization": {
+    "notary_name": "Samantha J. Lee",
+    "commission_expiry": "2027-02-28",
+    "county_recorded": "Kent County Recorder of Deeds",
+    "recording_ref": "Doc. No. 2025-123456"
+  },
+  "_meta": {
+    "generated_at": "2026-05-25T06:40:22.475188",
+    "model": "meta.llama3-70b-instruct-v1:0",
+    "record_num": 5
+  }
+}

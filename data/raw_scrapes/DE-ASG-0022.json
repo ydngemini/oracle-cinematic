@@ -1,0 +1,65 @@
+{
+  "record_id": "DE-ASG-0022",
+  "assignor": {
+    "name": "Emily J. Wilson",
+    "address": "12345 Oakwood Dr, Millsboro, DE 19966",
+    "entity_type": "individual"
+  },
+  "assignee": {
+    "name": "Millsboro Real Estate Investments, LLC",
+    "address": "45678 Atlantic Ave, Millsboro, DE 19971",
+    "entity_type": "llc"
+  },
+  "seller": {
+    "name": "John D. and Mary E. Thompson",
+    "address": "23456 Pineview Dr, Millsboro, DE 19966"
+  },
+  "property": {
+    "address": "34567 Cedar Creek Dr",
+    "city": "Millsboro",
+    "county": "Sussex",
+    "state": "DE",
+    "zip": "19966",
+    "parcel_id": "634-234.00-12.00",
+    "property_type": "SFR",
+    "bedrooms": 3,
+    "bathrooms": 2,
+    "sqft": 1800,
+    "year_built": 2001
+  },
+  "original_contract": {
+    "purchase_price": 220000,
+    "earnest_money": 4400,
+    "execution_date": "2025-11-15",
+    "closing_deadline": "2026-01-15",
+    "contingencies": [
+      "financing",
+      "inspection"
+    ]
+  },
+  "assignment": {
+    "assignment_fee": 15000,
+    "total_price_to_assignee": 235000,
+    "assignment_date": "2026-01-10",
+    "consideration_paid": 15000,
+    "deposit_held_by": "Assignor"
+  },
+  "legal_clauses": {
+    "assignability_clause": "This Assignment of Contract is freely assignable by the Assignor, and the Assignee acknowledges and agrees that it is bound by the terms and conditions of the Original Contract.",
+    "indemnification": "The Assignor hereby indemnifies and holds harmless the Assignee from and against any and all claims, demands, and liabilities arising out of or related to the Original Contract.",
+    "governing_law": "This Assignment of Contract shall be governed by and construed in accordance with the laws of the State of Delaware.",
+    "dispute_resolution": "Any disputes arising out of or related to this Assignment of Contract shall be resolved through binding arbitration in accordance with the rules of the American Arbitration Association.",
+    "closing_obligations": "The Assignee shall be responsible for all closing costs and obligations associated with the purchase of the Property, including but not limited to title insurance, settlement fees, and transfer taxes."
+  },
+  "notarization": {
+    "notary_name": "Jane Doe",
+    "commission_expiry": "2027-02-28",
+    "county_recorded": "Sussex County Recorder of Deeds",
+    "recording_ref": "Book 1234, Page 567"
+  },
+  "_meta": {
+    "generated_at": "2026-05-25T06:44:40.416842",
+    "model": "meta.llama3-70b-instruct-v1:0",
+    "record_num": 22
+  }
+}

@@ -32,8 +32,9 @@ PREDICTIVE_CACHE_TOP_N = 3
 
 
 class WorkflowEngine:
-    def __init__(self, websocket=None):
+    def __init__(self, websocket=None, mind_service=None):
         self.websocket = websocket
+        self.mind_service = mind_service
         self.graph = PropertyGraph()
         self.harvester = CountyAssessorHarvester(self.graph, websocket)
         self.analyst = AnalystAgent(self.graph, websocket)
@@ -186,6 +187,36 @@ class WorkflowEngine:
             "harvester": self.harvester.stats,
         }
 
+    async def _predictive_cache_loop(self):
+        await asyncio.sleep(PREDICTIVE_CACHE_INTERVAL)
+
+        while self._running:
+            try:
+                top_props = []
+                async for hit in self.graph.calculate_novelty_score():
+                    top_props.append({
+                        "id": property_id_from_address(hit["address"]),
+                        "address": hit["address"],
+                        "novelty": hit["novelty_score"],
+                    })
+                    if len(top_props) >= PREDICTIVE_CACHE_TOP_N:
+                        break
+
+                if top_props and self.websocket:
+                    new_ids = [p["id"] for p in top_props]
+                    if new_ids != self._last_pushed_ids:
+                        self._last_pushed_ids = new_ids
+                        await self.websocket.send_text(json.dumps({
+                            "type": "PREDICTIVE_CACHE",
+                            "properties": top_props,
+                        }))
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Predictive cache error: {e}")
+
+            await asyncio.sleep(PREDICTIVE_CACHE_INTERVAL)
+
     async def _emit_status(self, message: str):
         logger.info(message)
         if self.websocket:
@@ -196,3 +227,14 @@ class WorkflowEngine:
                 }))
             except Exception:
                 pass
+
+        if self.mind_service:
+            agent_id = "SCOUT"
+            upper = message.upper()
+            if "ANALYST" in upper:
+                agent_id = "ANALYST"
+            elif "CLOSER" in upper:
+                agent_id = "CLOSER"
+            elif "LEGAL" in upper:
+                agent_id = "LEGAL"
+            self.mind_service.observe(agent_id, message, importance=0.6)

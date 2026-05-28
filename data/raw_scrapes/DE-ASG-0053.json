@@ -1,0 +1,65 @@
+{
+  "record_id": "DE-ASG-0053",
+  "assignor": {
+    "name": "Ethan T. Thompson",
+    "address": "23456 Coastal Hwy, Rehoboth Beach, DE 19971",
+    "entity_type": "individual"
+  },
+  "assignee": {
+    "name": "Sussex Homes LLC",
+    "address": "1234 DuPont Blvd, Milford, DE 19963",
+    "entity_type": "llc"
+  },
+  "seller": {
+    "name": "Mary J. Wilson",
+    "address": "34567 Cedar Creek Rd, Georgetown, DE 19947"
+  },
+  "property": {
+    "address": "21637 Sandalwood Dr, Georgetown, DE 19947",
+    "city": "Georgetown",
+    "county": "Sussex",
+    "state": "DE",
+    "zip": "19947",
+    "parcel_id": "634-174.00-13.00",
+    "property_type": "SFR",
+    "bedrooms": 3,
+    "bathrooms": 2,
+    "sqft": 1800,
+    "year_built": 2002
+  },
+  "original_contract": {
+    "purchase_price": 220000,
+    "earnest_money": 5000,
+    "execution_date": "2025-10-15",
+    "closing_deadline": "2026-01-10",
+    "contingencies": [
+      "financing",
+      "inspection"
+    ]
+  },
+  "assignment": {
+    "assignment_fee": 18000,
+    "total_price_to_assignee": 238000,
+    "assignment_date": "2026-01-05",
+    "consideration_paid": 5000,
+    "deposit_held_by": "assignor"
+  },
+  "legal_clauses": {
+    "assignability_clause": "This Assignment is freely assignable by Assignee, and Assignor hereby consents to such assignment.",
+    "indemnification": "Assignor shall indemnify and hold harmless Assignee from any claims, damages, or expenses arising from Assignor's breach of this Assignment.",
+    "governing_law": "This Assignment shall be governed by and construed in accordance with the laws of the State of Delaware.",
+    "dispute_resolution": "Any disputes arising from this Assignment shall be resolved through binding arbitration in accordance with the rules of the American Arbitration Association.",
+    "closing_obligations": "Assignee shall be responsible for all closing costs and obligations associated with the purchase of the Property."
+  },
+  "notarization": {
+    "notary_name": "Karen M. Johnson",
+    "commission_expiry": "2027-02-28",
+    "county_recorded": "Sussex County Recorder of Deeds",
+    "recording_ref": "Book 2345, Page 123"
+  },
+  "_meta": {
+    "generated_at": "2026-05-25T06:53:01.620904",
+    "model": "meta.llama3-70b-instruct-v1:0",
+    "record_num": 53
+  }
+}

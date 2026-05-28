@@ -2,6 +2,7 @@ import { AgentStatusBar } from './AgentStatusBar';
 import { PropertySpecs } from './PropertySpecs';
 import { LiveTranscript } from './LiveTranscript';
 import { PropertyCanvas } from './PropertyCanvas';
+import { WalkerBubble } from './WalkerBubble';
 import styles from './DashboardLayout.module.css';
 
 export function DashboardLayout() {
@@ -22,6 +23,8 @@ export function DashboardLayout() {
           <LiveTranscript />
         </div>
       </div>
+
+      <WalkerBubble />
     </div>
   );
 }

@@ -1,0 +1,65 @@
+{
+  "record_id": "DE-ASG-0069",
+  "assignor": {
+    "name": "Emily J. Rodriguez",
+    "address": "2345 Concord Pike, Wilmington, DE 19803",
+    "entity_type": "individual"
+  },
+  "assignee": {
+    "name": "Hockessin Homes LLC",
+    "address": "123 Main St, Hockessin, DE 19707",
+    "entity_type": "llc"
+  },
+  "seller": {
+    "name": "John D. Lee",
+    "address": "456 Creek Rd, Hockessin, DE 19707"
+  },
+  "property": {
+    "address": "731 Valley Rd",
+    "city": "Hockessin",
+    "county": "New Castle",
+    "state": "DE",
+    "zip": "19707",
+    "parcel_id": "06-035-010.00-0001",
+    "property_type": "SFR",
+    "bedrooms": 4,
+    "bathrooms": 2.5,
+    "sqft": 2500,
+    "year_built": 2005
+  },
+  "original_contract": {
+    "purchase_price": 220000,
+    "earnest_money": 5000,
+    "execution_date": "2025-02-10",
+    "closing_deadline": "2025-04-15",
+    "contingencies": [
+      "financing",
+      "inspection"
+    ]
+  },
+  "assignment": {
+    "assignment_fee": 18000,
+    "total_price_to_assignee": 238000,
+    "assignment_date": "2025-03-20",
+    "consideration_paid": 5000,
+    "deposit_held_by": "seller"
+  },
+  "legal_clauses": {
+    "assignability_clause": "This Assignment of Contract is freely assignable by Assignor, and Assignee accepts such assignment.",
+    "indemnification": "Assignor agrees to indemnify Assignee against any claims, damages, or expenses arising from Assignor's breach of this Assignment.",
+    "governing_law": "This Assignment shall be governed by and construed in accordance with the laws of the State of Delaware.",
+    "dispute_resolution": "Any disputes arising from this Assignment shall be resolved through binding arbitration in New Castle County, Delaware.",
+    "closing_obligations": "Assignee shall fulfill all closing obligations as set forth in the Original Contract."
+  },
+  "notarization": {
+    "notary_name": "Deborah M. Johnson",
+    "commission_expiry": "2026-01-31",
+    "county_recorded": "New Castle County",
+    "recording_ref": "2025-03-22-001"
+  },
+  "_meta": {
+    "generated_at": "2026-05-25T06:57:02.414019",
+    "model": "meta.llama3-70b-instruct-v1:0",
+    "record_num": 69
+  }
+}

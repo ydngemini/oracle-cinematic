@@ -1,0 +1,65 @@
+{
+  "record_id": "DE-ASG-0090",
+  "assignor": {
+    "name": "Emily J. Wilson",
+    "address": "12345 N. DuPont Hwy, Felton, DE 19943",
+    "entity_type": "individual"
+  },
+  "assignee": {
+    "name": "Seaford Investment Partners, LLC",
+    "address": "4567 Bridgeville Hwy, Seaford, DE 19973",
+    "entity_type": "llc"
+  },
+  "seller": {
+    "name": "James R. Thompson",
+    "address": "23456 Woodbridge Ave, Seaford, DE 19973"
+  },
+  "property": {
+    "address": "34567 Sussex Hwy, Seaford, DE 19973",
+    "city": "Seaford",
+    "county": "Sussex",
+    "state": "DE",
+    "zip": "19973",
+    "parcel_id": "634-123.45-67",
+    "property_type": "SFR",
+    "bedrooms": 3,
+    "bathrooms": 2,
+    "sqft": 1800,
+    "year_built": 2002
+  },
+  "original_contract": {
+    "purchase_price": 220000,
+    "earnest_money": 10000,
+    "execution_date": "2025-10-15",
+    "closing_deadline": "2025-12-15",
+    "contingencies": [
+      "financing",
+      "inspection"
+    ]
+  },
+  "assignment": {
+    "assignment_fee": 18000,
+    "total_price_to_assignee": 238000,
+    "assignment_date": "2025-11-20",
+    "consideration_paid": 5000,
+    "deposit_held_by": "escrow agent"
+  },
+  "legal_clauses": {
+    "assignability_clause": "This Assignment of Contract is freely assignable by the Assignor to any third party without the need for the Seller's consent.",
+    "indemnification": "The Assignor agrees to indemnify and hold harmless the Assignee against any and all claims, damages, and expenses arising from the breach of this Assignment.",
+    "governing_law": "This Assignment shall be governed by and construed in accordance with the laws of the State of Delaware.",
+    "dispute_resolution": "Any disputes arising from this Assignment shall be resolved through binding arbitration in accordance with the rules of the American Arbitration Association.",
+    "closing_obligations": "The Assignee shall be responsible for ensuring that all closing obligations are fulfilled in accordance with the terms of the Original Contract."
+  },
+  "notarization": {
+    "notary_name": "Susan M. Johnson",
+    "commission_expiry": "2027-02-28",
+    "county_recorded": "Sussex County Recorder of Deeds",
+    "recording_ref": "Book 1234, Page 567"
+  },
+  "_meta": {
+    "generated_at": "2026-05-25T07:02:25.623624",
+    "model": "meta.llama3-70b-instruct-v1:0",
+    "record_num": 90
+  }
+}

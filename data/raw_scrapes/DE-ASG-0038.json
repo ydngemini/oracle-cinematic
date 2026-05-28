@@ -1,0 +1,65 @@
+{
+  "record_id": "DE-ASG-0038",
+  "assignor": {
+    "name": "Emily J. Wilson",
+    "address": "123 Oak St, Lewes, DE 19958",
+    "entity_type": "individual"
+  },
+  "assignee": {
+    "name": "Rehoboth Beach Investments LLC",
+    "address": "456 Rehoboth Ave, Rehoboth Beach, DE 19971",
+    "entity_type": "llc"
+  },
+  "seller": {
+    "name": "James R. Thompson",
+    "address": "789 Coastal Hwy, Rehoboth Beach, DE 19971"
+  },
+  "property": {
+    "address": "23435 Bay Vista Dr, Rehoboth Beach, DE 19971",
+    "city": "Rehoboth Beach",
+    "county": "Sussex",
+    "state": "DE",
+    "zip": "19971",
+    "parcel_id": "634-234.00-23.00",
+    "property_type": "SFR",
+    "bedrooms": 3,
+    "bathrooms": 2,
+    "sqft": 1800,
+    "year_built": 2005
+  },
+  "original_contract": {
+    "purchase_price": 220000,
+    "earnest_money": 10000,
+    "execution_date": "2025-10-15",
+    "closing_deadline": "2026-01-15",
+    "contingencies": [
+      "financing",
+      "inspection"
+    ]
+  },
+  "assignment": {
+    "assignment_fee": 15000,
+    "total_price_to_assignee": 235000,
+    "assignment_date": "2026-01-05",
+    "consideration_paid": 5000,
+    "deposit_held_by": "assignor"
+  },
+  "legal_clauses": {
+    "assignability_clause": "This Assignment is freely assignable by the Assignee without the consent of the Seller or the Assignor.",
+    "indemnification": "The Assignor shall indemnify, defend and hold harmless the Assignee from and against any and all claims, demands, actions, causes of action, suits, judgments, damages, and expenses arising from or related to the Original Contract.",
+    "governing_law": "This Assignment shall be governed by and construed in accordance with the laws of the State of Delaware.",
+    "dispute_resolution": "Any dispute arising under or in connection with this Assignment shall be resolved through binding arbitration in accordance with the rules of the American Arbitration Association.",
+    "closing_obligations": "The Assignee shall be responsible for all closing costs and obligations under the Original Contract."
+  },
+  "notarization": {
+    "notary_name": "Karen L. Jenkins",
+    "commission_expiry": "2028-02-28",
+    "county_recorded": "Sussex County Recorder of Deeds",
+    "recording_ref": "Instrument #2026-001234"
+  },
+  "_meta": {
+    "generated_at": "2026-05-25T06:49:11.730385",
+    "model": "meta.llama3-70b-instruct-v1:0",
+    "record_num": 38
+  }
+}

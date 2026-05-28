@@ -1,0 +1,65 @@
+{
+  "record_id": "DE-ASG-0002",
+  "assignor": {
+    "name": "Emily J. Rodriguez",
+    "address": "123 N. Washington St, Wilmington, DE 19801",
+    "entity_type": "individual"
+  },
+  "assignee": {
+    "name": "New Castle Properties, LLC",
+    "address": "456 E. Main St, Wilmington, DE 19806",
+    "entity_type": "llc"
+  },
+  "seller": {
+    "name": "John D. Lee",
+    "address": "789 S. Market St, Wilmington, DE 19801"
+  },
+  "property": {
+    "address": "1423 W. 2nd St",
+    "city": "Wilmington",
+    "county": "New Castle",
+    "state": "DE",
+    "zip": "19805",
+    "parcel_id": "010-123456",
+    "property_type": "SFR",
+    "bedrooms": 3,
+    "bathrooms": 2,
+    "sqft": 1500,
+    "year_built": 1995
+  },
+  "original_contract": {
+    "purchase_price": 220000,
+    "earnest_money": 5000,
+    "execution_date": "2025-10-15",
+    "closing_deadline": "2026-01-15",
+    "contingencies": [
+      "financing",
+      "inspection"
+    ]
+  },
+  "assignment": {
+    "assignment_fee": 20000,
+    "total_price_to_assignee": 240000,
+    "assignment_date": "2026-01-10",
+    "consideration_paid": 5000,
+    "deposit_held_by": "Assignor"
+  },
+  "legal_clauses": {
+    "assignability_clause": "This Assignment is freely assignable by Assignee, and Assignor acknowledges that Assignee may assign this Assignment to any third party without notice or consent.",
+    "indemnification": "Assignor agrees to indemnify, defend, and hold harmless Assignee from and against any and all claims, damages, losses, and expenses arising from or related to Assignor's breach of this Assignment.",
+    "governing_law": "This Assignment shall be governed by and construed in accordance with the laws of the State of Delaware.",
+    "dispute_resolution": "Any disputes arising from or related to this Assignment shall be resolved through binding arbitration in accordance with the rules of the American Arbitration Association.",
+    "closing_obligations": "Assignee shall be responsible for all closing costs and obligations associated with the purchase of the Property."
+  },
+  "notarization": {
+    "notary_name": "Samantha R. Johnson",
+    "commission_expiry": "2027-02-28",
+    "county_recorded": "New Castle County Recorder of Deeds",
+    "recording_ref": "Recording No. 2026-001234"
+  },
+  "_meta": {
+    "generated_at": "2026-05-25T06:39:36.666236",
+    "model": "meta.llama3-70b-instruct-v1:0",
+    "record_num": 2
+  }
+}

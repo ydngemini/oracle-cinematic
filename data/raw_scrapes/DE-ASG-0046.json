@@ -1,0 +1,65 @@
+{
+  "record_id": "DE-ASG-0046",
+  "assignor": {
+    "name": "Tanya R. Jenkins",
+    "address": "12345 Oak St, Bridgeville, DE 19933",
+    "entity_type": "individual"
+  },
+  "assignee": {
+    "name": "Seashore Properties LLC",
+    "address": "4567 S. DuPont Hwy, Georgetown, DE 19947",
+    "entity_type": "llc"
+  },
+  "seller": {
+    "name": "Mary E. Johnson",
+    "address": "23456 Sussex Hwy, Seaford, DE 19973"
+  },
+  "property": {
+    "address": "34567 Woodland Dr",
+    "city": "Seaford",
+    "county": "Sussex",
+    "state": "DE",
+    "zip": "19973",
+    "parcel_id": "634-123.01-14.00",
+    "property_type": "SFR",
+    "bedrooms": 3,
+    "bathrooms": 2,
+    "sqft": 1800,
+    "year_built": 2001
+  },
+  "original_contract": {
+    "purchase_price": 220000,
+    "earnest_money": 5000,
+    "execution_date": "2025-10-15",
+    "closing_deadline": "2026-01-15",
+    "contingencies": [
+      "financing",
+      "inspection"
+    ]
+  },
+  "assignment": {
+    "assignment_fee": 20000,
+    "total_price_to_assignee": 240000,
+    "assignment_date": "2026-01-05",
+    "consideration_paid": 1000,
+    "deposit_held_by": "assignor"
+  },
+  "legal_clauses": {
+    "assignability_clause": "This Assignment is freely assignable by Assignee.",
+    "indemnification": "Assignor shall indemnify Assignee against all claims, damages, and expenses arising from any breach of this Assignment.",
+    "governing_law": "This Assignment shall be governed by and construed in accordance with the laws of the State of Delaware.",
+    "dispute_resolution": "Any disputes arising from this Assignment shall be resolved through binding arbitration in Sussex County, Delaware.",
+    "closing_obligations": "Assignee shall be responsible for ensuring that all closing obligations are fulfilled in accordance with the Original Contract."
+  },
+  "notarization": {
+    "notary_name": "James R. Smith",
+    "commission_expiry": "2027-02-28",
+    "county_recorded": "Sussex",
+    "recording_ref": "2026-001234"
+  },
+  "_meta": {
+    "generated_at": "2026-05-25T06:51:06.201443",
+    "model": "meta.llama3-70b-instruct-v1:0",
+    "record_num": 46
+  }
+}

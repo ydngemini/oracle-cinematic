@@ -1,0 +1,65 @@
+{
+  "record_id": "DE-ASG-0054",
+  "assignor": {
+    "name": "Jessica R. Thompson",
+    "address": "34287 Bay View Dr, Lewes, DE 19958",
+    "entity_type": "individual"
+  },
+  "assignee": {
+    "name": "Rehoboth Beach Properties LLC",
+    "address": "19724 Coastal Hwy, Rehoboth Beach, DE 19971",
+    "entity_type": "llc"
+  },
+  "seller": {
+    "name": "Richard L. Martin",
+    "address": "37544 Pineview Dr, Rehoboth Beach, DE 19971"
+  },
+  "property": {
+    "address": "34595 Sand Dune Dr, Rehoboth Beach, DE 19971",
+    "city": "Rehoboth Beach",
+    "county": "Sussex",
+    "state": "DE",
+    "zip": "19971",
+    "parcel_id": "634-095.00-13.00",
+    "property_type": "SFR",
+    "bedrooms": 3,
+    "bathrooms": 2,
+    "sqft": 1800,
+    "year_built": 2002
+  },
+  "original_contract": {
+    "purchase_price": 220000,
+    "earnest_money": 4400,
+    "execution_date": "2025-10-15",
+    "closing_deadline": "2026-01-15",
+    "contingencies": [
+      "financing",
+      "inspection"
+    ]
+  },
+  "assignment": {
+    "assignment_fee": 15000,
+    "total_price_to_assignee": 235000,
+    "assignment_date": "2026-01-20",
+    "consideration_paid": 15000,
+    "deposit_held_by": "assignor"
+  },
+  "legal_clauses": {
+    "assignability_clause": "This Assignment shall be binding upon and inure to the benefit of the parties and their respective successors and assigns.",
+    "indemnification": "Assignor shall indemnify, defend, and hold harmless Assignee from and against any and all claims, damages, and expenses arising out of or related to the Original Contract.",
+    "governing_law": "This Assignment shall be governed by and construed in accordance with the laws of the State of Delaware.",
+    "dispute_resolution": "Any dispute arising out of or related to this Assignment shall be resolved through binding arbitration in accordance with the rules of the American Arbitration Association.",
+    "closing_obligations": "Assignee shall be responsible for closing the transaction with Seller, and Assignor shall cooperate fully with Assignee to facilitate a timely closing."
+  },
+  "notarization": {
+    "notary_name": "Karen L. Jenkins",
+    "commission_expiry": "2028-02-10",
+    "county_recorded": "Sussex County",
+    "recording_ref": "Book 2345, Page 123"
+  },
+  "_meta": {
+    "generated_at": "2026-05-25T06:53:17.326986",
+    "model": "meta.llama3-70b-instruct-v1:0",
+    "record_num": 54
+  }
+}

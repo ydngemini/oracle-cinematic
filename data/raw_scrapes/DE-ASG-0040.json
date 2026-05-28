@@ -1,0 +1,65 @@
+{
+  "record_id": "DE-ASG-0040",
+  "assignor": {
+    "name": "Emily J. Rodriguez",
+    "address": "123 Main St, Dover, DE 19901",
+    "entity_type": "individual"
+  },
+  "assignee": {
+    "name": "Smyrna Homes LLC",
+    "address": "456 N Main St, Smyrna, DE 19977",
+    "entity_type": "llc"
+  },
+  "seller": {
+    "name": "James R. Thompson",
+    "address": "789 S Dupont Hwy, Smyrna, DE 19977"
+  },
+  "property": {
+    "address": "234 W Commerce St, Smyrna, DE 19977",
+    "city": "Smyrna",
+    "county": "Kent",
+    "state": "DE",
+    "zip": "19977",
+    "parcel_id": "Kent-123456",
+    "property_type": "SFR",
+    "bedrooms": 3,
+    "bathrooms": 2,
+    "sqft": 1800,
+    "year_built": 2002
+  },
+  "original_contract": {
+    "purchase_price": 220000,
+    "earnest_money": 2200,
+    "execution_date": "2025-07-15",
+    "closing_deadline": "2025-09-15",
+    "contingencies": [
+      "financing",
+      "appraisal"
+    ]
+  },
+  "assignment": {
+    "assignment_fee": 15000,
+    "total_price_to_assignee": 235000,
+    "assignment_date": "2025-08-01",
+    "consideration_paid": 15000,
+    "deposit_held_by": "assignor"
+  },
+  "legal_clauses": {
+    "assignability_clause": "This Assignment is freely assignable by the Assignee without the need for further consent from the Seller or Assignor.",
+    "indemnification": "The Assignor shall indemnify and hold harmless the Assignee against any and all claims, damages, and expenses arising from any breach of this Assignment.",
+    "governing_law": "This Assignment shall be governed by and construed in accordance with the laws of the State of Delaware.",
+    "dispute_resolution": "Any dispute arising from this Assignment shall be resolved through binding arbitration in accordance with the rules of the American Arbitration Association.",
+    "closing_obligations": "The Assignee shall be responsible for all closing costs, including but not limited to title insurance, settlement fees, and transfer taxes."
+  },
+  "notarization": {
+    "notary_name": "Susan K. Johnson",
+    "commission_expiry": "2027-02-28",
+    "county_recorded": "Kent County Recorder of Deeds",
+    "recording_ref": "Book 1234, Page 567"
+  },
+  "_meta": {
+    "generated_at": "2026-05-25T06:49:40.198714",
+    "model": "meta.llama3-70b-instruct-v1:0",
+    "record_num": 40
+  }
+}

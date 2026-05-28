@@ -1,0 +1,65 @@
+{
+  "record_id": "DE-ASG-0037",
+  "assignor": {
+    "name": "JENNY L. WARREN",
+    "address": "1234 N Dupont Hwy, Bear, DE 19701",
+    "entity_type": "individual"
+  },
+  "assignee": {
+    "name": "ROSEWOOD PROPERTIES LLC",
+    "address": "4567 Governors Ave, Dover, DE 19901",
+    "entity_type": "llc"
+  },
+  "seller": {
+    "name": "RICHARD J. SMITH",
+    "address": "7890 S Little Creek Rd, Dover, DE 19901"
+  },
+  "property": {
+    "address": "2345 S State St",
+    "city": "Dover",
+    "county": "Kent",
+    "state": "DE",
+    "zip": "19901",
+    "parcel_id": "Kent-001234",
+    "property_type": "SFR",
+    "bedrooms": 3,
+    "bathrooms": 2,
+    "sqft": 1500,
+    "year_built": 1995
+  },
+  "original_contract": {
+    "purchase_price": 220000,
+    "earnest_money": 5000,
+    "execution_date": "2025-10-15",
+    "closing_deadline": "2026-01-20",
+    "contingencies": [
+      "financing",
+      "inspection"
+    ]
+  },
+  "assignment": {
+    "assignment_fee": 20000,
+    "total_price_to_assignee": 240000,
+    "assignment_date": "2026-01-10",
+    "consideration_paid": 5000,
+    "deposit_held_by": "Assignor"
+  },
+  "legal_clauses": {
+    "assignability_clause": "This Assignment is freely assignable by Assignee, and Assignor hereby consents to such assignment.",
+    "indemnification": "Assignor shall indemnify, defend, and hold harmless Assignee from any and all claims, damages, or expenses arising from Assignor's breach of this Assignment.",
+    "governing_law": "This Assignment shall be governed by and construed in accordance with the laws of the State of Delaware.",
+    "dispute_resolution": "Any disputes arising from this Assignment shall be resolved through binding arbitration in accordance with the rules of the American Arbitration Association.",
+    "closing_obligations": "Assignee shall be responsible for ensuring that all closing obligations are fulfilled, including but not limited to payment of all closing costs and fees."
+  },
+  "notarization": {
+    "notary_name": "KAREN J. JONES",
+    "commission_expiry": "2027-02-28",
+    "county_recorded": "Kent County Recorder of Deeds",
+    "recording_ref": "2026-001234"
+  },
+  "_meta": {
+    "generated_at": "2026-05-25T06:48:56.968784",
+    "model": "meta.llama3-70b-instruct-v1:0",
+    "record_num": 37
+  }
+}

@@ -1,0 +1,65 @@
+{
+  "record_id": "DE-ASG-0047",
+  "assignor": {
+    "name": "Emily J. Watson",
+    "address": "1234 N. DuPont Hwy, Dover, DE 19901",
+    "entity_type": "individual"
+  },
+  "assignee": {
+    "name": "Dover Real Estate Investors LLC",
+    "address": "4567 S. Bay Rd, Dover, DE 19901",
+    "entity_type": "llc"
+  },
+  "seller": {
+    "name": "James R. Thompson",
+    "address": "7890 W. Denney Rd, Dover, DE 19901"
+  },
+  "property": {
+    "address": "2345 S. Governors Ave",
+    "city": "Dover",
+    "county": "Kent",
+    "state": "DE",
+    "zip": "19904",
+    "parcel_id": "KENT-001234",
+    "property_type": "SFR",
+    "bedrooms": 3,
+    "bathrooms": 2,
+    "sqft": 1800,
+    "year_built": 2001
+  },
+  "original_contract": {
+    "purchase_price": 220000,
+    "earnest_money": 4400,
+    "execution_date": "2025-11-15",
+    "closing_deadline": "2026-01-15",
+    "contingencies": [
+      "financing",
+      "inspection"
+    ]
+  },
+  "assignment": {
+    "assignment_fee": 20000,
+    "total_price_to_assignee": 240000,
+    "assignment_date": "2026-01-10",
+    "consideration_paid": 1000,
+    "deposit_held_by": "assignor"
+  },
+  "legal_clauses": {
+    "assignability_clause": "This Assignment of Contract is freely assignable by the Assignor, and the Assignee acknowledges that it is bound by the terms of the Original Contract.",
+    "indemnification": "The Assignor shall indemnify and hold harmless the Assignee against any and all claims, damages, and expenses arising from the Assignor's breach of this Assignment.",
+    "governing_law": "This Assignment shall be governed by and construed in accordance with the laws of the State of Delaware.",
+    "dispute_resolution": "Any disputes arising from this Assignment shall be resolved through binding arbitration in accordance with the rules of the American Arbitration Association.",
+    "closing_obligations": "The Assignee shall be responsible for all closing costs and obligations associated with the transfer of ownership of the Property."
+  },
+  "notarization": {
+    "notary_name": "Karen M. Johnson",
+    "commission_expiry": "2027-02-28",
+    "county_recorded": "Kent County Recorder of Deeds",
+    "recording_ref": "KENT-REC-2026-001"
+  },
+  "_meta": {
+    "generated_at": "2026-05-25T06:51:20.921552",
+    "model": "meta.llama3-70b-instruct-v1:0",
+    "record_num": 47
+  }
+}

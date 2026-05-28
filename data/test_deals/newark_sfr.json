@@ -1,0 +1,63 @@
+{
+  "record_id": "DE-ASG-TEST-001",
+  "assignor": {
+    "name": "Marcus T. Williams",
+    "address": "88 Capitol Trail, Newark, DE 19711",
+    "entity_type": "individual"
+  },
+  "assignee": {
+    "name": "Nexum Capital Holdings, LLC",
+    "address": "1201 N. Orange St, Suite 800, Wilmington, DE 19801",
+    "entity_type": "llc"
+  },
+  "seller": {
+    "name": "Dorothy A. Henson",
+    "address": "42 Elkton Rd, Newark, DE 19711"
+  },
+  "property": {
+    "address": "42 Elkton Rd",
+    "city": "Newark",
+    "county": "New Castle",
+    "state": "DE",
+    "zip": "19711",
+    "parcel_id": "018-040.00-095",
+    "property_type": "SFR",
+    "bedrooms": 4,
+    "bathrooms": 2,
+    "sqft": 1850,
+    "year_built": 1978,
+    "condition_notes": "Original kitchen and baths, roof replaced 2019, HVAC functional but aging, foundation solid, cosmetic updates needed throughout"
+  },
+  "original_contract": {
+    "purchase_price": 195000,
+    "earnest_money": 3000,
+    "execution_date": "2026-04-20",
+    "closing_deadline": "2026-07-20",
+    "contingencies": ["inspection", "clear_title"]
+  },
+  "assignment": {
+    "assignment_fee": 25000,
+    "total_price_to_assignee": 220000,
+    "assignment_date": "2026-05-25",
+    "consideration_paid": 3000,
+    "deposit_held_by": "Assignor"
+  },
+  "legal_clauses": {
+    "assignability_clause": "This Agreement and all rights hereunder are freely assignable by Assignee without the consent of Seller or Assignor.",
+    "indemnification": "Assignor shall indemnify and hold harmless Assignee against all claims arising from Assignor's representations herein.",
+    "governing_law": "This Assignment shall be governed by the laws of the State of Delaware.",
+    "dispute_resolution": "Disputes shall be resolved by binding arbitration in New Castle County, Delaware.",
+    "closing_obligations": "Assignee assumes all closing costs and settlement obligations."
+  },
+  "notarization": {
+    "notary_name": "Lisa M. Crawford",
+    "commission_expiry": "2028-01-15",
+    "county_recorded": "New Castle County Recorder of Deeds",
+    "recording_ref": "Instrument No. 2026-0052847"
+  },
+  "_meta": {
+    "purpose": "test_deal",
+    "expected_verdict": "REJECT",
+    "rationale": "ARV ~$360K (1850sqft * $195/sqft), Rehab ~$33K (1978 build, moderate), MAO = $360K*0.70 - $33K = $219K. Asking $220K exceeds MAO by ~$1K. Borderline but should REJECT per strict rule."
+  }
+}

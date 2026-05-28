@@ -1,0 +1,65 @@
+{
+  "record_id": "DE-ASG-0007",
+  "assignor": {
+    "name": "Emily J. Rodriguez",
+    "address": "23412 Oak St, Georgetown, DE 19947",
+    "entity_type": "individual"
+  },
+  "assignee": {
+    "name": "Millsboro Investments LLC",
+    "address": "34567 Atlantic Ave, Millsboro, DE 19966",
+    "entity_type": "llc"
+  },
+  "seller": {
+    "name": "John D. Smith",
+    "address": "123 Main St, Millsboro, DE 19966"
+  },
+  "property": {
+    "address": "45657 Hickory St",
+    "city": "Millsboro",
+    "county": "Sussex",
+    "state": "DE",
+    "zip": "19966",
+    "parcel_id": "634-234.00-34.00",
+    "property_type": "SFR",
+    "bedrooms": 3,
+    "bathrooms": 2,
+    "sqft": 1800,
+    "year_built": 2001
+  },
+  "original_contract": {
+    "purchase_price": 220000,
+    "earnest_money": 5000,
+    "execution_date": "2025-10-15",
+    "closing_deadline": "2026-02-28",
+    "contingencies": [
+      "financing",
+      "inspection"
+    ]
+  },
+  "assignment": {
+    "assignment_fee": 20000,
+    "total_price_to_assignee": 240000,
+    "assignment_date": "2026-01-10",
+    "consideration_paid": 1000,
+    "deposit_held_by": "assignor"
+  },
+  "legal_clauses": {
+    "assignability_clause": "This Assignment shall be binding upon and inure to the benefit of the parties hereto and their respective successors and assigns.",
+    "indemnification": "Assignor hereby indemnifies Assignee against any loss, cost, or expense arising from any breach of Assignor's representations, warranties, or covenants.",
+    "governing_law": "This Assignment shall be governed by and construed in accordance with the laws of the State of Delaware.",
+    "dispute_resolution": "Any disputes arising out of or related to this Assignment shall be resolved through binding arbitration in accordance with the rules of the American Arbitration Association.",
+    "closing_obligations": "Assignee shall be responsible for all closing costs and obligations associated with the purchase of the Property."
+  },
+  "notarization": {
+    "notary_name": "Karen M. Johnson",
+    "commission_expiry": "2027-02-15",
+    "county_recorded": "Sussex County",
+    "recording_ref": "Book 2345, Page 123"
+  },
+  "_meta": {
+    "generated_at": "2026-05-25T06:40:52.522446",
+    "model": "meta.llama3-70b-instruct-v1:0",
+    "record_num": 7
+  }
+}

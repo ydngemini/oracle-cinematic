@@ -1,0 +1,65 @@
+{
+  "record_id": "DE-ASG-0099",
+  "assignor": {
+    "name": "Emily J. Rodriguez",
+    "address": "23445 Bayard St, Georgetown, DE 19947",
+    "entity_type": "individual"
+  },
+  "assignee": {
+    "name": "Seaside Ventures LLC",
+    "address": "34567 Atlantic Ave, Bethany Beach, DE 19930",
+    "entity_type": "llc"
+  },
+  "seller": {
+    "name": "Michael T. Brown",
+    "address": "12345 Middleford Rd, Seaford, DE 19973"
+  },
+  "property": {
+    "address": "45678 Woodland Dr, Seaford, DE 19973",
+    "city": "Seaford",
+    "county": "Sussex",
+    "state": "DE",
+    "zip": "19973",
+    "parcel_id": "634-234.00-12.00",
+    "property_type": "SFR",
+    "bedrooms": 3,
+    "bathrooms": 2,
+    "sqft": 1800,
+    "year_built": 1995
+  },
+  "original_contract": {
+    "purchase_price": 220000,
+    "earnest_money": 5000,
+    "execution_date": "2025-10-12",
+    "closing_deadline": "2026-01-15",
+    "contingencies": [
+      "financing",
+      "inspection"
+    ]
+  },
+  "assignment": {
+    "assignment_fee": 20000,
+    "total_price_to_assignee": 240000,
+    "assignment_date": "2025-11-20",
+    "consideration_paid": 20000,
+    "deposit_held_by": "assignor"
+  },
+  "legal_clauses": {
+    "assignability_clause": "This Assignment is assignable by Assignee to any third party without the consent of Assignor.",
+    "indemnification": "Assignor agrees to indemnify Assignee against any claims, damages, or expenses arising from any breach of this Assignment.",
+    "governing_law": "This Assignment shall be governed by and construed in accordance with the laws of the State of Delaware.",
+    "dispute_resolution": "Any disputes arising from this Assignment shall be resolved through binding arbitration in accordance with the rules of the American Arbitration Association.",
+    "closing_obligations": "Assignee shall be responsible for closing the transaction and ensuring that all necessary documents are executed and recorded."
+  },
+  "notarization": {
+    "notary_name": "Sandra K. Johnson",
+    "commission_expiry": "2027-02-28",
+    "county_recorded": "Sussex County Recorder of Deeds",
+    "recording_ref": "Instrument #2026-001234"
+  },
+  "_meta": {
+    "generated_at": "2026-05-25T07:04:45.038589",
+    "model": "meta.llama3-70b-instruct-v1:0",
+    "record_num": 99
+  }
+}

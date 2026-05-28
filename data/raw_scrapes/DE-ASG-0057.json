@@ -1,0 +1,65 @@
+{
+  "record_id": "DE-ASG-0057",
+  "assignor": {
+    "name": "Emily J. Wilson",
+    "address": "1234 W 11th St, Wilmington, DE 19805",
+    "entity_type": "individual"
+  },
+  "assignee": {
+    "name": "New Castle Ventures LLC",
+    "address": "456 N Main St, Newark, DE 19711",
+    "entity_type": "llc"
+  },
+  "seller": {
+    "name": "Mark A. Thompson",
+    "address": "789 S College Ave, Newark, DE 19713"
+  },
+  "property": {
+    "address": "1423 W Park Pl, Newark, DE 19711",
+    "city": "Newark",
+    "county": "New Castle",
+    "state": "DE",
+    "zip": "19711",
+    "parcel_id": "06-031.01-118",
+    "property_type": "SFR",
+    "bedrooms": 4,
+    "bathrooms": 2.5,
+    "sqft": 2400,
+    "year_built": 2002
+  },
+  "original_contract": {
+    "purchase_price": 220000,
+    "earnest_money": 5000,
+    "execution_date": "2025-10-15",
+    "closing_deadline": "2026-01-15",
+    "contingencies": [
+      "financing",
+      "inspection"
+    ]
+  },
+  "assignment": {
+    "assignment_fee": 20000,
+    "total_price_to_assignee": 240000,
+    "assignment_date": "2025-11-20",
+    "consideration_paid": 10000,
+    "deposit_held_by": "assignor"
+  },
+  "legal_clauses": {
+    "assignability_clause": "This Assignment is freely assignable by Assignee without the consent of Assignor or Seller.",
+    "indemnification": "Assignor and Seller shall jointly and severally indemnify Assignee against any claims, damages, or expenses arising from their breach of this Assignment.",
+    "governing_law": "This Assignment shall be governed by and construed in accordance with the laws of the State of Delaware.",
+    "dispute_resolution": "Any disputes arising from this Assignment shall be resolved through binding arbitration in accordance with the rules of the American Arbitration Association.",
+    "closing_obligations": "Assignee shall be responsible for ensuring timely closing of the transaction, and Assignor and Seller shall cooperate fully in the closing process."
+  },
+  "notarization": {
+    "notary_name": "Patricia A. Johnson",
+    "commission_expiry": "2027-02-28",
+    "county_recorded": "New Castle County Recorder of Deeds",
+    "recording_ref": "2025-123456"
+  },
+  "_meta": {
+    "generated_at": "2026-05-25T06:54:03.190961",
+    "model": "meta.llama3-70b-instruct-v1:0",
+    "record_num": 57
+  }
+}

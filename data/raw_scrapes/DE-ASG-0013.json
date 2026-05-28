@@ -1,0 +1,65 @@
+{
+  "record_id": "DE-ASG-0013",
+  "assignor": {
+    "name": "Emily J. Rodriguez",
+    "address": "1234 W 11th St, Wilmington, DE 19805",
+    "entity_type": "individual"
+  },
+  "assignee": {
+    "name": "New Horizon Properties LLC",
+    "address": "4567 Kirkwood Hwy, Wilmington, DE 19808",
+    "entity_type": "llc"
+  },
+  "seller": {
+    "name": "David M. Lee",
+    "address": "7890 N Market St, Wilmington, DE 19802"
+  },
+  "property": {
+    "address": "2345 W 4th St",
+    "city": "Wilmington",
+    "county": "New Castle",
+    "state": "DE",
+    "zip": "19801",
+    "parcel_id": "060134005",
+    "property_type": "SFR",
+    "bedrooms": 3,
+    "bathrooms": 2,
+    "sqft": 1800,
+    "year_built": 1985
+  },
+  "original_contract": {
+    "purchase_price": 220000,
+    "earnest_money": 10000,
+    "execution_date": "2025-10-15",
+    "closing_deadline": "2026-01-15",
+    "contingencies": [
+      "financing",
+      "inspection"
+    ]
+  },
+  "assignment": {
+    "assignment_fee": 20000,
+    "total_price_to_assignee": 240000,
+    "assignment_date": "2026-01-05",
+    "consideration_paid": 10000,
+    "deposit_held_by": "escrow agent"
+  },
+  "legal_clauses": {
+    "assignability_clause": "This Assignment is freely assignable by the Assignor and the Assignee, and any subsequent assignee, without the need for further consent or approval.",
+    "indemnification": "The Assignor hereby indemnifies and holds harmless the Assignee, its officers, directors, employees, and agents from and against any and all claims, demands, actions, or causes of action arising out of or related to this Assignment.",
+    "governing_law": "This Assignment shall be governed by and construed in accordance with the laws of the State of Delaware.",
+    "dispute_resolution": "Any dispute arising out of or related to this Assignment shall be resolved through binding arbitration in accordance with the rules of the American Arbitration Association.",
+    "closing_obligations": "The Assignee shall be responsible for all closing costs and obligations associated with the purchase of the Property."
+  },
+  "notarization": {
+    "notary_name": "Sandra K. Jenkins",
+    "commission_expiry": "2027-02-28",
+    "county_recorded": "New Castle County Recorder of Deeds",
+    "recording_ref": "Instrument #2026001234"
+  },
+  "_meta": {
+    "generated_at": "2026-05-25T06:42:27.428859",
+    "model": "meta.llama3-70b-instruct-v1:0",
+    "record_num": 13
+  }
+}

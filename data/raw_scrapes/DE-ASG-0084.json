@@ -1,0 +1,65 @@
+{
+  "record_id": "DE-ASG-0084",
+  "assignor": {
+    "name": "Emily J. Rodriguez",
+    "address": "1234 N. Washington St, Wilmington, DE 19801",
+    "entity_type": "individual"
+  },
+  "assignee": {
+    "name": "Milford Investment Properties LLC",
+    "address": "456 E. Masten Circle, Milford, DE 19963",
+    "entity_type": "llc"
+  },
+  "seller": {
+    "name": "James R. Thompson",
+    "address": "789 S. Dupont Hwy, New Castle, DE 19720"
+  },
+  "property": {
+    "address": "234 N. Rehoboth Blvd, Milford, DE 19963",
+    "city": "Milford",
+    "county": "Kent",
+    "state": "DE",
+    "zip": "19963",
+    "parcel_id": "KENT-123456",
+    "property_type": "SFR",
+    "bedrooms": 3,
+    "bathrooms": 2,
+    "sqft": 1800,
+    "year_built": 2001
+  },
+  "original_contract": {
+    "purchase_price": 220000,
+    "earnest_money": 4400,
+    "execution_date": "2025-09-15",
+    "closing_deadline": "2025-11-15",
+    "contingencies": [
+      "financing",
+      "inspection"
+    ]
+  },
+  "assignment": {
+    "assignment_fee": 20000,
+    "total_price_to_assignee": 240000,
+    "assignment_date": "2025-10-20",
+    "consideration_paid": 2000,
+    "deposit_held_by": "assignor"
+  },
+  "legal_clauses": {
+    "assignability_clause": "This Assignment is freely assignable by the Assignee, and any such assignment shall not relieve the Assignor of its obligations under this Assignment.",
+    "indemnification": "The Assignor shall indemnify, defend, and hold harmless the Assignee from and against any and all claims, damages, and expenses arising out of or related to the Assignor's breach of this Assignment.",
+    "governing_law": "This Assignment shall be governed by and construed in accordance with the laws of the State of Delaware.",
+    "dispute_resolution": "Any dispute arising out of or related to this Assignment shall be resolved through binding arbitration in accordance with the rules of the American Arbitration Association.",
+    "closing_obligations": "The Assignee shall be responsible for ensuring that all necessary documents are executed and delivered at closing, and that all closing obligations are satisfied."
+  },
+  "notarization": {
+    "notary_name": "Samantha J. Lee",
+    "commission_expiry": "2027-02-28",
+    "county_recorded": "Kent County Recorder of Deeds",
+    "recording_ref": "KT-2025-1234"
+  },
+  "_meta": {
+    "generated_at": "2026-05-25T07:00:44.416765",
+    "model": "meta.llama3-70b-instruct-v1:0",
+    "record_num": 84
+  }
+}
