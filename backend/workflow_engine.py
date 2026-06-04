@@ -24,11 +24,19 @@ from harvesters.county_assessor import CountyAssessorHarvester
 from agents.agent_analyst import AnalystAgent, CMAResult
 from spatial_agent import reconstruct_property, should_trigger_reconstruction, property_id_from_address
 from legal_agent import format_for_websocket, generate_legal_package
+from agents.scout import ScoutAgent
+from harvesters.four_state_firehose import MockBatchLeadsAdapter
 
 logger = logging.getLogger("oracle.workflow_engine")
 
 PREDICTIVE_CACHE_INTERVAL = 8
 PREDICTIVE_CACHE_TOP_N = 3
+
+SCOUT_UNDERWRITER_STATES = {"DE"}
+SCOUT_SCAN_INTERVAL = 30
+# Delaware Valley firehose territory (DE/PA/NJ/MD). The mock adapter ignores
+# the zips; real BatchLeads adapter will key off them.
+SCOUT_TERRITORY = ["19801", "19102", "08102", "21201"]
 
 
 class WorkflowEngine:
@@ -38,10 +46,12 @@ class WorkflowEngine:
         self.graph = PropertyGraph()
         self.harvester = CountyAssessorHarvester(self.graph, websocket)
         self.analyst = AnalystAgent(self.graph, websocket)
+        self.scout = ScoutAgent(MockBatchLeadsAdapter())
         self._running = False
         self._harvest_task: Optional[asyncio.Task] = None
         self._analysis_task: Optional[asyncio.Task] = None
         self._predictive_task: Optional[asyncio.Task] = None
+        self._scout_task: Optional[asyncio.Task] = None
         self._last_pushed_ids: list[str] = []
         self._stats = {
             "cycles": 0,
@@ -59,10 +69,16 @@ class WorkflowEngine:
         self._harvest_task = asyncio.create_task(self._harvest_loop())
         self._analysis_task = asyncio.create_task(self._analysis_loop())
         self._predictive_task = asyncio.create_task(self._predictive_cache_loop())
+        self._scout_task = asyncio.create_task(self._scout_loop())
 
         await self._emit_status("WORKFLOW ENGINE — all agents online")
 
-        await asyncio.gather(self._harvest_task, self._analysis_task, self._predictive_task)
+        await asyncio.gather(
+            self._harvest_task,
+            self._analysis_task,
+            self._predictive_task,
+            self._scout_task,
+        )
 
     async def stop(self):
         self._running = False
@@ -74,6 +90,8 @@ class WorkflowEngine:
             self._analysis_task.cancel()
         if self._predictive_task:
             self._predictive_task.cancel()
+        if self._scout_task:
+            self._scout_task.cancel()
 
         await self._emit_status("WORKFLOW ENGINE — pipeline shutdown complete")
 
@@ -216,6 +234,60 @@ class WorkflowEngine:
                 logger.error(f"Predictive cache error: {e}")
 
             await asyncio.sleep(PREDICTIVE_CACHE_INTERVAL)
+
+    async def _scout_loop(self):
+        """Drives the Scout agent over the firehose territory and routes each
+        MOTIVATED_SELLER_FOUND event through the state gatekeeper."""
+        await asyncio.sleep(7)
+
+        while self._running:
+            try:
+                await self._emit_status(
+                    f"AGENT SCOUT — sweeping territory {SCOUT_TERRITORY}"
+                )
+                # scan_territory is a sync generator over mock/HTTP fetches;
+                # yield control between events so we don't starve the loop.
+                for event in self.scout.scan_territory(SCOUT_TERRITORY):
+                    await self.handle_scout_event(event)
+                    await asyncio.sleep(0)
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Scout loop error: {e}")
+
+            await asyncio.sleep(SCOUT_SCAN_INTERVAL)
+
+    async def handle_scout_event(self, event: dict) -> None:
+        """Gatekeeper for Scout-emitted events. Routes by state per decision 004
+        (Multi-State Underwriting OOD): DE → Bedrock underwriter, else halt."""
+        if event.get("event_type") != "MOTIVATED_SELLER_FOUND":
+            return
+
+        state = (event.get("state") or "").upper()
+        payload = event.get("payload", {})
+        parcel_id = payload.get("parcel_id", "<unknown>")
+        score = event.get("motivation_score")
+
+        if state in SCOUT_UNDERWRITER_STATES:
+            await self._emit_status(
+                f"SCOUT → UNDERWRITER ({state}) — parcel {parcel_id} score {score}"
+            )
+            await self._invoke_de_underwriter(payload, score)
+        else:
+            logger.warning(
+                f"OOD deal halted: state={state} parcel={parcel_id} score={score} "
+                f"— non-DE underwriting deferred per decision 004"
+            )
+            await self._emit_status(
+                f"SCOUT → DEFERRED ({state}) — OOD pipeline not yet wired"
+            )
+
+    async def _invoke_de_underwriter(self, payload: dict, score) -> None:
+        """Bedrock oracle-underwriter-70b entrypoint. Stub until the fine-tune
+        job (wbtis0vmhc54) completes — then wires to ml_forge.bedrock_client."""
+        logger.info(
+            f"DE underwriter invoked: parcel={payload.get('parcel_id')} score={score}"
+        )
 
     async def _emit_status(self, message: str):
         logger.info(message)

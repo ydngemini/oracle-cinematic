@@ -36,6 +36,22 @@ DEMO_CREDENTIALS: dict[str, str] = {
 }
 
 # ---------------------------------------------------------------------------
+# Demo tenancy map — agent_id → (tenant_id, role). The Auth Gatekeeper stamps
+# these into the JWT at login so every downstream request carries its domain
+# + role (see tenancy.py / db/schema.sql). In production this is a `users`
+# table lookup, not a literal dict.
+# ---------------------------------------------------------------------------
+
+PLATFORM_TENANT_ID = "00000000-0000-0000-0000-000000000000"
+APEX_TENANT_ID = "11111111-1111-1111-1111-111111111111"
+
+DEMO_TENANCY: dict[str, tuple[str, str]] = {
+    "ydn":          (PLATFORM_TENANT_ID, "platform_admin"),  # god-mode override
+    "oracle_agent": (APEX_TENANT_ID,     "broker_owner"),
+    "analyst_01":   (APEX_TENANT_ID,     "agent"),
+}
+
+# ---------------------------------------------------------------------------
 # In-memory session registry
 # Maps agent_id → {token, issued_at, payload}
 # Capped at MAX_SESSIONS concurrent entries.
@@ -90,8 +106,31 @@ class LoginResponse(BaseModel):
 
 class VerifyResponse(BaseModel):
     agent_id: str
+    tenant_id: Optional[str] = None
+    role: Optional[str] = None
     issued_at: float
     expires_at: float
+
+
+# ---------------------------------------------------------------------------
+# Token decode — single validation path shared by /verify and the tenancy
+# gatekeeper (tenancy.require_context). Raises 401 on invalid/expired tokens.
+# ---------------------------------------------------------------------------
+
+
+def decode_token(raw_token: str) -> dict:
+    try:
+        return jwt.decode(raw_token, SECRET_KEY, algorithms=[ALGORITHM])
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token has expired.",
+        )
+    except jwt.InvalidTokenError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=f"Invalid token: {exc}",
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -116,9 +155,15 @@ def login(body: LoginRequest) -> LoginResponse:
             detail="Invalid agent credentials.",
         )
 
+    # Resolve the agent's domain + role. Demo creds without a tenancy entry
+    # fall back to an isolated agent in their own single-user tenant.
+    tenant_id, role = DEMO_TENANCY.get(body.agent_id, (body.agent_id, "agent"))
+
     now = time.time()
     payload = {
         "sub": body.agent_id,
+        "tenant_id": tenant_id,
+        "role": role,
         "iat": now,
         "exp": now + TOKEN_TTL_SECONDS,
     }
@@ -153,22 +198,12 @@ def verify(authorization: Optional[str] = Header(default=None)) -> VerifyRespons
         )
 
     raw_token = authorization.removeprefix("Bearer ").strip()
-
-    try:
-        payload = jwt.decode(raw_token, SECRET_KEY, algorithms=[ALGORITHM])
-    except jwt.ExpiredSignatureError:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Token has expired.",
-        )
-    except jwt.InvalidTokenError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=f"Invalid token: {exc}",
-        )
+    payload = decode_token(raw_token)
 
     return VerifyResponse(
         agent_id=payload["sub"],
+        tenant_id=payload.get("tenant_id"),
+        role=payload.get("role"),
         issued_at=payload["iat"],
         expires_at=payload["exp"],
     )
