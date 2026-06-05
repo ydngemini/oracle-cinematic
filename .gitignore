@@ -11,5 +11,6 @@ __pycache__/
 *.local
 .DS_Store
 *.log
+*.db
 venv/
 oracle-cinematic/
