@@ -14,3 +14,6 @@ __pycache__/
 *.db
 venv/
 oracle-cinematic/
+
+# Claude subagent worktrees (scratch)
+.claude/worktrees/

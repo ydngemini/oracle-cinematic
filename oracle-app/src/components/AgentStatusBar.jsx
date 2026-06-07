@@ -17,7 +17,7 @@ function resolveActivePhase(agent) {
 }
 
 export function AgentStatusBar() {
-  const { activeAgent } = useOracleState();
+  const { activeAgent, memorySync } = useOracleState();
   const activePhase = resolveActivePhase(activeAgent);
 
   return (
@@ -32,6 +32,9 @@ export function AgentStatusBar() {
             {label}
           </span>
         ))}
+        <span className={styles.memory} data-active={memorySync}>
+          {memorySync ? 'MEMORY SYNC: ACTIVE' : 'MEMORY SYNC: —'}
+        </span>
       </div>
     </div>
   );

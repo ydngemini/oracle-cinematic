@@ -38,6 +38,14 @@ DB_USER = os.getenv("ORACLE_DB_USER", "oracle_app_login")
 AWS_REGION = os.getenv("AWS_REGION", "us-east-2")
 RDS_CA_BUNDLE = os.getenv("ORACLE_RDS_CA_BUNDLE", "/etc/ssl/certs/rds-global-bundle.pem")
 
+# Local-dev escape hatch: if a static password is supplied we connect with plain
+# password auth (and SSL off unless ORACLE_DB_SSLMODE says otherwise) instead of
+# minting an AWS IAM token against an RDS endpoint. This lets the full stack run
+# against a throwaway `postgres:16` container. Aurora prod leaves these unset and
+# falls through to the IAM + TLS 1.3 path — production behaviour is unchanged.
+DB_PASSWORD = os.getenv("ORACLE_DB_PASSWORD", "")
+DB_SSLMODE = os.getenv("ORACLE_DB_SSLMODE", "")  # 'disable' (default for local) | 'require'
+
 _pool = None  # asyncpg.Pool, lazily created
 
 
@@ -69,6 +77,24 @@ async def init_pool(min_size: int = 2, max_size: int = 10):
         return _pool
 
     import asyncpg  # lazy
+
+    if DB_PASSWORD:
+        # Local / password-auth path (dev container). No IAM token, no RDS CA.
+        local_ssl = _build_ssl_context() if DB_SSLMODE not in ("", "disable") else False
+        _pool = await asyncpg.create_pool(
+            host=DB_HOST or "localhost",
+            port=DB_PORT,
+            database=DB_NAME,
+            # Aurora's default login role won't exist locally; fall back to the
+            # superuser the dev postgres container ships with.
+            user=os.getenv("ORACLE_DB_USER") or "postgres",
+            password=DB_PASSWORD,
+            ssl=local_ssl,
+            min_size=min_size,
+            max_size=max_size,
+            command_timeout=30,
+        )
+        return _pool
 
     _pool = await asyncpg.create_pool(
         host=DB_HOST,

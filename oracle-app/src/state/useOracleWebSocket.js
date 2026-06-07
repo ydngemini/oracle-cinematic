@@ -4,6 +4,26 @@ import { registerSW } from 'virtual:pwa-register';
 
 const WS_URL = import.meta.env.VITE_WS_URL || 'ws://localhost:8000/ws';
 const BASE_DELAY = 2000;
+
+// Operator identity for JIT memory hydration. Falls back to a demo id so a
+// tokenless dev session still connects and the backend degrades gracefully.
+function resolveUserId() {
+  return (
+    import.meta.env.VITE_USER_ID ||
+    (typeof localStorage !== 'undefined' && localStorage.getItem('oracle_user_id')) ||
+    'demo-operator'
+  );
+}
+
+function buildWsUrl() {
+  try {
+    const url = new URL(WS_URL);
+    url.searchParams.set('user_id', resolveUserId());
+    return url.toString();
+  } catch {
+    return WS_URL;
+  }
+}
 const MAX_DELAY = 60000;
 const MAX_RETRIES = 8;
 
@@ -18,7 +38,7 @@ export function useOracleWebSocket() {
     if (wsRef.current?.readyState === WebSocket.OPEN) return;
     if (wsRef.current?.readyState === WebSocket.CONNECTING) return;
 
-    const ws = new WebSocket(WS_URL);
+    const ws = new WebSocket(buildWsUrl());
     wsRef.current = ws;
 
     ws.onopen = () => {
@@ -123,6 +143,38 @@ export function useOracleWebSocket() {
             dispatch({ type: ACTIONS.WALKER_THOUGHT_END });
           }
           break;
+
+        case 'SESSION_RESTORED': {
+          const maoPct =
+            typeof msg.mao_threshold === 'number' ? msg.mao_threshold : 0.70;
+          // Hydrate the memory-sync state (drives AgentStatusBar indicator).
+          dispatch({
+            type: ACTIONS.SESSION_RESTORED,
+            payload: {
+              restored: msg.restored === true,
+              maoThreshold: maoPct,
+              summary: msg.summary || '',
+              markets: msg.markets || [],
+            },
+          });
+          // Load the operator's context into the LiveTranscript. Degrades to a
+          // neutral line when the backend couldn't restore (no DB / unknown user).
+          const restoredText = msg.restored
+            ? `Memory Sync active — MAO threshold ${Math.round(maoPct * 100)}%` +
+              (msg.summary ? ` · ${msg.summary}` : '') +
+              (msg.markets?.length ? ` · Markets: ${msg.markets.join(', ')}` : '')
+            : 'Memory Sync unavailable — running with default underwriting profile.';
+          dispatch({
+            type: ACTIONS.APPEND_TRANSCRIPT,
+            payload: {
+              id: crypto.randomUUID(),
+              agent: 'MEMORY',
+              text: restoredText,
+              timestamp: Date.now(),
+            },
+          });
+          break;
+        }
       }
     };
 

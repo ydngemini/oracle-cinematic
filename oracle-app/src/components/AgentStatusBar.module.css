@@ -57,3 +57,22 @@
     background-position: -200% center;
   }
 }
+
+.memory {
+  font-size: 0.52rem;
+  letter-spacing: 0.35em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.12);
+  font-weight: 400;
+  padding-left: 1.4rem;
+  border-left: 1px solid rgba(255, 255, 255, 0.06);
+  transition: color 0.6s cubic-bezier(0.16, 1, 0.3, 1),
+              text-shadow 0.6s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.memory[data-active="true"] {
+  color: rgba(126, 231, 159, 0.95);
+  text-shadow:
+    0 0 8px rgba(126, 231, 159, 0.5),
+    0 0 20px rgba(126, 231, 159, 0.18);
+}

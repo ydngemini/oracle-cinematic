@@ -22,6 +22,10 @@ export const initialState = {
   walkerThought: '',
   walkerAgent: 'SCOUT',
   walkerStreaming: false,
+  memorySync: false,
+  maoThreshold: 0.70,
+  profileSummary: '',
+  targetMarkets: [],
 };
 
 export const ACTIONS = {
@@ -44,6 +48,7 @@ export const ACTIONS = {
   WALKER_THOUGHT_START: 'WALKER_THOUGHT_START',
   WALKER_THOUGHT_TOKEN: 'WALKER_THOUGHT_TOKEN',
   WALKER_THOUGHT_END: 'WALKER_THOUGHT_END',
+  SESSION_RESTORED: 'SESSION_RESTORED',
 };
 
 export function oracleReducer(state, action) {
@@ -118,6 +123,18 @@ export function oracleReducer(state, action) {
 
     case ACTIONS.WALKER_THOUGHT_END:
       return { ...state, walkerStreaming: false };
+
+    case ACTIONS.SESSION_RESTORED:
+      return {
+        ...state,
+        memorySync: action.payload.restored === true,
+        maoThreshold:
+          typeof action.payload.maoThreshold === 'number'
+            ? action.payload.maoThreshold
+            : state.maoThreshold,
+        profileSummary: action.payload.summary || '',
+        targetMarkets: action.payload.markets || [],
+      };
 
     default:
       return state;
