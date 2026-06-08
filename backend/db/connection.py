@@ -101,6 +101,11 @@ def pool_stats() -> dict:
     }
 
 
+def get_pool():
+    """Return the current pool instance, or None if not initialised."""
+    return _pool
+
+
 async def init_pool(min_size: int = _ENV_POOL_MIN, max_size: int = _ENV_POOL_MAX):
     """Create the shared pool. Call once on app startup.
 

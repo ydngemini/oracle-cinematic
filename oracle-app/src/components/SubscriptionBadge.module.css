@@ -1,0 +1,57 @@
+.badge {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.3rem 0.7rem;
+  border-radius: 3px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  background: rgba(8, 8, 12, 0.6);
+  backdrop-filter: blur(20px);
+  cursor: pointer;
+  transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.badge[data-active="true"] {
+  border-color: rgba(100, 200, 120, 0.2);
+}
+
+.badge[data-active="false"] {
+  border-color: rgba(200, 100, 80, 0.2);
+  cursor: default;
+}
+
+.badge:hover[data-active="true"] {
+  border-color: rgba(100, 200, 120, 0.4);
+  background: rgba(100, 200, 120, 0.04);
+}
+
+.dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  transition: background 0.3s;
+}
+
+.dot[data-active="true"] {
+  background: rgba(100, 200, 120, 0.9);
+  box-shadow: 0 0 6px rgba(100, 200, 120, 0.5);
+}
+
+.dot[data-active="false"] {
+  background: rgba(200, 100, 80, 0.9);
+  box-shadow: 0 0 6px rgba(200, 100, 80, 0.5);
+}
+
+.label {
+  font-size: 0.45rem;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.7);
+}
+
+.period {
+  font-size: 0.4rem;
+  letter-spacing: 0.1em;
+  color: rgba(255, 255, 255, 0.3);
+}

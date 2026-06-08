@@ -4,6 +4,8 @@ import { LiveTranscript } from './LiveTranscript';
 import { PropertyCanvas } from './PropertyCanvas';
 import { WalkerBubble } from './WalkerBubble';
 import { DealPipeline } from './DealPipeline';
+import { BillingOverlay } from './BillingOverlay';
+import { SubscriptionBadge } from './SubscriptionBadge';
 import styles from './DashboardLayout.module.css';
 
 export function DashboardLayout() {
@@ -14,6 +16,7 @@ export function DashboardLayout() {
       <div className={styles.hud}>
         <div className={styles.topBar}>
           <AgentStatusBar />
+          <SubscriptionBadge />
         </div>
 
         <div className={styles.leftPanel}>
@@ -30,6 +33,7 @@ export function DashboardLayout() {
       </div>
 
       <WalkerBubble />
+      <BillingOverlay />
     </div>
   );
 }

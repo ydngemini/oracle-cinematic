@@ -483,6 +483,27 @@
   vertical-align: middle;
 }
 
+/* ── Portal button ──────────────────────────────────────────── */
+.portalBtn {
+  display: block;
+  margin: 0.8rem auto 0;
+  padding: 0.5rem 1.2rem;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 4px;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.5);
+  font-size: 0.55rem;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.portalBtn:hover {
+  border-color: rgba(200, 160, 80, 0.3);
+  color: rgba(220, 180, 100, 0.8);
+}
+
 /* ── Fine print ──────────────────────────────────────────────── */
 .fine {
   font-family: 'PP Neue Montreal', 'Inter', system-ui, sans-serif;

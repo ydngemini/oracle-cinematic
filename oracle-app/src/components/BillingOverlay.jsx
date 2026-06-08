@@ -1,4 +1,5 @@
 import { useState, useCallback } from 'react';
+import { useSubscription } from '../state/useSubscription';
 import styles from './BillingOverlay.module.css';
 
 const FEATURES = [
@@ -12,17 +13,8 @@ const FEATURES = [
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? 'http://localhost:8000';
 
-/**
- * BillingOverlay
- *
- * Slides into view from below when `isActive` is false.
- * Calls /billing/create-checkout-session then redirects to Stripe.
- *
- * Props:
- *   isActive  {boolean}  — when false, overlay is shown
- *   agentId   {string}   — agent identifier forwarded to Stripe metadata
- */
-export function BillingOverlay({ isActive = false, agentId = 'default' }) {
+export function BillingOverlay() {
+  const { active, status, plan, currentPeriodEnd, loading: subLoading, openPortal, tenantId } = useSubscription();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
 
@@ -34,7 +26,7 @@ export function BillingOverlay({ isActive = false, agentId = 'default' }) {
       const res = await fetch(`${API_BASE}/billing/create-checkout-session`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ agent_id: agentId }),
+        body: JSON.stringify({ tenant_id: tenantId }),
       });
 
       if (!res.ok) {
@@ -48,17 +40,19 @@ export function BillingOverlay({ isActive = false, agentId = 'default' }) {
       setError(err.message ?? 'Unknown error');
       setLoading(false);
     }
-  }, [agentId]);
+  }, [tenantId]);
+
+  if (subLoading) return null;
+  if (active) return null;
 
   return (
     <div
       className={styles.backdrop}
-      data-visible={!isActive}
-      aria-hidden={isActive}
+      data-visible="true"
+      aria-hidden={false}
     >
-      <div className={styles.panel} data-visible={!isActive}>
+      <div className={styles.panel} data-visible="true">
 
-        {/* ── Kicker + heading ── */}
         <div className={styles.header}>
           <span className={styles.kicker}>Oracle Swarm — License Required</span>
           <h2 className={styles.heading}>Oracle Swarm License</h2>
@@ -67,14 +61,12 @@ export function BillingOverlay({ isActive = false, agentId = 'default' }) {
           </p>
         </div>
 
-        {/* ── Price block ── */}
         <div className={styles.priceBlock}>
           <span className={styles.currency}>$</span>
           <span className={styles.price}>299</span>
           <span className={styles.period}>/mo</span>
         </div>
 
-        {/* ── Feature list ── */}
         <ul className={styles.featureList}>
           {FEATURES.map(({ id, label, detail }) => (
             <li key={id} className={styles.featureItem}>
@@ -85,7 +77,6 @@ export function BillingOverlay({ isActive = false, agentId = 'default' }) {
           ))}
         </ul>
 
-        {/* ── CTA ── */}
         <div className={styles.ctaWrapper}>
           {error && <p className={styles.errorMsg}>{error}</p>}
 
@@ -101,6 +92,12 @@ export function BillingOverlay({ isActive = false, agentId = 'default' }) {
               'Activate License'
             )}
           </button>
+
+          {status === 'canceled' && (
+            <button className={styles.portalBtn} onClick={openPortal}>
+              Reactivate via Portal
+            </button>
+          )}
 
           <p className={styles.fine}>
             Billed monthly. Cancel anytime. No setup fees.
