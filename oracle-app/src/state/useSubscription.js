@@ -1,22 +1,27 @@
 import { useState, useEffect, useCallback } from 'react';
+import { getTenantId } from './identity';
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? 'http://localhost:8000';
 
-function getTenantId() {
-  return (
-    import.meta.env.VITE_TENANT_ID ||
-    (typeof localStorage !== 'undefined' && localStorage.getItem('oracle_tenant_id')) ||
-    'default'
-  );
-}
+// Dev-only escape hatch: a local run without a live Stripe subscription would
+// otherwise be permanently stuck behind the $299 BillingOverlay. Gated on
+// import.meta.env.DEV, which is statically false in a production build — so this
+// can NEVER unlock a deployed app, regardless of the env var.
+const BILLING_BYPASS =
+  import.meta.env.DEV && import.meta.env.VITE_BILLING_BYPASS === 'true';
 
 export function useSubscription() {
-  const [sub, setSub] = useState({ active: false, status: 'loading', plan: 'none', currentPeriodEnd: null });
-  const [loading, setLoading] = useState(true);
+  const [sub, setSub] = useState(
+    BILLING_BYPASS
+      ? { active: true, status: 'dev_bypass', plan: 'dev', currentPeriodEnd: null }
+      : { active: false, status: 'loading', plan: 'none', currentPeriodEnd: null }
+  );
+  const [loading, setLoading] = useState(!BILLING_BYPASS);
 
   const tenantId = getTenantId();
 
   const refresh = useCallback(async () => {
+    if (BILLING_BYPASS) return;
     try {
       const res = await fetch(`${API_BASE}/billing/status/${tenantId}`);
       if (res.ok) {
@@ -35,6 +40,8 @@ export function useSubscription() {
     }
   }, [tenantId]);
 
+  // Fetch subscription status once on mount (and whenever the resolver changes).
+  // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => { refresh(); }, [refresh]);
 
   const openPortal = useCallback(async () => {
@@ -48,7 +55,9 @@ export function useSubscription() {
         const { url } = await res.json();
         window.location.href = url;
       }
-    } catch {}
+    } catch {
+      /* portal navigation is best-effort; surface nothing on transient failure */
+    }
   }, [tenantId]);
 
   return { ...sub, loading, refresh, openPortal, tenantId };

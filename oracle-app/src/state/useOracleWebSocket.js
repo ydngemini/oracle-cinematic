@@ -1,24 +1,19 @@
 import { useEffect, useCallback, useRef } from 'react';
 import { useOracleDispatch, ACTIONS } from './OracleContext';
+import { getUserId, getTenantId } from './identity';
 import { registerSW } from 'virtual:pwa-register';
 
 const WS_URL = import.meta.env.VITE_WS_URL || 'ws://localhost:8000/ws';
 const BASE_DELAY = 2000;
 
-// Operator identity for JIT memory hydration. Falls back to a demo id so a
-// tokenless dev session still connects and the backend degrades gracefully.
-function resolveUserId() {
-  return (
-    import.meta.env.VITE_USER_ID ||
-    (typeof localStorage !== 'undefined' && localStorage.getItem('oracle_user_id')) ||
-    'demo-operator'
-  );
-}
-
+// Identity for JIT memory hydration AND tenant-scoped lead delivery. Sending
+// tenant_id here keeps the DealPipeline (RLS-scoped leads) on the same tenant
+// as the billing gate — see state/identity.js.
 function buildWsUrl() {
   try {
     const url = new URL(WS_URL);
-    url.searchParams.set('user_id', resolveUserId());
+    url.searchParams.set('user_id', getUserId());
+    url.searchParams.set('tenant_id', getTenantId());
     return url.toString();
   } catch {
     return WS_URL;
@@ -189,6 +184,15 @@ export function useOracleWebSocket() {
               total: msg.total || 0,
             },
           });
+          break;
+
+        case 'PING':
+          // Keepalive: the backend idle-watchdog closes the socket after
+          // ORACLE_WS_IDLE_TIMEOUT (default 300s) unless it hears from us.
+          // Without this reply a passive viewer drops every ~5 minutes.
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: 'PONG' }));
+          }
           break;
       }
     };

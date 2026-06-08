@@ -22,7 +22,7 @@ from typing import Optional
 from graph_engine import PropertyGraph
 from harvesters.county_assessor import CountyAssessorHarvester
 from agents.agent_analyst import AnalystAgent, CMAResult
-from spatial_agent import reconstruct_property, should_trigger_reconstruction, property_id_from_address
+from spatial_agent import reconstruct_property, should_trigger_reconstruction, property_id
 from legal_agent import format_for_websocket, generate_legal_package
 from agents.scout import ScoutAgent
 from harvesters.four_state_firehose import MockBatchLeadsAdapter
@@ -213,7 +213,7 @@ class WorkflowEngine:
                 top_props = []
                 async for hit in self.graph.calculate_novelty_score():
                     top_props.append({
-                        "id": property_id_from_address(hit["address"]),
+                        "id": property_id(hit["address"]),
                         "address": hit["address"],
                         "novelty": hit["novelty_score"],
                     })

@@ -1,0 +1,101 @@
+.boundary {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2rem;
+  background: radial-gradient(ellipse at 50% 40%, rgba(18, 16, 12, 0.92) 0%, rgba(4, 4, 6, 0.97) 75%);
+  backdrop-filter: blur(8px);
+}
+
+.panel {
+  max-width: 36rem;
+  width: 100%;
+  padding: 2.25rem 2.5rem;
+  border: 1px solid rgba(200, 160, 80, 0.18);
+  border-radius: 14px;
+  background: rgba(8, 8, 12, 0.75);
+  box-shadow:
+    0 0 40px rgba(0, 0, 0, 0.6),
+    0 0 24px rgba(200, 160, 80, 0.06);
+  text-align: center;
+}
+
+.tag {
+  display: inline-block;
+  font-size: 0.68rem;
+  letter-spacing: 0.4em;
+  text-transform: uppercase;
+  color: rgba(200, 170, 120, 0.7);
+}
+
+.title {
+  margin: 0.85rem 0 0.5rem;
+  font-size: 1.4rem;
+  font-weight: 400;
+  letter-spacing: -0.01em;
+  color: rgba(235, 235, 240, 0.92);
+}
+
+.detail {
+  margin: 0 0 1.6rem;
+  font-size: 0.82rem;
+  line-height: 1.55;
+  color: rgba(220, 220, 230, 0.5);
+  word-break: break-word;
+}
+
+.actions {
+  display: flex;
+  gap: 0.75rem;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
+.retry,
+.reload {
+  padding: 0.7rem 1.4rem;
+  font-size: 0.72rem;
+  letter-spacing: 0.25em;
+  text-transform: uppercase;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.retry {
+  border: 1px solid rgba(200, 160, 80, 0.35);
+  background: linear-gradient(to bottom, rgba(200, 160, 80, 0.14), rgba(200, 160, 80, 0.04));
+  color: rgba(220, 190, 130, 0.95);
+}
+
+.retry:hover {
+  border-color: rgba(200, 160, 80, 0.6);
+  box-shadow: 0 0 18px rgba(200, 160, 80, 0.12);
+}
+
+.reload {
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.02);
+  color: rgba(220, 220, 230, 0.6);
+}
+
+.reload:hover {
+  border-color: rgba(255, 255, 255, 0.2);
+  color: rgba(235, 235, 240, 0.85);
+}
+
+.retry:focus-visible,
+.reload:focus-visible {
+  outline: 2px solid rgba(200, 160, 80, 0.6);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .retry,
+  .reload {
+    transition: none;
+  }
+}

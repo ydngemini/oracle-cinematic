@@ -23,13 +23,6 @@ const PARTICLE_COUNT = 120;
 function lerp(a, b, t) { return a + (b - a) * t; }
 function clamp(v, min, max) { return Math.max(min, Math.min(max, v)); }
 
-function lerpVec3(out, a, b, t) {
-  out[0] = lerp(a[0], b[0], t);
-  out[1] = lerp(a[1], b[1], t);
-  out[2] = lerp(a[2], b[2], t);
-  return out;
-}
-
 function springToward(current, target, velocity, stiffness, damping) {
   const force = (target - current) * stiffness;
   velocity = (velocity + force) * damping;
@@ -247,6 +240,7 @@ export function PropertyCanvas() {
   const [currentView, setCurrentView] = useState('CINEMATIC_ENTRY');
   const [anchorPositions, setAnchorPositions] = useState({});
   const [hoverAnchor, setHoverAnchor] = useState(null);
+  const [webglSupported, setWebglSupported] = useState(true);
 
   // Camera spring state
   const camState = useRef({
@@ -284,10 +278,15 @@ export function PropertyCanvas() {
     boundaryGeo: null,
   });
 
+  // Mirror visibility flags into refs so the rAF loop reads the latest value
+  // without re-subscribing. Assigned in an effect (not during render) per the
+  // rules-of-refs lint.
   const gisBoundaryVisibleRef = useRef(gisBoundaryVisible);
   const anchorsVisibleRef = useRef(anchorsVisible);
-  gisBoundaryVisibleRef.current = gisBoundaryVisible;
-  anchorsVisibleRef.current = anchorsVisible;
+  useEffect(() => {
+    gisBoundaryVisibleRef.current = gisBoundaryVisible;
+    anchorsVisibleRef.current = anchorsVisible;
+  }, [gisBoundaryVisible, anchorsVisible]);
 
   const assessorData = useMemo(() => ({
     roofAge: propertyData?.roofAge,
@@ -398,7 +397,21 @@ export function PropertyCanvas() {
     const canvas = canvasRef.current;
     if (!canvas) return;
 
-    const renderer = new SPLAT.WebGLRenderer(canvas);
+    // gsplat's WebGLRenderer creates its own GL context and throws if WebGL is
+    // unavailable (GPU blocklisted, disabled, headless, some VMs). Without this
+    // guard the throw is uncaught inside the effect and React tears down the
+    // entire app to a blank screen. Degrade to a CSS fallback instead.
+    let renderer;
+    try {
+      renderer = new SPLAT.WebGLRenderer(canvas);
+    } catch (err) {
+      console.error('[Spatial] WebGL unavailable — spatial viewer disabled:', err);
+      // One-time capability flag flip on init failure (renders the fallback).
+      // Not a cascading-render risk — the effect returns immediately after.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setWebglSupported(false);
+      return;
+    }
     const scene = new SPLAT.Scene();
     const camera = new SPLAT.Camera();
     camera.data.setSize(canvas.clientWidth, canvas.clientHeight);
@@ -720,6 +733,17 @@ export function PropertyCanvas() {
   return (
     <div className={styles.container} data-loaded={splatLoaded}>
       <canvas ref={canvasRef} className={styles.canvas} />
+
+      {/* WebGL unsupported fallback — keeps the rest of the C2 UI alive */}
+      {!webglSupported && (
+        <div className={styles.webglFallback}>
+          <span className={styles.webglFallbackTitle}>SPATIAL VIEWER UNAVAILABLE</span>
+          <span className={styles.webglFallbackHint}>
+            WebGL is disabled or unsupported in this browser. Property data and
+            agent telemetry remain fully active.
+          </span>
+        </div>
+      )}
 
       {/* Cinematic vignette */}
       <div className={styles.vignette} />

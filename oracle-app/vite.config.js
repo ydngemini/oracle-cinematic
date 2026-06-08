@@ -3,6 +3,11 @@ import react from '@vitejs/plugin-react'
 import { VitePWA } from 'vite-plugin-pwa'
 
 export default defineConfig({
+  // Read env from the project root (one .env for backend + frontend). Vite only
+  // exposes VITE_-prefixed vars to the client, so the Stripe/AWS secrets in the
+  // root .env are never bundled. Without this, VITE_WS_URL / VITE_TENANT_ID /
+  // VITE_BILLING_BYPASS were silently ignored and the app ran on hard defaults.
+  envDir: '..',
   plugins: [
     react(),
     VitePWA({
