@@ -116,6 +116,13 @@ async def _main() -> None:
         raise SystemExit("Set ORACLE_INGEST_TENANT_ID to the target tenant UUID.")
 
     import sys
+    from pathlib import Path
+    # Make sibling backend modules importable (db, tenancy, etc.) when invoked
+    # from the repo root as `python -m backend.harvesters.firehose`.
+    _backend = str(Path(__file__).resolve().parent.parent)
+    if _backend not in sys.path:
+        sys.path.insert(0, _backend)
+
     from db.connection import init_pool, close_pool
 
     states = [a for a in sys.argv[1:] if not a.startswith("-")] or None

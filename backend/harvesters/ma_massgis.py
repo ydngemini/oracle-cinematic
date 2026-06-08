@@ -20,8 +20,8 @@ class MassachusettsMassGISHarvester(ArcGISHarvester):
     STATE = "MA"
     SOURCE_LABEL = "MassGIS L3 assessor parcels"
     SERVICE_URL = (
-        "https://gis.massgis.digital.mass.gov/arcgis/rest/services/AssessingParcels/"
-        "L3_TaxPar/FeatureServer/0/query"
+        "https://services1.arcgis.com/hGdibHYSPO59RG1h/arcgis/rest/services/"
+        "Massachusetts_Property_Tax_Parcels/FeatureServer/0/query"
     )
 
     def map_record(self, row: dict) -> Optional[PropertyRecord]:

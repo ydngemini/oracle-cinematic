@@ -15,29 +15,29 @@ class WestVirginiaParcelsHarvester(ArcGISHarvester):
     STATE = "WV"
     SOURCE_LABEL = "WV statewide parcels"
     SERVICE_URL = (
-        "https://services.wvgis.wvu.edu/arcgis/rest/services/Cadastral/"
+        "https://services.wvgis.wvu.edu/arcgis/rest/services/Planning_Cadastre/"
         "WV_Parcels/MapServer/0/query"
     )
 
     def map_record(self, row: dict) -> Optional[PropertyRecord]:
-        parcel = str(row.get("PARID") or row.get("PARCELID") or "").strip()
-        addr = str(row.get("PADDR") or row.get("SITEADDR") or "").strip()
+        parcel = str(row.get("CleanParcelID") or row.get("GISPID") or "").strip()
+        addr = str(row.get("FullPhysicalAddress") or "").strip()
         if not parcel or not addr:
             return None
-        owner = " ".join(filter(None, [row.get("OWNERNME1"), row.get("OWNERNME2")])).strip()
-        mail = str(row.get("MADDR") or "").strip()
+        owner = str(row.get("FullOwnerName") or "").strip()
+        mail = str(row.get("FullOwnerAddress") or "").strip()
         absentee = bool(mail) and norm(mail) != norm(addr)
         return PropertyRecord(
             parcel_id=parcel,
             address=addr,
-            city=str(row.get("CITYNAME") or row.get("MUNI") or "").strip(),
+            city="",
             state=self.STATE,
-            zip_code=str(row.get("ZIP") or row.get("ZIPCODE") or "").strip()[:10],
+            zip_code="",
             owner_name=owner,
             owner_type=classify_owner(owner),
-            estimated_value=to_float(row.get("ASSDTTL") or row.get("TOTAL_VAL")),
+            estimated_value=0.0,
             equity_percent=0.0,
             is_absentee_owner=absentee,
             distress_flags=["absentee_owner"] if absentee else [],
-            last_sale_date=str(row.get("SALEDT") or "").strip()[:10] or None,
+            last_sale_date=None,
         )

@@ -17,8 +17,8 @@ class PennsylvaniaPhillyOPAHarvester(CartoHarvester):
     CARTO_DOMAIN = "https://phl.carto.com"
     TABLE = "opa_properties_public"
     SELECT = (
-        "parcel_number, location, owner_1, owner_2, mailing_street, mailing_city, "
-        "zip_code, market_value, sale_date, sale_price, category_code_description"
+        "parcel_number, location, owner_1, owner_2, mailing_street, mailing_city_state, "
+        "mailing_zip, market_value, sale_date, sale_price, category_code_description"
     )
     # Residential categories only.
     WHERE = "category_code_description ILIKE '%RESIDENTIAL%'"
@@ -34,9 +34,9 @@ class PennsylvaniaPhillyOPAHarvester(CartoHarvester):
         return PropertyRecord(
             parcel_id=parcel,
             address=addr,
-            city=str(row.get("mailing_city") or "Philadelphia").strip(),
+            city=str(row.get("mailing_city_state") or "Philadelphia").strip(),
             state=self.STATE,
-            zip_code=str(row.get("zip_code") or "").strip()[:10],
+            zip_code=str(row.get("mailing_zip") or "").strip()[:10],
             owner_name=owner,
             owner_type=classify_owner(owner),
             estimated_value=to_float(row.get("market_value")),

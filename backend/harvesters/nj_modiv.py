@@ -11,8 +11,8 @@ class NewJerseyModIVHarvester(ArcGISHarvester):
     STATE = "NJ"
     SOURCE_LABEL = "NJGIN MOD-IV parcels"
     SERVICE_URL = (
-        "https://services.arcgis.com/q1lA5GU2YK0EkExA/arcgis/rest/services/"
-        "NJ_Parcels/FeatureServer/0/query"
+        "https://services2.arcgis.com/XVOqAjTOJ5P6ngMu/ArcGIS/rest/services/"
+        "Parcels_Composite_NJ_WM/FeatureServer/0/query"
     )
 
     def map_record(self, row: dict) -> Optional[PropertyRecord]:
