@@ -16,11 +16,53 @@ pool, but only ever writable by their owning tenant. platform_admin bypasses
 all isolation (the IT-admin god-mode override).
 """
 
+import logging
+import re
 from dataclasses import dataclass
 from enum import Enum
 from typing import Optional
 
 from fastapi import Header, HTTPException, status
+
+# ---------------------------------------------------------------------------
+# Logging — never log token strings or raw passphrase material.
+# ---------------------------------------------------------------------------
+
+log = logging.getLogger("oracle.tenancy")
+
+# ---------------------------------------------------------------------------
+# Validation constants
+# ---------------------------------------------------------------------------
+
+# RFC 4122 UUID — 8-4-4-4-12 hex groups, case-insensitive.
+_UUID_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+    re.IGNORECASE,
+)
+
+# Defensive caps to prevent oversized values from polluting logs or DB GUCs.
+_MAX_ROLE_LEN = 64
+_MAX_AGENT_ID_LEN = 128
+
+
+def _validate_tenant_id(tenant_id: str) -> None:
+    """Raise 401 if tenant_id is not a well-formed UUID.
+
+    All tenant_id values in Oracle are UUIDs — any other shape indicates a
+    tampered or corrupt token. Validating here (before the value touches a DB
+    GUC or any lookup) is an injection-hardening belt-and-suspenders measure;
+    asyncpg's parameterised set_config already prevents SQL injection, but we
+    want to reject nonsense early and log it.
+    """
+    if not tenant_id or not _UUID_RE.match(tenant_id):
+        log.warning(
+            "Token contains non-UUID tenant_id (length=%d) — rejecting.",
+            len(tenant_id) if tenant_id else 0,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token contains invalid tenant_id — re-authenticate.",
+        )
 
 
 class Role(str, Enum):
@@ -92,17 +134,34 @@ def require_role(ctx: TenantContext, *allowed: Role) -> None:
 # ---------------------------------------------------------------------------
 # Postgres bridge — set the per-request GUCs that drive RLS. No-op until a real
 # connection is wired; call once at the start of each DB transaction.
+#
+# INJECTION SAFETY: asyncpg's parameterised execute() uses server-side binding
+# ($1, $2) which means the tenant_id and role values are transmitted as typed
+# bind parameters, never interpolated into the SQL string. set_config itself
+# only stores the value in the GUC table — there is no secondary SQL execution.
+# UUID validation in require_context() provides a further pre-flight guard.
+#
+# GUC RESET: the caller (db/connection.py:tenant_tx) wraps every call inside
+# `async with conn.transaction()`, making these SET LOCAL. On transaction
+# commit OR rollback the GUCs revert to their prior values automatically —
+# there is no leakage of one request's identity into a subsequent connection
+# that reuses the same socket from the pool.
 # ---------------------------------------------------------------------------
 
 async def apply_rls_context(conn, ctx: TenantContext) -> None:
-    """SET LOCAL the session context an asyncpg/psycopg connection so the
-    schema.sql RLS policies evaluate against this request's identity. Uses
-    set_config so a parameterized, injection-safe path is available."""
+    """SET LOCAL the session context on an asyncpg/psycopg connection so the
+    schema.sql RLS policies evaluate against this request's identity."""
     await conn.execute(
         "SELECT set_config('app.current_tenant', $1, true),"
         "       set_config('app.current_role',   $2, true)",
         ctx.tenant_id,
         ctx.role.value,
+    )
+    log.debug(
+        "RLS context applied: tenant_id=%r role=%r agent_id=%r.",
+        ctx.tenant_id,
+        ctx.role.value,
+        ctx.agent_id,
     )
 
 
@@ -124,18 +183,51 @@ def require_context(authorization: Optional[str] = Header(default=None)) -> Tena
 
     tenant_id = payload.get("tenant_id")
     raw_role = payload.get("role")
+
     if not tenant_id or not raw_role:
+        log.debug(
+            "Token missing required claims — tenant_id present: %s, role present: %s.",
+            bool(tenant_id),
+            bool(raw_role),
+        )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Token missing tenant_id/role — re-authenticate.",
         )
 
+    # Validate tenant_id is a well-formed UUID before it touches any lookup or GUC.
+    _validate_tenant_id(tenant_id)
+
+    # Guard against oversized role strings before enum lookup / log emission.
+    if len(raw_role) > _MAX_ROLE_LEN:
+        log.debug("Token contains oversized role value (length=%d) — rejecting.", len(raw_role))
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token contains unrecognised role — re-authenticate.",
+        )
+
     try:
         role = Role(raw_role)
     except ValueError:
+        log.debug("Token contains unknown role %r — rejecting.", raw_role)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=f"Unknown role in token: {raw_role}",
+            detail="Unrecognised role in token — re-authenticate.",
         )
 
-    return TenantContext(agent_id=payload["sub"], tenant_id=tenant_id, role=role)
+    agent_id = payload.get("sub", "")
+    if len(agent_id) > _MAX_AGENT_ID_LEN:
+        log.debug("Token subject exceeds maximum length (%d) — rejecting.", len(agent_id))
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid token.",
+        )
+
+    ctx = TenantContext(agent_id=agent_id, tenant_id=tenant_id, role=role)
+    log.debug(
+        "Tenant context established: agent_id=%r tenant_id=%r role=%r.",
+        ctx.agent_id,
+        ctx.tenant_id,
+        ctx.role.value,
+    )
+    return ctx

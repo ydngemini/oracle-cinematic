@@ -1,0 +1,86 @@
+services:
+
+  # ── PostgreSQL 16 ────────────────────────────────────────────────────────────
+  # Single-node local stand-in for Aurora. The `oracle` database, `postgres`
+  # superuser, and plain password auth replace the IAM-token path that
+  # db/connection.py uses in prod — it detects ORACLE_DB_PASSWORD and skips the
+  # boto3/RDS CA bundle entirely, so the full RLS stack still runs correctly.
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: oracle
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${ORACLE_DB_PASSWORD:-postgres}
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+      # Apply migrations at container first-start. Order matters — psql runs
+      # them alphabetically, which matches the 0001/0002/0003 numbering scheme.
+      - ./backend/db/migrations:/docker-entrypoint-initdb.d:ro
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d oracle"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+
+  # ── FastAPI backend ───────────────────────────────────────────────────────────
+  # Uvicorn hot-reload is ON (--reload) so backend/ edits take effect instantly
+  # without a container rebuild. In prod, swap CMD to remove --reload and set
+  # ORACLE_DB_SSLMODE=require + real AWS creds for the IAM auth path.
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      # Local dev DB override — tells db/connection.py to use plain password
+      # auth against the compose postgres container, skipping the IAM path.
+      ORACLE_DB_HOST: db
+      ORACLE_DB_PORT: "5432"
+      ORACLE_DB_NAME: oracle
+      ORACLE_DB_USER: postgres
+      ORACLE_DB_PASSWORD: ${ORACLE_DB_PASSWORD:-postgres}
+      ORACLE_DB_SSLMODE: disable
+    volumes:
+      # Mount source so --reload sees edits without rebuild.
+      - ./backend:/app
+    ports:
+      - "8000:8000"
+    command: >
+      uvicorn server:app
+        --host 0.0.0.0
+        --port 8000
+        --reload
+        --reload-dir /app
+
+  # ── Vite dev server (React frontend) ─────────────────────────────────────────
+  # Runs `npm run dev` on node:20-alpine. The container needs internet access
+  # on first run to fetch node_modules; after that, the bind-mount cache persists.
+  # VITE_WS_URL points to the backend container via the host's loopback so the
+  # browser WebSocket opens to localhost:8000, not the container hostname.
+  frontend:
+    image: node:20-alpine
+    working_dir: /app
+    restart: unless-stopped
+    depends_on:
+      - backend
+    environment:
+      VITE_WS_URL: ${VITE_WS_URL:-ws://localhost:8000/ws}
+    volumes:
+      - ./oracle-app:/app
+      - npm_cache:/app/node_modules
+    ports:
+      - "5173:5173"
+    command: sh -c "npm install && npm run dev -- --host 0.0.0.0"
+
+volumes:
+  pg_data:    # PostgreSQL data — survives `docker compose down`
+  npm_cache:  # node_modules cache — avoids full reinstall on container restart

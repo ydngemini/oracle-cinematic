@@ -1,0 +1,29 @@
+# Oracle Backend — Direct Production Dependencies
+# Generated from venv inspection + import analysis across all backend/*.py modules.
+# Transitive deps (pydantic-core, h11, yarl, etc.) are intentionally omitted;
+# pip resolves them. Pin the top-level packages so deploys are reproducible
+# without locking every wheel in the tree.
+
+# ── Web framework ──────────────────────────────────────────────────────────────
+fastapi==0.136.3
+uvicorn[standard]==0.49.0      # [standard] pulls uvloop + httptools + websockets
+
+# ── Database ───────────────────────────────────────────────────────────────────
+asyncpg==0.31.0                # Async PostgreSQL driver; tenant_tx + RLS GUC set
+
+# ── Auth / security ────────────────────────────────────────────────────────────
+PyJWT==2.13.0                  # JWT encode/decode in auth.py (>= 2.x returns str)
+
+# ── Payments ───────────────────────────────────────────────────────────────────
+stripe==15.2.0                 # Checkout sessions + webhook verification
+
+# ── HTTP clients ───────────────────────────────────────────────────────────────
+aiohttp==3.14.1                # Agent Mind llama-server streaming (mind_service.py)
+httpx==0.28.1                  # K8s HPA / pod queries in admin_c2.py (lazy import — not in venv yet)
+
+# ── AWS ────────────────────────────────────────────────────────────────────────
+boto3==1.43.14                 # RDS IAM auth-token minting in db/connection.py
+                               # (lazy import — only needed on Aurora prod path)
+
+# ── Config ─────────────────────────────────────────────────────────────────────
+python-dotenv==1.2.2           # Load .env in local dev; no-op in prod (env already set)

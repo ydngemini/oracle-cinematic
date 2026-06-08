@@ -20,16 +20,23 @@ Env: ORACLE_DB_HOST, ORACLE_DB_PORT(=5432), ORACLE_DB_NAME, ORACLE_DB_USER
 (=oracle_app_login), AWS_REGION, ORACLE_RDS_CA_BUNDLE (path to the RDS global
 CA .pem). boto3 + asyncpg are imported lazily so importing this module never
 breaks a backend that hasn't wired the DB yet.
+
+Pool sizing (env overrides, lowest priority; keyword args to init_pool() win):
+  ORACLE_DB_POOL_MIN  — minimum idle connections (default 2)
+  ORACLE_DB_POOL_MAX  — maximum open connections (default 10)
 """
 
 from __future__ import annotations
 
+import logging
 import os
 import ssl
 from contextlib import asynccontextmanager
 from typing import Optional
 
 from tenancy import TenantContext, apply_rls_context
+
+logger = logging.getLogger("oracle.db")
 
 DB_HOST = os.getenv("ORACLE_DB_HOST", "")
 DB_PORT = int(os.getenv("ORACLE_DB_PORT", "5432"))
@@ -45,6 +52,10 @@ RDS_CA_BUNDLE = os.getenv("ORACLE_RDS_CA_BUNDLE", "/etc/ssl/certs/rds-global-bun
 # falls through to the IAM + TLS 1.3 path — production behaviour is unchanged.
 DB_PASSWORD = os.getenv("ORACLE_DB_PASSWORD", "")
 DB_SSLMODE = os.getenv("ORACLE_DB_SSLMODE", "")  # 'disable' (default for local) | 'require'
+
+# Pool sizing — configurable via env; init_pool() kwargs take precedence.
+_ENV_POOL_MIN = int(os.getenv("ORACLE_DB_POOL_MIN", "2"))
+_ENV_POOL_MAX = int(os.getenv("ORACLE_DB_POOL_MAX", "10"))
 
 _pool = None  # asyncpg.Pool, lazily created
 
@@ -70,8 +81,33 @@ def _iam_auth_token() -> str:
     )
 
 
-async def init_pool(min_size: int = 2, max_size: int = 10):
-    """Create the shared pool. Call once on app startup."""
+async def _health_check_connection(conn) -> None:
+    """asyncpg pool `setup` callback — run a cheap health probe on every
+    connection that is checked out of the pool. If the connection is stale or
+    broken the query raises, asyncpg discards it and opens a fresh one."""
+    await conn.execute("SELECT 1")
+
+
+def pool_stats() -> dict:
+    """Return a snapshot of current pool metrics, or an empty dict if the pool
+    has not been initialised. Safe to call at any time (e.g. from /health)."""
+    if _pool is None:
+        return {}
+    return {
+        "min_size": _pool.get_min_size(),
+        "max_size": _pool.get_max_size(),
+        "size": _pool.get_size(),
+        "idle": _pool.get_idle_size(),
+    }
+
+
+async def init_pool(min_size: int = _ENV_POOL_MIN, max_size: int = _ENV_POOL_MAX):
+    """Create the shared pool. Call once on app startup.
+
+    min_size / max_size default to ORACLE_DB_POOL_MIN / ORACLE_DB_POOL_MAX env
+    vars (both fall back to 2 / 10 if unset). Explicit keyword arguments always
+    win over the env values, preserving backward-compatibility for call sites that
+    already pass numeric literals."""
     global _pool
     if _pool is not None:
         return _pool
@@ -93,19 +129,31 @@ async def init_pool(min_size: int = 2, max_size: int = 10):
             min_size=min_size,
             max_size=max_size,
             command_timeout=30,
+            setup=_health_check_connection,
         )
-        return _pool
+    else:
+        _pool = await asyncpg.create_pool(
+            host=DB_HOST,
+            port=DB_PORT,
+            database=DB_NAME,
+            user=DB_USER,
+            password=_iam_auth_token,        # callable → re-minted per connection
+            ssl=_build_ssl_context(),
+            min_size=min_size,
+            max_size=max_size,
+            command_timeout=30,
+            setup=_health_check_connection,
+        )
 
-    _pool = await asyncpg.create_pool(
-        host=DB_HOST,
-        port=DB_PORT,
-        database=DB_NAME,
-        user=DB_USER,
-        password=_iam_auth_token,        # callable → re-minted per connection
-        ssl=_build_ssl_context(),
-        min_size=min_size,
-        max_size=max_size,
-        command_timeout=30,
+    stats = pool_stats()
+    logger.info(
+        "DB pool ready — host=%s db=%s min=%d max=%d size=%d idle=%d",
+        DB_HOST or "localhost",
+        DB_NAME,
+        stats.get("min_size", min_size),
+        stats.get("max_size", max_size),
+        stats.get("size", 0),
+        stats.get("idle", 0),
     )
     return _pool
 
@@ -113,8 +161,14 @@ async def init_pool(min_size: int = 2, max_size: int = 10):
 async def close_pool():
     global _pool
     if _pool is not None:
-        await _pool.close()
-        _pool = None
+        logger.info("Closing DB pool (size=%d idle=%d).", _pool.get_size(), _pool.get_idle_size())
+        try:
+            await _pool.close()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Error while closing DB pool: %s", exc)
+        finally:
+            _pool = None
+        logger.info("DB pool closed.")
 
 
 @asynccontextmanager

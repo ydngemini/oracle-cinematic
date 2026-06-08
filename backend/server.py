@@ -7,6 +7,7 @@ import time
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from graph_engine import PropertyGraph
 from auth import router as auth_router
@@ -18,9 +19,16 @@ from spatial_agent import reconstruct_property, should_trigger_reconstruction
 from workflow_engine import WorkflowEngine
 from qwen_voice_agent import QwenVoiceAgent
 from agent_mind import MindService
-from db.connection import init_pool, close_pool
+from db.connection import init_pool, close_pool, pool_stats
 
 logger = logging.getLogger("oracle.server")
+
+# Module-level start time for uptime reporting.
+_START_TIME: float = time.monotonic()
+
+# Idle WebSocket timeout — connections that send nothing for this long are
+# considered stale and will be closed.  Configurable via env.
+_WS_IDLE_TIMEOUT: float = float(os.getenv("ORACLE_WS_IDLE_TIMEOUT", "300"))  # seconds
 
 
 @asynccontextmanager
@@ -64,6 +72,28 @@ from pathlib import Path
 splats_dir = Path(__file__).parent.parent / "oracle-app" / "public" / "splats"
 splats_dir.mkdir(parents=True, exist_ok=True)
 app.mount("/public/splats", StaticFiles(directory=str(splats_dir)), name="splats")
+
+
+@app.get("/health")
+async def health() -> JSONResponse:
+    """Shallow health probe: reports process uptime and DB pool metrics.
+
+    Returns HTTP 200 when the pool is alive, HTTP 503 when the pool is absent
+    (e.g. DB-less dev run or a mid-shutdown state).  The /health path is
+    intentionally not behind any auth middleware so load-balancers can reach it
+    without credentials."""
+    uptime_s = time.monotonic() - _START_TIME
+    stats = pool_stats()
+    db_ok = bool(stats)
+
+    body = {
+        "status": "ok" if db_ok else "degraded",
+        "uptime_seconds": round(uptime_s, 1),
+        "db": stats if db_ok else {"error": "pool not initialised"},
+    }
+    status_code = 200 if db_ok else 503
+    return JSONResponse(content=body, status_code=status_code)
+
 
 graph = PropertyGraph()
 mind_service = MindService()
@@ -126,6 +156,13 @@ def generate_mock_record() -> dict:
 
 async def data_ingestion_loop(websocket: WebSocket):
     batch_num = 0
+    _loop_tasks: set[asyncio.Task] = set()
+
+    def _spawn_loop_task(coro) -> asyncio.Task:
+        task = asyncio.create_task(coro)
+        _loop_tasks.add(task)
+        task.add_done_callback(_loop_tasks.discard)
+        return task
 
     while True:
         batch_num += 1
@@ -170,9 +207,7 @@ async def data_ingestion_loop(websocket: WebSocket):
             await asyncio.sleep(0.5)
 
             if should_trigger_reconstruction(hit["novelty_score"]):
-                asyncio.create_task(
-                    reconstruct_property(hit["address"], websocket)
-                )
+                _spawn_loop_task(reconstruct_property(hit["address"], websocket))
 
             await websocket.send_text(json.dumps({
                 "type": "STAGE_PROPERTY",
@@ -396,33 +431,94 @@ async def websocket_endpoint(websocket: WebSocket):
     # so a tokenless dev client still connects).
     user_id = websocket.query_params.get("user_id", "")
     tenant_id = _resolve_tenant(websocket)
+    client_label = f"user={user_id or 'anon'} tenant={tenant_id}"
+    logger.info("WebSocket connected — %s", client_label)
+
     await restore_session(websocket, user_id, tenant_id)
     await push_deal_pipeline(websocket, user_id, tenant_id)
 
     voice_agent = QwenVoiceAgent(websocket=websocket)
     engine = WorkflowEngine(websocket=websocket, mind_service=mind_service)
 
+    # Background tasks spawned during this session.  We cancel all of them on
+    # disconnect so nothing leaks after the client is gone.
+    _bg_tasks: set[asyncio.Task] = set()
+
+    def _spawn(coro) -> asyncio.Task:
+        """Create, track, and return a background task."""
+        task = asyncio.create_task(coro)
+        _bg_tasks.add(task)
+        task.add_done_callback(_bg_tasks.discard)
+        return task
+
+    # Idle-timeout watchdog: track the most recent message receipt time and
+    # close the connection if the client goes silent for _WS_IDLE_TIMEOUT seconds.
+    _last_seen: dict[str, float] = {"t": time.monotonic()}
+
+    async def idle_watchdog():
+        """Ping every 60 s; close if the client has been idle > _WS_IDLE_TIMEOUT."""
+        ping_interval = min(60.0, _WS_IDLE_TIMEOUT / 2)
+        while True:
+            await asyncio.sleep(ping_interval)
+            idle_for = time.monotonic() - _last_seen["t"]
+            if idle_for >= _WS_IDLE_TIMEOUT:
+                logger.warning(
+                    "Idle timeout (%.0fs) — closing WebSocket for %s",
+                    idle_for,
+                    client_label,
+                )
+                await websocket.close(code=1001)  # 1001 = Going Away
+                return
+            try:
+                await websocket.send_text(json.dumps({"type": "PING"}))
+            except Exception:  # noqa: BLE001 — client already gone
+                return
+
     async def listen_for_client_messages():
         while True:
-            raw = await websocket.receive_text()
+            try:
+                raw = await websocket.receive_text()
+            except WebSocketDisconnect:
+                raise  # bubble up to the gather handler
+            except Exception as exc:
+                logger.warning("WebSocket receive error for %s: %s", client_label, exc)
+                raise
+
+            _last_seen["t"] = time.monotonic()
+
             try:
                 msg = json.loads(raw)
             except json.JSONDecodeError:
+                logger.warning("Malformed JSON from %s — ignored (%.120s)", client_label, raw)
                 continue
 
-            if msg.get("type") == "WHISPER_INSTRUCT":
-                await voice_agent.handle_whisper_instruct(msg)
-            elif msg.get("type") == "REQUEST_DEAL_PIPELINE":
-                await push_deal_pipeline(websocket, user_id, tenant_id)
-            elif msg.get("type") == "REQUEST_RECONSTRUCTION":
-                address = msg.get("address", "")
-                if address:
-                    asyncio.create_task(reconstruct_property(address, websocket))
-            elif msg.get("type") == "OBSERVE":
-                mind_service.observe(
-                    msg.get("agent", "SCOUT"),
-                    msg.get("content", ""),
-                    msg.get("importance", 0.5),
+            msg_type = msg.get("type")
+            try:
+                if msg_type == "WHISPER_INSTRUCT":
+                    await voice_agent.handle_whisper_instruct(msg)
+                elif msg_type == "REQUEST_DEAL_PIPELINE":
+                    await push_deal_pipeline(websocket, user_id, tenant_id)
+                elif msg_type == "REQUEST_RECONSTRUCTION":
+                    address = msg.get("address", "")
+                    if address:
+                        _spawn(reconstruct_property(address, websocket))
+                elif msg_type == "OBSERVE":
+                    mind_service.observe(
+                        msg.get("agent", "SCOUT"),
+                        msg.get("content", ""),
+                        msg.get("importance", 0.5),
+                    )
+                elif msg_type == "PONG":
+                    pass  # client acknowledged our PING; _last_seen already updated
+                else:
+                    logger.debug("Unhandled message type %r from %s", msg_type, client_label)
+            except Exception as exc:  # noqa: BLE001 — one bad message must not kill the loop
+                logger.error(
+                    "Error handling message type=%r from %s: %s",
+                    msg_type,
+                    client_label,
+                    exc,
+                    exc_info=True,
                 )
 
     try:
@@ -430,11 +526,20 @@ async def websocket_endpoint(websocket: WebSocket):
             engine.start(),
             listen_for_client_messages(),
             monologue_loop(websocket),
+            idle_watchdog(),
         )
     except WebSocketDisconnect:
-        print("Client disconnected")
-    except Exception as e:
-        print(f"WebSocket error: {e}")
+        logger.info("WebSocket disconnected — %s", client_label)
+    except Exception as exc:
+        logger.error("WebSocket session error for %s: %s", client_label, exc, exc_info=True)
+    finally:
+        # Cancel all background tasks spawned during this session.
+        if _bg_tasks:
+            logger.debug("Cancelling %d background task(s) for %s", len(_bg_tasks), client_label)
+            for task in list(_bg_tasks):
+                task.cancel()
+            await asyncio.gather(*_bg_tasks, return_exceptions=True)
+            _bg_tasks.clear()
 
 
 if __name__ == "__main__":
