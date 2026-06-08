@@ -60,11 +60,14 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
+_ALLOWED_ORIGINS = os.getenv("ORACLE_CORS_ORIGINS", "http://localhost:3000,http://localhost:5173").split(",")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=_ALLOWED_ORIGINS,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization"],
+    allow_credentials=True,
 )
 
 app.include_router(auth_router)
@@ -101,6 +104,11 @@ async def health() -> JSONResponse:
     return JSONResponse(content=body, status_code=status_code)
 
 
+_tour_gen_timestamps: list[float] = []
+_TOUR_GEN_RATE_LIMIT = int(os.getenv("ORACLE_TOUR_RATE_LIMIT", "10"))  # per minute
+_TOUR_GEN_WINDOW = 60.0
+
+
 @app.post("/api/generate-tour")
 async def api_generate_tour(request: Request) -> JSONResponse:
     """AI-generate a full spatial tour schema from property metadata.
@@ -108,6 +116,12 @@ async def api_generate_tour(request: Request) -> JSONResponse:
     Accepts: { address, sqft, bedrooms, bathrooms, features[], description, price }
     Returns: Complete tour schema (waypoints, poses, floor plan, narrations)
     """
+    now = time.monotonic()
+    _tour_gen_timestamps[:] = [t for t in _tour_gen_timestamps if now - t < _TOUR_GEN_WINDOW]
+    if len(_tour_gen_timestamps) >= _TOUR_GEN_RATE_LIMIT:
+        return JSONResponse({"error": "rate limit exceeded — try again shortly"}, status_code=429)
+    _tour_gen_timestamps.append(now)
+
     body = await request.json()
     if not body.get("address") and not body.get("description"):
         return JSONResponse({"error": "address or description required"}, status_code=400)

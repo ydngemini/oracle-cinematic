@@ -1,6 +1,7 @@
 'use client'
 
 import dynamic from 'next/dynamic'
+import { TourErrorBoundary } from './TourErrorBoundary'
 
 const TourExperience = dynamic(
   () => import('./TourExperience').then(m => m.TourExperience),
@@ -8,5 +9,9 @@ const TourExperience = dynamic(
 )
 
 export function TourLoader() {
-  return <TourExperience />
+  return (
+    <TourErrorBoundary>
+      <TourExperience />
+    </TourErrorBoundary>
+  )
 }
