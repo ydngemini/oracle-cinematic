@@ -175,6 +175,16 @@ export function useOracleWebSocket() {
           });
           break;
         }
+
+        case 'DEAL_PIPELINE':
+          dispatch({
+            type: ACTIONS.SET_DEAL_PIPELINE,
+            payload: {
+              states: msg.states || [],
+              total: msg.total || 0,
+            },
+          });
+          break;
       }
     };
 

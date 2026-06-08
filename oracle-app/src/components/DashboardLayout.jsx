@@ -3,6 +3,7 @@ import { PropertySpecs } from './PropertySpecs';
 import { LiveTranscript } from './LiveTranscript';
 import { PropertyCanvas } from './PropertyCanvas';
 import { WalkerBubble } from './WalkerBubble';
+import { DealPipeline } from './DealPipeline';
 import styles from './DashboardLayout.module.css';
 
 export function DashboardLayout() {
@@ -17,6 +18,10 @@ export function DashboardLayout() {
 
         <div className={styles.leftPanel}>
           <PropertySpecs />
+        </div>
+
+        <div className={styles.rightPanel}>
+          <DealPipeline />
         </div>
 
         <div className={styles.bottomPanel}>

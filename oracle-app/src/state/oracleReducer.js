@@ -26,6 +26,8 @@ export const initialState = {
   maoThreshold: 0.70,
   profileSummary: '',
   targetMarkets: [],
+  dealPipeline: [],      // [{ state, count, leads: [...] }] from the 4-State firehose
+  dealPipelineTotal: 0,
 };
 
 export const ACTIONS = {
@@ -49,6 +51,7 @@ export const ACTIONS = {
   WALKER_THOUGHT_TOKEN: 'WALKER_THOUGHT_TOKEN',
   WALKER_THOUGHT_END: 'WALKER_THOUGHT_END',
   SESSION_RESTORED: 'SESSION_RESTORED',
+  SET_DEAL_PIPELINE: 'SET_DEAL_PIPELINE',
 };
 
 export function oracleReducer(state, action) {
@@ -134,6 +137,13 @@ export function oracleReducer(state, action) {
             : state.maoThreshold,
         profileSummary: action.payload.summary || '',
         targetMarkets: action.payload.markets || [],
+      };
+
+    case ACTIONS.SET_DEAL_PIPELINE:
+      return {
+        ...state,
+        dealPipeline: action.payload.states || [],
+        dealPipelineTotal: action.payload.total || 0,
       };
 
     default:

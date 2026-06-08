@@ -19,11 +19,11 @@
   padding: 1.5rem;
   display: grid;
   grid-template-rows: auto 1fr auto;
-  grid-template-columns: 320px 1fr;
+  grid-template-columns: 320px 1fr auto;
   grid-template-areas:
-    "top    top"
-    "left   center"
-    "bottom bottom";
+    "top    top    top"
+    "left   center right"
+    "bottom bottom bottom";
   gap: 1.5rem;
 }
 
@@ -40,6 +40,12 @@
   align-self: start;
 }
 
+.rightPanel {
+  grid-area: right;
+  align-self: start;
+  justify-self: end;
+}
+
 .bottomPanel {
   grid-area: bottom;
 }
@@ -47,17 +53,20 @@
 @media (max-width: 900px) {
   .hud {
     grid-template-columns: 1fr;
-    grid-template-rows: auto auto 1fr auto;
+    grid-template-rows: auto auto auto 1fr auto;
     grid-template-areas:
       "top"
       "left"
+      "right"
       "center"
       "bottom";
     padding: 1rem;
     gap: 1rem;
   }
 
-  .leftPanel {
+  .leftPanel,
+  .rightPanel {
     max-width: 100%;
+    justify-self: stretch;
   }
 }

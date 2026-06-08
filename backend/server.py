@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import os
 import random
 import time
 from contextlib import asynccontextmanager
@@ -317,6 +318,76 @@ async def restore_session(websocket: WebSocket, user_id: str, tenant_id: str):
     await websocket.send_text(json.dumps(payload))
 
 
+def _resolve_tenant(websocket: WebSocket) -> str:
+    """Tenant the operator's leads are scoped to. Real deployments pass tenant_id
+    from the verified JWT; for a tokenless dev client we fall back to
+    ORACLE_DEMO_TENANT_ID (the same tenant the harvesters ingest under) so the
+    pipeline actually shows data, then to the harmless 'default' sentinel."""
+    return (
+        websocket.query_params.get("tenant_id")
+        or os.getenv("ORACLE_DEMO_TENANT_ID")
+        or "default"
+    )
+
+
+async def push_deal_pipeline(websocket: WebSocket, user_id: str, tenant_id: str):
+    """Stream the operator's motivated-seller leads (the 4-State firehose output)
+    to the DealPipeline panel, grouped by state and ranked by motivation_score.
+
+    Reads through tenant_tx so RLS scopes the rows to this operator's tenant.
+    Degrades to an empty pipeline on any failure (no DB, non-UUID dev tenant,
+    import gap) — the panel shows 'Awaiting leads' rather than hanging."""
+    payload = {"type": "DEAL_PIPELINE", "states": [], "total": 0}
+
+    try:
+        from tenancy import TenantContext, Role
+        from db.connection import tenant_tx
+
+        ctx = TenantContext(agent_id=user_id or "demo-operator", tenant_id=tenant_id, role=Role.AGENT)
+        async with tenant_tx(ctx) as conn:
+            rows = await conn.fetch(
+                "SELECT parcel_id, state, motivation_score, underwriting, payload "
+                "FROM leads ORDER BY state ASC, motivation_score DESC LIMIT 500"
+            )
+
+        grouped: dict[str, list] = {}
+        for r in rows:
+            prop = _loads(r["payload"])
+            under = _loads(r["underwriting"])
+            grouped.setdefault(r["state"], []).append({
+                "parcel_id": r["parcel_id"],
+                "address": prop.get("address", ""),
+                "city": prop.get("city", ""),
+                "owner_name": prop.get("owner_name", ""),
+                "owner_type": prop.get("owner_type", "individual"),
+                "estimated_value": prop.get("estimated_value") or under.get("estimated_value", 0),
+                "distress_flags": prop.get("distress_flags", []),
+                "is_absentee_owner": prop.get("is_absentee_owner", False),
+                "motivation_score": r["motivation_score"],
+            })
+
+        payload["states"] = [
+            {"state": st, "count": len(leads), "leads": leads}
+            for st, leads in sorted(grouped.items())
+        ]
+        payload["total"] = sum(len(v) for v in grouped.values())
+    except Exception as e:  # noqa: BLE001 — pipeline is best-effort, never fatal
+        payload["error"] = str(e)[:160]
+
+    await websocket.send_text(json.dumps(payload))
+
+
+def _loads(value):
+    """asyncpg can hand back a jsonb column as a raw JSON string OR a decoded
+    dict depending on codecs — normalize to a dict either way."""
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except (json.JSONDecodeError, TypeError):
+            return {}
+    return value or {}
+
+
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
@@ -324,8 +395,9 @@ async def websocket_endpoint(websocket: WebSocket):
     # Operator identity for JIT memory hydration (query params; tenant defaults
     # so a tokenless dev client still connects).
     user_id = websocket.query_params.get("user_id", "")
-    tenant_id = websocket.query_params.get("tenant_id", "default")
+    tenant_id = _resolve_tenant(websocket)
     await restore_session(websocket, user_id, tenant_id)
+    await push_deal_pipeline(websocket, user_id, tenant_id)
 
     voice_agent = QwenVoiceAgent(websocket=websocket)
     engine = WorkflowEngine(websocket=websocket, mind_service=mind_service)
@@ -340,6 +412,8 @@ async def websocket_endpoint(websocket: WebSocket):
 
             if msg.get("type") == "WHISPER_INSTRUCT":
                 await voice_agent.handle_whisper_instruct(msg)
+            elif msg.get("type") == "REQUEST_DEAL_PIPELINE":
+                await push_deal_pipeline(websocket, user_id, tenant_id)
             elif msg.get("type") == "OBSERVE":
                 mind_service.observe(
                     msg.get("agent", "SCOUT"),
