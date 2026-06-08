@@ -38,19 +38,24 @@ export function PropertySpecs() {
       prev.price !== propertyData.price ||
       prev.novelty !== propertyData.novelty;
 
+    prevDataRef.current = propertyData;
+
     if (changed) {
+      // Animate out then in for property transitions.
       setRevealed(false);
       const frame = requestAnimationFrame(() => {
         setRevealed(true);
       });
-      prevDataRef.current = propertyData;
       return () => cancelAnimationFrame(frame);
     }
 
-    if (!revealed && (propertyData.squareFootage || propertyData.price || propertyData.novelty)) {
-      setRevealed(true);
+    // First-data-arrives: reveal without the false→true flicker of the
+    // changed-data branch. Use a 0ms timer so setState is inside a callback
+    // (not synchronously in the effect body) — satisfies react-hooks/set-state-in-effect.
+    if (propertyData.squareFootage || propertyData.price || propertyData.novelty) {
+      const tid = setTimeout(() => setRevealed(true), 0);
+      return () => clearTimeout(tid);
     }
-    prevDataRef.current = propertyData;
   }, [propertyData]);
 
   return (

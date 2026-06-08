@@ -1,4 +1,4 @@
-import { createContext, useContext, useReducer, useRef, useCallback } from 'react';
+import { createContext, useContext, useReducer, useRef } from 'react';
 import { oracleReducer, initialState, ACTIONS } from './oracleReducer';
 
 const OracleContext = createContext(null);
@@ -17,6 +17,7 @@ export function OracleProvider({ children }) {
   );
 }
 
+// eslint-disable-next-line react-refresh/only-export-components
 export function useOracleState() {
   const state = useContext(OracleContext);
   if (state === null) {
@@ -25,6 +26,7 @@ export function useOracleState() {
   return state;
 }
 
+// eslint-disable-next-line react-refresh/only-export-components
 export function useOracleDispatch() {
   const context = useContext(OracleDispatchContext);
   if (context === null) {

@@ -2,7 +2,6 @@ import { precacheAndRoute, cleanupOutdatedCaches } from 'workbox-precaching';
 import { registerRoute } from 'workbox-routing';
 import { CacheFirst, NetworkFirst } from 'workbox-strategies';
 import { ExpirationPlugin } from 'workbox-expiration';
-import { RangeRequestsPlugin } from 'workbox-range-requests';
 
 // ─── Workbox Precache (static assets from build manifest) ────────────────────
 
@@ -57,16 +56,6 @@ async function idbGet(storeName, key) {
   });
 }
 
-async function idbGetAllKeys(storeName) {
-  const db = await openDB();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(storeName, 'readonly');
-    const req = tx.objectStore(storeName).getAllKeys();
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error);
-  });
-}
-
 async function idbDelete(storeName, key) {
   const db = await openDB();
   return new Promise((resolve, reject) => {
@@ -102,7 +91,7 @@ async function prefetchSplat(propertyId) {
     });
 
     await evictOldEntries(STORE_SPLATS, MAX_CACHED_SPLATS);
-  } catch {}
+  } catch { /* network/IDB failure — prefetch is best-effort */ }
 }
 
 async function prefetchLegal(propertyId, legalPayload) {

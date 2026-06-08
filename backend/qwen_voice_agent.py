@@ -121,6 +121,10 @@ class QwenVoiceAgent:
             for w in pending:
                 w.applied = True
             conversation_snapshot = list(self._conversation)
+            # Prune applied whispers: keep only the last 10 so the list doesn't grow unbounded
+            applied = [w for w in self._pending_whispers if w.applied]
+            unapplied = [w for w in self._pending_whispers if not w.applied]
+            self._pending_whispers = applied[-10:] + unapplied
 
         prompt = self._build_prompt(conversation_snapshot, pending)
         response = await self._run_inference(prompt)

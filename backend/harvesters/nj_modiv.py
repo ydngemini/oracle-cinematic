@@ -21,7 +21,10 @@ class NewJerseyModIVHarvester(ArcGISHarvester):
         if not parcel or not addr:
             return None
         owner = str(row.get("OWNER_NAME") or "").strip()
-        mail = str(row.get("ST_ADDRESS") or row.get("CITY_STATE") or "").strip()
+        # MOD-IV mailing address fields: MAIL_ADD / OWN_MAIL are the owner mailing
+        # street, separate from ST_ADDRESS (the property's own street address).
+        # Falling back to ST_ADDRESS caused addr==mail false negatives when PROP_LOC absent.
+        mail = str(row.get("MAIL_ADD") or row.get("OWN_MAIL") or "").strip()
         absentee = bool(mail) and norm(mail) != norm(addr)
         # MOD-IV splits value into land + improvement.
         value = to_float(row.get("NET_VALUE")) or (

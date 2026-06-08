@@ -215,13 +215,27 @@ class CountyAssessorHarvester:
     async def _scrape_endpoint(
         self, url: str, params: dict, record_type: RecordType, parser
     ) -> list[PublicRecord]:
+        if self._session is None:
+            logger.error("_scrape_endpoint called before start() — session not initialised")
+            return []
         for attempt in range(MAX_RETRIES):
             try:
                 async with self._session.get(url, params=params) as resp:
                     if resp.status == 200:
                         data = await resp.json()
                         records = data.get("records", data.get("results", []))
-                        return [parser(item) for item in records if item]
+                        out: list[PublicRecord] = []
+                        for item in records:
+                            if not item:
+                                continue
+                            try:
+                                out.append(parser(item))
+                            except Exception as parse_err:
+                                logger.warning(
+                                    "Parser %s skipped malformed item: %s",
+                                    parser.__name__, parse_err,
+                                )
+                        return out
                     elif resp.status == 429:
                         wait = 2 ** (attempt + 1)
                         logger.warning(f"Rate limited on {url}, waiting {wait}s")

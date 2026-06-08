@@ -31,11 +31,13 @@ export function TerminalSection() {
   const [visibleLines, setVisibleLines] = useState(0)
   const [isInView, setIsInView] = useState(false)
   const sectionRef = useRef<HTMLDivElement>(null)
+  const hasTriggered = useRef(false)
 
   useEffect(() => {
     const observer = new IntersectionObserver(
       ([entry]) => {
-        if (entry.isIntersecting && !isInView) {
+        if (entry.isIntersecting && !hasTriggered.current) {
+          hasTriggered.current = true
           setIsInView(true)
         }
       },
@@ -44,7 +46,7 @@ export function TerminalSection() {
 
     if (sectionRef.current) observer.observe(sectionRef.current)
     return () => observer.disconnect()
-  }, [isInView])
+  }, [])
 
   useEffect(() => {
     if (!isInView) return

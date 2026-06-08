@@ -61,9 +61,7 @@ function EnergyField() {
         <bufferGeometry>
           <bufferAttribute
             attach="attributes-position"
-            count={500}
-            array={particlePositions}
-            itemSize={3}
+            args={[particlePositions, 3]}
           />
         </bufferGeometry>
         <pointsMaterial

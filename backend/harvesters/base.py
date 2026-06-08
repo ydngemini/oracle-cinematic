@@ -211,7 +211,11 @@ class BaseHarvester(ABC):
                     raise
 
             body = await asyncio.to_thread(_blocking)
-            return json.loads(body.decode("utf-8", errors="replace"))
+            text = body.decode("utf-8", errors="replace").strip()
+            if not text:
+                logger.warning("[%s] empty response body from %s", self.STATE, url)
+                return []
+            return json.loads(text)
 
         return await self._with_retries(_do, what=f"{self.STATE} fetch")
 
@@ -282,6 +286,7 @@ class SocrataHarvester(BaseHarvester):
 
     RESOURCE_URL: str = ""          # e.g. https://data.ct.gov/resource/5mzw-sjtu.json
     SOQL_WHERE: str = ""            # optional $where clause
+    SOQL_ORDER: str = ":id"         # stable pagination order; override if dataset lacks :id
 
     async def fetch_raw(self, max_records: Optional[int]) -> list[dict]:
         url = os.getenv(f"{self.STATE}_SOURCE_URL", self.RESOURCE_URL)
@@ -294,7 +299,9 @@ class SocrataHarvester(BaseHarvester):
             page = min(PAGE_SIZE, (max_records - len(out)) if max_records else PAGE_SIZE)
             if page <= 0:
                 break
-            params = {"$limit": page, "$offset": offset, "$order": ":id"}
+            params: dict = {"$limit": page, "$offset": offset}
+            if self.SOQL_ORDER:
+                params["$order"] = self.SOQL_ORDER
             if self.SOQL_WHERE:
                 params["$where"] = self.SOQL_WHERE
             rows = await self._get_json(f"{url}?{urllib.parse.urlencode(params)}")
@@ -331,8 +338,15 @@ class ArcGISHarvester(BaseHarvester):
                 "resultOffset": offset, "resultRecordCount": page,
             }
             data = await self._get_json(f"{url}?{urllib.parse.urlencode(params)}")
+            if isinstance(data, dict) and data.get("error"):
+                err = data["error"]
+                logger.warning(
+                    "[%s] ArcGIS error response (code=%s): %s",
+                    self.STATE, err.get("code", "?"), err.get("message", str(err))[:200],
+                )
+                break
             feats = data.get("features", []) if isinstance(data, dict) else []
-            rows = [f.get("attributes", {}) for f in feats]
+            rows = [f.get("attributes", {}) for f in feats if isinstance(f, dict)]
             if not rows:
                 break
             out.extend(rows)
@@ -366,6 +380,12 @@ class CartoHarvester(BaseHarvester):
                 break
             sql = f"SELECT {self.SELECT} FROM {self.TABLE}{where} LIMIT {page} OFFSET {offset}"
             data = await self._get_json(f"{domain}/api/v2/sql?{urllib.parse.urlencode({'q': sql})}")
+            if isinstance(data, dict) and data.get("error"):
+                logger.warning(
+                    "[%s] CARTO error response: %s",
+                    self.STATE, str(data["error"])[:200],
+                )
+                break
             rows = data.get("rows", []) if isinstance(data, dict) else []
             if not rows:
                 break

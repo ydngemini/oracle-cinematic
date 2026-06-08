@@ -2,7 +2,7 @@ import { useSubscription } from '../state/useSubscription';
 import styles from './SubscriptionBadge.module.css';
 
 export function SubscriptionBadge() {
-  const { active, status, plan, currentPeriodEnd, loading, openPortal } = useSubscription();
+  const { active, status, currentPeriodEnd, loading, openPortal } = useSubscription();
 
   if (loading || status === 'none' || status === 'no_db') return null;
 

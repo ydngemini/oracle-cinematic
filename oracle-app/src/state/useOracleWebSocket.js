@@ -1,4 +1,4 @@
-import { useEffect, useCallback, useRef } from 'react';
+import { useEffect, useLayoutEffect, useCallback, useRef } from 'react';
 import { useOracleDispatch, ACTIONS } from './OracleContext';
 import { getUserId, getTenantId } from './identity';
 import { registerSW } from 'virtual:pwa-register';
@@ -27,6 +27,9 @@ export function useOracleWebSocket() {
   const retryCount = useRef(0);
   const retryTimer = useRef(null);
   const mountedRef = useRef(false);
+  // Always points to the latest `connect` so onclose callbacks never hold a
+  // stale closure when `connect` is recreated (e.g. if dispatch identity changes).
+  const connectRef = useRef(null);
 
   const connect = useCallback(() => {
     if (!mountedRef.current) return;
@@ -209,7 +212,7 @@ export function useOracleWebSocket() {
 
       retryTimer.current = setTimeout(() => {
         retryCount.current += 1;
-        connect();
+        connectRef.current();
       }, delay);
     };
 
@@ -217,6 +220,13 @@ export function useOracleWebSocket() {
       ws.close();
     };
   }, [dispatch, wsRef]);
+
+  // Keep ref in sync with the latest memoized `connect` so onclose never calls
+  // a stale version.  useLayoutEffect runs synchronously after DOM mutations but
+  // before paint, guaranteeing the ref is fresh before any retry fires.
+  useLayoutEffect(() => {
+    connectRef.current = connect;
+  });
 
   useEffect(() => {
     mountedRef.current = true;
@@ -243,7 +253,7 @@ export function useOracleWebSocket() {
         wsRef.current = null;
       }
     };
-  }, [connect, dispatch]);
+  }, [connect, dispatch, wsRef]);
 
   const send = useCallback(
     (payload) => {

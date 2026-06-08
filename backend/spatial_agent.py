@@ -131,7 +131,8 @@ async def _scrape_zillow_images(address: str, output_dir: Path) -> list[Path]:
         )
 
         # Extract image URLs from Zillow's preloaded image data
-        img_pattern = re.compile(r'https://photos\.zillowstatic\.com/fp/[a-f0-9]+-[a-z_]+\.(jpg|webp)')
+        # Use non-capturing group so findall returns full URL strings, not just extensions
+        img_pattern = re.compile(r'https://photos\.zillowstatic\.com/fp/[a-f0-9]+-[a-z_]+\.(?:jpg|webp)')
         urls = list(set(img_pattern.findall(html)))[:MAX_IMAGES]
 
         if not urls:
@@ -243,6 +244,8 @@ async def run_dust3r(images_dir: Path, output_dir: Path) -> Optional[Path]:
 
     except asyncio.TimeoutError:
         logger.error("[Spatial] DUSt3R timed out (%ds)", timeout)
+        proc.kill()
+        await proc.wait()
     except FileNotFoundError:
         logger.error("[Spatial] DUSt3R not installed at %s", DUST3R_PATH)
 
@@ -297,6 +300,8 @@ async def run_gaussian_splatting(pointcloud: Path, output_dir: Path) -> Optional
 
     except asyncio.TimeoutError:
         logger.error("[Spatial] GS training timed out (%ds)", timeout)
+        proc.kill()
+        await proc.wait()
     except FileNotFoundError:
         logger.error("[Spatial] Gaussian Splatting not installed at %s", GS_PATH)
 

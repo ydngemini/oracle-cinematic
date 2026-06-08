@@ -14,7 +14,7 @@ const FEATURES = [
 const API_BASE = import.meta.env.VITE_API_BASE ?? 'http://localhost:8000';
 
 export function BillingOverlay() {
-  const { active, status, plan, currentPeriodEnd, loading: subLoading, openPortal, tenantId } = useSubscription();
+  const { active, status, loading: subLoading, openPortal, tenantId } = useSubscription();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
 

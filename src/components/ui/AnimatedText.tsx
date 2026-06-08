@@ -36,7 +36,7 @@ export function AnimatedText({ text, className, delay = 0, stagger = 0.03, as: T
       y: 0,
       rotateX: 0,
       transition: {
-        type: 'spring',
+        type: 'spring' as const,
         damping: 12,
         stiffness: 100,
       },

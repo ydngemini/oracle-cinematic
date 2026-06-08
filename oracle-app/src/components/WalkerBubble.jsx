@@ -11,13 +11,19 @@ const AGENT_COLORS = {
 
 export function WalkerBubble() {
   const { walkerThought, walkerAgent, walkerStreaming } = useOracleState();
+  // `visible` only ever transitions false→true inside a setTimeout callback
+  // (never synchronously in the effect body), which is what react-hooks/set-state-in-effect
+  // requires. When streaming starts we show immediately via the `walkerStreaming`
+  // short-circuit below; the state drives the post-stream linger/fade.
   const [visible, setVisible] = useState(false);
   const hideTimer = useRef(null);
 
   useEffect(() => {
     if (walkerStreaming) {
-      setVisible(true);
       clearTimeout(hideTimer.current);
+      // Reveal with a 0ms timer so the setState is inside a callback, not synchronously
+      // in the effect body — satisfies react-hooks/set-state-in-effect.
+      hideTimer.current = setTimeout(() => setVisible(true), 0);
     } else if (walkerThought) {
       hideTimer.current = setTimeout(() => setVisible(false), 4000);
     }

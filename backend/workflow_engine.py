@@ -52,6 +52,8 @@ class WorkflowEngine:
         self._analysis_task: Optional[asyncio.Task] = None
         self._predictive_task: Optional[asyncio.Task] = None
         self._scout_task: Optional[asyncio.Task] = None
+        # Fire-and-forget reconstruct tasks — tracked so stop() can cancel them.
+        self._recon_tasks: set[asyncio.Task] = set()
         self._last_pushed_ids: list[str] = []
         self._stats = {
             "cycles": 0,
@@ -84,15 +86,23 @@ class WorkflowEngine:
         self._running = False
         self.harvester.stop()
 
-        if self._harvest_task:
-            self._harvest_task.cancel()
-        if self._analysis_task:
-            self._analysis_task.cancel()
-        if self._predictive_task:
-            self._predictive_task.cancel()
-        if self._scout_task:
-            self._scout_task.cancel()
+        tasks_to_cancel = [
+            t for t in (
+                self._harvest_task,
+                self._analysis_task,
+                self._predictive_task,
+                self._scout_task,
+            )
+            if t is not None
+        ] + list(self._recon_tasks)
 
+        for t in tasks_to_cancel:
+            t.cancel()
+
+        if tasks_to_cancel:
+            await asyncio.gather(*tasks_to_cancel, return_exceptions=True)
+
+        self._recon_tasks.clear()
         await self._emit_status("WORKFLOW ENGINE — pipeline shutdown complete")
 
     async def _harvest_loop(self):
@@ -157,9 +167,11 @@ class WorkflowEngine:
             await asyncio.sleep(0.5)
 
             if should_trigger_reconstruction(novelty):
-                asyncio.create_task(
+                _t = asyncio.create_task(
                     reconstruct_property(address, self.websocket)
                 )
+                self._recon_tasks.add(_t)
+                _t.add_done_callback(self._recon_tasks.discard)
 
             if self.websocket:
                 await self.websocket.send_text(json.dumps({"type": "STAGE_PROPERTY"}))

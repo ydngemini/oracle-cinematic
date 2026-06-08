@@ -3,11 +3,12 @@ import os
 from datetime import datetime, timezone
 
 import stripe
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from db.connection import get_pool
+from tenancy import TenantContext, require_context
 
 logger = logging.getLogger("oracle.billing")
 
@@ -21,6 +22,18 @@ STRIPE_PRICE_ID = os.getenv("STRIPE_PRICE_ID", "price_REPLACE_ME")
 BASE_URL = os.getenv("ORACLE_BASE_URL", "http://localhost:5173")
 
 stripe.api_key = STRIPE_SECRET_KEY
+
+# Startup guard — catch misconfiguration before the first real request hits.
+if not STRIPE_SECRET_KEY:
+    logger.warning(
+        "STRIPE_SECRET_KEY not set — Stripe API calls will fail at runtime. "
+        "Set this variable before accepting real traffic."
+    )
+if not STRIPE_WEBHOOK_SECRET:
+    logger.warning(
+        "STRIPE_WEBHOOK_SECRET not set — all incoming webhooks will be rejected "
+        "with SignatureVerificationError. Set this variable before going live."
+    )
 
 router = APIRouter(prefix="/billing", tags=["billing"])
 
@@ -52,7 +65,17 @@ class SubscriptionStatus(BaseModel):
 # POST /billing/create-checkout-session
 # ---------------------------------------------------------------------------
 @router.post("/create-checkout-session", response_model=CheckoutResponse)
-async def create_checkout_session(body: CheckoutRequest):
+async def create_checkout_session(
+    body: CheckoutRequest,
+    ctx: TenantContext = Depends(require_context),
+):
+    # IDOR guard: callers may only open a checkout for their own tenant.
+    # platform_admin is allowed to act on behalf of any tenant.
+    if not ctx.is_platform_admin and body.tenant_id != ctx.tenant_id:
+        raise HTTPException(
+            status_code=403,
+            detail="Cannot create a checkout session for a different tenant.",
+        )
     try:
         session = stripe.checkout.Session.create(
             mode="subscription",
@@ -77,7 +100,17 @@ async def create_checkout_session(body: CheckoutRequest):
 # POST /billing/create-portal-session
 # ---------------------------------------------------------------------------
 @router.post("/create-portal-session")
-async def create_portal_session(body: PortalRequest):
+async def create_portal_session(
+    body: PortalRequest,
+    ctx: TenantContext = Depends(require_context),
+):
+    # IDOR guard: callers may only manage their own tenant's portal.
+    if not ctx.is_platform_admin and body.tenant_id != ctx.tenant_id:
+        raise HTTPException(
+            status_code=403,
+            detail="Cannot open a billing portal for a different tenant.",
+        )
+
     pool = get_pool()
     if not pool:
         raise HTTPException(status_code=503, detail="DB unavailable")
@@ -106,7 +139,17 @@ async def create_portal_session(body: PortalRequest):
 # GET /billing/status/{tenant_id}
 # ---------------------------------------------------------------------------
 @router.get("/status/{tenant_id}", response_model=SubscriptionStatus)
-async def subscription_status(tenant_id: str):
+async def subscription_status(
+    tenant_id: str,
+    ctx: TenantContext = Depends(require_context),
+):
+    # IDOR guard: agents may only query their own tenant's subscription status.
+    if not ctx.is_platform_admin and tenant_id != ctx.tenant_id:
+        raise HTTPException(
+            status_code=403,
+            detail="Cannot query subscription status for a different tenant.",
+        )
+
     pool = get_pool()
     if not pool:
         return SubscriptionStatus(active=False, status="no_db", plan="none")
@@ -121,7 +164,11 @@ async def subscription_status(tenant_id: str):
     if not row:
         return SubscriptionStatus(active=False, status="none", plan="none")
 
-    active = row["status"] in ("active", "trialing")
+    # "past_due" is Stripe's payment-retrying grace period — the subscription
+    # is still active and the customer should retain access until it lapses to
+    # "canceled" or "unpaid". Including it here prevents a service interruption
+    # during the retry window.
+    active = row["status"] in ("active", "trialing", "past_due")
     period_end = row["current_period_end"].isoformat() if row["current_period_end"] else None
 
     return SubscriptionStatus(
@@ -152,8 +199,10 @@ async def stripe_webhook(request: Request):
 
     pool = get_pool()
     if not pool:
-        logger.error("[billing] webhook received but DB pool unavailable")
-        return JSONResponse(content={"received": True})
+        logger.error("[billing] webhook received but DB pool unavailable — returning 503 so Stripe retries")
+        # Return 503 (not 200) so Stripe will retry delivery rather than
+        # silently dropping the event when the DB is transiently unavailable.
+        raise HTTPException(status_code=503, detail="DB unavailable — retry later")
 
     if event_type == "checkout.session.completed":
         await _handle_checkout_completed(pool, obj)
@@ -202,7 +251,13 @@ async def _handle_invoice_paid(pool, invoice):
     if not subscription_id:
         return
 
-    period_end = invoice.get("lines", {}).get("data", [{}])[0].get("period", {}).get("end")
+    # Use the top-level invoice `period_end` field — the canonical timestamp for
+    # when the paid billing period ends. The previous code drilled into
+    # lines.data[0].period.end which is absent for some invoice types (e.g.
+    # one-off items, setup fees) and silently sets period_end to NULL.
+    period_end = invoice.get("period_end")
+    if period_end is None:
+        logger.warning("[billing] invoice.paid has no period_end — sub=%s", subscription_id)
     period_end_dt = datetime.fromtimestamp(period_end, tz=timezone.utc) if period_end else None
 
     async with pool.acquire() as conn:

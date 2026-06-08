@@ -538,7 +538,12 @@ async def websocket_endpoint(websocket: WebSocket):
     except Exception as exc:
         logger.error("WebSocket session error for %s: %s", client_label, exc, exc_info=True)
     finally:
-        # Cancel all background tasks spawned during this session.
+        # Shut down the workflow engine (cancels harvest/analysis/scout/recon tasks).
+        try:
+            await engine.stop()
+        except Exception as _e:  # noqa: BLE001
+            logger.debug("engine.stop() raised during cleanup for %s: %s", client_label, _e)
+        # Cancel any remaining server-level background tasks spawned during this session.
         if _bg_tasks:
             logger.debug("Cancelling %d background task(s) for %s", len(_bg_tasks), client_label)
             for task in list(_bg_tasks):

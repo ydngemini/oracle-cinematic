@@ -11,6 +11,9 @@ import { EnergyRings } from './EnergyRings'
 import { HolographicGrid } from './HolographicGrid'
 import * as THREE from 'three'
 
+// Hoisted to module scope — never re-allocated, no GC churn
+const CHROMATIC_OFFSET = new THREE.Vector2(0.0005, 0.0005)
+
 interface HeroSceneProps {
   mouseX: number
   mouseY: number
@@ -52,7 +55,7 @@ export function HeroScene({ mouseX, mouseY }: HeroSceneProps) {
           />
           <ChromaticAberration
             blendFunction={BlendFunction.NORMAL}
-            offset={new THREE.Vector2(0.0005, 0.0005)}
+            offset={CHROMATIC_OFFSET}
           />
           <Vignette darkness={0.7} offset={0.2} />
         </EffectComposer>

@@ -57,7 +57,7 @@ function useJarvisVoice() {
 
     recognition.onend = () => {
       if (holdingRef.current) {
-        try { recognition.start(); } catch {}
+        try { recognition.start(); } catch { /* already started — ignore */ }
       }
     };
 
@@ -71,7 +71,7 @@ function useJarvisVoice() {
 
     try {
       recognitionRef.current?.start();
-    } catch {}
+    } catch { /* not ready / already started — ignore */ }
   }, [dispatch]);
 
   const stopListening = useCallback(() => {
@@ -81,7 +81,7 @@ function useJarvisVoice() {
 
     try {
       recognitionRef.current?.stop();
-    } catch {}
+    } catch { /* not running — ignore */ }
   }, [dispatch]);
 
   useEffect(() => {

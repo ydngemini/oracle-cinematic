@@ -27,7 +27,7 @@ class DelawareFirstMapHarvester(ArcGISHarvester):
             state=self.STATE,
             zip_code="",
             owner_name="",
-            owner_type="unknown",
+            owner_type="individual",  # FirstMap exposes no owner field; default per schema
             estimated_value=0.0,
             equity_percent=0.0,
             is_absentee_owner=False,

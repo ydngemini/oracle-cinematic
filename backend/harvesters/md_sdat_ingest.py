@@ -129,6 +129,7 @@ class MdSdatHarvester(PropertyHarvester):
         self.headless = headless
         self._limiter = _RateLimiter(MIN_REQUEST_INTERVAL, REQUEST_JITTER)
         self.metrics = {
+            "state": STATE,  # required by firehose — results keyed on m["state"]
             "requests": 0,
             "retries": 0,
             "fetched": 0,    # CSV rows seen
@@ -267,9 +268,10 @@ class MdSdatHarvester(PropertyHarvester):
         missing = [k for k in ("parcel_id", "address") if k not in colmap]
         if missing:
             logger.warning(
-                "CSV missing required column(s) %s; available headers: %s",
+                "CSV missing required column(s) %s; available headers: %s — aborting parse",
                 missing, reader.fieldnames,
             )
+            return []
 
         records: list[PropertyRecord] = []
         for row in reader:

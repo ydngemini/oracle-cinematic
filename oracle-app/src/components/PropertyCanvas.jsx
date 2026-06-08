@@ -241,6 +241,12 @@ export function PropertyCanvas() {
   const [anchorPositions, setAnchorPositions] = useState({});
   const [hoverAnchor, setHoverAnchor] = useState(null);
   const [webglSupported, setWebglSupported] = useState(true);
+  // Mouse position as state so the ambient-glow CSS vars re-render correctly
+  // (refs don't trigger re-renders; reading mouse.current in JSX is stale).
+  const [glowPos, setGlowPos] = useState({ x: 0.5, y: 0.5 });
+  // Tracks whether the GIS boundary geometry has been uploaded to the GPU.
+  // glState is a ref — reading it in JSX is a lint error and produces stale values.
+  const [boundaryLoaded, setBoundaryLoaded] = useState(false);
 
   // Camera spring state
   const camState = useRef({
@@ -330,8 +336,15 @@ export function PropertyCanvas() {
     gl.attachShader(p, v);
     gl.attachShader(p, f);
     gl.linkProgram(p);
+    // Detach and delete shaders immediately after linking — they are no longer
+    // needed and holding them allocated is a GPU memory leak.
+    gl.detachShader(p, v);
+    gl.detachShader(p, f);
+    gl.deleteShader(v);
+    gl.deleteShader(f);
     if (!gl.getProgramParameter(p, gl.LINK_STATUS)) {
       console.warn('[Spatial] Link:', gl.getProgramInfoLog(p));
+      gl.deleteProgram(p);
       return null;
     }
     return p;
@@ -367,10 +380,17 @@ export function PropertyCanvas() {
       verts.push(c[0], wallH, c[2], n[0], wallH, n[2]);
     }
 
+    // Free any previously uploaded boundary buffer before uploading new one.
+    if (glState.current.boundaryGeo?.vbo) {
+      gl.deleteBuffer(glState.current.boundaryGeo.vbo);
+      glState.current.boundaryGeo = null;
+    }
+
     const vbo = gl.createBuffer();
     gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
     gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(verts), gl.STATIC_DRAW);
     glState.current.boundaryGeo = { vbo, count: verts.length / 3 };
+    setBoundaryLoaded(true);
   }, [buildProgram]);
 
   const ingestGISBoundary = useCallback((geojson) => {
@@ -396,6 +416,9 @@ export function PropertyCanvas() {
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
+    // Snapshot the mutable glState object so the cleanup closure always refers
+    // to the same object reference, satisfying react-hooks/exhaustive-deps.
+    const gs = glState.current;
 
     // gsplat's WebGLRenderer creates its own GL context and throws if WebGL is
     // unavailable (GPU blocklisted, disabled, headless, some VMs). Without this
@@ -584,16 +607,20 @@ export function PropertyCanvas() {
           gl.disableVertexAttribArray(bpos);
         }
 
-        // Project anchors (every 3 frames)
-        if (frameRef.current % 3 === 0 && anchorsVisibleRef.current) {
-          const batch = {};
-          for (const a of ANCHORS) {
-            const s = projectToScreen(a.pos, viewMat, projMat, w, h);
-            if (s && s.x > 0 && s.x < w && s.y > 0 && s.y < h) {
-              batch[a.id] = { x: s.x / window.devicePixelRatio, y: s.y / window.devicePixelRatio, depth: s.depth };
+        // Project anchors + update glow position (every 3 frames to cap re-renders)
+        if (frameRef.current % 3 === 0) {
+          if (anchorsVisibleRef.current) {
+            const batch = {};
+            for (const a of ANCHORS) {
+              const s = projectToScreen(a.pos, viewMat, projMat, w, h);
+              if (s && s.x > 0 && s.x < w && s.y > 0 && s.y < h) {
+                batch[a.id] = { x: s.x / window.devicePixelRatio, y: s.y / window.devicePixelRatio, depth: s.depth };
+              }
             }
+            setAnchorPositions(batch);
           }
-          setAnchorPositions(batch);
+          // Keep ambient-glow CSS vars in sync via state (reading mouse ref in JSX is stale+lint error)
+          setGlowPos({ x: mouse.current.x, y: mouse.current.y });
         }
       }
 
@@ -611,10 +638,43 @@ export function PropertyCanvas() {
     };
     window.addEventListener('resize', handleResize);
 
+    // Pause the rAF loop on context loss so we don't spam GL errors into a
+    // dead context. The browser fires contextrestored automatically after a
+    // reset; restart the loop there.
+    const handleContextLost = (e) => {
+      e.preventDefault(); // required to allow context restoration
+      if (animRef.current) {
+        cancelAnimationFrame(animRef.current);
+        animRef.current = null;
+      }
+    };
+    const handleContextRestored = () => {
+      animRef.current = requestAnimationFrame(render);
+    };
+    overlayCanvas.addEventListener('webglcontextlost', handleContextLost);
+    overlayCanvas.addEventListener('webglcontextrestored', handleContextRestored);
+
     return () => {
       window.removeEventListener('resize', handleResize);
       if (animRef.current) cancelAnimationFrame(animRef.current);
+      animRef.current = null;
+
+      // Delete all GPU resources explicitly before dropping the context.
+      // Use the `gs` snapshot captured at effect-setup time (avoids the
+      // react-hooks/exhaustive-deps ref-in-cleanup warning).
+      if (gl) {
+        if (gs.particleProgram) { gl.deleteProgram(gs.particleProgram); gs.particleProgram = null; }
+        if (gs.particleVAO)     { gl.deleteBuffer(gs.particleVAO);      gs.particleVAO = null; }
+        if (gs.gridProgram)     { gl.deleteProgram(gs.gridProgram);      gs.gridProgram = null; }
+        if (gs.gridVBO)         { gl.deleteBuffer(gs.gridVBO);           gs.gridVBO = null; }
+        if (gs.boundaryProgram) { gl.deleteProgram(gs.boundaryProgram);  gs.boundaryProgram = null; }
+        if (gs.boundaryGeo?.vbo){ gl.deleteBuffer(gs.boundaryGeo.vbo);   gs.boundaryGeo = null; }
+        gs.gl = null;
+      }
+
       renderer.dispose();
+      overlayCanvas.removeEventListener('webglcontextlost', handleContextLost);
+      overlayCanvas.removeEventListener('webglcontextrestored', handleContextRestored);
       overlayCanvas?.remove();
     };
   }, [buildProgram]);
@@ -752,8 +812,8 @@ export function PropertyCanvas() {
       <div
         className={styles.ambientGlow}
         style={{
-          '--glow-x': `${mouse.current.x * 100}%`,
-          '--glow-y': `${mouse.current.y * 100}%`,
+          '--glow-x': `${glowPos.x * 100}%`,
+          '--glow-y': `${glowPos.y * 100}%`,
         }}
       />
 
@@ -795,7 +855,7 @@ export function PropertyCanvas() {
       )}
 
       {/* GIS indicator */}
-      {gisBoundaryVisible && glState.current.boundaryGeo && (
+      {gisBoundaryVisible && boundaryLoaded && (
         <div className={styles.gisIndicator}>
           <span className={styles.gisIndicatorDot} />
           <span>GIS BOUNDARY</span>
