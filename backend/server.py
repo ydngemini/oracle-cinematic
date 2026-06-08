@@ -21,6 +21,7 @@ from audit_ledger import router as audit_router, ledger, AuditCategory
 from admin_c2 import router as admin_c2_router
 from legal_agent import format_for_websocket
 from spatial_agent import reconstruct_property, should_trigger_reconstruction
+from tour_generator import generate_tour
 from workflow_engine import WorkflowEngine
 from qwen_voice_agent import QwenVoiceAgent
 from agent_mind import MindService
@@ -98,6 +99,21 @@ async def health() -> JSONResponse:
     }
     status_code = 200 if db_ok else 503
     return JSONResponse(content=body, status_code=status_code)
+
+
+@app.post("/api/generate-tour")
+async def api_generate_tour(body: dict) -> JSONResponse:
+    """AI-generate a full spatial tour schema from property metadata.
+
+    Accepts: { address, sqft, bedrooms, bathrooms, features[], description, price }
+    Returns: Complete tour schema (waypoints, poses, floor plan, narrations)
+    """
+    if not body.get("address") and not body.get("description"):
+        return JSONResponse({"error": "address or description required"}, status_code=400)
+    result = await generate_tour(body)
+    if result is None:
+        return JSONResponse({"error": "tour generation failed"}, status_code=502)
+    return JSONResponse(result)
 
 
 graph = PropertyGraph()
