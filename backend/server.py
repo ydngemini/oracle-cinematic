@@ -78,6 +78,11 @@ app.include_router(billing_router)
 app.include_router(audit_router)
 app.include_router(admin_c2_router)
 
+from apis.geocoding import geocode, reverse_geocode
+from apis.census import get_demographics_by_zip
+from apis.property_data import enrich_property, get_flood_zone
+from apis.market_data import get_market_snapshot
+
 from fastapi.staticfiles import StaticFiles
 from pathlib import Path
 
@@ -132,6 +137,58 @@ async def api_generate_tour(request: Request) -> JSONResponse:
     result = await generate_tour(body)
     if result is None:
         return JSONResponse({"error": "tour generation failed"}, status_code=502)
+    return JSONResponse(result)
+
+
+@app.get("/api/geocode")
+async def api_geocode(address: str) -> JSONResponse:
+    """Geocode an address to lat/lng coordinates (free, via OpenStreetMap)."""
+    result = await geocode(address)
+    if not result:
+        return JSONResponse({"error": "address not found"}, status_code=404)
+    return JSONResponse(result)
+
+
+@app.get("/api/reverse-geocode")
+async def api_reverse_geocode(lat: float, lng: float) -> JSONResponse:
+    """Reverse geocode coordinates to an address."""
+    result = await reverse_geocode(lat, lng)
+    if not result:
+        return JSONResponse({"error": "location not found"}, status_code=404)
+    return JSONResponse(result)
+
+
+@app.get("/api/demographics/{zip_code}")
+async def api_demographics(zip_code: str) -> JSONResponse:
+    """Get housing demographics for a ZIP code (US Census ACS 5-year)."""
+    if not zip_code.isdigit() or len(zip_code) != 5:
+        return JSONResponse({"error": "invalid zip code"}, status_code=400)
+    result = await get_demographics_by_zip(zip_code)
+    if not result:
+        return JSONResponse({"error": "no data for this zip"}, status_code=404)
+    return JSONResponse(result)
+
+
+@app.get("/api/enrich-property")
+async def api_enrich_property(address: str, lat: float, lng: float) -> JSONResponse:
+    """Enrich a property with flood zone, POIs, and walkscore (parallel)."""
+    result = await enrich_property(address, lat, lng)
+    return JSONResponse(result)
+
+
+@app.get("/api/flood-zone")
+async def api_flood_zone(lat: float, lng: float) -> JSONResponse:
+    """Check FEMA flood zone for coordinates."""
+    result = await get_flood_zone(lat, lng)
+    if not result:
+        return JSONResponse({"error": "flood data unavailable"}, status_code=502)
+    return JSONResponse(result)
+
+
+@app.get("/api/market-snapshot")
+async def api_market_snapshot() -> JSONResponse:
+    """Current mortgage rates and treasury yields."""
+    result = await get_market_snapshot()
     return JSONResponse(result)
 
 
