@@ -18,6 +18,7 @@ from graph_engine import PropertyGraph
 from auth import router as auth_router
 from billing import router as billing_router
 from audit_ledger import router as audit_router, ledger, AuditCategory
+from audit_middleware import AuditMiddleware, audit_action, audit_now
 from admin_c2 import router as admin_c2_router
 from legal_agent import format_for_websocket
 from spatial_agent import reconstruct_property, should_trigger_reconstruction
@@ -70,6 +71,8 @@ app.add_middleware(
     allow_credentials=True,
 )
 
+app.add_middleware(AuditMiddleware)
+
 app.include_router(auth_router)
 app.include_router(billing_router)
 app.include_router(audit_router)
@@ -110,6 +113,7 @@ _TOUR_GEN_WINDOW = 60.0
 
 
 @app.post("/api/generate-tour")
+@audit_action(AuditCategory.GENERATE_TOUR, "AI tour generation: {path}")
 async def api_generate_tour(request: Request) -> JSONResponse:
     """AI-generate a full spatial tour schema from property metadata.
 
