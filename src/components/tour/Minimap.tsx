@@ -1,6 +1,6 @@
 'use client'
 
-import { WAYPOINTS, FOOTPRINT, type Vec2 } from './tourData'
+import { FOOTPRINT, type Vec2, type Waypoint } from './tourData'
 
 const BOUNDS = { minX: -12, maxX: 12, minZ: -10, maxZ: 12 }
 
@@ -15,11 +15,15 @@ export function Minimap({
   currentPos,
   onNavigate,
   large = false,
+  waypoints,
+  gradientId = 'posGlow',
 }: {
   activeId: string | null
   currentPos: Vec2
   onNavigate: (id: string) => void
   large?: boolean
+  waypoints: Waypoint[]
+  gradientId?: string
 }) {
   const W = large ? 460 : 208
   const H = large ? 422 : 190
@@ -39,7 +43,7 @@ export function Minimap({
       style={{ display: 'block', width: '100%', height: 'auto' }}
     >
       <defs>
-        <radialGradient id="posGlow" cx="50%" cy="50%" r="50%">
+        <radialGradient id={gradientId} cx="50%" cy="50%" r="50%">
           <stop offset="0%" stopColor="#00f0ff" stopOpacity="0.9" />
           <stop offset="100%" stopColor="#00f0ff" stopOpacity="0" />
         </radialGradient>
@@ -58,7 +62,7 @@ export function Minimap({
       />
 
       {/* rooms */}
-      {WAYPOINTS.map((wp) => {
+      {waypoints.map((wp) => {
         const [cx, cz] = wp.plan.center
         const [w, d] = wp.plan.size
         const [rx, ry] = project(cx - w / 2, cz - d / 2, W, H)
@@ -100,7 +104,7 @@ export function Minimap({
       })}
 
       {/* live position marker */}
-      <circle cx={px} cy={py} r={large ? 22 : 13} fill="url(#posGlow)" />
+      <circle cx={px} cy={py} r={large ? 22 : 13} fill={`url(#${gradientId})`} />
       <circle cx={px} cy={py} r={large ? 6 : 4} fill="#00f0ff" stroke="#fff" strokeWidth={1.5} />
     </svg>
   )

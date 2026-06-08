@@ -96,6 +96,7 @@ export function TourExperience({ propertyInput }: { propertyInput?: Record<strin
             activeId={activeId}
             onNavigate={onNavigate}
             visible={mode !== 'dollhouse'}
+            waypoints={schema.waypoints}
           />
         </Suspense>
         <CameraRig pose={pose} mode={mode} />
@@ -118,6 +119,7 @@ export function TourExperience({ propertyInput }: { propertyInput?: Record<strin
         currentPos={currentPos}
         guideActive={guideActive}
         showPlan={showPlan}
+        waypoints={schema.waypoints}
         onExplore={onExplore}
         onDollhouse={onDollhouse}
         onTogglePlan={onTogglePlan}

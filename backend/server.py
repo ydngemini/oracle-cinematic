@@ -10,7 +10,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 load_dotenv(Path(__file__).resolve().parent.parent / ".env", override=False)
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
@@ -102,12 +102,13 @@ async def health() -> JSONResponse:
 
 
 @app.post("/api/generate-tour")
-async def api_generate_tour(body: dict) -> JSONResponse:
+async def api_generate_tour(request: Request) -> JSONResponse:
     """AI-generate a full spatial tour schema from property metadata.
 
     Accepts: { address, sqft, bedrooms, bathrooms, features[], description, price }
     Returns: Complete tour schema (waypoints, poses, floor plan, narrations)
     """
+    body = await request.json()
     if not body.get("address") and not body.get("description"):
         return JSONResponse({"error": "address or description required"}, status_code=400)
     result = await generate_tour(body)
@@ -238,7 +239,7 @@ async def data_ingestion_loop(websocket: WebSocket):
 
             dialogue = [
                 {"agent": "AI CLOSER", "text": f"Initiating contact with {hit['owner_name']}..."},
-                {"agent": "AI CLOSER", "text": f"Signal: {hit['life_event'].replace('_', ' ').title()} + {hit['equity_pct']}% equity"},
+                {"agent": "AI CLOSER", "text": f"Signal: {(hit['life_event'] or 'GENERAL').replace('_', ' ').title()} + {hit['equity_pct']}% equity"},
                 {"agent": "AI CLOSER", "text": "Call connected. Voice synthesis active."},
             ]
 

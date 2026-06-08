@@ -18,6 +18,7 @@ Uses Bedrock (Llama-70B) for generation with guided JSON output.
 Falls back to Claude-3 Sonnet if Llama fails.
 """
 
+import asyncio
 import json
 import logging
 import os
@@ -177,11 +178,17 @@ def _validate_tour_data(data: dict) -> tuple[bool, str]:
     waypoints = data["waypoints"]
     if not isinstance(waypoints, list) or len(waypoints) < 3:
         return False, f"Need at least 3 waypoints, got {len(waypoints) if isinstance(waypoints, list) else 0}"
-    for wp in waypoints:
+    required_wp_fields = ("id", "name", "tag", "pose", "hotspot", "narration", "plan", "stats")
+    for i, wp in enumerate(waypoints):
+        if not isinstance(wp, dict):
+            return False, f"Waypoint [{i}] is not an object"
+        for f in required_wp_fields:
+            if f not in wp:
+                return False, f"Waypoint [{i}] missing required field '{f}'"
         if not isinstance(wp.get("pose", {}).get("position"), list) or len(wp["pose"]["position"]) != 3:
-            return False, f"Waypoint '{wp.get('id', '?')}' has invalid pose.position"
+            return False, f"Waypoint '{wp['id']}' has invalid pose.position"
         if not isinstance(wp.get("hotspot"), list) or len(wp["hotspot"]) != 3:
-            return False, f"Waypoint '{wp.get('id', '?')}' has invalid hotspot"
+            return False, f"Waypoint '{wp['id']}' has invalid hotspot"
     tour_ids = set(data["tour_order"])
     wp_ids = {wp["id"] for wp in waypoints}
     missing = tour_ids - wp_ids
@@ -214,12 +221,13 @@ async def generate_tour(property_data: dict) -> Optional[dict]:
         style=style,
     )
 
-    # Try Llama-70B first (faster, cheaper)
-    raw = invoke_bedrock_model(PRIMARY_MODEL, f"{SYSTEM_PROMPT}\n\n{user_prompt}", max_tokens=4096)
+    # Try Llama-70B first (faster, cheaper) — run in thread to avoid blocking event loop
+    prompt_text = f"{SYSTEM_PROMPT}\n\n{user_prompt}"
+    raw = await asyncio.to_thread(invoke_bedrock_model, PRIMARY_MODEL, prompt_text, 4096)
 
     if not raw:
         logger.warning("Primary model failed, falling back to secondary")
-        raw = invoke_bedrock_model(SECONDARY_MODEL, f"{SYSTEM_PROMPT}\n\n{user_prompt}", max_tokens=4096)
+        raw = await asyncio.to_thread(invoke_bedrock_model, SECONDARY_MODEL, prompt_text, 4096)
 
     if not raw:
         logger.error("Both models failed to generate tour data")

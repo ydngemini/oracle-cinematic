@@ -44,6 +44,7 @@ export function CameraRig({ pose, mode }: { pose: CameraPose; mode: Mode }) {
     const a = anim.current
     const c = controls.current
     if (a.active) {
+      if (c) c.enableRotate = false
       a.t = Math.min(1, a.t + delta / a.duration)
       const e = easeInOutCubic(a.t)
       camera.position.lerpVectors(a.from, a.to, e)
@@ -53,7 +54,10 @@ export function CameraRig({ pose, mode }: { pose: CameraPose; mode: Mode }) {
       } else {
         camera.lookAt(a.toT)
       }
-      if (a.t >= 1) a.active = false
+      if (a.t >= 1) {
+        a.active = false
+        if (c) c.enableRotate = true
+      }
     } else if (c) {
       c.update()
     }
@@ -72,7 +76,7 @@ export function CameraRig({ pose, mode }: { pose: CameraPose; mode: Mode }) {
       makeDefault
       enablePan={false}
       enableZoom
-      enableRotate={!anim.current.active}
+      enableRotate
       enableDamping
       dampingFactor={0.08}
       rotateSpeed={mode === 'fpv' ? 0.5 : 0.6}

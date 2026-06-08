@@ -104,20 +104,23 @@ async function prefetchLegal(propertyId, legalPayload) {
 
 async function evictOldEntries(storeName, maxEntries) {
   const db = await openDB();
-  const tx = db.transaction(storeName, 'readwrite');
-  const store = tx.objectStore(storeName);
-
-  const allReq = store.getAll();
-  allReq.onsuccess = () => {
-    const entries = allReq.result;
-    if (entries.length <= maxEntries) return;
-
-    entries.sort((a, b) => (a.cachedAt || 0) - (b.cachedAt || 0));
-    const toRemove = entries.slice(0, entries.length - maxEntries);
-    for (const entry of toRemove) {
-      store.delete(entry.propertyId);
-    }
-  };
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(storeName, 'readwrite');
+    const store = tx.objectStore(storeName);
+    const allReq = store.getAll();
+    allReq.onsuccess = () => {
+      const entries = allReq.result;
+      if (entries.length <= maxEntries) { resolve(); return; }
+      entries.sort((a, b) => (a.cachedAt || 0) - (b.cachedAt || 0));
+      const toRemove = entries.slice(0, entries.length - maxEntries);
+      for (const entry of toRemove) {
+        store.delete(entry.propertyId);
+      }
+    };
+    allReq.onerror = () => reject(allReq.error);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
 }
 
 // ─── Message Handler (from main thread) ──────────────────────────────────────

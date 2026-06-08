@@ -144,7 +144,7 @@ async def _scrape_zillow_images(address: str, output_dir: Path) -> list[Path]:
 
         images = []
         for i, match in enumerate(urls):
-            url = match if isinstance(match, str) else f"https://photos.zillowstatic.com/fp/{match[0]}"
+            url = match if isinstance(match, str) else match[0]
             try:
                 img_req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
                 data = await asyncio.to_thread(

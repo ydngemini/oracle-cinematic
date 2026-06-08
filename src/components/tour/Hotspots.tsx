@@ -2,24 +2,26 @@
 
 import { useState } from 'react'
 import { Html } from '@react-three/drei'
-import { WAYPOINTS } from './tourData'
+import type { Waypoint } from './tourData'
 import styles from './tour.module.css'
 
 export function Hotspots({
   activeId,
   onNavigate,
   visible,
+  waypoints,
 }: {
   activeId: string | null
   onNavigate: (id: string) => void
   visible: boolean
+  waypoints: Waypoint[]
 }) {
   const [hovered, setHovered] = useState<string | null>(null)
   if (!visible) return null
 
   return (
     <>
-      {WAYPOINTS.map((wp) => {
+      {waypoints.map((wp) => {
         const isActive = wp.id === activeId
         return (
           <Html

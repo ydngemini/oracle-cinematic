@@ -335,6 +335,7 @@ Perform CMA and provide estimated fair market value with confidence interval.
         except asyncio.TimeoutError:
             logger.error("Inference timed out (60s)")
             proc.kill()
+            await proc.wait()
             return None
         except FileNotFoundError:
             logger.error(f"llama-cli binary not found")

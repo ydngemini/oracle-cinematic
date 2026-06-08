@@ -225,7 +225,7 @@ class WorkflowEngine:
                 top_props = []
                 async for hit in self.graph.calculate_novelty_score():
                     top_props.append({
-                        "id": property_id(hit["address"]),
+                        "propertyId": property_id(hit["address"]),
                         "address": hit["address"],
                         "novelty": hit["novelty_score"],
                     })
@@ -233,7 +233,7 @@ class WorkflowEngine:
                         break
 
                 if top_props and self.websocket:
-                    new_ids = [p["id"] for p in top_props]
+                    new_ids = [p["propertyId"] for p in top_props]
                     if new_ids != self._last_pushed_ids:
                         self._last_pushed_ids = new_ids
                         await self.websocket.send_text(json.dumps({

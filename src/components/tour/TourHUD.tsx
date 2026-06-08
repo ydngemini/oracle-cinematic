@@ -2,7 +2,7 @@
 
 import { motion, AnimatePresence } from 'framer-motion'
 import { Minimap } from './Minimap'
-import { WAYPOINTS, type Waypoint, type Vec2 } from './tourData'
+import { type Waypoint, type Vec2 } from './tourData'
 
 type Mode = 'explore' | 'dollhouse' | 'fpv'
 
@@ -14,6 +14,7 @@ interface HUDProps {
   currentPos: Vec2
   guideActive: boolean
   showPlan: boolean
+  waypoints: Waypoint[]
   onExplore: () => void
   onDollhouse: () => void
   onTogglePlan: () => void
@@ -57,6 +58,7 @@ export function TourHUD(props: HUDProps) {
     currentPos,
     guideActive,
     showPlan,
+    waypoints,
     onExplore,
     onDollhouse,
     onTogglePlan,
@@ -165,6 +167,8 @@ export function TourHUD(props: HUDProps) {
           activeId={activeId}
           currentPos={currentPos}
           onNavigate={onNavigate}
+          waypoints={waypoints}
+          gradientId="posGlow-sm"
         />
       </motion.div>
 
@@ -263,13 +267,15 @@ export function TourHUD(props: HUDProps) {
                 large
                 activeId={activeId}
                 currentPos={currentPos}
+                waypoints={waypoints}
+                gradientId="posGlow-lg"
                 onNavigate={(id) => {
                   onNavigate(id)
                   onTogglePlan()
                 }}
               />
               <div className="mt-4 flex flex-wrap gap-2">
-                {WAYPOINTS.map((wp) => (
+                {waypoints.map((wp) => (
                   <button
                     key={wp.id}
                     type="button"
