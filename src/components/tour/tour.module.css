@@ -1,0 +1,93 @@
+/* ─── Hotspot pucks (rendered inside drei <Html>) ─────────────────────────── */
+.hotspotWrap {
+  pointer-events: none;
+}
+
+.hotspot {
+  position: relative;
+  width: 44px;
+  height: 44px;
+  display: grid;
+  place-items: center;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  pointer-events: auto;
+  transform: translateZ(0);
+}
+
+.hotspotRing {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  border: 1.5px solid rgba(0, 240, 255, 0.7);
+  box-shadow: 0 0 18px rgba(0, 240, 255, 0.35);
+  animation: hsPulse 2.4s ease-out infinite;
+}
+
+.hotspotCore {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 35% 30%, #ffffff, #00f0ff 70%);
+  box-shadow: 0 0 14px rgba(0, 240, 255, 0.9);
+  transition: transform 0.25s ease;
+}
+
+.hotspot:hover .hotspotCore {
+  transform: scale(1.25);
+}
+
+.hotspotActive .hotspotRing {
+  border-color: rgba(139, 92, 246, 0.85);
+  box-shadow: 0 0 22px rgba(139, 92, 246, 0.55);
+}
+
+.hotspotActive .hotspotCore {
+  background: radial-gradient(circle at 35% 30%, #ffffff, #8b5cf6 70%);
+  box-shadow: 0 0 16px rgba(139, 92, 246, 0.95);
+}
+
+.hotspotLabel {
+  position: absolute;
+  bottom: 130%;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  white-space: nowrap;
+  padding: 7px 12px;
+  border-radius: 10px;
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: #e0e8ff;
+  background: rgba(10, 10, 15, 0.72);
+  backdrop-filter: blur(14px) saturate(1.4);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: 0 10px 30px -8px rgba(0, 0, 0, 0.8);
+  animation: hsLabelIn 0.2s ease-out;
+}
+
+.hotspotTag {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #00f0ff;
+  padding: 2px 6px;
+  border-radius: 5px;
+  background: rgba(0, 240, 255, 0.12);
+}
+
+@keyframes hsPulse {
+  0% { transform: scale(0.7); opacity: 0.9; }
+  70% { opacity: 0.15; }
+  100% { transform: scale(1.6); opacity: 0; }
+}
+
+@keyframes hsLabelIn {
+  from { opacity: 0; transform: translateX(-50%) translateY(4px); }
+  to { opacity: 1; transform: translateX(-50%) translateY(0); }
+}
