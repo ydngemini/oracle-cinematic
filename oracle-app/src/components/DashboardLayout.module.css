@@ -1,72 +1,271 @@
+/* ─────────────────────────────────────────────────────────────────────────────
+   DashboardLayout — Command Center HUD Grid
+   Three-column cinematic layout.
+   All tokens inherited from index.css :root.
+   ───────────────────────────────────────────────────────────────────────────── */
+
+/* ── Viewport — the absolute stage ─────────────────────────────────────────── */
 .viewport {
-  position: relative;
-  width: 100vw;
-  height: 100vh;
-  overflow: hidden;
-  background: radial-gradient(
-    ellipse at 30% 20%,
-    #0a1628 0%,
-    #050812 60%,
-    #020408 100%
-  );
+  position:   relative;
+  width:      100vw;
+  height:     100dvh;
+  overflow:   hidden;
+
+  /* Cinematic deep-space canvas */
+  background:  #020408;
+  background-image: var(--oracle-bg-canvas);
 }
 
+/* Subtle vignette overlay — does not block clicks */
+.viewport::before {
+  content:          "";
+  position:         absolute;
+  inset:            0;
+  z-index:          0;
+  pointer-events:   none;
+
+  background:
+    radial-gradient(ellipse 120% 60% at 50% 0%,   rgba(200, 160, 80, 0.03) 0%, transparent 65%),
+    radial-gradient(ellipse 80%  80% at 50% 100%,  rgba(8, 8, 20, 0.6)      0%, transparent 70%),
+    radial-gradient(ellipse 100% 100% at 0%   50%, rgba(4, 10, 20, 0.3)      0%, transparent 60%),
+    radial-gradient(ellipse 100% 100% at 100% 50%, rgba(20, 8, 4, 0.2)       0%, transparent 60%);
+}
+
+/* ── HUD grid — floats above the 3-D canvas ────────────────────────────────── */
 .hud {
-  position: absolute;
-  inset: 0;
-  z-index: 1;
+  position:     absolute;
+  inset:        0;
+  z-index:      var(--z-hud);
   pointer-events: none;
-  padding: 1.5rem;
-  display: grid;
-  grid-template-rows: auto 1fr auto;
-  grid-template-columns: 320px 1fr auto;
+
+  /* Generous breathing room — command center feel */
+  padding:      var(--space-5);
+  gap:          var(--space-4);
+
+  display:      grid;
+  grid-template-columns: 300px 1fr minmax(260px, 320px);
+  grid-template-rows:    auto 1fr auto;
   grid-template-areas:
     "top    top    top"
     "left   center right"
     "bottom bottom bottom";
-  gap: 1.5rem;
+
+  /* Allow the HUD shell to fill the whole stage */
+  width:  100%;
+  height: 100%;
 }
 
+/* Re-enable pointer events for every direct panel child */
 .hud > * {
   pointer-events: auto;
 }
 
+
+/* ── Panel base — shared glass surface ──────────────────────────────────────── */
+/* Applied to wrappers; individual components can override */
+.topBar,
+.leftPanel,
+.rightPanel,
+.bottomPanel {
+  /* Layout hint — panels animate from their natural position */
+  animation-fill-mode: both;
+}
+
+
+/* ── Top bar ─────────────────────────────────────────────────────────────────── */
 .topBar {
   grid-area: top;
+
+  /* Thin horizontal strip — feels like a HUD status rail */
+  align-self: start;
+
+  /* Entrance animation */
+  animation: slideInDown var(--duration-cinematic) var(--ease-spring) 0ms;
 }
 
+
+/* ── Left panel — property data column ─────────────────────────────────────── */
 .leftPanel {
-  grid-area: left;
+  grid-area:  left;
   align-self: start;
+
+  /* Subtle left-edge separator — depth cue */
+  position:   relative;
+
+  animation: slideInLeft var(--duration-cinematic) var(--ease-spring) 60ms;
 }
 
+/* Vertical amber accent line on the outer left edge */
+.leftPanel::before {
+  content:    "";
+  position:   absolute;
+  top:        12%;
+  bottom:     12%;
+  left:       -1px;
+  width:      1px;
+  background: linear-gradient(
+    to bottom,
+    transparent                0%,
+    var(--oracle-amber-ghost) 30%,
+    var(--oracle-amber-dim)   50%,
+    var(--oracle-amber-ghost) 70%,
+    transparent               100%
+  );
+  pointer-events: none;
+  border-radius:  var(--radius-pill);
+}
+
+
+/* ── Right panel — deal pipeline column ────────────────────────────────────── */
 .rightPanel {
-  grid-area: right;
-  align-self: start;
+  grid-area:   right;
+  align-self:  start;
   justify-self: end;
+
+  position: relative;
+
+  animation: slideInRight var(--duration-cinematic) var(--ease-spring) 60ms;
 }
 
+/* Mirror: vertical amber accent line on the outer right edge */
+.rightPanel::before {
+  content:    "";
+  position:   absolute;
+  top:        12%;
+  bottom:     12%;
+  right:      -1px;
+  width:      1px;
+  background: linear-gradient(
+    to bottom,
+    transparent                0%,
+    var(--oracle-amber-ghost) 30%,
+    var(--oracle-amber-dim)   50%,
+    var(--oracle-amber-ghost) 70%,
+    transparent               100%
+  );
+  pointer-events: none;
+  border-radius:  var(--radius-pill);
+}
+
+
+/* ── Bottom panel — live transcript rail ────────────────────────────────────── */
 .bottomPanel {
-  grid-area: bottom;
+  grid-area:  bottom;
+  align-self: end;
+
+  animation: slideInUp var(--duration-cinematic) var(--ease-spring) 120ms;
 }
 
+
+/* ── Cinematic entrance keyframes ───────────────────────────────────────────── */
+@keyframes slideInDown {
+  from {
+    opacity:   0;
+    transform: translateY(-18px);
+  }
+  to {
+    opacity:   1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes slideInLeft {
+  from {
+    opacity:   0;
+    transform: translateX(-22px);
+  }
+  to {
+    opacity:   1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes slideInRight {
+  from {
+    opacity:   0;
+    transform: translateX(22px);
+  }
+  to {
+    opacity:   1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes slideInUp {
+  from {
+    opacity:   0;
+    transform: translateY(18px);
+  }
+  to {
+    opacity:   1;
+    transform: translateY(0);
+  }
+}
+
+
+/* ── Reduced motion — collapse all transitions ──────────────────────────────── */
+@media (prefers-reduced-motion: reduce) {
+  .topBar,
+  .leftPanel,
+  .rightPanel,
+  .bottomPanel {
+    animation: none;
+  }
+
+  .leftPanel::before,
+  .rightPanel::before {
+    display: none;
+  }
+}
+
+
+/* ── Tablet — two-column stacked layout (900px–1199px) ──────────────────────── */
+@media (max-width: 1199px) and (min-width: 901px) {
+  .hud {
+    grid-template-columns: 280px 1fr;
+    grid-template-rows:    auto auto 1fr auto;
+    grid-template-areas:
+      "top    top"
+      "left   right"
+      "left   center"
+      "bottom bottom";
+    padding: var(--space-4);
+    gap:     var(--space-3);
+  }
+
+  .rightPanel {
+    justify-self: stretch;
+  }
+}
+
+
+/* ── Mobile — single column stack (≤ 900px) ─────────────────────────────────── */
 @media (max-width: 900px) {
   .hud {
     grid-template-columns: 1fr;
-    grid-template-rows: auto auto auto 1fr auto;
+    grid-template-rows:    auto auto auto 1fr auto;
     grid-template-areas:
       "top"
       "left"
       "right"
       "center"
       "bottom";
-    padding: 1rem;
-    gap: 1rem;
+    padding:    var(--space-3);
+    gap:        var(--space-3);
+    /* Mobile panels scroll vertically */
+    overflow-y: auto;
   }
 
   .leftPanel,
   .rightPanel {
-    max-width: 100%;
+    max-width:   100%;
+    width:       100%;
     justify-self: stretch;
+  }
+
+  /* Remove edge accent lines — not useful at mobile width */
+  .leftPanel::before,
+  .rightPanel::before {
+    display: none;
   }
 }

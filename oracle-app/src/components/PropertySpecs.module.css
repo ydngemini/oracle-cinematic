@@ -1,39 +1,199 @@
+/* ============================================================
+   PropertySpecs.module.css
+   Holographic property data panel — cinematic glass, animated
+   number reveals, layered depth. Oracle design system.
+   ============================================================ */
+
+/* ----- Keyframes ----- */
+
+@keyframes panelFadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(12px) scale(0.992);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes shimmerSweep {
+  0%   { background-position: -200% center; }
+  100% { background-position:  200% center; }
+}
+
+@keyframes scanLine {
+  0%   { transform: translateY(-100%); opacity: 0; }
+  10%  { opacity: 1; }
+  90%  { opacity: 1; }
+  100% { transform: translateY(100%); opacity: 0; }
+}
+
+@keyframes valueReveal {
+  0% {
+    opacity: 0;
+    transform: translateY(10px) scale(0.94);
+    filter: blur(6px);
+  }
+  60% {
+    filter: blur(0);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+    filter: blur(0);
+  }
+}
+
+@keyframes cardUnmask {
+  0%   { clip-path: inset(100% 0 0 0); opacity: 0; transform: translateY(20px); }
+  100% { clip-path: inset(0% 0 0 0);   opacity: 1; transform: translateY(0); }
+}
+
+@keyframes borderGlow {
+  0%, 100% { box-shadow: inset 0 0 0 1px rgba(200, 160, 80, 0.12); }
+  50%       { box-shadow: inset 0 0 0 1px rgba(200, 160, 80, 0.28); }
+}
+
+@keyframes dotPulse {
+  0%, 100% { transform: scale(1);   opacity: 1;   }
+  50%       { transform: scale(1.4); opacity: 0.6; }
+}
+
+@keyframes compsSlideIn {
+  from {
+    opacity: 0;
+    transform: translateX(-8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes tealScanPulse {
+  0%, 100% { opacity: 0.4; }
+  50%       { opacity: 1;   }
+}
+
+/* ----- Panel shell ----- */
+
 .panel {
-  background: rgba(8, 10, 18, 0.72);
-  backdrop-filter: blur(32px);
+  position: relative;
+  background: rgba(8, 8, 12, 0.75);
+  backdrop-filter: blur(40px) saturate(1.4);
+  -webkit-backdrop-filter: blur(40px) saturate(1.4);
   border: 1px solid rgba(255, 255, 255, 0.04);
-  border-radius: 2px;
+  border-top: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 3px;
   padding: 2.4rem 2rem;
   display: flex;
   flex-direction: column;
   gap: 2rem;
+  overflow: hidden;
+
+  /* Layered depth shadows */
   box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.03) inset,
+    0 -1px 0 rgba(0, 0, 0, 0.6) inset,
     0 24px 80px rgba(0, 0, 0, 0.5),
-    inset 0 1px 0 rgba(255, 255, 255, 0.02);
+    0 4px 16px rgba(0, 0, 0, 0.35),
+    0 1px 3px rgba(0, 0, 0, 0.6);
+
+  animation: panelFadeIn 0.7s cubic-bezier(0.16, 1, 0.3, 1) both;
+
+  /* Ambient inner vignette */
+  --panel-vignette: radial-gradient(
+    ellipse 120% 120% at 50% -10%,
+    rgba(200, 160, 80, 0.03) 0%,
+    transparent 70%
+  );
+  background-image: var(--panel-vignette);
+  background-color: rgba(8, 8, 12, 0.75);
 }
 
+/* Subtle horizontal scan line that traverses the panel once on mount */
+.panel::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    to bottom,
+    transparent 0%,
+    rgba(200, 160, 80, 0.04) 50%,
+    transparent 100%
+  );
+  height: 40%;
+  width: 100%;
+  pointer-events: none;
+  animation: scanLine 1.4s cubic-bezier(0.16, 1, 0.3, 1) 0.2s both;
+  z-index: 1;
+}
+
+/* Top edge prismatic highlight */
+.panel::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 10%;
+  right: 10%;
+  height: 1px;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(200, 160, 80, 0.35) 40%,
+    rgba(255, 255, 255, 0.15) 50%,
+    rgba(200, 160, 80, 0.35) 60%,
+    transparent
+  );
+  pointer-events: none;
+  z-index: 2;
+}
+
+/* ----- Header ----- */
+
 .header {
+  position: relative;
   display: flex;
   flex-direction: column;
-  gap: 0.35rem;
+  gap: 0.4rem;
+  z-index: 3;
 }
 
 .kicker {
-  font-size: 0.55rem;
-  letter-spacing: 0.35em;
+  font-size: 0.52rem;
+  letter-spacing: 0.38em;
   text-transform: uppercase;
-  color: rgba(200, 180, 140, 0.6);
-  font-weight: 500;
+  color: rgba(200, 160, 80, 0.55);
+  font-weight: 600;
+
+  /* Shimmer sweep on mount */
+  background: linear-gradient(
+    90deg,
+    rgba(200, 160, 80, 0.4) 0%,
+    rgba(200, 160, 80, 0.9) 40%,
+    rgba(255, 220, 140, 1) 50%,
+    rgba(200, 160, 80, 0.9) 60%,
+    rgba(200, 160, 80, 0.4) 100%
+  );
+  background-size: 200% auto;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: shimmerSweep 2.4s cubic-bezier(0.16, 1, 0.3, 1) 0.3s both;
 }
 
 .headline {
   font-size: 1.25rem;
   font-weight: 300;
-  letter-spacing: -0.01em;
-  color: rgba(240, 238, 232, 0.92);
+  letter-spacing: -0.015em;
+  color: rgba(245, 240, 230, 0.92);
   margin: 0;
   line-height: 1.3;
+  transition: color 0.5s cubic-bezier(0.16, 1, 0.3, 1);
 }
+
+/* ----- Hero grid — ARV / Rehab / MAO ----- */
 
 .heroGrid {
   display: grid;
@@ -42,6 +202,13 @@
   background: rgba(255, 255, 255, 0.03);
   border-radius: 2px;
   overflow: hidden;
+  position: relative;
+  z-index: 3;
+
+  /* Ambient glow frame */
+  box-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.02),
+    0 4px 24px rgba(0, 0, 0, 0.3);
 }
 
 .heroCard {
@@ -49,17 +216,66 @@
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  padding: 1.6rem 0.8rem;
+  padding: 1.8rem 0.8rem 1.6rem;
   background: rgba(12, 14, 22, 0.9);
-  gap: 0.3rem;
+  gap: 0.35rem;
+  position: relative;
+  overflow: hidden;
+  cursor: default;
 
   clip-path: inset(100% 0 0 0);
   opacity: 0;
-  transform: translateY(16px);
+  transform: translateY(18px);
   transition:
-    clip-path 0.8s cubic-bezier(0.16, 1, 0.3, 1),
-    opacity 0.8s cubic-bezier(0.16, 1, 0.3, 1),
-    transform 0.8s cubic-bezier(0.16, 1, 0.3, 1);
+    clip-path   0.75s cubic-bezier(0.16, 1, 0.3, 1),
+    opacity     0.75s cubic-bezier(0.16, 1, 0.3, 1),
+    transform   0.75s cubic-bezier(0.16, 1, 0.3, 1),
+    background  0.4s  ease;
+}
+
+/* Ambient inner glow per card */
+.heroCard::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(
+    ellipse 80% 60% at 50% 100%,
+    rgba(200, 160, 80, 0.04) 0%,
+    transparent 70%
+  );
+  opacity: 0;
+  transition: opacity 0.4s ease;
+  pointer-events: none;
+}
+
+.heroCard:hover {
+  background: rgba(16, 18, 28, 0.95);
+}
+
+.heroCard:hover::before {
+  opacity: 1;
+}
+
+/* Hover shimmer sweep */
+.heroCard::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: -100%;
+  width: 60%;
+  height: 100%;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(255, 255, 255, 0.025),
+    transparent
+  );
+  transition: left 0.6s cubic-bezier(0.16, 1, 0.3, 1);
+  pointer-events: none;
+}
+
+.heroCard:hover::after {
+  left: 150%;
 }
 
 .heroCard[data-revealed="true"] {
@@ -70,105 +286,191 @@
 
 .cardLabel {
   font-size: 0.5rem;
-  letter-spacing: 0.3em;
+  letter-spacing: 0.32em;
   text-transform: uppercase;
-  color: rgba(200, 180, 140, 0.5);
-  font-weight: 500;
+  color: rgba(200, 160, 80, 0.45);
+  font-weight: 600;
+  transition: color 0.3s ease;
+}
+
+.heroCard:hover .cardLabel {
+  color: rgba(200, 160, 80, 0.7);
 }
 
 .cardValue {
-  font-size: 1.6rem;
+  font-size: 1.65rem;
   font-weight: 200;
   color: rgba(245, 242, 235, 0.95);
-  letter-spacing: -0.02em;
+  letter-spacing: -0.025em;
   line-height: 1;
+  transition: color 0.3s ease;
+  position: relative;
+}
+
+.heroCard[data-revealed="true"] .cardValue {
+  animation: valueReveal 0.65s cubic-bezier(0.16, 1, 0.3, 1) both;
+  animation-delay: inherit;
+}
+
+.heroCard:hover .cardValue {
+  color: rgba(255, 248, 235, 1);
 }
 
 .cardUnit {
-  font-size: 0.55rem;
-  letter-spacing: 0.2em;
+  font-size: 0.52rem;
+  letter-spacing: 0.22em;
   text-transform: uppercase;
-  color: rgba(200, 200, 200, 0.3);
-  margin-top: 0.15rem;
+  color: rgba(200, 200, 200, 0.25);
+  margin-top: 0.2rem;
+  transition: color 0.3s ease;
 }
+
+.heroCard:hover .cardUnit {
+  color: rgba(200, 160, 80, 0.35);
+}
+
+/* ----- Detail strip ----- */
 
 .detailStrip {
   display: flex;
   align-items: baseline;
   gap: 2rem;
-  padding: 1rem 0;
+  padding: 1.1rem 0;
   border-top: 1px solid rgba(255, 255, 255, 0.04);
   border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+  position: relative;
+  z-index: 3;
+}
+
+/* Left-side accent rule */
+.detailStrip::before {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 0;
+  width: 2px;
+  height: 50%;
+  transform: translateY(-50%);
+  background: rgba(200, 160, 80, 0.2);
+  border-radius: 0 1px 1px 0;
 }
 
 .detailItem {
   display: flex;
   flex-direction: column;
-  gap: 0.2rem;
+  gap: 0.25rem;
 }
 
 .detailLabel {
-  font-size: 0.5rem;
-  letter-spacing: 0.25em;
+  font-size: 0.48rem;
+  letter-spacing: 0.28em;
   text-transform: uppercase;
-  color: rgba(180, 180, 180, 0.35);
+  color: rgba(180, 180, 180, 0.32);
+  transition: color 0.3s ease;
+}
+
+.detailItem:hover .detailLabel {
+  color: rgba(200, 160, 80, 0.5);
 }
 
 .detailValue {
-  font-size: 0.8rem;
-  color: rgba(230, 228, 222, 0.8);
+  font-size: 0.82rem;
+  color: rgba(230, 228, 222, 0.82);
   font-weight: 400;
+  transition: color 0.3s ease;
 }
+
+.detailItem:hover .detailValue {
+  color: rgba(245, 240, 230, 0.95);
+}
+
+/* ----- Status bar ----- */
 
 .statusBar {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  position: relative;
+  z-index: 3;
 }
 
 .statusLabel {
-  font-size: 0.5rem;
-  letter-spacing: 0.2em;
+  font-size: 0.48rem;
+  letter-spacing: 0.24em;
   text-transform: uppercase;
-  color: rgba(180, 180, 180, 0.3);
+  color: rgba(180, 180, 180, 0.28);
 }
 
 .statusBadge {
-  font-size: 0.55rem;
-  letter-spacing: 0.15em;
+  position: relative;
+  font-size: 0.52rem;
+  letter-spacing: 0.18em;
   text-transform: uppercase;
-  padding: 0.3rem 0.8rem;
+  padding: 0.32rem 0.9rem;
   border-radius: 1px;
-  background: rgba(255, 255, 255, 0.03);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  color: rgba(200, 200, 200, 0.5);
-  transition: all 0.6s cubic-bezier(0.16, 1, 0.3, 1);
+  background: rgba(255, 255, 255, 0.025);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  color: rgba(200, 200, 200, 0.45);
+  overflow: hidden;
+  transition:
+    background 0.6s cubic-bezier(0.16, 1, 0.3, 1),
+    border-color 0.6s cubic-bezier(0.16, 1, 0.3, 1),
+    color 0.6s cubic-bezier(0.16, 1, 0.3, 1),
+    box-shadow 0.6s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* Shimmer layer inside badge */
+.statusBadge::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(200, 160, 80, 0.1) 50%,
+    transparent 100%
+  );
+  transform: translateX(-100%);
+  transition: transform 0.6s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 .statusBadge[data-active="true"] {
   background: rgba(200, 160, 80, 0.08);
-  border-color: rgba(200, 160, 80, 0.3);
-  color: rgba(220, 180, 100, 0.9);
+  border-color: rgba(200, 160, 80, 0.32);
+  color: rgba(220, 180, 100, 0.92);
+  box-shadow:
+    0 0 12px rgba(200, 160, 80, 0.08),
+    inset 0 1px 0 rgba(255, 220, 140, 0.1);
 }
 
-/* --- Appraisal Mode Toggle --- */
+.statusBadge[data-active="true"]::before {
+  transform: translateX(200%);
+}
+
+/* ----- Mode toggle — AI vs Manual Comps ----- */
 
 .modeToggle {
   display: flex;
   align-items: center;
-  gap: 0.8rem;
+  gap: 0.85rem;
   cursor: pointer;
   user-select: none;
-  padding: 0.6rem 0;
+  padding: 0.65rem 0;
+  position: relative;
+  z-index: 3;
+}
+
+.modeToggle:hover .toggleTrack {
+  box-shadow: 0 0 16px rgba(200, 160, 80, 0.1);
 }
 
 .modeLabel {
-  font-size: 0.5rem;
-  letter-spacing: 0.25em;
+  font-size: 0.48rem;
+  letter-spacing: 0.28em;
   text-transform: uppercase;
-  color: rgba(180, 180, 180, 0.3);
+  color: rgba(180, 180, 180, 0.28);
   font-weight: 600;
-  transition: color 0.4s ease;
+  transition: color 0.45s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 .modeLabel[data-active="true"] {
@@ -177,21 +479,28 @@
 
 .toggleTrack {
   position: relative;
-  width: 3rem;
-  height: 1.4rem;
+  width: 3.2rem;
+  height: 1.45rem;
   background: rgba(255, 255, 255, 0.03);
-  border: 1px solid rgba(255, 255, 255, 0.12);
+  border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: 0;
-  transition: border-color 0.4s ease, background 0.4s ease;
+  transition:
+    border-color 0.45s cubic-bezier(0.16, 1, 0.3, 1),
+    background   0.45s cubic-bezier(0.16, 1, 0.3, 1),
+    box-shadow   0.45s cubic-bezier(0.16, 1, 0.3, 1);
+  overflow: hidden;
 }
 
+/* Inert background pulse while on AI mode */
 .toggleTrack[data-mode="ai"] {
-  border-color: rgba(200, 160, 80, 0.4);
+  border-color: rgba(200, 160, 80, 0.42);
+  animation: borderGlow 2.8s ease-in-out infinite;
 }
 
 .toggleTrack[data-mode="manual"] {
-  border-color: rgba(100, 200, 180, 0.4);
-  background: rgba(100, 200, 180, 0.04);
+  border-color: rgba(100, 200, 180, 0.42);
+  background: rgba(100, 200, 180, 0.03);
+  animation: none;
 }
 
 .toggleThumb {
@@ -200,77 +509,228 @@
   left: 2px;
   width: calc(50% - 3px);
   height: calc(100% - 4px);
-  background: rgba(200, 160, 80, 0.9);
-  transition: transform 0.35s cubic-bezier(0.16, 1, 0.3, 1), background 0.35s ease;
+  background: linear-gradient(
+    135deg,
+    rgba(220, 180, 100, 0.95),
+    rgba(200, 140, 60, 0.95)
+  );
+  box-shadow:
+    0 0 8px rgba(200, 160, 80, 0.5),
+    0 1px 4px rgba(0, 0, 0, 0.4);
+  transition:
+    transform    0.4s cubic-bezier(0.16, 1, 0.3, 1),
+    background   0.4s ease,
+    box-shadow   0.4s ease;
 }
 
 .toggleTrack[data-mode="manual"] .toggleThumb {
   transform: translateX(calc(100% + 2px));
-  background: rgba(100, 200, 180, 0.9);
+  background: linear-gradient(
+    135deg,
+    rgba(120, 220, 200, 0.95),
+    rgba(80, 180, 160, 0.95)
+  );
+  box-shadow:
+    0 0 8px rgba(100, 200, 180, 0.5),
+    0 1px 4px rgba(0, 0, 0, 0.4);
 }
 
-/* --- Manual Comps Section --- */
+/* ----- Manual Comps Section ----- */
 
 .compsSection {
   display: flex;
   flex-direction: column;
-  gap: 0.8rem;
-  padding-top: 1.2rem;
-  border-top: 1px solid rgba(100, 200, 180, 0.12);
+  gap: 0.85rem;
+  padding-top: 1.3rem;
+  border-top: 1px solid rgba(100, 200, 180, 0.1);
+  position: relative;
+  z-index: 3;
+}
+
+/* Teal left-edge accent rule */
+.compsSection::before {
+  content: '';
+  position: absolute;
+  top: 1.3rem;
+  left: 0;
+  bottom: 0;
+  width: 1px;
+  background: linear-gradient(
+    to bottom,
+    rgba(100, 200, 180, 0.3),
+    transparent
+  );
 }
 
 .compsSectionTitle {
-  font-size: 0.5rem;
-  letter-spacing: 0.3em;
+  font-size: 0.49rem;
+  letter-spacing: 0.32em;
   text-transform: uppercase;
   color: rgba(100, 200, 180, 0.6);
   font-weight: 600;
+  animation: tealScanPulse 2.4s ease-in-out infinite;
 }
 
 .compsLoading {
   font-size: 0.6rem;
-  letter-spacing: 0.15em;
-  color: rgba(200, 200, 200, 0.3);
+  letter-spacing: 0.16em;
+  color: rgba(200, 200, 200, 0.28);
   font-style: italic;
 }
 
 .compCard {
   display: flex;
   flex-direction: column;
-  gap: 0.5rem;
-  padding: 1rem;
+  gap: 0.55rem;
+  padding: 1rem 1rem 1rem 1.2rem;
   background: rgba(12, 14, 22, 0.85);
-  border: 1px solid rgba(100, 200, 180, 0.08);
-  border-left: 2px solid rgba(100, 200, 180, 0.4);
+  border: 1px solid rgba(100, 200, 180, 0.07);
+  border-left: 2px solid rgba(100, 200, 180, 0.35);
+  position: relative;
+  overflow: hidden;
+
+  transition:
+    background   0.4s ease,
+    border-color 0.4s ease,
+    box-shadow   0.4s ease;
+
+  animation: compsSlideIn 0.45s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.compCard:hover {
+  background: rgba(16, 20, 28, 0.92);
+  border-color: rgba(100, 200, 180, 0.14);
+  border-left-color: rgba(100, 200, 180, 0.55);
+  box-shadow:
+    0 4px 20px rgba(0, 0, 0, 0.3),
+    inset 0 0 24px rgba(100, 200, 180, 0.02);
+}
+
+/* Inner top highlight */
+.compCard::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: linear-gradient(
+    90deg,
+    rgba(100, 200, 180, 0.2),
+    transparent
+  );
 }
 
 .compAddress {
   font-size: 0.7rem;
-  color: rgba(240, 238, 232, 0.85);
+  color: rgba(240, 238, 232, 0.82);
   font-weight: 400;
   letter-spacing: 0.01em;
+  transition: color 0.3s ease;
+}
+
+.compCard:hover .compAddress {
+  color: rgba(245, 242, 235, 0.95);
 }
 
 .compRow {
   display: flex;
-  gap: 1.2rem;
+  gap: 1.4rem;
 }
 
 .compStat {
   display: flex;
   flex-direction: column;
-  gap: 0.1rem;
+  gap: 0.12rem;
 }
 
 .compStatLabel {
-  font-size: 0.45rem;
-  letter-spacing: 0.2em;
+  font-size: 0.44rem;
+  letter-spacing: 0.22em;
   text-transform: uppercase;
-  color: rgba(180, 180, 180, 0.35);
+  color: rgba(180, 180, 180, 0.32);
+  transition: color 0.3s ease;
+}
+
+.compCard:hover .compStatLabel {
+  color: rgba(100, 200, 180, 0.45);
 }
 
 .compStatValue {
-  font-size: 0.7rem;
-  color: rgba(230, 228, 222, 0.8);
+  font-size: 0.72rem;
+  color: rgba(230, 228, 222, 0.82);
   font-weight: 500;
+  transition: color 0.3s ease;
+}
+
+.compCard:hover .compStatValue {
+  color: rgba(245, 242, 235, 0.92);
+}
+
+/* ----- Reduced motion ----- */
+
+@media (prefers-reduced-motion: reduce) {
+  .panel,
+  .panel::before,
+  .kicker,
+  .heroCard,
+  .heroCard[data-revealed="true"] .cardValue,
+  .compCard,
+  .compsSectionTitle,
+  .toggleTrack[data-mode="ai"],
+  .statusBadge::before {
+    animation: none !important;
+  }
+
+  .heroCard {
+    clip-path: inset(0 0 0 0) !important;
+    opacity: 1 !important;
+    transform: none !important;
+    transition: background 0.2s ease !important;
+  }
+
+  .heroCard::after,
+  .toggleThumb {
+    transition-duration: 0.15s !important;
+  }
+
+  .kicker {
+    background: none;
+    -webkit-text-fill-color: rgba(200, 160, 80, 0.55);
+  }
+}
+
+/* ----- Mobile ----- */
+
+@media (max-width: 600px) {
+  .panel {
+    padding: 1.8rem 1.4rem;
+    gap: 1.6rem;
+  }
+
+  .heroGrid {
+    grid-template-columns: repeat(3, 1fr);
+  }
+
+  .heroCard {
+    padding: 1.4rem 0.5rem;
+  }
+
+  .cardValue {
+    font-size: 1.25rem;
+  }
+
+  .detailStrip {
+    flex-wrap: wrap;
+    gap: 1rem;
+  }
+
+  .modeToggle {
+    flex-wrap: wrap;
+    gap: 0.5rem;
+  }
+
+  .compRow {
+    gap: 0.8rem;
+  }
 }

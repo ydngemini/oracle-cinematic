@@ -1,11 +1,76 @@
 /* ─────────────────────────────────────────────────────────────
-   BillingOverlay
-   Slides in from below when data-visible="true".
-   Aesthetic: dark brutalist glassmorphism, PP Neue Montreal,
-              muted amber accents, 2 px border-radius, no neon.
-───────────────────────────────────────────────────────────── */
+   BillingOverlay — subscription gate
+   Cinematic modal. Stripe meets sci-fi. Glass tiers, amber CTA,
+   staggered feature-list reveal, spring-physics entrance.
+   ───────────────────────────────────────────────────────────── */
 
-/* Full-screen backdrop — intercepts pointer events when active */
+/* ── Keyframes ───────────────────────────────────────────────── */
+
+@keyframes backdropFadeIn {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+@keyframes panelRise {
+  0% {
+    opacity: 0;
+    transform: translateY(48px) scale(0.97);
+    filter: blur(8px);
+  }
+  55% {
+    filter: blur(0);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+    filter: blur(0);
+  }
+}
+
+@keyframes featureIn {
+  from {
+    opacity: 0;
+    transform: translateX(-12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes priceTick {
+  0% {
+    opacity: 0;
+    transform: translateY(20px) scale(0.9);
+    filter: blur(4px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+    filter: blur(0);
+  }
+}
+
+@keyframes dotGlow {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(200, 160, 80, 0); }
+  50%       { box-shadow: 0 0 6px 2px rgba(200, 160, 80, 0.2); }
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes shimmerCtaBg {
+  0%   { background-position: 200% center; }
+  100% { background-position: -200% center; }
+}
+
+@keyframes errorSlide {
+  from { opacity: 0; transform: translateY(-6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* ── Full-screen backdrop ────────────────────────────────────── */
 .backdrop {
   position: fixed;
   inset: 0;
@@ -15,269 +80,458 @@
   justify-content: center;
   padding: 2rem;
 
-  /* Backdrop darkens the scene */
-  background: rgba(2, 4, 8, 0.72);
-  backdrop-filter: blur(6px);
+  background: rgba(2, 3, 6, 0.82);
+  backdrop-filter: blur(8px) saturate(0.8);
+  -webkit-backdrop-filter: blur(8px) saturate(0.8);
 
-  /* Hidden by default */
+  /* Atmospheric vignette */
+  background-image:
+    radial-gradient(ellipse 70% 50% at 50% 50%, transparent 40%, rgba(0, 0, 0, 0.4) 100%);
+
   opacity: 0;
   pointer-events: none;
-  transition: opacity 0.45s cubic-bezier(0.16, 1, 0.3, 1);
+  transition: opacity 0.5s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 .backdrop[data-visible="true"] {
   opacity: 1;
   pointer-events: auto;
+  animation: backdropFadeIn 0.5s cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 
-/* ── Panel ───────────────────────────────────────────────── */
+/* ── Glass panel ─────────────────────────────────────────────── */
 .panel {
   position: relative;
   width: 100%;
-  max-width: 480px;
+  max-width: 500px;
 
-  background: rgba(10, 10, 12, 0.6);
-  backdrop-filter: blur(48px) saturate(1.2);
-  -webkit-backdrop-filter: blur(48px) saturate(1.2);
+  background: rgba(8, 8, 12, 0.75);
+  backdrop-filter: blur(40px) saturate(1.4);
+  -webkit-backdrop-filter: blur(40px) saturate(1.4);
 
-  border: 1px solid rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.04);
   border-radius: 2px;
-  box-shadow:
-    0 40px 120px rgba(0, 0, 0, 0.7),
-    0 0 0 1px rgba(200, 160, 80, 0.04),
-    inset 0 1px 0 rgba(255, 255, 255, 0.03);
 
-  padding: 2.8rem 2.4rem 2.4rem;
+  box-shadow:
+    0 8px 32px rgba(0, 0, 0, 0.4),
+    0 40px 120px rgba(0, 0, 0, 0.7),
+    0 0 0 1px rgba(200, 160, 80, 0.03),
+    inset 0 1px 0 rgba(255, 255, 255, 0.04),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.3);
+
+  padding: 3rem 2.8rem 2.6rem;
   display: flex;
   flex-direction: column;
   gap: 2rem;
 
-  /* Slide-in from below */
-  transform: translateY(40px);
+  /* Hidden state */
+  transform: translateY(48px) scale(0.97);
   opacity: 0;
+  filter: blur(8px);
   transition:
-    transform 0.5s cubic-bezier(0.16, 1, 0.3, 1),
-    opacity   0.45s cubic-bezier(0.16, 1, 0.3, 1);
+    transform 0.58s cubic-bezier(0.16, 1, 0.3, 1),
+    opacity   0.5s  cubic-bezier(0.16, 1, 0.3, 1),
+    filter    0.45s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* Top-edge amber keyline */
+.panel::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 8%;
+  right: 8%;
+  height: 1px;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(200, 160, 80, 0.3) 25%,
+    rgba(200, 160, 80, 0.5) 50%,
+    rgba(200, 160, 80, 0.3) 75%,
+    transparent
+  );
+}
+
+/* Corner accent — bottom right */
+.panel::after {
+  content: '';
+  position: absolute;
+  bottom: 0;
+  right: 0;
+  width: 80px;
+  height: 80px;
+  background:
+    linear-gradient(225deg, rgba(200, 160, 80, 0.04) 0%, transparent 60%);
+  pointer-events: none;
 }
 
 .backdrop[data-visible="true"] .panel {
-  transform: translateY(0);
+  transform: translateY(0) scale(1);
   opacity: 1;
+  filter: blur(0);
+  animation: panelRise 0.65s cubic-bezier(0.16, 1, 0.3, 1) 0.05s both;
 }
 
-/* ── Header ─────────────────────────────────────────────── */
+/* ── Header ──────────────────────────────────────────────────── */
 .header {
   display: flex;
   flex-direction: column;
-  gap: 0.55rem;
+  gap: 0.5rem;
+}
+
+.backdrop[data-visible="true"] .header {
+  animation: featureIn 0.5s cubic-bezier(0.16, 1, 0.3, 1) 0.15s both;
 }
 
 .kicker {
   font-family: 'PP Neue Montreal', 'Inter', system-ui, sans-serif;
   font-size: 0.52rem;
   font-weight: 500;
-  letter-spacing: 0.32em;
+  letter-spacing: 0.36em;
   text-transform: uppercase;
-  color: rgba(200, 160, 80, 0.65);
+  color: rgba(200, 160, 80, 0.6);
 }
 
 .heading {
   font-family: 'PP Neue Montreal', 'Inter', system-ui, sans-serif;
-  font-size: 1.55rem;
+  font-size: 1.6rem;
   font-weight: 300;
-  letter-spacing: -0.015em;
-  color: rgba(240, 238, 232, 0.94);
+  letter-spacing: -0.02em;
+  color: rgba(245, 240, 230, 0.94);
   margin: 0;
-  line-height: 1.25;
+  line-height: 1.2;
 }
 
 .subheading {
   font-family: 'PP Neue Montreal', 'Inter', system-ui, sans-serif;
   font-size: 0.78rem;
   font-weight: 400;
-  color: rgba(200, 198, 192, 0.45);
+  color: rgba(255, 255, 255, 0.28);
   margin: 0;
-  line-height: 1.55;
+  line-height: 1.6;
 }
 
-/* ── Price block ─────────────────────────────────────────── */
+/* ── Price block ─────────────────────────────────────────────── */
 .priceBlock {
   display: flex;
   align-items: baseline;
-  gap: 0.25rem;
+  gap: 0.2rem;
 
-  padding: 1.4rem 0;
+  padding: 1.6rem 0;
   border-top: 1px solid rgba(255, 255, 255, 0.04);
   border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+
+  /* Faint inner glow above/below the price row */
+  box-shadow:
+    0 -1px 0 rgba(255, 255, 255, 0.015),
+    0  1px 0 rgba(255, 255, 255, 0.015);
+}
+
+.backdrop[data-visible="true"] .priceBlock {
+  animation: priceTick 0.65s cubic-bezier(0.16, 1, 0.3, 1) 0.25s both;
 }
 
 .currency {
   font-family: 'PP Neue Montreal', 'Inter', system-ui, sans-serif;
   font-size: 1.4rem;
   font-weight: 300;
-  color: rgba(200, 160, 80, 0.55);
+  color: rgba(200, 160, 80, 0.5);
   align-self: flex-start;
-  margin-top: 0.5rem;
+  margin-top: 0.55rem;
+  line-height: 1;
 }
 
 .price {
   font-family: 'PP Neue Montreal', 'Inter', system-ui, sans-serif;
-  font-size: 4rem;
+  font-size: 4.2rem;
   font-weight: 200;
-  letter-spacing: -0.04em;
-  color: rgba(240, 238, 232, 0.97);
+  letter-spacing: -0.045em;
+  color: rgba(245, 240, 230, 0.97);
   line-height: 1;
+  /* Subtle text-shadow for depth */
+  text-shadow:
+    0 0 60px rgba(200, 160, 80, 0.12),
+    0 2px 8px rgba(0, 0, 0, 0.5);
 }
 
 .period {
   font-family: 'PP Neue Montreal', 'Inter', system-ui, sans-serif;
   font-size: 0.8rem;
   font-weight: 400;
-  letter-spacing: 0.05em;
-  color: rgba(180, 178, 172, 0.4);
+  letter-spacing: 0.06em;
+  color: rgba(255, 255, 255, 0.22);
   align-self: flex-end;
-  padding-bottom: 0.5rem;
+  padding-bottom: 0.55rem;
 }
 
-/* ── Feature list ───────────────────────────────────────── */
+/* ── Feature list ────────────────────────────────────────────── */
 .featureList {
   list-style: none;
   margin: 0;
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 0.75rem;
+  gap: 0;
 }
+
+/* Staggered reveal for each feature row */
+.backdrop[data-visible="true"] .featureItem:nth-child(1) { animation: featureIn 0.45s cubic-bezier(0.16, 1, 0.3, 1) 0.30s both; }
+.backdrop[data-visible="true"] .featureItem:nth-child(2) { animation: featureIn 0.45s cubic-bezier(0.16, 1, 0.3, 1) 0.36s both; }
+.backdrop[data-visible="true"] .featureItem:nth-child(3) { animation: featureIn 0.45s cubic-bezier(0.16, 1, 0.3, 1) 0.42s both; }
+.backdrop[data-visible="true"] .featureItem:nth-child(4) { animation: featureIn 0.45s cubic-bezier(0.16, 1, 0.3, 1) 0.48s both; }
+.backdrop[data-visible="true"] .featureItem:nth-child(5) { animation: featureIn 0.45s cubic-bezier(0.16, 1, 0.3, 1) 0.54s both; }
+.backdrop[data-visible="true"] .featureItem:nth-child(6) { animation: featureIn 0.45s cubic-bezier(0.16, 1, 0.3, 1) 0.60s both; }
 
 .featureItem {
   display: grid;
-  grid-template-columns: 6px 1fr;
+  grid-template-columns: 10px 1fr;
   grid-template-rows: auto auto;
-  column-gap: 0.75rem;
-  row-gap: 0.1rem;
+  column-gap: 0.85rem;
+  row-gap: 0.08rem;
   align-items: start;
+  padding: 0.65rem 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+  transition: background 0.2s ease;
+}
+
+.featureItem:last-child {
+  border-bottom: none;
+}
+
+.featureItem:hover {
+  background: rgba(200, 160, 80, 0.02);
+  margin-inline: -0.5rem;
+  padding-inline: 0.5rem;
+  border-radius: 2px;
+}
+
+.featureItem:hover .featureDot {
+  background: rgba(200, 160, 80, 0.75);
+  animation: dotGlow 1.5s ease infinite;
 }
 
 .featureDot {
   grid-row: 1 / 3;
   align-self: center;
-  width: 3px;
-  height: 3px;
+  width: 4px;
+  height: 4px;
   border-radius: 50%;
-  background: rgba(200, 160, 80, 0.5);
-  margin-top: 2px;
+  background: rgba(200, 160, 80, 0.45);
+  margin-top: 1px;
+  transition:
+    background   0.2s ease,
+    box-shadow   0.2s ease;
+  box-shadow: 0 0 0 0 rgba(200, 160, 80, 0);
 }
 
 .featureLabel {
   font-family: 'PP Neue Montreal', 'Inter', system-ui, sans-serif;
-  font-size: 0.72rem;
+  font-size: 0.7rem;
   font-weight: 500;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.06em;
   text-transform: uppercase;
-  color: rgba(230, 228, 222, 0.8);
+  color: rgba(245, 240, 230, 0.82);
+  line-height: 1.3;
 }
 
 .featureDetail {
   font-family: 'PP Neue Montreal', 'Inter', system-ui, sans-serif;
-  font-size: 0.68rem;
+  font-size: 0.66rem;
   font-weight: 400;
-  color: rgba(180, 178, 172, 0.4);
+  color: rgba(255, 255, 255, 0.28);
   line-height: 1.4;
 }
 
-/* ── CTA section ─────────────────────────────────────────── */
+/* ── CTA section ─────────────────────────────────────────────── */
 .ctaWrapper {
   display: flex;
   flex-direction: column;
   gap: 0.9rem;
 }
 
+.backdrop[data-visible="true"] .ctaWrapper {
+  animation: featureIn 0.5s cubic-bezier(0.16, 1, 0.3, 1) 0.68s both;
+}
+
+/* ── Error message ───────────────────────────────────────────── */
 .errorMsg {
   font-family: 'PP Neue Montreal', 'Inter', system-ui, sans-serif;
   font-size: 0.68rem;
-  color: rgba(210, 100, 80, 0.85);
+  color: rgba(215, 100, 75, 0.9);
   margin: 0;
-  padding: 0.55rem 0.8rem;
-  background: rgba(210, 80, 60, 0.06);
-  border: 1px solid rgba(210, 80, 60, 0.18);
-  border-radius: 2px;
+  padding: 0.6rem 0.9rem;
+  background: rgba(210, 75, 55, 0.07);
+  border: 1px solid rgba(210, 75, 55, 0.18);
+  border-left: 2px solid rgba(210, 75, 55, 0.45);
+  border-radius: 0 2px 2px 0;
+  line-height: 1.5;
+  animation: errorSlide 0.35s cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 
+/* ── CTA button ──────────────────────────────────────────────── */
 .cta {
   font-family: 'PP Neue Montreal', 'Inter', system-ui, sans-serif;
-  font-size: 0.7rem;
+  font-size: 0.62rem;
   font-weight: 500;
-  letter-spacing: 0.2em;
+  letter-spacing: 0.32em;
   text-transform: uppercase;
 
   width: 100%;
-  padding: 1rem 1.5rem;
+  padding: 1.1rem 1.5rem;
   border-radius: 2px;
-  border: 1px solid rgba(200, 160, 80, 0.35);
+  border: 1px solid rgba(200, 160, 80, 0.3);
   background: rgba(200, 160, 80, 0.07);
-  color: rgba(220, 180, 100, 0.92);
+  color: rgba(220, 185, 110, 0.92);
 
   cursor: pointer;
   position: relative;
   overflow: hidden;
 
+  box-shadow:
+    0 0 0 0 rgba(200, 160, 80, 0),
+    inset 0 1px 0 rgba(200, 160, 80, 0.06);
+
   transition:
-    background  0.3s cubic-bezier(0.16, 1, 0.3, 1),
-    border-color 0.3s cubic-bezier(0.16, 1, 0.3, 1),
-    color       0.3s cubic-bezier(0.16, 1, 0.3, 1),
-    transform   0.2s cubic-bezier(0.16, 1, 0.3, 1);
+    background    0.32s cubic-bezier(0.16, 1, 0.3, 1),
+    border-color  0.32s cubic-bezier(0.16, 1, 0.3, 1),
+    color         0.32s cubic-bezier(0.16, 1, 0.3, 1),
+    box-shadow    0.32s cubic-bezier(0.16, 1, 0.3, 1),
+    transform     0.2s  cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* Sweep shine */
+.cta::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: -100%;
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(200, 160, 80, 0.07) 50%,
+    transparent
+  );
+  transition: left 0.6s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* Bottom edge inner highlight */
+.cta::after {
+  content: '';
+  position: absolute;
+  bottom: 0;
+  left: 20%;
+  right: 20%;
+  height: 1px;
+  background: rgba(200, 160, 80, 0.12);
+  transition: opacity 0.3s ease;
+}
+
+.cta:hover:not(:disabled)::before {
+  left: 100%;
 }
 
 .cta:hover:not(:disabled) {
-  background: rgba(200, 160, 80, 0.14);
-  border-color: rgba(200, 160, 80, 0.55);
-  color: rgba(235, 200, 120, 1);
-  transform: translateY(-1px);
+  background:   rgba(200, 160, 80, 0.13);
+  border-color: rgba(200, 160, 80, 0.5);
+  color:        rgba(235, 200, 120, 1);
+  transform:    translateY(-2px);
+  box-shadow:
+    0 8px 24px rgba(0, 0, 0, 0.35),
+    0 0 32px rgba(200, 160, 80, 0.1),
+    inset 0 1px 0 rgba(200, 160, 80, 0.1);
 }
 
 .cta:active:not(:disabled) {
-  transform: translateY(0);
-  background: rgba(200, 160, 80, 0.09);
+  transform:    translateY(0);
+  background:   rgba(200, 160, 80, 0.08);
+  border-color: rgba(200, 160, 80, 0.35);
+  box-shadow:
+    0 2px 8px rgba(0, 0, 0, 0.3),
+    0 0 12px rgba(200, 160, 80, 0.06);
 }
 
 .cta:disabled {
   cursor: not-allowed;
-  opacity: 0.5;
+  opacity: 0.45;
+  transform: none;
 }
 
-/* Loading spinner inside button */
+/* Loading state — shimmer border */
+.cta[data-loading="true"] {
+  border-color: rgba(200, 160, 80, 0.22);
+  background: linear-gradient(
+    90deg,
+    rgba(200, 160, 80, 0.04) 0%,
+    rgba(200, 160, 80, 0.09) 50%,
+    rgba(200, 160, 80, 0.04) 100%
+  );
+  background-size: 200% auto;
+  animation: shimmerCtaBg 1.6s linear infinite;
+}
+
+/* ── Spinner ─────────────────────────────────────────────────── */
 .ctaSpinner {
   display: inline-block;
   width: 14px;
   height: 14px;
-  border: 1.5px solid rgba(200, 160, 80, 0.25);
-  border-top-color: rgba(200, 160, 80, 0.8);
+  border: 1.5px solid rgba(200, 160, 80, 0.2);
+  border-top-color: rgba(200, 160, 80, 0.85);
   border-radius: 50%;
-  animation: spin 0.75s linear infinite;
+  animation: spin 0.7s linear infinite;
   vertical-align: middle;
 }
 
-@keyframes spin {
-  to { transform: rotate(360deg); }
-}
-
+/* ── Fine print ──────────────────────────────────────────────── */
 .fine {
   font-family: 'PP Neue Montreal', 'Inter', system-ui, sans-serif;
-  font-size: 0.6rem;
-  letter-spacing: 0.08em;
-  color: rgba(160, 158, 152, 0.3);
+  font-size: 0.58rem;
+  letter-spacing: 0.1em;
+  color: rgba(255, 255, 255, 0.18);
   text-align: center;
   margin: 0;
 }
 
-/* ── Responsive ─────────────────────────────────────────── */
+/* ── Reduced motion ──────────────────────────────────────────── */
+@media (prefers-reduced-motion: reduce) {
+  .backdrop,
+  .panel,
+  .header,
+  .priceBlock,
+  .featureItem,
+  .ctaWrapper {
+    animation: none;
+  }
+
+  .backdrop[data-visible="true"] .panel {
+    animation: none;
+    transform: none;
+    opacity: 1;
+    filter: none;
+  }
+
+  .cta,
+  .featureItem {
+    transition: none;
+  }
+}
+
+/* ── Mobile ──────────────────────────────────────────────────── */
 @media (max-width: 540px) {
+  .backdrop {
+    padding: 1rem;
+    align-items: flex-end;
+  }
+
   .panel {
-    padding: 2rem 1.6rem 1.8rem;
+    padding: 2.2rem 1.6rem 2rem;
     gap: 1.6rem;
+    max-width: 100%;
+    border-radius: 2px 2px 0 0;
   }
 
   .price {
-    font-size: 3rem;
+    font-size: 3.2rem;
   }
 }

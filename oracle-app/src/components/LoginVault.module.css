@@ -1,9 +1,82 @@
 /* ─────────────────────────────────────────────────────────────
    LoginVault — auth gate overlay
-   Dark brutalist glassmorphism. No neon. Muted whites + amber.
+   Cinematic vault-unlock experience. Dark glass, amber accent.
+   Zero neon. Muted whites, spring easing, biometric feel.
    ───────────────────────────────────────────────────────────── */
 
-/* Full-screen backing */
+/* ── Keyframes ───────────────────────────────────────────────── */
+
+@keyframes vaultReveal {
+  0% {
+    opacity: 0;
+    background: #000;
+  }
+  100% {
+    opacity: 1;
+    background: #020408;
+  }
+}
+
+@keyframes panelDrop {
+  0% {
+    opacity: 0;
+    transform: translateY(-24px) scale(0.97);
+    filter: blur(6px);
+  }
+  60% {
+    filter: blur(0px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+    filter: blur(0px);
+  }
+}
+
+@keyframes scanLine {
+  0%   { transform: translateY(-100%); opacity: 0; }
+  10%  { opacity: 1; }
+  90%  { opacity: 1; }
+  100% { transform: translateY(400%); opacity: 0; }
+}
+
+@keyframes borderPulse {
+  0%, 100% { border-color: rgba(200, 160, 80, 0.12); }
+  50%       { border-color: rgba(200, 160, 80, 0.28); }
+}
+
+@keyframes dotPulse {
+  0%, 80%, 100% { opacity: 0.15; transform: scale(0.75); }
+  40%           { opacity: 1;    transform: scale(1.25); }
+}
+
+@keyframes fieldSlide {
+  from {
+    opacity: 0;
+    transform: translateX(-10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes glowPulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(200, 160, 80, 0); }
+  50%       { box-shadow: 0 0 0 4px rgba(200, 160, 80, 0.06); }
+}
+
+@keyframes shimmer {
+  0%   { background-position: -200% center; }
+  100% { background-position: 200% center; }
+}
+
+@keyframes fadeUpNote {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* ── Full-screen backing ─────────────────────────────────────── */
 .overlay {
   position: fixed;
   inset: 0;
@@ -15,8 +88,15 @@
 
   background: #020408;
 
+  /* Atmospheric radial — very subtle */
+  background-image:
+    radial-gradient(ellipse 80% 60% at 50% 0%,   rgba(200, 160, 80, 0.025) 0%, transparent 70%),
+    radial-gradient(ellipse 60% 80% at 50% 100%,  rgba(8, 20, 40, 0.6) 0%, transparent 80%);
+
+  animation: vaultReveal 0.9s cubic-bezier(0.16, 1, 0.3, 1) both;
+
   opacity: 1;
-  transition: opacity 1.2s cubic-bezier(0.16, 1, 0.3, 1);
+  transition: opacity 1.4s cubic-bezier(0.16, 1, 0.3, 1);
 
   font-family: 'PP Neue Montreal', 'Inter', -apple-system, sans-serif;
 }
@@ -26,25 +106,83 @@
   pointer-events: none;
 }
 
+/* ── Decorative grid overlay ─────────────────────────────────── */
+.overlay::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background-image:
+    linear-gradient(rgba(255, 255, 255, 0.012) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.012) 1px, transparent 1px);
+  background-size: 60px 60px;
+  pointer-events: none;
+  mask-image: radial-gradient(ellipse 70% 70% at 50% 50%, black 0%, transparent 100%);
+  -webkit-mask-image: radial-gradient(ellipse 70% 70% at 50% 50%, black 0%, transparent 100%);
+}
+
 /* ── Glass panel ─────────────────────────────────────────────── */
 .panel {
-  width: min(420px, calc(100vw - 2rem));
+  position: relative;
+  width: min(440px, calc(100vw - 2rem));
   display: flex;
   flex-direction: column;
   gap: 2.4rem;
 
-  background: rgba(10, 10, 12, 0.50);
-  backdrop-filter: blur(40px);
-  -webkit-backdrop-filter: blur(40px);
+  background: rgba(8, 8, 12, 0.75);
+  backdrop-filter: blur(40px) saturate(1.4);
+  -webkit-backdrop-filter: blur(40px) saturate(1.4);
 
-  border: 1px solid rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.04);
   border-radius: 2px;
 
-  padding: 3rem 2.8rem;
+  padding: 3.2rem 3rem;
 
   box-shadow:
-    0 32px 96px rgba(0, 0, 0, 0.7),
-    inset 0 1px 0 rgba(255, 255, 255, 0.03);
+    0 8px 32px rgba(0, 0, 0, 0.4),
+    0 40px 100px rgba(0, 0, 0, 0.65),
+    inset 0 1px 0 rgba(255, 255, 255, 0.04),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.3);
+
+  animation: panelDrop 0.85s cubic-bezier(0.16, 1, 0.3, 1) 0.15s both;
+
+  overflow: hidden;
+}
+
+/* Top-edge amber accent line */
+.panel::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 10%;
+  right: 10%;
+  height: 1px;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(200, 160, 80, 0.35) 30%,
+    rgba(200, 160, 80, 0.55) 50%,
+    rgba(200, 160, 80, 0.35) 70%,
+    transparent
+  );
+}
+
+/* Scan line — biometric effect, plays once on load */
+.panel::after {
+  content: '';
+  position: absolute;
+  inset-inline: 0;
+  top: 0;
+  height: 60px;
+  background: linear-gradient(
+    to bottom,
+    transparent,
+    rgba(200, 160, 80, 0.03) 40%,
+    rgba(200, 160, 80, 0.05) 50%,
+    rgba(200, 160, 80, 0.03) 60%,
+    transparent
+  );
+  pointer-events: none;
+  animation: scanLine 2.2s cubic-bezier(0.4, 0, 0.6, 1) 0.5s 1 forwards;
 }
 
 /* ── Wordmark ────────────────────────────────────────────────── */
@@ -52,21 +190,40 @@
   display: flex;
   align-items: center;
   gap: 0.9rem;
+  animation: fieldSlide 0.6s cubic-bezier(0.16, 1, 0.3, 1) 0.4s both;
 }
 
 .wordmarkKicker {
   font-size: 0.6rem;
   letter-spacing: 0.42em;
   text-transform: uppercase;
-  color: rgba(200, 175, 120, 0.75);
+  color: rgba(200, 175, 120, 0.8);
   font-weight: 500;
+  /* Subtle amber shimmer on initial load */
+  background: linear-gradient(
+    90deg,
+    rgba(200, 175, 120, 0.65) 0%,
+    rgba(235, 205, 140, 1) 40%,
+    rgba(200, 175, 120, 0.65) 60%
+  );
+  background-size: 200% auto;
+  background-clip: text;
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: shimmer 2.8s ease 0.6s 1 forwards;
 }
 
 .wordmarkDivider {
   display: block;
   width: 1px;
-  height: 12px;
-  background: rgba(255, 255, 255, 0.10);
+  height: 14px;
+  background: linear-gradient(
+    to bottom,
+    transparent,
+    rgba(255, 255, 255, 0.15) 30%,
+    rgba(255, 255, 255, 0.15) 70%,
+    transparent
+  );
   flex-shrink: 0;
 }
 
@@ -74,7 +231,7 @@
   font-size: 0.6rem;
   letter-spacing: 0.28em;
   text-transform: uppercase;
-  color: rgba(255, 255, 255, 0.18);
+  color: rgba(255, 255, 255, 0.2);
   font-weight: 400;
 }
 
@@ -85,112 +242,187 @@
   gap: 1.6rem;
 }
 
+/* ── Field ───────────────────────────────────────────────────── */
 .field {
   display: flex;
   flex-direction: column;
   gap: 0.55rem;
 }
 
-.label {
-  font-size: 0.52rem;
-  letter-spacing: 0.32em;
-  text-transform: uppercase;
-  color: rgba(180, 175, 160, 0.50);
-  font-weight: 500;
-  user-select: none;
+.field:nth-child(1) {
+  animation: fieldSlide 0.55s cubic-bezier(0.16, 1, 0.3, 1) 0.5s both;
 }
 
+.field:nth-child(2) {
+  animation: fieldSlide 0.55s cubic-bezier(0.16, 1, 0.3, 1) 0.62s both;
+}
+
+/* ── Label ───────────────────────────────────────────────────── */
+.label {
+  font-size: 0.52rem;
+  letter-spacing: 0.36em;
+  text-transform: uppercase;
+  color: rgba(180, 175, 160, 0.45);
+  font-weight: 500;
+  user-select: none;
+  transition: color 0.25s ease;
+}
+
+.field:focus-within .label {
+  color: rgba(200, 160, 80, 0.7);
+}
+
+/* ── Input ───────────────────────────────────────────────────── */
 .input {
   font-family: inherit;
   font-size: 0.875rem;
   font-weight: 300;
-  letter-spacing: 0.04em;
-  color: rgba(240, 238, 230, 0.88);
+  letter-spacing: 0.05em;
+  color: rgba(245, 240, 230, 0.9);
 
-  background: rgba(255, 255, 255, 0.025);
-  border: 1px solid rgba(255, 255, 255, 0.07);
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid rgba(255, 255, 255, 0.05);
   border-radius: 2px;
 
-  padding: 0.85rem 1rem;
+  padding: 0.9rem 1.1rem;
   outline: none;
 
+  /* Faint inner shadow for depth */
+  box-shadow:
+    inset 0 1px 3px rgba(0, 0, 0, 0.3),
+    0 0 0 0 rgba(200, 160, 80, 0);
+
   transition:
-    border-color 0.25s ease,
-    background  0.25s ease,
-    box-shadow  0.25s ease;
+    border-color  0.28s cubic-bezier(0.16, 1, 0.3, 1),
+    background    0.28s cubic-bezier(0.16, 1, 0.3, 1),
+    box-shadow    0.28s cubic-bezier(0.16, 1, 0.3, 1),
+    color         0.2s ease;
 }
 
 .input::placeholder {
-  color: rgba(255, 255, 255, 0.12);
+  color: rgba(255, 255, 255, 0.1);
   letter-spacing: 0.04em;
+  transition: color 0.2s ease;
+}
+
+.input:hover:not(:focus):not(:disabled) {
+  border-color: rgba(255, 255, 255, 0.09);
+  background: rgba(255, 255, 255, 0.025);
 }
 
 .input:focus {
-  border-color: rgba(200, 160, 80, 0.35);
-  background:   rgba(255, 255, 255, 0.04);
-  box-shadow:   0 0 0 2px rgba(200, 160, 80, 0.08);
+  border-color: rgba(200, 160, 80, 0.4);
+  background:   rgba(200, 160, 80, 0.025);
+  box-shadow:
+    inset 0 1px 3px rgba(0, 0, 0, 0.25),
+    0 0 0 3px rgba(200, 160, 80, 0.07),
+    0 0 20px rgba(200, 160, 80, 0.04);
+}
+
+.input:focus::placeholder {
+  color: rgba(255, 255, 255, 0.06);
 }
 
 .input:disabled {
-  opacity: 0.4;
+  opacity: 0.35;
   cursor: not-allowed;
 }
 
 /* ── Error message ───────────────────────────────────────────── */
 .errorMsg {
   margin: 0;
-  font-size: 0.7rem;
+  font-size: 0.68rem;
   letter-spacing: 0.06em;
-  color: rgba(200, 120, 80, 0.80);
-  line-height: 1.5;
-  padding: 0.5rem 0.75rem;
-  border-left: 2px solid rgba(200, 120, 80, 0.35);
-  background: rgba(200, 80, 40, 0.05);
+  color: rgba(210, 110, 80, 0.85);
+  line-height: 1.55;
+  padding: 0.65rem 0.9rem;
+  border-left: 2px solid rgba(210, 100, 70, 0.4);
+  background: rgba(200, 70, 40, 0.06);
   border-radius: 0 2px 2px 0;
+  animation: fieldSlide 0.4s cubic-bezier(0.16, 1, 0.3, 1) both;
+  box-shadow: inset 0 0 12px rgba(200, 70, 40, 0.04);
 }
 
 /* ── Submit button ───────────────────────────────────────────── */
 .submitBtn {
+  position: relative;
   font-family: inherit;
   font-size: 0.58rem;
-  letter-spacing: 0.36em;
+  letter-spacing: 0.4em;
   text-transform: uppercase;
   font-weight: 500;
   color: rgba(200, 175, 120, 0.65);
 
   background: rgba(200, 160, 80, 0.04);
-  border: 1px solid rgba(200, 160, 80, 0.18);
+  border: 1px solid rgba(200, 160, 80, 0.16);
   border-radius: 2px;
 
-  padding: 1rem 0;
+  padding: 1.05rem 0;
   width: 100%;
   cursor: pointer;
+  overflow: hidden;
 
   transition:
-    color            0.22s ease,
-    background       0.22s ease,
-    border-color     0.22s ease,
-    box-shadow       0.22s ease;
+    color         0.28s cubic-bezier(0.16, 1, 0.3, 1),
+    background    0.28s cubic-bezier(0.16, 1, 0.3, 1),
+    border-color  0.28s cubic-bezier(0.16, 1, 0.3, 1),
+    box-shadow    0.28s cubic-bezier(0.16, 1, 0.3, 1),
+    transform     0.18s cubic-bezier(0.16, 1, 0.3, 1);
 
-  /* Push button to bottom of form stack via margin-top */
   margin-top: 0.4rem;
+  animation: fieldSlide 0.55s cubic-bezier(0.16, 1, 0.3, 1) 0.74s both;
+}
+
+/* Sweep shine on hover */
+.submitBtn::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: -100%;
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(200, 160, 80, 0.06) 50%,
+    transparent
+  );
+  transition: left 0.55s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.submitBtn:hover:not(:disabled)::before {
+  left: 100%;
 }
 
 .submitBtn:hover:not(:disabled) {
-  color:         rgba(220, 190, 120, 0.95);
-  background:    rgba(200, 160, 80, 0.10);
-  border-color:  rgba(200, 160, 80, 0.40);
-  box-shadow:    0 0 24px rgba(200, 160, 80, 0.08);
+  color:        rgba(225, 195, 125, 0.98);
+  background:   rgba(200, 160, 80, 0.09);
+  border-color: rgba(200, 160, 80, 0.38);
+  box-shadow:
+    0 0 28px rgba(200, 160, 80, 0.08),
+    0 4px 16px rgba(0, 0, 0, 0.3),
+    inset 0 1px 0 rgba(200, 160, 80, 0.06);
+  transform: translateY(-1px);
 }
 
 .submitBtn:active:not(:disabled) {
-  background:   rgba(200, 160, 80, 0.15);
-  border-color: rgba(200, 160, 80, 0.55);
+  background:   rgba(200, 160, 80, 0.13);
+  border-color: rgba(200, 160, 80, 0.5);
+  transform:    translateY(0);
+  box-shadow:   0 0 16px rgba(200, 160, 80, 0.06);
 }
 
 .submitBtn:disabled {
-  opacity: 0.35;
+  opacity: 0.3;
   cursor: not-allowed;
+  transform: none;
+}
+
+/* Not-empty + not-disabled: animate a subtle border pulse */
+.submitBtn:not(:disabled):not([style]) {
+  animation:
+    fieldSlide 0.55s cubic-bezier(0.16, 1, 0.3, 1) 0.74s both,
+    borderPulse 3s ease 1.5s infinite;
 }
 
 /* ── Loading dots ────────────────────────────────────────────── */
@@ -205,30 +437,50 @@
   width: 3px;
   height: 3px;
   border-radius: 50%;
-  background: rgba(200, 175, 120, 0.65);
+  background: rgba(200, 175, 120, 0.7);
   animation: dotPulse 1.2s cubic-bezier(0.455, 0.03, 0.515, 0.955) infinite;
 }
 
-.loadingDots span:nth-child(2) {
-  animation-delay: 0.15s;
-}
-
-.loadingDots span:nth-child(3) {
-  animation-delay: 0.30s;
-}
-
-@keyframes dotPulse {
-  0%, 80%, 100% { opacity: 0.15; transform: scale(0.8); }
-  40%           { opacity: 1;    transform: scale(1.2); }
-}
+.loadingDots span:nth-child(2) { animation-delay: 0.15s; }
+.loadingDots span:nth-child(3) { animation-delay: 0.30s; }
 
 /* ── Footer note ─────────────────────────────────────────────── */
 .clearanceNote {
   margin: 0;
   font-size: 0.5rem;
-  letter-spacing: 0.22em;
+  letter-spacing: 0.24em;
   text-transform: uppercase;
   text-align: center;
-  color: rgba(255, 255, 255, 0.09);
+  color: rgba(255, 255, 255, 0.08);
   font-weight: 400;
+  animation: fadeUpNote 0.7s cubic-bezier(0.16, 1, 0.3, 1) 1s both;
+}
+
+/* ── Reduced motion ──────────────────────────────────────────── */
+@media (prefers-reduced-motion: reduce) {
+  .overlay,
+  .panel,
+  .wordmark,
+  .field,
+  .submitBtn,
+  .clearanceNote {
+    animation: none;
+  }
+
+  .panel::after {
+    display: none;
+  }
+
+  .input,
+  .submitBtn {
+    transition: none;
+  }
+}
+
+/* ── Mobile ──────────────────────────────────────────────────── */
+@media (max-width: 480px) {
+  .panel {
+    padding: 2.4rem 1.8rem;
+    gap: 2rem;
+  }
 }
