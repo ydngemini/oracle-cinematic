@@ -2,21 +2,103 @@
   position: absolute;
   inset: 0;
   z-index: 0;
+  overflow: hidden;
+  background: radial-gradient(ellipse at 50% 120%, rgba(18, 16, 12, 1) 0%, rgba(4, 4, 6, 1) 70%);
+}
+
+.container[data-loaded="true"] {
+  background: transparent;
 }
 
 .canvas {
   display: block;
   width: 100%;
   height: 100%;
+  cursor: grab;
 }
 
-/* ─── AR Spatial Anchor Layer ───────────────────────────────────────────── */
+.canvas:active {
+  cursor: grabbing;
+}
+
+/* ─── Cinematic Vignette ───────────────────────────────────────────────── */
+
+.vignette {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 3;
+  background:
+    radial-gradient(ellipse at 50% 50%, transparent 40%, rgba(0, 0, 0, 0.5) 100%),
+    linear-gradient(to bottom, rgba(0, 0, 0, 0.2) 0%, transparent 15%, transparent 85%, rgba(0, 0, 0, 0.4) 100%);
+}
+
+/* ─── Ambient Mouse Glow ───────────────────────────────────────────────── */
+
+.ambientGlow {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 1;
+  opacity: 0.15;
+  background: radial-gradient(
+    600px circle at var(--glow-x, 50%) var(--glow-y, 50%),
+    rgba(180, 140, 60, 0.12) 0%,
+    transparent 70%
+  );
+  transition: opacity 1.5s ease;
+}
+
+.container[data-loaded="true"] .ambientGlow {
+  opacity: 0.08;
+}
+
+/* ─── View Mode Indicator ──────────────────────────────────────────────── */
+
+.viewIndicator {
+  position: absolute;
+  top: 1.4rem;
+  left: 1.6rem;
+  z-index: 8;
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  pointer-events: none;
+  animation: fadeSlideIn 1.2s cubic-bezier(0.16, 1, 0.3, 1) both;
+  animation-delay: 0.5s;
+}
+
+.viewDot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: rgba(200, 160, 80, 0.9);
+  box-shadow: 0 0 8px rgba(200, 160, 80, 0.5);
+  animation: breathe 3s ease-in-out infinite;
+}
+
+.viewLabel {
+  font-size: 0.55rem;
+  letter-spacing: 0.25em;
+  text-transform: uppercase;
+  color: rgba(220, 200, 160, 0.7);
+  font-weight: 500;
+}
+
+.viewHint {
+  font-size: 0.45rem;
+  letter-spacing: 0.15em;
+  color: rgba(255, 255, 255, 0.2);
+  margin-left: 0.8rem;
+}
+
+/* ─── AR Spatial Anchors ───────────────────────────────────────────────── */
 
 .anchorLayer {
   position: absolute;
   inset: 0;
   pointer-events: none;
-  z-index: 5;
+  z-index: 6;
   overflow: hidden;
 }
 
@@ -25,157 +107,328 @@
   top: 0;
   left: 0;
   will-change: transform, opacity;
-  transition: opacity 0.4s ease;
-
   display: flex;
   flex-direction: column;
-  gap: 0.2rem;
-  padding: 0.6rem 1rem;
-  border-radius: 2px;
+  gap: 0.15rem;
+  padding: 0.5rem 0.9rem;
+  border-radius: 3px;
+  pointer-events: auto;
+  cursor: pointer;
 
-  background: rgba(8, 10, 18, 0.72);
-  backdrop-filter: blur(32px);
-  border: 1px solid rgba(255, 255, 255, 0.04);
+  background: rgba(8, 8, 12, 0.75);
+  backdrop-filter: blur(40px) saturate(1.4);
+  border: 1px solid rgba(255, 255, 255, 0.03);
   box-shadow:
-    0 12px 40px rgba(0, 0, 0, 0.5),
-    inset 0 1px 0 rgba(255, 255, 255, 0.02);
+    0 8px 32px rgba(0, 0, 0, 0.4),
+    0 1px 0 rgba(255, 255, 255, 0.02) inset;
 
-  animation: anchorFadeIn 0.8s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  transition:
+    border-color 0.4s cubic-bezier(0.16, 1, 0.3, 1),
+    box-shadow 0.4s cubic-bezier(0.16, 1, 0.3, 1),
+    transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+  animation: anchorEnter 0.8s cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 
-@keyframes anchorFadeIn {
+.anchorCard[data-active="true"] {
+  border-color: rgba(200, 160, 80, 0.25);
+  box-shadow:
+    0 12px 40px rgba(0, 0, 0, 0.5),
+    0 0 20px rgba(200, 160, 80, 0.08),
+    0 1px 0 rgba(255, 255, 255, 0.04) inset;
+  transform: translate(-50%, -100%) scale(1.08) !important;
+}
+
+@keyframes anchorEnter {
   from {
     opacity: 0;
-    transform: translate(-50%, -100%) translateY(8px);
+    transform: translate(-50%, -100%) translateY(12px) scale(0.9);
   }
   to {
     opacity: 1;
-    transform: translate(-50%, -100%) translateY(0);
+    transform: translate(-50%, -100%) translateY(0) scale(1);
   }
 }
 
 .anchorLabel {
-  font-size: 0.45rem;
-  letter-spacing: 0.35em;
+  font-size: 0.4rem;
+  letter-spacing: 0.4em;
   text-transform: uppercase;
-  color: rgba(200, 180, 140, 0.6);
-  font-weight: 500;
+  color: rgba(200, 170, 120, 0.55);
+  font-weight: 600;
 }
 
 .anchorValue {
-  font-size: 0.7rem;
+  font-size: 0.65rem;
   font-weight: 300;
-  color: rgba(240, 238, 232, 0.92);
+  color: rgba(245, 240, 230, 0.9);
   letter-spacing: -0.01em;
   white-space: nowrap;
 }
 
 .anchorStem {
   position: absolute;
-  bottom: -12px;
+  bottom: -16px;
   left: 50%;
   transform: translateX(-50%);
   width: 1px;
-  height: 12px;
-  background: linear-gradient(
-    to bottom,
-    rgba(200, 160, 80, 0.6),
-    rgba(200, 160, 80, 0.0)
-  );
+  height: 16px;
+  background: linear-gradient(to bottom, rgba(200, 160, 80, 0.5), transparent);
 }
 
-/* ─── GIS Boundary Indicator ────────────────────────────────────────────── */
+.anchorPulse {
+  position: absolute;
+  bottom: -20px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: rgba(200, 160, 80, 0.8);
+  animation: anchorPulseAnim 2s ease-in-out infinite;
+}
+
+@keyframes anchorPulseAnim {
+  0%, 100% { transform: translateX(-50%) scale(1); opacity: 0.6; }
+  50% { transform: translateX(-50%) scale(2); opacity: 0; }
+}
+
+/* ─── GIS Indicator ────────────────────────────────────────────────────── */
 
 .gisIndicator {
   position: absolute;
-  top: 1.2rem;
-  left: 1.5rem;
-  z-index: 6;
+  top: 1.4rem;
+  right: 1.6rem;
+  z-index: 8;
   display: flex;
   align-items: center;
   gap: 0.5rem;
   pointer-events: none;
+  font-size: 0.45rem;
+  letter-spacing: 0.3em;
+  text-transform: uppercase;
+  color: rgba(210, 148, 30, 0.6);
+  font-weight: 500;
+  animation: fadeSlideIn 0.8s cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 
 .gisIndicatorDot {
-  width: 6px;
-  height: 6px;
+  width: 5px;
+  height: 5px;
   border-radius: 50%;
-  background: rgba(210, 148, 30, 0.9);
-  box-shadow: 0 0 8px rgba(210, 148, 30, 0.6);
-  animation: gisPulse 2s ease-in-out infinite;
+  background: rgba(210, 148, 30, 0.8);
+  box-shadow: 0 0 6px rgba(210, 148, 30, 0.5);
+  animation: breathe 2.5s ease-in-out infinite;
 }
 
-@keyframes gisPulse {
-  0%, 100% { opacity: 0.6; box-shadow: 0 0 4px rgba(210, 148, 30, 0.3); }
-  50% { opacity: 1; box-shadow: 0 0 12px rgba(210, 148, 30, 0.8); }
-}
-
-.gisIndicatorText {
-  font-size: 0.5rem;
-  letter-spacing: 0.3em;
-  text-transform: uppercase;
-  color: rgba(210, 148, 30, 0.7);
-  font-weight: 500;
-}
-
-/* ─── Existing Styles ───────────────────────────────────────────────────── */
-
-.overlay {
-  position: absolute;
-  bottom: 1.5rem;
-  right: 1.5rem;
-  pointer-events: none;
-  opacity: 0;
-  transition: opacity 0.6s;
-  display: flex;
-  gap: 0.5rem;
-  z-index: 6;
-}
-
-.overlay[data-furnished="true"] {
-  opacity: 1;
-}
-
-.badge {
-  font-size: 0.6rem;
-  letter-spacing: 0.2em;
-  text-transform: uppercase;
-  padding: 0.4rem 1rem;
-  border-radius: 6px;
-  background: rgba(57, 255, 20, 0.08);
-  border: 1px solid rgba(57, 255, 20, 0.35);
-  color: #39ff14;
-  text-shadow: 0 0 10px rgba(57, 255, 20, 0.5);
-  backdrop-filter: blur(12px);
-  animation: glowPulse 2s ease-in-out infinite;
-}
-
-@keyframes glowPulse {
-  0%, 100% { box-shadow: 0 0 8px rgba(57, 255, 20, 0.2); }
-  50% { box-shadow: 0 0 20px rgba(57, 255, 20, 0.4); }
-}
+/* ─── Loading State ────────────────────────────────────────────────────── */
 
 .loadingOverlay {
   position: absolute;
   inset: 0;
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
-  background: rgba(0, 0, 0, 0.6);
-  backdrop-filter: blur(8px);
-  z-index: 10;
+  gap: 1.5rem;
+  background: rgba(4, 4, 6, 0.85);
+  backdrop-filter: blur(20px);
+  z-index: 20;
+  animation: fadeIn 0.6s ease both;
+}
+
+.loadingRing {
+  position: relative;
+  width: 80px;
+  height: 80px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.loadingRing svg {
+  width: 100%;
+  height: 100%;
+  transform: rotate(-90deg);
+}
+
+.loadingTrack {
+  fill: none;
+  stroke: rgba(255, 255, 255, 0.04);
+  stroke-width: 2;
+}
+
+.loadingProgress {
+  fill: none;
+  stroke: rgba(200, 160, 80, 0.8);
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-dasharray: 251;
+  transition: stroke-dashoffset 0.4s ease;
+}
+
+.loadingPct {
+  position: absolute;
+  font-size: 0.75rem;
+  font-weight: 300;
+  color: rgba(240, 230, 210, 0.9);
+  letter-spacing: -0.02em;
 }
 
 .loadingText {
-  font-size: 0.7rem;
+  font-size: 0.55rem;
   letter-spacing: 0.3em;
   text-transform: uppercase;
-  color: rgba(255, 255, 255, 0.7);
-  animation: loadPulse 1.5s ease-in-out infinite;
+  color: rgba(255, 255, 255, 0.6);
+  font-weight: 500;
 }
 
-@keyframes loadPulse {
-  0%, 100% { opacity: 0.4; }
-  50% { opacity: 1; }
+.loadingSubtext {
+  font-size: 0.45rem;
+  letter-spacing: 0.15em;
+  color: rgba(255, 255, 255, 0.2);
+}
+
+/* ─── Status Badges ────────────────────────────────────────────────────── */
+
+.badgeRow {
+  position: absolute;
+  bottom: 1.5rem;
+  right: 1.5rem;
+  z-index: 8;
+  display: flex;
+  gap: 0.5rem;
+  animation: fadeSlideIn 1s cubic-bezier(0.16, 1, 0.3, 1) both;
+  animation-delay: 1s;
+}
+
+.badge {
+  font-size: 0.5rem;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  padding: 0.35rem 0.8rem;
+  border-radius: 2px;
+  font-weight: 500;
+  backdrop-filter: blur(20px);
+  transition: all 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.badge[data-type="splat"] {
+  background: rgba(200, 160, 80, 0.06);
+  border: 1px solid rgba(200, 160, 80, 0.2);
+  color: rgba(220, 180, 100, 0.8);
+}
+
+.badge[data-type="furnished"] {
+  background: rgba(100, 180, 120, 0.06);
+  border: 1px solid rgba(100, 180, 120, 0.2);
+  color: rgba(140, 200, 150, 0.8);
+}
+
+.badge[data-type="spatial"] {
+  background: rgba(120, 140, 200, 0.06);
+  border: 1px solid rgba(120, 140, 200, 0.2);
+  color: rgba(160, 180, 220, 0.8);
+}
+
+.badge:hover {
+  transform: translateY(-1px);
+}
+
+/* ─── Reconstruct Button ───────────────────────────────────────────────── */
+
+.reconstructBtn {
+  position: absolute;
+  bottom: 1.5rem;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 10;
+
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.7rem 1.5rem;
+  border: 1px solid rgba(200, 160, 80, 0.2);
+  border-radius: 4px;
+  background: rgba(200, 160, 80, 0.04);
+  backdrop-filter: blur(20px);
+
+  font-size: 0.55rem;
+  letter-spacing: 0.25em;
+  text-transform: uppercase;
+  color: rgba(220, 180, 100, 0.8);
+  font-weight: 500;
+  cursor: pointer;
+
+  transition: all 0.5s cubic-bezier(0.16, 1, 0.3, 1);
+  animation: fadeSlideUp 1s cubic-bezier(0.16, 1, 0.3, 1) both;
+  animation-delay: 2s;
+}
+
+.reconstructBtn:hover {
+  border-color: rgba(200, 160, 80, 0.4);
+  background: rgba(200, 160, 80, 0.08);
+  box-shadow: 0 8px 32px rgba(200, 160, 80, 0.1);
+  transform: translateX(-50%) translateY(-2px);
+}
+
+.reconstructBtn:active {
+  transform: translateX(-50%) translateY(0);
+  transition-duration: 0.1s;
+}
+
+.reconstructIcon {
+  font-size: 1rem;
+  line-height: 1;
+  animation: rotateIcon 8s linear infinite;
+}
+
+@keyframes rotateIcon {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+/* ─── Shared Animations ────────────────────────────────────────────────── */
+
+@keyframes fadeSlideIn {
+  from { opacity: 0; transform: translateY(-8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes fadeSlideUp {
+  from { opacity: 0; transform: translateX(-50%) translateY(16px); }
+  to { opacity: 1; transform: translateX(-50%) translateY(0); }
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes breathe {
+  0%, 100% { opacity: 0.5; transform: scale(1); }
+  50% { opacity: 1; transform: scale(1.2); }
+}
+
+/* ─── Responsive ───────────────────────────────────────────────────────── */
+
+@media (max-width: 768px) {
+  .viewHint { display: none; }
+  .anchorCard { padding: 0.4rem 0.7rem; }
+  .anchorValue { font-size: 0.55rem; }
+  .badgeRow { bottom: 1rem; right: 1rem; }
+  .reconstructBtn { padding: 0.6rem 1.2rem; font-size: 0.5rem; }
+}
+
+/* ─── Reduced Motion ───────────────────────────────────────────────────── */
+
+@media (prefers-reduced-motion: reduce) {
+  .anchorCard,
+  .viewIndicator,
+  .badgeRow,
+  .reconstructBtn,
+  .gisIndicator { animation: none; }
+  .viewDot,
+  .gisIndicatorDot,
+  .anchorPulse,
+  .reconstructIcon { animation: none; }
 }

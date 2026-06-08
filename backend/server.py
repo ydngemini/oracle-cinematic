@@ -414,6 +414,10 @@ async def websocket_endpoint(websocket: WebSocket):
                 await voice_agent.handle_whisper_instruct(msg)
             elif msg.get("type") == "REQUEST_DEAL_PIPELINE":
                 await push_deal_pipeline(websocket, user_id, tenant_id)
+            elif msg.get("type") == "REQUEST_RECONSTRUCTION":
+                address = msg.get("address", "")
+                if address:
+                    asyncio.create_task(reconstruct_property(address, websocket))
             elif msg.get("type") == "OBSERVE":
                 mind_service.observe(
                     msg.get("agent", "SCOUT"),

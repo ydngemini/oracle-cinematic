@@ -43,6 +43,11 @@ export function useOracleWebSocket() {
 
     ws.onopen = () => {
       retryCount.current = 0;
+      window.__oracleRequestReconstruction = (address) => {
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: 'REQUEST_RECONSTRUCTION', address }));
+        }
+      };
     };
 
     ws.onmessage = (event) => {
@@ -78,7 +83,7 @@ export function useOracleWebSocket() {
         case 'SPLAT_READY':
           dispatch({
             type: ACTIONS.UPDATE_PROPERTY,
-            payload: { splatUrl: msg.url },
+            payload: { splatUrl: msg.splatUrl || msg.url, propertyId: msg.propertyId },
           });
           break;
 
