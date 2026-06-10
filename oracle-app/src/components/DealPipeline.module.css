@@ -490,3 +490,51 @@
     justify-content: space-between;
   }
 }
+
+/* ─── Contract Countdown Chip (0007 temporal safeguards) ─────────────────── */
+/* Zones mirror disposition_enforcer.py: danger ≤15d, warn ≤30d.            */
+
+@keyframes dangerPulse {
+  0%, 100% {
+    box-shadow: 0 0 10px rgba(255, 95, 95, 0.25);
+  }
+  50% {
+    box-shadow: 0 0 18px rgba(255, 95, 95, 0.5);
+  }
+}
+
+.countdownChip {
+  font-size: 0.5rem;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  padding: 0.14rem 0.4rem;
+  border-radius: 3px;
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.countdownChip[data-zone='calm'] {
+  color: rgba(120, 200, 255, 0.8);
+  background: rgba(120, 200, 255, 0.08);
+  border: 1px solid rgba(120, 200, 255, 0.18);
+}
+
+.countdownChip[data-zone='warn'] {
+  color: rgba(230, 195, 130, 0.9);
+  background: rgba(200, 160, 80, 0.1);
+  border: 1px solid rgba(200, 160, 80, 0.3);
+}
+
+.countdownChip[data-zone='danger'] {
+  color: rgba(255, 140, 130, 0.95);
+  background: rgba(255, 95, 95, 0.1);
+  border: 1px solid rgba(255, 95, 95, 0.4);
+  animation: dangerPulse 1.8s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .countdownChip[data-zone='danger'] {
+    animation: none;
+    box-shadow: 0 0 10px rgba(255, 95, 95, 0.3);
+  }
+}

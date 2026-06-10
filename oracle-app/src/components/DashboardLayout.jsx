@@ -3,10 +3,12 @@ import { useOracleState } from '../state';
 import { AgentStatusBar } from './AgentStatusBar';
 import { PropertySpecs } from './PropertySpecs';
 import { LiveTranscript } from './LiveTranscript';
+import { LivePulse } from './LivePulse';
 import { WalkerBubble } from './WalkerBubble';
 import { DealPipeline } from './DealPipeline';
 import { LegalMatrix } from './LegalMatrix';
 import { BillingOverlay } from './BillingOverlay';
+import { OnboardingGate } from './OnboardingGate';
 import { SubscriptionBadge } from './SubscriptionBadge';
 import { ErrorBoundary } from './ErrorBoundary';
 import styles from './DashboardLayout.module.css';
@@ -38,6 +40,7 @@ export function DashboardLayout() {
 
         <div className={styles.leftPanel}>
           <PropertySpecs />
+          <LivePulse />
         </div>
 
         <div className={styles.rightPanel}>
@@ -53,6 +56,8 @@ export function DashboardLayout() {
       {/* Slide-in panel; stays off-screen until a LEGAL_PACKAGE frame arrives. */}
       <LegalMatrix legalPackage={legalPackage} visible={!!legalPackage} />
       <BillingOverlay />
+      {/* Self-gating: renders only when memory restored AND no strike zones. */}
+      <OnboardingGate />
     </div>
   );
 }

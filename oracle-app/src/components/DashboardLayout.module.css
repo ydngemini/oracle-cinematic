@@ -89,6 +89,13 @@
   grid-area:  left;
   align-self: start;
 
+  /* Stack PropertySpecs above the LivePulse feed */
+  display:        flex;
+  flex-direction: column;
+  gap:            var(--space-4);
+  max-height:     100%;
+  min-height:     0;
+
   /* Subtle left-edge separator — depth cue */
   position:   relative;
 

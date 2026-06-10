@@ -56,18 +56,34 @@ export function useOracleWebSocket() {
         return;
       }
 
+      // Live Pulse feed entry — derived from real frames, never simulated.
+      const feed = (entry) =>
+        dispatch({
+          type: ACTIONS.FEED_EVENT,
+          payload: { id: crypto.randomUUID(), timestamp: Date.now(), ...entry },
+        });
+
       switch (msg.type) {
         case 'STATUS_UPDATE':
           dispatch({
             type: ACTIONS.SET_ACTIVE_AGENT,
             payload: msg.agent,
           });
+          if (msg.agent) {
+            feed({ actor: 'ai', actorName: msg.agent, text: 'took point on the active operation', tag: 'AGENT LIVE' });
+          }
           break;
 
         case 'DATA_PULLED':
           dispatch({
             type: ACTIONS.UPDATE_PROPERTY,
             payload: msg.data,
+          });
+          feed({
+            actor: 'ai',
+            actorName: 'Harvester',
+            text: `pulled municipal data for ${msg.data?.address || 'the target property'}`,
+            tag: 'DATA PULLED',
           });
           break;
 
@@ -82,6 +98,12 @@ export function useOracleWebSocket() {
           dispatch({
             type: ACTIONS.UPDATE_PROPERTY,
             payload: { splatUrl: msg.splatUrl || msg.url, propertyId: msg.propertyId },
+          });
+          feed({
+            actor: 'ai',
+            actorName: 'Spatial Agent',
+            text: `3D reconstruction is live${msg.propertyId ? ` for ${msg.propertyId}` : ''}`,
+            tag: 'SCAN LIVE',
           });
           break;
 
@@ -121,6 +143,12 @@ export function useOracleWebSocket() {
           dispatch({
             type: ACTIONS.SET_LEGAL_PACKAGE,
             payload: msg.data,
+          });
+          feed({
+            actor: 'ai',
+            actorName: 'AI Legal Agent',
+            text: 'compiled the legal package for the active parcel',
+            tag: 'CONTRACT READY',
           });
           break;
 
@@ -186,6 +214,69 @@ export function useOracleWebSocket() {
               states: msg.states || [],
               total: msg.total || 0,
             },
+          });
+          if (msg.total > 0) {
+            feed({
+              actor: 'ai',
+              actorName: 'Deal Pipeline',
+              text: `firehose sync across ${(msg.states || []).length} states`,
+              tag: 'PIPELINE',
+              metric: `${msg.total} leads`,
+            });
+          }
+          break;
+
+        case 'VOICE_NOTE_LOGGED': {
+          // Field walkthrough processed by the voice-intel worker. First real
+          // producer for the 'agent' (amber) actor in LivePulse.
+          const adj = Number(msg.price_adjustment);
+          feed({
+            actor: 'agent',
+            actorName: 'Field Agent',
+            text: `logged a voice walkthrough — ${msg.summary || 'note captured'}`,
+            tag: (msg.sentiment || 'VOICE NOTE').toUpperCase(),
+            ...(Number.isFinite(adj) && adj !== 0
+              ? { metric: `${adj > 0 ? '+' : '−'}$${Math.abs(adj).toLocaleString()}` }
+              : {}),
+          });
+          break;
+        }
+
+        case 'DOSSIER_MOVED': {
+          // A teammate (or this session) dragged a deal on the PipelineBoard.
+          const label = (msg.status || '').replace(/_/g, ' ');
+          feed({
+            actor: 'agent',
+            actorName: 'Field Agent',
+            text: `moved ${msg.address || msg.parcel_id} to ${label}`,
+            tag: label.toUpperCase(),
+          });
+          // Re-sync the pipeline so every open dashboard converges.
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: 'REQUEST_DEAL_PIPELINE' }));
+          }
+          break;
+        }
+
+        case 'CONTRACT_DANGER':
+          // Disposition Enforcer: assignment window in the danger zone.
+          feed({
+            actor: 'ai',
+            actorName: 'Disposition Engine',
+            text: msg.assets_ready
+              ? `contract window critical for ${msg.address || msg.parcel_id} — fire-sale marketing assets generated`
+              : `contract window critical for ${msg.address || msg.parcel_id} — asset generation queued`,
+            tag: 'URGENT DISPOSITION',
+            metric: `${msg.days_remaining}d left`,
+          });
+          break;
+
+        case 'CONTRACT_EXPIRED':
+          feed({
+            actor: 'ai',
+            actorName: 'Disposition Engine',
+            text: `assignment window expired for ${msg.address || msg.parcel_id} — dossier moved to expired`,
+            tag: 'EXPIRED',
           });
           break;
 

@@ -1,6 +1,6 @@
-import { useEffect, useRef, useCallback } from 'react';
+import { useEffect, useRef, useState, useCallback } from 'react';
 import { useOracleWebSocket, useOracleDispatch, ACTIONS } from './state';
-import { DashboardLayout } from './components';
+import { DashboardLayout, LoginVault } from './components';
 
 function useJarvisVoice() {
   const { dispatch } = useOracleDispatch();
@@ -109,11 +109,28 @@ function useJarvisVoice() {
   }, [startListening, stopListening]);
 }
 
-function App() {
+function AuthedApp() {
   useOracleWebSocket();
   useJarvisVoice();
 
   return <DashboardLayout />;
+}
+
+function App() {
+  // Auth gate: every REST surface (board moves, dossier, onboarding, CMA)
+  // needs the Bearer token LoginVault stores in sessionStorage. The WS and
+  // Jarvis hooks only mount after auth so the socket connects with a real
+  // identity. VITE_AUTH_BYPASS=1 skips the vault for local dev.
+  const [authed, setAuthed] = useState(
+    () =>
+      import.meta.env.VITE_AUTH_BYPASS === '1' ||
+      !!sessionStorage.getItem('oracle_token')
+  );
+
+  if (!authed) {
+    return <LoginVault onAuthenticated={() => setAuthed(true)} />;
+  }
+  return <AuthedApp />;
 }
 
 export default App;

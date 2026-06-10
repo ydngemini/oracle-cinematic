@@ -28,6 +28,7 @@ export const initialState = {
   targetMarkets: [],
   dealPipeline: [],      // [{ state, count, leads: [...] }] from the 4-State firehose
   dealPipelineTotal: 0,
+  liveFeed: [],          // Live Pulse — newest-first activity cards, capped at 50
 };
 
 export const ACTIONS = {
@@ -52,10 +53,16 @@ export const ACTIONS = {
   WALKER_THOUGHT_END: 'WALKER_THOUGHT_END',
   SESSION_RESTORED: 'SESSION_RESTORED',
   SET_DEAL_PIPELINE: 'SET_DEAL_PIPELINE',
+  FEED_EVENT: 'FEED_EVENT',
+  PROFILE_SAVED: 'PROFILE_SAVED',
 };
 
 export function oracleReducer(state, action) {
   switch (action.type) {
+    case ACTIONS.FEED_EVENT:
+      // Newest first; hard cap keeps an always-on dashboard from growing without bound.
+      return { ...state, liveFeed: [action.payload, ...state.liveFeed].slice(0, 50) };
+
     case ACTIONS.SET_ACTIVE_AGENT:
       return { ...state, activeAgent: action.payload };
 
@@ -138,6 +145,11 @@ export function oracleReducer(state, action) {
         profileSummary: action.payload.summary || '',
         targetMarkets: action.payload.markets || [],
       };
+
+    case ACTIONS.PROFILE_SAVED:
+      // Onboarding gate completed — markets land immediately; the next
+      // SESSION_RESTORED frame re-hydrates the same values from Postgres.
+      return { ...state, targetMarkets: action.payload.markets || [] };
 
     case ACTIONS.SET_DEAL_PIPELINE:
       return {

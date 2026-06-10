@@ -1,6 +1,10 @@
 import { useState, useRef } from 'react';
 import styles from './LoginVault.module.css';
 
+// Same base-URL convention as BillingOverlay/OnboardingGate — there is no
+// Vite proxy, so a relative /auth/login 404s in any deployed build.
+const API_BASE = import.meta.env.VITE_API_BASE ?? 'http://localhost:8000';
+
 /**
  * LoginVault
  *
@@ -30,7 +34,7 @@ export function LoginVault({ onAuthenticated }) {
     setLoading(true);
 
     try {
-      const res = await fetch('/auth/login', {
+      const res = await fetch(`${API_BASE}/auth/login`, {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
         body:    JSON.stringify({ agent_id: agentId, passphrase }),

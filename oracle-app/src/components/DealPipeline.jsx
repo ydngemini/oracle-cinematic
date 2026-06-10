@@ -1,6 +1,7 @@
 import { useCallback, useMemo, useState } from 'react';
 import { useOracleState, useOracleDispatch } from '../state';
 import { LeadMap } from './LeadMap';
+import { PipelineBoard } from './PipelineBoard';
 import { downloadLeadsCsv } from '../utils/csv';
 import styles from './DealPipeline.module.css';
 
@@ -22,10 +23,24 @@ function formatValue(v) {
 
 const OWNER_LABEL = { corporate: 'CORP', trust: 'TRUST', individual: 'INDIV' };
 
+// Contract clock zones — keep thresholds in sync with the backend's
+// ORACLE_DANGER_ZONE_DAYS (disposition_enforcer.py, default 15).
+// Exported for PipelineBoard, which renders the same chip on its cards.
+export function contractCountdown(lead) {
+  if (!lead.contract_expires_at) return null;
+  if (!['under_contract', 'marketing'].includes(lead.dossier_status)) return null;
+  const days = Math.max(
+    0,
+    Math.ceil((new Date(lead.contract_expires_at) - Date.now()) / 86_400_000)
+  );
+  return { days, zone: days <= 15 ? 'danger' : days <= 30 ? 'warn' : 'calm' };
+}
+
 export function DealPipeline() {
   const { dealPipeline, dealPipelineTotal } = useOracleState();
   const { wsRef } = useOracleDispatch();
   const [viewMode, setViewMode] = useState('grid');
+  const [boardOpen, setBoardOpen] = useState(false);
   const [selected, setSelected] = useState(() => new Set());
 
   // Flatten groups once, tagging each lead with its state for export/selection.
@@ -85,6 +100,15 @@ export function DealPipeline() {
       <header className={styles.header}>
         <div className={styles.titleRow}>
           <span className={styles.kicker}>Deal Pipeline</span>
+          <button
+            type="button"
+            className={styles.refresh}
+            onClick={() => setBoardOpen(true)}
+            aria-label="Open pipeline board"
+            title="Pipeline board"
+          >
+            ⊞
+          </button>
           <button
             type="button"
             className={styles.refresh}
@@ -149,6 +173,7 @@ export function DealPipeline() {
               <ul className={styles.leadList}>
                 {group.leads.map((lead) => {
                   const isSel = selected.has(lead.parcel_id);
+                  const countdown = contractCountdown(lead);
                   return (
                     <li key={lead.parcel_id}>
                       <button
@@ -172,6 +197,16 @@ export function DealPipeline() {
                         </span>
 
                         <span className={styles.leadMeta}>
+                          {countdown && (
+                            <span
+                              className={styles.countdownChip}
+                              data-zone={countdown.zone}
+                              aria-label={`Contract window: ${countdown.days} days remaining`}
+                              title={`Assignment window — ${countdown.days} days remaining`}
+                            >
+                              {countdown.days}d
+                            </span>
+                          )}
                           <span className={styles.ownerChip} data-type={lead.owner_type}>
                             {OWNER_LABEL[lead.owner_type] || 'INDIV'}
                           </span>
@@ -208,6 +243,8 @@ export function DealPipeline() {
           ))}
         </div>
       )}
+
+      {boardOpen && <PipelineBoard onClose={() => setBoardOpen(false)} />}
 
       {/* Floating Action Bar — frosted glass, spring-slides up from the viewport
           floor whenever a selection exists. Always mounted so the retract also
