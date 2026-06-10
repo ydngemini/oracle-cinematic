@@ -1,4 +1,6 @@
-@import "tailwindcss";
+/* Scope source scanning to src/ — .claude/commands symlinks outside the
+   project root and panics Turbopack's automatic source detection. */
+@import "tailwindcss" source("..");
 
 @theme {
   --color-void: #020408;

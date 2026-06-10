@@ -83,13 +83,24 @@ for sql_file in "$PROJECT_ROOT"/backend/db/migrations/*.sql; do
 done
 green "Migrations done."
 
+# ── Seed demo tenants ─────────────────────────────────────────────────────────
+# The auth demo tenancy map (backend/auth.py DEMO_TENANCY) stamps these tenant
+# ids into JWTs; lead inserts FK against tenants, so the rows must exist.
+bold "Seeding demo tenants..."
+docker compose exec -T db psql -U postgres -d oracle -q -c \
+  "INSERT INTO tenants (id, name, slug) VALUES
+     ('00000000-0000-0000-0000-000000000000', 'Oracle Platform', 'platform'),
+     ('11111111-1111-1111-1111-111111111111', 'Apex Brokerage',  'apex')
+   ON CONFLICT (id) DO NOTHING;"
+green "Tenants seeded."
+
 # ── Seed Memory Core (ignite_memory) ─────────────────────────────────────────
 # Creates user_profiles / user_interactions tables and upserts the demo-operator
 # row. Idempotent — ON CONFLICT DO UPDATE. Runs inside the backend container so
 # it uses the compose DB hostname, not localhost.
 bold "Seeding Memory Core (ignite_memory)..."
 docker compose exec -T backend \
-  python3 backend/scripts/ignite_memory.py 2>&1 \
+  python3 scripts/ignite_memory.py 2>&1 \
   | while IFS= read -r line; do printf '  %s\n' "$line"; done
 green "Memory Core seeded."
 

@@ -8,6 +8,8 @@ import {
   ContactShadows,
   Stars,
   Sparkles,
+  Environment,
+  Lightformer,
 } from '@react-three/drei'
 import * as THREE from 'three'
 import { FOOTPRINT, CEILING_H, type Vec3 } from './tourData'
@@ -370,6 +372,14 @@ export function Penthouse() {
       <Stars radius={120} depth={60} count={2500} factor={5} saturation={0} fade speed={0.5} />
       <Sparkles count={40} scale={[FOOTPRINT.width, CEILING_H, FOOTPRINT.depth]} size={2} speed={0.3} opacity={0.4} color="#cfe0ff" />
       <ContactShadows position={[0, 0.02, 0]} opacity={0.55} scale={26} blur={2.4} far={6} resolution={1024} color="#000000" />
+      {/* Static env map (rendered once) — cool reflections on glass/marble/metal */}
+      <Environment resolution={256} background={false} frames={1}>
+        <group rotation={[-Math.PI / 2, 0, 0]}>
+          <Lightformer form="rect" intensity={3.5} color="#06b6d4" position={[-5, 2, -10]} scale={[10, 2, 1]} />
+          <Lightformer form="rect" intensity={1.8} color="#ffffff" position={[10, 0, 10]} scale={[5, 5, 1]} />
+          <Lightformer form="rect" intensity={1.2} color="#9fb4ff" position={[0, 8, 0]} scale={[14, 3, 1]} />
+        </group>
+      </Environment>
     </group>
   )
 }
