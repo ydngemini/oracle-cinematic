@@ -41,8 +41,22 @@ from typing import Optional
 
 logger = logging.getLogger("oracle.spatial")
 
-SPLAT_OUTPUT_DIR = Path(__file__).parent.parent / "oracle-app" / "public" / "splats"
-SPLAT_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+# Host layout: <repo>/oracle-app/public/splats. In the Docker image __file__
+# is /app/spatial_agent.py, so the relative default resolves to /oracle-app —
+# unwritable at container root. Env override + tmp fallback so a side feature
+# can never crash the API at import time.
+_DEFAULT_SPLAT_DIR = Path(__file__).parent.parent / "oracle-app" / "public" / "splats"
+SPLAT_OUTPUT_DIR = Path(os.environ.get("ORACLE_SPLAT_DIR", str(_DEFAULT_SPLAT_DIR)))
+try:
+    SPLAT_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+except OSError:
+    SPLAT_OUTPUT_DIR = Path("/tmp/oracle_splats")
+    SPLAT_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    logger.warning(
+        "Splat output dir not writable at default location — falling back to %s "
+        "(set ORACLE_SPLAT_DIR to override).",
+        SPLAT_OUTPUT_DIR,
+    )
 
 WORK_DIR = Path("/tmp/oracle_spatial_work")
 WORK_DIR.mkdir(parents=True, exist_ok=True)

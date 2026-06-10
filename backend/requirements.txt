@@ -25,5 +25,10 @@ httpx==0.28.1                  # K8s HPA / pod queries in admin_c2.py (lazy impo
 boto3==1.43.14                 # RDS IAM auth-token minting in db/connection.py
                                # (lazy import — only needed on Aurora prod path)
 
+# ── Voice intelligence ─────────────────────────────────────────────────────────
+python-multipart==0.0.20       # FastAPI multipart parsing for UploadFile in voice_intel.py
+faster-whisper==1.2.1          # Walkthrough transcription in voice_intel.py
+                               # (lazy import — endpoint 503s gracefully if absent)
+
 # ── Config ─────────────────────────────────────────────────────────────────────
 python-dotenv==1.2.2           # Load .env in local dev; no-op in prod (env already set)

@@ -20,6 +20,13 @@ from billing import router as billing_router
 from audit_ledger import router as audit_router, ledger, AuditCategory
 from audit_middleware import AuditMiddleware, audit_action, audit_now
 from admin_c2 import router as admin_c2_router
+from client_portal import router as client_portal_router
+from voice_intel import router as voice_router, start_voice_workers, stop_voice_workers
+from agent_profile import router as agent_profile_router
+from disposition_enforcer import start_disposition_enforcer, stop_disposition_enforcer
+from lead_dossier import router as lead_dossier_router
+from cma_generator import router as cma_router
+import ws_hub
 from legal_agent import format_for_websocket
 from spatial_agent import reconstruct_property, should_trigger_reconstruction
 from tour_generator import generate_tour
@@ -53,9 +60,13 @@ async def lifespan(app: FastAPI):
         logger.info("Memory Core DB pool online — operators will hydrate from PostgreSQL.")
     except Exception as e:  # noqa: BLE001 — boot must survive a DB-less dev run
         logger.warning("DB pool init failed (%s); running without persistent memory.", e)
+    await start_voice_workers()
+    await start_disposition_enforcer()
     try:
         yield
     finally:
+        await stop_disposition_enforcer()
+        await stop_voice_workers()
         await close_pool()
 
 
@@ -77,6 +88,11 @@ app.include_router(auth_router)
 app.include_router(billing_router)
 app.include_router(audit_router)
 app.include_router(admin_c2_router)
+app.include_router(client_portal_router)
+app.include_router(voice_router)
+app.include_router(agent_profile_router)
+app.include_router(lead_dossier_router)
+app.include_router(cma_router)
 
 from apis.geocoding import geocode, reverse_geocode
 from apis.census import get_demographics_by_zip
@@ -86,9 +102,10 @@ from apis.market_data import get_market_snapshot
 from fastapi.staticfiles import StaticFiles
 from pathlib import Path
 
-splats_dir = Path(__file__).parent.parent / "oracle-app" / "public" / "splats"
-splats_dir.mkdir(parents=True, exist_ok=True)
-app.mount("/public/splats", StaticFiles(directory=str(splats_dir)), name="splats")
+# Serve the same directory spatial_agent writes to — it owns the env override
+# and the container-safe fallback (ORACLE_SPLAT_DIR / /tmp/oracle_splats).
+from spatial_agent import SPLAT_OUTPUT_DIR
+app.mount("/public/splats", StaticFiles(directory=str(SPLAT_OUTPUT_DIR)), name="splats")
 
 
 @app.get("/health")
@@ -478,7 +495,8 @@ async def push_deal_pipeline(websocket: WebSocket, user_id: str, tenant_id: str)
         ctx = TenantContext(agent_id=user_id or "demo-operator", tenant_id=tenant_id, role=Role.AGENT)
         async with tenant_tx(ctx) as conn:
             rows = await conn.fetch(
-                "SELECT parcel_id, state, motivation_score, underwriting, payload "
+                "SELECT id, parcel_id, state, motivation_score, underwriting, payload, "
+                "       dossier_status, contract_expires_at "
                 "FROM leads ORDER BY state ASC, motivation_score DESC LIMIT 500"
             )
 
@@ -487,6 +505,7 @@ async def push_deal_pipeline(websocket: WebSocket, user_id: str, tenant_id: str)
             prop = _loads(r["payload"])
             under = _loads(r["underwriting"])
             grouped.setdefault(r["state"], []).append({
+                "id": str(r["id"]),  # DB uuid — the PipelineBoard mutation key
                 "parcel_id": r["parcel_id"],
                 "address": prop.get("address", ""),
                 "city": prop.get("city", ""),
@@ -496,6 +515,10 @@ async def push_deal_pipeline(websocket: WebSocket, user_id: str, tenant_id: str)
                 "distress_flags": prop.get("distress_flags", []),
                 "is_absentee_owner": prop.get("is_absentee_owner", False),
                 "motivation_score": r["motivation_score"],
+                # Contract clock (0007) — drives the CountdownChip on lead cards.
+                "dossier_status": r["dossier_status"],
+                "contract_expires_at": r["contract_expires_at"].isoformat()
+                    if r["contract_expires_at"] else None,
             })
 
         payload["states"] = [
@@ -530,6 +553,11 @@ async def websocket_endpoint(websocket: WebSocket):
     tenant_id = _resolve_tenant(websocket)
     client_label = f"user={user_id or 'anon'} tenant={tenant_id}"
     logger.info("WebSocket connected — %s", client_label)
+
+    # Join the tenant's broadcast group so background workers (voice intel,
+    # future harvest completions) can reach this dashboard. Mirror unregister
+    # lives in the finally block below.
+    ws_hub.register(tenant_id, websocket)
 
     await restore_session(websocket, user_id, tenant_id)
     await push_deal_pipeline(websocket, user_id, tenant_id)
@@ -630,6 +658,7 @@ async def websocket_endpoint(websocket: WebSocket):
     except Exception as exc:
         logger.error("WebSocket session error for %s: %s", client_label, exc, exc_info=True)
     finally:
+        ws_hub.unregister(tenant_id, websocket)
         # Shut down the workflow engine (cancels harvest/analysis/scout/recon tasks).
         try:
             await engine.stop()
