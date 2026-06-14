@@ -77,6 +77,14 @@ DEMO_TENANCY: dict[str, tuple[str, str]] = {
     "analyst_01":   (APEX_TENANT_ID,     "agent"),
 }
 
+# Optional operator account injected from the environment (gitignored .env) —
+# real credentials must never appear in this file, which is in source control.
+_ADMIN_ID = os.environ.get("ORACLE_ADMIN_ID", "")
+_ADMIN_PASSPHRASE = os.environ.get("ORACLE_ADMIN_PASSPHRASE", "")
+if _ADMIN_ID and _ADMIN_PASSPHRASE:
+    DEMO_CREDENTIALS[_ADMIN_ID] = _ADMIN_PASSPHRASE
+    DEMO_TENANCY[_ADMIN_ID] = (PLATFORM_TENANT_ID, "platform_admin")
+
 # ---------------------------------------------------------------------------
 # In-memory session registry
 # Maps agent_id → {issued_at}  (token is NOT stored — no secret in memory)
@@ -119,6 +127,26 @@ def _register_session(agent_id: str) -> None:
         "agent_id": agent_id,
     }
     log.debug("Session registered for agent_id=%r.", agent_id)
+
+
+def active_sessions() -> list[dict]:
+    """Sanitized snapshot of the live session registry for the platform-admin
+    ops surface (admin_ops.py). Tokens are never stored in the registry, so
+    there is nothing secret to leak here — just who is logged in and when."""
+    _prune_expired_sessions()
+    snapshot = []
+    for agent_id, entry in _session_registry.items():
+        tenant_id, role = DEMO_TENANCY.get(agent_id, (agent_id, "agent"))
+        snapshot.append(
+            {
+                "agent_id": agent_id,
+                "tenant_id": tenant_id,
+                "role": role,
+                "issued_at": entry["issued_at"],
+                "expires_at": entry["issued_at"] + TOKEN_TTL_SECONDS,
+            }
+        )
+    return snapshot
 
 
 # ---------------------------------------------------------------------------
@@ -189,6 +217,10 @@ class LoginResponse(BaseModel):
     token: str
     agent_id: str
     expires_in: int  # seconds
+    # Stamped from the tenancy map so the frontend can gate role-specific
+    # surfaces (e.g. the platform-admin OPS tab) without decoding the JWT.
+    tenant_id: str
+    role: str
 
 
 class VerifyResponse(BaseModel):
@@ -321,6 +353,8 @@ def login(body: LoginRequest, response: Response) -> LoginResponse:
         token=token,
         agent_id=body.agent_id,
         expires_in=TOKEN_TTL_SECONDS,
+        tenant_id=tenant_id,
+        role=role,
     )
 
 

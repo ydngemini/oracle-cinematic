@@ -1,0 +1,970 @@
+/* ClientCrmTab — the two-sided client book: SELLERS | BUYERS.
+   Obsidian Deck idiom: dark etched glass, amber filament accents (sellers),
+   --oracle-blue port (buyers), mono tabular numerals, 9px wide-tracked caps
+   micro-labels. Scrolls inside CrmShell's <main>; the FAB and bottom-sheet
+   are the only fixed chrome and both clear the Deck. */
+
+.wrap {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+/* ── Header row — kicker + refresh key ───────────────────────────────────── */
+.topRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  min-height: 44px; /* touch floor */
+}
+
+.kicker {
+  font-family: var(--font-display);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  letter-spacing: var(--tracking-widest);
+  text-transform: uppercase;
+  color: var(--oracle-amber-dim);
+}
+
+.refreshBtn {
+  width: 44px;
+  height: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--oracle-border);
+  background: var(--oracle-glass);
+  color: var(--oracle-text-dim);
+  box-shadow: var(--shadow-inset);
+}
+
+.refreshBtn:hover {
+  background: var(--oracle-glass-hover);
+  color: var(--oracle-amber);
+}
+
+.refreshBtn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.refreshBtn svg {
+  width: 18px;
+  height: 18px;
+}
+
+.refreshing svg {
+  animation: spinGlyph 900ms linear infinite;
+}
+
+@keyframes spinGlyph {
+  to { transform: rotate(360deg); }
+}
+
+/* ── Two-port segmented control — amber port / blue port ─────────────────── */
+.segments {
+  display: flex;
+  gap: var(--space-1);
+  padding: var(--space-1);
+  background: var(--oracle-glass);
+  border: 1px solid var(--oracle-border);
+  border-top-color: var(--oracle-border-bright); /* etched top light */
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-inset);
+  animation: riseIn var(--duration-base) var(--ease-out) both;
+}
+
+.segKey {
+  flex: 1;
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  border-radius: calc(var(--radius-md) - 2px);
+  font-family: var(--font-display);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  letter-spacing: var(--tracking-widest);
+  text-transform: uppercase;
+  color: var(--oracle-text-ghost);
+  transition:
+    color var(--duration-base) var(--ease-out),
+    background var(--duration-base) var(--ease-out),
+    box-shadow var(--duration-base) var(--ease-out);
+}
+
+.segKey:active {
+  transform: translateY(1px);
+}
+
+.segKeyActive[data-seg='seller'] {
+  color: var(--oracle-amber);
+  background: var(--oracle-amber-ghost);
+  box-shadow:
+    inset 0 0 0 1px var(--oracle-amber-dim),
+    0 0 14px var(--oracle-amber-glow);
+}
+
+.segKeyActive[data-seg='buyer'] {
+  color: var(--oracle-blue);
+  background: color-mix(in srgb, var(--oracle-blue) 10%, transparent);
+  box-shadow:
+    inset 0 0 0 1px var(--oracle-blue-dim),
+    0 0 14px color-mix(in srgb, var(--oracle-blue) 10%, transparent);
+}
+
+.segLabel {
+  letter-spacing: inherit;
+}
+
+.segCount {
+  font-variant-numeric: tabular-nums;
+  font-size: 0.5625rem; /* 9px — instrument micro-label, matches Deck keys */
+  opacity: 0.75;
+}
+
+/* ── Client cards ────────────────────────────────────────────────────────── */
+.list {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: 0;
+}
+
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  border-radius: var(--radius-lg);
+  background: var(--oracle-glass);
+  border: 1px solid var(--oracle-border);
+  border-top-color: var(--oracle-border-bright); /* etched top light */
+  box-shadow: var(--shadow-inset);
+  animation: riseIn var(--duration-slow) var(--ease-spring) both;
+}
+
+.cardHead {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-height: 44px;
+}
+
+/* Initials ring — type-tinted: seller amber, buyer blue */
+.ring {
+  flex-shrink: 0;
+  width: 40px;
+  height: 40px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-pill);
+  font-family: var(--font-display);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  letter-spacing: var(--tracking-wide);
+  border: 1px solid var(--oracle-border-bright);
+  color: var(--oracle-text-dim);
+}
+
+.ring[data-tint='seller'] {
+  color: var(--oracle-amber);
+  border-color: var(--oracle-amber-dim);
+  box-shadow: 0 0 12px var(--oracle-amber-glow);
+}
+
+.ring[data-tint='buyer'] {
+  color: var(--oracle-blue);
+  border-color: var(--oracle-blue-dim);
+  box-shadow: 0 0 12px color-mix(in srgb, var(--oracle-blue) 12%, transparent);
+}
+
+.ring[data-tint='both'] {
+  color: var(--oracle-amber);
+  border-color: var(--oracle-blue-dim);
+  box-shadow:
+    0 0 12px var(--oracle-amber-glow),
+    0 0 12px color-mix(in srgb, var(--oracle-blue) 12%, transparent);
+}
+
+.idBlock {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.name {
+  font-size: var(--text-base);
+  font-weight: 600;
+  letter-spacing: var(--tracking-snug);
+  color: var(--oracle-text-heading);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.contact {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  font-family: var(--font-display);
+  font-size: var(--text-xs);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: var(--tracking-wide);
+  color: var(--oracle-text-dim);
+}
+
+.contactBit {
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.dotSep {
+  flex-shrink: 0;
+  color: var(--oracle-text-ghost);
+}
+
+/* Last touch — relative time over interaction type, instrument style */
+.touch {
+  flex-shrink: 0;
+  margin-left: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: var(--space-1);
+}
+
+.touchTime {
+  font-family: var(--font-display);
+  font-size: var(--text-sm);
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  color: var(--oracle-text);
+}
+
+.touchType,
+.touchGhost {
+  font-family: var(--font-display);
+  font-size: 0.5625rem;
+  font-weight: 500;
+  letter-spacing: var(--tracking-widest);
+  text-transform: uppercase;
+  color: var(--oracle-text-ghost);
+}
+
+/* ── Seller — their houses as address chips ──────────────────────────────── */
+.houseRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--oracle-border-subtle);
+}
+
+.houseChip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  max-width: 100%;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--oracle-amber-ghost);
+  background: var(--oracle-glass);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-display);
+  font-size: var(--text-xs);
+  letter-spacing: var(--tracking-wide);
+  color: var(--oracle-text-dim);
+}
+
+.houseChip[data-kind='lead'] {
+  border-style: dashed;
+  border-color: var(--oracle-border-bright);
+}
+
+.chipGlyph {
+  flex-shrink: 0;
+  width: 13px;
+  height: 13px;
+  color: var(--oracle-amber-dim);
+}
+
+.houseChip[data-kind='lead'] .chipGlyph {
+  color: var(--oracle-text-ghost);
+}
+
+.chipGlyph svg {
+  width: 100%;
+  height: 100%;
+}
+
+.chipText {
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.kindTag {
+  flex-shrink: 0;
+  font-size: 0.5625rem;
+  font-weight: 600;
+  letter-spacing: var(--tracking-widest);
+  text-transform: uppercase;
+  color: var(--oracle-text-ghost);
+}
+
+/* ── Buyer — preference chips ────────────────────────────────────────────── */
+.prefRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--oracle-border-subtle);
+}
+
+.prefChip {
+  font-family: var(--font-display);
+  font-size: var(--text-xs);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: var(--tracking-wider);
+  text-transform: uppercase;
+  color: var(--oracle-blue);
+  border: 1px solid var(--oracle-blue-dim);
+  background: color-mix(in srgb, var(--oracle-blue) 7%, transparent);
+  border-radius: var(--radius-sm);
+  padding: var(--space-1) var(--space-2);
+}
+
+/* ── Buyer — SEEN filmstrip of toured houses ─────────────────────────────── */
+.seenBlock {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.seenLabel {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-family: var(--font-display);
+  font-size: 0.5625rem;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: var(--tracking-widest);
+  text-transform: uppercase;
+  color: var(--oracle-text-ghost);
+}
+
+.seenGlyph {
+  width: 12px;
+  height: 12px;
+  color: var(--oracle-blue-dim);
+}
+
+.seenGlyph svg {
+  width: 100%;
+  height: 100%;
+}
+
+.filmstrip {
+  display: flex;
+  gap: var(--space-2);
+  overflow-x: auto;
+  padding-bottom: var(--space-1);
+  scrollbar-width: none; /* the strip scrolls, the rail stays hidden */
+}
+
+.filmstrip::-webkit-scrollbar {
+  display: none;
+}
+
+.frameChip {
+  flex-shrink: 0;
+  max-width: 18rem;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--oracle-border);
+  border-top-color: var(--oracle-border-bright);
+  background: var(--oracle-bg-mid);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-display);
+  font-size: var(--text-xs);
+  letter-spacing: var(--tracking-wide);
+  color: var(--oracle-text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.frameChip[data-kind='lead'] {
+  border-style: dashed;
+}
+
+/* ── Buyer — quiet LOG SHOWING action + inline listing picker ────────────── */
+.cardActions {
+  display: flex;
+  padding-top: var(--space-1);
+}
+
+.logBtn {
+  flex: 1;
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  border: 1px dashed var(--oracle-border-bright);
+  border-radius: var(--radius-md);
+  font-family: var(--font-display);
+  font-size: var(--text-xs);
+  font-weight: 500;
+  letter-spacing: var(--tracking-widest);
+  text-transform: uppercase;
+  color: var(--oracle-text-dim);
+  transition:
+    color var(--duration-base) var(--ease-out),
+    border-color var(--duration-base) var(--ease-out);
+}
+
+.logBtn[aria-expanded='true'],
+.logBtn:hover {
+  color: var(--oracle-blue);
+  border-color: var(--oracle-blue-dim);
+}
+
+.btnGlyph {
+  width: 14px;
+  height: 14px;
+}
+
+.btnGlyph svg {
+  width: 100%;
+  height: 100%;
+}
+
+.picker {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  background: var(--oracle-bg-mid);
+  border: 1px solid var(--oracle-border);
+  border-radius: var(--radius-md);
+  animation: riseIn var(--duration-base) var(--ease-out) both;
+}
+
+.pickerLabel {
+  font-family: var(--font-display);
+  font-size: 0.5625rem;
+  font-weight: 500;
+  letter-spacing: var(--tracking-widest);
+  text-transform: uppercase;
+  color: var(--oracle-text-ghost);
+}
+
+.pickRow {
+  width: 100%;
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  text-align: left;
+  background: var(--oracle-glass);
+  border: 1px solid var(--oracle-border);
+  border-radius: var(--radius-sm);
+  transition:
+    background var(--duration-fast) var(--ease-out),
+    border-color var(--duration-base) var(--ease-out);
+}
+
+.pickRow:hover:not(:disabled) {
+  background: var(--oracle-glass-hover);
+  border-color: var(--oracle-blue-dim);
+}
+
+.pickRow:active:not(:disabled) {
+  background: var(--oracle-glass-active);
+}
+
+.pickRow:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.pickAddress {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--text-sm);
+  color: var(--oracle-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pickMeta {
+  flex-shrink: 0;
+  font-family: var(--font-display);
+  font-size: var(--text-xs);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: var(--tracking-wider);
+  text-transform: uppercase;
+  color: var(--oracle-text-ghost);
+}
+
+.pickerEmpty {
+  font-size: var(--text-sm);
+  letter-spacing: var(--tracking-wide);
+  color: var(--oracle-text-ghost);
+  padding: var(--space-2) 0;
+}
+
+.pickSkels {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.pickSkel {
+  height: 44px;
+  border-radius: var(--radius-sm);
+  background: var(--oracle-glass);
+  border: 1px solid var(--oracle-border-subtle);
+  animation: skelBreathe 1.4s var(--ease-in-out) infinite alternate;
+}
+
+.pickSkel:nth-child(2) {
+  animation-delay: 120ms;
+}
+
+.err {
+  font-size: var(--text-sm);
+  letter-spacing: var(--tracking-wide);
+  color: var(--oracle-red);
+}
+
+/* ── Loading — breathing glass skeletons ─────────────────────────────────── */
+.skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.skelCard {
+  height: 132px;
+  border-radius: var(--radius-lg);
+  background: var(--oracle-glass);
+  border: 1px solid var(--oracle-border-subtle);
+  animation: skelBreathe 1.4s var(--ease-in-out) infinite alternate;
+}
+
+.skelCard:nth-child(2) { animation-delay: 120ms; }
+.skelCard:nth-child(3) { animation-delay: 240ms; }
+
+@keyframes skelBreathe {
+  from { opacity: 0.45; }
+  to   { opacity: 1; }
+}
+
+/* ── Error — quiet inline state, retry key ───────────────────────────────── */
+.errorBox {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-3);
+  padding: var(--space-5);
+  border-radius: var(--radius-lg);
+  background: var(--oracle-glass);
+  border: 1px solid var(--oracle-border);
+  animation: riseIn var(--duration-base) var(--ease-out) both;
+}
+
+.errorTick {
+  flex-shrink: 0;
+  width: 6px;
+  height: 6px;
+  border-radius: 1px;
+  transform: rotate(45deg);
+  background: var(--oracle-red-dim);
+}
+
+.errorText {
+  font-size: var(--text-sm);
+  line-height: var(--leading-snug);
+  color: var(--oracle-text-dim);
+}
+
+.retryBtn,
+.retrySm {
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+  font-family: var(--font-display);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  letter-spacing: var(--tracking-widest);
+  text-transform: uppercase;
+  color: var(--oracle-amber);
+  border: 1px solid var(--oracle-amber-dim);
+  border-radius: var(--radius-md);
+  background: var(--oracle-amber-ghost);
+}
+
+.retryBtn { padding: 0 var(--space-5); }
+.retrySm  { padding: 0 var(--space-4); flex-shrink: 0; }
+
+.retryBtn:hover,
+.retrySm:hover {
+  background: var(--oracle-glass-hover);
+}
+
+/* Refresh failed but stale data still on screen — slim strip above the list */
+.errorStrip {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--oracle-border);
+  background: var(--oracle-glass);
+}
+
+.errorStrip .errorText {
+  flex: 1;
+  font-size: var(--text-xs);
+}
+
+/* ── Empty state — per segment ───────────────────────────────────────────── */
+.empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: var(--space-3);
+  padding: var(--space-12) var(--space-6);
+  animation: riseIn var(--duration-slow) var(--ease-out) both;
+}
+
+.emptyGlyph {
+  width: 44px;
+  height: 44px;
+  color: var(--oracle-text-ghost);
+}
+
+.emptyGlyph svg {
+  width: 100%;
+  height: 100%;
+}
+
+.emptyTitle {
+  font-family: var(--font-display);
+  font-size: var(--text-base);
+  font-weight: 600;
+  letter-spacing: var(--tracking-wider);
+  text-transform: uppercase;
+  color: var(--oracle-text-dim);
+}
+
+.emptyHint {
+  max-width: 32ch;
+  font-size: var(--text-sm);
+  line-height: var(--leading-relaxed);
+  color: var(--oracle-text-ghost);
+}
+
+/* ── FAB — floats above the Deck, never under it ─────────────────────────── */
+.fab {
+  position: fixed;
+  right: var(--space-4);
+  bottom: calc(var(--deck-height) + var(--safe-bottom) + var(--space-4));
+  z-index: var(--z-panel);
+  width: 56px;
+  height: 56px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-pill);
+  background: var(--oracle-bg-mid);
+  backdrop-filter: var(--oracle-backdrop-light);
+  -webkit-backdrop-filter: var(--oracle-backdrop-light);
+  border: 1px solid var(--oracle-amber-dim);
+  color: var(--oracle-amber);
+  box-shadow: var(--shadow-float), var(--shadow-amber);
+  transition:
+    box-shadow var(--duration-base) var(--ease-out),
+    transform var(--duration-fast) var(--ease-out);
+}
+
+.fab:hover {
+  box-shadow: var(--shadow-float), 0 0 28px var(--oracle-amber-ghost);
+}
+
+.fab:active {
+  transform: translateY(1px) scale(0.97);
+}
+
+.fab svg {
+  width: 22px;
+  height: 22px;
+}
+
+/* Desktop: the shell is a centered 480px frame — keep the FAB inside it. */
+@media (min-width: 720px) {
+  .fab {
+    right: calc(50vw - 240px + var(--space-4));
+  }
+}
+
+/* ── Bottom-sheet — CREATE PROFILE, riding above the Deck ────────────────── */
+.sheetLayer {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-overlay);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-end;
+  padding: 0 var(--space-2) calc(var(--deck-height) + var(--safe-bottom) + var(--space-2));
+}
+
+.scrim {
+  position: absolute;
+  inset: 0;
+  border-radius: 0;
+  background: color-mix(in srgb, var(--oracle-bg-deep) 65%, transparent);
+  backdrop-filter: var(--oracle-backdrop-light);
+  -webkit-backdrop-filter: var(--oracle-backdrop-light);
+  animation: scrimIn var(--duration-base) var(--ease-out) both;
+}
+
+@keyframes scrimIn {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+.sheet {
+  position: relative;
+  width: min(100%, 460px);
+  max-height: calc(
+    100dvh - var(--crm-header-h) - var(--safe-top)
+    - var(--deck-height) - var(--safe-bottom) - var(--space-8)
+  );
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  padding: var(--space-3) var(--space-5) var(--space-5);
+  background: var(--oracle-bg-mid);
+  backdrop-filter: var(--oracle-backdrop);
+  -webkit-backdrop-filter: var(--oracle-backdrop);
+  border: 1px solid var(--oracle-border-bright);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-float);
+  animation: sheetUp var(--duration-slow) var(--ease-spring) both;
+}
+
+@keyframes sheetUp {
+  from { opacity: 0; transform: translateY(48px); }
+  to   { opacity: 1; transform: none; }
+}
+
+/* Staggered load-in for the sheet's children */
+.sheet > * {
+  animation: riseIn var(--duration-base) var(--ease-out) both;
+}
+
+.sheet > *:nth-child(2) { animation-delay: 50ms; }
+.sheet > *:nth-child(3) { animation-delay: 100ms; }
+.sheet > *:nth-child(4) { animation-delay: 150ms; }
+.sheet > *:nth-child(5) { animation-delay: 200ms; }
+.sheet > *:nth-child(6) { animation-delay: 250ms; }
+.sheet > *:nth-child(7) { animation-delay: 300ms; }
+.sheet > *:nth-child(8) { animation-delay: 350ms; }
+
+.sheetGrip {
+  align-self: center;
+  width: 36px;
+  height: 4px;
+  border-radius: var(--radius-pill);
+  background: var(--oracle-border-bright);
+}
+
+.sheetHead {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.sheetHeading {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.sheetKicker {
+  font-family: var(--font-display);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  letter-spacing: var(--tracking-widest);
+  text-transform: uppercase;
+  color: var(--oracle-amber-dim);
+}
+
+.sheetTitle {
+  font-size: var(--text-lg);
+  font-weight: 600;
+  letter-spacing: var(--tracking-tight);
+  color: var(--oracle-text-heading);
+}
+
+.sheetClose {
+  flex-shrink: 0;
+  width: 44px;
+  height: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--oracle-border);
+  background: var(--oracle-glass);
+  color: var(--oracle-text-dim);
+}
+
+.sheetClose:hover {
+  background: var(--oracle-glass-hover);
+  color: var(--oracle-text);
+}
+
+.sheetClose:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.sheetClose svg {
+  width: 16px;
+  height: 16px;
+}
+
+/* The sheet's seller⇄buyer toggle reuses the two-port control — just sizing */
+.typeToggle {
+  animation: none; /* the sheet stagger owns the entrance */
+}
+
+/* ── Sheet form ──────────────────────────────────────────────────────────── */
+.formSection {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  background: var(--oracle-glass);
+  border: 1px solid var(--oracle-border);
+  border-radius: var(--radius-lg);
+}
+
+.sectionLabel {
+  font-family: var(--font-display);
+  font-size: 0.5625rem;
+  font-weight: 600;
+  letter-spacing: var(--tracking-widest);
+  text-transform: uppercase;
+  color: var(--oracle-text-ghost);
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.microLabel {
+  font-family: var(--font-display);
+  font-size: var(--text-xs);
+  font-weight: 500;
+  letter-spacing: var(--tracking-widest);
+  text-transform: uppercase;
+  color: var(--oracle-text-dim);
+}
+
+.input {
+  width: 100%;
+  min-height: 44px;
+  padding: var(--space-2) var(--space-3);
+  background: var(--oracle-glass);
+  border: 1px solid var(--oracle-border);
+  border-radius: var(--radius-md);
+  color: var(--oracle-text);
+}
+
+.inputMono {
+  font-family: var(--font-display);
+  font-variant-numeric: tabular-nums;
+}
+
+.fieldGrid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-3);
+}
+
+.primaryBtn {
+  min-height: 48px;
+  padding: 0 var(--space-5);
+  background: var(--oracle-amber-ghost);
+  border: 1px solid var(--oracle-amber-dim);
+  border-radius: var(--radius-md);
+  font-family: var(--font-display);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  letter-spacing: var(--tracking-wider);
+  text-transform: uppercase;
+  color: var(--oracle-amber);
+  transition:
+    box-shadow var(--duration-base) var(--ease-out),
+    opacity var(--duration-fast) var(--ease-out);
+}
+
+.primaryBtn:hover {
+  box-shadow: var(--shadow-amber);
+}
+
+.primaryBtn:active {
+  transform: translateY(1px);
+}
+
+.primaryBtn:disabled {
+  opacity: 0.5;
+  cursor: default;
+  box-shadow: none;
+}
+
+/* ── Shared load-in ──────────────────────────────────────────────────────── */
+@keyframes riseIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: none; }
+}
+
+/* Global rule zeroes durations but not delays — kill the stagger so cards
+   and sheet children never hide behind animation-delay for reduced motion. */
+@media (prefers-reduced-motion: reduce) {
+  .card,
+  .segments,
+  .empty,
+  .errorBox,
+  .picker,
+  .scrim,
+  .sheet,
+  .sheet > * {
+    animation: none;
+  }
+}

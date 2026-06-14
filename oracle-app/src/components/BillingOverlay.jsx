@@ -23,9 +23,13 @@ export function BillingOverlay() {
     setError(null);
 
     try {
+      const token = sessionStorage.getItem('oracle_token');
       const res = await fetch(`${API_BASE}/billing/create-checkout-session`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
         body: JSON.stringify({ tenant_id: tenantId }),
       });
 

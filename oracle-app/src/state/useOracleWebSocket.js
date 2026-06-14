@@ -14,6 +14,10 @@ function buildWsUrl() {
     const url = new URL(WS_URL);
     url.searchParams.set('user_id', getUserId());
     url.searchParams.set('tenant_id', getTenantId());
+    // Verified JWT wins server-side over the (spoofable) tenant_id param —
+    // and is the ONLY way into the platform-admin firehose group.
+    const token = sessionStorage.getItem('oracle_token');
+    if (token) url.searchParams.set('token', token);
     return url.toString();
   } catch {
     return WS_URL;

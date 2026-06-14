@@ -23,7 +23,10 @@ export function useSubscription() {
   const refresh = useCallback(async () => {
     if (BILLING_BYPASS) return;
     try {
-      const res = await fetch(`${API_BASE}/billing/status/${tenantId}`);
+      const token = sessionStorage.getItem('oracle_token');
+      const res = await fetch(`${API_BASE}/billing/status/${tenantId}`, {
+        headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+      });
       if (res.ok) {
         const data = await res.json();
         setSub({
@@ -46,9 +49,13 @@ export function useSubscription() {
 
   const openPortal = useCallback(async () => {
     try {
+      const token = sessionStorage.getItem('oracle_token');
       const res = await fetch(`${API_BASE}/billing/create-portal-session`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
         body: JSON.stringify({ tenant_id: tenantId }),
       });
       if (res.ok) {

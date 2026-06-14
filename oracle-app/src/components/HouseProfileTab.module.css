@@ -1,0 +1,695 @@
+/* HouseProfileTab — "Create Profile for House".
+   Obsidian Deck idiom: etched glass, amber filament rail, mono tabular data.
+   Scrolls inside CrmShell's <main>; no fixed chrome of its own. */
+
+.wrap {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+}
+
+/* ── Heading ─────────────────────────────────────────────────────────────── */
+.heading {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.kicker {
+  font-family: var(--font-display);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  letter-spacing: var(--tracking-widest);
+  text-transform: uppercase;
+  color: var(--oracle-amber-dim);
+}
+
+.title {
+  font-size: var(--text-xl);
+  font-weight: 600;
+  letter-spacing: var(--tracking-tight);
+  color: var(--oracle-text-heading);
+}
+
+/* ── Filament progress rail — HOUSE → SELLER → REVIEW ────────────────────── */
+.rail {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-2);
+}
+
+.railNode {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-1);
+  min-width: 44px;
+}
+
+.railDot {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-pill);
+  font-family: var(--font-display);
+  font-size: var(--text-xs);
+  font-variant-numeric: tabular-nums;
+  color: var(--oracle-text-ghost);
+  background: var(--oracle-glass);
+  border: 1px solid var(--oracle-border-bright);
+  transition:
+    color var(--duration-base) var(--ease-out),
+    border-color var(--duration-base) var(--ease-out),
+    background var(--duration-base) var(--ease-out),
+    box-shadow var(--duration-base) var(--ease-out);
+}
+
+.railDot svg {
+  width: 13px;
+  height: 13px;
+}
+
+.railNodeActive .railDot {
+  color: var(--oracle-amber);
+  border-color: var(--oracle-amber-dim);
+  box-shadow: var(--shadow-amber);
+}
+
+.railNodeDone .railDot {
+  color: var(--oracle-amber);
+  border-color: var(--oracle-amber-dim);
+  background: var(--oracle-amber-ghost);
+}
+
+.railLabel {
+  font-family: var(--font-display);
+  font-size: 0.5625rem; /* 9px — instrument micro-label, same as the Deck keys */
+  font-weight: 500;
+  letter-spacing: var(--tracking-widest);
+  text-transform: uppercase;
+  color: var(--oracle-text-ghost);
+  transition: color var(--duration-base) var(--ease-out);
+}
+
+.railNodeActive .railLabel { color: var(--oracle-amber); }
+.railNodeDone .railLabel   { color: var(--oracle-text-dim); }
+
+.railLine {
+  flex: 1;
+  height: 2px;
+  margin-top: 13px; /* center of the 28px dot */
+  border-radius: var(--radius-pill);
+  background: var(--oracle-border);
+  transition: background var(--duration-slow) var(--ease-out);
+}
+
+.railLineLit {
+  background: var(--filament-faint);
+  box-shadow: 0 0 8px var(--oracle-amber-glow);
+}
+
+/* ── Stage — one staggered load-in per step (cf. CrmShell viewIn) ────────── */
+.stage {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.stage > * {
+  animation: stepIn var(--duration-base) var(--ease-out) both;
+}
+
+.stage > *:nth-child(2) { animation-delay: 60ms; }
+.stage > *:nth-child(3) { animation-delay: 120ms; }
+.stage > *:nth-child(4) { animation-delay: 180ms; }
+.stage > *:nth-child(5) { animation-delay: 240ms; }
+.stage > *:nth-child(6) { animation-delay: 300ms; }
+.stage > *:nth-child(7) { animation-delay: 360ms; }
+
+@keyframes stepIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: none; }
+}
+
+/* ── Fields ──────────────────────────────────────────────────────────────── */
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.microLabel {
+  font-family: var(--font-display);
+  font-size: var(--text-xs);
+  font-weight: 500;
+  letter-spacing: var(--tracking-widest);
+  text-transform: uppercase;
+  color: var(--oracle-text-dim);
+}
+
+.input {
+  width: 100%;
+  min-height: 44px;
+  padding: var(--space-2) var(--space-3);
+  background: var(--oracle-glass);
+  border: 1px solid var(--oracle-border);
+  border-radius: var(--radius-md);
+  color: var(--oracle-text);
+}
+
+.inputMono {
+  font-family: var(--font-display);
+  font-variant-numeric: tabular-nums;
+}
+
+.specGrid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: var(--space-3);
+}
+
+.err {
+  font-size: var(--text-sm);
+  letter-spacing: var(--tracking-wide);
+  color: var(--oracle-red);
+}
+
+.stepHint {
+  font-size: var(--text-sm);
+  line-height: var(--leading-relaxed);
+  color: var(--oracle-text-dim);
+  border-left: 2px solid var(--oracle-amber-dim);
+  padding-left: var(--space-3);
+}
+
+.hint {
+  font-size: var(--text-sm);
+  line-height: var(--leading-relaxed);
+  color: var(--oracle-text-dim);
+}
+
+/* ── Seller search + list ────────────────────────────────────────────────── */
+.searchWrap {
+  position: relative;
+}
+
+.searchGlyph {
+  position: absolute;
+  left: var(--space-3);
+  top: 50%;
+  transform: translateY(-50%);
+  width: 16px;
+  height: 16px;
+  color: var(--oracle-text-ghost);
+  pointer-events: none;
+}
+
+.searchGlyph svg {
+  width: 100%;
+  height: 100%;
+}
+
+.searchInput {
+  padding-left: var(--space-8);
+}
+
+.sellerList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.sellerRow {
+  width: 100%;
+  min-height: 52px;
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  text-align: left;
+  background: var(--oracle-glass);
+  border: 1px solid var(--oracle-border);
+  border-radius: var(--radius-md);
+  transition:
+    background var(--duration-fast) var(--ease-out),
+    border-color var(--duration-base) var(--ease-out),
+    box-shadow var(--duration-base) var(--ease-out);
+}
+
+.sellerRow:active {
+  background: var(--oracle-glass-active);
+}
+
+.sellerRowPicked {
+  border-color: var(--oracle-amber-dim);
+  background: var(--oracle-amber-glow);
+  box-shadow: var(--shadow-amber);
+}
+
+.rowGlyph {
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  color: var(--oracle-text-dim);
+}
+
+.sellerRowPicked .rowGlyph,
+.ownerChip .rowGlyph {
+  color: var(--oracle-amber);
+}
+
+.rowGlyph svg {
+  width: 100%;
+  height: 100%;
+}
+
+.rowText {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.rowName {
+  font-size: var(--text-base);
+  font-weight: 500;
+  color: var(--oracle-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.rowMail {
+  font-size: var(--text-sm);
+  color: var(--oracle-text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.rowCount {
+  flex-shrink: 0;
+  font-family: var(--font-display);
+  font-size: var(--text-xs);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: var(--tracking-wider);
+  text-transform: uppercase;
+  color: var(--oracle-text-ghost);
+}
+
+.sellerRowPicked .rowCount {
+  color: var(--oracle-amber-dim);
+}
+
+.empty {
+  font-size: var(--text-sm);
+  letter-spacing: var(--tracking-wide);
+  color: var(--oracle-text-ghost);
+  padding: var(--space-2) 0;
+}
+
+/* ── New-owner toggle + inline form ──────────────────────────────────────── */
+.newOwnerBtn {
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  border: 1px dashed var(--oracle-border-bright);
+  border-radius: var(--radius-md);
+  font-family: var(--font-display);
+  font-size: var(--text-xs);
+  font-weight: 500;
+  letter-spacing: var(--tracking-widest);
+  text-transform: uppercase;
+  color: var(--oracle-text-dim);
+  transition:
+    color var(--duration-base) var(--ease-out),
+    border-color var(--duration-base) var(--ease-out);
+}
+
+.newOwnerBtn[aria-expanded='true'] {
+  color: var(--oracle-amber);
+  border-color: var(--oracle-amber-dim);
+}
+
+.btnGlyph {
+  width: 14px;
+  height: 14px;
+}
+
+.btnGlyph svg {
+  width: 100%;
+  height: 100%;
+}
+
+.ownerForm {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  background: var(--oracle-glass);
+  border: 1px solid var(--oracle-border);
+  border-radius: var(--radius-lg);
+}
+
+.quietLink {
+  min-height: 44px;
+  align-self: center;
+  padding: 0 var(--space-4);
+  font-family: var(--font-display);
+  font-size: var(--text-xs);
+  letter-spacing: var(--tracking-wider);
+  text-transform: uppercase;
+  color: var(--oracle-text-ghost);
+}
+
+.quietLink:hover {
+  color: var(--oracle-text-dim);
+}
+
+/* ── Skeletons — glass rows breathing (cf. CrmShell skeletonBreathe) ─────── */
+.skeletons {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.skeletonRow {
+  height: 52px;
+  border-radius: var(--radius-md);
+  background: var(--oracle-glass);
+  border: 1px solid var(--oracle-border-subtle);
+  animation: skeletonBreathe 1.4s var(--ease-in-out) infinite alternate;
+}
+
+.skeletonRow:nth-child(2) { animation-delay: 120ms; }
+.skeletonRow:nth-child(3) { animation-delay: 240ms; }
+
+@keyframes skeletonBreathe {
+  from { opacity: 0.45; }
+  to   { opacity: 1; }
+}
+
+/* ── Quiet inline error + retry ──────────────────────────────────────────── */
+.errorBox {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  background: var(--oracle-glass);
+  border: 1px solid var(--oracle-border);
+  border-left: 2px solid var(--oracle-red-dim);
+  border-radius: var(--radius-md);
+}
+
+.errorText {
+  font-size: var(--text-sm);
+  line-height: var(--leading-snug);
+  color: var(--oracle-text-dim);
+}
+
+.retryBtn {
+  flex-shrink: 0;
+  min-height: 44px;
+  padding: 0 var(--space-4);
+  background: var(--oracle-amber-ghost);
+  border: 1px solid var(--oracle-amber-dim);
+  border-radius: var(--radius-md);
+  font-family: var(--font-display);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  letter-spacing: var(--tracking-wider);
+  text-transform: uppercase;
+  color: var(--oracle-amber);
+}
+
+.retryBtn:hover {
+  box-shadow: var(--shadow-amber);
+}
+
+/* ── Actions ─────────────────────────────────────────────────────────────── */
+.actions {
+  display: flex;
+  gap: var(--space-3);
+  margin-top: var(--space-2);
+}
+
+.primaryBtn {
+  flex: 1;
+  min-height: 48px;
+  padding: 0 var(--space-5);
+  background: var(--oracle-amber-ghost);
+  border: 1px solid var(--oracle-amber-dim);
+  border-radius: var(--radius-md);
+  font-family: var(--font-display);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  letter-spacing: var(--tracking-wider);
+  text-transform: uppercase;
+  color: var(--oracle-amber);
+  transition:
+    box-shadow var(--duration-base) var(--ease-out),
+    opacity var(--duration-fast) var(--ease-out);
+}
+
+.primaryBtn:hover {
+  box-shadow: var(--shadow-amber);
+}
+
+.primaryBtn:active {
+  transform: translateY(1px);
+}
+
+.primaryBtn:disabled {
+  opacity: 0.5;
+  cursor: default;
+  box-shadow: none;
+}
+
+.ghostBtn {
+  min-height: 48px;
+  padding: 0 var(--space-5);
+  border: 1px solid var(--oracle-border-bright);
+  border-radius: var(--radius-md);
+  font-family: var(--font-display);
+  font-size: var(--text-sm);
+  font-weight: 500;
+  letter-spacing: var(--tracking-wider);
+  text-transform: uppercase;
+  color: var(--oracle-text-dim);
+}
+
+.ghostBtn:hover {
+  background: var(--oracle-glass-hover);
+  color: var(--oracle-text);
+}
+
+.ghostBtn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* ── Review — house linked to owner by the filament ──────────────────────── */
+.linkage {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+}
+
+.houseCard {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-5);
+  background: var(--oracle-glass);
+  border: 1px solid var(--oracle-border-bright);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-panel);
+}
+
+.houseGlyph {
+  width: 24px;
+  height: 24px;
+  color: var(--oracle-amber);
+  filter: drop-shadow(0 0 6px var(--oracle-amber-ghost));
+}
+
+.houseGlyph svg {
+  width: 100%;
+  height: 100%;
+}
+
+.houseAddress {
+  font-size: var(--text-md);
+  font-weight: 600;
+  letter-spacing: var(--tracking-snug);
+  color: var(--oracle-text-heading);
+}
+
+.housePrice {
+  font-family: var(--font-display);
+  font-size: var(--text-2xl);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: var(--tracking-snug);
+  color: var(--oracle-amber);
+  text-shadow: 0 0 18px var(--oracle-amber-glow);
+}
+
+.houseSpecs {
+  display: flex;
+  gap: var(--space-6);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--oracle-border-subtle);
+}
+
+.spec {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.specValue {
+  font-family: var(--font-display);
+  font-size: var(--text-md);
+  font-variant-numeric: tabular-nums;
+  color: var(--oracle-text);
+}
+
+.specLabel {
+  font-family: var(--font-display);
+  font-size: 0.5625rem;
+  letter-spacing: var(--tracking-widest);
+  text-transform: uppercase;
+  color: var(--oracle-text-ghost);
+}
+
+/* The link itself — a short vertical run of the amber filament. */
+.linkFilament {
+  width: 2px;
+  height: var(--space-8);
+  align-self: center;
+  border-radius: var(--radius-pill);
+  background: linear-gradient(
+    180deg,
+    var(--oracle-amber-dim),
+    var(--oracle-amber) 50%,
+    var(--oracle-amber-dim)
+  );
+  box-shadow: 0 0 12px var(--oracle-amber-glow), 0 0 3px var(--oracle-amber-ghost);
+}
+
+.linkFilamentGhost {
+  background: var(--oracle-border-bright);
+  box-shadow: none;
+}
+
+.ownerChip {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-height: 56px;
+  padding: var(--space-3) var(--space-4);
+  background: var(--oracle-glass);
+  border: 1px solid var(--oracle-border-bright);
+  border-radius: var(--radius-lg);
+}
+
+.ownerChipGhost {
+  justify-content: center;
+  border-style: dashed;
+}
+
+.ownerBadge {
+  flex-shrink: 0;
+  font-family: var(--font-display);
+  font-size: 0.5625rem;
+  font-weight: 600;
+  letter-spacing: var(--tracking-widest);
+  text-transform: uppercase;
+  color: var(--oracle-amber);
+  border: 1px solid var(--oracle-amber-dim);
+  border-radius: var(--radius-pill);
+  padding: var(--space-1) var(--space-3);
+}
+
+/* ── Success — amber check, "Listed" ─────────────────────────────────────── */
+.done {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-4);
+  padding: var(--space-12) var(--space-4);
+  text-align: center;
+}
+
+.done > * {
+  animation: stepIn var(--duration-base) var(--ease-out) both;
+}
+
+.done > *:nth-child(2) { animation-delay: 80ms; }
+.done > *:nth-child(3) { animation-delay: 160ms; }
+.done > *:nth-child(4) { animation-delay: 240ms; }
+.done > *:nth-child(5) { animation-delay: 320ms; }
+
+.doneCheck {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 64px;
+  height: 64px;
+  border-radius: var(--radius-pill);
+  background: var(--oracle-amber-ghost);
+  border: 1px solid var(--oracle-amber-dim);
+  color: var(--oracle-amber);
+  box-shadow: var(--shadow-amber);
+  animation: checkPop var(--duration-cinematic) var(--ease-spring) both;
+}
+
+.doneCheck svg {
+  width: 28px;
+  height: 28px;
+}
+
+@keyframes checkPop {
+  from { opacity: 0; transform: scale(0.6); }
+  to   { opacity: 1; transform: scale(1); }
+}
+
+.doneTitle {
+  font-family: var(--font-display);
+  font-size: var(--text-lg);
+  font-weight: 600;
+  letter-spacing: var(--tracking-widest);
+  text-transform: uppercase;
+  color: var(--oracle-amber);
+}
+
+.doneAddress {
+  font-size: var(--text-base);
+  color: var(--oracle-text);
+}
+
+.doneOwner {
+  font-family: var(--font-display);
+  font-size: var(--text-xs);
+  letter-spacing: var(--tracking-wider);
+  text-transform: uppercase;
+  color: var(--oracle-text-dim);
+}
+
+.done .primaryBtn {
+  flex: initial;
+  width: 100%;
+  max-width: 280px;
+  margin-top: var(--space-4);
+}

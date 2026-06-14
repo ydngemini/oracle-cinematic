@@ -26,6 +26,7 @@ from agent_profile import router as agent_profile_router
 from disposition_enforcer import start_disposition_enforcer, stop_disposition_enforcer
 from lead_dossier import router as lead_dossier_router
 from cma_generator import router as cma_router
+from crm import router as crm_router
 import ws_hub
 from legal_agent import format_for_websocket
 from spatial_agent import reconstruct_property, should_trigger_reconstruction
@@ -77,7 +78,7 @@ _ALLOWED_ORIGINS = os.getenv("ORACLE_CORS_ORIGINS", "http://localhost:3000,http:
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_ALLOWED_ORIGINS,
-    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["Content-Type", "Authorization"],
     allow_credentials=True,
 )
@@ -93,6 +94,12 @@ app.include_router(voice_router)
 app.include_router(agent_profile_router)
 app.include_router(lead_dossier_router)
 app.include_router(cma_router)
+app.include_router(crm_router)
+from admin_ops import router as admin_ops_router  # noqa: E402 — late import, matches local router convention
+app.include_router(admin_ops_router)
+
+from state_compliance import router as state_compliance_router  # noqa: E402
+app.include_router(state_compliance_router)
 
 from apis.geocoding import geocode, reverse_geocode
 from apis.census import get_demographics_by_zip
@@ -468,15 +475,37 @@ async def restore_session(websocket: WebSocket, user_id: str, tenant_id: str):
 
 
 def _resolve_tenant(websocket: WebSocket) -> str:
-    """Tenant the operator's leads are scoped to. Real deployments pass tenant_id
-    from the verified JWT; for a tokenless dev client we fall back to
-    ORACLE_DEMO_TENANT_ID (the same tenant the harvesters ingest under) so the
-    pipeline actually shows data, then to the harmless 'default' sentinel."""
-    return (
-        websocket.query_params.get("tenant_id")
-        or os.getenv("ORACLE_DEMO_TENANT_ID")
-        or "default"
-    )
+    """Tenant the operator's leads are scoped to.
+
+    Resolution order:
+      1. A `token` query param carrying a valid JWT — tenant_id comes from the
+         verified claims. This is the ONLY path that can land in the platform
+         firehose group (role must be platform_admin).
+      2. The legacy `tenant_id` query param (tokenless dev clients), explicitly
+         barred from claiming the platform tenant — it is client-asserted.
+      3. ORACLE_DEMO_TENANT_ID (the tenant the harvesters ingest under), then
+         the harmless 'default' sentinel.
+    """
+    raw_token = websocket.query_params.get("token", "")
+    if raw_token:
+        try:
+            from auth import decode_token
+
+            claims = decode_token(raw_token)
+            claimed = claims.get("tenant_id") or "default"
+            if claimed == ws_hub.FIREHOSE_TENANT_ID and claims.get("role") != "platform_admin":
+                logger.warning("WS token valid but not platform_admin — demoting from firehose group.")
+                return os.getenv("ORACLE_DEMO_TENANT_ID") or "default"
+            return claimed
+        except Exception:  # noqa: BLE001 — invalid/expired token → dev fallback
+            logger.warning("WS token rejected — falling back to dev tenant resolution.")
+
+    claimed = websocket.query_params.get("tenant_id", "")
+    if claimed == ws_hub.FIREHOSE_TENANT_ID:
+        # Spoof guard: the all-tenant firehose is JWT-gated, never query-param.
+        logger.warning("WS client asserted the platform tenant without a token — demoted.")
+        claimed = ""
+    return claimed or os.getenv("ORACLE_DEMO_TENANT_ID") or "default"
 
 
 async def push_deal_pipeline(websocket: WebSocket, user_id: str, tenant_id: str):

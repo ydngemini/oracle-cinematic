@@ -15,6 +15,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import sqlite3
 from datetime import datetime, timezone
 from enum import Enum
@@ -24,14 +25,20 @@ from uuid import UUID
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
-from db.connection import _pool  # asyncpg.Pool — may be None in degraded mode
+import db.connection as _dbc  # pool lives at _dbc._pool — read live (it is created in the lifespan, AFTER this import)
 
 logger = logging.getLogger("oracle.audit")
 
 # ---------------------------------------------------------------------------
 # SQLite fallback — used only when the PG pool is absent / insert fails.
 # ---------------------------------------------------------------------------
-_SQLITE_PATH = Path(__file__).parent / "audit_logs.db"
+# Default lives beside the code, but in containers the source tree is a
+# read-only-for-this-uid bind mount — point ORACLE_AUDIT_SQLITE somewhere
+# writable (compose sets /tmp/audit_logs.db). PG is the primary store; this
+# is the degraded-mode fallback only.
+_SQLITE_PATH = Path(
+    os.environ.get("ORACLE_AUDIT_SQLITE", str(Path(__file__).parent / "audit_logs.db"))
+)
 
 
 def _sqlite_init() -> None:
@@ -105,7 +112,7 @@ def _compute_hash(
 
 async def _pg_last_hash() -> str:
     """Fetch the most recent entry_hash from PostgreSQL. Returns genesis sentinel on empty table."""
-    row = await _pool.fetchrow(  # type: ignore[union-attr]
+    row = await _dbc._pool.fetchrow(  # type: ignore[union-attr]
         "SELECT entry_hash FROM audit_ledger ORDER BY created_at DESC, event_id DESC LIMIT 1"
     )
     return row["entry_hash"] if row else "0" * 64
@@ -165,7 +172,8 @@ class AuditLedger:
 
         Returns the serialisable entry dict (broadcast to WS subscribers too).
         """
-        created_at   = datetime.now(tz=timezone.utc).isoformat()
+        created_dt   = datetime.now(tz=timezone.utc)
+        created_at   = created_dt.isoformat()  # string form: hashing, SQLite, JSON
         tenant_str   = str(tenant_id) if tenant_id is not None else ""
         user_str     = str(user_id)   if user_id   is not None else ""
         target_str   = str(target_id) if target_id is not None else ""
@@ -174,7 +182,7 @@ class AuditLedger:
 
         # ---- determine prev_hash ----------------------------------------
         prev_hash: str
-        if _pool is not None:
+        if _dbc._pool is not None:
             try:
                 prev_hash = await _pg_last_hash()
             except Exception as exc:  # noqa: BLE001
@@ -190,9 +198,9 @@ class AuditLedger:
 
         # ---- persist -------------------------------------------------------
         pg_ok = False
-        if _pool is not None:
+        if _dbc._pool is not None:
             try:
-                await _pool.execute(
+                await _dbc._pool.execute(
                     """
                     INSERT INTO audit_ledger
                         (tenant_id, user_id, category, action, target_id,
@@ -207,7 +215,7 @@ class AuditLedger:
                     meta_json,
                     prev_hash,
                     entry_hash,
-                    created_at,
+                    created_dt,  # asyncpg needs the datetime, not the isoformat string
                 )
                 pg_ok = True
                 logger.debug("audit: PG insert ok — %s / %s", category.value, action)
@@ -244,11 +252,11 @@ class AuditLedger:
         tampered hash. Pass use_sqlite=True to verify the local fallback chain
         instead of PostgreSQL.
         """
-        if use_sqlite or _pool is None:
+        if use_sqlite or _dbc._pool is None:
             return self._sqlite_verify_chain()
 
         try:
-            rows = await _pool.fetch(
+            rows = await _dbc._pool.fetch(
                 """
                 SELECT created_at, category, action, tenant_id, user_id,
                        target_id, metadata, prev_hash, entry_hash
@@ -270,11 +278,13 @@ class AuditLedger:
             if row["prev_hash"] != expected_prev:
                 return False
             computed = _compute_hash(
-                row["created_at"],
+                # The hash was computed over the isoformat STRING at record
+                # time — re-deriving from the PG datetime must match exactly.
+                row["created_at"].isoformat(),
                 row["category"],
                 row["action"],
-                row["tenant_id"] or "",
-                row["user_id"]   or "",
+                str(row["tenant_id"]) if row["tenant_id"] else "",
+                str(row["user_id"]) if row["user_id"] else "",
                 row["target_id"] or "",
                 meta_json,
                 row["prev_hash"],
@@ -297,7 +307,7 @@ class AuditLedger:
         Falls back to SQLite automatically when the pool is absent.
         Pass use_sqlite=True to explicitly query the local fallback store.
         """
-        if use_sqlite or _pool is None:
+        if use_sqlite or _dbc._pool is None:
             return self._sqlite_get_entries(limit=limit, category=category)
 
         try:
@@ -314,7 +324,7 @@ class AuditLedger:
                 idx += 1
 
             where_clause = ("WHERE " + " AND ".join(conditions)) if conditions else ""
-            rows = await _pool.fetch(
+            rows = await _dbc._pool.fetch(
                 f"""
                 SELECT created_at, tenant_id, user_id, category, action,
                        target_id, metadata, prev_hash, entry_hash
@@ -328,9 +338,11 @@ class AuditLedger:
             )
             return [
                 {
-                    "created_at": row["created_at"],
-                    "tenant_id":  row["tenant_id"],
-                    "user_id":    row["user_id"],
+                    # JSON-safe scalars — these dicts go straight through
+                    # json.dumps on the audit WS path (no FastAPI encoder).
+                    "created_at": row["created_at"].isoformat(),
+                    "tenant_id":  str(row["tenant_id"]) if row["tenant_id"] else None,
+                    "user_id":    str(row["user_id"]) if row["user_id"] else None,
                     "category":   row["category"],
                     "action":     row["action"],
                     "target_id":  row["target_id"],

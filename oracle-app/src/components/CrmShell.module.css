@@ -1,0 +1,107 @@
+/* CrmShell — portrait app frame. Header floats over the view; the view is
+   the only scroll container; the Deck owns the bottom edge. */
+
+.shell {
+  display: flex;
+  flex-direction: column;
+  height: 100dvh;
+  overflow: hidden;
+}
+
+/* ── Header — hairline wordmark bar ──────────────────────────────────────── */
+.header {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: var(--z-hud);
+  height: calc(var(--crm-header-h) + var(--safe-top));
+  padding: var(--safe-top) var(--space-4) 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: rgba(6, 6, 9, 0.72);
+  backdrop-filter: var(--oracle-backdrop-light);
+  -webkit-backdrop-filter: var(--oracle-backdrop-light);
+  border-bottom: 1px solid var(--oracle-border);
+}
+
+.wordmark {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-family: var(--font-display);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  letter-spacing: var(--tracking-widest);
+  color: var(--oracle-text-heading);
+}
+
+.tick {
+  width: 6px;
+  height: 6px;
+  border-radius: 1px;
+  background: var(--oracle-amber);
+  box-shadow: 0 0 8px var(--oracle-amber-dim);
+  transform: rotate(45deg);
+}
+
+/* ── View — the scroll surface ───────────────────────────────────────────── */
+.view {
+  flex: 1;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+  padding:
+    calc(var(--crm-header-h) + var(--safe-top) + var(--space-4))
+    var(--space-4)
+    calc(var(--deck-height) + var(--safe-bottom) + var(--space-6));
+  animation: viewIn var(--duration-base) var(--ease-out);
+}
+
+@keyframes viewIn {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: none; }
+}
+
+/* Desktop: the phone frame centered on the void, command-center vibes kept. */
+@media (min-width: 720px) {
+  .shell {
+    max-width: 480px;
+    margin: 0 auto;
+    border-left: 1px solid var(--oracle-border);
+    border-right: 1px solid var(--oracle-border);
+  }
+
+  .header,
+  .shell :global(nav[aria-label='Oracle CRM']) {
+    max-width: 480px;
+    left: 50%;
+    transform: translateX(-50%);
+    right: auto;
+    width: 100%;
+  }
+}
+
+/* ── Suspense fallback — breathing glass skeletons ──────────────────────── */
+.fallback {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.fallbackCard {
+  height: 96px;
+  border-radius: var(--radius-lg);
+  background: var(--oracle-glass);
+  border: 1px solid var(--oracle-border-subtle);
+  animation: skeletonBreathe 1.4s var(--ease-in-out) infinite alternate;
+}
+
+.fallbackCard:nth-child(2) { animation-delay: 120ms; }
+.fallbackCard:nth-child(3) { animation-delay: 240ms; }
+
+@keyframes skeletonBreathe {
+  from { opacity: 0.45; }
+  to   { opacity: 1; }
+}

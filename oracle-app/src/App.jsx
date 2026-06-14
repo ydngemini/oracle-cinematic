@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { useOracleWebSocket, useOracleDispatch, ACTIONS } from './state';
-import { DashboardLayout, LoginVault } from './components';
+import { CrmShell, LoginVault } from './components';
 
 function useJarvisVoice() {
   const { dispatch } = useOracleDispatch();
@@ -113,7 +113,9 @@ function AuthedApp() {
   useOracleWebSocket();
   useJarvisVoice();
 
-  return <DashboardLayout />;
+  // The 5-tab agent CRM (2026-06 redesign). The desktop HUD lives on in
+  // DashboardLayout but is no longer mounted — Listings is the landing tab.
+  return <CrmShell />;
 }
 
 function App() {

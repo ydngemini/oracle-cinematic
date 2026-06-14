@@ -47,8 +47,14 @@ export function LoginVault({ onAuthenticated }) {
         return;
       }
 
-      const { token } = await res.json();
+      const { token, agent_id, tenant_id, role } = await res.json();
       sessionStorage.setItem('oracle_token', token);
+      // Role gates role-specific surfaces (the platform-admin OPS tab);
+      // identity keys align the WS + profile panels with the JWT identity
+      // (identity.js resolution order: env → localStorage → demo default).
+      if (role) sessionStorage.setItem('oracle_role', role);
+      if (agent_id) localStorage.setItem('oracle_user_id', agent_id);
+      if (tenant_id) localStorage.setItem('oracle_tenant_id', tenant_id);
 
       // Trigger the fade-out, then hand off to parent after transition ends
       setFading(true);

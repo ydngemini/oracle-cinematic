@@ -1,4 +1,8 @@
 export { DashboardLayout } from './DashboardLayout';
+export { CrmShell } from './CrmShell';
+// Tab views (MarketplaceTab, HouseProfileTab, ClientCrmTab, CommsTab,
+// MyProfileTab) are intentionally NOT re-exported: CrmShell lazy-loads them
+// per-tab, and a static re-export would defeat the code-split.
 export { AgentStatusBar } from './AgentStatusBar';
 export { PropertySpecs } from './PropertySpecs';
 export { LiveTranscript } from './LiveTranscript';

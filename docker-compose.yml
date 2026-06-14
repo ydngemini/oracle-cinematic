@@ -49,6 +49,10 @@ services:
       ORACLE_DB_USER: postgres
       ORACLE_DB_PASSWORD: ${ORACLE_DB_PASSWORD:-postgres}
       ORACLE_DB_SSLMODE: disable
+      # Audit ledger SQLite fallback — the bind-mounted source tree is not
+      # writable by the container user (uid 1001), so point it at /tmp.
+      # Postgres is the primary store; this only catches degraded mode.
+      ORACLE_AUDIT_SQLITE: /tmp/audit_logs.db
     volumes:
       # Mount source so --reload sees edits without rebuild.
       - ./backend:/app
@@ -74,6 +78,10 @@ services:
       - backend
     environment:
       VITE_WS_URL: ${VITE_WS_URL:-ws://localhost:8000/ws}
+      # Vite only reads .env files from the app root (oracle-app/), not the
+      # repo root — forward the dev-only flags it needs from the compose env.
+      VITE_API_BASE: ${VITE_API_BASE:-http://localhost:8000}
+      VITE_BILLING_BYPASS: ${VITE_BILLING_BYPASS:-false}
     volumes:
       - ./oracle-app:/app
       - npm_cache:/app/node_modules

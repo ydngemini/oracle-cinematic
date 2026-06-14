@@ -1,0 +1,78 @@
+[
+  {
+    "rule_id": "FEDERAL-LEAD-PAINT-001",
+    "state_code": "FEDERAL",
+    "category": "disclosure",
+    "title": "Lead-Based Paint Disclosure (Pre-1978)",
+    "description": "Federal law (42 USC 4852d) requires sellers and landlords of pre-1978 housing to disclose known lead-based paint hazards. Buyers receive a 10-day window to conduct risk assessment.",
+    "severity": "required",
+    "trigger_conditions": {"all": [{"field": "year_built", "op": "lt", "value": 1978}, {"field": "transaction_type", "op": "in", "value": ["purchase", "lease"]}]},
+    "required_actions": [
+      {"action": "provide_disclosure_form", "form_id": "EPA-HUD-LEAD-DISCLOSURE", "deadline_days": 0},
+      {"action": "provide_pamphlet", "form_id": "EPA-PROTECT-YOUR-FAMILY"},
+      {"note": "Buyer/tenant has 10 calendar days to inspect for lead paint hazards."}
+    ],
+    "dependencies": [],
+    "effective_date": "1996-09-06",
+    "expiry_date": null,
+    "version": 1,
+    "citations": ["42 U.S.C. § 4852d", "40 CFR Part 745", "24 CFR Part 35"],
+    "metadata": {"federal_agency": "EPA/HUD"}
+  },
+  {
+    "rule_id": "FEDERAL-RESPA-001",
+    "state_code": "FEDERAL",
+    "category": "closing",
+    "title": "RESPA Loan Estimate and Closing Disclosure",
+    "description": "Lenders must provide Loan Estimate within 3 business days of application and Closing Disclosure 3 business days before consummation for RESPA-covered loans.",
+    "severity": "required",
+    "trigger_conditions": {"all": [{"field": "transaction_type", "op": "eq", "value": "purchase"}, {"field": "is_cash", "op": "neq", "value": true}]},
+    "required_actions": [
+      {"action": "lender_provides", "form_id": "CFPB-LOAN-ESTIMATE", "deadline_days": 3, "note": "Within 3 business days of loan application."},
+      {"action": "lender_provides", "form_id": "CFPB-CLOSING-DISCLOSURE", "deadline_days": -3, "note": "3 business days BEFORE closing."}
+    ],
+    "dependencies": [],
+    "effective_date": "2015-10-03",
+    "expiry_date": null,
+    "version": 1,
+    "citations": ["12 U.S.C. § 2601 et seq.", "12 CFR Part 1024 (Regulation X)"],
+    "metadata": {"federal_agency": "CFPB"}
+  },
+  {
+    "rule_id": "FEDERAL-FIRPTA-001",
+    "state_code": "FEDERAL",
+    "category": "tax",
+    "title": "FIRPTA Withholding for Foreign Sellers",
+    "description": "Buyer must withhold 15% of gross sales price (10% if price <= $1M and buyer uses as primary residence) when seller is a foreign person under FIRPTA.",
+    "severity": "required",
+    "trigger_conditions": {"field": "seller_is_foreign", "op": "eq", "value": true},
+    "required_actions": [
+      {"action": "withhold", "note": "Buyer withholds 15% (or 10% if price <= $1M, primary residence). Remit to IRS within 20 days of transfer."},
+      {"action": "form", "form_id": "IRS-8288"}
+    ],
+    "dependencies": [],
+    "effective_date": "1985-01-01",
+    "expiry_date": null,
+    "version": 3,
+    "citations": ["26 U.S.C. § 1445", "IRS Publication 515"],
+    "metadata": {}
+  },
+  {
+    "rule_id": "FEDERAL-FINCEN-GTO-001",
+    "state_code": "FEDERAL",
+    "category": "anti_money_laundering",
+    "title": "FinCEN Geographic Targeting Order — All-Cash Reporting",
+    "description": "FinCEN GTOs require title insurance companies to identify and report beneficial owners of legal entities purchasing residential real estate with all-cash in designated metro areas.",
+    "severity": "required",
+    "trigger_conditions": {"all": [{"field": "is_cash", "op": "eq", "value": true}, {"field": "price", "op": "gte", "value": 300000}]},
+    "required_actions": [
+      {"note": "Title company must file FinCEN report if in a designated metro area."}
+    ],
+    "dependencies": [],
+    "effective_date": "2016-03-01",
+    "expiry_date": null,
+    "version": 2,
+    "citations": ["31 U.S.C. § 5326", "FinCEN GTO 2024"],
+    "metadata": {}
+  }
+]

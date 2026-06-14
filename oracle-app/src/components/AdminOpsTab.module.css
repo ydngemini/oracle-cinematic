@@ -1,0 +1,734 @@
+/* AdminOpsTab — platform-admin OPS console.
+   Obsidian Deck idiom: dark etched glass, amber filament accents, mono
+   tabular numerals for every data value, 9px wide-tracked caps micro-labels.
+   Status grammar: amber = live/active, muted green (color-mix) = healthy,
+   desaturated red (color-mix) = error/offline.
+   Scrolls inside CrmShell's <main>; content only — no fixed chrome. */
+
+.wrap {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+}
+
+/* ── Header row — kicker + refresh key ──────────────────────────────────── */
+.topRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  min-height: 44px; /* touch floor */
+}
+
+.kicker {
+  font-family: var(--font-display);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  letter-spacing: var(--tracking-widest);
+  text-transform: uppercase;
+  color: var(--oracle-amber-dim);
+}
+
+.refreshBtn {
+  width: 44px;
+  height: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--oracle-border);
+  background: var(--oracle-glass);
+  color: var(--oracle-text-dim);
+  box-shadow: var(--shadow-inset);
+}
+
+.refreshBtn:hover {
+  background: var(--oracle-glass-hover);
+  color: var(--oracle-amber);
+}
+
+.refreshBtn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.refreshBtn svg {
+  width: 18px;
+  height: 18px;
+}
+
+.refreshing svg {
+  animation: spinGlyph 900ms linear infinite;
+}
+
+@keyframes spinGlyph {
+  to { transform: rotate(360deg); }
+}
+
+/* ── Section chrome — 9px micro-labels ──────────────────────────────────── */
+.section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.sectionHead {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.sectionLabel {
+  font-family: var(--font-display);
+  font-size: 0.5625rem; /* 9px — instrument micro-label, matches Deck keys */
+  font-weight: 600;
+  letter-spacing: var(--tracking-widest);
+  text-transform: uppercase;
+  color: var(--oracle-text-ghost);
+}
+
+.asideCount {
+  font-family: var(--font-display);
+  font-size: 0.5625rem;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: var(--tracking-wider);
+  text-transform: uppercase;
+  color: color-mix(in srgb, var(--oracle-green) 65%, var(--oracle-text-dim));
+}
+
+/* ── 1 · SYSTEM strip ───────────────────────────────────────────────────── */
+.sysStrip {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-5);
+  min-height: 44px;
+  padding: var(--space-3) var(--space-4);
+  background: var(--oracle-glass);
+  border: 1px solid var(--oracle-border);
+  border-top-color: var(--oracle-border-bright); /* etched top light */
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-inset);
+  animation: riseIn var(--duration-base) var(--ease-out) both;
+}
+
+.sysCore {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-right: auto;
+}
+
+.sysCoreLabel {
+  font-family: var(--font-display);
+  font-size: 0.5625rem;
+  font-weight: 600;
+  letter-spacing: var(--tracking-widest);
+  text-transform: uppercase;
+  color: var(--oracle-text-dim);
+}
+
+.sysItem {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--space-2);
+}
+
+.sysValue {
+  font-family: var(--font-display);
+  font-size: var(--text-base);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: var(--tracking-snug);
+  color: var(--oracle-text-heading);
+}
+
+.sysLabel {
+  font-family: var(--font-display);
+  font-size: 0.5625rem;
+  letter-spacing: var(--tracking-widest);
+  text-transform: uppercase;
+  color: var(--oracle-text-ghost);
+}
+
+/* Status dots — green-mix healthy, red-mix offline, ghost idle */
+.dot {
+  flex-shrink: 0;
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-pill);
+  background: var(--oracle-text-ghost);
+}
+
+.dotOnline {
+  background: color-mix(in srgb, var(--oracle-green) 75%, transparent);
+  box-shadow: 0 0 8px color-mix(in srgb, var(--oracle-green) 30%, transparent);
+}
+
+.dotOffline {
+  background: color-mix(in srgb, var(--oracle-red) 70%, transparent);
+  box-shadow: 0 0 8px color-mix(in srgb, var(--oracle-red) 25%, transparent);
+}
+
+.dotIdle {
+  background: var(--oracle-text-ghost);
+}
+
+/* ── 2 · FLEET totals — instrument grid ─────────────────────────────────── */
+.totals {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  background: var(--oracle-glass);
+  border: 1px solid var(--oracle-border);
+  border-top-color: var(--oracle-border-bright);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-inset);
+  overflow: hidden;
+  animation: riseIn var(--duration-base) var(--ease-out) both;
+}
+
+.totalCell {
+  display: flex;
+  flex-direction: column-reverse; /* big numeral above its micro-label */
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-4) var(--space-2);
+  border-bottom: 1px solid var(--oracle-border-subtle);
+}
+
+.totalCell:not(:nth-child(3n + 1)) {
+  border-left: 1px solid var(--oracle-border-subtle);
+}
+
+.totalCell:last-child {
+  grid-column: 1 / -1; /* 7th instrument spans the full row */
+  border-bottom: none;
+}
+
+.totalValue {
+  font-family: var(--font-display);
+  font-size: var(--text-xl);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: var(--tracking-snug);
+  color: var(--oracle-text-heading);
+}
+
+.totalLabel {
+  font-family: var(--font-display);
+  font-size: 0.5625rem;
+  font-weight: 500;
+  letter-spacing: var(--tracking-widest);
+  text-transform: uppercase;
+  color: var(--oracle-text-ghost);
+}
+
+/* ── 3 · LIVE FEED ──────────────────────────────────────────────────────── */
+.liveBadge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-family: var(--font-display);
+  font-size: 0.5625rem;
+  font-weight: 600;
+  letter-spacing: var(--tracking-widest);
+  text-transform: uppercase;
+  color: var(--oracle-amber-dim);
+}
+
+.liveTick {
+  width: 7px;
+  height: 7px;
+  border-radius: var(--radius-pill);
+  background: var(--oracle-amber-dim);
+}
+
+.liveTickPulse {
+  background: var(--oracle-amber);
+  animation: livePulse 1.1s var(--ease-out) 1;
+}
+
+@keyframes livePulse {
+  0%   { box-shadow: 0 0 0 0 var(--oracle-amber-ghost); }
+  40%  { box-shadow: 0 0 0 7px transparent; }
+  100% { box-shadow: 0 0 0 0 transparent; }
+}
+
+.feedList {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+  background: var(--oracle-glass);
+  border: 1px solid var(--oracle-border);
+  border-top-color: var(--oracle-border-bright);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-inset);
+  overflow: hidden;
+}
+
+.feedRow {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-height: 44px;
+  justify-content: center;
+  padding: var(--space-2) var(--space-4);
+}
+
+.feedRow + .feedRow {
+  border-top: 1px solid var(--oracle-border-subtle);
+}
+
+.feedTop {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+}
+
+.feedTag {
+  font-family: var(--font-display);
+  font-size: 0.5625rem;
+  font-weight: 600;
+  letter-spacing: var(--tracking-wider);
+  text-transform: uppercase;
+  color: var(--oracle-amber);
+}
+
+.feedMetric {
+  font-family: var(--font-display);
+  font-size: 0.5625rem;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: var(--tracking-wide);
+  color: var(--oracle-text-dim);
+}
+
+.feedText {
+  font-size: var(--text-sm);
+  line-height: var(--leading-snug);
+  color: var(--oracle-text-dim);
+}
+
+.feedWho {
+  color: var(--oracle-text);
+}
+
+.feedTenant {
+  font-family: var(--font-display);
+  font-size: 0.5625rem;
+  letter-spacing: var(--tracking-wider);
+  text-transform: uppercase;
+  color: var(--oracle-text-ghost);
+}
+
+/* ── 4 · TENANTS ────────────────────────────────────────────────────────── */
+.cardList {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: 0;
+}
+
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  border-radius: var(--radius-lg);
+  background: var(--oracle-glass);
+  border: 1px solid var(--oracle-border);
+  border-top-color: var(--oracle-border-bright);
+  box-shadow: var(--shadow-inset);
+  animation: riseIn var(--duration-base) var(--ease-out) both;
+}
+
+.cardHead {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.cardTitle {
+  font-family: var(--font-display);
+  font-size: var(--text-base);
+  font-weight: 600;
+  letter-spacing: var(--tracking-wide);
+  color: var(--oracle-text-heading);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.cardSub {
+  font-family: var(--font-display);
+  font-size: var(--text-xs);
+  letter-spacing: var(--tracking-wide);
+  color: var(--oracle-text-ghost);
+}
+
+.sockChip {
+  margin-left: auto;
+  flex-shrink: 0;
+  font-family: var(--font-display);
+  font-size: 0.5625rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: var(--tracking-wider);
+  text-transform: uppercase;
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-pill);
+  color: var(--oracle-amber);
+  border: 1px solid var(--oracle-amber-dim);
+  background: var(--oracle-amber-ghost);
+}
+
+.cardMeta {
+  font-family: var(--font-display);
+  font-size: 0.5625rem;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: var(--tracking-wider);
+  text-transform: uppercase;
+  color: var(--oracle-text-ghost);
+}
+
+/* Shared count chips (tenants + outbox rollup) */
+.chipRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.chip,
+.countChip {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--space-1);
+  font-family: var(--font-display);
+  font-size: var(--text-xs);
+  letter-spacing: var(--tracking-wider);
+  text-transform: uppercase;
+  color: var(--oracle-text-ghost);
+  border: 1px solid var(--oracle-border);
+  background: var(--oracle-glass);
+  border-radius: var(--radius-sm);
+  padding: var(--space-1) var(--space-2);
+}
+
+.chipNum {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--oracle-text);
+}
+
+.countChip[data-status='queued'] {
+  color: var(--oracle-amber);
+  border-color: var(--oracle-amber-dim);
+  background: var(--oracle-amber-ghost);
+}
+
+.countChip[data-status='queued'] .chipNum {
+  color: var(--oracle-amber);
+}
+
+.countChip[data-status='sent'] {
+  color: color-mix(in srgb, var(--oracle-green) 70%, var(--oracle-text-dim));
+  border-color: color-mix(in srgb, var(--oracle-green) 35%, transparent);
+}
+
+.countChip[data-status='sent'] .chipNum {
+  color: color-mix(in srgb, var(--oracle-green) 80%, var(--oracle-text));
+}
+
+.countChip[data-status='failed'] {
+  color: color-mix(in srgb, var(--oracle-red) 70%, var(--oracle-text-dim));
+  border-color: color-mix(in srgb, var(--oracle-red) 35%, transparent);
+}
+
+.countChip[data-status='failed'] .chipNum {
+  color: color-mix(in srgb, var(--oracle-red) 80%, var(--oracle-text));
+}
+
+/* ── 5 · USERS / 6 · OUTBOX / 7 · ACTIVITY — instrument rows ───────────── */
+.rowList {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+  background: var(--oracle-glass);
+  border: 1px solid var(--oracle-border);
+  border-top-color: var(--oracle-border-bright);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-inset);
+  overflow: hidden;
+}
+
+.userRow,
+.mailRow,
+.actRow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-height: 52px; /* > 44px touch floor */
+  padding: var(--space-2) var(--space-4);
+}
+
+.userRow + .userRow,
+.mailRow + .mailRow,
+.actRow + .actRow {
+  border-top: 1px solid var(--oracle-border-subtle);
+}
+
+.rowMain {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.rowTitle {
+  font-family: var(--font-display);
+  font-size: var(--text-sm);
+  letter-spacing: var(--tracking-wide);
+  color: var(--oracle-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.rowSub {
+  font-size: var(--text-xs);
+  color: var(--oracle-text-ghost);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.rowWhen {
+  flex-shrink: 0;
+  margin-left: auto;
+  font-family: var(--font-display);
+  font-size: 0.5625rem;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: var(--tracking-wider);
+  text-transform: uppercase;
+  color: var(--oracle-text-ghost);
+}
+
+.rowAside {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+  max-width: 30%;
+}
+
+.roleChip {
+  flex-shrink: 0;
+  font-family: var(--font-display);
+  font-size: 0.5625rem;
+  font-weight: 600;
+  letter-spacing: var(--tracking-wider);
+  text-transform: uppercase;
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--oracle-border-bright);
+  color: var(--oracle-text-dim);
+  background: var(--oracle-glass);
+}
+
+.roleChip[data-role='admin'] {
+  color: var(--oracle-amber);
+  border-color: var(--oracle-amber-dim);
+  background: var(--oracle-amber-ghost);
+}
+
+.tickOn,
+.tickOff {
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.tickOn {
+  color: color-mix(in srgb, var(--oracle-green) 75%, transparent);
+}
+
+.tickOff {
+  color: var(--oracle-text-ghost);
+}
+
+.tickOn svg {
+  width: 14px;
+  height: 14px;
+}
+
+.statusChip {
+  flex-shrink: 0;
+  font-family: var(--font-display);
+  font-size: 0.5625rem;
+  font-weight: 600;
+  letter-spacing: var(--tracking-wider);
+  text-transform: uppercase;
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--oracle-border-bright);
+  color: var(--oracle-text-dim);
+}
+
+.statusChip[data-status='queued'] {
+  color: var(--oracle-amber);
+  border-color: var(--oracle-amber-dim);
+}
+
+.statusChip[data-status='sent'] {
+  color: color-mix(in srgb, var(--oracle-green) 75%, var(--oracle-text-dim));
+  border-color: color-mix(in srgb, var(--oracle-green) 35%, transparent);
+}
+
+.statusChip[data-status='failed'] {
+  color: color-mix(in srgb, var(--oracle-red) 80%, var(--oracle-text-dim));
+  border-color: color-mix(in srgb, var(--oracle-red) 40%, transparent);
+}
+
+.mailErr {
+  font-size: var(--text-xs);
+  line-height: var(--leading-snug);
+  color: color-mix(in srgb, var(--oracle-red) 70%, var(--oracle-text-dim));
+}
+
+.actGlyph {
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--oracle-border);
+  color: var(--oracle-text-dim);
+}
+
+.actGlyph svg {
+  width: 14px;
+  height: 14px;
+}
+
+.actGlyph[data-dir='inbound'] {
+  color: color-mix(in srgb, var(--oracle-green) 70%, var(--oracle-text-dim));
+}
+
+.actGlyph[data-dir='outbound'] {
+  color: var(--oracle-amber-dim);
+}
+
+.actGlyph[data-dir='audit'] {
+  color: var(--oracle-text-ghost);
+}
+
+/* ── Quiet note — true statements, not fake data ────────────────────────── */
+.quietNote {
+  padding: var(--space-4);
+  border: 1px solid var(--oracle-border-subtle);
+  border-radius: var(--radius-md);
+  font-size: var(--text-sm);
+  line-height: var(--leading-relaxed);
+  color: var(--oracle-text-ghost);
+}
+
+/* ── Loading — breathing glass skeletons ────────────────────────────────── */
+.skelCol {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.skel {
+  border-radius: var(--radius-lg);
+  background: var(--oracle-glass);
+  border: 1px solid var(--oracle-border-subtle);
+  animation: skelBreathe 1.4s var(--ease-in-out) infinite alternate;
+}
+
+.skel:nth-child(2) { animation-delay: 120ms; }
+.skel:nth-child(3) { animation-delay: 240ms; }
+
+@keyframes skelBreathe {
+  from { opacity: 0.45; }
+  to   { opacity: 1; }
+}
+
+/* ── Error — quiet inline state, retry key ──────────────────────────────── */
+.errRow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--oracle-border);
+  background: var(--oracle-glass);
+  animation: riseIn var(--duration-base) var(--ease-out) both;
+}
+
+.errTick {
+  flex-shrink: 0;
+  width: 6px;
+  height: 6px;
+  border-radius: 1px;
+  transform: rotate(45deg);
+  background: color-mix(in srgb, var(--oracle-red) 60%, transparent);
+}
+
+.errText {
+  flex: 1;
+  font-size: var(--text-xs);
+  line-height: var(--leading-snug);
+  color: var(--oracle-text-dim);
+}
+
+.retryBtn {
+  flex-shrink: 0;
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 var(--space-4);
+  font-family: var(--font-display);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  letter-spacing: var(--tracking-widest);
+  text-transform: uppercase;
+  color: var(--oracle-amber);
+  border: 1px solid var(--oracle-amber-dim);
+  border-radius: var(--radius-md);
+  background: var(--oracle-amber-ghost);
+}
+
+.retryBtn:hover {
+  background: var(--oracle-glass-hover);
+}
+
+/* ── Shared load-in ─────────────────────────────────────────────────────── */
+@keyframes riseIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sysStrip,
+  .totals,
+  .card,
+  .errRow {
+    animation: none;
+  }
+
+  .liveTickPulse {
+    animation: none;
+  }
+}

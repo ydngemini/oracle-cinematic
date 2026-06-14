@@ -1,0 +1,111 @@
+.wrap {
+  position: relative;
+}
+
+.pill {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-1) var(--space-3);
+  background: var(--oracle-glass);
+  border: 1px solid var(--oracle-border);
+  border-radius: var(--radius-pill);
+  color: var(--oracle-text-dim);
+  font: var(--text-sm) / 1 var(--font-sans);
+  cursor: pointer;
+  transition: background 0.2s, border-color 0.2s;
+}
+
+.pill:hover {
+  background: var(--oracle-glass-hover);
+  border-color: var(--oracle-border-bright);
+}
+
+.pillGlyph {
+  width: 14px;
+  height: 14px;
+  display: flex;
+  color: var(--oracle-amber-dim);
+}
+
+.pillLabel {
+  white-space: nowrap;
+  max-width: 80px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sheet {
+  position: absolute;
+  top: calc(100% + var(--space-2));
+  right: 0;
+  z-index: 900;
+  width: min(320px, 90vw);
+  max-height: 60vh;
+  display: flex;
+  flex-direction: column;
+  background: rgba(8, 8, 12, 0.95);
+  backdrop-filter: var(--oracle-backdrop);
+  border: 1px solid var(--oracle-border-bright);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.6);
+  overflow: hidden;
+}
+
+.search {
+  padding: var(--space-3) var(--space-4);
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--oracle-border);
+  color: var(--oracle-text);
+  font: var(--text-sm) / 1.4 var(--font-sans);
+  outline: none;
+}
+
+.search::placeholder {
+  color: var(--oracle-text-ghost);
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(48px, 1fr));
+  gap: var(--space-1);
+  padding: var(--space-3);
+  overflow-y: auto;
+  flex: 1;
+}
+
+.stateBtn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-2) var(--space-1);
+  background: var(--oracle-glass);
+  border: 1px solid var(--oracle-border);
+  border-radius: var(--radius-sm);
+  color: var(--oracle-text-dim);
+  font: 600 var(--text-xs) / 1 var(--font-mono);
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.stateBtn:hover {
+  background: var(--oracle-glass-hover);
+  color: var(--oracle-text);
+}
+
+.stateBtnActive {
+  background: var(--oracle-amber-ghost);
+  border-color: var(--oracle-amber-dim);
+  color: var(--oracle-amber);
+}
+
+.footer {
+  padding: var(--space-2) var(--space-3);
+  border-top: 1px solid var(--oracle-border);
+}
+
+.footerCount {
+  font: var(--text-xs) / 1 var(--font-sans);
+  color: var(--oracle-amber-dim);
+}

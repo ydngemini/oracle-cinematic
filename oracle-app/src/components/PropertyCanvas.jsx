@@ -160,6 +160,7 @@ const GRID_VS = `
 `;
 
 const GRID_FS = `
+  #extension GL_OES_standard_derivatives : enable
   precision highp float;
   varying vec3 v_worldPos;
   uniform float u_time;
@@ -457,6 +458,9 @@ export function PropertyCanvas() {
     glState.current.gl = gl;
 
     if (gl) {
+      // fwidth() in GRID_FS is gated on this extension under WebGL1 — it must
+      // be requested before the shader compiles or compilation fails outright.
+      gl.getExtension('OES_standard_derivatives');
       gl.enable(gl.BLEND);
       gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
       gl.clearColor(0, 0, 0, 0);

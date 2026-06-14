@@ -241,6 +241,21 @@ class AuditMiddleware(BaseHTTPMiddleware):
         client_ip = request.client.host if request.client else "unknown"
         category = _category_for_path(path)
 
+        # Attribute the mutation from the Bearer JWT when one is present.
+        # decode_token is the same validation path the endpoints use, so a
+        # forged token attributes nothing (entry still records, unattributed).
+        tenant_id = user_id = None
+        auth_header = request.headers.get("authorization", "")
+        if auth_header.startswith("Bearer "):
+            try:
+                from auth import decode_token
+
+                claims = decode_token(auth_header.removeprefix("Bearer ").strip())
+                tenant_id = claims.get("tenant_id")
+                user_id = claims.get("sub")
+            except Exception:  # noqa: BLE001 — invalid/expired token
+                pass
+
         meta = {
             "method": request.method,
             "path": path,
@@ -254,6 +269,8 @@ class AuditMiddleware(BaseHTTPMiddleware):
             _record_safe(
                 category=category,
                 action=f"{request.method} {path}",
+                tenant_id=tenant_id,
+                user_id=user_id,
                 metadata=meta,
             )
         )

@@ -115,6 +115,20 @@
   --shadow-float:   0 0 0 1px var(--oracle-border), 0 24px 64px rgba(0, 0, 0, 0.7), 0 4px 16px rgba(0, 0, 0, 0.4);
   --shadow-amber:   0 0 24px var(--oracle-amber-glow), 0 0 8px var(--oracle-amber-ghost);
   --shadow-inset:   inset 0 1px 0 rgba(255, 255, 255, 0.05);
+
+  /* ── CRM mobile layer (the Deck) ──────────────────────────────────────────
+     Instrument-cluster type treatment: data (prices, counts, addresses) is
+     set in the mono with tabular numerals and wide-tracked caps labels —
+     the pocket version of the command center, not another sans-on-white CRM. */
+  --font-display:   var(--font-mono);
+  --deck-height:    64px;
+  --safe-top:       env(safe-area-inset-top, 0px);
+  --safe-bottom:    env(safe-area-inset-bottom, 0px);
+  --crm-header-h:   52px;
+
+  /* Filament — the live amber line of the Deck */
+  --filament:        linear-gradient(90deg, transparent, var(--oracle-amber) 35%, rgba(220, 185, 110, 1) 50%, var(--oracle-amber) 65%, transparent);
+  --filament-faint:  linear-gradient(90deg, transparent, var(--oracle-amber-dim), transparent);
 }
 
 
@@ -164,6 +178,24 @@ body {
   width: 100vw;
   height: 100dvh;
   overflow: hidden;
+}
+
+/* ── Mobile app-frame behavior ──────────────────────────────────────────────
+   The frame never scrolls (overflow hidden above); each CRM tab pane scrolls
+   internally. These kill the double-tap zoom, rubber-band chaining, and gray
+   tap flash that betray a web page pretending to be an app. */
+body {
+  overscroll-behavior: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+button, a, [role="tab"] {
+  touch-action: manipulation;
+}
+
+/* iOS zooms any focused input under 16px — pin form controls to --text-md. */
+@media (pointer: coarse) {
+  input, textarea, select { font-size: var(--text-md); }
 }
 
 
