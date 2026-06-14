@@ -63,9 +63,12 @@ async def lifespan(app: FastAPI):
         logger.warning("DB pool init failed (%s); running without persistent memory.", e)
     await start_voice_workers()
     await start_disposition_enforcer()
+    from data_integrations.periodic import start_periodic_scheduler, stop_periodic_scheduler
+    await start_periodic_scheduler()
     try:
         yield
     finally:
+        await stop_periodic_scheduler()
         await stop_disposition_enforcer()
         await stop_voice_workers()
         await close_pool()

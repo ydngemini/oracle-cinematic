@@ -1172,6 +1172,65 @@ async def get_reciprocity(
 
 
 @router.get(
+    "/api/market/coverage",
+    summary="National data-coverage map (property + compliance per jurisdiction)",
+)
+async def get_data_coverage(
+    summary_only: bool = Query(
+        False, description="Return just the rollup totals, not the per-state matrix."
+    ),
+    ctx: TenantContext = Depends(require_context),
+) -> dict:
+    """Report what data the platform holds for every US jurisdiction.
+
+    Three planes: property/parcel (per-state scrapers), compliance (per-state
+    statutory rules), and market/demographic (national APIs — no per-state gap).
+    Property and compliance status are tracked per jurisdiction so the coverage
+    gap stays visible; this is the source of truth behind the ops-console
+    coverage view and the next harvest-batch planning.
+    """
+    from data_coverage import report_json, summary as coverage_summary
+
+    return coverage_summary() if summary_only else report_json()
+
+
+@router.get(
+    "/api/market/harvest/status",
+    summary="Periodic auto-update scheduler status (per-task cadence + last run)",
+)
+async def get_harvest_status(
+    ctx: TenantContext = Depends(require_context),
+) -> dict:
+    """Report the auto-update heartbeat: whether the periodic scheduler is on,
+    its tick interval, and every task's cadence / last-run / failure count."""
+    from data_integrations.periodic import scheduler
+
+    return scheduler.status()
+
+
+@router.post(
+    "/api/market/harvest/run/{task_name}",
+    summary="Manually trigger a periodic harvest task now (platform admin)",
+)
+async def run_harvest_task(
+    task_name: str,
+    ctx: TenantContext = Depends(require_context),
+) -> dict:
+    """Force a scheduled task to run immediately, outside its cadence. Useful
+    for an on-demand refresh of a state/city dataset. Platform-admin only."""
+    require_role(ctx, Role.PLATFORM_ADMIN)
+    from data_integrations.periodic import scheduler
+
+    try:
+        result = await scheduler.run_now(task_name)
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
+        ) from exc
+    return {"task": task_name, "result": result}
+
+
+@router.get(
     "/api/licensing/agent/{agent_id}/status",
     response_model=AgentLicenseStatus,
     summary="All licenses for an agent with expiry warnings",
