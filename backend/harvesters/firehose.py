@@ -1,16 +1,18 @@
 """
-10-State Firehose — orchestrates every real state harvester around Delaware.
+National Firehose — orchestrates every real state harvester around Delaware.
 
-Coverage: DE MD PA NJ NY VA WV CT MA NC.
+Coverage: all 50 states + DC (51 jurisdictions). The original Mid-Atlantic ring
+(DE MD PA NJ NY VA WV CT MA NC) plus 40 statewide/county/city anchors added in
+the harvest-states program.
 
-Each state is a real scraper against that state's open-data endpoint (ArcGIS /
-Socrata / CARTO; MD via the SDAT Playwright path). The orchestrator runs them
-with shared rate-limiting, isolates per-state failures (one dead portal never
-sinks the run), and prints aggregate ingestion metrics.
+Each jurisdiction is a real scraper against that jurisdiction's open-data
+endpoint (ArcGIS / Socrata / CARTO; MD via the SDAT Playwright path). The
+orchestrator runs them with shared rate-limiting, isolates per-state failures
+(one dead portal never sinks the run), and prints aggregate ingestion metrics.
 
 CLI:
   ORACLE_DB_PASSWORD=... ORACLE_INGEST_TENANT_ID=<uuid> \\
-  python -m backend.harvesters.firehose            # all 10 states
+  python -m backend.harvesters.firehose            # all jurisdictions
   python -m backend.harvesters.firehose DE PA NJ   # a subset
 """
 from __future__ import annotations
@@ -34,6 +36,48 @@ from .ma_massgis import MassachusettsMassGISHarvester
 from .nc_onemap import NorthCarolinaOneMapHarvester
 from .md_sdat_ingest import MdSdatHarvester
 
+# National expansion — 40 additional jurisdictions (statewide + county/city anchors).
+from .ak_fnsb import AlaskaFNSBHarvester
+from .al_jefferson import AlabamaJeffersonHarvester
+from .ar_agiso import ArkansasAGISOHarvester
+from .az_maricopa import ArizonaMaricopaHarvester
+from .ca_san_diego import CaliforniaSanDiegoHarvester
+from .co_parcels import ColoradoParcelsHarvester
+from .dc_rpta import DCRPTAHarvester
+from .fl_fdor import FloridaFDORHarvester
+from .ga_fulton import GeorgiaFultonHarvester
+from .hi_honolulu import HawaiiHonoluluHarvester
+from .ia_linn import IowaLinnHarvester
+from .id_whiteStar import IdahoWhiteStarHarvester
+from .il_cook import IllinoisCookHarvester
+from .in_indy import IndianaIndyHarvester
+from .ks_shawnee import KansasShawneeHarvester
+from .ky_boone import KentuckyBoonePVAHarvester
+from .la_ebr import LouisianaEBRHarvester
+from .me_parcels import MaineParcelsHarvester
+from .mi_kent import MichiganKentHarvester
+from .mn_parcels import MinnesotaGeospatialHarvester
+from .mo_jackson import MissouriJacksonHarvester
+from .ms_mdeq import MississippiMDEQHarvester
+from .mt_cadastral import MontanaCadastralHarvester
+from .nd_gishub import NorthDakotaGISHubHarvester
+from .ne_lancaster import NebraskaLancasterHarvester
+from .nh_granit import NewHampshireGRANITHarvester
+from .nm_bernalillo import NewMexicoBernalilloHarvester
+from .nv_washoe import NevadaWashoeHarvester
+from .oh_franklin import OhioFranklinHarvester
+from .ok_oklahoma_county import OklahomaCountyHarvester
+from .or_marion import OregonMarionHarvester
+from .ri_pvd import RhodeIslandProvidenceHarvester
+from .sc_horry import SouthCarolinaHorryHarvester
+from .sd_pennington import SouthDakotaPenningtonHarvester
+from .tn_shelby import TennesseeShelbyHarvester
+from .tx_bexar import TexasBexarHarvester
+from .ut_utah_county import UtahCountyHarvester
+from .vt_vcgi import VermontVCGIHarvester
+from .wa_snohomish import WASnohomishHarvester
+from .wi_parcels import WisconsinSCOHarvester
+
 logger = logging.getLogger("oracle.harvester.firehose")
 
 # Delaware at the center, then the I-95 / Mid-Atlantic ring.
@@ -48,6 +92,47 @@ REGISTRY = {
     "CT": ConnecticutSalesHarvester,
     "MA": MassachusettsMassGISHarvester,
     "NC": NorthCarolinaOneMapHarvester,
+    # National expansion — 40 jurisdictions added in the harvest-states program.
+    "AK": AlaskaFNSBHarvester,
+    "AL": AlabamaJeffersonHarvester,
+    "AR": ArkansasAGISOHarvester,
+    "AZ": ArizonaMaricopaHarvester,
+    "CA": CaliforniaSanDiegoHarvester,
+    "CO": ColoradoParcelsHarvester,
+    "DC": DCRPTAHarvester,
+    "FL": FloridaFDORHarvester,
+    "GA": GeorgiaFultonHarvester,
+    "HI": HawaiiHonoluluHarvester,
+    "IA": IowaLinnHarvester,
+    "ID": IdahoWhiteStarHarvester,
+    "IL": IllinoisCookHarvester,
+    "IN": IndianaIndyHarvester,
+    "KS": KansasShawneeHarvester,
+    "KY": KentuckyBoonePVAHarvester,
+    "LA": LouisianaEBRHarvester,
+    "ME": MaineParcelsHarvester,
+    "MI": MichiganKentHarvester,
+    "MN": MinnesotaGeospatialHarvester,
+    "MO": MissouriJacksonHarvester,
+    "MS": MississippiMDEQHarvester,
+    "MT": MontanaCadastralHarvester,
+    "ND": NorthDakotaGISHubHarvester,
+    "NE": NebraskaLancasterHarvester,
+    "NH": NewHampshireGRANITHarvester,
+    "NM": NewMexicoBernalilloHarvester,
+    "NV": NevadaWashoeHarvester,
+    "OH": OhioFranklinHarvester,
+    "OK": OklahomaCountyHarvester,
+    "OR": OregonMarionHarvester,
+    "RI": RhodeIslandProvidenceHarvester,
+    "SC": SouthCarolinaHorryHarvester,
+    "SD": SouthDakotaPenningtonHarvester,
+    "TN": TennesseeShelbyHarvester,
+    "TX": TexasBexarHarvester,
+    "UT": UtahCountyHarvester,
+    "VT": VermontVCGIHarvester,
+    "WA": WASnohomishHarvester,
+    "WI": WisconsinSCOHarvester,
 }
 
 

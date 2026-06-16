@@ -6,7 +6,8 @@ jurisdiction?" The platform pulls data on three planes, and only two of them
 are per-jurisdiction (and therefore have a coverage gap worth tracking):
 
   1. Property / parcel   — per-state scrapers in ``harvesters/`` (the firehose).
-                           Live for 10 states today; the rest are MISSING.
+                           Live for 50/51 jurisdictions (WY has no public REST
+                           API); a few are county/city-anchored or geometry-only.
   2. Compliance          — per-state statutory rules in
                            ``compliance_engine/seed_data/``. Live for 50 states
                            + DC + federal.
@@ -66,37 +67,76 @@ US_JURISDICTIONS: dict[str, str] = {
 # reach of the dataset, so "every city" gaps inside a live state stay visible.
 # --------------------------------------------------------------------------- #
 LIVE_PROPERTY: dict[str, tuple[str, str, str]] = {
-    "DE": ("Delaware FirstMap parcels", "arcgis", "statewide"),
+    "DE": ("New Castle County parcels + ownership", "arcgis", "county:New Castle"),
     "MD": ("MD SDAT real property", "playwright", "statewide"),
     "PA": ("Philadelphia OPA assessments", "carto", "city:Philadelphia"),
     "NJ": ("NJ MOD-IV tax list", "arcgis", "statewide"),
     "NY": ("NYC PLUTO", "socrata", "city:New York City"),
-    "VA": ("Virginia VGIN parcels", "arcgis", "statewide"),
+    "VA": ("Virginia VGIN parcels (geometry only)", "arcgis", "statewide"),
     "WV": ("WV statewide parcels", "arcgis", "statewide"),
     "CT": ("CT real estate sales", "socrata", "statewide"),
     "MA": ("MassGIS standardized assessors", "arcgis", "statewide"),
     "NC": ("NC OneMap parcels", "arcgis", "statewide"),
+    # National expansion — 40 jurisdictions added in the harvest-states program.
+    "AK": ("FNSB tax parcels", "arcgis", "county:Fairbanks North Star Borough"),
+    "AL": ("Jefferson County BOE parcels", "arcgis", "county:Jefferson"),
+    "AR": ("AR GIS Office statewide parcels", "arcgis", "statewide"),
+    "AZ": ("Maricopa County Assessor parcels", "arcgis", "county:Maricopa"),
+    "CA": ("San Diego County parcels", "arcgis", "county:San Diego"),
+    "CO": ("Colorado OIT public parcels", "arcgis", "statewide"),
+    "DC": ("DC RPTA owner polygons", "arcgis", "statewide"),
+    "FL": ("FL FDOR cadastral parcels", "arcgis", "statewide"),
+    "GA": ("Fulton County tax parcels", "arcgis", "county:Fulton"),
+    "HI": ("Honolulu HOLIS parcels", "arcgis", "county:Honolulu"),
+    "IA": ("Linn County real estate parcels", "arcgis", "county:Linn"),
+    "ID": ("Idaho IDL WhiteStar parcels", "arcgis", "statewide"),
+    "IL": ("Cook County Assessor parcels", "socrata", "county:Cook"),
+    "IN": ("IndyGIS Marion County parcels", "arcgis", "county:Marion"),
+    "KS": ("Shawnee County Appraiser parcels", "arcgis", "county:Shawnee"),
+    "KY": ("Boone County PVA tax parcels", "arcgis", "county:Boone"),
+    "LA": ("East Baton Rouge assessor parcels", "arcgis", "county:East Baton Rouge"),
+    "ME": ("Maine GeoLibrary parcels", "arcgis", "statewide"),
+    "MI": ("Kent County equalization parcels", "arcgis", "county:Kent"),
+    "MN": ("MN Geospatial Commons parcels", "arcgis", "statewide"),
+    "MO": ("Jackson County parcels", "arcgis", "county:Jackson"),
+    "MS": ("MARIS/MDEQ statewide parcels", "arcgis", "statewide"),
+    "MT": ("MT DNRC cadastral parcels", "arcgis", "statewide"),
+    "ND": ("NDGISHUB tax-roll parcels", "arcgis", "statewide"),
+    "NE": ("Lancaster County tax parcels", "arcgis", "county:Lancaster"),
+    "NH": ("NH GRANIT/DRA parcel mosaic", "arcgis", "statewide"),
+    "NM": ("Bernalillo County assessor parcels", "arcgis", "county:Bernalillo"),
+    "NV": ("Washoe County assessor parcels", "arcgis", "county:Washoe"),
+    "OH": ("Franklin County Auditor CAMA", "arcgis", "county:Franklin"),
+    "OK": ("Oklahoma County assessor parcels", "arcgis", "county:Oklahoma"),
+    "OR": ("Marion County tax parcels", "arcgis", "county:Marion"),
+    "RI": ("Providence CAMA parcels", "arcgis", "city:Providence"),
+    "SC": ("Horry County GIS parcels", "arcgis", "county:Horry"),
+    "SD": ("Pennington County tax parcels", "arcgis", "county:Pennington"),
+    "TN": ("Shelby County assessor (Memphis)", "arcgis", "county:Shelby"),
+    "TX": ("Bexar CAD parcels (San Antonio)", "arcgis", "county:Bexar"),
+    "UT": ("Utah County assessor parcels", "socrata", "county:Utah"),
+    "VT": ("VCGI statewide parcels", "arcgis", "statewide"),
+    "WA": ("Snohomish County assessor parcels", "arcgis", "county:Snohomish"),
+    "WI": ("WI SCO statewide parcels", "arcgis", "statewide"),
 }
+
+# Live harvesters whose SOURCE publishes parcel geometry + IDs but no owner,
+# no assessed value, and no real street address (synthetic "PIN <id>" only).
+# These run and count as "live" (a working harvester exists), but they yield
+# nothing usable for lead-gen, so the coverage map flags them rather than
+# implying owner/value completeness. VA's statewide VGIN service is the lone
+# case after the harvest-states program — VA owner data is published only at
+# the county/city level, which the user opted to leave unharvested for now.
+GEOMETRY_ONLY: set[str] = {"VA"}
 
 # Portal platform hints for states we have NOT built yet — public record only,
 # used to plan the next harvest batch. Absence here means "research needed",
 # never "no portal exists". Endpoints are intentionally omitted (unverified).
+# Hints for jurisdictions that still lack a live property harvester. After the
+# harvest-states program the only remaining gap is Wyoming, whose statewide
+# parcel viewer is a web app with no public REST/query API.
 PORTAL_HINTS: dict[str, str] = {
-    "TX": "TNRIS / Texas stratmap statewide parcels",
-    "FL": "FGIO Florida statewide parcels (FGDL)",
-    "CA": "county assessors (no single statewide parcel layer)",
-    "WA": "WA Geospatial Open Data / county assessors",
-    "AZ": "AZGeo / Maricopa County Assessor",
-    "OH": "Ohio county auditors (CAMA)",
-    "IL": "Cook County + Illinois county GIS",
-    "GA": "Georgia GIS Clearinghouse / qPublic",
-    "CO": "Colorado county assessors",
-    "MI": "Michigan county equalization / GIS",
-    "MN": "MN Geospatial Commons parcels",
-    "WI": "WI statewide parcel initiative (V&E)",
-    "OR": "Oregon statewide parcel (ORMAP)",
-    "TN": "TN county assessors (CoT GIS)",
-    "MO": "Missouri county assessors",
+    "WY": "WY statewide parcel viewer is web-app only — no public REST API; county assessors vary",
 }
 
 # Market/demographic plane — national API integrations (no per-state gap).
@@ -119,6 +159,7 @@ class JurisdictionCoverage:
     portal_hint: Optional[str]
     compliance_status: str        # "live" | "missing"
     compliance_rule_count: int
+    property_geometry_only: bool = False  # live harvester but no owner/value/address
 
     def to_dict(self) -> dict:
         return {
@@ -128,6 +169,7 @@ class JurisdictionCoverage:
                 "status": self.property_status,
                 "source": self.property_source,
                 "scope": self.property_scope,
+                "geometry_only": self.property_geometry_only,
                 "portal_hint": self.portal_hint,
             },
             "compliance": {
@@ -172,6 +214,7 @@ def national_status() -> list[JurisdictionCoverage]:
             portal_hint=None if prop else PORTAL_HINTS.get(code),
             compliance_status="live" if rule_count > 0 else "missing",
             compliance_rule_count=rule_count,
+            property_geometry_only=bool(prop) and code in GEOMETRY_ONLY,
         ))
     return rows
 
@@ -183,6 +226,7 @@ def summary() -> dict:
     prop_statewide = sum(
         1 for r in rows if r.property_status == "live" and r.property_scope == "statewide"
     )
+    prop_geometry_only = sum(1 for r in rows if r.property_geometry_only)
     comp_live = sum(1 for r in rows if r.compliance_status == "live")
     comp_rules = sum(r.compliance_rule_count for r in rows)
     return {
@@ -191,6 +235,8 @@ def summary() -> dict:
             "live": prop_live,
             "live_statewide": prop_statewide,
             "city_scoped": prop_live - prop_statewide,
+            "geometry_only": prop_geometry_only,
+            "lead_usable": prop_live - prop_geometry_only,
             "missing": total - prop_live,
             "pct": round(100 * prop_live / total, 1),
         },
@@ -225,7 +271,9 @@ def report_markdown() -> str:
     out.append(
         f"- **Property/parcel:** {s['property']['live']}/{s['jurisdictions']} live "
         f"({s['property']['live_statewide']} statewide, "
-        f"{s['property']['city_scoped']} city-scoped) — {s['property']['pct']}%"
+        f"{s['property']['city_scoped']} county/city-scoped; "
+        f"{s['property']['lead_usable']} lead-usable, "
+        f"{s['property']['geometry_only']} geometry-only) — {s['property']['pct']}%"
     )
     out.append(
         f"- **Compliance:** {s['compliance']['live']}/{s['jurisdictions']} live, "
@@ -238,7 +286,12 @@ def report_markdown() -> str:
     out.append("| St | Jurisdiction | Property | Scope | Compliance | Next: portal hint |")
     out.append("|----|--------------|----------|-------|-----------|-------------------|")
     for r in rows:
-        prop = "✅ " + (r.property_source or "") if r.property_status == "live" else "❌ missing"
+        if r.property_status == "live":
+            prop = "✅ " + (r.property_source or "")
+            if r.property_geometry_only:
+                prop = "⚠️ " + (r.property_source or "") + " — no owner/value"
+        else:
+            prop = "❌ missing"
         scope = r.property_scope or ""
         comp = f"✅ {r.compliance_rule_count}" if r.compliance_status == "live" else "❌"
         hint = r.portal_hint or ""
