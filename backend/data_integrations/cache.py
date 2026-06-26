@@ -28,6 +28,7 @@ TTL = {
     "school_district": 180 * 86_400,
     "county_assessor": 7 * 86_400,
     "state_gis": 7 * 86_400,
+    "avm": 7 * 86_400,  # RentCast/ATTOM valuations (free tier = 50 calls/MONTH — cache hard)
 }
 
 

@@ -10,7 +10,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 load_dotenv(Path(__file__).resolve().parent.parent / ".env", override=False)
 
-from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
@@ -18,7 +18,8 @@ from graph_engine import PropertyGraph
 from auth import router as auth_router
 from billing import router as billing_router
 from audit_ledger import router as audit_router, ledger, AuditCategory
-from audit_middleware import AuditMiddleware, audit_action, audit_now
+from audit_middleware import AuditMiddleware, audit_action, audit_now, drain_pending
+from tenancy import require_context, TenantContext
 from admin_c2 import router as admin_c2_router
 from client_portal import router as client_portal_router
 from voice_intel import router as voice_router, start_voice_workers, stop_voice_workers
@@ -27,12 +28,14 @@ from disposition_enforcer import start_disposition_enforcer, stop_disposition_en
 from lead_dossier import router as lead_dossier_router
 from cma_generator import router as cma_router
 from crm import router as crm_router
+from client_enterprise import router as client_enterprise_router
 import ws_hub
 from legal_agent import format_for_websocket
 from spatial_agent import reconstruct_property, should_trigger_reconstruction
 from tour_generator import generate_tour
 from workflow_engine import WorkflowEngine
 from qwen_voice_agent import QwenVoiceAgent
+from outreach_compliance import router as outreach_compliance_router, AI_VOICE_DISCLOSURE
 from agent_mind import MindService
 from db.connection import init_pool, close_pool, pool_stats
 
@@ -56,6 +59,8 @@ async def lifespan(app: FastAPI):
     AWS creds for the Aurora IAM path) is logged but non-fatal: restore_session()
     already degrades to safe defaults, so the server still boots and the UI shows
     'MEMORY SYNC: —' rather than refusing every connection."""
+    import config
+    config.validate_or_die()  # fail fast in prod if a required secret is missing
     try:
         await init_pool()
         logger.info("Memory Core DB pool online — operators will hydrate from PostgreSQL.")
@@ -71,6 +76,8 @@ async def lifespan(app: FastAPI):
         await stop_periodic_scheduler()
         await stop_disposition_enforcer()
         await stop_voice_workers()
+        # Flush in-flight audit writes BEFORE the pool closes — they need it.
+        await drain_pending()
         await close_pool()
 
 
@@ -88,21 +95,56 @@ app.add_middleware(
 
 app.add_middleware(AuditMiddleware)
 
+
+# Baseline security headers on every response. setdefault() so a route can still
+# override (e.g. a future HTML page needing a looser CSP). HSTS is inert over
+# plain HTTP, so it is safe to always emit.
+_SECURITY_HEADERS = {
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+    "Referrer-Policy": "no-referrer",
+    "Strict-Transport-Security": "max-age=31536000; includeSubDomains",
+    "Content-Security-Policy": "default-src 'none'; frame-ancestors 'none'",
+    "Permissions-Policy": "geolocation=(), microphone=(), camera=()",
+}
+
+
+@app.middleware("http")
+async def _security_headers(request: Request, call_next):
+    response = await call_next(request)
+    for key, value in _SECURITY_HEADERS.items():
+        response.headers.setdefault(key, value)
+    return response
+
 app.include_router(auth_router)
 app.include_router(billing_router)
 app.include_router(audit_router)
-app.include_router(admin_c2_router)
+if os.environ.get("ORACLE_ENV", "").lower() in {"dev", "development", "local"}:
+    app.include_router(admin_c2_router)
+else:
+    logger.info(
+        "admin_c2 chaos router NOT mounted — ORACLE_ENV is not a dev value. "
+        "Chaos/load-test endpoints are disabled outside development."
+    )
 app.include_router(client_portal_router)
 app.include_router(voice_router)
 app.include_router(agent_profile_router)
 app.include_router(lead_dossier_router)
 app.include_router(cma_router)
 app.include_router(crm_router)
+app.include_router(client_enterprise_router)
+app.include_router(outreach_compliance_router)
 from admin_ops import router as admin_ops_router  # noqa: E402 — late import, matches local router convention
 app.include_router(admin_ops_router)
 
 from state_compliance import router as state_compliance_router  # noqa: E402
 app.include_router(state_compliance_router)
+
+from data_sources_api import router as data_sources_router  # noqa: E402 — keyless free data (geocode/fema/epa)
+app.include_router(data_sources_router)
+
+from mls_portal import router as mls_portal_router  # noqa: E402 — retail MLS browse (quota-safe, RentCast→oracle_mls_listings)
+app.include_router(mls_portal_router)
 
 from apis.geocoding import geocode, reverse_geocode
 from apis.census import get_demographics_by_zip
@@ -146,7 +188,9 @@ _TOUR_GEN_WINDOW = 60.0
 
 @app.post("/api/generate-tour")
 @audit_action(AuditCategory.GENERATE_TOUR, "AI tour generation: {path}")
-async def api_generate_tour(request: Request) -> JSONResponse:
+async def api_generate_tour(
+    request: Request, ctx: TenantContext = Depends(require_context)
+) -> JSONResponse:
     """AI-generate a full spatial tour schema from property metadata.
 
     Accepts: { address, sqft, bedrooms, bathrooms, features[], description, price }
@@ -221,175 +265,6 @@ async def api_market_snapshot() -> JSONResponse:
 
 graph = PropertyGraph()
 mind_service = MindService()
-
-DELAWARE_STREETS = [
-    "Silverside Rd", "Concord Pike", "Kirkwood Hwy", "Old Baltimore Pike",
-    "Capitol Trail", "Limestone Rd", "Paper Mill Rd", "Centerville Rd",
-    "Red Lion Rd", "Christiana Rd", "Marsh Rd", "Foulk Rd",
-    "Philadelphia Pike", "Governor Printz Blvd", "Naaman's Rd",
-]
-
-DELAWARE_CITIES = [
-    "Wilmington", "Newark", "Bear", "Hockessin", "Middletown",
-    "Dover", "Pike Creek", "Claymont", "Elsmere", "New Castle",
-]
-
-LIFE_EVENTS = [
-    "DIVORCE_FILING", "PROBATE", "NOTICE_OF_DEFAULT",
-    "TAX_LIEN", "PRE_FORECLOSURE", None, None, None,
-]
-
-OWNER_NAMES = [
-    "Patricia Hawkins", "Robert Simmons", "Margaret Ortiz",
-    "William DeLuca", "Barbara Kowalski", "James Fontaine",
-    "Linda Marchetti", "Thomas Hendricks", "Dorothy Callahan",
-    "Richard Ostrowski", "Sandra Whitfield", "Michael Cavanaugh",
-]
-
-
-def generate_mock_record() -> dict:
-    street_num = random.randint(100, 9999)
-    street = random.choice(DELAWARE_STREETS)
-    city = random.choice(DELAWARE_CITIES)
-    address = f"{street_num} {street}, {city}, DE {random.randint(19700, 19899)}"
-
-    market_value = random.randint(180000, 850000)
-    equity_pct = random.randint(15, 92)
-    life_event = random.choice(LIFE_EVENTS)
-
-    return {
-        "record_type": random.choice(["TAX_ASSESSMENT", "PROBATE_FILING", "COUNTY_LIEN"]),
-        "owner_name": random.choice(OWNER_NAMES),
-        "address": address,
-        "assessed_value": int(market_value * 0.72),
-        "market_value": market_value,
-        "sqft": random.randint(1100, 4200),
-        "bedrooms": random.randint(2, 6),
-        "bathrooms": random.randint(1, 4),
-        "county": "New Castle",
-        "state": "DE",
-        "equity_pct": equity_pct,
-        "years_owned": random.randint(2, 28),
-        "purchase_year": random.randint(1997, 2022),
-        "mortgage_balance": int(market_value * (1 - equity_pct / 100)),
-        "life_event": life_event,
-        "event_date": f"2026-{random.randint(1,5):02d}-{random.randint(1,28):02d}",
-        "case_number": f"NC-{random.randint(10000, 99999)}" if life_event else None,
-    }
-
-
-async def data_ingestion_loop(websocket: WebSocket):
-    batch_num = 0
-    _loop_tasks: set[asyncio.Task] = set()
-
-    def _spawn_loop_task(coro) -> asyncio.Task:
-        task = asyncio.create_task(coro)
-        _loop_tasks.add(task)
-        task.add_done_callback(_loop_tasks.discard)
-        return task
-
-    while True:
-        batch_num += 1
-        batch_size = random.randint(3, 8)
-
-        await websocket.send_text(json.dumps({
-            "type": "STATUS_UPDATE",
-            "agent": f"AGENT SCOUT — ingesting batch #{batch_num} ({batch_size} records)",
-        }))
-
-        for _ in range(batch_size):
-            record = generate_mock_record()
-            await graph.ingest_public_record(record)
-
-        await asyncio.sleep(0.4)
-
-        await websocket.send_text(json.dumps({
-            "type": "STATUS_UPDATE",
-            "agent": "AGENT ANALYST — scoring novelty across graph",
-        }))
-
-        async for hit in graph.calculate_novelty_score():
-            await websocket.send_text(json.dumps({
-                "type": "STATUS_UPDATE",
-                "agent": f"HIGH-PROBABILITY SELLER DETECTED — novelty {hit['novelty_score']}",
-            }))
-
-            await asyncio.sleep(0.3)
-
-            await websocket.send_text(json.dumps({
-                "type": "DATA_PULLED",
-                "data": {
-                    "address": hit["address"],
-                    "squareFootage": hit["sqft"],
-                    "price": hit["market_value"],
-                    "bedrooms": hit["bedrooms"],
-                    "bathrooms": hit["bathrooms"],
-                    "novelty": hit["novelty_score"],
-                },
-            }))
-
-            await asyncio.sleep(0.5)
-
-            if should_trigger_reconstruction(hit["novelty_score"]):
-                _spawn_loop_task(reconstruct_property(hit["address"], websocket))
-
-            await websocket.send_text(json.dumps({
-                "type": "STAGE_PROPERTY",
-            }))
-
-            await asyncio.sleep(1.0)
-
-            dialogue = [
-                {"agent": "AI CLOSER", "text": f"Initiating contact with {hit['owner_name']}..."},
-                {"agent": "AI CLOSER", "text": f"Signal: {(hit['life_event'] or 'GENERAL').replace('_', ' ').title()} + {hit['equity_pct']}% equity"},
-                {"agent": "AI CLOSER", "text": "Call connected. Voice synthesis active."},
-            ]
-
-            for line in dialogue:
-                await asyncio.sleep(0.8)
-                await websocket.send_text(json.dumps({
-                    "type": "TRANSCRIPT_LINE",
-                    "agent": line["agent"],
-                    "text": line["text"],
-                }))
-
-            ledger.record(
-                AuditCategory.AI_PHONE_CALL,
-                actor="AI CLOSER",
-                action="outbound_call_transcript",
-                payload={"owner": hit["owner_name"], "address": hit["address"], "transcript": dialogue},
-            )
-
-            await asyncio.sleep(1.2)
-            await websocket.send_text(json.dumps({
-                "type": "STATUS_UPDATE",
-                "agent": "AGENT LEGAL — generating contract package",
-            }))
-            await asyncio.sleep(0.6)
-
-            property_data = {
-                "address": hit["address"],
-                "price": hit["market_value"],
-                "owner_name": hit["owner_name"],
-            }
-            legal_payload = format_for_websocket(property_data, strategy="wholesale")
-            await websocket.send_text(legal_payload)
-
-            ledger.record(
-                AuditCategory.LEGAL_CONTRACT,
-                actor="AGENT LEGAL",
-                action="contract_generated",
-                payload={"address": hit["address"], "owner": hit["owner_name"], "strategy": "wholesale"},
-            )
-
-            break
-
-        interval = random.uniform(4.0, 8.0)
-        await websocket.send_text(json.dumps({
-            "type": "STATUS_UPDATE",
-            "agent": f"AGENT SCOUT — next scan in {interval:.0f}s",
-        }))
-        await asyncio.sleep(interval)
 
 
 async def monologue_loop(websocket: WebSocket):
@@ -595,7 +470,12 @@ async def websocket_endpoint(websocket: WebSocket):
     await push_deal_pipeline(websocket, user_id, tenant_id)
 
     voice_agent = QwenVoiceAgent(websocket=websocket)
-    engine = WorkflowEngine(websocket=websocket, mind_service=mind_service)
+    engine = WorkflowEngine(
+        websocket=websocket,
+        mind_service=mind_service,
+        tenant_id=tenant_id,
+        user_id=user_id,
+    )
 
     # Background tasks spawned during this session.  We cancel all of them on
     # disconnect so nothing leaks after the client is gone.

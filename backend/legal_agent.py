@@ -21,7 +21,12 @@ def generate_legal_package(property_data: dict, strategy: str = "wholesale") -> 
     now = datetime.now(tz=timezone.utc)
     closing_date = now + timedelta(days=30)
 
+    # `price` is the MAX ALLOWABLE OFFER (conservative acquisition ceiling for a
+    # distressed/off-market target) — NOT retail. arv/as_is are carried for
+    # transparency so the contract never hides what the offer is discounted from.
     price = property_data.get("price", property_data.get("market_value", 0))
+    arv = property_data.get("arv", 0)
+    as_is = property_data.get("as_is", 0)
     earnest_money = round(price * 0.01, 2)
 
     contract_type = (
@@ -33,6 +38,17 @@ def generate_legal_package(property_data: dict, strategy: str = "wholesale") -> 
         "seller": property_data.get("owner_name", "Unknown Seller"),
         "property_address": property_data.get("address", ""),
         "purchase_price": price,
+        "max_allowable_offer": price,
+        "arv_estimate": arv,
+        "as_is_estimate": as_is,
+        "distress_severity": property_data.get("distress_severity", "UNKNOWN"),
+        "offer_basis": (
+            "Purchase price is the max allowable offer for a distressed/off-market "
+            "acquisition (70% rule: 0.70 × ARV − estimated repairs), not retail "
+            "value. Figures are model estimates pending interior inspection — not "
+            "an appraisal."
+        ),
+        "valuation_assumptions": property_data.get("assumptions", []),
         "earnest_money": earnest_money,
         "closing_date": closing_date.strftime("%B %d, %Y"),
         "contingencies": [

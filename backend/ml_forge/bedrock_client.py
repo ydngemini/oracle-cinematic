@@ -20,9 +20,11 @@ from botocore.exceptions import ClientError, BotoCoreError
 
 logger = logging.getLogger("oracle.ml_forge.bedrock")
 
-AWS_REGION = os.environ.get("BEDROCK_REGION", "us-east-2")
-PRIMARY_MODEL = "meta.llama3-3-70b-instruct-v1:0"
-SECONDARY_MODEL = "meta.llama3-1-8b-instruct-v1:0"
+AWS_REGION = os.environ.get("BEDROCK_REGION", "us-east-1")
+# llama3-3-70b is on-demand-disabled; both must use the cross-region inference
+# profile (us.* prefix), which is what Bedrock actually authorizes for invoke.
+PRIMARY_MODEL = "us.meta.llama3-3-70b-instruct-v1:0"
+SECONDARY_MODEL = "us.meta.llama3-1-8b-instruct-v1:0"
 MAX_RETRIES = 6
 BASE_DELAY = 1.0
 MAX_DELAY = 64.0
@@ -40,11 +42,16 @@ _BOTO_CONFIG = Config(
 def _get_client():
     global _client
     if _client is None:
-        _client = boto3.client(
-            "bedrock-runtime",
-            region_name=AWS_REGION,
-            config=_BOTO_CONFIG,
-        )
+        kwargs = {"region_name": AWS_REGION, "config": _BOTO_CONFIG}
+        # Optional dedicated Bedrock credentials. Lets Bedrock invoke a different
+        # AWS account than the rest of the app (e.g. the account where Bedrock is
+        # actually enabled) without disturbing S3/other AWS_* default-chain usage.
+        ak = os.environ.get("BEDROCK_AWS_ACCESS_KEY_ID")
+        sk = os.environ.get("BEDROCK_AWS_SECRET_ACCESS_KEY")
+        if ak and sk:
+            kwargs["aws_access_key_id"] = ak
+            kwargs["aws_secret_access_key"] = sk
+        _client = boto3.client("bedrock-runtime", **kwargs)
     return _client
 
 
@@ -136,3 +143,43 @@ def invoke_bedrock_model(
 
     logger.error(f"Bedrock: exhausted {MAX_RETRIES} retries for model {model_id}")
     return None
+
+
+def stream_converse(
+    model_id: str,
+    system_text: str,
+    user_text: str,
+    max_tokens: int = 80,
+    temperature: float = 0.7,
+):
+    """Stream text deltas from a Bedrock model via the converse_stream API.
+
+    Synchronous generator: yields each text delta as it arrives. Uses the
+    provider-agnostic Converse API so no model-specific prompt formatting
+    (Llama special tokens etc.) is needed.
+    """
+    client = _get_client()
+
+    kwargs = {
+        "modelId": model_id,
+        "messages": [
+            {"role": "user", "content": [{"text": user_text}]}
+        ],
+        "inferenceConfig": {
+            "maxTokens": max_tokens,
+            "temperature": temperature,
+            "topP": 0.9,
+        },
+    }
+    if system_text:
+        kwargs["system"] = [{"text": system_text}]
+
+    response = client.converse_stream(**kwargs)
+    for event in response.get("stream", []):
+        block = event.get("contentBlockDelta")
+        if not block:
+            continue
+        delta = block.get("delta", {})
+        text = delta.get("text")
+        if text:
+            yield text

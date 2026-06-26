@@ -1,7 +1,11 @@
-import { useRef, useEffect, useState, useMemo, useCallback } from 'react';
+import { useRef, useEffect, useState, useMemo, useCallback, Suspense, lazy } from 'react';
 import { useOracleState } from '../state';
 import * as SPLAT from 'gsplat';
 import styles from './PropertyCanvas.module.css';
+
+// Photoreal Google 3D-Tiles flyover, opened on demand over the splat canvas.
+// Its own chunk so the Google Maps loader never touches app boot.
+const PropertyTour = lazy(() => import('./PropertyTour'));
 
 // ─── Camera Presets ──────────────────────────────────────────────────────────
 
@@ -248,6 +252,8 @@ export function PropertyCanvas() {
   // Tracks whether the GIS boundary geometry has been uploaded to the GPU.
   // glState is a ref — reading it in JSX is a lint error and produces stale values.
   const [boundaryLoaded, setBoundaryLoaded] = useState(false);
+  // Photoreal Google 3D-Tiles flyover overlay (closes back to this 2D canvas).
+  const [tourOpen, setTourOpen] = useState(false);
 
   // Camera spring state
   const camState = useRef({
@@ -903,6 +909,28 @@ export function PropertyCanvas() {
           <span className={styles.reconstructIcon}>◎</span>
           RECONSTRUCT 3D
         </button>
+      )}
+
+      {/* Photoreal flyover of the real house via Google 3D Tiles */}
+      {propertyData?.address && (
+        <button
+          className={styles.tourBtn}
+          onClick={() => setTourOpen(true)}
+        >
+          <span className={styles.reconstructIcon}>◉</span>
+          3D TOUR
+        </button>
+      )}
+
+      {tourOpen && propertyData?.address && (
+        <div className={styles.tourOverlay}>
+          <Suspense fallback={null}>
+            <PropertyTour
+              address={propertyData.address}
+              onClose={() => setTourOpen(false)}
+            />
+          </Suspense>
+        </div>
       )}
     </div>
   );

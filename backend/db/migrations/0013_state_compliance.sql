@@ -33,9 +33,25 @@
 -- radius queries).  Both are enabled on Aurora PostgreSQL ≥ 15.
 -- ===========================================================================
 
--- PostGIS + earthdistance (idempotent)
-CREATE EXTENSION IF NOT EXISTS postgis;
-CREATE EXTENSION IF NOT EXISTS earthdistance CASCADE;  -- also enables cube
+-- PostGIS + earthdistance power the geospatial features (flood-zone geometry,
+-- school/listing radius indexes). Both are enabled on Aurora PostgreSQL >= 15,
+-- but may be absent on a slim local image (e.g. postgres:*-alpine). We attempt to
+-- enable them WITHOUT failing the whole migration if they are unavailable: every
+-- geospatial object below is individually guarded on its extension being present,
+-- so the core compliance tables (mls_boards, state_*, agent_licenses, ...) always
+-- create. Geospatial features stay absent locally and light up automatically
+-- wherever the extensions exist.
+DO $$ BEGIN
+    CREATE EXTENSION IF NOT EXISTS postgis;
+EXCEPTION WHEN OTHERS THEN
+    RAISE NOTICE 'PostGIS unavailable (%) — flood-zone geometry + GIST indexes skipped', SQLERRM;
+END $$;
+
+DO $$ BEGIN
+    CREATE EXTENSION IF NOT EXISTS earthdistance CASCADE;  -- also enables cube
+EXCEPTION WHEN OTHERS THEN
+    RAISE NOTICE 'earthdistance unavailable (%) — ll_to_earth radius indexes skipped', SQLERRM;
+END $$;
 
 -- ---------------------------------------------------------------------------
 -- 1. state_regulatory_profiles
@@ -314,11 +330,10 @@ CREATE INDEX IF NOT EXISTS idx_oml_price         ON oracle_mls_listings(list_pri
 CREATE INDEX IF NOT EXISTS idx_oml_mls_id        ON oracle_mls_listings(mls_id);
 CREATE INDEX IF NOT EXISTS idx_oml_last_updated  ON oracle_mls_listings(last_updated DESC);
 
--- Spatial index (requires PostGIS)
+-- Spatial index (requires the earthdistance extension; skipped where absent)
 DO $$ BEGIN
-    IF NOT EXISTS (
-        SELECT 1 FROM pg_indexes WHERE indexname = 'idx_oml_latlon'
-    ) THEN
+    IF EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'earthdistance')
+       AND NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'idx_oml_latlon') THEN
         CREATE INDEX idx_oml_latlon ON oracle_mls_listings
             USING GIST (ll_to_earth(latitude::float8, longitude::float8))
             WHERE latitude IS NOT NULL AND longitude IS NOT NULL;
@@ -369,19 +384,29 @@ CREATE INDEX IF NOT EXISTS idx_cms_state ON county_market_stats(state_code);
 -- ---------------------------------------------------------------------------
 -- 14. fema_flood_zones  (PostGIS geometry — SRID 4326 = WGS84)
 -- ---------------------------------------------------------------------------
+-- geom is a PostGIS geometry type, so it is NOT declared inline (that would make
+-- the whole table fail to create without PostGIS). It is added — together with its
+-- GIST index — only where PostGIS is present (see the guarded block below).
 CREATE TABLE IF NOT EXISTS fema_flood_zones (
     id               uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
     flood_zone       text        NOT NULL,   -- AE, X, VE, 0.2PCT, …
     firm_panel       text,
     firm_date        date,
     community_number text,
-    geom             geometry(MultiPolygon, 4326) NOT NULL,
     updated_at       timestamptz NOT NULL DEFAULT now()
 );
 
 DO $$ BEGIN
-    IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'idx_ffz_geom') THEN
-        CREATE INDEX idx_ffz_geom ON fema_flood_zones USING GIST (geom);
+    IF EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'postgis') THEN
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                        WHERE table_name = 'fema_flood_zones' AND column_name = 'geom') THEN
+            ALTER TABLE fema_flood_zones ADD COLUMN geom geometry(MultiPolygon, 4326);
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'idx_ffz_geom') THEN
+            CREATE INDEX idx_ffz_geom ON fema_flood_zones USING GIST (geom);
+        END IF;
+    ELSE
+        RAISE NOTICE 'PostGIS absent — fema_flood_zones.geom column + GIST index omitted locally';
     END IF;
 END $$;
 
@@ -418,7 +443,8 @@ CREATE TABLE IF NOT EXISTS school_districts (
 );
 
 DO $$ BEGIN
-    IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'idx_sd_centroid') THEN
+    IF EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'earthdistance')
+       AND NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'idx_sd_centroid') THEN
         CREATE INDEX idx_sd_centroid ON school_districts
             USING GIST (ll_to_earth(centroid_lat::float8, centroid_lng::float8));
     END IF;

@@ -418,7 +418,7 @@ export default function MyProfileTab() {
       </section>
 
       <footer className={styles.foot}>
-        <span className={styles.wordmark}>ORACLE · AGENT CRM</span>
+        <span className={styles.wordmark}>NEOH · AGENT CRM</span>
       </footer>
     </section>
   );

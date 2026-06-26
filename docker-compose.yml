@@ -41,6 +41,15 @@ services:
     env_file:
       - .env
     environment:
+      # This compose stack IS the local dev environment. ORACLE_ENV=dev relaxes
+      # the production secret gate (config.validate_or_die / auth.py fail-fast) so
+      # the stack boots without prod-only secrets like ORACLE_ENCRYPTION_MASTER_KEY.
+      ORACLE_ENV: dev
+      # Real data only — synthetic Scout firehose stays OFF (no SCOUT_USE_MOCK).
+      # AWS_REGION lets the Bedrock client attempt real AI (tour-gen/CMA/dossier);
+      # degrades gracefully if model access isn't granted. Change if your Bedrock
+      # models live in another region.
+      AWS_REGION: us-east-1
       # Local dev DB override — tells db/connection.py to use plain password
       # auth against the compose postgres container, skipping the IAM path.
       ORACLE_DB_HOST: db
@@ -49,10 +58,19 @@ services:
       ORACLE_DB_USER: postgres
       ORACLE_DB_PASSWORD: ${ORACLE_DB_PASSWORD:-postgres}
       ORACLE_DB_SSLMODE: disable
+      # Real local LLM — agent-mind's inner monologue streams from the llama.cpp
+      # server running on the HOST (Llama-3.2-1B). The container reaches the host
+      # via host.docker.internal (mapped to host-gateway in extra_hosts below).
+      LLAMA_SERVER_URL: http://host.docker.internal:8090
       # Audit ledger SQLite fallback — the bind-mounted source tree is not
       # writable by the container user (uid 1001), so point it at /tmp.
       # Postgres is the primary store; this only catches degraded mode.
       ORACLE_AUDIT_SQLITE: /tmp/audit_logs.db
+    # Linux Docker doesn't resolve host.docker.internal by default — map it to
+    # the host gateway so the container can reach host-run services (the local
+    # llama.cpp LLM on :8090) via LLAMA_SERVER_URL above.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       # Mount source so --reload sees edits without rebuild.
       - ./backend:/app

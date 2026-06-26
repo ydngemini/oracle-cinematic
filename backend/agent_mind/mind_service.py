@@ -10,13 +10,18 @@ Connects to the running llama-server at localhost:8090 (Llama 3.2 1B Instruct).
 
 import asyncio
 import json
+import os
+import threading
 import time
 from dataclasses import dataclass, field
 from typing import Optional
 
 import aiohttp
 
-LLAMA_SERVER_URL = "http://127.0.0.1:8090"
+# Endpoint of the local llama.cpp server (Llama 3.2 1B Instruct). Defaults to
+# the host loopback for bare-metal runs; override with LLAMA_SERVER_URL when the
+# backend runs in Docker (point it at host.docker.internal:8090 — see compose).
+LLAMA_SERVER_URL = os.environ.get("LLAMA_SERVER_URL", "http://127.0.0.1:8090").rstrip("/")
 COMPLETION_ENDPOINT = f"{LLAMA_SERVER_URL}/completion"
 HEALTH_ENDPOINT = f"{LLAMA_SERVER_URL}/health"
 
@@ -79,6 +84,27 @@ class AgentMind:
             f"<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n"
         )
 
+    def build_bedrock_prompt(self) -> tuple[str, str]:
+        """Return (system_text, user_text) for the Bedrock Converse API.
+
+        Same persona + memory + instruction as build_context_window, but
+        WITHOUT any llama special tokens (Converse handles role framing).
+        """
+        recent = sorted(self.memory, key=lambda e: e.timestamp)[-12:]
+        memory_text = "\n".join(
+            f"[{e.role}] {e.content}" for e in recent
+        )
+        system_text = (
+            f"You are {self.agent_id}, an AI agent in Oracle (a real estate command platform). "
+            f"{self.persona}\n"
+            f"Your recent memory:\n{memory_text}\n\n"
+            f"Express your current inner thought in ONE concise sentence. "
+            f"Think about what you should do next based on your observations. "
+            f"Be specific and operational, not generic."
+        )
+        user_text = "What are you thinking right now?"
+        return system_text, user_text
+
 
 AGENT_PERSONAS = {
     "SCOUT": (
@@ -140,11 +166,25 @@ class MindService:
         mind = self.get_or_create_mind(agent_id)
         mind.remember(result, role="result", importance=importance)
 
+    def _bedrock(self):
+        """Lazy-import the Bedrock client; return module or None if unavailable.
+
+        A missing module or missing creds must never crash the monologue loop.
+        """
+        if not os.environ.get("BEDROCK_AWS_ACCESS_KEY_ID"):
+            return None
+        try:
+            from ml_forge import bedrock_client
+            return bedrock_client
+        except Exception:
+            return None
+
     async def generate_monologue(self, agent_id: str) -> Optional[str]:
         if not self._healthy:
             await self._check_health()
-            if not self._healthy:
-                return None
+
+        if not self._healthy:
+            return await self._generate_monologue_bedrock(agent_id)
 
         mind = self.get_or_create_mind(agent_id)
         prompt = mind.build_context_window()
@@ -176,12 +216,90 @@ class MindService:
         except Exception:
             return None
 
+    async def _generate_monologue_bedrock(self, agent_id: str) -> Optional[str]:
+        """Non-streaming monologue via Bedrock (used when llama-server is down)."""
+        bedrock = self._bedrock()
+        if bedrock is None:
+            return None
+
+        mind = self.get_or_create_mind(agent_id)
+        system_text, user_text = mind.build_bedrock_prompt()
+
+        def _run() -> str:
+            parts = []
+            for delta in bedrock.stream_converse(
+                bedrock.SECONDARY_MODEL,
+                system_text,
+                user_text,
+                max_tokens=MONOLOGUE_MAX_TOKENS,
+                temperature=MONOLOGUE_TEMPERATURE,
+            ):
+                parts.append(delta)
+            return "".join(parts)
+
+        try:
+            thought = (await asyncio.to_thread(_run)).strip()
+        except Exception:
+            return None
+
+        if thought:
+            mind.current_thought = thought
+            mind.thought_count += 1
+            mind.remember(thought, role="thought", importance=0.3)
+        return thought or None
+
+    async def _stream_monologue_bedrock(self, agent_id: str):
+        """Bridge the SYNC bedrock stream_converse generator into async tokens."""
+        bedrock = self._bedrock()
+        if bedrock is None:
+            return
+
+        mind = self.get_or_create_mind(agent_id)
+        system_text, user_text = mind.build_bedrock_prompt()
+
+        loop = asyncio.get_running_loop()
+        queue: asyncio.Queue = asyncio.Queue()
+        _SENTINEL = object()
+
+        def _worker():
+            try:
+                for delta in bedrock.stream_converse(
+                    bedrock.SECONDARY_MODEL,
+                    system_text,
+                    user_text,
+                    max_tokens=MONOLOGUE_MAX_TOKENS,
+                    temperature=MONOLOGUE_TEMPERATURE,
+                ):
+                    loop.call_soon_threadsafe(queue.put_nowait, delta)
+            except Exception:
+                pass
+            finally:
+                loop.call_soon_threadsafe(queue.put_nowait, _SENTINEL)
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+        full_text = ""
+        while True:
+            item = await queue.get()
+            if item is _SENTINEL:
+                break
+            full_text += item
+            yield item
+
+        if full_text.strip():
+            mind.current_thought = full_text.strip()
+            mind.thought_count += 1
+            mind.remember(full_text.strip(), role="thought", importance=0.3)
+
     async def stream_monologue(self, agent_id: str):
         """Yields tokens as they arrive from llama-server streaming mode."""
         if not self._healthy:
             await self._check_health()
-            if not self._healthy:
-                return
+
+        if not self._healthy:
+            async for token in self._stream_monologue_bedrock(agent_id):
+                yield token
+            return
 
         mind = self.get_or_create_mind(agent_id)
         prompt = mind.build_context_window()

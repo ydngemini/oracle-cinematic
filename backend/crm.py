@@ -35,6 +35,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from db.connection import tenant_tx
 from tenancy import TenantContext, require_context
+from outreach_compliance import Channel, enforce_outreach
 
 logger = logging.getLogger("oracle.crm")
 
@@ -43,9 +44,19 @@ router = APIRouter(prefix="/api/crm", tags=["Agent CRM"])
 # Mirrors of the 0012 CHECK constraints — validated here for a clean 422
 # instead of a constraint-violation 500 (lead_dossier house style).
 CLIENT_TYPES = {"seller", "buyer", "both"}
+CLIENT_STAGES = {"lead", "active", "nurture", "under_contract", "closed", "lost"}
 LISTING_STATUSES = {"draft", "active", "pending", "sold", "withdrawn"}
 SHOWING_OUTCOMES = {"pending", "interested", "offer_made", "passed", "no_show"}
 MESSAGE_CHANNELS = {"email", "message"}
+MESSAGE_DIRECTIONS = {"inbound", "outbound"}
+TASK_STATUSES = {"open", "done", "snoozed", "cancelled"}
+TASK_PRIORITIES = {"low", "normal", "high", "urgent"}
+
+# Shared column projection for clients — every client serializer reads these.
+_CLIENT_COLS = (
+    "id, full_name, email, phone, client_type, stage, lead_score, "
+    "assignee_id, company, preferences, source, created_at, last_contacted_at"
+)
 
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 # ", DE 19801" → "DE". Manual CRM houses still need leads.state (NOT NULL).
@@ -104,6 +115,24 @@ def _check_optional_email(v: Optional[str]) -> Optional[str]:
     return v
 
 
+async def _log_activity(conn, ctx, client_id, kind: str, summary: str, meta: Optional[dict] = None):
+    """Append a row to the client_activities timeline feed. Called on every
+    meaningful client mutation. `actor` is the JWT agent_id; meta is jsonb.
+    Runs inside the caller's tenant_tx so it shares the RLS context + tx."""
+    await conn.execute(
+        """
+        INSERT INTO client_activities (tenant_id, client_id, kind, summary, meta, actor)
+        VALUES ($1, $2, $3, $4, $5::jsonb, $6)
+        """,
+        ctx.tenant_id,
+        client_id,
+        kind,
+        summary,
+        json.dumps(meta or {}),
+        ctx.agent_id,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Request models
 # ---------------------------------------------------------------------------
@@ -150,6 +179,10 @@ class ClientCreate(BaseModel):
     email: Optional[str] = Field(None, max_length=254)
     phone: Optional[str] = Field(None, max_length=40)
     client_type: str
+    stage: Optional[str] = None
+    company: Optional[str] = Field(None, max_length=200)
+    lead_score: Optional[int] = Field(None, ge=0, le=100)
+    tags: list[str] = Field(default_factory=list)
     preferences: dict = Field(default_factory=dict)
 
     @field_validator("client_type")
@@ -157,6 +190,13 @@ class ClientCreate(BaseModel):
     def _type(cls, v: str) -> str:
         if v not in CLIENT_TYPES:
             raise ValueError(f"must be one of {sorted(CLIENT_TYPES)}")
+        return v
+
+    @field_validator("stage")
+    @classmethod
+    def _stage(cls, v):
+        if v is not None and v not in CLIENT_STAGES:
+            raise ValueError(f"must be one of {sorted(CLIENT_STAGES)}")
         return v
 
     @field_validator("email")
@@ -170,14 +210,26 @@ class ClientPatch(BaseModel):
     email: Optional[str] = Field(None, max_length=254)
     phone: Optional[str] = Field(None, max_length=40)
     client_type: Optional[str] = None
+    stage: Optional[str] = None
+    lead_score: Optional[int] = Field(None, ge=0, le=100)
+    assignee_id: Optional[str] = Field(None, max_length=160)
+    company: Optional[str] = Field(None, max_length=200)
     preferences: Optional[dict] = None
     source: Optional[str] = Field(None, max_length=80)
+    archived: Optional[bool] = None
 
     @field_validator("client_type")
     @classmethod
     def _type(cls, v):
         if v is not None and v not in CLIENT_TYPES:
             raise ValueError(f"must be one of {sorted(CLIENT_TYPES)}")
+        return v
+
+    @field_validator("stage")
+    @classmethod
+    def _stage(cls, v):
+        if v is not None and v not in CLIENT_STAGES:
+            raise ValueError(f"must be one of {sorted(CLIENT_STAGES)}")
         return v
 
     @field_validator("email")
@@ -190,12 +242,20 @@ class MessageCreate(BaseModel):
     channel: str
     subject: Optional[str] = Field(None, max_length=300)
     body: str = Field(..., min_length=1, max_length=20000)
+    direction: str = "outbound"
 
     @field_validator("channel")
     @classmethod
     def _channel(cls, v: str) -> str:
         if v not in MESSAGE_CHANNELS:
             raise ValueError(f"must be one of {sorted(MESSAGE_CHANNELS)}")
+        return v
+
+    @field_validator("direction")
+    @classmethod
+    def _direction(cls, v: str) -> str:
+        if v not in MESSAGE_DIRECTIONS:
+            raise ValueError(f"must be one of {sorted(MESSAGE_DIRECTIONS)}")
         return v
 
 
@@ -272,17 +332,29 @@ def _listing_json(row) -> dict:
     }
 
 
-def _client_json(row, houses, last_touch) -> dict:
+def _client_json(row, houses=None, last_touch=None, *, tags=None,
+                 open_tasks=0, last_activity=None) -> dict:
+    """ClientCard. `houses` + `last_touch` are kept for back-compat with the
+    existing 5-tab frontend; the enterprise fields (stage/score/assignee/company/
+    tags/open_tasks/last_activity) are additive."""
     return {
         "id": str(row["id"]),
         "full_name": row["full_name"],
         "email": row["email"],
         "phone": row["phone"],
         "client_type": row["client_type"],
+        "stage": row["stage"],
+        "lead_score": int(row["lead_score"]) if row["lead_score"] is not None else 0,
+        "assignee_id": row["assignee_id"],
+        "company": row["company"],
         "preferences": _loads(row["preferences"], {}),
         "source": row["source"],
         "created_at": _iso(row["created_at"]),
-        "houses": houses,
+        "last_contacted_at": _iso(row["last_contacted_at"]),
+        "tags": tags if tags is not None else [],
+        "open_tasks": int(open_tasks) if open_tasks is not None else 0,
+        "last_activity": last_activity,
+        "houses": houses if houses is not None else [],
         "last_touch": last_touch,
     }
 
@@ -475,26 +547,83 @@ async def create_listing(
 # Clients — the two-sided book.
 # ---------------------------------------------------------------------------
 
+_SORT_SQL = {
+    "recent": "c.created_at DESC",
+    "score": "c.lead_score DESC, c.created_at DESC",
+    "name": "c.full_name ASC",
+    "last_contacted": "c.last_contacted_at DESC NULLS LAST, c.created_at DESC",
+}
+
+
 @router.get("/clients")
 async def list_clients(
     type: str = Query("all"),
+    stage: Optional[str] = Query(None),
+    tag: Optional[str] = Query(None),
+    q: Optional[str] = Query(None),
+    score_min: Optional[int] = Query(None, ge=0, le=100),
+    assignee: Optional[str] = Query(None),
+    sort: str = Query("recent"),
     ctx: TenantContext = Depends(require_context),
 ):
-    """Client book for one segment. 'both' rows appear in both segments.
-    houses[] = listings they're selling + house-leads (skipping leads already
-    promoted to a listing) + houses a buyer was shown."""
+    """Enterprise client book (ClientCard feed). Back-compat: no params → all
+    non-archived clients ordered most-recent-first. 'both' rows appear in both
+    seller/buyer segments. houses[] = listings they're selling + house-leads
+    (skipping leads already promoted to a listing) + houses a buyer was shown.
+
+    Filters: type, stage, tag (case-insensitive), q (name/email/company ILIKE),
+    score_min, assignee. sort ∈ recent|score|name|last_contacted."""
     if type not in {"seller", "buyer", "all"}:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "type must be seller, buyer or all")
+    if stage is not None and stage not in CLIENT_STAGES:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, f"stage must be one of {sorted(CLIENT_STAGES)}")
+    order_sql = _SORT_SQL.get(sort)
+    if order_sql is None:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, f"sort must be one of {sorted(_SORT_SQL)}")
+
+    # Dynamic WHERE — every fragment references a model/whitelist-derived column
+    # with a positional placeholder, so this assembly is injection-safe.
+    where = ["c.archived_at IS NULL"]
+    args: list = []
+    if type != "all":
+        args.append(type)
+        where.append(f"(c.client_type = ${len(args)} OR c.client_type = 'both')")
+    if stage is not None:
+        args.append(stage)
+        where.append(f"c.stage = ${len(args)}")
+    if score_min is not None:
+        args.append(score_min)
+        where.append(f"c.lead_score >= ${len(args)}")
+    if assignee:
+        args.append(assignee)
+        where.append(f"c.assignee_id = ${len(args)}")
+    if q:
+        args.append(f"%{q.strip()}%")
+        where.append(
+            f"(c.full_name ILIKE ${len(args)} OR c.email ILIKE ${len(args)} "
+            f"OR c.company ILIKE ${len(args)})"
+        )
+    if tag:
+        args.append(tag.strip())
+        where.append(
+            f"EXISTS (SELECT 1 FROM client_tags ct2 WHERE ct2.client_id = c.id "
+            f"AND lower(ct2.tag) = lower(${len(args)}))"
+        )
 
     try:
         async with tenant_tx(ctx) as conn:
             rows = await conn.fetch(
-                """
+                f"""
                 SELECT c.id, c.full_name, c.email, c.phone, c.client_type,
-                       c.preferences, c.source, c.created_at,
+                       c.stage, c.lead_score, c.assignee_id, c.company,
+                       c.preferences, c.source, c.created_at, c.last_contacted_at,
                        h.houses,
+                       COALESCE(tg.tags, '[]'::json) AS tags,
+                       COALESCE(ot.open_tasks, 0)    AS open_tasks,
                        lt.interaction_type AS last_touch_type,
-                       lt.created_at       AS last_touch_at
+                       lt.created_at       AS last_touch_at,
+                       la.kind AS la_kind, la.summary AS la_summary,
+                       la.created_at AS la_created_at
                   FROM clients c
                   LEFT JOIN LATERAL (
                         SELECT json_agg(json_build_object(
@@ -520,18 +649,33 @@ async def list_clients(
                                ) x
                   ) h ON true
                   LEFT JOIN LATERAL (
+                        SELECT json_agg(t.tag ORDER BY lower(t.tag)) AS tags
+                          FROM client_tags t WHERE t.client_id = c.id
+                  ) tg ON true
+                  LEFT JOIN LATERAL (
+                        SELECT count(*) AS open_tasks
+                          FROM client_tasks ct
+                         WHERE ct.client_id = c.id AND ct.status = 'open'
+                  ) ot ON true
+                  LEFT JOIN LATERAL (
                         SELECT il.interaction_type, il.created_at
                           FROM interaction_logs il
                          WHERE il.client_id = c.id
                          ORDER BY il.created_at DESC
                          LIMIT 1
                   ) lt ON true
-                 WHERE c.archived_at IS NULL
-                   AND ($1 = 'all' OR c.client_type = $1 OR c.client_type = 'both')
-                 ORDER BY c.created_at DESC
+                  LEFT JOIN LATERAL (
+                        SELECT a.kind, a.summary, a.created_at
+                          FROM client_activities a
+                         WHERE a.client_id = c.id
+                         ORDER BY a.created_at DESC
+                         LIMIT 1
+                  ) la ON true
+                 WHERE {" AND ".join(where)}
+                 ORDER BY {order_sql}
                  LIMIT 500
                 """,
-                type,
+                *args,
             )
     except RuntimeError as exc:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, f"Memory Core offline ({exc})")
@@ -544,7 +688,21 @@ async def list_clients(
                 "interaction_type": r["last_touch_type"],
                 "created_at": _iso(r["last_touch_at"]),
             }
-        clients.append(_client_json(r, _loads(r["houses"], []) or [], last_touch))
+        last_activity = None
+        if r["la_created_at"] is not None:
+            last_activity = {
+                "kind": r["la_kind"],
+                "summary": r["la_summary"],
+                "created_at": _iso(r["la_created_at"]),
+            }
+        clients.append(_client_json(
+            r,
+            _loads(r["houses"], []) or [],
+            last_touch,
+            tags=_loads(r["tags"], []) or [],
+            open_tasks=r["open_tasks"],
+            last_activity=last_activity,
+        ))
     return {"clients": clients}
 
 
@@ -553,20 +711,49 @@ async def create_client(
     body: ClientCreate,
     ctx: TenantContext = Depends(require_context),
 ):
+    stage = body.stage or "lead"
+    score = body.lead_score or 0
     try:
         async with tenant_tx(ctx) as conn:
             row = await conn.fetchrow(
-                """
-                INSERT INTO clients (tenant_id, full_name, email, phone, client_type, preferences)
-                VALUES ($1, $2, $3, $4, $5, $6::jsonb)
-             RETURNING id, full_name, email, phone, client_type, preferences, source, created_at
+                f"""
+                INSERT INTO clients
+                    (tenant_id, full_name, email, phone, client_type,
+                     stage, lead_score, company, preferences)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb)
+             RETURNING {_CLIENT_COLS}
                 """,
                 ctx.tenant_id,
                 body.full_name.strip(),
                 body.email,
                 body.phone,
                 body.client_type,
+                stage,
+                score,
+                (body.company or None),
                 json.dumps(body.preferences or {}),
+            )
+
+            tags: list[str] = []
+            for raw in body.tags or []:
+                t = (raw or "").strip()
+                if not t:
+                    continue
+                await conn.execute(
+                    "INSERT INTO client_tags (tenant_id, client_id, tag) "
+                    "VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
+                    ctx.tenant_id, row["id"], t,
+                )
+            tag_rows = await conn.fetch(
+                "SELECT tag FROM client_tags WHERE client_id = $1 ORDER BY lower(tag)",
+                row["id"],
+            )
+            tags = [tr["tag"] for tr in tag_rows]
+
+            await _log_activity(
+                conn, ctx, row["id"], "created",
+                f"Client created: {row['full_name']}",
+                {"client_type": body.client_type, "stage": stage},
             )
     except RuntimeError as exc:
         raise HTTPException(
@@ -575,10 +762,10 @@ async def create_client(
         )
 
     logger.info(
-        "Client created: id=%s type=%s (tenant=%s, agent=%s)",
-        row["id"], body.client_type, ctx.tenant_id, ctx.agent_id,
+        "Client created: id=%s type=%s stage=%s (tenant=%s, agent=%s)",
+        row["id"], body.client_type, stage, ctx.tenant_id, ctx.agent_id,
     )
-    return {"client": _client_json(row, [], None)}
+    return {"client": _client_json(row, [], None, tags=tags)}
 
 
 @router.patch("/clients/{client_id}")
@@ -599,28 +786,66 @@ async def update_client(
     # Column names come from the ClientPatch model's declared fields — never
     # from raw client input — so this f-string assembly is injection-safe.
     sets, args = [], []
-    for col in ("full_name", "email", "phone", "client_type", "preferences", "source"):
+    for col in ("full_name", "email", "phone", "client_type",
+                "stage", "lead_score", "assignee_id", "company", "source"):
         if col not in fields:
             continue
-        if col == "preferences":
-            sets.append(f"preferences = ${len(args) + 1}::jsonb")
-            args.append(json.dumps(fields[col] or {}))
-        else:
-            sets.append(f"{col} = ${len(args) + 1}")
-            args.append(fields[col])
+        sets.append(f"{col} = ${len(args) + 1}")
+        args.append(fields[col])
+    if "preferences" in fields:
+        sets.append(f"preferences = ${len(args) + 1}::jsonb")
+        args.append(json.dumps(fields["preferences"] or {}))
+    if "archived" in fields:
+        # archived flips the soft-archive timestamp; no bound param needed.
+        sets.append("archived_at = now()" if fields["archived"] else "archived_at = NULL")
+    if not sets:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "no fields to update")
     args.append(client_id)
 
     try:
         async with tenant_tx(ctx) as conn:
+            current = await conn.fetchrow(
+                "SELECT id, full_name, stage, lead_score FROM clients WHERE id = $1",
+                client_id,
+            )
+            if current is None:
+                raise HTTPException(status.HTTP_404_NOT_FOUND, "client not found")
+
             row = await conn.fetchrow(
                 f"""
                 UPDATE clients
                    SET {", ".join(sets)}
                  WHERE id = ${len(args)}
-             RETURNING id, full_name, email, phone, client_type, preferences, source, created_at
+             RETURNING {_CLIENT_COLS}
                 """,
                 *args,
             )
+
+            # Lifecycle activities — only when the value actually moved.
+            if "stage" in fields and fields["stage"] != current["stage"]:
+                await _log_activity(
+                    conn, ctx, client_id, "stage_change",
+                    f"Stage: {current['stage']} → {fields['stage']}",
+                    {"from": current["stage"], "to": fields["stage"]},
+                )
+            if "lead_score" in fields and fields["lead_score"] != current["lead_score"]:
+                await _log_activity(
+                    conn, ctx, client_id, "score_change",
+                    f"Lead score: {current['lead_score']} → {fields['lead_score']}",
+                    {"from": current["lead_score"], "to": fields["lead_score"]},
+                )
+            if "archived" in fields:
+                await _log_activity(
+                    conn, ctx, client_id, "system",
+                    "Client archived" if fields["archived"] else "Client restored",
+                    {"archived": bool(fields["archived"])},
+                )
+
+            tag_rows = await conn.fetch(
+                "SELECT tag FROM client_tags WHERE client_id = $1 ORDER BY lower(tag)",
+                client_id,
+            )
+            tags = [tr["tag"] for tr in tag_rows]
     except RuntimeError as exc:
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -629,7 +854,7 @@ async def update_client(
 
     if row is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "client not found")
-    return {"client": _client_json(row, [], None)}
+    return {"client": _client_json(row, [], None, tags=tags)}
 
 
 @router.get("/clients/{client_id}/interactions")
@@ -673,19 +898,39 @@ async def send_message(
     email_outbox for the send worker. Threads continue the latest thread_id for
     this client+channel, else start a fresh one (gen_random_uuid)."""
     _require_uuid(client_id, "client_id")
+    direction = body.direction
+    outbound = direction == "outbound"
 
     try:
         async with tenant_tx(ctx) as conn:
             client = await conn.fetchrow(
-                "SELECT id, full_name, email FROM clients WHERE id = $1",
+                "SELECT id, full_name, email, client_type FROM clients WHERE id = $1",
                 client_id,
             )
             if client is None:
                 raise HTTPException(status.HTTP_404_NOT_FOUND, "client not found")
-            if body.channel == "email" and not client["email"]:
+            if body.channel == "email" and outbound and not client["email"]:
                 raise HTTPException(
                     status.HTTP_422_UNPROCESSABLE_ENTITY,
                     "client has no email address on file",
+                )
+
+            # Compliance gate: never SEND to a contact who has opted out / is on
+            # the do-not-contact list. Raises 451 when blocked. Only outbound
+            # email leaves the building; inbound logging is just a record.
+            if body.channel == "email" and outbound:
+                await enforce_outreach(
+                    ctx, channel=Channel.EMAIL, contact=client["email"], state_code=None,
+                    conn=conn,
+                )
+
+            # actor_role must satisfy the interaction_logs CHECK. Outbound is the
+            # agent; inbound is attributed to the client's side (both→buyer).
+            if outbound:
+                actor_role = "agent"
+            else:
+                actor_role = {"seller": "seller", "buyer": "buyer", "both": "buyer"}.get(
+                    client["client_type"], "buyer"
                 )
 
             interaction = await conn.fetchrow(
@@ -693,12 +938,12 @@ async def send_message(
                 INSERT INTO interaction_logs
                     (tenant_id, client_id, actor_role, interaction_type,
                      direction, subject, payload, thread_id)
-                VALUES ($1, $2, 'agent', $3, 'outbound', $4, $5::jsonb,
+                VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb,
                         COALESCE(
                             (SELECT thread_id
                                FROM interaction_logs
                               WHERE client_id = $2
-                                AND interaction_type = $3
+                                AND interaction_type = $4
                                 AND thread_id IS NOT NULL
                               ORDER BY created_at DESC
                               LIMIT 1),
@@ -708,13 +953,15 @@ async def send_message(
                 """,
                 ctx.tenant_id,
                 client_id,
+                actor_role,
                 body.channel,
+                direction,
                 body.subject,
                 json.dumps({"body": body.body}),
             )
 
             queued_email_id = None
-            if body.channel == "email":
+            if body.channel == "email" and outbound:
                 outbox = await conn.fetchrow(
                     """
                     INSERT INTO email_outbox
@@ -731,6 +978,23 @@ async def send_message(
                     ctx.agent_id or "agent",
                 )
                 queued_email_id = str(outbox["id"])
+
+            # Outbound touch advances last_contacted_at (drives sort + nurture).
+            if outbound:
+                await conn.execute(
+                    "UPDATE clients SET last_contacted_at = now() WHERE id = $1",
+                    client_id,
+                )
+
+            await _log_activity(
+                conn, ctx, client_id, "message",
+                f"{direction.capitalize()} {body.channel}: {body.subject or '(no subject)'}",
+                {
+                    "channel": body.channel,
+                    "direction": direction,
+                    "thread_id": str(interaction["thread_id"]) if interaction["thread_id"] else None,
+                },
+            )
     except RuntimeError as exc:
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -738,8 +1002,8 @@ async def send_message(
         )
 
     logger.info(
-        "Message logged: client=%s channel=%s queued_email=%s (tenant=%s, agent=%s)",
-        client_id, body.channel, queued_email_id, ctx.tenant_id, ctx.agent_id,
+        "Message logged: client=%s channel=%s direction=%s queued_email=%s (tenant=%s, agent=%s)",
+        client_id, body.channel, direction, queued_email_id, ctx.tenant_id, ctx.agent_id,
     )
     return {"interaction": _interaction_json(interaction), "queued_email_id": queued_email_id}
 

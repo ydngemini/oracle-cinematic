@@ -1,0 +1,265 @@
+/* PropertyTour — photoreal 3D flyover viewer.
+   Etched-glass chrome floats over Google's Map3DElement render surface.
+   Mobile-first; the host element fills its container and Google paints into it. */
+
+.tour {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  min-height: 320px;
+  overflow: hidden;
+  border-radius: var(--radius-lg);
+  background: var(--oracle-bg-canvas);
+  isolation: isolate;
+}
+
+/* Google paints the photoreal tiles + its required logo/attribution here. */
+.stage {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.stage :global(gmp-map-3d) {
+  width: 100%;
+  height: 100%;
+}
+
+/* ── Top bar — address + close ─────────────────────────────────────────────── */
+.bar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: var(--z-hud);
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  background: linear-gradient(180deg, rgba(4, 4, 6, 0.72), rgba(4, 4, 6, 0));
+  pointer-events: none;
+}
+
+.bar > * { pointer-events: auto; }
+
+.kicker {
+  flex: none;
+  font-family: var(--font-display);
+  font-size: 0.5625rem; /* 9px micro-label */
+  font-weight: 600;
+  letter-spacing: var(--tracking-widest);
+  text-transform: uppercase;
+  color: var(--oracle-amber-dim);
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--oracle-amber-ghost);
+  border-radius: var(--radius-pill);
+  background: rgba(4, 4, 6, 0.4);
+  white-space: nowrap;
+}
+
+.addr {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--text-sm);
+  font-weight: 500;
+  letter-spacing: var(--tracking-snug);
+  color: var(--oracle-text-heading);
+  text-shadow: 0 1px 6px rgba(0, 0, 0, 0.8);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.closeBtn {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: var(--radius-pill);
+  color: var(--oracle-text);
+  background: var(--oracle-glass);
+  border: 1px solid var(--oracle-border-bright);
+  backdrop-filter: var(--oracle-backdrop-light);
+  -webkit-backdrop-filter: var(--oracle-backdrop-light);
+  transition: background var(--duration-fast) var(--ease-out);
+}
+
+.closeBtn:hover { background: var(--oracle-glass-hover); }
+.closeBtn svg { width: 16px; height: 16px; }
+
+/* ── Bottom controls — play/pause + snap ──────────────────────────────────── */
+.controls {
+  position: absolute;
+  left: 50%;
+  bottom: var(--space-4);
+  transform: translateX(-50%);
+  z-index: var(--z-hud);
+  display: flex;
+  gap: var(--space-2);
+  padding: var(--space-2);
+  border-radius: var(--radius-pill);
+  background: rgba(8, 8, 12, 0.62);
+  border: 1px solid var(--oracle-border-bright);
+  box-shadow: var(--shadow-panel);
+  backdrop-filter: var(--oracle-backdrop);
+  -webkit-backdrop-filter: var(--oracle-backdrop);
+}
+
+.ctrlBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: 40px;
+  padding: 0 var(--space-4);
+  border-radius: var(--radius-pill);
+  font-family: var(--font-display);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+  color: var(--oracle-text);
+  background: var(--oracle-glass);
+  border: 1px solid var(--oracle-border-bright);
+  transition:
+    background var(--duration-fast) var(--ease-out),
+    box-shadow var(--duration-base) var(--ease-out),
+    color var(--duration-fast) var(--ease-out);
+}
+
+.ctrlBtn:hover {
+  background: var(--oracle-amber-ghost);
+  color: var(--oracle-amber);
+  box-shadow: var(--shadow-amber);
+}
+
+.ctrlBtn:active { transform: translateY(1px); }
+
+.ctrlGlyph {
+  display: grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+}
+
+.ctrlGlyph svg { width: 15px; height: 15px; }
+
+/* ── Loading veil ─────────────────────────────────────────────────────────── */
+.loading {
+  position: absolute;
+  inset: 0;
+  z-index: var(--z-panel);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-3);
+  background: var(--oracle-bg-canvas);
+}
+
+.spinner {
+  width: 34px;
+  height: 34px;
+  border-radius: var(--radius-pill);
+  border: 2px solid var(--oracle-border-bright);
+  border-top-color: var(--oracle-amber);
+  animation: tourSpin 0.8s linear infinite;
+}
+
+@keyframes tourSpin {
+  to { transform: rotate(360deg); }
+}
+
+.loadingText {
+  font-family: var(--font-display);
+  font-size: var(--text-sm);
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+  color: var(--oracle-text-dim);
+}
+
+/* ── Attribution — required Google credit, never hidden ───────────────────── */
+.attribution {
+  position: absolute;
+  right: var(--space-2);
+  bottom: var(--space-2);
+  z-index: var(--z-hud);
+  font-size: 0.625rem; /* 10px */
+  letter-spacing: var(--tracking-wide);
+  color: var(--oracle-text-ghost);
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.9);
+  pointer-events: none;
+}
+
+/* ── Graceful fallback (no key / no coverage / geocode miss) ───────────────── */
+.fallback {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-3);
+  padding: var(--space-6);
+  text-align: center;
+  background: var(--oracle-bg-canvas);
+}
+
+.fallbackGlyph {
+  display: grid;
+  place-items: center;
+  width: 48px;
+  height: 48px;
+  border-radius: var(--radius-pill);
+  color: var(--oracle-text-ghost);
+  background: var(--oracle-glass);
+  border: 1px solid var(--oracle-border-bright);
+}
+
+.fallbackGlyph svg { width: 24px; height: 24px; }
+
+.fallbackTitle {
+  font-family: var(--font-display);
+  font-size: var(--text-base);
+  font-weight: 600;
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+  color: var(--oracle-text-heading);
+}
+
+.fallbackHint {
+  max-width: 32ch;
+  font-size: var(--text-sm);
+  line-height: var(--leading-relaxed);
+  color: var(--oracle-text-dim);
+}
+
+.fallbackAddr {
+  font-family: var(--font-display);
+  font-size: var(--text-xs);
+  letter-spacing: var(--tracking-wide);
+  color: var(--oracle-text-ghost);
+}
+
+.fallbackBtn {
+  margin-top: var(--space-2);
+  min-height: 44px;
+  padding: 0 var(--space-5);
+  border-radius: var(--radius-md);
+  font-family: var(--font-display);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  letter-spacing: var(--tracking-wider);
+  text-transform: uppercase;
+  color: var(--oracle-text);
+  background: var(--oracle-glass);
+  border: 1px solid var(--oracle-border-bright);
+  transition: background var(--duration-fast) var(--ease-out);
+}
+
+.fallbackBtn:hover { background: var(--oracle-glass-hover); }
+
+@media (min-width: 768px) {
+  .tour { min-height: 420px; }
+}

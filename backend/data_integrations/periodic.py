@@ -207,6 +207,33 @@ async def _new_listings_task() -> dict:
     return await RESOListingsFeed().sync_once()
 
 
+async def _distress_scrape_task() -> dict:
+    """Fast-moving ACTIVE SCRAPE: keyless Socrata code-violation feeds (NYC HPD,
+    Chicago) → distress leads, idempotent via leads UNIQUE(tenant_id,parcel_id).
+    Per-source rate limiting + circuit breakers live in harvesters/base.py, so a
+    flaky/down portal backs off instead of flooding. Skips cleanly with no tenant.
+    Uses NO API keys — safe to run on a tight (e.g. 30-min) cadence."""
+    tenant = os.getenv("ORACLE_INGEST_TENANT_ID", "")
+    if not tenant:
+        return {"skipped": "ORACLE_INGEST_TENANT_ID unset"}
+    cap = int(os.getenv("ORACLE_DISTRESS_MAX_PER_SOURCE", "500")) or None
+    try:
+        from harvesters.ny_hpd_violations import NYCHPDViolationsHarvester
+        from harvesters.il_chicago_violations import ChicagoBuildingViolationsHarvester
+    except Exception as exc:  # noqa: BLE001
+        return {"skipped": f"distress harvester import failed: {exc}"}
+    out: dict = {}
+    for label, cls in (("nyc_hpd", NYCHPDViolationsHarvester),
+                       ("chicago_violations", ChicagoBuildingViolationsHarvester)):
+        try:
+            res = await cls(tenant, agent_id="periodic-distress").harvest(
+                max_records=cap, persist=True)
+            out[label] = res if isinstance(res, dict) else {"result": str(res)}
+        except Exception as exc:  # noqa: BLE001 — one source must not sink the rest
+            out[label] = {"error": str(exc)[:160]}
+    return out
+
+
 async def _coverage_snapshot_task() -> dict:
     """Cheap every-tick freshness signal: recompute national coverage summary."""
     try:
@@ -228,6 +255,18 @@ def build_default_scheduler() -> PeriodicScheduler:
         name="parcel_harvest",
         interval_s=harvest_interval_h * 3600,
         run=_parcel_harvest_task,
+        # Heavy 49-state national pass. Default OFF so enabling the scheduler +
+        # ingest tenant (for the fast distress scrape) doesn't kick off a full
+        # parcel run; flip ORACLE_PARCEL_HARVEST_ENABLED=1 when you want it.
+        enabled=os.getenv("ORACLE_PARCEL_HARVEST_ENABLED", "0") == "1",
+    ))
+    # Fast-moving keyless distress scrape (NYC HPD + Chicago violations). Polite
+    # to Socrata; default 30-min cadence = the "active web scrape" heartbeat.
+    distress_interval_min = float(os.getenv("ORACLE_DISTRESS_INTERVAL_MIN", "30"))
+    sched.register(PeriodicTask(
+        name="distress_scrape",
+        interval_s=distress_interval_min * 60,
+        run=_distress_scrape_task,
     ))
     listings_interval_h = float(os.getenv("ORACLE_LISTINGS_INTERVAL_HOURS", "1"))
     sched.register(PeriodicTask(

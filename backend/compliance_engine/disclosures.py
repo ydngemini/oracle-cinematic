@@ -112,9 +112,15 @@ class DisclosureEngine:
                 continue
 
             try:
-                if not self._evaluator.evaluate(rule.trigger_conditions, context):
-                    continue
+                fired = self._evaluator.evaluate(rule.trigger_conditions, context)
             except ValueError:
+                # Indeterminate trigger — context lacks a field the rule needs
+                # (e.g. year_built is None so float(None) raises). A REQUIRED
+                # disclosure must FAIL CLOSED: include it rather than silently
+                # drop a legally-mandated form (TSCA 1018 lead-paint, etc.).
+                # Non-required rules stay skipped when the trigger can't be decided.
+                fired = rule.severity == "required"
+            if not fired:
                 continue
 
             fired_ids.add(rule.rule_id)

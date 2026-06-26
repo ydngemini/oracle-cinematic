@@ -69,6 +69,24 @@ USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/125.0"
 MIN_IMAGES_FOR_RECONSTRUCTION = 4
 MAX_IMAGES = 20
 
+# Lawful-by-default media sourcing. The product promise is "agents upload their
+# own photos." The Zillow/Redfin scrape fallback builds a derivative 3D product
+# from third-party COPYRIGHTED listing photos and trips both sites' anti-scraping
+# ToS — so it stays OFF unless an operator explicitly opts in (internal use only,
+# with rights to the images). Default off = the code matches the marketing claim.
+ALLOW_WEB_SCRAPE = os.environ.get("SPATIAL_ALLOW_WEB_SCRAPE", "0").lower() in (
+    "1", "true", "yes", "on",
+)
+
+# Every reconstruction is AI-GENERATED and may hallucinate or omit geometry the
+# model never observed. This disclosure must travel with the asset to the viewer
+# so a buyer is never shown a fabricated room as if it were a survey of record.
+SPATIAL_AI_DISCLOSURE = (
+    "AI-generated 3D reconstruction. Created automatically from 2D photos; "
+    "geometry may be incomplete or inaccurate. Not a measured survey and not a "
+    "substitute for an in-person showing or inspection."
+)
+
 
 def _detect_device() -> str:
     explicit = os.environ.get("SPATIAL_DEVICE", "").lower()
@@ -93,11 +111,13 @@ def property_id(address: str) -> str:
 
 # ─── Image Sourcing ───────────────────────────────────────────────────────────
 
-async def source_listing_images(address: str, work_dir: Path) -> list[Path]:
+async def source_listing_images(address: str, work_dir: Path) -> tuple[list[Path], str]:
+    """Return (images, source) where source is 'agent_upload', 'web_scrape', or
+    'none'. Provenance is recorded so it can travel with the generated asset."""
     images_dir = work_dir / "images"
     images_dir.mkdir(exist_ok=True)
 
-    # 1. Check for staged images first
+    # 1. Agent-uploaded / staged images — the lawful, product-promised source.
     staged = Path(__file__).parent / "staged_images" / property_id(address)
     if staged.exists():
         images = []
@@ -108,21 +128,35 @@ async def source_listing_images(address: str, work_dir: Path) -> list[Path]:
                 images.append(dest)
         if images:
             logger.info("[Spatial] %d staged images found for %s", len(images), address)
-            return images[:MAX_IMAGES]
+            return images[:MAX_IMAGES], "agent_upload"
 
-    # 2. Attempt Zillow static media scraping
+    # 2/3. Web-scrape fallback — OFF by default. Building a buyer-facing 3D product
+    # from Zillow/Redfin listing photos is copyright-infringing and violates their
+    # anti-scraping ToS. Only enable for internal testing with owned content.
+    if not ALLOW_WEB_SCRAPE:
+        logger.warning(
+            "[Spatial] No uploaded images for %s and web scraping is disabled "
+            "(set SPATIAL_ALLOW_WEB_SCRAPE=1 to override). Skipping reconstruction.",
+            address,
+        )
+        return [], "none"
+
+    logger.warning(
+        "[Spatial] SCRAPING third-party listing photos for %s — copyright/ToS "
+        "risk. Do not use the result for buyer-facing output without rights to "
+        "the source images.", address,
+    )
     images = await _scrape_zillow_images(address, images_dir)
     if len(images) >= MIN_IMAGES_FOR_RECONSTRUCTION:
-        return images[:MAX_IMAGES]
+        return images[:MAX_IMAGES], "web_scrape"
 
-    # 3. Attempt Redfin CDN
     images = await _scrape_redfin_images(address, images_dir)
     if len(images) >= MIN_IMAGES_FOR_RECONSTRUCTION:
-        return images[:MAX_IMAGES]
+        return images[:MAX_IMAGES], "web_scrape"
 
     logger.warning("[Spatial] Insufficient images for %s (found %d, need %d)",
                    address, len(images), MIN_IMAGES_FOR_RECONSTRUCTION)
-    return images
+    return images, "web_scrape"
 
 
 async def _scrape_zillow_images(address: str, output_dir: Path) -> list[Path]:
@@ -372,6 +406,8 @@ async def reconstruct_property(address: str, websocket=None) -> Optional[str]:
                 "propertyId": prop_id_val,
                 "address": address,
                 "cached": True,
+                "generated": True,
+                "disclosure": SPATIAL_AI_DISCLOSURE,
             }))
         return url
 
@@ -388,7 +424,7 @@ async def reconstruct_property(address: str, websocket=None) -> Optional[str]:
             }))
 
     await status(f"sourcing listing images for {address}")
-    images = await source_listing_images(address, work_dir)
+    images, image_source = await source_listing_images(address, work_dir)
 
     if len(images) < MIN_IMAGES_FOR_RECONSTRUCTION:
         await status(f"insufficient images ({len(images)}/{MIN_IMAGES_FOR_RECONSTRUCTION}) — cannot reconstruct")
@@ -412,6 +448,22 @@ async def reconstruct_property(address: str, websocket=None) -> Optional[str]:
     url = f"/public/splats/{prop_id_val}.splat"
     await status(f"reconstruction complete in {elapsed:.0f}s — {final_splat.stat().st_size / 1e6:.1f} MB")
 
+    # Provenance + disclosure manifest travels next to the .splat so the viewer
+    # (and any audit) always knows the asset is AI-generated and where the source
+    # images came from.
+    manifest = {
+        "propertyId": prop_id_val,
+        "address": address,
+        "generated": True,
+        "generator": "dust3r+gaussian-splatting",
+        "imageSource": image_source,
+        "disclosure": SPATIAL_AI_DISCLOSURE,
+    }
+    try:
+        (SPLAT_OUTPUT_DIR / f"{prop_id_val}.json").write_text(json.dumps(manifest, indent=2))
+    except OSError as exc:  # never let a side feature crash on a write error
+        logger.warning("[Spatial] Could not write manifest for %s: %s", prop_id_val, exc)
+
     if websocket:
         await websocket.send_text(json.dumps({
             "type": "SPLAT_READY",
@@ -419,6 +471,9 @@ async def reconstruct_property(address: str, websocket=None) -> Optional[str]:
             "propertyId": prop_id_val,
             "address": address,
             "elapsed_s": round(elapsed, 1),
+            "generated": True,
+            "imageSource": image_source,
+            "disclosure": SPATIAL_AI_DISCLOSURE,
         }))
 
     shutil.rmtree(work_dir, ignore_errors=True)

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { crmGet } from '../state/useCrmApi';
 import { MarketDataPanels } from './MarketDataPanels';
+import MarketplaceBrowse from './MarketplaceBrowse';
 import styles from './MarketplaceTab.module.css';
 
 // Inline stroke glyphs — currentColor, zero icon deps (house rule).
@@ -134,9 +135,14 @@ export default function MarketplaceTab() {
       : error?.message || 'Couldn’t reach the listings service.';
 
   return (
-    <section className={styles.wrap} aria-label="Marketplace — active listings" aria-busy={isLoading || refreshing}>
+    <section className={styles.wrap} aria-label="Marketplace" aria-busy={isLoading || refreshing}>
+      {/* Primary discovery surface: the retail browse portal (RentCast-cached). */}
+      <MarketplaceBrowse />
+
+      <div className={styles.sectionDivider} role="separator" aria-hidden="true" />
+
       <header className={styles.topRow}>
-        <span className={styles.kicker}>Marketplace</span>
+        <span className={styles.kicker}>Your active listings</span>
         <button
           type="button"
           className={`${styles.refreshBtn} ${refreshing ? styles.refreshing : ''}`}

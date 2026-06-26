@@ -35,8 +35,8 @@ export default defineConfig(({ command }) => ({
       },
 
       manifest: {
-        name: 'Oracle Agent CRM',
-        short_name: 'Oracle',
+        name: 'Neoh Agent CRM',
+        short_name: 'Neoh',
         description: 'AI-run real-estate agent command center — listings, clients, comms',
         theme_color: '#0a0a0c',
         background_color: '#000000',

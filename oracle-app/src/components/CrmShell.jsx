@@ -76,7 +76,7 @@ export function CrmShell() {
       <header className={styles.header}>
         <span className={styles.wordmark}>
           <span className={styles.tick} aria-hidden="true" />
-          ORACLE
+          NEOH
         </span>
         <StateSelector />
         <SubscriptionBadge />

@@ -54,7 +54,15 @@ SDAT_PORTAL_URL = os.getenv(
     "https://opendata.maryland.gov/Business-and-Economy/Maryland-Real-Property-Assessments/",
 )
 # Fast path: skip DOM resolution and hit the Socrata CSV export directly.
-SDAT_EXPORT_URL = os.getenv("MD_SDAT_EXPORT_URL", "")
+# Direct Socrata SODA CSV endpoint for the statewide "Maryland Real Property
+# Assessments" dataset (ed4q-f8tm). Using the stable resource API (bounded by
+# $limit, ordered by :id) is far more robust than scraping the portal page's
+# rendered "Export" link, which broke when the page DOM changed (2026-06). The
+# DOM-scrape `_resolve_export_url` path remains as a fallback if this is blanked.
+SDAT_EXPORT_URL = os.getenv(
+    "MD_SDAT_EXPORT_URL",
+    "https://opendata.maryland.gov/resource/ed4q-f8tm.csv?$order=:id&$limit=10000",
+)
 # CSS selector for the portal's "Export → CSV" anchor, used when no direct URL.
 SDAT_EXPORT_SELECTOR = os.getenv(
     "MD_SDAT_EXPORT_SELECTOR", "a[href*='rows.csv'], a[href*='accessType=DOWNLOAD']"
@@ -73,8 +81,8 @@ BATCH_SIZE = int(os.getenv("MD_SDAT_BATCH_SIZE", "500"))
 # than hard-coding a single layout. First matching header (case-insensitive,
 # punctuation-stripped) wins.
 _COLUMN_SYNONYMS = {
-    "parcel_id": ("account number", "account id", "acctid", "parcel id", "parcel", "real property account"),
-    "address": ("premise address", "property address", "site address", "address"),
+    "parcel_id": ("acctid", "account number", "account id", "parcel id", "parcel", "real property account"),
+    "address": ("street address", "premise address", "property address", "site address", "address"),
     "city": ("premise city", "property city", "city", "town"),
     "zip_code": ("premise zip", "property zip", "zip code", "zip", "postal code"),
     "owner_name": ("owner name", "owner", "ownername", "owner 1"),
@@ -288,11 +296,17 @@ class MdSdatHarvester(PropertyHarvester):
 
     def _build_colmap(self, headers: list[str]) -> dict[str, str]:
         """Map our field names → the actual CSV header for this export."""
-        norm = {self._norm(h): h for h in headers}
+        # Exact normalized match wins; else the first header whose normalized form
+        # CONTAINS the synonym. SDAT/Socrata headers carry long mdp/sdat suffixes
+        # (e.g. 'account_id_mdp_field_acctid', 'mdp_street_address_mdp_field_address'),
+        # so substring matching is required — exact-equality silently mapped nothing.
+        norm_pairs = [(self._norm(h), h) for h in headers]
+        exact = {n: h for n, h in norm_pairs}
         colmap: dict[str, str] = {}
         for field, synonyms in _COLUMN_SYNONYMS.items():
             for syn in synonyms:
-                actual = norm.get(self._norm(syn))
+                ns = self._norm(syn)
+                actual = exact.get(ns) or next((h for n, h in norm_pairs if ns in n), None)
                 if actual:
                     colmap[field] = actual
                     break
@@ -377,9 +391,17 @@ class MdSdatHarvester(PropertyHarvester):
         # carries an explicit tenant_id (FK-valid, NOT NULL).
         ctx = TenantContext(agent_id=self.agent_id, tenant_id=self.tenant_id, role=Role.PLATFORM_ADMIN)
 
+        # Idempotent upsert on the leads UNIQUE(tenant_id, parcel_id) key (0018) —
+        # the 24h scheduler re-runs MD, so a plain INSERT threw UniqueViolation and
+        # dropped the whole batch. Re-harvests now refresh the row in place.
         sql = (
             "INSERT INTO leads (tenant_id, parcel_id, state, motivation_score, underwriting, payload) "
-            "VALUES ($1::uuid, $2, $3, $4, $5::jsonb, $6::jsonb)"
+            "VALUES ($1::uuid, $2, $3, $4, $5::jsonb, $6::jsonb) "
+            "ON CONFLICT (tenant_id, parcel_id) DO UPDATE SET "
+            "motivation_score = EXCLUDED.motivation_score, "
+            "underwriting = EXCLUDED.underwriting, "
+            "payload = EXCLUDED.payload, "
+            "updated_at = now()"
         )
 
         total = 0

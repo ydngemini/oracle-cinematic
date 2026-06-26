@@ -17,6 +17,7 @@ import json
 import logging
 import os
 import sqlite3
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
@@ -110,12 +111,45 @@ def _compute_hash(
     return hashlib.sha256(block.encode("utf-8")).hexdigest()
 
 
-async def _pg_last_hash() -> str:
-    """Fetch the most recent entry_hash from PostgreSQL. Returns genesis sentinel on empty table."""
-    row = await _dbc._pool.fetchrow(  # type: ignore[union-attr]
-        "SELECT entry_hash FROM audit_ledger ORDER BY created_at DESC, event_id DESC LIMIT 1"
+# Fixed advisory-lock key shared by every audit-chain writer in every process.
+# pg_advisory_xact_lock serialises the read-head + insert pair so two concurrent
+# record() calls can never observe the same prev_hash and fork the chain. The
+# value is arbitrary but must be identical across all writers.
+_AUDIT_CHAIN_LOCK_KEY = 0x4155_4449_5403  # mnemonic: "AUDI" + chain v3
+
+
+async def _pg_last_hash(conn) -> str:
+    """Fetch the most recent entry_hash on the given connection. Returns the
+    genesis sentinel on an empty table. The caller must run this inside the
+    advisory-locked transaction (and under a context that can SELECT the whole
+    chain) so the value is still current at INSERT time."""
+    row = await conn.fetchrow(
+        "SELECT entry_hash FROM audit_ledger ORDER BY seq DESC LIMIT 1"
     )
     return row["entry_hash"] if row else "0" * 64
+
+
+@asynccontextmanager
+async def _global_chain_conn():
+    """Acquire a pooled connection in a transaction with platform_admin RLS
+    context applied, so audit reads and writes see the whole cross-tenant chain.
+
+    The audit_ledger is a single global hash chain, but audit_ledger_select
+    scopes non-admins to their own tenant — without this, a bare-pool read sees
+    no rows (no GUC set) and the head read / verify / admin feed all come back
+    empty. SET LOCAL resets at transaction end, so no identity leaks onto the
+    pooled socket."""
+    async with _dbc._pool.acquire() as conn:  # type: ignore[union-attr]
+        async with conn.transaction():
+            # Match the apply_rls_context() GUC contract: set BOTH role and
+            # tenant (to the all-zero platform sentinel) so any policy that
+            # references app_current_tenant() can't silently break on this
+            # global-chain connection. SET LOCAL resets at transaction end.
+            await conn.execute(
+                "SELECT set_config('app.current_role',   'platform_admin', true),"
+                "       set_config('app.current_tenant', '00000000-0000-0000-0000-000000000000', true)"
+            )
+            yield conn
 
 
 def _sqlite_last_hash() -> str:
@@ -180,51 +214,61 @@ class AuditLedger:
         meta_payload = metadata or {}
         meta_json    = json.dumps(meta_payload, separators=(",", ":"), sort_keys=True)
 
-        # ---- determine prev_hash ----------------------------------------
+        # ---- persist atomically -------------------------------------------
+        # PG path: read the chain head and append inside ONE advisory-locked
+        # transaction, so prev_hash cannot go stale between the read and the
+        # insert (closes the TOCTOU that let two concurrent record() calls share
+        # a prev_hash and fork the chain). SET LOCAL platform_admin so the
+        # global-chain SELECT sees every tenant's rows — audit_ledger_select
+        # scopes non-admins to their own tenant, which would otherwise make the
+        # head read return only the current tenant's last row (or nothing). The
+        # GUC is SET LOCAL, so it resets when the transaction ends: no identity
+        # leaks onto the pooled socket. Falls back to the SQLite chain if the
+        # pool is down or the transaction fails.
         prev_hash: str
-        if _dbc._pool is not None:
-            try:
-                prev_hash = await _pg_last_hash()
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("audit: could not read prev_hash from PG (%s); falling back to SQLite chain", exc)
-                prev_hash = _sqlite_last_hash()
-        else:
-            prev_hash = _sqlite_last_hash()
-
-        entry_hash = _compute_hash(
-            created_at, category.value, action,
-            tenant_str, user_str, target_str, meta_json, prev_hash,
-        )
-
-        # ---- persist -------------------------------------------------------
+        entry_hash: str
         pg_ok = False
         if _dbc._pool is not None:
             try:
-                await _dbc._pool.execute(
-                    """
-                    INSERT INTO audit_ledger
-                        (tenant_id, user_id, category, action, target_id,
-                         metadata, prev_hash, entry_hash, created_at)
-                    VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9)
-                    """,
-                    tenant_str or None,
-                    user_str   or None,
-                    category.value,
-                    action,
-                    target_str or None,
-                    meta_json,
-                    prev_hash,
-                    entry_hash,
-                    created_dt,  # asyncpg needs the datetime, not the isoformat string
-                )
+                async with _global_chain_conn() as conn:
+                    await conn.execute(
+                        "SELECT pg_advisory_xact_lock($1)", _AUDIT_CHAIN_LOCK_KEY
+                    )
+                    prev_hash = await _pg_last_hash(conn)
+                    entry_hash = _compute_hash(
+                        created_at, category.value, action,
+                        tenant_str, user_str, target_str, meta_json, prev_hash,
+                    )
+                    await conn.execute(
+                        """
+                        INSERT INTO audit_ledger
+                            (tenant_id, user_id, category, action, target_id,
+                             metadata, prev_hash, entry_hash, created_at)
+                        VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9)
+                        """,
+                        tenant_str or None,
+                        user_str   or None,
+                        category.value,
+                        action,
+                        target_str or None,
+                        meta_json,
+                        prev_hash,
+                        entry_hash,
+                        created_dt,  # asyncpg needs the datetime, not the isoformat string
+                    )
                 pg_ok = True
                 logger.debug("audit: PG insert ok — %s / %s", category.value, action)
             except Exception as exc:  # noqa: BLE001
                 logger.warning(
-                    "audit: PG insert failed (%s); persisting to SQLite fallback", exc
+                    "audit: PG append failed (%s); persisting to SQLite fallback", exc
                 )
 
         if not pg_ok:
+            prev_hash = _sqlite_last_hash()
+            entry_hash = _compute_hash(
+                created_at, category.value, action,
+                tenant_str, user_str, target_str, meta_json, prev_hash,
+            )
             self._sqlite_insert(
                 created_at, tenant_str, user_str, category.value,
                 action, target_str, meta_json, prev_hash, entry_hash,
@@ -256,14 +300,15 @@ class AuditLedger:
             return self._sqlite_verify_chain()
 
         try:
-            rows = await _dbc._pool.fetch(
-                """
-                SELECT created_at, category, action, tenant_id, user_id,
-                       target_id, metadata, prev_hash, entry_hash
-                FROM   audit_ledger
-                ORDER  BY created_at ASC, event_id ASC
-                """
-            )
+            async with _global_chain_conn() as conn:
+                rows = await conn.fetch(
+                    """
+                    SELECT created_at, category, action, tenant_id, user_id,
+                           target_id, metadata, prev_hash, entry_hash
+                    FROM   audit_ledger
+                    ORDER  BY seq ASC
+                    """
+                )
         except Exception as exc:  # noqa: BLE001
             logger.warning("audit: verify_chain PG query failed (%s); falling back to SQLite", exc)
             return self._sqlite_verify_chain()
@@ -324,18 +369,19 @@ class AuditLedger:
                 idx += 1
 
             where_clause = ("WHERE " + " AND ".join(conditions)) if conditions else ""
-            rows = await _dbc._pool.fetch(
-                f"""
-                SELECT created_at, tenant_id, user_id, category, action,
-                       target_id, metadata, prev_hash, entry_hash
-                FROM   audit_ledger
-                {where_clause}
-                ORDER  BY created_at DESC, event_id DESC
-                LIMIT  ${idx}
-                """,
-                *params,
-                limit,
-            )
+            async with _global_chain_conn() as conn:
+                rows = await conn.fetch(
+                    f"""
+                    SELECT created_at, tenant_id, user_id, category, action,
+                           target_id, metadata, prev_hash, entry_hash
+                    FROM   audit_ledger
+                    {where_clause}
+                    ORDER  BY seq DESC
+                    LIMIT  ${idx}
+                    """,
+                    *params,
+                    limit,
+                )
             return [
                 {
                     # JSON-safe scalars — these dicts go straight through

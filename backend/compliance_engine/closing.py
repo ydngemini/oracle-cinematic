@@ -82,10 +82,15 @@ DRY_FUNDING_STATES = {
 }
 COMMUNITY_PROPERTY_STATES = {"AZ", "CA", "ID", "LA", "NM", "NV", "TX", "WA", "WI"}
 
+# States/jurisdictions that permit Remote Online Notarization (RON). DC added
+# per RULONA (D.C. Law 22-189). CA (SB 696, eff. Jan 2024), NJ (P.L.2021 c.179),
+# NC (S.L. 2022-54), RI, and ME also authorize RON and were previously omitted.
+# NOTE: legal data — confirm against current state statutes before relying on it
+# for a given transaction.
 _RON_PERMITTED_STATES = {
-    "AK", "AL", "AR", "AZ", "CO", "FL", "HI", "IA", "ID", "IN",
-    "KS", "KY", "LA", "MD", "MI", "MN", "MO", "MS", "MT", "ND",
-    "NE", "NH", "NV", "NY", "OH", "OK", "OR", "PA", "SD", "TN",
+    "AK", "AL", "AR", "AZ", "CA", "CO", "DC", "FL", "HI", "IA", "ID", "IN",
+    "KS", "KY", "LA", "MD", "ME", "MI", "MN", "MO", "MS", "MT", "NC", "ND",
+    "NE", "NH", "NJ", "NV", "NY", "OH", "OK", "OR", "PA", "RI", "SD", "TN",
     "TX", "UT", "VA", "VT", "WA", "WI", "WV", "WY",
 }
 
@@ -146,9 +151,11 @@ class ClosingEngine:
         warnings: List[str] = []
 
         if state == "IL":
-            county = (context.get("county") or "").lower()
+            county = (context.get("county") or "").strip().lower()
+            if county.endswith(" county"):
+                county = county[: -len(" county")].rstrip()
             cook_collars = {"cook", "dupage", "kane", "lake", "mchenry", "will"}
-            if any(c in county for c in cook_collars):
+            if county in cook_collars:
                 warnings.append(
                     "Cook County and collar counties: attorney closing strongly recommended."
                 )

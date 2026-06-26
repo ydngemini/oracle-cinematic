@@ -1,0 +1,180 @@
+import { useEffect, useState } from 'react';
+import { crmGet } from '../state/useCrmApi';
+import styles from './ListingDetail.module.css';
+
+const GLYPHS = {
+  house: (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M3 10.5 12 3l9 7.5" />
+      <path d="M5.5 9.5V20h13V9.5" />
+      <path d="M9.5 20v-6h5v6" />
+    </svg>
+  ),
+  back: (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M15 18l-6-6 6-6" />
+    </svg>
+  ),
+};
+
+const fmtInt = new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 });
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+function toNum(v) {
+  if (v === null || v === undefined || v === '') return null;
+  const n = typeof v === 'string' ? Number(v) : v;
+  return Number.isFinite(n) ? n : null;
+}
+
+function formatPrice(v) {
+  const n = toNum(v);
+  return n === null || n <= 0 ? null : `$${fmtInt.format(n)}`;
+}
+
+function formatBaths(n) {
+  if (n === null) return null;
+  return n % 1 === 0 ? fmtInt.format(n) : n.toFixed(1);
+}
+
+function formatDate(iso) {
+  if (!iso) return null;
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return null;
+  return `${MONTHS[d.getMonth()]} ${d.getDate()}, ${d.getFullYear()}`;
+}
+
+function normalizeStatus(s) {
+  const t = String(s || '').toLowerCase();
+  if (t.startsWith('active')) return 'active';
+  if (t.startsWith('pend')) return 'pending';
+  if (t.startsWith('sold') || t.startsWith('clos')) return 'sold';
+  return 'other';
+}
+
+/**
+ * ListingDetail — full record for one cached MLS listing.
+ * Fetches GET /api/mls/listings/{id}; renders only real fields (a spec is
+ * omitted entirely when the source didn't carry it — never a fabricated value).
+ */
+export default function ListingDetail({ listingId, onBack }) {
+  const [listing, setListing] = useState(null);
+  const [error, setError] = useState(null);
+
+  useEffect(() => {
+    let alive = true;
+    setListing(null);
+    setError(null);
+    crmGet(`/api/mls/listings/${listingId}`).then(
+      (data) => { if (alive) setListing(data); },
+      (err) => { if (alive) setError(err); }
+    );
+    return () => { alive = false; };
+  }, [listingId]);
+
+  const l = listing;
+  const status = normalizeStatus(l?.status);
+  const price = formatPrice(l?.price);
+  const photos = Array.isArray(l?.photos) ? l.photos : [];
+
+  // Specs are rendered only when present — no zero-fills, no invented data.
+  const specs = l
+    ? [
+        ['Beds', toNum(l.beds) !== null ? fmtInt.format(toNum(l.beds)) : null],
+        ['Baths', formatBaths(toNum(l.baths))],
+        ['Sqft', toNum(l.sqft) ? fmtInt.format(toNum(l.sqft)) : null],
+        ['Lot sqft', toNum(l.lot_sqft) ? fmtInt.format(toNum(l.lot_sqft)) : null],
+        ['Year built', l.year_built || null],
+        ['Property type', l.property_type || null],
+        ['HOA / mo', toNum(l.hoa_monthly) ? `$${fmtInt.format(toNum(l.hoa_monthly))}` : null],
+        ['Days on market', toNum(l.days_on_market) !== null ? fmtInt.format(toNum(l.days_on_market)) : null],
+        ['County', l.county || null],
+        ['MLS #', l.mls_number || null],
+        ['Listed', formatDate(l.list_date)],
+      ].filter(([, v]) => v !== null && v !== '' && v !== undefined)
+    : [];
+
+  return (
+    <section className={styles.wrap} aria-label="Listing detail">
+      <button type="button" className={styles.backBtn} onClick={onBack}>
+        {GLYPHS.back}
+        <span>Back to results</span>
+      </button>
+
+      {error ? (
+        <div className={styles.stateBox} role="alert">
+          <span className={styles.errorTick} aria-hidden="true" />
+          <p className={styles.stateText}>
+            {error.status === 404 ? 'This listing is no longer available.' : (error.message || 'Couldn’t load this listing.')}
+          </p>
+        </div>
+      ) : !l ? (
+        <div className={styles.hero} aria-hidden="true">
+          <div className={styles.skel} />
+        </div>
+      ) : (
+        <>
+          <div className={styles.hero}>
+            <span className={styles.heroGhost} aria-hidden="true">{GLYPHS.house}</span>
+            {photos[0] && (
+              <img
+                className={styles.heroImg}
+                src={photos[0]}
+                alt={l.address || 'Listing'}
+                onError={(e) => { e.currentTarget.hidden = true; }}
+              />
+            )}
+            <span className={styles.pill} data-status={status}>
+              {status === 'other' ? (l.status || '—') : status}
+            </span>
+          </div>
+
+          {photos.length > 1 && (
+            <div className={styles.thumbs}>
+              {photos.slice(1, 7).map((src, i) => (
+                <img
+                  key={i}
+                  className={styles.thumb}
+                  src={src}
+                  alt=""
+                  loading="lazy"
+                  onError={(e) => { e.currentTarget.hidden = true; }}
+                />
+              ))}
+            </div>
+          )}
+
+          <header className={styles.headBlock}>
+            {price ? <span className={styles.price}>{price}</span> : <span className={styles.priceTbd}>Price TBD</span>}
+            <h2 className={styles.address}>{l.address || 'Address pending'}</h2>
+            <p className={styles.locale}>
+              {[l.city, l.state].filter(Boolean).join(', ')}{l.zip ? ` ${l.zip}` : ''}
+            </p>
+          </header>
+
+          {specs.length > 0 && (
+            <dl className={styles.specGrid}>
+              {specs.map(([label, value]) => (
+                <div key={label} className={styles.spec}>
+                  <dt className={styles.specLabel}>{label}</dt>
+                  <dd className={styles.specValue}>{value}</dd>
+                </div>
+              ))}
+            </dl>
+          )}
+
+          {l.description && (
+            <div className={styles.descBlock}>
+              <h3 className={styles.descHead}>About this home</h3>
+              <p className={styles.descText}>{l.description}</p>
+            </div>
+          )}
+
+          <p className={styles.sourceNote}>
+            Data via {l.source === 'rentcast' ? 'RentCast' : (l.source || 'MLS')}, cached
+            {formatDate(l.last_updated) ? ` · updated ${formatDate(l.last_updated)}` : ''}
+          </p>
+        </>
+      )}
+    </section>
+  );
+}

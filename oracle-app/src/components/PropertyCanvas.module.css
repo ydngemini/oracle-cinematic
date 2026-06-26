@@ -449,6 +449,55 @@
   .reconstructBtn { padding: 0.6rem 1.2rem; font-size: 0.5rem; }
 }
 
+/* ─── Photoreal 3D-Tiles tour ──────────────────────────────────────────── */
+
+.tourBtn {
+  position: absolute;
+  bottom: 1.5rem;
+  right: 1.5rem;
+  z-index: 10;
+
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.7rem 1.4rem;
+  border: 1px solid rgba(200, 160, 80, 0.2);
+  border-radius: 4px;
+  background: rgba(200, 160, 80, 0.04);
+  backdrop-filter: blur(20px);
+
+  font-size: 0.55rem;
+  letter-spacing: 0.25em;
+  text-transform: uppercase;
+  color: rgba(220, 180, 100, 0.8);
+  font-weight: 500;
+  cursor: pointer;
+
+  transition: all 0.5s cubic-bezier(0.16, 1, 0.3, 1);
+  animation: fadeSlideUp 1s cubic-bezier(0.16, 1, 0.3, 1) both;
+  animation-delay: 2.2s;
+}
+
+.tourBtn:hover {
+  border-color: rgba(200, 160, 80, 0.4);
+  background: rgba(200, 160, 80, 0.08);
+  box-shadow: 0 8px 32px rgba(200, 160, 80, 0.1);
+  transform: translateY(-2px);
+}
+
+.tourBtn:active {
+  transform: translateY(0);
+  transition-duration: 0.1s;
+}
+
+.tourOverlay {
+  position: absolute;
+  inset: 0;
+  z-index: 40;
+  background: rgba(2, 2, 4, 0.55);
+  padding: clamp(0.5rem, 2vw, 1.5rem);
+}
+
 /* ─── Reduced Motion ───────────────────────────────────────────────────── */
 
 @media (prefers-reduced-motion: reduce) {
@@ -456,6 +505,7 @@
   .viewIndicator,
   .badgeRow,
   .reconstructBtn,
+  .tourBtn,
   .gisIndicator { animation: none; }
   .viewDot,
   .gisIndicatorDot,

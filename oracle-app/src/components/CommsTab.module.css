@@ -516,6 +516,7 @@
 .chRow {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: var(--space-3);
 }
 
@@ -526,7 +527,7 @@
 
 .chKey {
   min-height: 44px;
-  padding: 0 var(--space-4);
+  padding: 0 var(--space-3);
   font-family: var(--font-display);
   font-size: var(--text-xs);
   font-weight: 600;
@@ -816,7 +817,494 @@
   .msg,
   .queuedChip,
   .empty,
-  .errorBox {
+  .errorBox,
+  .tray {
     animation: none;
   }
+}
+
+/* ════════════════════════════════════════════════════════════════════════════
+   ENTERPRISE EXTENSIONS — toolbar, unread emphasis, status badges, composer
+   trays (AI draft + templates). Same Obsidian Deck idiom as the base tab.
+   ════════════════════════════════════════════════════════════════════════ */
+
+/* ── Header tally — N unread next to the kicker ──────────────────────────── */
+.unreadTally {
+  margin-left: var(--space-2);
+  padding: 1px var(--space-2);
+  font-size: 0.5625rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: var(--tracking-wide);
+  color: var(--oracle-amber);
+  background: var(--oracle-amber-ghost);
+  border: 1px solid var(--oracle-amber-dim);
+  border-radius: var(--radius-pill);
+}
+
+/* ── Toolbar — search + channel filter (LEVEL 1) ─────────────────────────── */
+.toolbar {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.searchBox {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.searchGlyph {
+  position: absolute;
+  left: var(--space-3);
+  width: 16px;
+  height: 16px;
+  color: var(--oracle-text-ghost);
+  pointer-events: none;
+}
+
+.searchGlyph svg {
+  width: 100%;
+  height: 100%;
+}
+
+.searchInput {
+  width: 100%;
+  min-height: 44px;
+  padding: var(--space-2) var(--space-8) var(--space-2) var(--space-8);
+  background: var(--oracle-glass);
+  border: 1px solid var(--oracle-border);
+  border-radius: var(--radius-md);
+  color: var(--oracle-text);
+  font-size: var(--text-sm);
+}
+
+.searchInput::-webkit-search-cancel-button {
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+.searchInput:focus-visible {
+  outline: none;
+  border-color: var(--oracle-amber-dim);
+  box-shadow: var(--shadow-amber);
+}
+
+.searchClear {
+  position: absolute;
+  right: var(--space-2);
+  width: 32px;
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-sm);
+  color: var(--oracle-text-ghost);
+}
+
+.searchClear:hover {
+  color: var(--oracle-amber);
+}
+
+.searchClear svg {
+  width: 14px;
+  height: 14px;
+}
+
+.filterRow {
+  display: flex;
+  gap: var(--space-2);
+  overflow-x: auto;
+  scrollbar-width: none;
+  -webkit-overflow-scrolling: touch;
+}
+
+.filterRow::-webkit-scrollbar {
+  display: none;
+}
+
+.filterKey {
+  flex-shrink: 0;
+  min-height: 36px;
+  padding: 0 var(--space-3);
+  font-family: var(--font-display);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+  color: var(--oracle-text-ghost);
+  border: 1px solid var(--oracle-border);
+  border-radius: var(--radius-pill);
+  background: var(--oracle-glass);
+  transition:
+    color var(--duration-fast) var(--ease-out),
+    border-color var(--duration-base) var(--ease-out),
+    background var(--duration-fast) var(--ease-out);
+}
+
+.filterKeyOn {
+  color: var(--oracle-amber);
+  border-color: var(--oracle-amber-dim);
+  background: var(--oracle-amber-ghost);
+}
+
+/* ── Unread emphasis (LEVEL 1 rows) ──────────────────────────────────────── */
+.threadRowUnread {
+  border-left: 2px solid var(--oracle-amber-dim);
+}
+
+.threadRowUnread .threadName {
+  color: var(--oracle-text-heading);
+  font-weight: 600;
+}
+
+.threadRowUnread .snippet {
+  color: var(--oracle-text);
+}
+
+.unreadDot {
+  flex-shrink: 0;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--oracle-amber);
+  box-shadow: 0 0 8px var(--oracle-amber-glow);
+}
+
+.countChipUnread {
+  color: var(--oracle-amber);
+  border-color: var(--oracle-amber-dim);
+  background: var(--oracle-amber-ghost);
+}
+
+/* ── Thread header enrichment (LEVEL 2) ──────────────────────────────────── */
+.headSub {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.headEmail {
+  font-size: var(--text-xs);
+  color: var(--oracle-text-ghost);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.headCount {
+  flex-shrink: 0;
+  margin-left: auto;
+  font-family: var(--font-display);
+  font-size: 0.5625rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: var(--tracking-wider);
+  color: var(--oracle-text-ghost);
+  border: 1px solid var(--oracle-border);
+  border-radius: var(--radius-pill);
+  padding: 1px var(--space-2);
+}
+
+/* ── Delivery status badge (LEVEL 2 bubble meta) ─────────────────────────── */
+.statusBadge {
+  font-family: var(--font-display);
+  font-size: 0.5625rem;
+  font-weight: 600;
+  letter-spacing: var(--tracking-wider);
+  text-transform: uppercase;
+  border-radius: var(--radius-pill);
+  padding: 0 var(--space-2);
+  border: 1px solid var(--oracle-border);
+  color: var(--oracle-text-ghost);
+}
+
+.statusBadge[data-tone='amber'] {
+  color: var(--oracle-amber);
+  border-color: var(--oracle-amber-dim);
+  background: var(--oracle-amber-ghost);
+}
+
+.statusBadge[data-tone='good'] {
+  color: var(--oracle-green);
+  border-color: var(--oracle-green-dim);
+}
+
+.statusBadge[data-tone='red'] {
+  color: var(--oracle-red);
+  border-color: var(--oracle-red-dim);
+}
+
+.statusBadge[data-tone='neutral'],
+.statusBadge[data-tone='ghost'] {
+  color: var(--oracle-text-ghost);
+  border-color: var(--oracle-border);
+}
+
+/* ── Composer tool keys (AI draft + templates) ───────────────────────────── */
+.toolKeys {
+  display: inline-flex;
+  gap: var(--space-2);
+}
+
+.toolKey {
+  width: 40px;
+  height: 40px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--oracle-border);
+  background: var(--oracle-glass);
+  color: var(--oracle-text-dim);
+  transition:
+    color var(--duration-fast) var(--ease-out),
+    border-color var(--duration-base) var(--ease-out),
+    background var(--duration-fast) var(--ease-out);
+}
+
+.toolKey:hover {
+  color: var(--oracle-amber);
+  background: var(--oracle-glass-hover);
+}
+
+.toolKeyOn {
+  color: var(--oracle-amber);
+  border-color: var(--oracle-amber-dim);
+  background: var(--oracle-amber-ghost);
+  box-shadow: var(--shadow-amber);
+}
+
+.toolKey svg {
+  width: 18px;
+  height: 18px;
+}
+
+/* ── Composer trays — open above the fields, glass card ──────────────────── */
+.tray {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--oracle-border);
+  border-top-color: var(--oracle-border-bright);
+  background: var(--oracle-glass);
+  box-shadow: var(--shadow-inset);
+  max-height: 46vh;
+  overflow-y: auto;
+  animation: riseIn var(--duration-base) var(--ease-out) both;
+}
+
+.trayHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.trayTitle {
+  font-family: var(--font-display);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  letter-spacing: var(--tracking-widest);
+  text-transform: uppercase;
+  color: var(--oracle-amber-dim);
+}
+
+.trayClose {
+  width: 32px;
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-sm);
+  color: var(--oracle-text-ghost);
+}
+
+.trayClose:hover {
+  color: var(--oracle-amber);
+}
+
+.trayClose svg {
+  width: 14px;
+  height: 14px;
+}
+
+.trayHint {
+  font-size: var(--text-xs);
+  color: var(--oracle-text-ghost);
+  line-height: var(--leading-snug);
+}
+
+.chipWrap {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.intentChip {
+  min-height: 36px;
+  padding: 0 var(--space-3);
+  font-size: var(--text-xs);
+  color: var(--oracle-text);
+  border: 1px solid var(--oracle-border);
+  border-radius: var(--radius-pill);
+  background: var(--oracle-glass);
+  transition:
+    color var(--duration-fast) var(--ease-out),
+    border-color var(--duration-base) var(--ease-out),
+    background var(--duration-fast) var(--ease-out);
+}
+
+.intentChip:hover {
+  color: var(--oracle-amber);
+  border-color: var(--oracle-amber-dim);
+  background: var(--oracle-amber-ghost);
+}
+
+.intentChip:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.trayBusy {
+  font-family: var(--font-display);
+  font-size: 0.5625rem;
+  font-weight: 600;
+  letter-spacing: var(--tracking-widest);
+  text-transform: uppercase;
+  color: var(--oracle-amber);
+}
+
+.trayErr {
+  font-size: var(--text-xs);
+  line-height: var(--leading-snug);
+  color: var(--oracle-text-dim);
+}
+
+/* ── Templates tray ──────────────────────────────────────────────────────── */
+.tplList {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: 0;
+}
+
+.tplEmpty {
+  font-size: var(--text-xs);
+  color: var(--oracle-text-ghost);
+  padding: var(--space-2) 0;
+}
+
+.tplRow {
+  display: flex;
+  align-items: stretch;
+  gap: var(--space-2);
+}
+
+.tplInsert {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: var(--space-2) var(--space-3);
+  text-align: left;
+  border: 1px solid var(--oracle-border);
+  border-radius: var(--radius-md);
+  background: var(--oracle-glass);
+  transition:
+    border-color var(--duration-base) var(--ease-out),
+    background var(--duration-fast) var(--ease-out);
+}
+
+.tplInsert:hover {
+  border-color: var(--oracle-amber-dim);
+  background: var(--oracle-amber-ghost);
+}
+
+.tplTitle {
+  font-family: var(--font-display);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+  color: var(--oracle-text);
+}
+
+.tplPreview {
+  font-size: var(--text-xs);
+  color: var(--oracle-text-ghost);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tplDel {
+  flex-shrink: 0;
+  width: 36px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--oracle-border);
+  background: var(--oracle-glass);
+  color: var(--oracle-text-ghost);
+}
+
+.tplDel:hover {
+  color: var(--oracle-red);
+  border-color: var(--oracle-red-dim);
+}
+
+.tplDel svg {
+  width: 14px;
+  height: 14px;
+}
+
+.tplSaveRow {
+  display: flex;
+  gap: var(--space-2);
+}
+
+.tplSaveInput {
+  flex: 1;
+  min-width: 0;
+  min-height: 40px;
+  padding: var(--space-2) var(--space-3);
+  background: var(--oracle-glass);
+  border: 1px solid var(--oracle-border);
+  border-radius: var(--radius-md);
+  color: var(--oracle-text);
+  font-size: var(--text-sm);
+}
+
+.tplSaveBtn {
+  flex-shrink: 0;
+  width: 40px;
+  height: 40px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-md);
+  color: var(--oracle-amber);
+  border: 1px solid var(--oracle-amber-dim);
+  background: var(--oracle-amber-ghost);
+}
+
+.tplSaveBtn:hover {
+  background: var(--oracle-glass-hover);
+}
+
+.tplSaveBtn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.tplSaveBtn svg {
+  width: 16px;
+  height: 16px;
 }

@@ -121,6 +121,44 @@ async def _record_safe(
 
 
 # ---------------------------------------------------------------------------
+# In-flight write tracking
+#
+# Audit writes run off the request hot path (no added latency), but a bare
+# create_task() is unsafe twice over: CPython may garbage-collect a task that
+# nothing holds a reference to, and a task still running when the process stops
+# loses its ledger row. The audit ledger is compliance evidence, so we keep a
+# strong reference to every in-flight write and drain the set on shutdown.
+# ---------------------------------------------------------------------------
+
+_pending: set[asyncio.Task] = set()
+
+
+def _spawn_record(**kwargs) -> None:
+    """Fire _record_safe as a tracked background task (strong-referenced until done)."""
+    task = asyncio.create_task(_record_safe(**kwargs))
+    _pending.add(task)
+    task.add_done_callback(_pending.discard)
+
+
+async def drain_pending(timeout: float = 5.0) -> None:
+    """Await all in-flight audit writes. Call from the app lifespan shutdown so
+    audit rows are not lost when the process stops."""
+    if not _pending:
+        return
+    in_flight = list(_pending)
+    log.info("Draining %d in-flight audit write(s) before shutdown.", len(in_flight))
+    try:
+        await asyncio.wait_for(
+            asyncio.gather(*in_flight, return_exceptions=True), timeout=timeout
+        )
+    except asyncio.TimeoutError:
+        log.warning(
+            "Audit drain timed out after %.1fs — %d write(s) may be incomplete.",
+            timeout, len(_pending),
+        )
+
+
+# ---------------------------------------------------------------------------
 # 1. @audit_action decorator
 # ---------------------------------------------------------------------------
 
@@ -184,15 +222,14 @@ def audit_action(
             if isinstance(result, Response):
                 meta["status_code"] = result.status_code
 
-            # Fire and forget — do not block the response.
-            asyncio.get_event_loop().create_task(
-                _record_safe(
-                    category=category,
-                    action=action,
-                    tenant_id=tenant_id,
-                    user_id=user_id,
-                    metadata=meta,
-                )
+            # Tracked background task — off the hot path, but strong-referenced
+            # and drained on shutdown so the write is not lost.
+            _spawn_record(
+                category=category,
+                action=action,
+                tenant_id=tenant_id,
+                user_id=user_id,
+                metadata=meta,
             )
 
             return result
@@ -264,15 +301,14 @@ class AuditMiddleware(BaseHTTPMiddleware):
             "client_ip": client_ip,
         }
 
-        # Dispatch off the hot path — do not await.
-        asyncio.get_event_loop().create_task(
-            _record_safe(
-                category=category,
-                action=f"{request.method} {path}",
-                tenant_id=tenant_id,
-                user_id=user_id,
-                metadata=meta,
-            )
+        # Tracked background task — off the hot path, strong-referenced, drained
+        # on shutdown (see _spawn_record / drain_pending).
+        _spawn_record(
+            category=category,
+            action=f"{request.method} {path}",
+            tenant_id=tenant_id,
+            user_id=user_id,
+            metadata=meta,
         )
 
         return response

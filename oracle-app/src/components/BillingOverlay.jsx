@@ -58,8 +58,8 @@ export function BillingOverlay() {
       <div className={styles.panel} data-visible="true">
 
         <div className={styles.header}>
-          <span className={styles.kicker}>Oracle Swarm — License Required</span>
-          <h2 className={styles.heading}>Oracle Swarm License</h2>
+          <span className={styles.kicker}>Neoh Swarm — License Required</span>
+          <h2 className={styles.heading}>Neoh Swarm License</h2>
           <p className={styles.subheading}>
             Activate full autonomous acquisition intelligence for this agent cluster.
           </p>

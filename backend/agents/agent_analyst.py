@@ -15,7 +15,7 @@ import logging
 import math
 import os
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
@@ -163,6 +163,24 @@ class CMAResult:
     methodology: str
     reasoning: str
     generated_at: float
+    # Fact-check provenance from the AVM reconciliation layer. Defaults preserve
+    # backward compatibility for the comps/LoRA/statistical paths, which set a
+    # plain methodology string and leave the verdict UNVERIFIED.
+    verdict: str = "UNVERIFIED"
+    confidence: float = 0.0
+    sources: list = field(default_factory=list)
+    checks: dict = field(default_factory=dict)
+    # Distress-aware figures (set by the distress_valuation safety layer). For a
+    # distressed/off-market target, `estimated_value` is the conservative AS-IS
+    # value; `arv_estimate` is the retail/after-repair value (the raw AVM number);
+    # `investor_offer` is the max acquisition offer. confidence_low/high mirror
+    # the as-is band. Defaults keep non-distress callers backward compatible.
+    arv_estimate: int = 0
+    as_is_low: int = 0
+    as_is_high: int = 0
+    investor_offer: int = 0
+    distress_severity: str = "UNKNOWN"
+    valuation_assumptions: list = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -175,6 +193,16 @@ class CMAResult:
             "methodology": self.methodology,
             "reasoning": self.reasoning,
             "generated_at": self.generated_at,
+            "verdict": self.verdict,
+            "confidence": self.confidence,
+            "sources": self.sources,
+            "checks": self.checks,
+            "arv_estimate": self.arv_estimate,
+            "as_is_low": self.as_is_low,
+            "as_is_high": self.as_is_high,
+            "investor_offer": self.investor_offer,
+            "distress_severity": self.distress_severity,
+            "valuation_assumptions": self.valuation_assumptions,
         }
 
 
@@ -187,6 +215,26 @@ class AnalystAgent:
     async def analyze_property(self, subject_property: dict) -> Optional[CMAResult]:
         address = subject_property.get("address", "")
         await self._emit_status(f"AGENT ANALYST — initiating CMA for {address}")
+
+        # 1) Establish a RETAIL valuation from the best available source.
+        base = await self._compute_base_valuation(subject_property)
+        if base is None:
+            return None
+
+        # 2) Convert retail → decision-relevant figures via the distress safety
+        #    layer. The AVM gives retail/ARV (good condition, arms-length); our
+        #    targets are off-market & distressed, so we must derive a conservative
+        #    as-is value and a max acquisition offer rather than offer retail.
+        return self._finalize_valuation(base, subject_property)
+
+    async def _compute_base_valuation(self, subject_property: dict) -> Optional[CMAResult]:
+        """Retail/ARV valuation from the best available source: real external AVM
+        first (off-market parcels rarely have in-graph comps), then comps + LoRA,
+        then statistical, then assessed-value fallback."""
+        # Real-AVM first, with its fact-check layer. Returns None on UNAVAILABLE.
+        avm_cma = await self._external_avm_cma(subject_property)
+        if avm_cma is not None:
+            return avm_cma
 
         comps = self._select_comparables(subject_property)
         if not comps:
@@ -204,14 +252,97 @@ class AnalystAgent:
             await self._emit_status("AGENT ANALYST — inference failed, using statistical fallback")
             return self._statistical_valuation(subject_property, comps)
 
-        result = self._parse_model_output(raw_output, subject_property, comps)
+        return self._parse_model_output(raw_output, subject_property, comps)
 
+    def _finalize_valuation(
+        self, base: CMAResult, subject: dict, strategy: str = "wholesale"
+    ) -> CMAResult:
+        """Apply the distress-aware safety layer to a retail valuation. Treats the
+        base estimate as retail/ARV, derives a conservative as-is band and a max
+        acquisition offer, lowers confidence for unknown-condition distress, and
+        surfaces every assumption. Never fabricates a value (ARV 0 → all 0)."""
+        import distress_valuation as dv
+
+        arv = base.estimated_value
+        d = dv.adjust(arv, subject, strategy=strategy)
+
+        base.distress_severity = d.severity
+        base.valuation_assumptions = d.assumptions
+        base.arv_estimate = d.arv
+
+        if d.arv <= 0:
+            # No base value (e.g. real lead, no AVM key) — keep it honestly zero.
+            base.investor_offer = 0
+            return base
+
+        base.arv_estimate = d.arv
+        base.estimated_value = d.as_is_mid       # decision-relevant: as-is value
+        base.confidence_low = d.as_is_low
+        base.confidence_high = d.as_is_high
+        base.as_is_low = d.as_is_low
+        base.as_is_high = d.as_is_high
+        base.investor_offer = d.investor_offer
+        base.price_per_sqft = round(d.as_is_mid / max(subject.get("sqft", 0) or 1, 1), 2)
+        base.confidence = max(0.1, round(base.confidence - d.confidence_penalty, 2))
+        base.methodology = f"{base.methodology} → as-is ({d.severity})"
+        base.reasoning = (
+            f"ARV ${d.arv:,} [{base.reasoning}]. As-is ${d.as_is_mid:,} "
+            f"(${d.as_is_low:,}–${d.as_is_high:,}) after ~{int(d.total_discount_pct*100)}% "
+            f"distress/condition adjustment. Max offer ${d.investor_offer:,}. "
+            + " ".join(d.assumptions)
+        )
+        return base
+
+    async def _external_avm_cma(self, subject: dict) -> Optional[CMAResult]:
+        """Query the real-AVM + fact-check layer. Returns a CMAResult when a
+        provider produced a value (even UNVERIFIED — the verdict carries the
+        caveat), or None when no provider is configured/answered so the caller
+        falls through to the comps path. Never fabricates a value."""
+        try:
+            import avm_client
+            result = await avm_client.value_property(subject)
+        except Exception as e:  # noqa: BLE001 — AVM is best-effort
+            logger.warning("External AVM failed: %s", e)
+            return None
+
+        if result.verdict == "UNAVAILABLE" or result.estimated_value <= 0:
+            return None
+
+        src = "+".join(result.sources) or "avm"
         await self._emit_status(
-            f"AGENT ANALYST — CMA complete: ${result.estimated_value:,} "
-            f"(±${result.estimated_value - result.confidence_low:,})"
+            f"AGENT ANALYST — AVM {result.verdict} via {src} "
+            f"(conf {result.confidence:.0%}): ${result.estimated_value:,}"
+        )
+        return CMAResult(
+            subject_address=subject.get("address", ""),
+            estimated_value=result.estimated_value,
+            confidence_low=result.confidence_low,
+            confidence_high=result.confidence_high,
+            price_per_sqft=result.price_per_sqft,
+            comps_used=result.comps_used,
+            methodology=f"Real AVM ({src}) + fact-check [{result.verdict}]",
+            reasoning=self._avm_reasoning(result),
+            generated_at=time.time(),
+            verdict=result.verdict,
+            confidence=result.confidence,
+            sources=result.sources,
+            checks=result.checks,
         )
 
-        return result
+    @staticmethod
+    def _avm_reasoning(result) -> str:
+        """Human-readable summary of which fact-checks passed/failed."""
+        bits = []
+        for name, c in (result.checks or {}).items():
+            p = c.get("pass") if isinstance(c, dict) else None
+            mark = "✓" if p is True else ("✗" if p is False else "–")
+            bits.append(f"{name}{mark}")
+        verdict_note = {
+            "VERIFIED": "cross-checks agree",
+            "UNVERIFIED": "insufficient corroboration — treat as indicative",
+            "CONFLICT": "sources disagree >20% — do not rely on point value",
+        }.get(result.verdict, "")
+        return f"{result.verdict}: {verdict_note}. Checks: {' '.join(bits)}."
 
     def _select_comparables(self, subject: dict) -> list[Comparable]:
         sale_nodes = [

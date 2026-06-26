@@ -1,341 +1,243 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { crmGet, crmPost } from '../state/useCrmApi';
+import {
+  GLYPHS, CLIENT_TYPES, STAGES, SORTS, fmtInt, normalizeType,
+  relTime, errMessage, toNum, Avatar, StagePill, ScoreMeter, TagList,
+} from './ClientShared';
+import ClientDetailDrawer from './ClientDetailDrawer';
 import styles from './ClientCrmTab.module.css';
 
-// Inline stroke glyphs — currentColor, zero icon deps (house rule).
-const GLYPHS = {
-  refresh: (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="M20.5 12a8.5 8.5 0 1 1-2.49-6.01" />
-      <path d="M20.5 3.5V8H16" />
-    </svg>
-  ),
-  plus: (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="M12 5.5v13M5.5 12h13" />
-    </svg>
-  ),
-  close: (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="m6 6 12 12M18 6 6 18" />
-    </svg>
-  ),
-  clients: (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <circle cx="9" cy="8.5" r="3.2" />
-      <path d="M3.5 19.5c0-3 2.5-5 5.5-5s5.5 2 5.5 5" />
-      <circle cx="16.5" cy="9.5" r="2.4" />
-      <path d="M16 14.7c2.6.3 4.5 2 4.5 4.3" />
-    </svg>
-  ),
-  house: (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="M3 10.5 12 3l9 7.5" />
-      <path d="M5.5 9.5V20h13V9.5" />
-      <path d="M9.5 20v-6h5v6" />
-    </svg>
-  ),
-  eye: (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12Z" />
-      <circle cx="12" cy="12" r="3" />
-    </svg>
-  ),
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const EMPTY_FORM = {
+  full_name: '', email: '', phone: '', client_type: 'seller', stage: 'lead',
+  company: '', tags: '', budget: '', beds: '', zips: '',
 };
+const DEFAULT_FILTERS = { q: '', type: 'all', stage: '', tag: '', sort: 'recent' };
 
-const SEGMENTS = [
-  { id: 'seller', label: 'Sellers' },
-  { id: 'buyer', label: 'Buyers' },
+function buildQuery(f) {
+  const p = new URLSearchParams();
+  p.set('type', f.type || 'all');
+  p.set('sort', f.sort || 'recent');
+  if (f.q) p.set('q', f.q);
+  if (f.stage) p.set('stage', f.stage);
+  if (f.tag) p.set('tag', f.tag);
+  return `/api/crm/clients?${p.toString()}`;
+}
+
+const BULK_ACTIONS = [
+  { id: 'tag', label: 'Tag', glyph: GLYPHS.tag, needs: 'text', placeholder: 'tag name' },
+  { id: 'stage', label: 'Stage', glyph: GLYPHS.bolt, needs: 'stage' },
+  { id: 'assign', label: 'Assign', glyph: GLYPHS.assign, needs: 'text', placeholder: 'agent id' },
+  { id: 'archive', label: 'Archive', glyph: GLYPHS.archive, needs: null },
 ];
 
-const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-const EMPTY_FORM = { full_name: '', email: '', phone: '', budget: '', beds: '', zips: '' };
-const fmtInt = new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 });
-
-// numeric / jsonb values may land as strings — parse defensively, never trust shape.
-function toNum(v) {
-  if (v === null || v === undefined || v === '') return null;
-  const n = typeof v === 'string' ? Number(v) : v;
-  return Number.isFinite(n) ? n : null;
-}
-
-// $1.2M / $850K short-form for budget + pick rows.
-function shortDollars(n) {
-  const trim = (x) => {
-    const s = x >= 100 ? String(Math.round(x)) : x.toFixed(1);
-    return s.replace(/\.0$/, '');
-  };
-  const abs = Math.abs(n);
-  if (abs >= 1e9) return `$${trim(n / 1e9)}B`;
-  if (abs >= 1e6) return `$${trim(n / 1e6)}M`;
-  if (abs >= 1e3) return `$${trim(n / 1e3)}K`;
-  return `$${fmtInt.format(n)}`;
-}
-
-function initialsOf(name) {
-  return (
-    String(name || '')
-      .split(/\s+/)
-      .filter(Boolean)
-      .slice(0, 2)
-      .map((w) => w[0].toUpperCase())
-      .join('') || '·'
-  );
-}
-
-// "now / 12m / 3h / 2d / 5w / 4mo / 1y" — instrument-cluster relative time.
-function relTime(iso) {
-  if (!iso) return null;
-  const t = new Date(iso).getTime();
-  if (Number.isNaN(t)) return null;
-  const s = Math.max(0, (Date.now() - t) / 1000);
-  if (s < 60) return 'now';
-  if (s < 3600) return `${Math.floor(s / 60)}m`;
-  if (s < 86400) return `${Math.floor(s / 3600)}h`;
-  const d = s / 86400;
-  if (d < 7) return `${Math.floor(d)}d`;
-  if (d < 30) return `${Math.floor(d / 7)}w`;
-  if (d < 365) return `${Math.floor(d / 30)}mo`;
-  return `${Math.floor(d / 365)}y`;
-}
-
-function normalizeType(t, fallback) {
-  const v = String(t || '').toLowerCase();
-  return v === 'seller' || v === 'buyer' || v === 'both' ? v : fallback;
-}
-
-// preferences is jsonb — could be an object, a JSON string, or junk. Never crash.
-function parsePrefs(p) {
-  if (!p) return null;
-  if (typeof p === 'string') {
-    try { p = JSON.parse(p); } catch { return null; }
-  }
-  return typeof p === 'object' && !Array.isArray(p) ? p : null;
-}
-
-function budgetChip(b) {
-  if (b === null || b === undefined) return null;
-  if (typeof b === 'object' && !Array.isArray(b)) {
-    const min = toNum(b.min);
-    const max = toNum(b.max);
-    if (min !== null && max !== null) return `${shortDollars(min)}–${shortDollars(max)}`;
-    if (max !== null) return `≤ ${shortDollars(max)}`;
-    if (min !== null) return `≥ ${shortDollars(min)}`;
-    return null;
-  }
-  const n = toNum(b);
-  if (n !== null) return shortDollars(n);
-  return typeof b === 'string' && b.trim() ? b.trim() : null;
-}
-
-// Buyer preference chips — defensively read budget / beds / zips keys.
-function prefChipsOf(preferences) {
-  const p = parsePrefs(preferences);
-  if (!p) return [];
-  const chips = [];
-  const budget = budgetChip(p.budget ?? p.price ?? p.max_price);
-  if (budget) chips.push(budget);
-  const bedsRaw = p.beds ?? p.bedrooms;
-  const beds = toNum(bedsRaw);
-  if (beds !== null) chips.push(`${fmtInt.format(beds)} bd`);
-  else if (typeof bedsRaw === 'string' && bedsRaw.trim()) chips.push(`${bedsRaw.trim()} bd`);
-  const zipsRaw = p.zips ?? p.zip_codes ?? p.zip;
-  const zips = Array.isArray(zipsRaw)
-    ? zipsRaw.map((z) => String(z).trim()).filter(Boolean)
-    : typeof zipsRaw === 'string'
-      ? zipsRaw.split(/[\s,]+/).filter(Boolean)
-      : [];
-  chips.push(...zips.slice(0, 4));
-  if (zips.length > 4) chips.push(`+${zips.length - 4}`);
-  return chips;
-}
-
 /**
- * ClientCrmTab — the two-sided client book: SELLERS | BUYERS.
- * Sellers wear amber (their houses listed as address chips); buyers wear blue
- * (preference chips + a SEEN filmstrip of toured houses). The FAB raises the
- * Create Profile bottom-sheet; buyer cards log showings against real listings.
- * Renders only what /api/crm/clients returns — never simulates data.
+ * ClientCrmTab — the enterprise client book. A unified, filterable, sortable
+ * roster (search + type/stage/tag chips + saved segments), bulk operations,
+ * a quick-add sheet, and the full ClientDetailDrawer. Renders only what
+ * /api/crm/clients returns; every other state (loading/empty/error) is graceful.
  */
 export default function ClientCrmTab() {
-  const [segment, setSegment] = useState('seller');
-  const [book, setBook] = useState({ seller: null, buyer: null }); // null = not loaded
-  const [errors, setErrors] = useState({ seller: null, buyer: null });
+  const [clients, setClients] = useState(null); // null = first load
+  const [error, setError] = useState(null);
   const [refreshing, setRefreshing] = useState(false);
 
-  // Create-profile bottom sheet.
+  const [qInput, setQInput] = useState('');
+  const [filters, setFilters] = useState(DEFAULT_FILTERS);
+  const [activeSeg, setActiveSeg] = useState(null);
+
+  const [segments, setSegments] = useState(null); // null = unknown
+  const [segmentsOnline, setSegmentsOnline] = useState(false);
+  const [savingView, setSavingView] = useState(false);
+  const [viewName, setViewName] = useState('');
+
+  const [selected, setSelected] = useState(() => new Set());
+  const [bulkPanel, setBulkPanel] = useState(null); // {action, value}
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [bulkError, setBulkError] = useState('');
+
   const [sheetOpen, setSheetOpen] = useState(false);
   const [form, setForm] = useState(EMPTY_FORM);
-  const [formType, setFormType] = useState('seller');
   const [formError, setFormError] = useState('');
   const [saving, setSaving] = useState(false);
 
-  // Inline showing picker — one open at a time, listings cached across opens.
-  const [picker, setPicker] = useState(null);
-  const listingsCache = useRef(null);
+  const [drawerCard, setDrawerCard] = useState(null);
 
-  // All setState lands in async continuations — never synchronously inside
-  // the effect's call stack (react-hooks/set-state-in-effect compliant).
-  const fetchSegment = useCallback((seg) => {
-    return crmGet(`/api/crm/clients?type=${seg}`).then(
+  const listingsCache = useRef(null);
+  const filterKey = JSON.stringify(filters);
+
+  // Debounce the search box into filters.q (clears any active segment).
+  useEffect(() => {
+    const id = setTimeout(() => {
+      setFilters((f) => (f.q === qInput ? f : { ...f, q: qInput }));
+    }, 280);
+    return () => clearTimeout(id);
+  }, [qInput]);
+
+  // ── Fetch roster whenever filters change ─────────────────────────────────
+  const fetchClients = useCallback((f) => {
+    setRefreshing(true);
+    return crmGet(buildQuery(f)).then(
       (data) => {
-        setBook((b) => ({ ...b, [seg]: Array.isArray(data?.clients) ? data.clients : [] }));
-        setErrors((e) => ({ ...e, [seg]: null }));
+        const rows = Array.isArray(data?.clients) ? data.clients : [];
+        setClients(rows);
+        setError(null);
         setRefreshing(false);
+        // Prune selection to ids still present.
+        setSelected((sel) => {
+          if (sel.size === 0) return sel;
+          const ids = new Set(rows.map((r) => r.id));
+          const next = new Set([...sel].filter((id) => ids.has(id)));
+          return next.size === sel.size ? sel : next;
+        });
       },
       (err) => {
-        setErrors((e) => ({ ...e, [seg]: err })); // 404 until the route deploys — handled below
+        setError(err);
         setRefreshing(false);
+        setClients((c) => (c === null ? null : c)); // keep stale list on soft fail
       }
     );
   }, []);
 
   useEffect(() => {
-    if (book[segment] === null && !errors[segment]) fetchSegment(segment);
-  }, [segment, book, errors, fetchSegment]);
+    fetchClients(JSON.parse(filterKey));
+  }, [filterKey, fetchClients]);
 
+  // Segments — fetched once; the whole bar stays hidden if the route is offline.
+  useEffect(() => {
+    crmGet('/api/crm/clients/segments').then(
+      (data) => { setSegments(Array.isArray(data?.segments) ? data.segments : []); setSegmentsOnline(true); },
+      () => setSegmentsOnline(false)
+    );
+  }, []);
+
+  // Esc closes the quick-add sheet.
   useEffect(() => {
     if (!sheetOpen) return undefined;
-    const onKey = (e) => {
-      if (e.key === 'Escape') setSheetOpen(false);
-    };
+    const onKey = (e) => { if (e.key === 'Escape') setSheetOpen(false); };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [sheetOpen]);
 
-  const refresh = () => {
-    setRefreshing(true);
-    setErrors((e) => ({ ...e, [segment]: null }));
-    fetchSegment(segment);
+  const refresh = () => fetchClients(filters);
+
+  const patchFilter = (patch, { clearSeg = true } = {}) => {
+    if (clearSeg) setActiveSeg(null);
+    setFilters((f) => ({ ...f, ...patch }));
   };
 
-  const retry = () => {
-    setErrors((e) => ({ ...e, [segment]: null })); // back to skeletons while in flight
-    fetchSegment(segment);
+  const toggleType = (id) => patchFilter({ type: filters.type === id ? 'all' : id });
+  const toggleStage = (id) => patchFilter({ stage: filters.stage === id ? '' : id });
+  const toggleTag = (t) => patchFilter({ tag: filters.tag === t ? '' : t });
+  const setSort = (id) => patchFilter({ sort: id }, { clearSeg: false });
+
+  const applySegment = (seg) => {
+    const d = seg?.definition && typeof seg.definition === 'object' ? seg.definition : {};
+    setActiveSeg(seg.id);
+    setQInput(d.q || '');
+    setFilters({
+      q: d.q || '',
+      type: d.type || 'all',
+      stage: d.stage || '',
+      tag: d.tag || '',
+      sort: d.sort || 'recent',
+    });
   };
 
-  // ── Listings — fetched once, shared by every picker open ─────────────────
+  const saveSegment = () => {
+    const name = viewName.trim();
+    if (!name) return;
+    setSavingView(false);
+    setViewName('');
+    crmPost('/api/crm/clients/segments', { name, definition: { ...filters } }).then(
+      (data) => {
+        const seg = data?.segment ?? data;
+        if (seg?.id) { setSegments((s) => [...(s || []), seg]); setActiveSeg(seg.id); }
+        else crmGet('/api/crm/clients/segments').then((d) => setSegments(Array.isArray(d?.segments) ? d.segments : []), () => {});
+      },
+      () => {}
+    );
+  };
+
+  // ── Tag universe for the tag filter row ──────────────────────────────────
+  const tagUniverse = useMemo(() => {
+    const set = new Set();
+    (clients || []).forEach((c) => (Array.isArray(c.tags) ? c.tags : []).forEach((t) => t && set.add(t)));
+    if (filters.tag) set.add(filters.tag);
+    return [...set].sort().slice(0, 14);
+  }, [clients, filters.tag]);
+
+  // ── Selection / bulk ─────────────────────────────────────────────────────
+  const toggleSelect = (id) => setSelected((sel) => {
+    const next = new Set(sel);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    return next;
+  });
+  const clearSelection = () => { setSelected(new Set()); setBulkPanel(null); setBulkError(''); };
+  const allVisibleSelected = clients && clients.length > 0 && selected.size === clients.length;
+  const toggleSelectAll = () => {
+    if (allVisibleSelected) setSelected(new Set());
+    else setSelected(new Set((clients || []).map((c) => c.id)));
+  };
+
+  const openBulk = (action) => {
+    if (action.needs === null) { runBulk(action.id, true); return; }
+    setBulkError('');
+    setBulkPanel({ action: action.id, value: action.needs === 'stage' ? 'active' : '' });
+  };
+
+  const runBulk = (action, value) => {
+    const ids = [...selected];
+    if (ids.length === 0) return;
+    setBulkBusy(true);
+    setBulkError('');
+    crmPost('/api/crm/clients/bulk', { ids, action, value }).then(
+      () => {
+        setBulkBusy(false);
+        clearSelection();
+        fetchClients(filters);
+      },
+      (err) => { setBulkBusy(false); setBulkError(errMessage(err, 'bulk action')); }
+    );
+  };
+
+  // ── Shared listings (for the drawer's showing picker) ────────────────────
   const getListings = useCallback(() => {
     if (!listingsCache.current) {
-      const p = crmGet('/api/crm/listings').then((d) =>
-        Array.isArray(d?.listings) ? d.listings : []
-      );
-      p.catch(() => {
-        if (listingsCache.current === p) listingsCache.current = null; // allow retry
-      });
+      const p = crmGet('/api/crm/listings').then((d) => (Array.isArray(d?.listings) ? d.listings : []));
+      p.catch(() => { if (listingsCache.current === p) listingsCache.current = null; });
       listingsCache.current = p;
     }
     return listingsCache.current;
   }, []);
 
-  const loadPickerListings = useCallback(
-    (clientId) => {
-      getListings().then(
-        (rows) =>
-          setPicker((p) => (p && p.clientId === clientId ? { ...p, status: 'ready', listings: rows } : p)),
-        (err) =>
-          setPicker((p) =>
-            p && p.clientId === clientId
-              ? {
-                  ...p,
-                  status: 'error',
-                  error:
-                    err.status === 404
-                      ? 'Listings service isn’t online yet.'
-                      : err.message || 'Could not load listings.',
-                }
-              : p
-          )
-      );
-    },
-    [getListings]
-  );
+  // Drawer pushes header edits back into the row in place.
+  const onClientChanged = useCallback((card) => {
+    if (!card?.id) return;
+    setDrawerCard((d) => (d && d.id === card.id ? { ...d, ...card } : d));
+    setClients((prev) => {
+      if (!Array.isArray(prev)) return prev;
+      if (card.archived) return prev.filter((c) => c.id !== card.id);
+      return prev.map((c) => (c.id === card.id ? { ...c, ...card } : c));
+    });
+  }, []);
 
-  const togglePicker = (client) => {
-    if (picker?.clientId === client.id) {
-      setPicker(null);
-      return;
-    }
-    setPicker({ clientId: client.id, status: 'loading', listings: [], error: '', postingId: null, postError: '' });
-    loadPickerListings(client.id);
-  };
-
-  const retryPicker = (clientId) => {
-    setPicker((p) => (p && p.clientId === clientId ? { ...p, status: 'loading', error: '' } : p));
-    loadPickerListings(clientId);
-  };
-
-  const logShowing = (client, listing) => {
-    setPicker((p) => (p && p.clientId === client.id ? { ...p, postingId: listing.id, postError: '' } : p));
-    crmPost('/api/crm/showings', { client_id: client.id, listing_id: listing.id, outcome: 'pending' }).then(
-      () => {
-        // The POST landed — reflect the real event: house joins the SEEN
-        // filmstrip, last_touch becomes the showing we just recorded.
-        const touch = { interaction_type: 'showing', created_at: new Date().toISOString() };
-        setBook((b) => {
-          const stamp = (list) =>
-            Array.isArray(list)
-              ? list.map((c) => {
-                  if (c.id !== client.id) return c;
-                  const houses = Array.isArray(c.houses) ? c.houses : [];
-                  const already = houses.some((h) => h.id === listing.id);
-                  return {
-                    ...c,
-                    last_touch: touch,
-                    houses: already
-                      ? houses
-                      : [...houses, { id: listing.id, address: listing.address, kind: 'listing' }],
-                  };
-                })
-              : list;
-          return { seller: stamp(b.seller), buyer: stamp(b.buyer) };
-        });
-        setPicker(null);
-      },
-      (err) => {
-        setPicker((p) =>
-          p && p.clientId === client.id
-            ? {
-                ...p,
-                postingId: null,
-                postError:
-                  err.status === 404
-                    ? 'Showings service isn’t online yet — nothing was saved.'
-                    : err.message || 'Could not log the showing.',
-              }
-            : p
-        );
-      }
-    );
-  };
-
-  // ── Create Profile sheet ──────────────────────────────────────────────────
-  const openSheet = () => {
-    setFormType(segment);
-    setFormError('');
-    setSheetOpen(true);
-  };
-
-  const closeSheet = () => {
-    if (!saving) setSheetOpen(false);
-  };
-
+  // ── Quick-add ────────────────────────────────────────────────────────────
   const setField = (key, value) => setForm((f) => ({ ...f, [key]: value }));
+  const openSheet = () => { setForm({ ...EMPTY_FORM, client_type: filters.type === 'buyer' ? 'buyer' : 'seller' }); setFormError(''); setSheetOpen(true); };
+  const closeSheet = () => { if (!saving) setSheetOpen(false); };
 
   const submitProfile = () => {
     const name = form.full_name.trim();
-    if (!name) {
-      setFormError('A name is required.');
-      return;
-    }
+    if (!name) { setFormError('A name is required.'); return; }
     const email = form.email.trim();
-    if (email && !EMAIL_RE.test(email)) {
-      setFormError('That email doesn’t look right.');
-      return;
-    }
-    const body = { full_name: name, client_type: formType };
+    if (email && !EMAIL_RE.test(email)) { setFormError('That email doesn’t look right.'); return; }
+    const body = { full_name: name, client_type: form.client_type, stage: form.stage };
     if (email) body.email = email;
     if (form.phone.trim()) body.phone = form.phone.trim();
+    if (form.company.trim()) body.company = form.company.trim();
+    const tags = form.tags.split(/[,\n]+/).map((t) => t.trim().toLowerCase()).filter(Boolean);
+    if (tags.length) body.tags = tags;
     const prefs = {};
     const budget = toNum(form.budget.trim());
     if (budget !== null) prefs.budget = budget;
@@ -348,297 +250,253 @@ export default function ClientCrmTab() {
     setSaving(true);
     setFormError('');
     crmPost('/api/crm/clients', body).then(
-      (data) => {
-        const made = {
-          houses: [],
-          last_touch: null,
-          created_at: new Date().toISOString(),
-          ...(data?.client ?? body),
-        };
-        const type = normalizeType(made.client_type, formType);
-        const targets = type === 'both' ? ['seller', 'buyer'] : [type];
-        // Optimistic prepend into every loaded segment the new client belongs
-        // to; unloaded segments stay null and fetch fresh on first open.
-        setBook((b) => {
-          const next = { ...b };
-          for (const t of targets) {
-            if (Array.isArray(next[t])) next[t] = [made, ...next[t]];
-          }
-          return next;
-        });
+      () => {
         setSaving(false);
         setSheetOpen(false);
         setForm(EMPTY_FORM);
-        if (type === 'seller' || type === 'buyer') setSegment(type);
+        fetchClients(filters); // pull the server-computed card back
       },
-      (err) => {
-        setSaving(false);
-        setFormError(
-          err.status === 404
-            ? 'The client service isn’t deployed yet — nothing was saved.'
-            : err.message || 'The profile could not be created.'
-        );
-      }
+      (err) => { setSaving(false); setFormError(errMessage(err, 'client')); }
     );
   };
 
   // ── Render ────────────────────────────────────────────────────────────────
-  const clients = book[segment];
-  const error = errors[segment];
   const isLoading = clients === null && !error;
-  const errMsg =
-    error?.status === 404
-      ? 'Client book isn’t online yet.'
-      : error?.message || 'Couldn’t reach the client book.';
+  const hasList = Array.isArray(clients);
+  const total = hasList ? clients.length : null;
 
   return (
-    <section className={styles.wrap} aria-label="Clients — the two-sided book" aria-busy={isLoading || refreshing}>
+    <section className={styles.wrap} aria-label="Client book" aria-busy={isLoading || refreshing}>
       <header className={styles.topRow}>
-        <span className={styles.kicker}>Client Book</span>
+        <span className={styles.kicker}>
+          Client Book{total !== null && <span className={styles.kickerCount}> · {fmtInt.format(total)}</span>}
+        </span>
         <button
           type="button"
           className={`${styles.refreshBtn} ${refreshing ? styles.refreshing : ''}`}
           onClick={refresh}
           disabled={refreshing || isLoading}
-          aria-label={`Refresh ${segment === 'seller' ? 'sellers' : 'buyers'}`}
+          aria-label="Refresh client book"
         >
           {GLYPHS.refresh}
         </button>
       </header>
 
-      {/* Two-port segmented control — amber for sellers, blue for buyers */}
-      <div className={styles.segments}>
-        {SEGMENTS.map((s) => {
-          const active = segment === s.id;
-          const count = Array.isArray(book[s.id]) ? book[s.id].length : null;
-          return (
-            <button
-              key={s.id}
-              type="button"
-              data-seg={s.id}
-              aria-pressed={active}
-              className={`${styles.segKey}${active ? ` ${styles.segKeyActive}` : ''}`}
-              onClick={() => setSegment(s.id)}
-            >
-              <span className={styles.segLabel}>{s.label}</span>
-              {count !== null && <span className={styles.segCount}>{fmtInt.format(count)}</span>}
-            </button>
-          );
-        })}
+      {/* Search + sort */}
+      <div className={styles.toolbar}>
+        <div className={styles.searchBar}>
+          <span className={styles.searchIcon} aria-hidden="true">{GLYPHS.search}</span>
+          <input
+            className={styles.searchInput}
+            value={qInput}
+            onChange={(e) => setQInput(e.target.value)}
+            placeholder="Search name, email, company…"
+            aria-label="Search clients"
+            type="search"
+          />
+          {qInput && (
+            <button type="button" className={styles.searchClear} onClick={() => setQInput('')} aria-label="Clear search">{GLYPHS.close}</button>
+          )}
+        </div>
+        <label className={styles.sortWrap}>
+          <span className={styles.sortGlyph} aria-hidden="true">{GLYPHS.sort}</span>
+          <select className={styles.sortSelect} value={filters.sort} onChange={(e) => setSort(e.target.value)} aria-label="Sort clients">
+            {SORTS.map((s) => <option key={s.id} value={s.id}>{s.label}</option>)}
+          </select>
+        </label>
       </div>
 
+      {/* Type filter chips */}
+      <div className={styles.chipRow} role="group" aria-label="Filter by type">
+        {CLIENT_TYPES.map((t) => (
+          <button key={t.id} type="button" className={styles.chip} aria-pressed={filters.type === t.id} onClick={() => toggleType(t.id)}>
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {/* Stage filter chips */}
+      <div className={styles.chipScroll} role="group" aria-label="Filter by stage">
+        {STAGES.map((s) => (
+          <button key={s.id} type="button" className={styles.chip} data-stage={s.id} aria-pressed={filters.stage === s.id} onClick={() => toggleStage(s.id)}>
+            {s.label}
+          </button>
+        ))}
+      </div>
+
+      {/* Tag filter chips */}
+      {tagUniverse.length > 0 && (
+        <div className={styles.chipScroll} role="group" aria-label="Filter by tag">
+          {tagUniverse.map((t) => (
+            <button key={t} type="button" className={styles.chipTag} aria-pressed={filters.tag === t} onClick={() => toggleTag(t)}>#{t}</button>
+          ))}
+        </div>
+      )}
+
+      {/* Saved segments */}
+      {segmentsOnline && (
+        <div className={styles.segmentBar}>
+          {(segments || []).map((seg) => (
+            <button key={seg.id} type="button" className={styles.segChip} aria-pressed={activeSeg === seg.id} onClick={() => applySegment(seg)}>
+              {seg.name || 'View'}
+            </button>
+          ))}
+          {savingView ? (
+            <span className={styles.saveView}>
+              <input
+                className={styles.saveInput}
+                value={viewName}
+                onChange={(e) => setViewName(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter') saveSegment(); if (e.key === 'Escape') { setSavingView(false); setViewName(''); } }}
+                placeholder="View name"
+                aria-label="Segment name"
+                autoFocus
+              />
+              <button type="button" className={styles.saveGo} onClick={saveSegment} aria-label="Save segment">{GLYPHS.check}</button>
+            </span>
+          ) : (
+            <button type="button" className={styles.segAdd} onClick={() => setSavingView(true)} aria-label="Save current filters as a segment">
+              {GLYPHS.plus} Save view
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* Bulk toolbar */}
+      {selected.size > 0 && (
+        <div className={styles.bulkBar} role="region" aria-label="Bulk actions">
+          <div className={styles.bulkTop}>
+            <button type="button" className={styles.bulkAll} onClick={toggleSelectAll} aria-pressed={allVisibleSelected}>
+              <span className={styles.bulkCheck} data-on={allVisibleSelected} aria-hidden="true">{GLYPHS.check}</span>
+              {fmtInt.format(selected.size)} selected
+            </button>
+            <div className={styles.bulkActions}>
+              {BULK_ACTIONS.map((a) => (
+                <button key={a.id} type="button" className={styles.bulkBtn} data-danger={a.id === 'archive'} disabled={bulkBusy} onClick={() => openBulk(a)}>
+                  <span className={styles.bulkGlyph} aria-hidden="true">{a.glyph}</span>{a.label}
+                </button>
+              ))}
+            </div>
+            <button type="button" className={styles.bulkClose} onClick={clearSelection} aria-label="Clear selection">{GLYPHS.close}</button>
+          </div>
+
+          {bulkPanel && (
+            <div className={styles.bulkPanel}>
+              {bulkPanel.action === 'stage' ? (
+                <select className={styles.bulkInput} value={bulkPanel.value} onChange={(e) => setBulkPanel((p) => ({ ...p, value: e.target.value }))} aria-label="Stage">
+                  {STAGES.map((s) => <option key={s.id} value={s.id}>{s.label}</option>)}
+                </select>
+              ) : (
+                <input
+                  className={styles.bulkInput}
+                  value={bulkPanel.value}
+                  onChange={(e) => setBulkPanel((p) => ({ ...p, value: e.target.value }))}
+                  onKeyDown={(e) => { if (e.key === 'Enter' && bulkPanel.value.trim()) runBulk(bulkPanel.action, bulkPanel.value.trim()); }}
+                  placeholder={BULK_ACTIONS.find((a) => a.id === bulkPanel.action)?.placeholder}
+                  aria-label={`${bulkPanel.action} value`}
+                  autoFocus
+                />
+              )}
+              <button
+                type="button"
+                className={styles.bulkApply}
+                disabled={bulkBusy || (bulkPanel.action !== 'stage' && !bulkPanel.value.trim())}
+                onClick={() => runBulk(bulkPanel.action, bulkPanel.action === 'stage' ? bulkPanel.value : bulkPanel.value.trim())}
+              >
+                {bulkBusy ? 'Applying…' : 'Apply'}
+              </button>
+            </div>
+          )}
+          {bulkError && <span className={styles.err} role="alert">{bulkError}</span>}
+        </div>
+      )}
+
+      {/* List body */}
       {isLoading ? (
         <div className={styles.skeleton} aria-hidden="true">
-          <div className={styles.skelCard} />
-          <div className={styles.skelCard} />
-          <div className={styles.skelCard} />
+          <div className={styles.skelCard} /><div className={styles.skelCard} /><div className={styles.skelCard} />
         </div>
       ) : error && clients === null ? (
         <div className={styles.errorBox} role="alert">
           <span className={styles.errorTick} aria-hidden="true" />
-          <p className={styles.errorText}>{errMsg}</p>
-          <button type="button" className={styles.retryBtn} onClick={retry}>
-            Retry
-          </button>
+          <p className={styles.errorText}>{errMessage(error, 'client book')}</p>
+          <button type="button" className={styles.retryBtn} onClick={refresh}>Retry</button>
         </div>
       ) : (
         <>
           {error && (
             <div className={styles.errorStrip} role="alert">
               <span className={styles.errorTick} aria-hidden="true" />
-              <p className={styles.errorText}>{errMsg}</p>
-              <button type="button" className={styles.retrySm} onClick={refresh}>
-                Retry
-              </button>
+              <p className={styles.errorText}>{errMessage(error, 'client book')}</p>
+              <button type="button" className={styles.retrySm} onClick={refresh}>Retry</button>
             </div>
           )}
 
-          {clients.length === 0 ? (
+          {hasList && clients.length === 0 ? (
             <div className={styles.empty}>
               <span className={styles.emptyGlyph} aria-hidden="true">{GLYPHS.clients}</span>
               <p className={styles.emptyTitle}>
-                {segment === 'seller' ? 'No sellers on file' : 'No buyers on file'}
+                {filters.q || filters.stage || filters.tag || filters.type !== 'all' ? 'No matches' : 'No clients yet'}
               </p>
               <p className={styles.emptyHint}>
-                {segment === 'seller'
-                  ? 'Tap + to create a seller profile, or attach an owner from the House tab.'
-                  : 'Tap + to create a buyer profile — preferences feed the match engine.'}
+                {filters.q || filters.stage || filters.tag || filters.type !== 'all'
+                  ? 'Loosen the filters, or tap + to add a client.'
+                  : 'Tap + to create your first client profile — the roster fills the pipeline.'}
               </p>
             </div>
           ) : (
-            <ul key={segment} className={styles.list} role="list">
-              {clients.map((c, i) => {
-                const tint = normalizeType(c.client_type, segment);
-                const houses = Array.isArray(c.houses) ? c.houses : [];
-                const prefChips = segment === 'buyer' ? prefChipsOf(c.preferences) : [];
-                const touched = relTime(c.last_touch?.created_at);
-                const pickerOpen = picker?.clientId === c.id;
-
+            <ul className={styles.list} role="list">
+              {(clients || []).map((c, i) => {
+                const tint = normalizeType(c.client_type, 'both');
+                const checked = selected.has(c.id);
+                const last = c.last_activity || (c.last_touch ? { kind: c.last_touch.interaction_type, summary: c.last_touch.interaction_type, created_at: c.last_touch.created_at } : null);
+                const openCount = toNum(c.open_tasks);
                 return (
                   <li
                     key={c.id ?? `${c.full_name}-${i}`}
-                    className={styles.card}
-                    data-type={tint}
-                    style={{ animationDelay: `${Math.min(i, 8) * 70}ms` }}
+                    className={styles.clientRow}
+                    data-selected={checked}
+                    style={{ animationDelay: `${Math.min(i, 8) * 50}ms` }}
                   >
-                    <div className={styles.cardHead}>
-                      <span className={styles.ring} data-tint={tint} aria-hidden="true">
-                        {initialsOf(c.full_name)}
-                      </span>
-                      <div className={styles.idBlock}>
-                        <span className={styles.name}>{c.full_name || 'Unnamed'}</span>
-                        {(c.email || c.phone) && (
-                          <span className={styles.contact}>
-                            {c.email && <span className={styles.contactBit}>{c.email}</span>}
-                            {c.email && c.phone && (
-                              <span className={styles.dotSep} aria-hidden="true">·</span>
-                            )}
-                            {c.phone && <span className={styles.contactBit}>{c.phone}</span>}
-                          </span>
+                    <button
+                      type="button"
+                      className={styles.rowCheck}
+                      data-on={checked}
+                      aria-pressed={checked}
+                      aria-label={checked ? `Deselect ${c.full_name}` : `Select ${c.full_name}`}
+                      onClick={() => toggleSelect(c.id)}
+                    >
+                      <span aria-hidden="true">{GLYPHS.check}</span>
+                    </button>
+
+                    <button type="button" className={styles.rowOpen} onClick={() => setDrawerCard(c)} aria-label={`Open ${c.full_name || 'client'}`}>
+                      <Avatar name={c.full_name} type={tint} size="md" />
+                      <div className={styles.rowMain}>
+                        <span className={styles.rowNameLine}>
+                          <span className={styles.rowName}>{c.full_name || 'Unnamed'}</span>
+                          <StagePill stage={c.stage} />
+                        </span>
+                        {(c.company || c.email) && (
+                          <span className={styles.rowSub}>{c.company || c.email}</span>
                         )}
-                      </div>
-                      <div className={styles.touch}>
-                        {c.last_touch ? (
-                          <>
-                            <span className={styles.touchTime}>{touched ?? '—'}</span>
-                            <span className={styles.touchType}>
-                              {c.last_touch.interaction_type || 'touch'}
+                        {Array.isArray(c.tags) && c.tags.length > 0 && (
+                          <span className={styles.rowTags}><TagList tags={c.tags} max={3} /></span>
+                        )}
+                        <span className={styles.rowFoot}>
+                          {toNum(c.lead_score) !== null && <span className={styles.rowMeterWrap}><ScoreMeter score={c.lead_score} /></span>}
+                          {openCount !== null && openCount > 0 && (
+                            <span className={styles.footTasks}>{GLYPHS.task}{fmtInt.format(openCount)} task{openCount === 1 ? '' : 's'}</span>
+                          )}
+                          {last && (
+                            <span className={styles.footActivity}>
+                              <span className={styles.footTime}>{relTime(last.created_at) || ''}</span>
+                              {last.summary && <span className={styles.footKind}>{last.summary}</span>}
                             </span>
-                          </>
-                        ) : (
-                          <span className={styles.touchGhost}>No touch</span>
-                        )}
+                          )}
+                        </span>
                       </div>
-                    </div>
-
-                    {/* Sellers — their houses, the property↔person graph */}
-                    {segment === 'seller' && houses.length > 0 && (
-                      <div className={styles.houseRow}>
-                        {houses.map((h, j) => (
-                          <span
-                            key={h.id ?? `${h.address}-${j}`}
-                            className={styles.houseChip}
-                            data-kind={h.kind === 'lead' ? 'lead' : 'listing'}
-                          >
-                            <span className={styles.chipGlyph} aria-hidden="true">{GLYPHS.house}</span>
-                            <span className={styles.chipText}>{h.address || 'Address pending'}</span>
-                            {h.kind === 'lead' && <span className={styles.kindTag}>Lead</span>}
-                          </span>
-                        ))}
-                      </div>
-                    )}
-
-                    {/* Buyers — preference chips + SEEN filmstrip + log showing */}
-                    {segment === 'buyer' && (
-                      <>
-                        {prefChips.length > 0 && (
-                          <div className={styles.prefRow}>
-                            {prefChips.map((p, j) => (
-                              <span key={`${p}-${j}`} className={styles.prefChip}>{p}</span>
-                            ))}
-                          </div>
-                        )}
-
-                        {houses.length > 0 && (
-                          <div className={styles.seenBlock}>
-                            <span className={styles.seenLabel}>
-                              <span className={styles.seenGlyph} aria-hidden="true">{GLYPHS.eye}</span>
-                              Seen · {fmtInt.format(houses.length)}
-                            </span>
-                            <div className={styles.filmstrip}>
-                              {houses.map((h, j) => (
-                                <span
-                                  key={h.id ?? `${h.address}-${j}`}
-                                  className={styles.frameChip}
-                                  data-kind={h.kind === 'lead' ? 'lead' : 'listing'}
-                                >
-                                  {h.address || 'Address pending'}
-                                </span>
-                              ))}
-                            </div>
-                          </div>
-                        )}
-
-                        <div className={styles.cardActions}>
-                          <button
-                            type="button"
-                            className={styles.logBtn}
-                            aria-expanded={pickerOpen}
-                            onClick={() => togglePicker(c)}
-                          >
-                            <span className={styles.btnGlyph} aria-hidden="true">{GLYPHS.eye}</span>
-                            {pickerOpen ? 'Close' : 'Log Showing'}
-                          </button>
-                        </div>
-
-                        {pickerOpen && (
-                          <div className={styles.picker}>
-                            <span className={styles.pickerLabel}>Pick the listing shown</span>
-
-                            {picker.status === 'loading' && (
-                              <div className={styles.pickSkels} aria-hidden="true">
-                                <div className={styles.pickSkel} />
-                                <div className={styles.pickSkel} />
-                              </div>
-                            )}
-
-                            {picker.status === 'error' && (
-                              <div className={styles.errorStrip} role="alert">
-                                <span className={styles.errorTick} aria-hidden="true" />
-                                <p className={styles.errorText}>{picker.error}</p>
-                                <button
-                                  type="button"
-                                  className={styles.retrySm}
-                                  onClick={() => retryPicker(c.id)}
-                                >
-                                  Retry
-                                </button>
-                              </div>
-                            )}
-
-                            {picker.status === 'ready' && picker.listings.length === 0 && (
-                              <p className={styles.pickerEmpty}>
-                                No listings on file — stage a house first.
-                              </p>
-                            )}
-
-                            {picker.status === 'ready' &&
-                              picker.listings.map((l, j) => {
-                                const seen = houses.some((h) => h.id === l.id);
-                                const posting = picker.postingId === l.id;
-                                const price = toNum(l.price);
-                                return (
-                                  <button
-                                    key={l.id ?? `${l.address}-${j}`}
-                                    type="button"
-                                    className={styles.pickRow}
-                                    disabled={seen || picker.postingId !== null}
-                                    onClick={() => logShowing(c, l)}
-                                  >
-                                    <span className={styles.chipGlyph} aria-hidden="true">{GLYPHS.house}</span>
-                                    <span className={styles.pickAddress}>
-                                      {l.address || 'Address pending'}
-                                    </span>
-                                    <span className={styles.pickMeta}>
-                                      {posting
-                                        ? 'Logging…'
-                                        : seen
-                                          ? 'Seen'
-                                          : price !== null
-                                            ? shortDollars(price)
-                                            : ''}
-                                    </span>
-                                  </button>
-                                );
-                              })}
-
-                            {picker.postError && (
-                              <span className={styles.err} role="alert">{picker.postError}</span>
-                            )}
-                          </div>
-                        )}
-                      </>
-                    )}
+                      <span className={styles.rowChevron} aria-hidden="true">{GLYPHS.chevron}</span>
+                    </button>
                   </li>
                 );
               })}
@@ -647,140 +505,100 @@ export default function ClientCrmTab() {
         </>
       )}
 
-      {/* FAB — floats above the Deck, raises the Create Profile sheet */}
-      <button type="button" className={styles.fab} aria-label="Create client profile" onClick={openSheet}>
-        {GLYPHS.plus}
-      </button>
+      {/* FAB → quick-add */}
+      <button type="button" className={styles.fab} aria-label="Add client" onClick={openSheet}>{GLYPHS.plus}</button>
 
       {sheetOpen && (
         <div className={styles.sheetLayer}>
           <button type="button" className={styles.scrim} aria-label="Close" onClick={closeSheet} />
-          <div className={styles.sheet} role="dialog" aria-modal="true" aria-label="Create client profile">
+          <div className={styles.sheet} role="dialog" aria-modal="true" aria-label="Add client">
             <span className={styles.sheetGrip} aria-hidden="true" />
             <header className={styles.sheetHead}>
               <div className={styles.sheetHeading}>
                 <span className={styles.sheetKicker}>New Client</span>
                 <h3 className={styles.sheetTitle}>Create Profile</h3>
               </div>
-              <button
-                type="button"
-                className={styles.sheetClose}
-                onClick={closeSheet}
-                disabled={saving}
-                aria-label="Close"
-              >
-                {GLYPHS.close}
-              </button>
+              <button type="button" className={styles.sheetClose} onClick={closeSheet} disabled={saving} aria-label="Close">{GLYPHS.close}</button>
             </header>
 
-            {/* Seller ⇄ buyer toggle — same two-port control as the book */}
+            {/* Type */}
             <div className={`${styles.segments} ${styles.typeToggle}`}>
-              {SEGMENTS.map((s) => (
-                <button
-                  key={s.id}
-                  type="button"
-                  data-seg={s.id}
-                  aria-pressed={formType === s.id}
-                  className={`${styles.segKey}${formType === s.id ? ` ${styles.segKeyActive}` : ''}`}
-                  onClick={() => setFormType(s.id)}
-                >
-                  <span className={styles.segLabel}>{s.id === 'seller' ? 'Seller' : 'Buyer'}</span>
+              {[{ id: 'seller', label: 'Seller' }, { id: 'buyer', label: 'Buyer' }, { id: 'both', label: 'Both' }].map((s) => (
+                <button key={s.id} type="button" data-seg={s.id === 'buyer' ? 'buyer' : 'seller'} aria-pressed={form.client_type === s.id} className={`${styles.segKey}${form.client_type === s.id ? ` ${styles.segKeyActive}` : ''}`} onClick={() => setField('client_type', s.id)}>
+                  <span className={styles.segLabel}>{s.label}</span>
                 </button>
               ))}
             </div>
 
             <label className={styles.field}>
               <span className={styles.microLabel}>Full Name · Required</span>
-              <input
-                className={styles.input}
-                value={form.full_name}
-                onChange={(e) => {
-                  setField('full_name', e.target.value);
-                  if (formError) setFormError('');
-                }}
-                autoComplete="name"
-                placeholder="Client name"
-              />
+              <input className={styles.input} value={form.full_name} onChange={(e) => { setField('full_name', e.target.value); if (formError) setFormError(''); }} autoComplete="name" placeholder="Client name" />
             </label>
+
+            <div className={styles.fieldGrid}>
+              <label className={styles.field}>
+                <span className={styles.microLabel}>Stage</span>
+                <select className={styles.input} value={form.stage} onChange={(e) => setField('stage', e.target.value)}>
+                  {STAGES.map((s) => <option key={s.id} value={s.id}>{s.label}</option>)}
+                </select>
+              </label>
+              <label className={styles.field}>
+                <span className={styles.microLabel}>Company</span>
+                <input className={styles.input} value={form.company} onChange={(e) => setField('company', e.target.value)} placeholder="Optional" />
+              </label>
+            </div>
 
             <div className={styles.formSection}>
               <span className={styles.sectionLabel}>Contact Info</span>
               <label className={styles.field}>
                 <span className={styles.microLabel}>Email</span>
-                <input
-                  className={styles.input}
-                  value={form.email}
-                  onChange={(e) => setField('email', e.target.value)}
-                  type="email"
-                  inputMode="email"
-                  autoComplete="email"
-                  placeholder="client@email.com"
-                />
+                <input className={styles.input} value={form.email} onChange={(e) => setField('email', e.target.value)} type="email" inputMode="email" autoComplete="email" placeholder="client@email.com" />
               </label>
               <label className={styles.field}>
                 <span className={styles.microLabel}>Phone</span>
-                <input
-                  className={`${styles.input} ${styles.inputMono}`}
-                  value={form.phone}
-                  onChange={(e) => setField('phone', e.target.value)}
-                  type="tel"
-                  inputMode="tel"
-                  autoComplete="tel"
-                  placeholder="555 000 0000"
-                />
+                <input className={`${styles.input} ${styles.inputMono}`} value={form.phone} onChange={(e) => setField('phone', e.target.value)} type="tel" inputMode="tel" autoComplete="tel" placeholder="555 000 0000" />
               </label>
             </div>
+
+            <label className={styles.field}>
+              <span className={styles.microLabel}>Tags · Comma separated</span>
+              <input className={styles.input} value={form.tags} onChange={(e) => setField('tags', e.target.value)} placeholder="cash, motivated, probate" />
+            </label>
 
             <div className={styles.formSection}>
               <span className={styles.sectionLabel}>Preferences</span>
               <div className={styles.fieldGrid}>
                 <label className={styles.field}>
                   <span className={styles.microLabel}>Budget · USD</span>
-                  <input
-                    className={`${styles.input} ${styles.inputMono}`}
-                    value={form.budget}
-                    onChange={(e) => setField('budget', e.target.value.replace(/[^\d.]/g, ''))}
-                    inputMode="decimal"
-                    placeholder="0"
-                  />
+                  <input className={`${styles.input} ${styles.inputMono}`} value={form.budget} onChange={(e) => setField('budget', e.target.value.replace(/[^\d.]/g, ''))} inputMode="decimal" placeholder="0" />
                 </label>
                 <label className={styles.field}>
                   <span className={styles.microLabel}>Beds</span>
-                  <input
-                    className={`${styles.input} ${styles.inputMono}`}
-                    value={form.beds}
-                    onChange={(e) => setField('beds', e.target.value.replace(/[^\d]/g, ''))}
-                    inputMode="numeric"
-                    placeholder="0"
-                  />
+                  <input className={`${styles.input} ${styles.inputMono}`} value={form.beds} onChange={(e) => setField('beds', e.target.value.replace(/[^\d]/g, ''))} inputMode="numeric" placeholder="0" />
                 </label>
               </div>
               <label className={styles.field}>
                 <span className={styles.microLabel}>Zip Codes · Comma separated</span>
-                <input
-                  className={`${styles.input} ${styles.inputMono}`}
-                  value={form.zips}
-                  onChange={(e) => setField('zips', e.target.value)}
-                  inputMode="numeric"
-                  placeholder="33101, 33139"
-                />
+                <input className={`${styles.input} ${styles.inputMono}`} value={form.zips} onChange={(e) => setField('zips', e.target.value)} inputMode="numeric" placeholder="33101, 33139" />
               </label>
             </div>
 
-            {formError && (
-              <span className={styles.err} role="alert">{formError}</span>
-            )}
+            {formError && <span className={styles.err} role="alert">{formError}</span>}
 
-            <button
-              type="button"
-              className={styles.primaryBtn}
-              onClick={submitProfile}
-              disabled={saving}
-            >
+            <button type="button" className={styles.primaryBtn} onClick={submitProfile} disabled={saving}>
               {saving ? 'Saving…' : 'Create Profile'}
             </button>
           </div>
         </div>
+      )}
+
+      {drawerCard && (
+        <ClientDetailDrawer
+          card={drawerCard}
+          onClose={() => setDrawerCard(null)}
+          onClientChanged={onClientChanged}
+          getListings={getListings}
+        />
       )}
     </section>
   );

@@ -140,9 +140,17 @@ async def persist_leads(tenant_id: str, agent_id: str, records: list[PropertyRec
     from db.connection import tenant_tx
 
     ctx = TenantContext(agent_id=agent_id, tenant_id=tenant_id, role=Role.PLATFORM_ADMIN)
+    # Idempotent upsert: a recurring harvest re-sees the same parcels every cycle,
+    # so refresh the row in place instead of accumulating a duplicate lead per run.
+    # Requires UNIQUE (tenant_id, parcel_id) from migration 0018.
     sql = (
         "INSERT INTO leads (tenant_id, parcel_id, state, motivation_score, underwriting, payload) "
-        "VALUES ($1::uuid, $2, $3, $4, $5::jsonb, $6::jsonb)"
+        "VALUES ($1::uuid, $2, $3, $4, $5::jsonb, $6::jsonb) "
+        "ON CONFLICT (tenant_id, parcel_id) DO UPDATE SET "
+        "motivation_score = EXCLUDED.motivation_score, "
+        "underwriting = EXCLUDED.underwriting, "
+        "payload = EXCLUDED.payload, "
+        "updated_at = now()"
     )
 
     total = 0

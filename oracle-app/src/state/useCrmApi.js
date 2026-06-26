@@ -36,3 +36,4 @@ export const crmGet = (path) => request(path);
 export const crmPost = (path, body) => request(path, { method: 'POST', body });
 export const crmPut = (path, body) => request(path, { method: 'PUT', body });
 export const crmPatch = (path, body) => request(path, { method: 'PATCH', body });
+export const crmDelete = (path) => request(path, { method: 'DELETE' });

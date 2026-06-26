@@ -81,7 +81,7 @@ export function LoginVault({ onAuthenticated }) {
       <div className={styles.panel}>
         {/* Wordmark */}
         <div className={styles.wordmark}>
-          <span className={styles.wordmarkKicker}>Oracle</span>
+          <span className={styles.wordmarkKicker}>Neoh</span>
           <span className={styles.wordmarkDivider} />
           <span className={styles.wordmarkSub}>Command Center</span>
         </div>

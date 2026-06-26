@@ -1,0 +1,179 @@
+/* ClientShared — atoms used across the enterprise client book: avatar ring,
+   stage pill, lead-score meter, tag chips. Same Obsidian-Deck idiom as
+   ClientCrmTab: dark etched glass, amber filament, mono wide-tracked caps. */
+
+/* ── Avatar / initials ring ─────────────────────────────────────────────── */
+.avatar {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-pill);
+  font-family: var(--font-display);
+  font-weight: 600;
+  letter-spacing: var(--tracking-wide);
+  border: 1px solid var(--oracle-border-bright);
+  background: var(--oracle-glass);
+  color: var(--oracle-text-dim);
+}
+
+.avatar[data-size='sm'] { width: 32px; height: 32px; font-size: 0.625rem; }
+.avatar[data-size='md'] { width: 40px; height: 40px; font-size: var(--text-xs); }
+.avatar[data-size='lg'] { width: 52px; height: 52px; font-size: var(--text-base); }
+
+.avatar[data-tint='seller'] {
+  color: var(--oracle-amber);
+  border-color: var(--oracle-amber-dim);
+  box-shadow: 0 0 12px var(--oracle-amber-glow);
+}
+
+.avatar[data-tint='buyer'] {
+  color: var(--oracle-blue);
+  border-color: var(--oracle-blue-dim);
+  box-shadow: 0 0 12px color-mix(in srgb, var(--oracle-blue) 12%, transparent);
+}
+
+.avatar[data-tint='both'] {
+  color: var(--oracle-amber);
+  border-color: var(--oracle-blue-dim);
+  box-shadow:
+    0 0 10px var(--oracle-amber-glow),
+    0 0 10px color-mix(in srgb, var(--oracle-blue) 12%, transparent);
+}
+
+/* ── Stage pill ─────────────────────────────────────────────────────────── */
+.stagePill {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 2px var(--space-2);
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--oracle-border);
+  background: var(--oracle-glass);
+  font-family: var(--font-display);
+  font-size: 0.5625rem;
+  font-weight: 600;
+  letter-spacing: var(--tracking-widest);
+  text-transform: uppercase;
+  white-space: nowrap;
+  color: var(--oracle-text-dim);
+}
+
+.stageDot {
+  width: 6px;
+  height: 6px;
+  border-radius: var(--radius-pill);
+  background: currentColor;
+  flex-shrink: 0;
+}
+
+.stagePill[data-stage='lead'] {
+  color: var(--oracle-blue);
+  border-color: var(--oracle-blue-dim);
+  background: color-mix(in srgb, var(--oracle-blue) 8%, transparent);
+}
+.stagePill[data-stage='active'] {
+  color: var(--oracle-amber);
+  border-color: var(--oracle-amber-dim);
+  background: var(--oracle-amber-ghost);
+}
+.stagePill[data-stage='nurture'] {
+  color: rgba(200, 180, 130, 0.9);
+  border-color: rgba(200, 180, 130, 0.35);
+  background: rgba(200, 180, 130, 0.08);
+}
+.stagePill[data-stage='under_contract'] {
+  color: var(--oracle-green);
+  border-color: var(--oracle-green-dim);
+  background: color-mix(in srgb, var(--oracle-green) 8%, transparent);
+}
+.stagePill[data-stage='closed'] {
+  color: var(--oracle-green);
+  border-color: var(--oracle-green);
+  background: color-mix(in srgb, var(--oracle-green) 14%, transparent);
+}
+.stagePill[data-stage='lost'] {
+  color: var(--oracle-red);
+  border-color: var(--oracle-red-dim);
+  background: color-mix(in srgb, var(--oracle-red) 8%, transparent);
+}
+
+/* ── Lead-score meter ───────────────────────────────────────────────────── */
+.meter {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.meterTrack {
+  position: relative;
+  flex: 1;
+  min-width: 38px;
+  height: 4px;
+  border-radius: var(--radius-pill);
+  background: var(--oracle-glass-active);
+  overflow: hidden;
+}
+
+.meterFill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: var(--pct, 0%);
+  border-radius: var(--radius-pill);
+  transition: width var(--duration-base) var(--ease-out);
+}
+
+.meterTrack[data-tier='low']  .meterFill { background: var(--oracle-red-dim); }
+.meterTrack[data-tier='mid']  .meterFill { background: var(--oracle-amber); }
+.meterTrack[data-tier='high'] .meterFill { background: var(--oracle-green); }
+
+.meterVal {
+  flex-shrink: 0;
+  font-family: var(--font-display);
+  font-size: 0.5625rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: var(--tracking-wider);
+  color: var(--oracle-text-dim);
+}
+
+/* ── Tag chips ──────────────────────────────────────────────────────────── */
+.tagRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.tagChip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  max-width: 12rem;
+  padding: 1px var(--space-2);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--oracle-border-bright);
+  background: var(--oracle-glass);
+  font-family: var(--font-display);
+  font-size: 0.5625rem;
+  font-weight: 500;
+  letter-spacing: var(--tracking-wider);
+  text-transform: uppercase;
+  color: var(--oracle-text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tagHash { color: var(--oracle-text-ghost); }
+
+.tagMore {
+  font-family: var(--font-display);
+  font-size: 0.5625rem;
+  font-weight: 600;
+  letter-spacing: var(--tracking-wider);
+  color: var(--oracle-text-ghost);
+  align-self: center;
+}

@@ -7,21 +7,76 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-from db.connection import get_pool
-from tenancy import TenantContext, require_context
+import config
+from db.connection import get_pool, tenant_tx
+from tenancy import Role, TenantContext, require_context
 
 logger = logging.getLogger("oracle.billing")
+
+# Stripe webhooks carry no JWT, so they have no tenant context. Subscriptions
+# RLS is `tenant_id = app_current_tenant() OR app_is_platform_admin()` — without
+# a GUC context every webhook write/read is silently RLS-filtered (the same trap
+# migration 0016 documents for the audit ledger). Run these through a platform-
+# admin system context so the policy is satisfied; the explicit tenant_id in each
+# query remains the real scoping. (Mirrors disposition_enforcer.SYSTEM_CTX.)
+_SYSTEM_CTX = TenantContext(
+    agent_id="billing-webhook",
+    tenant_id="00000000-0000-0000-0000-000000000000",
+    role=Role.PLATFORM_ADMIN,
+)
 
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
+def _truthy(v: str) -> bool:
+    """Parse a boolean env var: 1/true/yes/on (case-insensitive, ws-tolerant)."""
+    return (v or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY", "")
 STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET", "")
 STRIPE_PRICE_ID = os.getenv("STRIPE_PRICE_ID", "price_REPLACE_ME")
 
 BASE_URL = os.getenv("ORACLE_BASE_URL", "http://localhost:5173")
 
+# Compliance toggles (Jun-2026 legal audit).
+# - SaaS sales tax: 25+ jurisdictions tax SaaS; non-collection risks ~30% penalty
+#   + multi-year lookback. Stripe Tax auto-computes once enabled in the Stripe
+#   Dashboard AND a tax registration exists for the state. Default ON; flip off
+#   only if Stripe Tax is not yet activated on the account (else checkout 400s).
+STRIPE_AUTOMATIC_TAX = _truthy(os.getenv("STRIPE_AUTOMATIC_TAX", "1"))
+# - CA ARL AB 2863 affirmative consent: requires a Terms-of-Service checkbox at
+#   checkout. Needs a ToS URL configured in the Stripe Dashboard, so it's gated
+#   behind this flag to avoid breaking checkout on accounts without one.
+STRIPE_REQUIRE_TOS = _truthy(os.getenv("STRIPE_REQUIRE_TOS", "0"))
+
+# Auto-renew disclosure shown at checkout. CA ARL requires the renewal frequency,
+# amount, and cancellation path be clear and conspicuous before purchase.
+AUTO_RENEW_DISCLOSURE = os.getenv(
+    "ORACLE_AUTORENEW_DISCLOSURE",
+    "This is an auto-renewing monthly subscription. You will be charged each month "
+    "until you cancel. You can cancel anytime from Billing in your dashboard.",
+)
+
 stripe.api_key = STRIPE_SECRET_KEY
+
+# Live-key safety interlock. A sk_live_* key bills REAL cards on every checkout and
+# webhook. Allow it only in a production posture; in dev/test (the default ORACLE_ENV)
+# refuse to boot rather than risk a test checkout charging a real customer. The escape
+# hatch ORACLE_ALLOW_LIVE_STRIPE=1 lets an operator exercise the live key locally on
+# purpose. Mirrors config.validate_or_die()'s fail-fast philosophy.
+_IS_LIVE_STRIPE = STRIPE_SECRET_KEY.startswith("sk_live_")
+if _IS_LIVE_STRIPE and config.IS_DEV and not _truthy(os.getenv("ORACLE_ALLOW_LIVE_STRIPE", "")):
+    raise RuntimeError(
+        "Refusing to start: a LIVE Stripe key (sk_live_*) is configured while "
+        "ORACLE_ENV is dev/unset — live keys charge real cards. Use a sk_test_* key "
+        "for development, set ORACLE_ENV=production for a real deployment, or set "
+        "ORACLE_ALLOW_LIVE_STRIPE=1 to override this interlock deliberately."
+    )
+if _IS_LIVE_STRIPE:
+    logger.warning("Stripe LIVE mode active (sk_live_*) — real charges WILL be processed.")
+elif STRIPE_SECRET_KEY:
+    logger.info("Stripe test mode (sk_test_*) — no real charges.")
 
 # Startup guard — catch misconfiguration before the first real request hits.
 if not STRIPE_SECRET_KEY:
@@ -76,16 +131,31 @@ async def create_checkout_session(
             status_code=403,
             detail="Cannot create a checkout session for a different tenant.",
         )
+    # CA ARL / FTC Section 5: affirmative consent + a clear auto-renew disclosure
+    # before purchase. SaaS sales tax: collect billing address + tax IDs so Stripe
+    # Tax can compute and remit. Cancellation is self-serve via the billing portal
+    # (channel parity — same online channel used to subscribe).
+    session_kwargs = dict(
+        mode="subscription",
+        line_items=[{"price": STRIPE_PRICE_ID, "quantity": 1}],
+        metadata={"tenant_id": body.tenant_id},
+        success_url=f"{BASE_URL}/billing/success?session_id={{CHECKOUT_SESSION_ID}}",
+        cancel_url=f"{BASE_URL}/billing/cancel",
+        # "required" (not "auto") so Stripe Tax always has an address to source from.
+        billing_address_collection="required",
+        allow_promotion_codes=True,
+        tax_id_collection={"enabled": True},
+        custom_text={"submit": {"message": AUTO_RENEW_DISCLOSURE}},
+    )
+    if STRIPE_AUTOMATIC_TAX:
+        session_kwargs["automatic_tax"] = {"enabled": True}
+    if STRIPE_REQUIRE_TOS:
+        session_kwargs["consent_collection"] = {"terms_of_service": "required"}
+        session_kwargs["custom_text"]["terms_of_service_acceptance"] = {
+            "message": AUTO_RENEW_DISCLOSURE,
+        }
     try:
-        session = stripe.checkout.Session.create(
-            mode="subscription",
-            line_items=[{"price": STRIPE_PRICE_ID, "quantity": 1}],
-            metadata={"tenant_id": body.tenant_id},
-            success_url=f"{BASE_URL}/billing/success?session_id={{CHECKOUT_SESSION_ID}}",
-            cancel_url=f"{BASE_URL}/billing/cancel",
-            billing_address_collection="auto",
-            allow_promotion_codes=True,
-        )
+        session = stripe.checkout.Session.create(**session_kwargs)
     except stripe.error.InvalidRequestError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except stripe.error.AuthenticationError:
@@ -115,7 +185,7 @@ async def create_portal_session(
     if not pool:
         raise HTTPException(status_code=503, detail="DB unavailable")
 
-    async with pool.acquire() as conn:
+    async with tenant_tx(ctx) as conn:
         row = await conn.fetchrow(
             "SELECT stripe_customer_id FROM subscriptions WHERE tenant_id = $1 LIMIT 1",
             body.tenant_id,
@@ -154,7 +224,7 @@ async def subscription_status(
     if not pool:
         return SubscriptionStatus(active=False, status="no_db", plan="none")
 
-    async with pool.acquire() as conn:
+    async with tenant_tx(ctx) as conn:
         row = await conn.fetchrow(
             "SELECT status, plan, current_period_end FROM subscriptions "
             "WHERE tenant_id = $1 ORDER BY created_at DESC LIMIT 1",
@@ -234,7 +304,7 @@ async def _handle_checkout_completed(pool, session):
         logger.warning("[billing] checkout.completed missing tenant_id or subscription")
         return
 
-    async with pool.acquire() as conn:
+    async with tenant_tx(_SYSTEM_CTX) as conn:
         await conn.execute(
             """INSERT INTO subscriptions (tenant_id, stripe_customer_id, stripe_subscription_id, status)
                VALUES ($1, $2, $3, 'active')
@@ -260,7 +330,7 @@ async def _handle_invoice_paid(pool, invoice):
         logger.warning("[billing] invoice.paid has no period_end — sub=%s", subscription_id)
     period_end_dt = datetime.fromtimestamp(period_end, tz=timezone.utc) if period_end else None
 
-    async with pool.acquire() as conn:
+    async with tenant_tx(_SYSTEM_CTX) as conn:
         await conn.execute(
             """UPDATE subscriptions SET status = 'active', current_period_end = $2, updated_at = now()
                WHERE stripe_subscription_id = $1""",
@@ -276,7 +346,7 @@ async def _handle_subscription_updated(pool, subscription):
     period_end = subscription.get("current_period_end")
     period_end_dt = datetime.fromtimestamp(period_end, tz=timezone.utc) if period_end else None
 
-    async with pool.acquire() as conn:
+    async with tenant_tx(_SYSTEM_CTX) as conn:
         await conn.execute(
             """UPDATE subscriptions SET status = $2, current_period_end = $3, updated_at = now()
                WHERE stripe_subscription_id = $1""",
@@ -289,7 +359,7 @@ async def _handle_subscription_updated(pool, subscription):
 async def _handle_subscription_deleted(pool, subscription):
     sub_id = subscription.get("id")
 
-    async with pool.acquire() as conn:
+    async with tenant_tx(_SYSTEM_CTX) as conn:
         await conn.execute(
             """UPDATE subscriptions SET status = 'canceled', updated_at = now()
                WHERE stripe_subscription_id = $1""",

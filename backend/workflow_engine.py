@@ -16,6 +16,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import os
 import time
 from typing import Optional
 
@@ -26,8 +27,15 @@ from spatial_agent import reconstruct_property, should_trigger_reconstruction, p
 from legal_agent import format_for_websocket, generate_legal_package
 from agents.scout import ScoutAgent
 from harvesters.four_state_firehose import MockBatchLeadsAdapter
+from real_leads import fetch_real_records
+from outreach_compliance import AI_VOICE_DISCLOSURE
 
 logger = logging.getLogger("oracle.workflow_engine")
+
+# How many real `leads` rows to seed the graph with per session. Keeps the
+# flagship pipeline operating on REAL parcels even when the live county portals
+# are unreachable (DNS/404 in dev).
+REAL_LEAD_SEED_LIMIT = 50
 
 PREDICTIVE_CACHE_INTERVAL = 8
 PREDICTIVE_CACHE_TOP_N = 3
@@ -38,15 +46,43 @@ SCOUT_SCAN_INTERVAL = 30
 # the zips; real BatchLeads adapter will key off them.
 SCOUT_TERRITORY = ["19801", "19102", "08102", "21201"]
 
+# Scout has only a MOCK lead adapter today (no real BatchLeads integration yet).
+# Running mock data silently would present synthetic "motivated sellers" as real,
+# so the mock is opt-in: off by default → Scout is disabled rather than faking it.
+SCOUT_USE_MOCK = os.environ.get("SCOUT_USE_MOCK", "").lower() in {"1", "true", "yes", "on"}
+
+# The CountyAssessorHarvester targets hard-coded Delaware portals
+# (recorder.delaware.gov — currently NXDOMAIN — and newcastlede.gov/parcelview).
+# With no reachable endpoint it returns zero records yet retries on every 300s
+# cycle, flooding logs with connection failures on every WebSocket session. The
+# real pipeline is seeded from the DB by _seed_real_leads(), so the live scraper
+# is opt-in: off by default until a working portal/credentials are wired.
+COUNTY_HARVEST_ENABLED = os.environ.get("COUNTY_HARVEST_ENABLED", "").lower() in {"1", "true", "yes", "on"}
+
 
 class WorkflowEngine:
-    def __init__(self, websocket=None, mind_service=None):
+    def __init__(self, websocket=None, mind_service=None, tenant_id="", user_id=""):
         self.websocket = websocket
         self.mind_service = mind_service
+        # Operator identity — used to seed the graph from this tenant's real
+        # leads (RLS-scoped) so the visible pipeline runs on real parcels.
+        self.tenant_id = tenant_id
+        self.user_id = user_id
         self.graph = PropertyGraph()
         self.harvester = CountyAssessorHarvester(self.graph, websocket)
         self.analyst = AnalystAgent(self.graph, websocket)
-        self.scout = ScoutAgent(MockBatchLeadsAdapter())
+        if SCOUT_USE_MOCK:
+            logger.warning(
+                "Scout running on MockBatchLeadsAdapter — SYNTHETIC leads, NOT real "
+                "data (SCOUT_USE_MOCK enabled). Unset it once a real adapter is wired."
+            )
+            self.scout = ScoutAgent(MockBatchLeadsAdapter())
+        else:
+            self.scout = None
+            logger.info(
+                "Scout disabled — no real lead adapter wired and SCOUT_USE_MOCK is off. "
+                "Set SCOUT_USE_MOCK=1 to run the synthetic-data demo."
+            )
         self._running = False
         self._harvest_task: Optional[asyncio.Task] = None
         self._analysis_task: Optional[asyncio.Task] = None
@@ -68,19 +104,34 @@ class WorkflowEngine:
 
         await self._emit_status("WORKFLOW ENGINE — initializing pipeline")
 
-        self._harvest_task = asyncio.create_task(self._harvest_loop())
+        # Seed the graph from REAL leads before the analysis loop runs, so the
+        # novelty → CMA → contact pipeline operates on real parcels even when the
+        # live county portals are unreachable. Best-effort: degrades to whatever
+        # the harvester pulls if the DB seed yields nothing.
+        await self._seed_real_leads()
+
+        if COUNTY_HARVEST_ENABLED:
+            self._harvest_task = asyncio.create_task(self._harvest_loop())
+        else:
+            logger.info(
+                "County-assessor harvester disabled — no reachable Delaware portal "
+                "and COUNTY_HARVEST_ENABLED is off. Graph runs on _seed_real_leads()."
+            )
         self._analysis_task = asyncio.create_task(self._analysis_loop())
         self._predictive_task = asyncio.create_task(self._predictive_cache_loop())
         self._scout_task = asyncio.create_task(self._scout_loop())
 
         await self._emit_status("WORKFLOW ENGINE — all agents online")
 
-        await asyncio.gather(
-            self._harvest_task,
-            self._analysis_task,
-            self._predictive_task,
-            self._scout_task,
-        )
+        await asyncio.gather(*[
+            t for t in (
+                self._harvest_task,
+                self._analysis_task,
+                self._predictive_task,
+                self._scout_task,
+            )
+            if t is not None
+        ])
 
     async def stop(self):
         self._running = False
@@ -104,6 +155,30 @@ class WorkflowEngine:
 
         self._recon_tasks.clear()
         await self._emit_status("WORKFLOW ENGINE — pipeline shutdown complete")
+
+    async def _seed_real_leads(self):
+        """Ingest this tenant's real `leads` rows into the graph so the live
+        pipeline scores real parcels. Never fabricates data; on any failure the
+        graph is simply left to whatever the harvester provides."""
+        if not self.tenant_id:
+            logger.info("No tenant context — skipping real-lead graph seed.")
+            return
+        try:
+            records = await fetch_real_records(self.tenant_id, self.user_id, REAL_LEAD_SEED_LIMIT)
+        except Exception as e:  # noqa: BLE001 — seeding is best-effort
+            logger.warning("Real-lead seed failed: %s", e)
+            return
+        if not records:
+            await self._emit_status("WORKFLOW ENGINE — no real leads to seed (graph empty)")
+            return
+        for record in records:
+            try:
+                await self.graph.ingest_public_record(record)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("Failed to ingest seed record: %s", e)
+        await self._emit_status(
+            f"WORKFLOW ENGINE — seeded {len(records)} real parcels into graph"
+        )
 
     async def _harvest_loop(self):
         try:
@@ -153,11 +228,23 @@ class WorkflowEngine:
                         "address": address,
                         "squareFootage": hit["sqft"],
                         "price": hit["market_value"],
+                        # estimatedValue is the conservative AS-IS value for a
+                        # distressed/off-market target; arvEstimate is retail.
                         "estimatedValue": cma_result.estimated_value,
+                        "arvEstimate": cma_result.arv_estimate,
+                        "asIsLow": cma_result.as_is_low,
+                        "asIsHigh": cma_result.as_is_high,
+                        "investorOffer": cma_result.investor_offer,
+                        "distressSeverity": cma_result.distress_severity,
                         "confidenceLow": cma_result.confidence_low,
                         "confidenceHigh": cma_result.confidence_high,
                         "pricePerSqft": cma_result.price_per_sqft,
                         "methodology": cma_result.methodology,
+                        # Fact-check provenance — the UI must never present an
+                        # UNVERIFIED/CONFLICT valuation as a confident number.
+                        "avmVerdict": cma_result.verdict,
+                        "avmConfidence": cma_result.confidence,
+                        "avmSources": cma_result.sources,
                         "bedrooms": hit["bedrooms"],
                         "bathrooms": hit["bathrooms"],
                         "novelty": novelty,
@@ -179,10 +266,18 @@ class WorkflowEngine:
             await asyncio.sleep(1.0)
 
             if self.websocket:
+                # No real telephony is placed here — this is a scripted demo
+                # transcript. It leads with AI_VOICE_DISCLOSURE (TCPA / FCC 24-17:
+                # an artificial voice must disclose itself) and every line carries
+                # "simulated": true so the UI and audit trail never present it as a
+                # live call. life_event is NULL for real parcels with no distress
+                # signal — guard it rather than .replace() on None.
+                signal = (hit.get("life_event") or "GENERAL").replace("_", " ").title()
                 dialogue = [
                     {"agent": "AI CLOSER", "text": f"Initiating contact with {hit['owner_name']}..."},
-                    {"agent": "AI CLOSER", "text": f"Signal: {hit['life_event'].replace('_', ' ').title()} + {hit['equity_pct']}% equity"},
+                    {"agent": "AI CLOSER", "text": f"Signal: {signal} + {hit['equity_pct']}% equity"},
                     {"agent": "AI CLOSER", "text": "Call connected. Voice synthesis active."},
+                    {"agent": "AI CLOSER", "text": AI_VOICE_DISCLOSURE},
                 ]
                 for line in dialogue:
                     await asyncio.sleep(0.8)
@@ -190,6 +285,7 @@ class WorkflowEngine:
                         "type": "TRANSCRIPT_LINE",
                         "agent": line["agent"],
                         "text": line["text"],
+                        "simulated": True,
                     }))
 
             await asyncio.sleep(1.2)
@@ -197,9 +293,19 @@ class WorkflowEngine:
             if self.websocket:
                 await self._emit_status("AGENT LEGAL — generating contract package")
                 await asyncio.sleep(0.6)
+                # The contract price is the conservative MAX ACQUISITION OFFER
+                # (70% rule on a distressed target) — NEVER the retail ARV, or we
+                # would contract to overpay on exactly the properties we target.
+                offer = 0
+                if cma_result:
+                    offer = cma_result.investor_offer or cma_result.estimated_value
                 property_data = {
                     "address": address,
-                    "price": cma_result.estimated_value if cma_result else hit["market_value"],
+                    "price": offer or hit["market_value"],
+                    "arv": cma_result.arv_estimate if cma_result else 0,
+                    "as_is": cma_result.estimated_value if cma_result else 0,
+                    "assumptions": cma_result.valuation_assumptions if cma_result else [],
+                    "distress_severity": cma_result.distress_severity if cma_result else "UNKNOWN",
                     "owner_name": hit["owner_name"],
                 }
                 legal_payload = format_for_websocket(property_data, strategy="wholesale")
@@ -250,6 +356,11 @@ class WorkflowEngine:
     async def _scout_loop(self):
         """Drives the Scout agent over the firehose territory and routes each
         MOTIVATED_SELLER_FOUND event through the state gatekeeper."""
+        if self.scout is None:
+            await self._emit_status(
+                "AGENT SCOUT — disabled (no real lead adapter; set SCOUT_USE_MOCK=1 for demo)"
+            )
+            return
         await asyncio.sleep(7)
 
         while self._running:

@@ -73,7 +73,7 @@ export function TabBar({ tabs, active, onSelect }) {
   const activeIndex = Math.max(0, tabs.findIndex((t) => t.id === active));
 
   return (
-    <nav className={styles.deck} aria-label="Oracle CRM">
+    <nav className={styles.deck} aria-label="Neoh CRM">
       <div className={`${styles.filamentTrack} ${flash ? styles.filamentFlash : ''}`}>
         <div
           className={styles.filament}

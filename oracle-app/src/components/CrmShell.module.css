@@ -74,7 +74,7 @@
   }
 
   .header,
-  .shell :global(nav[aria-label='Oracle CRM']) {
+  .shell :global(nav[aria-label='Neoh CRM']) {
     max-width: 480px;
     left: 50%;
     transform: translateX(-50%);

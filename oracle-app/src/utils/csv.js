@@ -32,7 +32,7 @@ export function leadsToCsv(leads) {
 
 export function downloadLeadsCsv(leads, filename) {
   if (!leads || leads.length === 0) return 0;
-  const name = filename || `oracle-leads-${new Date().toISOString().slice(0, 10)}.csv`;
+  const name = filename || `neoh-leads-${new Date().toISOString().slice(0, 10)}.csv`;
   const csv = leadsToCsv(leads);
   // Prepend BOM so Excel reads UTF-8 correctly.
   const blob = new Blob(['﻿', csv], { type: 'text/csv;charset=utf-8;' });

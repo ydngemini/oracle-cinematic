@@ -3,13 +3,15 @@ Oracle — Authentication Router
 JWT-based agent auth with in-memory session registry.
 
 SECRET_KEY must be set via the environment variable ORACLE_SECRET_KEY.
-The hardcoded placeholder is *only* active when running without that variable
-(local dev). Startup emits a loud WARNING in that case.
+If it is unset the app FAILS TO START — except in development (ORACLE_ENV in
+dev/development/local), where an ephemeral per-process key is generated so local
+runs work without a static secret in source.
 """
 
 import hmac
 import logging
 import os
+import secrets
 import time
 from typing import Optional
 
@@ -28,13 +30,24 @@ log = logging.getLogger("oracle.auth")
 # ---------------------------------------------------------------------------
 
 _ENV_KEY = os.environ.get("ORACLE_SECRET_KEY", "")
+_IS_DEV = os.environ.get("ORACLE_ENV", "").lower() in {"dev", "development", "local"}
+
 if _ENV_KEY:
     SECRET_KEY: str = _ENV_KEY
-else:
-    SECRET_KEY = "ORACLE_DEV_PLACEHOLDER_KEY_replace_in_production_64bytes_abcdef1234"
+elif _IS_DEV:
+    # Dev only: no static secret in source. A hardcoded placeholder is forgeable
+    # by anyone with repo access and lives forever in git history, so we mint an
+    # ephemeral per-process key instead — tokens are valid only for this run.
+    SECRET_KEY = secrets.token_hex(32)
     log.warning(
-        "ORACLE_SECRET_KEY not set — using insecure placeholder key. "
-        "This MUST be replaced before any non-local deployment."
+        "ORACLE_SECRET_KEY not set — generated an ephemeral dev key. Tokens will "
+        "not survive a restart; set ORACLE_SECRET_KEY for stable local sessions."
+    )
+else:
+    raise RuntimeError(
+        "ORACLE_SECRET_KEY is not set. Refusing to start outside development. "
+        "Set ORACLE_SECRET_KEY in the environment (or ORACLE_ENV=dev for an "
+        "ephemeral local key)."
     )
 
 ALGORITHM = "HS256"
@@ -55,11 +68,10 @@ _MAX_TOKEN_LEN = 8192  # standard JWT headroom
 # In production this would be a hashed-password database lookup.
 # ---------------------------------------------------------------------------
 
-DEMO_CREDENTIALS: dict[str, str] = {
-    "oracle_agent": "nexus_access_2026",
-    "analyst_01":   "scanner_ready",
-    "ydn":          "sypher_core",
-}
+# Hardcoded demo logins are populated below ONLY when ORACLE_ENABLE_DEMO_LOGINS=1,
+# so they never ship to a public deployment by default. Production auth comes from
+# the env-injected ORACLE_ADMIN_ID / ORACLE_ADMIN_PASSPHRASE operator account.
+DEMO_CREDENTIALS: dict[str, str] = {}
 
 # ---------------------------------------------------------------------------
 # Demo tenancy map — agent_id → (tenant_id, role). The Auth Gatekeeper stamps
@@ -71,11 +83,21 @@ DEMO_CREDENTIALS: dict[str, str] = {
 PLATFORM_TENANT_ID = "00000000-0000-0000-0000-000000000000"
 APEX_TENANT_ID = "11111111-1111-1111-1111-111111111111"
 
-DEMO_TENANCY: dict[str, tuple[str, str]] = {
-    "ydn":          (PLATFORM_TENANT_ID, "platform_admin"),  # god-mode override
-    "oracle_agent": (APEX_TENANT_ID,     "broker_owner"),
-    "analyst_01":   (APEX_TENANT_ID,     "agent"),
-}
+DEMO_TENANCY: dict[str, tuple[str, str]] = {}
+
+# Local-dev convenience logins — OFF unless explicitly enabled. Never enable on an
+# internet-facing box; use ORACLE_ADMIN_ID / ORACLE_ADMIN_PASSPHRASE instead.
+if os.environ.get("ORACLE_ENABLE_DEMO_LOGINS", "").lower() in ("1", "true", "yes"):
+    DEMO_CREDENTIALS.update({
+        "oracle_agent": "nexus_access_2026",
+        "analyst_01":   "scanner_ready",
+        "ydn":          "sypher_core",
+    })
+    DEMO_TENANCY.update({
+        "ydn":          (PLATFORM_TENANT_ID, "platform_admin"),  # god-mode override
+        "oracle_agent": (APEX_TENANT_ID,     "broker_owner"),
+        "analyst_01":   (APEX_TENANT_ID,     "agent"),
+    })
 
 # Optional operator account injected from the environment (gitignored .env) —
 # real credentials must never appear in this file, which is in source control.

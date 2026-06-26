@@ -53,6 +53,29 @@ def _date(v: Any) -> Optional[str]:
     return str(v)[:10]
 
 
+# Pull the delta cursor back this many minutes from the max ModificationTimestamp
+# actually processed, so a record sharing the boundary second with a record we
+# already pulled isn't skipped by the strict `gt` filter on the next run. The
+# upsert is idempotent, so the small re-pull overlap is harmless.
+_CURSOR_OVERLAP_MIN = 2
+
+
+def _parse_reso_dt(value: Any) -> Optional[datetime]:
+    """Parse a RESO ModificationTimestamp (ISO-8601) into a tz-aware UTC datetime.
+    Returns None when absent/unparseable so a bad value can never corrupt (advance
+    past, or rewind) the persisted delta cursor."""
+    if not value:
+        return None
+    s = str(value).strip().replace("Z", "+00:00")
+    try:
+        dt = datetime.fromisoformat(s)
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
 class RESOListingsFeed(DataSource):
     """RESO Web API Property-resource delta puller → oracle_mls_listings."""
 
@@ -158,11 +181,14 @@ class RESOListingsFeed(DataSource):
         fallback = (datetime.now(timezone.utc) - timedelta(hours=self.lookback_h))
 
         upserted = 0
+        max_modified: Optional[datetime] = None
         async with tenant_tx(ctx) as conn:
             row = await conn.fetchrow(
                 "SELECT last_sync_at FROM mls_sync_status WHERE mls_id = $1", self.mls_id
             )
             since_dt = (row and row["last_sync_at"]) or fallback
+            if since_dt.tzinfo is None:
+                since_dt = since_dt.replace(tzinfo=timezone.utc)
             since = since_dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
             skip = 0
@@ -186,22 +212,36 @@ class RESOListingsFeed(DataSource):
                         rec["close_price"], rec["description"],
                     )
                     upserted += 1
+                    # Advance the delta cursor by the MAX ModificationTimestamp
+                    # actually processed — NEVER wall-clock now(): a record modified
+                    # between this fetch and the status write would be permanently
+                    # skipped by the next run's `gt now()` filter (silent data loss).
+                    m = _parse_reso_dt(rec.get("_modified"))
+                    if m is not None and (max_modified is None or m > max_modified):
+                        max_modified = m
                 if len(batch) < self.page:
                     break
                 skip += self.page
+
+            # Cursor = newest record seen minus a small overlap; clamp so it never
+            # moves backwards and never advances when nothing new arrived.
+            cursor = since_dt
+            if max_modified is not None:
+                candidate = max_modified - timedelta(minutes=_CURSOR_OVERLAP_MIN)
+                cursor = candidate if candidate > since_dt else since_dt
 
             await conn.execute(
                 """
                 INSERT INTO mls_sync_status
                     (mls_id, mls_name, feed_type, last_sync_at, listings_synced, sync_lag_minutes, updated_at)
-                VALUES ($1, $2, 'RESO_Web_API', now(), $3, 0, now())
+                VALUES ($1, $2, 'RESO_Web_API', $4, $3, 0, now())
                 ON CONFLICT (mls_id) DO UPDATE SET
                     mls_name = EXCLUDED.mls_name,
-                    last_sync_at = now(),
+                    last_sync_at = EXCLUDED.last_sync_at,
                     listings_synced = mls_sync_status.listings_synced + EXCLUDED.listings_synced,
                     updated_at = now()
                 """,
-                self.mls_id, self.mls_name, upserted,
+                self.mls_id, self.mls_name, upserted, cursor,
             )
 
         self._metrics["normalized"] += upserted

@@ -10,6 +10,18 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Playwright + Chromium — required by the browser-based state harvesters (e.g.
+# Maryland SDAT, harvesters/md_sdat_ingest.py) so the parcel-harvest national
+# pass covers portals that have no plain HTTP/API export. Installed as ROOT
+# (--with-deps pulls the apt system libraries Chromium needs) into a shared path
+# that the non-root uid-1001 runtime user can read+execute. PLAYWRIGHT_BROWSERS_PATH
+# is an ENV so it applies at both build (install) and runtime (launch). This is a
+# heavy layer (~apt libs + ~150MB Chromium) but cached unless requirements change.
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+RUN pip install --no-cache-dir playwright \
+    && playwright install --with-deps chromium \
+    && chmod -R a+rX /ms-playwright
+
 # Copy the rest of the backend source. The compose dev setup bind-mounts /app
 # over this, so this layer is only meaningful in a production image build.
 COPY . .

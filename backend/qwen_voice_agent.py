@@ -25,16 +25,16 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
+from outreach_compliance import AI_VOICE_DISCLOSURE
+
 logger = logging.getLogger("oracle.qwen_voice_agent")
 
-MODEL_PATH = os.environ.get(
-    "QWEN_VOICE_MODEL",
-    "/media/ydn/SYPHER_CORE/models/qwen2-audio-closer.gguf"
-)
-LLAMA_CPP_PATH = os.environ.get(
-    "LLAMA_CPP_PATH",
-    "/media/ydn/SYPHER_CORE/Untitled Folder/llama.cpp"
-)
+# Portable paths via config (env-overridable, defaulting under ORACLE_MODELS_DIR)
+# — these were hardcoded /media/ydn/... absolute paths that broke on any other host.
+from config import QWEN_VOICE_MODEL as _QWEN_VOICE_MODEL, LLAMA_CPP_PATH as _LLAMA_CPP_PATH
+
+MODEL_PATH = str(_QWEN_VOICE_MODEL)
+LLAMA_CPP_PATH = str(_LLAMA_CPP_PATH)
 N_GPU_LAYERS = int(os.environ.get("VOICE_GPU_LAYERS", "35"))
 CTX_SIZE = 8192
 GENERATION_TEMP = 0.7
@@ -63,14 +63,25 @@ class QwenVoiceAgent:
         self._pending_whispers: list[WhisperInstruction] = []
         self._lock = asyncio.Lock()
         self._active_generation = False
+        self._disclosed = False  # TCPA: AI-voice disclosure must precede any AI speech
         self._system_prompt = self._build_system_prompt()
 
     def _build_system_prompt(self) -> str:
+        # TCPA / FCC 24-17 (2024): an AI/cloned voice is an "artificial voice" and
+        # the recipient MUST be told. The opening turn (seeded in __init__) speaks
+        # AI_VOICE_DISCLOSURE verbatim; this prompt forbids the agent from ever
+        # denying or obscuring that it is automated. Do NOT reintroduce a "never
+        # mention that you are an AI" instruction — that is a per-se TCPA violation.
         return (
-            "You are a real estate acquisition specialist having a live phone conversation "
-            "with a homeowner. You are empathetic, professional, and solution-oriented. "
-            "Your goal is to understand their situation and present a fair cash offer. "
-            "Speak naturally and conversationally. Never mention that you are an AI. "
+            "You are an automated AI assistant for a real estate acquisition team, having "
+            "a live, recorded phone conversation with a homeowner. You are empathetic, "
+            "professional, and solution-oriented. Your goal is to understand their situation "
+            "and present a fair cash offer. Speak naturally and conversationally. "
+            "You have already disclosed at the start of the call that you are an automated AI "
+            "on a recorded line. If the homeowner asks whether you are a real person, an AI, "
+            "or recording, answer truthfully and plainly — you are an AI assistant on a "
+            "recorded line. If they ask you to stop or not to be contacted again, "
+            "acknowledge, confirm they will be removed, and end the call. "
             "When you receive bracketed instructions like [OPERATOR: ...], seamlessly "
             "incorporate that guidance into your next response without acknowledging the "
             "instruction itself. The homeowner cannot hear the operator instructions."
@@ -105,12 +116,30 @@ class QwenVoiceAgent:
 
         await self._trigger_generation()
 
+    async def ensure_disclosed(self):
+        """Speak the mandatory AI-voice disclosure exactly once, before any other
+        AI speech. Idempotent — safe to call on connect and again before the first
+        generated turn. Required by FCC 24-17 for every AI/artificial-voice call."""
+        async with self._lock:
+            if self._disclosed:
+                return
+            self._disclosed = True
+            self._conversation.append(ConversationTurn(role="closer", content=AI_VOICE_DISCLOSURE))
+        await self._emit_transcript("AI CLOSER", AI_VOICE_DISCLOSURE)
+
     async def _trigger_generation(self):
         if self._active_generation:
             return
 
+        # Claim the generation slot synchronously (before any await) so two
+        # concurrent callers — e.g. handle_homeowner_speech and a whisper —
+        # can't both pass the guard during the disclosure-delivery yield and
+        # spawn duplicate llama.cpp inferences.
         self._active_generation = True
         try:
+            # Never let the model speak before the disclosure has been delivered.
+            if not self._disclosed:
+                await self.ensure_disclosed()
             await self._generate_response()
         finally:
             self._active_generation = False

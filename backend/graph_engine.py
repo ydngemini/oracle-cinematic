@@ -61,6 +61,9 @@ class PropertyGraph:
             "bathrooms": record_data.get("bathrooms", 0),
             "county": record_data.get("county", "New Castle"),
             "state": record_data.get("state", "DE"),
+            # Real harvester-computed motivated-seller signal (0 for synthetic
+            # records, which surface via the equity/life-event path instead).
+            "motivation_score": record_data.get("motivation_score", 0),
         })
 
         self._add_edge("OWNS", homeowner_id, property_id, {
@@ -84,6 +87,10 @@ class PropertyGraph:
 
     async def calculate_novelty_score(self) -> AsyncGenerator[dict, None]:
         high_signal_events = {"DIVORCE_FILING", "PROBATE", "NOTICE_OF_DEFAULT", "TAX_LIEN", "PRE_FORECLOSURE"}
+        # Real harvested parcels surface on their genuine motivation_score rather
+        # than the synthetic equity/life-event gate (real leads are often not
+        # equity-enriched). 60 ≈ multiple stacked distress signals.
+        MOTIVATION_THRESHOLD = 60
 
         for prop in self._find_nodes("Property"):
             prop_id = prop["id"]
@@ -99,6 +106,37 @@ class PropertyGraph:
                     continue
 
                 equity_pct = owner["properties"].get("equity_pct", 0)
+
+                # ── Real-signal path ───────────────────────────────────────────
+                # Harvested parcels carry a real motivation_score. Surface the
+                # high-motivation ones directly — no fabricated equity, no
+                # synthetic life event required. Synthetic records score 0 here
+                # and fall through to the equity/life-event path below.
+                motivation = prop["properties"].get("motivation_score", 0) or 0
+                if motivation >= MOTIVATION_THRESHOLD:
+                    # Label with the homeowner's real distress signal when present.
+                    signal = "MOTIVATED_SELLER"
+                    for ev_edge in self._find_edges_from(owner_id, "EXPERIENCED"):
+                        ev = self.nodes.get(ev_edge["to"])
+                        if ev:
+                            signal = ev["properties"].get("event_type", signal)
+                            break
+                    yield {
+                        "property_id": prop_id,
+                        "address": prop["properties"].get("address", ""),
+                        "sqft": prop["properties"].get("sqft", 0),
+                        "market_value": prop["properties"].get("market_value", 0),
+                        "bedrooms": prop["properties"].get("bedrooms", 0),
+                        "bathrooms": prop["properties"].get("bathrooms", 0),
+                        "owner_name": owner["properties"].get("name", ""),
+                        "equity_pct": equity_pct,
+                        "life_event": signal,
+                        "novelty_score": round(min(float(motivation), 99.0), 1),
+                        "classification": "HIGH_PROBABILITY_SELLER",
+                        "_source": "real",
+                    }
+                    break
+
                 if equity_pct <= 40:
                     continue
 

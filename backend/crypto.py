@@ -288,13 +288,13 @@ async def access_pii_field(
 
     # Record access in the tamper-proof audit chain.
     try:
-        ledger.record(
+        await ledger.record(
             category=AuditCategory.USER_STATE_CHANGE,
-            actor=ctx.agent_id,
             action="ACCESS_PII",
-            payload={
-                "tenant_id": ctx.tenant_id,
-                "target_id": target_id,
+            tenant_id=ctx.tenant_id,
+            user_id=ctx.agent_id,
+            target_id=target_id,
+            metadata={
                 "field": field_name,
                 "role": ctx.role.value,
             },

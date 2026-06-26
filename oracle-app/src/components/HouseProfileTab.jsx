@@ -1,7 +1,11 @@
-import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
+import { Fragment, Suspense, lazy, useCallback, useEffect, useMemo, useState } from 'react';
 import { crmGet, crmPost } from '../state/useCrmApi';
 import { ComplianceDashboard } from './ComplianceDashboard';
 import styles from './HouseProfileTab.module.css';
+
+// The photoreal 3D tour pulls in the Google Maps loader on demand — keep it in
+// its own chunk so the House form paints without it until the agent opens a tour.
+const PropertyTour = lazy(() => import('./PropertyTour'));
 
 // Inline stroke glyphs — same idiom as TabBar GLYPHS, zero icon deps.
 const GLYPHS = {
@@ -94,6 +98,9 @@ export default function HouseProfileTab() {
   const [submitStatus, setSubmitStatus] = useState('idle'); // idle|busy|error|done
   const [submitError, setSubmitError] = useState('');
   const [listed, setListed] = useState(null);
+
+  // Photoreal 3D flyover overlay — opens against whatever address is on file.
+  const [tourOpen, setTourOpen] = useState(false);
 
   const loadSellers = useCallback(async () => {
     setSellersStatus('loading');
@@ -306,6 +313,23 @@ export default function HouseProfileTab() {
               <span className={styles.err} role="alert">{houseError}</span>
             )}
           </label>
+
+          {house.address.trim() && (
+            <button
+              type="button"
+              className={styles.tourLaunch}
+              onClick={() => setTourOpen(true)}
+            >
+              <span className={styles.tourLaunchGlyph} aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M3 10.5 12 3l9 7.5" />
+                  <path d="M5.5 9.5V20h13V9.5" />
+                  <circle cx="12" cy="13.5" r="2" />
+                </svg>
+              </span>
+              Preview the 3D tour
+            </button>
+          )}
 
           <label className={styles.field}>
             <span className={styles.microLabel}>Asking Price · USD</span>
@@ -576,6 +600,26 @@ export default function HouseProfileTab() {
             </button>
           </div>
         </section>
+      )}
+
+      {/* Photoreal 3D flyover — full-screen overlay; degrades cleanly w/o a key. */}
+      {tourOpen && (
+        <div
+          className={styles.tourOverlay}
+          role="dialog"
+          aria-modal="true"
+          aria-label="3D property tour"
+          onClick={(e) => { if (e.target === e.currentTarget) setTourOpen(false); }}
+        >
+          <div className={styles.tourFrame}>
+            <Suspense fallback={null}>
+              <PropertyTour
+                address={house.address.trim()}
+                onClose={() => setTourOpen(false)}
+              />
+            </Suspense>
+          </div>
+        </div>
       )}
     </div>
   );

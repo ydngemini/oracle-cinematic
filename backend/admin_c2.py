@@ -14,7 +14,10 @@ import random
 import time
 from typing import Optional
 
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
+
+from admin_ops import require_platform_admin
+from tenancy import TenantContext
 
 logger = logging.getLogger("oracle.admin_c2")
 
@@ -283,7 +286,7 @@ async def _run_surge(graph, websocket: Optional[WebSocket] = None):
 
 
 @router.post("/simulate-surge")
-async def simulate_surge():
+async def simulate_surge(ctx: TenantContext = Depends(require_platform_admin)):
     """
     Chaos engineering endpoint: injects 500 synthetic inbound leads into the
     workflow pipeline over 10 seconds. Triggers Kubernetes HPA scaling of
@@ -309,7 +312,7 @@ async def simulate_surge():
 
 
 @router.get("/surge-status")
-async def surge_status():
+async def surge_status(ctx: TenantContext = Depends(require_platform_admin)):
     """Current state of the surge and HPA metrics."""
     hpa = await _query_hpa_metrics()
     pods = await _query_pod_count()
@@ -322,7 +325,24 @@ async def surge_status():
 
 @router.websocket("/surge-telemetry")
 async def surge_telemetry_ws(websocket: WebSocket):
-    """Real-time telemetry stream for the frontend to watch HPA scaling."""
+    """Real-time telemetry stream for the frontend to watch HPA scaling.
+
+    Platform-admin only. WebSockets can't carry an Authorization header, so the
+    JWT is passed as the ?token= query param (same convention as /ws) and the
+    socket is closed with 1008 (policy violation) for missing/invalid tokens or
+    any non-platform_admin caller."""
+    raw_token = websocket.query_params.get("token", "")
+    try:
+        from auth import decode_token
+
+        claims = decode_token(raw_token)
+    except Exception:  # noqa: BLE001 — missing/invalid/expired token
+        await websocket.close(code=1008)
+        return
+    if claims.get("role") != "platform_admin":
+        await websocket.close(code=1008)
+        return
+
     await websocket.accept()
     _surge_subscribers.append(websocket)
 

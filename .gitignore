@@ -17,3 +17,6 @@ oracle-cinematic/
 
 # Claude subagent worktrees (scratch)
 .claude/worktrees/
+
+# session scratch / diagnostic dumps
+_diag*.txt

@@ -9,6 +9,18 @@
   gap: var(--space-4);
 }
 
+/* ── Section divider — separates the retail browse from the agent's listings ─ */
+.sectionDivider {
+  height: 1px;
+  margin: var(--space-2) 0;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    var(--oracle-border-bright),
+    transparent
+  );
+}
+
 /* ── Header row — kicker + refresh key ───────────────────────────────────── */
 .topRow {
   display: flex;
