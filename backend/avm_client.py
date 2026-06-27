@@ -398,8 +398,12 @@ async def value_property(subject: dict) -> AVMResult:
         cached = await _cache_get(key)
         if cached is not None:
             _INPROC[key] = cached
+            # Capital visibility: a hit means we served an already-underwritten
+            # address from di_cache and spent $0 instead of a billable AVM call.
+            logger.info("AVM cache HIT %s — served from di_cache, no provider call ($0).", key)
             return cached
 
+        logger.info("AVM cache MISS %s — calling live AVM provider(s) (billable).", key)
         result = await _value_property_uncached(subject)
 
         if result and result.estimated_value > 0:
