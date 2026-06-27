@@ -94,7 +94,7 @@ class TestClassContract:
         assert harv.agent_id == "firehose-wy"
 
     def test_construction_requires_tenant(self):
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="tenant_id is required"):
             WyomingParcelsHarvester(tenant_id="")
 
 

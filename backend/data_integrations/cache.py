@@ -85,8 +85,8 @@ class IntegrationCache:
                 if self._redis:
                     try:
                         await self._redis.setex(f"di:{key}", 3600, json.dumps(payload))
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug("Redis warm-cache SET failed for %s: %s", key, e)
                 return payload
         except Exception as e:
             logger.warning("PG cache GET failed for %s: %s", key, e)

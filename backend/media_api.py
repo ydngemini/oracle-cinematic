@@ -70,7 +70,10 @@ async def _read_and_validate(f: UploadFile) -> tuple[bytes, str]:
     """Slurp one upload, enforce the size cap, and confirm it is really an image.
 
     Raises 413 (too big), 415 (not an image), or 422 (empty)."""
-    data = await f.read()
+    # Read at most MAX_BYTES+1 so an oversized upload is rejected WITHOUT first
+    # materialising the whole body in memory (a full f.read() lets a huge file
+    # exhaust the worker before the size check below).
+    data = await f.read(MAX_BYTES + 1)
     if not data:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Empty file upload.")
     if len(data) > MAX_BYTES:
@@ -98,6 +101,13 @@ async def _persist(
     """Insert each validated image as a property_media row (+ media_blobs bytes),
     appending to the existing photo order. Runs inside the caller's tenant_tx so
     RLS scopes every write to the request's tenant."""
+    # Serialize concurrent uploads to the SAME property so two requests can't read
+    # the same MAX(sort_order) and collide on positions (gallery order must stay
+    # deterministic). A per-property advisory xact-lock is lighter than locking the
+    # parent row and releases automatically when this tenant_tx commits.
+    _lock_key = str(listing_id or lead_id or "")
+    if _lock_key:
+        await conn.execute("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", _lock_key)
     # Next sort_order for this property (tenant-scoped via RLS on the SELECT).
     base = await conn.fetchval(
         """
@@ -308,7 +318,12 @@ async def portal_upload_media(
     if not tenant_id or not lead_raw:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Malformed portal session.")
     _validate_tenant_id(tenant_id)
-    lead_id = UUID(lead_raw)
+    # A malformed-but-signed lead_id claim must read as auth failure (401), not a
+    # 500 from UUID() blowing up before we enter tenant_tx().
+    try:
+        lead_id = UUID(lead_raw)
+    except (ValueError, TypeError, AttributeError):
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Malformed portal session.")
 
     # The portal client is not a platform admin; role=AGENT yields ordinary
     # tenant-scoped RLS pinned to the portal's tenant + lead.
