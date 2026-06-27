@@ -30,7 +30,7 @@
 .filament {
   height: 100%;
   background: var(--filament);
-  box-shadow: 0 0 12px var(--oracle-amber-dim), 0 0 3px var(--oracle-amber);
+  box-shadow: 0 0 14px var(--oracle-amber-dim), 0 0 4px var(--oracle-amber-bright);
   transition: transform var(--duration-slow) var(--ease-spring);
   will-change: transform;
 }
@@ -54,6 +54,7 @@
 }
 
 .key {
+  position: relative;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -68,13 +69,57 @@
     transform var(--duration-fast) var(--ease-out);
 }
 
+/* Soft amber glow pad that blooms in behind the active key's glyph */
+.key::before {
+  content: '';
+  position: absolute;
+  top: 7px;
+  left: 50%;
+  width: 44px;
+  height: 44px;
+  border-radius: var(--radius-pill);
+  background: radial-gradient(circle, var(--oracle-amber-glow) 0%, transparent 70%);
+  opacity: 0;
+  transform: translateX(-50%) scale(0.6);
+  transition:
+    opacity var(--duration-base) var(--ease-out),
+    transform var(--duration-slow) var(--ease-spring);
+  pointer-events: none;
+}
+
 .key:active {
   transform: translateY(1px);
+}
+
+@media (hover: hover) {
+  .key:hover {
+    color: var(--oracle-text-dim);
+  }
+}
+
+.key:focus-visible {
+  outline: none;
+  color: var(--oracle-amber);
+}
+
+.key:focus-visible .glyph {
+  outline: 2px solid var(--oracle-amber);
+  outline-offset: 4px;
+  border-radius: var(--radius-sm);
 }
 
 .keyActive {
   color: var(--oracle-amber);
   text-shadow: 0 0 18px var(--oracle-amber-glow);
+}
+
+.keyActive::before {
+  opacity: 1;
+  transform: translateX(-50%) scale(1);
+}
+
+.keyActive .glyph {
+  transform: scale(1.08) translateY(-1px);
 }
 
 .keyActive .glyph svg {
@@ -84,6 +129,7 @@
 .glyph {
   width: 22px;
   height: 22px;
+  transition: transform var(--duration-slow) var(--ease-spring);
 }
 
 .glyph svg {

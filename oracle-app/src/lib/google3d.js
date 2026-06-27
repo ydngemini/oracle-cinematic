@@ -46,11 +46,27 @@ export function loadGoogleMaps() {
       return;
     }
 
+    // Use the official `callback` param, NOT script.onload: under loading=async
+    // onload fires before google.maps.importLibrary is initialised, so the old
+    // code intermittently rejected MAPS_UNAVAILABLE ("3D map service could not be
+    // reached"). The callback fires only once the API core is ready.
+    const CB = '__neohGmapsReady';
+    window[CB] = () => {
+      try { delete window[CB]; } catch { /* ignore */ }
+      if (window.google?.maps?.importLibrary) {
+        resolve(window.google);
+      } else {
+        _loadPromise = null; // allow a later retry after a transient init failure
+        reject(new Error('MAPS_UNAVAILABLE'));
+      }
+    };
+
     const params = new URLSearchParams({
       key: KEY,
       v: MAPS_VERSION,
       loading: 'async',
       libraries: 'maps3d,geocoding',
+      callback: CB,
     });
 
     const script = document.createElement('script');
@@ -59,12 +75,9 @@ export function loadGoogleMaps() {
     script.defer = true;
     script.dataset.oracleGoogleMaps = '1';
     script.onerror = () => {
+      try { delete window[CB]; } catch { /* ignore */ } // callback never fired
       _loadPromise = null; // allow a later retry after a transient failure
       reject(new Error('SCRIPT_LOAD_FAILED'));
-    };
-    script.onload = () => {
-      if (window.google?.maps?.importLibrary) resolve(window.google);
-      else reject(new Error('MAPS_UNAVAILABLE'));
     };
     document.head.appendChild(script);
   });

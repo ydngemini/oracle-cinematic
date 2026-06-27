@@ -24,6 +24,19 @@
   backdrop-filter: var(--oracle-backdrop-light);
   -webkit-backdrop-filter: var(--oracle-backdrop-light);
   border-bottom: 1px solid var(--oracle-border);
+  box-shadow: 0 1px 0 rgba(0, 0, 0, 0.4);
+}
+
+/* Hairline filament glint along the header's bottom edge */
+.header::after {
+  content: '';
+  position: absolute;
+  left: var(--space-4);
+  right: var(--space-4);
+  bottom: -1px;
+  height: 1px;
+  background: var(--filament-faint);
+  opacity: 0.5;
 }
 
 .wordmark {
@@ -35,6 +48,7 @@
   font-weight: 600;
   letter-spacing: var(--tracking-widest);
   color: var(--oracle-text-heading);
+  text-shadow: 0 0 24px rgba(0, 0, 0, 0.5);
 }
 
 .tick {
@@ -44,6 +58,19 @@
   background: var(--oracle-amber);
   box-shadow: 0 0 8px var(--oracle-amber-dim);
   transform: rotate(45deg);
+  animation: tick-breathe 3.2s var(--ease-in-out) infinite;
+}
+
+/* The live amber diamond exhales — a quiet sign the command center is awake. */
+@keyframes tick-breathe {
+  0%, 100% { box-shadow: 0 0 8px var(--oracle-amber-dim); opacity: 0.85; }
+  50%      { box-shadow: 0 0 14px var(--oracle-amber), 0 0 4px var(--oracle-amber-bright); opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tick,
+  .view,
+  .fallbackCard { animation: none; }
 }
 
 /* ── View — the scroll surface ───────────────────────────────────────────── */
@@ -56,11 +83,11 @@
     calc(var(--crm-header-h) + var(--safe-top) + var(--space-4))
     var(--space-4)
     calc(var(--deck-height) + var(--safe-bottom) + var(--space-6));
-  animation: viewIn var(--duration-base) var(--ease-out);
+  animation: view-in var(--duration-slow) var(--ease-spring);
 }
 
-@keyframes viewIn {
-  from { opacity: 0; transform: translateY(6px); }
+@keyframes view-in {
+  from { opacity: 0; transform: translateY(10px) scale(0.994); }
   to   { opacity: 1; transform: none; }
 }
 
@@ -93,15 +120,13 @@
 .fallbackCard {
   height: 96px;
   border-radius: var(--radius-lg);
-  background: var(--oracle-glass);
+  background-color: var(--oracle-glass);
+  background-image: linear-gradient(100deg, transparent 28%, var(--oracle-shimmer) 50%, transparent 72%);
+  background-size: 220% 100%;
+  background-repeat: no-repeat;
   border: 1px solid var(--oracle-border-subtle);
-  animation: skeletonBreathe 1.4s var(--ease-in-out) infinite alternate;
+  animation: oracle-sheen 1.5s var(--ease-in-out) infinite;
 }
 
-.fallbackCard:nth-child(2) { animation-delay: 120ms; }
-.fallbackCard:nth-child(3) { animation-delay: 240ms; }
-
-@keyframes skeletonBreathe {
-  from { opacity: 0.45; }
-  to   { opacity: 1; }
-}
+.fallbackCard:nth-child(2) { animation-delay: 160ms; }
+.fallbackCard:nth-child(3) { animation-delay: 320ms; }

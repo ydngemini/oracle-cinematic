@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { crmGet } from '../state/useCrmApi';
+import { locationFor, usePropertyCover } from '../lib/propertyImagery';
 import ListingDetail from './ListingDetail';
 import styles from './MarketplaceBrowse.module.css';
 
@@ -418,9 +419,21 @@ export default function MarketplaceBrowse() {
 
           <ul className={styles.grid} role="list">
             {listings.map((l, i) =>
-              isPipeline
-                ? renderPipelineCard(l, i, () => setSelected(l.id))
-                : renderMlsCard(l, i, () => setSelected(l.id))
+              isPipeline ? (
+                <PipelineCard
+                  key={l.id ?? `${l.parcel_id}-${i}`}
+                  l={l}
+                  i={i}
+                  onOpen={() => setSelected(l.id)}
+                />
+              ) : (
+                <MlsCard
+                  key={l.id ?? `${l.address}-${i}`}
+                  l={l}
+                  i={i}
+                  onOpen={() => setSelected(l.id)}
+                />
+              )
             )}
           </ul>
 
@@ -451,36 +464,93 @@ export default function MarketplaceBrowse() {
   );
 }
 
-// ── card renderers ───────────────────────────────────────────────────────────
+// ── cover (real Google imagery, scrim + overlay) ─────────────────────────────
 
-function renderMlsCard(l, i, onOpen) {
+/**
+ * PropertyCover — resolves real Street View (→ satellite static → ghost) for a
+ * listing and paints it under a gradient scrim. Lazy-loaded, shimmer while it
+ * decodes, and an onError chain that walks candidates before degrading to the
+ * ghost glyph — never a broken image. `badge` / `pill` sit in the top corners;
+ * `footer` overlays the bottom scrim (chips, meter).
+ */
+function PropertyCover({ location, alt, badge, pill, footer }) {
+  const { ready, candidates } = usePropertyCover(location, {
+    size: '640x400',
+    fov: 80,
+  });
+  const [idx, setIdx] = useState(0);
+  const [loaded, setLoaded] = useState(false);
+  const [shownFor, setShownFor] = useState(location);
+
+  // Reset the candidate walk + load state whenever the target changes
+  // (render-phase reset — no cascading effect).
+  if (shownFor !== location) {
+    setShownFor(location);
+    setIdx(0);
+    setLoaded(false);
+  }
+
+  const current = candidates[idx];
+  const exhausted = ready && (candidates.length === 0 || idx >= candidates.length);
+  const showShimmer = !exhausted && (!ready || !loaded);
+  // Keep alt honest: the cover can fall back to a satellite tile when no pano
+  // exists, so reflect the real source rather than always saying "Street view".
+  const imageAlt = current?.kind === 'satellite'
+    ? (alt || '').replace(/^Street view of/i, 'Satellite view of')
+    : alt;
+
+  return (
+    <div className={styles.cover}>
+      <span className={styles.coverGhost} aria-hidden="true">{GLYPHS.house}</span>
+
+      {current && (
+        <img
+          key={current.url}
+          className={styles.coverImg}
+          data-loaded={loaded ? 'true' : 'false'}
+          src={current.url}
+          alt={imageAlt}
+          loading="lazy"
+          decoding="async"
+          onLoad={() => setLoaded(true)}
+          onError={() => {
+            setLoaded(false);
+            setIdx((n) => n + 1);
+          }}
+        />
+      )}
+
+      {showShimmer && <span className={styles.coverShimmer} aria-hidden="true" />}
+      {current && loaded && <span className={styles.coverScrim} aria-hidden="true" />}
+
+      {badge}
+      {pill}
+      {footer && <div className={styles.coverFooter}>{footer}</div>}
+    </div>
+  );
+}
+
+// ── cards ────────────────────────────────────────────────────────────────────
+
+function MlsCard({ l, i, onOpen }) {
   const status = normalizeStatus(l.status);
   const price = formatPrice(l.price);
   const beds = toNum(l.beds);
   const baths = toNum(l.baths);
   const sqft = toNum(l.sqft);
+  const location = locationFor(l);
   return (
-    <li
-      key={l.id ?? `${l.address}-${i}`}
-      className={styles.card}
-      style={{ animationDelay: `${Math.min(i, 8) * 45}ms` }}
-    >
+    <li className={styles.card} style={{ animationDelay: `${Math.min(i, 8) * 45}ms` }}>
       <button type="button" className={styles.cardBtn} onClick={onOpen} aria-label={`View ${l.address || 'listing'}`}>
-        <div className={styles.cover}>
-          <span className={styles.coverGhost} aria-hidden="true">{GLYPHS.house}</span>
-          {l.cover_url && (
-            <img
-              className={styles.coverImg}
-              src={l.cover_url}
-              alt=""
-              loading="lazy"
-              onError={(e) => { e.currentTarget.hidden = true; }}
-            />
-          )}
-          <span className={styles.pill} data-status={status}>
-            {status === 'other' ? (l.status || '—') : status}
-          </span>
-        </div>
+        <PropertyCover
+          location={location}
+          alt={l.address ? `Street view of ${l.address}` : ''}
+          pill={
+            <span className={styles.pill} data-status={status}>
+              {status === 'other' ? (l.status || '—') : status}
+            </span>
+          }
+        />
         <div className={styles.body}>
           {price ? <span className={styles.price}>{price}</span> : <span className={styles.priceTbd}>Price TBD</span>}
           <span className={styles.address}>{l.address || 'Address pending'}</span>
@@ -500,27 +570,56 @@ function renderMlsCard(l, i, onOpen) {
   );
 }
 
-function renderPipelineCard(l, i, onOpen) {
+function PipelineCard({ l, i, onOpen }) {
   const price = formatPrice(l.price);
   const beds = toNum(l.beds);
   const baths = toNum(l.baths);
   const sqft = toNum(l.sqft);
   const flags = Array.isArray(l.distress_flags) ? l.distress_flags : [];
-  // Absentee gets its own cover chip, so drop it from the in-body flag row.
-  const bodyFlags = flags.filter((f) => f !== 'absentee_owner');
+  // Absentee gets its own cover badge; show up to three other signals as
+  // scrim chips, with a "+N" tail when there are more.
+  const overlayFlags = flags.filter((f) => f !== 'absentee_owner');
+  const shownFlags = overlayFlags.slice(0, 3);
+  const extraFlags = overlayFlags.length - shownFlags.length;
   const score = toNum(l.motivation_score);
+  const location = locationFor(l);
+
   return (
-    <li
-      key={l.id ?? `${l.parcel_id}-${i}`}
-      className={styles.card}
-      style={{ animationDelay: `${Math.min(i, 8) * 45}ms` }}
-    >
+    <li className={styles.card} style={{ animationDelay: `${Math.min(i, 8) * 45}ms` }}>
       <button type="button" className={styles.cardBtn} onClick={onOpen} aria-label={`View ${l.address || 'property'}`}>
-        <div className={styles.cover}>
-          <span className={styles.coverGhost} aria-hidden="true">{GLYPHS.house}</span>
-          {l.is_absentee && <span className={styles.coverBadge}>Absentee</span>}
-          <span className={styles.pill} data-source="pipeline">Pipeline</span>
-        </div>
+        <PropertyCover
+          location={location}
+          alt={l.address ? `Street view of ${l.address}` : ''}
+          badge={l.is_absentee ? <span className={styles.coverBadge}>Absentee</span> : null}
+          pill={<span className={styles.pill} data-source="pipeline">Pipeline</span>}
+          footer={
+            (shownFlags.length > 0 || score !== null) ? (
+              <>
+                {shownFlags.length > 0 && (
+                  <div className={styles.flagRow}>
+                    {shownFlags.map((f) => (
+                      <span key={f} className={styles.flagOnCover}>{flagLabel(f)}</span>
+                    ))}
+                    {extraFlags > 0 && <span className={styles.flagOnCover}>+{extraFlags}</span>}
+                  </div>
+                )}
+                {score !== null && (
+                  <div className={styles.meterRow} title={`Motivation ${score} / 100`}>
+                    <span className={styles.meterLabel}>Motivation</span>
+                    <span className={styles.meterTrack} aria-hidden="true">
+                      <span
+                        className={styles.meterFill}
+                        data-tier={motivationTier(score)}
+                        style={{ width: `${clampPct(score)}%` }}
+                      />
+                    </span>
+                    <span className={styles.meterVal}>{score}</span>
+                  </div>
+                )}
+              </>
+            ) : null
+          }
+        />
         <div className={styles.body}>
           {price ? <span className={styles.price}>{price}</span> : <span className={styles.priceTbd}>Unpriced</span>}
           <span className={styles.address}>{l.address || 'Address pending'}</span>
@@ -534,28 +633,6 @@ function renderPipelineCard(l, i, onOpen) {
               {beds !== null && <span className={styles.chip}>{fmtInt.format(beds)} bd</span>}
               {baths !== null && <span className={styles.chip}>{formatBaths(baths)} ba</span>}
               {sqft !== null && sqft > 0 && <span className={styles.chip}>{fmtInt.format(sqft)} sqft</span>}
-            </div>
-          )}
-
-          {bodyFlags.length > 0 && (
-            <div className={styles.flagRow}>
-              {bodyFlags.map((f) => (
-                <span key={f} className={styles.flag}>{flagLabel(f)}</span>
-              ))}
-            </div>
-          )}
-
-          {score !== null && (
-            <div className={styles.meterRow} title={`Motivation ${score} / 100`}>
-              <span className={styles.meterLabel}>Motivation</span>
-              <span className={styles.meterTrack} aria-hidden="true">
-                <span
-                  className={styles.meterFill}
-                  data-tier={motivationTier(score)}
-                  style={{ width: `${clampPct(score)}%` }}
-                />
-              </span>
-              <span className={styles.meterVal}>{score}</span>
             </div>
           )}
         </div>

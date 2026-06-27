@@ -44,6 +44,11 @@
 .refreshBtn:hover {
   background: var(--oracle-glass-hover);
   color: var(--oracle-amber);
+  border-color: var(--oracle-amber-dim);
+}
+
+.refreshBtn:active:not(:disabled) {
+  transform: scale(0.92);
 }
 
 .refreshBtn:disabled {
@@ -90,6 +95,13 @@
   transition:
     background var(--duration-fast) var(--ease-out),
     border-color var(--duration-base) var(--ease-out);
+}
+
+@media (hover: hover) {
+  .threadRow:hover {
+    background: var(--oracle-glass-hover);
+    border-color: var(--oracle-border-bright);
+  }
 }
 
 .threadRow:active {
@@ -659,14 +671,17 @@
 .skelRow {
   height: 64px;
   border-radius: var(--radius-lg);
-  background: var(--oracle-glass);
+  background-color: var(--oracle-glass);
+  background-image: linear-gradient(100deg, transparent 28%, var(--oracle-shimmer) 50%, transparent 72%);
+  background-size: 220% 100%;
+  background-repeat: no-repeat;
   border: 1px solid var(--oracle-border-subtle);
-  animation: skelBreathe 1.4s var(--ease-in-out) infinite alternate;
+  animation: oracle-sheen 1.5s var(--ease-in-out) infinite;
 }
 
-.skelRow:nth-child(2) { animation-delay: 120ms; }
-.skelRow:nth-child(3) { animation-delay: 240ms; }
-.skelRow:nth-child(4) { animation-delay: 360ms; }
+.skelRow:nth-child(2) { animation-delay: 130ms; }
+.skelRow:nth-child(3) { animation-delay: 260ms; }
+.skelRow:nth-child(4) { animation-delay: 390ms; }
 
 .streamSkel {
   display: flex;
@@ -680,23 +695,21 @@
   height: 56px;
   width: 72%;
   border-radius: var(--radius-lg);
-  background: var(--oracle-glass);
+  background-color: var(--oracle-glass);
+  background-image: linear-gradient(100deg, transparent 28%, var(--oracle-shimmer) 50%, transparent 72%);
+  background-size: 220% 100%;
+  background-repeat: no-repeat;
   border: 1px solid var(--oracle-border-subtle);
-  animation: skelBreathe 1.4s var(--ease-in-out) infinite alternate;
+  animation: oracle-sheen 1.5s var(--ease-in-out) infinite;
 }
 
 .skelMsgOut {
   align-self: flex-end;
-  animation-delay: 120ms;
+  animation-delay: 130ms;
 }
 
-.skelMsgIn:nth-child(3) { animation-delay: 240ms; }
-.skelMsgOut:nth-child(4) { animation-delay: 360ms; }
-
-@keyframes skelBreathe {
-  from { opacity: 0.45; }
-  to   { opacity: 1; }
-}
+.skelMsgIn:nth-child(3) { animation-delay: 260ms; }
+.skelMsgOut:nth-child(4) { animation-delay: 390ms; }
 
 /* ── Error — quiet inline state, retry key (matches Marketplace) ─────────── */
 .errorBox {
@@ -778,14 +791,29 @@
 }
 
 .emptyGlyph {
-  width: 44px;
-  height: 44px;
-  color: var(--oracle-text-ghost);
+  width: 76px;
+  height: 76px;
+  display: grid;
+  place-items: center;
+  margin-bottom: var(--space-1);
+  border-radius: var(--radius-pill);
+  background:
+    radial-gradient(circle at 50% 38%, var(--oracle-amber-glow), transparent 68%),
+    var(--oracle-glass);
+  border: 1px solid var(--oracle-border-bright);
+  box-shadow: var(--shadow-inset), 0 0 28px var(--oracle-amber-glow);
+  color: var(--oracle-amber-dim);
+  animation: empty-halo 4.5s var(--ease-in-out) infinite;
 }
 
 .emptyGlyph svg {
-  width: 100%;
-  height: 100%;
+  width: 30px;
+  height: 30px;
+}
+
+@keyframes empty-halo {
+  0%, 100% { box-shadow: var(--shadow-inset), 0 0 22px var(--oracle-amber-glow); }
+  50%      { box-shadow: var(--shadow-inset), 0 0 40px var(--oracle-amber-glow); }
 }
 
 .emptyTitle {
@@ -940,13 +968,20 @@
   transition:
     color var(--duration-fast) var(--ease-out),
     border-color var(--duration-base) var(--ease-out),
-    background var(--duration-fast) var(--ease-out);
+    background var(--duration-fast) var(--ease-out),
+    box-shadow var(--duration-base) var(--ease-out),
+    transform var(--duration-base) var(--ease-bounce);
+}
+
+.filterKey:active {
+  transform: scale(0.93);
 }
 
 .filterKeyOn {
   color: var(--oracle-amber);
   border-color: var(--oracle-amber-dim);
   background: var(--oracle-amber-ghost);
+  box-shadow: 0 0 12px var(--oracle-amber-glow);
 }
 
 /* ── Unread emphasis (LEVEL 1 rows) ──────────────────────────────────────── */

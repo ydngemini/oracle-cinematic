@@ -381,8 +381,21 @@
   color: var(--oracle-text-ghost);
 }
 
-.emptyGlyph { width: 32px; height: 32px; color: var(--oracle-text-ghost); }
-.emptyGlyph svg { width: 100%; height: 100%; }
+.emptyGlyph {
+  width: 54px;
+  height: 54px;
+  display: grid;
+  place-items: center;
+  margin-bottom: var(--space-1);
+  border-radius: var(--radius-pill);
+  background:
+    radial-gradient(circle at 50% 40%, var(--oracle-amber-glow), transparent 70%),
+    var(--oracle-glass);
+  border: 1px solid var(--oracle-border-bright);
+  box-shadow: var(--shadow-inset);
+  color: var(--oracle-amber-dim);
+}
+.emptyGlyph svg { width: 22px; height: 22px; }
 
 .emptyText {
   font-size: var(--text-sm);
@@ -441,21 +454,19 @@
 .skelRow {
   height: 54px;
   border-radius: var(--radius-md);
-  background: var(--oracle-glass);
+  background-color: var(--oracle-glass);
+  background-image: linear-gradient(100deg, transparent 28%, var(--oracle-shimmer) 50%, transparent 72%);
+  background-size: 220% 100%;
+  background-repeat: no-repeat;
   border: 1px solid var(--oracle-border-subtle);
-  animation: skelBreathe 1.4s var(--ease-in-out) infinite alternate;
+  animation: oracle-sheen 1.5s var(--ease-in-out) infinite;
 }
-.skelRow:nth-child(2) { animation-delay: 120ms; }
-.skelRow:nth-child(3) { animation-delay: 240ms; }
+.skelRow:nth-child(2) { animation-delay: 160ms; }
+.skelRow:nth-child(3) { animation-delay: 320ms; }
 
 .err {
   font-size: var(--text-sm);
   color: var(--oracle-red);
-}
-
-@keyframes skelBreathe {
-  from { opacity: 0.45; }
-  to   { opacity: 1; }
 }
 
 @keyframes paneRise {

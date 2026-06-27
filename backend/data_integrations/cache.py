@@ -76,12 +76,18 @@ class IntegrationCache:
                     key,
                 )
             if row:
+                payload = row["payload"]
+                # asyncpg returns jsonb as a raw JSON *string* (no codec registered on
+                # the pool), so a cache HIT handed callers a str and they crashed on
+                # `.get()` ('str' object has no attribute 'get'). Parse to dict/list here.
+                if isinstance(payload, str):
+                    payload = json.loads(payload)
                 if self._redis:
                     try:
-                        await self._redis.setex(f"di:{key}", 3600, json.dumps(row["payload"]))
-                    except Exception:
-                        pass
-                return row["payload"]
+                        await self._redis.setex(f"di:{key}", 3600, json.dumps(payload))
+                    except Exception as e:
+                        logger.debug("Redis warm-cache SET failed for %s: %s", key, e)
+                return payload
         except Exception as e:
             logger.warning("PG cache GET failed for %s: %s", key, e)
 

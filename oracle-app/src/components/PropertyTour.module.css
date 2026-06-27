@@ -89,15 +89,114 @@
 .closeBtn:hover { background: var(--oracle-glass-hover); }
 .closeBtn svg { width: 16px; height: 16px; }
 
-/* ── Bottom controls — play/pause + snap ──────────────────────────────────── */
-.controls {
+/* ── Walk hint — fades after the first grab ───────────────────────────────── */
+.hint {
+  position: absolute;
+  top: 52px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: var(--z-hud);
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  max-width: calc(100% - 2 * var(--space-4));
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-pill);
+  font-family: var(--font-display);
+  font-size: var(--text-xs);
+  font-weight: 500;
+  letter-spacing: var(--tracking-wide);
+  text-align: center;
+  color: var(--oracle-text);
+  background: rgba(8, 8, 12, 0.62);
+  border: 1px solid var(--oracle-border-bright);
+  box-shadow: var(--shadow-panel);
+  backdrop-filter: var(--oracle-backdrop-light);
+  -webkit-backdrop-filter: var(--oracle-backdrop-light);
+  pointer-events: none;
+  animation: hint-in var(--duration-base) var(--ease-out) both, hint-out var(--duration-slow) var(--ease-out) 5s both;
+}
+
+.hintGlyph { display: grid; place-items: center; width: 16px; height: 16px; flex: none; color: var(--oracle-amber); }
+.hintGlyph svg { width: 16px; height: 16px; }
+
+@keyframes hint-in { from { opacity: 0; transform: translate(-50%, -6px); } to { opacity: 1; transform: translate(-50%, 0); } }
+@keyframes hint-out { from { opacity: 1; } to { opacity: 0; } }
+
+/* ── Dock — filmstrip + walk controls, anchored bottom ────────────────────── */
+.dock {
   position: absolute;
   left: 50%;
   bottom: var(--space-4);
   transform: translateX(-50%);
   z-index: var(--z-hud);
   display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-3);
+  width: min(100%, 640px);
+  padding: 0 var(--space-3);
+}
+
+/* Filmstrip of composed photos, scrolling horizontally over the 3D scene. */
+.filmstrip {
+  display: flex;
   gap: var(--space-2);
+  max-width: 100%;
+  padding: var(--space-2);
+  overflow-x: auto;
+  border-radius: var(--radius-lg);
+  background: rgba(8, 8, 12, 0.55);
+  border: 1px solid var(--oracle-border-bright);
+  box-shadow: var(--shadow-panel);
+  backdrop-filter: var(--oracle-backdrop-light);
+  -webkit-backdrop-filter: var(--oracle-backdrop-light);
+  scrollbar-width: thin;
+  -webkit-overflow-scrolling: touch;
+}
+
+.film {
+  position: relative;
+  flex: none;
+  width: 56px;
+  height: 56px;
+  padding: 0;
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  cursor: pointer;
+  background: var(--oracle-bg-mid);
+  border: 1px solid var(--oracle-border-bright);
+  transition: transform var(--duration-fast) var(--ease-out), box-shadow var(--duration-base) var(--ease-out);
+}
+
+.film:hover { transform: translateY(-2px); box-shadow: var(--shadow-amber); }
+.film:focus-visible { outline: 2px solid var(--oracle-amber); outline-offset: 2px; }
+.film img { width: 100%; height: 100%; object-fit: cover; display: block; }
+
+.filmTag {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  min-width: 15px;
+  height: 15px;
+  padding: 0 4px;
+  display: grid;
+  place-items: center;
+  font-family: var(--font-display);
+  font-size: 0.5rem;
+  font-weight: 700;
+  color: var(--oracle-text-heading);
+  background: rgba(4, 4, 6, 0.6);
+  border-radius: var(--radius-sm);
+}
+
+/* ── Bottom controls — orbit/walk + zoom + tilt + snap ────────────────────── */
+.controls {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-items: center;
+  gap: var(--space-1);
   padding: var(--space-2);
   border-radius: var(--radius-pill);
   background: rgba(8, 8, 12, 0.62);
@@ -106,6 +205,30 @@
   backdrop-filter: var(--oracle-backdrop);
   -webkit-backdrop-filter: var(--oracle-backdrop);
 }
+
+.ctrlSep {
+  width: 1px;
+  align-self: stretch;
+  margin: 2px var(--space-1);
+  background: var(--oracle-border-bright);
+}
+
+.iconCtrl {
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border-radius: var(--radius-pill);
+  color: var(--oracle-text);
+  background: transparent;
+  border: 1px solid transparent;
+  transition: background var(--duration-fast) var(--ease-out), color var(--duration-fast) var(--ease-out);
+}
+
+.iconCtrl:hover { background: var(--oracle-amber-ghost); color: var(--oracle-amber); }
+.iconCtrl:active { transform: translateY(1px); }
+.iconCtrl:focus-visible { outline: 2px solid var(--oracle-amber-dim); outline-offset: 2px; }
+.iconCtrl svg { width: 18px; height: 18px; }
 
 .ctrlBtn {
   display: inline-flex;
@@ -260,6 +383,118 @@
 
 .fallbackBtn:hover { background: var(--oracle-glass-hover); }
 
+/* Composed photos still surface even when 3D coverage is missing. */
+.fallbackStrip {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: var(--space-2);
+  max-width: 100%;
+}
+
+.fallbackThumb {
+  width: 56px;
+  height: 56px;
+  padding: 0;
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  cursor: pointer;
+  background: var(--oracle-bg-mid);
+  border: 1px solid var(--oracle-border-bright);
+}
+
+.fallbackThumb:hover { box-shadow: var(--shadow-amber); }
+.fallbackThumb:focus-visible { outline: 2px solid var(--oracle-amber); outline-offset: 2px; }
+.fallbackThumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+
+/* ── Lightbox over the live 3D flyover ────────────────────────────────────── */
+.lightbox {
+  position: absolute;
+  inset: 0;
+  z-index: var(--z-overlay);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-5);
+  background: rgba(2, 2, 4, 0.88);
+  backdrop-filter: var(--oracle-backdrop);
+  -webkit-backdrop-filter: var(--oracle-backdrop);
+  animation: lb-in var(--duration-base) var(--ease-out);
+}
+
+@keyframes lb-in { from { opacity: 0; } to { opacity: 1; } }
+
+.lightboxImg {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-float);
+}
+
+.lbClose {
+  position: absolute;
+  top: var(--space-4);
+  right: var(--space-4);
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border-radius: var(--radius-pill);
+  color: var(--oracle-text);
+  background: var(--oracle-glass);
+  border: 1px solid var(--oracle-border-bright);
+  backdrop-filter: var(--oracle-backdrop-light);
+  -webkit-backdrop-filter: var(--oracle-backdrop-light);
+}
+
+.lbClose:hover { background: var(--oracle-glass-hover); color: var(--oracle-amber); }
+.lbClose svg { width: 18px; height: 18px; }
+
+.lbNav {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  border-radius: var(--radius-pill);
+  color: var(--oracle-text);
+  background: var(--oracle-glass);
+  border: 1px solid var(--oracle-border-bright);
+  backdrop-filter: var(--oracle-backdrop-light);
+  -webkit-backdrop-filter: var(--oracle-backdrop-light);
+}
+
+.lbNav:hover { background: var(--oracle-glass-hover); color: var(--oracle-amber); }
+.lbNav svg { width: 20px; height: 20px; }
+.lbPrev { left: var(--space-3); }
+.lbNext { right: var(--space-3); }
+
+.lbCounter {
+  position: absolute;
+  bottom: var(--space-4);
+  left: 50%;
+  transform: translateX(-50%);
+  font-family: var(--font-display);
+  font-size: var(--text-xs);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: var(--tracking-wider);
+  color: var(--oracle-text-dim);
+  background: rgba(4, 4, 6, 0.55);
+  border: 1px solid var(--oracle-border-bright);
+  border-radius: var(--radius-pill);
+  padding: 4px var(--space-3);
+}
+
 @media (min-width: 768px) {
   .tour { min-height: 420px; }
+  .film, .fallbackThumb { width: 64px; height: 64px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hint, .lightbox { animation: none; }
+  .film, .iconCtrl { transition: none; }
+  .film:hover, .iconCtrl:active { transform: none; }
 }

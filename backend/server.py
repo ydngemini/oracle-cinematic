@@ -146,6 +146,9 @@ app.include_router(data_sources_router)
 from mls_portal import router as mls_portal_router  # noqa: E402 — retail MLS browse (quota-safe, RentCast→oracle_mls_listings)
 app.include_router(mls_portal_router)
 
+from media_api import router as media_api_router  # noqa: E402 — 2D image upload/serve (agent JWT + portal token; bytes in media_blobs)
+app.include_router(media_api_router)
+
 from apis.geocoding import geocode, reverse_geocode
 from apis.census import get_demographics_by_zip
 from apis.property_data import enrich_property, get_flood_zone

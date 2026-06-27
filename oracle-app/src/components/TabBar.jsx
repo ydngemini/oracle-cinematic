@@ -80,7 +80,11 @@ export function TabBar({ tabs, active, onSelect }) {
           style={{ transform: `translateX(${activeIndex * 100}%)`, width: `${100 / tabs.length}%` }}
         />
       </div>
-      <div className={styles.keys} role="tablist">
+      <div
+        className={styles.keys}
+        role="tablist"
+        style={{ gridTemplateColumns: `repeat(${tabs.length}, 1fr)` }}
+      >
         {tabs.map((tab) => (
           <button
             key={tab.id}
