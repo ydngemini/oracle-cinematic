@@ -41,7 +41,13 @@ export function PipelineBoard({ onClose }) {
   // A drag that just ended must not register as a card click.
   const dragJustEnded = useRef(false);
 
-  useEffect(() => setOverrides({}), [dealPipeline]);
+  // Clear optimistic overrides whenever a fresh pipeline arrives — render-phase
+  // reset (the linter flags the equivalent setState-in-effect).
+  const [prevPipeline, setPrevPipeline] = useState(dealPipeline);
+  if (dealPipeline !== prevPipeline) {
+    setPrevPipeline(dealPipeline);
+    setOverrides({});
+  }
 
   // Esc closes the dossier first, then the board.
   useEffect(() => {

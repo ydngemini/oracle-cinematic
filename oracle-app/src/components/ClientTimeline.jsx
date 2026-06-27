@@ -32,11 +32,15 @@ export default function ClientTimeline({ clientId, reloadKey = 0 }) {
   const [feed, setFeed] = useState(null); // null = loading
   const [error, setError] = useState(null);
 
+  // Reset to the loading state when the target/refresh changes — render-phase,
+  // so the linter's setState-in-effect rule stays satisfied.
+  const feedKey = `${clientId} ${reloadKey}`;
+  const [prevFeedKey, setPrevFeedKey] = useState(feedKey);
+  if (feedKey !== prevFeedKey) { setPrevFeedKey(feedKey); setFeed(null); setError(null); }
+
   useEffect(() => {
     if (!clientId) return undefined;
     let live = true;
-    setFeed(null);
-    setError(null);
     crmGet(`/api/crm/clients/${clientId}/timeline?limit=50`).then(
       (data) => {
         if (!live) return;

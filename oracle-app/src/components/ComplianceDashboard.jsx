@@ -39,13 +39,18 @@ export function ComplianceDashboard({ listingId }) {
 
   const fetch_ = useCallback(() => {
     if (!listingId) return;
-    setLoading(true);
     const stateParam = primaryState ? `&state=${primaryState}` : '';
     crmGet(`/api/compliance/check?listing_id=${listingId}${stateParam}`).then(
       (res) => { setData(res); setLoading(false); setError(null); },
       (err) => { setError(err); setLoading(false); }
     );
   }, [listingId, primaryState]);
+
+  // Show the spinner again when the target changes — render-phase reset, so the
+  // fetch effect below carries no synchronous setState (set-state-in-effect).
+  const ccKey = `${listingId} ${primaryState}`;
+  const [prevCcKey, setPrevCcKey] = useState(ccKey);
+  if (ccKey !== prevCcKey) { setPrevCcKey(ccKey); setLoading(Boolean(listingId)); setError(null); }
 
   useEffect(() => { fetch_(); }, [fetch_]);
 

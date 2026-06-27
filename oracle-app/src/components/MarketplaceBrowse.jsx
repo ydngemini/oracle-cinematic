@@ -177,6 +177,10 @@ export default function MarketplaceBrowse() {
   // Pipeline is the default and holds the real harvested inventory — load it
   // immediately so the Listings tab is never empty on arrival.
   useEffect(() => {
+    // Mount-time initial load. runSearch sets loading/error synchronously and is
+    // shared by 5 event handlers (pagination, retry, source toggle), so the
+    // loading flag stays in runSearch; the mount fetch here is intentional.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     runSearch(1, 'pipeline');
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);

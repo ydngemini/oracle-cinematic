@@ -47,12 +47,16 @@ export function LicenseStatusWidget() {
 
   const fetch_ = useCallback(() => {
     if (!agentId) return;
-    setLoading(true);
     crmGet(`/api/licensing/agent/${encodeURIComponent(agentId)}/status`).then(
       (res) => { setData(res); setLoading(false); setError(null); },
       (err) => { setError(err); setLoading(false); }
     );
   }, [agentId]);
+
+  // Show the spinner again when the agent changes — render-phase reset keeps the
+  // fetch effect free of synchronous setState (set-state-in-effect).
+  const [prevAgentId, setPrevAgentId] = useState(agentId);
+  if (agentId !== prevAgentId) { setPrevAgentId(agentId); setLoading(Boolean(agentId)); setError(null); }
 
   useEffect(() => { fetch_(); }, [fetch_]);
 
