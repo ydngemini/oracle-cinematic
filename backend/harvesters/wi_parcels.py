@@ -36,6 +36,12 @@ class WisconsinSCOHarvester(ArcGISHarvester):
         "Wisconsin_Statewide_Parcels/FeatureServer/0/query"
     )
 
+    # Of 3.56M statewide parcels, ~33% (vacant/ag/exempt) carry no site address
+    # and were silently skipped in map_record — that capped WI at 2786 of a 5000
+    # fetch. Filter to valued parcels that actually have a situs address so the
+    # bounded fetch is ~100% usable (2.38M still qualify). Mirrors WY's filter.
+    WHERE = "SITEADRESS IS NOT NULL AND SITEADRESS <> '' AND CNTASSDVALUE > 0"
+
     # Fields to request from the API (keeps payloads smaller than SELECT *)
     OUT_FIELDS = ",".join([
         "PARCELID",

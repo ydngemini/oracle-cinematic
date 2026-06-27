@@ -89,6 +89,55 @@
 .pill[data-status='active'] { color: var(--oracle-green); border-color: var(--oracle-green-dim); }
 .pill[data-status='pending'] { color: var(--oracle-amber); border-color: var(--oracle-amber-dim); }
 .pill[data-status='sold'] { color: var(--oracle-text-ghost); }
+.pill[data-source='pipeline'] { color: var(--oracle-amber); border-color: var(--oracle-amber-dim); }
+
+.coverBadge {
+  position: absolute;
+  top: var(--space-3);
+  left: var(--space-3);
+  z-index: var(--z-above);
+  font-family: var(--font-display);
+  font-size: 0.5625rem;
+  font-weight: 700;
+  letter-spacing: var(--tracking-wider);
+  text-transform: uppercase;
+  padding: var(--space-1) var(--space-3);
+  border-radius: var(--radius-pill);
+  color: var(--oracle-bg-mid);
+  background: var(--oracle-amber);
+  box-shadow: 0 0 12px var(--oracle-amber-glow);
+}
+
+/* ── Distress signal block (pipeline detail) ──────────────────────────────── */
+.flagBlock {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-4);
+  border-radius: var(--radius-lg);
+  background: var(--oracle-glass);
+  border: 1px solid var(--oracle-border);
+  box-shadow: var(--shadow-inset);
+}
+
+.flagRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.flag {
+  font-family: var(--font-display);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  letter-spacing: var(--tracking-wider);
+  text-transform: uppercase;
+  color: var(--oracle-red);
+  border: 1px solid var(--oracle-red-dim);
+  background: var(--oracle-red-ghost, rgba(220, 80, 80, 0.08));
+  border-radius: var(--radius-sm);
+  padding: var(--space-1) var(--space-2);
+}
 
 /* ── Thumbnail strip ─────────────────────────────────────────────────────── */
 .thumbs {

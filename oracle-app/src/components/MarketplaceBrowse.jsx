@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { crmGet } from '../state/useCrmApi';
 import ListingDetail from './ListingDetail';
 import styles from './MarketplaceBrowse.module.css';
@@ -45,6 +45,21 @@ const BEDS_OPTS = [
   { label: '5+ bd', value: '5' },
 ];
 
+// Human labels for harvested distress signals (payload.distress_flags).
+const FLAG_LABELS = {
+  absentee_owner: 'Absentee',
+  tax_exempt: 'Tax Exempt',
+  tax_delinquent: 'Tax Delinquent',
+  high_equity: 'High Equity',
+  vacant: 'Vacant',
+  pre_foreclosure: 'Pre-Foreclosure',
+  foreclosure: 'Foreclosure',
+  probate: 'Probate',
+  out_of_state: 'Out of State',
+  free_and_clear: 'Free & Clear',
+  long_tenure: 'Long Tenure',
+};
+
 const fmtInt = new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 });
 
 function toNum(v) {
@@ -71,15 +86,42 @@ function normalizeStatus(s) {
   return 'other';
 }
 
+function flagLabel(f) {
+  if (FLAG_LABELS[f]) return FLAG_LABELS[f];
+  return String(f || '')
+    .replace(/_/g, ' ')
+    .replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+// Motivation tier drives the meter colour (0–100 distress/urgency score).
+function motivationTier(score) {
+  const n = toNum(score) ?? 0;
+  if (n >= 60) return 'high';
+  if (n >= 35) return 'mid';
+  return 'low';
+}
+
+function clampPct(score) {
+  const n = toNum(score) ?? 0;
+  return Math.max(0, Math.min(100, n));
+}
+
 /**
- * MarketplaceBrowse — Neoh's retail MLS discovery surface.
+ * MarketplaceBrowse — Neoh's listing discovery surface.
  *
- * Searches an area (city/state/zip), filters locally-served results, and renders
- * a responsive card grid. All data comes from GET /api/mls/<...>, which serves
- * RentCast listings cached into oracle_mls_listings (quota-safe — one provider
- * fetch per area per day). Renders only real rows; never simulates a listing.
+ * Two real sources, switchable with a toggle:
+ *   • Pipeline (default) — the 240k+ REAL harvested leads, served from the
+ *     `leads` table via GET /api/mls/pipeline. Cards wear distress badges
+ *     (absentee, tax-exempt, …) and a motivation meter. This is where the data
+ *     actually lives today, so it loads on mount.
+ *   • MLS — RentCast-cached retail listings via GET /api/mls/search (empty until
+ *     a feed/key is live; kept here so it lights up automatically when it is).
+ *
+ * Renders only real rows; never simulates a listing and never invents a price —
+ * an unpriced lead shows "Unpriced", not a fabricated number.
  */
 export default function MarketplaceBrowse() {
+  const [source, setSource] = useState('pipeline'); // 'pipeline' | 'mls'
   const [form, setForm] = useState({
     city: '',
     state: '',
@@ -88,6 +130,7 @@ export default function MarketplaceBrowse() {
     maxPrice: '',
     beds: '',
     propertyType: '',
+    keyword: '',
   });
   const [result, setResult] = useState(null); // null = no search yet
   const [loading, setLoading] = useState(false);
@@ -97,7 +140,8 @@ export default function MarketplaceBrowse() {
 
   const setField = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.value }));
 
-  const runSearch = useCallback((nextPage) => {
+  const runSearch = useCallback((nextPage, src) => {
+    const useSource = src || source;
     const f = form;
     const params = new URLSearchParams();
     if (f.city.trim()) params.set('city', f.city.trim());
@@ -106,12 +150,17 @@ export default function MarketplaceBrowse() {
     if (f.minPrice) params.set('min_price', String(toNum(f.minPrice) ?? ''));
     if (f.maxPrice) params.set('max_price', String(toNum(f.maxPrice) ?? ''));
     if (f.beds) params.set('beds', f.beds);
-    if (f.propertyType) params.set('property_type', f.propertyType);
+    if (useSource === 'pipeline') {
+      if (f.keyword.trim()) params.set('q', f.keyword.trim());
+    } else if (f.propertyType) {
+      params.set('property_type', f.propertyType);
+    }
     params.set('page', String(nextPage));
 
+    const endpoint = useSource === 'pipeline' ? '/api/mls/pipeline' : '/api/mls/search';
     setLoading(true);
     setError(null);
-    return crmGet(`/api/mls/search?${params.toString()}`).then(
+    return crmGet(`${endpoint}?${params.toString()}`).then(
       (data) => {
         setResult(data);
         setPage(nextPage);
@@ -122,13 +171,34 @@ export default function MarketplaceBrowse() {
         setLoading(false);
       }
     );
-  }, [form]);
+  }, [form, source]);
+
+  // Pipeline is the default and holds the real harvested inventory — load it
+  // immediately so the Listings tab is never empty on arrival.
+  useEffect(() => {
+    runSearch(1, 'pipeline');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const switchSource = (next) => {
+    if (next === source) return;
+    setSource(next);
+    setSelected(null);
+    setError(null);
+    setPage(1);
+    if (next === 'pipeline') {
+      runSearch(1, 'pipeline'); // pipeline browses with or without filters
+    } else {
+      setResult(null); // MLS needs an explicit area search
+    }
+  };
 
   const onSubmit = (e) => {
     e.preventDefault();
     runSearch(1);
   };
 
+  const isPipeline = source === 'pipeline';
   const hasArea = form.city.trim() || form.state.trim() || form.zip.trim();
   const listings = result?.listings ?? [];
   const total = result?.total ?? 0;
@@ -138,7 +208,13 @@ export default function MarketplaceBrowse() {
       : error?.message || 'Couldn’t reach the listings service.';
 
   if (selected) {
-    return <ListingDetail listingId={selected} onBack={() => setSelected(null)} />;
+    return (
+      <ListingDetail
+        listingId={selected}
+        source={source}
+        onBack={() => setSelected(null)}
+      />
+    );
   }
 
   return (
@@ -146,8 +222,32 @@ export default function MarketplaceBrowse() {
       <header className={styles.head}>
         <span className={styles.brandRow}>
           <span className={styles.kicker}>Neoh</span>
-          <span className={styles.subKicker}>Browse the market</span>
+          <span className={styles.subKicker}>
+            {isPipeline ? 'Acquisition pipeline' : 'Browse the market'}
+          </span>
         </span>
+        <div className={styles.sourceToggle} role="tablist" aria-label="Listing source">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={isPipeline}
+            className={styles.sourceBtn}
+            data-active={isPipeline}
+            onClick={() => switchSource('pipeline')}
+          >
+            Pipeline
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={!isPipeline}
+            className={styles.sourceBtn}
+            data-active={!isPipeline}
+            onClick={() => switchSource('mls')}
+          >
+            MLS
+          </button>
+        </div>
       </header>
 
       <form className={styles.searchForm} onSubmit={onSubmit}>
@@ -228,21 +328,37 @@ export default function MarketplaceBrowse() {
               ))}
             </select>
           </label>
-          <label className={styles.selectField}>
-            <span className={styles.srOnly}>Property type</span>
-            <select className={styles.select} value={form.propertyType} onChange={setField('propertyType')}>
-              {PROPERTY_TYPES.map((o) => (
-                <option key={o.value} value={o.value}>{o.label}</option>
-              ))}
-            </select>
-          </label>
+          {isPipeline ? (
+            <label className={styles.selectField}>
+              <span className={styles.srOnly}>Keyword (owner / address)</span>
+              <input
+                className={styles.input}
+                type="text"
+                inputMode="text"
+                placeholder="Owner or address"
+                value={form.keyword}
+                onChange={setField('keyword')}
+              />
+            </label>
+          ) : (
+            <label className={styles.selectField}>
+              <span className={styles.srOnly}>Property type</span>
+              <select className={styles.select} value={form.propertyType} onChange={setField('propertyType')}>
+                {PROPERTY_TYPES.map((o) => (
+                  <option key={o.value} value={o.value}>{o.label}</option>
+                ))}
+              </select>
+            </label>
+          )}
         </div>
       </form>
 
-      {/* Quota-honest provenance line — always visible once a search has run. */}
+      {/* Honest provenance line — always visible once a search has run. */}
       {result && (
         <div className={styles.metaRow}>
-          <span className={styles.sourceNote}>Data via RentCast, cached</span>
+          <span className={styles.sourceNote}>
+            {isPipeline ? 'Real harvested pipeline' : 'Data via RentCast, cached'}
+          </span>
           {result.degraded && (
             <span className={styles.degradedNote} role="status">
               {result.notice || 'Live feed unavailable — showing cached listings.'}
@@ -269,85 +385,43 @@ export default function MarketplaceBrowse() {
       ) : result === null ? (
         <div className={styles.stateBox}>
           <span className={styles.stateGlyph} aria-hidden="true">{GLYPHS.house}</span>
-          <p className={styles.stateTitle}>Search a city to load listings</p>
+          <p className={styles.stateTitle}>Search a city to load MLS listings</p>
           <p className={styles.stateHint}>
-            Enter a city + state or a ZIP, then hit Search. Neoh pulls the market once and serves it instantly after.
+            Enter a city + state or a ZIP, then hit Search. Or switch to Pipeline to browse the live acquisition feed.
           </p>
         </div>
       ) : listings.length === 0 ? (
         <div className={styles.stateBox}>
           <span className={styles.stateGlyph} aria-hidden="true">{GLYPHS.house}</span>
           <p className={styles.stateTitle}>
-            {hasArea ? 'No listings found for this area' : 'Enter an area to search'}
+            {isPipeline
+              ? 'No pipeline properties match'
+              : hasArea
+                ? 'No listings found for this area'
+                : 'Enter an area to search'}
           </p>
           <p className={styles.stateHint}>
-            {result.degraded
-              ? 'The live feed is unavailable right now and nothing is cached for this area yet.'
-              : 'Try a broader area or different filters.'}
+            {isPipeline
+              ? 'Loosen the filters — clear the state or price range to see more of the harvested feed.'
+              : result.degraded
+                ? 'The live feed is unavailable right now and nothing is cached for this area yet.'
+                : 'Try a broader area or different filters.'}
           </p>
         </div>
       ) : (
         <>
           <div className={styles.resultMeta}>
-            <span className={styles.resultCount}>{fmtInt.format(total)} {total === 1 ? 'listing' : 'listings'}</span>
+            <span className={styles.resultCount}>
+              {fmtInt.format(total)} {total === 1 ? 'property' : 'properties'}
+            </span>
           </div>
 
           <ul className={styles.grid} role="list">
-            {listings.map((l, i) => {
-              const status = normalizeStatus(l.status);
-              const price = formatPrice(l.price);
-              const beds = toNum(l.beds);
-              const baths = toNum(l.baths);
-              const sqft = toNum(l.sqft);
-              return (
-                <li
-                  key={l.id ?? `${l.address}-${i}`}
-                  className={styles.card}
-                  style={{ animationDelay: `${Math.min(i, 8) * 45}ms` }}
-                >
-                  <button
-                    type="button"
-                    className={styles.cardBtn}
-                    onClick={() => setSelected(l.id)}
-                    aria-label={`View ${l.address || 'listing'}`}
-                  >
-                    <div className={styles.cover}>
-                      <span className={styles.coverGhost} aria-hidden="true">{GLYPHS.house}</span>
-                      {l.cover_url && (
-                        <img
-                          className={styles.coverImg}
-                          src={l.cover_url}
-                          alt=""
-                          loading="lazy"
-                          onError={(e) => { e.currentTarget.hidden = true; }}
-                        />
-                      )}
-                      <span className={styles.pill} data-status={status}>
-                        {status === 'other' ? (l.status || '—') : status}
-                      </span>
-                    </div>
-                    <div className={styles.body}>
-                      {price ? (
-                        <span className={styles.price}>{price}</span>
-                      ) : (
-                        <span className={styles.priceTbd}>Price TBD</span>
-                      )}
-                      <span className={styles.address}>{l.address || 'Address pending'}</span>
-                      <span className={styles.locale}>
-                        {[l.city, l.state].filter(Boolean).join(', ')}{l.zip ? ` ${l.zip}` : ''}
-                      </span>
-                      {(beds !== null || baths !== null || sqft !== null) && (
-                        <div className={styles.chips}>
-                          {beds !== null && <span className={styles.chip}>{fmtInt.format(beds)} bd</span>}
-                          {baths !== null && <span className={styles.chip}>{formatBaths(baths)} ba</span>}
-                          {sqft !== null && sqft > 0 && <span className={styles.chip}>{fmtInt.format(sqft)} sqft</span>}
-                        </div>
-                      )}
-                    </div>
-                  </button>
-                </li>
-              );
-            })}
+            {listings.map((l, i) =>
+              isPipeline
+                ? renderPipelineCard(l, i, () => setSelected(l.id))
+                : renderMlsCard(l, i, () => setSelected(l.id))
+            )}
           </ul>
 
           {(page > 1 || result.has_more) && (
@@ -374,5 +448,118 @@ export default function MarketplaceBrowse() {
         </>
       )}
     </section>
+  );
+}
+
+// ── card renderers ───────────────────────────────────────────────────────────
+
+function renderMlsCard(l, i, onOpen) {
+  const status = normalizeStatus(l.status);
+  const price = formatPrice(l.price);
+  const beds = toNum(l.beds);
+  const baths = toNum(l.baths);
+  const sqft = toNum(l.sqft);
+  return (
+    <li
+      key={l.id ?? `${l.address}-${i}`}
+      className={styles.card}
+      style={{ animationDelay: `${Math.min(i, 8) * 45}ms` }}
+    >
+      <button type="button" className={styles.cardBtn} onClick={onOpen} aria-label={`View ${l.address || 'listing'}`}>
+        <div className={styles.cover}>
+          <span className={styles.coverGhost} aria-hidden="true">{GLYPHS.house}</span>
+          {l.cover_url && (
+            <img
+              className={styles.coverImg}
+              src={l.cover_url}
+              alt=""
+              loading="lazy"
+              onError={(e) => { e.currentTarget.hidden = true; }}
+            />
+          )}
+          <span className={styles.pill} data-status={status}>
+            {status === 'other' ? (l.status || '—') : status}
+          </span>
+        </div>
+        <div className={styles.body}>
+          {price ? <span className={styles.price}>{price}</span> : <span className={styles.priceTbd}>Price TBD</span>}
+          <span className={styles.address}>{l.address || 'Address pending'}</span>
+          <span className={styles.locale}>
+            {[l.city, l.state].filter(Boolean).join(', ')}{l.zip ? ` ${l.zip}` : ''}
+          </span>
+          {(beds !== null || baths !== null || sqft !== null) && (
+            <div className={styles.chips}>
+              {beds !== null && <span className={styles.chip}>{fmtInt.format(beds)} bd</span>}
+              {baths !== null && <span className={styles.chip}>{formatBaths(baths)} ba</span>}
+              {sqft !== null && sqft > 0 && <span className={styles.chip}>{fmtInt.format(sqft)} sqft</span>}
+            </div>
+          )}
+        </div>
+      </button>
+    </li>
+  );
+}
+
+function renderPipelineCard(l, i, onOpen) {
+  const price = formatPrice(l.price);
+  const beds = toNum(l.beds);
+  const baths = toNum(l.baths);
+  const sqft = toNum(l.sqft);
+  const flags = Array.isArray(l.distress_flags) ? l.distress_flags : [];
+  // Absentee gets its own cover chip, so drop it from the in-body flag row.
+  const bodyFlags = flags.filter((f) => f !== 'absentee_owner');
+  const score = toNum(l.motivation_score);
+  return (
+    <li
+      key={l.id ?? `${l.parcel_id}-${i}`}
+      className={styles.card}
+      style={{ animationDelay: `${Math.min(i, 8) * 45}ms` }}
+    >
+      <button type="button" className={styles.cardBtn} onClick={onOpen} aria-label={`View ${l.address || 'property'}`}>
+        <div className={styles.cover}>
+          <span className={styles.coverGhost} aria-hidden="true">{GLYPHS.house}</span>
+          {l.is_absentee && <span className={styles.coverBadge}>Absentee</span>}
+          <span className={styles.pill} data-source="pipeline">Pipeline</span>
+        </div>
+        <div className={styles.body}>
+          {price ? <span className={styles.price}>{price}</span> : <span className={styles.priceTbd}>Unpriced</span>}
+          <span className={styles.address}>{l.address || 'Address pending'}</span>
+          <span className={styles.locale}>
+            {[l.city, l.state].filter(Boolean).join(', ')}{l.zip ? ` ${l.zip}` : ''}
+          </span>
+          {l.owner_name && <span className={styles.owner}>Owner · {l.owner_name}</span>}
+
+          {(beds !== null || baths !== null || sqft !== null) && (
+            <div className={styles.chips}>
+              {beds !== null && <span className={styles.chip}>{fmtInt.format(beds)} bd</span>}
+              {baths !== null && <span className={styles.chip}>{formatBaths(baths)} ba</span>}
+              {sqft !== null && sqft > 0 && <span className={styles.chip}>{fmtInt.format(sqft)} sqft</span>}
+            </div>
+          )}
+
+          {bodyFlags.length > 0 && (
+            <div className={styles.flagRow}>
+              {bodyFlags.map((f) => (
+                <span key={f} className={styles.flag}>{flagLabel(f)}</span>
+              ))}
+            </div>
+          )}
+
+          {score !== null && (
+            <div className={styles.meterRow} title={`Motivation ${score} / 100`}>
+              <span className={styles.meterLabel}>Motivation</span>
+              <span className={styles.meterTrack} aria-hidden="true">
+                <span
+                  className={styles.meterFill}
+                  data-tier={motivationTier(score)}
+                  style={{ width: `${clampPct(score)}%` }}
+                />
+              </span>
+              <span className={styles.meterVal}>{score}</span>
+            </div>
+          )}
+        </div>
+      </button>
+    </li>
   );
 }

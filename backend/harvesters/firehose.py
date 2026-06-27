@@ -2,8 +2,8 @@
 National Firehose — orchestrates every real state harvester around Delaware.
 
 Coverage: all 50 states + DC (51 jurisdictions). The original Mid-Atlantic ring
-(DE MD PA NJ NY VA WV CT MA NC) plus 40 statewide/county/city anchors added in
-the harvest-states program.
+(DE MD PA NJ NY VA WV CT MA NC) plus 41 statewide/county/city anchors added in
+the harvest-states program (WY was the last state wired in).
 
 Each jurisdiction is a real scraper against that jurisdiction's open-data
 endpoint (ArcGIS / Socrata / CARTO; MD via the SDAT Playwright path). The
@@ -77,6 +77,7 @@ from .ut_utah_county import UtahCountyHarvester
 from .vt_vcgi import VermontVCGIHarvester
 from .wa_snohomish import WASnohomishHarvester
 from .wi_parcels import WisconsinSCOHarvester
+from .wy_parcels import WyomingParcelsHarvester
 
 logger = logging.getLogger("oracle.harvester.firehose")
 
@@ -92,7 +93,7 @@ REGISTRY = {
     "CT": ConnecticutSalesHarvester,
     "MA": MassachusettsMassGISHarvester,
     "NC": NorthCarolinaOneMapHarvester,
-    # National expansion — 40 jurisdictions added in the harvest-states program.
+    # National expansion — 41 jurisdictions added in the harvest-states program.
     "AK": AlaskaFNSBHarvester,
     "AL": AlabamaJeffersonHarvester,
     "AR": ArkansasAGISOHarvester,
@@ -133,6 +134,7 @@ REGISTRY = {
     "VT": VermontVCGIHarvester,
     "WA": WASnohomishHarvester,
     "WI": WisconsinSCOHarvester,
+    "WY": WyomingParcelsHarvester,
 }
 
 

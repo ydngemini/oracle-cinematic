@@ -96,14 +96,20 @@ class HawaiiHonoluluHarvester(ArcGISHarvester):
             # ---- 2. Batch-fetch ASMTGIS for this page's parids ----
             parids = [r["parid"] for r in owndat_rows if r.get("parid")]
             asmt_map: dict[str, dict] = {}
-            if parids:
-                parid_list = ",".join(f"'{p}'" for p in parids)
+            # Chunk the IN(...) lookup so the GET URL never exceeds the server's URI
+            # limit — a full page of parids built a ~414-triggering query. 150/req
+            # mirrors the IL fix; each chunk is best-effort so one failure (or a
+            # transient 414) degrades that slice to value=0 instead of dropping the page.
+            _ASMT_CHUNK = 150
+            for _ci in range(0, len(parids), _ASMT_CHUNK):
+                chunk = parids[_ci:_ci + _ASMT_CHUNK]
+                parid_list = ",".join(f"'{p}'" for p in chunk)
                 asmt_params = {
                     "where": f"parid IN ({parid_list})",
                     "outFields": "parid,buildingvalue,landvalue,tnettaxval",
                     "returnGeometry": "false",
                     "f": "json",
-                    "resultRecordCount": len(parids) + 10,
+                    "resultRecordCount": len(chunk) + 10,
                 }
                 try:
                     asmt_data = await self._get_json(
@@ -116,7 +122,7 @@ class HawaiiHonoluluHarvester(ArcGISHarvester):
                             if pid:
                                 asmt_map[pid] = attr
                 except Exception as exc:  # noqa: BLE001
-                    logger.warning("[%s] ASMTGIS enrichment failed for batch: %s", self.STATE, exc)
+                    logger.warning("[%s] ASMTGIS enrichment failed for chunk: %s", self.STATE, exc)
 
             # ---- 3. Merge ASMTGIS values into OWNDAT rows ----
             for row in owndat_rows:

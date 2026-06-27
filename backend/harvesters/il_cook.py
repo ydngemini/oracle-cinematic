@@ -40,6 +40,11 @@ _HARVEST_YEAR = "2024"            # most recent complete assessment year
 # 10%-of-market assessed value to an approximate full market value.
 _ASSESS_MULTIPLIER = 10.0
 
+# Max PINs per assessed-value IN(...) query. A full 1000-PIN page builds a
+# ~17 KB URL and Socrata returns HTTP 414; 150 keeps the query string well under
+# the ~8 KB limit while still amortizing the request across the page.
+_VALUE_CHUNK = 150
+
 
 class IllinoisCookHarvester(SocrataHarvester):
     """Cook County, IL parcel + assessment data via two Socrata endpoints."""
@@ -63,7 +68,6 @@ class IllinoisCookHarvester(SocrataHarvester):
         out: list[dict] = []
         self._val_cache = {}
 
-        import urllib.request as _req
         from .base import PAGE_SIZE
 
         offset = 0
@@ -84,25 +88,15 @@ class IllinoisCookHarvester(SocrataHarvester):
             if not rows:
                 break
 
-            # Prefetch assessed values for this page's PINs in one request.
+            # Prefetch assessed values for this page's PINs. A single IN(...) over
+            # a full 1000-PIN page builds a ~17 KB query string and Socrata answers
+            # HTTP 414 (Request-URI Too Large), which previously killed the entire
+            # IL harvest on the first page — that's why IL was stuck at 131 stale
+            # rows. Chunk the IN(...) into small batches (URL stays well under 8 KB),
+            # and treat the value lookup as best-effort: if a chunk fails we log and
+            # continue with estimated_value=0 rather than dropping the whole batch.
             pins = [r["pin"] for r in rows if r.get("pin")]
-            if pins:
-                pin_list = ",".join(f"'{p}'" for p in pins)
-                val_where = f"pin in({pin_list}) AND year='{_HARVEST_YEAR}'"
-                val_params = {
-                    "$where":  val_where,
-                    "$select": "pin,certified_tot,board_tot",
-                    "$limit":  len(pins),
-                }
-                val_rows = await self._get_json(
-                    f"{_VALUE_URL}?{urllib.parse.urlencode(val_params)}"
-                )
-                if isinstance(val_rows, list):
-                    for vr in val_rows:
-                        pin = vr.get("pin", "")
-                        # Prefer board_tot (post-appeals), fall back to certified_tot
-                        raw = vr.get("board_tot") or vr.get("certified_tot") or 0
-                        self._val_cache[pin] = to_float(raw) * _ASSESS_MULTIPLIER
+            await self._prefetch_values(pins)
 
             out.extend(rows)
             offset += len(rows)
@@ -110,6 +104,41 @@ class IllinoisCookHarvester(SocrataHarvester):
                 break
 
         return out
+
+    async def _prefetch_values(self, pins: list[str]) -> None:
+        """Populate ``self._val_cache`` for ``pins`` via chunked IN(...) queries.
+
+        Best-effort: a failed chunk (e.g. a transient portal error) logs and is
+        skipped, leaving those parcels at estimated_value=0 — the harvest still
+        persists every address, which is the data that matters for lead coverage.
+        """
+        from .base import logger
+
+        for start in range(0, len(pins), _VALUE_CHUNK):
+            chunk = pins[start:start + _VALUE_CHUNK]
+            if not chunk:
+                continue
+            pin_list = ",".join(f"'{p}'" for p in chunk)
+            val_where = f"pin in({pin_list}) AND year='{_HARVEST_YEAR}'"
+            val_params = {
+                "$where":  val_where,
+                "$select": "pin,certified_tot,board_tot",
+                "$limit":  len(chunk),
+            }
+            try:
+                val_rows = await self._get_json(
+                    f"{_VALUE_URL}?{urllib.parse.urlencode(val_params)}"
+                )
+            except Exception as exc:  # noqa: BLE001 — value lookup is best-effort
+                logger.warning("[IL] assessed-value prefetch chunk failed (%d pins): %s",
+                               len(chunk), exc)
+                continue
+            if isinstance(val_rows, list):
+                for vr in val_rows:
+                    pin = vr.get("pin", "")
+                    # Prefer board_tot (post-appeals), fall back to certified_tot
+                    raw = vr.get("board_tot") or vr.get("certified_tot") or 0
+                    self._val_cache[pin] = to_float(raw) * _ASSESS_MULTIPLIER
 
     # ── map_record ────────────────────────────────────────────────────────────
     def map_record(self, row: dict) -> Optional[PropertyRecord]:

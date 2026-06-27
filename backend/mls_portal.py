@@ -543,3 +543,211 @@ async def mls_portal_listing(
     if not row:
         raise HTTPException(status.HTTP_404_NOT_FOUND, f"Listing {listing_id!r} not found.")
     return _listing_json(dict(row))
+
+
+# ── Pipeline source: browse the REAL harvested leads as listings ──────────────
+#
+# The agent-staged ``listings`` table and ``oracle_mls_listings`` are empty until
+# a RESO feed / RentCast key is live, but the ``leads`` table holds the 240k+ real
+# harvested parcels. The pipeline routes expose those leads as browsable listing
+# cards — the SAME card JSON shape MarketplaceBrowse consumes — with extra
+# distress-signal fields (motivation score, distress flags, absentee/owner).
+#
+# RLS is enforced exactly like /search: tenant_tx(ctx) scopes ``leads`` to the
+# caller's tenant (platform_admin sees the whole forest). All location/price/bed
+# filters and pagination run in SQL — no provider call, no fabrication. When a
+# lead carries no positive ``estimated_value`` the price is returned as null so
+# the UI shows "unpriced" rather than a made-up number.
+
+# Lead → listing-card projection. Payload fields are extracted in SQL so we never
+# have to decode the whole jsonb blob in Python; distress_flags is materialized as
+# a text[] (asyncpg → list[str]); price/equity are regex-guarded numeric casts so
+# a malformed payload value can never break the query.
+_PIPELINE_SELECT = """
+    id::text                                   AS id,
+    parcel_id,
+    state,
+    motivation_score,
+    dossier_status,
+    beds,
+    baths,
+    sqft,
+    created_at,
+    updated_at,
+    payload->>'address'                        AS address,
+    payload->>'city'                           AS city,
+    payload->>'zip_code'                       AS zip,
+    payload->>'county'                         AS county,
+    payload->>'owner_name'                     AS owner_name,
+    payload->>'owner_type'                     AS owner_type,
+    payload->>'last_sale_date'                 AS last_sale_date,
+    -- NULLIF guards leads whose harvester wrote '' (empty string) for this flag:
+    -- ''::boolean errors ("invalid input syntax for type boolean") and COALESCE
+    -- can't catch it because the cast fails first. NULLIF('','')->NULL->false.
+    COALESCE(NULLIF(payload->>'is_absentee_owner', '')::boolean, false) AS is_absentee,
+    CASE WHEN payload->>'estimated_value' ~ '^[0-9.]+$'
+         THEN NULLIF((payload->>'estimated_value')::numeric, 0)
+         ELSE NULL END                         AS price,
+    CASE WHEN payload->>'equity_percent' ~ '^-?[0-9.]+$'
+         THEN (payload->>'equity_percent')::numeric
+         ELSE NULL END                         AS equity_percent,
+    ARRAY(
+        SELECT jsonb_array_elements_text(
+            CASE WHEN jsonb_typeof(payload->'distress_flags') = 'array'
+                 THEN payload->'distress_flags' ELSE '[]'::jsonb END)
+    )                                          AS distress_flags
+"""
+
+
+def _pipeline_listing_json(r: dict) -> dict:
+    """Map a leads row → the listing-card JSON shape (+ pipeline-only fields)."""
+    flags = list(r.get("distress_flags") or [])
+    baths = _num(r.get("baths"))
+    return {
+        "id": r.get("id"),
+        "mls_number": r.get("parcel_id") or "",
+        "parcel_id": r.get("parcel_id") or "",
+        "address": r.get("address") or "",
+        "city": r.get("city") or "",
+        "state": r.get("state") or "",
+        "zip": r.get("zip") or "",
+        "county": r.get("county") or "",
+        "latitude": None,
+        "longitude": None,
+        "price": _num(r.get("price")),          # null when no estimated_value → UI: unpriced
+        "orig_price": None,
+        "status": r.get("dossier_status") or "pipeline",
+        "property_type": None,
+        "beds": r.get("beds"),
+        "baths": baths,
+        "sqft": r.get("sqft"),
+        "lot_sqft": None,
+        "year_built": None,
+        "hoa_monthly": None,
+        "days_on_market": None,
+        "list_date": None,
+        "description": None,
+        "photos": [],
+        "cover_url": None,
+        "source": "pipeline",
+        "last_updated": _iso(r.get("updated_at")),
+        # ── pipeline-specific distress signals ──
+        "motivation_score": r.get("motivation_score"),
+        "distress_flags": flags,
+        "is_absentee": bool(r.get("is_absentee")),
+        "owner_name": r.get("owner_name") or "",
+        "owner_type": r.get("owner_type") or "",
+        "equity_percent": _num(r.get("equity_percent")),
+        "last_sale_date": _iso(r.get("last_sale_date")),
+    }
+
+
+@router.get("/pipeline", summary="Browse the real harvested lead pipeline as listings")
+async def mls_pipeline_search(
+    city: Optional[str] = Query(default=None, max_length=120),
+    state: Optional[str] = Query(default=None, max_length=2),
+    zip: Optional[str] = Query(default=None, max_length=10),  # noqa: A002 — public query name
+    min_price: Optional[float] = Query(default=None, ge=0),
+    max_price: Optional[float] = Query(default=None, ge=0),
+    beds: Optional[int] = Query(default=None, ge=0, le=20),
+    q: Optional[str] = Query(default=None, max_length=160),
+    page: int = Query(default=1, ge=1, le=1000),
+    ctx: TenantContext = Depends(require_context),
+) -> dict:
+    """Paged, filtered browse served from the ``leads`` table (RLS-scoped).
+
+    Highest-motivation leads first. Filtering/pagination is pure SQL — no provider
+    call. This is where the real harvested inventory lives, so it has data even
+    when the MLS/RentCast surfaces are empty."""
+    conditions: list[str] = ["1 = 1"]
+    args: list[Any] = []
+
+    def _arg(v: Any) -> str:
+        args.append(v)
+        return f"${len(args)}"
+
+    if state and _STATE_RE.match(state.strip()):
+        conditions.append(f"state = {_arg(state.strip().upper())}")
+    if city and city.strip():
+        conditions.append(f"payload->>'city' ILIKE {_arg(city.strip())}")
+    if zip and zip.strip():
+        conditions.append(f"payload->>'zip_code' = {_arg(zip.strip())}")
+    if beds is not None:
+        conditions.append(f"beds >= {_arg(beds)}")
+    if min_price is not None:
+        conditions.append(
+            f"payload->>'estimated_value' ~ '^[0-9.]+$' "
+            f"AND (payload->>'estimated_value')::numeric >= {_arg(min_price)}"
+        )
+    if max_price is not None:
+        conditions.append(
+            f"payload->>'estimated_value' ~ '^[0-9.]+$' "
+            f"AND (payload->>'estimated_value')::numeric <= {_arg(max_price)}"
+        )
+    if q and q.strip():
+        like = f"%{q.strip()}%"
+        p = _arg(like)
+        conditions.append(
+            f"(payload->>'address' ILIKE {p} OR payload->>'city' ILIKE {p} "
+            f"OR payload->>'owner_name' ILIKE {p} OR parcel_id ILIKE {p})"
+        )
+
+    where = " AND ".join(conditions)
+    offset = (page - 1) * PAGE_SIZE
+
+    count_q = f"SELECT COUNT(*) AS n FROM leads WHERE {where}"
+    data_q = (
+        f"SELECT {_PIPELINE_SELECT} FROM leads WHERE {where} "
+        f"ORDER BY motivation_score DESC, created_at DESC "
+        f"LIMIT {_arg(PAGE_SIZE)} OFFSET {_arg(offset)}"
+    )
+
+    try:
+        async with tenant_tx(ctx) as conn:
+            count_row = await conn.fetchrow(count_q, *args[:-2])
+            total = int(count_row["n"]) if count_row else 0
+            rows = [dict(r) for r in await conn.fetch(data_q, *args)]
+    except RuntimeError as exc:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, f"Memory Core offline ({exc})")
+    except Exception as exc:  # noqa: BLE001
+        logger.error("MLS pipeline search failed: %s", exc)
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Memory Core offline.")
+
+    listings = [_pipeline_listing_json(r) for r in rows]
+    return {
+        "listings": listings,
+        "total": total,
+        "page": page,
+        "page_size": PAGE_SIZE,
+        "has_more": offset + len(listings) < total,
+        "degraded": False,
+        "source": "pipeline",
+        "notice": None,
+    }
+
+
+@router.get("/pipeline/{lead_id}", summary="Single pipeline (harvested lead) detail")
+async def mls_pipeline_listing(
+    lead_id: str,
+    ctx: TenantContext = Depends(require_context),
+) -> dict:
+    """Full detail for one harvested lead. 422 on a malformed id, 404 if absent."""
+    try:
+        uuid.UUID(lead_id)
+    except (ValueError, AttributeError, TypeError):
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "lead_id must be a UUID")
+
+    try:
+        async with tenant_tx(ctx) as conn:
+            row = await conn.fetchrow(
+                f"SELECT {_PIPELINE_SELECT} FROM leads WHERE id = $1::uuid", lead_id
+            )
+    except RuntimeError as exc:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, f"Memory Core offline ({exc})")
+    except Exception as exc:  # noqa: BLE001
+        logger.error("MLS pipeline detail failed: %s", exc)
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Memory Core offline.")
+
+    if not row:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"Lead {lead_id!r} not found.")
+    return _pipeline_listing_json(dict(row))

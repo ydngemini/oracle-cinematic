@@ -51,12 +51,32 @@ function normalizeStatus(s) {
   return 'other';
 }
 
+const FLAG_LABELS = {
+  absentee_owner: 'Absentee',
+  tax_exempt: 'Tax Exempt',
+  tax_delinquent: 'Tax Delinquent',
+  high_equity: 'High Equity',
+  vacant: 'Vacant',
+  pre_foreclosure: 'Pre-Foreclosure',
+  foreclosure: 'Foreclosure',
+  probate: 'Probate',
+  out_of_state: 'Out of State',
+  free_and_clear: 'Free & Clear',
+  long_tenure: 'Long Tenure',
+};
+
+function flagLabel(f) {
+  if (FLAG_LABELS[f]) return FLAG_LABELS[f];
+  return String(f || '').replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
 /**
- * ListingDetail — full record for one cached MLS listing.
- * Fetches GET /api/mls/listings/{id}; renders only real fields (a spec is
+ * ListingDetail — full record for one listing.
+ * For MLS rows fetches GET /api/mls/listings/{id}; for harvested pipeline rows
+ * fetches GET /api/mls/pipeline/{id}. Renders only real fields (a spec is
  * omitted entirely when the source didn't carry it — never a fabricated value).
  */
-export default function ListingDetail({ listingId, onBack }) {
+export default function ListingDetail({ listingId, source = 'mls', onBack }) {
   const [listing, setListing] = useState(null);
   const [error, setError] = useState(null);
 
@@ -64,34 +84,52 @@ export default function ListingDetail({ listingId, onBack }) {
     let alive = true;
     setListing(null);
     setError(null);
-    crmGet(`/api/mls/listings/${listingId}`).then(
+    const path = source === 'pipeline'
+      ? `/api/mls/pipeline/${listingId}`
+      : `/api/mls/listings/${listingId}`;
+    crmGet(path).then(
       (data) => { if (alive) setListing(data); },
       (err) => { if (alive) setError(err); }
     );
     return () => { alive = false; };
-  }, [listingId]);
+  }, [listingId, source]);
 
   const l = listing;
+  const isPipeline = (l?.source === 'pipeline') || source === 'pipeline';
   const status = normalizeStatus(l?.status);
   const price = formatPrice(l?.price);
   const photos = Array.isArray(l?.photos) ? l.photos : [];
+  const flags = Array.isArray(l?.distress_flags) ? l.distress_flags : [];
 
   // Specs are rendered only when present — no zero-fills, no invented data.
-  const specs = l
-    ? [
-        ['Beds', toNum(l.beds) !== null ? fmtInt.format(toNum(l.beds)) : null],
-        ['Baths', formatBaths(toNum(l.baths))],
-        ['Sqft', toNum(l.sqft) ? fmtInt.format(toNum(l.sqft)) : null],
-        ['Lot sqft', toNum(l.lot_sqft) ? fmtInt.format(toNum(l.lot_sqft)) : null],
-        ['Year built', l.year_built || null],
-        ['Property type', l.property_type || null],
-        ['HOA / mo', toNum(l.hoa_monthly) ? `$${fmtInt.format(toNum(l.hoa_monthly))}` : null],
-        ['Days on market', toNum(l.days_on_market) !== null ? fmtInt.format(toNum(l.days_on_market)) : null],
-        ['County', l.county || null],
-        ['MLS #', l.mls_number || null],
-        ['Listed', formatDate(l.list_date)],
-      ].filter(([, v]) => v !== null && v !== '' && v !== undefined)
-    : [];
+  const specs = !l
+    ? []
+    : (isPipeline
+        ? [
+            ['Beds', toNum(l.beds) !== null ? fmtInt.format(toNum(l.beds)) : null],
+            ['Baths', formatBaths(toNum(l.baths))],
+            ['Sqft', toNum(l.sqft) ? fmtInt.format(toNum(l.sqft)) : null],
+            ['Owner', l.owner_name || null],
+            ['Owner type', l.owner_type ? flagLabel(l.owner_type) : null],
+            ['Motivation', toNum(l.motivation_score) !== null ? `${fmtInt.format(toNum(l.motivation_score))} / 100` : null],
+            ['Equity', toNum(l.equity_percent) !== null ? `${fmtInt.format(toNum(l.equity_percent) * 100)}%` : null],
+            ['Last sale', formatDate(l.last_sale_date)],
+            ['Parcel #', l.parcel_id || null],
+            ['Stage', l.status || null],
+          ].filter(([, v]) => v !== null && v !== '' && v !== undefined)
+        : [
+            ['Beds', toNum(l.beds) !== null ? fmtInt.format(toNum(l.beds)) : null],
+            ['Baths', formatBaths(toNum(l.baths))],
+            ['Sqft', toNum(l.sqft) ? fmtInt.format(toNum(l.sqft)) : null],
+            ['Lot sqft', toNum(l.lot_sqft) ? fmtInt.format(toNum(l.lot_sqft)) : null],
+            ['Year built', l.year_built || null],
+            ['Property type', l.property_type || null],
+            ['HOA / mo', toNum(l.hoa_monthly) ? `$${fmtInt.format(toNum(l.hoa_monthly))}` : null],
+            ['Days on market', toNum(l.days_on_market) !== null ? fmtInt.format(toNum(l.days_on_market)) : null],
+            ['County', l.county || null],
+            ['MLS #', l.mls_number || null],
+            ['Listed', formatDate(l.list_date)],
+          ].filter(([, v]) => v !== null && v !== '' && v !== undefined));
 
   return (
     <section className={styles.wrap} aria-label="Listing detail">
@@ -123,9 +161,16 @@ export default function ListingDetail({ listingId, onBack }) {
                 onError={(e) => { e.currentTarget.hidden = true; }}
               />
             )}
-            <span className={styles.pill} data-status={status}>
-              {status === 'other' ? (l.status || '—') : status}
-            </span>
+            {isPipeline ? (
+              <span className={styles.pill} data-source="pipeline">Pipeline</span>
+            ) : (
+              <span className={styles.pill} data-status={status}>
+                {status === 'other' ? (l.status || '—') : status}
+              </span>
+            )}
+            {isPipeline && l.is_absentee && (
+              <span className={styles.coverBadge}>Absentee</span>
+            )}
           </div>
 
           {photos.length > 1 && (
@@ -144,7 +189,7 @@ export default function ListingDetail({ listingId, onBack }) {
           )}
 
           <header className={styles.headBlock}>
-            {price ? <span className={styles.price}>{price}</span> : <span className={styles.priceTbd}>Price TBD</span>}
+            {price ? <span className={styles.price}>{price}</span> : <span className={styles.priceTbd}>{isPipeline ? 'Unpriced' : 'Price TBD'}</span>}
             <h2 className={styles.address}>{l.address || 'Address pending'}</h2>
             <p className={styles.locale}>
               {[l.city, l.state].filter(Boolean).join(', ')}{l.zip ? ` ${l.zip}` : ''}
@@ -162,6 +207,17 @@ export default function ListingDetail({ listingId, onBack }) {
             </dl>
           )}
 
+          {isPipeline && flags.length > 0 && (
+            <div className={styles.flagBlock}>
+              <h3 className={styles.descHead}>Distress signals</h3>
+              <div className={styles.flagRow}>
+                {flags.map((f) => (
+                  <span key={f} className={styles.flag}>{flagLabel(f)}</span>
+                ))}
+              </div>
+            </div>
+          )}
+
           {l.description && (
             <div className={styles.descBlock}>
               <h3 className={styles.descHead}>About this home</h3>
@@ -170,7 +226,9 @@ export default function ListingDetail({ listingId, onBack }) {
           )}
 
           <p className={styles.sourceNote}>
-            Data via {l.source === 'rentcast' ? 'RentCast' : (l.source || 'MLS')}, cached
+            {isPipeline
+              ? `Real harvested pipeline lead${l.parcel_id ? ` · parcel ${l.parcel_id}` : ''}`
+              : `Data via ${l.source === 'rentcast' ? 'RentCast' : (l.source || 'MLS')}, cached`}
             {formatDate(l.last_updated) ? ` · updated ${formatDate(l.last_updated)}` : ''}
           </p>
         </>

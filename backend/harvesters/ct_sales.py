@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from .base import SocrataHarvester, to_float
+from .base import SocrataHarvester, norm, to_float
 from .property_adapter import PropertyRecord
 
 
@@ -18,9 +18,18 @@ class ConnecticutSalesHarvester(SocrataHarvester):
     SOQL_WHERE = "residentialtype IS NOT NULL"
 
     def map_record(self, row: dict) -> Optional[PropertyRecord]:
-        parcel = str(row.get("serialnumber") or "").strip()
+        # `serialnumber` is a per-town, per-year sale sequence — NOT a unique
+        # parcel key. Keying leads on it collapsed 5000 fetched sales into ~1254
+        # rows via the ON CONFLICT(tenant_id, parcel_id) upsert. This dataset
+        # carries no APN, so the property's town+street is the stable identity:
+        # it yields one lead per property (~4929 of 5000) and idempotently folds
+        # repeat sales of the same home into a single, latest-sale-wins lead.
+        town = str(row.get("town") or "").strip()
         addr = str(row.get("address") or "").strip()
-        if not parcel or not addr:
+        if not addr:
+            return None
+        parcel = f"CT-{norm(town)}-{norm(addr)}"
+        if parcel == "CT--":
             return None
         assessed = to_float(row.get("assessedvalue"))
         sale = to_float(row.get("saleamount"))
@@ -32,7 +41,7 @@ class ConnecticutSalesHarvester(SocrataHarvester):
         return PropertyRecord(
             parcel_id=parcel,
             address=addr,
-            city=str(row.get("town") or "").strip(),
+            city=town,
             state=self.STATE,
             zip_code="",
             owner_name="",  # sales file carries no owner name
