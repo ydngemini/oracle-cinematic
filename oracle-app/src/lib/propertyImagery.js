@@ -91,13 +91,17 @@ export function satelliteUrl(location, { size = '640x400', zoom = 19, scale } = 
   return `${STATICMAP_BASE}?${p.toString()}`;
 }
 
-/**
- * Probe Street View coverage at a location (a FREE metadata request).
- * @returns {Promise<'OK'|'ZERO_RESULTS'|'NO_KEY'|'ERROR'>}
- */
-export async function checkStreetViewCoverage(location) {
-  if (!KEY) return 'NO_KEY';
-  if (!location) return 'ERROR';
+// Module-level dedup: many cards (and remounts) ask about the same address, so
+// we share one in-flight probe per normalized location and remember definitive
+// answers. Transient ERRORs are never cached, so a flaky network can recover.
+const _coverageCache = new Map(); // normLocation -> 'OK' | 'ZERO_RESULTS'
+const _coverageInflight = new Map(); // normLocation -> Promise<status>
+
+function _normLocation(location) {
+  return String(location).trim().toLowerCase();
+}
+
+async function _probeStreetViewCoverage(location) {
   try {
     const p = new URLSearchParams({ location, key: KEY });
     const res = await fetch(`${STREETVIEW_META}?${p.toString()}`);
@@ -108,6 +112,36 @@ export async function checkStreetViewCoverage(location) {
     // Network / transient — caller treats this as "optimistically try the pano".
     return 'ERROR';
   }
+}
+
+/**
+ * Probe Street View coverage at a location (a FREE metadata request).
+ * Deduped across callers: identical locations reuse a cached/in-flight result
+ * instead of issuing a fresh network probe per card.
+ * @returns {Promise<'OK'|'ZERO_RESULTS'|'NO_KEY'|'ERROR'>}
+ */
+export async function checkStreetViewCoverage(location) {
+  if (!KEY) return 'NO_KEY';
+  if (!location) return 'ERROR';
+
+  const norm = _normLocation(location);
+  if (_coverageCache.has(norm)) return _coverageCache.get(norm);
+  if (_coverageInflight.has(norm)) return _coverageInflight.get(norm);
+
+  const probe = _probeStreetViewCoverage(location)
+    .then((status) => {
+      // Only memoize definitive answers; let transient ERRORs retry next time.
+      if (status !== 'ERROR') _coverageCache.set(norm, status);
+      _coverageInflight.delete(norm);
+      return status;
+    })
+    .catch(() => {
+      _coverageInflight.delete(norm);
+      return 'ERROR';
+    });
+
+  _coverageInflight.set(norm, probe);
+  return probe;
 }
 
 /**

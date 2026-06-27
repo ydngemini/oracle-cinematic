@@ -101,7 +101,10 @@ services:
       VITE_API_BASE: ${VITE_API_BASE:-http://localhost:8000}
       VITE_BILLING_BYPASS: ${VITE_BILLING_BYPASS:-false}
       # Google Maps Platform key for the photoreal 3D property tour (Map3DElement).
-      # Substituted from the repo-root .env at compose time (gitignored secret).
+      # NOTE: VITE_* values are inlined into browser-visible client code, so this is
+      # a PUBLIC / browser-exposed key — NOT a confidential secret. Lock it down via
+      # HTTP-referrer + API restrictions in the Google Cloud Console; never place
+      # confidential credentials on a VITE_ channel. Value comes from the repo-root .env.
       VITE_GOOGLE_MAPS_KEY: ${VITE_GOOGLE_MAPS_KEY:-}
     volumes:
       - ./oracle-app:/app

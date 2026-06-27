@@ -277,10 +277,19 @@ export default function PropertyTour({ address, lat, lng, leadId, listingId, onC
         const AltitudeMode = maps3d.AltitudeMode;
         const pins = media.slice(0, 8);
         pins.forEach((m, i) => {
-          const angle = (i / pins.length) * Math.PI * 2;
-          const dLat = Math.cos(angle) * 0.00016;
-          const dLng = Math.sin(angle) * 0.00016;
-          const position = { lat: c.lat + dLat, lng: c.lng + dLng, altitude: 26 + (i % 3) * 9 };
+          // Honesty rule: only drop a 3D pin where the photo carries REAL
+          // coordinates. With no media geolocation we skip the pin entirely and
+          // leave the filmstrip/lightbox as the way to browse photos — never
+          // fabricate a spatial position from the photo index.
+          const mediaLat = Number(m.lat ?? m.latitude);
+          const mediaLng = Number(m.lng ?? m.longitude);
+          if (!Number.isFinite(mediaLat) || !Number.isFinite(mediaLng)) return;
+          const mediaAltitude = Number(m.altitude);
+          const position = {
+            lat: mediaLat,
+            lng: mediaLng,
+            altitude: Number.isFinite(mediaAltitude) ? mediaAltitude : 0,
+          };
           let marker;
           try {
             marker = new Marker({
@@ -521,16 +530,44 @@ export default function PropertyTour({ address, lat, lng, leadId, listingId, onC
 // ── Lightbox over the live 3D flyover ────────────────────────────────────────
 function Lightbox({ media, index, onClose, onIndex }) {
   const count = media.length;
+  const dialogRef = useRef(null);
+  const closeRef = useRef(null);
+
+  // Move focus into the dialog on open, restore it to the opener on close.
+  useEffect(() => {
+    const previouslyFocused = document.activeElement;
+    closeRef.current?.focus();
+    return () => previouslyFocused?.focus?.();
+  }, []);
+
+  // Keep Tab/Shift+Tab cycling within the dialog's controls.
+  const trapFocus = useCallback((e) => {
+    if (e.key !== 'Tab') return;
+    const focusable = [...dialogRef.current.querySelectorAll('button')];
+    if (focusable.length === 0) return;
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (e.shiftKey && document.activeElement === first) {
+      e.preventDefault();
+      last?.focus();
+    } else if (!e.shiftKey && document.activeElement === last) {
+      e.preventDefault();
+      first?.focus();
+    }
+  }, []);
+
   return (
     <div
+      ref={dialogRef}
       className={styles.lightbox}
       role="dialog"
       aria-modal="true"
       aria-label={`Photo ${index + 1} of ${count}`}
+      onKeyDown={trapFocus}
       onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
     >
       <img className={styles.lightboxImg} src={mediaSrc(media[index])} alt={`Property photo ${index + 1}`} />
-      <button type="button" className={styles.lbClose} onClick={onClose} aria-label="Close photo">
+      <button ref={closeRef} type="button" className={styles.lbClose} onClick={onClose} aria-label="Close photo">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" /></svg>
       </button>
       {count > 1 && (

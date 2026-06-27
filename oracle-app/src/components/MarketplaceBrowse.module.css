@@ -309,10 +309,10 @@
     ),
     var(--oracle-bg-mid);
   background-size: 220% 100%, 100% 100%;
-  animation: coverShimmer 1.3s linear infinite;
+  animation: cover-shimmer 1.3s linear infinite;
 }
 
-@keyframes coverShimmer {
+@keyframes cover-shimmer {
   from { background-position: 180% 0, 0 0; }
   to   { background-position: -80% 0, 0 0; }
 }

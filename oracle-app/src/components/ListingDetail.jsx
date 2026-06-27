@@ -344,7 +344,11 @@ function ListingHero({ location, address, pill, badge }) {
           className={styles.heroImg}
           data-loaded={loaded ? 'true' : 'false'}
           src={current.url}
-          alt={address ? `Street view of ${address}` : 'Property exterior'}
+          alt={
+            current.kind === 'satellite'
+              ? (address ? `Satellite view of ${address}` : 'Satellite view of property')
+              : (address ? `Street view of ${address}` : 'Property exterior')
+          }
           decoding="async"
           onLoad={() => setLoaded(true)}
           onError={() => {

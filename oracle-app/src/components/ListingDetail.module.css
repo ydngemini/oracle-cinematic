@@ -152,10 +152,10 @@
     ),
     var(--oracle-glass);
   background-size: 220% 100%, 100% 100%;
-  animation: heroShimmer 1.3s linear infinite;
+  animation: hero-shimmer 1.3s linear infinite;
 }
 
-@keyframes heroShimmer {
+@keyframes hero-shimmer {
   from { background-position: 180% 0, 0 0; }
   to   { background-position: -80% 0, 0 0; }
 }
@@ -443,10 +443,10 @@
   background: rgba(2, 2, 4, 0.72);
   backdrop-filter: var(--oracle-backdrop-light);
   -webkit-backdrop-filter: var(--oracle-backdrop-light);
-  animation: tourOverlayIn var(--duration-base) var(--ease-out);
+  animation: tour-overlay-in var(--duration-base) var(--ease-out);
 }
 
-@keyframes tourOverlayIn {
+@keyframes tour-overlay-in {
   from { opacity: 0; }
   to { opacity: 1; }
 }

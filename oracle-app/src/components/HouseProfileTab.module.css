@@ -382,7 +382,7 @@
   color: var(--oracle-text-dim);
 }
 
-/* ── Skeletons — glass rows under the shared oracleSheen shimmer ─────────── */
+/* ── Skeletons — glass rows under the shared oracle-sheen shimmer ─────────── */
 .skeletons {
   display: flex;
   flex-direction: column;
@@ -397,7 +397,7 @@
   background-size: 220% 100%;
   background-repeat: no-repeat;
   border: 1px solid var(--oracle-border-subtle);
-  animation: oracleSheen 1.5s var(--ease-in-out) infinite;
+  animation: oracle-sheen 1.5s var(--ease-in-out) infinite;
 }
 
 .skeletonRow:nth-child(2) { animation-delay: 160ms; }

@@ -151,10 +151,10 @@
 
 
 /* ── Global motion primitives ───────────────────────────────────────────────
-   oracleSheen sweeps the loading band across glass skeletons. Defined globally
+   oracle-sheen sweeps the loading band across glass skeletons. Defined globally
    so every CSS-Module skeleton shares one premium shimmer (module references to
    an undefined-locally keyframe resolve to this global name). */
-@keyframes oracleSheen {
+@keyframes oracle-sheen {
   from { background-position: 220% 0; }
   to   { background-position: -120% 0; }
 }

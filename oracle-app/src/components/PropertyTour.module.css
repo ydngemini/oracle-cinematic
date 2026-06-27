@@ -114,14 +114,14 @@
   backdrop-filter: var(--oracle-backdrop-light);
   -webkit-backdrop-filter: var(--oracle-backdrop-light);
   pointer-events: none;
-  animation: hintIn var(--duration-base) var(--ease-out) both, hintOut var(--duration-slow) var(--ease-out) 5s both;
+  animation: hint-in var(--duration-base) var(--ease-out) both, hint-out var(--duration-slow) var(--ease-out) 5s both;
 }
 
 .hintGlyph { display: grid; place-items: center; width: 16px; height: 16px; flex: none; color: var(--oracle-amber); }
 .hintGlyph svg { width: 16px; height: 16px; }
 
-@keyframes hintIn { from { opacity: 0; transform: translate(-50%, -6px); } to { opacity: 1; transform: translate(-50%, 0); } }
-@keyframes hintOut { from { opacity: 1; } to { opacity: 0; } }
+@keyframes hint-in { from { opacity: 0; transform: translate(-50%, -6px); } to { opacity: 1; transform: translate(-50%, 0); } }
+@keyframes hint-out { from { opacity: 1; } to { opacity: 0; } }
 
 /* ── Dock — filmstrip + walk controls, anchored bottom ────────────────────── */
 .dock {
@@ -419,10 +419,10 @@
   background: rgba(2, 2, 4, 0.88);
   backdrop-filter: var(--oracle-backdrop);
   -webkit-backdrop-filter: var(--oracle-backdrop);
-  animation: lbIn var(--duration-base) var(--ease-out);
+  animation: lb-in var(--duration-base) var(--ease-out);
 }
 
-@keyframes lbIn { from { opacity: 0; } to { opacity: 1; } }
+@keyframes lb-in { from { opacity: 0; } to { opacity: 1; } }
 
 .lightboxImg {
   max-width: 100%;
@@ -495,4 +495,6 @@
 
 @media (prefers-reduced-motion: reduce) {
   .hint, .lightbox { animation: none; }
+  .film, .iconCtrl { transition: none; }
+  .film:hover, .iconCtrl:active { transform: none; }
 }

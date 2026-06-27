@@ -262,6 +262,36 @@ export default function MediaUploader({
     return () => window.removeEventListener('keydown', onKey);
   }, [lightbox, items.length]);
 
+  // ── Lightbox focus management ──────────────────────────────────────────────
+  // Move focus into the dialog on open and restore it to the opener on close.
+  // Keyed on open/closed (not the index) so prev/next nav keeps trapped focus.
+  const lightboxOpen = lightbox != null;
+  const lbDialogRef = useRef(null);
+  const lbCloseRef = useRef(null);
+
+  useEffect(() => {
+    if (!lightboxOpen) return undefined;
+    const previouslyFocused = document.activeElement;
+    lbCloseRef.current?.focus();
+    return () => previouslyFocused?.focus?.();
+  }, [lightboxOpen]);
+
+  // Trap Tab/Shift+Tab within the dialog's controls.
+  const trapLightboxFocus = useCallback((e) => {
+    if (e.key !== 'Tab') return;
+    const focusable = [...(lbDialogRef.current?.querySelectorAll('button') ?? [])];
+    if (focusable.length === 0) return;
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (e.shiftKey && document.activeElement === first) {
+      e.preventDefault();
+      last?.focus();
+    } else if (!e.shiftKey && document.activeElement === last) {
+      e.preventDefault();
+      first?.focus();
+    }
+  }, []);
+
   const count = items.length;
   const wrapClass = `${styles.wrap}${compact ? ` ${styles.compact}` : ''}`;
 
@@ -398,14 +428,16 @@ export default function MediaUploader({
       {/* Lightbox */}
       {lightbox != null && items[lightbox] && (
         <div
+          ref={lbDialogRef}
           className={styles.lightbox}
           role="dialog"
           aria-modal="true"
           aria-label={`Photo ${lightbox + 1} of ${count}`}
+          onKeyDown={trapLightboxFocus}
           onClick={(e) => { if (e.target === e.currentTarget) setLightbox(null); }}
         >
           <img className={styles.lightboxImg} src={mediaSrc(items[lightbox])} alt={`Property photo ${lightbox + 1}`} />
-          <button type="button" className={styles.lbClose} onClick={() => setLightbox(null)} aria-label="Close">
+          <button ref={lbCloseRef} type="button" className={styles.lbClose} onClick={() => setLightbox(null)} aria-label="Close">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" /></svg>
           </button>
           {count > 1 && (

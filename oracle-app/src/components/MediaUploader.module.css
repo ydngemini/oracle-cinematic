@@ -92,7 +92,7 @@
   padding: 0;
   margin: -1px;
   overflow: hidden;
-  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
   white-space: nowrap;
   border: 0;
 }
@@ -307,10 +307,10 @@
     linear-gradient(100deg, transparent 20%, var(--oracle-glass-hover) 50%, transparent 80%),
     var(--oracle-glass);
   background-size: 220% 100%, 100% 100%;
-  animation: mediaShimmer 1.3s linear infinite;
+  animation: media-shimmer 1.3s linear infinite;
 }
 
-@keyframes mediaShimmer {
+@keyframes media-shimmer {
   from { background-position: 180% 0, 0 0; }
   to   { background-position: -80% 0, 0 0; }
 }
@@ -364,10 +364,10 @@
   background: rgba(2, 2, 4, 0.86);
   backdrop-filter: var(--oracle-backdrop);
   -webkit-backdrop-filter: var(--oracle-backdrop);
-  animation: lbIn var(--duration-base) var(--ease-out);
+  animation: lb-in var(--duration-base) var(--ease-out);
 }
 
-@keyframes lbIn { from { opacity: 0; } to { opacity: 1; } }
+@keyframes lb-in { from { opacity: 0; } to { opacity: 1; } }
 
 .lightboxImg {
   max-width: 100%;

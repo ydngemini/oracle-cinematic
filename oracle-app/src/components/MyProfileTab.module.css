@@ -428,7 +428,7 @@
   background-size: 220% 100%;
   background-repeat: no-repeat;
   border: 1px solid var(--oracle-border-subtle);
-  animation: oracleSheen 1.5s var(--ease-in-out) infinite;
+  animation: oracle-sheen 1.5s var(--ease-in-out) infinite;
 }
 
 .skelIdentity { height: 114px; }

@@ -53,8 +53,12 @@ export function loadGoogleMaps() {
     const CB = '__neohGmapsReady';
     window[CB] = () => {
       try { delete window[CB]; } catch { /* ignore */ }
-      if (window.google?.maps?.importLibrary) resolve(window.google);
-      else reject(new Error('MAPS_UNAVAILABLE'));
+      if (window.google?.maps?.importLibrary) {
+        resolve(window.google);
+      } else {
+        _loadPromise = null; // allow a later retry after a transient init failure
+        reject(new Error('MAPS_UNAVAILABLE'));
+      }
     };
 
     const params = new URLSearchParams({
@@ -71,6 +75,7 @@ export function loadGoogleMaps() {
     script.defer = true;
     script.dataset.oracleGoogleMaps = '1';
     script.onerror = () => {
+      try { delete window[CB]; } catch { /* ignore */ } // callback never fired
       _loadPromise = null; // allow a later retry after a transient failure
       reject(new Error('SCRIPT_LOAD_FAILED'));
     };

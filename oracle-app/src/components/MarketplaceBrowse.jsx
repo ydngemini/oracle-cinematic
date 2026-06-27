@@ -493,6 +493,11 @@ function PropertyCover({ location, alt, badge, pill, footer }) {
   const current = candidates[idx];
   const exhausted = ready && (candidates.length === 0 || idx >= candidates.length);
   const showShimmer = !exhausted && (!ready || !loaded);
+  // Keep alt honest: the cover can fall back to a satellite tile when no pano
+  // exists, so reflect the real source rather than always saying "Street view".
+  const imageAlt = current?.kind === 'satellite'
+    ? (alt || '').replace(/^Street view of/i, 'Satellite view of')
+    : alt;
 
   return (
     <div className={styles.cover}>
@@ -504,7 +509,7 @@ function PropertyCover({ location, alt, badge, pill, footer }) {
           className={styles.coverImg}
           data-loaded={loaded ? 'true' : 'false'}
           src={current.url}
-          alt={alt}
+          alt={imageAlt}
           loading="lazy"
           decoding="async"
           onLoad={() => setLoaded(true)}

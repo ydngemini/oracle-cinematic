@@ -667,7 +667,7 @@
 .err { font-size: var(--text-sm); color: var(--oracle-red); }
 
 .bodySkel { display: flex; flex-direction: column; gap: var(--space-3); }
-.skelBar { height: 64px; border-radius: var(--radius-md); background-color: var(--oracle-glass); background-image: linear-gradient(100deg, transparent 28%, var(--oracle-shimmer) 50%, transparent 72%); background-size: 220% 100%; background-repeat: no-repeat; border: 1px solid var(--oracle-border-subtle); animation: oracleSheen 1.5s var(--ease-in-out) infinite; }
+.skelBar { height: 64px; border-radius: var(--radius-md); background-color: var(--oracle-glass); background-image: linear-gradient(100deg, transparent 28%, var(--oracle-shimmer) 50%, transparent 72%); background-size: 220% 100%; background-repeat: no-repeat; border: 1px solid var(--oracle-border-subtle); animation: oracle-sheen 1.5s var(--ease-in-out) infinite; }
 .skelBar:nth-child(2) { animation-delay: 160ms; }
 .skelBar:nth-child(3) { animation-delay: 320ms; }
 

@@ -265,10 +265,10 @@
   height: 7px;
   border-radius: var(--radius-pill);
   background: var(--oracle-amber-dim);
-  animation: liveIdle 2.6s var(--ease-in-out) infinite;
+  animation: live-idle 2.6s var(--ease-in-out) infinite;
 }
 
-@keyframes liveIdle {
+@keyframes live-idle {
   0%, 100% { opacity: 0.45; }
   50%      { opacity: 1; }
 }
@@ -712,7 +712,7 @@
   background-size: 220% 100%;
   background-repeat: no-repeat;
   border: 1px solid var(--oracle-border-subtle);
-  animation: oracleSheen 1.5s var(--ease-in-out) infinite;
+  animation: oracle-sheen 1.5s var(--ease-in-out) infinite;
 }
 
 .skel:nth-child(2) { animation-delay: 160ms; }
@@ -783,6 +783,10 @@
 
   .liveTick,
   .liveTickPulse {
+    animation: none;
+  }
+
+  .skel {
     animation: none;
   }
 }

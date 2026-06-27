@@ -548,7 +548,7 @@
   background-size: 220% 100%;
   background-repeat: no-repeat;
   border: 1px solid var(--oracle-border-subtle);
-  animation: oracleSheen 1.5s var(--ease-in-out) infinite;
+  animation: oracle-sheen 1.5s var(--ease-in-out) infinite;
 }
 
 .pickSkel:nth-child(2) {
@@ -576,7 +576,7 @@
   background-size: 220% 100%;
   background-repeat: no-repeat;
   border: 1px solid var(--oracle-border-subtle);
-  animation: oracleSheen 1.5s var(--ease-in-out) infinite;
+  animation: oracle-sheen 1.5s var(--ease-in-out) infinite;
 }
 
 .skelCard:nth-child(2) { animation-delay: 160ms; }
@@ -674,7 +674,7 @@
   border: 1px solid var(--oracle-border-bright);
   box-shadow: var(--shadow-inset), 0 0 28px var(--oracle-amber-glow);
   color: var(--oracle-amber-dim);
-  animation: emptyHalo 4.5s var(--ease-in-out) infinite;
+  animation: empty-halo 4.5s var(--ease-in-out) infinite;
 }
 
 .emptyGlyph svg {
@@ -682,7 +682,7 @@
   height: 30px;
 }
 
-@keyframes emptyHalo {
+@keyframes empty-halo {
   0%, 100% { box-shadow: var(--shadow-inset), 0 0 22px var(--oracle-amber-glow); }
   50%      { box-shadow: var(--shadow-inset), 0 0 40px var(--oracle-amber-glow); }
 }
