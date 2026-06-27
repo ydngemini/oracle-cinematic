@@ -1,0 +1,344 @@
+"""Neoh 2D image upload + serve API.
+
+Agents (in-app, JWT) and homeowners (passwordless client portal) attach property
+photos to a lead or listing. The metadata row lives in the existing tenant-scoped
+`property_media` table (kind='photo'); the raw bytes live in the non-tenant-scoped
+`media_blobs` table (migration 0022) so the PUBLIC `GET /api/media/{id}` serve
+path — which backs <img src> references and has no tenant context — can stream
+them without tripping property_media's FORCE row-level security.
+
+Why bytes-in-Postgres instead of files-on-disk: the container runs as uid 1001
+against a bind mount that is not reliably writable (CLAUDE.md / prod-readiness
+audit), and per-tenant RLS makes a shared writable dir awkward. A DB blob keyed
+by the media row's random uuid is the robust, deployment-agnostic choice.
+
+Endpoints
+  POST   /api/crm/leads/{lead_id}/media        (agent JWT)  — upload photo(s)
+  POST   /api/crm/listings/{listing_id}/media  (agent JWT)  — upload photo(s)
+  GET    /api/crm/media?lead_id=&listing_id=    (agent JWT)  — list photos
+  DELETE /api/crm/media/{media_id}             (agent JWT)  — remove a photo
+  POST   /api/portal/media                     (portal token) — homeowner upload
+  GET    /api/media/{media_id}                 (public)     — stream the image
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+from typing import List, Optional
+from uuid import UUID, uuid4
+
+import jwt
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Header,
+    HTTPException,
+    Query,
+    UploadFile,
+    status,
+)
+from fastapi.responses import Response
+
+from auth import ALGORITHM, SECRET_KEY
+from db.connection import get_pool, tenant_tx
+from tenancy import Role, TenantContext, require_context, _validate_tenant_id
+
+log = logging.getLogger("oracle.media_api")
+
+router = APIRouter(prefix="/api", tags=["media"])
+
+# 12 MB hard cap per image.
+MAX_BYTES = 12 * 1024 * 1024
+
+# Magic-byte sniff → canonical content-type. We trust the file signature over the
+# client-declared Content-Type (which is attacker-controlled and easily spoofed).
+def _sniff_image(data: bytes) -> Optional[str]:
+    if data[:8] == b"\x89PNG\r\n\x1a\n":
+        return "image/png"
+    if data[:3] == b"\xff\xd8\xff":
+        return "image/jpeg"
+    if data[:6] in (b"GIF87a", b"GIF89a"):
+        return "image/gif"
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp"
+    return None
+
+
+async def _read_and_validate(f: UploadFile) -> tuple[bytes, str]:
+    """Slurp one upload, enforce the size cap, and confirm it is really an image.
+
+    Raises 413 (too big), 415 (not an image), or 422 (empty)."""
+    data = await f.read()
+    if not data:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Empty file upload.")
+    if len(data) > MAX_BYTES:
+        raise HTTPException(
+            status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            f"Image exceeds {MAX_BYTES // (1024 * 1024)}MB limit.",
+        )
+    content_type = _sniff_image(data)
+    if content_type is None:
+        raise HTTPException(
+            status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+            "Upload is not a recognised image (png, jpeg, gif, webp).",
+        )
+    return data, content_type
+
+
+async def _persist(
+    conn,
+    *,
+    tenant_id: str,
+    lead_id: Optional[UUID],
+    listing_id: Optional[UUID],
+    files: List[UploadFile],
+) -> list[dict]:
+    """Insert each validated image as a property_media row (+ media_blobs bytes),
+    appending to the existing photo order. Runs inside the caller's tenant_tx so
+    RLS scopes every write to the request's tenant."""
+    # Next sort_order for this property (tenant-scoped via RLS on the SELECT).
+    base = await conn.fetchval(
+        """
+        SELECT COALESCE(MAX(sort_order), -1)
+          FROM property_media
+         WHERE ($1::uuid IS NOT NULL AND lead_id = $1)
+            OR ($2::uuid IS NOT NULL AND listing_id = $2)
+        """,
+        lead_id,
+        listing_id,
+    )
+
+    created: list[dict] = []
+    for f in files:
+        data, content_type = await _read_and_validate(f)
+        base += 1
+        # url is NOT NULL and must point at the public serve path, which embeds
+        # the row id. Generate the id client-side so the url is known up front and
+        # the whole thing is a single INSERT (a writable CTE can't UPDATE the row
+        # its own INSERT just created — same-statement snapshot).
+        new_id = uuid4()
+        row = await conn.fetchrow(
+            """
+            INSERT INTO property_media
+                (id, tenant_id, lead_id, listing_id, kind, url, sort_order)
+            VALUES ($1, $2, $3, $4, 'photo', $5, $6)
+            RETURNING id, url, kind, sort_order, created_at
+            """,
+            new_id,
+            tenant_id,
+            lead_id,
+            listing_id,
+            f"/api/media/{new_id}",
+            base,
+        )
+        await conn.execute(
+            """
+            INSERT INTO media_blobs (media_id, content_type, byte_size, bytes)
+            VALUES ($1, $2, $3, $4)
+            """,
+            row["id"],
+            content_type,
+            len(data),
+            data,
+        )
+        created.append(
+            {
+                "id": str(row["id"]),
+                "url": row["url"],
+                "kind": row["kind"],
+                "sort_order": row["sort_order"],
+                "created_at": row["created_at"].isoformat(),
+            }
+        )
+
+    return created
+
+
+# ---------------------------------------------------------------------------
+# Agent endpoints — JWT (require_context → TenantContext), RLS-scoped.
+# ---------------------------------------------------------------------------
+
+@router.post("/crm/leads/{lead_id}/media", status_code=status.HTTP_201_CREATED)
+async def upload_lead_media(
+    lead_id: UUID,
+    files: List[UploadFile] = File(...),
+    ctx: TenantContext = Depends(require_context),
+):
+    """Attach one or more photos to a lead (the primary property record — 257k
+    leads vs few listings). Returns the created media rows."""
+    async with tenant_tx(ctx) as conn:
+        if not await conn.fetchval("SELECT 1 FROM leads WHERE id = $1", lead_id):
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Lead not found.")
+        created = await _persist(
+            conn, tenant_id=ctx.tenant_id, lead_id=lead_id, listing_id=None, files=files
+        )
+    log.info("Lead media uploaded: lead_id=%s count=%d tenant=%s", lead_id, len(created), ctx.tenant_id)
+    return {"media": created}
+
+
+@router.post("/crm/listings/{listing_id}/media", status_code=status.HTTP_201_CREATED)
+async def upload_listing_media(
+    listing_id: UUID,
+    files: List[UploadFile] = File(...),
+    ctx: TenantContext = Depends(require_context),
+):
+    """Attach one or more photos to a listing. Returns the created media rows."""
+    async with tenant_tx(ctx) as conn:
+        if not await conn.fetchval("SELECT 1 FROM listings WHERE id = $1", listing_id):
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Listing not found.")
+        created = await _persist(
+            conn, tenant_id=ctx.tenant_id, lead_id=None, listing_id=listing_id, files=files
+        )
+    log.info("Listing media uploaded: listing_id=%s count=%d tenant=%s", listing_id, len(created), ctx.tenant_id)
+    return {"media": created}
+
+
+@router.get("/crm/media")
+async def list_media(
+    lead_id: Optional[UUID] = Query(default=None),
+    listing_id: Optional[UUID] = Query(default=None),
+    ctx: TenantContext = Depends(require_context),
+):
+    """List photos for a lead or listing, ordered by sort_order. RLS-scoped."""
+    if lead_id is None and listing_id is None:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            "Provide lead_id or listing_id.",
+        )
+    async with tenant_tx(ctx) as conn:
+        rows = await conn.fetch(
+            """
+            SELECT id, url, kind, sort_order, created_at
+              FROM property_media
+             WHERE kind = 'photo'
+               AND (($1::uuid IS NOT NULL AND lead_id = $1)
+                 OR ($2::uuid IS NOT NULL AND listing_id = $2))
+             ORDER BY sort_order ASC, created_at ASC
+            """,
+            lead_id,
+            listing_id,
+        )
+    return {
+        "media": [
+            {
+                "id": str(r["id"]),
+                "url": r["url"],
+                "kind": r["kind"],
+                "sort_order": r["sort_order"],
+                "created_at": r["created_at"].isoformat(),
+            }
+            for r in rows
+        ]
+    }
+
+
+@router.delete("/crm/media/{media_id}")
+async def delete_media(
+    media_id: UUID,
+    ctx: TenantContext = Depends(require_context),
+):
+    """Delete a photo. RLS confines the DELETE to this tenant; media_blobs
+    cascades via the 0022 FK."""
+    async with tenant_tx(ctx) as conn:
+        row = await conn.fetchrow(
+            "DELETE FROM property_media WHERE id = $1 RETURNING id", media_id
+        )
+    if row is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Media not found.")
+    log.info("Media deleted: media_id=%s tenant=%s", media_id, ctx.tenant_id)
+    return {"deleted": True, "id": str(media_id)}
+
+
+# ---------------------------------------------------------------------------
+# Public serve — no auth. The media id is a 122-bit random uuid; media_blobs is
+# deliberately non-RLS (it holds only the publicly-served image bytes), so this
+# reads on a plain pooled connection with no tenant context.
+# ---------------------------------------------------------------------------
+
+@router.get("/media/{media_id}")
+async def serve_media(media_id: UUID):
+    pool = get_pool()
+    if pool is None:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Storage offline.")
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT content_type, bytes FROM media_blobs WHERE media_id = $1",
+            media_id,
+        )
+    if row is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Image not found.")
+    return Response(
+        content=bytes(row["bytes"]),
+        media_type=row["content_type"],
+        headers={"Cache-Control": "public, max-age=31536000, immutable"},
+    )
+
+
+# ---------------------------------------------------------------------------
+# Client-portal upload — passwordless portal-session token (client_portal.py).
+# The token is pinned to (tenant, lead, portal); the homeowner can only attach
+# photos to their own property. Decoded directly (not via decode_token) to mirror
+# how client_portal mints it: jwt.encode(claims, SECRET_KEY, ALGORITHM) with no
+# aud/iss, so it must be verified the same way.
+# ---------------------------------------------------------------------------
+
+@router.post("/portal/media", status_code=status.HTTP_201_CREATED)
+async def portal_upload_media(
+    files: List[UploadFile] = File(...),
+    authorization: Optional[str] = Header(default=None),
+):
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(
+            status.HTTP_401_UNAUTHORIZED, "Missing or malformed Authorization header."
+        )
+    token = authorization.removeprefix("Bearer ").strip()
+    try:
+        claims = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+    except jwt.InvalidTokenError:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid or expired session.")
+
+    if claims.get("role") != "portal_client":
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Not a portal session token.")
+
+    tenant_id = claims.get("tenant_id")
+    lead_raw = claims.get("lead_id")
+    portal_id = claims.get("portal_id")
+    if not tenant_id or not lead_raw:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Malformed portal session.")
+    _validate_tenant_id(tenant_id)
+    lead_id = UUID(lead_raw)
+
+    # The portal client is not a platform admin; role=AGENT yields ordinary
+    # tenant-scoped RLS pinned to the portal's tenant + lead.
+    ctx = TenantContext(
+        agent_id=f"portal:{portal_id}", tenant_id=tenant_id, role=Role.AGENT
+    )
+
+    async with tenant_tx(ctx) as conn:
+        if not await conn.fetchval("SELECT 1 FROM leads WHERE id = $1", lead_id):
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Lead not found.")
+        created = await _persist(
+            conn, tenant_id=tenant_id, lead_id=lead_id, listing_id=None, files=files
+        )
+        # Append-only interaction record — mirrors the portal's audit pattern
+        # (homeowner = seller side, inbound). interaction_type must satisfy the
+        # 0008/0012 CHECK; 'message' is the closest enumerated value.
+        await conn.execute(
+            """
+            INSERT INTO interaction_logs
+                (tenant_id, lead_id, portal_id, actor_role, interaction_type,
+                 direction, subject, payload)
+            VALUES ($1, $2, $3, 'seller', 'message', 'inbound',
+                    'Homeowner uploaded property photo(s)', $4::jsonb)
+            """,
+            tenant_id,
+            lead_id,
+            UUID(portal_id) if portal_id else None,
+            json.dumps(
+                {"media_ids": [m["id"] for m in created], "count": len(created)}
+            ),
+        )
+    log.info("Portal media uploaded: lead_id=%s count=%d tenant=%s", lead_id, len(created), tenant_id)
+    return {"media": created}

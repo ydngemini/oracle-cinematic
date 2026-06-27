@@ -58,13 +58,106 @@
   width: 100%;
   height: 100%;
   object-fit: cover;
+  opacity: 0;
+  transform: scale(1.03);
+  transition:
+    opacity var(--duration-slow) var(--ease-out),
+    transform 1.2s var(--ease-out);
+}
+
+.heroImg[data-loaded='true'] {
+  opacity: 1;
+  transform: none;
+}
+
+/* Bottom-up scrim keeps the corner tags + minimap legible over any photo. */
+.heroScrim {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(
+    to top,
+    rgba(4, 4, 6, 0.7) 0%,
+    rgba(4, 4, 6, 0.25) 30%,
+    rgba(4, 4, 6, 0) 55%
+  );
+}
+
+/* Provenance tag — honest about which Google surface the hero is showing. */
+.heroSourceTag {
+  position: absolute;
+  left: var(--space-3);
+  bottom: var(--space-3);
+  z-index: var(--z-above);
+  font-family: var(--font-display);
+  font-size: 0.5625rem;
+  font-weight: 600;
+  letter-spacing: var(--tracking-widest);
+  text-transform: uppercase;
+  color: var(--oracle-text-dim);
+  background: rgba(4, 4, 6, 0.5);
+  backdrop-filter: var(--oracle-backdrop-light);
+  -webkit-backdrop-filter: var(--oracle-backdrop-light);
+  border: 1px solid var(--oracle-border-bright);
+  border-radius: var(--radius-pill);
+  padding: 2px var(--space-2);
+}
+
+/* Satellite minimap inset — aerial complement to the Street View hero. */
+.heroMinimap {
+  position: absolute;
+  right: var(--space-3);
+  bottom: var(--space-3);
+  z-index: var(--z-above);
+  width: clamp(84px, 22%, 132px);
+  aspect-ratio: 1 / 1;
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  border: 1px solid var(--oracle-border-bright);
+  box-shadow: var(--shadow-float);
+  background: var(--oracle-bg-mid);
+}
+
+.heroMinimapImg {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.heroMinimapTag {
+  position: absolute;
+  left: 4px;
+  top: 4px;
+  font-family: var(--font-display);
+  font-size: 0.5rem;
+  font-weight: 700;
+  letter-spacing: var(--tracking-wider);
+  text-transform: uppercase;
+  color: var(--oracle-text-heading);
+  background: rgba(4, 4, 6, 0.55);
+  border-radius: var(--radius-sm);
+  padding: 1px 5px;
 }
 
 .skel {
   position: absolute;
   inset: 0;
-  background: var(--oracle-glass);
-  animation: skelBreathe 1.4s var(--ease-in-out) infinite alternate;
+  background:
+    linear-gradient(
+      100deg,
+      transparent 20%,
+      var(--oracle-glass-hover) 50%,
+      transparent 80%
+    ),
+    var(--oracle-glass);
+  background-size: 220% 100%, 100% 100%;
+  animation: heroShimmer 1.3s linear infinite;
+}
+
+@keyframes heroShimmer {
+  from { background-position: 180% 0, 0 0; }
+  to   { background-position: -80% 0, 0 0; }
 }
 
 .pill {
@@ -303,6 +396,69 @@
   color: var(--oracle-text-dim);
 }
 
+/* ── Photoreal 3D tour — launch chip + full-screen overlay ────────────────── */
+.tourLaunch {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  align-self: flex-start;
+  min-height: 44px;
+  padding: 0 var(--space-4);
+  border-radius: var(--radius-pill);
+  font-family: var(--font-display);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+  color: var(--oracle-amber);
+  background: var(--oracle-amber-ghost);
+  border: 1px solid var(--oracle-amber-dim);
+  cursor: pointer;
+  transition:
+    box-shadow var(--duration-base) var(--ease-out),
+    background var(--duration-fast) var(--ease-out);
+}
+
+.tourLaunch:hover { box-shadow: var(--shadow-amber); background: var(--oracle-glass-hover); }
+.tourLaunch:active { transform: translateY(1px); }
+.tourLaunch:focus-visible { outline: 2px solid var(--oracle-amber-dim); outline-offset: 2px; }
+
+.tourLaunchGlyph {
+  display: grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+}
+
+.tourLaunchGlyph svg { width: 16px; height: 16px; }
+
+.tourOverlay {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-modal);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-3);
+  background: rgba(2, 2, 4, 0.72);
+  backdrop-filter: var(--oracle-backdrop-light);
+  -webkit-backdrop-filter: var(--oracle-backdrop-light);
+  animation: tourOverlayIn var(--duration-base) var(--ease-out);
+}
+
+@keyframes tourOverlayIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.tourFrame {
+  width: min(100%, 1100px);
+  height: min(82vh, 720px);
+  box-shadow: var(--shadow-float);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+}
+
 @keyframes skelBreathe {
   from { opacity: 0.45; }
   to   { opacity: 1; }
@@ -321,7 +477,12 @@
 
 @media (prefers-reduced-motion: reduce) {
   .wrap,
-  .skel {
+  .skel,
+  .tourOverlay {
     animation: none;
+  }
+  .heroImg {
+    transition: opacity var(--duration-base) var(--ease-out);
+    transform: none;
   }
 }

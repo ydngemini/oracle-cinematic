@@ -1,6 +1,12 @@
-import { useEffect, useState } from 'react';
+import { lazy, Suspense, useEffect, useState } from 'react';
 import { crmGet } from '../state/useCrmApi';
+import { locationFor, satelliteUrl, usePropertyCover } from '../lib/propertyImagery';
+import MediaUploader from './MediaUploader';
 import styles from './ListingDetail.module.css';
+
+// The photoreal 3D tour pulls in the Google Maps loader on demand — keep it out
+// of the initial chunk and only mount it when a tour is actually opened.
+const PropertyTour = lazy(() => import('./PropertyTour'));
 
 const GLYPHS = {
   house: (
@@ -13,6 +19,13 @@ const GLYPHS = {
   back: (
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
       <path d="M15 18l-6-6 6-6" />
+    </svg>
+  ),
+  tour: (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M3 10.5 12 3l9 7.5" />
+      <path d="M5.5 9.5V20h13V9.5" />
+      <circle cx="12" cy="13.5" r="2" />
     </svg>
   ),
 };
@@ -79,6 +92,7 @@ function flagLabel(f) {
 export default function ListingDetail({ listingId, source = 'mls', onBack }) {
   const [listing, setListing] = useState(null);
   const [error, setError] = useState(null);
+  const [tourOpen, setTourOpen] = useState(false);
 
   useEffect(() => {
     let alive = true;
@@ -99,7 +113,22 @@ export default function ListingDetail({ listingId, source = 'mls', onBack }) {
   const status = normalizeStatus(l?.status);
   const price = formatPrice(l?.price);
   const photos = Array.isArray(l?.photos) ? l.photos : [];
+  // Pipeline detail IDs are lead ids; MLS detail IDs are listing ids. The media
+  // owner + the tour's photo source key off whichever this is.
+  const mediaOwner = source === 'pipeline' ? { leadId: listingId } : { listingId };
+  const mediaToken = typeof sessionStorage !== 'undefined' ? sessionStorage.getItem('oracle_token') : null;
   const flags = Array.isArray(l?.distress_flags) ? l.distress_flags : [];
+
+  // Geocodable location for Google imagery (prefers coords) + a textual address
+  // for the 3D tour's geocoder.
+  const coverLocation = locationFor(l);
+  const textAddress = !l
+    ? ''
+    : [l.address, l.city, [l.state || l.state_code, l.zip || l.zip_code].filter(Boolean).join(' ')]
+        .filter(Boolean)
+        .join(', ');
+  const tourLat = toNum(l?.latitude ?? l?.lat);
+  const tourLng = toNum(l?.longitude ?? l?.lng);
 
   // Specs are rendered only when present — no zero-fills, no invented data.
   const specs = !l
@@ -151,37 +180,31 @@ export default function ListingDetail({ listingId, source = 'mls', onBack }) {
         </div>
       ) : (
         <>
-          <div className={styles.hero}>
-            <span className={styles.heroGhost} aria-hidden="true">{GLYPHS.house}</span>
-            {photos[0] && (
-              <img
-                className={styles.heroImg}
-                src={photos[0]}
-                alt={l.address || 'Listing'}
-                onError={(e) => { e.currentTarget.hidden = true; }}
-              />
-            )}
-            {isPipeline ? (
-              <span className={styles.pill} data-source="pipeline">Pipeline</span>
-            ) : (
-              <span className={styles.pill} data-status={status}>
-                {status === 'other' ? (l.status || '—') : status}
-              </span>
-            )}
-            {isPipeline && l.is_absentee && (
-              <span className={styles.coverBadge}>Absentee</span>
-            )}
-          </div>
+          <ListingHero
+            location={coverLocation}
+            address={l.address || textAddress}
+            pill={
+              isPipeline ? (
+                <span className={styles.pill} data-source="pipeline">Pipeline</span>
+              ) : (
+                <span className={styles.pill} data-status={status}>
+                  {status === 'other' ? (l.status || '—') : status}
+                </span>
+              )
+            }
+            badge={isPipeline && l.is_absentee ? <span className={styles.coverBadge}>Absentee</span> : null}
+          />
 
-          {photos.length > 1 && (
+          {photos.length > 0 && (
             <div className={styles.thumbs}>
-              {photos.slice(1, 7).map((src, i) => (
+              {photos.slice(0, 8).map((src, i) => (
                 <img
                   key={i}
                   className={styles.thumb}
                   src={src}
-                  alt=""
+                  alt={l.address ? `Photo of ${l.address}` : 'Listing photo'}
                   loading="lazy"
+                  decoding="async"
                   onError={(e) => { e.currentTarget.hidden = true; }}
                 />
               ))}
@@ -225,14 +248,137 @@ export default function ListingDetail({ listingId, source = 'mls', onBack }) {
             </div>
           )}
 
+          <MediaUploader {...mediaOwner} token={mediaToken} title="Property photos" />
+
+          {textAddress && (
+            <button
+              type="button"
+              className={styles.tourLaunch}
+              onClick={() => setTourOpen(true)}
+            >
+              <span className={styles.tourLaunchGlyph} aria-hidden="true">{GLYPHS.tour}</span>
+              Preview the 3D tour
+            </button>
+          )}
+
           <p className={styles.sourceNote}>
             {isPipeline
               ? `Real harvested pipeline lead${l.parcel_id ? ` · parcel ${l.parcel_id}` : ''}`
               : `Data via ${l.source === 'rentcast' ? 'RentCast' : (l.source || 'MLS')}, cached`}
             {formatDate(l.last_updated) ? ` · updated ${formatDate(l.last_updated)}` : ''}
           </p>
+
+          {/* Photoreal 3D flyover — full-screen overlay; PropertyTour degrades
+              cleanly to its own fallback when no Maps key is configured. */}
+          {tourOpen && (
+            <div
+              className={styles.tourOverlay}
+              role="dialog"
+              aria-modal="true"
+              aria-label="3D property tour"
+              onClick={(e) => { if (e.target === e.currentTarget) setTourOpen(false); }}
+            >
+              <div className={styles.tourFrame}>
+                <Suspense fallback={null}>
+                  <PropertyTour
+                    address={textAddress}
+                    lat={tourLat ?? undefined}
+                    lng={tourLng ?? undefined}
+                    title={l.address || textAddress}
+                    {...mediaOwner}
+                    onClose={() => setTourOpen(false)}
+                  />
+                </Suspense>
+              </div>
+            </div>
+          )}
         </>
       )}
     </section>
+  );
+}
+
+// ── Street View hero (satellite static fallback → ghost) ─────────────────────
+
+/**
+ * ListingHero — big Street View facade for the listing, with a satellite static
+ * minimap inset when a real pano is showing. Skeleton shimmer holds the 16/9 box
+ * (no layout shift); an onError chain walks candidates before degrading to the
+ * ghost glyph. `scale=2` keeps the hero crisp on retina displays.
+ */
+function ListingHero({ location, address, pill, badge }) {
+  const { ready, candidates } = usePropertyCover(location, {
+    size: '640x360',
+    fov: 85,
+    zoom: 19,
+    scale: 2,
+  });
+  const [idx, setIdx] = useState(0);
+  const [loaded, setLoaded] = useState(false);
+  const [shownFor, setShownFor] = useState(location);
+
+  // Render-phase reset when the target changes (no cascading effect).
+  if (shownFor !== location) {
+    setShownFor(location);
+    setIdx(0);
+    setLoaded(false);
+  }
+
+  const current = candidates[idx];
+  const exhausted = ready && (candidates.length === 0 || idx >= candidates.length);
+  const showShimmer = !exhausted && (!ready || !loaded);
+  // Only inset the aerial when the hero itself is a Street View pano — otherwise
+  // the hero is already the satellite tile and a minimap would be redundant.
+  const minimap =
+    current?.kind === 'streetview'
+      ? satelliteUrl(location, { size: '320x320', zoom: 18, scale: 2 })
+      : null;
+
+  return (
+    <div className={styles.hero}>
+      <span className={styles.heroGhost} aria-hidden="true">{GLYPHS.house}</span>
+
+      {current && (
+        <img
+          key={current.url}
+          className={styles.heroImg}
+          data-loaded={loaded ? 'true' : 'false'}
+          src={current.url}
+          alt={address ? `Street view of ${address}` : 'Property exterior'}
+          decoding="async"
+          onLoad={() => setLoaded(true)}
+          onError={() => {
+            setLoaded(false);
+            setIdx((n) => n + 1);
+          }}
+        />
+      )}
+
+      {showShimmer && <span className={styles.skel} aria-hidden="true" />}
+      {current && loaded && <span className={styles.heroScrim} aria-hidden="true" />}
+
+      {pill}
+      {badge}
+
+      {minimap && loaded && (
+        <span className={styles.heroMinimap}>
+          <img
+            className={styles.heroMinimapImg}
+            src={minimap}
+            alt=""
+            loading="lazy"
+            decoding="async"
+            onError={(e) => { e.currentTarget.parentElement.hidden = true; }}
+          />
+          <span className={styles.heroMinimapTag}>Aerial</span>
+        </span>
+      )}
+
+      {current && loaded && (
+        <span className={styles.heroSourceTag}>
+          {current.kind === 'streetview' ? 'Street View' : 'Satellite'}
+        </span>
+      )}
+    </div>
   );
 }

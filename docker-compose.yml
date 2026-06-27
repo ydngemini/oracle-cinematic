@@ -100,6 +100,9 @@ services:
       # repo root — forward the dev-only flags it needs from the compose env.
       VITE_API_BASE: ${VITE_API_BASE:-http://localhost:8000}
       VITE_BILLING_BYPASS: ${VITE_BILLING_BYPASS:-false}
+      # Google Maps Platform key for the photoreal 3D property tour (Map3DElement).
+      # Substituted from the repo-root .env at compose time (gitignored secret).
+      VITE_GOOGLE_MAPS_KEY: ${VITE_GOOGLE_MAPS_KEY:-}
     volumes:
       - ./oracle-app:/app
       - npm_cache:/app/node_modules

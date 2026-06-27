@@ -1,0 +1,81 @@
+# CodeRabbit configuration for Neoh (Oracle) — github.com/ydngemini/oracle-cinematic
+# Schema: https://coderabbit.ai/integrations/schema.v2.json
+# Investor/wholesaler real-estate command center: FastAPI + asyncpg (RLS multi-tenant)
+# backend, Vite/React + raw-WebGL + CSS-Modules frontend.
+language: en-US
+early_access: false
+
+reviews:
+  profile: assertive            # thorough — surface more, not fewer, issues
+  request_changes_workflow: false
+  high_level_summary: true
+  poem: false
+  review_status: true
+  collapse_walkthrough: false
+  auto_review:
+    enabled: true
+    drafts: false
+    base_branches:
+      - main
+      - "feat/.*"
+
+  # Keep noise out of the diff — generated, vendored, binary, and secret-ish paths.
+  path_filters:
+    - "!**/node_modules/**"
+    - "!**/dist/**"
+    - "!oracle-app/dist/**"
+    - "!**/*.min.js"
+    - "!**/*.gguf"
+    - "!**/*.png"
+    - "!**/*.jpg"
+    - "!**/*.webp"
+    - "!**/package-lock.json"
+    - "!**/.env*"
+    - "!**/_diag*.txt"
+    - "!SYPHER_VAULT/**"
+
+  # Project-specific review rules — encode the hard conventions so reviews enforce them.
+  path_instructions:
+    - path: "oracle-app/src/**"
+      instructions: >
+        Frontend hard rules: PURE CSS Modules + glassmorphism ONLY — flag any UI
+        library (MUI, Tailwind, Bootstrap, Chakra, styled-components). NO Three.js
+        — 3D must be raw WebGL or Google's Map3DElement web component. Components
+        must render ONLY real API data — flag any mocked/simulated/placeholder
+        data presented as real. Respect prefers-reduced-motion, real <button>s +
+        aria labels, mobile-first. Secrets: VITE_* keys are browser-exposed by
+        design; never log tokens. Match the dark-glass / amber "Neoh" brand.
+    - path: "backend/**/*.py"
+      instructions: >
+        Backend hard rules: every tenant-scoped DB access MUST go through
+        `tenant_tx(ctx)` with `require_context` (RLS) — flag raw pool access that
+        bypasses tenant isolation. Never log or return secrets/PII. External
+        providers degrade gracefully (log + return None/empty), NEVER fabricate
+        data (no fake valuations/listings/leads). Watch for SQL injection in any
+        dynamically-built WHERE/ORDER BY (must be whitelisted/parameterized).
+        asyncpg returns jsonb as a STRING — deserialize before `.get()`.
+    - path: "backend/db/migrations/**"
+      instructions: >
+        Migrations MUST be idempotent (IF NOT EXISTS, guarded DO-blocks for
+        triggers/policies). Tenant tables MUST `ENABLE` + `FORCE ROW LEVEL
+        SECURITY` and use the canonical policy
+        `app_is_platform_admin() OR tenant_id = app_current_tenant()` (USING +
+        WITH CHECK). Flag any plain INSERT into a table with a UNIQUE upsert key
+        that lacks ON CONFLICT.
+    - path: "backend/harvesters/**"
+      instructions: >
+        Harvesters must persist idempotently (ON CONFLICT on leads
+        UNIQUE(tenant_id, parcel_id)), rate-limit + circuit-break per source, and
+        degrade gracefully per-state (log + continue, never crash the run). Watch
+        for over-long GET URLs (chunk IN()/prefetch lists to avoid HTTP 414).
+
+  tools:
+    ruff:
+      enabled: true
+    eslint:
+      enabled: true
+    gitleaks:
+      enabled: true        # secret scanning — this repo's .env is gitignored; catch leaks
+
+chat:
+  auto_reply: true

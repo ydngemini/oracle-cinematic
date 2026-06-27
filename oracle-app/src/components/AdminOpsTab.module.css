@@ -45,6 +45,11 @@
 .refreshBtn:hover {
   background: var(--oracle-glass-hover);
   color: var(--oracle-amber);
+  border-color: var(--oracle-amber-dim);
+}
+
+.refreshBtn:active:not(:disabled) {
+  transform: scale(0.92);
 }
 
 .refreshBtn:disabled {
@@ -105,11 +110,13 @@
   gap: var(--space-2) var(--space-5);
   min-height: 44px;
   padding: var(--space-3) var(--space-4);
-  background: var(--oracle-glass);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.018), transparent 60%),
+    var(--oracle-glass);
   border: 1px solid var(--oracle-border);
   border-top-color: var(--oracle-border-bright); /* etched top light */
   border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-inset);
+  box-shadow: var(--shadow-e2);
   animation: riseIn var(--duration-base) var(--ease-out) both;
 }
 
@@ -179,11 +186,13 @@
 .totals {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
-  background: var(--oracle-glass);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.018), transparent 42%),
+    var(--oracle-glass);
   border: 1px solid var(--oracle-border);
   border-top-color: var(--oracle-border-bright);
   border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-inset);
+  box-shadow: var(--shadow-e2);
   overflow: hidden;
   animation: riseIn var(--duration-base) var(--ease-out) both;
 }
@@ -195,6 +204,17 @@
   gap: var(--space-1);
   padding: var(--space-4) var(--space-2);
   border-bottom: 1px solid var(--oracle-border-subtle);
+  transition: background var(--duration-fast) var(--ease-out);
+}
+
+@media (hover: hover) {
+  .totalCell:hover {
+    background: var(--oracle-glass-hover);
+  }
+  .totalCell:hover .totalValue {
+    color: var(--oracle-amber);
+    text-shadow: 0 0 16px var(--oracle-amber-glow);
+  }
 }
 
 .totalCell:not(:nth-child(3n + 1)) {
@@ -213,6 +233,9 @@
   font-variant-numeric: tabular-nums;
   letter-spacing: var(--tracking-snug);
   color: var(--oracle-text-heading);
+  transition:
+    color var(--duration-base) var(--ease-out),
+    text-shadow var(--duration-base) var(--ease-out);
 }
 
 .totalLabel {
@@ -242,6 +265,12 @@
   height: 7px;
   border-radius: var(--radius-pill);
   background: var(--oracle-amber-dim);
+  animation: liveIdle 2.6s var(--ease-in-out) infinite;
+}
+
+@keyframes liveIdle {
+  0%, 100% { opacity: 0.45; }
+  50%      { opacity: 1; }
 }
 
 .liveTickPulse {
@@ -260,21 +289,37 @@
   display: flex;
   flex-direction: column;
   padding: 0;
-  background: var(--oracle-glass);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.018), transparent 24%),
+    var(--oracle-glass);
   border: 1px solid var(--oracle-border);
   border-top-color: var(--oracle-border-bright);
   border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-inset);
+  box-shadow: var(--shadow-e2);
   overflow: hidden;
 }
 
 .feedRow {
+  position: relative;
   display: flex;
   flex-direction: column;
   gap: var(--space-1);
   min-height: 44px;
   justify-content: center;
   padding: var(--space-2) var(--space-4);
+  transition: background var(--duration-fast) var(--ease-out);
+}
+
+/* Newest frame (reducer prepends) — faint amber edge marks the live head */
+.feedRow:first-child {
+  background: linear-gradient(90deg, var(--oracle-amber-glow), transparent 60%);
+  box-shadow: inset 2px 0 0 var(--oracle-amber-dim);
+}
+
+@media (hover: hover) {
+  .feedRow:hover {
+    background: var(--oracle-glass-hover);
+  }
 }
 
 .feedRow + .feedRow {
@@ -340,8 +385,18 @@
   background: var(--oracle-glass);
   border: 1px solid var(--oracle-border);
   border-top-color: var(--oracle-border-bright);
-  box-shadow: var(--shadow-inset);
+  box-shadow: var(--shadow-e1);
   animation: riseIn var(--duration-base) var(--ease-out) both;
+  transition:
+    border-color var(--duration-base) var(--ease-out),
+    box-shadow var(--duration-base) var(--ease-out);
+}
+
+@media (hover: hover) {
+  .card:hover {
+    border-color: var(--oracle-border-bright);
+    box-shadow: var(--shadow-e2);
+  }
 }
 
 .cardHead {
@@ -652,18 +707,16 @@
 
 .skel {
   border-radius: var(--radius-lg);
-  background: var(--oracle-glass);
+  background-color: var(--oracle-glass);
+  background-image: linear-gradient(100deg, transparent 28%, var(--oracle-shimmer) 50%, transparent 72%);
+  background-size: 220% 100%;
+  background-repeat: no-repeat;
   border: 1px solid var(--oracle-border-subtle);
-  animation: skelBreathe 1.4s var(--ease-in-out) infinite alternate;
+  animation: oracleSheen 1.5s var(--ease-in-out) infinite;
 }
 
-.skel:nth-child(2) { animation-delay: 120ms; }
-.skel:nth-child(3) { animation-delay: 240ms; }
-
-@keyframes skelBreathe {
-  from { opacity: 0.45; }
-  to   { opacity: 1; }
-}
+.skel:nth-child(2) { animation-delay: 160ms; }
+.skel:nth-child(3) { animation-delay: 320ms; }
 
 /* ── Error — quiet inline state, retry key ──────────────────────────────── */
 .errRow {
@@ -728,6 +781,7 @@
     animation: none;
   }
 
+  .liveTick,
   .liveTickPulse {
     animation: none;
   }

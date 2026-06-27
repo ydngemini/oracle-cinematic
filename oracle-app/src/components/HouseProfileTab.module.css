@@ -242,6 +242,13 @@
     box-shadow var(--duration-base) var(--ease-out);
 }
 
+@media (hover: hover) {
+  .sellerRow:hover {
+    background: var(--oracle-glass-hover);
+    border-color: var(--oracle-border-bright);
+  }
+}
+
 .sellerRow:active {
   background: var(--oracle-glass-active);
 }
@@ -375,7 +382,7 @@
   color: var(--oracle-text-dim);
 }
 
-/* ── Skeletons — glass rows breathing (cf. CrmShell skeletonBreathe) ─────── */
+/* ── Skeletons — glass rows under the shared oracleSheen shimmer ─────────── */
 .skeletons {
   display: flex;
   flex-direction: column;
@@ -385,18 +392,16 @@
 .skeletonRow {
   height: 52px;
   border-radius: var(--radius-md);
-  background: var(--oracle-glass);
+  background-color: var(--oracle-glass);
+  background-image: linear-gradient(100deg, transparent 28%, var(--oracle-shimmer) 50%, transparent 72%);
+  background-size: 220% 100%;
+  background-repeat: no-repeat;
   border: 1px solid var(--oracle-border-subtle);
-  animation: skeletonBreathe 1.4s var(--ease-in-out) infinite alternate;
+  animation: oracleSheen 1.5s var(--ease-in-out) infinite;
 }
 
-.skeletonRow:nth-child(2) { animation-delay: 120ms; }
-.skeletonRow:nth-child(3) { animation-delay: 240ms; }
-
-@keyframes skeletonBreathe {
-  from { opacity: 0.45; }
-  to   { opacity: 1; }
-}
+.skeletonRow:nth-child(2) { animation-delay: 160ms; }
+.skeletonRow:nth-child(3) { animation-delay: 320ms; }
 
 /* ── Quiet inline error + retry ──────────────────────────────────────────── */
 .errorBox {

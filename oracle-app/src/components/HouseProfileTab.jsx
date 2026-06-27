@@ -1,6 +1,7 @@
 import { Fragment, Suspense, lazy, useCallback, useEffect, useMemo, useState } from 'react';
 import { crmGet, crmPost } from '../state/useCrmApi';
 import { ComplianceDashboard } from './ComplianceDashboard';
+import MediaUploader from './MediaUploader';
 import styles from './HouseProfileTab.module.css';
 
 // The photoreal 3D tour pulls in the Google Maps loader on demand — keep it in
@@ -258,6 +259,13 @@ export default function HouseProfileTab() {
             Add another
           </button>
         </div>
+        {listed?.id && (
+          <MediaUploader
+            listingId={listed.id}
+            token={typeof sessionStorage !== 'undefined' ? sessionStorage.getItem('oracle_token') : null}
+            title="Property photos"
+          />
+        )}
         <ComplianceDashboard listingId={listed?.id} />
       </div>
     );
@@ -615,6 +623,7 @@ export default function HouseProfileTab() {
             <Suspense fallback={null}>
               <PropertyTour
                 address={house.address.trim()}
+                listingId={listed?.id}
                 onClose={() => setTourOpen(false)}
               />
             </Suspense>
