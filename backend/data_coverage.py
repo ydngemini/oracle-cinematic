@@ -118,6 +118,7 @@ LIVE_PROPERTY: dict[str, tuple[str, str, str]] = {
     "VT": ("VCGI statewide parcels", "arcgis", "statewide"),
     "WA": ("Snohomish County assessor parcels", "arcgis", "county:Snohomish"),
     "WI": ("WI SCO statewide parcels", "arcgis", "statewide"),
+    "WY": ("WY statewide parcels (Property Tax Division)", "arcgis", "statewide"),
 }
 
 # Live harvesters whose SOURCE publishes parcel geometry + IDs but no owner,
@@ -132,12 +133,11 @@ GEOMETRY_ONLY: set[str] = {"VA"}
 # Portal platform hints for states we have NOT built yet — public record only,
 # used to plan the next harvest batch. Absence here means "research needed",
 # never "no portal exists". Endpoints are intentionally omitted (unverified).
-# Hints for jurisdictions that still lack a live property harvester. After the
-# harvest-states program the only remaining gap is Wyoming, whose statewide
-# parcel viewer is a web app with no public REST/query API.
-PORTAL_HINTS: dict[str, str] = {
-    "WY": "WY statewide parcel viewer is web-app only — no public REST API; county assessors vary",
-}
+# As of 2026-06-27 there are NO remaining gaps: the harvest-states program plus
+# the Wyoming harvester (WY Property Tax Division statewide-parcels ArcGIS
+# FeatureServer — the earlier "web-app only, no REST API" note was wrong) bring
+# coverage to all 50 states + DC. Kept as an empty extension point for new gaps.
+PORTAL_HINTS: dict[str, str] = {}
 
 # Market/demographic plane — national API integrations (no per-state gap).
 NATIONAL_INTEGRATIONS: list[tuple[str, str]] = [
