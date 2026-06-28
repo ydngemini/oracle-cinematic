@@ -22,6 +22,12 @@ RUN pip install --no-cache-dir playwright \
     && playwright install --with-deps chromium \
     && chmod -R a+rX /ms-playwright
 
+# Amazon RDS global CA bundle — lets connection.py do TLS verify-full against
+# Aurora (HARDENING.md §1, rds.force_ssl=1). ORACLE_RDS_CA_BUNDLE points here.
+ADD https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem /etc/ssl/certs/rds-global-bundle.pem
+RUN chmod a+r /etc/ssl/certs/rds-global-bundle.pem
+ENV ORACLE_RDS_CA_BUNDLE=/etc/ssl/certs/rds-global-bundle.pem
+
 # Copy the rest of the backend source. The compose dev setup bind-mounts /app
 # over this, so this layer is only meaningful in a production image build.
 COPY . .
