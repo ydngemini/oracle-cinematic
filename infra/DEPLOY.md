@@ -144,7 +144,20 @@ Watch the target group go healthy; tail logs in `/ecs/neoh-prod/backend`.
   in the Stripe dashboard, copy the signing secret into `STRIPE_WEBHOOK_SECRET`,
   and re-run step 7.
 
-## 9. Day-2
+## 9. GPU reconstruction (walkable 3D tours)
+
+`reconstruction.tf` provisions the walk-inside splat pipeline: an S3 bucket
+(capture inputs/outputs + public `splats/`), an ECR repo, and **AWS Batch** on a
+SPOT g5 GPU compute environment that **scales to zero** (pay per job, ~$0.30–1/house).
+`terraform apply` also wires the backend task env (`RECONSTRUCTION_PROVIDER=aws_batch`,
+`RECON_*`, `ORACLE_SPLAT_STORAGE=s3`, `ORACLE_SPLAT_S3_BUCKET`, `ORACLE_SPLAT_CDN_BASE`).
+
+After apply: (1) request EC2 **SPOT g5/g4dn vCPU** quota in-region; (2) build+push
+the GPU job image to the `recon_ecr_url` output and set `recon_image_tag`; (3) roll
+the backend. Until configured, the enqueue endpoint honestly returns 503 (never a
+fake splat). Full steps + the capture flow: **`infra/reconstruction/README.md`**.
+
+## 9b. Day-2
 
 - New release: build+push a new `image_tag`, register a new task-def revision,
   `update-service`. (The service ignores `task_definition` drift in TF so CI owns it.)

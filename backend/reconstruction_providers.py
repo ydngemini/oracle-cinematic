@@ -264,11 +264,88 @@ class ServerlessProvider(ReconstructionProvider):
         return await _http_reconstruct(url, headers, images, work_dir)
 
 
+class AwsBatchProvider(ReconstructionProvider):
+    """AWS GPU reconstruction via AWS Batch (SPOT g5, scales to zero — pay only
+    per job, ~$0.30-1/house). Uploads the capture to S3, submits a Batch job that
+    runs the COLMAP + 3DGS pipeline on a GPU and writes the .splat back to S3,
+    polls, then downloads the result. No keys — the ECS task role provides creds.
+
+    Configure (set by infra/terraform/reconstruction.tf outputs):
+      RECON_S3_BUCKET         inputs/outputs bucket
+      RECON_AWS_BATCH_QUEUE   Batch job-queue name/arn
+      RECON_AWS_BATCH_JOBDEF  Batch job-definition name/arn
+      AWS_REGION              region
+    """
+    name = "aws_batch"
+
+    def available(self) -> tuple[bool, str]:
+        miss = [v for v in ("RECON_S3_BUCKET", "RECON_AWS_BATCH_QUEUE", "RECON_AWS_BATCH_JOBDEF")
+                if not os.environ.get(v)]
+        if miss:
+            return (False, "set " + ", ".join(miss) + " (deploy infra/terraform/reconstruction.tf)")
+        return (True, "")
+
+    async def reconstruct(self, images: list[Path], work_dir: Path) -> Path:
+        if not images:
+            raise ProviderError("no capture images provided")
+        # boto3 is blocking — run off the event loop so the worker stays responsive.
+        return await asyncio.to_thread(self._run_blocking, images, work_dir)
+
+    def _run_blocking(self, images: list[Path], work_dir: Path) -> Path:
+        import time
+        import uuid as _uuid
+        import boto3  # lazy — only the AWS path needs the SDK
+
+        bucket = os.environ["RECON_S3_BUCKET"]
+        queue = os.environ["RECON_AWS_BATCH_QUEUE"]
+        jobdef = os.environ["RECON_AWS_BATCH_JOBDEF"]
+        region = os.environ.get("AWS_REGION", "us-east-1")
+        timeout = int(os.environ.get("RECON_AWS_TIMEOUT", "3600"))  # 60 min
+        s3 = boto3.client("s3", region_name=region)
+        batch = boto3.client("batch", region_name=region)
+
+        job_key = _uuid.uuid4().hex
+        in_prefix = f"recon-inputs/{job_key}"
+        out_key = f"recon-outputs/{job_key}/model.splat"
+        for p in images:
+            s3.upload_file(str(p), bucket, f"{in_prefix}/{p.name}")
+
+        sub = batch.submit_job(
+            jobName=f"neoh-recon-{job_key[:12]}",
+            jobQueue=queue,
+            jobDefinition=jobdef,
+            containerOverrides={"environment": [
+                {"name": "INPUT_S3", "value": f"s3://{bucket}/{in_prefix}"},
+                {"name": "OUTPUT_S3", "value": f"s3://{bucket}/{out_key}"},
+            ]},
+        )
+        job_id = sub["jobId"]
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            time.sleep(20)
+            jobs = batch.describe_jobs(jobs=[job_id]).get("jobs", [])
+            if not jobs:
+                continue
+            st = jobs[0]["status"]
+            if st == "SUCCEEDED":
+                break
+            if st == "FAILED":
+                raise ProviderError(f"AWS Batch job failed: {jobs[0].get('statusReason', 'unknown')}")
+        else:
+            raise ProviderError("AWS Batch reconstruction did not finish within budget")
+
+        out = work_dir / "model.splat"
+        s3.download_file(bucket, out_key, str(out))
+        return out
+
+
 _PROVIDERS = {
     "stub": StubProvider,
     "local": LocalGpuProvider,
     "cloud": CloudGpuProvider,
     "serverless": ServerlessProvider,
+    "aws_batch": AwsBatchProvider,
+    "aws": AwsBatchProvider,
 }
 
 
