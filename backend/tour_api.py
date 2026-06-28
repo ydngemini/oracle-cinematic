@@ -17,6 +17,7 @@ RLS scopes every read to the caller's tenant.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Optional
 from uuid import UUID
@@ -25,6 +26,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from db.connection import tenant_tx
 from tenancy import TenantContext, require_context
+from reconstruction_providers import SPATIAL_AI_DISCLOSURE, get_provider
+from reconstruction_worker import ReconstructionJob, enqueue
 
 log = logging.getLogger("oracle.tour_api")
 
@@ -97,6 +100,7 @@ async def resolve_tour(
         "badge": _TIER_BADGE[best],
         "honest_note": _TIER_NOTE[best],
         "walkable_interior": best >= 2,  # the only tiers you can truly walk inside
+        "disclosure": SPATIAL_AI_DISCLOSURE if best >= 2 else None,
         "tiers": {
             "exterior": True,
             "photos": has_photos,
@@ -106,4 +110,72 @@ async def resolve_tour(
         "splat_url": splats[0]["url"] if has_splat else None,
         "pano_manifest_url": panos[0]["url"] if has_pano else None,
         "photo_count": len(photos),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Reconstruction jobs — enqueue a capture→splat job (tier 3) + poll its status.
+# Long jobs run in the reconstruction worker pool (reconstruction_worker.py);
+# this is the 202-accept-then-poll surface.
+# ---------------------------------------------------------------------------
+@router.post("/crm/reconstruction-jobs", status_code=status.HTTP_202_ACCEPTED)
+async def enqueue_reconstruction(
+    lead_id: Optional[UUID] = Query(default=None),
+    listing_id: Optional[UUID] = Query(default=None),
+    ctx: TenantContext = Depends(require_context),
+):
+    """Queue a Gaussian-splat reconstruction for one property. Returns 202 +
+    job_id; poll GET /crm/reconstruction-jobs/{id}. 503 if the configured
+    provider isn't available (no GPU / no key) — never silently fakes a result."""
+    if lead_id is None and listing_id is None:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Provide lead_id or listing_id.")
+    ok, why = get_provider().available()
+    if not ok:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, f"Reconstruction provider unavailable: {why}")
+
+    async with tenant_tx(ctx) as conn:
+        row = await conn.fetchrow(
+            """
+            INSERT INTO reconstruction_jobs (tenant_id, lead_id, listing_id, status, created_by)
+            VALUES ($1, $2, $3, 'queued', $4)
+            RETURNING id
+            """,
+            ctx.tenant_id, lead_id, listing_id, ctx.agent_id,
+        )
+    job_id = str(row["id"])
+    try:
+        enqueue(ReconstructionJob(
+            ctx=ctx, job_id=job_id,
+            lead_id=str(lead_id) if lead_id else None,
+            listing_id=str(listing_id) if listing_id else None,
+        ))
+    except asyncio.QueueFull:
+        async with tenant_tx(ctx) as conn:
+            await conn.execute(
+                "UPDATE reconstruction_jobs SET status='failed', error='queue full' WHERE id=$1", row["id"]
+            )
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Reconstruction queue is full — try again shortly.")
+    return {"job_id": job_id, "status": "queued"}
+
+
+@router.get("/crm/reconstruction-jobs/{job_id}")
+async def reconstruction_job_status(
+    job_id: UUID,
+    ctx: TenantContext = Depends(require_context),
+):
+    """Poll a reconstruction job (RLS-scoped)."""
+    async with tenant_tx(ctx) as conn:
+        row = await conn.fetchrow(
+            "SELECT id, status, provider, progress, media_id, error FROM reconstruction_jobs WHERE id = $1",
+            job_id,
+        )
+    if row is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Job not found.")
+    return {
+        "job_id": str(row["id"]),
+        "status": row["status"],
+        "provider": row["provider"],
+        "progress": row["progress"],
+        "media_id": str(row["media_id"]) if row["media_id"] else None,
+        "error": row["error"],
     }
