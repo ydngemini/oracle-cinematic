@@ -149,6 +149,9 @@ app.include_router(mls_portal_router)
 from media_api import router as media_api_router  # noqa: E402 — 2D image upload/serve (agent JWT + portal token; bytes in media_blobs)
 app.include_router(media_api_router)
 
+from tour_api import router as tour_api_router  # noqa: E402 — walkable-tour tier resolver (exterior/photos/360/splat)
+app.include_router(tour_api_router)
+
 from apis.geocoding import geocode, reverse_geocode
 from apis.census import get_demographics_by_zip
 from apis.property_data import enrich_property, get_flood_zone

@@ -887,7 +887,7 @@ export function PropertyCanvas() {
             <span className={styles.loadingPct}>{loadProgress}%</span>
           </div>
           <span className={styles.loadingText}>RECONSTRUCTING SPATIAL MODEL</span>
-          <div className={styles.loadingSubtext}>DUSt3R → Gaussian Splatting</div>
+          <div className={styles.loadingSubtext}>Photoreal Gaussian Splatting</div>
         </div>
       )}
 

@@ -52,6 +52,12 @@ router = APIRouter(prefix="/api", tags=["media"])
 # 12 MB hard cap per image.
 MAX_BYTES = 12 * 1024 * 1024
 
+# Media kinds permitted by property_media's chk_media_kind constraint (0012). The
+# photo-upload endpoints below only produce 'photo'; the walkable-tour pipeline
+# (capture wizard / reconstruction worker) writes 'pano'/'splat'/'tour' rows that
+# the tour resolver (tour_api.py) reads to pick the highest available tier.
+_ALLOWED_KINDS = {"photo", "pano", "splat", "tour", "floorplan", "document"}
+
 # Magic-byte sniff → canonical content-type. We trust the file signature over the
 # client-declared Content-Type (which is attacker-controlled and easily spoofed).
 def _sniff_image(data: bytes) -> Optional[str]:
@@ -97,10 +103,15 @@ async def _persist(
     lead_id: Optional[UUID],
     listing_id: Optional[UUID],
     files: List[UploadFile],
+    kind: str = "photo",
 ) -> list[dict]:
     """Insert each validated image as a property_media row (+ media_blobs bytes),
-    appending to the existing photo order. Runs inside the caller's tenant_tx so
-    RLS scopes every write to the request's tenant."""
+    appending to the existing order. Runs inside the caller's tenant_tx so
+    RLS scopes every write to the request's tenant. `kind` defaults to 'photo'
+    (the only kind these image endpoints accept today); the capture/reconstruction
+    pipeline passes 'pano'/'splat'/'tour'."""
+    if kind not in _ALLOWED_KINDS:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"Unsupported media kind: {kind!r}")
     # Serialize concurrent uploads to the SAME property so two requests can't read
     # the same MAX(sort_order) and collide on positions (gallery order must stay
     # deterministic). A per-property advisory xact-lock is lighter than locking the
@@ -133,7 +144,7 @@ async def _persist(
             """
             INSERT INTO property_media
                 (id, tenant_id, lead_id, listing_id, kind, url, sort_order)
-            VALUES ($1, $2, $3, $4, 'photo', $5, $6)
+            VALUES ($1, $2, $3, $4, $7, $5, $6)
             RETURNING id, url, kind, sort_order, created_at
             """,
             new_id,
@@ -142,6 +153,7 @@ async def _persist(
             listing_id,
             f"/api/media/{new_id}",
             base,
+            kind,
         )
         await conn.execute(
             """
@@ -209,26 +221,33 @@ async def upload_listing_media(
 async def list_media(
     lead_id: Optional[UUID] = Query(default=None),
     listing_id: Optional[UUID] = Query(default=None),
+    kind: str = Query(default="photo", description="media kind to list, or 'all' for every kind"),
     ctx: TenantContext = Depends(require_context),
 ):
-    """List photos for a lead or listing, ordered by sort_order. RLS-scoped."""
+    """List media for a lead or listing, ordered by sort_order. RLS-scoped.
+
+    Defaults to kind='photo' so the existing photo filmstrip is unchanged; pass
+    kind='all' (or a specific kind like 'splat'/'pano'/'tour') so the walkable-
+    tour surfaces can enumerate non-photo media."""
     if lead_id is None and listing_id is None:
         raise HTTPException(
             status.HTTP_422_UNPROCESSABLE_ENTITY,
             "Provide lead_id or listing_id.",
         )
+    kind_filter = None if kind == "all" else kind
     async with tenant_tx(ctx) as conn:
         rows = await conn.fetch(
             """
             SELECT id, url, kind, sort_order, created_at
               FROM property_media
-             WHERE kind = 'photo'
+             WHERE ($3::text IS NULL OR kind = $3)
                AND (($1::uuid IS NOT NULL AND lead_id = $1)
                  OR ($2::uuid IS NOT NULL AND listing_id = $2))
              ORDER BY sort_order ASC, created_at ASC
             """,
             lead_id,
             listing_id,
+            kind_filter,
         )
     return {
         "media": [
