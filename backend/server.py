@@ -23,6 +23,7 @@ from tenancy import require_context, TenantContext
 from admin_c2 import router as admin_c2_router
 from client_portal import router as client_portal_router
 from voice_intel import router as voice_router, start_voice_workers, stop_voice_workers
+from reconstruction_worker import start_reconstruction_workers, stop_reconstruction_workers
 from agent_profile import router as agent_profile_router
 from disposition_enforcer import start_disposition_enforcer, stop_disposition_enforcer
 from lead_dossier import router as lead_dossier_router
@@ -67,6 +68,7 @@ async def lifespan(app: FastAPI):
     except Exception as e:  # noqa: BLE001 — boot must survive a DB-less dev run
         logger.warning("DB pool init failed (%s); running without persistent memory.", e)
     await start_voice_workers()
+    await start_reconstruction_workers()
     await start_disposition_enforcer()
     from data_integrations.periodic import start_periodic_scheduler, stop_periodic_scheduler
     await start_periodic_scheduler()
@@ -76,6 +78,7 @@ async def lifespan(app: FastAPI):
         await stop_periodic_scheduler()
         await stop_disposition_enforcer()
         await stop_voice_workers()
+        await stop_reconstruction_workers()
         # Flush in-flight audit writes BEFORE the pool closes — they need it.
         await drain_pending()
         await close_pool()
@@ -148,6 +151,9 @@ app.include_router(mls_portal_router)
 
 from media_api import router as media_api_router  # noqa: E402 — 2D image upload/serve (agent JWT + portal token; bytes in media_blobs)
 app.include_router(media_api_router)
+
+from tour_api import router as tour_api_router  # noqa: E402 — walkable-tour tier resolver (exterior/photos/360/splat)
+app.include_router(tour_api_router)
 
 from apis.geocoding import geocode, reverse_geocode
 from apis.census import get_demographics_by_zip

@@ -58,6 +58,33 @@
   white-space: nowrap;
 }
 
+/* Honest tour-tier badge — neutral by default; amber + "walk inside" when the
+   property actually has a captured walkable interior (tiers 2/3). */
+.tierBadge {
+  flex: none;
+  font-family: var(--font-display);
+  font-size: 0.5625rem;
+  font-weight: 600;
+  letter-spacing: var(--tracking-widest);
+  text-transform: uppercase;
+  color: var(--oracle-text-dim);
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--oracle-border-bright);
+  border-radius: var(--radius-pill);
+  background: rgba(4, 4, 6, 0.4);
+  white-space: nowrap;
+}
+
+.tierBadge[data-walkable] {
+  color: var(--oracle-amber);
+  border-color: var(--oracle-amber);
+  background: var(--oracle-amber-ghost);
+}
+
+.tierBadge[data-walkable]::before {
+  content: '↳ ';
+}
+
 .addr {
   flex: 1;
   min-width: 0;

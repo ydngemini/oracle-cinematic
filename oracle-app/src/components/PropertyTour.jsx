@@ -77,6 +77,23 @@ export default function PropertyTour({ address, lat, lng, leadId, listingId, onC
   const [media, setMedia] = useState([]);
   const [lightbox, setLightbox] = useState(null); // index into media, or null
 
+  // Honest tour tier (exterior / photos / 360 / full walkthrough) from the
+  // resolver. Async-only setState (no synchronous set-state-in-effect). If the
+  // resolver is offline we silently stay exterior-only — never claim more.
+  const [tour, setTour] = useState(null);
+  useEffect(() => {
+    if (leadId == null && listingId == null) return undefined;
+    let alive = true;
+    const p = new URLSearchParams();
+    if (leadId != null) p.set('lead_id', String(leadId));
+    if (listingId != null) p.set('listing_id', String(listingId));
+    crmGet(`/api/crm/property-tour?${p.toString()}`).then(
+      (d) => { if (alive) setTour(d); },
+      () => { if (alive) setTour(null); },
+    );
+    return () => { alive = false; };
+  }, [leadId, listingId]);
+
   // ── Orbit control (refs so handlers stay stable across renders) ───────────
   const stopOrbit = useCallback(() => {
     const map = mapRef.current;
@@ -439,6 +456,15 @@ export default function PropertyTour({ address, lat, lng, leadId, listingId, onC
 
       <header className={styles.bar}>
         <span className={styles.kicker}>Neoh · 3D Tour</span>
+        {tour?.badge && (
+          <span
+            className={styles.tierBadge}
+            data-walkable={tour.walkable_interior ? '' : undefined}
+            title={tour.honest_note}
+          >
+            {tour.badge}
+          </span>
+        )}
         <span className={styles.addr} title={resolvedLabel || address}>
           {resolvedLabel || address}
         </span>

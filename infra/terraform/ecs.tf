@@ -34,6 +34,14 @@ locals {
     { name = "ORACLE_RDS_CA_BUNDLE", value = "/etc/ssl/certs/rds-global-bundle.pem" },
     { name = "AWS_REGION", value = var.aws_region },
     { name = "BEDROCK_REGION", value = var.aws_region },
+    # GPU reconstruction via AWS Batch + S3 splat storage (reconstruction.tf).
+    { name = "RECONSTRUCTION_PROVIDER", value = "aws_batch" },
+    { name = "RECON_S3_BUCKET", value = aws_s3_bucket.recon.bucket },
+    { name = "RECON_AWS_BATCH_QUEUE", value = aws_batch_job_queue.recon.name },
+    { name = "RECON_AWS_BATCH_JOBDEF", value = aws_batch_job_definition.recon.name },
+    { name = "ORACLE_SPLAT_STORAGE", value = "s3" },
+    { name = "ORACLE_SPLAT_S3_BUCKET", value = aws_s3_bucket.recon.bucket },
+    { name = "ORACLE_SPLAT_CDN_BASE", value = "https://${aws_s3_bucket.recon.bucket}.s3.${var.aws_region}.amazonaws.com" },
   ]
 
   # Secrets injected from Secrets Manager JSON keys (never in plaintext env/state).

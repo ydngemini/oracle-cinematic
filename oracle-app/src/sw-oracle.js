@@ -70,7 +70,11 @@ async function idbDelete(storeName, key) {
 
 const SPLAT_BASE = '/public/splats';
 const API_BASE = self.location.origin;
-const MAX_CACHED_SPLATS = 5;
+// Splats are 10-60MB each, so a fixed count thrashes once a few listings are
+// walked. Bound by total BYTES (primary) with a generous count as a secondary
+// guard. propertyId here is the unique splat filename (one row → one file).
+const MAX_CACHED_SPLATS = 30;
+const MAX_CACHE_BYTES = 400 * 1024 * 1024; // ~400 MB of cached splats
 
 async function prefetchSplat(propertyId) {
   const existing = await idbGet(STORE_SPLATS, propertyId);
@@ -90,7 +94,7 @@ async function prefetchSplat(propertyId) {
       cachedAt: Date.now(),
     });
 
-    await evictOldEntries(STORE_SPLATS, MAX_CACHED_SPLATS);
+    await evictOldEntries(STORE_SPLATS, MAX_CACHED_SPLATS, MAX_CACHE_BYTES);
   } catch { /* network/IDB failure — prefetch is best-effort */ }
 }
 
@@ -102,7 +106,7 @@ async function prefetchLegal(propertyId, legalPayload) {
   });
 }
 
-async function evictOldEntries(storeName, maxEntries) {
+async function evictOldEntries(storeName, maxEntries, maxBytes = Infinity) {
   const db = await openDB();
   return new Promise((resolve, reject) => {
     const tx = db.transaction(storeName, 'readwrite');
@@ -110,11 +114,16 @@ async function evictOldEntries(storeName, maxEntries) {
     const allReq = store.getAll();
     allReq.onsuccess = () => {
       const entries = allReq.result;
-      if (entries.length <= maxEntries) { resolve(); return; }
-      entries.sort((a, b) => (a.cachedAt || 0) - (b.cachedAt || 0));
-      const toRemove = entries.slice(0, entries.length - maxEntries);
-      for (const entry of toRemove) {
-        store.delete(entry.propertyId);
+      // Keep newest-first within BOTH the count and byte budgets; evict the rest.
+      entries.sort((a, b) => (b.cachedAt || 0) - (a.cachedAt || 0));
+      let count = 0;
+      let bytes = 0;
+      for (const entry of entries) {
+        count += 1;
+        bytes += entry.size || 0;
+        if (count > maxEntries || bytes > maxBytes) {
+          store.delete(entry.propertyId);
+        }
       }
     };
     allReq.onerror = () => reject(allReq.error);
