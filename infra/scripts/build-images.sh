@@ -14,12 +14,13 @@ REGION="${AWS_REGION:-us-east-1}"
 AWS=(aws --profile "$PROFILE" --region "$REGION")
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 
-cd "$(dirname "$0")/../terraform"
-BE=$(terraform output -raw ecr_backend_url)
-FE=$(terraform output -raw ecr_frontend_url)
-RECON=$(terraform output -raw recon_ecr_url)
-BUCKET=$(terraform output -raw recon_s3_bucket)
-REG="${BE%%/*}"
+# Resolve resource names deterministically via aws (no local terraform needed).
+ACCT=$("${AWS[@]}" sts get-caller-identity --query Account --output text)
+REG="${ACCT}.dkr.ecr.${REGION}.amazonaws.com"
+BE="${REG}/neoh/backend"
+FE="${REG}/neoh/frontend"
+RECON="${REG}/neoh/reconstruction"
+BUCKET="neoh-prod-recon-${ACCT}"
 
 # ── source: git-archive HEAD → S3 (CodeBuild unpacks it as the build context) ──
 ZIP="/tmp/neoh-src-$$.zip"
@@ -51,6 +52,7 @@ phases:
   build:
     commands:
       - aws ecr get-login-password --region \$AWS_DEFAULT_REGION | docker login --username AWS --password-stdin \$ECR_REGISTRY
+      - if [ -n "\$DOCKERHUB_TOKEN" ]; then echo "\$DOCKERHUB_TOKEN" | docker login --username "\$DOCKERHUB_USER" --password-stdin; echo "authed to Docker Hub (avoids nvidia/cuda 429)"; fi
       - docker build -t \$RECON:v1 -t \$RECON:latest infra/reconstruction
       - docker push \$RECON:v1
       - docker push \$RECON:latest
@@ -64,6 +66,7 @@ phases:
   build:
     commands:
       - aws ecr get-login-password --region \$AWS_DEFAULT_REGION | docker login --username AWS --password-stdin \$ECR_REGISTRY
+      - for i in python:3.12-slim node:20-alpine nginx:1.27-alpine; do docker pull public.ecr.aws/docker/library/\$i && docker tag public.ecr.aws/docker/library/\$i \$i; done
       - docker build -t \$BE:latest backend
       - docker push \$BE:latest
       - docker build --build-arg VITE_API_BASE=https://neoh.app -t \$FE:latest oracle-app
@@ -71,7 +74,11 @@ phases:
 YAML
 fi
 
-ENVVARS="[{\"name\":\"ECR_REGISTRY\",\"value\":\"$REG\"},{\"name\":\"BE\",\"value\":\"$BE\"},{\"name\":\"FE\",\"value\":\"$FE\"},{\"name\":\"RECON\",\"value\":\"$RECON\"},{\"name\":\"AWS_DEFAULT_REGION\",\"value\":\"$REGION\"}]"
+# Optional Docker Hub auth (avoids the nvidia/cuda anonymous 429 on CodeBuild IPs):
+#   DOCKERHUB_USER=you DOCKERHUB_TOKEN=dckr_pat_... infra/scripts/build-images.sh recon
+DH=""
+if [ -n "${DOCKERHUB_TOKEN:-}" ]; then DH=",{\"name\":\"DOCKERHUB_USER\",\"value\":\"${DOCKERHUB_USER:-}\"},{\"name\":\"DOCKERHUB_TOKEN\",\"value\":\"$DOCKERHUB_TOKEN\"}"; fi
+ENVVARS="[{\"name\":\"ECR_REGISTRY\",\"value\":\"$REG\"},{\"name\":\"BE\",\"value\":\"$BE\"},{\"name\":\"FE\",\"value\":\"$FE\"},{\"name\":\"RECON\",\"value\":\"$RECON\"},{\"name\":\"AWS_DEFAULT_REGION\",\"value\":\"$REGION\"}$DH]"
 
 SRC="{\"type\":\"S3\",\"location\":\"$BUCKET/$SRCKEY\",\"buildspec\":$(python3 -c 'import json,sys;print(json.dumps(sys.stdin.read()))' <<<"$SPEC")}"
 ENVJSON="{\"type\":\"LINUX_CONTAINER\",\"image\":\"aws/codebuild/standard:7.0\",\"computeType\":\"$COMPUTE\",\"privilegedMode\":true,\"environmentVariables\":$ENVVARS}"
