@@ -1,0 +1,178 @@
+.overlay {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-modal, 1000);
+  background: #040406;
+  overflow: hidden;
+  touch-action: none; /* we own all gestures (look + joystick) */
+  user-select: none;
+}
+
+.canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  cursor: grab;
+}
+.canvas:active { cursor: grabbing; }
+
+/* ── top bar ─────────────────────────────────────────────────────────────── */
+.bar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  pointer-events: none;
+  background: linear-gradient(to bottom, rgba(4, 4, 6, 0.7), transparent);
+}
+.bar > * { pointer-events: auto; }
+
+.kicker {
+  flex: none;
+  font-family: var(--font-display);
+  font-size: 0.5625rem;
+  font-weight: 600;
+  letter-spacing: var(--tracking-widest);
+  text-transform: uppercase;
+  color: var(--oracle-amber);
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--oracle-amber);
+  border-radius: var(--radius-pill);
+  background: var(--oracle-amber-ghost);
+  white-space: nowrap;
+}
+
+.addr {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--text-sm);
+  font-weight: 500;
+  color: var(--oracle-text-heading);
+  text-shadow: 0 1px 6px rgba(0, 0, 0, 0.8);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.closeBtn {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  border: 1px solid var(--oracle-border-bright);
+  background: var(--oracle-glass);
+  backdrop-filter: var(--oracle-backdrop);
+  color: var(--oracle-text-heading);
+  cursor: pointer;
+}
+.closeBtn svg { width: 18px; height: 18px; }
+.closeBtn:hover { border-color: var(--oracle-amber); color: var(--oracle-amber); }
+
+/* ── centered states ─────────────────────────────────────────────────────── */
+.center {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-3);
+  color: var(--oracle-text-heading);
+  text-align: center;
+  padding: var(--space-4);
+}
+.spinner {
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  border: 2px solid var(--oracle-amber-ghost);
+  border-top-color: var(--oracle-amber);
+  animation: walk-spin 0.9s linear infinite;
+}
+@keyframes walk-spin { to { transform: rotate(360deg); } }
+.loadingText { font-size: var(--text-sm); color: var(--oracle-text-dim); letter-spacing: var(--tracking-snug); }
+.errText { font-size: var(--text-sm); color: var(--oracle-text-heading); max-width: 32ch; }
+.ghostBtn {
+  padding: var(--space-2) var(--space-4);
+  border: 1px solid var(--oracle-border-bright);
+  border-radius: var(--radius-pill);
+  background: var(--oracle-glass);
+  color: var(--oracle-text-heading);
+  font-size: var(--text-sm);
+  cursor: pointer;
+}
+.ghostBtn:hover { border-color: var(--oracle-amber); color: var(--oracle-amber); }
+
+/* ── walk hint ───────────────────────────────────────────────────────────── */
+.hint {
+  position: absolute;
+  top: 64px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: var(--space-1) var(--space-3);
+  border-radius: var(--radius-pill);
+  background: rgba(4, 4, 6, 0.55);
+  backdrop-filter: var(--oracle-backdrop);
+  border: 1px solid var(--oracle-border-bright);
+  color: var(--oracle-text-dim);
+  font-size: 0.6875rem;
+  letter-spacing: var(--tracking-snug);
+  white-space: nowrap;
+  animation: walk-fade 0.4s ease;
+}
+@keyframes walk-fade { from { opacity: 0; } to { opacity: 1; } }
+
+/* ── touch joystick (hidden on devices with a fine pointer) ──────────────── */
+.joystick {
+  position: absolute;
+  left: var(--space-4);
+  bottom: calc(var(--space-6, 48px) + 24px);
+  width: 108px;
+  height: 108px;
+  border-radius: 50%;
+  border: 1px solid var(--oracle-border-bright);
+  background: rgba(4, 4, 6, 0.4);
+  backdrop-filter: var(--oracle-backdrop);
+  display: grid;
+  place-items: center;
+  touch-action: none;
+}
+.joyNub {
+  width: 42px;
+  height: 42px;
+  border-radius: 50%;
+  background: var(--oracle-amber-ghost);
+  border: 1px solid var(--oracle-amber);
+}
+@media (pointer: fine) {
+  .joystick { display: none; }
+}
+
+/* ── persistent AI disclosure ────────────────────────────────────────────── */
+.disclosure {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  margin: 0;
+  padding: var(--space-2) var(--space-4);
+  font-size: 0.625rem;
+  line-height: 1.4;
+  text-align: center;
+  color: var(--oracle-text-dim);
+  background: linear-gradient(to top, rgba(4, 4, 6, 0.8), transparent);
+  pointer-events: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .spinner { animation-duration: 2s; }
+  .hint { animation: none; }
+}

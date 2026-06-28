@@ -1,5 +1,6 @@
 import { lazy, Suspense, useEffect, useState } from 'react';
 import { crmGet } from '../state/useCrmApi';
+import { useTour } from '../state/useTour';
 import { locationFor, satelliteUrl, usePropertyCover } from '../lib/propertyImagery';
 import MediaUploader from './MediaUploader';
 import styles from './ListingDetail.module.css';
@@ -7,6 +8,7 @@ import styles from './ListingDetail.module.css';
 // The photoreal 3D tour pulls in the Google Maps loader on demand — keep it out
 // of the initial chunk and only mount it when a tour is actually opened.
 const PropertyTour = lazy(() => import('./PropertyTour'));
+const WalkableSplatViewer = lazy(() => import('./WalkableSplatViewer'));
 
 const GLYPHS = {
   house: (
@@ -93,6 +95,9 @@ export default function ListingDetail({ listingId, source = 'mls', onBack }) {
   const [listing, setListing] = useState(null);
   const [error, setError] = useState(null);
   const [tourOpen, setTourOpen] = useState(false);
+  const [walkOpen, setWalkOpen] = useState(false);
+  // Resolve the property's best tour tier; "Step inside" appears only at tier 3.
+  const { tour } = useTour(source === 'pipeline' ? { leadId: listingId } : { listingId });
 
   // Reset to loading when the target record changes — render-phase, so we don't
   // trip the setState-in-effect rule.
@@ -265,6 +270,18 @@ export default function ListingDetail({ listingId, source = 'mls', onBack }) {
             </button>
           )}
 
+          {tour?.best_tier === 3 && tour?.splat_url && (
+            <button
+              type="button"
+              className={styles.tourLaunch}
+              data-walk=""
+              onClick={() => setWalkOpen(true)}
+            >
+              <span className={styles.tourLaunchGlyph} aria-hidden="true">{GLYPHS.tour}</span>
+              Step inside · walk the 3D space
+            </button>
+          )}
+
           <p className={styles.sourceNote}>
             {isPipeline
               ? `Real harvested pipeline lead${l.parcel_id ? ` · parcel ${l.parcel_id}` : ''}`
@@ -295,6 +312,19 @@ export default function ListingDetail({ listingId, source = 'mls', onBack }) {
                 </Suspense>
               </div>
             </div>
+          )}
+
+          {/* Walk-inside Gaussian splat — self-contained full-screen overlay. */}
+          {walkOpen && tour?.splat_url && (
+            <Suspense fallback={null}>
+              <WalkableSplatViewer
+                splatUrl={tour.splat_url}
+                disclosure={tour.disclosure}
+                address={l.address || textAddress}
+                title={l.address || textAddress}
+                onClose={() => setWalkOpen(false)}
+              />
+            </Suspense>
           )}
         </>
       )}

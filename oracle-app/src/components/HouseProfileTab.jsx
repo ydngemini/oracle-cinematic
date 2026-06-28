@@ -1,5 +1,6 @@
 import { Fragment, Suspense, lazy, useCallback, useEffect, useMemo, useState } from 'react';
 import { crmGet, crmPost } from '../state/useCrmApi';
+import { useTour } from '../state/useTour';
 import { ComplianceDashboard } from './ComplianceDashboard';
 import MediaUploader from './MediaUploader';
 import styles from './HouseProfileTab.module.css';
@@ -7,6 +8,7 @@ import styles from './HouseProfileTab.module.css';
 // The photoreal 3D tour pulls in the Google Maps loader on demand — keep it in
 // its own chunk so the House form paints without it until the agent opens a tour.
 const PropertyTour = lazy(() => import('./PropertyTour'));
+const WalkableSplatViewer = lazy(() => import('./WalkableSplatViewer'));
 
 // Inline stroke glyphs — same idiom as TabBar GLYPHS, zero icon deps.
 const GLYPHS = {
@@ -102,6 +104,9 @@ export default function HouseProfileTab() {
 
   // Photoreal 3D flyover overlay — opens against whatever address is on file.
   const [tourOpen, setTourOpen] = useState(false);
+  const [walkOpen, setWalkOpen] = useState(false);
+  // Walk-inside appears only once the house is listed AND has a tier-3 splat.
+  const { tour } = useTour({ listingId: listed?.id });
 
   const loadSellers = useCallback(() => {
     crmGet('/api/crm/clients?type=seller').then(
@@ -343,6 +348,24 @@ export default function HouseProfileTab() {
                 </svg>
               </span>
               Preview the 3D tour
+            </button>
+          )}
+
+          {tour?.best_tier === 3 && tour?.splat_url && (
+            <button
+              type="button"
+              className={styles.tourLaunch}
+              data-walk=""
+              onClick={() => setWalkOpen(true)}
+            >
+              <span className={styles.tourLaunchGlyph} aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M3 10.5 12 3l9 7.5" />
+                  <path d="M5.5 9.5V20h13V9.5" />
+                  <circle cx="12" cy="13.5" r="2" />
+                </svg>
+              </span>
+              Step inside · walk the 3D space
             </button>
           )}
 
@@ -636,6 +659,19 @@ export default function HouseProfileTab() {
             </Suspense>
           </div>
         </div>
+      )}
+
+      {/* Walk-inside Gaussian splat — self-contained full-screen overlay. */}
+      {walkOpen && tour?.splat_url && (
+        <Suspense fallback={null}>
+          <WalkableSplatViewer
+            splatUrl={tour.splat_url}
+            disclosure={tour.disclosure}
+            address={house.address.trim()}
+            title={house.address.trim()}
+            onClose={() => setWalkOpen(false)}
+          />
+        </Suspense>
       )}
     </div>
   );
