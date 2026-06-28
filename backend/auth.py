@@ -8,6 +8,8 @@ dev/development/local), where an ephemeral per-process key is generated so local
 runs work without a static secret in source.
 """
 
+import base64
+import hashlib
 import hmac
 import logging
 import os
@@ -106,6 +108,95 @@ _ADMIN_PASSPHRASE = os.environ.get("ORACLE_ADMIN_PASSPHRASE", "")
 if _ADMIN_ID and _ADMIN_PASSPHRASE:
     DEMO_CREDENTIALS[_ADMIN_ID] = _ADMIN_PASSPHRASE
     DEMO_TENANCY[_ADMIN_ID] = (PLATFORM_TENANT_ID, "platform_admin")
+
+# ---------------------------------------------------------------------------
+# DB-backed credentials + self-serve signup. The operator/demo dict above stays
+# as the platform-admin fallback; everyone else is a users-table lookup. Password
+# hashing uses stdlib scrypt (no extra dependency).
+# ---------------------------------------------------------------------------
+_SCRYPT_N, _SCRYPT_R, _SCRYPT_P = 2 ** 14, 8, 1
+_RESET_TTL_SECONDS = 1800  # password-reset link valid 30 min
+MIN_PASSWORD_LEN = 10
+
+
+def _hash_pw(password: str) -> str:
+    salt = secrets.token_bytes(16)
+    dk = hashlib.scrypt(password.encode(), salt=salt, n=_SCRYPT_N, r=_SCRYPT_R, p=_SCRYPT_P, dklen=32)
+    return "scrypt$%s$%s" % (base64.b64encode(salt).decode(), base64.b64encode(dk).decode())
+
+
+def _verify_pw(password: str, stored: Optional[str]) -> bool:
+    if not stored:
+        return False
+    try:
+        scheme, salt_b64, dk_b64 = stored.split("$")
+        if scheme != "scrypt":
+            return False
+        salt = base64.b64decode(salt_b64)
+        expected = base64.b64decode(dk_b64)
+        dk = hashlib.scrypt(password.encode(), salt=salt, n=_SCRYPT_N, r=_SCRYPT_R, p=_SCRYPT_P, dklen=len(expected))
+        return hmac.compare_digest(dk, expected)
+    except Exception:  # noqa: BLE001 — any parse/format error == invalid
+        return False
+
+
+def _slugify(text: str) -> str:
+    base = "".join(c if c.isalnum() else "-" for c in (text or "").lower()).strip("-")[:40] or "tenant"
+    return "%s-%s" % (base, secrets.token_hex(3))
+
+
+def _issue_jwt(sub: str, tenant_id: str, role: str, *, ttl: int = TOKEN_TTL_SECONDS, extra: Optional[dict] = None) -> str:
+    now = time.time()
+    payload: dict = {"sub": sub, "tenant_id": tenant_id, "role": role, "iat": now, "exp": now + ttl}
+    if extra:
+        payload.update(extra)
+    if _JWT_ISSUER:
+        payload["iss"] = _JWT_ISSUER
+    if _JWT_AUDIENCE:
+        payload["aud"] = _JWT_AUDIENCE
+    token = jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
+    return token.decode("utf-8") if isinstance(token, bytes) else token
+
+
+def _admin_ctx():
+    """Platform-admin TenantContext (RLS bypass) for pre-auth user lookups +
+    signup inserts — login/register run before any caller context exists."""
+    from tenancy import TenantContext  # lazy import avoids a startup cycle
+    return TenantContext(agent_id="auth", tenant_id=PLATFORM_TENANT_ID, role="platform_admin")
+
+
+async def _lookup_user(agent_id: str):
+    from db.connection import tenant_tx
+    async with tenant_tx(_admin_ctx()) as conn:
+        return await conn.fetchrow(
+            "SELECT tenant_id, role, password_hash FROM users "
+            "WHERE lower(agent_id) = lower($1) AND is_active",
+            agent_id,
+        )
+
+
+def _send_reset_email(to_email: str, link: str) -> None:
+    """Best-effort password-reset email via SES. If SES isn't set up yet, log and
+    move on — the /forgot endpoint still returns 202 (no account enumeration).
+    Sender configurable via ORACLE_SES_SENDER (must be an SES-verified identity)."""
+    sender = os.environ.get("ORACLE_SES_SENDER", "no-reply@neoh.app")
+    region = os.environ.get("AWS_REGION", "us-east-1")
+    try:
+        import boto3
+        boto3.client("sesv2", region_name=region).send_email(
+            FromEmailAddress=sender,
+            Destination={"ToAddresses": [to_email]},
+            Content={"Simple": {
+                "Subject": {"Data": "Reset your Neoh password"},
+                "Body": {
+                    "Html": {"Data": f'<p>Reset your Neoh password (link valid 30 minutes):</p><p><a href="{link}">{link}</a></p>'},
+                    "Text": {"Data": f"Reset your Neoh password (valid 30 minutes): {link}"},
+                },
+            }},
+        )
+        log.info("Reset email sent to %r", to_email)
+    except Exception as e:  # noqa: BLE001 — email is best-effort; never leak to the caller
+        log.warning("Reset email not sent (SES not configured?): %s", e)
 
 # ---------------------------------------------------------------------------
 # In-memory session registry
@@ -235,6 +326,22 @@ class LoginRequest(BaseModel):
     passphrase: str
 
 
+class RegisterRequest(BaseModel):
+    email: str
+    password: str
+    full_name: str = ""
+    company: str = ""
+
+
+class ForgotRequest(BaseModel):
+    email: str
+
+
+class ResetRequest(BaseModel):
+    token: str
+    new_password: str
+
+
 class LoginResponse(BaseModel):
     token: str
     agent_id: str
@@ -311,7 +418,7 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 
 
 @router.post("/login", response_model=LoginResponse)
-def login(body: LoginRequest, response: Response) -> LoginResponse:
+async def login(body: LoginRequest, response: Response) -> LoginResponse:
     """
     Validate agent credentials and return a signed JWT.
 
@@ -329,12 +436,21 @@ def login(body: LoginRequest, response: Response) -> LoginResponse:
     # --- Rate limit check (per agent_id) -------------------------------------
     limit, remaining, reset = _check_rate_limit(body.agent_id)
 
-    # --- Credential validation (constant-time comparison) --------------------
+    # --- Credential validation -----------------------------------------------
+    # 1) operator/demo dict (constant-time). 2) DB-backed users (self-serve signups).
     expected = DEMO_CREDENTIALS.get(body.agent_id, "")
     # hmac.compare_digest prevents timing-based enumeration of valid agent IDs.
     credentials_ok = bool(expected) and hmac.compare_digest(
         expected.encode(), body.passphrase.encode()
     )
+    if credentials_ok:
+        tenant_id, role = DEMO_TENANCY.get(body.agent_id, (body.agent_id, "agent"))
+    else:
+        row = await _lookup_user(body.agent_id)
+        if row and _verify_pw(body.passphrase, row["password_hash"]):
+            credentials_ok = True
+            tenant_id, role = str(row["tenant_id"]), row["role"]
+
     if not credentials_ok:
         # Don't distinguish "unknown agent" from "wrong passphrase" — prevents
         # user enumeration via timing or error messages.
@@ -344,10 +460,6 @@ def login(body: LoginRequest, response: Response) -> LoginResponse:
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid agent credentials.",
         )
-
-    # Resolve the agent's domain + role. Demo creds without a tenancy entry
-    # fall back to an isolated agent in their own single-user tenant.
-    tenant_id, role = DEMO_TENANCY.get(body.agent_id, (body.agent_id, "agent"))
 
     now = time.time()
     payload: dict = {
@@ -378,6 +490,81 @@ def login(body: LoginRequest, response: Response) -> LoginResponse:
         tenant_id=tenant_id,
         role=role,
     )
+
+
+@router.post("/register", response_model=LoginResponse, status_code=status.HTTP_201_CREATED)
+async def register(body: RegisterRequest, response: Response) -> LoginResponse:
+    """Self-serve broker signup: create a fresh tenant + a broker_owner user, then
+    log them in. agent_id (the JWT sub) is the normalized email."""
+    email = body.email.strip().lower()
+    if "@" not in email or "." not in email.split("@")[-1] or len(email) > _MAX_AGENT_ID_LEN:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Enter a valid email address.")
+    if not (MIN_PASSWORD_LEN <= len(body.password) <= _MAX_PASSPHRASE_LEN):
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, f"Password must be at least {MIN_PASSWORD_LEN} characters.")
+
+    from db.connection import tenant_tx
+    pw_hash = _hash_pw(body.password)
+    company = (body.company or "").strip()
+    async with tenant_tx(_admin_ctx()) as conn:
+        if await conn.fetchval("SELECT 1 FROM users WHERE lower(agent_id) = lower($1)", email):
+            raise HTTPException(status.HTTP_409_CONFLICT, "An account with that email already exists.")
+        trow = await conn.fetchrow(
+            "INSERT INTO tenants (slug, name) VALUES ($1, $2) RETURNING id",
+            _slugify(company or email.split("@")[0]), company or email,
+        )
+        await conn.execute(
+            "INSERT INTO users (tenant_id, agent_id, role, password_hash, email, full_name, company) "
+            "VALUES ($1, $2, 'broker_owner', $3, $4, $5, $6)",
+            trow["id"], email, pw_hash, email, body.full_name.strip(), company,
+        )
+    tenant_id = str(trow["id"])
+    token = _issue_jwt(email, tenant_id, "broker_owner")
+    _register_session(email)
+    log.info("New signup: agent_id=%r tenant_id=%r", email, tenant_id)
+    return LoginResponse(token=token, agent_id=email, expires_in=TOKEN_TTL_SECONDS, tenant_id=tenant_id, role="broker_owner")
+
+
+@router.post("/forgot", status_code=status.HTTP_202_ACCEPTED)
+async def forgot_password(body: ForgotRequest):
+    """Email a time-limited reset link. Always 202 (never reveals whether the email
+    has an account). The token is a short-TTL signed JWT with purpose=pwreset."""
+    email = body.email.strip().lower()
+    row = await _lookup_user(email)
+    if row:
+        token = _issue_jwt(email, str(row["tenant_id"]), row["role"], ttl=_RESET_TTL_SECONDS, extra={"purpose": "pwreset"})
+        base = os.environ.get("ORACLE_BASE_URL", "https://neoh.app").rstrip("/")
+        _send_reset_email(email, f"{base}/?reset={token}")
+    return {"status": "ok", "detail": "If that email has an account, a reset link is on its way."}
+
+
+@router.post("/reset", response_model=LoginResponse)
+async def reset_password(body: ResetRequest, response: Response) -> LoginResponse:
+    """Consume a reset token (purpose=pwreset), set the new password, log in."""
+    if not (MIN_PASSWORD_LEN <= len(body.new_password) <= _MAX_PASSPHRASE_LEN):
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, f"Password must be at least {MIN_PASSWORD_LEN} characters.")
+    try:
+        claims = decode_token(body.token)  # validates signature + expiry
+    except HTTPException:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Reset link is invalid or has expired.")
+    if claims.get("purpose") != "pwreset":
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Reset link is invalid or has expired.")
+
+    email = claims["sub"]
+    from db.connection import tenant_tx
+    pw_hash = _hash_pw(body.new_password)
+    async with tenant_tx(_admin_ctx()) as conn:
+        tid = await conn.fetchval(
+            "UPDATE users SET password_hash = $2, updated_at = now() "
+            "WHERE lower(agent_id) = lower($1) AND is_active RETURNING tenant_id",
+            email, pw_hash,
+        )
+    if not tid:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Account not found.")
+    tenant_id, role = str(tid), claims.get("role", "agent")
+    token = _issue_jwt(email, tenant_id, role)
+    _register_session(email)
+    log.info("Password reset for agent_id=%r", email)
+    return LoginResponse(token=token, agent_id=email, expires_in=TOKEN_TTL_SECONDS, tenant_id=tenant_id, role=role)
 
 
 @router.post("/verify", response_model=VerifyResponse)
