@@ -1,0 +1,24 @@
+# Copy to terraform.tfvars (gitignored) and fill in. No secrets live here —
+# real runtime secrets go into AWS Secrets Manager after apply (see DEPLOY.md).
+
+aws_region  = "us-east-1"
+project     = "neoh"
+environment = "prod"
+
+# An ISSUED ACM certificate ARN in aws_region covering your domain.
+acm_certificate_arn = "arn:aws:acm:us-east-1:111122223333:certificate/xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+domain_name         = "app.neoh.example"
+
+# Must be EXACT origins, no wildcard (config.py rejects wildcard in prod).
+cors_origins = "https://app.neoh.example"
+app_base_url = "https://app.neoh.example"
+
+# Tenant the seeded real leads live under (see project memory).
+demo_tenant_id = "00000000-0000-0000-0000-000000000000"
+
+# Push this tag to ECR before `terraform apply` (use a git SHA in CI).
+image_tag = "v1"
+
+# Aurora Serverless v2 capacity band (ACU). 0.5 floor scales near-zero off-peak.
+db_min_acu = 0.5
+db_max_acu = 4

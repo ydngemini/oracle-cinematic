@@ -103,27 +103,34 @@ export default function HouseProfileTab() {
   // Photoreal 3D flyover overlay — opens against whatever address is on file.
   const [tourOpen, setTourOpen] = useState(false);
 
-  const loadSellers = useCallback(async () => {
-    setSellersStatus('loading');
-    setSellersError('');
-    try {
-      const data = await crmGet('/api/crm/clients?type=seller');
-      setSellers(Array.isArray(data?.clients) ? data.clients : []);
-      setSellersStatus('ready');
-    } catch (err) {
-      // The route may 404 until the backend ships — quiet inline state.
-      setSellersError(
-        err.status === 404
-          ? 'Seller directory is not online yet.'
-          : err.message || 'Could not reach the CRM.'
-      );
-      setSellersStatus('error');
-    }
+  const loadSellers = useCallback(() => {
+    crmGet('/api/crm/clients?type=seller').then(
+      (data) => {
+        setSellers(Array.isArray(data?.clients) ? data.clients : []);
+        setSellersStatus('ready');
+      },
+      (err) => {
+        // The route may 404 until the backend ships — quiet inline state.
+        setSellersError(
+          err.status === 404
+            ? 'Seller directory is not online yet.'
+            : err.message || 'Could not reach the CRM.'
+        );
+        setSellersStatus('error');
+      }
+    );
   }, []);
 
+  // Flip idle→loading during render when the seller step opens, then let the
+  // effect run the async fetch — keeps the effect free of synchronous setState.
+  if (step === 1 && sellersStatus === 'idle') {
+    setSellersStatus('loading');
+    setSellersError('');
+  }
+
   useEffect(() => {
-    if (step === 1 && sellersStatus === 'idle') loadSellers();
-  }, [step, sellersStatus, loadSellers]);
+    if (sellersStatus === 'loading') loadSellers();
+  }, [sellersStatus, loadSellers]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();

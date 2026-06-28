@@ -47,13 +47,18 @@ export function MarketDataPanels() {
   const [error, setError] = useState(null);
 
   const fetch_ = useCallback(() => {
-    if (!primaryState) { setLoading(false); return; }
-    setLoading(true);
+    if (!primaryState) return;
     crmGet(`/api/market/${primaryState}/overview`).then(
       (res) => { setData(res); setLoading(false); setError(null); },
       (err) => { setError(err); setLoading(false); }
     );
   }, [primaryState]);
+
+  // Show the spinner again when the state changes — render-phase reset keeps the
+  // fetch effect free of synchronous setState (set-state-in-effect).
+  const mdKey = primaryState || '';
+  const [prevMdKey, setPrevMdKey] = useState(mdKey);
+  if (mdKey !== prevMdKey) { setPrevMdKey(mdKey); setLoading(Boolean(primaryState)); setError(null); }
 
   useEffect(() => { fetch_(); }, [fetch_]);
 

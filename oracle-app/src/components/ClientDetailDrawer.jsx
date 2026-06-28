@@ -321,7 +321,10 @@ export default function ClientDetailDrawer({ card, onClose, onClientChanged, get
 // Assignee inline field — separate so it owns its own draft state.
 function InlineAssignee({ value, onCommit }) {
   const [draft, setDraft] = useState(value || '');
-  useEffect(() => { setDraft(value || ''); }, [value]);
+  // Re-sync the draft when the committed value changes — render-phase, the
+  // documented alternative to a setState-in-effect (which the linter flags).
+  const [prevValue, setPrevValue] = useState(value);
+  if (value !== prevValue) { setPrevValue(value); setDraft(value || ''); }
   return (
     <input
       className={styles.assigneeInput}
@@ -338,7 +341,14 @@ function InlineAssignee({ value, onCommit }) {
 // ── Overview pane ─────────────────────────────────────────────────────────
 function OverviewPane({ detail, loadErr, prefChips, openTasks, houses, applyPatch }) {
   const [contact, setContact] = useState({ email: detail?.email || '', phone: detail?.phone || '' });
-  useEffect(() => { setContact({ email: detail?.email || '', phone: detail?.phone || '' }); }, [detail?.email, detail?.phone]);
+  // Re-sync editable contact fields when the underlying record changes —
+  // render-phase reset, not an effect (avoids the setState-in-effect cascade).
+  const contactSig = `${detail?.email || ''} ${detail?.phone || ''}`;
+  const [prevContactSig, setPrevContactSig] = useState(contactSig);
+  if (contactSig !== prevContactSig) {
+    setPrevContactSig(contactSig);
+    setContact({ email: detail?.email || '', phone: detail?.phone || '' });
+  }
   const commit = (key) => {
     const v = contact[key].trim();
     if (v !== (detail?.[key] || '')) applyPatch({ [key]: v || null });

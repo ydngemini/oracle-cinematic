@@ -20,3 +20,15 @@ oracle-cinematic/
 
 # session scratch / diagnostic dumps
 _diag*.txt
+
+# Terraform — never commit state (holds secret ARNs/ids) or filled-in tfvars
+infra/terraform/.terraform/
+infra/terraform/*.tfstate
+infra/terraform/*.tfstate.*
+infra/terraform/*.tfvars
+!infra/terraform/*.tfvars.example
+infra/terraform/.terraform.lock.hcl
+crash.log
+
+# Production env (real secrets) — only the .example template is tracked
+.env.prod

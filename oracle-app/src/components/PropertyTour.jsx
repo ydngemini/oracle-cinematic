@@ -240,9 +240,15 @@ export default function PropertyTour({ address, lat, lng, leadId, listingId, onC
     };
   }, [address, lat, lng, title, startOrbit, stopOrbit, takeControl]);
 
+  // Clear the photo overlay when the record loses its id — render-phase reset
+  // (avoids the setState-in-effect the linter flags); the fetch stays below.
+  const noMediaId = leadId == null && listingId == null;
+  const [prevNoMediaId, setPrevNoMediaId] = useState(noMediaId);
+  if (noMediaId !== prevNoMediaId) { setPrevNoMediaId(noMediaId); if (noMediaId) setMedia([]); }
+
   // ── Fetch the record's uploaded photos (compose into the tour) ────────────
   useEffect(() => {
-    if (leadId == null && listingId == null) { setMedia([]); return; }
+    if (leadId == null && listingId == null) return undefined;
     let alive = true;
     const p = new URLSearchParams();
     if (leadId != null) p.set('lead_id', String(leadId));

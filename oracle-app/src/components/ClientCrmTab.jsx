@@ -100,6 +100,11 @@ export default function ClientCrmTab() {
   }, []);
 
   useEffect(() => {
+    // fetchClients sets `refreshing` synchronously and is shared by 3 event
+    // handlers (manual refresh + two post-mutation reloads). Refetch-on-filter-
+    // change is a legitimate data-fetch effect, so the loading flag stays in the
+    // loader rather than being hoisted to render-phase across every caller.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     fetchClients(JSON.parse(filterKey));
   }, [filterKey, fetchClients]);
 

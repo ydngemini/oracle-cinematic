@@ -58,13 +58,14 @@ export function MlsFeedStatus() {
   const [expandedId, setExpandedId] = useState(null);
 
   const fetch_ = useCallback(() => {
-    setLoading(true);
     crmGet('/api/mls/regions').then(
       (res) => { setData(res); setLoading(false); setError(null); },
       (err) => { setError(err); setLoading(false); }
     );
   }, []);
 
+  // loading initializes true and this runs once (stable deps) — so the fetch
+  // effect carries no synchronous setState (satisfies set-state-in-effect).
   useEffect(() => { fetch_(); }, [fetch_]);
 
   const regions = data?.regions || [];

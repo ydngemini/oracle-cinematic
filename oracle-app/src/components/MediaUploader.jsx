@@ -106,7 +106,7 @@ export default function MediaUploader({
   const targetKey = listingId != null ? `listing:${listingId}` : leadId != null ? `lead:${leadId}` : null;
 
   const [items, setItems] = useState([]);
-  const [galleryState, setGalleryState] = useState('idle'); // idle|loading|ready|error
+  const [galleryState, setGalleryState] = useState(targetKey ? 'loading' : 'idle'); // idle|loading|ready|error
   const [galleryError, setGalleryError] = useState('');
   const [uploads, setUploads] = useState([]); // {id,name,preview,progress,status,error,file}
   const [dragOver, setDragOver] = useState(false);
@@ -119,28 +119,37 @@ export default function MediaUploader({
   onChangeRef.current = onChange;
 
   // ── Gallery load ───────────────────────────────────────────────────────────
-  const refresh = useCallback(async () => {
-    if (!targetKey) { setGalleryState('idle'); return; }
-    setGalleryState('loading');
-    setGalleryError('');
-    try {
-      const p = new URLSearchParams();
-      if (leadId != null) p.set('lead_id', String(leadId));
-      if (listingId != null) p.set('listing_id', String(listingId));
-      const data = await crmGet(`/api/crm/media?${p.toString()}`);
-      const media = (Array.isArray(data?.media) ? data.media : [])
-        .slice()
-        .sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0));
-      setItems(media);
-      setGalleryState('ready');
-      onChangeRef.current?.(media);
-    } catch (err) {
-      setGalleryError(
-        err.status === 404 ? 'The media service is not online yet.' : (err.message || 'Could not load photos.')
-      );
-      setGalleryState('error');
-    }
+  const refresh = useCallback(() => {
+    if (!targetKey) return;
+    const p = new URLSearchParams();
+    if (leadId != null) p.set('lead_id', String(leadId));
+    if (listingId != null) p.set('listing_id', String(listingId));
+    crmGet(`/api/crm/media?${p.toString()}`).then(
+      (data) => {
+        const media = (Array.isArray(data?.media) ? data.media : [])
+          .slice()
+          .sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0));
+        setItems(media);
+        setGalleryState('ready');
+        onChangeRef.current?.(media);
+      },
+      (err) => {
+        setGalleryError(
+          err.status === 404 ? 'The media service is not online yet.' : (err.message || 'Could not load photos.')
+        );
+        setGalleryState('error');
+      }
+    );
   }, [leadId, listingId, targetKey]);
+
+  // Reset the gallery to its loading state when the target record changes —
+  // render-phase, so the load effect carries no synchronous setState.
+  const [prevTargetKey, setPrevTargetKey] = useState(targetKey);
+  if (targetKey !== prevTargetKey) {
+    setPrevTargetKey(targetKey);
+    setGalleryState(targetKey ? 'loading' : 'idle');
+    setGalleryError('');
+  }
 
   useEffect(() => { refresh(); }, [refresh]);
 

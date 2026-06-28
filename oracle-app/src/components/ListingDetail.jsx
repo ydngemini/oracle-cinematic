@@ -94,10 +94,14 @@ export default function ListingDetail({ listingId, source = 'mls', onBack }) {
   const [error, setError] = useState(null);
   const [tourOpen, setTourOpen] = useState(false);
 
+  // Reset to loading when the target record changes — render-phase, so we don't
+  // trip the setState-in-effect rule.
+  const detailKey = `${source} ${listingId}`;
+  const [prevDetailKey, setPrevDetailKey] = useState(detailKey);
+  if (detailKey !== prevDetailKey) { setPrevDetailKey(detailKey); setListing(null); setError(null); }
+
   useEffect(() => {
     let alive = true;
-    setListing(null);
-    setError(null);
     const path = source === 'pipeline'
       ? `/api/mls/pipeline/${listingId}`
       : `/api/mls/listings/${listingId}`;

@@ -29,14 +29,18 @@ export default function ClientTaskList({ clientId, onChange }) {
 
   const load = useCallback(() => {
     if (!clientId) return;
-    setError(null);
     crmGet(`/api/crm/tasks?client_id=${clientId}`).then(
       (data) => setTasks(Array.isArray(data?.tasks) ? data.tasks : []),
       (err) => { setError(err); setTasks([]); }
     );
   }, [clientId]);
 
-  useEffect(() => { setTasks(null); load(); }, [load]);
+  // Reset to loading when the client changes — render-phase, so the effect that
+  // triggers the fetch carries no synchronous setState (set-state-in-effect).
+  const [prevClientId, setPrevClientId] = useState(clientId);
+  if (clientId !== prevClientId) { setPrevClientId(clientId); setTasks(null); setError(null); }
+
+  useEffect(() => { load(); }, [load]);
 
   const add = () => {
     const t = title.trim();
@@ -149,7 +153,7 @@ export default function ClientTaskList({ clientId, onChange }) {
         <div className={styles.errorStrip} role="alert">
           <span className={styles.errorTick} aria-hidden="true" />
           <p className={styles.errorText}>{errMessage(error, 'tasks')}</p>
-          <button type="button" className={styles.retrySm} onClick={() => { setTasks(null); load(); }}>Retry</button>
+          <button type="button" className={styles.retrySm} onClick={() => { setTasks(null); setError(null); load(); }}>Retry</button>
         </div>
       ) : open.length === 0 && done.length === 0 ? (
         <div className={styles.empty}>

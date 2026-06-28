@@ -85,11 +85,13 @@ export function DossierPanel({ leadId, onClose }) {
   const [entityBusy, setEntityBusy] = useState(false);
   const [entityError, setEntityError] = useState('');
 
+  // Reset stale dossier fields when the lead changes — render-phase reset, not
+  // inside the effect (the linter flags setState-in-effect).
+  const [prevLeadId, setPrevLeadId] = useState(leadId);
+  if (leadId !== prevLeadId) { setPrevLeadId(leadId); setDossier(null); setError(''); setCma(''); }
+
   useEffect(() => {
     let live = true;
-    setDossier(null);
-    setError('');
-    setCma('');
     fetch(`${API_BASE}/api/leads/${leadId}/dossier`, { headers: authHeaders() })
       .then(async (res) => {
         if (!res.ok) {
