@@ -9,6 +9,8 @@ import styles from './HouseProfileTab.module.css';
 // its own chunk so the House form paints without it until the agent opens a tour.
 const PropertyTour = lazy(() => import('./PropertyTour'));
 const WalkableSplatViewer = lazy(() => import('./WalkableSplatViewer'));
+// Guided capture → reconstruction flow — only pulled in when the agent opens it.
+const CaptureWizard = lazy(() => import('./CaptureWizard'));
 
 // Inline stroke glyphs — same idiom as TabBar GLYPHS, zero icon deps.
 const GLYPHS = {
@@ -39,6 +41,13 @@ const GLYPHS = {
   plus: (
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
       <path d="M12 5.5v13M5.5 12h13" />
+    </svg>
+  ),
+  tour: (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M3 10.5 12 3l9 7.5" />
+      <path d="M5.5 9.5V20h13V9.5" />
+      <circle cx="12" cy="13.5" r="2" />
     </svg>
   ),
 };
@@ -105,8 +114,13 @@ export default function HouseProfileTab() {
   // Photoreal 3D flyover overlay — opens against whatever address is on file.
   const [tourOpen, setTourOpen] = useState(false);
   const [walkOpen, setWalkOpen] = useState(false);
+  const [captureOpen, setCaptureOpen] = useState(false);
+  // A splat built by the CaptureWizard this session — lights "Step inside" at once.
+  const [capturedSplatUrl, setCapturedSplatUrl] = useState(null);
   // Walk-inside appears only once the house is listed AND has a tier-3 splat.
   const { tour } = useTour({ listingId: listed?.id });
+  // The splat to walk: the resolver's tier-3 splat, or one just built this session.
+  const walkUrl = tour?.splat_url || capturedSplatUrl;
 
   const loadSellers = useCallback(() => {
     crmGet('/api/crm/clients?type=seller').then(
@@ -272,13 +286,64 @@ export default function HouseProfileTab() {
           </button>
         </div>
         {listed?.id && (
-          <MediaUploader
-            listingId={listed.id}
-            token={typeof sessionStorage !== 'undefined' ? sessionStorage.getItem('oracle_token') : null}
-            title="Property photos"
-          />
+          <>
+            <MediaUploader
+              listingId={listed.id}
+              token={typeof sessionStorage !== 'undefined' ? sessionStorage.getItem('oracle_token') : null}
+              title="Property photos"
+            />
+
+            <button
+              type="button"
+              className={styles.tourLaunch}
+              onClick={() => setCaptureOpen(true)}
+            >
+              <span className={styles.tourLaunchGlyph} aria-hidden="true">{GLYPHS.tour}</span>
+              Create 3D walkthrough
+            </button>
+
+            {walkUrl && (
+              <button
+                type="button"
+                className={styles.tourLaunch}
+                data-walk=""
+                onClick={() => setWalkOpen(true)}
+              >
+                <span className={styles.tourLaunchGlyph} aria-hidden="true">{GLYPHS.tour}</span>
+                Step inside · walk the 3D space
+              </button>
+            )}
+          </>
         )}
         <ComplianceDashboard listingId={listed?.id} />
+
+        {/* Guided capture → reconstruction overlay. */}
+        {captureOpen && listed?.id && (
+          <Suspense fallback={null}>
+            <CaptureWizard
+              listingId={listed.id}
+              token={typeof sessionStorage !== 'undefined' ? sessionStorage.getItem('oracle_token') : null}
+              onClose={() => setCaptureOpen(false)}
+              onComplete={(splatUrl) => {
+                if (splatUrl) { setCapturedSplatUrl(splatUrl); setWalkOpen(true); }
+                setCaptureOpen(false);
+              }}
+            />
+          </Suspense>
+        )}
+
+        {/* Walk-inside Gaussian splat — self-contained full-screen overlay. */}
+        {walkOpen && walkUrl && (
+          <Suspense fallback={null}>
+            <WalkableSplatViewer
+              splatUrl={walkUrl}
+              disclosure={tour?.disclosure}
+              address={listed?.address || house.address.trim()}
+              title={listed?.address || house.address.trim()}
+              onClose={() => setWalkOpen(false)}
+            />
+          </Suspense>
+        )}
       </div>
     );
   }

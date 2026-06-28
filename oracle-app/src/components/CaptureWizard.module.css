@@ -1,0 +1,498 @@
+/* CaptureWizard — guided capture → Gaussian-splat reconstruction overlay.
+   Mirrors the .tourOverlay dialog idiom: etched glass, amber filament, mono
+   numerals. Mobile-first; the dialog scrolls internally on small screens. */
+
+.overlay {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-modal);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-3);
+  background: rgba(2, 2, 4, 0.72);
+  backdrop-filter: var(--oracle-backdrop-light);
+  -webkit-backdrop-filter: var(--oracle-backdrop-light);
+  animation: capture-overlay-in var(--duration-base) var(--ease-out);
+}
+
+@keyframes capture-overlay-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.dialog {
+  display: flex;
+  flex-direction: column;
+  width: min(100%, 560px);
+  max-height: min(92vh, 880px);
+  border-radius: var(--radius-lg);
+  background: var(--oracle-bg-mid);
+  border: 1px solid var(--oracle-border);
+  border-top-color: var(--oracle-border-bright);
+  box-shadow: var(--shadow-float);
+  overflow: hidden;
+}
+
+/* ── Header ────────────────────────────────────────────────────────────────── */
+.head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-4) var(--space-4) var(--space-3);
+  border-bottom: 1px solid var(--oracle-border-subtle);
+}
+
+.kicker {
+  font-family: var(--font-display);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  letter-spacing: var(--tracking-widest);
+  text-transform: uppercase;
+  color: var(--oracle-amber-dim);
+}
+
+.closeBtn {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  border-radius: var(--radius-pill);
+  color: var(--oracle-text-dim);
+  background: var(--oracle-glass);
+  border: 1px solid var(--oracle-border);
+  cursor: pointer;
+  transition: color var(--duration-fast) var(--ease-out), background var(--duration-fast) var(--ease-out);
+}
+
+.closeBtn:hover { color: var(--oracle-amber); background: var(--oracle-glass-hover); }
+.closeBtn:focus-visible { outline: 2px solid var(--oracle-amber-dim); outline-offset: 2px; }
+.closeBtn svg { width: 18px; height: 18px; }
+
+/* ── Filament progress rail ──────────────────────────────────────────────────── */
+.rail {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+}
+
+.railLine {
+  flex: 1;
+  height: 1px;
+  background: var(--oracle-border-bright);
+  transition: background var(--duration-base) var(--ease-out);
+}
+
+.railLineLit { background: var(--filament-faint); }
+
+.railNode {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--oracle-text-ghost);
+}
+
+.railDot {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: var(--radius-pill);
+  font-family: var(--font-display);
+  font-size: var(--text-xs);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--oracle-text-ghost);
+  background: var(--oracle-glass);
+  border: 1px solid var(--oracle-border-bright);
+}
+
+.railDot svg { width: 13px; height: 13px; }
+
+.railLabel {
+  font-family: var(--font-display);
+  font-size: 0.5625rem;
+  font-weight: 600;
+  letter-spacing: var(--tracking-wider);
+  text-transform: uppercase;
+}
+
+.railNodeActive { color: var(--oracle-amber); }
+.railNodeActive .railDot {
+  color: var(--oracle-amber);
+  border-color: var(--oracle-amber-dim);
+  background: var(--oracle-amber-ghost);
+  box-shadow: var(--shadow-amber);
+}
+
+.railNodeDone { color: var(--oracle-text-dim); }
+.railNodeDone .railDot {
+  color: var(--oracle-amber);
+  border-color: var(--oracle-amber-dim);
+}
+
+/* ── Scrolling body ──────────────────────────────────────────────────────────── */
+.body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--space-2) var(--space-4) var(--space-4);
+}
+
+.stage {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  animation: capture-rise var(--duration-base) var(--ease-out) both;
+}
+
+@keyframes capture-rise {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
+}
+
+.stageTitle {
+  font-family: var(--font-display);
+  font-size: var(--text-md);
+  font-weight: 600;
+  letter-spacing: var(--tracking-wide);
+  color: var(--oracle-text-heading);
+  margin: 0;
+}
+
+.lede {
+  font-size: var(--text-sm);
+  line-height: var(--leading-relaxed);
+  color: var(--oracle-text-dim);
+  margin: 0;
+}
+
+/* ── Capture tips ────────────────────────────────────────────────────────────── */
+.tips {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  margin: 0;
+  padding: var(--space-4);
+  list-style: none;
+  border-radius: var(--radius-lg);
+  background: var(--oracle-glass);
+  border: 1px solid var(--oracle-border);
+  box-shadow: var(--shadow-inset);
+}
+
+.tip {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  font-size: var(--text-sm);
+  line-height: var(--leading-snug);
+  color: var(--oracle-text-dim);
+}
+
+.tipDot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  margin-top: 6px;
+  border-radius: 1px;
+  transform: rotate(45deg);
+  background: var(--oracle-amber);
+  box-shadow: 0 0 8px var(--oracle-amber-glow);
+}
+
+/* ── Fields ──────────────────────────────────────────────────────────────────── */
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.microLabel {
+  font-family: var(--font-display);
+  font-size: 0.5625rem;
+  font-weight: 500;
+  letter-spacing: var(--tracking-widest);
+  text-transform: uppercase;
+  color: var(--oracle-text-ghost);
+}
+
+.input {
+  width: 100%;
+  min-height: 44px;
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--text-md);
+  color: var(--oracle-text-heading);
+  background: var(--oracle-glass);
+  border: 1px solid var(--oracle-border);
+  border-radius: var(--radius-md);
+  transition: border-color var(--duration-fast) var(--ease-out), background var(--duration-fast) var(--ease-out);
+}
+
+.input:focus-visible {
+  outline: none;
+  border-color: var(--oracle-amber-dim);
+  background: var(--oracle-glass-hover);
+}
+
+/* ── Readiness meter (capture step) ──────────────────────────────────────────── */
+.readiness {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-lg);
+  background: var(--oracle-glass);
+  border: 1px solid var(--oracle-border);
+  box-shadow: var(--shadow-inset);
+}
+
+.readinessOk { border-color: var(--oracle-green-dim); }
+
+.readinessCount {
+  font-family: var(--font-display);
+  font-size: var(--text-xl);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: var(--tracking-snug);
+  color: var(--oracle-amber);
+}
+
+.readinessOk .readinessCount { color: var(--oracle-green); }
+
+.readinessOf {
+  font-size: var(--text-sm);
+  color: var(--oracle-text-ghost);
+}
+
+.readinessText {
+  font-size: var(--text-sm);
+  line-height: var(--leading-snug);
+  color: var(--oracle-text-dim);
+}
+
+/* ── Build / generate ────────────────────────────────────────────────────────── */
+.generate,
+.building,
+.result,
+.notice,
+.errorBox {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.building,
+.result {
+  align-items: center;
+  text-align: center;
+  padding: var(--space-6) var(--space-4);
+}
+
+.buildSpark {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  color: var(--oracle-amber);
+  animation: capture-spin 2.4s linear infinite;
+}
+
+.buildSpark svg { width: 32px; height: 32px; }
+
+@keyframes capture-spin {
+  from { transform: rotate(0); }
+  to { transform: rotate(360deg); }
+}
+
+.buildTitle,
+.resultTitle {
+  font-family: var(--font-display);
+  font-size: var(--text-base);
+  font-weight: 600;
+  letter-spacing: var(--tracking-wide);
+  color: var(--oracle-text-heading);
+}
+
+.progressTrack {
+  position: relative;
+  width: 100%;
+  height: 6px;
+  border-radius: var(--radius-pill);
+  background: var(--oracle-glass-active);
+  overflow: hidden;
+}
+
+.progressBar {
+  position: absolute;
+  inset: 0 auto 0 0;
+  height: 100%;
+  border-radius: var(--radius-pill);
+  background: var(--filament);
+  box-shadow: 0 0 10px var(--oracle-amber-glow);
+  transition: width var(--duration-base) var(--ease-out);
+}
+
+.progressPct {
+  font-family: var(--font-display);
+  font-size: var(--text-sm);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: var(--tracking-snug);
+  color: var(--oracle-amber);
+}
+
+.buildHint {
+  font-size: var(--text-xs);
+  line-height: var(--leading-relaxed);
+  color: var(--oracle-text-ghost);
+  margin: 0;
+}
+
+.resultCheck {
+  display: grid;
+  place-items: center;
+  width: 48px;
+  height: 48px;
+  border-radius: var(--radius-pill);
+  color: var(--oracle-green);
+  background: var(--oracle-glass);
+  border: 1px solid var(--oracle-green-dim);
+}
+
+.resultCheck svg { width: 26px; height: 26px; }
+
+.resultText {
+  font-size: var(--text-sm);
+  line-height: var(--leading-relaxed);
+  color: var(--oracle-text-dim);
+  margin: 0;
+}
+
+/* 503 honest notice */
+.notice {
+  padding: var(--space-4);
+  border-radius: var(--radius-lg);
+  background: var(--oracle-amber-ghost);
+  border: 1px solid var(--oracle-amber-dim);
+}
+
+.noticeTitle {
+  font-family: var(--font-display);
+  font-size: var(--text-base);
+  font-weight: 600;
+  letter-spacing: var(--tracking-wide);
+  color: var(--oracle-amber);
+}
+
+.noticeText {
+  font-size: var(--text-sm);
+  line-height: var(--leading-relaxed);
+  color: var(--oracle-text-dim);
+  margin: 0;
+}
+
+.noticeDetail {
+  font-size: var(--text-xs);
+  line-height: var(--leading-snug);
+  color: var(--oracle-text-ghost);
+  margin: 0;
+}
+
+/* Failure */
+.errorBox {
+  padding: var(--space-4);
+  border-radius: var(--radius-lg);
+  background: var(--oracle-red-ghost, rgba(220, 80, 80, 0.08));
+  border: 1px solid var(--oracle-red-dim);
+}
+
+.errorTitle {
+  font-family: var(--font-display);
+  font-size: var(--text-base);
+  font-weight: 600;
+  letter-spacing: var(--tracking-wide);
+  color: var(--oracle-red);
+}
+
+.errorText {
+  font-size: var(--text-sm);
+  line-height: var(--leading-relaxed);
+  color: var(--oracle-text-dim);
+  margin: 0;
+}
+
+/* ── Actions ─────────────────────────────────────────────────────────────────── */
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+}
+
+.primaryBtn,
+.ghostBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  min-height: 44px;
+  padding: 0 var(--space-5);
+  font-family: var(--font-display);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+  border-radius: var(--radius-pill);
+  cursor: pointer;
+  transition: box-shadow var(--duration-base) var(--ease-out), background var(--duration-fast) var(--ease-out);
+}
+
+.primaryBtn {
+  color: var(--oracle-amber);
+  background: var(--oracle-amber-ghost);
+  border: 1px solid var(--oracle-amber-dim);
+}
+
+.primaryBtn:hover:not(:disabled) { box-shadow: var(--shadow-amber); background: var(--oracle-glass-hover); }
+.primaryBtn:active:not(:disabled) { transform: translateY(1px); }
+.primaryBtn:disabled { opacity: 0.45; cursor: not-allowed; }
+
+.ghostBtn {
+  color: var(--oracle-text-dim);
+  background: var(--oracle-glass);
+  border: 1px solid var(--oracle-border);
+}
+
+.ghostBtn:hover { color: var(--oracle-amber); background: var(--oracle-glass-hover); }
+
+.primaryBtn:focus-visible,
+.ghostBtn:focus-visible { outline: 2px solid var(--oracle-amber-dim); outline-offset: 2px; }
+
+.btnGlyph {
+  display: grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+}
+
+.btnGlyph svg { width: 16px; height: 16px; }
+
+/* ── Persistent AI disclosure ────────────────────────────────────────────────── */
+.disclosure {
+  margin: 0;
+  padding: var(--space-3) var(--space-4);
+  font-size: var(--text-xs);
+  line-height: var(--leading-snug);
+  color: var(--oracle-text-ghost);
+  border-top: 1px solid var(--oracle-border-subtle);
+  background: var(--oracle-glass);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .overlay,
+  .stage,
+  .buildSpark {
+    animation: none;
+  }
+}

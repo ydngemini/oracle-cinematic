@@ -124,16 +124,18 @@ async def _convert_to_splat(src: Path, work_dir: Path, media_id: str) -> Path:
     return out
 
 
-def _store_splat(src_splat: Path, media_id: str, *, provider: str, address: str) -> str:
-    """Persist the .splat + an AI-provenance manifest. Filesystem seam now
-    (served at /public/splats); swap to S3 for the Fargate prod deploy."""
-    storage = os.environ.get("ORACLE_SPLAT_STORAGE", "fs").lower()
-    if storage == "s3":  # pragma: no cover — prod path (needs bucket + boto3)
-        raise ProviderError("S3 splat storage not yet wired (set ORACLE_SPLAT_STORAGE=fs or add the S3 seam)")
-    SPLAT_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    dest = SPLAT_OUTPUT_DIR / f"{media_id}.splat"
-    if src_splat.resolve() != dest.resolve():
-        shutil.copyfile(src_splat, dest)
+def _store_splat(src_splat: Path, media_id: str, *, provider: str, address: str) -> tuple[str, Optional[str]]:
+    """Persist the .splat + an AI-provenance manifest. Returns (public_url, s3_key)
+    where s3_key is None for the filesystem seam (we don't own a remote object).
+
+    Two seams, selected by ORACLE_SPLAT_STORAGE:
+      • fs  (default) — copy into SPLAT_OUTPUT_DIR, served by server.py at
+        /public/splats/{id}.splat. In the dev stack ORACLE_SPLAT_DIR points at the
+        bind-mounted /app/.splatdata so the file survives `--force-recreate`.
+      • s3  — Fargate prod has no persistent disk, so push the splat + manifest to
+        S3 and serve them via the bucket (or a CDN in front of it). The object key
+        is recorded on the property_media row so we own the canonical artifact.
+    """
     manifest = {
         "mediaId": media_id,
         "address": address,
@@ -141,12 +143,46 @@ def _store_splat(src_splat: Path, media_id: str, *, provider: str, address: str)
         "generator": provider,
         "disclosure": SPATIAL_AI_DISCLOSURE,
     }
+    storage = os.environ.get("ORACLE_SPLAT_STORAGE", "fs").lower()
+
+    if storage == "s3":  # pragma: no cover — prod path (needs bucket + boto3 + creds)
+        bucket = os.environ.get("ORACLE_SPLAT_S3_BUCKET")
+        if not bucket:
+            raise ProviderError(
+                "ORACLE_SPLAT_STORAGE=s3 but ORACLE_SPLAT_S3_BUCKET is unset — "
+                "set the bucket name (and optionally ORACLE_SPLAT_CDN_BASE)."
+            )
+        import boto3  # lazy import — only the prod S3 path needs the AWS SDK
+        s3 = boto3.client("s3")
+        splat_key = f"splats/{media_id}.splat"
+        manifest_key = f"splats/{media_id}.json"
+        s3.put_object(
+            Bucket=bucket, Key=splat_key,
+            Body=src_splat.read_bytes(), ContentType="application/octet-stream",
+        )
+        s3.put_object(
+            Bucket=bucket, Key=manifest_key,
+            Body=json.dumps(manifest, indent=2).encode("utf-8"),
+            ContentType="application/json",
+        )
+        # Public URL: CDN base if fronted by CloudFront, else the raw S3 endpoint.
+        cdn_base = os.environ.get("ORACLE_SPLAT_CDN_BASE", f"https://{bucket}.s3.amazonaws.com")
+        return f"{cdn_base.rstrip('/')}/{splat_key}", splat_key
+
+    # ── filesystem seam (default) ──────────────────────────────────────────────
+    SPLAT_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    dest = SPLAT_OUTPUT_DIR / f"{media_id}.splat"
+    if src_splat.resolve() != dest.resolve():
+        shutil.copyfile(src_splat, dest)
     (SPLAT_OUTPUT_DIR / f"{media_id}.json").write_text(json.dumps(manifest, indent=2))
-    return f"/public/splats/{media_id}.splat"
+    return f"/public/splats/{media_id}.splat", None
 
 
-async def _record_media(job: ReconstructionJob, media_id: str, url: str) -> None:
-    """Insert the splat as a property_media row the resolver reads for tier 3."""
+async def _record_media(
+    job: ReconstructionJob, media_id: str, url: str, s3_key: Optional[str] = None
+) -> None:
+    """Insert the splat as a property_media row the resolver reads for tier 3.
+    s3_key is the canonical object key when stored on S3 (None for the fs seam)."""
     async with tenant_tx(job.ctx) as conn:
         base = await conn.fetchval(
             """
@@ -160,14 +196,15 @@ async def _record_media(job: ReconstructionJob, media_id: str, url: str) -> None
         )
         await conn.execute(
             """
-            INSERT INTO property_media (id, tenant_id, lead_id, listing_id, kind, url, sort_order)
-            VALUES ($1, $2, $3, $4, 'splat', $5, $6)
+            INSERT INTO property_media (id, tenant_id, lead_id, listing_id, kind, url, s3_key, sort_order)
+            VALUES ($1, $2, $3, $4, 'splat', $5, $6, $7)
             """,
             UUID(media_id),
             job.ctx.tenant_id,
             UUID(job.lead_id) if job.lead_id else None,
             UUID(job.listing_id) if job.listing_id else None,
             url,
+            s3_key,
             int(base) + 1,
         )
 
@@ -181,8 +218,8 @@ async def _process(job: ReconstructionJob) -> None:
         images = await _gather_source_images(job, work / "images")
         raw = await provider.reconstruct(images, work)            # .ply or .splat
         splat = await _convert_to_splat(raw, work, media_id)      # standard .splat
-        url = _store_splat(splat, media_id, provider=provider.name, address=job.listing_id or job.lead_id or "")
-        await _record_media(job, media_id, url)
+        url, s3_key = _store_splat(splat, media_id, provider=provider.name, address=job.listing_id or job.lead_id or "")
+        await _record_media(job, media_id, url, s3_key)
     await _set_status(job.ctx, job.job_id, "succeeded", media_id=UUID(media_id), progress=100)
     try:
         await ws_hub.broadcast(job.ctx.tenant_id, {

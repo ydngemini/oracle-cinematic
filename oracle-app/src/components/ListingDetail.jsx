@@ -9,6 +9,8 @@ import styles from './ListingDetail.module.css';
 // of the initial chunk and only mount it when a tour is actually opened.
 const PropertyTour = lazy(() => import('./PropertyTour'));
 const WalkableSplatViewer = lazy(() => import('./WalkableSplatViewer'));
+// Guided capture → reconstruction flow — only pulled in when the agent opens it.
+const CaptureWizard = lazy(() => import('./CaptureWizard'));
 
 const GLYPHS = {
   house: (
@@ -96,6 +98,10 @@ export default function ListingDetail({ listingId, source = 'mls', onBack }) {
   const [error, setError] = useState(null);
   const [tourOpen, setTourOpen] = useState(false);
   const [walkOpen, setWalkOpen] = useState(false);
+  const [captureOpen, setCaptureOpen] = useState(false);
+  // A splat resolved by the CaptureWizard this session — lights "Step inside"
+  // immediately without waiting for the resolver hook to re-key.
+  const [capturedSplatUrl, setCapturedSplatUrl] = useState(null);
   // Resolve the property's best tour tier; "Step inside" appears only at tier 3.
   const { tour } = useTour(source === 'pipeline' ? { leadId: listingId } : { listingId });
 
@@ -126,6 +132,8 @@ export default function ListingDetail({ listingId, source = 'mls', onBack }) {
   // owner + the tour's photo source key off whichever this is.
   const mediaOwner = source === 'pipeline' ? { leadId: listingId } : { listingId };
   const mediaToken = typeof sessionStorage !== 'undefined' ? sessionStorage.getItem('oracle_token') : null;
+  // The splat to walk: the resolver's tier-3 splat, or one just built this session.
+  const walkUrl = tour?.splat_url || capturedSplatUrl;
   const flags = Array.isArray(l?.distress_flags) ? l.distress_flags : [];
 
   // Geocodable location for Google imagery (prefers coords) + a textual address
@@ -259,6 +267,15 @@ export default function ListingDetail({ listingId, source = 'mls', onBack }) {
 
           <MediaUploader {...mediaOwner} token={mediaToken} title="Property photos" />
 
+          <button
+            type="button"
+            className={styles.tourLaunch}
+            onClick={() => setCaptureOpen(true)}
+          >
+            <span className={styles.tourLaunchGlyph} aria-hidden="true">{GLYPHS.tour}</span>
+            Create 3D walkthrough
+          </button>
+
           {textAddress && (
             <button
               type="button"
@@ -270,7 +287,7 @@ export default function ListingDetail({ listingId, source = 'mls', onBack }) {
             </button>
           )}
 
-          {tour?.best_tier === 3 && tour?.splat_url && (
+          {walkUrl && (
             <button
               type="button"
               className={styles.tourLaunch}
@@ -315,14 +332,30 @@ export default function ListingDetail({ listingId, source = 'mls', onBack }) {
           )}
 
           {/* Walk-inside Gaussian splat — self-contained full-screen overlay. */}
-          {walkOpen && tour?.splat_url && (
+          {walkOpen && walkUrl && (
             <Suspense fallback={null}>
               <WalkableSplatViewer
-                splatUrl={tour.splat_url}
-                disclosure={tour.disclosure}
+                splatUrl={walkUrl}
+                disclosure={tour?.disclosure}
                 address={l.address || textAddress}
                 title={l.address || textAddress}
                 onClose={() => setWalkOpen(false)}
+              />
+            </Suspense>
+          )}
+
+          {/* Guided capture → reconstruction overlay. On success it hands back the
+              resolved splat, which lights "Step inside" and opens the walk view. */}
+          {captureOpen && (
+            <Suspense fallback={null}>
+              <CaptureWizard
+                {...mediaOwner}
+                token={mediaToken}
+                onClose={() => setCaptureOpen(false)}
+                onComplete={(splatUrl) => {
+                  if (splatUrl) { setCapturedSplatUrl(splatUrl); setWalkOpen(true); }
+                  setCaptureOpen(false);
+                }}
               />
             </Suspense>
           )}

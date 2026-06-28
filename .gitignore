@@ -32,3 +32,8 @@ crash.log
 
 # Production env (real secrets) — only the .example template is tracked
 .env.prod
+
+# Generated Gaussian splats — keep the dir (so the bind-mount target exists),
+# ignore the heavy .splat/.json artifacts written into it at runtime.
+backend/.splatdata/*
+!backend/.splatdata/.gitkeep
