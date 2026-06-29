@@ -45,11 +45,17 @@ export function LoginVault({ onAuthenticated }) {
     if (data.tenant_id) localStorage.setItem('oracle_tenant_id', data.tenant_id);
     // Strip ?reset= so a refresh doesn't re-trigger reset mode.
     if (window.location.search) window.history.replaceState({}, '', window.location.pathname);
-    setFading(true);
     setLoading(false);
+    setFading(true);
+    // Mount the dashboard on the fade's end — but NEVER depend on transitionend
+    // alone: if the overlay has no transition (reduced-motion, or the fade class
+    // doesn't animate), the event never fires and the screen hangs after auth.
+    // A timeout fallback guarantees we proceed. Guarded so it runs exactly once.
+    let done = false;
+    const finish = () => { if (done) return; done = true; onAuthenticated?.(); };
     const overlay = overlayRef.current;
-    const onEnd = () => { overlay.removeEventListener('transitionend', onEnd); onAuthenticated?.(); };
-    overlay.addEventListener('transitionend', onEnd);
+    if (overlay) overlay.addEventListener('transitionend', finish, { once: true });
+    setTimeout(finish, 600);
   }
 
   async function post(path, payload) {
