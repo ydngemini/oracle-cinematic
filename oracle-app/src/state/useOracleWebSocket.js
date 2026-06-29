@@ -3,7 +3,16 @@ import { useOracleDispatch, ACTIONS } from './OracleContext';
 import { getUserId, getTenantId } from './identity';
 import { registerSW } from 'virtual:pwa-register';
 
-const WS_URL = import.meta.env.VITE_WS_URL || 'ws://localhost:8000/ws';
+// In prod the SPA is served over https on the same host as the API, and the ALB
+// routes /ws to the backend — so derive wss://<host>/ws from the page origin.
+// VITE_WS_URL overrides explicitly; fall back to localhost only for http dev.
+// (Hardcoding ws://localhost in the bundle made the live feed dead in prod:
+// mixed-content blocked on an https page.)
+const WS_URL =
+  import.meta.env.VITE_WS_URL ||
+  (typeof window !== 'undefined' && window.location.protocol === 'https:'
+    ? `wss://${window.location.host}/ws`
+    : 'ws://localhost:8000/ws');
 const BASE_DELAY = 2000;
 
 // Identity for JIT memory hydration AND tenant-scoped lead delivery. Sending

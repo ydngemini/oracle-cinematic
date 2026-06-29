@@ -94,3 +94,23 @@ resource "aws_lb_listener_rule" "api" {
     }
   }
 }
+
+# Client magic-link portal (client_portal.py, prefix /portal). Separate rule
+# because the /api rule's path-pattern condition is at the 5-value ALB cap.
+# Without this, /portal/* falls through to the static frontend nginx → the
+# portal session/link API is dead via the public URL.
+resource "aws_lb_listener_rule" "portal" {
+  listener_arn = aws_lb_listener.https.arn
+  priority     = 11
+
+  action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.backend.arn
+  }
+
+  condition {
+    path_pattern {
+      values = ["/portal/*"]
+    }
+  }
+}
