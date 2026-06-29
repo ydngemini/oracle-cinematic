@@ -15,6 +15,9 @@ echo ">> resolving backend service network + task def"
 NET=$("${AWS[@]}" ecs describe-services --cluster "$CLUSTER" --services backend \
   --query 'services[0].{td:taskDefinition,subnets:networkConfiguration.awsvpcConfiguration.subnets,sgs:networkConfiguration.awsvpcConfiguration.securityGroups}' --output json)
 TD=$(python3 -c 'import json,sys;print(json.load(sys.stdin)["td"])' <<<"$NET")
+# Allow the caller (deploy-update.sh) to pin a specific (digest-pinned) revision so
+# the migration runs the freshly-built image, not a cached :latest digest.
+[ -n "${MIGRATION_TASK_DEF:-}" ] && TD="$MIGRATION_TASK_DEF"
 SUBNETS=$(python3 -c 'import json,sys;print(",".join(json.load(sys.stdin)["subnets"]))' <<<"$NET")
 SGS=$(python3 -c 'import json,sys;print(",".join(json.load(sys.stdin)["sgs"]))' <<<"$NET")
 ROLE_ARN=$("${AWS[@]}" ecs describe-task-definition --task-definition "$TD" --query 'taskDefinition.taskRoleArn' --output text)
