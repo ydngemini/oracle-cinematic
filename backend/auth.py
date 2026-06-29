@@ -160,9 +160,10 @@ def _issue_jwt(sub: str, tenant_id: str, role: str, *, ttl: int = TOKEN_TTL_SECO
 
 def _admin_ctx():
     """Platform-admin TenantContext (RLS bypass) for pre-auth user lookups +
-    signup inserts — login/register run before any caller context exists."""
-    from tenancy import TenantContext  # lazy import avoids a startup cycle
-    return TenantContext(agent_id="auth", tenant_id=PLATFORM_TENANT_ID, role="platform_admin")
+    signup inserts — login/register run before any caller context exists.
+    role MUST be the Role enum: apply_rls_context() reads ctx.role.value."""
+    from tenancy import TenantContext, Role  # lazy import avoids a startup cycle
+    return TenantContext(agent_id="auth", tenant_id=PLATFORM_TENANT_ID, role=Role.PLATFORM_ADMIN)
 
 
 async def _lookup_user(agent_id: str):
