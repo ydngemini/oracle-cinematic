@@ -55,11 +55,46 @@ async def main() -> int:
         if not files:
             print(f"!! no migrations found in {MIGRATIONS_DIR}", flush=True)
             return 2
-        print(f"applying {len(files)} migrations to {host}/{db} as {user}", flush=True)
+
+        # Ledger — apply each file at most once. Without this, a re-run blindly
+        # re-applied non-idempotent 0001 (`CREATE TABLE tenants`) and died with
+        # "relation tenants already exists". On a DB that already has the schema
+        # but no ledger yet (applied pre-ledger), we run a one-time BACK-FILL:
+        # an "already exists" error means it was applied before → record + move on.
+        # Once the ledger is populated, runs are strict again (real errors abort).
+        await conn.execute(
+            "CREATE TABLE IF NOT EXISTS schema_migrations ("
+            "filename text PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())"
+        )
+        applied = {r["filename"] for r in await conn.fetch("SELECT filename FROM schema_migrations")}
+        schema_exists = await conn.fetchval("SELECT to_regclass('public.tenants') IS NOT NULL")
+        backfill = (not applied) and bool(schema_exists)
+        # SQLSTATEs meaning "already exists / already applied".
+        DUP = {"42P07", "42710", "42701", "42P06", "42723", "42P16", "42P04", "42P05", "23505"}
+
+        print(f"{len(files)} files; {len(applied)} recorded; backfill={backfill}", flush=True)
+        processed = 0
         for f in files:
-            print(f">> {os.path.basename(f)}", flush=True)
-            await conn.execute(open(f).read())
-        print("migrations complete", flush=True)
+            name = os.path.basename(f)
+            if name in applied:
+                print(f"-- {name} (recorded, skip)", flush=True)
+                continue
+            sql = open(f).read()
+            try:
+                await conn.execute(sql)
+                print(f">> applied {name}", flush=True)
+            except asyncpg.PostgresError as e:
+                code = getattr(e, "sqlstate", None)
+                if backfill and (code in DUP or "already exists" in str(e).lower()):
+                    print(f"~~ {name} already applied ({code}) — recording", flush=True)
+                else:
+                    print(f"!! {name} FAILED ({code}): {e}", flush=True)
+                    raise
+            await conn.execute(
+                "INSERT INTO schema_migrations (filename) VALUES ($1) ON CONFLICT DO NOTHING", name
+            )
+            processed += 1
+        print(f"migrations complete ({processed} processed)", flush=True)
         return 0
     finally:
         await conn.close()
