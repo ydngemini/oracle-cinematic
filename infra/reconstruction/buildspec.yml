@@ -1,0 +1,49 @@
+version: 0.2
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Neoh GPU reconstruction image — AWS CodeBuild buildspec.
+#
+# Builds the CUDA image from the Dockerfile in this directory (CUDA 12.1 -devel +
+# COLMAP + nerfstudio splatfacto + PlayCanvas splat-transform + awscli) and pushes
+# it to ECR as  $ECR_REPO_URI:$IMAGE_TAG  and  $ECR_REPO_URI:latest.
+#
+# ── NO GPU REQUIRED TO BUILD ──
+# The only GPU-specific compile step (tiny-cuda-nn / gsplat that nerfstudio pulls)
+# is CROSS-COMPILED by nvcc for the SM arch fixed in the Dockerfile
+# (TORCH_CUDA_ARCH_LIST="8.6"). nvcc needs no physical device, so a standard CPU
+# CodeBuild container with privileged Docker is sufficient. A real GPU is only
+# needed at RUN time on AWS Batch (g5/g4dn), never at build time.
+#
+# Source layout: codebuild-setup.sh zips the CONTENTS of infra/reconstruction/
+# (Dockerfile, run.sh, buildspec.yml) to the archive root, so the Docker build
+# context here is ".".
+#
+# Env vars (set on the CodeBuild project by codebuild-setup.sh):
+#   ECR_REPO_URI        e.g. 404870839825.dkr.ecr.us-east-1.amazonaws.com/neoh/reconstruction
+#   AWS_DEFAULT_REGION  e.g. us-east-1
+#   IMAGE_TAG           primary tag (default "v1"); ":latest" is always also pushed
+# ─────────────────────────────────────────────────────────────────────────────
+
+env:
+  variables:
+    IMAGE_TAG: "v1"
+
+phases:
+  pre_build:
+    commands:
+      - echo "Logging in to Amazon ECR in $AWS_DEFAULT_REGION ..."
+      # Registry host = first path segment of the repo URI (repo path is "neoh/reconstruction").
+      - ECR_REGISTRY=$(echo "$ECR_REPO_URI" | cut -d/ -f1)
+      - aws ecr get-login-password --region "$AWS_DEFAULT_REGION" | docker login --username AWS --password-stdin "$ECR_REGISTRY"
+      - echo "Target repo $ECR_REPO_URI  tags $IMAGE_TAG and latest"
+  build:
+    commands:
+      - echo "Building CUDA reconstruction image (no GPU needed - nvcc cross-compiles for SM 8.6)..."
+      - docker build -t "$ECR_REPO_URI:$IMAGE_TAG" -t "$ECR_REPO_URI:latest" .
+  post_build:
+    commands:
+      - echo "Pushing $ECR_REPO_URI:$IMAGE_TAG"
+      - docker push "$ECR_REPO_URI:$IMAGE_TAG"
+      - echo "Pushing $ECR_REPO_URI:latest"
+      - docker push "$ECR_REPO_URI:latest"
+      - echo "Push complete - registered image is ready for var.recon_image_tag."

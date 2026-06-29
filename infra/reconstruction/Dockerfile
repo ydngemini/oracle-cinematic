@@ -16,8 +16,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       git curl ca-certificates build-essential \
       python3 python3-pip python3-dev \
       colmap ffmpeg \
-      nodejs npm \
+    && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+    && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/*
+# NOTE: Ubuntu's apt `nodejs` is Node 12 — too old for splat-transform (optional
+# chaining). NodeSource gives Node 20.
 
 # .ply -> .splat converter (MIT) + awscli for S3 I/O.
 RUN npm install -g @playcanvas/splat-transform \

@@ -26,6 +26,9 @@ locals {
     { name = "ORACLE_BASE_URL", value = var.app_base_url },
     { name = "ORACLE_DEMO_TENANT_ID", value = var.demo_tenant_id },
     { name = "ORACLE_ENABLE_DEMO_LOGINS", value = "0" },
+    # Operator/admin login id (platform_admin). Passphrase is the ORACLE_ADMIN_PASSPHRASE
+    # secret. NOTE: this is the ONLY login path — Neoh has no self-serve signup yet.
+    { name = "ORACLE_ADMIN_ID", value = "ydnop@ydnhft.com" },
     { name = "ORACLE_DB_HOST", value = aws_rds_cluster.aurora.endpoint },
     { name = "ORACLE_DB_PORT", value = "5432" },
     { name = "ORACLE_DB_NAME", value = var.db_name },
