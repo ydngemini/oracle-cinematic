@@ -74,10 +74,22 @@ phases:
 YAML
 fi
 
-# Optional Docker Hub auth (avoids the nvidia/cuda anonymous 429 on CodeBuild IPs):
-#   DOCKERHUB_USER=you DOCKERHUB_TOKEN=dckr_pat_... infra/scripts/build-images.sh recon
+# Docker Hub auth (avoids the nvidia/cuda anonymous 429 on CodeBuild IPs).
+# PREFERRED: store the PAT in Secrets Manager so it is NOT persisted as plaintext in
+# the CodeBuild project env (readable by anyone with codebuild:BatchGetProjects):
+#   aws secretsmanager create-secret --name neoh/dockerhub \
+#     --secret-string '{"username":"<user>","token":"dckr_pat_..."}'
+# CodeBuild resolves SECRETS_MANAGER-typed env vars at build time. The CodeBuild
+# service role needs secretsmanager:GetSecretValue on neoh/dockerhub.
 DH=""
-if [ -n "${DOCKERHUB_TOKEN:-}" ]; then DH=",{\"name\":\"DOCKERHUB_USER\",\"value\":\"${DOCKERHUB_USER:-}\"},{\"name\":\"DOCKERHUB_TOKEN\",\"value\":\"$DOCKERHUB_TOKEN\"}"; fi
+if "${AWS[@]}" secretsmanager describe-secret --secret-id neoh/dockerhub >/dev/null 2>&1; then
+  echo ">> Docker Hub creds via Secrets Manager (neoh/dockerhub)"
+  DH=",{\"name\":\"DOCKERHUB_USER\",\"value\":\"neoh/dockerhub:username\",\"type\":\"SECRETS_MANAGER\"},{\"name\":\"DOCKERHUB_TOKEN\",\"value\":\"neoh/dockerhub:token\",\"type\":\"SECRETS_MANAGER\"}"
+elif [ -n "${DOCKERHUB_TOKEN:-}" ]; then
+  echo "!! WARNING: injecting Docker Hub PAT as PLAINTEXT into the CodeBuild project env." >&2
+  echo "!! Fix: aws secretsmanager create-secret --name neoh/dockerhub --secret-string '{\"username\":\"\$USER\",\"token\":\"dckr_pat_...\"}'" >&2
+  DH=",{\"name\":\"DOCKERHUB_USER\",\"value\":\"${DOCKERHUB_USER:-}\"},{\"name\":\"DOCKERHUB_TOKEN\",\"value\":\"$DOCKERHUB_TOKEN\"}"
+fi
 ENVVARS="[{\"name\":\"ECR_REGISTRY\",\"value\":\"$REG\"},{\"name\":\"BE\",\"value\":\"$BE\"},{\"name\":\"FE\",\"value\":\"$FE\"},{\"name\":\"RECON\",\"value\":\"$RECON\"},{\"name\":\"AWS_DEFAULT_REGION\",\"value\":\"$REGION\"}$DH]"
 
 SRC="{\"type\":\"S3\",\"location\":\"$BUCKET/$SRCKEY\",\"buildspec\":$(python3 -c 'import json,sys;print(json.dumps(sys.stdin.read()))' <<<"$SPEC")}"

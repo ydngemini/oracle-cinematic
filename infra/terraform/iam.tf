@@ -78,3 +78,114 @@ resource "aws_iam_role_policy" "task" {
   role   = aws_iam_role.task.id
   policy = data.aws_iam_policy_document.task.json
 }
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Deploy role — scoped CI/operator identity that REPLACES the root access key the
+# `swarm-admin` profile currently uses (SECURITY: a root AKIA key is the highest-
+# risk credential type). Assumed by the operator IAM user via sts:AssumeRole;
+# carries only the permissions the infra/scripts deploy + ops flows actually call.
+#
+# CUTOVER (do NOT delete the root key until this is proven):
+#   1. terraform apply  (creates the role — additive, safe)
+#   2. add to ~/.aws/config:
+#        [profile neoh-deploy]
+#        role_arn = arn:aws:iam::<acct>:role/neoh-prod-deploy
+#        source_profile = default            # the YDNop IAM user
+#   3. run a full deploy under AWS_PROFILE=neoh-deploy and confirm it works
+#   4. THEN: aws iam delete-access-key for the root key; repoint scripts' default.
+# ─────────────────────────────────────────────────────────────────────────────
+data "aws_iam_policy_document" "deploy_assume" {
+  statement {
+    actions = ["sts:AssumeRole"]
+    principals {
+      type        = "AWS"
+      identifiers = ["arn:aws:iam::${local.account_id}:user/YDNop"]
+    }
+  }
+}
+
+resource "aws_iam_role" "deploy" {
+  name               = "${local.name}-deploy"
+  assume_role_policy = data.aws_iam_policy_document.deploy_assume.json
+}
+
+data "aws_iam_policy_document" "deploy" {
+  statement {
+    sid = "EcsDeploy"
+    actions = [
+      "ecs:DescribeServices", "ecs:DescribeTaskDefinition", "ecs:RegisterTaskDefinition",
+      "ecs:UpdateService", "ecs:ListTasks", "ecs:DescribeTasks", "ecs:RunTask",
+    ]
+    resources = ["*"]
+  }
+  statement {
+    sid       = "PassEcsRoles"
+    actions   = ["iam:PassRole"]
+    resources = [aws_iam_role.execution.arn, aws_iam_role.task.arn]
+  }
+  # setup-ses.sh: SES enable + DKIM in Route53 + grant ses:SendEmail on the task role.
+  statement {
+    sid       = "SesSetup"
+    actions   = ["ses:*", "sesv2:*"]
+    resources = ["*"]
+  }
+  statement {
+    sid       = "Route53Dns"
+    actions   = ["route53:ChangeResourceRecordSets", "route53:ListHostedZones", "route53:GetChange"]
+    resources = ["*"]
+  }
+  statement {
+    sid       = "PutRolePolicyForSes"
+    actions   = ["iam:PutRolePolicy", "iam:GetRole"]
+    resources = [aws_iam_role.task.arn]
+  }
+  # request-gpu-quota.sh
+  statement {
+    sid = "QuotaRequests"
+    actions = [
+      "servicequotas:GetServiceQuota", "servicequotas:RequestServiceQuotaIncrease",
+      "servicequotas:ListRequestedServiceQuotaChangeHistoryByQuota", "servicequotas:GetRequestedServiceQuotaChange",
+    ]
+    resources = ["*"]
+  }
+  # build-images.sh (CodeBuild). CreateRole/PassRole scoped to the neoh-codebuild role it provisions.
+  statement {
+    sid = "CodeBuildDeploy"
+    actions = [
+      "codebuild:BatchGetProjects", "codebuild:CreateProject", "codebuild:UpdateProject",
+      "codebuild:StartBuild", "codebuild:BatchGetBuilds",
+    ]
+    resources = ["*"]
+  }
+  statement {
+    sid       = "CodeBuildRole"
+    actions   = ["iam:CreateRole", "iam:PutRolePolicy", "iam:GetRole", "iam:PassRole"]
+    resources = ["arn:aws:iam::${local.account_id}:role/neoh-codebuild"]
+  }
+  statement {
+    sid       = "ReconSourceBucket"
+    actions   = ["s3:PutObject", "s3:GetObject", "s3:CreateBucket", "s3:PutBucketPolicy"]
+    resources = ["arn:aws:s3:::${local.name}-recon-${local.account_id}", "arn:aws:s3:::${local.name}-recon-${local.account_id}/*"]
+  }
+  statement {
+    sid       = "AppSecretRW"
+    actions   = ["secretsmanager:GetSecretValue", "secretsmanager:PutSecretValue", "secretsmanager:DescribeSecret"]
+    resources = [aws_secretsmanager_secret.app.arn, "arn:aws:secretsmanager:${var.aws_region}:${local.account_id}:secret:neoh/dockerhub-*"]
+  }
+  # Read-only verification used by prod-smoke.sh / monitoring.
+  statement {
+    sid = "ReadOnlyVerify"
+    actions = [
+      "cloudwatch:DescribeAlarms", "rds:DescribeDBClusters", "elasticloadbalancing:Describe*",
+      "ecr:GetAuthorizationToken", "ecr:BatchGetImage", "ecr:GetDownloadUrlForLayer",
+      "logs:GetLogEvents", "logs:FilterLogEvents", "sts:GetCallerIdentity",
+    ]
+    resources = ["*"]
+  }
+}
+
+resource "aws_iam_role_policy" "deploy" {
+  name   = "${local.name}-deploy"
+  role   = aws_iam_role.deploy.id
+  policy = data.aws_iam_policy_document.deploy.json
+}
