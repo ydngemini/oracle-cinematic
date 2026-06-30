@@ -94,12 +94,21 @@ resource "aws_iam_role_policy" "task" {
 #   3. run a full deploy under AWS_PROFILE=neoh-deploy and confirm it works
 #   4. THEN: aws iam delete-access-key for the root key; repoint scripts' default.
 # ─────────────────────────────────────────────────────────────────────────────
+# YDNop lives in a DIFFERENT account (364238921565) than prod (404870839825), so this
+# is a CROSS-ACCOUNT trust. After apply, the YDNop side must also grant the user
+# sts:AssumeRole on this role's ARN before `source_profile=default` can assume it.
+variable "deploy_principal_arns" {
+  description = "IAM principal ARNs allowed to assume the scoped deploy role."
+  type        = list(string)
+  default     = ["arn:aws:iam::364238921565:user/YDNop"]
+}
+
 data "aws_iam_policy_document" "deploy_assume" {
   statement {
     actions = ["sts:AssumeRole"]
     principals {
       type        = "AWS"
-      identifiers = ["arn:aws:iam::${local.account_id}:user/YDNop"]
+      identifiers = var.deploy_principal_arns
     }
   }
 }
