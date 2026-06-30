@@ -26,6 +26,12 @@ locals {
     { name = "ORACLE_BASE_URL", value = var.app_base_url },
     { name = "ORACLE_DEMO_TENANT_ID", value = var.demo_tenant_id },
     { name = "ORACLE_ENABLE_DEMO_LOGINS", value = "0" },
+    # Real lead ingestion: FREE open-data firehose (51 state portals, no API key) — NOT
+    # RentCast. Master switch + ingest tenant + the heavy parcel harvest. distress_scrape
+    # (keyless) also runs once the master is on. See data_integrations/periodic.py.
+    { name = "ORACLE_SCHEDULER_ENABLED", value = "1" },
+    { name = "ORACLE_INGEST_TENANT_ID", value = "00000000-0000-0000-0000-000000000000" },
+    { name = "ORACLE_PARCEL_HARVEST_ENABLED", value = "1" },
     # Operator/admin login id (platform_admin). Passphrase is the ORACLE_ADMIN_PASSPHRASE
     # secret. NOTE: this is the ONLY login path — Neoh has no self-serve signup yet.
     { name = "ORACLE_ADMIN_ID", value = "ydnop@ydnhft.com" },
