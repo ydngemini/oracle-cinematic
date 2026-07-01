@@ -786,3 +786,56 @@ body {
   line-height: 1;
 }
 .logout-btn:hover { color: var(--accent-red); border-color: var(--accent-red); }
+
+/* --- Time-series charts (real CloudWatch / cost history) --------------- */
+.ts-chart {
+  position: relative;
+  width: 100%;
+  margin-top: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.25);
+  overflow: hidden;
+}
+.ts-svg { width: 100%; height: 100%; display: block; }
+.ts-labels {
+  position: absolute;
+  inset: 4px 8px auto 8px;
+  display: flex;
+  justify-content: space-between;
+  font-family: var(--font-mono, monospace);
+  font-size: 10px;
+  color: var(--text-secondary, #7a8a99);
+  pointer-events: none;
+}
+.ts-labels .ts-now { color: var(--accent-cyan); }
+.ts-msg {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-family: var(--font-mono, monospace);
+  color: var(--text-secondary, #7a8a99);
+}
+.ts-msg.ts-err { color: var(--accent-orange); }
+.billing-trend { margin-bottom: 12px; }
+
+/* range selector (1h/6h/24h/7d) */
+.range-selector { display: flex; gap: 4px; margin-top: 4px; }
+.range-btn {
+  flex: 1;
+  padding: 4px 0;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.3);
+  color: var(--text-secondary, #7a8a99);
+  font-size: 11px;
+  font-family: var(--font-mono, monospace);
+  cursor: pointer;
+}
+.range-btn.active {
+  color: #05121a;
+  background: var(--accent-cyan);
+  border-color: var(--accent-cyan);
+  font-weight: 700;
+}

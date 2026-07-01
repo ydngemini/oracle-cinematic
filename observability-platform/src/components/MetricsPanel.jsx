@@ -1,36 +1,75 @@
-export default function MetricsPanel({ selectedService, instance, metrics }) {
-  const cpuData = metrics?.cpu;
-  const cpuValue = cpuData?.avg || 0;
+import { useState, useEffect } from 'react';
+import { fetchMetricHistory } from '../lib/api';
+import TimeSeriesChart from './TimeSeriesChart.jsx';
+
+const RANGES = ['1h', '6h', '24h', '7d'];
+
+export default function MetricsPanel({ selectedService, instance }) {
+  const type = selectedService?.type;
+  const id = selectedService?.id;
+  const [range, setRange] = useState('1h');
+  const [hist, setHist] = useState({ loading: false, error: '', series: [], unit: '', metric: '' });
+
+  // Fetch the real CloudWatch history whenever the selected resource or range changes.
+  useEffect(() => {
+    if (!type || !id) {
+      setHist({ loading: false, error: '', series: [], unit: '', metric: '' });
+      return;
+    }
+    let cancelled = false;
+    setHist((h) => ({ ...h, loading: true, error: '' }));
+    fetchMetricHistory(type, id, range)
+      .then((d) => {
+        if (!cancelled) setHist({ loading: false, error: '', series: d.series || [], unit: d.unit || '', metric: d.metric || '' });
+      })
+      .catch(() => {
+        if (!cancelled) setHist({ loading: false, error: 'history unavailable', series: [], unit: '', metric: '' });
+      });
+    return () => { cancelled = true; };
+  }, [type, id, range]);
+
+  const isPct = hist.unit === 'Percent';
+  const last = hist.series.length ? hist.series[hist.series.length - 1].v : null;
+  const valClass = isPct ? (last > 80 ? 'red' : last > 60 ? 'orange' : 'green') : 'cyan';
+  const label = hist.metric || (type === 'lambda' ? 'Invocations' : 'CPU Utilization');
 
   return (
     <div className="panel" style={{ flex: '0 0 auto' }}>
       <div className="panel-header">
         <h2>Metrics</h2>
-        {selectedService && (
-          <span className="panel-count">{selectedService.type.toUpperCase()}</span>
-        )}
+        {selectedService && <span className="panel-count">{selectedService.type.toUpperCase()}</span>}
       </div>
       {selectedService && instance ? (
-        <div className="metrics-grid">
-          <div className="metric-card">
-            <div className="metric-label">CPU Utilization</div>
-            <div className={`metric-value ${cpuValue > 80 ? 'red' : cpuValue > 60 ? 'orange' : 'green'}`}>
-              {cpuData ? `${cpuValue.toFixed(1)}%` : '—'}
+        <>
+          <div className="metrics-grid">
+            <div className="metric-card">
+              <div className="metric-label">{label}</div>
+              <div className={`metric-value ${valClass}`}>
+                {last != null ? `${last.toFixed(1)}${isPct ? '%' : ''}` : '—'}
+              </div>
             </div>
-            <svg className="metric-sparkline" viewBox="0 0 100 32" preserveAspectRatio="none">
-              <polyline
-                fill="none"
-                stroke="var(--accent-cyan)"
-                strokeWidth="1.5"
-                points={[...Array(20)].map((_, i) => `${i * 5},${16 + Math.sin(Date.now() / 1000 + i) * 10}`).join(' ')}
-              />
-            </svg>
+            <div className="metric-card">
+              <div className="metric-label">Range</div>
+              <div className="range-selector">
+                {RANGES.map((r) => (
+                  <button
+                    key={r}
+                    className={`range-btn ${r === range ? 'active' : ''}`}
+                    onClick={() => setRange(r)}
+                  >
+                    {r}
+                  </button>
+                ))}
+              </div>
+            </div>
           </div>
-          <div className="metric-card">
-            <div className="metric-label">Time Slice</div>
-            <div className="metric-value cyan">1h</div>
-          </div>
-        </div>
+          <TimeSeriesChart
+            series={hist.series}
+            unit={hist.unit}
+            loading={hist.loading}
+            error={hist.error}
+          />
+        </>
       ) : (
         <div style={{ textAlign: 'center', padding: '24px 0', color: 'var(--text-secondary)', fontSize: '13px' }}>
           Select a service to view metrics

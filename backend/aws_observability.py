@@ -705,6 +705,50 @@ async def api_get_ec2_metrics(
     return JSONResponse(metrics)
 
 
+# Range -> (lookback minutes, CloudWatch period seconds). ~60-170 points each.
+_HISTORY_RANGES = {
+    "1h": (60, 60),
+    "6h": (360, 300),
+    "24h": (1440, 900),
+    "7d": (10080, 3600),
+    "30d": (43200, 21600),
+}
+# resource type -> (namespace, metric, dimension name, unit, statistic)
+_HISTORY_METRICS = {
+    "ec2": ("AWS/EC2", "CPUUtilization", "InstanceId", "Percent", "Average"),
+    "rds": ("AWS/RDS", "CPUUtilization", "DBInstanceIdentifier", "Percent", "Average"),
+    "lambda": ("AWS/Lambda", "Invocations", "FunctionName", "Count", "Sum"),
+}
+
+
+@router.get("/metrics/history")
+async def api_metrics_history(
+    type: str,
+    id: str,
+    range: str = "1h",
+    ctx: TenantContext = Depends(require_context),
+) -> JSONResponse:
+    """Real historical CloudWatch series for one resource — feeds the dashboard
+    time-series charts (replaces the old client-side fake sparkline). CloudWatch
+    IS the time-series store (15-month retention); nothing is persisted here."""
+    if ctx.role not in {"platform_admin", "broker_owner"}:
+        return JSONResponse({"error": "unauthorized"}, status_code=403)
+    if type not in _HISTORY_METRICS:
+        return JSONResponse({"error": f"unknown type '{type}'"}, status_code=400)
+    minutes, period = _HISTORY_RANGES.get(range, _HISTORY_RANGES["1h"])
+    namespace, metric, dim_name, unit, stat = _HISTORY_METRICS[type]
+    points = await get_cloudwatch_metrics(
+        namespace, metric, [{"Name": dim_name, "Value": id}],
+        period=period, minutes=minutes, statistics=[stat, "Maximum"],
+    )
+    val_key = "sum" if stat == "Sum" else "avg"
+    series = [{"t": p["timestamp"], "v": p.get(val_key), "max": p.get("max")} for p in points]
+    return JSONResponse({
+        "type": type, "id": id, "metric": metric, "unit": unit,
+        "range": range, "period": period, "series": series,
+    })
+
+
 @router.get("/rds/instances")
 async def api_get_rds(
     ctx: TenantContext = Depends(require_context),
