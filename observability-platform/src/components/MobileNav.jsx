@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useRef } from 'react';
 import './MobileNav.css';
 
 export default function MobileNav({ activeView, onViewChange, views }) {
@@ -76,7 +76,10 @@ export function PullToRefresh({ onRefresh, children }) {
   const [isPulling, setIsPulling] = useState(false);
   const [pullDistance, setPullDistance] = useState(0);
   const [isRefreshing, setIsRefreshing] = useState(false);
-  const startY = useState(0);
+  // Mutable ref, NOT state: we write .current in touch handlers without re-rendering.
+  // (Was useState(0) — its .current was undefined after the first re-render, which
+  // made `diff` NaN and silently disabled pull-to-refresh.)
+  const startY = useRef(0);
 
   const handleTouchStart = (e) => {
     if (e.currentTarget.scrollTop === 0) {

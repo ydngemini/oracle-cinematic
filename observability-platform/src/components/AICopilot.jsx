@@ -148,7 +148,20 @@ export default function AICopilot({ infrastructure, metrics, alerts }) {
 
   return (
     <div className="ai-copilot">
-      <div className="copilot-toggle" onClick={() => setChatOpen(!chatOpen)}>
+      <div
+        className="copilot-toggle"
+        role="button"
+        tabIndex={0}
+        aria-label="Toggle NAVI copilot"
+        aria-expanded={chatOpen}
+        onClick={() => setChatOpen(!chatOpen)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            setChatOpen(!chatOpen);
+          }
+        }}
+      >
         <div className={`copilot-avatar ${urgentCount > 0 ? 'urgent' : warningCount > 0 ? 'warning' : 'ok'}`}>
           <span className="copilot-icon">◈</span>
           {urgentCount > 0 && <span className="copilot-badge critical">{urgentCount}</span>}
