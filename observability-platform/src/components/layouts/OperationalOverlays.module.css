@@ -1,0 +1,295 @@
+.operationalOverlay {
+  background: linear-gradient(180deg, #0d1117 0%, #0a0e14 100%);
+  border: 1px solid rgba(0, 212, 255, 0.3);
+  border-radius: 12px;
+  padding: 16px;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  overflow: hidden;
+}
+
+.overlayHeader {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding-bottom: 12px;
+  border-bottom: 1px solid rgba(0, 212, 255, 0.2);
+}
+
+.overlayHeader h3 {
+  font-family: 'Orbitron', 'JetBrains Mono', monospace;
+  font-size: 14px;
+  color: rgba(0, 212, 255, 0.8);
+  text-transform: uppercase;
+  letter-spacing: 2px;
+  text-shadow: 0 0 10px rgba(0, 212, 255, 0.5);
+  margin: 0;
+}
+
+.metricSection {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.sectionTitle {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+
+.revenueCard {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px;
+  background: rgba(0, 0, 0, 0.3);
+  border-radius: 10px;
+  border: 1px solid rgba(255, 159, 26, 0.2);
+  position: relative;
+}
+
+.revenuePrimary {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.revenueValue {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 28px;
+  font-weight: bold;
+  color: #ff9f1a;
+  text-shadow: 0 0 15px rgba(255, 159, 26, 0.4);
+}
+
+.revenueLabel {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+}
+
+.revenueTarget {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.targetBar {
+  height: 8px;
+  background: rgba(0, 0, 0, 0.4);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.targetFill {
+  height: 100%;
+  background: linear-gradient(90deg, #ff9f1a 0%, #00ff88 100%);
+  border-radius: 4px;
+  transition: width 0.5s ease;
+  box-shadow: 0 0 10px rgba(255, 159, 26, 0.4);
+}
+
+.targetLabels {
+  display: flex;
+  justify-content: space-between;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 9px;
+  color: var(--text-secondary);
+}
+
+.trendChip {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  padding: 4px 10px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  border-radius: 4px;
+}
+
+.trendChip.positive {
+  background: rgba(0, 255, 136, 0.15);
+  color: #00ff88;
+}
+
+.trendChip.negative {
+  background: rgba(255, 59, 92, 0.15);
+  color: #ff3b5c;
+}
+
+.customerGrid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+}
+
+.customerCard {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 12px 8px;
+  background: rgba(0, 0, 0, 0.3);
+  border-radius: 8px;
+  border: 1px solid rgba(0, 212, 255, 0.15);
+}
+
+.customerCard.newCard {
+  background: rgba(0, 255, 136, 0.05);
+  border-color: rgba(0, 255, 136, 0.3);
+}
+
+.customerCard.churnCard {
+  background: rgba(255, 59, 92, 0.05);
+  border-color: rgba(255, 59, 92, 0.3);
+}
+
+.customerCard.positive {
+  background: rgba(0, 255, 136, 0.1);
+  border-color: rgba(0, 255, 136, 0.4);
+}
+
+.customerCard.negative {
+  background: rgba(255, 59, 92, 0.1);
+  border-color: rgba(255, 59, 92, 0.4);
+}
+
+.customerValue {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 18px;
+  font-weight: bold;
+  color: var(--text-primary);
+}
+
+.customerCard.newCard .customerValue,
+.customerCard.positive .customerValue {
+  color: #00ff88;
+}
+
+.customerCard.churnCard .customerValue,
+.customerCard.negative .customerValue {
+  color: #ff3b5c;
+}
+
+.customerLabel {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 9px;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+}
+
+.transactionRow {
+  display: flex;
+  gap: 12px;
+}
+
+.transactionMetric {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 12px;
+  background: rgba(0, 0, 0, 0.3);
+  border-radius: 8px;
+}
+
+.transValue {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 16px;
+  font-weight: bold;
+  color: #00d4ff;
+}
+
+.transLabel {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 9px;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+}
+
+.npsSection {
+  margin-top: auto;
+  padding: 12px;
+  background: linear-gradient(135deg, rgba(168, 85, 247, 0.1) 0%, rgba(0, 212, 255, 0.1) 100%);
+  border-radius: 8px;
+  border: 1px solid rgba(168, 85, 247, 0.3);
+}
+
+.npsLabel {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 9px;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  margin-bottom: 6px;
+}
+
+.npsDisplay {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.npsValue {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 32px;
+  font-weight: bold;
+  color: #a855f7;
+  text-shadow: 0 0 20px rgba(168, 85, 247, 0.5);
+}
+
+.npsTrend {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+.npsTrend.positive {
+  background: rgba(0, 255, 136, 0.15);
+  color: #00ff88;
+}
+
+.npsTrend.negative {
+  background: rgba(255, 59, 92, 0.15);
+  color: #ff3b5c;
+}
+
+.miniWidget {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 8px 12px;
+  background: rgba(0, 0, 0, 0.3);
+  border-radius: 6px;
+}
+
+.miniValue {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 14px;
+  font-weight: bold;
+  color: var(--text-primary);
+}
+
+.miniLabel {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 8px;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+}
+
+.miniTrend {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  font-size: 9px;
+  padding: 2px 4px;
+  border-radius: 3px;
+}

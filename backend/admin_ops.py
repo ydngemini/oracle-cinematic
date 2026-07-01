@@ -25,6 +25,7 @@ import asyncio
 import logging
 import time
 import uuid
+from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -139,7 +140,9 @@ async def overview(ctx: TenantContext = Depends(require_platform_admin)):
 
 def _monthly_minor(price: dict, qty) -> float:
     """Normalize one recurring Stripe price+quantity to a monthly amount (minor units)."""
-    amt = (price.get("unit_amount") or 0) * (qty or 1)
+    # A quantity of 0 means 0 units billed — only a missing quantity defaults to 1.
+    qty = 1 if qty is None else qty
+    amt = (price.get("unit_amount") or 0) * qty
     rec = price.get("recurring") or {}
     count = rec.get("interval_count") or 1
     interval = rec.get("interval")
@@ -156,34 +159,53 @@ def _monthly_minor(price: dict, qty) -> float:
 
 def _stripe_revenue() -> dict:
     """Synchronous Stripe rollup (run in an executor): MRR from active
-    subscriptions + month-to-date captured revenue (net of refunds)."""
-    currency = "usd"
-    mrr_minor = 0.0
+    subscriptions + month-to-date captured revenue (net of refunds).
+
+    Amounts are segregated by currency — Stripe minor units are only additive
+    within one currency (100 JPY minor units != 100 USD cents), so we never sum
+    across currencies. The top-level currency/mrr/mtd_revenue report the dominant
+    currency (largest MRR); `by_currency` carries the full per-currency breakdown
+    so a mixed-currency account is represented honestly instead of conflated."""
+    mrr_by_ccy: dict[str, float] = defaultdict(float)
+    mtd_by_ccy: dict[str, float] = defaultdict(float)
     active = 0
     for sub in stripe.Subscription.list(status="active", limit=100).auto_paging_iter():
         active += 1
-        if sub.get("currency"):
-            currency = sub["currency"]
+        ccy = (sub.get("currency") or "usd").lower()
         for item in (sub.get("items", {}).get("data") or []):
-            mrr_minor += _monthly_minor(item.get("price") or {}, item.get("quantity"))
+            mrr_by_ccy[ccy] += _monthly_minor(item.get("price") or {}, item.get("quantity"))
 
     now = datetime.now(timezone.utc)
     month_start = int(datetime(now.year, now.month, 1, tzinfo=timezone.utc).timestamp())
-    mtd_minor = 0.0
     payments = 0
     for ch in stripe.Charge.list(created={"gte": month_start}, limit=100).auto_paging_iter():
         if ch.get("status") == "succeeded":
-            mtd_minor += (ch.get("amount_captured") or 0) - (ch.get("amount_refunded") or 0)
+            ccy = (ch.get("currency") or "usd").lower()
+            mtd_by_ccy[ccy] += (ch.get("amount_captured") or 0) - (ch.get("amount_refunded") or 0)
             payments += 1
-            if ch.get("currency"):
-                currency = ch["currency"]
+
+    # Dominant currency = largest MRR (tie-break on MTD), defaulting to usd.
+    all_ccys = set(mrr_by_ccy) | set(mtd_by_ccy)
+    primary = max(
+        all_ccys,
+        key=lambda c: (mrr_by_ccy.get(c, 0.0), mtd_by_ccy.get(c, 0.0)),
+        default="usd",
+    )
+    by_currency = {
+        c: {
+            "mrr": round(mrr_by_ccy.get(c, 0.0)) / 100,
+            "mtd_revenue": round(mtd_by_ccy.get(c, 0.0)) / 100,
+        }
+        for c in sorted(all_ccys)
+    }
 
     return {
-        "currency": currency,
-        "mrr": round(mrr_minor) / 100,
-        "mtd_revenue": round(mtd_minor) / 100,
+        "currency": primary,
+        "mrr": round(mrr_by_ccy.get(primary, 0.0)) / 100,
+        "mtd_revenue": round(mtd_by_ccy.get(primary, 0.0)) / 100,
         "active_subscriptions": active,
         "mtd_payments": payments,
+        "by_currency": by_currency,
     }
 
 

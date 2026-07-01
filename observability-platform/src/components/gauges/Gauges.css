@@ -1,0 +1,32 @@
+.gauge-container {
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid rgba(0, 212, 255, 0.15);
+  border-radius: 8px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+
+.gauge-label {
+  font-family: var(--font-mono, 'JetBrains Mono', monospace);
+  font-size: 10px;
+  color: rgba(232, 238, 245, 0.5);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+
+.gauge-value {
+  font-family: var(--font-mono, 'JetBrains Mono', monospace);
+  font-weight: bold;
+  color: #00d4ff;
+}
+
+.gauge-wrapper {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  justify-content: center;
+  padding: 16px;
+}

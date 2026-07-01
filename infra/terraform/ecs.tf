@@ -46,6 +46,9 @@ locals {
     { name = "ORACLE_RDS_CA_BUNDLE", value = "/etc/ssl/certs/rds-global-bundle.pem" },
     { name = "AWS_REGION", value = var.aws_region },
     { name = "BEDROCK_REGION", value = var.aws_region },
+    # AWS observability broadcaster (aws_observability.py). Opt-in; the loop only
+    # calls AWS while a dashboard client is connected. Task role read grant: iam.tf.
+    { name = "AWS_OBSERVABILITY_ENABLED", value = var.observability_enabled ? "1" : "0" },
     # GPU reconstruction via AWS Batch + S3 splat storage (reconstruction.tf).
     { name = "RECONSTRUCTION_PROVIDER", value = "aws_batch" },
     { name = "RECON_S3_BUCKET", value = aws_s3_bucket.recon.bucket },

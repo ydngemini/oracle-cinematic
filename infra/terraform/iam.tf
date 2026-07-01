@@ -71,6 +71,33 @@ data "aws_iam_policy_document" "task" {
       "arn:aws:bedrock:*:${local.account_id}:inference-profile/*",
     ]
   }
+
+  # ── AWS observability dashboard (aws_observability.py) — READ-ONLY inventory +
+  # metrics + cost. Broad but strictly read/describe/list; no mutating actions.
+  # These describe/list/get APIs do not support resource-level scoping, so "*" is
+  # required. Gated at runtime by AWS_OBSERVABILITY_ENABLED (ecs.tf). Only added
+  # because the Neoh-embedded dashboard was opted into; drop this statement to
+  # revoke the dashboard's access entirely.
+  dynamic "statement" {
+    for_each = var.observability_enabled ? [1] : []
+    content {
+      sid = "AwsObservabilityReadOnly"
+      actions = [
+        "cloudwatch:GetMetricStatistics", "cloudwatch:GetMetricData", "cloudwatch:ListMetrics",
+        "ec2:DescribeInstances", "ec2:DescribeVolumes", "ec2:DescribeSecurityGroups",
+        "rds:DescribeDBInstances", "rds:DescribeDBClusters",
+        "lambda:ListFunctions", "lambda:GetFunction",
+        "elasticloadbalancing:DescribeLoadBalancers", "elasticloadbalancing:DescribeTargetGroups", "elasticloadbalancing:DescribeTargetHealth",
+        "cloudfront:ListDistributions",
+        "ce:GetCostAndUsage",
+        "securityhub:GetFindings",
+        "iam:ListUsers", "iam:GetUser",
+        "s3:ListAllMyBuckets", "s3:GetBucketLocation",
+        "autoscaling:DescribeAutoScalingGroups",
+      ]
+      resources = ["*"]
+    }
+  }
 }
 
 resource "aws_iam_role_policy" "task" {

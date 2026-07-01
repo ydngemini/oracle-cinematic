@@ -20,6 +20,10 @@ REG="${ACCT}.dkr.ecr.${REGION}.amazonaws.com"
 BE="${REG}/neoh/backend"
 FE="${REG}/neoh/frontend"
 RECON="${REG}/neoh/reconstruction"
+OBS="${REG}/neoh/observability"
+# AWS observability dashboard vhost. The ALB routes this host to the dashboard,
+# and its /api,/auth,/ws to the backend, so the SPA calls the API same-origin.
+OBS_HOST="${OBS_HOST:-obs.neoh.app}"
 BUCKET="neoh-prod-recon-${ACCT}"
 
 # ── source: git-archive HEAD → S3 (CodeBuild unpacks it as the build context) ──
@@ -71,6 +75,8 @@ phases:
       - docker push \$BE:latest
       - docker build --build-arg VITE_API_BASE=https://neoh.app -t \$FE:latest oracle-app
       - docker push \$FE:latest
+      - docker build --build-arg VITE_API_BASE=https://${OBS_HOST} --build-arg VITE_WS_URL=wss://${OBS_HOST} -t \$OBS:latest observability-platform
+      - docker push \$OBS:latest
 YAML
 fi
 
@@ -81,16 +87,22 @@ fi
 #     --secret-string '{"username":"<user>","token":"dckr_pat_..."}'
 # CodeBuild resolves SECRETS_MANAGER-typed env vars at build time. The CodeBuild
 # service role needs secretsmanager:GetSecretValue on neoh/dockerhub.
+# Precedence: an explicitly-exported DOCKERHUB_TOKEN is an operator override and
+# wins — otherwise a misconfigured neoh/dockerhub secret (wrong JSON keys, or the
+# build role lacking secretsmanager:GetSecretValue) would silently strand the
+# build with no creds and hit the nvidia/cuda anonymous 429. With no env token,
+# Secrets Manager is the (secure, non-plaintext) default. Unset DOCKERHUB_TOKEN
+# to force the Secrets Manager path.
 DH=""
-if "${AWS[@]}" secretsmanager describe-secret --secret-id neoh/dockerhub >/dev/null 2>&1; then
+if [ -n "${DOCKERHUB_TOKEN:-}" ]; then
+  echo "!! WARNING: injecting Docker Hub PAT as PLAINTEXT into the CodeBuild project env (operator override)." >&2
+  echo "!! Prefer Secrets Manager: unset DOCKERHUB_TOKEN, then aws secretsmanager create-secret --name neoh/dockerhub --secret-string '{\"username\":\"\$USER\",\"token\":\"dckr_pat_...\"}'" >&2
+  DH=",{\"name\":\"DOCKERHUB_USER\",\"value\":\"${DOCKERHUB_USER:-}\"},{\"name\":\"DOCKERHUB_TOKEN\",\"value\":\"$DOCKERHUB_TOKEN\"}"
+elif "${AWS[@]}" secretsmanager describe-secret --secret-id neoh/dockerhub >/dev/null 2>&1; then
   echo ">> Docker Hub creds via Secrets Manager (neoh/dockerhub)"
   DH=",{\"name\":\"DOCKERHUB_USER\",\"value\":\"neoh/dockerhub:username\",\"type\":\"SECRETS_MANAGER\"},{\"name\":\"DOCKERHUB_TOKEN\",\"value\":\"neoh/dockerhub:token\",\"type\":\"SECRETS_MANAGER\"}"
-elif [ -n "${DOCKERHUB_TOKEN:-}" ]; then
-  echo "!! WARNING: injecting Docker Hub PAT as PLAINTEXT into the CodeBuild project env." >&2
-  echo "!! Fix: aws secretsmanager create-secret --name neoh/dockerhub --secret-string '{\"username\":\"\$USER\",\"token\":\"dckr_pat_...\"}'" >&2
-  DH=",{\"name\":\"DOCKERHUB_USER\",\"value\":\"${DOCKERHUB_USER:-}\"},{\"name\":\"DOCKERHUB_TOKEN\",\"value\":\"$DOCKERHUB_TOKEN\"}"
 fi
-ENVVARS="[{\"name\":\"ECR_REGISTRY\",\"value\":\"$REG\"},{\"name\":\"BE\",\"value\":\"$BE\"},{\"name\":\"FE\",\"value\":\"$FE\"},{\"name\":\"RECON\",\"value\":\"$RECON\"},{\"name\":\"AWS_DEFAULT_REGION\",\"value\":\"$REGION\"}$DH]"
+ENVVARS="[{\"name\":\"ECR_REGISTRY\",\"value\":\"$REG\"},{\"name\":\"BE\",\"value\":\"$BE\"},{\"name\":\"FE\",\"value\":\"$FE\"},{\"name\":\"OBS\",\"value\":\"$OBS\"},{\"name\":\"RECON\",\"value\":\"$RECON\"},{\"name\":\"AWS_DEFAULT_REGION\",\"value\":\"$REGION\"}$DH]"
 
 SRC="{\"type\":\"S3\",\"location\":\"$BUCKET/$SRCKEY\",\"buildspec\":$(python3 -c 'import json,sys;print(json.dumps(sys.stdin.read()))' <<<"$SPEC")}"
 ENVJSON="{\"type\":\"LINUX_CONTAINER\",\"image\":\"aws/codebuild/standard:7.0\",\"computeType\":\"$COMPUTE\",\"privilegedMode\":true,\"environmentVariables\":$ENVVARS}"
