@@ -192,53 +192,45 @@ body {
   padding-bottom: calc(12px + var(--safe-area-bottom));
 }
 
-@media (min-width: 1024px) {
-  .main-content {
-    display: grid;
-    grid-template-columns: 280px 1fr 280px;
-    gap: 16px;
-    padding: 16px 24px;
-    overflow: hidden;
-  }
-  
-  .main-content.dashboard,
-  .main-content.topology {
-    grid-template-columns: 280px 1fr 280px;
-  }
-}
-
-@media (min-width: 768px) and (max-width: 1023px) {
-  .main-content {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 12px;
-    padding: 12px 16px;
-  }
-  
-  .main-content > *:first-child {
-    grid-column: 1;
-  }
-  
-  .main-content > *:nth-child(2) {
-    grid-column: 2;
-    grid-row: 1 / 3;
-  }
-  
-  .main-content > *:last-child {
-    grid-column: 1;
-  }
-}
-
-/* PullToRefresh is a mobile-only touch-gesture wrapper. On the tablet/desktop
-   grid it must NOT be the single grid item (that crammed every panel into
-   column 1 and left columns 2-3 an empty void). display:contents dissolves the
-   wrapper's box so the panels become real grid items. */
+/* .main-content is a SCROLLABLE vertical stack at every size (the base rule
+   above sets flex-column + overflow-y:auto). The dashboard's 3-column grid now
+   lives on .dashboard-grid, so full-width feature sections stack BELOW it and
+   you can scroll down to them / add more. */
 @media (min-width: 768px) {
+  .main-content { padding: 16px 24px; gap: 20px; }
+  /* PullToRefresh is a mobile-only touch-gesture wrapper — display:contents
+     dissolves its box so .dashboard-grid + .feature-section become direct
+     children of the scroll container (was crushing everything into one cell). */
   .pull-to-refresh { display: contents; }
 }
+
+/* The dashboard grid (moved off .main-content). Mobile isn't rendered here
+   (it uses the tabbed view); this covers tablet + desktop. */
+.dashboard-grid { display: flex; flex-direction: column; gap: 16px; }
+@media (min-width: 768px) and (max-width: 1023px) {
+  .dashboard-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .dashboard-grid > *:first-child { grid-column: 1; }
+  .dashboard-grid > *:nth-child(2) { grid-column: 2; grid-row: 1 / 3; }
+  .dashboard-grid > *:last-child { grid-column: 1; }
+}
 @media (min-width: 1024px) {
-  /* Each column scrolls internally instead of clipping under overflow:hidden. */
-  .main-content > * { min-height: 0; overflow-y: auto; }
+  .dashboard-grid { display: grid; grid-template-columns: 280px 1fr 280px; gap: 16px; }
+}
+
+/* Right column (metrics + billing) + the extensible full-width feature area. */
+.metrics-col { display: flex; flex-direction: column; gap: 16px; }
+.feature-section {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 16px;
+}
+.feature-section-title {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: var(--accent-cyan);
+  margin: 4px 2px -4px;
 }
 
 /* Panel - Mobile */

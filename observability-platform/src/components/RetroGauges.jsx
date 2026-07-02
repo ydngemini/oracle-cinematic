@@ -79,7 +79,7 @@ export function SpeedGauge({ value = 0, max = 100, label = 'THROUGHPUT', unit = 
 
     // Needle
     const needleAngle = startAngle + percent * Math.PI * 1.5;
-    const needleLen = radius * 0.65;
+    const needleLen = radius * 0.5;
     ctx.beginPath();
     ctx.moveTo(cx, cy);
     ctx.lineTo(cx + Math.cos(needleAngle) * needleLen, cy + Math.sin(needleAngle) * needleLen);
@@ -101,19 +101,16 @@ export function SpeedGauge({ value = 0, max = 100, label = 'THROUGHPUT', unit = 
     ctx.fillStyle = '#ff3b5c';
     ctx.fill();
 
-    // Label
-    ctx.fillStyle = 'rgba(232, 238, 245, 0.5)';
-    ctx.font = '11px "JetBrains Mono", monospace';
+    // Digital readout in the lower gap: a prominent value (clear of the side
+    // ticks at ~0.51r and of the shortened needle) with a compact label·unit
+    // caption below it — no element overlaps the ticks, needle, or hub.
     ctx.textAlign = 'center';
-    ctx.fillText(label, cx, cy + radius * 0.35);
-
-    // Value display
     ctx.fillStyle = color;
-    ctx.font = 'bold 24px "JetBrains Mono", monospace';
-    ctx.fillText(Math.round(value).toString(), cx, cy + radius * 0.55);
-    ctx.fillStyle = 'rgba(232, 238, 245, 0.4)';
-    ctx.font = '10px "JetBrains Mono", monospace';
-    ctx.fillText(unit, cx, cy + radius * 0.7);
+    ctx.font = 'bold 22px "JetBrains Mono", monospace';
+    ctx.fillText(Math.round(value).toString(), cx, cy + radius * 0.6);
+    ctx.fillStyle = 'rgba(232, 238, 245, 0.45)';
+    ctx.font = '9px "JetBrains Mono", monospace';
+    ctx.fillText(`${label} · ${unit}`, cx, cy + radius * 0.82);
   }, [value, max, label, unit, color]);
 
   return <canvas ref={canvasRef} className="speed-gauge" />;
@@ -375,11 +372,16 @@ export function TurboGauge({ rpm = 0, boost = 0, temp = 0 }) {
 
     ctx.clearRect(0, 0, w, h);
 
-    // TURBO text
+    // TURBO watermark — size it to fit the canvas so it never clips at the edges.
     ctx.fillStyle = 'rgba(0, 212, 255, 0.1)';
-    ctx.font = 'bold 60px "Orbitron", sans-serif';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
+    let turboSize = Math.round(Math.min(cx, cy) * 0.62);
+    ctx.font = `bold ${turboSize}px "Orbitron", sans-serif`;
+    while (turboSize > 10 && ctx.measureText('TURBO').width > cx * 1.7) {
+      turboSize -= 2;
+      ctx.font = `bold ${turboSize}px "Orbitron", sans-serif`;
+    }
     ctx.fillText('TURBO', cx, cy);
 
     // Main gauge arc

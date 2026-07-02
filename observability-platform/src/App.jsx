@@ -196,43 +196,53 @@ function Dashboard({ token, onLogout }) {
 
   const renderDesktopContent = () => (
     <>
-      <ServicePanel
-        ec2={infrastructure.ec2}
-        rds={infrastructure.rds}
-        onSelect={handleServiceSelect}
-        selectedService={selectedService}
-      />
-
-      {viewMode === 'dashboard' ? (
-        <RetroDashboard 
-          ec2={infrastructure.ec2} 
-          rds={infrastructure.rds} 
-          metrics={metrics}
-          billing={infrastructure.billing}
-        />
-      ) : (
-        <div className="canvas-container">
-          <AWSWebGLCanvas
-            ec2={infrastructure.ec2.instances}
-            rds={infrastructure.rds.instances}
-            metrics={metrics}
-            selectedService={selectedService}
-          />
-        </div>
-      )}
-
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-        <MetricsPanel
+      <div className="dashboard-grid">
+        <ServicePanel
+          ec2={infrastructure.ec2}
+          rds={infrastructure.rds}
+          onSelect={handleServiceSelect}
           selectedService={selectedService}
-          instance={selectedInstance}
-          metrics={selectedService?.type === 'ec2' 
-            ? metrics.ec2[selectedService?.id] 
-            : selectedService?.type === 'rds' 
-              ? metrics.rds[selectedService?.id] 
-              : null}
         />
-        <BillingPanel billing={infrastructure.billing} />
+
+        {viewMode === 'dashboard' ? (
+          <RetroDashboard
+            ec2={infrastructure.ec2}
+            rds={infrastructure.rds}
+            metrics={metrics}
+            billing={infrastructure.billing}
+          />
+        ) : (
+          <div className="canvas-container">
+            <AWSWebGLCanvas
+              ec2={infrastructure.ec2.instances}
+              rds={infrastructure.rds.instances}
+              metrics={metrics}
+              selectedService={selectedService}
+            />
+          </div>
+        )}
+
+        <div className="metrics-col">
+          <MetricsPanel
+            selectedService={selectedService}
+            instance={selectedInstance}
+            metrics={selectedService?.type === 'ec2'
+              ? metrics.ec2[selectedService?.id]
+              : selectedService?.type === 'rds'
+                ? metrics.rds[selectedService?.id]
+                : null}
+          />
+          <BillingPanel billing={infrastructure.billing} />
+        </div>
       </div>
+
+      {/* Extensible feature area — scrolls below the dashboard. Add more panels
+          here (each becomes a responsive card in the auto-fit grid). */}
+      <div className="feature-section-title">Infrastructure Detail</div>
+      <section className="feature-section">
+        <MorePanel infrastructure={infrastructure} />
+        <SecurityPanel security={infrastructure.security} />
+      </section>
     </>
   );
 
@@ -370,6 +380,40 @@ function MorePanel({ infrastructure }) {
             {infrastructure.security?.score || 100}
           </div>
         </div>
+      </div>
+    </div>
+  );
+}
+
+function SecurityPanel({ security }) {
+  const score = security?.score ?? 100;
+  const findings = security?.findings || [];
+  const scoreClass = score > 80 ? 'green' : score > 60 ? 'orange' : 'red';
+  const sevColor = (s) =>
+    s === 'CRITICAL' ? 'var(--accent-red)' : s === 'HIGH' ? 'var(--accent-orange)' : 'var(--text-secondary)';
+  return (
+    <div className="panel">
+      <div className="panel-header">
+        <h2>Security</h2>
+        <span className="panel-count">{security?.findings_count || 0}</span>
+      </div>
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: '10px', padding: '4px 0 12px' }}>
+        <span className={`metric-value ${scoreClass}`} style={{ fontSize: '34px' }}>{score}</span>
+        <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>security score</span>
+      </div>
+      <div className="service-list">
+        {findings.length === 0 ? (
+          <div style={{ textAlign: 'center', padding: '14px', color: 'var(--accent-green)', fontSize: '13px' }}>
+            ✓ No active findings
+          </div>
+        ) : (
+          findings.slice(0, 6).map((f, i) => (
+            <div key={f.id || i} className="service-item" style={{ borderColor: sevColor(f.severity) }}>
+              <div style={{ fontSize: '11px', color: sevColor(f.severity) }}>{f.severity || 'INFO'}</div>
+              <div style={{ fontSize: '12px' }}>{f.title || f.Title || 'Finding'}</div>
+            </div>
+          ))
+        )}
       </div>
     </div>
   );
