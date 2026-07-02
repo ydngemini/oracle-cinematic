@@ -511,8 +511,17 @@ async def get_billing_metrics() -> dict[str, Any]:
         return {"by_service": {}, "month_total": 0.0, "error": str(e)}
 
 
+# Security Hub isn't enabled on every account. Once GetFindings proves the
+# account isn't subscribed we short-circuit — otherwise the 15s broadcast loop
+# spams ~240 ERROR logs/hour (and as many failing GetFindings calls) forever.
+_securityhub_disabled = False
+
+
 async def get_security_hub_findings() -> list[dict[str, Any]]:
-    """Fetch Security Hub findings."""
+    """Fetch Security Hub findings (no-op if the account isn't subscribed)."""
+    global _securityhub_disabled
+    if _securityhub_disabled:
+        return []
     try:
         sh = _get_securityhub_client()
         loop = asyncio.get_event_loop()
@@ -541,7 +550,17 @@ async def get_security_hub_findings() -> list[dict[str, Any]]:
                 "resources": [r.get("Id", "") for r in f.get("Resources", [])],
             })
         return findings
-    except (ClientError, BotoCoreError) as e:
+    except ClientError as e:
+        code = e.response.get("Error", {}).get("Code", "")
+        # Stable "Security Hub not turned on / no access" conditions: log ONCE and
+        # stop calling GetFindings so we don't spam ERROR logs every 15s.
+        if code in ("InvalidAccessException", "ResourceNotFoundException", "AccessDeniedException", "SubscriptionRequiredException"):
+            log.warning("Security Hub unavailable for this account (%s) — skipping findings.", code)
+            _securityhub_disabled = True
+            return []
+        log.error("Security Hub fetch error: %s", e)
+        return []
+    except BotoCoreError as e:
         log.error("Security Hub fetch error: %s", e)
         return []
 
