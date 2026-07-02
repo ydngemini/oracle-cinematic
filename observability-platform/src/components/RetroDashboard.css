@@ -16,6 +16,23 @@
               rgba(0, 0, 0, 0.3);
   position: relative;
   overflow: hidden;
+  /* Responsive gauge rows: center a single gauge, wrap multi-gauge rows instead
+     of clipping the 3rd gauge on narrow columns (tablet was cutting off MEMORY). */
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-around;
+  align-items: center;
+  gap: 10px 8px;
+  padding: 14px 10px;
+}
+
+.dial-row {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-around;
+  align-items: center;
+  gap: 10px 8px;
+  padding: 14px 10px;
 }
 
 .gauge-cluster::before {

@@ -229,6 +229,18 @@ body {
   }
 }
 
+/* PullToRefresh is a mobile-only touch-gesture wrapper. On the tablet/desktop
+   grid it must NOT be the single grid item (that crammed every panel into
+   column 1 and left columns 2-3 an empty void). display:contents dissolves the
+   wrapper's box so the panels become real grid items. */
+@media (min-width: 768px) {
+  .pull-to-refresh { display: contents; }
+}
+@media (min-width: 1024px) {
+  /* Each column scrolls internally instead of clipping under overflow:hidden. */
+  .main-content > * { min-height: 0; overflow-y: auto; }
+}
+
 /* Panel - Mobile */
 .panel {
   background: var(--bg-card);
