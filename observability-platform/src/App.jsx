@@ -7,6 +7,7 @@ import RetroDashboard from './components/RetroDashboard.jsx';
 import AICopilot from './components/AICopilot.jsx';
 import MobileNav, { SwipeContainer, PullToRefresh } from './components/MobileNav.jsx';
 import Login from './components/Login.jsx';
+import FeaturePanels from './components/panels/FeaturePanels.jsx';
 import useAwsWebSocket from './hooks/useAwsWebSocket.jsx';
 import { resolveToken, logout } from './lib/auth';
 import './index.css';
@@ -188,7 +189,13 @@ function Dashboard({ token, onLogout }) {
       case 'alerts':
         return <AlertsPanel alerts={alerts} security={infrastructure.security} />;
       case 'more':
-        return <MorePanel infrastructure={infrastructure} />;
+        return (
+          <FeaturePanels
+            infrastructure={infrastructure}
+            selectedService={selectedService}
+            onSelect={handleServiceSelect}
+          />
+        );
       default:
         return null;
     }
@@ -236,13 +243,13 @@ function Dashboard({ token, onLogout }) {
         </div>
       </div>
 
-      {/* Extensible feature area — scrolls below the dashboard. Add more panels
-          here (each becomes a responsive card in the auto-fit grid). */}
-      <div className="feature-section-title">Infrastructure Detail</div>
-      <section className="feature-section">
-        <MorePanel infrastructure={infrastructure} />
-        <SecurityPanel security={infrastructure.security} />
-      </section>
+      {/* 20 real-data feature panels grouped by category (Compute / Storage /
+          Network / Security / Cost & Ops), scrolling below the dashboard. */}
+      <FeaturePanels
+        infrastructure={infrastructure}
+        selectedService={selectedService}
+        onSelect={handleServiceSelect}
+      />
     </>
   );
 

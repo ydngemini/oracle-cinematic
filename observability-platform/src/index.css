@@ -232,6 +232,22 @@ body {
   color: var(--accent-cyan);
   margin: 4px 2px -4px;
 }
+/* Wide detail tables span 2 grid tracks on desktop; full width on mobile. */
+.feature-section .panel.span-2 { grid-column: span 2; }
+@media (max-width: 767px) {
+  .feature-section .panel.span-2 { grid-column: auto; }
+}
+/* Read-only (non-selectable) rows shouldn't look clickable. */
+.service-item.static { cursor: default; }
+.service-item.static:active { transform: none; }
+/* <select> reusing the .range-btn look (the cost-trend service picker). */
+select.range-btn {
+  padding: 4px 8px;
+  cursor: pointer;
+  text-align: left;
+  -webkit-appearance: none;
+  appearance: none;
+}
 
 /* Panel - Mobile */
 .panel {

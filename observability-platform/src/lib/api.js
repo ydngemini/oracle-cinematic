@@ -32,3 +32,8 @@ export function fetchMetricHistory(type, id, range = '1h') {
   const q = new URLSearchParams({ type, id, range }).toString();
   return authedGet(`/api/aws/metrics/history?${q}`);
 }
+
+// Latest detailed CloudWatch metrics for one resource. type: ec2|rds|lambda|ebs|s3.
+export function fetchResourceMetrics(type, id) {
+  return authedGet(`/api/aws/${type}/${encodeURIComponent(id)}/metrics`);
+}
