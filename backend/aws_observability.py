@@ -749,6 +749,45 @@ async def api_metrics_history(
     })
 
 
+def _build_copilot_prompt(message: str, context: dict) -> str:
+    ctx = json.dumps(context, default=str)[:3000]
+    return (
+        "You are NAVI, an expert AWS cloud operations copilot embedded in a live "
+        "infrastructure dashboard. Answer the operator concisely (2-5 sentences). "
+        "Cite numbers ONLY from the live context below; never invent resources. If "
+        "asked to act, give the specific AWS action or CLI command.\n\n"
+        f"LIVE CONTEXT (JSON): {ctx}\n\n"
+        f"OPERATOR: {message}\n\nNAVI:"
+    )
+
+
+@router.post("/copilot/query")
+async def api_copilot_query(
+    body: dict,
+    ctx: TenantContext = Depends(require_context),
+) -> JSONResponse:
+    """Real LLM copilot (Bedrock) answering ops questions with the live infra
+    snapshot as context. Replaces the client-side if/else responder; the frontend
+    falls back to its rule-based answers if this is unavailable."""
+    if ctx.role not in {"platform_admin", "broker_owner"}:
+        return JSONResponse({"error": "unauthorized"}, status_code=403)
+    message = (body.get("message") or "").strip()[:2000]
+    if not message:
+        return JSONResponse({"error": "empty message"}, status_code=400)
+    prompt = _build_copilot_prompt(message, body.get("context") or {})
+    reply = None
+    try:
+        from ml_forge.bedrock_client import invoke_bedrock_model, PRIMARY_MODEL, SECONDARY_MODEL
+        reply = await asyncio.to_thread(invoke_bedrock_model, PRIMARY_MODEL, prompt, 700)
+        if not reply:
+            reply = await asyncio.to_thread(invoke_bedrock_model, SECONDARY_MODEL, prompt, 700)
+    except Exception as e:  # noqa: BLE001 — LLM/creds failures degrade to the client fallback
+        log.error("Copilot LLM error: %s", e)
+    if not reply:
+        return JSONResponse({"reply": None, "error": "llm_unavailable"}, status_code=503)
+    return JSONResponse({"reply": reply.strip(), "model": "bedrock"})
+
+
 @router.get("/rds/instances")
 async def api_get_rds(
     ctx: TenantContext = Depends(require_context),
@@ -1098,6 +1137,9 @@ async def observability_websocket(websocket: WebSocket):
                     else:
                         metrics = {}
                     await websocket.send_text(json.dumps({"type": "AWS_DETAILED_METRICS", **metrics}))
+                elif msg.get("type") == "PING":
+                    # Client heartbeat — reply so it can detect a dead connection.
+                    await websocket.send_text(json.dumps({"type": "PONG"}))
             except WebSocketDisconnect:
                 break
             except Exception as e:

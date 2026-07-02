@@ -839,3 +839,14 @@ body {
   border-color: var(--accent-cyan);
   font-weight: 700;
 }
+
+/* --- connection-ui polish: contain layout bleeds --------------------- */
+/* Stop any child overflow from producing a horizontal scrollbar / bleed. */
+.overlay-ui,
+.main-content { overflow-x: hidden; }
+/* Flex children overflow their track without min-width:0 (classic bleed). */
+.main-content > * { min-width: 0; }
+.panel { min-width: 0; }
+/* The HEALTH/ACTIVE/COST/SYNC indicator strip was clipping in narrow columns. */
+.status-light-strip { flex-wrap: wrap; row-gap: 4px; }
+.panel-header { gap: 8px; flex-wrap: wrap; }

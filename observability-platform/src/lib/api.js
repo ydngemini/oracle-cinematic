@@ -5,12 +5,25 @@ import { resolveToken } from './auth';
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? 'http://localhost:8000';
 
-async function authedGet(path) {
+function authHeaders(extra = {}) {
   const token = resolveToken();
-  const res = await fetch(`${API_BASE}${path}`, {
-    headers: token ? { Authorization: `Bearer ${token}` } : {},
-  });
+  return token ? { ...extra, Authorization: `Bearer ${token}` } : extra;
+}
+
+async function authedGet(path) {
+  const res = await fetch(`${API_BASE}${path}`, { headers: authHeaders() });
   if (!res.ok) throw new Error(`GET ${path} -> ${res.status}`);
+  return res.json();
+}
+
+// Real LLM copilot (Bedrock, server-side). Returns { reply, model } or throws.
+export async function fetchCopilotReply(message, context) {
+  const res = await fetch(`${API_BASE}/api/aws/copilot/query`, {
+    method: 'POST',
+    headers: authHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify({ message, context }),
+  });
+  if (!res.ok) throw new Error(`copilot -> ${res.status}`);
   return res.json();
 }
 

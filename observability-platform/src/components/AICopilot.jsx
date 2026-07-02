@@ -1,5 +1,29 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
+import { fetchCopilotReply } from '../lib/api';
 import './AICopilot.css';
+
+// Compact the live snapshot into a small JSON context the LLM can reason over
+// (real numbers only — the server prompt forbids inventing resources).
+function buildContext(infra, metrics, alerts) {
+  if (!infra) return {};
+  const topCosts = Object.entries(infra.billing?.by_service || {})
+    .sort((a, b) => b[1].total - a[1].total)
+    .slice(0, 5)
+    .map(([service, d]) => ({ service, cost: Math.round(d.total * 100) / 100 }));
+  return {
+    counts: {
+      ec2: infra.ec2?.count, rds: infra.rds?.count, lambda: infra.lambda?.count,
+      s3: infra.s3?.count, elb: infra.elb?.count, ebs: infra.ebs?.count,
+    },
+    ec2_running: (infra.ec2?.instances || []).filter((i) => i.state === 'running').length,
+    rds_available: (infra.rds?.instances || []).filter((i) => i.status === 'available').length,
+    security_score: infra.security?.score,
+    security_findings: infra.security?.findings_count,
+    month_cost: infra.billing?.month_total,
+    top_costs: topCosts,
+    alerts: (alerts || []).slice(0, 5).map((a) => ({ sev: a.severity, msg: a.message })),
+  };
+}
 
 const COPILOT_SUGGESTIONS = [
   { condition: 'cpu_high', threshold: 80, suggestion: 'CPU utilization is high. Consider scaling out or optimizing workloads.', action: 'scale_out' },
@@ -121,18 +145,24 @@ export default function AICopilot({ infrastructure, metrics, alerts }) {
 
   const handleChatSubmit = async (e) => {
     e?.preventDefault();
-    if (!chatInput.trim()) return;
+    const userMessage = chatInput.trim();
+    if (!userMessage || isTyping) return;
 
-    const userMessage = chatInput;
     setChatInput('');
     setChatHistory(prev => [...prev, { role: 'user', content: userMessage }]);
     setIsTyping(true);
 
-    await new Promise(resolve => setTimeout(resolve, 1000 + Math.random() * 1000));
-
-    const response = generateCopilotResponse(userMessage, infrastructure, metrics);
-    setChatHistory(prev => [...prev, { role: 'assistant', content: response }]);
-    setIsTyping(false);
+    try {
+      // Real LLM (Bedrock) with the live infra snapshot as context.
+      const { reply } = await fetchCopilotReply(userMessage, buildContext(infrastructure, metrics, alerts));
+      const content = reply || generateCopilotResponse(userMessage, infrastructure, metrics);
+      setChatHistory(prev => [...prev, { role: 'assistant', content }]);
+    } catch {
+      // LLM unreachable → graceful fallback to the rule-based responder.
+      setChatHistory(prev => [...prev, { role: 'assistant', content: generateCopilotResponse(userMessage, infrastructure, metrics) }]);
+    } finally {
+      setIsTyping(false);
+    }
   };
 
   const handleActionClick = (suggestion) => {
