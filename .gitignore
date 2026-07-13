@@ -28,6 +28,8 @@ infra/terraform/*.tfstate.*
 infra/terraform/*.tfvars
 !infra/terraform/*.tfvars.example
 infra/terraform/.terraform.lock.hcl
+infra/terraform/*.tfplan
+infra/terraform/tfplan
 crash.log
 
 # Production env (real secrets) — only the .example template is tracked

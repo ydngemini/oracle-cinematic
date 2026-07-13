@@ -2,7 +2,7 @@
 // platform_admin/broker_owner, so this app must obtain a real JWT before it can
 // connect. Mirrors the main Neoh app: POST {VITE_API_BASE}/auth/login with
 // { agent_id, passphrase } → { token, role, ... }.
-const API_BASE = import.meta.env.VITE_API_BASE ?? 'http://localhost:8000';
+const API_BASE = (import.meta.env.VITE_API_BASE || '').replace(/\/+$/, '');
 
 // Roles the backend WS accepts (must match _OBS_ALLOWED_ROLES in aws_observability.py).
 export const OBS_ROLES = new Set(['platform_admin', 'broker_owner']);
@@ -10,17 +10,14 @@ export const OBS_ROLES = new Set(['platform_admin', 'broker_owner']);
 const TOKEN_KEY = 'oracle_token';
 const ROLE_KEY = 'oracle_role';
 
-// Resolve a token without a login round-trip: an explicit ?token= URL param, a
-// build-time VITE_AWS_WS_TOKEN, then our own stored session (sessionStorage),
-// then localStorage (same-origin share with the main app). First hit wins.
+// Resolve a token without a login round-trip from this app's sessionStorage.
+// This app is served from a different origin than the main Neoh app (different
+// port in dev, different subdomain in prod), so localStorage is never shared
+// between them. Tokens must never be accepted from URLs or compiled into the
+// static Vite bundle.
 export function resolveToken() {
   try {
-    const urlToken = new URLSearchParams(window.location.search).get('token');
-    if (urlToken) return urlToken;
-  } catch { /* non-browser env */ }
-  if (import.meta.env.VITE_AWS_WS_TOKEN) return import.meta.env.VITE_AWS_WS_TOKEN;
-  try {
-    return sessionStorage.getItem(TOKEN_KEY) || localStorage.getItem(TOKEN_KEY) || '';
+    return sessionStorage.getItem(TOKEN_KEY) || '';
   } catch {
     return '';
   }
@@ -56,6 +53,5 @@ export function logout() {
   try {
     sessionStorage.removeItem(TOKEN_KEY);
     sessionStorage.removeItem(ROLE_KEY);
-    localStorage.removeItem(TOKEN_KEY);
   } catch { /* ignore */ }
 }

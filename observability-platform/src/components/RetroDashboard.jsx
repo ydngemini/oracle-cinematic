@@ -26,12 +26,12 @@ export default function RetroDashboard({ ec2, rds, metrics, billing }) {
     const memValues = Object.values(metrics?.rds || {})
       .map(m => m?.memory?.avg || 0)
       .filter(v => v > 0);
-    return memValues.length > 0 ? memValues.reduce((a, b) => a + b, 0) / memValues.length : 60;
+    return memValues.length > 0 ? memValues.reduce((a, b) => a + b, 0) / memValues.length : 0;
   }, [metrics]);
 
   const statusColor = avgCpu > 90 ? 'critical' : avgCpu > alertThreshold ? 'warning' : 'ok';
 
-  const requestRate = instances.length * 2 + Math.random() * 10;
+  const requestRate = instances.length * 2 + avgCpu / 10;
   const rpmValue = (requestRate / 100) * 8000;
 
   useEffect(() => {
@@ -63,7 +63,7 @@ export default function RetroDashboard({ ec2, rds, metrics, billing }) {
       <div className="gauge-cluster">
         <div className="gauge-standalone">
           <TurboGauge rpm={rpmValue} boost={boostValue} temp={avgCpu} />
-          <div className="gauge-title">INFRUSTRUCTURE LOAD</div>
+          <div className="gauge-title">INFRASTRUCTURE LOAD</div>
         </div>
       </div>
 

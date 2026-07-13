@@ -60,7 +60,10 @@ def test_expired_token_rejected():
 
 def test_forged_signature_rejected():
     # Signed with a key that is NOT the server's — a token an attacker mints.
-    forged = _mint(_valid_claims(role="platform_admin"), key="ATTACKER_KEY_NOT_THE_SERVERS")
+    forged = _mint(
+        _valid_claims(role="platform_admin"),
+        key="ATTACKER_KEY_NOT_THE_SERVER_32_BYTES",
+    )
     try:
         auth.decode_token(forged)
         assert False, "forged token was accepted — privilege escalation"

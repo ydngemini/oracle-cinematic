@@ -87,20 +87,20 @@ fi
 #     --secret-string '{"username":"<user>","token":"dckr_pat_..."}'
 # CodeBuild resolves SECRETS_MANAGER-typed env vars at build time. The CodeBuild
 # service role needs secretsmanager:GetSecretValue on neoh/dockerhub.
-# Precedence: an explicitly-exported DOCKERHUB_TOKEN is an operator override and
-# wins — otherwise a misconfigured neoh/dockerhub secret (wrong JSON keys, or the
-# build role lacking secretsmanager:GetSecretValue) would silently strand the
-# build with no creds and hit the nvidia/cuda anonymous 429. With no env token,
-# Secrets Manager is the (secure, non-plaintext) default. Unset DOCKERHUB_TOKEN
-# to force the Secrets Manager path.
+# Precedence: Secrets Manager wins whenever neoh/dockerhub is reachable — a
+# correctly-configured secret must never be silently shadowed by a stray
+# DOCKERHUB_TOKEN left in the operator's shell/CI env. DOCKERHUB_TOKEN is only a
+# fallback for when Secrets Manager access fails (missing secret, or the build
+# role lacking secretsmanager:GetSecretValue) — same "no creds" failure mode as
+# before that case, just plaintext instead of a hard stop.
 DH=""
-if [ -n "${DOCKERHUB_TOKEN:-}" ]; then
-  echo "!! WARNING: injecting Docker Hub PAT as PLAINTEXT into the CodeBuild project env (operator override)." >&2
-  echo "!! Prefer Secrets Manager: unset DOCKERHUB_TOKEN, then aws secretsmanager create-secret --name neoh/dockerhub --secret-string '{\"username\":\"\$USER\",\"token\":\"dckr_pat_...\"}'" >&2
-  DH=",{\"name\":\"DOCKERHUB_USER\",\"value\":\"${DOCKERHUB_USER:-}\"},{\"name\":\"DOCKERHUB_TOKEN\",\"value\":\"$DOCKERHUB_TOKEN\"}"
-elif "${AWS[@]}" secretsmanager describe-secret --secret-id neoh/dockerhub >/dev/null 2>&1; then
+if "${AWS[@]}" secretsmanager describe-secret --secret-id neoh/dockerhub >/dev/null 2>&1; then
   echo ">> Docker Hub creds via Secrets Manager (neoh/dockerhub)"
   DH=",{\"name\":\"DOCKERHUB_USER\",\"value\":\"neoh/dockerhub:username\",\"type\":\"SECRETS_MANAGER\"},{\"name\":\"DOCKERHUB_TOKEN\",\"value\":\"neoh/dockerhub:token\",\"type\":\"SECRETS_MANAGER\"}"
+elif [ -n "${DOCKERHUB_TOKEN:-}" ]; then
+  echo "!! WARNING: injecting Docker Hub PAT as PLAINTEXT into the CodeBuild project env (Secrets Manager unavailable)." >&2
+  echo "!! Prefer Secrets Manager: aws secretsmanager create-secret --name neoh/dockerhub --secret-string '{\"username\":\"\$USER\",\"token\":\"dckr_pat_...\"}'" >&2
+  DH=",{\"name\":\"DOCKERHUB_USER\",\"value\":\"${DOCKERHUB_USER:-}\"},{\"name\":\"DOCKERHUB_TOKEN\",\"value\":\"$DOCKERHUB_TOKEN\"}"
 fi
 ENVVARS="[{\"name\":\"ECR_REGISTRY\",\"value\":\"$REG\"},{\"name\":\"BE\",\"value\":\"$BE\"},{\"name\":\"FE\",\"value\":\"$FE\"},{\"name\":\"OBS\",\"value\":\"$OBS\"},{\"name\":\"RECON\",\"value\":\"$RECON\"},{\"name\":\"AWS_DEFAULT_REGION\",\"value\":\"$REGION\"}$DH]"
 

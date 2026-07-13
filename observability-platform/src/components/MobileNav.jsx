@@ -16,9 +16,11 @@ export default function MobileNav({ activeView, onViewChange, views }) {
     <nav className="mobile-nav">
       {navViews.map(view => (
         <button
+          type="button"
           key={view.id}
           className={`mobile-nav-btn ${activeView === view.id ? 'active' : ''}`}
           onClick={() => onViewChange(view.id)}
+          aria-current={activeView === view.id ? 'page' : undefined}
         >
           <span className="mobile-nav-icon">{view.icon}</span>
           <span className="mobile-nav-label">{view.label}</span>

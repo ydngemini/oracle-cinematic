@@ -1,0 +1,17 @@
+{
+  "tests": [
+    {
+      "name": "boot-selftest",
+      "input": {
+        "selftest": true,
+        "return_splat_b64": true
+      },
+      "timeout": 1800000
+    }
+  ],
+  "config": {
+    "gpuTypeId": "NVIDIA GeForce RTX 4090",
+    "gpuCount": 1,
+    "allowedCudaVersions": ["12.8", "12.7", "12.6", "12.5", "12.4", "12.3", "12.2", "12.1"]
+  }
+}

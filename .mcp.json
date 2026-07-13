@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "oncompute": {
+      "type": "http",
+      "url": "https://mcp.oncompute.ai/mcp"
+    }
+  }
+}

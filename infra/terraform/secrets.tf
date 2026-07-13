@@ -24,6 +24,7 @@ resource "aws_secretsmanager_secret_version" "app" {
     STRIPE_SECRET_KEY            = ""
     STRIPE_WEBHOOK_SECRET        = ""
     RENTCAST_API_KEY             = ""
+    RUNPOD_API_KEY               = ""
   })
 
   lifecycle { ignore_changes = [secret_string] }

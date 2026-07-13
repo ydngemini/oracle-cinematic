@@ -26,7 +26,7 @@ export default function App() {
 }
 
 function Dashboard({ token, onLogout }) {
-  const { connected, lastMessage, requestSnapshot, authError } = useAwsWebSocket(token);
+  const { connected, messages, acknowledgeMessages, requestSnapshot, authError } = useAwsWebSocket(token);
   const [infrastructure, setInfrastructure] = useState({
     ec2: { instances: [], count: 0 },
     rds: { instances: [], count: 0 },
@@ -53,41 +53,46 @@ function Dashboard({ token, onLogout }) {
   }, []);
 
   useEffect(() => {
-    if (!lastMessage) return;
-    if (lastMessage.type === 'AWS_INFRASTRUCTURE_SNAPSHOT') {
-      const { type, ...rest } = lastMessage;
-      setInfrastructure(prev => ({ ...prev, ...rest }));
-      
-      if (rest.security?.findings_count > 0) {
-        setAlerts(prev => {
-          const newAlerts = rest.security.findings
-            .filter(f => f.severity === 'CRITICAL' || f.severity === 'HIGH')
-            .slice(0, 3)
-            .map(f => ({
-              id: f.id,
-              severity: f.severity.toLowerCase(),
-              message: f.title,
-              resource: f.aws_account_id,
-            }));
-          return [...newAlerts, ...prev].slice(0, 10);
-        });
+    if (messages.length === 0) return;
+    messages.forEach((message) => {
+      if (message.type === 'AWS_INFRASTRUCTURE_SNAPSHOT') {
+        const { type, ...rest } = message;
+        setInfrastructure(prev => ({ ...prev, ...rest }));
+
+        if (rest.security?.findings_count > 0) {
+          setAlerts(prev => {
+            const seenIds = new Set(prev.map(a => a.id));
+            const newAlerts = rest.security.findings
+              .filter(f => f.severity === 'CRITICAL' || f.severity === 'HIGH')
+              .filter(f => !seenIds.has(f.id))
+              .slice(0, 3)
+              .map(f => ({
+                id: f.id,
+                severity: f.severity.toLowerCase(),
+                message: f.title,
+                resource: f.aws_account_id,
+              }));
+            return [...newAlerts, ...prev].slice(0, 10);
+          });
+        }
+      } else if (message.type === 'AWS_METRICS_UPDATE') {
+        setMetrics(prev => ({
+          ...prev,
+          ec2: { ...prev.ec2, ...(message.ec2 || {}) },
+          rds: { ...prev.rds, ...(message.rds || {}) },
+          lambda: { ...prev.lambda, ...(message.lambda || {}) },
+          elb: { ...prev.elb, ...(message.elb || {}) },
+        }));
       }
-    } else if (lastMessage.type === 'AWS_METRICS_UPDATE') {
-      setMetrics(prev => ({
-        ...prev,
-        ec2: { ...prev.ec2, ...(lastMessage.ec2 || {}) },
-        rds: { ...prev.rds, ...(lastMessage.rds || {}) },
-        lambda: { ...prev.lambda, ...(lastMessage.lambda || {}) },
-        elb: { ...prev.elb, ...(lastMessage.elb || {}) },
-      }));
-    }
-  }, [lastMessage]);
+    });
+    acknowledgeMessages(messages.length);
+  }, [messages, acknowledgeMessages]);
 
   useEffect(() => {
     if (connected) {
       requestSnapshot();
     }
-  }, [connected]);
+  }, [connected, requestSnapshot]);
 
   // Server rejected the token/role (4401/4403) — clear it and return to login.
   useEffect(() => {
@@ -207,6 +212,7 @@ function Dashboard({ token, onLogout }) {
         <ServicePanel
           ec2={infrastructure.ec2}
           rds={infrastructure.rds}
+          lambda={infrastructure.lambda}
           onSelect={handleServiceSelect}
           selectedService={selectedService}
         />
@@ -263,14 +269,18 @@ function Dashboard({ token, onLogout }) {
           {!isMobile && (
             <div className="view-toggle">
               <button 
+                type="button"
                 className={viewMode === 'dashboard' ? 'active' : ''} 
                 onClick={() => setViewMode('dashboard')}
+                aria-pressed={viewMode === 'dashboard'}
               >
                 Dashboard
               </button>
               <button 
+                type="button"
                 className={viewMode === 'topology' ? 'active' : ''} 
                 onClick={() => setViewMode('topology')}
+                aria-pressed={viewMode === 'topology'}
               >
                 Topology
               </button>
@@ -289,7 +299,7 @@ function Dashboard({ token, onLogout }) {
               <span style={{ color: 'var(--accent-cyan)' }}>{totalResources}</span>
             </div>
           </div>
-          <button className="logout-btn" onClick={onLogout} title="Sign out">⏻</button>
+          <button type="button" className="logout-btn" onClick={onLogout} title="Sign out" aria-label="Sign out">⏻</button>
         </div>
       </header>
 
@@ -350,78 +360,6 @@ function AlertsPanel({ alerts, security }) {
           <span style={{ fontSize: '14px', color: 'var(--text-secondary)' }}>Security Score</span>
         </div>
       )}
-    </div>
-  );
-}
-
-function MorePanel({ infrastructure }) {
-  return (
-    <div className="panel">
-      <div className="panel-header">
-        <h2>More Stats</h2>
-      </div>
-      <div className="metrics-grid" style={{ gridTemplateColumns: 'repeat(2, 1fr)' }}>
-        <div className="metric-card">
-          <div className="metric-label">S3 Buckets</div>
-          <div className="metric-value cyan">{infrastructure.s3?.count || 0}</div>
-        </div>
-        <div className="metric-card">
-          <div className="metric-label">Lambda</div>
-          <div className="metric-value cyan">{infrastructure.lambda?.count || 0}</div>
-        </div>
-        <div className="metric-card">
-          <div className="metric-label">Load Balancers</div>
-          <div className="metric-value cyan">{infrastructure.elb?.count || 0}</div>
-        </div>
-        <div className="metric-card">
-          <div className="metric-label">Auto Scaling</div>
-          <div className="metric-value cyan">{infrastructure.auto_scaling?.count || 0}</div>
-        </div>
-        <div className="metric-card">
-          <div className="metric-label">CloudFront</div>
-          <div className="metric-value cyan">{infrastructure.cloudfront?.count || 0}</div>
-        </div>
-        <div className="metric-card">
-          <div className="metric-label">Security Score</div>
-          <div className={`metric-value ${infrastructure.security?.score > 80 ? 'green' : infrastructure.security?.score > 60 ? 'orange' : 'red'}`}>
-            {infrastructure.security?.score || 100}
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function SecurityPanel({ security }) {
-  const score = security?.score ?? 100;
-  const findings = security?.findings || [];
-  const scoreClass = score > 80 ? 'green' : score > 60 ? 'orange' : 'red';
-  const sevColor = (s) =>
-    s === 'CRITICAL' ? 'var(--accent-red)' : s === 'HIGH' ? 'var(--accent-orange)' : 'var(--text-secondary)';
-  return (
-    <div className="panel">
-      <div className="panel-header">
-        <h2>Security</h2>
-        <span className="panel-count">{security?.findings_count || 0}</span>
-      </div>
-      <div style={{ display: 'flex', alignItems: 'baseline', gap: '10px', padding: '4px 0 12px' }}>
-        <span className={`metric-value ${scoreClass}`} style={{ fontSize: '34px' }}>{score}</span>
-        <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>security score</span>
-      </div>
-      <div className="service-list">
-        {findings.length === 0 ? (
-          <div style={{ textAlign: 'center', padding: '14px', color: 'var(--accent-green)', fontSize: '13px' }}>
-            ✓ No active findings
-          </div>
-        ) : (
-          findings.slice(0, 6).map((f, i) => (
-            <div key={f.id || i} className="service-item" style={{ borderColor: sevColor(f.severity) }}>
-              <div style={{ fontSize: '11px', color: sevColor(f.severity) }}>{f.severity || 'INFO'}</div>
-              <div style={{ fontSize: '12px' }}>{f.title || f.Title || 'Finding'}</div>
-            </div>
-          ))
-        )}
-      </div>
     </div>
   );
 }

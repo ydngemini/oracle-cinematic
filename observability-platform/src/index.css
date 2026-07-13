@@ -1,3 +1,5 @@
+@import "./components/AICopilot.css";
+
 :root {
   --bg-primary: #0a0e14;
   --bg-secondary: #111820;
@@ -325,6 +327,21 @@ select.range-btn {
   cursor: pointer;
   transition: all 0.2s ease;
   touch-action: manipulation;
+}
+
+button.service-item {
+  width: 100%;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+}
+
+button:focus-visible,
+[role="button"]:focus-visible,
+select:focus-visible,
+input:focus-visible {
+  outline: 2px solid var(--accent-cyan);
+  outline-offset: 2px;
 }
 
 @media (min-width: 768px) {
@@ -666,9 +683,15 @@ select.range-btn {
     display: none !important;
   }
   
-  .main-content.dashboard .canvas-container,
-  .main-content.topology .canvas-container {
+  .main-content.dashboard .canvas-container {
     display: none;
+  }
+
+  .main-content.topology .canvas-container {
+    position: relative;
+    inset: auto;
+    min-height: 320px;
+    width: 100%;
   }
 }
 
@@ -730,7 +753,6 @@ select.range-btn {
     height: 6px;
   }
 }
-@import "./components/AICopilot.css";
 .service-section-label { font-size: 11px; color: var(--accent-cyan); margin-bottom: 8px; letter-spacing: 0.5px; text-transform: uppercase; }
 
 /* --- Auth gate --------------------------------------------------------- */

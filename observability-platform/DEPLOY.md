@@ -14,9 +14,11 @@ repo (Cognito/Cloudflare) — the two are independent.
   obs.neoh.app/ws      ┘       priority 10 — no host condition, matches every host)
 ```
 
-The dashboard signs in via `POST /auth/login` and streams `/api/aws/ws?token=<jwt>`,
+The dashboard signs in via `POST /auth/login` and streams `/api/aws/ws` using an
+`oracle.jwt` WebSocket subprotocol,
 both **same-origin** on `obs.neoh.app` → routed to the backend → **no CORS**. The
 backend's `/api/aws/ws` is auth-gated to `platform_admin`/`broker_owner`.
+Blank `VITE_API_BASE` and `VITE_WS_URL` values select this same-origin behavior.
 
 ## What's in code (this branch)
 

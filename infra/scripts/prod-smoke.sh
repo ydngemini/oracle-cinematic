@@ -12,6 +12,7 @@
 #      NOT). See infra/terraform/alb.tf: /api/* + /health route to the backend.
 #   3. ECS services running == desired with a single stable deployment.
 #   4. The splat S3 bucket exists and grants public read on splats/*.
+#   5. The contract-vault S3 bucket exists, blocks public access, and encrypts.
 #
 # Identifiers are read from `terraform output` when terraform/state is reachable,
 # otherwise they fall back to the deterministic prod values
@@ -29,6 +30,7 @@
 #   SPLAT_BUCKET    (default: terraform output recon_s3_bucket -> neoh-prod-recon-<acct>)
 #   SPLAT_CDN_BASE  (default: terraform output recon_splat_cdn_base)
 #   SPLAT_TEST_KEY  (optional: a key UNDER splats/ to anonymously HEAD for 200)
+#   CONTRACT_VAULT_BUCKET (default: terraform output contract_vault_bucket)
 #   TF_DIR          (default: ../terraform relative to this script)
 #
 # Exit code: 0 if all hard checks pass, 1 if any hard check fails.
@@ -58,6 +60,9 @@ SPLAT_BUCKET="${SPLAT_BUCKET:-neoh-prod-recon-$ACCOUNT_ID}"
 
 SPLAT_CDN_BASE="${SPLAT_CDN_BASE:-$(tf_out recon_splat_cdn_base)}"
 SPLAT_CDN_BASE="${SPLAT_CDN_BASE:-https://$SPLAT_BUCKET.s3.$REGION.amazonaws.com}"
+
+CONTRACT_VAULT_BUCKET="${CONTRACT_VAULT_BUCKET:-$(tf_out contract_vault_bucket)}"
+CONTRACT_VAULT_BUCKET="${CONTRACT_VAULT_BUCKET:-neoh-prod-contract-vault-$ACCOUNT_ID}"
 
 # ECS service names are fixed in infra/terraform/ecs.tf (aws_ecs_service.backend
 # / .frontend -> name = "backend" / "frontend").
@@ -90,6 +95,7 @@ info "App URL:      $APP_URL"
 info "ALB DNS:      ${ALB_DNS:-<unresolved>}"
 info "ECS cluster:  $ECS_CLUSTER  (services: ${SERVICES[*]})"
 info "Splat bucket: $SPLAT_BUCKET"
+info "Vault bucket: $CONTRACT_VAULT_BUCKET"
 echo
 
 # ── 1. public app health (+ ALB fallback) ────────────────────────────────────
@@ -185,6 +191,49 @@ if "${AWS[@]}" s3api head-bucket --bucket "$SPLAT_BUCKET" >/dev/null 2>&1; then
   fi
 else
   fail "S3 splat bucket NOT found or no access: $SPLAT_BUCKET"
+fi
+echo
+
+# ── 5. contract vault bucket private + encrypted ────────────────────────────
+echo "── 5. contract vault S3 bucket ──"
+if "${AWS[@]}" s3api head-bucket --bucket "$CONTRACT_VAULT_BUCKET" >/dev/null 2>&1; then
+  pass "S3 contract vault bucket exists: $CONTRACT_VAULT_BUCKET"
+
+  pab="$("${AWS[@]}" s3api get-public-access-block --bucket "$CONTRACT_VAULT_BUCKET" \
+    --query 'PublicAccessBlockConfiguration.[BlockPublicAcls,IgnorePublicAcls,BlockPublicPolicy,RestrictPublicBuckets]' \
+    --output text 2>/dev/null || true)"
+  if [[ "$pab" == $'True\tTrue\tTrue\tTrue' ]]; then
+    pass "Contract vault blocks all public ACLs and public policies"
+  else
+    fail "Contract vault public-access block is not fully enabled: ${pab:-<missing>}"
+  fi
+
+  enc="$("${AWS[@]}" s3api get-bucket-encryption --bucket "$CONTRACT_VAULT_BUCKET" \
+    --query 'ServerSideEncryptionConfiguration.Rules[0].ApplyServerSideEncryptionByDefault.SSEAlgorithm' \
+    --output text 2>/dev/null || true)"
+  if [[ "$enc" == "AES256" ]]; then
+    pass "Contract vault default encryption is AES256"
+  else
+    fail "Contract vault default encryption is ${enc:-<missing>} (expected AES256)"
+  fi
+
+  vstat="$("${AWS[@]}" s3api get-bucket-versioning --bucket "$CONTRACT_VAULT_BUCKET" \
+    --query 'Status' --output text 2>/dev/null || true)"
+  if [[ "$vstat" == "Enabled" ]]; then
+    pass "Contract vault versioning is enabled"
+  else
+    warn "Contract vault versioning status is ${vstat:-<unset>} (expected Enabled)"
+  fi
+
+  vpol="$("${AWS[@]}" s3api get-bucket-policy --bucket "$CONTRACT_VAULT_BUCKET" \
+    --query 'Policy' --output text 2>/dev/null || true)"
+  if printf '%s' "$vpol" | grep -q 'DenyInsecureTransport'; then
+    pass "Contract vault bucket policy denies non-TLS transport"
+  else
+    fail "Contract vault bucket policy does not show DenyInsecureTransport"
+  fi
+else
+  fail "S3 contract vault bucket NOT found or no access: $CONTRACT_VAULT_BUCKET"
 fi
 echo
 

@@ -104,12 +104,13 @@ function mat4LookAt(eye, center, up) {
 
 function mat4Multiply(a, b) {
   const out = new Float32Array(16);
-  for (let i = 0; i < 4; i++) {
-    for (let j = 0; j < 4; j++) {
-      out[i * 4 + j] = 0;
-      for (let k = 0; k < 4; k++) {
-        out[i * 4 + j] += a[i * 4 + k] * b[k * 4 + j];
-      }
+  for (let column = 0; column < 4; column++) {
+    for (let row = 0; row < 4; row++) {
+      out[column * 4 + row] =
+        a[row] * b[column * 4] +
+        a[4 + row] * b[column * 4 + 1] +
+        a[8 + row] * b[column * 4 + 2] +
+        a[12 + row] * b[column * 4 + 3];
     }
   }
   return out;
@@ -161,18 +162,34 @@ export default function AWSWebGLCanvas({ ec2, rds, lambda, metrics, selectedServ
       if (rafRef.current) {
         cancelAnimationFrame(rafRef.current);
       }
+      if (particleProg) gl.deleteProgram(particleProg);
+      if (lineProg) gl.deleteProgram(lineProg);
+      programsRef.current = {};
+      if (glRef.current === gl) glRef.current = null;
     };
   }, []);
 
   useEffect(() => {
-    const gl = glRef.current;
     const canvas = canvasRef.current;
-    if (!gl || !canvas) return;
+    if (!canvas) return;
 
-    const dpr = window.devicePixelRatio || 1;
-    canvas.width = canvas.clientWidth * dpr;
-    canvas.height = canvas.clientHeight * dpr;
-    gl.viewport(0, 0, canvas.width, canvas.height);
+    const resize = () => {
+      const gl = glRef.current;
+      if (!gl) return;
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      const width = Math.max(1, Math.floor(canvas.clientWidth * dpr));
+      const height = Math.max(1, Math.floor(canvas.clientHeight * dpr));
+      if (canvas.width !== width || canvas.height !== height) {
+        canvas.width = width;
+        canvas.height = height;
+        gl.viewport(0, 0, width, height);
+      }
+    };
+
+    const observer = new ResizeObserver(resize);
+    observer.observe(canvas);
+    resize();
+    return () => observer.disconnect();
   }, []);
 
   useEffect(() => {
@@ -255,7 +272,7 @@ export default function AWSWebGLCanvas({ ec2, rds, lambda, metrics, selectedServ
 
       gl.clear(gl.COLOR_BUFFER_BIT);
 
-      const aspect = canvas.width / canvas.height;
+      const aspect = canvas.width / Math.max(canvas.height, 1);
       const proj = mat4Perspective(Math.PI / 4, aspect, 0.1, 100);
       const camAngle = time * 0.1 + userRotation;
       const camDist = 12;
@@ -379,6 +396,8 @@ export default function AWSWebGLCanvas({ ec2, rds, lambda, metrics, selectedServ
   return (
     <canvas 
       ref={canvasRef} 
+      role="img"
+      aria-label="AWS infrastructure topology"
       style={{ width: '100%', height: '100%', touchAction: 'none' }}
       onTouchStart={handleTouchStart}
       onTouchMove={handleTouchMove}

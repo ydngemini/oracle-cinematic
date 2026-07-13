@@ -53,6 +53,7 @@ export default function MetricsPanel({ selectedService, instance }) {
               <div className="range-selector">
                 {RANGES.map((r) => (
                   <button
+                    type="button"
                     key={r}
                     className={`range-btn ${r === range ? 'active' : ''}`}
                     onClick={() => setRange(r)}

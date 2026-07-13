@@ -3,7 +3,7 @@
 // that's needed — no CORS. Token comes from the same place the WS uses.
 import { resolveToken } from './auth';
 
-const API_BASE = import.meta.env.VITE_API_BASE ?? 'http://localhost:8000';
+const API_BASE = (import.meta.env.VITE_API_BASE || '').replace(/\/+$/, '');
 
 function authHeaders(extra = {}) {
   const token = resolveToken();

@@ -1,0 +1,5 @@
+# RunPod serverless worker deps (torch/nerfstudio are installed separately in the
+# Dockerfile so their CUDA index URL isn't applied to these). Exact pins keep the
+# externally-built worker image reproducible.
+runpod==1.10.1
+requests==2.34.2

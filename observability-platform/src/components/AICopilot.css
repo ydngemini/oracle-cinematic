@@ -18,6 +18,10 @@
   gap: 8px;
   cursor: pointer;
   padding: 8px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
 }
 
 .copilot-avatar {
@@ -189,6 +193,10 @@
   cursor: pointer;
   margin-bottom: 6px;
   transition: all 0.2s ease;
+  width: 100%;
+  color: inherit;
+  font: inherit;
+  text-align: left;
 }
 
 .suggestion-item:active {
@@ -212,9 +220,11 @@
 .suggestion-content {
   flex: 1;
   min-width: 0;
+  display: block;
 }
 
 .suggestion-message {
+  display: block;
   font-size: 12px;
   font-weight: 500;
   white-space: nowrap;

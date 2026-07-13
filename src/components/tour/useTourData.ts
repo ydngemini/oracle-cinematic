@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type { Waypoint, CameraPose, Vec2 } from './tourData'
 import * as staticData from './tourData'
 
@@ -49,6 +49,7 @@ function staticToSchema(): TourSchema {
 }
 
 export function useTourData(propertyInput?: Record<string, unknown>) {
+  const initialPropertyInput = useRef(propertyInput)
   const [schema, setSchema] = useState<TourSchema>(staticToSchema)
   const [status, setStatus] = useState<Status>('ready')
   const [error, setError] = useState<string | null>(null)
@@ -76,10 +77,11 @@ export function useTourData(propertyInput?: Record<string, unknown>) {
   }, [])
 
   useEffect(() => {
-    if (propertyInput && Object.keys(propertyInput).length > 0) {
-      generate(propertyInput)
+    const input = initialPropertyInput.current
+    if (input && Object.keys(input).length > 0) {
+      generate(input)
     }
-  }, []) // only on mount
+  }, [generate])
 
   const waypointIndex: Record<string, Waypoint> = Object.fromEntries(
     schema.waypoints.map(w => [w.id, w])

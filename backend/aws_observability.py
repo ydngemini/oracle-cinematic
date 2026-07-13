@@ -8,6 +8,8 @@ import asyncio
 import json
 import logging
 import os
+import re
+import time
 from datetime import datetime, timedelta
 from functools import lru_cache
 from typing import Any, Optional
@@ -16,11 +18,12 @@ from collections import defaultdict
 import boto3
 from botocore.config import Config
 from botocore.exceptions import BotoCoreError, ClientError
-from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect, status
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel, ConfigDict, Field
 
 from auth import decode_token
-from tenancy import require_context, TenantContext
+from tenancy import _validate_tenant_id, require_context, require_role, Role, TenantContext
 
 # Roles allowed to read AWS infra observability (mirrors the REST route gates).
 _OBS_ALLOWED_ROLES = {"platform_admin", "broker_owner"}
@@ -30,11 +33,51 @@ log = logging.getLogger("oracle.aws_observability")
 router = APIRouter(prefix="/api/aws", tags=["aws-observability"])
 
 AWS_REGION = os.getenv("AWS_REGION", "us-east-1")
+_MAX_ASG_DESIRED_CAPACITY = int(os.getenv("AWS_OBS_MAX_ASG_DESIRED_CAPACITY", "100"))
+_ASG_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:=+@-]{0,254}$")
+_EC2_INSTANCE_RE = re.compile(r"^i-[0-9a-f]{8,17}$")
+_COPILOT_CONTEXT_MAX_BYTES = 32 * 1024
+_COPILOT_RATE_LIMIT = int(os.getenv("AWS_OBS_COPILOT_RATE_LIMIT", "20"))
+_COPILOT_RATE_WINDOW = 60.0
+_copilot_timestamps: dict[str, list[float]] = defaultdict(list)
+_WS_MAX_MESSAGE_BYTES = 4096
+_WS_SNAPSHOT_COOLDOWN = 5.0
+_WS_METRICS_COOLDOWN = 1.0
+_WS_RESOURCE_ID_PATTERNS = {
+    "ec2": _EC2_INSTANCE_RE,
+    "rds": re.compile(r"^[A-Za-z][A-Za-z0-9-]{0,62}$"),
+    "lambda": re.compile(r"^[A-Za-z0-9_-]{1,64}$"),
+    "ebs": re.compile(r"^vol-[0-9a-f]{8,17}$"),
+}
 
 _boto_config = Config(
     region_name=AWS_REGION,
     retries={"max_attempts": 3, "mode": "adaptive"},
 )
+
+
+class CopilotRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    message: str = Field(min_length=1, max_length=2000)
+    context: dict[str, Any] = Field(default_factory=dict)
+
+
+class ScaleRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    desired_capacity: int = Field(ge=0, le=_MAX_ASG_DESIRED_CAPACITY)
+
+
+def _check_copilot_rate_limit(ctx: TenantContext) -> None:
+    key = f"{ctx.tenant_id}:{ctx.agent_id}"
+    now = time.monotonic()
+    recent = [stamp for stamp in _copilot_timestamps[key] if now - stamp < _COPILOT_RATE_WINDOW]
+    if len(recent) >= _COPILOT_RATE_LIMIT:
+        _copilot_timestamps[key] = recent
+        raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "Copilot rate limit exceeded.")
+    recent.append(now)
+    _copilot_timestamps[key] = recent
 
 
 # boto3 clients are thread-safe and expensive to construct (each call re-parses
@@ -225,6 +268,33 @@ async def get_rds_instances() -> list[dict[str, Any]]:
     except (ClientError, BotoCoreError) as e:
         log.error("RDS fetch error: %s", e)
         return []
+
+
+# RDS has no "total memory" field on any Describe API — CloudWatch only exposes
+# FreeableMemory (bytes). Convert to % used via each instance class's known RAM;
+# classes not in this table degrade to None (honest "no data") rather than
+# faking a percentage. Covers the burstable/general/memory-optimized families in
+# use here — extend as new classes get provisioned.
+_RDS_INSTANCE_MEMORY_GIB: dict[str, int] = {
+    "db.t3.micro": 1, "db.t3.small": 2, "db.t3.medium": 4, "db.t3.large": 8,
+    "db.t3.xlarge": 16, "db.t3.2xlarge": 32,
+    "db.t4g.micro": 1, "db.t4g.small": 2, "db.t4g.medium": 4, "db.t4g.large": 8,
+    "db.t4g.xlarge": 16, "db.t4g.2xlarge": 32,
+    "db.m5.large": 8, "db.m5.xlarge": 16, "db.m5.2xlarge": 32, "db.m5.4xlarge": 64,
+    "db.m6g.large": 8, "db.m6g.xlarge": 16, "db.m6g.2xlarge": 32, "db.m6g.4xlarge": 64,
+    "db.r5.large": 16, "db.r5.xlarge": 32, "db.r5.2xlarge": 64, "db.r5.4xlarge": 128,
+    "db.r6g.large": 16, "db.r6g.xlarge": 32, "db.r6g.2xlarge": 64, "db.r6g.4xlarge": 128,
+}
+
+
+def _rds_memory_pct_used(db_class: str, freeable_bytes: Optional[float]) -> Optional[float]:
+    """% memory used from FreeableMemory bytes; None when the class or the
+    CloudWatch datapoint is unavailable — never fabricate a number."""
+    gib = _RDS_INSTANCE_MEMORY_GIB.get(db_class)
+    if gib is None or freeable_bytes is None:
+        return None
+    pct = 100.0 * (1 - (freeable_bytes / (gib * 1024 ** 3)))
+    return max(0.0, min(100.0, pct))
 
 
 async def get_rds_detailed_metrics(db_instance_id: str) -> dict[str, Any]:
@@ -465,8 +535,18 @@ async def get_cloudfront_distributions() -> list[dict[str, Any]]:
         return []
 
 
+# Cost Explorer isn't enabled on every account (billing console access must be
+# opted in). Once GetCostAndUsage proves that, short-circuit — otherwise the 15s
+# broadcast loop spams paid GetCostAndUsage calls and ERROR logs forever (same
+# failure mode fixed for Security Hub below).
+_billing_disabled = False
+
+
 async def get_billing_metrics() -> dict[str, Any]:
-    """Fetch AWS cost and usage data."""
+    """Fetch AWS cost and usage data (no-op if Cost Explorer isn't available)."""
+    global _billing_disabled
+    if _billing_disabled:
+        return {"by_service": {}, "month_total": 0.0}
     try:
         ce = _get_cost_explorer_client()
         loop = asyncio.get_event_loop()
@@ -506,7 +586,18 @@ async def get_billing_metrics() -> dict[str, Any]:
             "period": {"start": start_date.isoformat(), "end": end_date.isoformat()},
             "daily": daily_costs,
         }
-    except (ClientError, BotoCoreError) as e:
+    except ClientError as e:
+        code = e.response.get("Error", {}).get("Code", "")
+        # Stable "Cost Explorer not enabled / no access" conditions: log ONCE and
+        # stop calling GetCostAndUsage so we don't spam ERROR logs (and billed
+        # API calls) every 15s.
+        if code in ("DataUnavailableException", "AccessDeniedException", "SubscriptionRequiredException"):
+            log.warning("Cost Explorer unavailable for this account (%s) — skipping billing.", code)
+            _billing_disabled = True
+            return {"by_service": {}, "month_total": 0.0}
+        log.error("Billing fetch error: %s", e)
+        return {"by_service": {}, "month_total": 0.0, "error": str(e)}
+    except BotoCoreError as e:
         log.error("Billing fetch error: %s", e)
         return {"by_service": {}, "month_total": 0.0, "error": str(e)}
 
@@ -695,8 +786,7 @@ async def api_get_infrastructure(
     ctx: TenantContext = Depends(require_context),
 ) -> JSONResponse:
     """Get full AWS infrastructure snapshot."""
-    if ctx.role not in {"platform_admin", "broker_owner"}:
-        return JSONResponse({"error": "unauthorized"}, status_code=403)
+    require_role(ctx, Role.PLATFORM_ADMIN, Role.BROKER_OWNER)
     snapshot = await get_full_infrastructure_snapshot()
     return JSONResponse(snapshot)
 
@@ -706,8 +796,7 @@ async def api_get_ec2(
     ctx: TenantContext = Depends(require_context),
 ) -> JSONResponse:
     """Get EC2 instances."""
-    if ctx.role not in {"platform_admin", "broker_owner"}:
-        return JSONResponse({"error": "unauthorized"}, status_code=403)
+    require_role(ctx, Role.PLATFORM_ADMIN, Role.BROKER_OWNER)
     instances = await get_ec2_instances()
     return JSONResponse({"instances": instances})
 
@@ -718,8 +807,7 @@ async def api_get_ec2_metrics(
     ctx: TenantContext = Depends(require_context),
 ) -> JSONResponse:
     """Get EC2 detailed metrics."""
-    if ctx.role not in {"platform_admin", "broker_owner"}:
-        return JSONResponse({"error": "unauthorized"}, status_code=403)
+    require_role(ctx, Role.PLATFORM_ADMIN, Role.BROKER_OWNER)
     metrics = await get_ec2_detailed_metrics(instance_id)
     return JSONResponse(metrics)
 
@@ -750,8 +838,7 @@ async def api_metrics_history(
     """Real historical CloudWatch series for one resource — feeds the dashboard
     time-series charts (replaces the old client-side fake sparkline). CloudWatch
     IS the time-series store (15-month retention); nothing is persisted here."""
-    if ctx.role not in {"platform_admin", "broker_owner"}:
-        return JSONResponse({"error": "unauthorized"}, status_code=403)
+    require_role(ctx, Role.PLATFORM_ADMIN, Role.BROKER_OWNER)
     if type not in _HISTORY_METRICS:
         return JSONResponse({"error": f"unknown type '{type}'"}, status_code=400)
     minutes, period = _HISTORY_RANGES.get(range, _HISTORY_RANGES["1h"])
@@ -782,18 +869,21 @@ def _build_copilot_prompt(message: str, context: dict) -> str:
 
 @router.post("/copilot/query")
 async def api_copilot_query(
-    body: dict,
+    body: CopilotRequest,
     ctx: TenantContext = Depends(require_context),
 ) -> JSONResponse:
     """Real LLM copilot (Bedrock) answering ops questions with the live infra
     snapshot as context. Replaces the client-side if/else responder; the frontend
     falls back to its rule-based answers if this is unavailable."""
-    if ctx.role not in {"platform_admin", "broker_owner"}:
-        return JSONResponse({"error": "unauthorized"}, status_code=403)
-    message = (body.get("message") or "").strip()[:2000]
+    require_role(ctx, Role.PLATFORM_ADMIN, Role.BROKER_OWNER)
+    _check_copilot_rate_limit(ctx)
+    message = body.message.strip()
     if not message:
         return JSONResponse({"error": "empty message"}, status_code=400)
-    prompt = _build_copilot_prompt(message, body.get("context") or {})
+    encoded_context = json.dumps(body.context, separators=(",", ":"), default=str).encode("utf-8")
+    if len(encoded_context) > _COPILOT_CONTEXT_MAX_BYTES:
+        return JSONResponse({"error": "context too large"}, status_code=413)
+    prompt = _build_copilot_prompt(message, body.context)
     reply = None
     try:
         from ml_forge.bedrock_client import invoke_bedrock_model, PRIMARY_MODEL, SECONDARY_MODEL
@@ -812,8 +902,7 @@ async def api_get_rds(
     ctx: TenantContext = Depends(require_context),
 ) -> JSONResponse:
     """Get RDS instances."""
-    if ctx.role not in {"platform_admin", "broker_owner"}:
-        return JSONResponse({"error": "unauthorized"}, status_code=403)
+    require_role(ctx, Role.PLATFORM_ADMIN, Role.BROKER_OWNER)
     instances = await get_rds_instances()
     return JSONResponse({"instances": instances})
 
@@ -824,8 +913,7 @@ async def api_get_rds_metrics(
     ctx: TenantContext = Depends(require_context),
 ) -> JSONResponse:
     """Get RDS detailed metrics."""
-    if ctx.role not in {"platform_admin", "broker_owner"}:
-        return JSONResponse({"error": "unauthorized"}, status_code=403)
+    require_role(ctx, Role.PLATFORM_ADMIN, Role.BROKER_OWNER)
     metrics = await get_rds_detailed_metrics(instance_id)
     return JSONResponse(metrics)
 
@@ -833,8 +921,7 @@ async def api_get_rds_metrics(
 @router.get("/lambda/functions")
 async def api_get_lambda(ctx: TenantContext = Depends(require_context)) -> JSONResponse:
     """Get Lambda functions."""
-    if ctx.role not in {"platform_admin", "broker_owner"}:
-        return JSONResponse({"error": "unauthorized"}, status_code=403)
+    require_role(ctx, Role.PLATFORM_ADMIN, Role.BROKER_OWNER)
     functions = await get_lambda_functions()
     return JSONResponse({"functions": functions})
 
@@ -845,8 +932,7 @@ async def api_get_lambda_metrics(
     ctx: TenantContext = Depends(require_context),
 ) -> JSONResponse:
     """Get Lambda metrics."""
-    if ctx.role not in {"platform_admin", "broker_owner"}:
-        return JSONResponse({"error": "unauthorized"}, status_code=403)
+    require_role(ctx, Role.PLATFORM_ADMIN, Role.BROKER_OWNER)
     metrics = await get_lambda_metrics(function_name)
     return JSONResponse(metrics)
 
@@ -854,8 +940,7 @@ async def api_get_lambda_metrics(
 @router.get("/ebs/volumes")
 async def api_get_ebs(ctx: TenantContext = Depends(require_context)) -> JSONResponse:
     """Get EBS volumes."""
-    if ctx.role not in {"platform_admin", "broker_owner"}:
-        return JSONResponse({"error": "unauthorized"}, status_code=403)
+    require_role(ctx, Role.PLATFORM_ADMIN, Role.BROKER_OWNER)
     volumes = await get_ebs_volumes()
     return JSONResponse({"volumes": volumes})
 
@@ -866,8 +951,7 @@ async def api_get_ebs_metrics(
     ctx: TenantContext = Depends(require_context),
 ) -> JSONResponse:
     """Get EBS metrics."""
-    if ctx.role not in {"platform_admin", "broker_owner"}:
-        return JSONResponse({"error": "unauthorized"}, status_code=403)
+    require_role(ctx, Role.PLATFORM_ADMIN, Role.BROKER_OWNER)
     metrics = await get_ebs_metrics(volume_id)
     return JSONResponse(metrics)
 
@@ -875,8 +959,7 @@ async def api_get_ebs_metrics(
 @router.get("/elb")
 async def api_get_elb(ctx: TenantContext = Depends(require_context)) -> JSONResponse:
     """Get Load Balancers."""
-    if ctx.role not in {"platform_admin", "broker_owner"}:
-        return JSONResponse({"error": "unauthorized"}, status_code=403)
+    require_role(ctx, Role.PLATFORM_ADMIN, Role.BROKER_OWNER)
     load_balancers = await get_load_balancers()
     return JSONResponse({"load_balancers": load_balancers})
 
@@ -884,8 +967,7 @@ async def api_get_elb(ctx: TenantContext = Depends(require_context)) -> JSONResp
 @router.get("/s3/buckets")
 async def api_get_s3(ctx: TenantContext = Depends(require_context)) -> JSONResponse:
     """Get S3 buckets."""
-    if ctx.role not in {"platform_admin", "broker_owner"}:
-        return JSONResponse({"error": "unauthorized"}, status_code=403)
+    require_role(ctx, Role.PLATFORM_ADMIN, Role.BROKER_OWNER)
     buckets = await get_s3_buckets()
     return JSONResponse({"buckets": buckets})
 
@@ -896,8 +978,7 @@ async def api_get_s3_metrics(
     ctx: TenantContext = Depends(require_context),
 ) -> JSONResponse:
     """Get S3 metrics."""
-    if ctx.role not in {"platform_admin", "broker_owner"}:
-        return JSONResponse({"error": "unauthorized"}, status_code=403)
+    require_role(ctx, Role.PLATFORM_ADMIN, Role.BROKER_OWNER)
     metrics = await get_s3_metrics(bucket_name)
     return JSONResponse(metrics)
 
@@ -907,8 +988,7 @@ async def api_get_billing(
     ctx: TenantContext = Depends(require_context),
 ) -> JSONResponse:
     """Get AWS billing metrics."""
-    if ctx.role not in {"platform_admin", "broker_owner"}:
-        return JSONResponse({"error": "unauthorized"}, status_code=403)
+    require_role(ctx, Role.PLATFORM_ADMIN, Role.BROKER_OWNER)
     billing = await get_billing_metrics()
     return JSONResponse(billing)
 
@@ -918,8 +998,7 @@ async def api_get_security_findings(
     ctx: TenantContext = Depends(require_context),
 ) -> JSONResponse:
     """Get Security Hub findings."""
-    if ctx.role not in {"platform_admin", "broker_owner"}:
-        return JSONResponse({"error": "unauthorized"}, status_code=403)
+    require_role(ctx, Role.PLATFORM_ADMIN, Role.BROKER_OWNER)
     findings = await get_security_hub_findings()
     iam_users = await get_iam_users()
     security_groups = await get_vpc_security_groups()
@@ -937,8 +1016,7 @@ async def api_get_security_groups(
     ctx: TenantContext = Depends(require_context),
 ) -> JSONResponse:
     """Get VPC Security Groups."""
-    if ctx.role not in {"platform_admin", "broker_owner"}:
-        return JSONResponse({"error": "unauthorized"}, status_code=403)
+    require_role(ctx, Role.PLATFORM_ADMIN, Role.BROKER_OWNER)
     groups = await get_vpc_security_groups()
     return JSONResponse({"security_groups": groups})
 
@@ -946,8 +1024,7 @@ async def api_get_security_groups(
 @router.get("/autoscaling/groups")
 async def api_get_asg(ctx: TenantContext = Depends(require_context)) -> JSONResponse:
     """Get Auto Scaling Groups."""
-    if ctx.role not in {"platform_admin", "broker_owner"}:
-        return JSONResponse({"error": "unauthorized"}, status_code=403)
+    require_role(ctx, Role.PLATFORM_ADMIN, Role.BROKER_OWNER)
     groups = await get_auto_scaling_groups()
     return JSONResponse({"auto_scaling_groups": groups})
 
@@ -955,18 +1032,14 @@ async def api_get_asg(ctx: TenantContext = Depends(require_context)) -> JSONResp
 @router.post("/autoscaling/{group_name}/scale")
 async def api_scale_asg(
     group_name: str,
-    request: dict,
-    background_tasks: BackgroundTasks,
+    request: ScaleRequest,
     ctx: TenantContext = Depends(require_context),
 ) -> JSONResponse:
     """Scale an Auto Scaling Group."""
-    if ctx.role not in {"platform_admin"}:
-        return JSONResponse({"error": "unauthorized - requires platform_admin"}, status_code=403)
-    
-    desired_capacity = request.get("desired_capacity")
-    if desired_capacity is None:
-        return JSONResponse({"error": "desired_capacity required"}, status_code=400)
-    
+    require_role(ctx, Role.PLATFORM_ADMIN)
+    if not _ASG_NAME_RE.fullmatch(group_name):
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "Invalid Auto Scaling group name.")
+
     try:
         asg = _get_autoscaling_client()
         loop = asyncio.get_event_loop()
@@ -974,14 +1047,20 @@ async def api_scale_asg(
             None,
             lambda: asg.set_desired_capacity(
                 AutoScalingGroupName=group_name,
-                DesiredCapacity=int(desired_capacity),
-                HonorCooldown=False
+                DesiredCapacity=request.desired_capacity,
+                HonorCooldown=True,
             )
         )
-        return JSONResponse({"success": True, "group": group_name, "desired_capacity": desired_capacity})
+        log.info(
+            "ASG desired capacity changed: group=%s desired=%d actor=%s",
+            group_name,
+            request.desired_capacity,
+            ctx.agent_id,
+        )
+        return JSONResponse({"success": True, "group": group_name, "desired_capacity": request.desired_capacity})
     except (ClientError, BotoCoreError) as e:
         log.error("ASG scale error: %s", e)
-        return JSONResponse({"error": str(e)}, status_code=500)
+        return JSONResponse({"error": "AWS scaling operation failed"}, status_code=502)
 
 
 @router.post("/ec2/{instance_id}/restart")
@@ -990,9 +1069,10 @@ async def api_restart_ec2(
     ctx: TenantContext = Depends(require_context),
 ) -> JSONResponse:
     """Restart an EC2 instance."""
-    if ctx.role not in {"platform_admin"}:
-        return JSONResponse({"error": "unauthorized - requires platform_admin"}, status_code=403)
-    
+    require_role(ctx, Role.PLATFORM_ADMIN)
+    if not _EC2_INSTANCE_RE.fullmatch(instance_id):
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "Invalid EC2 instance ID.")
+
     try:
         ec2 = _get_ec2_client()
         loop = asyncio.get_event_loop()
@@ -1000,10 +1080,11 @@ async def api_restart_ec2(
             None,
             lambda: ec2.reboot_instances(InstanceIds=[instance_id])
         )
+        log.info("EC2 reboot requested: instance=%s actor=%s", instance_id, ctx.agent_id)
         return JSONResponse({"success": True, "instance_id": instance_id, "action": "reboot"})
     except (ClientError, BotoCoreError) as e:
         log.error("EC2 reboot error: %s", e)
-        return JSONResponse({"error": str(e)}, status_code=500)
+        return JSONResponse({"error": "AWS reboot operation failed"}, status_code=502)
 
 
 _obs_websockets: set[WebSocket] = set()
@@ -1031,7 +1112,7 @@ async def broadcast_metrics():
 
             # Fetch every per-resource CloudWatch series concurrently — serial
             # awaits here can exceed the 15s interval on a multi-instance fleet.
-            ec2_cpu, rds_cpu, lambda_invocations = await asyncio.gather(
+            ec2_cpu, rds_cpu, rds_memory, lambda_invocations = await asyncio.gather(
                 asyncio.gather(*[
                     get_cloudwatch_metrics(
                         "AWS/EC2", "CPUUtilization",
@@ -1041,6 +1122,12 @@ async def broadcast_metrics():
                 asyncio.gather(*[
                     get_cloudwatch_metrics(
                         "AWS/RDS", "CPUUtilization",
+                        [{"Name": "DBInstanceIdentifier", "Value": db["id"]}])
+                    for db in rds_list
+                ]),
+                asyncio.gather(*[
+                    get_cloudwatch_metrics(
+                        "AWS/RDS", "FreeableMemory",
                         [{"Name": "DBInstanceIdentifier", "Value": db["id"]}])
                     for db in rds_list
                 ]),
@@ -1064,11 +1151,14 @@ async def broadcast_metrics():
             rds_metrics = {
                 db["id"]: {
                     "cpu": cpu[-1] if cpu else None,
+                    "memory": {
+                        "avg": _rds_memory_pct_used(db.get("class", ""), mem[-1]["avg"])
+                    } if mem and mem[-1].get("avg") is not None else None,
                     "name": db["id"],
                     "status": db["status"],
                     "engine": db["engine"],
                 }
-                for db, cpu in zip(rds_list, rds_cpu)
+                for db, cpu, mem in zip(rds_list, rds_cpu, rds_memory)
             }
             lambda_metrics = {
                 fn["name"]: {
@@ -1110,14 +1200,19 @@ async def broadcast_metrics():
 async def observability_websocket(websocket: WebSocket):
     """WebSocket endpoint for real-time AWS observability stream.
 
-    Auth-gated to match the REST routes: the JWT is passed as a `?token=` query
-    param (the browser WebSocket API cannot set Authorization headers) and must
-    decode to a platform_admin/broker_owner role. Anything else is rejected
-    before accept() — this stream exposes the full AWS infra inventory + billing.
+    Auth-gated to match the REST routes. The browser sends two WebSocket
+    subprotocol values: `oracle.jwt` and the JWT. This keeps credentials out of
+    request URLs, browser history, and ordinary access logs.
     """
-    raw_token = websocket.query_params.get("token", "")
+    offered_protocols = [
+        value.strip()
+        for value in websocket.headers.get("sec-websocket-protocol", "").split(",")
+        if value.strip()
+    ]
+    raw_token = offered_protocols[1] if len(offered_protocols) == 2 and offered_protocols[0] == "oracle.jwt" else ""
     try:
         claims = decode_token(raw_token)
+        _validate_tenant_id(claims.get("tenant_id", ""))
     except Exception:  # noqa: BLE001 — missing/invalid/expired token
         await websocket.close(code=4401)  # 4401: application "unauthorized"
         log.warning("Observability WS rejected — missing/invalid token.")
@@ -1127,24 +1222,50 @@ async def observability_websocket(websocket: WebSocket):
         log.warning("Observability WS rejected — role %r not permitted.", claims.get("role"))
         return
 
-    await websocket.accept()
+    await websocket.accept(subprotocol="oracle.jwt")
     _obs_websockets.add(websocket)
     log.info("Observability WebSocket connected — %d clients", len(_obs_websockets))
+    last_snapshot_at = float("-inf")
+    last_metrics_at = float("-inf")
     try:
         await websocket.send_text(json.dumps({"type": "AWS_CONNECTED"}))
         while True:
             try:
                 data = await websocket.receive_text()
+                if len(data.encode("utf-8")) > _WS_MAX_MESSAGE_BYTES:
+                    await websocket.close(code=1009)
+                    break
                 msg = json.loads(data)
+                if not isinstance(msg, dict):
+                    await websocket.send_text(json.dumps({"type": "AWS_REQUEST_ERROR"}))
+                    continue
                 if msg.get("type") == "REQUEST_SNAPSHOT":
+                    now = time.monotonic()
+                    if now - last_snapshot_at < _WS_SNAPSHOT_COOLDOWN:
+                        await websocket.send_text(json.dumps({"type": "AWS_RATE_LIMITED"}))
+                        continue
+                    last_snapshot_at = now
                     snapshot = await get_full_infrastructure_snapshot()
                     await websocket.send_text(json.dumps({
                         "type": "AWS_INFRASTRUCTURE_SNAPSHOT",
                         **snapshot,
                     }))
                 elif msg.get("type") == "REQUEST_METRICS":
+                    now = time.monotonic()
+                    if now - last_metrics_at < _WS_METRICS_COOLDOWN:
+                        await websocket.send_text(json.dumps({"type": "AWS_RATE_LIMITED"}))
+                        continue
                     instance_id = msg.get("instance_id")
                     instance_type = msg.get("instance_type", "ec2")
+                    pattern = _WS_RESOURCE_ID_PATTERNS.get(instance_type)
+                    if (
+                        pattern is None
+                        or not isinstance(instance_id, str)
+                        or pattern.fullmatch(instance_id) is None
+                    ):
+                        await websocket.send_text(json.dumps({"type": "AWS_REQUEST_ERROR"}))
+                        continue
+                    last_metrics_at = now
                     if instance_type == "ec2":
                         metrics = await get_ec2_detailed_metrics(instance_id)
                     elif instance_type == "rds":
@@ -1153,8 +1274,6 @@ async def observability_websocket(websocket: WebSocket):
                         metrics = await get_lambda_metrics(instance_id)
                     elif instance_type == "ebs":
                         metrics = await get_ebs_metrics(instance_id)
-                    else:
-                        metrics = {}
                     await websocket.send_text(json.dumps({"type": "AWS_DETAILED_METRICS", **metrics}))
                 elif msg.get("type") == "PING":
                     # Client heartbeat — reply so it can detect a dead connection.

@@ -1,0 +1,6 @@
+{
+  "input": {
+    "selftest": true,
+    "return_splat_b64": true
+  }
+}

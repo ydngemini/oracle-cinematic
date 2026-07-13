@@ -178,47 +178,53 @@ export default function AICopilot({ infrastructure, metrics, alerts }) {
 
   return (
     <div className="ai-copilot">
-      <div
+      <button
+        type="button"
         className="copilot-toggle"
-        role="button"
-        tabIndex={0}
         aria-label="Toggle NAVI copilot"
         aria-expanded={chatOpen}
         onClick={() => setChatOpen(!chatOpen)}
-        onKeyDown={(e) => {
-          if (e.key === 'Enter' || e.key === ' ') {
-            e.preventDefault();
-            setChatOpen(!chatOpen);
-          }
-        }}
       >
-        <div className={`copilot-avatar ${urgentCount > 0 ? 'urgent' : warningCount > 0 ? 'warning' : 'ok'}`}>
+        <span className={`copilot-avatar ${urgentCount > 0 ? 'urgent' : warningCount > 0 ? 'warning' : 'ok'}`}>
           <span className="copilot-icon">◈</span>
           {urgentCount > 0 && <span className="copilot-badge critical">{urgentCount}</span>}
           {warningCount > 0 && urgentCount === 0 && <span className="copilot-badge warning">{warningCount}</span>}
-        </div>
+        </span>
         <span className="copilot-label">NAVI</span>
-      </div>
+      </button>
 
       {chatOpen && (
         <div className="copilot-panel">
           <div className="copilot-header">
             <h3>◈ NAVI — AI Copilot</h3>
-            <button className="copilot-close" onClick={() => setChatOpen(false)}>×</button>
+            <button
+              type="button"
+              className="copilot-close"
+              onClick={() => setChatOpen(false)}
+              aria-label="Close NAVI copilot"
+              title="Close"
+            >
+              ×
+            </button>
           </div>
 
           {suggestions.length > 0 && (
             <div className="copilot-suggestions">
               <h4>Recommendations</h4>
               {suggestions.map(s => (
-                <div key={s.id} className={`suggestion-item ${s.type}`} onClick={() => handleActionClick(s)}>
+                <button
+                  type="button"
+                  key={s.id}
+                  className={`suggestion-item ${s.type}`}
+                  onClick={() => handleActionClick(s)}
+                >
                   <span className="suggestion-icon">{s.type === 'critical' ? '⚡' : s.type === 'warning' ? '⚠' : '💡'}</span>
-                  <div className="suggestion-content">
-                    <div className="suggestion-message">{s.message}</div>
-                    <div className="suggestion-detail">{s.suggestion}</div>
-                  </div>
+                  <span className="suggestion-content">
+                    <span className="suggestion-message">{s.message}</span>
+                    <span className="suggestion-detail">{s.suggestion}</span>
+                  </span>
                   <span className="suggestion-action">→</span>
-                </div>
+                </button>
               ))}
             </div>
           )}

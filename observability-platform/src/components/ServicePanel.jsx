@@ -13,36 +13,40 @@ export default function ServicePanel({ ec2, rds, lambda, onSelect, selectedServi
           EC2 INSTANCES — {ec2Running}/{ec2.count}
         </div>
         {ec2.instances.slice(0, 20).map(inst => (
-          <div
+          <button
+            type="button"
             key={inst.id}
             className={`service-item ${selectedService?.type === 'ec2' && selectedService?.id === inst.id ? 'selected' : ''}`}
             onClick={() => onSelect('ec2', inst.id)}
+            aria-pressed={selectedService?.type === 'ec2' && selectedService?.id === inst.id}
           >
-            <div className="service-header">
+            <span className="service-header">
               <span className="service-name">{inst.name || inst.id.slice(0, 12)}</span>
               <span className={`service-state ${inst.state}`}>{inst.state}</span>
-            </div>
-            <div className="service-meta">{inst.type} · {inst.az}</div>
-          </div>
+            </span>
+            <span className="service-meta">{inst.type} · {inst.az}</span>
+          </button>
         ))}
         
         <div className="service-section-label" style={{ marginTop: '12px' }}>
           RDS DATABASES — {rdsAvailable}/{rds.count}
         </div>
         {rds.instances.slice(0, 10).map(db => (
-          <div
+          <button
+            type="button"
             key={db.id}
             className={`service-item ${selectedService?.type === 'rds' && selectedService?.id === db.id ? 'selected' : ''}`}
             onClick={() => onSelect('rds', db.id)}
+            aria-pressed={selectedService?.type === 'rds' && selectedService?.id === db.id}
           >
-            <div className="service-header">
+            <span className="service-header">
               <span className="service-name">{db.id}</span>
               <span className={`service-state ${db.status === 'available' ? 'running' : 'pending'}`}>
                 {db.status}
               </span>
-            </div>
-            <div className="service-meta">{db.engine} {db.engine_version} · {db.class}</div>
-          </div>
+            </span>
+            <span className="service-meta">{db.engine} {db.engine_version} · {db.class}</span>
+          </button>
         ))}
         
         {lambda?.functions?.length > 0 && (
@@ -51,19 +55,21 @@ export default function ServicePanel({ ec2, rds, lambda, onSelect, selectedServi
               LAMBDA — {lambda.functions.filter(f => f.state === 'Active').length}/{lambda.count}
             </div>
             {lambda.functions.slice(0, 10).map(fn => (
-              <div
+              <button
+                type="button"
                 key={fn.name}
                 className={`service-item ${selectedService?.type === 'lambda' && selectedService?.id === fn.name ? 'selected' : ''}`}
                 onClick={() => onSelect('lambda', fn.name)}
+                aria-pressed={selectedService?.type === 'lambda' && selectedService?.id === fn.name}
               >
-                <div className="service-header">
+                <span className="service-header">
                   <span className="service-name">{fn.name}</span>
                   <span className={`service-state ${fn.state === 'Active' ? 'running' : 'pending'}`}>
                     {fn.state || 'Active'}
                   </span>
-                </div>
-                <div className="service-meta">{fn.runtime} · {fn.memory}MB</div>
-              </div>
+                </span>
+                <span className="service-meta">{fn.runtime} · {fn.memory}MB</span>
+              </button>
             ))}
           </>
         )}

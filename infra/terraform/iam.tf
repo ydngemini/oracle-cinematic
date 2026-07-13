@@ -98,6 +98,28 @@ data "aws_iam_policy_document" "task" {
       resources = ["*"]
     }
   }
+
+  # ── AWS observability dashboard — the two mutating actions behind it
+  # (POST .../autoscaling/{group}/scale, POST .../ec2/{id}/restart, both already
+  # gated to platform_admin in aws_observability.py). Kept as its own statement,
+  # deliberately NOT folded into AwsObservabilityReadOnly above, so that
+  # statement's name stays true and a future reviewer doesn't have to re-derive
+  # which actions are mutating. Scoped to this account/region (both actions
+  # support resource-level ARNs, unlike the Describe/List calls above).
+  dynamic "statement" {
+    for_each = var.observability_enabled ? [1] : []
+    content {
+      sid = "AwsObservabilityMutate"
+      actions = [
+        "ec2:RebootInstances",
+        "autoscaling:SetDesiredCapacity",
+      ]
+      resources = [
+        "arn:aws:ec2:${var.aws_region}:${local.account_id}:instance/*",
+        "arn:aws:autoscaling:${var.aws_region}:${local.account_id}:autoScalingGroup:*:autoScalingGroupName/*",
+      ]
+    }
+  }
 }
 
 resource "aws_iam_role_policy" "task" {
@@ -215,6 +237,8 @@ data "aws_iam_policy_document" "deploy" {
       "cloudwatch:DescribeAlarms", "rds:DescribeDBClusters", "elasticloadbalancing:Describe*",
       "ecr:GetAuthorizationToken", "ecr:BatchGetImage", "ecr:GetDownloadUrlForLayer",
       "logs:GetLogEvents", "logs:FilterLogEvents", "sts:GetCallerIdentity",
+      "s3:GetEncryptionConfiguration", "s3:GetBucketLocation", "s3:GetBucketPolicy",
+      "s3:GetBucketPublicAccessBlock", "s3:GetBucketVersioning", "s3:ListBucket",
     ]
     resources = ["*"]
   }

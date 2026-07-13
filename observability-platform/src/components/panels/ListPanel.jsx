@@ -35,17 +35,34 @@ export default function ListPanel({
               const b = badge ? badge(item) : null;
               const m = meta ? meta(item) : null;
               const selectable = !!onSelect;
-              return (
-                <div
-                  key={rowKey ? rowKey(item, i) : i}
-                  className={`service-item ${selectable ? '' : 'static'}`}
-                  onClick={selectable ? () => onSelect(item) : undefined}
-                >
-                  <div className="service-header">
+              const key = rowKey ? rowKey(item, i) : i;
+              const content = (
+                <>
+                  <span className="service-header">
                     <span className="service-name">{primary(item)}</span>
                     {b && <span className={`service-state ${b.className || ''}`}>{b.text}</span>}
-                  </div>
-                  {m && <div className="service-meta">{m}</div>}
+                  </span>
+                  {m && <span className="service-meta">{m}</span>}
+                </>
+              );
+              if (selectable) {
+                return (
+                  <button
+                    type="button"
+                    key={key}
+                    className="service-item"
+                    onClick={() => onSelect(item)}
+                  >
+                    {content}
+                  </button>
+                );
+              }
+              return (
+                <div
+                  key={key}
+                  className="service-item static"
+                >
+                  {content}
                 </div>
               );
             })}

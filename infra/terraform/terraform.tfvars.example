@@ -19,6 +19,13 @@ demo_tenant_id = "00000000-0000-0000-0000-000000000000"
 # Push this tag to ECR before `terraform apply` (use a git SHA in CI).
 image_tag = "v1"
 
+# Walkable-tour reconstruction backend. Default uses AWS Batch; switch to RunPod
+# when AWS EC2 GPU Spot quota is unavailable. Store RUNPOD_API_KEY in the app
+# Secrets Manager JSON, not in this file.
+# reconstruction_provider = "runpod"
+# runpod_endpoint_id      = "xxxxxxxxxxxxxxxxxxxx"
+# recon_runpod_timeout    = 3600
+
 # Aurora Serverless v2 capacity band (ACU). 0.5 floor scales near-zero off-peak.
 db_min_acu = 0.5
 db_max_acu = 4

@@ -16,8 +16,9 @@ RUN npm ci
 
 COPY . .
 
-# Browser-PUBLIC build args (NOT secrets — they ship in the JS bundle). vite.config.js
-# injects these via `define` from process.env, so ENV here is picked up at build.
+# Browser-PUBLIC build args (NOT secrets — they ship in the JS bundle). Vite
+# reads these from the build environment; blank values select same-origin ALB
+# routing in production.
 ARG VITE_API_BASE=""
 ARG VITE_WS_URL=""
 ENV VITE_API_BASE=${VITE_API_BASE}
