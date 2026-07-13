@@ -64,9 +64,8 @@ SPLAT_CDN_BASE="${SPLAT_CDN_BASE:-https://$SPLAT_BUCKET.s3.$REGION.amazonaws.com
 CONTRACT_VAULT_BUCKET="${CONTRACT_VAULT_BUCKET:-$(tf_out contract_vault_bucket)}"
 CONTRACT_VAULT_BUCKET="${CONTRACT_VAULT_BUCKET:-neoh-prod-contract-vault-$ACCOUNT_ID}"
 
-# ECS service names are fixed in infra/terraform/ecs.tf (aws_ecs_service.backend
-# / .frontend -> name = "backend" / "frontend").
-SERVICES=(backend frontend)
+# ECS service names are fixed in infra/terraform/ecs.tf and observability.tf.
+SERVICES=(backend frontend observability)
 
 # host header for the ALB-direct fallback (cert is for the app domain, not the ALB)
 APP_HOST="${APP_URL#*://}"; APP_HOST="${APP_HOST%%/*}"

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Ship the latest built images + migrations to prod. Run AFTER
-# `infra/scripts/build-images.sh app` has pushed fresh backend/frontend images.
+# `infra/scripts/build-images.sh app` has pushed fresh backend/frontend/observability
+# images.
 #
 #   AWS_PROFILE=swarm-admin infra/scripts/deploy-update.sh
 #
@@ -35,6 +36,13 @@ PY
 echo "═══ pin freshly-built images by digest ═══"
 BE_TD=$(pin neoh-prod-backend  neoh/backend);  echo "   backend  → ${BE_TD##*/}"
 FE_TD=$(pin neoh-prod-frontend neoh/frontend); echo "   frontend → ${FE_TD##*/}"
+OBS_TD=""
+OBS_STATUS=$("${AWS[@]}" ecs describe-services --cluster "$CLUSTER" --services observability \
+  --query 'services[0].status' --output text 2>/dev/null || true)
+if [[ "$OBS_STATUS" == "ACTIVE" ]]; then
+  OBS_TD=$(pin neoh-prod-observability neoh/observability)
+  echo "   observability → ${OBS_TD##*/}"
+fi
 
 echo "═══ 1/3  migrations (on the new backend image) ═══"
 MIGRATION_TASK_DEF="$BE_TD" bash "$HERE/run-migrations.sh"
@@ -42,8 +50,13 @@ MIGRATION_TASK_DEF="$BE_TD" bash "$HERE/run-migrations.sh"
 echo "═══ 2/3  roll services onto the pinned revisions ═══"
 "${AWS[@]}" ecs update-service --cluster "$CLUSTER" --service backend  --task-definition "$BE_TD" --force-new-deployment >/dev/null
 "${AWS[@]}" ecs update-service --cluster "$CLUSTER" --service frontend --task-definition "$FE_TD" --force-new-deployment >/dev/null
+SERVICES=(backend frontend)
+if [[ -n "$OBS_TD" ]]; then
+  "${AWS[@]}" ecs update-service --cluster "$CLUSTER" --service observability --task-definition "$OBS_TD" --force-new-deployment >/dev/null
+  SERVICES+=(observability)
+fi
 echo "   waiting for stability (a few min)..."
-"${AWS[@]}" ecs wait services-stable --cluster "$CLUSTER" --services backend frontend
+"${AWS[@]}" ecs wait services-stable --cluster "$CLUSTER" --services "${SERVICES[@]}"
 
 echo "═══ 3/3  smoke test ═══"
 bash "$HERE/prod-smoke.sh" || echo "   (smoke reported issues — see above)"
