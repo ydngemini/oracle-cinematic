@@ -162,7 +162,7 @@ def test_require_context_rejections():
     forged = jwt.encode(
         {"sub": "x", "tenant_id": TENANT_A, "role": "platform_admin",
          "iat": time.time(), "exp": time.time() + 60},
-        "WRONG_SECRET", algorithm=auth.ALGORITHM,
+        "wrong-test-secret-key-with-at-least-32-bytes", algorithm=auth.ALGORITHM,
     )
     _expect_401(require_context, f"Bearer {forged}")
 

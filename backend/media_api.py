@@ -25,6 +25,9 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import time
+from collections import defaultdict
 from typing import List, Optional
 from uuid import UUID, uuid4
 
@@ -42,6 +45,7 @@ from fastapi import (
 from fastapi.responses import Response
 
 from auth import ALGORITHM, SECRET_KEY
+from contract_vault import VaultUploadError
 from db.connection import get_pool, tenant_tx
 from tenancy import Role, TenantContext, require_context, _validate_tenant_id
 
@@ -51,6 +55,10 @@ router = APIRouter(prefix="/api", tags=["media"])
 
 # 12 MB hard cap per image.
 MAX_BYTES = 12 * 1024 * 1024
+MAX_FILES_PER_UPLOAD = 30
+_CONTRACT_RATE_LIMIT = int(os.getenv("CONTRACT_GENERATION_RATE_LIMIT", "10"))
+_CONTRACT_RATE_WINDOW = 60 * 60.0
+_contract_generation_timestamps: dict[str, list[float]] = defaultdict(list)
 
 # Media kinds permitted by property_media's chk_media_kind constraint (0012). The
 # photo-upload endpoints below only produce 'photo'; the walkable-tour pipeline
@@ -84,7 +92,7 @@ async def _read_and_validate(f: UploadFile) -> tuple[bytes, str]:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Empty file upload.")
     if len(data) > MAX_BYTES:
         raise HTTPException(
-            status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            status.HTTP_413_CONTENT_TOO_LARGE,
             f"Image exceeds {MAX_BYTES // (1024 * 1024)}MB limit.",
         )
     content_type = _sniff_image(data)
@@ -110,6 +118,13 @@ async def _persist(
     RLS scopes every write to the request's tenant. `kind` defaults to 'photo'
     (the only kind these image endpoints accept today); the capture/reconstruction
     pipeline passes 'pano'/'splat'/'tour'."""
+    if not files:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Provide at least one image.")
+    if len(files) > MAX_FILES_PER_UPLOAD:
+        raise HTTPException(
+            status.HTTP_413_CONTENT_TOO_LARGE,
+            f"Upload exceeds the {MAX_FILES_PER_UPLOAD} image limit.",
+        )
     if kind not in _ALLOWED_KINDS:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, f"Unsupported media kind: {kind!r}")
     # Serialize concurrent uploads to the SAME property so two requests can't read
@@ -278,6 +293,89 @@ async def delete_media(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Media not found.")
     log.info("Media deleted: media_id=%s tenant=%s", media_id, ctx.tenant_id)
     return {"deleted": True, "id": str(media_id)}
+
+
+# ---------------------------------------------------------------------------
+# Contract vault — agent JWT only. Legal PDFs go to private S3 with SSE-S3 and
+# are downloaded through short-lived presigned URLs, never public media routes.
+# ---------------------------------------------------------------------------
+
+def _check_contract_generation_rate(ctx: TenantContext) -> None:
+    key = f"{ctx.tenant_id}:{ctx.agent_id}"
+    now = time.monotonic()
+    recent = [
+        stamp
+        for stamp in _contract_generation_timestamps[key]
+        if now - stamp < _CONTRACT_RATE_WINDOW
+    ]
+    if len(recent) >= _CONTRACT_RATE_LIMIT:
+        _contract_generation_timestamps[key] = recent
+        raise HTTPException(
+            status.HTTP_429_TOO_MANY_REQUESTS,
+            "Contract generation rate limit exceeded.",
+        )
+    recent.append(now)
+    _contract_generation_timestamps[key] = recent
+
+@router.post("/contracts/clients/{client_id}/assignment")
+async def generate_assignment_contract(
+    client_id: UUID,
+    expiration_seconds: int = Query(default=3600, ge=1, le=3600),
+    ctx: TenantContext = Depends(require_context),
+):
+    _check_contract_generation_rate(ctx)
+    try:
+        from ml_forge.synthetic_lawyer import generate_assignment_contract_for_client
+
+        result = await generate_assignment_contract_for_client(
+            str(client_id),
+            ctx,
+            expiration_seconds=expiration_seconds,
+        )
+    except RuntimeError:
+        log.exception("Contract data service unavailable for client_id=%s", client_id)
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "Contract data service unavailable.",
+        )
+    except (ValueError, VaultUploadError):
+        log.exception("Contract vault failed for client_id=%s tenant=%s", client_id, ctx.tenant_id)
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "Contract vault unavailable.",
+        )
+    except Exception:  # noqa: BLE001
+        log.exception("Assignment contract generation failed for client_id=%s", client_id)
+        raise HTTPException(
+            status.HTTP_502_BAD_GATEWAY,
+            "Assignment contract generation failed.",
+        )
+
+    if result.get("status") != "SUCCESS":
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            {
+                "status": result.get("status", "FATAL_ERROR"),
+                "missing_variables": result.get("missing_variables", []),
+                "assignment_fee_calculated": result.get("assignment_fee_calculated", 0),
+            },
+        )
+
+    log.info(
+        "Assignment contract vaulted: client_id=%s document_id=%s tenant=%s actor=%s",
+        client_id,
+        result["document_id"],
+        ctx.tenant_id,
+        ctx.agent_id,
+    )
+    return {
+        "status": "SUCCESS",
+        "client_id": str(client_id),
+        "document_id": result["document_id"],
+        "download_url": result["presigned_url"],
+        "expires_in": result["expires_in"],
+        "assignment_fee_calculated": result["assignment_fee_calculated"],
+    }
 
 
 # ---------------------------------------------------------------------------

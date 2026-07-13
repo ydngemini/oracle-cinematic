@@ -28,6 +28,7 @@ export default defineConfig(({ command }) => ({
       selfDestroying: command === 'serve',
 
       injectManifest: {
+        rollupFormat: 'iife',
         maximumFileSizeToCacheInBytes: 100 * 1024 * 1024,
         globPatterns: [
           '**/*.{js,css,html,woff2,png,svg,ico}',

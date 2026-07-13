@@ -134,6 +134,14 @@ async def enqueue_reconstruction(
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, f"Reconstruction provider unavailable: {why}")
 
     async with tenant_tx(ctx) as conn:
+        # Validate the target exists in this tenant BEFORE inserting. The
+        # reconstruction_jobs FKs (lead_id->leads, listing_id->listings) would
+        # otherwise raise ForeignKeyViolation -> unhandled 500 on a bogus or
+        # cross-tenant id. RLS scopes these SELECTs to the caller's tenant.
+        if lead_id is not None and not await conn.fetchval("SELECT 1 FROM leads WHERE id = $1", lead_id):
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Lead not found.")
+        if listing_id is not None and not await conn.fetchval("SELECT 1 FROM listings WHERE id = $1", listing_id):
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Listing not found.")
         row = await conn.fetchrow(
             """
             INSERT INTO reconstruction_jobs (tenant_id, lead_id, listing_id, status, created_by)

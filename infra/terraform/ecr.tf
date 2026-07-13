@@ -1,5 +1,5 @@
 locals {
-  ecr_repos = ["backend", "frontend"]
+  ecr_repos = ["backend", "frontend", "observability"]
 }
 
 resource "aws_ecr_repository" "repo" {

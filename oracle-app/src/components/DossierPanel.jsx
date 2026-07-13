@@ -69,6 +69,7 @@ export function DossierPanel({ leadId, onClose }) {
   const [dossier, setDossier] = useState(null);
   const [error, setError] = useState('');
   const [copied, setCopied] = useState('');
+  const [now, setNow] = useState(() => Date.now());
 
   const [zoning, setZoning] = useState('');
   const [sqft, setSqft] = useState('');
@@ -89,6 +90,11 @@ export function DossierPanel({ leadId, onClose }) {
   // inside the effect (the linter flags setState-in-effect).
   const [prevLeadId, setPrevLeadId] = useState(leadId);
   if (leadId !== prevLeadId) { setPrevLeadId(leadId); setDossier(null); setError(''); setCma(''); }
+
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 60_000);
+    return () => clearInterval(timer);
+  }, []);
 
   useEffect(() => {
     let live = true;
@@ -190,8 +196,8 @@ export function DossierPanel({ leadId, onClose }) {
   if (dossier?.contract_execution_date && dossier?.contract_expires_at) {
     const exec = new Date(dossier.contract_execution_date).getTime();
     const exp = new Date(dossier.contract_expires_at).getTime();
-    const frac = Math.min(1, Math.max(0, (exp - Date.now()) / (exp - exec)));
-    const days = Math.max(0, Math.ceil((exp - Date.now()) / 86_400_000));
+    const frac = Math.min(1, Math.max(0, (exp - now) / (exp - exec)));
+    const days = Math.max(0, Math.ceil((exp - now) / 86_400_000));
     fuse = { frac, days, zone: days <= 15 ? 'danger' : days <= 30 ? 'warn' : 'calm' };
   }
 

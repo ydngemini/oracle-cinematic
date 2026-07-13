@@ -1,0 +1,27 @@
+{
+  "title": "Neoh Gaussian-Splat Reconstruction",
+  "description": "Turn 8+ overlapping property photos into a walkable 3D Gaussian splat (.splat). COLMAP poses + nerfstudio splatfacto (Apache-2.0) + PlayCanvas splat-transform (MIT). Uses presigned S3 HTTPS URLs, so the worker never receives AWS credentials. All-commercial-OK licensing (no DUSt3R / INRIA-3DGS).",
+  "type": "serverless",
+  "category": "image",
+  "config": {
+    "runsOn": "GPU",
+    "containerDiskInGb": 40,
+    "gpuCount": 1,
+    "gpuIds": "ADA_24,AMPERE_24",
+    "allowedCudaVersions": ["12.8", "12.7", "12.6", "12.5", "12.4", "12.3", "12.2", "12.1"],
+    "env": [
+      {
+        "key": "RECON_ITERS",
+        "input": {
+          "type": "number",
+          "name": "Training iterations",
+          "description": "splatfacto iterations — quality vs. cost. 7000 is a good default for a house.",
+          "default": 7000,
+          "min": 1000,
+          "max": 30000,
+          "advanced": true
+        }
+      }
+    ]
+  }
+}

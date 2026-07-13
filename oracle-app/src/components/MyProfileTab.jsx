@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { crmGet, crmPut } from '../state/useCrmApi';
+import { crmGet, crmPost, crmPut } from '../state/useCrmApi';
 import { getTenantId, getUserId } from '../state/identity';
 import { LicenseStatusWidget } from './LicenseStatusWidget';
 import styles from './MyProfileTab.module.css';
@@ -79,6 +79,11 @@ export default function MyProfileTab() {
   const [saveStatus, setSaveStatus] = useState('idle'); // idle|busy|saved|error
   const [saveError, setSaveError] = useState('');
   const [brokenUrl, setBrokenUrl] = useState(null); // last headshot URL that 404'd
+  // Self-service password change (logged-in). DB-user accounts only — the env
+  // operator account is managed via ORACLE_ADMIN_PASSPHRASE.
+  const [pw, setPw] = useState({ current: '', next: '' });
+  const [pwStatus, setPwStatus] = useState('idle'); // idle|busy|saved|error
+  const [pwMsg, setPwMsg] = useState('');
   const savedTimer = useRef(null);
 
   // All setState lands in async continuations — never synchronously inside
@@ -151,6 +156,27 @@ export default function MyProfileTab() {
   const signOut = () => {
     sessionStorage.removeItem('oracle_token');
     window.location.reload();
+  };
+
+  const changePassword = async (e) => {
+    e.preventDefault();
+    if (pwStatus === 'busy' || !pw.current || pw.next.length < 10) return;
+    setPwStatus('busy');
+    setPwMsg('');
+    try {
+      await crmPost('/auth/change-password', { current_password: pw.current, new_password: pw.next });
+      setPw({ current: '', next: '' });
+      setPwStatus('saved');
+      setPwMsg('Password updated.');
+    } catch (err) {
+      setPwStatus('error');
+      setPwMsg(err?.message || 'Could not change password.');
+    }
+  };
+  const setPwField = (key) => (e) => {
+    const v = e.target.value;
+    setPw((p) => ({ ...p, [key]: v }));
+    if (pwStatus !== 'idle' && pwStatus !== 'busy') { setPwStatus('idle'); setPwMsg(''); }
   };
 
   const isLoading = profile === null && !loadError;
@@ -395,6 +421,54 @@ export default function MyProfileTab() {
 
       {/* ── State licenses — per-state compliance tracking ──────────── */}
       <LicenseStatusWidget />
+
+      {/* ── Security — self-service password change (DB accounts) ──────── */}
+      <section className={styles.panel} aria-label="Security">
+        <span className={styles.sectionLabel}>Security</span>
+        <form onSubmit={changePassword}>
+          <label className={styles.field}>
+            <span className={styles.microLabel}>Current Password</span>
+            <input
+              type="password"
+              className={styles.input}
+              autoComplete="current-password"
+              value={pw.current}
+              onChange={setPwField('current')}
+              placeholder="••••••••"
+            />
+          </label>
+          <label className={styles.field}>
+            <span className={styles.microLabel}>New Password</span>
+            <input
+              type="password"
+              className={styles.input}
+              autoComplete="new-password"
+              value={pw.next}
+              onChange={setPwField('next')}
+              placeholder="At least 10 characters"
+            />
+          </label>
+          {pwMsg && (
+            <div className={styles.errorBox} role={pwStatus === 'error' ? 'alert' : 'status'}>
+              <span
+                className={styles.errorText}
+                style={pwStatus === 'saved' ? { color: 'var(--oracle-amber, #d8a657)' } : undefined}
+              >
+                {pwMsg}
+              </span>
+            </div>
+          )}
+          <div className={styles.actions}>
+            <button
+              type="submit"
+              className={styles.saveBtn}
+              disabled={pwStatus === 'busy' || !pw.current || pw.next.length < 10}
+            >
+              {pwStatus === 'busy' ? 'Updating…' : 'Change Password'}
+            </button>
+          </div>
+        </form>
+      </section>
 
       {/* ── Session — local identity, renders even when the API is dark ── */}
       <section className={styles.panel} aria-label="Session">

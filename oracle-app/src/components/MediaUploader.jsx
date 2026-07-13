@@ -116,7 +116,10 @@ export default function MediaUploader({
   const uidRef = useRef(0);
   const urlsRef = useRef(new Set()); // object URLs to revoke on unmount
   const onChangeRef = useRef(onChange);
-  onChangeRef.current = onChange;
+
+  useEffect(() => {
+    onChangeRef.current = onChange;
+  }, [onChange]);
 
   // ── Gallery load ───────────────────────────────────────────────────────────
   const refresh = useCallback(() => {

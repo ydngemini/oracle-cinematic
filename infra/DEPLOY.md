@@ -2,7 +2,8 @@
 
 Full AWS deployment matching `HARDENING.md`: Aurora PostgreSQL (Serverless v2,
 IAM auth) + Fargate (backend + nginx frontend) behind an ALB with WAF, Secrets
-Manager, KMS, CloudWatch, all in a zero-trust VPC.
+Manager, KMS, CloudWatch, private S3 contract-vault storage, all in a zero-trust
+VPC.
 
 Terraform lives in `infra/terraform/` and is **validated** (`terraform validate`
 passes). You run `terraform apply` with **your** AWS credentials — it provisions
@@ -58,12 +59,18 @@ docker push $ACCOUNT.dkr.ecr.$REGION.amazonaws.com/neoh/frontend:$TAG
 ## 3. Provision everything
 
 ```bash
-terraform apply        # VPC, Aurora, ALB, WAF, ECS, IAM, Secrets, CloudWatch
+terraform apply        # VPC, Aurora, ALB, WAF, ECS, IAM, Secrets, CloudWatch, S3 vaults
 ```
 
 Note the outputs: `alb_dns_name`, `db_writer_endpoint`, `db_master_secret_arn`,
-`app_secret_name`. The backend service will NOT be healthy yet — it can't connect
-until the secrets are real, the param group is loaded, and migrations have run.
+`app_secret_name`, `contract_vault_bucket`. The backend service will NOT be
+healthy yet — it can't connect until the secrets are real, the param group is
+loaded, and migrations have run.
+
+Terraform also provisions the private contract vault bucket and wires
+`CONTRACT_VAULT_BUCKET` into the backend task definition. The bucket blocks
+public access, defaults to SSE-S3 (`AES256`), denies non-TLS access, and the app
+task role can only read/write `clients/*/contracts/*.pdf` objects.
 
 ## 4. Populate the application secrets (real values, out-of-band)
 
@@ -139,6 +146,7 @@ Watch the target group go healthy; tail logs in `/ecs/neoh-prod/backend`.
   ```bash
   curl -fsS https://app.neoh.example/health          # backend 200
   curl -fsS https://app.neoh.example/ | head         # SPA shell
+  infra/scripts/prod-smoke.sh                        # ECS + S3 vault checks
   ```
 - Stripe: add the live webhook endpoint `https://app.neoh.example/billing/webhook`
   in the Stripe dashboard, copy the signing secret into `STRIPE_WEBHOOK_SECRET`,
@@ -146,16 +154,20 @@ Watch the target group go healthy; tail logs in `/ecs/neoh-prod/backend`.
 
 ## 9. GPU reconstruction (walkable 3D tours)
 
-`reconstruction.tf` provisions the walk-inside splat pipeline: an S3 bucket
-(capture inputs/outputs + public `splats/`), an ECR repo, and **AWS Batch** on a
-SPOT g5 GPU compute environment that **scales to zero** (pay per job, ~$0.30–1/house).
-`terraform apply` also wires the backend task env (`RECONSTRUCTION_PROVIDER=aws_batch`,
+`reconstruction.tf` provisions the walk-inside splat storage: an S3 bucket
+(capture inputs/outputs + public `splats/`) plus the default **AWS Batch** SPOT g5
+GPU compute environment that **scales to zero** (pay per job, ~$0.30–1/house).
+`terraform apply` also wires the backend task env (`RECONSTRUCTION_PROVIDER`,
 `RECON_*`, `ORACLE_SPLAT_STORAGE=s3`, `ORACLE_SPLAT_S3_BUCKET`, `ORACLE_SPLAT_CDN_BASE`).
 
 After apply: (1) request EC2 **SPOT g5/g4dn vCPU** quota in-region; (2) build+push
 the GPU job image to the `recon_ecr_url` output and set `recon_image_tag`; (3) roll
 the backend. Until configured, the enqueue endpoint honestly returns 503 (never a
 fake splat). Full steps + the capture flow: **`infra/reconstruction/README.md`**.
+
+If AWS GPU quota is blocked, set `reconstruction_provider = "runpod"` and
+`runpod_endpoint_id` in `terraform.tfvars`, add `RUNPOD_API_KEY` to the app
+Secrets Manager JSON, and deploy the worker in **`infra/reconstruction-runpod/`**.
 
 ## 9b. Day-2
 

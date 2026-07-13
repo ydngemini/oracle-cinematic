@@ -72,21 +72,43 @@ async def lifespan(app: FastAPI):
     await start_disposition_enforcer()
     from data_integrations.periodic import start_periodic_scheduler, stop_periodic_scheduler
     await start_periodic_scheduler()
+    # AWS observability broadcaster is opt-in: it polls Cost Explorer (billed
+    # per call) and the infra APIs. Off unless AWS_OBSERVABILITY_ENABLED is set;
+    # even when enabled, the loop only calls AWS while a client is connected.
+    metrics_task = None
+    if os.environ.get("AWS_OBSERVABILITY_ENABLED", "").lower() in {"1", "true", "yes"}:
+        from aws_observability import broadcast_metrics
+        metrics_task = asyncio.create_task(broadcast_metrics())
+    else:
+        logger.info(
+            "AWS observability broadcaster NOT started — set AWS_OBSERVABILITY_ENABLED=1 "
+            "to enable the Cost-Explorer/infra metrics poll."
+        )
     try:
         yield
     finally:
+        if metrics_task is not None:
+            metrics_task.cancel()
+            try:
+                await metrics_task
+            except asyncio.CancelledError:
+                pass
         await stop_periodic_scheduler()
         await stop_disposition_enforcer()
         await stop_voice_workers()
         await stop_reconstruction_workers()
-        # Flush in-flight audit writes BEFORE the pool closes — they need it.
         await drain_pending()
         await close_pool()
 
 
 app = FastAPI(lifespan=lifespan)
 
-_ALLOWED_ORIGINS = os.getenv("ORACLE_CORS_ORIGINS", "http://localhost:3000,http://localhost:5173").split(",")
+_ALLOWED_ORIGINS = os.getenv(
+    "ORACLE_CORS_ORIGINS",
+    # 5173 = main Neoh app; 5174 = AWS observability dashboard (its /auth/login
+    # is cross-origin in dev). Prod overrides this via ORACLE_CORS_ORIGINS.
+    "http://localhost:3000,http://localhost:5173,http://localhost:5174",
+).split(",")
 
 app.add_middleware(
     CORSMiddleware,
@@ -154,6 +176,9 @@ app.include_router(media_api_router)
 
 from tour_api import router as tour_api_router  # noqa: E402 — walkable-tour tier resolver (exterior/photos/360/splat)
 app.include_router(tour_api_router)
+
+from aws_observability import router as aws_obs_router  # noqa: E402 — AWS infrastructure observability
+app.include_router(aws_obs_router)
 
 from apis.geocoding import geocode, reverse_geocode
 from apis.census import get_demographics_by_zip

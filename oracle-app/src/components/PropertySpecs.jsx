@@ -67,7 +67,14 @@ export function PropertySpecs() {
         </h2>
       </header>
 
-      <div className={styles.modeToggle} onClick={handleToggleMode}>
+      <button
+        type="button"
+        className={styles.modeToggle}
+        role="switch"
+        aria-checked={isAiAppraisalMode}
+        aria-label="Use AI autonomous appraisal mode"
+        onClick={handleToggleMode}
+      >
         <span
           className={styles.modeLabel}
           data-active={isAiAppraisalMode}
@@ -83,7 +90,7 @@ export function PropertySpecs() {
         >
           MANUAL COMPS
         </span>
-      </div>
+      </button>
 
       <div className={styles.heroGrid}>
         {HERO_CARDS.map(({ key, label, format, unit }, i) => (

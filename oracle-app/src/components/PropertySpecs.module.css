@@ -458,6 +458,16 @@
   padding: 0.65rem 0;
   position: relative;
   z-index: 3;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+}
+
+.modeToggle:focus-visible {
+  outline: 2px solid rgba(220, 180, 100, 0.9);
+  outline-offset: 4px;
 }
 
 .modeToggle:hover .toggleTrack {

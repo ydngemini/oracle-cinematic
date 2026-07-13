@@ -220,6 +220,14 @@ async def subscription_status(
             detail="Cannot query subscription status for a different tenant.",
         )
 
+    # Platform admin (the operator) is EXEMPT from billing — full access with no
+    # subscription. Keyed on the VERIFIED role (not the tenant_id path param, which
+    # the FE resolver may set to a demo/other tenant), so the access gate always
+    # opens for the operator. This endpoint only backs the front-end gate; the admin
+    # dashboard reads aggregate subscription counts elsewhere (admin_ops.py).
+    if ctx.is_platform_admin:
+        return SubscriptionStatus(active=True, status="platform_admin", plan="platform")
+
     pool = get_pool()
     if not pool:
         return SubscriptionStatus(active=False, status="no_db", plan="none")

@@ -343,6 +343,11 @@ class ResetRequest(BaseModel):
     new_password: str
 
 
+class ChangePasswordRequest(BaseModel):
+    current_password: str
+    new_password: str
+
+
 class LoginResponse(BaseModel):
     token: str
     agent_id: str
@@ -566,6 +571,34 @@ async def reset_password(body: ResetRequest, response: Response) -> LoginRespons
     _register_session(email)
     log.info("Password reset for agent_id=%r", email)
     return LoginResponse(token=token, agent_id=email, expires_in=TOKEN_TTL_SECONDS, tenant_id=tenant_id, role=role)
+
+
+@router.post("/change-password")
+async def change_password(body: ChangePasswordRequest, authorization: Optional[str] = Header(default=None)):
+    """Logged-in self-service password change (current → new). DB users only — the
+    env operator account is managed via ORACLE_ADMIN_PASSPHRASE, not here.
+    Uses auth's own decode_token (no tenancy import) to stay self-contained."""
+    if not authorization or not authorization.lower().startswith("bearer "):
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Authentication required.")
+    claims = decode_token(authorization.split(" ", 1)[1])  # validates sig+exp → 401
+    agent_id = claims.get("sub", "")
+    if not (MIN_PASSWORD_LEN <= len(body.new_password) <= _MAX_PASSPHRASE_LEN):
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, f"New password must be at least {MIN_PASSWORD_LEN} characters.")
+    row = await _lookup_user(agent_id)
+    if not row or not row["password_hash"]:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "This account's password is managed by your administrator, not self-service.")
+    if not _verify_pw(body.current_password, row["password_hash"]):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Current password is incorrect.")
+
+    from db.connection import tenant_tx
+    new_hash = _hash_pw(body.new_password)
+    async with tenant_tx(_admin_ctx()) as conn:
+        await conn.execute(
+            "UPDATE users SET password_hash = $2, updated_at = now() WHERE lower(agent_id) = lower($1)",
+            agent_id, new_hash,
+        )
+    log.info("Password changed (self-service) for agent_id=%r", agent_id)
+    return {"status": "ok", "detail": "Password updated."}
 
 
 @router.post("/verify", response_model=VerifyResponse)

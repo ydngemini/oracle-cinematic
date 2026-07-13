@@ -20,15 +20,24 @@ locals {
   frontend_image = "${aws_ecr_repository.repo["frontend"].repository_url}:${var.image_tag}"
 
   # Non-secret runtime env (plain task environment).
-  backend_env = [
+  backend_env = concat([
     { name = "ORACLE_ENV", value = var.environment },
     { name = "ORACLE_CORS_ORIGINS", value = var.cors_origins },
     { name = "ORACLE_BASE_URL", value = var.app_base_url },
     { name = "ORACLE_DEMO_TENANT_ID", value = var.demo_tenant_id },
     { name = "ORACLE_ENABLE_DEMO_LOGINS", value = "0" },
+    # Real lead ingestion: FREE open-data firehose (51 state portals, no API key) — NOT
+    # RentCast. Master switch + ingest tenant + the heavy parcel harvest. distress_scrape
+    # (keyless) also runs once the master is on. See data_integrations/periodic.py.
+    { name = "ORACLE_SCHEDULER_ENABLED", value = "1" },
+    { name = "ORACLE_INGEST_TENANT_ID", value = "00000000-0000-0000-0000-000000000000" },
+    { name = "ORACLE_PARCEL_HARVEST_ENABLED", value = "1" },
     # Operator/admin login id (platform_admin). Passphrase is the ORACLE_ADMIN_PASSPHRASE
     # secret. NOTE: this is the ONLY login path — Neoh has no self-serve signup yet.
     { name = "ORACLE_ADMIN_ID", value = "ydnop@ydnhft.com" },
+    # Stripe price for the $299/mo Swarm License (public id, not a secret). Without
+    # it billing.py falls back to price_REPLACE_ME → "No such price" at checkout.
+    { name = "STRIPE_PRICE_ID", value = "price_1TftozEDjW1NbBU5FaAQGPiH" },
     { name = "ORACLE_DB_HOST", value = aws_rds_cluster.aurora.endpoint },
     { name = "ORACLE_DB_PORT", value = "5432" },
     { name = "ORACLE_DB_NAME", value = var.db_name },
@@ -37,18 +46,33 @@ locals {
     { name = "ORACLE_RDS_CA_BUNDLE", value = "/etc/ssl/certs/rds-global-bundle.pem" },
     { name = "AWS_REGION", value = var.aws_region },
     { name = "BEDROCK_REGION", value = var.aws_region },
-    # GPU reconstruction via AWS Batch + S3 splat storage (reconstruction.tf).
-    { name = "RECONSTRUCTION_PROVIDER", value = "aws_batch" },
+    # Private legal contract vault (contract_vault.tf). Contracts are stored in
+    # S3 with SSE-S3 and delivered through one-hour presigned URLs only.
+    { name = "CONTRACT_VAULT_BUCKET", value = aws_s3_bucket.contract_vault.bucket },
+    # AWS observability broadcaster (aws_observability.py). Opt-in; the loop only
+    # calls AWS while a dashboard client is connected. Task role read grant: iam.tf.
+    { name = "AWS_OBSERVABILITY_ENABLED", value = var.observability_enabled ? "1" : "0" },
+    # GPU reconstruction + S3 splat storage (reconstruction.tf). AWS Batch is the
+    # default; RunPod is an opt-in no-EC2-GPU-quota path.
+    { name = "RECONSTRUCTION_PROVIDER", value = var.reconstruction_provider },
     { name = "RECON_S3_BUCKET", value = aws_s3_bucket.recon.bucket },
-    { name = "RECON_AWS_BATCH_QUEUE", value = aws_batch_job_queue.recon.name },
-    { name = "RECON_AWS_BATCH_JOBDEF", value = aws_batch_job_definition.recon.name },
-    { name = "ORACLE_SPLAT_STORAGE", value = "s3" },
-    { name = "ORACLE_SPLAT_S3_BUCKET", value = aws_s3_bucket.recon.bucket },
-    { name = "ORACLE_SPLAT_CDN_BASE", value = "https://${aws_s3_bucket.recon.bucket}.s3.${var.aws_region}.amazonaws.com" },
-  ]
+    ],
+    var.reconstruction_provider == "aws_batch" ? [
+      { name = "RECON_AWS_BATCH_QUEUE", value = aws_batch_job_queue.recon.name },
+      { name = "RECON_AWS_BATCH_JOBDEF", value = aws_batch_job_definition.recon.name },
+    ] : [],
+    var.reconstruction_provider == "runpod" ? [
+      { name = "RUNPOD_ENDPOINT_ID", value = var.runpod_endpoint_id },
+      { name = "RECON_RUNPOD_TIMEOUT", value = tostring(var.recon_runpod_timeout) },
+    ] : [],
+    [
+      { name = "ORACLE_SPLAT_STORAGE", value = "s3" },
+      { name = "ORACLE_SPLAT_S3_BUCKET", value = aws_s3_bucket.recon.bucket },
+      { name = "ORACLE_SPLAT_CDN_BASE", value = "https://${aws_s3_bucket.recon.bucket}.s3.${var.aws_region}.amazonaws.com" },
+  ])
 
   # Secrets injected from Secrets Manager JSON keys (never in plaintext env/state).
-  backend_secrets = [
+  backend_secrets = concat([
     for k in [
       "ORACLE_SECRET_KEY",
       "ORACLE_ENCRYPTION_MASTER_KEY",
@@ -60,7 +84,10 @@ locals {
       name      = k
       valueFrom = "${aws_secretsmanager_secret.app.arn}:${k}::"
     }
-  ]
+    ], var.reconstruction_provider == "runpod" ? [{
+      name      = "RUNPOD_API_KEY"
+      valueFrom = "${aws_secretsmanager_secret.app.arn}:RUNPOD_API_KEY::"
+  }] : [])
 }
 
 resource "aws_ecs_task_definition" "backend" {
@@ -95,6 +122,16 @@ resource "aws_ecs_task_definition" "backend" {
       startPeriod = 60
     }
   }])
+
+  lifecycle {
+    precondition {
+      condition = (
+        var.reconstruction_provider != "runpod" ||
+        can(regex("^[A-Za-z0-9_-]{3,128}$", var.runpod_endpoint_id))
+      )
+      error_message = "runpod_endpoint_id is required when reconstruction_provider is runpod."
+    }
+  }
 }
 
 resource "aws_ecs_task_definition" "frontend" {

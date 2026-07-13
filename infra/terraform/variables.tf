@@ -132,6 +132,47 @@ variable "log_retention_days" {
   default     = 90
 }
 
+# ── reconstruction backend ──────────────────────────────────────────────────
+variable "reconstruction_provider" {
+  description = "GPU reconstruction backend for walkable tours: aws_batch (default) or runpod."
+  type        = string
+  default     = "aws_batch"
+
+  validation {
+    condition     = contains(["aws_batch", "runpod"], var.reconstruction_provider)
+    error_message = "reconstruction_provider must be one of: aws_batch, runpod."
+  }
+}
+
+variable "runpod_endpoint_id" {
+  description = "RunPod Serverless endpoint ID when reconstruction_provider = runpod."
+  type        = string
+  default     = ""
+
+  validation {
+    condition = (
+      var.runpod_endpoint_id == "" ||
+      can(regex("^[A-Za-z0-9_-]{3,128}$", var.runpod_endpoint_id))
+    )
+    error_message = "runpod_endpoint_id must be 3-128 letters, digits, underscores, or hyphens."
+  }
+}
+
+variable "recon_runpod_timeout" {
+  description = "RunPod reconstruction timeout in seconds."
+  type        = number
+  default     = 3600
+
+  validation {
+    condition = (
+      var.recon_runpod_timeout == floor(var.recon_runpod_timeout) &&
+      var.recon_runpod_timeout >= 60 &&
+      var.recon_runpod_timeout <= 7200
+    )
+    error_message = "recon_runpod_timeout must be a whole number from 60 through 7200."
+  }
+}
+
 variable "tags" {
   description = "Extra tags applied to every resource."
   type        = map(string)

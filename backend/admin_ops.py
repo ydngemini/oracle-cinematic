@@ -9,6 +9,7 @@ reads legal at the Postgres level; nothing here bypasses the policy layer.
 
 Surfaces:
   * /overview — per-tenant fleet counts + live sessions + WS socket groups.
+  * /billing-summary — fleet revenue (Stripe MRR/MTD) + per-tenant sub status.
   * /users    — every auth identity merged with its user_profiles row and
                 live session state (who is online right now).
   * /activity — the firehose at rest: recent interaction_logs across all
@@ -20,12 +21,15 @@ Live counterpart: ws_hub mirrors every tenant's frames into the platform
 firehose group, so the OPS tab's feed updates in real time over /ws.
 """
 
+import asyncio
 import logging
 import time
 import uuid
-from datetime import datetime
+from collections import defaultdict
+from datetime import datetime, timezone
 from typing import Optional
 
+import stripe
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 import ws_hub
@@ -125,6 +129,125 @@ async def overview(ctx: TenantContext = Depends(require_platform_admin)):
         "tenants": tenants,
         "sessions": active_sessions(),
         "ws_groups": ws_hub.connection_counts(),
+    }
+
+
+# ---------------------------------------------------------------------------
+# /billing-summary — fleet revenue (Stripe) + per-tenant subscription status
+# Lets external dashboards (e.g. the Observatory) read aggregate revenue without
+# ever holding the Stripe key — the key stays here, server-side.
+# ---------------------------------------------------------------------------
+
+def _monthly_minor(price: dict, qty) -> float:
+    """Normalize one recurring Stripe price+quantity to a monthly amount (minor units)."""
+    # A quantity of 0 means 0 units billed — only a missing quantity defaults to 1.
+    qty = 1 if qty is None else qty
+    amt = (price.get("unit_amount") or 0) * qty
+    rec = price.get("recurring") or {}
+    count = rec.get("interval_count") or 1
+    interval = rec.get("interval")
+    if interval == "month":
+        return amt / count
+    if interval == "year":
+        return amt / (12 * count)
+    if interval == "week":
+        return amt * 52 / 12 / count
+    if interval == "day":
+        return amt * 365 / 12 / count
+    return 0.0
+
+
+def _stripe_revenue() -> dict:
+    """Synchronous Stripe rollup (run in an executor): MRR from active
+    subscriptions + month-to-date captured revenue (net of refunds).
+
+    Amounts are segregated by currency — Stripe minor units are only additive
+    within one currency (100 JPY minor units != 100 USD cents), so we never sum
+    across currencies. The top-level currency/mrr/mtd_revenue report the dominant
+    currency (largest MRR); `by_currency` carries the full per-currency breakdown
+    so a mixed-currency account is represented honestly instead of conflated."""
+    mrr_by_ccy: dict[str, float] = defaultdict(float)
+    mtd_by_ccy: dict[str, float] = defaultdict(float)
+    active = 0
+    for sub in stripe.Subscription.list(status="active", limit=100).auto_paging_iter():
+        active += 1
+        ccy = (sub.get("currency") or "usd").lower()
+        for item in (sub.get("items", {}).get("data") or []):
+            mrr_by_ccy[ccy] += _monthly_minor(item.get("price") or {}, item.get("quantity"))
+
+    now = datetime.now(timezone.utc)
+    month_start = int(datetime(now.year, now.month, 1, tzinfo=timezone.utc).timestamp())
+    payments = 0
+    for ch in stripe.Charge.list(created={"gte": month_start}, limit=100).auto_paging_iter():
+        if ch.get("status") == "succeeded":
+            ccy = (ch.get("currency") or "usd").lower()
+            mtd_by_ccy[ccy] += (ch.get("amount_captured") or 0) - (ch.get("amount_refunded") or 0)
+            payments += 1
+
+    # Dominant currency = largest MRR (tie-break on MTD), defaulting to usd.
+    all_ccys = set(mrr_by_ccy) | set(mtd_by_ccy)
+    primary = max(
+        all_ccys,
+        key=lambda c: (mrr_by_ccy.get(c, 0.0), mtd_by_ccy.get(c, 0.0)),
+        default="usd",
+    )
+    by_currency = {
+        c: {
+            "mrr": round(mrr_by_ccy.get(c, 0.0)) / 100,
+            "mtd_revenue": round(mtd_by_ccy.get(c, 0.0)) / 100,
+        }
+        for c in sorted(all_ccys)
+    }
+
+    return {
+        "currency": primary,
+        "mrr": round(mrr_by_ccy.get(primary, 0.0)) / 100,
+        "mtd_revenue": round(mtd_by_ccy.get(primary, 0.0)) / 100,
+        "active_subscriptions": active,
+        "mtd_payments": payments,
+        "by_currency": by_currency,
+    }
+
+
+@router.get("/billing-summary")
+async def billing_summary(ctx: TenantContext = Depends(require_platform_admin)):
+    # Per-tenant subscription status from our DB (entitlement source of truth).
+    rows = await _fetch(
+        ctx,
+        """
+        SELECT s.tenant_id, t.name AS tenant_name, s.status, s.plan, s.current_period_end
+        FROM subscriptions s
+        LEFT JOIN tenants t ON t.id = s.tenant_id
+        ORDER BY t.name NULLS LAST
+        """,
+    )
+    by_status: dict[str, int] = {}
+    for r in rows:
+        by_status[r["status"]] = by_status.get(r["status"], 0) + 1
+
+    # Aggregate revenue from Stripe (the money source of truth). Degrade to
+    # DB-only counts if Stripe is unconfigured/unreachable.
+    revenue = {
+        "currency": "usd",
+        "mrr": None,
+        "mtd_revenue": None,
+        "active_subscriptions": by_status.get("active", 0),
+        "mtd_payments": None,
+        "stripe_ok": False,
+    }
+    if stripe.api_key:
+        try:
+            loop = asyncio.get_event_loop()
+            rolled = await loop.run_in_executor(None, _stripe_revenue)
+            revenue = {**revenue, **rolled, "stripe_ok": True}
+        except Exception as exc:  # noqa: BLE001 — Stripe/network failures
+            logger.error("Stripe revenue rollup failed: %s", exc)
+
+    return {
+        **revenue,
+        "subscriptions_by_status": by_status,
+        "tenants": rows,
+        "fetched_at": datetime.now(timezone.utc).isoformat(),
     }
 
 

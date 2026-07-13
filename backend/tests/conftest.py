@@ -15,6 +15,7 @@ import os
 import sys
 
 os.environ.setdefault("ORACLE_ENV", "dev")
+os.environ.setdefault("ORACLE_SECRET_KEY", "test-only-secret-key-with-at-least-32-bytes")
 
 _BACKEND = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _BACKEND not in sys.path:

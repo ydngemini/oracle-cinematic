@@ -2,15 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import { motion } from 'framer-motion'
-import { Fraunces } from 'next/font/google'
 import { CEILING_H, FOOTPRINT, WAYPOINTS } from './tourData'
-
-const fraunces = Fraunces({
-  subsets: ['latin'],
-  weight: ['300', '400'],
-  style: ['normal', 'italic'],
-  display: 'swap',
-})
 
 const EASE = [0.16, 1, 0.3, 1] as const
 
@@ -112,7 +104,7 @@ export function TourEntry({ onEnter }: { onEnter: () => void }) {
             </motion.p>
             <motion.h1
               variants={rise}
-              className={`${fraunces.className} text-[clamp(3.2rem,9vw,8rem)] font-light leading-[0.92] tracking-tight`}
+              className="font-serif text-[clamp(3.2rem,9vw,8rem)] font-light leading-[0.92] tracking-tight"
             >
               <span className="italic text-[rgba(224,232,255,0.92)]">The Nocturne</span>
               <br />
@@ -169,7 +161,7 @@ export function TourEntry({ onEnter }: { onEnter: () => void }) {
                       {String(i + 1).padStart(2, '0')}
                     </span>
                     <span
-                      className={`${fraunces.className} text-[17px] font-light text-[rgba(224,232,255,0.8)] transition-colors group-hover:text-white`}
+                      className="font-serif text-[17px] font-light text-[rgba(224,232,255,0.8)] transition-colors group-hover:text-white"
                     >
                       {wp.name}
                     </span>

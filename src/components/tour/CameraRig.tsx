@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useRef } from 'react'
+import type { ComponentRef } from 'react'
 import { useThree, useFrame } from '@react-three/fiber'
 import { OrbitControls } from '@react-three/drei'
 import * as THREE from 'three'
@@ -13,9 +14,7 @@ const easeInOutCubic = (t: number) =>
 
 export function CameraRig({ pose, mode }: { pose: CameraPose; mode: Mode }) {
   const camera = useThree((s) => s.camera)
-  // drei's OrbitControls ref resolves to the three-stdlib impl; typed loosely on purpose.
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const controls = useRef<any>(null)
+  const controls = useRef<ComponentRef<typeof OrbitControls>>(null)
 
   const anim = useRef({
     from: new THREE.Vector3(),
