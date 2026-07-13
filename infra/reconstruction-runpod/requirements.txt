@@ -3,3 +3,4 @@
 # externally-built worker image reproducible.
 runpod==1.10.1
 requests==2.34.2
+idna>=3.15

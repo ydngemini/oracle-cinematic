@@ -35,5 +35,5 @@ export function fetchMetricHistory(type, id, range = '1h') {
 
 // Latest detailed CloudWatch metrics for one resource. type: ec2|rds|lambda|ebs|s3.
 export function fetchResourceMetrics(type, id) {
-  return authedGet(`/api/aws/${type}/${encodeURIComponent(id)}/metrics`);
+  return authedGet(`/api/aws/${encodeURIComponent(type)}/${encodeURIComponent(id)}/metrics`);
 }

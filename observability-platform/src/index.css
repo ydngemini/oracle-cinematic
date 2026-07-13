@@ -572,53 +572,6 @@ input:focus-visible {
   background: linear-gradient(90deg, var(--accent-cyan), var(--accent-purple));
 }
 
-/* Mobile Navigation Bar */
-.mobile-nav {
-  display: flex;
-  position: fixed;
-  bottom: 0;
-  left: 0;
-  right: 0;
-  background: rgba(10, 14, 20, 0.98);
-  border-top: 1px solid var(--border-glow);
-  padding: 8px 0;
-  padding-bottom: calc(8px + var(--safe-area-bottom));
-  z-index: 100;
-}
-
-@media (min-width: 1024px) {
-  .mobile-nav {
-    display: none;
-  }
-}
-
-.mobile-nav-btn {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 4px;
-  padding: 8px;
-  background: transparent;
-  border: none;
-  color: var(--text-secondary);
-  font-size: 10px;
-  font-family: var(--font-mono);
-  cursor: pointer;
-  transition: all 0.2s ease;
-}
-
-.mobile-nav-btn.active {
-  color: var(--accent-cyan);
-}
-
-.mobile-nav-btn:active {
-  background: rgba(0, 212, 255, 0.1);
-}
-
-.mobile-nav-icon {
-  font-size: 18px;
-}
 
 /* Touch-friendly buttons */
 .touch-btn {

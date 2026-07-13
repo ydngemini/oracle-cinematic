@@ -191,18 +191,24 @@ def _stripe_revenue() -> dict:
         key=lambda c: (mrr_by_ccy.get(c, 0.0), mtd_by_ccy.get(c, 0.0)),
         default="usd",
     )
+    # Zero-decimal currencies (JPY, KRW, VND, etc.) use whole units already;
+    # currencies with minor units need division by 100.
+    zero_decimal = {"bif", "clp", "djf", "gnf", "jpy", "kmf", "krw", "mga", "pyg", "rwf", "ugx", "vnd", "vuv", "xaf", "xof", "xpf"}
+    def to_major(minor_units: float, currency: str) -> float:
+        return round(minor_units) if currency in zero_decimal else round(minor_units) / 100
+
     by_currency = {
         c: {
-            "mrr": round(mrr_by_ccy.get(c, 0.0)) / 100,
-            "mtd_revenue": round(mtd_by_ccy.get(c, 0.0)) / 100,
+            "mrr": to_major(mrr_by_ccy.get(c, 0.0), c),
+            "mtd_revenue": to_major(mtd_by_ccy.get(c, 0.0), c),
         }
         for c in sorted(all_ccys)
     }
 
     return {
         "currency": primary,
-        "mrr": round(mrr_by_ccy.get(primary, 0.0)) / 100,
-        "mtd_revenue": round(mtd_by_ccy.get(primary, 0.0)) / 100,
+        "mrr": to_major(mrr_by_ccy.get(primary, 0.0), primary),
+        "mtd_revenue": to_major(mtd_by_ccy.get(primary, 0.0), primary),
         "active_subscriptions": active,
         "mtd_payments": payments,
         "by_currency": by_currency,

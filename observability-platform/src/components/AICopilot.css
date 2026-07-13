@@ -24,6 +24,12 @@
   font: inherit;
 }
 
+.copilot-toggle:focus-visible {
+  outline: 2px solid var(--accent-cyan);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
 .copilot-avatar {
   width: 48px;
   height: 48px;
@@ -63,6 +69,18 @@
 @keyframes pulse-urgent {
   0%, 100% { transform: scale(1); box-shadow: 0 0 30px rgba(255, 59, 92, 0.6); }
   50% { transform: scale(1.1); box-shadow: 0 0 40px rgba(255, 59, 92, 0.8); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .copilot-avatar.warning {
+    animation: none;
+  }
+  .copilot-avatar.urgent {
+    animation: none;
+  }
+  .chat-message.typing {
+    animation: none;
+  }
 }
 
 .copilot-icon {
@@ -167,6 +185,11 @@
   justify-content: center;
 }
 
+.copilot-close:focus-visible {
+  outline: 2px solid var(--accent-cyan);
+  outline-offset: 2px;
+}
+
 .copilot-suggestions {
   padding: 12px;
   max-height: 200px;
@@ -197,6 +220,11 @@
   color: inherit;
   font: inherit;
   text-align: left;
+}
+
+.suggestion-item:focus-visible {
+  outline: 2px solid var(--accent-cyan);
+  outline-offset: 2px;
 }
 
 .suggestion-item:active {
@@ -342,6 +370,11 @@
   align-items: center;
   justify-content: center;
   transition: transform 0.2s ease;
+}
+
+.chat-submit:focus-visible {
+  outline: 2px solid var(--accent-cyan);
+  outline-offset: 2px;
 }
 
 .chat-submit:active {

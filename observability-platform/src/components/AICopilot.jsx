@@ -47,7 +47,10 @@ export default function AICopilot({ infrastructure, metrics, alerts }) {
   const analyzeInfra = useCallback(() => {
     const newSuggestions = [];
 
-    if (!infrastructure) return;
+    if (!infrastructure) {
+      setSuggestions([]);
+      return;
+    }
 
     Object.entries(metrics?.ec2 || {}).forEach(([id, data]) => {
       const cpu = data?.cpu?.avg || 0;
@@ -252,8 +255,9 @@ export default function AICopilot({ infrastructure, metrics, alerts }) {
                 onChange={e => setChatInput(e.target.value)}
                 placeholder="Ask NAVI..."
                 className="chat-input"
+                aria-label="Chat with NAVI copilot"
               />
-              <button type="submit" className="chat-submit">→</button>
+              <button type="submit" className="chat-submit" aria-label="Send message">→</button>
             </form>
           </div>
 

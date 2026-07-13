@@ -104,7 +104,7 @@ export function TourEntry({ onEnter }: { onEnter: () => void }) {
             </motion.p>
             <motion.h1
               variants={rise}
-              className="font-serif text-[clamp(3.2rem,9vw,8rem)] font-light leading-[0.92] tracking-tight"
+              className="font-display text-[clamp(3.2rem,9vw,8rem)] font-light leading-[0.92] tracking-tight"
             >
               <span className="italic text-[rgba(224,232,255,0.92)]">The Nocturne</span>
               <br />

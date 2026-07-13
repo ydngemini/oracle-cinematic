@@ -40,7 +40,11 @@ function CostTrendPanel({ billing }) {
     [billing],
   );
   const [svc, setSvc] = useState('');
-  const active = svc || services[0] || '';
+  // Validate selected service against current services list; clear stale selections
+  const active = useMemo(() => {
+    if (svc && services.includes(svc)) return svc;
+    return services[0] || '';
+  }, [svc, services]);
   const series = useMemo(() => serviceDailySeries(billing, active), [billing, active]);
   return (
     <div className="panel">

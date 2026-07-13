@@ -102,11 +102,17 @@ export function PullToRefresh({ onRefresh, children }) {
   const handleTouchEnd = async () => {
     if (pullDistance > 60) {
       setIsRefreshing(true);
-      await onRefresh();
-      setIsRefreshing(false);
+      try {
+        await onRefresh();
+      } finally {
+        setIsRefreshing(false);
+        setIsPulling(false);
+        setPullDistance(0);
+      }
+    } else {
+      setIsPulling(false);
+      setPullDistance(0);
     }
-    setIsPulling(false);
-    setPullDistance(0);
   };
 
   return (

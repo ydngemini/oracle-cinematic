@@ -56,9 +56,9 @@ class SovereignVault:
         bucket_name: Optional[str] = None,
         region_name: Optional[str] = None,
     ):
-        self.bucket_name = (bucket_name or os.getenv("CONTRACT_VAULT_BUCKET") or DEFAULT_BUCKET).strip()
+        self.bucket_name = (bucket_name or os.getenv("CONTRACT_VAULT_BUCKET", "")).strip()
         if not self.bucket_name:
-            raise ValueError("CONTRACT_VAULT_BUCKET cannot be empty")
+            raise ValueError("CONTRACT_VAULT_BUCKET is required (no default fallback)")
 
         self.region_name = region_name or os.getenv("AWS_REGION", "us-east-2")
         if s3_client is not None:
@@ -119,6 +119,8 @@ class SovereignVault:
         try:
             path = self._validate_pdf(pdf_file_path)
             key = self.s3_key(client_id, document_id)
+            # Reuse the sanitized document_id from s3_key validation for ContentDisposition
+            safe_document_id = self._document_id(document_id)
             logger.info("Contract vault upload starting: document_id=%s", document_id)
             self.s3_client.upload_file(
                 str(path),
@@ -127,13 +129,13 @@ class SovereignVault:
                 ExtraArgs={
                     "ServerSideEncryption": "AES256",
                     "ContentType": "application/pdf",
-                    "ContentDisposition": f'attachment; filename="{document_id}.pdf"',
+                    "ContentDisposition": f'attachment; filename="{safe_document_id}.pdf"',
                 },
             )
             logger.info("Contract vault upload complete: document_id=%s", document_id)
             return True
         except (BotoCoreError, ClientError, OSError, ValueError) as exc:
-            logger.error("Contract vault upload failed for document_id=%s: %s", document_id, exc)
+            logger.exception("Contract vault upload failed for document_id=%s: %s", document_id, exc)
             return False
 
     def generate_expiring_link(
@@ -152,7 +154,7 @@ class SovereignVault:
                 ExpiresIn=expires_in,
             )
         except (BotoCoreError, ClientError, ValueError) as exc:
-            logger.error("Contract vault presign failed for document_id=%s: %s", document_id, exc)
+            logger.exception("Contract vault presign failed for document_id=%s: %s", document_id, exc)
             return None
 
     def vault_pdf(

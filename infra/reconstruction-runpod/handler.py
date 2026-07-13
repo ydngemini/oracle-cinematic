@@ -107,12 +107,11 @@ def _pull_urls(urls: list[str], dest: Path) -> int:
             declared_size = r.headers.get("Content-Length")
             if declared_size:
                 try:
-                    if int(declared_size) > MAX_IMAGE_BYTES:
-                        raise ValueError(f"image_urls[{i}] exceeds the per-image byte limit")
+                    size_int = int(declared_size)
                 except ValueError as exc:
-                    if "exceeds" in str(exc):
-                        raise
                     raise ValueError(f"image_urls[{i}] returned an invalid Content-Length") from exc
+                if size_int > MAX_IMAGE_BYTES:
+                    raise ValueError(f"image_urls[{i}] exceeds the per-image byte limit")
             written = 0
             with target.open("wb") as f:
                 for chunk in r.iter_content(1 << 20):
@@ -200,17 +199,38 @@ def _write_demo_splat(path: Path, w=4.0, h=2.6, d=4.0, step=0.12) -> Path:
 # --- pipeline ---------------------------------------------------------------
 def _run_pipeline(images: Path, splat: Path, iters: str) -> tuple[int, str]:
     """Run pipeline.sh, tee its output to the RunPod worker log, keep an error tail."""
+    import threading
+    timeout_seconds = int(os.environ.get("RECON_TIMEOUT", "3600"))
     env = {**os.environ, "RECON_ITERS": iters}
     proc = subprocess.Popen(
         [PIPELINE, str(images), str(splat)],
         env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
     )
     tail: collections.deque[str] = collections.deque(maxlen=80)
-    assert proc.stdout is not None
-    for line in proc.stdout:
-        print(line, end="", flush=True)  # -> visible live in RunPod worker logs
-        tail.append(line)
-    proc.wait()
+    timer_triggered = [False]
+
+    def timeout_kill():
+        timer_triggered[0] = True
+        try:
+            proc.terminate()
+            proc.wait(timeout=5)
+        except Exception:
+            proc.kill()
+            proc.wait()
+
+    timer = threading.Timer(timeout_seconds, timeout_kill)
+    timer.start()
+    try:
+        assert proc.stdout is not None
+        for line in proc.stdout:
+            print(line, end="", flush=True)  # -> visible live in RunPod worker logs
+            tail.append(line)
+        proc.wait()
+    finally:
+        timer.cancel()
+    if timer_triggered[0]:
+        tail.append(f"[TIMEOUT] Pipeline killed after {timeout_seconds}s\n")
+        return 124, "".join(tail)
     return proc.returncode, "".join(tail)
 
 

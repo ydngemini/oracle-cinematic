@@ -62,6 +62,7 @@ SPLAT_CDN_BASE="${SPLAT_CDN_BASE:-$(tf_out recon_splat_cdn_base)}"
 SPLAT_CDN_BASE="${SPLAT_CDN_BASE:-https://$SPLAT_BUCKET.s3.$REGION.amazonaws.com}"
 
 CONTRACT_VAULT_BUCKET="${CONTRACT_VAULT_BUCKET:-$(tf_out contract_vault_bucket)}"
+# Terraform pattern: ${local.name}-contract-vault-${local.account_id}
 CONTRACT_VAULT_BUCKET="${CONTRACT_VAULT_BUCKET:-neoh-prod-contract-vault-$ACCOUNT_ID}"
 
 # ECS service names are fixed in infra/terraform/ecs.tf (aws_ecs_service.backend
