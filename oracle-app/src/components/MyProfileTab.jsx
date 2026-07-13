@@ -2,6 +2,8 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { crmGet, crmPost, crmPut } from '../state/useCrmApi';
 import { getTenantId, getUserId } from '../state/identity';
 import { LicenseStatusWidget } from './LicenseStatusWidget';
+import { HarvestControl } from './HarvestControl';
+import { BrokerageOnboardingPanel } from './BrokerageOnboardingPanel';
 import styles from './MyProfileTab.module.css';
 
 // Inline stroke glyphs — same idiom as TabBar GLYPHS, zero icon deps.
@@ -421,6 +423,10 @@ export default function MyProfileTab() {
 
       {/* ── State licenses — per-state compliance tracking ──────────── */}
       <LicenseStatusWidget />
+
+      <BrokerageOnboardingPanel />
+
+      {sessionStorage.getItem('oracle_role') === 'broker_owner' && <HarvestControl />}
 
       {/* ── Security — self-service password change (DB accounts) ──────── */}
       <section className={styles.panel} aria-label="Security">

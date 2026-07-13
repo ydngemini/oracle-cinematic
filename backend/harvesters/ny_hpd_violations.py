@@ -18,6 +18,7 @@ import os
 from typing import Optional
 
 from .base import SocrataHarvester
+from .municipal import aggregate_property_records, normalize_bbl, normalize_street_address
 from .property_adapter import PropertyRecord
 
 
@@ -27,6 +28,9 @@ class NYCHPDViolationsHarvester(SocrataHarvester):
     RESOURCE_URL = "https://data.cityofnewyork.us/resource/wvxf-dwi5.json"
     SOQL_WHERE = "violationstatus='Open'"
     SOQL_ORDER = "violationid"
+    SOQL_CURSOR_FIELD = "violationid"
+    SOURCE_KEY = "nyc_hpd_violations"
+    RETAIN_RAW = True
 
     async def _get_json(self, url: str, headers: Optional[dict] = None):
         token = os.getenv("SODA_APP_TOKEN")
@@ -35,10 +39,10 @@ class NYCHPDViolationsHarvester(SocrataHarvester):
         return await super()._get_json(url, headers=headers)
 
     def map_record(self, row: dict) -> Optional[PropertyRecord]:
-        bbl = str(row.get("bbl") or "").strip()
+        bbl = normalize_bbl(str(row.get("bbl") or ""))
         house = str(row.get("housenumber") or "").strip()
         street = str(row.get("streetname") or "").strip()
-        address = " ".join(p for p in (house, street) if p).strip()
+        address = normalize_street_address(" ".join(p for p in (house, street) if p))
         if not bbl or not address:
             return None
 
@@ -64,4 +68,20 @@ class NYCHPDViolationsHarvester(SocrataHarvester):
             is_absentee_owner=False,
             distress_flags=flags,
             last_sale_date=None,
+            source_metadata={
+                "bbl": bbl,
+                "building_id": row.get("buildingid"),
+                "registration_id": row.get("registrationid"),
+                "violation_id": row.get("violationid"),
+                "inspection_date": row.get("inspectiondate"),
+                "violation_class": vclass or None,
+                "rent_impairing": str(row.get("rentimpairing") or "").upper() == "Y",
+            },
         )
+
+    def aggregate_records(self, records: list[PropertyRecord]) -> list[PropertyRecord]:
+        return aggregate_property_records(records)
+
+    def raw_property_key(self, row: dict) -> str:
+        bbl = normalize_bbl(str(row.get("bbl") or ""))
+        return f"HPDV:{bbl}" if bbl else ""

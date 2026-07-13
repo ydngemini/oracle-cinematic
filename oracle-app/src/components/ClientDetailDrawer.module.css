@@ -638,6 +638,27 @@
 .pickAddr { flex: 1; min-width: 0; font-size: var(--text-sm); color: var(--oracle-text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .pickMeta { flex-shrink: 0; font-family: var(--font-display); font-size: var(--text-xs); letter-spacing: var(--tracking-wider); text-transform: uppercase; color: var(--oracle-text-ghost); }
 
+/* ── Revocable, read-only dossier links ────────────────────────────────── */
+.dossierPane, .dossierForm { display: flex; flex-direction: column; gap: var(--space-3); }
+.scopeFieldset { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-2); padding: var(--space-3); border: 1px solid var(--oracle-border); border-radius: var(--radius-md); }
+.scopeFieldset legend { padding: 0 var(--space-1); font-family: var(--font-display); font-size: .5625rem; letter-spacing: var(--tracking-widest); text-transform: uppercase; color: var(--oracle-text-ghost); }
+.scopeFieldset label { min-height: 40px; display: flex; align-items: center; gap: var(--space-2); font-size: var(--text-xs); color: var(--oracle-text-dim); }
+.scopeFieldset input { width: 18px; height: 18px; accent-color: var(--oracle-amber); }
+.dossierWarning { padding: var(--space-2) var(--space-3); border-left: 2px solid var(--oracle-amber-dim); font-size: var(--text-xs); color: var(--oracle-text-dim); }
+.createdLink { display: flex; flex-direction: column; gap: var(--space-2); padding: var(--space-4); border: 1px solid var(--oracle-green-dim); border-radius: var(--radius-lg); background: color-mix(in srgb, var(--oracle-green) 5%, transparent); }
+.createdLink p { font-size: var(--text-xs); color: var(--oracle-text-dim); }
+.createdLink input { width: 100%; min-height: 44px; padding: var(--space-2) var(--space-3); border: 1px solid var(--oracle-border-bright); border-radius: var(--radius-md); background: rgba(0,0,0,.3); font-family: var(--font-display); font-size: var(--text-xs); color: var(--oracle-text); }
+.createdLink button, .portalLinks button { min-height: 44px; padding: 0 var(--space-3); border: 1px solid var(--oracle-amber-dim); border-radius: var(--radius-md); font-family: var(--font-display); font-size: var(--text-xs); text-transform: uppercase; color: var(--oracle-amber); }
+.portalLinks { list-style: none; overflow: hidden; border: 1px solid var(--oracle-border); border-radius: var(--radius-md); }
+.portalLinks li { min-height: 64px; display: flex; align-items: center; gap: var(--space-3); padding: var(--space-3); }
+.portalLinks li + li { border-top: 1px solid var(--oracle-border-subtle); }
+.portalLinks li > div { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.portalLinks strong { font-size: var(--text-sm); }
+.portalLinks small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--text-xs); color: var(--oracle-text-ghost); }
+.portalLinks button { flex: 0 0 auto; color: var(--oracle-red); border-color: var(--oracle-red-dim); }
+
+@media (max-width: 390px) { .scopeFieldset { grid-template-columns: 1fr; } }
+
 /* ── Shared empty / error / skeleton (drawer-level) ─────────────────────── */
 .empty {
   display: flex;

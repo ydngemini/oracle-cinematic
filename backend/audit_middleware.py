@@ -40,8 +40,11 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import hashlib
+import json
 import logging
 import time
+from collections import defaultdict, deque
 from typing import Callable, Optional
 
 from fastapi import Request
@@ -93,7 +96,7 @@ def _fill_template(template: str, request: Request) -> str:
 
 def _category_for_path(path: str) -> AuditCategory:
     """Pick a category based on whether the path lives under /admin."""
-    if path.startswith("/admin"):
+    if path.startswith(("/admin", "/api/admin")):
         return AuditCategory.ADMIN_ACTION
     return AuditCategory.USER_STATE_CHANGE
 
@@ -131,6 +134,105 @@ async def _record_safe(
 # ---------------------------------------------------------------------------
 
 _pending: set[asyncio.Task] = set()
+
+# Per-process detection is deliberately bounded; durable alerts are written to
+# Postgres and can be correlated across ECS replicas by fingerprint/time.
+_denial_windows: dict[tuple[str, str], deque[float]] = defaultdict(deque)
+_denial_last_alert: dict[tuple[str, str], float] = {}
+_DENIAL_WINDOW_SECONDS = 300.0
+_DENIAL_THRESHOLD = 5
+_MAX_ANOMALY_KEYS = 5_000
+
+
+async def _record_anomaly_safe(
+    *,
+    tenant_id: Optional[str],
+    user_id: Optional[str],
+    source_ip: str,
+    path: str,
+    count: int,
+) -> None:
+    fingerprint = hashlib.sha256(
+        f"repeated_access_denial:{source_ip}:{path}".encode("utf-8")
+    ).hexdigest()
+    evidence = {
+        "denials": count,
+        "window_seconds": int(_DENIAL_WINDOW_SECONDS),
+        "status_codes": [401, 403],
+    }
+    try:
+        from uuid import UUID
+
+        from db.connection import tenant_tx
+        from tenancy import Role, TenantContext
+
+        platform_tenant = "00000000-0000-0000-0000-000000000000"
+        try:
+            persisted_tenant = str(UUID(str(tenant_id))) if tenant_id else platform_tenant
+        except ValueError:
+            persisted_tenant = platform_tenant
+        ctx = TenantContext(
+            agent_id="audit-anomaly-detector",
+            tenant_id=platform_tenant,
+            role=Role.PLATFORM_ADMIN,
+        )
+        async with tenant_tx(ctx) as conn:
+            await conn.execute(
+                """
+                INSERT INTO audit_anomaly_alerts (
+                    tenant_id,anomaly_type,severity,fingerprint,actor_id,
+                    source_ip,route,evidence
+                ) VALUES ($1::uuid,'repeated_access_denial','high',$2,$3,$4::inet,$5,$6::jsonb)
+                """,
+                persisted_tenant,
+                fingerprint,
+                user_id,
+                source_ip if source_ip != "unknown" else None,
+                path[:500],
+                json.dumps(evidence, separators=(",", ":")),
+            )
+        await ledger.record(
+            category=AuditCategory.ADMIN_ACTION,
+            action="anomaly_repeated_access_denial",
+            tenant_id=persisted_tenant,
+            user_id=user_id,
+            metadata={"fingerprint": fingerprint, "route": path, **evidence},
+        )
+    except Exception as exc:  # noqa: BLE001 — anomaly recording never breaks auth
+        log.warning("Anomaly alert write failed (degraded mode): %s", exc)
+
+
+def _track_access_denial(
+    *,
+    tenant_id: Optional[str],
+    user_id: Optional[str],
+    source_ip: str,
+    path: str,
+) -> None:
+    now = time.monotonic()
+    key = (source_ip, path)
+    if key not in _denial_windows and len(_denial_windows) >= _MAX_ANOMALY_KEYS:
+        oldest = next(iter(_denial_windows))
+        _denial_windows.pop(oldest, None)
+        _denial_last_alert.pop(oldest, None)
+    window = _denial_windows[key]
+    while window and now - window[0] > _DENIAL_WINDOW_SECONDS:
+        window.popleft()
+    window.append(now)
+    last_alert = _denial_last_alert.get(key, 0.0)
+    if len(window) >= _DENIAL_THRESHOLD and now - last_alert >= _DENIAL_WINDOW_SECONDS:
+        _denial_last_alert[key] = now
+        task = asyncio.create_task(
+            _record_anomaly_safe(
+                tenant_id=tenant_id,
+                user_id=user_id,
+                source_ip=source_ip,
+                path=path,
+                count=len(window),
+            )
+        )
+        _pending.add(task)
+        task.add_done_callback(_pending.discard)
 
 
 def _spawn_record(**kwargs) -> None:
@@ -263,13 +365,11 @@ class AuditMiddleware(BaseHTTPMiddleware):
         super().__init__(app)
 
     async def dispatch(self, request: Request, call_next: Callable) -> Response:
-        # Pass through non-mutation methods and skipped paths immediately.
-        if request.method not in _MUTATION_METHODS:
-            return await call_next(request)
-
         path = request.url.path
         if any(path.startswith(prefix) for prefix in _SKIP_PREFIXES):
             return await call_next(request)
+
+        is_mutation = request.method in _MUTATION_METHODS
 
         t0 = time.monotonic()
         response = await call_next(request)
@@ -303,13 +403,22 @@ class AuditMiddleware(BaseHTTPMiddleware):
 
         # Tracked background task — off the hot path, strong-referenced, drained
         # on shutdown (see _spawn_record / drain_pending).
-        _spawn_record(
-            category=category,
-            action=f"{request.method} {path}",
-            tenant_id=tenant_id,
-            user_id=user_id,
-            metadata=meta,
-        )
+        if is_mutation:
+            _spawn_record(
+                category=category,
+                action=f"{request.method} {path}",
+                tenant_id=tenant_id,
+                user_id=user_id,
+                metadata=meta,
+            )
+
+        if response.status_code in {401, 403}:
+            _track_access_denial(
+                tenant_id=tenant_id,
+                user_id=user_id,
+                source_ip=client_ip,
+                path=path,
+            )
 
         return response
 

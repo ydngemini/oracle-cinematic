@@ -19,16 +19,18 @@ import hashlib
 import logging
 import os
 import secrets
+import json
 from datetime import datetime, timezone
+from typing import Any, Literal, Optional
 from uuid import UUID
 
 import jwt
-from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field
+from fastapi import APIRouter, Depends, Header, HTTPException
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from auth import ALGORITHM, SECRET_KEY
 from db.connection import get_pool, tenant_tx
-from tenancy import TenantContext, require_context
+from tenancy import Role, TenantContext, require_context
 
 log = logging.getLogger("oracle.client_portal")
 
@@ -42,15 +44,43 @@ MAX_EXPIRY_DAYS = 90
 # Models
 # ---------------------------------------------------------------------------
 
+class PortalAssetScope(BaseModel):
+    """Closed allow-list: a portal can never request arbitrary table/field names."""
+
+    model_config = ConfigDict(extra="forbid")
+    summary: bool = True
+    media: bool = False
+    milestones: bool = False
+    title_summary: bool = False
+    zoning_summary: bool = False
+    underwriting: bool = False
+    documents: bool = False
+
+
 class PortalLinkRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     lead_id: UUID
     expiry_days: int = Field(default=7, ge=1, le=MAX_EXPIRY_DAYS)
+    link_kind: Literal["seller", "joint_venture"] = "seller"
+    asset_scope: PortalAssetScope = Field(default_factory=PortalAssetScope)
+    issued_to_label: Optional[str] = Field(default=None, max_length=120)
+    watermark_text: Optional[str] = Field(default=None, max_length=160)
+
+    @field_validator("issued_to_label", "watermark_text")
+    @classmethod
+    def plain_single_line(cls, value: Optional[str]) -> Optional[str]:
+        if value is not None and any(ord(ch) < 32 for ch in value):
+            raise ValueError("portal labels must be a single line")
+        return value
 
 
 class PortalLinkResponse(BaseModel):
     portal_id: str
     secure_url: str
     access_expires_at: str
+    link_kind: str
+    asset_scope: dict
+    watermark_text: str
 
 
 class PortalSessionResponse(BaseModel):
@@ -58,6 +88,9 @@ class PortalSessionResponse(BaseModel):
     session_token: str
     lead_id: str
     expires_at: str
+    link_kind: str
+    asset_scope: dict
+    watermark_text: str
 
 
 def _hash_token(token: str) -> str:
@@ -76,6 +109,14 @@ async def create_portal_link(
     """Mint a passwordless portal link for a lead owned by this tenant."""
     token = secrets.token_urlsafe(32)  # 256-bit; plaintext returned once below
     token_hash = _hash_token(token)
+    scope = body.asset_scope.model_dump()
+    # Seller dossiers never expose disposition documents by default; a broker
+    # must explicitly opt in.  Every scope remains read-only.
+    watermark = body.watermark_text or (
+        f"CONFIDENTIAL — {body.issued_to_label}"
+        if body.issued_to_label
+        else "CONFIDENTIAL — REVOCABLE DOSSIER"
+    )
 
     async with tenant_tx(ctx) as conn:
         # RLS scopes this lookup — a foreign lead_id reads as nonexistent.
@@ -86,13 +127,17 @@ async def create_portal_link(
         row = await conn.fetchrow(
             """
             INSERT INTO client_portals
-                (tenant_id, lead_id, token_hash, access_expires_at, created_by)
+                (tenant_id, lead_id, token_hash, access_expires_at, created_by,
+                 link_kind,asset_scope,watermark_text,issued_to_label)
             VALUES
-                ($1, $2, $3, now() + make_interval(days => $4), $5)
+                ($1, $2, $3, now() + make_interval(days => $4), $5,
+                 $6,$7::jsonb,$8,$9)
             RETURNING id, access_expires_at
             """,
             UUID(ctx.tenant_id), body.lead_id, token_hash,
-            body.expiry_days, ctx.agent_id,
+            body.expiry_days, ctx.agent_id, body.link_kind,
+            json.dumps(scope, separators=(",", ":")), watermark,
+            body.issued_to_label,
         )
 
     log.info(
@@ -103,7 +148,55 @@ async def create_portal_link(
         portal_id=str(row["id"]),
         secure_url=f"{PORTAL_BASE_URL}/vault/secure-access/{token}",
         access_expires_at=row["access_expires_at"].isoformat(),
+        link_kind=body.link_kind,
+        asset_scope=scope,
+        watermark_text=watermark,
     )
+
+
+@router.get("/links")
+async def list_portal_links(
+    lead_id: Optional[UUID] = None,
+    ctx: TenantContext = Depends(require_context),
+):
+    """List link metadata only; bearer tokens can never be recovered."""
+    async with tenant_tx(ctx) as conn:
+        rows = await conn.fetch(
+            """
+            SELECT id,lead_id,link_kind,asset_scope,watermark_text,issued_to_label,
+                   access_expires_at,revoked_at,last_accessed_at,access_count,
+                   created_by,created_at
+              FROM client_portals
+             WHERE ($1::uuid IS NULL OR lead_id=$1)
+             ORDER BY created_at DESC
+            """,
+            lead_id,
+        )
+    return {
+        "links": [
+            {
+                **dict(row),
+                "id": str(row["id"]),
+                "lead_id": str(row["lead_id"]),
+                "asset_scope": (
+                    json.loads(row["asset_scope"])
+                    if isinstance(row["asset_scope"], str)
+                    else row["asset_scope"]
+                ),
+                "access_expires_at": row["access_expires_at"].isoformat(),
+                "active": (
+                    row["revoked_at"] is None
+                    and row["access_expires_at"] > datetime.now(timezone.utc)
+                ),
+                "revoked_at": row["revoked_at"].isoformat() if row["revoked_at"] else None,
+                "last_accessed_at": (
+                    row["last_accessed_at"].isoformat() if row["last_accessed_at"] else None
+                ),
+                "created_at": row["created_at"].isoformat(),
+            }
+            for row in rows
+        ]
+    }
 
 
 @router.post("/links/{portal_id}/revoke")
@@ -155,11 +248,19 @@ async def open_portal_session(token: str):
         raise HTTPException(status_code=404, detail="Link invalid or expired.")
 
     expires_at: datetime = row["access_expires_at"]
+    scope = (
+        json.loads(row["asset_scope"])
+        if isinstance(row["asset_scope"], str)
+        else dict(row["asset_scope"] or {})
+    )
     claims = {
         "role": "portal_client",
         "tenant_id": str(row["tenant_id"]),
         "lead_id": str(row["lead_id"]),
         "portal_id": str(row["portal_id"]),
+        "link_kind": row["link_kind"],
+        "asset_scope": scope,
+        "watermark_text": row["watermark_text"] or "CONFIDENTIAL — REVOCABLE DOSSIER",
         "iat": int(datetime.now(timezone.utc).timestamp()),
         "exp": int(expires_at.timestamp()),
     }
@@ -170,4 +271,218 @@ async def open_portal_session(token: str):
         session_token=session_token,
         lead_id=str(row["lead_id"]),
         expires_at=expires_at.isoformat(),
+        link_kind=row["link_kind"],
+        asset_scope=scope,
+        watermark_text=row["watermark_text"] or "CONFIDENTIAL — REVOCABLE DOSSIER",
     )
+
+
+def _portal_session_claims(authorization: Optional[str]) -> dict:
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Missing portal session.")
+    try:
+        claims = jwt.decode(
+            authorization.removeprefix("Bearer ").strip(),
+            SECRET_KEY,
+            algorithms=[ALGORITHM],
+        )
+    except jwt.InvalidTokenError as exc:
+        raise HTTPException(status_code=401, detail="Invalid or expired portal session.") from exc
+    if claims.get("role") != "portal_client":
+        raise HTTPException(status_code=403, detail="Not a portal session.")
+    try:
+        UUID(str(claims["tenant_id"]))
+        UUID(str(claims["lead_id"]))
+        UUID(str(claims["portal_id"]))
+    except (KeyError, TypeError, ValueError) as exc:
+        raise HTTPException(status_code=401, detail="Malformed portal session.") from exc
+    return claims
+
+
+def _json_value(value):
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except ValueError:
+            return value
+    return value
+
+
+@router.get("/dossier")
+async def read_scoped_dossier(authorization: Optional[str] = Header(default=None)):
+    """Return only the fields granted by a still-live, revocable portal row."""
+    claims = _portal_session_claims(authorization)
+    ctx = TenantContext(
+        agent_id=f"portal:{claims['portal_id']}",
+        tenant_id=str(claims["tenant_id"]),
+        role=Role.AGENT,
+    )
+    async with tenant_tx(ctx) as conn:
+        portal = await conn.fetchrow(
+            """
+            SELECT * FROM client_portals
+             WHERE id=$1::uuid AND lead_id=$2::uuid
+               AND revoked_at IS NULL AND access_expires_at > now()
+            """,
+            claims["portal_id"],
+            claims["lead_id"],
+        )
+        if portal is None:
+            raise HTTPException(status_code=404, detail="Link invalid or expired.")
+        scope = dict(_json_value(portal["asset_scope"]) or {})
+        lead = await conn.fetchrow(
+            """
+            SELECT id,parcel_id,state,address,asking_price,dossier_status,
+                   contract_execution_date,contract_expires_at,updated_at
+              FROM leads WHERE id=$1::uuid
+            """,
+            claims["lead_id"],
+        )
+        if lead is None:
+            raise HTTPException(status_code=404, detail="Dossier is unavailable.")
+
+        assets: dict[str, Any] = {}
+        if scope.get("summary"):
+            assets["summary"] = {
+                "lead_id": str(lead["id"]),
+                "parcel_id": lead["parcel_id"],
+                "state": lead["state"],
+                "address": lead["address"],
+                "asking_price": float(lead["asking_price"]) if lead["asking_price"] else None,
+                "dossier_status": lead["dossier_status"],
+                "contract_execution_date": (
+                    lead["contract_execution_date"].isoformat()
+                    if lead["contract_execution_date"] else None
+                ),
+                "contract_expires_at": (
+                    lead["contract_expires_at"].isoformat()
+                    if lead["contract_expires_at"] else None
+                ),
+                "updated_at": lead["updated_at"].isoformat(),
+            }
+        if scope.get("media"):
+            rows = await conn.fetch(
+                """
+                SELECT id,kind,url,caption,sort_order,created_at
+                  FROM property_media WHERE lead_id=$1::uuid
+                 ORDER BY sort_order,id
+                """,
+                claims["lead_id"],
+            )
+            assets["media"] = [
+                {
+                    **dict(row),
+                    "id": str(row["id"]),
+                    "created_at": row["created_at"].isoformat(),
+                }
+                for row in rows
+            ]
+        if scope.get("milestones"):
+            rows = await conn.fetch(
+                """
+                SELECT m.id,m.milestone_type,m.title,m.status,m.due_at,m.completed_at
+                  FROM transactions t
+                  JOIN transaction_milestones m ON m.transaction_id=t.id
+                 WHERE t.lead_id=$1::uuid ORDER BY m.due_at NULLS LAST,m.created_at
+                """,
+                claims["lead_id"],
+            )
+            assets["milestones"] = [
+                {
+                    **dict(row),
+                    "id": str(row["id"]),
+                    "due_at": row["due_at"].isoformat() if row["due_at"] else None,
+                    "completed_at": (
+                        row["completed_at"].isoformat() if row["completed_at"] else None
+                    ),
+                }
+                for row in rows
+            ]
+        if scope.get("title_summary"):
+            rows = await conn.fetch(
+                """
+                SELECT finding_type,amount,recorded_at,released_at,match_status,
+                       chain_gap,review_status,notes
+                  FROM title_findings WHERE property_key=$1
+                 ORDER BY created_at DESC LIMIT 50
+                """,
+                lead["parcel_id"],
+            )
+            assets["title_summary"] = [
+                {
+                    **dict(row),
+                    "amount": float(row["amount"]) if row["amount"] is not None else None,
+                    "recorded_at": row["recorded_at"].isoformat() if row["recorded_at"] else None,
+                    "released_at": row["released_at"].isoformat() if row["released_at"] else None,
+                    "warning": "Preliminary public-record finding; not an insured title search.",
+                }
+                for row in rows
+            ]
+        if scope.get("zoning_summary"):
+            row = await conn.fetchrow(
+                """
+                SELECT zoning_district,effective_version,lot_area_sqft,
+                       building_area_sqft,current_far,max_far,
+                       remaining_buildable_sqft,permitted_uses,result,review_status
+                  FROM zoning_analyses WHERE property_key=$1
+                 ORDER BY created_at DESC LIMIT 1
+                """,
+                lead["parcel_id"],
+            )
+            assets["zoning_summary"] = (
+                {
+                    **dict(row),
+                    "result": _json_value(row["result"]),
+                    "warning": "Planning and zoning professional review required.",
+                }
+                if row else None
+            )
+        if scope.get("underwriting"):
+            row = await conn.fetchrow(
+                """
+                SELECT analysis_type,observation_date,confidence,model_version,
+                       evidence_status,result,trace,professional_review_status
+                  FROM intelligence_scores
+                 WHERE property_key=$1 AND analysis_type='underwriting'
+                 ORDER BY observation_date DESC,created_at DESC LIMIT 1
+                """,
+                lead["parcel_id"],
+            )
+            assets["underwriting"] = (
+                {
+                    **dict(row),
+                    "observation_date": row["observation_date"].isoformat(),
+                    "confidence": float(row["confidence"]),
+                    "result": _json_value(row["result"]),
+                    "trace": _json_value(row["trace"]),
+                }
+                if row else None
+            )
+        if scope.get("documents"):
+            rows = await conn.fetch(
+                """
+                SELECT id,document_type,template_key,template_version,status,
+                       reviewed_at,artifact_sha256,created_at
+                  FROM contract_documents
+                 WHERE lead_id=$1::uuid AND status IN ('approved','signed')
+                 ORDER BY created_at DESC
+                """,
+                claims["lead_id"],
+            )
+            assets["documents"] = [
+                {
+                    **dict(row),
+                    "id": str(row["id"]),
+                    "reviewed_at": row["reviewed_at"].isoformat() if row["reviewed_at"] else None,
+                    "created_at": row["created_at"].isoformat(),
+                }
+                for row in rows
+            ]
+
+    return {
+        "read_only": True,
+        "link_kind": portal["link_kind"],
+        "asset_scope": scope,
+        "watermark_text": portal["watermark_text"] or "CONFIDENTIAL — REVOCABLE DOSSIER",
+        "assets": assets,
+    }

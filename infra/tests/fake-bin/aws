@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+printf '%s\n' "$*" >> "${FAKE_AWS_LOG:?}"
+
+args=" $* "
+case "$args" in
+  *" sts get-caller-identity "*) echo "123456789012" ;;
+  *" ecr describe-images "*) echo "sha256:0123456789abcdef" ;;
+  *" ecs describe-services "*"services[0].{td:taskDefinition"*)
+    echo '{"td":"arn:old-backend","subnets":["subnet-1"],"sgs":["sg-1"]}'
+    ;;
+  *" ecs describe-services "*" observability "*"services[0].status"*) echo "INACTIVE" ;;
+  *" ecs describe-services "*" backend "*"services[0].taskDefinition"*) echo "arn:old-backend" ;;
+  *" ecs describe-services "*" frontend "*"services[0].taskDefinition"*) echo "arn:old-frontend" ;;
+  *" ecs describe-task-definition "*"taskDefinition.taskRoleArn"*) echo "arn:aws:iam::123456789012:role/test-role" ;;
+  *" ecs describe-task-definition "*)
+    echo '{"family":"test","networkMode":"awsvpc","containerDefinitions":[{"name":"backend","image":"old"}],"requiresCompatibilities":["FARGATE"],"cpu":"256","memory":"512"}'
+    ;;
+  *" ecs register-task-definition "*) echo "arn:new-task" ;;
+  *" rds describe-db-clusters "*) echo "arn:aws:secretsmanager:us-east-1:123456789012:secret:test" ;;
+  *" ecs run-task "*) echo "arn:aws:ecs:us-east-1:123456789012:task/test" ;;
+  *" ecs describe-tasks "*"containers[0].exitCode"*) echo "0" ;;
+  *" ecs describe-tasks "*"stoppedReason"*) echo "Essential container exited" ;;
+  *) : ;;
+esac

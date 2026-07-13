@@ -1,5 +1,6 @@
 'use client'
 
+import { useState } from 'react'
 import { FOOTPRINT, type Vec2, type Waypoint } from './tourData'
 
 const BOUNDS = { minX: -12, maxX: 12, minZ: -10, maxZ: 12 }
@@ -25,6 +26,7 @@ export function Minimap({
   waypoints: Waypoint[]
   gradientId?: string
 }) {
+  const [focusedId, setFocusedId] = useState<string | null>(null)
   const W = large ? 460 : 208
   const H = large ? 422 : 190
   const sx = W / (BOUNDS.maxX - BOUNDS.minX)
@@ -41,6 +43,8 @@ export function Minimap({
       height={H}
       viewBox={`0 0 ${W} ${H}`}
       style={{ display: 'block', width: '100%', height: 'auto' }}
+      role="group"
+      aria-label="Interactive property floor plan"
     >
       <defs>
         <radialGradient id={gradientId} cx="50%" cy="50%" r="50%">
@@ -69,12 +73,24 @@ export function Minimap({
         const rw = w * sx
         const rh = d * (H / (BOUNDS.maxZ - BOUNDS.minZ))
         const isActive = wp.id === activeId
+        const isFocused = wp.id === focusedId
         const [lx, ly] = project(cx, cz, W, H)
         return (
           <g
             key={wp.id}
             onClick={() => onNavigate(wp.id)}
-            style={{ cursor: 'pointer' }}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter' || event.key === ' ') {
+                event.preventDefault()
+                onNavigate(wp.id)
+              }
+            }}
+            onFocus={() => setFocusedId(wp.id)}
+            onBlur={() => setFocusedId(null)}
+            role="button"
+            tabIndex={0}
+            aria-label={`Go to ${wp.name}`}
+            style={{ cursor: 'pointer', outline: 'none' }}
           >
             <rect
               x={rx}
@@ -83,8 +99,14 @@ export function Minimap({
               height={rh}
               rx={4}
               fill={isActive ? 'rgba(139,92,246,0.22)' : 'rgba(255,255,255,0.04)'}
-              stroke={isActive ? 'rgba(139,92,246,0.9)' : 'rgba(255,255,255,0.12)'}
-              strokeWidth={isActive ? 1.5 : 1}
+              stroke={
+                isFocused
+                  ? '#00f0ff'
+                  : isActive
+                    ? 'rgba(139,92,246,0.9)'
+                    : 'rgba(255,255,255,0.12)'
+              }
+              strokeWidth={isFocused || isActive ? 1.5 : 1}
             />
             {large && (
               <text

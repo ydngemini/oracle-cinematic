@@ -29,9 +29,20 @@ locals {
     # Real lead ingestion: FREE open-data firehose (51 state portals, no API key) — NOT
     # RentCast. Master switch + ingest tenant + the heavy parcel harvest. distress_scrape
     # (keyless) also runs once the master is on. See data_integrations/periodic.py.
+    # Keep the durable producer alive for retention/source-health maintenance;
+    # the municipal jobs themselves remain independently feature-gated below.
     { name = "ORACLE_SCHEDULER_ENABLED", value = "1" },
     { name = "ORACLE_INGEST_TENANT_ID", value = "00000000-0000-0000-0000-000000000000" },
-    { name = "ORACLE_PARCEL_HARVEST_ENABLED", value = "1" },
+    { name = "ORACLE_PARCEL_HARVEST_ENABLED", value = var.feature_municipal_harvests ? "1" : "0" },
+    { name = "ORACLE_FEATURE_AUTOMATION", value = tostring(var.feature_automation) },
+    { name = "ORACLE_FEATURE_MUNICIPAL_HARVESTS", value = tostring(var.feature_municipal_harvests) },
+    { name = "ORACLE_FEATURE_PREDICTIVE_INTELLIGENCE", value = tostring(var.feature_predictive_intelligence) },
+    { name = "ORACLE_FEATURE_MARKETPLACE", value = tostring(var.feature_marketplace) },
+    { name = "ORACLE_FEATURE_LOCAL_MODELS", value = tostring(var.feature_local_models) },
+    { name = "ORACLE_FEATURE_SPATIAL_TOURS", value = tostring(var.feature_spatial_tours) },
+    { name = "ORACLE_FEATURE_CONTRACTS", value = tostring(var.feature_contracts) },
+    { name = "ORACLE_RAW_SOURCE_RETENTION_DAYS", value = tostring(var.raw_source_retention_days) },
+    { name = "ORACLE_CALL_TRANSCRIPT_RETENTION_DAYS", value = tostring(var.call_transcript_retention_days) },
     # Operator/admin login id (platform_admin). Passphrase is the ORACLE_ADMIN_PASSPHRASE
     # secret. NOTE: this is the ONLY login path — Neoh has no self-serve signup yet.
     { name = "ORACLE_ADMIN_ID", value = "ydnop@ydnhft.com" },

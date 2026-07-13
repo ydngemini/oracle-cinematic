@@ -3,7 +3,7 @@ Workflow Engine — orchestrates the Oracle agent pipeline.
 
 Pipeline stages:
   1. HARVEST  — CountyAssessorHarvester scrapes public records → Graph
-  2. SCORE    — PropertyGraph.calculate_novelty_score() identifies high-probability sellers
+  2. SCORE    — PropertyGraph.calculate_novelty_score() ranks public-record review candidates
   3. ANALYZE  — AnalystAgent runs CMA on each high-score property
   4. SPATIAL  — SpatialAgent reconstructs 3D splat for qualifying properties
   5. CONTACT  — AI Closer initiates outreach (downstream, not managed here)
@@ -26,7 +26,7 @@ from agents.agent_analyst import AnalystAgent, CMAResult
 from spatial_agent import reconstruct_property, should_trigger_reconstruction, property_id
 from legal_agent import format_for_websocket, generate_legal_package
 from agents.scout import ScoutAgent
-from harvesters.four_state_firehose import MockBatchLeadsAdapter
+from harvesters.four_state_firehose import RegionalParcelAdapter
 from real_leads import fetch_real_records
 from outreach_compliance import AI_VOICE_DISCLOSURE
 
@@ -42,14 +42,15 @@ PREDICTIVE_CACHE_TOP_N = 3
 
 SCOUT_UNDERWRITER_STATES = {"DE"}
 SCOUT_SCAN_INTERVAL = 30
-# Delaware Valley firehose territory (DE/PA/NJ/MD). The mock adapter ignores
-# the zips; real BatchLeads adapter will key off them.
+# Delaware Valley firehose territory (DE/PA/NJ/MD).
 SCOUT_TERRITORY = ["19801", "19102", "08102", "21201"]
 
-# Scout has only a MOCK lead adapter today (no real BatchLeads integration yet).
-# Running mock data silently would present synthetic "motivated sellers" as real,
-# so the mock is opt-in: off by default → Scout is disabled rather than faking it.
-SCOUT_USE_MOCK = os.environ.get("SCOUT_USE_MOCK", "").lower() in {"1", "true", "yes", "on"}
+# Live regional sweeps are opt-in because each WebSocket session owns a workflow
+# engine and municipal portals must not be multiplied by passive viewers.  The
+# only available adapter is real/public; there is no synthetic fallback.
+SCOUT_REGIONAL_ENABLED = os.environ.get("SCOUT_REGIONAL_ENABLED", "").lower() in {
+    "1", "true", "yes", "on"
+}
 
 # The CountyAssessorHarvester targets hard-coded Delaware portals
 # (recorder.delaware.gov — currently NXDOMAIN — and newcastlede.gov/parcelview).
@@ -71,17 +72,13 @@ class WorkflowEngine:
         self.graph = PropertyGraph()
         self.harvester = CountyAssessorHarvester(self.graph, websocket)
         self.analyst = AnalystAgent(self.graph, websocket)
-        if SCOUT_USE_MOCK:
-            logger.warning(
-                "Scout running on MockBatchLeadsAdapter — SYNTHETIC leads, NOT real "
-                "data (SCOUT_USE_MOCK enabled). Unset it once a real adapter is wired."
-            )
-            self.scout = ScoutAgent(MockBatchLeadsAdapter())
+        if SCOUT_REGIONAL_ENABLED:
+            self.scout = ScoutAgent(RegionalParcelAdapter(tenant_id=tenant_id))
         else:
             self.scout = None
             logger.info(
-                "Scout disabled — no real lead adapter wired and SCOUT_USE_MOCK is off. "
-                "Set SCOUT_USE_MOCK=1 to run the synthetic-data demo."
+                "Per-session regional Scout disabled; durable municipal harvest jobs remain active. "
+                "Set SCOUT_REGIONAL_ENABLED=1 for a live regional sweep."
             )
         self._running = False
         self._harvest_task: Optional[asyncio.Task] = None
@@ -210,7 +207,7 @@ class WorkflowEngine:
             novelty = hit["novelty_score"]
 
             await self._emit_status(
-                f"HIGH-PROBABILITY SELLER DETECTED — novelty {novelty}"
+                f"PUBLIC-RECORD REVIEW CANDIDATE — evidence strength {novelty}"
             )
 
             await asyncio.sleep(0.3)
@@ -358,7 +355,7 @@ class WorkflowEngine:
         MOTIVATED_SELLER_FOUND event through the state gatekeeper."""
         if self.scout is None:
             await self._emit_status(
-                "AGENT SCOUT — disabled (no real lead adapter; set SCOUT_USE_MOCK=1 for demo)"
+                "AGENT SCOUT — per-session sweep disabled (durable harvest queue remains active)"
             )
             return
         await asyncio.sleep(7)
@@ -368,9 +365,13 @@ class WorkflowEngine:
                 await self._emit_status(
                     f"AGENT SCOUT — sweeping territory {SCOUT_TERRITORY}"
                 )
-                # scan_territory is a sync generator over mock/HTTP fetches;
-                # yield control between events so we don't starve the loop.
-                for event in self.scout.scan_territory(SCOUT_TERRITORY):
+                # The compatibility scanner is synchronous; isolate municipal
+                # HTTP/Playwright work in a thread so the authenticated socket's
+                # heartbeat and live telemetry stay responsive.
+                events = await asyncio.to_thread(
+                    lambda: list(self.scout.scan_territory(SCOUT_TERRITORY))
+                )
+                for event in events:
                     await self.handle_scout_event(event)
                     await asyncio.sleep(0)
             except asyncio.CancelledError:

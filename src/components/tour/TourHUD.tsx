@@ -39,7 +39,8 @@ function ModeButton({
     <button
       type="button"
       onClick={onClick}
-      className={`px-4 py-2 rounded-xl text-[13px] font-semibold tracking-wide transition-all duration-300 ${
+      aria-pressed={active}
+      className={`whitespace-nowrap rounded-xl px-3 py-2 text-[12px] font-semibold tracking-wide transition-all duration-300 md:px-4 md:text-[13px] ${
         active
           ? 'bg-[rgba(0,240,255,0.14)] text-[#7df0ff] shadow-[0_0_20px_rgba(0,240,255,0.18)] border border-[rgba(0,240,255,0.35)]'
           : 'text-[rgba(224,232,255,0.65)] hover:text-[#e0e8ff] border border-transparent hover:bg-[rgba(255,255,255,0.05)]'
@@ -71,12 +72,13 @@ export function TourHUD(props: HUDProps) {
   return (
     <div className="pointer-events-none absolute inset-0 z-20 select-none">
       {/* ── Top bar ─────────────────────────────────────────────── */}
-      <div className="absolute top-0 left-0 right-0 flex items-start justify-between p-5 md:p-7">
+      <div className="absolute top-0 left-0 right-0 flex flex-col items-stretch gap-2 p-3 md:flex-row md:items-start md:justify-between md:p-7">
         <motion.div
           initial={{ opacity: 0, y: -16 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.7, ease }}
-          className="glass-panel pointer-events-auto rounded-2xl px-5 py-3"
+          className="glass-panel pointer-events-auto self-start rounded-2xl px-3 py-2 md:px-5 md:py-3"
+          data-testid="tour-property-label"
         >
           <div className="flex items-center gap-3">
             <span className="h-2 w-2 rounded-full bg-[#00f0ff] shadow-[0_0_10px_#00f0ff]" />
@@ -95,7 +97,8 @@ export function TourHUD(props: HUDProps) {
           initial={{ opacity: 0, y: -16 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.7, delay: 0.08, ease }}
-          className="glass-panel pointer-events-auto flex items-center gap-1.5 rounded-2xl p-1.5"
+          className="glass-panel pointer-events-auto flex items-center justify-center gap-1 rounded-2xl p-1.5 md:gap-1.5"
+          data-testid="tour-mode-controls"
         >
           <ModeButton active={mode === 'explore'} onClick={onExplore}>
             Explore
@@ -153,7 +156,8 @@ export function TourHUD(props: HUDProps) {
         initial={{ opacity: 0, y: 24 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.7, delay: 0.16, ease }}
-        className="glass-panel pointer-events-auto absolute bottom-5 left-5 w-[228px] rounded-2xl p-3 md:bottom-7 md:left-7"
+        className="glass-panel pointer-events-auto absolute bottom-20 left-3 w-[164px] rounded-2xl p-2 md:bottom-7 md:left-7 md:w-[228px] md:p-3"
+        data-testid="tour-minimap"
       >
         <div className="mb-2 flex items-center justify-between px-1">
           <span className="text-[10px] font-semibold uppercase tracking-[0.16em] text-[rgba(224,232,255,0.5)]">
@@ -177,7 +181,8 @@ export function TourHUD(props: HUDProps) {
         initial={{ opacity: 0, y: 24 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.7, delay: 0.22, ease }}
-        className="glass-panel pointer-events-auto absolute bottom-5 left-1/2 flex -translate-x-1/2 items-center gap-2 rounded-2xl p-2 md:bottom-7"
+        className="glass-panel pointer-events-auto absolute bottom-3 left-1/2 flex -translate-x-1/2 items-center gap-1 rounded-2xl p-1.5 md:bottom-7 md:gap-2 md:p-2"
+        data-testid="tour-guide-controls"
       >
         <button
           type="button"
@@ -193,6 +198,7 @@ export function TourHUD(props: HUDProps) {
         <button
           type="button"
           onClick={onToggleGuide}
+          aria-pressed={guideActive}
           className={`flex items-center gap-2.5 rounded-xl px-4 py-2.5 text-[13px] font-semibold transition-all duration-300 ${
             guideActive
               ? 'bg-[rgba(139,92,246,0.18)] text-[#c4b5fd] border border-[rgba(139,92,246,0.4)] shadow-[0_0_24px_rgba(139,92,246,0.22)]'
@@ -232,7 +238,7 @@ export function TourHUD(props: HUDProps) {
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             transition={{ duration: 0.4 }}
-            className="pointer-events-auto absolute inset-0 z-30 grid place-items-center bg-[rgba(2,4,8,0.74)] backdrop-blur-sm"
+            className="pointer-events-auto absolute inset-0 z-30 grid place-items-center bg-[rgba(2,4,8,0.74)] p-3 backdrop-blur-sm"
             onClick={onTogglePlan}
           >
             <motion.div
@@ -240,7 +246,10 @@ export function TourHUD(props: HUDProps) {
               animate={{ scale: 1, y: 0, opacity: 1 }}
               exit={{ scale: 0.92, y: 20, opacity: 0 }}
               transition={{ duration: 0.45, ease }}
-              className="glass-panel rounded-3xl p-7"
+              className="glass-panel w-full max-w-[516px] rounded-3xl p-4 md:p-7"
+              role="dialog"
+              aria-modal="true"
+              aria-label="Interactive property floor plan"
               onClick={(e) => e.stopPropagation()}
             >
               <div className="mb-4 flex items-center justify-between">
@@ -248,7 +257,7 @@ export function TourHUD(props: HUDProps) {
                   <div className="text-[11px] font-semibold uppercase tracking-[0.2em] text-[rgba(0,240,255,0.8)]">
                     Floor 42 · Interactive Plan
                   </div>
-                  <div className="text-xl font-semibold text-[#e0e8ff]">
+                  <div className="text-base font-semibold text-[#e0e8ff] md:text-xl">
                     The Aerie Penthouse — 318 m²
                   </div>
                 </div>

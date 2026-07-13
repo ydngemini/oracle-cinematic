@@ -104,20 +104,19 @@ aws rds reboot-db-instance --db-instance-identifier neoh-prod-aurora-0
 
 ## 6. Run migrations (as the master user, then the app uses IAM)
 
-Migrations need network to Aurora (private subnet). Easiest: a one-off task in the
-cluster, or run from a bastion via SSM. Pull the master creds from the RDS-managed
-secret, then apply `0001 → 0002 → 0003 → … → 0022` in order (0001/0003 create the
-`oracle_app_login` IAM role + RLS the app depends on):
+Migrations need network to private Aurora. The production runner launches a
+one-off private-subnet ECS task on the new digest-pinned backend image,
+temporarily grants access to only the RDS-managed master secret, applies every
+pending numbered migration, and revokes that grant on success or failure:
 
 ```bash
-aws secretsmanager get-secret-value --secret-id "$(terraform output -raw db_master_secret_arn)" \
-  --query SecretString --output text   # {username,password}
+AWS_PROFILE=swarm-admin infra/scripts/run-migrations.sh
 ```
 
-There is no migration-runner script — apply the raw SQL files in **filename
-order** (they are numbered `0001`…`0022`; `0001`/`0003` create the `oracle_app_login`
-IAM role + the RLS the app relies on). From a host with network to Aurora
-(SSM bastion or a one-off ECS task), over TLS verify-full against the RDS CA:
+For break-glass recovery, apply the raw SQL files in **filename order** (`0001`
+through the latest migration; `0001`/`0003` create the `oracle_app_login` role
+and RLS). From a host with network to Aurora, use TLS verify-full against the RDS
+CA:
 
 ```bash
 export PGSSLMODE=verify-full PGSSLROOTCERT=/path/to/rds-global-bundle.pem
@@ -137,6 +136,29 @@ aws ecs update-service --cluster "$(terraform output -raw ecs_cluster)" \
 ```
 
 Watch the target group go healthy; tail logs in `/ecs/neoh-prod/backend`.
+
+For normal releases use `infra/scripts/deploy-update.sh`. It runs migrations
+first, rolls and checks the backend before the frontend, runs the complete smoke
+suite, and automatically restores the prior ECS task definitions if stability or
+any smoke assertion fails. Additive migrations remain in place and are forward-
+compatible with the prior service revision.
+
+## 7b. Staged platform capabilities
+
+The new platform capabilities are explicit Terraform booleans and default to
+`false` in production: municipal harvests, predictive intelligence, marketplace,
+contracts, spatial generation, local models, and autonomous commands. Enable one
+reviewed cohort at a time in `terraform.tfvars`, apply Terraform to register the
+task definition, and then run the digest-pinned release:
+
+```bash
+terraform -chdir=infra/terraform apply
+AWS_PROFILE=swarm-admin infra/scripts/build-images.sh app
+AWS_PROFILE=swarm-admin infra/scripts/deploy-update.sh
+```
+
+Keep `feature_automation` last: EMAIL/CALL/CALENDAR execution additionally needs
+provider credentials, consent/approval testing, and webhook-signature validation.
 
 ## 8. DNS + smoke test
 
@@ -171,8 +193,9 @@ Secrets Manager JSON, and deploy the worker in **`infra/reconstruction-runpod/`*
 
 ## 9b. Day-2
 
-- New release: build+push a new `image_tag`, register a new task-def revision,
-  `update-service`. (The service ignores `task_definition` drift in TF so CI owns it.)
+- New release: start from a reviewed, clean commit (the build script refuses a
+  dirty tree), build/push, then run `deploy-update.sh`. The service ignores
+  `task_definition` drift in TF so the digest-pinned release script owns rollout.
 - Audit trail: pgaudit → `/aws/rds/cluster/neoh-prod-aurora/postgresql` (KMS,
   90-day retention). Add a log-group resource policy denying delete for immutability.
 - **Still TODO (not in this TF):** per-tenant API throttling (add API Gateway in

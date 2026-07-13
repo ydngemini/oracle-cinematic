@@ -134,6 +134,13 @@ classify_api() {
 }
 classify_api "tour resolver" "/api/crm/property-tour"
 classify_api "data health"   "/api/data/health"
+classify_api "commands"      "/api/commands"
+classify_api "intelligence"  "/api/intelligence/policy"
+classify_api "portfolio"     "/api/portfolio"
+classify_api "marketplace"   "/api/marketplace"
+classify_api "models"        "/api/models"
+classify_api "harvests"      "/api/harvests"
+classify_api "contracts"     "/api/contracts/policy"
 echo
 
 # ── 3. ECS services running == desired, stable ───────────────────────────────
@@ -163,6 +170,67 @@ else
     fail "ECS: expected ${#SERVICES[@]} services (${SERVICES[*]}) in '$ECS_CLUSTER', only $got reported"
   fi
 fi
+echo
+
+# ── 3b. staged feature flags are explicit in the backend task definition ────
+echo "── 3b. staged platform flags ──"
+backend_td="$("${AWS[@]}" ecs describe-services --cluster "$ECS_CLUSTER" --services backend \
+  --query 'services[0].taskDefinition' --output text 2>/dev/null || true)"
+feature_names=(
+  ORACLE_FEATURE_AUTOMATION
+  ORACLE_FEATURE_MUNICIPAL_HARVESTS
+  ORACLE_FEATURE_PREDICTIVE_INTELLIGENCE
+  ORACLE_FEATURE_MARKETPLACE
+  ORACLE_FEATURE_LOCAL_MODELS
+  ORACLE_FEATURE_SPATIAL_TOURS
+  ORACLE_FEATURE_CONTRACTS
+)
+if [[ -z "$backend_td" || "$backend_td" == "None" ]]; then
+  fail "Could not resolve the backend task definition for feature-flag audit"
+else
+  feature_env="$("${AWS[@]}" ecs describe-task-definition --task-definition "$backend_td" \
+    --query 'taskDefinition.containerDefinitions[0].environment' --output json 2>/dev/null || true)"
+  for feature_name in "${feature_names[@]}"; do
+    feature_value="$(python3 -c 'import json,sys; n=sys.argv[1]; rows=json.load(sys.stdin); print(next((str(x.get("value", "")).lower() for x in rows if x.get("name")==n), ""))' "$feature_name" <<<"${feature_env:-[]}" 2>/dev/null || true)"
+    case "$feature_value" in
+      true|false|1|0) pass "$feature_name is explicit ($feature_value)";;
+      *) fail "$feature_name is absent or invalid in the backend task definition";;
+    esac
+  done
+fi
+echo
+
+# ── 3c. database audit preload + platform alarms ────────────────────────────
+echo "── 3c. audit and platform alarms ──"
+cluster_pg="$("${AWS[@]}" rds describe-db-clusters --db-cluster-identifier neoh-prod-aurora \
+  --query 'DBClusters[0].DBClusterParameterGroup' --output text 2>/dev/null || true)"
+preload=""
+if [[ -n "$cluster_pg" && "$cluster_pg" != "None" ]]; then
+  preload="$("${AWS[@]}" rds describe-db-cluster-parameters --db-cluster-parameter-group-name "$cluster_pg" \
+    --query 'Parameters[?ParameterName==`shared_preload_libraries`].ParameterValue | [0]' --output text 2>/dev/null || true)"
+fi
+if [[ "$preload" == *pgaudit* ]]; then
+  pass "Aurora shared_preload_libraries includes pgaudit"
+else
+  fail "Aurora pgaudit preload is absent (parameter group=${cluster_pg:-unresolved})"
+fi
+
+platform_alarms=(
+  neoh-prod-automation-job-failures
+  neoh-prod-harvest-source-failures
+  neoh-prod-stale-harvest-sources
+)
+alarm_rows="$("${AWS[@]}" cloudwatch describe-alarms --alarm-names "${platform_alarms[@]}" \
+  --query 'MetricAlarms[].[AlarmName,StateValue]' --output text 2>/dev/null || true)"
+for alarm_name in "${platform_alarms[@]}"; do
+  alarm_state="$(awk -v name="$alarm_name" '$1==name {print $2}' <<<"$alarm_rows")"
+  case "$alarm_state" in
+    OK) pass "CloudWatch $alarm_name is OK";;
+    INSUFFICIENT_DATA) warn "CloudWatch $alarm_name has insufficient data after deployment";;
+    ALARM) fail "CloudWatch $alarm_name is ALARM";;
+    *) fail "CloudWatch alarm missing: $alarm_name";;
+  esac
+done
 echo
 
 # ── 4. splat S3 bucket exists + splats/* public-read ─────────────────────────

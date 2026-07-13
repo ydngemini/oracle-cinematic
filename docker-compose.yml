@@ -58,6 +58,15 @@ services:
       ORACLE_DB_USER: postgres
       ORACLE_DB_PASSWORD: ${ORACLE_DB_PASSWORD:-postgres}
       ORACLE_DB_SSLMODE: disable
+      # Development exercises the full surface. Production Terraform defaults
+      # every new high-risk capability to false for staged rollout.
+      ORACLE_FEATURE_AUTOMATION: "true"
+      ORACLE_FEATURE_MUNICIPAL_HARVESTS: "true"
+      ORACLE_FEATURE_PREDICTIVE_INTELLIGENCE: "true"
+      ORACLE_FEATURE_MARKETPLACE: "true"
+      ORACLE_FEATURE_LOCAL_MODELS: "true"
+      ORACLE_FEATURE_SPATIAL_TOURS: "true"
+      ORACLE_FEATURE_CONTRACTS: "true"
       # Real local LLM — agent-mind's inner monologue streams from the llama.cpp
       # server running on the HOST (Llama-3.2-1B). The container reaches the host
       # via host.docker.internal (mapped to host-gateway in extra_hosts below).

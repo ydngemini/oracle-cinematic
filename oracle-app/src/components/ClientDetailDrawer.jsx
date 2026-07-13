@@ -16,6 +16,7 @@ const SUBTABS = [
   { id: 'tasks', label: 'Tasks' },
   { id: 'notes', label: 'Notes' },
   { id: 'houses', label: 'Houses' },
+  { id: 'dossier', label: 'Dossier' },
 ];
 
 // Inline-editable text — click to edit, commit on Enter/blur, Esc cancels.
@@ -304,7 +305,7 @@ export default function ClientDetailDrawer({ card, onClose, onClientChanged, get
                 setDetail((d) => {
                   const hs = Array.isArray(d.houses) ? d.houses : [];
                   if (hs.some((h) => h.id === listing.id)) return d;
-                  const next = { ...d, houses: [...hs, { id: listing.id, address: listing.address, kind: 'listing' }] };
+                  const next = { ...d, houses: [...hs, { id: listing.id, address: listing.address, kind: 'listing', lead_id: listing.lead_id || null }] };
                   onClientChanged?.(next);
                   return next;
                 });
@@ -312,8 +313,148 @@ export default function ClientDetailDrawer({ card, onClose, onClientChanged, get
               }}
             />
           )}
+          {tab === 'dossier' && <DossierLinksPane detail={detail} houses={houses} />}
         </div>
       </div>
+    </div>
+  );
+}
+
+const DOSSIER_SCOPE_LABELS = {
+  summary: 'Property summary',
+  media: 'Media',
+  milestones: 'Milestones',
+  title_summary: 'Preliminary title summary',
+  zoning_summary: 'Zoning summary',
+  underwriting: 'Underwriting trace',
+  documents: 'Approved documents',
+};
+
+function DossierLinksPane({ detail, houses }) {
+  const leadHouses = houses
+    .map((house) => ({ ...house, lead_id: house.lead_id || (house.kind === 'lead' ? house.id : null) }))
+    .filter((house) => house.lead_id);
+  const [leadId, setLeadId] = useState(leadHouses[0]?.lead_id || '');
+  const [links, setLinks] = useState(null);
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [created, setCreated] = useState(null);
+  const [kind, setKind] = useState('seller');
+  const [expiryDays, setExpiryDays] = useState(7);
+  const [scope, setScope] = useState({
+    summary: true, media: true, milestones: true, title_summary: false,
+    zoning_summary: false, underwriting: false, documents: false,
+  });
+
+  const load = useCallback(() => {
+    if (!leadId) return Promise.resolve().then(() => setLinks([]));
+    return crmGet(`/portal/links?lead_id=${encodeURIComponent(leadId)}`).then(
+      (data) => { setLinks(Array.isArray(data?.links) ? data.links : []); setError(''); },
+      (reason) => setError(errMessage(reason, 'dossier links')),
+    );
+  }, [leadId]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const create = (event) => {
+    event.preventDefault();
+    if (!leadId) return;
+    setBusy(true);
+    setCreated(null);
+    crmPost('/portal/links', {
+      lead_id: leadId,
+      expiry_days: Number(expiryDays),
+      link_kind: kind,
+      asset_scope: scope,
+      issued_to_label: detail?.full_name || null,
+      watermark_text: detail?.full_name ? `CONFIDENTIAL — ${detail.full_name}` : null,
+    }).then((result) => {
+      setCreated(result);
+      return load();
+    }).catch((reason) => setError(errMessage(reason, 'dossier link'))).finally(() => setBusy(false));
+  };
+
+  const revoke = (id) => {
+    setBusy(true);
+    crmPost(`/portal/links/${id}/revoke`, {}).then(load)
+      .catch((reason) => setError(errMessage(reason, 'dossier link')))
+      .finally(() => setBusy(false));
+  };
+
+  if (leadHouses.length === 0) {
+    return <div className={styles.empty}><span aria-hidden="true">{GLYPHS.house}</span><p className={styles.emptyText}>Link this client to a lead before issuing a read-only dossier.</p></div>;
+  }
+
+  return (
+    <div className={styles.dossierPane}>
+      <section className={styles.section}>
+        <span className={styles.sectionLabel}>Issue revocable dossier</span>
+        <form onSubmit={create} className={styles.dossierForm}>
+          <label className={styles.field}>
+            <span className={styles.microLabel}>Property</span>
+            <select className={styles.input} value={leadId} onChange={(event) => { setLeadId(event.target.value); setCreated(null); }}>
+              {leadHouses.map((house) => <option key={`${house.id}:${house.lead_id}`} value={house.lead_id}>{house.address || house.lead_id}</option>)}
+            </select>
+          </label>
+          <div className={styles.fieldGrid}>
+            <label className={styles.field}>
+              <span className={styles.microLabel}>Audience</span>
+              <select className={styles.input} value={kind} onChange={(event) => setKind(event.target.value)}>
+                <option value="seller">Seller</option>
+                <option value="joint_venture">Joint venture</option>
+              </select>
+            </label>
+            <label className={styles.field}>
+              <span className={styles.microLabel}>Expires</span>
+              <select className={styles.input} value={expiryDays} onChange={(event) => setExpiryDays(Number(event.target.value))}>
+                <option value={1}>1 day</option><option value={7}>7 days</option><option value={14}>14 days</option><option value={30}>30 days</option><option value={90}>90 days</option>
+              </select>
+            </label>
+          </div>
+          <fieldset className={styles.scopeFieldset}>
+            <legend>Read-only assets</legend>
+            {Object.entries(DOSSIER_SCOPE_LABELS).map(([key, text]) => (
+              <label key={key}>
+                <input type="checkbox" checked={Boolean(scope[key])} onChange={(event) => setScope((current) => ({ ...current, [key]: event.target.checked }))} />
+                <span>{text}</span>
+              </label>
+            ))}
+          </fieldset>
+          <p className={styles.dossierWarning}>Title, zoning, underwriting, and legal documents remain professional-review artifacts. Links are watermarked, audited, expiring, and read-only.</p>
+          <button type="submit" className={styles.logBtn} disabled={busy || !scope.summary}>{busy ? 'Issuing…' : 'Issue secure link'}</button>
+        </form>
+      </section>
+
+      {created && (
+        <section className={styles.createdLink} aria-live="polite">
+          <strong>Copy this link now</strong>
+          <p>The bearer token is shown once and cannot be recovered later.</p>
+          <input aria-label="New secure dossier URL" value={created.secure_url} readOnly onFocus={(event) => event.currentTarget.select()} />
+          <button type="button" onClick={() => navigator.clipboard?.writeText(created.secure_url)}>Copy link</button>
+        </section>
+      )}
+
+      {error && <div className={styles.errorStrip} role="alert"><span className={styles.errorTick} aria-hidden="true" /><p className={styles.errorText}>{error}</p></div>}
+
+      <section className={styles.section}>
+        <span className={styles.sectionLabel}>Issued links</span>
+        {links === null ? <div className={styles.bodySkel} aria-hidden="true"><div className={styles.skelBar} /></div> : links.length === 0 ? (
+          <p className={styles.emptyText}>No dossier links issued for this property.</p>
+        ) : (
+          <ul className={styles.portalLinks}>
+            {links.map((link) => {
+              const active = link.active === true;
+              const scopes = Object.entries(link.asset_scope || {}).filter(([, enabled]) => enabled).map(([key]) => DOSSIER_SCOPE_LABELS[key] || key);
+              return (
+                <li key={link.id}>
+                  <div><strong>{link.link_kind === 'joint_venture' ? 'Joint venture' : 'Seller'} dossier</strong><small>{active ? `Expires ${fmtDate(link.access_expires_at)}` : link.revoked_at ? 'Revoked' : 'Expired'} · {link.access_count || 0} views</small><small>{scopes.join(' · ')}</small></div>
+                  {active && <button type="button" onClick={() => revoke(link.id)} disabled={busy}>Revoke</button>}
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </section>
     </div>
   );
 }

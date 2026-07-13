@@ -12,6 +12,12 @@ const GLYPHS = {
       <path d="M9.5 20v-6h5v6" />
     </svg>
   ),
+  portfolio: (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M4 20V10M10 20V4M16 20v-7M22 20H2" />
+      <path d="m3 7 6-4 6 7 6-4" />
+    </svg>
+  ),
   house: (
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
       <path d="M3 10.5 12 3l9 7.5" />

@@ -35,12 +35,9 @@ def record_from_lead_row(r) -> dict:
     """Map a `leads` row onto the firehose record dict that
     graph.ingest_public_record() expects.
 
-    Missing fields get conservative derived defaults so a real row never
-    silently produces a malformed record:
-      - assessed_value derived from market_value (~0.72) when not present
-      - equity_pct from payload.equity_percent (clamped 0..100)
-      - mortgage_balance implied from market_value and equity
-      - life_event mapped from the first distress flag, else NULL (unknown)
+    Missing fields remain unknown. Property characteristics, assessed value,
+    owner identity, and mortgage balance are never synthesized here; inference
+    belongs in the separately provenance-tagged inference pipeline.
     """
     payload = _loads(r["payload"])
     under = _loads(r["underwriting"])
@@ -83,9 +80,13 @@ def record_from_lead_row(r) -> dict:
         # Real provenance — not one of the synthetic TAX_ASSESSMENT placeholders.
         "record_type": "REAL_PARCEL",
         "motivation_score": motivation_score,
-        "owner_name": payload.get("owner_name") or "Owner of Record",
+        "record_id": str(r["id"]),
+        "parcel_id": r["parcel_id"],
+        "source": payload.get("source") or "tenant_public_record_lead",
+        "observed_at": r["updated_at"].isoformat() if r["updated_at"] else None,
+        "owner_name": payload.get("owner_name"),
         "address": r["address"] or payload.get("address") or r["parcel_id"],
-        "assessed_value": int(market_value * 0.72) if market_value else 0,
+        "assessed_value": payload.get("assessed_value"),
         "market_value": market_value,
         "sqft": r["sqft"] or 0,
         "bedrooms": r["beds"] or 0,
@@ -97,7 +98,7 @@ def record_from_lead_row(r) -> dict:
         # sale year when available, else leave 0 (unknown) rather than fabricate.
         "years_owned": 0,
         "purchase_year": int(last_sale[:4]) if isinstance(last_sale, str) and len(last_sale) >= 4 and last_sale[:4].isdigit() else 0,
-        "mortgage_balance": int(market_value * (1 - equity_pct / 100)) if market_value else 0,
+        "mortgage_balance": payload.get("mortgage_balance"),
         "life_event": life_event,
         "event_date": last_sale,
         # No probate/lien case number on a parcel row — carry the parcel id so the
@@ -122,8 +123,8 @@ async def fetch_real_records(tenant_id: str, user_id: str, limit: int) -> list[d
         ctx = TenantContext(agent_id=user_id or "demo-operator", tenant_id=tenant_id, role=Role.AGENT)
         async with tenant_tx(ctx) as conn:
             rows = await conn.fetch(
-                "SELECT parcel_id, state, motivation_score, underwriting, payload, "
-                "       address, asking_price, beds, baths, sqft "
+                "SELECT id,parcel_id,state,motivation_score,underwriting,payload, "
+                "       address,asking_price,beds,baths,sqft,updated_at "
                 "FROM leads ORDER BY random() LIMIT $1",
                 limit,
             )

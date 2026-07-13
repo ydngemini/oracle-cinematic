@@ -71,6 +71,10 @@ async def lifespan(app: FastAPI):
     await start_reconstruction_workers()
     await start_disposition_enforcer()
     from data_integrations.periodic import start_periodic_scheduler, stop_periodic_scheduler
+    from automation_jobs import start_job_workers, stop_job_workers
+    # Importing periodic registers every job handler before workers can claim a
+    # pre-existing row left by an earlier deployment.
+    await start_job_workers()
     await start_periodic_scheduler()
     # AWS observability broadcaster is opt-in: it polls Cost Explorer (billed
     # per call) and the infra APIs. Off unless AWS_OBSERVABILITY_ENABLED is set;
@@ -94,6 +98,7 @@ async def lifespan(app: FastAPI):
             except asyncio.CancelledError:
                 pass
         await stop_periodic_scheduler()
+        await stop_job_workers()
         await stop_disposition_enforcer()
         await stop_voice_workers()
         await stop_reconstruction_workers()
@@ -179,6 +184,27 @@ app.include_router(tour_api_router)
 
 from aws_observability import router as aws_obs_router  # noqa: E402 — AWS infrastructure observability
 app.include_router(aws_obs_router)
+
+# Real-estate intelligence platform surfaces.  Import these before the
+# application lifespan starts so their durable-job handlers are registered
+# before a worker can lease rows left by a previous deployment.
+from commands_api import router as commands_router  # noqa: E402
+from contracts_api import router as contracts_router  # noqa: E402
+from harvests_api import router as harvests_router  # noqa: E402
+from intelligence_api import router as intelligence_router  # noqa: E402
+from marketplace_api import router as marketplace_router  # noqa: E402
+from models_api import router as models_router  # noqa: E402
+from portfolio_api import router as portfolio_router  # noqa: E402
+from spatial_intelligence_api import router as spatial_intelligence_router  # noqa: E402
+
+app.include_router(commands_router)
+app.include_router(contracts_router)
+app.include_router(harvests_router)
+app.include_router(intelligence_router)
+app.include_router(marketplace_router)
+app.include_router(models_router)
+app.include_router(portfolio_router)
+app.include_router(spatial_intelligence_router)
 
 from apis.geocoding import geocode, reverse_geocode
 from apis.census import get_demographics_by_zip

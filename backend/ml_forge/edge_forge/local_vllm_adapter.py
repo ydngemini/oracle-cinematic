@@ -18,10 +18,8 @@ Requires:
 
 import json
 import os
-from typing import Dict, List, Optional
-
-from vllm import LLM, SamplingParams
-from vllm.lora.request import LoRARequest
+import time
+from typing import Any, Dict, List, Optional
 
 BASE_MODEL = "unsloth/llama-3-8b-Instruct-bnb-4bit"
 
@@ -82,16 +80,40 @@ class EdgeUnderwriter:
         max_loras: int = 4,
         max_lora_rank: int = 16,
         gpu_memory_utilization: float = 0.90,
+        fallback_models: Optional[List[str]] = None,
     ):
+        if not 0.10 <= gpu_memory_utilization <= 0.95:
+            raise ValueError("gpu_memory_utilization must be between 0.10 and 0.95")
+        try:
+            from vllm import LLM, SamplingParams
+            from vllm.lora.request import LoRARequest
+        except ImportError as exc:
+            raise RuntimeError(
+                "vLLM is unavailable; run EdgeUnderwriter inside the GPU inference image"
+            ) from exc
+        self._sampling_params_class = SamplingParams
+        self._lora_request_class = LoRARequest
+        self.base_model = base_model
+        self.max_lora_rank = max_lora_rank
         # enable_lora keeps the base weights resident while LoRA deltas swap in.
-        self.llm = LLM(
-            model=base_model,
-            enable_lora=True,
-            max_loras=max_loras,
-            max_lora_rank=max_lora_rank,
-            max_cpu_loras=max_loras * 2,
-            gpu_memory_utilization=gpu_memory_utilization,
-        )
+        load_errors: list[str] = []
+        self.llm = None
+        for candidate in [base_model, *(fallback_models or [])]:
+            try:
+                self.llm = LLM(
+                    model=candidate,
+                    enable_lora=True,
+                    max_loras=max_loras,
+                    max_lora_rank=max_lora_rank,
+                    max_cpu_loras=max_loras * 2,
+                    gpu_memory_utilization=gpu_memory_utilization,
+                )
+                self.base_model = candidate
+                break
+            except Exception as exc:  # noqa: BLE001 - explicit configured fallback
+                load_errors.append(f"{candidate}: {type(exc).__name__}")
+        if self.llm is None:
+            raise RuntimeError("No configured base model could load: " + "; ".join(load_errors))
         self.tokenizer = self.llm.get_tokenizer()
         self.adapter_root = adapter_root
 
@@ -102,7 +124,16 @@ class EdgeUnderwriter:
 
         # Currently mounted state adapter.
         self._active_state: Optional[str] = None
-        self._active_request: Optional[LoRARequest] = None
+        self._active_request: Optional[Any] = None
+        self._adapter_metadata: Dict[str, dict] = {}
+        self._telemetry = {
+            "base_model": self.base_model,
+            "swaps": 0,
+            "batches": 0,
+            "records": 0,
+            "parse_failures": 0,
+            "last_latency_ms": None,
+        }
 
         self._discover_adapters()
 
@@ -120,12 +151,42 @@ class EdgeUnderwriter:
             ):
                 self.register_adapter(name.upper(), path)
 
-    def register_adapter(self, state_code: str, adapter_path: str):
-        """Register a trained LoRA adapter directory for a state code."""
+    def register_adapter(
+        self,
+        state_code: str,
+        adapter_path: str,
+        *,
+        model_version: Optional[str] = None,
+    ):
+        """Register an adapter after base-model/rank compatibility checks."""
         state_code = state_code.upper()
         if not os.path.exists(adapter_path):
             raise FileNotFoundError(f"Adapter path missing: {adapter_path}")
+        config_path = os.path.join(adapter_path, "adapter_config.json")
+        if not os.path.isfile(config_path):
+            raise ValueError(f"adapter_config.json missing under {adapter_path}")
+        with open(config_path, "r", encoding="utf-8") as handle:
+            config = json.load(handle)
+        expected_base = str(config.get("base_model_name_or_path") or "")
+        if expected_base and expected_base != self.base_model:
+            # Repositories may use an alias for the same base; require an
+            # explicit compatible_base_models declaration to permit it.
+            compatible = set(config.get("compatible_base_models") or [])
+            if self.base_model not in compatible:
+                raise ValueError(
+                    f"adapter base {expected_base!r} is incompatible with resident base {self.base_model!r}"
+                )
+        rank = int(config.get("r") or config.get("lora_rank") or 0)
+        if rank <= 0 or rank > self.max_lora_rank:
+            raise ValueError(
+                f"adapter rank {rank} exceeds configured max_lora_rank {self.max_lora_rank}"
+            )
         self._adapter_paths[state_code] = adapter_path
+        self._adapter_metadata[state_code] = {
+            "model_version": model_version or config.get("model_version") or "unversioned",
+            "rank": rank,
+            "base_model": expected_base or self.base_model,
+        }
         if state_code not in self._lora_ids:
             self._lora_ids[state_code] = self._next_lora_id
             self._next_lora_id += 1
@@ -150,12 +211,15 @@ class EdgeUnderwriter:
         if state_code == self._active_state:
             return self  # already mounted
 
-        self._active_request = LoRARequest(
+        self._active_request = self._lora_request_class(
             lora_name=f"{state_code.lower()}_underwriter",
             lora_int_id=self._lora_ids[state_code],
             lora_path=self._adapter_paths[state_code],
         )
         self._active_state = state_code
+        self._telemetry["swaps"] += 1
+        self._telemetry["active_adapter"] = state_code
+        self._telemetry["active_model_version"] = self._adapter_metadata[state_code]["model_version"]
         return self
 
     @property
@@ -197,13 +261,14 @@ class EdgeUnderwriter:
             )
 
         prompts = [self._build_prompt(p) for p in properties]
-        sampling = SamplingParams(
+        sampling = self._sampling_params_class(
             temperature=temperature,
             top_p=0.9,
             max_tokens=max_tokens,
             guided_decoding=_guided_json(UNDERWRITE_JSON_SCHEMA),
         )
 
+        started = time.monotonic()
         outputs = self.llm.generate(
             prompts,
             sampling,
@@ -213,15 +278,46 @@ class EdgeUnderwriter:
         results = []
         for prop, out in zip(properties, outputs):
             raw = out.outputs[0].text if out.outputs else ""
+            parsed = _safe_json(raw)
+            if parsed is None:
+                self._telemetry["parse_failures"] += 1
             results.append(
                 {
                     "state": self._active_state,
+                    "model_version": self._adapter_metadata.get(self._active_state or "", {}).get("model_version"),
                     "input": prop,
                     "raw": raw,
-                    "parsed": _safe_json(raw),
+                    "parsed": parsed,
                 }
             )
+        self._telemetry["batches"] += 1
+        self._telemetry["records"] += len(properties)
+        self._telemetry["last_latency_ms"] = round((time.monotonic() - started) * 1000, 2)
         return results
+
+    def canary_evaluate(self, state_code: str, cases: List[dict]) -> dict:
+        """Run fixed cases and require parseable outputs plus expected verdicts."""
+        if not cases:
+            raise ValueError("at least one canary case is required")
+        inputs = [dict(case.get("input") or {}) for case in cases]
+        outputs = self.hot_swap_state_lora(state_code).underwrite_batch(inputs)
+        passed = 0
+        details = []
+        for case, output in zip(cases, outputs):
+            parsed = output.get("parsed")
+            expected = case.get("expected_verdict")
+            ok = parsed is not None and (expected is None or parsed.get("verdict") == expected)
+            passed += int(ok)
+            details.append({"case_id": case.get("case_id"), "passed": ok})
+        return {
+            "passed": passed == len(cases),
+            "pass_rate": round(passed / len(cases), 4),
+            "cases": details,
+            "model_version": self._adapter_metadata[state_code.upper()]["model_version"],
+        }
+
+    def telemetry(self) -> dict:
+        return dict(self._telemetry)
 
 
 def _guided_json(schema: dict):
@@ -244,9 +340,24 @@ def _safe_json(text: str) -> Optional[dict]:
     if start == -1 or end == -1 or end <= start:
         return None
     try:
-        return json.loads(text[start : end + 1])
+        parsed = json.loads(text[start : end + 1])
     except json.JSONDecodeError:
         return None
+    if not isinstance(parsed, dict):
+        return None
+    required = set(UNDERWRITE_JSON_SCHEMA["required"])
+    if set(parsed) != required:
+        return None
+    if parsed.get("mao_formula") != "0.70 * ARV - rehab":
+        return None
+    if parsed.get("verdict") not in {"Proceed", "Reject"}:
+        return None
+    for key in ("arv_estimate", "rehab_estimate", "mao"):
+        if not isinstance(parsed.get(key), int) or parsed[key] < 0:
+            return None
+    if not isinstance(parsed.get("rationale"), str):
+        return None
+    return parsed
 
 
 if __name__ == "__main__":

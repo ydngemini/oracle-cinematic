@@ -112,22 +112,36 @@ class DataSource(ABC):
         ...
 
     async def get(self, cache_key: str, **fetch_kwargs: Any) -> Optional[dict]:
-        if self._cache:
-            cached = await self._cache.get(cache_key)
-            if cached is not None:
-                self._metrics["cache_hits"] += 1
-                return cached
+        # External calls are never allowed to bypass IntegrationCache.  This is
+        # both a quota/cost guard and a privacy control: callers provide a
+        # logical key, while the cache stores only a credential-free canonical
+        # request hash.
+        if self._cache is None:
+            raise DataIntegrationError(
+                f"IntegrationCache is required for external source {self.source_name!r}"
+            )
 
-        raw = await self.fetch(**fetch_kwargs)
-        if raw is None:
+        before_hits = self._cache.metrics().get("hits", 0)
+
+        async def fetch_and_normalize() -> dict:
+            raw = await self.fetch(**fetch_kwargs)
+            if raw is None:
+                return {"_cacheable_empty": True}
+            result = self.normalize(raw)
+            self._metrics["normalized"] += 1
+            return result
+
+        result = await self._cache.get_or_fetch(
+            self.source_name,
+            {"logical_key": cache_key, "arguments": fetch_kwargs},
+            fetch_and_normalize,
+            ttl=self._cache_ttl(),
+        )
+        after_hits = self._cache.metrics().get("hits", 0)
+        if after_hits > before_hits:
+            self._metrics["cache_hits"] += 1
+        if result == {"_cacheable_empty": True}:
             return None
-
-        result = self.normalize(raw)
-        self._metrics["normalized"] += 1
-
-        if self._cache:
-            await self._cache.set(cache_key, result, ttl=self._cache_ttl())
-
         return result
 
     def metrics(self) -> dict:

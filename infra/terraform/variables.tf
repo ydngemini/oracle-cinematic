@@ -126,6 +126,72 @@ variable "demo_tenant_id" {
   default     = "00000000-0000-0000-0000-000000000000"
 }
 
+# ── staged platform rollout -------------------------------------------------
+# High-risk capabilities ship dark in production. Enable them independently
+# only after migrations, smoke tests, and the corresponding provider/licensing
+# review are green. Local compose explicitly enables the development surface.
+variable "feature_automation" {
+  description = "Enable EMAIL/CALL/CALENDAR command drafting and approved execution."
+  type        = bool
+  default     = false
+}
+
+variable "feature_municipal_harvests" {
+  description = "Enable durable municipal/parcel harvest scheduling and controls."
+  type        = bool
+  default     = false
+}
+
+variable "feature_predictive_intelligence" {
+  description = "Enable predictive, title, zoning, and underwriting intelligence APIs."
+  type        = bool
+  default     = false
+}
+
+variable "feature_marketplace" {
+  description = "Enable internal disposition marketplace workflows."
+  type        = bool
+  default     = false
+}
+
+variable "feature_local_models" {
+  description = "Enable opt-in local model training and hot-swap controls."
+  type        = bool
+  default     = false
+}
+
+variable "feature_spatial_tours" {
+  description = "Enable generative spatial tour jobs and variants."
+  type        = bool
+  default     = false
+}
+
+variable "feature_contracts" {
+  description = "Enable approved-template legal document generation and vaulting."
+  type        = bool
+  default     = false
+}
+
+variable "raw_source_retention_days" {
+  description = "Maximum retention for raw licensed/public source payloads before redaction."
+  type        = number
+  default     = 730
+  validation {
+    condition     = var.raw_source_retention_days >= 1 && var.raw_source_retention_days <= 3650
+    error_message = "raw_source_retention_days must be between 1 and 3650."
+  }
+}
+
+variable "call_transcript_retention_days" {
+  description = "Days to retain consented transcript excerpts before automated redaction."
+  type        = number
+  default     = 365
+  validation {
+    condition     = var.call_transcript_retention_days >= 1 && var.call_transcript_retention_days <= 3650
+    error_message = "call_transcript_retention_days must be between 1 and 3650."
+  }
+}
+
 variable "log_retention_days" {
   description = "CloudWatch log retention for app + pgaudit groups."
   type        = number

@@ -22,21 +22,25 @@ firehose group, so the OPS tab's feed updates in real time over /ws.
 """
 
 import asyncio
+import json
 import logging
 import time
 import uuid
 from collections import defaultdict
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Literal, Optional
 
 import stripe
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from pydantic import BaseModel, ConfigDict, Field
 
 import ws_hub
 from auth import active_sessions, DEMO_TENANCY
-from audit_ledger import ledger
+from approval_service import create_approval, decide_approval
+from audit_ledger import AuditCategory, ledger
 from db.connection import tenant_tx
-from tenancy import TenantContext, require_context
+from platform_policy import ActionRisk, validate_approval_reason
+from tenancy import Role, TenantContext, require_context, require_role
 
 logger = logging.getLogger("oracle.admin_ops")
 
@@ -395,6 +399,176 @@ async def outbox(
         )
 
     return {"counts": {r["status"]: r["n"] for r in rollup}, "emails": rows}
+
+
+# ---------------------------------------------------------------------------
+# Protected brokerage authorization changes — immutable, two-person approval.
+# ---------------------------------------------------------------------------
+
+class RoleChangeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    user_id: uuid.UUID
+    new_role: Literal["agent", "broker_owner"]
+    reason: str = Field(min_length=8, max_length=500)
+
+
+class RoleChangeDecision(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    reason: str = Field(min_length=8, max_length=500)
+
+
+@router.get("/permission-policy")
+async def permission_policy(ctx: TenantContext = Depends(require_context)):
+    require_role(ctx, Role.BROKER_OWNER)
+    return {
+        "broker_managed_roles": ["agent", "broker_owner"],
+        "platform_admin_assignment_via_api": False,
+        "two_person_approval": True,
+        "requester_may_approve": False,
+        "reason_required": True,
+        "override_events_immutable": True,
+        "existing_tokens": "role change is authoritative on the next authenticated session",
+    }
+
+
+@router.post("/role-changes", status_code=201)
+async def request_role_change(
+    body: RoleChangeRequest,
+    ctx: TenantContext = Depends(require_context),
+):
+    require_role(ctx, Role.BROKER_OWNER)
+    reason = validate_approval_reason(body.reason)
+    async with tenant_tx(ctx) as conn:
+        target = await conn.fetchrow(
+            "SELECT id,agent_id,role,is_active FROM users WHERE id=$1::uuid",
+            str(body.user_id),
+        )
+    if target is None:
+        raise HTTPException(status_code=404, detail="User not found.")
+    if target["agent_id"] == ctx.agent_id:
+        raise HTTPException(status_code=409, detail="A broker cannot change their own role.")
+    if target["role"] == "platform_admin":
+        raise HTTPException(status_code=403, detail="Platform-admin roles are protected.")
+    if target["role"] == body.new_role:
+        raise HTTPException(status_code=409, detail="User already has that role.")
+    draft = {
+        "user_id": str(body.user_id),
+        "agent_id": target["agent_id"],
+        "prior_role": target["role"],
+        "new_role": body.new_role,
+        "business_reason": reason,
+    }
+    approval = await create_approval(
+        ctx,
+        action_type="brokerage.role_change",
+        risk=ActionRisk.ROLE_OVERRIDE,
+        target_type="user",
+        target_id=str(body.user_id),
+        draft_payload=draft,
+        expires_in_minutes=24 * 60,
+    )
+    return {"approval": approval, "requires_different_broker": True}
+
+
+@router.post("/role-changes/{approval_id}/execute")
+async def execute_role_change(
+    approval_id: uuid.UUID,
+    body: RoleChangeDecision,
+    ctx: TenantContext = Depends(require_context),
+):
+    require_role(ctx, Role.BROKER_OWNER)
+    async with tenant_tx(ctx) as conn:
+        approval_row = await conn.fetchrow(
+            "SELECT * FROM action_approvals WHERE id=$1::uuid",
+            str(approval_id),
+        )
+    if approval_row is None or approval_row["action_type"] != "brokerage.role_change":
+        raise HTTPException(status_code=404, detail="Role-change approval not found.")
+    try:
+        approval = await decide_approval(
+            ctx,
+            str(approval_id),
+            decision="approved",
+            reason=body.reason,
+        )
+    except (LookupError, ValueError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if approval["status"] != "approved":
+        raise HTTPException(status_code=409, detail="Role-change approval expired.")
+    draft = approval["draft_payload"]
+    async with tenant_tx(ctx) as conn:
+        target = await conn.fetchrow(
+            """
+            UPDATE users SET role=$3
+             WHERE id=$1::uuid AND role=$2 AND role <> 'platform_admin'
+            RETURNING id,agent_id,role
+            """,
+            draft["user_id"],
+            draft["prior_role"],
+            draft["new_role"],
+        )
+        if target is None:
+            raise HTTPException(
+                status_code=409,
+                detail="User role changed after the approval was requested; no override applied.",
+            )
+        event = await conn.fetchrow(
+            """
+            INSERT INTO protected_override_events (
+                tenant_id,approval_id,override_type,target_type,target_id,
+                prior_value,new_value,reason,performed_by
+            ) VALUES (
+                $1::uuid,$2::uuid,'role_change','user',$3,
+                $4::jsonb,$5::jsonb,$6,$7
+            ) RETURNING id,created_at
+            """,
+            ctx.tenant_id,
+            str(approval_id),
+            draft["user_id"],
+            json.dumps({"role": draft["prior_role"]}, separators=(",", ":")),
+            json.dumps({"role": draft["new_role"]}, separators=(",", ":")),
+            draft["business_reason"],
+            ctx.agent_id,
+        )
+    await ledger.record(
+        category=AuditCategory.ADMIN_ACTION,
+        action="protected_role_override_executed",
+        tenant_id=ctx.tenant_id,
+        user_id=ctx.agent_id,
+        target_id=draft["user_id"],
+        metadata={
+            "approval_id": str(approval_id),
+            "prior_role": draft["prior_role"],
+            "new_role": draft["new_role"],
+            "reason": draft["business_reason"],
+        },
+    )
+    return {
+        "user_id": draft["user_id"],
+        "role": target["role"],
+        "override_event_id": str(event["id"]),
+        "effective_for": "newly issued sessions",
+    }
+
+
+@router.get("/anomalies")
+async def anomaly_alerts(
+    severity: Optional[str] = Query(default=None, pattern=r"^(low|medium|high|critical)$"),
+    limit: int = Query(default=100, ge=1, le=500),
+    ctx: TenantContext = Depends(require_context),
+):
+    require_role(ctx, Role.BROKER_OWNER)
+    async with tenant_tx(ctx) as conn:
+        rows = await conn.fetch(
+            """
+            SELECT * FROM audit_anomaly_alerts
+             WHERE ($1::text IS NULL OR severity=$1)
+             ORDER BY created_at DESC LIMIT $2
+            """,
+            severity,
+            limit,
+        )
+    return {"alerts": [_row(row) for row in rows]}
 
 
 # ---------------------------------------------------------------------------

@@ -54,6 +54,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from db.connection import tenant_tx, get_pool
 from tenancy import TenantContext, Role, require_context
+from marketplace_engine import rank_buyer_request
 
 logger = logging.getLogger("oracle.mls_portal")
 
@@ -62,6 +63,9 @@ router = APIRouter(prefix="/api/mls", tags=["MLS Portal"])
 # ── Provider / cache constants ────────────────────────────────────────────────
 RENTCAST_BASE = "https://api.rentcast.io/v1"
 REQUEST_TIMEOUT = 20
+REQUEST_ATTEMPTS = 2
+LISTING_FRESH_SECONDS = 24 * 3600
+LISTING_EXPIRED_SECONDS = 72 * 3600
 
 # Source discriminator for rows this portal caches. The (mls_id, mls_number)
 # UNIQUE key makes the upsert idempotent; "rentcast" namespaces our rows away
@@ -184,19 +188,30 @@ async def _fetch_rentcast_listings(rentcast_params: dict) -> list[dict]:
 
     params = {**rentcast_params, "status": "Active", "limit": str(RENTCAST_FETCH_LIMIT)}
     headers = {"X-Api-Key": key, "accept": "application/json"}
-    timeout = aiohttp.ClientTimeout(total=REQUEST_TIMEOUT)
-    async with aiohttp.ClientSession(timeout=timeout) as session:
-        async with session.get(f"{RENTCAST_BASE}/listings/sale", params=params, headers=headers) as resp:
-            if resp.status == 429:
-                logger.warning("RentCast listings/sale: 429 quota/rate limit for %s", params)
-                raise _RentCastError(429, "RentCast rate/quota limit")
-            if resp.status == 401:
-                logger.warning("RentCast listings/sale: 401 — RENTCAST_API_KEY rejected.")
-                raise _RentCastError(401, "RentCast API key rejected")
-            if resp.status != 200:
-                logger.warning("RentCast listings/sale: HTTP %s for %s", resp.status, params)
-                raise _RentCastError(resp.status, f"RentCast HTTP {resp.status}")
-            data = await resp.json()
+    timeout = aiohttp.ClientTimeout(total=REQUEST_TIMEOUT, connect=8, sock_read=15)
+    data: Any = None
+    for attempt in range(REQUEST_ATTEMPTS):
+        try:
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.get(f"{RENTCAST_BASE}/listings/sale", params=params, headers=headers) as resp:
+                    if resp.status == 429:
+                        logger.warning("RentCast listings/sale: 429 quota/rate limit for %s", params)
+                        raise _RentCastError(429, "RentCast rate/quota limit")
+                    if resp.status in {401, 403}:
+                        logger.warning("RentCast listings/sale: %s — API key rejected.", resp.status)
+                        raise _RentCastError(resp.status, "RentCast API key rejected")
+                    if resp.status >= 500 and attempt + 1 < REQUEST_ATTEMPTS:
+                        await asyncio.sleep(0.4 * (2**attempt))
+                        continue
+                    if resp.status != 200:
+                        logger.warning("RentCast listings/sale: HTTP %s for %s", resp.status, params)
+                        raise _RentCastError(resp.status, f"RentCast HTTP {resp.status}")
+                    data = await resp.json()
+                    break
+        except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+            if attempt + 1 >= REQUEST_ATTEMPTS:
+                raise _RentCastError(503, "RentCast connection failed") from exc
+            await asyncio.sleep(0.4 * (2**attempt))
     # RentCast returns a JSON array for this endpoint.
     if isinstance(data, list):
         return data
@@ -407,6 +422,20 @@ def _listing_json(r: dict) -> dict:
     if bf is not None or bh is not None:
         baths = (bf or 0) + 0.5 * (bh or 0)
     photos = r.get("photos") or []
+    updated_at = r.get("last_updated")
+    age_seconds: Optional[int] = None
+    if isinstance(updated_at, datetime):
+        if updated_at.tzinfo is None:
+            updated_at = updated_at.replace(tzinfo=timezone.utc)
+        age_seconds = max(0, int((datetime.now(timezone.utc) - updated_at).total_seconds()))
+    if age_seconds is None:
+        freshness = "unknown"
+    elif age_seconds <= LISTING_FRESH_SECONDS:
+        freshness = "fresh"
+    elif age_seconds <= LISTING_EXPIRED_SECONDS:
+        freshness = "stale"
+    else:
+        freshness = "expired"
     return {
         "id": str(r.get("id")),
         "mls_number": r.get("mls_number") or "",
@@ -435,8 +464,75 @@ def _listing_json(r: dict) -> dict:
         "photos": photos,
         "cover_url": photos[0] if photos else None,
         "source": "rentcast" if r.get("mls_id") == MLS_SOURCE_ID else (r.get("mls_id") or "mls"),
-        "last_updated": _iso(r.get("last_updated")),
+        "last_updated": _iso(updated_at),
+        "freshness": {
+            "status": freshness,
+            "age_seconds": age_seconds,
+            "alert": (
+                None
+                if freshness == "fresh"
+                else "Listing data should be verified with the originating MLS before relying on it."
+            ),
+        },
     }
+
+
+def _freshness_summary(listings: list[dict[str, Any]]) -> dict[str, Any]:
+    counts = {"fresh": 0, "stale": 0, "expired": 0, "unknown": 0}
+    for listing in listings:
+        status_name = listing.get("freshness", {}).get("status", "unknown")
+        counts[status_name if status_name in counts else "unknown"] += 1
+    return {
+        "counts": counts,
+        "requires_verification": bool(counts["stale"] or counts["expired"] or counts["unknown"]),
+        "fresh_threshold_seconds": LISTING_FRESH_SECONDS,
+        "expired_threshold_seconds": LISTING_EXPIRED_SECONDS,
+    }
+
+
+async def _buyer_matches(conn: Any, listing: dict[str, Any]) -> list[dict[str, Any]]:
+    """Rank explicit active buy boxes without exposing client contact data."""
+    requests = await conn.fetch(
+        """
+        SELECT r.id,r.request_name,r.criteria,r.expires_at,
+               p.states,p.counties,p.property_types,p.min_price,p.max_price,
+               p.min_beds,p.min_sqft,p.max_rehab,p.strategies,
+               p.verification_status,p.acquisition_history_verified
+          FROM buyer_requests r
+          JOIN buyer_profiles p ON p.id=r.buyer_profile_id
+         WHERE r.status='active' AND p.active=true
+           AND (r.expires_at IS NULL OR r.expires_at>now())
+        """
+    )
+    facts = {
+        "state": listing.get("state"),
+        "county": listing.get("county"),
+        "property_type": listing.get("property_type"),
+        "asking_price": listing.get("price"),
+        "beds": listing.get("beds"),
+        "sqft": listing.get("sqft"),
+    }
+    matches: list[dict[str, Any]] = []
+    for request in requests:
+        request_data = dict(request)
+        criteria = request_data.get("criteria") or {}
+        if isinstance(criteria, str):
+            try:
+                import json
+
+                criteria = json.loads(criteria)
+            except ValueError:
+                criteria = {}
+        ranked = rank_buyer_request(facts, request_data, criteria)
+        matches.append(
+            {
+                "buyer_request_id": str(request["id"]),
+                "request_name": request["request_name"],
+                **ranked,
+            }
+        )
+    matches.sort(key=lambda item: item["match_score"], reverse=True)
+    return matches[:10]
 
 
 # ── routes ────────────────────────────────────────────────────────────────────
@@ -515,6 +611,7 @@ async def mls_portal_search(
         "degraded": degraded,
         "source": "RentCast (cached)",
         "notice": notice,
+        "freshness": _freshness_summary(listings),
     }
 
 
@@ -534,6 +631,8 @@ async def mls_portal_listing(
             row = await conn.fetchrow(
                 "SELECT * FROM oracle_mls_listings WHERE id = $1::uuid", listing_id
             )
+            listing = _listing_json(dict(row)) if row else None
+            matches = await _buyer_matches(conn, listing) if listing else []
     except RuntimeError as exc:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, f"Memory Core offline ({exc})")
     except Exception as exc:  # noqa: BLE001
@@ -542,7 +641,79 @@ async def mls_portal_listing(
 
     if not row:
         raise HTTPException(status.HTTP_404_NOT_FOUND, f"Listing {listing_id!r} not found.")
-    return _listing_json(dict(row))
+    return {**listing, "buyer_matches": matches}
+
+
+@router.get("/health", summary="MLS source health and freshness")
+async def mls_portal_health(
+    ctx: TenantContext = Depends(require_context),
+) -> dict[str, Any]:
+    """Report live-feed age without making a provider request."""
+    try:
+        async with tenant_tx(ctx) as conn:
+            rows = await conn.fetch(
+                """
+                SELECT mls_id,COUNT(*) AS listing_count,MAX(last_updated) AS last_updated,
+                       COUNT(*) FILTER (WHERE last_updated >= now()-interval '24 hours') AS fresh_count,
+                       COUNT(*) FILTER (WHERE last_updated < now()-interval '24 hours'
+                                         AND last_updated >= now()-interval '72 hours') AS stale_count,
+                       COUNT(*) FILTER (WHERE last_updated < now()-interval '72 hours') AS expired_count
+                  FROM oracle_mls_listings
+                 GROUP BY mls_id ORDER BY mls_id
+                """
+            )
+    except RuntimeError as exc:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, f"Memory Core offline ({exc})")
+    except Exception as exc:  # noqa: BLE001
+        logger.error("MLS health failed: %s", exc)
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Memory Core offline.")
+    sources: list[dict[str, Any]] = []
+    for raw in rows:
+        row = dict(raw)
+        last_updated = row.get("last_updated")
+        if isinstance(last_updated, datetime) and last_updated.tzinfo is None:
+            last_updated = last_updated.replace(tzinfo=timezone.utc)
+        age_seconds = (
+            max(0, int((datetime.now(timezone.utc) - last_updated).total_seconds()))
+            if isinstance(last_updated, datetime)
+            else None
+        )
+        health = (
+            "unknown"
+            if age_seconds is None
+            else "healthy"
+            if age_seconds <= LISTING_FRESH_SECONDS
+            else "degraded"
+            if age_seconds <= LISTING_EXPIRED_SECONDS
+            else "unhealthy"
+        )
+        sources.append(
+            {
+                "source": row["mls_id"],
+                "health": health,
+                "last_updated": _iso(last_updated),
+                "age_seconds": age_seconds,
+                "listing_count": int(row["listing_count"]),
+                "fresh_count": int(row["fresh_count"]),
+                "stale_count": int(row["stale_count"]),
+                "expired_count": int(row["expired_count"]),
+            }
+        )
+    overall = (
+        "empty"
+        if not sources
+        else "unhealthy"
+        if any(item["health"] == "unhealthy" for item in sources)
+        else "degraded"
+        if any(item["health"] in {"degraded", "unknown"} for item in sources)
+        else "healthy"
+    )
+    return {
+        "status": overall,
+        "checked_at": datetime.now(timezone.utc).isoformat(),
+        "sources": sources,
+        "live_provider_called": False,
+    }
 
 
 # ── Pipeline source: browse the REAL harvested leads as listings ──────────────

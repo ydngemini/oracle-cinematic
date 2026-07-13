@@ -81,6 +81,10 @@ export function TourExperience({ propertyInput }: { propertyInput?: Record<strin
 
   return (
     <div className="relative h-screen w-screen overflow-hidden bg-[#05070d] noise-overlay">
+      <p className="sr-only">
+        Interactive three-dimensional property tour. Use the Explore, Dollhouse,
+        floor-plan, room, and guided-tour controls to change the view.
+      </p>
       <Canvas
         shadows
         dpr={[1, 2]}

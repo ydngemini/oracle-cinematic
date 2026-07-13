@@ -17,6 +17,7 @@ import os
 from typing import Optional
 
 from .base import SocrataHarvester, norm
+from .municipal import aggregate_property_records, normalize_pin, normalize_street_address
 from .property_adapter import PropertyRecord
 
 
@@ -26,6 +27,9 @@ class ChicagoBuildingViolationsHarvester(SocrataHarvester):
     RESOURCE_URL = "https://data.cityofchicago.org/resource/22u3-xenr.json"
     SOQL_WHERE = "violation_status='OPEN'"
     SOQL_ORDER = "id"
+    SOQL_CURSOR_FIELD = "id"
+    SOURCE_KEY = "chicago_building_violations"
+    RETAIN_RAW = True
 
     async def _get_json(self, url: str, headers: Optional[dict] = None):
         token = os.getenv("SODA_APP_TOKEN")
@@ -34,11 +38,12 @@ class ChicagoBuildingViolationsHarvester(SocrataHarvester):
         return await super()._get_json(url, headers=headers)
 
     def map_record(self, row: dict) -> Optional[PropertyRecord]:
-        address = str(row.get("address") or "").strip()
+        address = normalize_street_address(str(row.get("address") or ""))
         if not address:
             return None
+        pin = normalize_pin(str(row.get("pin") or row.get("pin14") or ""))
         group = str(row.get("property_group") or "").strip()
-        key = group or norm(address)
+        key = pin or group or norm(address)
         if not key:
             return None
 
@@ -62,4 +67,20 @@ class ChicagoBuildingViolationsHarvester(SocrataHarvester):
             is_absentee_owner=False,
             distress_flags=flags,
             last_sale_date=None,
+            source_metadata={
+                "pin": pin or None,
+                "property_group": group or None,
+                "violation_id": row.get("id"),
+                "violation_date": row.get("violation_date"),
+                "inspection_number": row.get("inspection_number"),
+            },
         )
+
+    def aggregate_records(self, records: list[PropertyRecord]) -> list[PropertyRecord]:
+        return aggregate_property_records(records)
+
+    def raw_property_key(self, row: dict) -> str:
+        pin = normalize_pin(str(row.get("pin") or row.get("pin14") or ""))
+        group = str(row.get("property_group") or "").strip()
+        address = normalize_street_address(str(row.get("address") or ""))
+        return f"CHIV:{pin or group or norm(address)}"

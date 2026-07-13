@@ -19,6 +19,20 @@ demo_tenant_id = "00000000-0000-0000-0000-000000000000"
 # Push this tag to ECR before `terraform apply` (use a git SHA in CI).
 image_tag = "v1"
 
+# Platform capabilities are fail-closed in production. Enable one cohort at a
+# time after migration + smoke checks. Outreach/provider execution should be
+# the last capability enabled.
+feature_municipal_harvests      = false
+feature_predictive_intelligence = false
+feature_marketplace             = false
+feature_contracts               = false
+feature_spatial_tours           = false
+feature_local_models            = false
+feature_automation              = false
+
+raw_source_retention_days       = 730
+call_transcript_retention_days  = 365
+
 # Walkable-tour reconstruction backend. Default uses AWS Batch; switch to RunPod
 # when AWS EC2 GPU Spot quota is unavailable. Store RUNPOD_API_KEY in the app
 # Secrets Manager JSON, not in this file.

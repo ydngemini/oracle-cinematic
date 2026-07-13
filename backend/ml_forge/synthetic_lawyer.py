@@ -7,8 +7,11 @@ legally-formatted wholesale assignment contracts for training data.
 
 import json
 import asyncio
+import difflib
+import hashlib
 import os
 import re
+import string
 import sys
 import time
 import random
@@ -22,11 +25,17 @@ from typing import Any, Mapping
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from backend.ml_forge.bedrock_client import (
-    invoke_bedrock_model,
-    PRIMARY_MODEL,
-    SECONDARY_MODEL,
-)
+# Keep deterministic drafting importable in API/test processes that do not
+# install the AWS SDK.  The optional synthetic-training path imports Bedrock
+# only when it is actually invoked.
+PRIMARY_MODEL = "us.meta.llama3-3-70b-instruct-v1:0"
+SECONDARY_MODEL = "us.meta.llama3-1-8b-instruct-v1:0"
+
+
+def invoke_bedrock_model(model_id: str, prompt: str, max_tokens: int = 2048):
+    from backend.ml_forge.bedrock_client import invoke_bedrock_model as invoke
+
+    return invoke(model_id, prompt, max_tokens=max_tokens)
 
 TOTAL_RECORDS = 100
 OUTPUT_PATH = os.path.join(
@@ -131,6 +140,124 @@ CONTINGENCY_CLAUSES = {
         "administrator, or estate authority necessary for Seller to convey "
         "marketable title at closing."
     ),
+}
+
+# These are bootstrap candidates, not silently approved legal forms.  A broker
+# may copy them into ``contract_templates`` and an attorney must approve the
+# exact checksum/version before the contracts API will render a document.
+SELLER_PURCHASE_TEMPLATE = """REAL ESTATE PURCHASE AND SALE AGREEMENT — SELLER FORM
+Effective date: {current_date}
+
+Seller: {seller_name}
+Buyer: {buyer_name}
+Property: {property_address}
+Purchase price: ${purchase_price}
+Earnest money deposit: ${earnest_money_deposit}
+Closing date: {closing_date}
+
+1. PROPERTY AND CONVEYANCE. Seller agrees to convey the Property to Buyer at closing, subject to the approved title, deed, disclosure, and closing requirements for the stated jurisdiction.
+2. DUE DILIGENCE. Buyer may complete the inspections and investigations expressly stated in the approved addenda. No condition, title, zoning, tax, or environmental conclusion is made by this draft.
+3. TITLE AND CLOSING. The closing professional shall determine acceptable title, payoff, recording, prorations, and funds requirements.
+4. DEFAULT AND REMEDIES. The parties' remedies are limited to those in the attorney-approved template and controlling law.
+5. ADDENDA. {approved_addenda}
+
+SELLER: ____________________  DATE: __________
+BUYER:  ____________________  DATE: __________
+
+PROFESSIONAL REVIEW REQUIRED: This generated draft is not legal advice and must not be signed until the approved template and transaction-specific terms are reviewed by qualified counsel."""
+
+BUYER_PURCHASE_TEMPLATE = """REAL ESTATE PURCHASE OFFER — BUYER FORM
+Offer date: {current_date}
+
+Buyer: {buyer_name}
+Seller: {seller_name}
+Property: {property_address}
+Offer amount: ${purchase_price}
+Earnest money deposit: ${earnest_money_deposit}
+Requested closing date: {closing_date}
+Financing: {financing_terms}
+Inspection/due-diligence period: {due_diligence_period}
+
+This offer incorporates only the contingencies and addenda expressly listed here: {approved_addenda}
+Title, disclosures, prorations, possession, risk of loss, default, and closing obligations are governed by the attorney-approved template for the stated jurisdiction.
+
+BUYER: ____________________  DATE: __________
+
+PROFESSIONAL REVIEW REQUIRED: This generated draft is not legal advice and must not be delivered or signed until reviewed under the brokerage's approval policy."""
+
+JOINT_VENTURE_TEMPLATE = """REAL ESTATE JOINT VENTURE AGREEMENT
+Effective date: {current_date}
+
+Party A: {party_a_name}
+Party B: {party_b_name}
+Project/property: {property_address}
+Purpose: {venture_purpose}
+Party A contribution: {party_a_contribution}
+Party B contribution: {party_b_contribution}
+Approved distribution terms: {distribution_terms}
+Decision authority: {decision_authority}
+Term/termination: {termination_terms}
+
+The parties will maintain truthful books and records, comply with licensing, securities, tax, fair-housing, and real-estate requirements, and use the attorney-approved dispute, indemnity, confidentiality, and wind-down provisions for the jurisdiction.
+
+PARTY A: ____________________  DATE: __________
+PARTY B: ____________________  DATE: __________
+
+PROFESSIONAL REVIEW REQUIRED: This generated draft is not legal or tax advice and must be reviewed by qualified counsel before signature or performance."""
+
+REDLINE_REVIEW_TEMPLATE = """DEFENSIVE REDLINE REVIEW PROTOCOL
+Version: {protocol_version}
+
+Compare only the supplied original and proposed text. Identify additions, removals, and replacements; flag objective legal/financial risk terms; preserve both source hashes; and make no claim that a clause is enforceable. Every proposed change requires attorney review."""
+
+BUILTIN_CONTRACT_TEMPLATES: dict[str, dict[str, Any]] = {
+    "assignment-standard": {
+        "document_type": "assignment",
+        "jurisdiction": "US-GENERIC",
+        "version": "1.0.0",
+        "body_template": ASSIGNMENT_CONTRACT_TEMPLATE,
+        "required_fields": list(REQUIRED_CONTRACT_VARIABLES),
+    },
+    "seller-purchase-standard": {
+        "document_type": "seller_purchase",
+        "jurisdiction": "US-GENERIC",
+        "version": "1.0.0",
+        "body_template": SELLER_PURCHASE_TEMPLATE,
+        "required_fields": [
+            "current_date", "seller_name", "buyer_name", "property_address",
+            "purchase_price", "earnest_money_deposit", "closing_date",
+            "approved_addenda",
+        ],
+    },
+    "buyer-purchase-standard": {
+        "document_type": "buyer_purchase",
+        "jurisdiction": "US-GENERIC",
+        "version": "1.0.0",
+        "body_template": BUYER_PURCHASE_TEMPLATE,
+        "required_fields": [
+            "current_date", "buyer_name", "seller_name", "property_address",
+            "purchase_price", "earnest_money_deposit", "closing_date",
+            "financing_terms", "due_diligence_period", "approved_addenda",
+        ],
+    },
+    "joint-venture-standard": {
+        "document_type": "joint_venture",
+        "jurisdiction": "US-GENERIC",
+        "version": "1.0.0",
+        "body_template": JOINT_VENTURE_TEMPLATE,
+        "required_fields": [
+            "current_date", "party_a_name", "party_b_name", "property_address",
+            "venture_purpose", "party_a_contribution", "party_b_contribution",
+            "distribution_terms", "decision_authority", "termination_terms",
+        ],
+    },
+    "defensive-redline-standard": {
+        "document_type": "redline",
+        "jurisdiction": "US-GENERIC",
+        "version": "1.0.0",
+        "body_template": REDLINE_REVIEW_TEMPLATE,
+        "required_fields": ["protocol_version"],
+    },
 }
 
 DE_COUNTIES = ["New Castle", "Kent", "Sussex"]
@@ -565,6 +692,290 @@ def draft_assignment_contract_json(transaction_data: Mapping[str, Any]) -> str:
         separators=(",", ":"),
         ensure_ascii=False,
     )
+
+
+_TEMPLATE_FIELD_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
+_MAX_TEMPLATE_BYTES = 100_000
+_MAX_FIELD_CHARS = 4_000
+_DOCUMENT_TYPES = {
+    "assignment", "seller_purchase", "buyer_purchase", "joint_venture", "redline"
+}
+_MONEY_FIELDS = {
+    "purchase_price", "wholesale_buy_price", "investor_buy_price",
+    "earnest_money", "earnest_money_deposit", "assignment_fee", "offer_amount",
+}
+_DERIVED_TEMPLATE_FIELDS = {"assignment_fee", "section_4_contingency"}
+
+
+def template_sha256(body_template: str) -> str:
+    return hashlib.sha256(body_template.encode("utf-8")).hexdigest()
+
+
+def _template_fields(body_template: str) -> tuple[list[str], list[str]]:
+    fields: list[str] = []
+    invalid: list[str] = []
+    try:
+        parsed = string.Formatter().parse(body_template)
+        for _, field_name, format_spec, conversion in parsed:
+            if field_name is None:
+                continue
+            if (
+                not _TEMPLATE_FIELD_RE.fullmatch(field_name)
+                or format_spec
+                or conversion
+            ):
+                invalid.append(field_name)
+            else:
+                fields.append(field_name)
+    except ValueError:
+        invalid.append("malformed_template")
+    return list(dict.fromkeys(fields)), list(dict.fromkeys(invalid))
+
+
+def validate_contract_template(
+    document_type: str,
+    body_template: str,
+    required_fields: list[str],
+) -> dict[str, Any]:
+    """Validate a versioned template without executing arbitrary formatting.
+
+    Only simple ``{snake_case}`` substitutions are accepted. Attribute access,
+    indexing, conversions, and format specs are intentionally rejected.
+    """
+    issues: list[str] = []
+    if document_type not in _DOCUMENT_TYPES:
+        issues.append("document_type_invalid")
+    if not body_template or len(body_template.encode("utf-8")) > _MAX_TEMPLATE_BYTES:
+        issues.append("body_template_size_invalid")
+    fields, invalid = _template_fields(body_template)
+    issues.extend(f"template_field_invalid:{name}" for name in invalid)
+    normalized_required = list(dict.fromkeys(str(v).strip() for v in required_fields))
+    for name in normalized_required:
+        if not _TEMPLATE_FIELD_RE.fullmatch(name):
+            issues.append(f"required_field_invalid:{name}")
+    allowed_derived = _DERIVED_TEMPLATE_FIELDS if document_type == "assignment" else set()
+    missing_declarations = sorted(set(fields) - set(normalized_required) - allowed_derived)
+    if missing_declarations:
+        issues.extend(f"placeholder_not_required:{name}" for name in missing_declarations)
+    return {
+        "valid": not issues,
+        "issues": issues,
+        "placeholders": fields,
+        "required_fields": normalized_required,
+        "template_sha256": template_sha256(body_template),
+    }
+
+
+def _safe_contract_scalar(name: str, value: Any) -> tuple[str | None, str | None]:
+    if value is None:
+        return None, name
+    if isinstance(value, (dict, list, tuple, set)):
+        return None, f"{name}_must_be_scalar"
+    if name in _MONEY_FIELDS:
+        amount = _money(value)
+        if amount is None or amount < 0:
+            return None, f"{name}_invalid"
+        return _money_text(amount), None
+    text_value = _date_text(value) or ""
+    if (
+        not text_value.strip()
+        or len(text_value) > _MAX_FIELD_CHARS
+        or _CONTROL_CHARACTER_RE.search(text_value)
+    ):
+        return None, f"{name}_invalid"
+    try:
+        text_value.encode("cp1252")
+    except UnicodeEncodeError:
+        return None, f"{name}_unsupported_characters"
+    return text_value.strip(), None
+
+
+def render_approved_contract_template(
+    *,
+    document_type: str,
+    body_template: str,
+    required_fields: list[str],
+    transaction_data: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Render a deterministic professional-review draft from an exact template.
+
+    The method returns validation traces, not model reasoning.  The calling API
+    is responsible for proving that this exact template checksum/version has an
+    approved attorney review row.
+    """
+    validation = validate_contract_template(document_type, body_template, required_fields)
+    if not validation["valid"]:
+        return {
+            "status": "FATAL_ERROR",
+            "missing_variables": validation["issues"],
+            "final_contract_text": "",
+            "template_sha256": validation["template_sha256"],
+        }
+
+    raw: dict[str, Any] = dict(transaction_data)
+    assignment_result: dict[str, Any] | None = None
+    if document_type == "assignment":
+        assignment_result = draft_assignment_contract(transaction_data)
+        if assignment_result["status"] != "SUCCESS":
+            return {
+                **assignment_result,
+                "template_sha256": validation["template_sha256"],
+            }
+        normalized = normalize_assignment_payload(transaction_data)
+        wholesale = _money(normalized["wholesale_buy_price"]) or Decimal(0)
+        investor = _money(normalized["investor_buy_price"]) or Decimal(0)
+        earnest = _money(normalized["earnest_money_deposit"]) or Decimal(0)
+        condition = _normalize_condition_flag(normalized.get("condition_flag")) or "None"
+        raw.update(normalized)
+        raw.update(
+            {
+                "assignment_fee": investor - wholesale,
+                "earnest_money_deposit": earnest,
+                "section_4_contingency": CONTINGENCY_CLAUSES.get(condition, ""),
+            }
+        )
+
+    context: dict[str, str] = {}
+    issues: list[str] = []
+    for field_name in validation["placeholders"]:
+        if field_name == "section_4_contingency":
+            # This is controlled text selected from a closed internal map.
+            context[field_name] = str(raw.get(field_name) or "")
+            continue
+        rendered, issue = _safe_contract_scalar(field_name, raw.get(field_name))
+        if issue:
+            issues.append(issue)
+        else:
+            context[field_name] = rendered or ""
+
+    for required in validation["required_fields"]:
+        if required not in raw or _is_missing(raw.get(required)):
+            issues.append(required)
+    issues = list(dict.fromkeys(issues))
+    if issues:
+        return {
+            "status": "FATAL_ERROR",
+            "missing_variables": issues,
+            "final_contract_text": "",
+            "template_sha256": validation["template_sha256"],
+        }
+
+    try:
+        text_value = body_template.format_map(context)
+    except (KeyError, ValueError) as exc:
+        return {
+            "status": "FATAL_ERROR",
+            "missing_variables": [f"template_render_failed:{type(exc).__name__}"],
+            "final_contract_text": "",
+            "template_sha256": validation["template_sha256"],
+        }
+
+    input_hash = hashlib.sha256(
+        json.dumps(dict(transaction_data), sort_keys=True, default=str, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    result = {
+        "status": "SUCCESS",
+        "document_type": document_type,
+        "missing_variables": [],
+        "final_contract_text": text_value,
+        "template_sha256": validation["template_sha256"],
+        "input_sha256": input_hash,
+        "content_sha256": hashlib.sha256(text_value.encode("utf-8")).hexdigest(),
+        "professional_review_required": True,
+        "warnings": [
+            "Generated legal draft; not legal advice.",
+            "Attorney review and an explicit approval are required before delivery or signature.",
+        ],
+    }
+    if assignment_result is not None:
+        result["assignment_fee_calculated"] = assignment_result["assignment_fee_calculated"]
+    return result
+
+
+_REDLINE_RISK_TERMS: dict[str, tuple[str, ...]] = {
+    "financial": ("price", "fee", "deposit", "liquidated damages", "commission", "payment"),
+    "title": ("title", "lien", "encumbrance", "deed", "recording"),
+    "remedies": ("default", "indemn", "waiver", "release", "specific performance", "arbitration"),
+    "timing": ("closing", "deadline", "inspection", "termination", "notice"),
+    "transfer": ("assign", "novation", "successor", "joint venture"),
+}
+
+
+def defensive_redline(original_text: str, proposed_text: str) -> dict[str, Any]:
+    """Produce a reproducible, non-opinionated legal change review.
+
+    Risk flags are literal keyword matches, not covert scoring or a claim about
+    enforceability.  Both source documents remain authoritative.
+    """
+    if not original_text or not proposed_text:
+        return {"status": "FATAL_ERROR", "missing_variables": ["original_text", "proposed_text"]}
+    if max(len(original_text), len(proposed_text)) > _MAX_TEMPLATE_BYTES:
+        return {"status": "FATAL_ERROR", "missing_variables": ["document_size_invalid"]}
+    if "\x00" in original_text or "\x00" in proposed_text:
+        return {"status": "FATAL_ERROR", "missing_variables": ["document_contains_nul"]}
+    try:
+        original_text.encode("cp1252")
+        proposed_text.encode("cp1252")
+    except UnicodeEncodeError:
+        return {"status": "FATAL_ERROR", "missing_variables": ["document_unsupported_characters"]}
+
+    original_lines = original_text.splitlines()
+    proposed_lines = proposed_text.splitlines()
+    matcher = difflib.SequenceMatcher(a=original_lines, b=proposed_lines, autojunk=False)
+    changes: list[dict[str, Any]] = []
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag == "equal":
+            continue
+        before = "\n".join(original_lines[i1:i2])
+        after = "\n".join(proposed_lines[j1:j2])
+        probe = f"{before}\n{after}".lower()
+        flags = sorted(
+            category
+            for category, terms in _REDLINE_RISK_TERMS.items()
+            if any(term in probe for term in terms)
+        )
+        changes.append(
+            {
+                "change_type": tag,
+                "original_lines": [i1 + 1, i2],
+                "proposed_lines": [j1 + 1, j2],
+                "before": before,
+                "after": after,
+                "literal_risk_flags": flags,
+            }
+        )
+
+    unified = "\n".join(
+        difflib.unified_diff(
+            original_lines,
+            proposed_lines,
+            fromfile="original",
+            tofile="proposed",
+            lineterm="",
+        )
+    )
+    report_lines = [
+        "DEFENSIVE REDLINE REVIEW",
+        "PROFESSIONAL REVIEW REQUIRED — objective text comparison only; not legal advice.",
+        f"Original SHA-256: {hashlib.sha256(original_text.encode('utf-8')).hexdigest()}",
+        f"Proposed SHA-256: {hashlib.sha256(proposed_text.encode('utf-8')).hexdigest()}",
+        f"Detected change groups: {len(changes)}",
+        "",
+        unified or "No textual changes detected.",
+    ]
+    final_text = "\n".join(report_lines)
+    return {
+        "status": "SUCCESS",
+        "document_type": "redline",
+        "changes": changes,
+        "change_count": len(changes),
+        "final_contract_text": final_text,
+        "original_sha256": hashlib.sha256(original_text.encode("utf-8")).hexdigest(),
+        "proposed_sha256": hashlib.sha256(proposed_text.encode("utf-8")).hexdigest(),
+        "content_sha256": hashlib.sha256(final_text.encode("utf-8")).hexdigest(),
+        "professional_review_required": True,
+        "warnings": ["Literal risk flags are review aids, not legal conclusions."],
+    }
 
 
 def _pdf_escape(text: str) -> str:

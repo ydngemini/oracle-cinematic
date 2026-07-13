@@ -293,6 +293,38 @@ export function useOracleWebSocket() {
           });
           break;
 
+        case 'JOB_PROGRESS':
+          dispatch({ type: ACTIONS.JOB_PROGRESS, payload: msg });
+          feed({
+            actor: 'ai',
+            actorName: 'Durable Worker',
+            text: `${String(msg.job_type || 'job').replaceAll(':', ' ')} — ${msg.message || 'working'}`,
+            tag: 'JOB PROGRESS',
+            metric: `${Math.round(Number(msg.progress) || 0)}%`,
+          });
+          break;
+
+        case 'NEGOTIATION_TELEMETRY':
+          dispatch({ type: ACTIONS.NEGOTIATION_TELEMETRY, payload: msg });
+          feed({
+            actor: 'ai',
+            actorName: 'Negotiation Assist',
+            text: `seller counter-offer classified ${String(msg.threshold || 'review').toLowerCase()}`,
+            tag: 'LIVE MAO',
+            metric: Number.isFinite(Number(msg.mao)) ? `$${Math.round(Number(msg.mao)).toLocaleString()}` : undefined,
+          });
+          break;
+
+        case 'CALL_CONSENT':
+          dispatch({ type: ACTIONS.CALL_CONSENT, payload: msg });
+          feed({
+            actor: 'agent',
+            actorName: 'Call Compliance',
+            text: msg.consent_recorded ? 'explicit transcription consent recorded' : 'transcription consent withdrawn',
+            tag: 'CALL CONSENT',
+          });
+          break;
+
         case 'PING':
           // Keepalive: the backend idle-watchdog closes the socket after
           // ORACLE_WS_IDLE_TIMEOUT (default 300s) unless it hears from us.

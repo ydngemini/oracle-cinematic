@@ -29,9 +29,11 @@ Enable in production (it is OFF by default so dev boots never scrape unexpectedl
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import time
+from datetime import datetime, timezone
 from dataclasses import dataclass, field
 from typing import Awaitable, Callable, Optional
 
@@ -64,7 +66,12 @@ class PeriodicTask:
 
 
 class PeriodicScheduler:
-    """Heartbeat loop running due PeriodicTasks. One per process."""
+    """Heartbeat loop that enqueues due work into the durable job queue.
+
+    Every ECS replica may run this lightweight producer.  The interval-bucket
+    idempotency key collapses all replicas onto one PostgreSQL job, and leased
+    workers perform the actual scrape exactly once per successful attempt.
+    """
 
     def __init__(self, tick_s: int = TICK_SECONDS):
         self.tick_s = max(5, tick_s)
@@ -81,6 +88,19 @@ class PeriodicScheduler:
                 task.name, task.interval_s / 3600,
             )
         self._tasks[task.name] = task
+        self._register_job_handler(task)
+
+    @staticmethod
+    def _register_job_handler(task: PeriodicTask) -> None:
+        from automation_jobs import register_handler
+
+        async def handler(payload: dict, reporter) -> dict:
+            await reporter.progress(5, f"{task.name}: starting")
+            result = await task.run()
+            await reporter.progress(95, f"{task.name}: finalizing")
+            return result if isinstance(result, dict) else {"result": str(result)}
+
+        register_handler(f"periodic:{task.name}", handler)
 
     async def start(self) -> None:
         if not SCHEDULER_ENABLED:
@@ -118,13 +138,38 @@ class PeriodicScheduler:
                 break
 
     async def _run_task(self, task: PeriodicTask) -> None:
-        """Run one task, isolating its failure from the loop and siblings."""
+        """Enqueue one interval-bucketed task, isolating producer failures."""
         t0 = time.monotonic()
         try:
-            logger.info("[periodic] running '%s'", task.name)
-            result = await task.run()
-            task.last_status = "ok"
-            task.last_result = result if isinstance(result, dict) else {"result": str(result)}
+            from automation_jobs import enqueue_job, interval_idempotency_key
+            from tenancy import Role, TenantContext
+
+            tenant_id = os.getenv("ORACLE_INGEST_TENANT_ID") or os.getenv(
+                "ORACLE_PLATFORM_TENANT_ID", "00000000-0000-0000-0000-000000000000"
+            )
+            now = datetime.now(timezone.utc)
+            bucket_number = int(now.timestamp() // max(1, int(task.interval_s)))
+            bucket = f"{int(task.interval_s)}:{bucket_number}"
+            ctx = TenantContext(
+                agent_id="periodic-scheduler",
+                tenant_id=tenant_id,
+                role=Role.PLATFORM_ADMIN,
+            )
+            job, created = await enqueue_job(
+                ctx,
+                job_type=f"periodic:{task.name}",
+                payload={"task": task.name, "scheduled_bucket": bucket},
+                idempotency_key=interval_idempotency_key(task.name, tenant_id, bucket),
+                created_by="periodic-scheduler",
+                priority=40,
+            )
+            task.last_status = "queued" if created else "deduplicated"
+            task.last_result = {
+                "job_id": job["id"],
+                "created": created,
+                "state": job["state"],
+                "scheduled_bucket": bucket,
+            }
             task.runs += 1
         except Exception as exc:  # noqa: BLE001 — one task must not sink the loop
             task.last_status = f"error: {str(exc)[:160]}"
@@ -138,12 +183,31 @@ class PeriodicScheduler:
                         task.name, task.last_status, now - t0, task.interval_s / 60)
 
     async def run_now(self, name: str) -> dict:
-        """Manually trigger a task immediately (admin / debugging)."""
+        """Queue a controlled manual rerun through the same durable path."""
         task = self._tasks.get(name)
         if not task:
             raise KeyError(f"No such task: {name}. Known: {list(self._tasks)}")
-        await self._run_task(task)
-        return task.last_result
+        from automation_jobs import enqueue_job
+        from tenancy import Role, TenantContext
+
+        tenant_id = os.getenv("ORACLE_INGEST_TENANT_ID") or os.getenv(
+            "ORACLE_PLATFORM_TENANT_ID", "00000000-0000-0000-0000-000000000000"
+        )
+        request_id = str(time.time_ns())
+        ctx = TenantContext(
+            agent_id="manual-harvest",
+            tenant_id=tenant_id,
+            role=Role.PLATFORM_ADMIN,
+        )
+        job, _ = await enqueue_job(
+            ctx,
+            job_type=f"periodic:{task.name}",
+            payload={"task": task.name, "manual": True, "request_id": request_id},
+            idempotency_key=f"manual:{task.name}:{request_id}",
+            created_by="manual-harvest",
+            priority=20,
+        )
+        return {"job_id": job["id"], "state": job["state"], "manual": True}
 
     def status(self) -> dict:
         return {
@@ -248,8 +312,94 @@ async def _coverage_snapshot_task() -> dict:
         return {"error": str(exc)[:160]}
 
 
+async def _retention_cleanup_task() -> dict:
+    """Redact expired raw evidence/transcripts and evict stale cache rows.
+
+    The database function is SECURITY DEFINER and independently verifies the
+    platform-admin RLS context. Evidence hashes and audit facts remain intact.
+    """
+    from db.connection import tenant_tx
+    from tenancy import Role, TenantContext
+
+    tenant_id = os.getenv(
+        "ORACLE_PLATFORM_TENANT_ID", "00000000-0000-0000-0000-000000000000"
+    )
+    ctx = TenantContext(
+        agent_id="retention-janitor",
+        tenant_id=tenant_id,
+        role=Role.PLATFORM_ADMIN,
+    )
+    raw_days = max(1, min(3650, int(os.getenv("ORACLE_RAW_SOURCE_RETENTION_DAYS", "730"))))
+    transcript_days = max(
+        1,
+        min(3650, int(os.getenv("ORACLE_CALL_TRANSCRIPT_RETENTION_DAYS", "365"))),
+    )
+    async with tenant_tx(ctx) as conn:
+        result = await conn.fetchval(
+            "SELECT purge_expired_platform_data($1, $2)",
+            raw_days,
+            transcript_days,
+        )
+    if isinstance(result, str):
+        result = json.loads(result)
+    clean = dict(result or {})
+    logger.info(
+        "ORACLE_METRIC retention_cleanup source_payloads=%d transcripts=%d cache_rows=%d",
+        int(clean.get("source_payloads_purged") or 0),
+        int(clean.get("transcripts_purged") or 0),
+        int(clean.get("cache_rows_deleted") or 0),
+    )
+    return clean
+
+
+async def _source_health_task() -> dict:
+    """Emit one metric marker per enabled source that is stale or open."""
+    from db.connection import tenant_tx
+    from tenancy import Role, TenantContext
+
+    tenant_id = os.getenv(
+        "ORACLE_PLATFORM_TENANT_ID", "00000000-0000-0000-0000-000000000000"
+    )
+    ctx = TenantContext(
+        agent_id="source-health-monitor",
+        tenant_id=tenant_id,
+        role=Role.PLATFORM_ADMIN,
+    )
+    async with tenant_tx(ctx) as conn:
+        rows = await conn.fetch(
+            """
+            SELECT source_key,circuit_state,failure_count,
+                   EXTRACT(EPOCH FROM (now()-last_succeeded_at)) AS age_seconds
+              FROM harvest_sources
+             WHERE enabled
+               AND (
+                   circuit_state='open'
+                   OR last_succeeded_at IS NULL
+                   OR now()-last_succeeded_at > make_interval(
+                       secs => GREATEST(schedule_seconds*2, 21600)::double precision
+                   )
+               )
+             ORDER BY source_key
+            """
+        )
+    sources = []
+    for row in rows:
+        source_key = str(row["source_key"])
+        sources.append(source_key)
+        logger.warning(
+            "ORACLE_METRIC stale_harvest_source source=%s circuit=%s failures=%d",
+            source_key,
+            str(row["circuit_state"]),
+            int(row["failure_count"] or 0),
+        )
+    return {"stale_sources": len(sources), "source_keys": sources}
+
+
 def build_default_scheduler() -> PeriodicScheduler:
     sched = PeriodicScheduler()
+    municipal_enabled = os.getenv(
+        "ORACLE_FEATURE_MUNICIPAL_HARVESTS", "true"
+    ).strip().lower() in {"1", "true", "yes", "on"}
     harvest_interval_h = float(os.getenv("ORACLE_HARVEST_INTERVAL_HOURS", "24"))
     sched.register(PeriodicTask(
         name="parcel_harvest",
@@ -258,7 +408,10 @@ def build_default_scheduler() -> PeriodicScheduler:
         # Heavy 49-state national pass. Default OFF so enabling the scheduler +
         # ingest tenant (for the fast distress scrape) doesn't kick off a full
         # parcel run; flip ORACLE_PARCEL_HARVEST_ENABLED=1 when you want it.
-        enabled=os.getenv("ORACLE_PARCEL_HARVEST_ENABLED", "0") == "1",
+        enabled=(
+            municipal_enabled
+            and os.getenv("ORACLE_PARCEL_HARVEST_ENABLED", "0") == "1"
+        ),
     ))
     # Fast-moving keyless distress scrape (NYC HPD + Chicago violations). Polite
     # to Socrata; default 30-min cadence = the "active web scrape" heartbeat.
@@ -267,6 +420,7 @@ def build_default_scheduler() -> PeriodicScheduler:
         name="distress_scrape",
         interval_s=distress_interval_min * 60,
         run=_distress_scrape_task,
+        enabled=municipal_enabled,
     ))
     listings_interval_h = float(os.getenv("ORACLE_LISTINGS_INTERVAL_HOURS", "1"))
     sched.register(PeriodicTask(
@@ -278,6 +432,16 @@ def build_default_scheduler() -> PeriodicScheduler:
         name="coverage_snapshot",
         interval_s=TICK_SECONDS,   # every heartbeat
         run=_coverage_snapshot_task,
+    ))
+    sched.register(PeriodicTask(
+        name="platform_retention_cleanup",
+        interval_s=24 * 3600,
+        run=_retention_cleanup_task,
+    ))
+    sched.register(PeriodicTask(
+        name="platform_source_health",
+        interval_s=max(3600, TICK_SECONDS),
+        run=_source_health_task,
     ))
     return sched
 

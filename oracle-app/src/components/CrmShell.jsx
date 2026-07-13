@@ -11,6 +11,7 @@ import styles from './CrmShell.module.css';
 // Each tab is its own chunk — a field agent on LTE only pays for the tab
 // they open. (Same code-split rationale as PropertyCanvas in the HUD era.)
 const MarketplaceTab = lazy(() => import('./MarketplaceTab'));
+const PortfolioTab = lazy(() => import('./PortfolioTab'));
 const HouseProfileTab = lazy(() => import('./HouseProfileTab'));
 const ClientCrmTab = lazy(() => import('./ClientCrmTab'));
 const CommsTab = lazy(() => import('./CommsTab'));
@@ -19,6 +20,7 @@ const AdminOpsTab = lazy(() => import('./AdminOpsTab'));
 
 const TABS = [
   { id: 'marketplace', label: 'Listings', glyph: 'marketplace', Component: MarketplaceTab },
+  { id: 'portfolio', label: 'Portfolio', glyph: 'portfolio', Component: PortfolioTab },
   { id: 'house', label: 'House', glyph: 'house', Component: HouseProfileTab },
   { id: 'clients', label: 'Clients', glyph: 'clients', Component: ClientCrmTab },
   { id: 'comms', label: 'Comms', glyph: 'comms', Component: CommsTab },

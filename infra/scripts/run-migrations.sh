@@ -10,6 +10,18 @@
 set -euo pipefail
 AWS=(aws --profile "${AWS_PROFILE:-swarm-admin}" --region "${AWS_REGION:-us-east-1}")
 CLUSTER=neoh-prod
+ROLE=""
+GRANT_CREATED=0
+
+cleanup_migration_grant() {
+  if [[ "$GRANT_CREATED" == "1" && -n "$ROLE" ]]; then
+    echo ">> revoking temporary migration secret grant"
+    "${AWS[@]}" iam delete-role-policy \
+      --role-name "$ROLE" --policy-name migrate-master-secret >/dev/null 2>&1 || true
+    GRANT_CREATED=0
+  fi
+}
+trap cleanup_migration_grant EXIT
 
 echo ">> resolving backend service network + task def"
 NET=$("${AWS[@]}" ecs describe-services --cluster "$CLUSTER" --services backend \
@@ -30,6 +42,7 @@ echo "   master-secret=$MASTER_ARN"
 echo ">> granting task role least-privilege read on the master secret (+ KMS decrypt via Secrets Manager)"
 "${AWS[@]}" iam put-role-policy --role-name "$ROLE" --policy-name migrate-master-secret \
   --policy-document "{\"Version\":\"2012-10-17\",\"Statement\":[{\"Effect\":\"Allow\",\"Action\":\"secretsmanager:GetSecretValue\",\"Resource\":\"$MASTER_ARN\"},{\"Effect\":\"Allow\",\"Action\":\"kms:Decrypt\",\"Resource\":\"*\",\"Condition\":{\"StringEquals\":{\"kms:ViaService\":\"secretsmanager.${AWS_REGION:-us-east-1}.amazonaws.com\"}}}]}"
+GRANT_CREATED=1
 sleep 10 # IAM propagation
 
 echo ">> launching one-off migration task"
@@ -50,6 +63,6 @@ REASON=$("${AWS[@]}" ecs describe-tasks --cluster "$CLUSTER" --tasks "$ARN" \
   --query 'tasks[0].stoppedReason' --output text)
 echo ">> migration task exitCode=$CODE ($REASON)"
 [ "$CODE" = "0" ] || { echo "!! migrations FAILED — check CloudWatch logs for the task"; exit 1; }
-echo ">> migrations applied. Revoking the temporary master-secret grant."
-"${AWS[@]}" iam delete-role-policy --role-name "$ROLE" --policy-name migrate-master-secret || true
+echo ">> migrations applied."
+cleanup_migration_grant
 echo ">> done"

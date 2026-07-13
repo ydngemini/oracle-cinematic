@@ -29,6 +29,9 @@ export const initialState = {
   dealPipeline: [],      // [{ state, count, leads: [...] }] from the 4-State firehose
   dealPipelineTotal: 0,
   liveFeed: [],          // Live Pulse — newest-first activity cards, capped at 50
+  jobProgress: {},       // durable job id -> latest authenticated progress frame
+  negotiationTelemetry: null,
+  callConsents: {},
 };
 
 export const ACTIONS = {
@@ -55,10 +58,31 @@ export const ACTIONS = {
   SET_DEAL_PIPELINE: 'SET_DEAL_PIPELINE',
   FEED_EVENT: 'FEED_EVENT',
   PROFILE_SAVED: 'PROFILE_SAVED',
+  JOB_PROGRESS: 'JOB_PROGRESS',
+  NEGOTIATION_TELEMETRY: 'NEGOTIATION_TELEMETRY',
+  CALL_CONSENT: 'CALL_CONSENT',
 };
 
 export function oracleReducer(state, action) {
   switch (action.type) {
+    case ACTIONS.JOB_PROGRESS: {
+      const next = { ...state.jobProgress, [action.payload.job_id]: action.payload };
+      const entries = Object.entries(next);
+      return {
+        ...state,
+        jobProgress: entries.length > 50 ? Object.fromEntries(entries.slice(-50)) : next,
+      };
+    }
+
+    case ACTIONS.NEGOTIATION_TELEMETRY:
+      return { ...state, negotiationTelemetry: action.payload };
+
+    case ACTIONS.CALL_CONSENT:
+      return {
+        ...state,
+        callConsents: { ...state.callConsents, [action.payload.call_session_id]: action.payload },
+      };
+
     case ACTIONS.FEED_EVENT:
       // Newest first; hard cap keeps an always-on dashboard from growing without bound.
       return { ...state, liveFeed: [action.payload, ...state.liveFeed].slice(0, 50) };

@@ -627,13 +627,15 @@ async def list_clients(
                   FROM clients c
                   LEFT JOIN LATERAL (
                         SELECT json_agg(json_build_object(
-                                   'id', x.id, 'address', x.address, 'kind', x.kind)) AS houses
+                                   'id', x.id, 'address', x.address, 'kind', x.kind,
+                                   'lead_id', x.lead_id)) AS houses
                           FROM (
-                                SELECT ls.id::text AS id, ls.address, 'listing' AS kind
+                                SELECT ls.id::text AS id, ls.address, 'listing' AS kind,
+                                       ls.lead_id::text AS lead_id
                                   FROM listings ls
                                  WHERE ls.seller_client_id = c.id
                                  UNION
-                                SELECT ld.id::text, ld.address, 'lead'
+                                SELECT ld.id::text, ld.address, 'lead', ld.id::text
                                   FROM leads ld
                                  WHERE ld.seller_client_id = c.id
                                    AND ld.address IS NOT NULL
@@ -641,7 +643,8 @@ async def list_clients(
                                  UNION
                                 SELECT COALESCE(sl.id::text, sld.id::text),
                                        COALESCE(sl.address, sld.address, sld.payload->>'address'),
-                                       CASE WHEN sl.id IS NOT NULL THEN 'listing' ELSE 'lead' END
+                                       CASE WHEN sl.id IS NOT NULL THEN 'listing' ELSE 'lead' END,
+                                       COALESCE(sl.lead_id,sld.id)::text
                                   FROM showings s
                                   LEFT JOIN listings sl  ON sl.id  = s.listing_id
                                   LEFT JOIN leads    sld ON sld.id = s.lead_id

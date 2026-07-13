@@ -22,6 +22,7 @@ these modules stay importable in a bare scraper environment.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -32,6 +33,7 @@ import urllib.parse
 import urllib.request
 from abc import ABC, abstractmethod
 from dataclasses import asdict
+from datetime import datetime, timezone
 from typing import Optional
 
 from .property_adapter import PropertyRecord
@@ -184,6 +186,9 @@ class BaseHarvester(ABC):
 
     STATE: str = "??"
     SOURCE_LABEL: str = "unknown"
+    SOURCE_KEY: str = ""
+    RETAIN_RAW: bool = False
+    SOQL_CURSOR_FIELD: str = ""
 
     def __init__(self, tenant_id: str, agent_id: Optional[str] = None, limiter: Optional[RateLimiter] = None):
         if not tenant_id:
@@ -197,8 +202,10 @@ class BaseHarvester(ABC):
         self.metrics = {
             "state": self.STATE, "source": self.SOURCE_LABEL,
             "requests": 0, "retries": 0,
-            "fetched": 0, "parsed": 0, "skipped": 0, "inserted": 0,
+            "fetched": 0, "parsed": 0, "skipped": 0, "aggregated": 0,
+            "inserted": 0, "raw_retained": 0,
         }
+        self._cursor_start: Optional[str] = None
 
     # -- HTTP (stdlib urllib in a thread; rate-limited + retried) -- #
     async def _get_json(self, url: str, headers: Optional[dict] = None):
@@ -255,9 +262,161 @@ class BaseHarvester(ABC):
     def map_record(self, row: dict) -> Optional[PropertyRecord]:
         """Map one source row to a PropertyRecord, or None to skip."""
 
+    def aggregate_records(self, records: list[PropertyRecord]) -> list[PropertyRecord]:
+        """Hook for row-heavy feeds (violations) to collapse by property."""
+        return records
+
+    def raw_property_key(self, row: dict) -> str:
+        """Property reconciliation key used by raw-source retention."""
+        return ""
+
+    async def _load_cursor(self) -> Optional[str]:
+        if not self.RETAIN_RAW or not self.SOURCE_KEY:
+            return None
+        from db.connection import tenant_tx
+        from tenancy import Role, TenantContext
+
+        ctx = TenantContext(
+            agent_id=self.agent_id,
+            tenant_id=self.tenant_id,
+            role=Role.PLATFORM_ADMIN,
+        )
+        async with tenant_tx(ctx) as conn:
+            return await conn.fetchval(
+                """
+                SELECT cursor_value FROM harvest_sources
+                WHERE tenant_id=$1::uuid AND source_key=$2
+                """,
+                self.tenant_id,
+                self.SOURCE_KEY,
+            )
+
+    @staticmethod
+    def _cursor_sort_key(value: Any) -> tuple[int, Any]:
+        text = str(value or "").strip()
+        try:
+            return (0, int(text))
+        except ValueError:
+            return (1, text)
+
+    def _cursor_end(self, rows: list[dict]) -> Optional[str]:
+        if not self.SOQL_CURSOR_FIELD:
+            return None
+        values = [
+            str(row.get(self.SOQL_CURSOR_FIELD) or "").strip()
+            for row in rows
+            if str(row.get(self.SOQL_CURSOR_FIELD) or "").strip()
+        ]
+        return max(values, key=self._cursor_sort_key) if values else self._cursor_start
+
+    async def _retain_raw(self, rows: list[dict], cursor_end: Optional[str]) -> None:
+        """Persist exact public observations and advance the cursor atomically."""
+        if not self.RETAIN_RAW or not self.SOURCE_KEY:
+            return
+        from db.connection import tenant_tx
+        from tenancy import Role, TenantContext
+
+        ctx = TenantContext(
+            agent_id=self.agent_id,
+            tenant_id=self.tenant_id,
+            role=Role.PLATFORM_ADMIN,
+        )
+        retrieved_at = datetime.now(timezone.utc)
+        request_material = json.dumps(
+            {
+                "source": self.SOURCE_KEY,
+                "cursor_start": self._cursor_start,
+                "cursor_end": cursor_end,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        request_hash = hashlib.sha256(request_material.encode("utf-8")).hexdigest()
+        retention_days = max(
+            1,
+            min(3650, int(os.getenv("ORACLE_RAW_SOURCE_RETENTION_DAYS", "730"))),
+        )
+        async with tenant_tx(ctx) as conn:
+            license_row = await conn.fetchrow(
+                """
+                INSERT INTO source_licenses (
+                    tenant_id,source_key,source_name,source_url,license_name,
+                    property_level_allowed,outreach_use_allowed,retention_days
+                ) VALUES ($1::uuid,$2,$3,$4,'municipal-open-data',true,false,$5)
+                ON CONFLICT (tenant_id,source_key) DO UPDATE SET
+                    source_name=EXCLUDED.source_name,source_url=EXCLUDED.source_url,
+                    active=true,updated_at=now()
+                RETURNING id,retention_days
+                """,
+                self.tenant_id,
+                self.SOURCE_KEY,
+                self.SOURCE_LABEL,
+                getattr(self, "RESOURCE_URL", None),
+                retention_days,
+            )
+            for row in rows:
+                raw_blob = json.dumps(row, sort_keys=True, separators=(",", ":"), default=str)
+                payload_digest = hashlib.sha256(raw_blob.encode("utf-8")).hexdigest()
+                record_key = str(
+                    row.get(self.SOQL_CURSOR_FIELD)
+                    or row.get("id")
+                    or row.get("violationid")
+                    or payload_digest
+                )
+                await conn.execute(
+                    """
+                    INSERT INTO source_records (
+                        tenant_id,source_license_id,source_key,record_key,
+                        property_key,jurisdiction,observed_at,retrieved_at,
+                        request_hash,payload_hash,raw_payload,expires_at
+                    ) VALUES (
+                        $1::uuid,$2,$3,$4,$5,$6,$7,$7,$8,$9,$10::jsonb,
+                        $7 + ($11 || ' days')::interval
+                    ) ON CONFLICT (tenant_id,source_key,record_key,observed_at) DO NOTHING
+                    """,
+                    self.tenant_id,
+                    license_row["id"],
+                    self.SOURCE_KEY,
+                    record_key,
+                    self.raw_property_key(row) or None,
+                    self.STATE,
+                    retrieved_at,
+                    request_hash,
+                    payload_digest,
+                    raw_blob,
+                    str(license_row["retention_days"]),
+                )
+                self.metrics["raw_retained"] += 1
+            await conn.execute(
+                """
+                INSERT INTO harvest_sources (
+                    tenant_id,source_key,display_name,jurisdiction,adapter,
+                    cursor_value,cursor_observed_at,last_started_at,
+                    last_succeeded_at,last_record_observed_at,coverage
+                ) VALUES ($1::uuid,$2,$3,$4,$5,$6,now(),now(),now(),now(),$7::jsonb)
+                ON CONFLICT (tenant_id,source_key) DO UPDATE SET
+                    cursor_value=EXCLUDED.cursor_value,
+                    cursor_observed_at=EXCLUDED.cursor_observed_at,
+                    last_succeeded_at=EXCLUDED.last_succeeded_at,
+                    last_record_observed_at=EXCLUDED.last_record_observed_at,
+                    coverage=EXCLUDED.coverage,
+                    failure_count=0,circuit_state='closed',last_error=NULL,
+                    updated_at=now()
+                """,
+                self.tenant_id,
+                self.SOURCE_KEY,
+                self.SOURCE_LABEL,
+                self.STATE,
+                type(self).__name__,
+                cursor_end,
+                json.dumps({"fetched": len(rows), "raw_retained": self.metrics["raw_retained"]}),
+            )
+
     async def harvest(self, *, max_records: Optional[int] = None, persist: bool = True) -> dict:
         t0 = time.monotonic()
         logger.info("[%s] harvest starting (%s)", self.STATE, self.SOURCE_LABEL)
+        if persist and self.RETAIN_RAW:
+            self._cursor_start = await self._load_cursor()
         rows = await self.fetch_raw(max_records)
 
         records: list[PropertyRecord] = []
@@ -270,8 +429,13 @@ class BaseHarvester(ABC):
             records.append(rec)
             self.metrics["parsed"] += 1
 
+        records = self.aggregate_records(records)
+        self.metrics["aggregated"] = len(records)
+
         if persist:
             await persist_leads(self.tenant_id, self.agent_id, records, metrics=self.metrics)
+            if self.RETAIN_RAW:
+                await self._retain_raw(rows, self._cursor_end(rows))
 
         elapsed = time.monotonic() - t0
         self.metrics["elapsed_s"] = round(elapsed, 2)
@@ -312,6 +476,18 @@ class SocrataHarvester(BaseHarvester):
                 params["$order"] = self.SOQL_ORDER
             if self.SOQL_WHERE:
                 params["$where"] = self.SOQL_WHERE
+            if self.SOQL_CURSOR_FIELD and self._cursor_start:
+                cursor = str(self._cursor_start).replace("'", "''")
+                cursor_clause = (
+                    f"{self.SOQL_CURSOR_FIELD}>{cursor}"
+                    if cursor.isdigit()
+                    else f"{self.SOQL_CURSOR_FIELD}>'{cursor}'"
+                )
+                params["$where"] = (
+                    f"({params['$where']}) AND {cursor_clause}"
+                    if params.get("$where")
+                    else cursor_clause
+                )
             rows = await self._get_json(f"{url}?{urllib.parse.urlencode(params)}")
             if not rows:
                 break

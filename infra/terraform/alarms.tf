@@ -234,3 +234,90 @@ resource "aws_cloudwatch_metric_alarm" "aurora_memory" {
   alarm_actions = [aws_sns_topic.alarms.arn]
   ok_actions    = [aws_sns_topic.alarms.arn]
 }
+
+# ── Oracle platform durable-work health ─────────────────────────────────────
+# The backend emits deliberately content-free ORACLE_METRIC markers: no tenant,
+# address, transcript, or provider payload enters CloudWatch metric dimensions.
+resource "aws_cloudwatch_log_metric_filter" "automation_job_failures" {
+  name           = "${local.name}-automation-job-failures"
+  log_group_name = aws_cloudwatch_log_group.backend.name
+  pattern        = "\"ORACLE_METRIC automation_job_failure\""
+
+  metric_transformation {
+    name      = "AutomationJobFailures"
+    namespace = "Oracle/Platform"
+    value     = "1"
+  }
+}
+
+resource "aws_cloudwatch_metric_alarm" "automation_job_failures" {
+  alarm_name          = "${local.name}-automation-job-failures"
+  alarm_description   = "Three or more durable automation job attempts failed in five minutes."
+  namespace           = "Oracle/Platform"
+  metric_name         = "AutomationJobFailures"
+  statistic           = "Sum"
+  period              = 300
+  evaluation_periods  = 1
+  datapoints_to_alarm = 1
+  threshold           = 3
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = [aws_sns_topic.alarms.arn]
+  ok_actions          = [aws_sns_topic.alarms.arn]
+}
+
+resource "aws_cloudwatch_log_metric_filter" "harvest_source_failures" {
+  name           = "${local.name}-harvest-source-failures"
+  log_group_name = aws_cloudwatch_log_group.backend.name
+  pattern        = "\"ORACLE_METRIC harvest_source_failure\""
+
+  metric_transformation {
+    name      = "HarvestSourceFailures"
+    namespace = "Oracle/Platform"
+    value     = "1"
+  }
+}
+
+resource "aws_cloudwatch_metric_alarm" "harvest_source_failures" {
+  alarm_name          = "${local.name}-harvest-source-failures"
+  alarm_description   = "Two or more municipal source runs failed in fifteen minutes."
+  namespace           = "Oracle/Platform"
+  metric_name         = "HarvestSourceFailures"
+  statistic           = "Sum"
+  period              = 300
+  evaluation_periods  = 3
+  datapoints_to_alarm = 2
+  threshold           = 2
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = [aws_sns_topic.alarms.arn]
+  ok_actions          = [aws_sns_topic.alarms.arn]
+}
+
+resource "aws_cloudwatch_log_metric_filter" "stale_harvest_sources" {
+  name           = "${local.name}-stale-harvest-sources"
+  log_group_name = aws_cloudwatch_log_group.backend.name
+  pattern        = "\"ORACLE_METRIC stale_harvest_source\""
+
+  metric_transformation {
+    name      = "StaleHarvestSources"
+    namespace = "Oracle/Platform"
+    value     = "1"
+  }
+}
+
+resource "aws_cloudwatch_metric_alarm" "stale_harvest_sources" {
+  alarm_name          = "${local.name}-stale-harvest-sources"
+  alarm_description   = "At least one enabled municipal source exceeded twice its schedule or opened its circuit."
+  namespace           = "Oracle/Platform"
+  metric_name         = "StaleHarvestSources"
+  statistic           = "Sum"
+  period              = 3600
+  evaluation_periods  = 1
+  datapoints_to_alarm = 1
+  threshold           = 1
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = [aws_sns_topic.alarms.arn]
+  ok_actions          = [aws_sns_topic.alarms.arn]
+}

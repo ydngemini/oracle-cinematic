@@ -53,7 +53,22 @@ ALTER ROLE oracle_app_login SET search_path = public;
 --                          audit role + pgaudit.role, so a leak claim can be
 --                          answered with "exactly who SELECTed what, when".
 -- ---------------------------------------------------------------------------
-CREATE EXTENSION IF NOT EXISTS pgaudit;
+-- Aurora exposes pgaudit after the cluster parameter group has preloaded it,
+-- while the intentionally slim postgres:*‑alpine development image does not
+-- ship the extension at all.  Keep fresh local/test bootstraps runnable, but
+-- emit an unmistakable warning; production preflight separately requires the
+-- extension before traffic is shifted.
+DO $$ BEGIN
+    IF EXISTS (
+        SELECT 1
+        FROM pg_available_extensions
+        WHERE name = 'pgaudit'
+    ) THEN
+        CREATE EXTENSION IF NOT EXISTS pgaudit;
+    ELSE
+        RAISE WARNING 'pgaudit is unavailable; acceptable only for local/test databases';
+    END IF;
+END $$;
 
 -- Session audit: every mutation, schema change, and grant by the app.
 ALTER ROLE oracle_app_login SET pgaudit.log = 'write, ddl, role';

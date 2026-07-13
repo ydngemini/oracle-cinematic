@@ -17,13 +17,12 @@ Endpoints
   POST   /api/crm/listings/{listing_id}/media  (agent JWT)  — upload photo(s)
   GET    /api/crm/media?lead_id=&listing_id=    (agent JWT)  — list photos
   DELETE /api/crm/media/{media_id}             (agent JWT)  — remove a photo
-  POST   /api/portal/media                     (portal token) — homeowner upload
+  POST   /api/portal/media                     (portal token) — explicit read-only rejection
   GET    /api/media/{media_id}                 (public)     — stream the image
 """
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 import time
@@ -47,7 +46,7 @@ from fastapi.responses import Response
 from auth import ALGORITHM, SECRET_KEY
 from contract_vault import VaultUploadError
 from db.connection import get_pool, tenant_tx
-from tenancy import Role, TenantContext, require_context, _validate_tenant_id
+from tenancy import TenantContext, require_context
 
 log = logging.getLogger("oracle.media_api")
 
@@ -404,16 +403,13 @@ async def serve_media(media_id: UUID):
 
 
 # ---------------------------------------------------------------------------
-# Client-portal upload — passwordless portal-session token (client_portal.py).
-# The token is pinned to (tenant, lead, portal); the homeowner can only attach
-# photos to their own property. Decoded directly (not via decode_token) to mirror
-# how client_portal mints it: jwt.encode(claims, SECRET_KEY, ALGORITHM) with no
-# aud/iss, so it must be verified the same way.
+# Client-portal mutation guard — passwordless portal-session token
+# (client_portal.py). Dossier sessions are deliberately read-only; keeping this
+# route returns an explicit 403 to older clients without parsing an upload body.
 # ---------------------------------------------------------------------------
 
 @router.post("/portal/media", status_code=status.HTTP_201_CREATED)
 async def portal_upload_media(
-    files: List[UploadFile] = File(...),
     authorization: Optional[str] = Header(default=None),
 ):
     if not authorization or not authorization.startswith("Bearer "):
@@ -429,48 +425,9 @@ async def portal_upload_media(
     if claims.get("role") != "portal_client":
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Not a portal session token.")
 
-    tenant_id = claims.get("tenant_id")
-    lead_raw = claims.get("lead_id")
-    portal_id = claims.get("portal_id")
-    if not tenant_id or not lead_raw:
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Malformed portal session.")
-    _validate_tenant_id(tenant_id)
-    # A malformed-but-signed lead_id claim must read as auth failure (401), not a
-    # 500 from UUID() blowing up before we enter tenant_tx().
-    try:
-        lead_id = UUID(lead_raw)
-    except (ValueError, TypeError, AttributeError):
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Malformed portal session.")
-
-    # The portal client is not a platform admin; role=AGENT yields ordinary
-    # tenant-scoped RLS pinned to the portal's tenant + lead.
-    ctx = TenantContext(
-        agent_id=f"portal:{portal_id}", tenant_id=tenant_id, role=Role.AGENT
+    # Scoped dossier links are intentionally read-only.  Agent-authenticated
+    # capture/upload routes remain available for brokerage workflows.
+    raise HTTPException(
+        status.HTTP_403_FORBIDDEN,
+        "This revocable dossier link is read-only.",
     )
-
-    async with tenant_tx(ctx) as conn:
-        if not await conn.fetchval("SELECT 1 FROM leads WHERE id = $1", lead_id):
-            raise HTTPException(status.HTTP_404_NOT_FOUND, "Lead not found.")
-        created = await _persist(
-            conn, tenant_id=tenant_id, lead_id=lead_id, listing_id=None, files=files
-        )
-        # Append-only interaction record — mirrors the portal's audit pattern
-        # (homeowner = seller side, inbound). interaction_type must satisfy the
-        # 0008/0012 CHECK; 'message' is the closest enumerated value.
-        await conn.execute(
-            """
-            INSERT INTO interaction_logs
-                (tenant_id, lead_id, portal_id, actor_role, interaction_type,
-                 direction, subject, payload)
-            VALUES ($1, $2, $3, 'seller', 'message', 'inbound',
-                    'Homeowner uploaded property photo(s)', $4::jsonb)
-            """,
-            tenant_id,
-            lead_id,
-            UUID(portal_id) if portal_id else None,
-            json.dumps(
-                {"media_ids": [m["id"] for m in created], "count": len(created)}
-            ),
-        )
-    log.info("Portal media uploaded: lead_id=%s count=%d tenant=%s", lead_id, len(created), tenant_id)
-    return {"media": created}

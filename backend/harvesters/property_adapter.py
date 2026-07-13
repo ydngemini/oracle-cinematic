@@ -1,6 +1,6 @@
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
-from typing import List, Optional
+from dataclasses import dataclass, field
+from typing import Any, List, Optional
 
 
 @dataclass
@@ -18,6 +18,19 @@ class PropertyRecord:
     is_absentee_owner: bool
     distress_flags: List[str]  # e.g., ['tax_lien', 'pre_foreclosure']
     last_sale_date: Optional[str]
+    # Source-backed characteristics used by HBU/spatial intelligence.  They are
+    # optional because most assessor feeds expose only a subset; missing values
+    # stay missing rather than being silently imputed during ingestion.
+    zoning_district: Optional[str] = None
+    max_far: Optional[float] = None
+    lot_area_sqft: Optional[float] = None
+    building_area_sqft: Optional[float] = None
+    land_use: Optional[str] = None
+    air_rights_indicator: Optional[bool] = None
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+    dataset_version: Optional[str] = None
+    source_metadata: dict[str, Any] = field(default_factory=dict)
 
 
 class PropertyHarvester(ABC):

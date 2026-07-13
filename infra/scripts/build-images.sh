@@ -14,6 +14,16 @@ REGION="${AWS_REGION:-us-east-1}"
 AWS=(aws --profile "$PROFILE" --region "$REGION")
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 
+# CodeBuild consumes git-archive HEAD. Refuse a dirty workspace so production
+# can never silently omit reviewed-but-uncommitted fixes (or include untracked
+# local secrets through an ad-hoc archive).
+if [[ -n "$(git -C "$REPO_ROOT" status --porcelain)" ]]; then
+  echo "!! refusing production build: the workspace has uncommitted changes" >&2
+  echo "!! review and commit the intended release before invoking CodeBuild" >&2
+  exit 2
+fi
+SOURCE_REV="$(git -C "$REPO_ROOT" rev-parse HEAD)"
+
 # Resolve resource names deterministically via aws (no local terraform needed).
 ACCT=$("${AWS[@]}" sts get-caller-identity --query Account --output text)
 REG="${ACCT}.dkr.ecr.${REGION}.amazonaws.com"
@@ -29,10 +39,11 @@ BUCKET="neoh-prod-recon-${ACCT}"
 # ── source: git-archive HEAD → S3 (CodeBuild unpacks it as the build context) ──
 ZIP="/tmp/neoh-src-$$.zip"
 git -C "$REPO_ROOT" archive --format=zip -o "$ZIP" HEAD
-SRCKEY="codebuild/neoh-src.zip"
+SRCKEY="codebuild/neoh-src-${SOURCE_REV}.zip"
 "${AWS[@]}" s3 cp "$ZIP" "s3://$BUCKET/$SRCKEY" >/dev/null
 rm -f "$ZIP"
 echo ">> source uploaded: s3://$BUCKET/$SRCKEY"
+echo ">> source revision: $SOURCE_REV"
 
 # ── shared CodeBuild service role ───────────────────────────────────────────
 ROLE=neoh-codebuild

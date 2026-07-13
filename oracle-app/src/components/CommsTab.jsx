@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { crmGet } from '../state/useCrmApi';
 import styles from './CommsTab.module.css';
 import CommsComposer from './CommsComposer';
+import { CommandApprovalPanel } from './CommandApprovalPanel';
 import {
   GLYPHS,
   ts,
@@ -363,6 +364,8 @@ export default function CommsTab() {
           {GLYPHS.refresh}
         </button>
       </header>
+
+      <CommandApprovalPanel />
 
       {!isLoading && !(threadsError && threads === null) && normalized.length > 0 && (
         <div className={styles.toolbar}>

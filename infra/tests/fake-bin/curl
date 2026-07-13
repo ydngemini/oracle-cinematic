@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# Force the first staged public health check to fail after the backend update.
+printf '503'

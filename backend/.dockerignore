@@ -1,0 +1,14 @@
+__pycache__/
+**/__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+tests/
+ml_forge/venv/
+.splatdata/
+audit_logs.db
+*.log
+.env
+.env.*
+.git/

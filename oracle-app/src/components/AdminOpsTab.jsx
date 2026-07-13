@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { crmGet } from '../state/useCrmApi';
 import { useOracleState } from '../state';
 import { MlsFeedStatus } from './MlsFeedStatus';
+import { HarvestControl } from './HarvestControl';
 import styles from './AdminOpsTab.module.css';
 
 // Inline stroke glyphs — currentColor, zero icon deps (house rule).
@@ -497,6 +498,7 @@ export default function AdminOpsTab() {
       <UsersPanel slot={feeds.users} onRetry={refetch} />
       <OutboxPanel slot={feeds.outbox} onRetry={refetch} />
       <ActivityPanel slot={feeds.activity} onRetry={refetch} />
+      <HarvestControl />
       <MlsFeedStatus />
     </section>
   );
