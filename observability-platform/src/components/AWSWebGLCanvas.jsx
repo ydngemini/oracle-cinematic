@@ -136,9 +136,11 @@ export default function AWSWebGLCanvas({ ec2, rds, lambda, metrics, selectedServ
   const linesRef = useRef([]);
   const rafRef = useRef(null);
   const timeRef = useRef(0);
-  const [userRotation, setUserRotation] = useState(0);
+  const userRotationRef = useRef(0);
   const [isDragging, setIsDragging] = useState(false);
   const lastTouchRef = useRef({ x: 0, y: 0 });
+  const lineBufferRef = useRef(null);
+  const particleBufferRef = useRef(null);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -164,7 +166,11 @@ export default function AWSWebGLCanvas({ ec2, rds, lambda, metrics, selectedServ
       }
       if (particleProg) gl.deleteProgram(particleProg);
       if (lineProg) gl.deleteProgram(lineProg);
+      if (lineBufferRef.current) gl.deleteBuffer(lineBufferRef.current);
+      if (particleBufferRef.current) gl.deleteBuffer(particleBufferRef.current);
       programsRef.current = {};
+      lineBufferRef.current = null;
+      particleBufferRef.current = null;
       if (glRef.current === gl) glRef.current = null;
     };
   }, []);
@@ -266,6 +272,14 @@ export default function AWSWebGLCanvas({ ec2, rds, lambda, metrics, selectedServ
     const programs = programsRef.current;
     if (!gl || !programs.particle || !programs.line) return;
 
+    // Initialize persistent buffers once
+    if (!lineBufferRef.current) {
+      lineBufferRef.current = gl.createBuffer();
+    }
+    if (!particleBufferRef.current) {
+      particleBufferRef.current = gl.createBuffer();
+    }
+
     const render = () => {
       timeRef.current += 0.016;
       const time = timeRef.current;
@@ -274,7 +288,7 @@ export default function AWSWebGLCanvas({ ec2, rds, lambda, metrics, selectedServ
 
       const aspect = canvas.width / Math.max(canvas.height, 1);
       const proj = mat4Perspective(Math.PI / 4, aspect, 0.1, 100);
-      const camAngle = time * 0.1 + userRotation;
+      const camAngle = time * 0.1 + userRotationRef.current;
       const camDist = 12;
       const eye = [Math.sin(camAngle) * camDist, Math.cos(camAngle) * camDist, 8];
       const view = mat4LookAt(eye, [0, 0, 0], [0, 0, 1]);
@@ -290,8 +304,7 @@ export default function AWSWebGLCanvas({ ec2, rds, lambda, metrics, selectedServ
           lineVerts.push(...line.start, ...line.color, ...line.end, ...line.color);
         });
 
-        const lineBuf = gl.createBuffer();
-        gl.bindBuffer(gl.ARRAY_BUFFER, lineBuf);
+        gl.bindBuffer(gl.ARRAY_BUFFER, lineBufferRef.current);
         gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(lineVerts), gl.STATIC_DRAW);
 
         const posLoc = gl.getAttribLocation(lineProg, 'a_position');
@@ -303,7 +316,6 @@ export default function AWSWebGLCanvas({ ec2, rds, lambda, metrics, selectedServ
         gl.vertexAttribPointer(colorLoc, 3, gl.FLOAT, false, 24, 12);
 
         gl.drawArrays(gl.LINES, 0, linesRef.current.length * 2);
-        gl.deleteBuffer(lineBuf);
       }
 
       const particleProg = programs.particle;
@@ -321,8 +333,7 @@ export default function AWSWebGLCanvas({ ec2, rds, lambda, metrics, selectedServ
       });
 
       if (particleData.length > 0) {
-        const particleBuf = gl.createBuffer();
-        gl.bindBuffer(gl.ARRAY_BUFFER, particleBuf);
+        gl.bindBuffer(gl.ARRAY_BUFFER, particleBufferRef.current);
         gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(particleData), gl.DYNAMIC_DRAW);
 
         const posLoc = gl.getAttribLocation(particleProg, 'a_position');
@@ -340,7 +351,6 @@ export default function AWSWebGLCanvas({ ec2, rds, lambda, metrics, selectedServ
         gl.vertexAttribPointer(colorLoc, 3, gl.FLOAT, false, stride, 16);
 
         gl.drawArrays(gl.POINTS, 0, particlesRef.current.length);
-        gl.deleteBuffer(particleBuf);
       }
 
       rafRef.current = requestAnimationFrame(render);
@@ -353,7 +363,7 @@ export default function AWSWebGLCanvas({ ec2, rds, lambda, metrics, selectedServ
         cancelAnimationFrame(rafRef.current);
       }
     };
-  }, [userRotation]);
+  }, []);
 
   const handleTouchStart = (e) => {
     setIsDragging(true);
@@ -366,7 +376,7 @@ export default function AWSWebGLCanvas({ ec2, rds, lambda, metrics, selectedServ
   const handleTouchMove = (e) => {
     if (!isDragging) return;
     const dx = e.touches[0].clientX - lastTouchRef.current.x;
-    setUserRotation(prev => prev + dx * 0.01);
+    userRotationRef.current += dx * 0.01;
     lastTouchRef.current = {
       x: e.touches[0].clientX,
       y: e.touches[0].clientY,
@@ -385,7 +395,7 @@ export default function AWSWebGLCanvas({ ec2, rds, lambda, metrics, selectedServ
   const handleMouseMove = (e) => {
     if (!isDragging) return;
     const dx = e.clientX - lastTouchRef.current.x;
-    setUserRotation(prev => prev + dx * 0.005);
+    userRotationRef.current += dx * 0.005;
     lastTouchRef.current = { x: e.clientX, y: e.clientY };
   };
 

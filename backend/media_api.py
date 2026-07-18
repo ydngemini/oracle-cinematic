@@ -332,17 +332,17 @@ async def generate_assignment_contract(
             ctx,
             expiration_seconds=expiration_seconds,
         )
-    except RuntimeError:
-        log.exception("Contract data service unavailable for client_id=%s", client_id)
-        raise HTTPException(
-            status.HTTP_503_SERVICE_UNAVAILABLE,
-            "Contract data service unavailable.",
-        )
     except (ValueError, VaultUploadError):
         log.exception("Contract vault failed for client_id=%s tenant=%s", client_id, ctx.tenant_id)
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE,
             "Contract vault unavailable.",
+        )
+    except RuntimeError:
+        log.exception("Contract data service unavailable for client_id=%s", client_id)
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "Contract data service unavailable.",
         )
     except Exception:  # noqa: BLE001
         log.exception("Assignment contract generation failed for client_id=%s", client_id)

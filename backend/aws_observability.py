@@ -26,7 +26,7 @@ from auth import decode_token
 from tenancy import _validate_tenant_id, require_context, require_role, Role, TenantContext
 
 # Roles allowed to read AWS infra observability (mirrors the REST route gates).
-_OBS_ALLOWED_ROLES = {"platform_admin", "broker_owner"}
+_OBS_ALLOWED_ROLES = {"platform_admin"}
 
 log = logging.getLogger("oracle.aws_observability")
 

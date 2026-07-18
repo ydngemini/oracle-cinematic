@@ -73,7 +73,7 @@
 
 .gauge-title {
   font-size: 9px;
-  font-family: 'Orbitron', 'JetBrains Mono', monospace;
+  font-family: Orbitron, 'JetBrains Mono', monospace;
   color: rgba(0, 212, 255, 0.6);
   text-transform: uppercase;
   letter-spacing: 2px;
@@ -99,8 +99,8 @@
 .rpm-bar {
   background: linear-gradient(90deg, #00ff88 0%, #00ff88 33%, #ff9f1a 66%, #ff3b5c 100%);
   transition: width 0.3s ease;
-  box-shadow: 
-    0 0 10px currentColor,
+  box-shadow:
+    0 0 10px currentcolor,
     inset 0 1px 0 rgba(255, 255, 255, 0.2);
 }
 
