@@ -207,6 +207,9 @@ body {
   overflow: hidden;
 }
 
+.neoh-app-shell { position: relative; isolation: isolate; min-height: 100dvh; }
+.neoh-app-foreground { position: relative; z-index: 1; min-height: 100dvh; }
+
 /* ── Mobile app-frame behavior ──────────────────────────────────────────────
    The frame never scrolls (overflow hidden above); each CRM tab pane scrolls
    internally. These kill the double-tap zoom, rubber-band chaining, and gray

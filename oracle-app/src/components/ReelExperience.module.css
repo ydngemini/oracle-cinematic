@@ -1,0 +1,74 @@
+.reel {
+  --coal: #080806;
+  --charcoal: #12120f;
+  --ivory: #f0eee6;
+  --chalk: #c8c4b8;
+  --bronze: #8c6742;
+  --amber: #c89452;
+  height: 100dvh;
+  overflow-y: auto;
+  overflow-x: clip;
+  color: var(--ivory);
+  background: var(--coal);
+  font-family: var(--font-sans);
+}
+
+.reel :focus-visible { outline: 2px solid var(--amber); outline-offset: 4px; }
+.skipLink { position: fixed; z-index: 100; top: .75rem; left: .75rem; padding: .7rem .85rem; color: var(--coal); background: var(--ivory); font-size: .68rem; letter-spacing: .1em; text-transform: uppercase; transform: translateY(-160%); transition: transform .16s ease; }
+.skipLink:focus { transform: translateY(0); }
+.header { position: fixed; z-index: 20; top: 0; right: 0; left: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: start; gap: 1rem; padding: 1rem clamp(1rem, 3vw, 3rem) 2.75rem; background: linear-gradient(180deg, rgba(8,8,6,.95), rgba(8,8,6,0)); pointer-events: none; }
+.brand, .desktopNav, .menuButton { pointer-events: auto; }
+.brand { display: inline-flex; align-items: baseline; gap: .72rem; width: fit-content; color: var(--ivory); text-decoration: none; text-transform: uppercase; }
+.brand span { font-weight: 700; font-size: .86rem; letter-spacing: .2em; }
+.brand small { color: rgba(240,238,230,.58); font: .58rem var(--font-mono); letter-spacing: .14em; }
+.desktopNav { display: none; }
+.menuButton { border: 0; padding: .25rem 0; color: var(--ivory); background: none; font: .63rem var(--font-mono); letter-spacing: .13em; text-transform: uppercase; cursor: pointer; }
+.counter { padding-top: .26rem; color: rgba(240,238,230,.68); font: .63rem var(--font-mono); letter-spacing: .13em; }
+.mobileNav { position: fixed; z-index: 19; inset: 4.2rem 1rem auto; display: grid; gap: .3rem; padding: .75rem; border: 1px solid rgba(240,238,230,.16); background: rgba(8,8,6,.98); opacity: 0; pointer-events: none; transform: translateY(-.8rem); transition: opacity .2s ease, transform .2s ease; }
+.mobileNav[hidden] { display: none; }
+.mobileNavOpen { opacity: 1; pointer-events: auto; transform: translateY(0); }
+.mobileNav button { display: flex; gap: .75rem; border: 0; padding: .7rem; color: var(--ivory); background: transparent; text-align: left; font: .68rem var(--font-mono); letter-spacing: .08em; text-transform: uppercase; cursor: pointer; }
+.mobileNav button span { color: var(--amber); }
+.sequence { position: relative; }
+.project { display: grid; grid-template-columns: 1fr; align-content: center; gap: 1.35rem; min-height: 100svh; padding: 6rem 1rem 4.25rem; scroll-margin-top: 1rem; }
+.projectRail { position: relative; z-index: 2; }
+.eyebrow { display: flex; align-items: center; gap: .65rem; margin-bottom: 1rem; color: rgba(240,238,230,.6); font: .6rem var(--font-mono); letter-spacing: .14em; text-transform: uppercase; }
+.eyebrow span { color: var(--amber); }
+.project h1 { max-width: 12ch; font-size: clamp(2.75rem, 13vw, 6rem); font-weight: 300; line-height: .88; letter-spacing: -.06em; text-transform: uppercase; }
+.project h1 span { display: block; }
+.description { max-width: 28rem; margin-top: 1rem; color: rgba(240,238,230,.66); font-size: .76rem; line-height: 1.65; letter-spacing: .04em; }
+.mediaStage { position: relative; min-height: min(55svh, 35rem); margin: 0; overflow: hidden; background: var(--charcoal); box-shadow: 0 1.5rem 4rem rgba(0,0,0,.32); }
+.mediaStage::after { position: absolute; inset: 0; border: 1px solid rgba(240,238,230,.16); border-bottom: 2px solid var(--bronze); content: ''; pointer-events: none; }
+.accentamber .mediaStage::after { border-bottom-color: var(--amber); }
+.accentconcrete .mediaStage::after { border-bottom-color: #8d8b84; }
+.mediaStage img { display: block; width: 100%; height: 100%; min-height: inherit; object-fit: cover; filter: saturate(.8) contrast(1.04); transition: transform 1s ease; }
+.project:hover .mediaStage img { transform: scale(1.025); }
+.mediaStage figcaption { position: absolute; z-index: 1; right: .7rem; bottom: .65rem; color: rgba(240,238,230,.65); font: .5rem var(--font-mono); letter-spacing: .12em; text-transform: uppercase; }
+.metadata { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; margin: 0; }
+.metadata div { padding-top: .65rem; border-top: 1px solid rgba(240,238,230,.16); }
+.metadata dt { color: rgba(240,238,230,.46); font: .53rem var(--font-mono); letter-spacing: .13em; text-transform: uppercase; }
+.metadata dd { margin: .35rem 0 0; color: var(--chalk); font-size: .7rem; line-height: 1.35; }
+.progress { position: fixed; z-index: 18; top: 50%; right: clamp(.75rem, 2vw, 2rem); width: 1px; height: 4.5rem; background: rgba(240,238,230,.18); transform: translateY(-50%); }
+.progress span { display: block; width: 100%; height: 100%; background: var(--amber); transform-origin: top; transition: transform .35s ease; }
+.backdrop { position: fixed; z-index: 0; inset: 0; overflow: hidden; pointer-events: none; background: #080806; }
+.backdrop::after { position: absolute; inset: 0; content: ''; background: linear-gradient(135deg, rgba(8,8,6,.94), rgba(8,8,6,.84)); }
+.backdrop img { width: 100%; height: 100%; object-fit: cover; opacity: .16; filter: grayscale(.35) saturate(.45); }
+
+@media (min-width: 760px) {
+  .header { grid-template-columns: 1fr auto auto; }
+  .desktopNav { display: flex; gap: 1.15rem; }
+  .desktopNav button { border: 0; padding: .25rem 0; color: rgba(240,238,230,.46); background: none; font: .57rem var(--font-mono); letter-spacing: .1em; text-transform: uppercase; cursor: pointer; transition: color .2s ease; }
+  .desktopNav .activeNav, .desktopNav button:hover { color: var(--ivory); }
+  .menuButton, .mobileNav { display: none; }
+  .project { grid-template-columns: minmax(13rem, .56fr) minmax(26rem, 1.35fr); grid-template-rows: minmax(0, 1fr) auto; column-gap: clamp(2rem, 5vw, 6rem); row-gap: 1.3rem; align-items: center; min-height: 100svh; padding: 7.5rem clamp(2rem, 5vw, 6rem) 3rem; }
+  .projectRail { grid-column: 1; grid-row: 1; }
+  .mediaStage { grid-column: 2; grid-row: 1; min-height: clamp(28rem, 66svh, 48rem); }
+  .metadata { grid-column: 2; grid-row: 2; grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .project h1 { font-size: clamp(3.3rem, 6.5vw, 7.3rem); }
+  .description { font-size: .75rem; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .skipLink, .mobileNav, .mediaStage img, .progress span { transition: none; }
+  .project:hover .mediaStage img { transform: none; }
+}

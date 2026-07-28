@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { useOracleWebSocket, useOracleDispatch, ACTIONS } from './state';
 import { CrmShell, LoginVault } from './components';
+import { ReelBackdrop, ReelExperience } from './components/ReelExperience';
 
 function useJarvisVoice() {
   const { dispatch } = useOracleDispatch();
@@ -118,7 +119,7 @@ function AuthedApp() {
   return <CrmShell />;
 }
 
-function App() {
+function NeohApp() {
   // Auth gate: every REST surface (board moves, dossier, onboarding, CMA)
   // needs the Bearer token LoginVault stores in sessionStorage. The WS and
   // Jarvis hooks only mount after auth so the socket connects with a real
@@ -129,10 +130,19 @@ function App() {
       !!sessionStorage.getItem('oracle_token')
   );
 
-  if (!authed) {
-    return <LoginVault onAuthenticated={() => setAuthed(true)} />;
-  }
-  return <AuthedApp />;
+  return (
+    <div className="neoh-app-shell">
+      <ReelBackdrop />
+      <div className="neoh-app-foreground">
+        {!authed ? <LoginVault onAuthenticated={() => setAuthed(true)} /> : <AuthedApp />}
+      </div>
+    </div>
+  );
+}
+
+function App() {
+  const isReelRoute = window.location.pathname === '/reel' || window.location.pathname.startsWith('/reel/');
+  return isReelRoute ? <ReelExperience /> : <NeohApp />;
 }
 
 export default App;
