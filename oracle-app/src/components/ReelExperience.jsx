@@ -56,7 +56,8 @@ function scrollToProject(id, reducedMotion) {
 export function ReelBackdrop() {
   return (
     <div className={styles.backdrop} aria-hidden="true">
-      <img src={projects[0].src} alt="" />
+      <img src="/architectural-waterfall.webp" alt="" />
+      <span className={styles.waterfallFlow} />
     </div>
   );
 }
