@@ -31,6 +31,14 @@ feature_spatial_tours           = false
 feature_local_models            = false
 feature_automation              = false
 
+# Alibaba Qwen3.5 Omni Flash Realtime call engine. Before enabling, add
+# DASHSCOPE_API_KEY to the app Secrets Manager JSON and set your workspace ID.
+qwen_realtime_enabled      = false
+qwen_realtime_workspace_id = ""
+qwen_realtime_region       = "intl" # Singapore; use "cn" for Beijing
+qwen_realtime_model        = "qwen3.5-omni-flash-realtime"
+qwen_realtime_voice        = "Ethan"
+
 raw_source_retention_days       = 730
 call_transcript_retention_days  = 365
 
