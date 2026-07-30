@@ -1,0 +1,3 @@
+# Test-only dependencies.  Production images keep these out unless explicitly
+# built with INSTALL_TEST_DEPS=true.
+pytest==9.1.1

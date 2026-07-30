@@ -25,6 +25,7 @@ export function HeroScene({ mouseX, mouseY }: HeroSceneProps) {
       camera={{ position: [0, 0, 6], fov: 55 }}
       gl={{
         antialias: true,
+        preserveDrawingBuffer: true,
         toneMapping: THREE.ACESFilmicToneMapping,
         toneMappingExposure: 1.2,
       }}

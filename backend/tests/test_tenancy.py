@@ -26,6 +26,7 @@ import jwt
 from fastapi import HTTPException
 
 import auth
+from policy_contract import PLATFORM_POLICY_VERSION
 from tenancy import (
     Role,
     TenantContext,
@@ -48,7 +49,12 @@ CTX_ADMIN = TenantContext(agent_id="ydn", tenant_id=PLATFORM, role=Role.PLATFORM
 
 
 def _token(sub="apex_owner", tenant_id=TENANT_A, role="broker_owner", ttl=60, **extra):
-    payload = {"sub": sub, "iat": time.time(), "exp": time.time() + ttl}
+    payload = {
+        "sub": sub,
+        "policy_version": PLATFORM_POLICY_VERSION,
+        "iat": time.time(),
+        "exp": time.time() + ttl,
+    }
     if tenant_id is not None:
         payload["tenant_id"] = tenant_id
     if role is not None:
@@ -165,6 +171,16 @@ def test_require_context_rejections():
         "wrong-test-secret-key-with-at-least-32-bytes", algorithm=auth.ALGORITHM,
     )
     _expect_401(require_context, f"Bearer {forged}")
+
+
+def test_require_context_rejects_stale_policy_version():
+    try:
+        require_context(f"Bearer {_token(policy_version='prior-policy')}")
+    except HTTPException as e:
+        assert e.status_code == 403
+        assert "current platform policy" in e.detail
+    else:
+        raise AssertionError("expected a stale-policy token to be rejected")
 
 
 # --- standalone runner (no pytest needed) -----------------------------------

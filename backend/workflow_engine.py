@@ -183,7 +183,7 @@ class WorkflowEngine:
         except asyncio.CancelledError:
             pass
         except Exception as e:
-            logger.error(f"Harvester crashed: {e}")
+            logger.error("Harvester crashed: %s", e)
 
     async def _analysis_loop(self):
         await asyncio.sleep(5)
@@ -195,7 +195,7 @@ class WorkflowEngine:
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                logger.error(f"Analysis cycle error: {e}")
+                logger.error("Analysis cycle error: %s", e)
 
             await asyncio.sleep(10)
 
@@ -346,7 +346,7 @@ class WorkflowEngine:
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                logger.error(f"Predictive cache error: {e}")
+                logger.error("Predictive cache error: %s", e)
 
             await asyncio.sleep(PREDICTIVE_CACHE_INTERVAL)
 
@@ -377,7 +377,7 @@ class WorkflowEngine:
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                logger.error(f"Scout loop error: {e}")
+                logger.error("Scout loop error: %s", e)
 
             await asyncio.sleep(SCOUT_SCAN_INTERVAL)
 
@@ -399,8 +399,9 @@ class WorkflowEngine:
             await self._invoke_de_underwriter(payload, score)
         else:
             logger.warning(
-                f"OOD deal halted: state={state} parcel={parcel_id} score={score} "
-                f"— non-DE underwriting deferred per decision 004"
+                "OOD deal halted: state=%s parcel=%s score=%s "
+                "— non-DE underwriting deferred per decision 004",
+                state, parcel_id, score,
             )
             await self._emit_status(
                 f"SCOUT → DEFERRED ({state}) — OOD pipeline not yet wired"
@@ -410,7 +411,8 @@ class WorkflowEngine:
         """Bedrock oracle-underwriter-70b entrypoint. Stub until the fine-tune
         job (wbtis0vmhc54) completes — then wires to ml_forge.bedrock_client."""
         logger.info(
-            f"DE underwriter invoked: parcel={payload.get('parcel_id')} score={score}"
+            "DE underwriter invoked: parcel=%s score=%s",
+            payload.get('parcel_id'), score,
         )
 
     async def _emit_status(self, message: str):

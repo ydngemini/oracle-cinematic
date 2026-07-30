@@ -64,6 +64,7 @@ class QwenVoiceAgent:
         self._lock = asyncio.Lock()
         self._active_generation = False
         self._disclosed = False  # TCPA: AI-voice disclosure must precede any AI speech
+        self._financial_context: dict = {}
         self._system_prompt = self._build_system_prompt()
 
     def _build_system_prompt(self) -> str:
@@ -101,7 +102,7 @@ class QwenVoiceAgent:
         async with self._lock:
             self._pending_whispers.append(whisper)
 
-        logger.info(f"Whisper queued: {instruction[:80]}")
+        logger.info("Whisper queued: %.80s", instruction)
         await self._emit_status(f"WHISPER RECEIVED — injecting: {instruction[:50]}...")
 
         if not self._active_generation:
@@ -115,6 +116,16 @@ class QwenVoiceAgent:
             ))
 
         await self._trigger_generation()
+
+    async def apply_objective_telemetry(self, frame: dict):
+        """Attach server-calculated MAO facts without asking the model to recalculate."""
+        allowed = {
+            key: frame.get(key)
+            for key in ("counter_offer", "mao", "threshold", "objection_draft", "formula")
+            if frame.get(key) is not None
+        }
+        async with self._lock:
+            self._financial_context = allowed
 
     async def ensure_disclosed(self):
         """Speak the mandatory AI-voice disclosure exactly once, before any other
@@ -183,6 +194,17 @@ class QwenVoiceAgent:
                 f"<|im_start|>system\n[OPERATOR: {injection}]<|im_end|>"
             )
 
+        if self._financial_context:
+            context = json.dumps(self._financial_context, separators=(",", ":"))
+            lines.append(
+                "<|im_start|>system\n"
+                f"[VERIFIED NEGOTIATION TELEMETRY: {context}] "
+                "Use only these supplied financial facts. Do not recompute, estimate, "
+                "or invent property conditions. Any proposed response remains an editable "
+                "draft requiring the human agent's approval."
+                "<|im_end|>"
+            )
+
         lines.append("<|im_start|>assistant\n")
         return "\n".join(lines)
 
@@ -191,11 +213,11 @@ class QwenVoiceAgent:
         model_path = Path(MODEL_PATH)
 
         if not model_path.exists():
-            logger.warning(f"Voice model not found at {model_path}")
+            logger.warning("Voice model not found at %s", model_path)
             return self._fallback_response()
 
         if not llama_bin.exists():
-            logger.warning(f"llama-cli not found at {llama_bin}")
+            logger.warning("llama-cli not found at %s", llama_bin)
             return self._fallback_response()
 
         cmd = [
@@ -221,7 +243,7 @@ class QwenVoiceAgent:
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
 
             if proc.returncode != 0:
-                logger.error(f"Voice inference failed: {stderr.decode()[:300]}")
+                logger.error("Voice inference failed: %.300s", stderr.decode())
                 return self._fallback_response()
 
             output = stdout.decode().strip()
@@ -239,6 +261,9 @@ class QwenVoiceAgent:
             return self._fallback_response()
 
     def _fallback_response(self) -> str:
+        objection = str(self._financial_context.get("objection_draft") or "").strip()
+        if objection:
+            return objection
         pending = [w for w in self._pending_whispers if w.applied]
         if pending:
             last = pending[-1].instruction

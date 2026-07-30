@@ -6,8 +6,8 @@ jurisdiction?" The platform pulls data on three planes, and only two of them
 are per-jurisdiction (and therefore have a coverage gap worth tracking):
 
   1. Property / parcel   — per-state scrapers in ``harvesters/`` (the firehose).
-                           Live for 50/51 jurisdictions (WY has no public REST
-                           API); a few are county/city-anchored or geometry-only.
+                           Live for all 50 states plus DC; a few are
+                           county/city-anchored or geometry-only.
   2. Compliance          — per-state statutory rules in
                            ``compliance_engine/seed_data/``. Live for 50 states
                            + DC + federal.
@@ -114,7 +114,7 @@ LIVE_PROPERTY: dict[str, tuple[str, str, str]] = {
     "SD": ("Pennington County tax parcels", "arcgis", "county:Pennington"),
     "TN": ("Shelby County assessor (Memphis)", "arcgis", "county:Shelby"),
     "TX": ("Bexar CAD parcels (San Antonio)", "arcgis", "county:Bexar"),
-    "UT": ("Utah County assessor parcels", "socrata", "county:Utah"),
+    "UT": ("Utah County Assessor TaxParcelAll", "arcgis", "county:Utah"),
     "VT": ("VCGI statewide parcels", "arcgis", "statewide"),
     "WA": ("Snohomish County assessor parcels", "arcgis", "county:Snohomish"),
     "WI": ("WI SCO statewide parcels", "arcgis", "statewide"),

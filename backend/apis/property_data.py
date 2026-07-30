@@ -51,12 +51,28 @@ async def get_nearby_pois(lat: float, lng: float, radius_m: int = 1000) -> dict:
     """
 
     try:
-        data = urllib.parse.urlencode({"data": query}).encode()
-        req = urllib.request.Request(_OVERPASS_URL, data=data, method="POST")
-        raw = await asyncio.to_thread(
-            lambda: urllib.request.urlopen(req, timeout=15).read().decode()
+        from data_integrations.cache import cached_external
+
+        async def fetch_upstream() -> dict:
+            data = urllib.parse.urlencode({"data": query}).encode()
+            req = urllib.request.Request(_OVERPASS_URL, data=data, method="POST")
+            raw = await asyncio.to_thread(
+                lambda: urllib.request.urlopen(req, timeout=15).read().decode()
+            )
+            return {"result": json.loads(raw)}
+
+        payload = await cached_external(
+            "state_gis",
+            {
+                "provider": "openstreetmap_overpass",
+                "lat": round(float(lat), 5),
+                "lng": round(float(lng), 5),
+                "radius_m": radius_m,
+            },
+            fetch_upstream,
+            ttl=7 * 86_400,
         )
-        result = json.loads(raw)
+        result = payload.get("result") or {}
         total = result.get("elements", [{}])[0].get("tags", {}).get("total", 0)
         return {
             "radius_m": radius_m,
@@ -85,11 +101,22 @@ async def get_flood_zone(lat: float, lng: float) -> Optional[dict]:
     url = f"{_FEMA_URL}?{params}"
 
     try:
-        req = urllib.request.Request(url)
-        raw = await asyncio.to_thread(
-            lambda: urllib.request.urlopen(req, timeout=10).read().decode()
+        from data_integrations.cache import cached_external
+
+        async def fetch_upstream() -> dict:
+            req = urllib.request.Request(url)
+            raw = await asyncio.to_thread(
+                lambda: urllib.request.urlopen(req, timeout=10).read().decode()
+            )
+            return {"result": json.loads(raw)}
+
+        payload = await cached_external(
+            "fema_flood",
+            {"lat": round(float(lat), 5), "lng": round(float(lng), 5)},
+            fetch_upstream,
+            ttl=30 * 86_400,
         )
-        result = json.loads(raw)
+        result = payload.get("result") or {}
         features = result.get("features", [])
         if not features:
             return {"zone": "X", "risk": "minimal", "in_sfha": False}
@@ -138,11 +165,26 @@ async def get_walkscore(lat: float, lng: float, address: str) -> Optional[dict]:
     url = f"https://api.walkscore.com/score?{params}"
 
     try:
-        req = urllib.request.Request(url)
-        raw = await asyncio.to_thread(
-            lambda: urllib.request.urlopen(req, timeout=10).read().decode()
+        from data_integrations.cache import cached_external
+
+        async def fetch_upstream() -> dict:
+            req = urllib.request.Request(url)
+            raw = await asyncio.to_thread(
+                lambda: urllib.request.urlopen(req, timeout=10).read().decode()
+            )
+            return {"result": json.loads(raw)}
+
+        payload = await cached_external(
+            "walkscore",
+            {
+                "lat": round(float(lat), 5),
+                "lng": round(float(lng), 5),
+                "address": address.strip(),
+            },
+            fetch_upstream,
+            ttl=30 * 86_400,
         )
-        result = json.loads(raw)
+        result = payload.get("result") or {}
         if result.get("status") != 1:
             return None
 

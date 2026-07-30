@@ -117,6 +117,11 @@ resource "aws_ecs_service" "observability" {
   desired_count   = var.observability_desired_count
   launch_type     = "FARGATE"
 
+  deployment_circuit_breaker {
+    enable   = true
+    rollback = true
+  }
+
   network_configuration {
     subnets          = aws_subnet.private[*].id
     security_groups  = [aws_security_group.ecs.id]

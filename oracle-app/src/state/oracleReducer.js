@@ -26,12 +26,13 @@ export const initialState = {
   maoThreshold: 0.70,
   profileSummary: '',
   targetMarkets: [],
-  dealPipeline: [],      // [{ state, count, leads: [...] }] from the 4-State firehose
-  dealPipelineTotal: 0,
   liveFeed: [],          // Live Pulse — newest-first activity cards, capped at 50
   jobProgress: {},       // durable job id -> latest authenticated progress frame
   negotiationTelemetry: null,
   callConsents: {},
+  aiChatMessages: [],
+  aiChatRevision: 0,
+  aiChatConnection: 'offline',
 };
 
 export const ACTIONS = {
@@ -55,16 +56,124 @@ export const ACTIONS = {
   WALKER_THOUGHT_TOKEN: 'WALKER_THOUGHT_TOKEN',
   WALKER_THOUGHT_END: 'WALKER_THOUGHT_END',
   SESSION_RESTORED: 'SESSION_RESTORED',
-  SET_DEAL_PIPELINE: 'SET_DEAL_PIPELINE',
   FEED_EVENT: 'FEED_EVENT',
   PROFILE_SAVED: 'PROFILE_SAVED',
   JOB_PROGRESS: 'JOB_PROGRESS',
   NEGOTIATION_TELEMETRY: 'NEGOTIATION_TELEMETRY',
   CALL_CONSENT: 'CALL_CONSENT',
+  AI_CHAT_CONNECTION: 'AI_CHAT_CONNECTION',
+  AI_CHAT_HYDRATE: 'AI_CHAT_HYDRATE',
+  AI_CHAT_SEND_LOCAL: 'AI_CHAT_SEND_LOCAL',
+  AI_CHAT_ACCEPTED: 'AI_CHAT_ACCEPTED',
+  AI_CHAT_START: 'AI_CHAT_START',
+  AI_CHAT_DELTA: 'AI_CHAT_DELTA',
+  AI_CHAT_COMPLETE: 'AI_CHAT_COMPLETE',
+  AI_CHAT_ERROR: 'AI_CHAT_ERROR',
+  AI_CHAT_REJECTED: 'AI_CHAT_REJECTED',
+  AI_CHAT_ACTION_UNDONE: 'AI_CHAT_ACTION_UNDONE',
 };
 
 export function oracleReducer(state, action) {
   switch (action.type) {
+    case ACTIONS.AI_CHAT_CONNECTION:
+      return { ...state, aiChatConnection: action.payload };
+
+    case ACTIONS.AI_CHAT_HYDRATE: {
+      const incoming = Array.isArray(action.payload) ? action.payload : [];
+      const pending = state.aiChatMessages.filter((message) => {
+        if (!message.local) return false;
+        return !incoming.some((saved) => {
+          if (saved.request_id !== message.request_id) return false;
+          if (saved.role !== message.role) return false;
+          if (message.id && saved.id && saved.id !== message.id) return false;
+          return true;
+        });
+      });
+      return { ...state, aiChatMessages: [...incoming, ...pending] };
+    }
+
+    case ACTIONS.AI_CHAT_SEND_LOCAL:
+      return {
+        ...state,
+        aiChatMessages: [
+          ...state.aiChatMessages,
+          action.payload.user,
+          action.payload.assistant,
+        ],
+      };
+
+    case ACTIONS.AI_CHAT_ACCEPTED:
+      return {
+        ...state,
+        aiChatRevision: state.aiChatRevision + 1,
+        aiChatMessages: state.aiChatMessages.map((message) => {
+          if (message.request_id !== action.payload.request_id) return message;
+          if (message.role === 'assistant') {
+            return { ...message, id: action.payload.message_id, status: action.payload.status || 'pending', local: false };
+          }
+          if (message.role === 'user' && action.payload.user_message_id) {
+            return { ...message, id: action.payload.user_message_id, local: false };
+          }
+          return message;
+        }),
+      };
+
+    case ACTIONS.AI_CHAT_START:
+      return {
+        ...state,
+        aiChatMessages: upsertAssistant(state.aiChatMessages, action.payload, {
+          status: 'streaming', content: '', local: false,
+        }),
+      };
+
+    case ACTIONS.AI_CHAT_DELTA:
+      return {
+        ...state,
+        aiChatMessages: upsertAssistant(state.aiChatMessages, action.payload, (message) => ({
+          status: 'streaming', content: `${message.content || ''}${action.payload.delta || ''}`, local: false,
+        })),
+      };
+
+    case ACTIONS.AI_CHAT_COMPLETE:
+      return {
+        ...state,
+        aiChatRevision: state.aiChatRevision + 1,
+        aiChatMessages: upsertAssistant(state.aiChatMessages, action.payload, {
+          status: 'completed', actions: action.payload.actions || [], model_id: action.payload.model_id,
+        }),
+      };
+
+    case ACTIONS.AI_CHAT_ERROR:
+      return {
+        ...state,
+        aiChatRevision: state.aiChatRevision + 1,
+        aiChatMessages: upsertAssistant(state.aiChatMessages, action.payload, {
+          status: 'failed', content: action.payload.message || 'The assistant is unavailable.',
+          error_code: action.payload.code,
+        }),
+      };
+
+    case ACTIONS.AI_CHAT_REJECTED:
+      return {
+        ...state,
+        aiChatMessages: state.aiChatMessages.map((message) =>
+          message.request_id === action.payload.request_id && message.role === 'assistant'
+            ? { ...message, status: 'failed', content: action.payload.message || 'Message was not accepted.' }
+            : message
+        ),
+      };
+
+    case ACTIONS.AI_CHAT_ACTION_UNDONE:
+      return {
+        ...state,
+        aiChatMessages: state.aiChatMessages.map((message) => ({
+          ...message,
+          actions: (message.actions || []).map((receipt) =>
+            receipt.action_id === action.payload.id ? { ...receipt, status: 'undone' } : receipt
+          ),
+        })),
+      };
+
     case ACTIONS.JOB_PROGRESS: {
       const next = { ...state.jobProgress, [action.payload.job_id]: action.payload };
       const entries = Object.entries(next);
@@ -175,16 +284,31 @@ export function oracleReducer(state, action) {
       // SESSION_RESTORED frame re-hydrates the same values from Postgres.
       return { ...state, targetMarkets: action.payload.markets || [] };
 
-    case ACTIONS.SET_DEAL_PIPELINE:
-      return {
-        ...state,
-        dealPipeline: action.payload.states || [],
-        dealPipelineTotal: action.payload.total || 0,
-      };
-
     default:
       return state;
   }
+}
+
+function upsertAssistant(messages, payload, patch) {
+  const index = messages.findIndex((message) =>
+    (payload.message_id && message.id === payload.message_id) ||
+    (payload.request_id && message.request_id === payload.request_id && message.role === 'assistant')
+  );
+  if (index < 0) {
+    return [...messages, {
+      id: payload.message_id || `pending-${payload.request_id}`,
+      request_id: payload.request_id,
+      role: 'assistant',
+      content: '',
+      status: 'pending',
+      created_at: new Date().toISOString(),
+      ...(typeof patch === 'function' ? patch({}) : patch),
+    }];
+  }
+  const current = messages[index];
+  const next = [...messages];
+  next[index] = { ...current, ...(typeof patch === 'function' ? patch(current) : patch) };
+  return next;
 }
 
 function applyJarvisCommand(state, transcript) {

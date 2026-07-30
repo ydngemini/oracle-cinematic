@@ -11,6 +11,7 @@
 // The key is added to oracle-app/.env later as VITE_GOOGLE_MAPS_KEY. Until then
 // this resolves to '' and hasMapsKey() is false everywhere.
 const KEY = (import.meta.env.VITE_GOOGLE_MAPS_KEY || '').trim();
+const MAP_ID = (import.meta.env.VITE_GOOGLE_MAP_ID || '').trim();
 
 // Map3DElement (the maps3d library) currently ships only on the alpha channel.
 const MAPS_VERSION = 'alpha';
@@ -21,6 +22,12 @@ export function getMapsKey() {
 
 export function hasMapsKey() {
   return KEY.length > 0;
+}
+
+// Advanced Markers require a map ID. DEMO_MAP_ID keeps local development
+// usable, while production may provide a branded/cloud-configured map ID.
+export function getMapsMapId() {
+  return MAP_ID || 'DEMO_MAP_ID';
 }
 
 let _loadPromise = null;
@@ -65,7 +72,7 @@ export function loadGoogleMaps() {
       key: KEY,
       v: MAPS_VERSION,
       loading: 'async',
-      libraries: 'maps3d,geocoding',
+      libraries: 'maps3d,geocoding,marker',
       callback: CB,
     });
 
@@ -92,6 +99,16 @@ export function loadGoogleMaps() {
 export async function loadMaps3d() {
   const google = await loadGoogleMaps();
   return google.maps.importLibrary('maps3d');
+}
+
+/** Load the standard map and accessible Advanced Marker libraries on demand. */
+export async function loadMapsAndMarkers() {
+  const google = await loadGoogleMaps();
+  const [{ Map }, { AdvancedMarkerElement }] = await Promise.all([
+    google.maps.importLibrary('maps'),
+    google.maps.importLibrary('marker'),
+  ]);
+  return { google, Map, AdvancedMarkerElement };
 }
 
 /**

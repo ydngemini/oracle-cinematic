@@ -9,11 +9,6 @@ const GLYPHS = {
       <path d="M12 3 5 6v5c0 4.4 3 7.5 7 9 4-1.5 7-4.6 7-9V6Z" />
     </svg>
   ),
-  plus: (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="M12 5v14M5 12h14" />
-    </svg>
-  ),
 };
 
 function daysUntil(isoDate) {
@@ -129,11 +124,6 @@ export function LicenseStatusWidget() {
           {licenses.length === 0 && (
             <p className={styles.emptyText}>No licenses on file.</p>
           )}
-
-          <button type="button" className={styles.addBtn}>
-            <span className={styles.addGlyph}>{GLYPHS.plus}</span>
-            Add License
-          </button>
         </>
       )}
     </section>

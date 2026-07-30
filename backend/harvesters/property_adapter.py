@@ -18,6 +18,16 @@ class PropertyRecord:
     is_absentee_owner: bool
     distress_flags: List[str]  # e.g., ['tax_lien', 'pre_foreclosure']
     last_sale_date: Optional[str]
+    # Public-record facts shared by assessor and recorder sources. These remain
+    # nullable end to end: a missing value means the source did not publish it,
+    # never zero and never a model-generated estimate.
+    county: Optional[str] = None
+    bedrooms: Optional[float] = None
+    bathrooms: Optional[float] = None
+    rooms: Optional[float] = None
+    year_built: Optional[int] = None
+    property_class: Optional[str] = None
+    last_sale_price: Optional[float] = None
     # Source-backed characteristics used by HBU/spatial intelligence.  They are
     # optional because most assessor feeds expose only a subset; missing values
     # stay missing rather than being silently imputed during ingestion.

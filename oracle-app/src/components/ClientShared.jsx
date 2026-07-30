@@ -160,6 +160,29 @@ export const SORTS = [
   { id: 'last_contacted', label: 'Last Contact' },
 ];
 
+export const PORTAL_LINK_KINDS = [
+  { id: 'seller', label: 'Seller' },
+  { id: 'joint_venture', label: 'Joint venture' },
+];
+
+export const PORTAL_ASSET_SCOPES = [
+  { id: 'summary', label: 'Property summary', defaultEnabled: true },
+  { id: 'media', label: 'Media', defaultEnabled: true },
+  { id: 'milestones', label: 'Milestones', defaultEnabled: true },
+  { id: 'title_summary', label: 'Preliminary title summary', defaultEnabled: false },
+  { id: 'zoning_summary', label: 'Zoning summary', defaultEnabled: false },
+  { id: 'underwriting', label: 'Underwriting trace', defaultEnabled: false },
+  { id: 'documents', label: 'Approved documents', defaultEnabled: false },
+];
+
+const PORTAL_KIND_LABELS = Object.fromEntries(PORTAL_LINK_KINDS.map((item) => [item.id, item.label]));
+const PORTAL_SCOPE_LABELS = Object.fromEntries(PORTAL_ASSET_SCOPES.map((item) => [item.id, item.label]));
+export const portalKindLabel = (id) => PORTAL_KIND_LABELS[id] || 'Dossier';
+export const portalScopeLabel = (id) => PORTAL_SCOPE_LABELS[id] || id;
+export const defaultPortalAssetScope = () => Object.fromEntries(
+  PORTAL_ASSET_SCOPES.map((item) => [item.id, item.defaultEnabled]),
+);
+
 // ── Pure helpers ──────────────────────────────────────────────────────────
 export function toNum(v) {
   if (v === null || v === undefined || v === '') return null;

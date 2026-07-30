@@ -1,7 +1,4 @@
 import asyncio
-import base64
-import hashlib
-import hmac
 from datetime import date
 
 import pytest
@@ -14,9 +11,8 @@ from command_providers import (
     ProviderConfigurationError,
     ProviderRequestError,
     create_google_calendar_event,
-    place_twilio_call,
+    place_acs_call,
     send_ses_email,
-    verify_twilio_signature,
 )
 from graph_engine import PropertyGraph
 from intelligence_engine import (
@@ -318,25 +314,13 @@ def test_feature_flags_are_independent_and_disabled_features_do_not_advertise(mo
     assert scheduler._tasks["platform_source_health"].enabled is True
 
 
-def test_twilio_signature_is_constant_time_compatible_and_rejects_tampering():
-    url = "https://neoh.example/api/commands/webhooks/twilio"
-    form = {"CallSid": "CA123", "CallStatus": "completed", "SequenceNumber": "1"}
-    material = url + "".join(f"{key}{form[key]}" for key in sorted(form))
-    signature = base64.b64encode(
-        hmac.new(b"test-token", material.encode("utf-8"), hashlib.sha1).digest()
-    ).decode("ascii")
-    assert verify_twilio_signature(
-        url=url, form=form, signature=signature, auth_token="test-token"
-    )
-    assert not verify_twilio_signature(
-        url=url,
-        form={**form, "CallStatus": "in-progress"},
-        signature=signature,
-        auth_token="test-token",
-    )
-    assert not verify_twilio_signature(
-        url="file:///tmp/webhook", form=form, signature=signature, auth_token="test-token"
-    )
+def test_acs_call_provider_fails_closed_on_missing_config():
+    with pytest.raises(ProviderConfigurationError):
+        asyncio.run(
+            place_acs_call(
+                {"target": {"phone": "+15555550101"}},
+            )
+        )
 
 
 def test_provider_adapters_fail_closed_before_any_network_call(monkeypatch):
@@ -348,15 +332,13 @@ def test_provider_adapters_fail_closed_before_any_network_call(monkeypatch):
             )
         )
 
-    with pytest.raises(ProviderRequestError):
+    with pytest.raises(ProviderConfigurationError):
         asyncio.run(
-            place_twilio_call(
+            place_acs_call(
                 {"target": {"phone": "555-0100"}},
                 credentials={
-                    "account_sid": "AC123",
-                    "auth_token": "token",
+                    "connection_string": "endpoint=https://mock.acs.azure.com/;accesskey=mock",
                     "from_number": "+15555550101",
-                    "twiml_url": "https://example.test/twiml",
                 },
             )
         )

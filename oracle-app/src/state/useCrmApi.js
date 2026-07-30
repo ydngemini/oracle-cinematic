@@ -1,39 +1,48 @@
-// Shared CRM REST helper — one place for base URL, Bearer auth, JSON, and
-// error normalization. Every tab speaks to /api/crm/* through these.
-const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8000';
+import {
+  fetchWithRetry,
+  fetchBlob,
+  uploadFile,
+} from '../lib/apiClient';
 
-function authHeaders() {
-  const token = sessionStorage.getItem('oracle_token');
-  return token ? { Authorization: `Bearer ${token}` } : {};
+export { ApiError } from '../lib/apiClient';
+
+export async function crmGet(path, options) {
+  return fetchWithRetry(path, { ...options, method: 'GET' });
 }
 
-async function request(path, { method = 'GET', body } = {}) {
-  const res = await fetch(`${API_BASE}${path}`, {
-    method,
-    headers: {
-      ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
-      ...authHeaders(),
-    },
-    ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
-  });
-
-  if (!res.ok) {
-    let detail = res.statusText;
-    try {
-      const data = await res.json();
-      detail = data.detail || detail;
-    } catch { /* non-JSON error body — keep statusText */ }
-    const err = new Error(detail);
-    err.status = res.status;
-    throw err;
-  }
-
-  if (res.status === 204) return null;
-  return res.json();
+export async function crmPost(path, body, options) {
+  return fetchWithRetry(path, { ...options, method: 'POST', body });
 }
 
-export const crmGet = (path) => request(path);
-export const crmPost = (path, body) => request(path, { method: 'POST', body });
-export const crmPut = (path, body) => request(path, { method: 'PUT', body });
-export const crmPatch = (path, body) => request(path, { method: 'PATCH', body });
-export const crmDelete = (path) => request(path, { method: 'DELETE' });
+export async function crmPut(path, body, options) {
+  return fetchWithRetry(path, { ...options, method: 'PUT', body });
+}
+
+export async function crmPatch(path, body, options) {
+  return fetchWithRetry(path, { ...options, method: 'PATCH', body });
+}
+
+export async function crmDelete(path, options) {
+  return fetchWithRetry(path, { ...options, method: 'DELETE' });
+}
+
+export async function crmGetBlob(path, options) {
+  return fetchBlob(path, options);
+}
+
+export async function crmDownload(path, filename, options) {
+  const blob = await fetchBlob(path, options);
+  const objectUrl = URL.createObjectURL(blob);
+  const link = window.document.createElement('a');
+  link.href = objectUrl;
+  link.download = filename;
+  link.style.display = 'none';
+  window.document.body.append(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000);
+}
+
+export async function crmUpload(path, formData, options) {
+  return uploadFile(path, formData, options);
+}

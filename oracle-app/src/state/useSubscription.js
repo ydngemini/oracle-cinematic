@@ -1,14 +1,16 @@
 import { useState, useEffect, useCallback } from 'react';
 import { getTenantId } from './identity';
+import { apiGet, apiPost, ApiError } from '../lib/apiClient';
+import { formatApiError } from '../lib/errorMessages';
 
-const API_BASE = import.meta.env.VITE_API_BASE ?? 'http://localhost:8000';
-
-// Dev-only escape hatch: a local run without a live Stripe subscription would
-// otherwise be permanently stuck behind the $299 BillingOverlay. Gated on
-// import.meta.env.DEV, which is statically false in a production build — so this
-// can NEVER unlock a deployed app, regardless of the env var.
 const BILLING_BYPASS =
   import.meta.env.DEV && import.meta.env.VITE_BILLING_BYPASS === 'true';
+
+const BILLING_STATUS_ERROR =
+  'We couldn\'t verify your license because the billing service is unavailable. Please try again.';
+const BILLING_PORTAL_ERROR =
+  'We couldn\'t open the billing portal. Please try again.';
+const SERVICE_ERROR_STATUSES = new Set(['error', 'no_db']);
 
 export function useSubscription() {
   const [sub, setSub] = useState(
@@ -17,27 +19,40 @@ export function useSubscription() {
       : { active: false, status: 'loading', plan: 'none', currentPeriodEnd: null }
   );
   const [loading, setLoading] = useState(!BILLING_BYPASS);
+  const [error, setError] = useState(null);
 
   const tenantId = getTenantId();
 
   const refresh = useCallback(async () => {
-    if (BILLING_BYPASS) return;
+    if (BILLING_BYPASS) return { ok: true };
+
+    setLoading(true);
+    setError(null);
+
     try {
-      const token = sessionStorage.getItem('oracle_token');
-      const res = await fetch(`${API_BASE}/billing/status/${tenantId}`, {
-        headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
-      });
-      if (res.ok) {
-        const data = await res.json();
-        setSub({
-          active: data.active,
-          status: data.status,
-          plan: data.plan,
-          currentPeriodEnd: data.current_period_end,
-        });
+      const data = await apiGet(`/billing/status/${encodeURIComponent(tenantId)}`);
+      if (
+        typeof data?.active !== 'boolean' ||
+        typeof data?.status !== 'string' ||
+        SERVICE_ERROR_STATUSES.has(data.status)
+      ) {
+        throw new ApiError('Billing status response was unavailable', 0, false);
       }
-    } catch {
-      setSub(s => ({ ...s, status: 'error' }));
+
+      setSub({
+        active: data.active,
+        status: data.status,
+        plan: typeof data.plan === 'string' ? data.plan : 'none',
+        currentPeriodEnd: data.current_period_end ?? null,
+      });
+      return { ok: true };
+    } catch (err) {
+      setSub((current) => (
+        current.active ? current : { ...current, active: false, status: 'error' }
+      ));
+      const msg = err instanceof ApiError ? formatApiError(err) : BILLING_STATUS_ERROR;
+      setError(msg);
+      return { ok: false, error: msg };
     } finally {
       setLoading(false);
     }
@@ -49,23 +64,29 @@ export function useSubscription() {
 
   const openPortal = useCallback(async () => {
     try {
-      const token = sessionStorage.getItem('oracle_token');
-      const res = await fetch(`${API_BASE}/billing/create-portal-session`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        },
-        body: JSON.stringify({ tenant_id: tenantId }),
-      });
-      if (res.ok) {
-        const { url } = await res.json();
-        window.location.href = url;
+      const data = await apiPost('/billing/create-portal-session', { tenant_id: tenantId });
+      const url = data?.url;
+      if (typeof url !== 'string' || !url) {
+        return { ok: false, error: BILLING_PORTAL_ERROR };
       }
-    } catch {
-      /* portal navigation is best-effort; surface nothing on transient failure */
+
+      let parsedUrl;
+      try {
+        parsedUrl = new URL(url);
+      } catch {
+        return { ok: false, error: BILLING_PORTAL_ERROR };
+      }
+      if (parsedUrl.protocol !== 'https:' && parsedUrl.protocol !== 'http:') {
+        return { ok: false, error: BILLING_PORTAL_ERROR };
+      }
+
+      window.location.href = url;
+      return { ok: true };
+    } catch (err) {
+      const msg = err instanceof ApiError ? formatApiError(err) : BILLING_PORTAL_ERROR;
+      return { ok: false, error: msg };
     }
   }, [tenantId]);
 
-  return { ...sub, loading, refresh, openPortal, tenantId };
+  return { ...sub, loading, error, refresh, openPortal, tenantId };
 }

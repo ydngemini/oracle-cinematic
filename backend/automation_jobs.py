@@ -44,6 +44,11 @@ class JobApprovalError(ValueError):
     pass
 
 
+def _exception_detail(exc: Exception) -> str:
+    """Keep the exception class visible when built-in timeouts have no text."""
+    return str(exc).strip() or repr(exc)
+
+
 def canonical_json(value: Any) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
 
@@ -185,6 +190,7 @@ async def claim_next_job(worker_id: str, *, queue_name: str = "default") -> Opti
     lease_token = uuid.uuid4()
     ctx = _platform_context(worker_id)
     async with dbc.tenant_tx(ctx) as conn:
+        await _reap_exhausted_leases(conn)
         row = await conn.fetchrow(
             """
             WITH candidate AS (
@@ -237,6 +243,40 @@ async def claim_next_job(worker_id: str, *, queue_name: str = "default") -> Opti
     return _row_dict(row)
 
 
+async def _reap_exhausted_leases(conn) -> int:
+    """Dead-letter expired jobs that can no longer be claimed.
+
+    Without this sweep, a running job whose final lease expires at
+    ``attempt_count == max_attempts`` remains stuck in ``running`` forever
+    because the claim query correctly refuses another attempt.
+    """
+    result = await conn.execute(
+        """
+        UPDATE automation_jobs
+           SET state='dead_letter',
+               status_message='dead letter: lease attempts exhausted',
+               completed_at=COALESCE(completed_at, now()),
+               lease_owner=NULL,lease_token=NULL,lease_expires_at=NULL,
+               last_error_code=COALESCE(
+                   last_error_code,
+                   'LEASE_ATTEMPTS_EXHAUSTED'
+               ),
+               last_error=COALESCE(
+                   last_error,
+                   'job lease expired after maximum attempts'
+               ),
+               updated_at=now()
+         WHERE state IN ('leased','running')
+           AND lease_expires_at < now()
+           AND attempt_count >= max_attempts
+        """
+    )
+    try:
+        return int(str(result).rsplit(" ", 1)[-1])
+    except (TypeError, ValueError):
+        return 0
+
+
 async def _lease_update(
     job: Mapping[str, Any],
     worker_id: str,
@@ -265,6 +305,7 @@ async def mark_running(job: Mapping[str, Any], worker_id: str) -> None:
         UPDATE automation_jobs
            SET state='running', status_message='running',
                lease_expires_at=now() + ($4 || ' seconds')::interval,
+               last_error=NULL,last_error_code=NULL,
                updated_at=now()
          WHERE id=$1::uuid AND lease_owner=$2 AND lease_token=$3::uuid
         RETURNING id
@@ -297,19 +338,27 @@ async def heartbeat_job(
 async def complete_job(
     job: Mapping[str, Any], worker_id: str, result: Mapping[str, Any]
 ) -> None:
+    result_body = dict(result)
+    # A national job can finish all available work while still containing
+    # failed jurisdictions.  Preserve that terminal truth instead of calling
+    # it a success; the worker attempt itself still completed normally.
+    state = "partial" if result_body.pop("_terminal_state", None) == "partial" else "succeeded"
+    status_message = "partial completion" if state == "partial" else "succeeded"
     await _lease_update(
         job,
         worker_id,
         """
         UPDATE automation_jobs
-           SET state='succeeded', result=$4::jsonb, progress=100,
-               status_message='succeeded', completed_at=now(),
+           SET state=$4, result=$5::jsonb, progress=100,
+               status_message=$6, completed_at=now(),
                lease_owner=NULL, lease_token=NULL, lease_expires_at=NULL,
                last_error=NULL, last_error_code=NULL, updated_at=now()
          WHERE id=$1::uuid AND lease_owner=$2 AND lease_token=$3::uuid
         RETURNING id
         """,
-        canonical_json(dict(result)),
+        state,
+        canonical_json(result_body),
+        status_message,
     )
     await _finish_attempt(job, worker_id, "succeeded")
 
@@ -325,6 +374,7 @@ async def fail_job(
     max_attempts = int(job.get("max_attempts") or 1)
     terminal = attempt >= max_attempts
     retry_seconds = min(3_600, 5 * (2 ** max(0, attempt - 1)))
+    error_detail = _exception_detail(exc)
     await _lease_update(
         job,
         worker_id,
@@ -344,10 +394,10 @@ async def fail_job(
         "dead_letter" if terminal else "failed",
         "dead letter" if terminal else f"retry in {retry_seconds}s",
         error_code[:120],
-        str(exc)[:2_000],
+        error_detail[:2_000],
         str(retry_seconds),
     )
-    await _finish_attempt(job, worker_id, "failed", error_code, str(exc))
+    await _finish_attempt(job, worker_id, "failed", error_code, error_detail)
     logger.error(
         "ORACLE_METRIC automation_job_failure job_type=%s state=%s error_code=%s attempt=%d",
         str(job.get("job_type") or "unknown")[:120],
@@ -366,18 +416,21 @@ async def _finish_attempt(
 ) -> None:
     ctx = _platform_context(worker_id)
     async with dbc.tenant_tx(ctx) as conn:
-        await conn.execute(
+        changed = await conn.fetchval(
             """
-            UPDATE automation_job_attempts
-               SET finished_at=now(), outcome=$4, error_code=$5, error_detail=$6
-             WHERE job_id=$1::uuid AND attempt_number=$2 AND lease_token=$3::uuid
+            SELECT finish_automation_job_attempt($1::uuid, $2, $3, $4, $5)
             """,
             job["id"],
             int(job["attempt_count"]),
-            job["lease_token"],
             outcome,
             error_code,
             error_detail[:2_000] if error_detail else None,
+        )
+    if not changed:
+        logger.warning(
+            "automation job attempt was already finalized or unavailable job=%s attempt=%d",
+            str(job.get("id") or "unknown"),
+            int(job.get("attempt_count") or 0),
         )
 
 
@@ -420,17 +473,20 @@ class JobReporter:
         try:
             import ws_hub
 
-            await ws_hub.broadcast(
-                str(self.job["tenant_id"]),
-                {
+            payload = {
                     "type": "JOB_PROGRESS",
                     "version": 1,
                     "job_id": str(self.job["id"]),
                     "job_type": self.job["job_type"],
                     "progress": max(0.0, min(100.0, float(percent))),
                     "message": message[:500],
-                },
-            )
+                }
+            if self.job["job_type"] == "ai_chat:response":
+                await ws_hub.broadcast_user(
+                    str(self.job["tenant_id"]), str(self.job.get("created_by") or ""), payload
+                )
+            else:
+                await ws_hub.broadcast(str(self.job["tenant_id"]), payload)
         except Exception as exc:  # noqa: BLE001 - telemetry cannot fail the job
             logger.debug("job progress broadcast failed: %s", exc)
 

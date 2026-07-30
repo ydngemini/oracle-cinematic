@@ -24,6 +24,16 @@ resource "aws_secretsmanager_secret_version" "app" {
     STRIPE_SECRET_KEY            = ""
     STRIPE_WEBHOOK_SECRET        = ""
     RENTCAST_API_KEY             = ""
+    GOOGLE_CLIENT_ID             = ""
+    GOOGLE_CLIENT_SECRET         = ""
+    TWILIO_ACCOUNT_SID           = ""
+    TWILIO_AUTH_TOKEN            = ""
+    TWILIO_FROM_NUMBER           = ""
+    ORACLE_TWILIO_TWIML_URL      = ""
+    ACS_CONNECTION_STRING        = ""
+    ACS_FROM_NUMBER              = ""
+    ORACLE_ACS_WEBHOOK_SECRET    = ""
+    REDIS_URL                    = ""
     RUNPOD_API_KEY               = ""
   })
 

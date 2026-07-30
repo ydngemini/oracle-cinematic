@@ -22,8 +22,7 @@ from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisco
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
-from auth import decode_token
-from tenancy import _validate_tenant_id, require_context, require_role, Role, TenantContext
+from tenancy import require_context, require_role, Role, TenantContext
 
 # Roles allowed to read AWS infra observability (mirrors the REST route gates).
 _OBS_ALLOWED_ROLES = {"platform_admin", "broker_owner"}
@@ -1211,15 +1210,14 @@ async def observability_websocket(websocket: WebSocket):
     ]
     raw_token = offered_protocols[1] if len(offered_protocols) == 2 and offered_protocols[0] == "oracle.jwt" else ""
     try:
-        claims = decode_token(raw_token)
-        _validate_tenant_id(claims.get("tenant_id", ""))
+        ctx = require_context(f"Bearer {raw_token}")
     except Exception:  # noqa: BLE001 — missing/invalid/expired token
         await websocket.close(code=4401)  # 4401: application "unauthorized"
         log.warning("Observability WS rejected — missing/invalid token.")
         return
-    if claims.get("role") not in _OBS_ALLOWED_ROLES:
+    if ctx.role.value not in _OBS_ALLOWED_ROLES:
         await websocket.close(code=4403)  # 4403: application "forbidden"
-        log.warning("Observability WS rejected — role %r not permitted.", claims.get("role"))
+        log.warning("Observability WS rejected — role %r not permitted.", ctx.role.value)
         return
 
     await websocket.accept(subprotocol="oracle.jwt")

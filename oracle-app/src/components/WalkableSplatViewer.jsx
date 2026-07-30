@@ -17,7 +17,8 @@ import styles from './WalkableSplatViewer.module.css';
  * Props: { splatUrl, disclosure?, address?, title?, onClose }
  */
 
-const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8000';
+const API_BASE = import.meta.env.VITE_API_BASE
+  || (import.meta.env.DEV ? 'http://localhost:8000' : '');
 const absUrl = (u) => (!u ? '' : /^https?:\/\//i.test(u) ? u : `${API_BASE}${u.startsWith('/') ? '' : '/'}${u}`);
 const DISCLOSURE_FALLBACK =
   'AI-generated 3D reconstruction from photos — geometry may be incomplete or inaccurate. Not a measured survey or a substitute for an in-person showing.';

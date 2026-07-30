@@ -32,6 +32,7 @@ Run:  ORACLE_DB_PASSWORD=... ORACLE_INGEST_TENANT_ID=<uuid> \\
 from __future__ import annotations
 
 import asyncio
+import base64
 import csv
 import io
 import json
@@ -39,9 +40,9 @@ import logging
 import os
 import random
 import time
-from dataclasses import asdict
 from typing import Optional
 
+from .base import persist_leads
 from .property_adapter import PropertyHarvester, PropertyRecord
 
 logger = logging.getLogger("oracle.harvester.md_sdat")
@@ -90,6 +91,16 @@ _COLUMN_SYNONYMS = {
     "estimated_value": ("total assessment", "total assessed value", "current assessment", "assessed value", "total value"),
     "last_sale_date": ("transfer date", "deed date", "sale date", "last sale date"),
     "last_sale_price": ("consideration", "sale price", "transfer price"),
+    "county": ("county", "county name", "jurisdiction"),
+    "bedrooms": ("bedrooms", "bedroom count", "number of bedrooms"),
+    "bathrooms": ("bathrooms", "bathroom count", "number of bathrooms"),
+    "rooms": ("rooms", "total rooms", "room count"),
+    "year_built": ("year built", "construction year"),
+    "property_class": ("property class", "assessment class", "use class"),
+    "building_area_sqft": (
+        "building area", "building square feet", "living area", "gross living area",
+    ),
+    "lot_area_sqft": ("lot area", "lot square feet", "land square feet"),
 }
 
 _CORP_TOKENS = ("llc", "l.l.c", "inc", "incorporated", "corp", "co.", "company", "lp", "l.p", "partners", "holdings", "properties", "group", "ventures")
@@ -126,6 +137,7 @@ class MdSdatHarvester(PropertyHarvester):
         tenant_id: str,
         agent_id: str = "md-sdat-harvester",
         headless: bool = True,
+        cache=None,
     ):
         if not tenant_id:
             raise ValueError(
@@ -135,9 +147,12 @@ class MdSdatHarvester(PropertyHarvester):
         self.tenant_id = tenant_id
         self.agent_id = agent_id
         self.headless = headless
+        self._cache = cache
         self._limiter = _RateLimiter(MIN_REQUEST_INTERVAL, REQUEST_JITTER)
         self.metrics = {
             "state": STATE,  # required by firehose — results keyed on m["state"]
+            "source": "Maryland SDAT real property assessments",
+            "source_key": "md_sdat",
             "requests": 0,
             "retries": 0,
             "fetched": 0,    # CSV rows seen
@@ -149,7 +164,13 @@ class MdSdatHarvester(PropertyHarvester):
     # ------------------------------------------------------------------ #
     # Async core
     # ------------------------------------------------------------------ #
-    async def harvest(self, *, max_records: Optional[int] = None) -> dict:
+    async def harvest(
+        self,
+        *,
+        max_records: Optional[int] = None,
+        checkpoint: int = 0,
+        persist: bool = True,
+    ) -> dict:
         """Full pipeline: launch browser → resolve export → download CSV →
         parse → persist. Returns the metrics dict; also logs a summary."""
         try:
@@ -180,13 +201,19 @@ class MdSdatHarvester(PropertyHarvester):
                 raw = await self._fetch_csv(context, export_url)
                 self.metrics["fetched_bytes"] = len(raw)
 
-                records = self._parse_csv(raw, max_records=max_records)
+                records = self._parse_csv(
+                    raw,
+                    max_records=max_records,
+                    checkpoint=max(0, int(checkpoint or 0)),
+                )
                 logger.info(
                     "Parsed %d/%d rows into PropertyRecords (%d skipped)",
                     self.metrics["parsed"], self.metrics["fetched"], self.metrics["skipped"],
                 )
 
-                await self._persist(records)
+                self._records = records
+                if persist:
+                    await self._persist(records)
             finally:
                 await browser.close()
 
@@ -219,7 +246,21 @@ class MdSdatHarvester(PropertyHarvester):
                 href = f"{origin[0]}//{origin[2]}{href}"
             return href
 
-        return await self._with_retries(_nav, what="resolve export URL")
+        if self._cache is None:
+            from data_integrations.cache import get_integration_cache
+
+            self._cache = await get_integration_cache()
+
+        async def fetch_portal() -> dict:
+            return {"export_url": await self._with_retries(_nav, what="resolve export URL")}
+
+        cached = await self._cache.get_or_fetch(
+            "state_gis",
+            {"provider": "maryland_sdat", "operation": "resolve_export", "portal": SDAT_PORTAL_URL},
+            fetch_portal,
+            ttl=7 * 86_400,
+        )
+        return str(cached["export_url"])
 
     async def _fetch_csv(self, context, url: str) -> bytes:
         """Download the CSV through the browser's request context so we get HTTP
@@ -237,7 +278,22 @@ class MdSdatHarvester(PropertyHarvester):
                 raise RuntimeError(f"SDAT export returned HTTP {status}")
             return await resp.body()
 
-        return await self._with_retries(_get, what="download residential CSV")
+        if self._cache is None:
+            from data_integrations.cache import get_integration_cache
+
+            self._cache = await get_integration_cache()
+
+        async def fetch_export() -> dict:
+            raw = await self._with_retries(_get, what="download residential CSV")
+            return {"csv_base64": base64.b64encode(raw).decode("ascii")}
+
+        cached = await self._cache.get_or_fetch(
+            "state_gis",
+            {"provider": "maryland_sdat", "operation": "parcel_export", "url": url},
+            fetch_export,
+            ttl=7 * 86_400,
+        )
+        return base64.b64decode(cached["csv_base64"], validate=True)
 
     async def _with_retries(self, coro_factory, *, what: str):
         """Run `coro_factory()` with exponential backoff + jitter. Retries on
@@ -266,7 +322,13 @@ class MdSdatHarvester(PropertyHarvester):
     # ------------------------------------------------------------------ #
     # Parsing / mapping
     # ------------------------------------------------------------------ #
-    def _parse_csv(self, raw: bytes, *, max_records: Optional[int] = None) -> list[PropertyRecord]:
+    def _parse_csv(
+        self,
+        raw: bytes,
+        *,
+        max_records: Optional[int] = None,
+        checkpoint: int = 0,
+    ) -> list[PropertyRecord]:
         text = raw.decode("utf-8-sig", errors="replace")
         reader = csv.DictReader(io.StringIO(text))
         if not reader.fieldnames:
@@ -282,8 +344,14 @@ class MdSdatHarvester(PropertyHarvester):
             return []
 
         records: list[PropertyRecord] = []
-        for row in reader:
+        self.metrics["checkpoint_start"] = checkpoint
+        next_checkpoint = checkpoint
+        complete = True
+        for source_index, row in enumerate(reader):
+            if source_index < checkpoint:
+                continue
             self.metrics["fetched"] += 1
+            next_checkpoint = source_index + 1
             rec = self._map_row(row, colmap)
             if rec is None:
                 self.metrics["skipped"] += 1
@@ -291,7 +359,10 @@ class MdSdatHarvester(PropertyHarvester):
             records.append(rec)
             self.metrics["parsed"] += 1
             if max_records and len(records) >= max_records:
+                complete = False
                 break
+        self.metrics["checkpoint"] = None if complete else next_checkpoint
+        self.metrics["checkpoint_complete"] = complete
         return records
 
     def _build_colmap(self, headers: list[str]) -> dict[str, str]:
@@ -352,6 +423,15 @@ class MdSdatHarvester(PropertyHarvester):
             is_absentee_owner=is_absentee,
             distress_flags=distress,
             last_sale_date=g("last_sale_date") or None,
+            county=g("county") or None,
+            bedrooms=_to_float(g("bedrooms")) or None,
+            bathrooms=_to_float(g("bathrooms")) or None,
+            rooms=_to_float(g("rooms")) or None,
+            year_built=int(value) if (value := _to_float(g("year_built"))) >= 1600 else None,
+            property_class=g("property_class") or None,
+            last_sale_price=_to_float(g("last_sale_price")) or None,
+            building_area_sqft=_to_float(g("building_area_sqft")) or None,
+            lot_area_sqft=_to_float(g("lot_area_sqft")) or None,
         )
 
     @staticmethod
@@ -380,54 +460,15 @@ class MdSdatHarvester(PropertyHarvester):
         if not records:
             logger.info("No records to persist.")
             return 0
-
-        # Lazy: these transitively import FastAPI — keep the scraper importable
-        # without it. tenant_tx applies the RLS GUCs for this insert.
-        from tenancy import TenantContext, Role
-        from db.connection import tenant_tx
-
-        # PLATFORM_ADMIN: a platform-level firehose writes across the forest; the
-        # WITH CHECK policy passes on app_is_platform_admin(), and every row still
-        # carries an explicit tenant_id (FK-valid, NOT NULL).
-        ctx = TenantContext(agent_id=self.agent_id, tenant_id=self.tenant_id, role=Role.PLATFORM_ADMIN)
-
-        # Idempotent upsert on the leads UNIQUE(tenant_id, parcel_id) key (0018) —
-        # the 24h scheduler re-runs MD, so a plain INSERT threw UniqueViolation and
-        # dropped the whole batch. Re-harvests now refresh the row in place.
-        sql = (
-            "INSERT INTO leads (tenant_id, parcel_id, state, motivation_score, underwriting, payload) "
-            "VALUES ($1::uuid, $2, $3, $4, $5::jsonb, $6::jsonb) "
-            "ON CONFLICT (tenant_id, parcel_id) DO UPDATE SET "
-            "motivation_score = EXCLUDED.motivation_score, "
-            "underwriting = EXCLUDED.underwriting, "
-            "payload = EXCLUDED.payload, "
-            "updated_at = now()"
+        # Use the same strict payload contract as every other state.  This
+        # replaces the historical MD-only persistence path, which could drift
+        # from source provenance and cleanup rules used by the national run.
+        return await persist_leads(
+            self.tenant_id,
+            self.agent_id,
+            records,
+            metrics=self.metrics,
         )
-
-        total = 0
-        async with tenant_tx(ctx) as conn:
-            for start in range(0, len(records), BATCH_SIZE):
-                batch = records[start:start + BATCH_SIZE]
-                args = [
-                    (
-                        self.tenant_id,
-                        rec.parcel_id,
-                        rec.state,
-                        self._motivation_score(rec),
-                        json.dumps({
-                            "estimated_value": rec.estimated_value,
-                            "equity_percent": rec.equity_percent,
-                            "source": "md_sdat",
-                        }),
-                        json.dumps(asdict(rec)),
-                    )
-                    for rec in batch
-                ]
-                await conn.executemany(sql, args)
-                total += len(batch)
-                self.metrics["inserted"] = total
-                logger.info("Inserted batch %d–%d (%d/%d total)", start, start + len(batch), total, len(records))
-        return total
 
     # ------------------------------------------------------------------ #
     # PropertyHarvester ABC compliance

@@ -5,7 +5,7 @@ import logging
 import re
 import uuid
 from datetime import date, datetime, timezone
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field, field_validator
@@ -49,6 +49,42 @@ class ContractTemplate(BaseModel):
     version: str
     effective_date: Optional[date] = None
     download_url: Optional[str] = None
+
+
+class StateDocumentLibraryItem(BaseModel):
+    """A selectable state-specific contract or document reference.
+
+    The item intentionally carries metadata and source provenance only. It is
+    not an assertion that the platform may reproduce an association form.
+    """
+
+    item_id: str
+    state_code: str
+    kind: Literal["contract", "document"]
+    title: str
+    subtitle: str = ""
+    source_name: str
+    source_status: str
+    selection_status: str
+    version: Optional[str] = None
+    effective_date: Optional[date] = None
+    download_url: Optional[str] = None
+    citations: list[str] = Field(default_factory=list)
+    notes: Optional[str] = None
+    attorney_review_required: bool = True
+
+
+class StateDocumentLibrary(BaseModel):
+    """State selector payload for the contract and document library."""
+
+    state_code: str
+    state_name: str
+    regulatory_url: Optional[str] = None
+    attorney_review_required: bool
+    items: list[StateDocumentLibraryItem]
+    total_contracts: int
+    total_documents: int
+    source_note: str
 
 
 class AdvertisingRule(BaseModel):
@@ -444,4 +480,3 @@ class FormValidationResponse(BaseModel):
 # ---------------------------------------------------------------------------
 # Compliance Engine
 # ---------------------------------------------------------------------------
-

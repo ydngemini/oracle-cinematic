@@ -1,0 +1,29 @@
+.picker { display: flex; flex-direction: column; gap: var(--space-3); max-width: 58rem; padding: var(--space-4); border: 1px solid var(--oracle-border); border-radius: var(--radius-lg); background: var(--oracle-glass); }
+.heading { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-3); }
+.kicker { font-family: var(--font-display); font-size: .5625rem; font-weight: 700; letter-spacing: var(--tracking-wider); text-transform: uppercase; color: var(--oracle-amber-dim); }
+.heading h2 { margin-top: var(--space-1); font-family: var(--font-display); font-size: var(--text-sm); letter-spacing: var(--tracking-wider); text-transform: uppercase; color: var(--oracle-text); }
+.count { flex: 0 0 auto; padding: 2px 8px; border: 1px solid var(--oracle-border); border-radius: var(--radius-pill); font-family: var(--font-display); font-size: .5625rem; letter-spacing: var(--tracking-wide); text-transform: uppercase; color: var(--oracle-text-ghost); white-space: nowrap; }
+.selectLabel { display: flex; flex-direction: column; gap: var(--space-1); min-width: 0; }
+.selectRow { display: grid; grid-template-columns: minmax(13rem, .7fr) minmax(0, 1.5fr); gap: var(--space-3); min-width: 0; }
+.selectLabel > span { font-family: var(--font-display); font-size: .5625rem; font-weight: 600; letter-spacing: var(--tracking-wider); text-transform: uppercase; color: var(--oracle-text-ghost); }
+.selectLabel select { width: 100%; min-width: 0; min-height: 44px; padding: 0 var(--space-3); border: 1px solid var(--oracle-border-bright); border-radius: var(--radius-sm); background: var(--oracle-glass-hover); color: var(--oracle-text); font: inherit; }
+.selectLabel select:focus-visible, .actions button:focus-visible { outline: 2px solid var(--oracle-amber); outline-offset: 2px; }
+.selectLabel select:disabled { cursor: wait; color: var(--oracle-text-ghost); }
+.selection { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); padding-top: var(--space-3); border-top: 1px solid var(--oracle-border-subtle); }
+.selectionText { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.selectionText strong, .selectionText span, .selectionText small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.selectionText strong { color: var(--oracle-text-heading); font-size: var(--text-sm); }
+.selectionText span { color: var(--oracle-text-dim); font-size: var(--text-xs); }
+.selectionText small { color: var(--oracle-text-ghost); font-size: .625rem; }
+.accessNote { margin: var(--space-1) 0 0; color: var(--oracle-text-ghost); font-size: .625rem; line-height: var(--leading-normal); white-space: normal; }
+.actions { flex: 0 0 auto; display: flex; align-items: center; gap: var(--space-2); }
+.actions button { min-height: 36px; padding: 0 var(--space-3); border: 1px solid var(--oracle-amber-dim); border-radius: var(--radius-sm); background: var(--oracle-amber-ghost); color: var(--oracle-amber); font-family: var(--font-display); font-size: .5625rem; font-weight: 700; letter-spacing: var(--tracking-wider); text-transform: uppercase; }
+.actions button:hover:not(:disabled) { border-color: var(--oracle-amber); background: rgba(236, 171, 63, .14); }
+.actions .save { border-color: var(--oracle-border-bright); background: transparent; color: var(--oracle-text-dim); }
+.actions .save:hover:not(:disabled) { border-color: var(--oracle-amber-dim); color: var(--oracle-amber); }
+.actions button:disabled { cursor: wait; opacity: .6; }
+.note, .empty, .error { font-size: var(--text-xs); line-height: var(--leading-relaxed); color: var(--oracle-text-ghost); }
+.note { padding-top: var(--space-2); border-top: 1px solid var(--oracle-border-subtle); }
+.error { padding: var(--space-2) var(--space-3); border-left: 2px solid var(--oracle-red-dim); background: var(--oracle-glass); color: var(--oracle-text-dim); }
+.empty { padding: var(--space-3); border: 1px solid var(--oracle-border-subtle); border-radius: var(--radius-md); }
+@media (max-width: 560px) { .selectRow { grid-template-columns: 1fr; } .selection { align-items: flex-start; flex-direction: column; } .actions { width: 100%; } .actions button { flex: 1; } }

@@ -63,11 +63,22 @@ async def get_demographics_by_zip(zip_code: str) -> Optional[dict]:
     url = f"{_BASE_URL}/{_ACS_DATASET}?{urllib.parse.urlencode(params)}"
 
     try:
-        req = urllib.request.Request(url)
-        raw = await asyncio.to_thread(
-            lambda: urllib.request.urlopen(req, timeout=15).read().decode()
+        from data_integrations.cache import cached_external
+
+        async def fetch_upstream() -> dict:
+            req = urllib.request.Request(url)
+            raw = await asyncio.to_thread(
+                lambda: urllib.request.urlopen(req, timeout=15).read().decode()
+            )
+            return {"rows": json.loads(raw)}
+
+        payload = await cached_external(
+            "census_acs",
+            {"dataset": _ACS_DATASET, "geography": "zip", "zip": zip_code},
+            fetch_upstream,
+            ttl=365 * 86_400,
         )
-        data = json.loads(raw)
+        data = payload.get("rows") or []
         if len(data) < 2:
             return None
 
@@ -108,11 +119,27 @@ async def get_demographics_by_state_county(state_fips: str, county_fips: str) ->
     url = f"{_BASE_URL}/{_ACS_DATASET}?{urllib.parse.urlencode(params)}"
 
     try:
-        req = urllib.request.Request(url)
-        raw = await asyncio.to_thread(
-            lambda: urllib.request.urlopen(req, timeout=15).read().decode()
+        from data_integrations.cache import cached_external
+
+        async def fetch_upstream() -> dict:
+            req = urllib.request.Request(url)
+            raw = await asyncio.to_thread(
+                lambda: urllib.request.urlopen(req, timeout=15).read().decode()
+            )
+            return {"rows": json.loads(raw)}
+
+        payload = await cached_external(
+            "census_acs",
+            {
+                "dataset": _ACS_DATASET,
+                "geography": "county",
+                "state_fips": state_fips,
+                "county_fips": county_fips,
+            },
+            fetch_upstream,
+            ttl=365 * 86_400,
         )
-        data = json.loads(raw)
+        data = payload.get("rows") or []
         if len(data) < 2:
             return None
 

@@ -49,19 +49,20 @@ export function AnimatedText({ text, className, delay = 0, stagger = 0.03, as: T
       initial="hidden"
       whileInView="visible"
       viewport={{ once: true }}
-      className={clsx('flex flex-wrap', className)}
       style={{ perspective: '1000px' }}
     >
-      {words.map((word, i) => (
-        <motion.span
-          key={i}
-          variants={child}
-          className="inline-block mr-[0.3em]"
-          style={{ transformOrigin: 'bottom' }}
-        >
-          <Tag className="inline">{word}</Tag>
-        </motion.span>
-      ))}
+      <Tag className={clsx('flex flex-wrap', className)}>
+        {words.map((word, i) => (
+          <motion.span
+            key={i}
+            variants={child}
+            className="inline-block mr-[0.3em]"
+            style={{ transformOrigin: 'bottom' }}
+          >
+            {word}
+          </motion.span>
+        ))}
+      </Tag>
     </motion.div>
   )
 }

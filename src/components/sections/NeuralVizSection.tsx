@@ -13,7 +13,10 @@ const NeuralNetwork = dynamic(
 
 export function NeuralVizSection() {
   return (
-    <section className="relative py-32 px-6 md:px-12 overflow-hidden">
+    <section
+      className="relative py-32 px-6 md:px-12 overflow-hidden"
+      data-testid="neural-visualization"
+    >
       <div className="absolute inset-0 bg-gradient-to-b from-void via-obsidian/50 to-void" />
 
       <div className="relative max-w-7xl mx-auto">

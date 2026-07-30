@@ -25,6 +25,7 @@ from pydantic import BaseModel, Field, field_validator
 from db.connection import tenant_tx
 from tenancy import TenantContext, require_context
 import ws_hub
+from mls_enrichment import MLS_OVERLAY_SELECT, clean_mls_overlay
 
 logger = logging.getLogger("oracle.lead_dossier")
 
@@ -76,7 +77,8 @@ async def get_dossier(
                 """
                 SELECT parcel_id, state, motivation_score, underwriting, payload,
                        dossier_status, contract_execution_date, contract_expires_at,
-                       marketing_payload, marketing_generated_at, acquisition_entity
+                       marketing_payload, marketing_generated_at, acquisition_entity,
+                       """ + MLS_OVERLAY_SELECT + """
                   FROM leads WHERE id = $1
                 """,
                 lead_id,
@@ -114,6 +116,7 @@ async def get_dossier(
         "marketing_generated_at": row["marketing_generated_at"].isoformat()
             if row["marketing_generated_at"] else None,
         "acquisition_entity": _jsonb(row["acquisition_entity"]) or None,
+        "mls_overlay": clean_mls_overlay(row["mls_overlay"]),
         "interactions": [
             {
                 "actor_role": l["actor_role"],

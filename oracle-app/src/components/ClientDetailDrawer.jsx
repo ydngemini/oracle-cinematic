@@ -1,21 +1,22 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { crmGet, crmPost, crmPatch, crmDelete } from '../state/useCrmApi';
+import { crmGet, crmPost, crmPatch } from '../state/useCrmApi';
 import {
   GLYPHS, STAGES, stageLabel, normStage, normalizeType, clampScore,
-  relTime, fmtDate, prefChipsOf, errMessage, shortDollars, toNum, fmtInt,
-  Avatar, ScoreMeter,
+  relTime, fmtDate, prefChipsOf, errMessage, fmtInt,
+  PORTAL_LINK_KINDS, PORTAL_ASSET_SCOPES, portalKindLabel, portalScopeLabel,
+  defaultPortalAssetScope, Avatar, ScoreMeter,
 } from './ClientShared';
 import ClientTimeline from './ClientTimeline';
-import ClientTaskList from './ClientTaskList';
 import ClientNotes from './ClientNotes';
+import StateDocumentChecklist from './StateDocumentChecklist';
+import { useAssistantRecord } from './AssistantContext';
 import styles from './ClientDetailDrawer.module.css';
 
 const SUBTABS = [
   { id: 'overview', label: 'Overview' },
   { id: 'timeline', label: 'Timeline' },
-  { id: 'tasks', label: 'Tasks' },
   { id: 'notes', label: 'Notes' },
-  { id: 'houses', label: 'Houses' },
+  { id: 'documents', label: 'Documents' },
   { id: 'dossier', label: 'Dossier' },
 ];
 
@@ -57,10 +58,10 @@ function InlineEdit({ value, placeholder, onCommit, className, ariaLabel }) {
 /**
  * ClientDetailDrawer — the full client sheet. Receives the list card as a seed
  * (real data already in hand), then deep-fetches GET /clients/{id}. Header
- * controls stage / score / tags / assignee / identity (all PATCH /clients/{id}),
+ * controls stage / score / assignee / identity (all PATCH /clients/{id}),
  * and the sub-tabs own their own data + graceful states. Keyboard-dismissable.
  */
-export default function ClientDetailDrawer({ card, onClose, onClientChanged, getListings }) {
+export default function ClientDetailDrawer({ card, onClose, onClientChanged }) {
   const clientId = card?.id;
   const [detail, setDetail] = useState(card);   // seed with the row we already have
   const [loadErr, setLoadErr] = useState(null);
@@ -69,6 +70,10 @@ export default function ClientDetailDrawer({ card, onClose, onClientChanged, get
   const [tlKey, setTlKey] = useState(0);
   const sheetRef = useRef(null);
   const scoreTimer = useRef(null);
+  const onCloseRef = useRef(onClose);
+  useAssistantRecord('client', clientId, detail?.full_name || card?.full_name || 'Client', detail?.stage || '');
+
+  useEffect(() => { onCloseRef.current = onClose; }, [onClose]);
 
   // Deep-fetch full detail; merge over the seed so nothing flickers to empty.
   useEffect(() => {
@@ -86,13 +91,45 @@ export default function ClientDetailDrawer({ card, onClose, onClientChanged, get
     return () => { live = false; };
   }, [clientId]);
 
-  // Esc to dismiss + focus the sheet on open.
+  // Treat the sheet as a real modal: focus enters on open, cannot tab behind
+  // the scrim, Escape dismisses, and the opener regains focus on close.
   useEffect(() => {
-    const onKey = (e) => { if (e.key === 'Escape') onClose(); };
+    const previouslyFocused = document.activeElement;
+    const onKey = (e) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        onCloseRef.current?.();
+        return;
+      }
+      if (e.key !== 'Tab') return;
+      const focusable = [...(sheetRef.current?.querySelectorAll(
+        'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+      ) ?? [])];
+      if (focusable.length === 0) {
+        e.preventDefault();
+        sheetRef.current?.focus();
+        return;
+      }
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (!sheetRef.current?.contains(document.activeElement)) {
+        e.preventDefault();
+        (e.shiftKey ? last : first).focus();
+      } else if (e.shiftKey && document.activeElement === first) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && document.activeElement === last) {
+        e.preventDefault();
+        first.focus();
+      }
+    };
     window.addEventListener('keydown', onKey);
     if (sheetRef.current) sheetRef.current.focus();
-    return () => window.removeEventListener('keydown', onKey);
-  }, [onClose]);
+    return () => {
+      window.removeEventListener('keydown', onKey);
+      previouslyFocused?.focus?.({ preventScroll: true });
+    };
+  }, [clientId]);
 
   useEffect(() => () => { if (scoreTimer.current) clearTimeout(scoreTimer.current); }, []);
 
@@ -124,31 +161,6 @@ export default function ClientDetailDrawer({ card, onClose, onClientChanged, get
     );
   }, [clientId, detail, onClientChanged, bumpTimeline]);
 
-  // ── Tags ───────────────────────────────────────────────────────────────
-  const [tagDraft, setTagDraft] = useState('');
-  const tags = Array.isArray(detail?.tags) ? detail.tags : [];
-  const addTag = () => {
-    const t = tagDraft.trim().toLowerCase();
-    if (!t || tags.includes(t)) { setTagDraft(''); return; }
-    setTagDraft('');
-    const optimistic = { ...detail, tags: [...tags, t] };
-    setDetail(optimistic);
-    onClientChanged?.(optimistic);
-    crmPost(`/api/crm/clients/${clientId}/tags`, { tag: t }).then(
-      (data) => { if (Array.isArray(data?.tags)) { const m = { ...optimistic, tags: data.tags }; setDetail(m); onClientChanged?.(m); } bumpTimeline(); },
-      (err) => { setDetail(detail); onClientChanged?.(detail); flashToast(errMessage(err, 'tags')); }
-    );
-  };
-  const removeTag = (t) => {
-    const optimistic = { ...detail, tags: tags.filter((x) => x !== t) };
-    setDetail(optimistic);
-    onClientChanged?.(optimistic);
-    crmDelete(`/api/crm/clients/${clientId}/tags/${encodeURIComponent(t)}`).then(
-      (data) => { if (Array.isArray(data?.tags)) { const m = { ...optimistic, tags: data.tags }; setDetail(m); onClientChanged?.(m); } },
-      (err) => { setDetail(detail); onClientChanged?.(detail); flashToast(errMessage(err, 'tags')); }
-    );
-  };
-
   // ── Score stepper (debounced commit) ─────────────────────────────────────
   const score = clampScore(detail?.lead_score);
   const nudgeScore = (delta) => {
@@ -163,9 +175,7 @@ export default function ClientDetailDrawer({ card, onClose, onClientChanged, get
   const stage = normStage(detail?.stage);
   const prefChips = prefChipsOf(detail?.preferences);
   const houses = Array.isArray(detail?.houses) ? detail.houses : [];
-  const showings = Array.isArray(detail?.showings) ? detail.showings : [];
   const notesCount = Array.isArray(detail?.notes) ? detail.notes.length : null;
-  const openTasks = toNum(detail?.open_tasks);
 
   return (
     <div className={styles.layer}>
@@ -238,24 +248,6 @@ export default function ClientDetailDrawer({ card, onClose, onClientChanged, get
             </div>
           </div>
 
-          {/* Tags editor */}
-          <div className={styles.tagsEditor}>
-            {tags.map((t) => (
-              <span key={t} className={styles.tagEdit}>
-                #{t}
-                <button type="button" className={styles.tagX} aria-label={`Remove tag ${t}`} onClick={() => removeTag(t)}>{GLYPHS.close}</button>
-              </span>
-            ))}
-            <input
-              className={styles.tagAdd}
-              value={tagDraft}
-              onChange={(e) => setTagDraft(e.target.value)}
-              onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addTag(); } }}
-              onBlur={addTag}
-              placeholder="+ tag"
-              aria-label="Add tag"
-            />
-          </div>
         </header>
 
         {toast && (
@@ -268,9 +260,7 @@ export default function ClientDetailDrawer({ card, onClose, onClientChanged, get
         <nav className={styles.subnav} role="tablist" aria-label="Client sections">
           {SUBTABS.map((s) => {
             let count = null;
-            if (s.id === 'tasks' && openTasks !== null) count = openTasks;
             if (s.id === 'notes' && notesCount !== null) count = notesCount;
-            if (s.id === 'houses' && houses.length) count = houses.length;
             return (
               <button
                 key={s.id}
@@ -290,27 +280,15 @@ export default function ClientDetailDrawer({ card, onClose, onClientChanged, get
         {/* ── Body ───────────────────────────────────────────────────────── */}
         <div className={styles.body}>
           {tab === 'overview' && (
-            <OverviewPane detail={detail} loadErr={loadErr} prefChips={prefChips} openTasks={openTasks} houses={houses} applyPatch={applyPatch} />
+            <OverviewPane detail={detail} loadErr={loadErr} prefChips={prefChips} houses={houses} applyPatch={applyPatch} />
           )}
           {tab === 'timeline' && <ClientTimeline clientId={clientId} reloadKey={tlKey} />}
-          {tab === 'tasks' && <ClientTaskList clientId={clientId} onChange={bumpTimeline} />}
           {tab === 'notes' && <ClientNotes clientId={clientId} onChange={bumpTimeline} />}
-          {tab === 'houses' && (
-            <HousesPane
-              detail={detail}
-              houses={houses}
-              showings={showings}
-              getListings={getListings}
-              onShowingLogged={(listing) => {
-                setDetail((d) => {
-                  const hs = Array.isArray(d.houses) ? d.houses : [];
-                  if (hs.some((h) => h.id === listing.id)) return d;
-                  const next = { ...d, houses: [...hs, { id: listing.id, address: listing.address, kind: 'listing', lead_id: listing.lead_id || null }] };
-                  onClientChanged?.(next);
-                  return next;
-                });
-                bumpTimeline();
-              }}
+          {tab === 'documents' && (
+            <StateDocumentChecklist
+              clientId={clientId}
+              stateCode={detail?.state_code || detail?.preferences?.state || 'DE'}
+              compact
             />
           )}
           {tab === 'dossier' && <DossierLinksPane detail={detail} houses={houses} />}
@@ -319,16 +297,6 @@ export default function ClientDetailDrawer({ card, onClose, onClientChanged, get
     </div>
   );
 }
-
-const DOSSIER_SCOPE_LABELS = {
-  summary: 'Property summary',
-  media: 'Media',
-  milestones: 'Milestones',
-  title_summary: 'Preliminary title summary',
-  zoning_summary: 'Zoning summary',
-  underwriting: 'Underwriting trace',
-  documents: 'Approved documents',
-};
 
 function DossierLinksPane({ detail, houses }) {
   const leadHouses = houses
@@ -341,10 +309,7 @@ function DossierLinksPane({ detail, houses }) {
   const [created, setCreated] = useState(null);
   const [kind, setKind] = useState('seller');
   const [expiryDays, setExpiryDays] = useState(7);
-  const [scope, setScope] = useState({
-    summary: true, media: true, milestones: true, title_summary: false,
-    zoning_summary: false, underwriting: false, documents: false,
-  });
+  const [scope, setScope] = useState(defaultPortalAssetScope);
 
   const load = useCallback(() => {
     if (!leadId) return Promise.resolve().then(() => setLinks([]));
@@ -400,8 +365,7 @@ function DossierLinksPane({ detail, houses }) {
             <label className={styles.field}>
               <span className={styles.microLabel}>Audience</span>
               <select className={styles.input} value={kind} onChange={(event) => setKind(event.target.value)}>
-                <option value="seller">Seller</option>
-                <option value="joint_venture">Joint venture</option>
+                {PORTAL_LINK_KINDS.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
               </select>
             </label>
             <label className={styles.field}>
@@ -413,10 +377,10 @@ function DossierLinksPane({ detail, houses }) {
           </div>
           <fieldset className={styles.scopeFieldset}>
             <legend>Read-only assets</legend>
-            {Object.entries(DOSSIER_SCOPE_LABELS).map(([key, text]) => (
-              <label key={key}>
-                <input type="checkbox" checked={Boolean(scope[key])} onChange={(event) => setScope((current) => ({ ...current, [key]: event.target.checked }))} />
-                <span>{text}</span>
+            {PORTAL_ASSET_SCOPES.map((item) => (
+              <label key={item.id}>
+                <input type="checkbox" checked={Boolean(scope[item.id])} onChange={(event) => setScope((current) => ({ ...current, [item.id]: event.target.checked }))} />
+                <span>{item.label}</span>
               </label>
             ))}
           </fieldset>
@@ -444,10 +408,10 @@ function DossierLinksPane({ detail, houses }) {
           <ul className={styles.portalLinks}>
             {links.map((link) => {
               const active = link.active === true;
-              const scopes = Object.entries(link.asset_scope || {}).filter(([, enabled]) => enabled).map(([key]) => DOSSIER_SCOPE_LABELS[key] || key);
+              const scopes = Object.entries(link.asset_scope || {}).filter(([, enabled]) => enabled).map(([key]) => portalScopeLabel(key));
               return (
                 <li key={link.id}>
-                  <div><strong>{link.link_kind === 'joint_venture' ? 'Joint venture' : 'Seller'} dossier</strong><small>{active ? `Expires ${fmtDate(link.access_expires_at)}` : link.revoked_at ? 'Revoked' : 'Expired'} · {link.access_count || 0} views</small><small>{scopes.join(' · ')}</small></div>
+                  <div><strong>{portalKindLabel(link.link_kind)} dossier</strong><small>{active ? `Expires ${fmtDate(link.access_expires_at)}` : link.revoked_at ? 'Revoked' : 'Expired'} · {link.access_count || 0} views</small><small>{scopes.join(' · ')}</small></div>
                   {active && <button type="button" onClick={() => revoke(link.id)} disabled={busy}>Revoke</button>}
                 </li>
               );
@@ -480,11 +444,11 @@ function InlineAssignee({ value, onCommit }) {
 }
 
 // ── Overview pane ─────────────────────────────────────────────────────────
-function OverviewPane({ detail, loadErr, prefChips, openTasks, houses, applyPatch }) {
+function OverviewPane({ detail, loadErr, prefChips, houses, applyPatch }) {
   const [contact, setContact] = useState({ email: detail?.email || '', phone: detail?.phone || '' });
   // Re-sync editable contact fields when the underlying record changes —
   // render-phase reset, not an effect (avoids the setState-in-effect cascade).
-  const contactSig = `${detail?.email || ''} ${detail?.phone || ''}`;
+  const contactSig = `${detail?.email || ''}${detail?.phone || ''}`;
   const [prevContactSig, setPrevContactSig] = useState(contactSig);
   if (contactSig !== prevContactSig) {
     setPrevContactSig(contactSig);
@@ -504,8 +468,7 @@ function OverviewPane({ detail, loadErr, prefChips, openTasks, houses, applyPatc
       )}
 
       <div className={styles.statRow}>
-        <div className={styles.stat}><span className={styles.statNum}>{openTasks === null ? '—' : openTasks}</span><span className={styles.statLabel}>Open Tasks</span></div>
-        <div className={styles.stat}><span className={styles.statNum}>{houses.length}</span><span className={styles.statLabel}>Houses</span></div>
+        <div className={styles.stat}><span className={styles.statNum}>{houses.length}</span><span className={styles.statLabel}>Properties</span></div>
         <div className={styles.stat}><span className={styles.statNum}>{relTime(detail?.last_contacted_at || detail?.last_touch?.created_at) || '—'}</span><span className={styles.statLabel}>Last Contact</span></div>
       </div>
 
@@ -539,82 +502,6 @@ function OverviewPane({ detail, loadErr, prefChips, openTasks, houses, applyPatc
           <div className={styles.dataRow}><span className={styles.dataKey}>Last Contact</span><span className={styles.dataVal}>{fmtDate(detail?.last_contacted_at) || relTime(detail?.last_touch?.created_at) || '—'}</span></div>
         </div>
       </div>
-    </div>
-  );
-}
-
-// ── Houses & showings pane (reuses the book's listing-picker idiom) ─────────
-function HousesPane({ houses, getListings, onShowingLogged, detail }) {
-  const [picker, setPicker] = useState(null); // {status, listings, error, postingId, postError}
-  const clientId = detail?.id;
-
-  const open = () => {
-    if (picker) { setPicker(null); return; }
-    setPicker({ status: 'loading', listings: [], error: '', postingId: null, postError: '' });
-    getListings().then(
-      (rows) => setPicker((p) => (p ? { ...p, status: 'ready', listings: rows } : p)),
-      (err) => setPicker((p) => (p ? { ...p, status: 'error', error: errMessage(err, 'listings') } : p))
-    );
-  };
-
-  const logShowing = (listing) => {
-    setPicker((p) => (p ? { ...p, postingId: listing.id, postError: '' } : p));
-    crmPost('/api/crm/showings', { client_id: clientId, listing_id: listing.id, outcome: 'pending' }).then(
-      () => { onShowingLogged(listing); setPicker(null); },
-      (err) => setPicker((p) => (p ? { ...p, postingId: null, postError: errMessage(err, 'showings') } : p))
-    );
-  };
-
-  return (
-    <div>
-      {houses.length === 0 ? (
-        <div className={styles.empty}>
-          <span aria-hidden="true">{GLYPHS.house}</span>
-          <p className={styles.emptyText}>No houses linked yet. Log a showing to attach a listing.</p>
-        </div>
-      ) : (
-        <div className={styles.houseList}>
-          {houses.map((h, i) => (
-            <div key={h.id ?? `${h.address}-${i}`} className={styles.houseItem} data-kind={h.kind === 'lead' ? 'lead' : 'listing'}>
-              {GLYPHS.house}
-              <span className={styles.houseAddr}>{h.address || 'Address pending'}</span>
-              <span className={styles.houseKind}>{h.kind === 'lead' ? 'Lead' : 'Listing'}</span>
-            </div>
-          ))}
-        </div>
-      )}
-
-      <button type="button" className={styles.logBtn} aria-expanded={!!picker} onClick={open}>
-        {GLYPHS.eye}{picker ? 'Close' : 'Log Showing'}
-      </button>
-
-      {picker && (
-        <div className={styles.picker}>
-          <span className={styles.pickerLabel}>Pick the listing shown</span>
-          {picker.status === 'loading' && (
-            <div className={styles.bodySkel} aria-hidden="true"><div className={styles.skelBar} /><div className={styles.skelBar} /></div>
-          )}
-          {picker.status === 'error' && (
-            <div className={styles.errorStrip} role="alert"><span className={styles.errorTick} aria-hidden="true" /><p className={styles.errorText}>{picker.error}</p></div>
-          )}
-          {picker.status === 'ready' && picker.listings.length === 0 && (
-            <p className={styles.emptyText}>No listings on file — stage a house first.</p>
-          )}
-          {picker.status === 'ready' && picker.listings.map((l, i) => {
-            const seen = houses.some((h) => h.id === l.id);
-            const posting = picker.postingId === l.id;
-            const price = toNum(l.price);
-            return (
-              <button key={l.id ?? `${l.address}-${i}`} type="button" className={styles.pickRow} disabled={seen || picker.postingId !== null} onClick={() => logShowing(l)}>
-                {GLYPHS.house}
-                <span className={styles.pickAddr}>{l.address || 'Address pending'}</span>
-                <span className={styles.pickMeta}>{posting ? 'Logging…' : seen ? 'Seen' : price !== null ? shortDollars(price) : ''}</span>
-              </button>
-            );
-          })}
-          {picker.postError && <span className={styles.err} role="alert">{picker.postError}</span>}
-        </div>
-      )}
     </div>
   );
 }

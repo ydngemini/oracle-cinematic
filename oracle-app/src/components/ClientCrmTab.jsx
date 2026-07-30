@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { crmGet, crmPost } from '../state/useCrmApi';
 import {
   GLYPHS, CLIENT_TYPES, STAGES, SORTS, fmtInt, normalizeType,
-  relTime, errMessage, toNum, Avatar, StagePill, ScoreMeter, TagList,
+  relTime, errMessage, toNum, Avatar, StagePill, ScoreMeter,
 } from './ClientShared';
 import ClientDetailDrawer from './ClientDetailDrawer';
 import styles from './ClientCrmTab.module.css';
@@ -10,9 +10,9 @@ import styles from './ClientCrmTab.module.css';
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const EMPTY_FORM = {
   full_name: '', email: '', phone: '', client_type: 'seller', stage: 'lead',
-  company: '', tags: '', budget: '', beds: '', zips: '',
+  company: '', budget: '', beds: '', zips: '',
 };
-const DEFAULT_FILTERS = { q: '', type: 'all', stage: '', tag: '', sort: 'recent' };
+const DEFAULT_FILTERS = { q: '', type: 'all', stage: '', sort: 'recent' };
 
 function buildQuery(f) {
   const p = new URLSearchParams();
@@ -20,12 +20,10 @@ function buildQuery(f) {
   p.set('sort', f.sort || 'recent');
   if (f.q) p.set('q', f.q);
   if (f.stage) p.set('stage', f.stage);
-  if (f.tag) p.set('tag', f.tag);
   return `/api/crm/clients?${p.toString()}`;
 }
 
 const BULK_ACTIONS = [
-  { id: 'tag', label: 'Tag', glyph: GLYPHS.tag, needs: 'text', placeholder: 'tag name' },
   { id: 'stage', label: 'Stage', glyph: GLYPHS.bolt, needs: 'stage' },
   { id: 'assign', label: 'Assign', glyph: GLYPHS.assign, needs: 'text', placeholder: 'agent id' },
   { id: 'archive', label: 'Archive', glyph: GLYPHS.archive, needs: null },
@@ -63,7 +61,6 @@ export default function ClientCrmTab() {
 
   const [drawerCard, setDrawerCard] = useState(null);
 
-  const listingsCache = useRef(null);
   const filterKey = JSON.stringify(filters);
 
   // Debounce the search box into filters.q (clears any active segment).
@@ -133,7 +130,6 @@ export default function ClientCrmTab() {
 
   const toggleType = (id) => patchFilter({ type: filters.type === id ? 'all' : id });
   const toggleStage = (id) => patchFilter({ stage: filters.stage === id ? '' : id });
-  const toggleTag = (t) => patchFilter({ tag: filters.tag === t ? '' : t });
   const setSort = (id) => patchFilter({ sort: id }, { clearSeg: false });
 
   const applySegment = (seg) => {
@@ -144,7 +140,6 @@ export default function ClientCrmTab() {
       q: d.q || '',
       type: d.type || 'all',
       stage: d.stage || '',
-      tag: d.tag || '',
       sort: d.sort || 'recent',
     });
   };
@@ -163,14 +158,6 @@ export default function ClientCrmTab() {
       () => {}
     );
   };
-
-  // ── Tag universe for the tag filter row ──────────────────────────────────
-  const tagUniverse = useMemo(() => {
-    const set = new Set();
-    (clients || []).forEach((c) => (Array.isArray(c.tags) ? c.tags : []).forEach((t) => t && set.add(t)));
-    if (filters.tag) set.add(filters.tag);
-    return [...set].sort().slice(0, 14);
-  }, [clients, filters.tag]);
 
   // ── Selection / bulk ─────────────────────────────────────────────────────
   const toggleSelect = (id) => setSelected((sel) => {
@@ -206,16 +193,6 @@ export default function ClientCrmTab() {
     );
   };
 
-  // ── Shared listings (for the drawer's showing picker) ────────────────────
-  const getListings = useCallback(() => {
-    if (!listingsCache.current) {
-      const p = crmGet('/api/crm/listings').then((d) => (Array.isArray(d?.listings) ? d.listings : []));
-      p.catch(() => { if (listingsCache.current === p) listingsCache.current = null; });
-      listingsCache.current = p;
-    }
-    return listingsCache.current;
-  }, []);
-
   // Drawer pushes header edits back into the row in place.
   const onClientChanged = useCallback((card) => {
     if (!card?.id) return;
@@ -241,8 +218,6 @@ export default function ClientCrmTab() {
     if (email) body.email = email;
     if (form.phone.trim()) body.phone = form.phone.trim();
     if (form.company.trim()) body.company = form.company.trim();
-    const tags = form.tags.split(/[,\n]+/).map((t) => t.trim().toLowerCase()).filter(Boolean);
-    if (tags.length) body.tags = tags;
     const prefs = {};
     const budget = toNum(form.budget.trim());
     if (budget !== null) prefs.budget = budget;
@@ -276,15 +251,20 @@ export default function ClientCrmTab() {
         <span className={styles.kicker}>
           Client Book{total !== null && <span className={styles.kickerCount}> · {fmtInt.format(total)}</span>}
         </span>
-        <button
-          type="button"
-          className={`${styles.refreshBtn} ${refreshing ? styles.refreshing : ''}`}
-          onClick={refresh}
-          disabled={refreshing || isLoading}
-          aria-label="Refresh client book"
-        >
-          {GLYPHS.refresh}
-        </button>
+        <div className={styles.topActions}>
+          <button type="button" className={styles.newProfileBtn} onClick={openSheet}>
+            {GLYPHS.plus} New profile
+          </button>
+          <button
+            type="button"
+            className={`${styles.refreshBtn} ${refreshing ? styles.refreshing : ''}`}
+            onClick={refresh}
+            disabled={refreshing || isLoading}
+            aria-label="Refresh client book"
+          >
+            {GLYPHS.refresh}
+          </button>
+        </div>
       </header>
 
       {/* Search + sort */}
@@ -328,15 +308,6 @@ export default function ClientCrmTab() {
           </button>
         ))}
       </div>
-
-      {/* Tag filter chips */}
-      {tagUniverse.length > 0 && (
-        <div className={styles.chipScroll} role="group" aria-label="Filter by tag">
-          {tagUniverse.map((t) => (
-            <button key={t} type="button" className={styles.chipTag} aria-pressed={filters.tag === t} onClick={() => toggleTag(t)}>#{t}</button>
-          ))}
-        </div>
-      )}
 
       {/* Saved segments */}
       {segmentsOnline && (
@@ -441,10 +412,10 @@ export default function ClientCrmTab() {
             <div className={styles.empty}>
               <span className={styles.emptyGlyph} aria-hidden="true">{GLYPHS.clients}</span>
               <p className={styles.emptyTitle}>
-                {filters.q || filters.stage || filters.tag || filters.type !== 'all' ? 'No matches' : 'No clients yet'}
+                {filters.q || filters.stage || filters.type !== 'all' ? 'No matches' : 'No clients yet'}
               </p>
               <p className={styles.emptyHint}>
-                {filters.q || filters.stage || filters.tag || filters.type !== 'all'
+                {filters.q || filters.stage || filters.type !== 'all'
                   ? 'Loosen the filters, or tap + to add a client.'
                   : 'Tap + to create your first client profile — the roster fills the pipeline.'}
               </p>
@@ -483,9 +454,6 @@ export default function ClientCrmTab() {
                         </span>
                         {(c.company || c.email) && (
                           <span className={styles.rowSub}>{c.company || c.email}</span>
-                        )}
-                        {Array.isArray(c.tags) && c.tags.length > 0 && (
-                          <span className={styles.rowTags}><TagList tags={c.tags} max={3} /></span>
                         )}
                         <span className={styles.rowFoot}>
                           {toNum(c.lead_score) !== null && <span className={styles.rowMeterWrap}><ScoreMeter score={c.lead_score} /></span>}
@@ -565,11 +533,6 @@ export default function ClientCrmTab() {
               </label>
             </div>
 
-            <label className={styles.field}>
-              <span className={styles.microLabel}>Tags · Comma separated</span>
-              <input className={styles.input} value={form.tags} onChange={(e) => setField('tags', e.target.value)} placeholder="cash, motivated, probate" />
-            </label>
-
             <div className={styles.formSection}>
               <span className={styles.sectionLabel}>Preferences</span>
               <div className={styles.fieldGrid}>
@@ -602,7 +565,6 @@ export default function ClientCrmTab() {
           card={drawerCard}
           onClose={() => setDrawerCard(null)}
           onClientChanged={onClientChanged}
-          getListings={getListings}
         />
       )}
     </section>

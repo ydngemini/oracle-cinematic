@@ -10,6 +10,8 @@ city data stays auto-updating without a brute-force hourly full re-scrape:
     source portals, never a full national reload every hour.
   * Cheap tasks (coverage snapshot) run every tick, so there is always a fresh
     freshness signal within the hour.
+  * A bounded payload-normalization job upgrades legacy public lead rows to the
+    provenance-first schema without fetching or fabricating any new facts.
 
 Per-source rate limiting + circuit breakers already live in harvesters/base.py
 and data_integrations/scheduler.py — this module only decides WHEN to run.
@@ -33,7 +35,7 @@ import json
 import logging
 import os
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass, field
 from typing import Awaitable, Callable, Optional
 
@@ -96,7 +98,51 @@ class PeriodicScheduler:
 
         async def handler(payload: dict, reporter) -> dict:
             await reporter.progress(5, f"{task.name}: starting")
-            result = await task.run()
+            # A national cleanup or a slow public portal can legitimately run
+            # longer than the durable-job lease. Keep the lease alive while the
+            # task is executing so a second worker cannot duplicate it midway.
+            lease_seconds = max(30, int(os.getenv("ORACLE_JOB_LEASE_SECONDS", "120")))
+            heartbeat_seconds = max(10, min(60, lease_seconds // 3))
+
+            async def heartbeat() -> None:
+                while True:
+                    await asyncio.sleep(heartbeat_seconds)
+                    await reporter.progress(5, f"{task.name}: working")
+
+            heartbeat_task = asyncio.create_task(
+                heartbeat(), name=f"periodic-heartbeat-{task.name}"
+            )
+            work_task = asyncio.create_task(
+                task.run(), name=f"periodic-work-{task.name}"
+            )
+            try:
+                done, _pending = await asyncio.wait(
+                    {work_task, heartbeat_task},
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if heartbeat_task in done:
+                    heartbeat_error = heartbeat_task.exception()
+                    if heartbeat_error is not None:
+                        work_task.cancel()
+                        try:
+                            await work_task
+                        except asyncio.CancelledError:
+                            pass
+                        raise heartbeat_error
+                    raise RuntimeError(f"{task.name}: heartbeat ended unexpectedly")
+                result = await work_task
+            finally:
+                if not work_task.done():
+                    work_task.cancel()
+                    try:
+                        await work_task
+                    except asyncio.CancelledError:
+                        pass
+                heartbeat_task.cancel()
+                try:
+                    await heartbeat_task
+                except asyncio.CancelledError:
+                    pass
             await reporter.progress(95, f"{task.name}: finalizing")
             return result if isinstance(result, dict) else {"result": str(result)}
 
@@ -254,21 +300,169 @@ async def _parcel_harvest_task() -> dict:
     firehose = MultiStateFirehose(tenant, agent_id="periodic-harvest")
     result = await firehose.run(max_records_per_state=cap, concurrency=2)
     totals = result.get("totals", {})
-    return {"states": len(REGISTRY), "inserted": totals.get("inserted", 0),
-            "errors": totals.get("errors", 0), "elapsed_s": totals.get("elapsed_s")}
+    outcome = {
+        "states": len(REGISTRY),
+        "inserted": totals.get("inserted", 0),
+        "errors": totals.get("errors", 0),
+        "failed_states": totals.get("failed_states", []),
+        "zero_result_states": totals.get("zero_result_states", []),
+        "elapsed_s": totals.get("elapsed_s"),
+    }
+    if int(totals.get("errors") or 0):
+        outcome["_terminal_state"] = "partial"
+    return outcome
+
+
+async def _source_health_probe_task() -> dict:
+    """Run one polite sample fetch per jurisdiction to verify source reachability.
+
+    This is intentionally separate from the full harvest cadence: every source
+    receives at most one small, rate-limited read per probe interval. Probe
+    reads never persist property rows and never consume a production cursor.
+    """
+    tenant = os.getenv("ORACLE_INGEST_TENANT_ID", "")
+    if not tenant:
+        return {"skipped": "ORACLE_INGEST_TENANT_ID unset"}
+    from harvesters.firehose import MultiStateFirehose, REGISTRY
+
+    result = await MultiStateFirehose(
+        tenant,
+        agent_id="source-health-probe",
+        mode="probe",
+    ).run(max_records_per_state=1, concurrency=4)
+    totals = result.get("totals", {})
+    outcome = {
+        "probed_states": len(REGISTRY),
+        "failed_states": totals.get("failed_states", []),
+        "zero_result_states": totals.get("zero_result_states", []),
+        "errors": totals.get("errors", 0),
+    }
+    if int(totals.get("errors") or 0):
+        outcome["_terminal_state"] = "partial"
+    return outcome
+
+
+async def _property_characteristics_backfill_task() -> dict:
+    """Revisit public sources to populate source-published property facts.
+
+    This has an independent cursor namespace from the ordinary parcel harvest
+    and writes only to the shared public catalog. It cannot create private CRM
+    leads and it never fills a missing fact with a model-generated estimate.
+    """
+    tenant = os.getenv("ORACLE_INGEST_TENANT_ID", "")
+    if not tenant:
+        return {"skipped": "ORACLE_INGEST_TENANT_ID unset"}
+    try:
+        from harvesters.firehose import MultiStateFirehose, REGISTRY
+    except Exception as exc:  # noqa: BLE001
+        return {"skipped": f"firehose import failed: {exc}"}
+
+    cap = max(
+        100,
+        min(25_000, int(os.getenv("ORACLE_PROPERTY_FACT_BACKFILL_MAX_PER_STATE", "1000"))),
+    )
+    concurrency = max(
+        1,
+        min(8, int(os.getenv("ORACLE_PROPERTY_FACT_BACKFILL_CONCURRENCY", "2"))),
+    )
+    result = await MultiStateFirehose(
+        tenant,
+        agent_id="property-characteristics-backfill",
+        mode="catalog_backfill",
+    ).run(max_records_per_state=cap, concurrency=concurrency)
+    totals = result.get("totals", {})
+    outcome = {
+        "jurisdictions": len(REGISTRY),
+        "catalog_rows_refreshed": int(totals.get("inserted") or 0),
+        "errors": int(totals.get("errors") or 0),
+        "failed_states": totals.get("failed_states", []),
+        "zero_result_states": totals.get("zero_result_states", []),
+        "checkpointed_states": int(totals.get("checkpointed_states") or 0),
+        "elapsed_s": totals.get("elapsed_s"),
+        "source_backed_only": True,
+    }
+    if outcome["errors"]:
+        outcome["_terminal_state"] = "partial"
+    logger.info(
+        "ORACLE_METRIC property_characteristics_backfill refreshed=%d errors=%d",
+        outcome["catalog_rows_refreshed"],
+        outcome["errors"],
+    )
+    return outcome
+
+
+async def _lead_payload_normalization_task() -> dict:
+    """Clean legacy national-harvest payloads without rescraping a source.
+
+    This is a database-only, idempotent migration through the durable worker.
+    It touches only records tagged by the public-property pipeline, preserving
+    manual CRM leads and any calculated underwriting fields.
+    """
+    tenant = os.getenv("ORACLE_INGEST_TENANT_ID", "")
+    if not tenant:
+        return {"skipped": "ORACLE_INGEST_TENANT_ID unset"}
+    from harvesters.base import normalize_public_leads
+
+    batch_size = int(os.getenv("ORACLE_LEAD_NORMALIZE_BATCH_SIZE", "500"))
+    max_rows = int(os.getenv("ORACLE_LEAD_NORMALIZE_MAX_ROWS", "10000"))
+    result = await normalize_public_leads(
+        tenant,
+        batch_size=batch_size,
+        max_rows=max_rows,
+    )
+    logger.info(
+        "ORACLE_METRIC lead_payload_normalization examined=%d normalized=%d fallback=%d",
+        int(result.get("examined") or 0),
+        int(result.get("normalized") or 0),
+        int(result.get("normalized_from_fallback") or 0),
+    )
+    # Drain a large historical backfill in serialized, bounded jobs rather than
+    # leaving the next 10k records for tomorrow's cadence. The short delay lets
+    # this job commit and release its lease before another worker can claim the
+    # follow-up batch.
+    catchup_enabled = os.getenv("ORACLE_LEAD_NORMALIZE_CATCHUP_ENABLED", "1") == "1"
+    if catchup_enabled and int(result.get("normalized") or 0) >= max_rows:
+        from automation_jobs import enqueue_job
+        from tenancy import Role, TenantContext
+
+        ctx = TenantContext(
+            agent_id="lead-payload-normalizer",
+            tenant_id=tenant,
+            role=Role.PLATFORM_ADMIN,
+        )
+        followup, created = await enqueue_job(
+            ctx,
+            job_type="periodic:lead_payload_normalization",
+            payload={"task": "lead_payload_normalization", "catchup": True},
+            idempotency_key=f"lead-payload-normalization-catchup:{time.time_ns()}",
+            created_by="lead-payload-normalizer",
+            priority=40,
+            scheduled_at=datetime.now(timezone.utc) + timedelta(seconds=30),
+        )
+        result["catchup_queued"] = created
+        result["catchup_job_id"] = followup["id"]
+    return result
 
 
 async def _new_listings_task() -> dict:
-    """Fast-moving MLS delta: pull listings modified since the last sync (RESO
-    Web API) and upsert into oracle_mls_listings. Skips cleanly if no feed is
-    configured. This is the hourly counterpart to the slow parcel harvest."""
+    """Fast-moving MLS delta across every authorized RESO board.
+
+    Each board owns an independent durable cursor and failure boundary. One
+    unavailable MLS therefore degrades the roll-up instead of blocking all
+    listing updates.
+    """
     try:
-        from data_integrations.listings_feed import RESOListingsFeed
+        from data_integrations.listings_feed import RESOListingsAggregator
     except Exception as exc:  # noqa: BLE001
         return {"skipped": f"listings_feed import failed: {exc}"}
-    if not RESOListingsFeed.is_configured():
-        return {"skipped": "no RESO feed configured (set ORACLE_RESO_URL/TOKEN/MLS_ID)"}
-    return await RESOListingsFeed().sync_once()
+    if not RESOListingsAggregator.is_configured():
+        return {
+            "skipped": (
+                "no RESO feed configured "
+                "(set ORACLE_RESO_FEEDS_JSON or ORACLE_RESO_URL/TOKEN/MLS_ID)"
+            )
+        }
+    return await RESOListingsAggregator().sync_once()
 
 
 async def _distress_scrape_task() -> dict:
@@ -312,6 +506,20 @@ async def _coverage_snapshot_task() -> dict:
         return {"error": str(exc)[:160]}
 
 
+async def _market_research_task() -> dict:
+    """Refresh redistributable aggregate market metrics for all jurisdictions.
+
+    This is deliberately separate from the property/listing pipelines: Zillow
+    Research, Redfin Data Center, HUD, and FHFA observations describe markets,
+    not individual homes.
+    """
+    try:
+        from market_research_agent import run_market_research_sync
+    except Exception as exc:  # noqa: BLE001
+        return {"skipped": f"market research agent import failed: {exc}"}
+    return await run_market_research_sync()
+
+
 async def _retention_cleanup_task() -> dict:
     """Redact expired raw evidence/transcripts and evict stale cache rows.
 
@@ -340,21 +548,25 @@ async def _retention_cleanup_task() -> dict:
             raw_days,
             transcript_days,
         )
+        oauth_states_deleted = await conn.fetchval("SELECT purge_expired_oauth_states()")
     if isinstance(result, str):
         result = json.loads(result)
     clean = dict(result or {})
+    clean["oauth_states_deleted"] = int(oauth_states_deleted or 0)
     logger.info(
-        "ORACLE_METRIC retention_cleanup source_payloads=%d transcripts=%d cache_rows=%d",
+        "ORACLE_METRIC retention_cleanup source_payloads=%d transcripts=%d cache_rows=%d oauth_states=%d",
         int(clean.get("source_payloads_purged") or 0),
         int(clean.get("transcripts_purged") or 0),
         int(clean.get("cache_rows_deleted") or 0),
+        clean["oauth_states_deleted"],
     )
     return clean
 
 
 async def _source_health_task() -> dict:
-    """Emit one metric marker per enabled source that is stale or open."""
+    """Persist and emit one bounded health marker per enabled source."""
     from db.connection import tenant_tx
+    from harvest_health import classify_health, safe_health_detail
     from tenancy import Role, TenantContext
 
     tenant_id = os.getenv(
@@ -368,31 +580,45 @@ async def _source_health_task() -> dict:
     async with tenant_tx(ctx) as conn:
         rows = await conn.fetch(
             """
-            SELECT source_key,circuit_state,failure_count,
-                   EXTRACT(EPOCH FROM (now()-last_succeeded_at)) AS age_seconds
+            SELECT id,source_key,circuit_state,failure_count,schedule_seconds,
+                   last_succeeded_at,last_error
               FROM harvest_sources
              WHERE enabled
-               AND (
-                   circuit_state='open'
-                   OR last_succeeded_at IS NULL
-                   OR now()-last_succeeded_at > make_interval(
-                       secs => GREATEST(schedule_seconds*2, 21600)::double precision
-                   )
-               )
              ORDER BY source_key
             """
         )
-    sources = []
+    sources: list[dict[str, str]] = []
+    updates = []
     for row in rows:
         source_key = str(row["source_key"])
-        sources.append(source_key)
-        logger.warning(
-            "ORACLE_METRIC stale_harvest_source source=%s circuit=%s failures=%d",
-            source_key,
-            str(row["circuit_state"]),
-            int(row["failure_count"] or 0),
+        status = classify_health(
+            last_succeeded_at=row["last_succeeded_at"],
+            schedule_seconds=row["schedule_seconds"],
+            circuit_state=row["circuit_state"],
+            failure_count=row["failure_count"],
         )
-    return {"stale_sources": len(sources), "source_keys": sources}
+        detail = safe_health_detail(row["last_error"]) if status in {"degraded", "failed"} else None
+        updates.append((status, detail, row["id"]))
+        if status != "fresh":
+            sources.append({"source_key": source_key, "status": status})
+            logger.warning(
+                "ORACLE_METRIC harvest_source_health source=%s status=%s circuit=%s failures=%d",
+                source_key,
+                status,
+                str(row["circuit_state"]),
+                int(row["failure_count"] or 0),
+            )
+    if updates:
+        async with tenant_tx(ctx) as conn:
+            await conn.executemany(
+                """
+                UPDATE harvest_sources
+                   SET health_status=$1,health_detail=$2,last_health_checked_at=now(),updated_at=now()
+                 WHERE id=$3::uuid
+                """,
+                updates,
+            )
+    return {"non_fresh_sources": len(sources), "sources": sources}
 
 
 def build_default_scheduler() -> PeriodicScheduler:
@@ -413,6 +639,35 @@ def build_default_scheduler() -> PeriodicScheduler:
             and os.getenv("ORACLE_PARCEL_HARVEST_ENABLED", "0") == "1"
         ),
     ))
+    probe_interval_h = max(6.0, float(os.getenv("ORACLE_SOURCE_HEALTH_PROBE_INTERVAL_HOURS", "24")))
+    sched.register(PeriodicTask(
+        name="source_health_probe",
+        interval_s=probe_interval_h * 3600,
+        run=_source_health_probe_task,
+        enabled=(
+            municipal_enabled
+            and os.getenv("ORACLE_SOURCE_HEALTH_PROBES_ENABLED", "1") == "1"
+        ),
+    ))
+    fact_interval_h = max(
+        6.0,
+        float(os.getenv("ORACLE_PROPERTY_FACT_BACKFILL_INTERVAL_HOURS", "6")),
+    )
+    sched.register(PeriodicTask(
+        name="property_characteristics_backfill",
+        interval_s=fact_interval_h * 3600,
+        run=_property_characteristics_backfill_task,
+        enabled=(
+            municipal_enabled
+            and os.getenv("ORACLE_PROPERTY_FACT_BACKFILL_ENABLED", "1") == "1"
+        ),
+    ))
+    sched.register(PeriodicTask(
+        name="lead_payload_normalization",
+        interval_s=24 * 3600,
+        run=_lead_payload_normalization_task,
+        enabled=municipal_enabled,
+    ))
     # Fast-moving keyless distress scrape (NYC HPD + Chicago violations). Polite
     # to Socrata; default 30-min cadence = the "active web scrape" heartbeat.
     distress_interval_min = float(os.getenv("ORACLE_DISTRESS_INTERVAL_MIN", "30"))
@@ -432,6 +687,15 @@ def build_default_scheduler() -> PeriodicScheduler:
         name="coverage_snapshot",
         interval_s=TICK_SECONDS,   # every heartbeat
         run=_coverage_snapshot_task,
+    ))
+    market_interval_h = max(
+        6.0, float(os.getenv("ORACLE_MARKET_RESEARCH_INTERVAL_HOURS", "24"))
+    )
+    sched.register(PeriodicTask(
+        name="market_research",
+        interval_s=market_interval_h * 3600,
+        run=_market_research_task,
+        enabled=os.getenv("ORACLE_MARKET_RESEARCH_ENABLED", "1") == "1",
     ))
     sched.register(PeriodicTask(
         name="platform_retention_cleanup",

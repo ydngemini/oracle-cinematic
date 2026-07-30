@@ -26,7 +26,9 @@ from uuid import UUID
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
-import db.connection as _dbc  # pool lives at _dbc._pool — read live (it is created in the lifespan, AFTER this import)
+from tenancy import Role, require_context
+
+import db.connection as _dbc  # pool via _dbc.get_pool() — read live (it is created in the lifespan, AFTER this import)
 
 logger = logging.getLogger("oracle.audit")
 
@@ -139,7 +141,10 @@ async def _global_chain_conn():
     no rows (no GUC set) and the head read / verify / admin feed all come back
     empty. SET LOCAL resets at transaction end, so no identity leaks onto the
     pooled socket."""
-    async with _dbc._pool.acquire() as conn:  # type: ignore[union-attr]
+    pool = _dbc.get_pool()
+    if pool is None:
+        raise RuntimeError("DB pool not initialized — audit chain requires an active pool")
+    async with pool.acquire() as conn:
         async with conn.transaction():
             # Match the apply_rls_context() GUC contract: set BOTH role and
             # tenant (to the all-zero platform sentinel) so any policy that
@@ -228,7 +233,7 @@ class AuditLedger:
         prev_hash: str
         entry_hash: str
         pg_ok = False
-        if _dbc._pool is not None:
+        if _dbc.get_pool() is not None:
             try:
                 async with _global_chain_conn() as conn:
                     await conn.execute(
@@ -296,7 +301,7 @@ class AuditLedger:
         tampered hash. Pass use_sqlite=True to verify the local fallback chain
         instead of PostgreSQL.
         """
-        if use_sqlite or _dbc._pool is None:
+        if use_sqlite or _dbc.get_pool() is None:
             return self._sqlite_verify_chain()
 
         try:
@@ -352,7 +357,7 @@ class AuditLedger:
         Falls back to SQLite automatically when the pool is absent.
         Pass use_sqlite=True to explicitly query the local fallback store.
         """
-        if use_sqlite or _dbc._pool is None:
+        if use_sqlite or _dbc.get_pool() is None:
             return self._sqlite_get_entries(limit=limit, category=category)
 
         try:
@@ -564,19 +569,50 @@ async def audit_trail_ws(websocket: WebSocket) -> None:
     """
     Real-time audit feed.
 
-    On connect: sends the 50 most recent entries as AUDIT_HISTORY.
+    Platform-admin JWT authentication is completed before the WebSocket
+    upgrade. On connect: sends the 50 most recent entries as AUDIT_HISTORY.
     Thereafter: each new ledger.record() call broadcasts AUDIT_ENTRY frames.
-    """
-    await websocket.accept()
-    ledger.subscribe(websocket)
 
-    history = await ledger.get_entries(limit=50)
-    await websocket.send_text(
-        json.dumps({"type": "AUDIT_HISTORY", "data": list(reversed(history))})
-    )
+    The browser supplies ``oracle.jwt`` and the JWT as WebSocket subprotocols,
+    keeping credentials out of URLs and access logs. This feed is global by
+    design, so ordinary tenant roles are rejected rather than tenant-filtered.
+    """
+    offered = [
+        value.strip()
+        for value in websocket.headers.get("sec-websocket-protocol", "").split(",")
+        if value.strip()
+    ]
+    raw_token = offered[1] if len(offered) == 2 and offered[0] == "oracle.jwt" else ""
+    if not raw_token:
+        logger.warning("Audit WebSocket rejected a missing credential.")
+        await websocket.close(code=4401)
+        return
 
     try:
+        ctx = require_context(f"Bearer {raw_token}")
+    except Exception:  # noqa: BLE001 — normalize all credential failures
+        logger.warning("Audit WebSocket rejected an invalid or expired credential.")
+        await websocket.close(code=4401)
+        return
+    if ctx.role is not Role.PLATFORM_ADMIN:
+        logger.warning("Audit WebSocket rejected a non-admin role.")
+        await websocket.close(code=4403)
+        return
+
+    await websocket.accept(subprotocol="oracle.jwt")
+    ledger.subscribe(websocket)
+
+    try:
+        history = await ledger.get_entries(limit=50)
+        await websocket.send_text(
+            json.dumps({"type": "AUDIT_HISTORY", "data": list(reversed(history))})
+        )
         while True:
-            await websocket.receive_text()
+            message = await websocket.receive_text()
+            if len(message.encode("utf-8")) > 4096:
+                await websocket.close(code=1009)
+                return
     except WebSocketDisconnect:
+        pass
+    finally:
         ledger.unsubscribe(websocket)

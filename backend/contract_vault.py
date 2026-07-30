@@ -83,6 +83,13 @@ class SovereignVault:
         return document_id
 
     @staticmethod
+    def _tenant_id(value: str) -> str:
+        try:
+            return str(uuid.UUID(str(value)))
+        except (TypeError, ValueError, AttributeError) as exc:
+            raise ValueError("tenant_id must be a UUID") from exc
+
+    @staticmethod
     def _expiration(value: int) -> int:
         try:
             seconds = int(value)
@@ -109,16 +116,35 @@ class SovereignVault:
                 raise ValueError("File is not a PDF")
         return path
 
-    def s3_key(self, client_id: str, document_id: str) -> str:
+    def s3_key(
+        self,
+        client_id: str,
+        document_id: str,
+        *,
+        tenant_id: Optional[str] = None,
+    ) -> str:
         safe_client_id = self._client_id(client_id)
         safe_document_id = self._document_id(document_id)
+        if tenant_id:
+            safe_tenant_id = self._tenant_id(tenant_id)
+            return (
+                f"tenants/{safe_tenant_id}/contracts/"
+                f"{safe_client_id}/{safe_document_id}.pdf"
+            )
         return f"clients/{safe_client_id}/contracts/{safe_document_id}.pdf"
 
-    def encrypt_and_upload(self, pdf_file_path: str, client_id: str, document_id: str) -> bool:
+    def encrypt_and_upload(
+        self,
+        pdf_file_path: str,
+        client_id: str,
+        document_id: str,
+        *,
+        tenant_id: Optional[str] = None,
+    ) -> bool:
         """Upload a generated PDF and force SSE-S3 AES256 encryption at rest."""
         try:
             path = self._validate_pdf(pdf_file_path)
-            key = self.s3_key(client_id, document_id)
+            key = self.s3_key(client_id, document_id, tenant_id=tenant_id)
             logger.info("Contract vault upload starting: document_id=%s", document_id)
             self.s3_client.upload_file(
                 str(path),
@@ -141,11 +167,13 @@ class SovereignVault:
         client_id: str,
         document_id: str,
         expiration_seconds: int = DEFAULT_EXPIRATION_SECONDS,
+        *,
+        tenant_id: Optional[str] = None,
     ) -> Optional[str]:
         """Generate a presigned GET URL that expires after at most one hour."""
         try:
             expires_in = self._expiration(expiration_seconds)
-            key = self.s3_key(client_id, document_id)
+            key = self.s3_key(client_id, document_id, tenant_id=tenant_id)
             return self.s3_client.generate_presigned_url(
                 "get_object",
                 Params={"Bucket": self.bucket_name, "Key": key},
@@ -162,13 +190,24 @@ class SovereignVault:
         client_id: str,
         document_id: str,
         expiration_seconds: int = DEFAULT_EXPIRATION_SECONDS,
+        tenant_id: Optional[str] = None,
     ) -> VaultedContract:
         """Upload a PDF and return the signed download descriptor."""
-        key = self.s3_key(client_id, document_id)
-        if not self.encrypt_and_upload(str(pdf_file_path), client_id, document_id):
+        key = self.s3_key(client_id, document_id, tenant_id=tenant_id)
+        if not self.encrypt_and_upload(
+            str(pdf_file_path),
+            client_id,
+            document_id,
+            tenant_id=tenant_id,
+        ):
             raise VaultUploadError("contract upload failed")
 
-        url = self.generate_expiring_link(client_id, document_id, expiration_seconds)
+        url = self.generate_expiring_link(
+            client_id,
+            document_id,
+            expiration_seconds,
+            tenant_id=tenant_id,
+        )
         if not url:
             raise VaultUploadError("contract upload succeeded but presigned URL failed")
 

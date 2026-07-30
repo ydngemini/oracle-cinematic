@@ -1,11 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useOracleState, useOracleDispatch } from '../state';
-import { contractCountdown } from './DealPipeline';
+import { contractCountdown } from './pipelineUtils';
 import { DossierPanel } from './DossierPanel';
+import { apiPatch } from '../lib/apiClient';
 import styles from './PipelineBoard.module.css';
-
-const API_BASE = import.meta.env.VITE_API_BASE ?? 'http://localhost:8000';
 
 // Columns mirror the 0007 dossier_status state machine exactly — the CHECK
 // constraint is the source of truth, these are just display labels.
@@ -27,7 +26,7 @@ function formatValue(v) {
   return `$${n.toLocaleString()}`;
 }
 
-export function PipelineBoard({ onClose }) {
+export function PipelineBoard({ onClose, onOpen }) {
   const { dealPipeline } = useOracleState();
   const { wsRef } = useOracleDispatch();
 
@@ -97,19 +96,7 @@ export function PipelineBoard({ onClose }) {
 
     setOverrides((o) => ({ ...o, [leadId]: status }));
     try {
-      const token = sessionStorage.getItem('oracle_token');
-      const res = await fetch(`${API_BASE}/api/leads/${leadId}/dossier-status`, {
-        method: 'PATCH',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        },
-        body: JSON.stringify({ status }),
-      });
-      if (!res.ok) {
-        const detail = await res.json().catch(() => ({}));
-        throw new Error(detail.detail || `move failed (${res.status})`);
-      }
+      await apiPatch(`/api/leads/${leadId}/dossier-status`, { status });
       // Pull fresh truth — the DEAL_PIPELINE frame clears the override.
       if (wsRef.current?.readyState === WebSocket.OPEN) {
         wsRef.current.send(JSON.stringify({ type: 'REQUEST_DEAL_PIPELINE' }));
@@ -188,13 +175,15 @@ export function PipelineBoard({ onClose }) {
                       aria-label={`${lead.address || lead.parcel_id} — ${stage.title}. Enter opens the dossier; arrow keys move between stages.`}
                       onClick={() => {
                         if (dragJustEnded.current || !lead.id) return;
-                        setDossierId(lead.id);
+                        if (onOpen) onOpen(lead.id);
+                        else setDossierId(lead.id);
                       }}
                       onKeyDown={(e) => {
                         if (!lead.id) return;
                         if (e.key === 'Enter' || e.key === ' ') {
                           e.preventDefault();
-                          setDossierId(lead.id);
+                          if (onOpen) onOpen(lead.id);
+                          else setDossierId(lead.id);
                         } else {
                           moveByKey(e, lead, stageIndex);
                         }
@@ -240,7 +229,7 @@ export function PipelineBoard({ onClose }) {
         })}
       </div>
 
-      {dossierId && (
+      {!onOpen && dossierId && (
         <DossierPanel leadId={dossierId} onClose={() => setDossierId(null)} />
       )}
     </div>

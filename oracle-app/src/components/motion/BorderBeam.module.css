@@ -1,0 +1,51 @@
+.borderBeam {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  overflow: hidden;
+  border-radius: inherit;
+  padding: var(--beam-border-width);
+  pointer-events: none;
+  isolation: isolate;
+  mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  mask-composite: exclude;
+  -webkit-mask-composite: xor;
+}
+
+.orbit {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: max(220%, calc(var(--beam-size) * 2));
+  aspect-ratio: 1;
+  background: conic-gradient(
+    from 0deg,
+    transparent 0deg 274deg,
+    color-mix(in srgb, var(--beam-color-from) 10%, transparent) 294deg,
+    var(--beam-color-from) 318deg,
+    var(--beam-color-to) 342deg,
+    transparent 360deg
+  );
+  transform: translate3d(-50%, -50%, 0) rotate(0deg);
+  transform-origin: center;
+  will-change: transform;
+  animation: border-beam-orbit var(--beam-duration) linear var(--beam-delay) infinite;
+}
+
+@keyframes border-beam-orbit {
+  to {
+    transform: translate3d(-50%, -50%, 0) rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .orbit {
+    opacity: 0;
+    animation: none;
+  }
+}

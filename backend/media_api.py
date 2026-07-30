@@ -1,11 +1,11 @@
-"""Neoh 2D image upload + serve API.
+"""Neoh 2D image upload + authenticated delivery API.
 
 Agents (in-app, JWT) and homeowners (passwordless client portal) attach property
 photos to a lead or listing. The metadata row lives in the existing tenant-scoped
 `property_media` table (kind='photo'); the raw bytes live in the non-tenant-scoped
-`media_blobs` table (migration 0022) so the PUBLIC `GET /api/media/{id}` serve
-path — which backs <img src> references and has no tenant context — can stream
-them without tripping property_media's FORCE row-level security.
+`media_blobs` table (migration 0022). Delivery always joins through the
+tenant-scoped metadata row inside ``tenant_tx`` so possession of a media UUID is
+never sufficient to read another tenant's image.
 
 Why bytes-in-Postgres instead of files-on-disk: the container runs as uid 1001
 against a bind mount that is not reliably writable (CLAUDE.md / prod-readiness
@@ -18,16 +18,20 @@ Endpoints
   GET    /api/crm/media?lead_id=&listing_id=    (agent JWT)  — list photos
   DELETE /api/crm/media/{media_id}             (agent JWT)  — remove a photo
   POST   /api/portal/media                     (portal token) — explicit read-only rejection
-  GET    /api/media/{media_id}                 (public)     — stream the image
+  GET    /api/media/{media_id}                 (agent JWT)  — stream the image
 """
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import os
+from pathlib import Path
+import tempfile
 import time
 from collections import defaultdict
-from typing import List, Optional
+from typing import Any, List, Optional
 from uuid import UUID, uuid4
 
 import jwt
@@ -42,10 +46,12 @@ from fastapi import (
     status,
 )
 from fastapi.responses import Response
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from auth import ALGORITHM, SECRET_KEY
-from contract_vault import VaultUploadError
-from db.connection import get_pool, tenant_tx
+from audit_ledger import AuditCategory, ledger
+from contract_vault import SovereignVault, VaultUploadError
+from db.connection import tenant_tx
 from tenancy import TenantContext, require_context
 
 log = logging.getLogger("oracle.media_api")
@@ -58,6 +64,39 @@ MAX_FILES_PER_UPLOAD = 30
 _CONTRACT_RATE_LIMIT = int(os.getenv("CONTRACT_GENERATION_RATE_LIMIT", "10"))
 _CONTRACT_RATE_WINDOW = 60 * 60.0
 _contract_generation_timestamps: dict[str, list[float]] = defaultdict(list)
+_SYNTHESIS_FINANCIAL_FIELDS = {
+    "wholesale_buy_price",
+    "investor_buy_price",
+    "earnest_money_deposit",
+    "purchase_price",
+    "assignment_fee",
+}
+
+
+class ContractSynthesisRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    client_id: UUID
+    doc_id: str = Field(min_length=1, max_length=160, pattern=r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,159}$")
+    state: str = Field(pattern=r"^[A-Za-z]{2}$")
+    financial_override: dict[str, float] = Field(default_factory=dict)
+
+    @field_validator("state")
+    @classmethod
+    def normalize_state(cls, value: str) -> str:
+        return value.upper()
+
+    @field_validator("financial_override")
+    @classmethod
+    def validate_financial_override(cls, value: dict[str, float]) -> dict[str, float]:
+        if len(value) > len(_SYNTHESIS_FINANCIAL_FIELDS):
+            raise ValueError("too many financial override fields")
+        unsupported = sorted(set(value) - _SYNTHESIS_FINANCIAL_FIELDS)
+        if unsupported:
+            raise ValueError(f"unsupported financial override fields: {unsupported}")
+        for key, amount in value.items():
+            if amount < 0 or amount > 1_000_000_000:
+                raise ValueError(f"{key} is outside the supported range")
+        return value
 
 # Media kinds permitted by property_media's chk_media_kind constraint (0012). The
 # photo-upload endpoints below only produce 'photo'; the walkable-tour pipeline
@@ -149,7 +188,7 @@ async def _persist(
     for f in files:
         data, content_type = await _read_and_validate(f)
         base += 1
-        # url is NOT NULL and must point at the public serve path, which embeds
+        # url is NOT NULL and points at the authenticated serve path, which embeds
         # the row id. Generate the id client-side so the url is known up front and
         # the whole thing is a single INSERT (a writable CTE can't UPDATE the row
         # its own INSERT just created — same-statement snapshot).
@@ -316,6 +355,357 @@ def _check_contract_generation_rate(ctx: TenantContext) -> None:
     recent.append(now)
     _contract_generation_timestamps[key] = recent
 
+
+async def _mark_synthesis_failed(
+    ctx: TenantContext,
+    artifact_id: UUID,
+    failure_code: str,
+    metadata: Optional[dict[str, Any]] = None,
+) -> None:
+    """Move a started artifact to a terminal state without exposing internals."""
+    async with tenant_tx(ctx) as conn:
+        await conn.execute(
+            """
+            UPDATE contract_synthesis_artifacts
+               SET status='failed',failure_code=$2,
+                   metadata=metadata || $3::jsonb,updated_at=now()
+             WHERE id=$1
+            """,
+            artifact_id,
+            failure_code,
+            json.dumps(metadata or {}),
+        )
+
+
+@router.post("/contracts/synthesize")
+async def synthesize_contract(
+    body: ContractSynthesisRequest,
+    expiration_seconds: int = Query(default=3600, ge=60, le=3600),
+    ctx: TenantContext = Depends(require_context),
+):
+    """Render one attorney-approved template and store it in the private vault."""
+    _check_contract_generation_rate(ctx)
+    from ml_forge.synthetic_lawyer import (
+        fetch_assignment_transaction_for_client,
+        render_approved_contract_template,
+        template_sha256,
+        write_contract_pdf,
+    )
+
+    async with tenant_tx(ctx) as conn:
+        template = await conn.fetchrow(
+            """
+            SELECT id,template_key,version,document_type,jurisdiction,
+                   body_template,required_fields,template_sha256,
+                   attorney_reviewed_by,attorney_reviewed_at
+              FROM contract_templates
+             WHERE tenant_id=$1::uuid
+               AND status='approved'
+               AND jurisdiction IN ($2,'US-GENERIC')
+               AND (template_key=$3 OR id::text=$3)
+             ORDER BY CASE WHEN jurisdiction=$2 THEN 0 ELSE 1 END,
+                      updated_at DESC
+             LIMIT 1
+            """,
+            ctx.tenant_id,
+            body.state,
+            body.doc_id,
+        )
+        if template is None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="This document has no attorney-approved executable template.",
+            )
+
+        artifact_id = uuid4()
+        document_id = f"{str(template['template_key'])[:96]}-{artifact_id.hex[:12]}"
+        await conn.execute(
+            """
+            INSERT INTO contract_synthesis_artifacts (
+                id,tenant_id,client_id,doc_id,state_code,template_id,
+                template_sha256,status,created_by
+            ) VALUES ($1,$2::uuid,$3,$4,$5,$6,$7,'generating',$8)
+            """,
+            artifact_id,
+            ctx.tenant_id,
+            body.client_id,
+            document_id,
+            body.state,
+            template["id"],
+            template["template_sha256"],
+            ctx.agent_id,
+        )
+
+    if template_sha256(template["body_template"]) != template["template_sha256"]:
+        async with tenant_tx(ctx) as conn:
+            await conn.execute(
+                """
+                UPDATE contract_synthesis_artifacts
+                   SET status='failed',failure_code='template_checksum_mismatch',
+                       updated_at=now()
+                 WHERE id=$1
+                """,
+                artifact_id,
+            )
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Approved template checksum mismatch.",
+        )
+
+    try:
+        transaction = await fetch_assignment_transaction_for_client(str(body.client_id), ctx)
+        transaction.update(body.financial_override)
+        rendered = render_approved_contract_template(
+            document_type=template["document_type"],
+            body_template=template["body_template"],
+            required_fields=list(template["required_fields"]),
+            transaction_data=transaction,
+        )
+    except Exception as exc:  # database/template failures must not strand "generating"
+        await _mark_synthesis_failed(ctx, artifact_id, "contract_context_unavailable")
+        log.exception("Contract synthesis context failed artifact=%s", artifact_id)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Contract data service unavailable.",
+        ) from exc
+    if rendered.get("status") == "FATAL_ERROR":
+        async with tenant_tx(ctx) as conn:
+            await conn.execute(
+                """
+                UPDATE contract_synthesis_artifacts
+                   SET status='failed',failure_code='missing_required_fields',
+                       metadata=$2::jsonb,updated_at=now()
+                 WHERE id=$1
+                """,
+                artifact_id,
+                json.dumps({"missing_variables": rendered.get("missing_variables", [])}),
+            )
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "status": "FATAL_ERROR",
+                "missing_variables": rendered.get("missing_variables", []),
+            },
+        )
+
+    try:
+        with tempfile.TemporaryDirectory(prefix="neoh_synthesis_") as directory:
+            pdf_path = Path(directory) / f"{document_id}.pdf"
+            write_contract_pdf(rendered["final_contract_text"], pdf_path)
+            pdf_sha256 = hashlib.sha256(pdf_path.read_bytes()).hexdigest()
+            try:
+                vaulted = SovereignVault().vault_pdf(
+                    pdf_path,
+                    client_id=str(body.client_id),
+                    document_id=document_id,
+                    expiration_seconds=expiration_seconds,
+                    tenant_id=ctx.tenant_id,
+                )
+                vault_result = vaulted.to_dict()
+                synthesis_status = "ENCRYPTED_IN_VAULT"
+            except (VaultUploadError, ValueError) as exc:
+                import config
+
+                if not config.IS_DEV:
+                    await _mark_synthesis_failed(ctx, artifact_id, "vault_unavailable")
+                    log.exception("Contract synthesis vault upload failed artifact=%s", artifact_id)
+                    raise HTTPException(
+                        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                        detail="Contract vault unavailable.",
+                    ) from exc
+                vault_result = {
+                    "bucket": None,
+                    "s3_key": None,
+                    "presigned_url": None,
+                    "expires_in": 0,
+                }
+                synthesis_status = "LOCAL_PREVIEW_ONLY"
+    except HTTPException:
+        raise
+    except Exception as exc:
+        await _mark_synthesis_failed(ctx, artifact_id, "pdf_generation_failed")
+        log.exception("Contract PDF generation failed artifact=%s", artifact_id)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Contract generation unavailable.",
+        ) from exc
+
+    async with tenant_tx(ctx) as conn:
+        await conn.execute(
+            """
+            UPDATE contract_synthesis_artifacts
+               SET status=$2,pdf_sha256=$3,s3_key=$4,
+                   encryption=CASE WHEN $4::text IS NULL THEN NULL ELSE 'AES256' END,
+                   expires_at=CASE WHEN $5::int > 0
+                       THEN now()+make_interval(secs=>$5) ELSE NULL END,
+                   metadata=$6::jsonb,updated_at=now()
+             WHERE id=$1
+            """,
+            artifact_id,
+            synthesis_status.lower(),
+            pdf_sha256,
+            vault_result.get("s3_key"),
+            int(vault_result.get("expires_in") or 0),
+            json.dumps(
+                {
+                    "document_type": template["document_type"],
+                    "template_key": template["template_key"],
+                    "template_version": template["version"],
+                    "professional_review_required": True,
+                }
+            ),
+        )
+
+    await ledger.record(
+        category=AuditCategory.LEGAL_CONTRACT,
+        action="contract_synthesized_encrypted",
+        tenant_id=ctx.tenant_id,
+        user_id=ctx.agent_id,
+        target_id=str(artifact_id),
+        metadata={
+            "client_id": str(body.client_id),
+            "document_type": template["document_type"],
+            "template_sha256": template["template_sha256"],
+            "pdf_sha256": pdf_sha256,
+            "status": synthesis_status,
+        },
+    )
+    return {
+        "status": synthesis_status,
+        "client_id": str(body.client_id),
+        "document_id": str(artifact_id),
+        "doc_id": document_id,
+        "document_type": template["document_type"],
+        "state": body.state,
+        "template": {
+            "id": str(template["id"]),
+            "key": template["template_key"],
+            "version": template["version"],
+            "sha256": template["template_sha256"],
+        },
+        "pdf_sha256": pdf_sha256,
+        "encryption": "AES256" if vault_result.get("s3_key") else None,
+        "download_url": vault_result.get("presigned_url"),
+        "expires_in": vault_result.get("expires_in"),
+        "professional_review_required": True,
+    }
+
+
+@router.get("/contracts/synthesis-artifacts")
+async def list_contract_synthesis_artifacts(
+    client_id: UUID,
+    state_code: Optional[str] = Query(default=None, pattern=r"^[A-Za-z]{2}$"),
+    ctx: TenantContext = Depends(require_context),
+):
+    """List generated document state for one tenant-owned client."""
+    normalized_state = state_code.upper() if state_code else None
+    async with tenant_tx(ctx) as conn:
+        rows = await conn.fetch(
+            """
+            SELECT id,client_id,doc_id,state_code,status,pdf_sha256,encryption,
+                   expires_at,metadata,created_at,updated_at
+              FROM contract_synthesis_artifacts
+             WHERE client_id=$1
+               AND ($2::char(2) IS NULL OR state_code=$2)
+             ORDER BY created_at DESC
+             LIMIT 200
+            """,
+            client_id,
+            normalized_state,
+        )
+    return {
+        "artifacts": [
+            {
+                "id": str(row["id"]),
+                "client_id": str(row["client_id"]),
+                "doc_id": row["doc_id"],
+                "state": str(row["state_code"]).strip(),
+                "status": str(row["status"]).upper(),
+                "pdf_sha256": row["pdf_sha256"],
+                "encryption": row["encryption"],
+                "expires_at": row["expires_at"].isoformat() if row["expires_at"] else None,
+                "template_key": (row["metadata"] or {}).get("template_key"),
+                "document_type": (row["metadata"] or {}).get("document_type"),
+                "created_at": row["created_at"].isoformat(),
+                "updated_at": row["updated_at"].isoformat(),
+            }
+            for row in rows
+        ]
+    }
+
+
+@router.get("/contracts/synthesis-artifacts/{artifact_id}/download")
+async def download_contract_synthesis_artifact(
+    artifact_id: UUID,
+    expiration_seconds: int = Query(default=3600, ge=60, le=3600),
+    ctx: TenantContext = Depends(require_context),
+):
+    """Issue a fresh one-hour URL after re-checking tenant ownership under RLS."""
+    async with tenant_tx(ctx) as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT id,client_id,doc_id,s3_key,status
+              FROM contract_synthesis_artifacts
+             WHERE id=$1
+            """,
+            artifact_id,
+        )
+    if row is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Contract artifact not found.")
+    if row["status"] != "encrypted_in_vault" or not row["s3_key"]:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "This contract is not available in the encrypted vault.",
+        )
+
+    try:
+        vault = SovereignVault()
+        expected_key = vault.s3_key(
+            str(row["client_id"]),
+            row["doc_id"],
+            tenant_id=ctx.tenant_id,
+        )
+        if expected_key != row["s3_key"]:
+            log.error("Contract vault key mismatch artifact=%s", artifact_id)
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                "Contract vault metadata failed integrity validation.",
+            )
+        download_url = vault.generate_expiring_link(
+            str(row["client_id"]),
+            row["doc_id"],
+            expiration_seconds,
+            tenant_id=ctx.tenant_id,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:  # credentials/configuration errors stay private
+        log.exception("Contract vault presign failed artifact=%s", artifact_id)
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "Contract vault unavailable.",
+        ) from exc
+    if not download_url:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "Contract vault unavailable.",
+        )
+
+    await ledger.record(
+        category=AuditCategory.LEGAL_CONTRACT,
+        action="contract_download_link_issued",
+        tenant_id=ctx.tenant_id,
+        user_id=ctx.agent_id,
+        target_id=str(artifact_id),
+        metadata={"expires_in": expiration_seconds},
+    )
+    return {
+        "artifact_id": str(artifact_id),
+        "download_url": download_url,
+        "expires_in": expiration_seconds,
+    }
+
+
 @router.post("/contracts/clients/{client_id}/assignment")
 async def generate_assignment_contract(
     client_id: UUID,
@@ -378,19 +768,25 @@ async def generate_assignment_contract(
 
 
 # ---------------------------------------------------------------------------
-# Public serve — no auth. The media id is a 122-bit random uuid; media_blobs is
-# deliberately non-RLS (it holds only the publicly-served image bytes), so this
-# reads on a plain pooled connection with no tenant context.
+# Authenticated delivery. ``media_blobs`` intentionally has no tenant column, so
+# every read must join through ``property_media`` while tenant RLS is active.
+# The frontend fetches this route with its Bearer token and renders a short-lived
+# object URL; browsers cannot attach Authorization headers to a plain <img src>.
 # ---------------------------------------------------------------------------
 
 @router.get("/media/{media_id}")
-async def serve_media(media_id: UUID):
-    pool = get_pool()
-    if pool is None:
-        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Storage offline.")
-    async with pool.acquire() as conn:
+async def serve_media(
+    media_id: UUID,
+    ctx: TenantContext = Depends(require_context),
+):
+    async with tenant_tx(ctx) as conn:
         row = await conn.fetchrow(
-            "SELECT content_type, bytes FROM media_blobs WHERE media_id = $1",
+            """
+            SELECT mb.content_type, mb.bytes
+              FROM property_media AS pm
+              JOIN media_blobs AS mb ON mb.media_id = pm.id
+             WHERE pm.id = $1
+            """,
             media_id,
         )
     if row is None:
@@ -398,7 +794,11 @@ async def serve_media(media_id: UUID):
     return Response(
         content=bytes(row["bytes"]),
         media_type=row["content_type"],
-        headers={"Cache-Control": "public, max-age=31536000, immutable"},
+        headers={
+            "Cache-Control": "private, no-store",
+            "Content-Disposition": "inline",
+            "X-Content-Type-Options": "nosniff",
+        },
     )
 
 

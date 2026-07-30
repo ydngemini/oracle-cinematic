@@ -46,11 +46,22 @@ async def geocode(address: str) -> Optional[dict]:
     url = f"{_NOMINATIM_URL}/search?{params}"
 
     try:
-        req = urllib.request.Request(url, headers={"User-Agent": _USER_AGENT})
-        raw = await asyncio.to_thread(
-            lambda: urllib.request.urlopen(req, timeout=10).read().decode()
+        from data_integrations.cache import cached_external
+
+        async def fetch_upstream() -> dict:
+            req = urllib.request.Request(url, headers={"User-Agent": _USER_AGENT})
+            raw = await asyncio.to_thread(
+                lambda: urllib.request.urlopen(req, timeout=10).read().decode()
+            )
+            return {"results": json.loads(raw)}
+
+        payload = await cached_external(
+            "geocode",
+            {"provider": "nominatim", "operation": "search", "address": address.strip()},
+            fetch_upstream,
+            ttl=90 * 86_400,
         )
-        results = json.loads(raw)
+        results = payload.get("results") or []
         if not results:
             return None
 
@@ -87,11 +98,27 @@ async def reverse_geocode(lat: float, lng: float) -> Optional[dict]:
     url = f"{_NOMINATIM_URL}/reverse?{params}"
 
     try:
-        req = urllib.request.Request(url, headers={"User-Agent": _USER_AGENT})
-        raw = await asyncio.to_thread(
-            lambda: urllib.request.urlopen(req, timeout=10).read().decode()
+        from data_integrations.cache import cached_external
+
+        async def fetch_upstream() -> dict:
+            req = urllib.request.Request(url, headers={"User-Agent": _USER_AGENT})
+            raw = await asyncio.to_thread(
+                lambda: urllib.request.urlopen(req, timeout=10).read().decode()
+            )
+            return {"result": json.loads(raw)}
+
+        payload = await cached_external(
+            "geocode",
+            {
+                "provider": "nominatim",
+                "operation": "reverse",
+                "lat": round(float(lat), 6),
+                "lng": round(float(lng), 6),
+            },
+            fetch_upstream,
+            ttl=90 * 86_400,
         )
-        result = json.loads(raw)
+        result = payload.get("result") or {}
         if "error" in result:
             return None
         return {

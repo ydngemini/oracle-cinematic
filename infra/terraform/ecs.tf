@@ -24,6 +24,10 @@ locals {
     { name = "ORACLE_ENV", value = var.environment },
     { name = "ORACLE_CORS_ORIGINS", value = var.cors_origins },
     { name = "ORACLE_BASE_URL", value = var.app_base_url },
+    { name = "ORACLE_PUBLIC_BASE_URL", value = var.app_base_url },
+    { name = "GOOGLE_OAUTH_REDIRECT_URI", value = "${var.app_base_url}/api/commands/providers/google/oauth/callback" },
+    { name = "ORACLE_SES_FROM_EMAIL", value = var.ses_from_email },
+    { name = "ORACLE_TWILIO_STATUS_CALLBACK", value = "${var.app_base_url}/api/commands/webhooks/twilio" },
     { name = "ORACLE_DEMO_TENANT_ID", value = var.demo_tenant_id },
     { name = "ORACLE_ENABLE_DEMO_LOGINS", value = "0" },
     # Real lead ingestion: FREE open-data firehose (51 state portals, no API key) — NOT
@@ -41,6 +45,7 @@ locals {
     { name = "ORACLE_FEATURE_LOCAL_MODELS", value = tostring(var.feature_local_models) },
     { name = "ORACLE_FEATURE_SPATIAL_TOURS", value = tostring(var.feature_spatial_tours) },
     { name = "ORACLE_FEATURE_CONTRACTS", value = tostring(var.feature_contracts) },
+    { name = "ORACLE_FEATURE_AI_CHAT", value = tostring(var.feature_ai_chat) },
     { name = "ORACLE_RAW_SOURCE_RETENTION_DAYS", value = tostring(var.raw_source_retention_days) },
     { name = "ORACLE_CALL_TRANSCRIPT_RETENTION_DAYS", value = tostring(var.call_transcript_retention_days) },
     # Operator/admin login id (platform_admin). Passphrase is the ORACLE_ADMIN_PASSPHRASE
@@ -82,7 +87,8 @@ locals {
       { name = "ORACLE_SPLAT_CDN_BASE", value = "https://${aws_s3_bucket.recon.bucket}.s3.${var.aws_region}.amazonaws.com" },
   ])
 
-  # Secrets injected from Secrets Manager JSON keys (never in plaintext env/state).
+  # Secrets injected from Secrets Manager JSON keys, never embedded in the task
+  # definition or Terraform state.
   backend_secrets = concat([
     for k in [
       "ORACLE_SECRET_KEY",
@@ -91,6 +97,16 @@ locals {
       "STRIPE_SECRET_KEY",
       "STRIPE_WEBHOOK_SECRET",
       "RENTCAST_API_KEY",
+      "GOOGLE_CLIENT_ID",
+      "GOOGLE_CLIENT_SECRET",
+      "TWILIO_ACCOUNT_SID",
+      "TWILIO_AUTH_TOKEN",
+      "TWILIO_FROM_NUMBER",
+      "ORACLE_TWILIO_TWIML_URL",
+      "ACS_CONNECTION_STRING",
+      "ACS_FROM_NUMBER",
+      "ORACLE_ACS_WEBHOOK_SECRET",
+      "REDIS_URL",
       ] : {
       name      = k
       valueFrom = "${aws_secretsmanager_secret.app.arn}:${k}::"
@@ -187,6 +203,11 @@ resource "aws_ecs_service" "backend" {
   # Give migrations time + the IAM login role to exist before health flaps.
   health_check_grace_period_seconds = 120
 
+  deployment_circuit_breaker {
+    enable   = true
+    rollback = true
+  }
+
   network_configuration {
     subnets          = aws_subnet.private[*].id
     security_groups  = [aws_security_group.ecs.id]
@@ -210,6 +231,11 @@ resource "aws_ecs_service" "frontend" {
   task_definition = aws_ecs_task_definition.frontend.arn
   desired_count   = var.frontend_desired_count
   launch_type     = "FARGATE"
+
+  deployment_circuit_breaker {
+    enable   = true
+    rollback = true
+  }
 
   network_configuration {
     subnets          = aws_subnet.private[*].id

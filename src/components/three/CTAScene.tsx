@@ -82,6 +82,7 @@ export function CTAScene() {
     <Canvas
       camera={{ position: [0, 0, 8], fov: 45 }}
       dpr={[1, 1.5]}
+      gl={{ preserveDrawingBuffer: true }}
       style={{ position: 'absolute', inset: 0 }}
     >
       <ambientLight intensity={0.05} />

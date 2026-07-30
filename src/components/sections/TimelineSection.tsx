@@ -73,8 +73,8 @@ export function TimelineSection() {
             {milestones.map((milestone, i) => (
               <motion.div
                 key={milestone.phase}
-                initial={{ opacity: 0, x: i % 2 === 0 ? -50 : 50 }}
-                whileInView={{ opacity: 1, x: 0 }}
+                initial={{ opacity: 0, y: 24 }}
+                whileInView={{ opacity: 1, y: 0 }}
                 viewport={{ once: true, margin: '-100px' }}
                 transition={{ duration: 0.8, delay: 0.1, ease: [0.16, 1, 0.3, 1] }}
                 className={`relative flex items-center gap-8 ${

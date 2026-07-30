@@ -1,12 +1,26 @@
-import { precacheAndRoute, cleanupOutdatedCaches } from 'workbox-precaching';
+import { ExpirationPlugin } from 'workbox-expiration';
 import { registerRoute } from 'workbox-routing';
 import { CacheFirst, NetworkFirst } from 'workbox-strategies';
-import { ExpirationPlugin } from 'workbox-expiration';
 
-// ─── Workbox Precache (static assets from build manifest) ────────────────────
+// Bump the cache generation so activate removes pre-expiration v2 entries
+// already retained by long-lived Azure SPA installations.
+const STATIC_CACHE = 'neoh-static-v3';
+const PAGE_CACHE = 'neoh-pages-v3';
+const STATIC_CACHE_MAX_ENTRIES = 60;
+const STATIC_CACHE_MAX_AGE_SECONDS = 30 * 24 * 60 * 60;
 
-precacheAndRoute(self.__WB_MANIFEST);
-cleanupOutdatedCaches();
+self.addEventListener('install', () => self.skipWaiting());
+self.addEventListener('activate', (event) => {
+  event.waitUntil(
+    caches.keys()
+      .then((keys) => Promise.all(
+        keys
+          .filter((key) => key.startsWith('neoh-') && ![STATIC_CACHE, PAGE_CACHE].includes(key))
+          .map((key) => caches.delete(key)),
+      ))
+      .then(() => self.clients.claim()),
+  );
+});
 
 // ─── IndexedDB Predictive Cache Engine ───────────────────────────────────────
 
@@ -218,62 +232,62 @@ self.addEventListener('message', async (event) => {
 
 // ─── Fetch Intercept: Serve splats from IndexedDB if cached ──────────────────
 
-registerRoute(
-  ({ url }) => url.pathname.startsWith(SPLAT_BASE) && url.pathname.endsWith('.splat'),
-  async ({ request }) => {
-    const filename = request.url.split('/').pop();
-    const propertyId = filename.replace('.splat', '');
-
-    const cached = await idbGet(STORE_SPLATS, propertyId);
-    if (cached?.blob) {
-      return new Response(cached.blob, {
-        status: 200,
-        headers: {
-          'Content-Type': 'application/octet-stream',
-          'Content-Length': cached.blob.size.toString(),
-          'X-Oracle-Cache': 'predictive-hit',
-        },
-      });
-    }
-
-    const response = await fetch(request);
-
-    if (response.ok) {
-      const clone = response.clone();
-      const blob = await clone.blob();
-      idbPut(STORE_SPLATS, {
-        propertyId,
-        blob,
-        size: blob.size,
-        cachedAt: Date.now(),
-      }).catch(() => {});
-    }
-
-    return response;
+async function serveSplat(request) {
+  const filename = request.url.split('/').pop();
+  const propertyId = filename.replace('.splat', '');
+  const cached = await idbGet(STORE_SPLATS, propertyId);
+  if (cached?.blob) {
+    return new Response(cached.blob, {
+      status: 200,
+      headers: {
+        'Content-Type': 'application/octet-stream',
+        'Content-Length': cached.blob.size.toString(),
+        'X-Neoh-Cache': 'predictive-hit',
+      },
+    });
   }
-);
-
-// ─── Cache static assets aggressively ────────────────────────────────────────
+  const response = await fetch(request);
+  if (response.ok) {
+    const blob = await response.clone().blob();
+    idbPut(STORE_SPLATS, {
+      propertyId,
+      blob,
+      size: blob.size,
+      cachedAt: Date.now(),
+    }).catch(() => {});
+  }
+  return response;
+}
 
 registerRoute(
-  ({ request }) =>
-    request.destination === 'script' ||
-    request.destination === 'style' ||
-    request.destination === 'font',
+  ({ url }) => (
+    url.origin === self.location.origin
+    && url.pathname.startsWith(SPLAT_BASE)
+    && url.pathname.endsWith('.splat')
+  ),
+  ({ request }) => serveSplat(request),
+);
+
+registerRoute(
+  ({ request, url }) => (
+    url.origin === self.location.origin
+    && ['script', 'style', 'font'].includes(request.destination)
+  ),
   new CacheFirst({
-    cacheName: 'oracle-static-v1',
+    cacheName: STATIC_CACHE,
     plugins: [
-      new ExpirationPlugin({ maxEntries: 100, maxAgeSeconds: 30 * 24 * 60 * 60 }),
+      new ExpirationPlugin({
+        maxEntries: STATIC_CACHE_MAX_ENTRIES,
+        maxAgeSeconds: STATIC_CACHE_MAX_AGE_SECONDS,
+      }),
     ],
-  })
+  }),
 );
 
 registerRoute(
-  ({ request }) => request.destination === 'document',
-  new NetworkFirst({
-    cacheName: 'oracle-pages-v1',
-    plugins: [
-      new ExpirationPlugin({ maxEntries: 10, maxAgeSeconds: 7 * 24 * 60 * 60 }),
-    ],
-  })
+  ({ request, url }) => (
+    url.origin === self.location.origin
+    && request.destination === 'document'
+  ),
+  new NetworkFirst({ cacheName: PAGE_CACHE }),
 );

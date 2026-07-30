@@ -122,6 +122,78 @@
   z-index: 0;
 }
 
+.telemetry {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.72rem 1rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  background: rgba(255, 255, 255, 0.018);
+}
+
+.maoBadge {
+  border-radius: 999px;
+  padding: 0.34rem 0.65rem;
+  background: rgba(148, 163, 184, 0.1);
+  color: #cbd5e1;
+  font-size: 0.52rem;
+  font-weight: 750;
+  letter-spacing: 0.12em;
+}
+
+.maoBadge[data-threshold='green'] {
+  background: rgba(34, 197, 94, 0.14);
+  color: #86efac;
+}
+
+.maoBadge[data-threshold='amber'] {
+  background: rgba(245, 158, 11, 0.14);
+  color: #fcd34d;
+}
+
+.maoBadge[data-threshold='red'] {
+  background: rgba(239, 68, 68, 0.14);
+  color: #fca5a5;
+}
+
+.maoValue {
+  color: rgba(245, 240, 230, 0.78);
+  font-size: 0.69rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.objection {
+  position: relative;
+  z-index: 2;
+  display: grid;
+  gap: 0.28rem;
+  padding: 0.72rem 1rem;
+  border-bottom: 1px solid rgba(120, 200, 255, 0.12);
+  background: rgba(120, 200, 255, 0.035);
+}
+
+.objection strong {
+  color: rgba(140, 210, 255, 0.85);
+  font-size: 0.58rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.objection p {
+  margin: 0;
+  color: rgba(235, 242, 247, 0.83);
+  font-size: 0.72rem;
+  line-height: 1.48;
+}
+
+.objection small {
+  color: rgba(255, 255, 255, 0.36);
+  font-size: 0.57rem;
+}
+
 /* ─── Scrolling Log Body ─────────────────────────────────────────────────── */
 
 .body {
@@ -481,6 +553,11 @@
 /* ─── Responsive ─────────────────────────────────────────────────────────── */
 
 @media (max-width: 768px) {
+  .telemetry {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
   .body {
     max-height: 260px;
     padding: 1.1rem 0.9rem 1rem;

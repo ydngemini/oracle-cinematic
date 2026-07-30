@@ -118,11 +118,8 @@ def test_websocket_throttles_repeated_snapshot_requests(monkeypatch):
 
     monkeypatch.setattr(
         obs,
-        "decode_token",
-        lambda _token: {
-            "tenant_id": ADMIN.tenant_id,
-            "role": "platform_admin",
-        },
+        "require_context",
+        lambda _authorization: ADMIN,
     )
     monkeypatch.setattr(obs, "get_full_infrastructure_snapshot", snapshot)
     monkeypatch.setattr(obs.time, "monotonic", lambda: 100.0)
@@ -147,11 +144,8 @@ def test_websocket_throttles_repeated_snapshot_requests(monkeypatch):
 def test_websocket_rejects_oversized_commands(monkeypatch):
     monkeypatch.setattr(
         obs,
-        "decode_token",
-        lambda _token: {
-            "tenant_id": ADMIN.tenant_id,
-            "role": "platform_admin",
-        },
+        "require_context",
+        lambda _authorization: ADMIN,
     )
     ws = FakeWebSocket(["x" * (obs._WS_MAX_MESSAGE_BYTES + 1)])
 

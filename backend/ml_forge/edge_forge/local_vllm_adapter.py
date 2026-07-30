@@ -1,5 +1,5 @@
 """
-Edge Forge — local vLLM inference adapter with hot-swappable state LoRA lobes.
+Edge Forge — local vLLM inference adapter with hot-swappable state/agent LoRAs.
 
 EdgeUnderwriter holds ONE resident copy of the base Llama-3-8B model in GPU
 memory and dynamically attaches the correct per-state LoRA adapter
@@ -17,6 +17,7 @@ Requires:
 """
 
 import json
+import hashlib
 import os
 import time
 from typing import Any, Dict, List, Optional
@@ -71,7 +72,7 @@ UNDERWRITE_JSON_SCHEMA = {
 
 
 class EdgeUnderwriter:
-    """Single resident 8B base model with hot-swappable per-state LoRA adapters."""
+    """Single resident base model with validated state and agent LoRA adapters."""
 
     def __init__(
         self,
@@ -117,13 +118,17 @@ class EdgeUnderwriter:
         self.tokenizer = self.llm.get_tokenizer()
         self.adapter_root = adapter_root
 
-        # Registry of known state adapters and a monotonic id counter vLLM needs.
+        # Scoped registry and a monotonic id counter vLLM needs. Prefixing keys
+        # prevents an agent identifier such as "DE" from shadowing a state lobe.
         self._adapter_paths: Dict[str, str] = {}
         self._lora_ids: Dict[str, int] = {}
         self._next_lora_id = 1
 
-        # Currently mounted state adapter.
+        # Currently mounted adapter (one LoRA request per inference batch).
+        self._active_scope: Optional[str] = None
+        self._active_key: Optional[str] = None
         self._active_state: Optional[str] = None
+        self._active_agent_id: Optional[str] = None
         self._active_request: Optional[Any] = None
         self._adapter_metadata: Dict[str, dict] = {}
         self._telemetry = {
@@ -141,15 +146,30 @@ class EdgeUnderwriter:
     # Adapter registry
     # ------------------------------------------------------------------ #
     def _discover_adapters(self):
-        """Auto-register any per-state adapter dirs under adapter_root."""
+        """Auto-register states plus adapters under ``adapter_root/agents``."""
         if not os.path.isdir(self.adapter_root):
             return
         for name in os.listdir(self.adapter_root):
             path = os.path.join(self.adapter_root, name)
+            if name == "agents" and os.path.isdir(path):
+                for agent_id in os.listdir(path):
+                    agent_path = os.path.join(path, agent_id)
+                    if os.path.isfile(os.path.join(agent_path, "adapter_config.json")):
+                        self.register_agent_adapter(agent_id, agent_path)
+                continue
             if os.path.isdir(path) and os.path.exists(
                 os.path.join(path, "adapter_config.json")
             ):
                 self.register_adapter(name.upper(), path)
+
+    @staticmethod
+    def _registry_key(scope: str, identifier: str) -> str:
+        if scope not in {"state", "agent"}:
+            raise ValueError(f"unsupported adapter scope: {scope}")
+        identifier = str(identifier).strip()
+        if not identifier or len(identifier) > 200:
+            raise ValueError("adapter identifier must contain 1 to 200 characters")
+        return f"{scope}:{identifier.upper() if scope == 'state' else identifier}"
 
     def register_adapter(
         self,
@@ -158,8 +178,32 @@ class EdgeUnderwriter:
         *,
         model_version: Optional[str] = None,
     ):
-        """Register an adapter after base-model/rank compatibility checks."""
-        state_code = state_code.upper()
+        """Register a state adapter after base-model/rank compatibility checks."""
+        return self._register_scoped_adapter(
+            "state", state_code.upper(), adapter_path, model_version=model_version
+        )
+
+    def register_agent_adapter(
+        self,
+        agent_id: str,
+        adapter_path: str,
+        *,
+        model_version: Optional[str] = None,
+    ):
+        """Register an opt-in agent adapter without conflating it with a state model."""
+        return self._register_scoped_adapter(
+            "agent", agent_id, adapter_path, model_version=model_version
+        )
+
+    def _register_scoped_adapter(
+        self,
+        scope: str,
+        identifier: str,
+        adapter_path: str,
+        *,
+        model_version: Optional[str] = None,
+    ):
+        registry_key = self._registry_key(scope, identifier)
         if not os.path.exists(adapter_path):
             raise FileNotFoundError(f"Adapter path missing: {adapter_path}")
         config_path = os.path.join(adapter_path, "adapter_config.json")
@@ -181,15 +225,18 @@ class EdgeUnderwriter:
             raise ValueError(
                 f"adapter rank {rank} exceeds configured max_lora_rank {self.max_lora_rank}"
             )
-        self._adapter_paths[state_code] = adapter_path
-        self._adapter_metadata[state_code] = {
+        self._adapter_paths[registry_key] = adapter_path
+        self._adapter_metadata[registry_key] = {
+            "scope": scope,
+            "identifier": identifier.upper() if scope == "state" else identifier,
             "model_version": model_version or config.get("model_version") or "unversioned",
             "rank": rank,
             "base_model": expected_base or self.base_model,
         }
-        if state_code not in self._lora_ids:
-            self._lora_ids[state_code] = self._next_lora_id
+        if registry_key not in self._lora_ids:
+            self._lora_ids[registry_key] = self._next_lora_id
             self._next_lora_id += 1
+        return self
 
     # ------------------------------------------------------------------ #
     # Hot swap
@@ -201,30 +248,50 @@ class EdgeUnderwriter:
         LoRA cache (up to max_loras) — subsequent swaps back to a warm state
         are free. Returns self so calls can be chained.
         """
-        state_code = state_code.upper()
-        if state_code not in self._adapter_paths:
+        return self._hot_swap("state", state_code.upper())
+
+    def hot_swap_agent_lora(self, agent_id: str) -> "EdgeUnderwriter":
+        """Mount a consented, validated per-agent adapter for the next batch."""
+        return self._hot_swap("agent", agent_id)
+
+    def _hot_swap(self, scope: str, identifier: str) -> "EdgeUnderwriter":
+        registry_key = self._registry_key(scope, identifier)
+        if registry_key not in self._adapter_paths:
+            known = sorted(
+                metadata["identifier"]
+                for metadata in self._adapter_metadata.values()
+                if metadata["scope"] == scope
+            )
             raise KeyError(
-                f"No adapter registered for state '{state_code}'. "
-                f"Known: {sorted(self._adapter_paths)}"
+                f"No adapter registered for {scope} '{identifier}'. Known: {known}"
             )
 
-        if state_code == self._active_state:
+        if registry_key == self._active_key:
             return self  # already mounted
 
+        safe_name = hashlib.sha256(registry_key.encode("utf-8")).hexdigest()[:16]
         self._active_request = self._lora_request_class(
-            lora_name=f"{state_code.lower()}_underwriter",
-            lora_int_id=self._lora_ids[state_code],
-            lora_path=self._adapter_paths[state_code],
+            lora_name=f"{scope}_{safe_name}",
+            lora_int_id=self._lora_ids[registry_key],
+            lora_path=self._adapter_paths[registry_key],
         )
-        self._active_state = state_code
+        self._active_scope = scope
+        self._active_key = registry_key
+        self._active_state = identifier.upper() if scope == "state" else None
+        self._active_agent_id = identifier if scope == "agent" else None
         self._telemetry["swaps"] += 1
-        self._telemetry["active_adapter"] = state_code
-        self._telemetry["active_model_version"] = self._adapter_metadata[state_code]["model_version"]
+        self._telemetry["active_adapter_scope"] = scope
+        self._telemetry["active_adapter"] = identifier
+        self._telemetry["active_model_version"] = self._adapter_metadata[registry_key]["model_version"]
         return self
 
     @property
     def active_state(self) -> Optional[str]:
         return self._active_state
+
+    @property
+    def active_agent_id(self) -> Optional[str]:
+        return self._active_agent_id
 
     # ------------------------------------------------------------------ #
     # Inference
@@ -257,7 +324,7 @@ class EdgeUnderwriter:
         """
         if self._active_request is None:
             raise RuntimeError(
-                "No state adapter mounted — call hot_swap_state_lora(state) first."
+                "No adapter mounted — call hot_swap_state_lora() or hot_swap_agent_lora() first."
             )
 
         prompts = [self._build_prompt(p) for p in properties]
@@ -284,7 +351,9 @@ class EdgeUnderwriter:
             results.append(
                 {
                     "state": self._active_state,
-                    "model_version": self._adapter_metadata.get(self._active_state or "", {}).get("model_version"),
+                    "agent_id": self._active_agent_id,
+                    "adapter_scope": self._active_scope,
+                    "model_version": self._adapter_metadata.get(self._active_key or "", {}).get("model_version"),
                     "input": prop,
                     "raw": raw,
                     "parsed": parsed,
@@ -297,10 +366,17 @@ class EdgeUnderwriter:
 
     def canary_evaluate(self, state_code: str, cases: List[dict]) -> dict:
         """Run fixed cases and require parseable outputs plus expected verdicts."""
+        return self._canary_evaluate("state", state_code.upper(), cases)
+
+    def canary_evaluate_agent(self, agent_id: str, cases: List[dict]) -> dict:
+        """Canary an agent adapter before routing any production batch to it."""
+        return self._canary_evaluate("agent", agent_id, cases)
+
+    def _canary_evaluate(self, scope: str, identifier: str, cases: List[dict]) -> dict:
         if not cases:
             raise ValueError("at least one canary case is required")
         inputs = [dict(case.get("input") or {}) for case in cases]
-        outputs = self.hot_swap_state_lora(state_code).underwrite_batch(inputs)
+        outputs = self._hot_swap(scope, identifier).underwrite_batch(inputs)
         passed = 0
         details = []
         for case, output in zip(cases, outputs):
@@ -313,7 +389,11 @@ class EdgeUnderwriter:
             "passed": passed == len(cases),
             "pass_rate": round(passed / len(cases), 4),
             "cases": details,
-            "model_version": self._adapter_metadata[state_code.upper()]["model_version"],
+            "adapter_scope": scope,
+            "adapter_id": identifier,
+            "model_version": self._adapter_metadata[
+                self._registry_key(scope, identifier)
+            ]["model_version"],
         }
 
     def telemetry(self) -> dict:

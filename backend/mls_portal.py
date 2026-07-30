@@ -1,33 +1,9 @@
 """
-mls_portal.py — Neoh retail MLS browse portal (router prefix /api/mls).
+mls_portal.py — direct MLS browse portal (router prefix /api/mls).
 
-A quota-safe public browse surface over ``oracle_mls_listings``. RentCast's free
-tier is **50 calls/MONTH total**, so this NEVER hits RentCast on every browse.
-Instead:
-
-  1. A browse request resolves the searched AREA (zip, or city+state, or state).
-  2. If that area has NO fresh fetch marker (di_cache, 24h TTL) we make ONE
-     RentCast ``GET /v1/listings/sale`` call for the whole area, UPSERT the
-     results into ``oracle_mls_listings``, and stamp the area marker — even when
-     the area returns zero listings (a negative-cache, so an empty area is not
-     re-fetched 50 times and burns the monthly quota).
-  3. EVERY browse then serves straight from ``oracle_mls_listings`` with the
-     caller's filters applied in SQL. Price/beds/property-type filters never
-     trigger a new fetch — the area is fetched once, then filtered locally.
-
-Quota guards (defense in depth):
-  * Per-request: there is exactly one RentCast call site in the fetch path.
-  * Per-area: the di_cache marker caps fetches to ~1 per area per 24h.
-  * Per-process: a per-area asyncio.Lock collapses concurrent same-area misses
-    onto a single provider hit (no double-spend under load).
-  * Hard stop: no ``RENTCAST_API_KEY`` ⇒ never fetch, serve cache + degraded.
-  * On 429 (quota exhausted) we back off for the full 24h; on a transient error
-    we back off 1h. Either way the request still serves whatever is cached.
-
-This is the same table the RESO feed (data_integrations/listings_feed.py) writes,
-so when a real RESO feed is configured its rows appear here automatically and the
-RentCast bridge simply stops being the only source. Cached MLS rows are written
-under the platform/ingest tenant, mirroring listings_feed.py.
+The browse surface reads only normalized rows from authorized direct MLS/RESO
+board feeds. It never calls a listing aggregator, scrapes a member/consumer
+portal, or returns quarantined historical ``mls_id='rentcast'`` rows.
 
 Routes:
   GET /api/mls/search          — paged, filtered browse (GET; the existing
@@ -42,58 +18,30 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import math
-import os
 import re
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Optional
 
-import aiohttp
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
-from db.connection import tenant_tx, get_pool
-from tenancy import TenantContext, Role, require_context
+from db.connection import tenant_tx
+from tenancy import TenantContext, require_context
 from marketplace_engine import rank_buyer_request
+from data_coverage import summary as data_coverage_summary
 
 logger = logging.getLogger("oracle.mls_portal")
 
 router = APIRouter(prefix="/api/mls", tags=["MLS Portal"])
 
-# ── Provider / cache constants ────────────────────────────────────────────────
-RENTCAST_BASE = "https://api.rentcast.io/v1"
-REQUEST_TIMEOUT = 20
-REQUEST_ATTEMPTS = 2
 LISTING_FRESH_SECONDS = 24 * 3600
 LISTING_EXPIRED_SECONDS = 72 * 3600
 
-# Source discriminator for rows this portal caches. The (mls_id, mls_number)
-# UNIQUE key makes the upsert idempotent; "rentcast" namespaces our rows away
-# from any real RESO board id, so they never collide with a future live feed.
-MLS_SOURCE_ID = "rentcast"
-
-PAGE_SIZE = 24                     # listing cards per page
-RENTCAST_FETCH_LIMIT = 500        # RentCast max per call — one precious call, grab the most
-AREA_TTL = 24 * 3600              # fresh-area window: don't re-fetch within 24h
-QUOTA_TTL = 24 * 3600            # 429 backoff: quota exhausted, hard back-off for the day
-ERROR_TTL = 3600                 # transient-error backoff: retry the area in 1h
-
-PLATFORM_TENANT_ID = "00000000-0000-0000-0000-000000000000"
+PAGE_SIZE = 24
+THIRD_PARTY_LISTING_SOURCE_IDS = frozenset({"rentcast"})
+PUBLIC_PROPERTY_COVERAGE = data_coverage_summary()["property"]
 
 _STATE_RE = re.compile(r"^[A-Za-z]{2}$")
-_ZIP_RE = re.compile(r"^\d{5}$")
-
-# Per-area locks: collapse concurrent same-area cache-misses onto one fetch so two
-# simultaneous browsers of the same city never spend two RentCast calls.
-_AREA_LOCKS: dict[str, asyncio.Lock] = {}
-
-
-class _RentCastError(Exception):
-    """Raised on a non-recoverable RentCast response; carries the HTTP status."""
-
-    def __init__(self, http_status: int, message: str = "") -> None:
-        super().__init__(message or f"RentCast HTTP {http_status}")
-        self.http_status = http_status
 
 
 # ── small coercers (mirror data_integrations/listings_feed.py) ────────────────
@@ -105,312 +53,12 @@ def _num(v: Any) -> Optional[float]:
         return None
 
 
-def _int(v: Any) -> Optional[int]:
-    f = _num(v)
-    return int(f) if f is not None else None
-
-
 def _iso(v: Any) -> Optional[str]:
     if v is None:
         return None
     if isinstance(v, (datetime,)):
         return v.isoformat()
     return str(v)
-
-
-def _date(v: Any) -> Optional[str]:
-    """ISO timestamps → date part for a SQL date column."""
-    if not v:
-        return None
-    return str(v)[:10]
-
-
-def _lock_for(key: str) -> asyncio.Lock:
-    lock = _AREA_LOCKS.get(key)
-    if lock is None:
-        lock = asyncio.Lock()
-        _AREA_LOCKS[key] = lock
-    return lock
-
-
-def _ingest_ctx() -> TenantContext:
-    """Platform-admin context for writing cached MLS rows — same idiom as
-    listings_feed.py. The table has no tenant column/RLS, but we still write
-    under the platform/ingest tenant so attribution is consistent."""
-    tenant = os.getenv("ORACLE_INGEST_TENANT_ID") or PLATFORM_TENANT_ID
-    return TenantContext(agent_id="mls-portal", tenant_id=tenant, role=Role.PLATFORM_ADMIN)
-
-
-# ── area resolution ───────────────────────────────────────────────────────────
-
-def _resolve_area(city: Optional[str], state: Optional[str], zip_code: Optional[str]) -> dict:
-    """Normalize the search location into a fetch plan.
-
-    Returns {"key", "rentcast_params", "fetchable"}. ``fetchable`` is False when
-    we lack enough to safely query RentCast (RentCast needs a zip, or a state —
-    a bare city would otherwise pull the wrong city nationwide / waste a call).
-    """
-    city_n = (city or "").strip()
-    state_n = (state or "").strip().upper()
-    zip_n = (zip_code or "").strip()
-
-    if zip_n and _ZIP_RE.match(zip_n):
-        return {
-            "key": f"zip:{zip_n}",
-            "rentcast_params": {"zipCode": zip_n},
-            "fetchable": True,
-        }
-    if state_n and _STATE_RE.match(state_n) and city_n:
-        return {
-            "key": f"cs:{state_n}:{city_n.lower()}",
-            "rentcast_params": {"city": city_n, "state": state_n},
-            "fetchable": True,
-        }
-    if state_n and _STATE_RE.match(state_n):
-        return {
-            "key": f"st:{state_n}",
-            "rentcast_params": {"state": state_n},
-            "fetchable": True,
-        }
-    return {"key": "", "rentcast_params": {}, "fetchable": False}
-
-
-# ── RentCast fetch + normalize ────────────────────────────────────────────────
-
-async def _fetch_rentcast_listings(rentcast_params: dict) -> list[dict]:
-    """ONE RentCast GET /v1/listings/sale call. Returns the raw listing array.
-
-    Raises _RentCastError on 429 (quota) or any non-200, so the caller can choose
-    its back-off TTL. Never returns partial garbage."""
-    key = os.environ.get("RENTCAST_API_KEY", "")
-    if not key:
-        raise _RentCastError(0, "RENTCAST_API_KEY not configured")
-
-    params = {**rentcast_params, "status": "Active", "limit": str(RENTCAST_FETCH_LIMIT)}
-    headers = {"X-Api-Key": key, "accept": "application/json"}
-    timeout = aiohttp.ClientTimeout(total=REQUEST_TIMEOUT, connect=8, sock_read=15)
-    data: Any = None
-    for attempt in range(REQUEST_ATTEMPTS):
-        try:
-            async with aiohttp.ClientSession(timeout=timeout) as session:
-                async with session.get(f"{RENTCAST_BASE}/listings/sale", params=params, headers=headers) as resp:
-                    if resp.status == 429:
-                        logger.warning("RentCast listings/sale: 429 quota/rate limit for %s", params)
-                        raise _RentCastError(429, "RentCast rate/quota limit")
-                    if resp.status in {401, 403}:
-                        logger.warning("RentCast listings/sale: %s — API key rejected.", resp.status)
-                        raise _RentCastError(resp.status, "RentCast API key rejected")
-                    if resp.status >= 500 and attempt + 1 < REQUEST_ATTEMPTS:
-                        await asyncio.sleep(0.4 * (2**attempt))
-                        continue
-                    if resp.status != 200:
-                        logger.warning("RentCast listings/sale: HTTP %s for %s", resp.status, params)
-                        raise _RentCastError(resp.status, f"RentCast HTTP {resp.status}")
-                    data = await resp.json()
-                    break
-        except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
-            if attempt + 1 >= REQUEST_ATTEMPTS:
-                raise _RentCastError(503, "RentCast connection failed") from exc
-            await asyncio.sleep(0.4 * (2**attempt))
-    # RentCast returns a JSON array for this endpoint.
-    if isinstance(data, list):
-        return data
-    if isinstance(data, dict):  # be tolerant if they ever wrap it
-        return data.get("listings") or data.get("data") or []
-    return []
-
-
-def _normalize_rentcast(item: dict) -> Optional[dict]:
-    """Map a RentCast sale-listing to the oracle_mls_listings column shape.
-
-    Keyed by RentCast's stable ``id`` slug as mls_number so re-fetches upsert in
-    place. Returns None for records we can't key (no id/mlsNumber)."""
-    g = item.get
-    mls_number = str(g("id") or g("mlsNumber") or "").strip()
-    if not mls_number:
-        return None
-
-    # RentCast exposes a single float `bathrooms` (e.g. 2.5). Split into the
-    # full/half columns the table carries.
-    baths = _num(g("bathrooms"))
-    baths_full = int(math.floor(baths)) if baths is not None else None
-    baths_half = (1 if (baths - math.floor(baths)) >= 0.5 else 0) if baths is not None else None
-
-    hoa = g("hoa") or {}
-    hoa_fee = _num(hoa.get("fee")) if isinstance(hoa, dict) else None
-
-    return {
-        "mls_id": MLS_SOURCE_ID,
-        "mls_number": mls_number,
-        "address": (g("formattedAddress") or g("addressLine1") or "").strip(),
-        "city": (g("city") or "").strip(),
-        "state_code": (g("state") or "")[:2].upper(),
-        "zip_code": (g("zipCode") or "").strip(),
-        "county": (g("county") or "").strip(),
-        "latitude": _num(g("latitude")),
-        "longitude": _num(g("longitude")),
-        "list_price": _num(g("price")) or 0.0,
-        "orig_list_price": None,
-        "status": (g("status") or "active").strip().lower().replace(" ", "_"),
-        "property_type": (g("propertyType") or "residential_1_4").strip(),
-        "beds": _int(g("bedrooms")),
-        "baths_full": baths_full,
-        "baths_half": baths_half,
-        "sqft": _int(g("squareFootage")),
-        "lot_sqft": _int(g("lotSize")),
-        "year_built": _int(g("yearBuilt")),
-        "hoa_monthly": hoa_fee,
-        "days_on_market": _int(g("daysOnMarket")),
-        "list_date": _date(g("listedDate")),
-        "close_date": None,
-        "close_price": None,
-        "description": g("description"),
-    }
-
-
-_UPSERT = """
-    INSERT INTO oracle_mls_listings (
-        mls_id, mls_number, address, city, state_code, zip_code, county,
-        latitude, longitude, list_price, orig_list_price, status, property_type,
-        beds, baths_full, baths_half, sqft, lot_sqft, year_built, hoa_monthly,
-        days_on_market, list_date, close_date, close_price, description, last_updated
-    ) VALUES (
-        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,
-        $21,$22,$23,$24,$25, now()
-    )
-    ON CONFLICT (mls_id, mls_number) DO UPDATE SET
-        address=EXCLUDED.address, city=EXCLUDED.city, state_code=EXCLUDED.state_code,
-        zip_code=EXCLUDED.zip_code, county=EXCLUDED.county,
-        latitude=EXCLUDED.latitude, longitude=EXCLUDED.longitude,
-        list_price=EXCLUDED.list_price, orig_list_price=EXCLUDED.orig_list_price,
-        status=EXCLUDED.status, property_type=EXCLUDED.property_type,
-        beds=EXCLUDED.beds, baths_full=EXCLUDED.baths_full, baths_half=EXCLUDED.baths_half,
-        sqft=EXCLUDED.sqft, lot_sqft=EXCLUDED.lot_sqft, year_built=EXCLUDED.year_built,
-        hoa_monthly=EXCLUDED.hoa_monthly, days_on_market=EXCLUDED.days_on_market,
-        list_date=EXCLUDED.list_date, close_date=EXCLUDED.close_date,
-        close_price=EXCLUDED.close_price, description=EXCLUDED.description,
-        last_updated=now()
-"""
-
-
-async def _upsert_listings(records: list[dict]) -> int:
-    """Idempotent bulk upsert of normalized rows under the ingest tenant."""
-    if not records:
-        return 0
-    written = 0
-    async with tenant_tx(_ingest_ctx()) as conn:
-        for rec in records:
-            if not rec or not rec.get("mls_number"):
-                continue
-            await conn.execute(
-                _UPSERT,
-                rec["mls_id"], rec["mls_number"], rec["address"], rec["city"],
-                rec["state_code"], rec["zip_code"], rec["county"], rec["latitude"],
-                rec["longitude"], rec["list_price"], rec["orig_list_price"], rec["status"],
-                rec["property_type"], rec["beds"], rec["baths_full"], rec["baths_half"],
-                rec["sqft"], rec["lot_sqft"], rec["year_built"], rec["hoa_monthly"],
-                rec["days_on_market"], rec["list_date"], rec["close_date"],
-                rec["close_price"], rec["description"],
-            )
-            written += 1
-    return written
-
-
-# ── di_cache area marker (durable negative cache + quota guard) ────────────────
-
-def _cache():
-    """PG-backed IntegrationCache, or None outside app context. Best-effort:
-    a cache failure must never break a browse (it just means we may re-fetch)."""
-    pool = get_pool()
-    if pool is None:
-        return None
-    try:
-        from data_integrations.cache import IntegrationCache
-        return IntegrationCache(pool)
-    except Exception as e:  # noqa: BLE001
-        logger.debug("MLS portal cache unavailable: %s", e)
-        return None
-
-
-async def _area_marker_get(key: str) -> Optional[dict]:
-    cache = _cache()
-    if cache is None or not key:
-        return None
-    try:
-        return await cache.get(f"mlsportal:area:{key}")
-    except Exception as e:  # noqa: BLE001
-        logger.debug("MLS portal marker GET skipped for %s: %s", key, e)
-        return None
-
-
-async def _area_marker_set(key: str, payload: dict, ttl: int) -> None:
-    cache = _cache()
-    if cache is None or not key:
-        return
-    try:
-        await cache.set(f"mlsportal:area:{key}", payload, ttl)
-    except Exception as e:  # noqa: BLE001
-        logger.debug("MLS portal marker SET skipped for %s: %s", key, e)
-
-
-async def _ensure_area_cached(area: dict) -> tuple[bool, Optional[str]]:
-    """Ensure the area has been fetched from RentCast within the TTL.
-
-    Returns (degraded, notice). Makes AT MOST ONE RentCast call. Never raises —
-    any provider failure degrades to serving whatever is already cached."""
-    key = area["key"]
-    if not area["fetchable"]:
-        # Not enough location to fetch safely; serve cache only (not degraded —
-        # the empty/area-needed state is a normal UX, not a provider failure).
-        return (False, None)
-
-    if not os.environ.get("RENTCAST_API_KEY"):
-        return (True, "RentCast not configured — showing cached listings only.")
-
-    # Fast path: a fresh marker means we already fetched this area recently.
-    if await _area_marker_get(key) is not None:
-        return (False, None)
-
-    # Serialize same-area work so concurrent misses share one provider call.
-    async with _lock_for(key):
-        if await _area_marker_get(key) is not None:
-            return (False, None)
-
-        try:
-            raw = await _fetch_rentcast_listings(area["rentcast_params"])
-        except _RentCastError as e:
-            if e.http_status == 429:
-                # Quota/rate exhausted — back off hard for the day.
-                await _area_marker_set(key, {"status": "quota", "at": _iso(datetime.now(timezone.utc))}, QUOTA_TTL)
-                return (True, "RentCast quota reached — showing cached listings.")
-            if e.http_status in (401, 403):
-                # Persistent auth/plan rejection — NOT transient. Back off the full
-                # day so we don't pointlessly re-hit the provider every hour.
-                await _area_marker_set(key, {"status": "unauthorized", "code": e.http_status, "at": _iso(datetime.now(timezone.utc))}, QUOTA_TTL)
-                return (True, "RentCast listings not authorized for this key — showing cached listings.")
-            # Transient/other error — short back-off so we recover within the hour.
-            await _area_marker_set(key, {"status": "error", "code": e.http_status, "at": _iso(datetime.now(timezone.utc))}, ERROR_TTL)
-            return (True, "Live listing service unavailable — showing cached listings.")
-        except Exception as e:  # noqa: BLE001 — provider is best-effort
-            logger.warning("RentCast listings fetch failed for %s: %s", key, e)
-            await _area_marker_set(key, {"status": "error", "at": _iso(datetime.now(timezone.utc))}, ERROR_TTL)
-            return (True, "Live listing service unavailable — showing cached listings.")
-
-        records = [r for r in (_normalize_rentcast(it) for it in raw) if r]
-        try:
-            written = await _upsert_listings(records)
-        except Exception as e:  # noqa: BLE001 — never let a write error break the browse
-            logger.warning("MLS portal upsert failed for %s: %s", key, e)
-            written = 0
-
-        # Stamp the marker even on a zero-result area (negative cache) so we don't
-        # re-spend the monthly quota re-querying an empty market.
-        await _area_marker_set(
-            key,
-            {"status": "ok", "fetched": len(raw), "written": written, "at": _iso(datetime.now(timezone.utc))},
-            AREA_TTL,
-        )
-        return (False, None)
 
 
 # ── serializer ────────────────────────────────────────────────────────────────
@@ -463,7 +111,7 @@ def _listing_json(r: dict) -> dict:
         "description": r.get("description"),
         "photos": photos,
         "cover_url": photos[0] if photos else None,
-        "source": "rentcast" if r.get("mls_id") == MLS_SOURCE_ID else (r.get("mls_id") or "mls"),
+        "source": r.get("mls_id") or "direct_mls",
         "last_updated": _iso(updated_at),
         "freshness": {
             "status": freshness,
@@ -549,17 +197,9 @@ async def mls_portal_search(
     page: int = Query(default=1, ge=1, le=1000),
     ctx: TenantContext = Depends(require_context),
 ) -> dict:
-    """Paged, filtered browse served from ``oracle_mls_listings``.
-
-    The searched area is fetched from RentCast at most once per 24h (then cached);
-    all filtering/pagination runs locally against the table — browsing is free."""
-    area = _resolve_area(city, state, zip)
-
-    # Bridge step: make sure the area is populated (≤1 RentCast call), then serve.
-    degraded, notice = await _ensure_area_cached(area)
-
-    conditions: list[str] = ["1 = 1"]
-    args: list[Any] = []
+    """Paged browse over direct, authorized MLS/RESO rows already ingested."""
+    conditions: list[str] = ["mls_id <> ALL($1::text[])"]
+    args: list[Any] = [list(THIRD_PARTY_LISTING_SOURCE_IDS)]
 
     def _arg(v: Any) -> str:
         args.append(v)
@@ -586,7 +226,8 @@ async def mls_portal_search(
     count_q = f"SELECT COUNT(*) AS n FROM oracle_mls_listings WHERE {where}"
     data_q = (
         f"SELECT * FROM oracle_mls_listings WHERE {where} "
-        f"ORDER BY last_updated DESC NULLS LAST, list_price DESC NULLS LAST "
+        f"ORDER BY last_updated DESC NULLS LAST, list_price DESC NULLS LAST, "
+        f"mls_id ASC, mls_number ASC "
         f"LIMIT {_arg(PAGE_SIZE)} OFFSET {_arg(offset)}"
     )
 
@@ -602,15 +243,17 @@ async def mls_portal_search(
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Memory Core offline.")
 
     listings = [_listing_json(r) for r in rows]
+    sources = sorted({item["source"] for item in listings if item.get("source")})
     return {
         "listings": listings,
         "total": total,
         "page": page,
         "page_size": PAGE_SIZE,
         "has_more": offset + len(listings) < total,
-        "degraded": degraded,
-        "source": "RentCast (cached)",
-        "notice": notice,
+        "degraded": False,
+        "source": "combined authorized listing cache",
+        "sources": sources,
+        "notice": None,
         "freshness": _freshness_summary(listings),
     }
 
@@ -629,7 +272,12 @@ async def mls_portal_listing(
     try:
         async with tenant_tx(ctx) as conn:
             row = await conn.fetchrow(
-                "SELECT * FROM oracle_mls_listings WHERE id = $1::uuid", listing_id
+                """
+                SELECT * FROM oracle_mls_listings
+                 WHERE id = $1::uuid AND mls_id <> ALL($2::text[])
+                """,
+                listing_id,
+                list(THIRD_PARTY_LISTING_SOURCE_IDS),
             )
             listing = _listing_json(dict(row)) if row else None
             matches = await _buyer_matches(conn, listing) if listing else []
@@ -659,8 +307,10 @@ async def mls_portal_health(
                                          AND last_updated >= now()-interval '72 hours') AS stale_count,
                        COUNT(*) FILTER (WHERE last_updated < now()-interval '72 hours') AS expired_count
                   FROM oracle_mls_listings
+                 WHERE mls_id <> ALL($1::text[])
                  GROUP BY mls_id ORDER BY mls_id
-                """
+                """,
+                list(THIRD_PARTY_LISTING_SOURCE_IDS),
             )
     except RuntimeError as exc:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, f"Memory Core offline ({exc})")
@@ -716,66 +366,63 @@ async def mls_portal_health(
     }
 
 
-# ── Pipeline source: browse the REAL harvested leads as listings ──────────────
+# ── Shared public-property catalog ───────────────────────────────────────────
 #
-# The agent-staged ``listings`` table and ``oracle_mls_listings`` are empty until
-# a RESO feed / RentCast key is live, but the ``leads`` table holds the 240k+ real
-# harvested parcels. The pipeline routes expose those leads as browsable listing
-# cards — the SAME card JSON shape MarketplaceBrowse consumes — with extra
-# distress-signal fields (motivation score, distress flags, absentee/owner).
-#
-# RLS is enforced exactly like /search: tenant_tx(ctx) scopes ``leads`` to the
-# caller's tenant (platform_admin sees the whole forest). All location/price/bed
-# filters and pagination run in SQL — no provider call, no fabrication. When a
-# lead carries no positive ``estimated_value`` the price is returned as null so
-# the UI shows "unpriced" rather than a made-up number.
+# Public assessor/parcel facts live in `public_property_records`, separate from
+# tenant-private CRM leads.  The catalog contains only an explicit field
+# allow-list and is read-only for ordinary users.  Linking a catalog record to a
+# client creates a private tenant lead in crm.py; browsing never exposes another
+# tenant's notes, contacts, underwriting, motivation, or deal state.
 
-# Lead → listing-card projection. Payload fields are extracted in SQL so we never
-# have to decode the whole jsonb blob in Python; distress_flags is materialized as
-# a text[] (asyncpg → list[str]); price/equity are regex-guarded numeric casts so
-# a malformed payload value can never break the query.
-_PIPELINE_SELECT = """
+_PUBLIC_RECORD_SELECT = """
     id::text                                   AS id,
+    id::text                                   AS public_record_id,
     parcel_id,
     state,
-    motivation_score,
-    dossier_status,
-    beds,
-    baths,
-    sqft,
-    created_at,
-    updated_at,
-    payload->>'address'                        AS address,
-    payload->>'city'                           AS city,
-    payload->>'zip_code'                       AS zip,
-    payload->>'county'                         AS county,
-    payload->>'owner_name'                     AS owner_name,
-    payload->>'owner_type'                     AS owner_type,
-    payload->>'last_sale_date'                 AS last_sale_date,
-    -- NULLIF guards leads whose harvester wrote '' (empty string) for this flag:
-    -- ''::boolean errors ("invalid input syntax for type boolean") and COALESCE
-    -- can't catch it because the cast fails first. NULLIF('','')->NULL->false.
-    COALESCE(NULLIF(payload->>'is_absentee_owner', '')::boolean, false) AS is_absentee,
-    CASE WHEN payload->>'estimated_value' ~ '^[0-9.]+$'
-         THEN NULLIF((payload->>'estimated_value')::numeric, 0)
-         ELSE NULL END                         AS price,
-    CASE WHEN payload->>'equity_percent' ~ '^-?[0-9.]+$'
-         THEN (payload->>'equity_percent')::numeric
-         ELSE NULL END                         AS equity_percent,
-    ARRAY(
-        SELECT jsonb_array_elements_text(
-            CASE WHEN jsonb_typeof(payload->'distress_flags') = 'array'
-                 THEN payload->'distress_flags' ELSE '[]'::jsonb END)
-    )                                          AS distress_flags
+    COALESCE(
+        county,
+        CASE
+            WHEN coverage_scope LIKE 'county:%'
+            THEN substring(coverage_scope FROM 8)
+        END
+    )                                           AS county,
+    city,
+    zip_code                                   AS zip,
+    address,
+    owner_name,
+    owner_type,
+    public_record_value                        AS price,
+    last_sale_price,
+    reported_record_date                       AS last_sale_date,
+    bedrooms                                   AS beds,
+    bathrooms                                  AS baths,
+    rooms,
+    year_built,
+    property_class,
+    zoning_district,
+    land_use,
+    lot_area_sqft,
+    building_area_sqft                         AS sqft,
+    latitude,
+    longitude,
+    source_key,
+    source_name,
+    coverage_scope,
+    detail_level,
+    observed_fields,
+    verification_required,
+    record_refreshed_at,
+    dataset_version,
+    source_metadata
 """
 
 
-def _pipeline_listing_json(r: dict) -> dict:
-    """Map a leads row → the listing-card JSON shape (+ pipeline-only fields)."""
-    flags = list(r.get("distress_flags") or [])
-    baths = _num(r.get("baths"))
-    return {
+def _public_record_json(r: dict) -> dict:
+    """Map one allow-listed catalog row to the existing property-card contract."""
+    record = {
         "id": r.get("id"),
+        "public_record_id": r.get("public_record_id") or r.get("id"),
+        "lead_id": None,
         "mls_number": r.get("parcel_id") or "",
         "parcel_id": r.get("parcel_id") or "",
         "address": r.get("address") or "",
@@ -783,37 +430,147 @@ def _pipeline_listing_json(r: dict) -> dict:
         "state": r.get("state") or "",
         "zip": r.get("zip") or "",
         "county": r.get("county") or "",
-        "latitude": None,
-        "longitude": None,
-        "price": _num(r.get("price")),          # null when no estimated_value → UI: unpriced
+        "latitude": _num(r.get("latitude")),
+        "longitude": _num(r.get("longitude")),
+        "price": _num(r.get("price")),
         "orig_price": None,
-        "status": r.get("dossier_status") or "pipeline",
-        "property_type": None,
-        "beds": r.get("beds"),
-        "baths": baths,
-        "sqft": r.get("sqft"),
-        "lot_sqft": None,
-        "year_built": None,
+        "status": "public_record",
+        "property_type": r.get("land_use") or r.get("property_class"),
+        "beds": _num(r.get("beds")),
+        "baths": _num(r.get("baths")),
+        "sqft": _num(r.get("sqft")),
+        "lot_sqft": _num(r.get("lot_area_sqft")),
+        "year_built": int(r["year_built"]) if r.get("year_built") is not None else None,
+        "rooms": _num(r.get("rooms")),
+        "property_class": r.get("property_class"),
+        "last_sale_price": _num(r.get("last_sale_price")),
         "hoa_monthly": None,
         "days_on_market": None,
         "list_date": None,
         "description": None,
         "photos": [],
         "cover_url": None,
-        "source": "pipeline",
-        "last_updated": _iso(r.get("updated_at")),
-        # ── pipeline-specific distress signals ──
-        "motivation_score": r.get("motivation_score"),
-        "distress_flags": flags,
-        "is_absentee": bool(r.get("is_absentee")),
+        "source": r.get("source_name") or r.get("source_key") or "public property record",
+        "source_key": r.get("source_key"),
+        "last_updated": _iso(r.get("record_refreshed_at")),
         "owner_name": r.get("owner_name") or "",
         "owner_type": r.get("owner_type") or "",
-        "equity_percent": _num(r.get("equity_percent")),
         "last_sale_date": _iso(r.get("last_sale_date")),
+        "zoning_district": r.get("zoning_district"),
+        "land_use": r.get("land_use"),
+        "detail_level": r.get("detail_level") or "limited",
+        "observed_fields": list(r.get("observed_fields") or []),
+        "verification_required": r.get("verification_required") is not False,
+        "coverage_scope": r.get("coverage_scope") or "source scope not declared",
+        "dataset_version": r.get("dataset_version"),
+        "match_type": r.get("match_type") or "browse",
+        "match_score": int(r.get("match_score") or 0),
+    }
+    required_facts = {
+        "assessor_value": record["price"],
+        "last_recorded_sale": record["last_sale_price"],
+        "bedrooms": record["beds"],
+        "bathrooms": record["baths"],
+        "square_feet": record["sqft"],
+        "lot_square_feet": record["lot_sqft"],
+        "year_built": record["year_built"],
+        "total_rooms": record["rooms"],
+    }
+    observed = [key for key, value in required_facts.items() if value is not None]
+    missing = [key for key, value in required_facts.items() if value is None]
+    metadata = r.get("source_metadata")
+    field_sources = (
+        metadata.get("published_field_sources", {})
+        if isinstance(metadata, dict)
+        else {}
+    )
+    record["fact_coverage"] = {
+        "observed": observed,
+        "missing": missing,
+        "observed_count": len(observed),
+        "required_count": len(required_facts),
+        "complete": not missing,
+        "source_fields": field_sources if isinstance(field_sources, dict) else {},
+        "policy": "source_published_only",
+    }
+    return record
+
+
+def _public_coverage_json() -> dict[str, Any]:
+    return {
+        "jurisdictions_live": int(PUBLIC_PROPERTY_COVERAGE["live"]),
+        "statewide_jurisdictions": int(PUBLIC_PROPERTY_COVERAGE["live_statewide"]),
+        "locally_scoped_jurisdictions": int(PUBLIC_PROPERTY_COVERAGE["city_scoped"]),
+        "geometry_only_jurisdictions": int(PUBLIC_PROPERTY_COVERAGE["geometry_only"]),
+        "nationwide_complete": (
+            int(PUBLIC_PROPERTY_COVERAGE["live_statewide"])
+            == int(PUBLIC_PROPERTY_COVERAGE["live"])
+            and int(PUBLIC_PROPERTY_COVERAGE["geometry_only"]) == 0
+        ),
+        "notice": (
+            "Results include every record currently harvested from configured public sources. "
+            "Some states are county- or city-scoped, and source fields vary by jurisdiction."
+        ),
     }
 
 
-@router.get("/pipeline", summary="Browse the real harvested lead pipeline as listings")
+async def _reconcile_sparse_cook_record(
+    *,
+    query_text: str,
+    rows: list[dict[str, Any]],
+    ctx: TenantContext,
+) -> bool:
+    """Replace an address-only Chicago violation hit with its assessor PIN."""
+    if not re.match(r"^\s*\d{1,7}\s+\S+", query_text):
+        return False
+    sparse = next(
+        (
+            row for row in rows
+            if row.get("source_key") == "chicago_building_violations"
+            and row.get("address")
+        ),
+        None,
+    )
+    if not sparse:
+        return False
+    if any(
+        row.get("source_key") == "regional_parcels_il"
+        and row.get("address")
+        for row in rows
+    ):
+        return False
+    try:
+        from harvesters.base import upsert_public_records
+        from harvesters.il_cook import IllinoisCookHarvester
+
+        harvester = IllinoisCookHarvester(
+            ctx.tenant_id,
+            agent_id="cook-address-reconciler",
+        )
+        records = await asyncio.wait_for(
+            harvester.lookup_address(str(sparse["address"])),
+            timeout=30,
+        )
+        if not records:
+            return False
+        await upsert_public_records(
+            ctx.tenant_id,
+            "cook-address-reconciler",
+            records,
+            metrics=harvester.metrics,
+        )
+        return True
+    except Exception as exc:  # noqa: BLE001 - sparse result still remains usable
+        logger.warning(
+            "Cook County exact-address reconciliation failed for %r: %s",
+            str(sparse.get("address"))[:120],
+            exc,
+        )
+        return False
+
+
+@router.get("/pipeline", include_in_schema=False)
+@router.get("/public-records", summary="Search the shared source-backed property catalog")
 async def mls_pipeline_search(
     city: Optional[str] = Query(default=None, max_length=120),
     state: Optional[str] = Query(default=None, max_length=2),
@@ -822,69 +579,114 @@ async def mls_pipeline_search(
     max_price: Optional[float] = Query(default=None, ge=0),
     beds: Optional[int] = Query(default=None, ge=0, le=20),
     q: Optional[str] = Query(default=None, max_length=160),
-    page: int = Query(default=1, ge=1, le=1000),
+    page: int = Query(default=1, ge=1, le=10_000),
     ctx: TenantContext = Depends(require_context),
 ) -> dict:
-    """Paged, filtered browse served from the ``leads`` table (RLS-scoped).
-
-    Highest-motivation leads first. Filtering/pagination is pure SQL — no provider
-    call. This is where the real harvested inventory lives, so it has data even
-    when the MLS/RentCast surfaces are empty."""
-    conditions: list[str] = ["1 = 1"]
+    """Accurate paged search over shared, allow-listed public property facts."""
+    conditions: list[str] = []
     args: list[Any] = []
 
     def _arg(v: Any) -> str:
         args.append(v)
         return f"${len(args)}"
 
-    if state and _STATE_RE.match(state.strip()):
-        conditions.append(f"state = {_arg(state.strip().upper())}")
+    normalized_state = (
+        state.strip().upper()
+        if state and _STATE_RE.match(state.strip())
+        else None
+    )
+    if normalized_state:
+        conditions.append(f"state = {_arg(normalized_state)}")
     if city and city.strip():
-        conditions.append(f"payload->>'city' ILIKE {_arg(city.strip())}")
+        conditions.append(f"city ILIKE {_arg(city.strip())}")
     if zip and zip.strip():
-        conditions.append(f"payload->>'zip_code' = {_arg(zip.strip())}")
+        conditions.append(f"zip_code = {_arg(zip.strip())}")
     if beds is not None:
-        conditions.append(f"beds >= {_arg(beds)}")
+        conditions.append(f"bedrooms >= {_arg(beds)}")
     if min_price is not None:
-        conditions.append(
-            f"payload->>'estimated_value' ~ '^[0-9.]+$' "
-            f"AND (payload->>'estimated_value')::numeric >= {_arg(min_price)}"
-        )
+        conditions.append(f"public_record_value >= {_arg(min_price)}")
     if max_price is not None:
-        conditions.append(
-            f"payload->>'estimated_value' ~ '^[0-9.]+$' "
-            f"AND (payload->>'estimated_value')::numeric <= {_arg(max_price)}"
-        )
+        conditions.append(f"public_record_value <= {_arg(max_price)}")
+
+    rank_sql = "0"
+    match_type_sql = "'browse'"
     if q and q.strip():
-        like = f"%{q.strip()}%"
-        p = _arg(like)
+        query_text = " ".join(q.split())
+        normalized_query = re.sub(r"[^a-z0-9]", "", query_text.lower())
+        contains_arg = _arg(f"%{query_text}%")
+        exact_arg = _arg(normalized_query)
         conditions.append(
-            f"(payload->>'address' ILIKE {p} OR payload->>'city' ILIKE {p} "
-            f"OR payload->>'owner_name' ILIKE {p} OR parcel_id ILIKE {p})"
+            f"(search_document ILIKE {contains_arg} "
+            f"OR regexp_replace(lower(parcel_id), '[^a-z0-9]', '', 'g') = {exact_arg} "
+            f"OR regexp_replace(lower(COALESCE(address, '')), '[^a-z0-9]', '', 'g') = {exact_arg})"
+        )
+        conditions.append(
+            "("
+            "source_key <> 'chicago_building_violations' "
+            "OR address IS NULL "
+            "OR NOT EXISTS ("
+            "SELECT 1 FROM public_property_records canonical "
+            "WHERE canonical.state = public_property_records.state "
+            "AND canonical.source_key = 'regional_parcels_il' "
+            "AND canonical.address IS NOT NULL "
+            "AND regexp_replace(lower(canonical.address), '[^a-z0-9]', '', 'g') "
+            "= regexp_replace(lower(public_property_records.address), '[^a-z0-9]', '', 'g')"
+            ")"
+            ")"
+        )
+        rank_sql = (
+            f"CASE "
+            f"WHEN regexp_replace(lower(parcel_id), '[^a-z0-9]', '', 'g') = {exact_arg} THEN 100 "
+            f"WHEN regexp_replace(lower(COALESCE(address, '')), '[^a-z0-9]', '', 'g') = {exact_arg} THEN 98 "
+            f"WHEN address ILIKE {contains_arg} THEN 85 "
+            f"WHEN owner_name ILIKE {contains_arg} THEN 70 "
+            f"WHEN city ILIKE {contains_arg} THEN 55 "
+            f"ELSE 40 END"
+        )
+        match_type_sql = (
+            f"CASE "
+            f"WHEN regexp_replace(lower(parcel_id), '[^a-z0-9]', '', 'g') = {exact_arg} THEN 'parcel_exact' "
+            f"WHEN regexp_replace(lower(COALESCE(address, '')), '[^a-z0-9]', '', 'g') = {exact_arg} THEN 'address_exact' "
+            f"WHEN address ILIKE {contains_arg} THEN 'address_partial' "
+            f"WHEN owner_name ILIKE {contains_arg} THEN 'owner_partial' "
+            f"WHEN city ILIKE {contains_arg} THEN 'city_partial' "
+            f"ELSE 'text_partial' END"
         )
 
-    where = " AND ".join(conditions)
+    where = " AND ".join(conditions) if conditions else "TRUE"
     offset = (page - 1) * PAGE_SIZE
+    count_args = list(args)
+    count_q = f"SELECT COUNT(*) AS n FROM public_property_records WHERE {where}"
 
-    count_q = f"SELECT COUNT(*) AS n FROM leads WHERE {where}"
     data_q = (
-        f"SELECT {_PIPELINE_SELECT} FROM leads WHERE {where} "
-        f"ORDER BY motivation_score DESC, created_at DESC "
+        f"SELECT {_PUBLIC_RECORD_SELECT}, {rank_sql} AS match_score, "
+        f"{match_type_sql} AS match_type "
+        f"FROM public_property_records WHERE {where} "
+        f"ORDER BY match_score DESC, record_refreshed_at DESC, id ASC "
         f"LIMIT {_arg(PAGE_SIZE)} OFFSET {_arg(offset)}"
     )
 
     try:
         async with tenant_tx(ctx) as conn:
-            count_row = await conn.fetchrow(count_q, *args[:-2])
+            count_row = await conn.fetchrow(count_q, *count_args)
             total = int(count_row["n"]) if count_row else 0
             rows = [dict(r) for r in await conn.fetch(data_q, *args)]
+        if q and q.strip() and await _reconcile_sparse_cook_record(
+            query_text=" ".join(q.split()),
+            rows=rows,
+            ctx=ctx,
+        ):
+            async with tenant_tx(ctx) as conn:
+                count_row = await conn.fetchrow(count_q, *count_args)
+                total = int(count_row["n"]) if count_row else 0
+                rows = [dict(r) for r in await conn.fetch(data_q, *args)]
     except RuntimeError as exc:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, f"Memory Core offline ({exc})")
     except Exception as exc:  # noqa: BLE001
-        logger.error("MLS pipeline search failed: %s", exc)
+        logger.error("Public property record search failed: %s", exc)
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Memory Core offline.")
 
-    listings = [_pipeline_listing_json(r) for r in rows]
+    listings = [_public_record_json(r) for r in rows]
     return {
         "listings": listings,
         "total": total,
@@ -892,33 +694,43 @@ async def mls_pipeline_search(
         "page_size": PAGE_SIZE,
         "has_more": offset + len(listings) < total,
         "degraded": False,
-        "source": "pipeline",
-        "notice": None,
+        "source": "shared public property catalog",
+        "notice": _public_coverage_json()["notice"],
+        "coverage": _public_coverage_json(),
+        "accuracy": {
+            "ranked_exact_matches": bool(q and q.strip()),
+            "deduplicated_by": "source + state + source record id",
+            "verification_required": True,
+        },
     }
 
 
-@router.get("/pipeline/{lead_id}", summary="Single pipeline (harvested lead) detail")
+@router.get("/pipeline/{record_id}", include_in_schema=False)
+@router.get("/public-records/{record_id}", summary="Single public property record")
 async def mls_pipeline_listing(
-    lead_id: str,
+    record_id: str,
     ctx: TenantContext = Depends(require_context),
 ) -> dict:
-    """Full detail for one harvested lead. 422 on a malformed id, 404 if absent."""
+    """Return one allow-listed shared record; CRM data is never joined."""
     try:
-        uuid.UUID(lead_id)
+        uuid.UUID(record_id)
     except (ValueError, AttributeError, TypeError):
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "lead_id must be a UUID")
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "record_id must be a UUID")
 
     try:
         async with tenant_tx(ctx) as conn:
             row = await conn.fetchrow(
-                f"SELECT {_PIPELINE_SELECT} FROM leads WHERE id = $1::uuid", lead_id
+                f"SELECT {_PUBLIC_RECORD_SELECT}, 0 AS match_score, "
+                f"'record_id_exact' AS match_type "
+                f"FROM public_property_records WHERE id = $1::uuid",
+                record_id,
             )
     except RuntimeError as exc:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, f"Memory Core offline ({exc})")
     except Exception as exc:  # noqa: BLE001
-        logger.error("MLS pipeline detail failed: %s", exc)
+        logger.error("Public property record detail failed: %s", exc)
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Memory Core offline.")
 
     if not row:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, f"Lead {lead_id!r} not found.")
-    return _pipeline_listing_json(dict(row))
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"Public record {record_id!r} not found.")
+    return _public_record_json(dict(row))

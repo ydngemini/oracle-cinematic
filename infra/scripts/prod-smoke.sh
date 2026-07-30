@@ -184,6 +184,7 @@ feature_names=(
   ORACLE_FEATURE_LOCAL_MODELS
   ORACLE_FEATURE_SPATIAL_TOURS
   ORACLE_FEATURE_CONTRACTS
+  ORACLE_FEATURE_AI_CHAT
 )
 if [[ -z "$backend_td" || "$backend_td" == "None" ]]; then
   fail "Could not resolve the backend task definition for feature-flag audit"

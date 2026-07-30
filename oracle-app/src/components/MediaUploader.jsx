@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { crmGet, crmDelete } from '../state/useCrmApi';
+import useProtectedMedia from '../state/useProtectedMedia';
 import styles from './MediaUploader.module.css';
 
 /**
@@ -10,7 +11,7 @@ import styles from './MediaUploader.module.css';
  *   POST /api/crm/listings/{listing_id}/media
  *   GET  /api/crm/media?lead_id=&listing_id=                   -> {media:[...]}
  *   DELETE /api/crm/media/{id}
- *   GET  /api/media/{id}  (raw bytes, used in <img src>)
+ *   GET  /api/media/{id}  (JWT-protected bytes, rendered via an object URL)
  *
  * JSON calls go through crmGet/crmDelete; the multipart upload is a direct
  * XHR (gives real upload progress) carrying the Bearer token. A `token` prop
@@ -25,20 +26,21 @@ import styles from './MediaUploader.module.css';
  *   compact {boolean}                   tighter layout for inline use
  */
 
-const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8000';
+const API_BASE = import.meta.env.VITE_API_BASE
+  || (import.meta.env.DEV ? 'http://localhost:8000' : '');
 const MAX_BYTES = 25 * 1024 * 1024; // 25 MB per image — friendly client-side guard
 
-// Resolve a media row to a displayable URL. Honour an absolute `url`, prefix a
-// relative one with the API origin, else fall back to the raw-bytes endpoint.
+// Media rows are resolved by useProtectedMedia. Never put the authenticated API
+// route directly in <img src>, because browsers cannot attach the Bearer token.
 export function mediaSrc(m) {
   if (!m) return '';
+  if (m.display_url) return m.display_url;
   const u = m.url;
-  if (u) return /^https?:\/\//i.test(u) ? u : `${API_BASE}${u.startsWith('/') ? '' : '/'}${u}`;
-  return m.id != null ? `${API_BASE}/api/media/${m.id}` : '';
+  return u && /^https?:\/\//i.test(u) && !u.startsWith(API_BASE) ? u : '';
 }
 
 function authToken(override) {
-  return override || sessionStorage.getItem('oracle_token') || '';
+  return override || '';
 }
 
 // Multipart POST with progress. fetch can't surface upload progress, so XHR is
@@ -111,6 +113,7 @@ export default function MediaUploader({
   const [uploads, setUploads] = useState([]); // {id,name,preview,progress,status,error,file}
   const [dragOver, setDragOver] = useState(false);
   const [lightbox, setLightbox] = useState(null); // index into items, or null
+  const displayItems = useProtectedMedia(items, { token });
 
   const inputRef = useRef(null);
   const uidRef = useRef(0);
@@ -407,7 +410,7 @@ export default function MediaUploader({
 
       {count > 0 && (
         <ul className={styles.grid}>
-          {items.map((m, i) => (
+          {displayItems.map((m, i) => (
             <li key={m.id} className={styles.cell}>
               <button
                 type="button"
@@ -417,7 +420,7 @@ export default function MediaUploader({
               >
                 <img
                   className={styles.thumbImg}
-                  src={mediaSrc(m)}
+                  src={mediaSrc(m) || undefined}
                   alt={`Property photo ${i + 1}`}
                   loading="lazy"
                   decoding="async"
@@ -438,7 +441,7 @@ export default function MediaUploader({
       )}
 
       {/* Lightbox */}
-      {lightbox != null && items[lightbox] && (
+      {lightbox != null && displayItems[lightbox] && (
         <div
           ref={lbDialogRef}
           className={styles.lightbox}
@@ -448,7 +451,7 @@ export default function MediaUploader({
           onKeyDown={trapLightboxFocus}
           onClick={(e) => { if (e.target === e.currentTarget) setLightbox(null); }}
         >
-          <img className={styles.lightboxImg} src={mediaSrc(items[lightbox])} alt={`Property photo ${lightbox + 1}`} />
+          <img className={styles.lightboxImg} src={mediaSrc(displayItems[lightbox]) || undefined} alt={`Property photo ${lightbox + 1}`} />
           <button ref={lbCloseRef} type="button" className={styles.lbClose} onClick={() => setLightbox(null)} aria-label="Close">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" /></svg>
           </button>

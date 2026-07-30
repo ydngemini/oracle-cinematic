@@ -155,8 +155,9 @@ export default function MyProfileTab() {
     }
   };
 
-  const signOut = () => {
-    sessionStorage.removeItem('oracle_token');
+  const signOut = async () => {
+    try { await crmPost('/auth/logout', {}); } catch { /* reload still clears UI state */ }
+    sessionStorage.removeItem('oracle_role');
     window.location.reload();
   };
 
@@ -212,9 +213,9 @@ export default function MyProfileTab() {
       : 'Save Profile';
 
   return (
-    <section className={styles.wrap} aria-label="My profile" aria-busy={isLoading || busy}>
+    <section className={styles.wrap} aria-label="Agent profile" aria-busy={isLoading || busy}>
       <header className={styles.topRow}>
-        <span className={styles.kicker}>My Profile</span>
+        <span className={styles.kicker}>Agent profile</span>
       </header>
 
       {isLoading ? (
@@ -231,7 +232,7 @@ export default function MyProfileTab() {
           </button>
         </div>
       ) : (
-        <>
+        <div>
           {/* ── Identity card ─────────────────────────────────────────── */}
           <div className={styles.identity}>
             <span className={styles.headshot}>
@@ -418,18 +419,19 @@ export default function MyProfileTab() {
               )}
             </section>
           )}
-        </>
+        </div>
       )}
 
-      {/* ── State licenses — per-state compliance tracking ──────────── */}
-      <LicenseStatusWidget />
+      <>
+          {/* ── State licenses — per-state compliance tracking ──────────── */}
+          <LicenseStatusWidget />
 
-      <BrokerageOnboardingPanel />
+          <BrokerageOnboardingPanel />
 
-      {sessionStorage.getItem('oracle_role') === 'broker_owner' && <HarvestControl />}
+          {sessionStorage.getItem('oracle_role') === 'broker_owner' && <HarvestControl />}
 
-      {/* ── Security — self-service password change (DB accounts) ──────── */}
-      <section className={styles.panel} aria-label="Security">
+          {/* ── Security — self-service password change (DB accounts) ──────── */}
+          <section className={styles.panel} aria-label="Security">
         <span className={styles.sectionLabel}>Security</span>
         <form onSubmit={changePassword}>
           <label className={styles.field}>
@@ -474,10 +476,10 @@ export default function MyProfileTab() {
             </button>
           </div>
         </form>
-      </section>
+          </section>
 
-      {/* ── Session — local identity, renders even when the API is dark ── */}
-      <section className={styles.panel} aria-label="Session">
+          {/* ── Session — local identity, renders even when the API is dark ── */}
+          <section className={styles.panel} aria-label="Session">
         <span className={styles.sectionLabel}>Session</span>
         <dl className={styles.sessionGrid}>
           <div className={styles.sessionRow}>
@@ -495,7 +497,8 @@ export default function MyProfileTab() {
           </span>
           Sign Out
         </button>
-      </section>
+          </section>
+      </>
 
       <footer className={styles.foot}>
         <span className={styles.wordmark}>NEOH · AGENT CRM</span>

@@ -1,32 +1,34 @@
 import { useEffect, useLayoutEffect, useCallback, useRef } from 'react';
 import { useOracleDispatch, ACTIONS } from './OracleContext';
 import { getUserId, getTenantId } from './identity';
-import { registerSW } from 'virtual:pwa-register';
 
 // In prod the SPA is served over https on the same host as the API, and the ALB
 // routes /ws to the backend — so derive wss://<host>/ws from the page origin.
 // VITE_WS_URL overrides explicitly; fall back to localhost only for http dev.
 // (Hardcoding ws://localhost in the bundle made the live feed dead in prod:
 // mixed-content blocked on an https page.)
+const configuredWsUrl = import.meta.env.VITE_WS_URL || '';
 const WS_URL =
-  import.meta.env.VITE_WS_URL ||
+  (configuredWsUrl
+    ? `${configuredWsUrl.replace(/\/+$/, '')}${new URL(configuredWsUrl).pathname === '/' ? '/ws' : ''}`
+    : '') ||
   (typeof window !== 'undefined' && window.location.protocol === 'https:'
     ? `wss://${window.location.host}/ws`
-    : 'ws://localhost:8000/ws');
+    : import.meta.env.DEV
+      ? 'ws://localhost:8000/ws'
+      : typeof window !== 'undefined'
+        ? `ws://${window.location.host}/ws`
+        : '');
 const BASE_DELAY = 2000;
 
-// Identity for JIT memory hydration AND tenant-scoped lead delivery. Sending
-// tenant_id here keeps the DealPipeline (RLS-scoped leads) on the same tenant
-// as the billing gate — see state/identity.js.
+// Identity for tokenless local development only. Production tenant/user values
+// are derived from verified JWT claims by the server.
 function buildWsUrl() {
+  if (!import.meta.env.DEV) return WS_URL;
   try {
     const url = new URL(WS_URL);
     url.searchParams.set('user_id', getUserId());
     url.searchParams.set('tenant_id', getTenantId());
-    // Verified JWT wins server-side over the (spoofable) tenant_id param —
-    // and is the ONLY way into the platform-admin firehose group.
-    const token = sessionStorage.getItem('oracle_token');
-    if (token) url.searchParams.set('token', token);
     return url.toString();
   } catch {
     return WS_URL;
@@ -54,6 +56,7 @@ export function useOracleWebSocket() {
 
     ws.onopen = () => {
       retryCount.current = 0;
+      dispatch({ type: ACTIONS.AI_CHAT_CONNECTION, payload: 'online' });
       window.__oracleRequestReconstruction = (address) => {
         if (ws.readyState === WebSocket.OPEN) {
           ws.send(JSON.stringify({ type: 'REQUEST_RECONSTRUCTION', address }));
@@ -220,25 +223,6 @@ export function useOracleWebSocket() {
           break;
         }
 
-        case 'DEAL_PIPELINE':
-          dispatch({
-            type: ACTIONS.SET_DEAL_PIPELINE,
-            payload: {
-              states: msg.states || [],
-              total: msg.total || 0,
-            },
-          });
-          if (msg.total > 0) {
-            feed({
-              actor: 'ai',
-              actorName: 'Deal Pipeline',
-              text: `firehose sync across ${(msg.states || []).length} states`,
-              tag: 'PIPELINE',
-              metric: `${msg.total} leads`,
-            });
-          }
-          break;
-
         case 'VOICE_NOTE_LOGGED': {
           // Field walkthrough processed by the voice-intel worker. First real
           // producer for the 'agent' (amber) actor in LivePulse.
@@ -264,10 +248,6 @@ export function useOracleWebSocket() {
             text: `moved ${msg.address || msg.parcel_id} to ${label}`,
             tag: label.toUpperCase(),
           });
-          // Re-sync the pipeline so every open dashboard converges.
-          if (ws.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify({ type: 'REQUEST_DEAL_PIPELINE' }));
-          }
           break;
         }
 
@@ -295,13 +275,39 @@ export function useOracleWebSocket() {
 
         case 'JOB_PROGRESS':
           dispatch({ type: ACTIONS.JOB_PROGRESS, payload: msg });
-          feed({
-            actor: 'ai',
-            actorName: 'Durable Worker',
-            text: `${String(msg.job_type || 'job').replaceAll(':', ' ')} — ${msg.message || 'working'}`,
-            tag: 'JOB PROGRESS',
-            metric: `${Math.round(Number(msg.progress) || 0)}%`,
-          });
+          if (msg.job_type !== 'ai_chat:response') {
+            feed({
+              actor: 'ai',
+              actorName: 'Durable Worker',
+              text: `${String(msg.job_type || 'job').replaceAll(':', ' ')} — ${msg.message || 'working'}`,
+              tag: 'JOB PROGRESS',
+              metric: `${Math.round(Number(msg.progress) || 0)}%`,
+            });
+          }
+          break;
+
+        case 'AI_CHAT_ACCEPTED':
+          dispatch({ type: ACTIONS.AI_CHAT_ACCEPTED, payload: msg });
+          break;
+
+        case 'AI_CHAT_START':
+          dispatch({ type: ACTIONS.AI_CHAT_START, payload: msg });
+          break;
+
+        case 'AI_CHAT_DELTA':
+          dispatch({ type: ACTIONS.AI_CHAT_DELTA, payload: msg });
+          break;
+
+        case 'AI_CHAT_COMPLETE':
+          dispatch({ type: ACTIONS.AI_CHAT_COMPLETE, payload: msg });
+          break;
+
+        case 'AI_CHAT_ERROR':
+          dispatch({ type: ACTIONS.AI_CHAT_ERROR, payload: msg });
+          break;
+
+        case 'AI_CHAT_REJECTED':
+          dispatch({ type: ACTIONS.AI_CHAT_REJECTED, payload: msg });
           break;
 
         case 'NEGOTIATION_TELEMETRY':
@@ -313,6 +319,32 @@ export function useOracleWebSocket() {
             tag: 'LIVE MAO',
             metric: Number.isFinite(Number(msg.mao)) ? `$${Math.round(Number(msg.mao)).toLocaleString()}` : undefined,
           });
+          break;
+
+        case 'VOICE_TELEMETRY':
+          dispatch({ type: ACTIONS.NEGOTIATION_TELEMETRY, payload: msg });
+          if (msg.transcript?.text) {
+            dispatch({
+              type: ACTIONS.APPEND_TRANSCRIPT,
+              payload: {
+                id: crypto.randomUUID(),
+                agent: msg.transcript.speaker || 'VOICE',
+                text: msg.transcript.text,
+                timestamp: Date.parse(msg.created_at) || Date.now(),
+              },
+            });
+          }
+          if (msg.counter_offer !== null && msg.counter_offer !== undefined) {
+            feed({
+              actor: 'ai',
+              actorName: 'Negotiation Assist',
+              text: `counter-offer classified ${String(msg.threshold || 'unavailable').toLowerCase()}`,
+              tag: 'LIVE MAO',
+              metric: Number.isFinite(Number(msg.mao))
+                ? `$${Math.round(Number(msg.mao)).toLocaleString()}`
+                : undefined,
+            });
+          }
           break;
 
         case 'CALL_CONSENT':
@@ -338,6 +370,7 @@ export function useOracleWebSocket() {
 
     ws.onclose = () => {
       wsRef.current = null;
+      dispatch({ type: ACTIONS.AI_CHAT_CONNECTION, payload: 'offline' });
       if (!mountedRef.current) return;
       if (retryCount.current >= MAX_RETRIES) return;
 
@@ -368,7 +401,15 @@ export function useOracleWebSocket() {
     mountedRef.current = true;
     retryTimer.current = setTimeout(connect, 100);
 
-    registerSW({ immediate: true });
+    if ('serviceWorker' in navigator) {
+      if (import.meta.env.PROD) {
+        navigator.serviceWorker.register('/sw-oracle.js').catch(() => {});
+      } else {
+        navigator.serviceWorker.getRegistrations()
+          .then((registrations) => Promise.all(registrations.map((registration) => registration.unregister())))
+          .catch(() => {});
+      }
+    }
 
     const swListener = (event) => {
       const { type, propertyIds } = event.data || {};

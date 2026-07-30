@@ -1,109 +1,125 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { crmGet } from '../state/useCrmApi';
+import { useAssistant } from './AssistantContext';
 import styles from './PortfolioTab.module.css';
 
-const number = new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 });
-
-function Glyph({ children }) {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      {children}
-    </svg>
-  );
-}
-
-const refreshGlyph = <Glyph><path d="M20.5 12a8.5 8.5 0 1 1-2.5-6" /><path d="M20.5 3.5V8H16" /></Glyph>;
+const integer = new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 });
+const currency = new Intl.NumberFormat('en-US', {
+  style: 'currency',
+  currency: 'USD',
+  notation: 'compact',
+  maximumFractionDigits: 1,
+});
 
 function label(value) {
   return String(value || 'unknown').replaceAll('_', ' ');
 }
 
-function dateTime(value) {
-  if (!value) return 'No date';
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) return 'No date';
-  return new Intl.DateTimeFormat('en-US', {
-    month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit',
-  }).format(parsed);
-}
-
-function percent(value) {
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? `${Math.round(parsed * 100)}%` : '—';
-}
-
-function Metric({ name, value, tone }) {
+function Metric({ name, value, tone = 'neutral', detail }) {
   return (
-    <div className={styles.metric} data-tone={tone || 'neutral'}>
+    <div className={styles.metric} data-tone={tone}>
       <dt>{name}</dt>
       <dd>{value}</dd>
+      {detail && <small>{detail}</small>}
     </div>
   );
 }
 
-function Section({ title, count, children }) {
+function ProgressTrack({ title, stages }) {
+  const total = Math.max(1, stages.reduce((sum, stage) => sum + Number(stage.value || 0), 0));
   return (
-    <section className={styles.section} aria-labelledby={`portfolio-${title.replaceAll(' ', '-').toLowerCase()}`}>
-      <header className={styles.sectionHead}>
-        <h2 id={`portfolio-${title.replaceAll(' ', '-').toLowerCase()}`}>{title}</h2>
-        <span aria-label={`${count} items`}>{number.format(count)}</span>
+    <section className={styles.progressTrack}>
+      <header>
+        <h3>{title}</h3>
+        <span>{integer.format(total === 1 && stages.every((stage) => !stage.value) ? 0 : total)} deals</span>
       </header>
-      {children}
+      <div className={styles.progressBar} aria-label={`${title} transaction stages`}>
+        {stages.map((stage) => (
+          <span
+            key={stage.label}
+            style={{ '--stage-width': `${Math.max(0, (Number(stage.value || 0) / total) * 100)}%` }}
+            title={`${stage.label}: ${stage.value || 0}`}
+          />
+        ))}
+      </div>
+      <dl className={styles.progressLegend}>
+        {stages.map((stage) => (
+          <div key={stage.label}>
+            <dt>{stage.label}</dt>
+            <dd>{integer.format(stage.value || 0)}</dd>
+          </div>
+        ))}
+      </dl>
     </section>
   );
-}
-
-function Empty({ children }) {
-  return <p className={styles.empty}>{children}</p>;
 }
 
 export default function PortfolioTab() {
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
   const [refreshing, setRefreshing] = useState(false);
+  const { requestCommand, setOpen } = useAssistant();
 
-  const load = useCallback(() => {
-    return crmGet('/api/portfolio').then(
-      (payload) => {
-        setData(payload);
-        setError(null);
-        setRefreshing(false);
-      },
-      (reason) => {
-        setError(reason);
-        setRefreshing(false);
-      },
-    );
+  const load = useCallback(async () => {
+    try {
+      const payload = await crmGet('/api/portfolio/summary');
+      setData(payload);
+      setError(null);
+    } catch (reason) {
+      setError(reason);
+    } finally {
+      setRefreshing(false);
+    }
   }, []);
+
+  useEffect(() => {
+    const initialLoad = Promise.resolve().then(load);
+    const timer = window.setInterval(load, 60_000);
+    return () => {
+      void initialLoad;
+      window.clearInterval(timer);
+    };
+  }, [load]);
 
   const refresh = () => {
     setRefreshing(true);
-    load();
+    void load();
   };
 
-  useEffect(() => {
-    load();
-    const timer = window.setInterval(load, 60_000);
-    return () => window.clearInterval(timer);
-  }, [load]);
-
   const metrics = data?.metrics || {};
-  const urgentMilestones = useMemo(
-    () => (data?.milestones || []).filter((item) => item.status === 'at_risk'),
-    [data],
-  );
+  const milestones = data?.milestone_breakdown;
+  const sellerStages = [
+    { label: 'Prospecting', value: milestones?.sellers?.prospecting || 0 },
+    { label: 'Under contract', value: milestones?.sellers?.under_contract || 0 },
+    { label: 'Closed', value: milestones?.sellers?.closed || 0 },
+  ];
+  const buyerStages = [
+    { label: 'Matched', value: milestones?.buyers?.matched || 0 },
+    { label: 'Offer pending', value: milestones?.buyers?.offer_pending || 0 },
+    { label: 'Under contract', value: milestones?.buyers?.under_contract || 0 },
+    { label: 'Closed', value: milestones?.buyers?.closed || 0 },
+  ];
+
+  const draftFollowUp = (client) => {
+    requestCommand({
+      clientId: client.client_id,
+      rawText: `Email ${client.name} with a concise follow-up about their ${client.stage} transaction and ask for the best next step.`,
+    });
+    setOpen(true);
+  };
+
   const loading = data === null && !error;
 
   return (
-    <section className={styles.wrap} aria-label="Portfolio intelligence" aria-busy={loading || refreshing}>
+    <section className={styles.wrap} aria-label="Portfolio analytics" aria-busy={loading || refreshing}>
       <header className={styles.hero}>
         <div>
-          <span className={styles.kicker}>Portfolio intelligence</span>
-          <h1>Execution desk</h1>
-          <p>Contracts, response health, deadlines, and review queues in one tenant-scoped view.</p>
+          <span className={styles.kicker}>Portfolio · Live tenant data</span>
+          <h1>Portfolio command desk</h1>
+          <p>Contract exposure, client response health, transaction progress, and action-required signals.</p>
         </div>
         <button type="button" className={styles.refresh} onClick={refresh} disabled={refreshing} aria-label="Refresh portfolio">
-          {refreshGlyph}
+          <span aria-hidden="true">↻</span>
         </button>
       </header>
 
@@ -115,95 +131,122 @@ export default function PortfolioTab() {
       )}
 
       {loading ? (
-        <div className={styles.skeletons} aria-hidden="true">
-          <div /><div /><div />
-        </div>
+        <div className={styles.skeletons} aria-hidden="true"><div /><div /><div /></div>
       ) : data ? (
         <>
           <dl className={styles.metrics} aria-label="Portfolio key metrics">
-            <Metric name="Active contracts" value={number.format(metrics.active_contracts || 0)} />
-            <Metric name="30d response" value={percent(metrics.response_rate_30d)} tone="good" />
-            <Metric name="Silent 72h" value={number.format(metrics.ghosting_72h || 0)} tone={metrics.ghosting_72h ? 'warn' : 'neutral'} />
-            <Metric name="Deadlines at risk" value={number.format(metrics.deadlines_at_risk || 0)} tone={metrics.deadlines_at_risk ? 'danger' : 'neutral'} />
-            <Metric name="Title review" value={number.format(metrics.unreviewed_title_risks || 0)} tone={metrics.unreviewed_title_risks ? 'warn' : 'neutral'} />
-            <Metric name="Zoning upside" value={number.format(metrics.zoning_opportunities || 0)} tone="good" />
+            <Metric
+              name="Active Contracts"
+              value={integer.format(metrics.active_contracts || 0)}
+              detail="Staged or under contract"
+            />
+            <Metric
+              name="30-Day Response Rate"
+              value={`${Number(metrics.response_rate_30d || 0).toFixed(1)}%`}
+              tone={Number(metrics.response_rate_30d || 0) >= 80 ? 'good' : 'warn'}
+              detail="Inbound vs outbound threads"
+            />
+            <Metric
+              name="Active Volume"
+              value={currency.format(Number(metrics.total_volume || 0))}
+              detail="Current transaction value"
+            />
+            <Metric
+              name="Ghosting Risk"
+              value={integer.format(metrics.ghosting_alerts_count || 0)}
+              tone={metrics.ghosting_alerts_count ? 'danger' : 'good'}
+              detail="No response for 72+ hours"
+            />
           </dl>
 
-          <Section title="Active contracts" count={(data.active_contracts || []).length}>
-            {(data.active_contracts || []).length === 0 ? <Empty>No active contract windows.</Empty> : (
-              <ul className={styles.cards}>
-                {data.active_contracts.map((contract) => (
-                  <li key={contract.id} className={styles.card}>
-                    <div className={styles.cardTop}>
-                      <strong>{contract.address || contract.parcel_id}</strong>
-                      <span data-tone={Number(contract.days_remaining) <= 7 ? 'danger' : 'neutral'}>
-                        {contract.days_remaining == null ? 'No deadline' : `${contract.days_remaining}d left`}
-                      </span>
+          <section className={styles.progressSection} aria-labelledby="transaction-progress-title">
+            <header className={styles.sectionHead}>
+              <div>
+                <span className={styles.kicker}>Dual-track milestones</span>
+                <h2 id="transaction-progress-title">Transaction progress</h2>
+              </div>
+            </header>
+            <div className={styles.progressGrid}>
+              <ProgressTrack title="Seller pipeline" stages={sellerStages} />
+              <ProgressTrack title="Buyer pipeline" stages={buyerStages} />
+            </div>
+          </section>
+
+          <section className={styles.actionSection} aria-labelledby="ghosting-title">
+            <header className={styles.sectionHead}>
+              <div>
+                <span className={styles.kicker}>Action required</span>
+                <h2 id="ghosting-title">Ghosting risk</h2>
+              </div>
+              <span>{integer.format((data.ghosting_clients || []).length)}</span>
+            </header>
+            {(data.ghosting_clients || []).length === 0 ? (
+              <p className={styles.empty}>No active client has gone silent for more than 72 hours.</p>
+            ) : (
+              <ul className={styles.riskList}>
+                {data.ghosting_clients.map((client) => (
+                  <li key={client.client_id}>
+                    <div>
+                      <strong>{client.name}</strong>
+                      <span>{client.stage} · {integer.format(client.last_contact_hours)}h since contact</span>
                     </div>
-                    <p>{contract.seller_name || 'Seller not linked'}</p>
-                    <small>{label(contract.dossier_status)} · expires {dateTime(contract.contract_expires_at)}</small>
+                    <button type="button" onClick={() => draftFollowUp(client)}>
+                      Draft follow-up
+                    </button>
                   </li>
                 ))}
               </ul>
             )}
-          </Section>
+          </section>
 
-          <Section title="Milestones" count={(data.milestones || []).length}>
-            {(data.milestones || []).length === 0 ? <Empty>No open transaction milestones.</Empty> : (
-              <ul className={styles.rows}>
-                {data.milestones.map((item) => (
-                  <li key={item.id}>
-                    <span className={styles.statusDot} data-status={item.status} aria-hidden="true" />
-                    <div><strong>{item.title}</strong><small>{label(item.milestone_type)} · {item.assigned_to || 'unassigned'}</small></div>
-                    <time dateTime={item.due_at || undefined}>{dateTime(item.due_at)}</time>
-                  </li>
-                ))}
-              </ul>
-            )}
-            {urgentMilestones.length > 0 && <p className={styles.reviewNote}>{urgentMilestones.length} milestone{urgentMilestones.length === 1 ? '' : 's'} require immediate review.</p>}
-          </Section>
+          <div className={styles.lowerGrid}>
+            <section className={styles.pulseSection} aria-labelledby="activity-title">
+              <header className={styles.sectionHead}>
+                <div>
+                  <span className={styles.kicker}>Audit-backed</span>
+                  <h2 id="activity-title">Live activity pulse</h2>
+                </div>
+              </header>
+              {(data.activity_pulse || []).length === 0 ? (
+                <p className={styles.empty}>No recent audited activity.</p>
+              ) : (
+                <ol className={styles.pulseList}>
+                  {data.activity_pulse.slice(0, 8).map((event) => (
+                    <li key={event.event_id}>
+                      <span className={styles.pulseDot} aria-hidden="true" />
+                      <div><strong>{label(event.action)}</strong><small>{label(event.category)}</small></div>
+                      <time dateTime={event.created_at}>
+                        {new Date(event.created_at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}
+                      </time>
+                    </li>
+                  ))}
+                </ol>
+              )}
+            </section>
 
-          <Section title="Title review" count={(data.title_risks || []).length}>
-            {(data.title_risks || []).length === 0 ? <Empty>No preliminary title findings awaiting review.</Empty> : (
-              <ul className={styles.rows}>
-                {data.title_risks.map((item, index) => (
-                  <li key={`${item.property_key}:${item.finding_type}:${index}`}>
-                    <span className={styles.statusDot} data-status="at_risk" aria-hidden="true" />
-                    <div><strong>{item.property_key}</strong><small>{label(item.finding_type)} · {label(item.match_status)}{item.chain_gap ? ' · chain gap' : ''}</small></div>
-                  </li>
-                ))}
-              </ul>
-            )}
-            <p className={styles.disclaimer}>Preliminary public-record intelligence is not an insured title search.</p>
-          </Section>
-
-          <Section title="Zoning opportunities" count={(data.zoning_opportunities || []).length}>
-            {(data.zoning_opportunities || []).length === 0 ? <Empty>No reviewed buildable-area opportunities.</Empty> : (
-              <ul className={styles.rows}>
-                {data.zoning_opportunities.map((item) => (
-                  <li key={item.id}>
-                    <span className={styles.statusDot} data-status="complete" aria-hidden="true" />
-                    <div><strong>{item.property_key}</strong><small>{item.zoning_district} · planning review {label(item.review_status)}</small></div>
-                    <span className={styles.numeric}>{number.format(Number(item.remaining_buildable_sqft) || 0)} sf</span>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </Section>
-
-          <Section title="Intelligence alerts" count={(data.intelligence_alerts || []).length}>
-            {(data.intelligence_alerts || []).length === 0 ? <Empty>No low-confidence or review-required analyses in the last 30 days.</Empty> : (
-              <ul className={styles.rows}>
-                {data.intelligence_alerts.map((item) => (
-                  <li key={item.id}>
-                    <span className={styles.statusDot} data-status="at_risk" aria-hidden="true" />
-                    <div><strong>{item.property_key}</strong><small>{label(item.analysis_type)} · model {item.model_version}</small></div>
-                    <span className={styles.numeric}>{percent(item.confidence)}</span>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </Section>
+            <section className={styles.flagsSection} aria-labelledby="flags-title">
+              <header className={styles.sectionHead}>
+                <div>
+                  <span className={styles.kicker}>Professional review</span>
+                  <h2 id="flags-title">Title, zoning & distress flags</h2>
+                </div>
+                <span>{integer.format((data.intelligence_flags || []).length)}</span>
+              </header>
+              {(data.intelligence_flags || []).length === 0 ? (
+                <p className={styles.empty}>No active intelligence flags.</p>
+              ) : (
+                <ul className={styles.flagList}>
+                  {data.intelligence_flags.slice(0, 8).map((flag, index) => (
+                    <li key={`${flag.type}:${flag.property_key}:${index}`}>
+                      <span data-type={flag.type}>{flag.type}</span>
+                      <div><strong>{flag.label || flag.property_key}</strong><small>{flag.property_key}</small></div>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              <p className={styles.disclaimer}>Signals are preliminary and require qualified professional review.</p>
+            </section>
+          </div>
         </>
       ) : null}
     </section>

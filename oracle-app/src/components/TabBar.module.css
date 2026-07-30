@@ -1,5 +1,4 @@
-/* The Deck — instrument cluster at the thumb line. Etched glass, amber
-   filament. Sits above the safe-area on notched phones. */
+/* The Deck — a flat bronze instrument rail at the thumb line. */
 
 .deck {
   position: fixed;
@@ -9,11 +8,11 @@
   z-index: var(--z-hud);
   height: calc(var(--deck-height) + var(--safe-bottom));
   padding-bottom: var(--safe-bottom);
-  background: rgba(6, 6, 9, 0.82);
-  backdrop-filter: var(--oracle-backdrop);
-  -webkit-backdrop-filter: var(--oracle-backdrop);
-  border-top: 1px solid var(--oracle-border-bright);
-  box-shadow: 0 -12px 40px rgba(0, 0, 0, 0.55);
+  background: linear-gradient(118deg, rgba(47, 35, 20, 0.94), rgba(22, 16, 9, 0.93));
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  border-top: 1px solid var(--oracle-glass-edge);
+  box-shadow: 0 -14px 38px rgba(0, 0, 0, 0.30), inset 0 1px 0 rgba(255, 244, 214, 0.14);
 }
 
 /* ── Filament — the live amber line across the top edge ─────────────────── */
@@ -110,7 +109,6 @@
 
 .keyActive {
   color: var(--oracle-amber);
-  text-shadow: 0 0 18px var(--oracle-amber-glow);
 }
 
 .keyActive::before {
@@ -120,10 +118,6 @@
 
 .keyActive .glyph {
   transform: scale(1.08) translateY(-1px);
-}
-
-.keyActive .glyph svg {
-  filter: drop-shadow(0 0 6px var(--oracle-amber-ghost));
 }
 
 .glyph {
@@ -143,4 +137,21 @@
   font-weight: 500;
   letter-spacing: var(--tracking-widest);
   text-transform: uppercase;
+}
+
+:global(html[data-keyboard-open='true']) .deck {
+  visibility: hidden;
+  pointer-events: none;
+}
+
+@media (max-width: 359px) {
+  .label {
+    font-size: 0.5rem;
+    letter-spacing: var(--tracking-wider);
+  }
+
+  .glyph {
+    width: 20px;
+    height: 20px;
+  }
 }

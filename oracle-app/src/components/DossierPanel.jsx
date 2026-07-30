@@ -1,20 +1,34 @@
 import { useEffect, useRef, useState } from 'react';
+import { crmGet, crmPut, crmPost } from '../state/useCrmApi';
 import styles from './DossierPanel.module.css';
-
-const API_BASE = import.meta.env.VITE_API_BASE ?? 'http://localhost:8000';
-
-function authHeaders() {
-  const token = sessionStorage.getItem('oracle_token');
-  return {
-    'Content-Type': 'application/json',
-    ...(token ? { Authorization: `Bearer ${token}` } : {}),
-  };
-}
 
 function money(v) {
   const n = Number(v);
   if (!n || Number.isNaN(n)) return '—';
   return `$${n.toLocaleString()}`;
+}
+
+function number(v, suffix = '') {
+  const n = Number(v);
+  if (!Number.isFinite(n) || n <= 0) return 'Not published';
+  return `${n.toLocaleString(undefined, { maximumFractionDigits: 2 })}${suffix}`;
+}
+
+function published(value) {
+  return typeof value === 'string' && value.trim() ? value.trim() : 'Not published';
+}
+
+function reportedDate(value) {
+  if (typeof value !== 'string' || !value) return 'Not published';
+  const date = new Date(`${value.slice(0, 10)}T12:00:00Z`);
+  return Number.isNaN(date.getTime()) ? 'Not published' : date.toLocaleDateString();
+}
+
+function coverageScope(value) {
+  if (typeof value !== 'string' || !value) return 'Source scope not declared';
+  const [kind, ...name] = value.split(':');
+  if (!name.length) return kind;
+  return `${kind} · ${name.join(':')}`;
 }
 
 // Minimal markdown → React for the CMA brief. Handles headings, lists, bold,
@@ -98,14 +112,7 @@ export function DossierPanel({ leadId, onClose }) {
 
   useEffect(() => {
     let live = true;
-    fetch(`${API_BASE}/api/leads/${leadId}/dossier`, { headers: authHeaders() })
-      .then(async (res) => {
-        if (!res.ok) {
-          const d = await res.json().catch(() => ({}));
-          throw new Error(d.detail || `dossier fetch failed (${res.status})`);
-        }
-        return res.json();
-      })
+    crmGet(`/api/leads/${leadId}/dossier`)
       .then((d) => {
         if (!live) return;
         setDossier(d);
@@ -136,23 +143,12 @@ export function DossierPanel({ leadId, onClose }) {
     setCmaBusy(true);
     setCmaError('');
     try {
-      const res = await fetch(`${API_BASE}/api/agents/generate-cma`, {
-        method: 'POST',
-        headers: authHeaders(),
-        body: JSON.stringify({
-          property_address: dossier.payload?.address || dossier.parcel_id,
-          zoning_code: zoning || 'R-1',
-          square_footage: Number(sqft) || 0,
-          arv_estimate: Number(arv) || 0,
-        }),
+      const d = await crmPost('/api/agents/generate-cma', {
+        property_address: dossier.payload?.address || dossier.parcel_id,
+        zoning_code: zoning || 'R-1',
+        square_footage: Number(sqft) || 0,
+        arv_estimate: Number(arv) || 0,
       });
-      if (!res.ok) {
-        const d = await res.json().catch(() => ({}));
-        throw new Error(
-          typeof d.detail === 'string' ? d.detail : `synthesis failed (${res.status})`
-        );
-      }
-      const d = await res.json();
       setCma(d.cma_markdown || '');
     } catch (err) {
       setCmaError(String(err.message || err));
@@ -165,23 +161,12 @@ export function DossierPanel({ leadId, onClose }) {
     setEntityBusy(true);
     setEntityError('');
     try {
-      const res = await fetch(`${API_BASE}/api/leads/${leadId}/entity`, {
-        method: 'PUT',
-        headers: authHeaders(),
-        body: JSON.stringify({
-          entity_name: entityName,
-          ein: entityEin,
-          formation_state: entityState,
-          notes: '',
-        }),
+      const d = await crmPut(`/api/leads/${leadId}/entity`, {
+        entity_name: entityName,
+        ein: entityEin,
+        formation_state: entityState,
+        notes: '',
       });
-      if (!res.ok) {
-        const d = await res.json().catch(() => ({}));
-        throw new Error(
-          typeof d.detail === 'string' ? d.detail : `entity save failed (${res.status})`
-        );
-      }
-      const d = await res.json();
       setDossier((prev) => ({ ...prev, acquisition_entity: d.acquisition_entity }));
       setEntityEditing(false);
     } catch (err) {
@@ -203,6 +188,11 @@ export function DossierPanel({ leadId, onClose }) {
 
   const address = dossier?.payload?.address || dossier?.parcel_id || '…';
   const mkt = dossier?.marketing_payload;
+  const property = dossier?.payload || {};
+  const provenance = property.provenance || {};
+  const quality = property.data_quality || {};
+  const hasCoordinates = Number.isFinite(Number(property.latitude))
+    && Number.isFinite(Number(property.longitude));
 
   return (
     <aside className={styles.drawer} role="dialog" aria-modal="false" aria-label={`Asset dossier — ${address}`}>
@@ -239,6 +229,49 @@ export function DossierPanel({ leadId, onClose }) {
               <div><dt>Rehab</dt><dd>{money(dossier.underwriting?.rehab || dossier.underwriting?.rehab_estimate)}</dd></div>
               <div><dt>Est. Value</dt><dd>{money(dossier.payload?.estimated_value || dossier.underwriting?.estimated_value)}</dd></div>
             </dl>
+          </section>
+
+          {/* ── Public source detail ── */}
+          <section className={styles.section} aria-label="Public property record detail">
+            <h3 className={styles.kicker}>Public Property Record</h3>
+            <div className={styles.provenance}>
+              <div>
+                <span>Source</span>
+                <strong>{published(provenance.source_name || property.source)}</strong>
+              </div>
+              <div>
+                <span>Coverage</span>
+                <strong>{coverageScope(provenance.coverage_scope)}</strong>
+              </div>
+              <div>
+                <span>Detail</span>
+                <strong>{published(quality.detail_level).replace(/_/g, ' ')}</strong>
+              </div>
+            </div>
+            <dl className={styles.publicFacts}>
+              <div><dt>Owner</dt><dd>{published(property.owner_name)}</dd></div>
+              <div><dt>Owner type</dt><dd>{published(property.owner_type)}</dd></div>
+              <div><dt>Public value</dt><dd>{money(property.estimated_value)}</dd></div>
+              <div><dt>Equity</dt><dd>{number(property.equity_percent, '%')}</dd></div>
+              <div><dt>Reported record date</dt><dd>{reportedDate(property.last_sale_date)}</dd></div>
+              <div><dt>Absentee flag</dt><dd>{property.is_absentee_owner === true ? 'Reported absentee' : 'Not published'}</dd></div>
+              <div><dt>Land use</dt><dd>{published(property.land_use)}</dd></div>
+              <div><dt>Zoning</dt><dd>{published(property.zoning_district)}</dd></div>
+              <div><dt>Lot area</dt><dd>{number(property.lot_area_sqft, ' sq ft')}</dd></div>
+              <div><dt>Building area</dt><dd>{number(property.building_area_sqft, ' sq ft')}</dd></div>
+              <div><dt>Max FAR</dt><dd>{number(property.max_far)}</dd></div>
+              <div><dt>Map coordinates</dt><dd>{hasCoordinates ? 'Published by source' : 'Not published'}</dd></div>
+            </dl>
+            <p className={styles.sourceNote}>
+              Refreshed {provenance.record_refreshed_at
+                ? new Date(provenance.record_refreshed_at).toLocaleString()
+                : 'before provenance tracking'} · public records are source-reported, not an ARV,
+              title opinion, or outreach authorization.
+            </p>
+            <p className={styles.emptyNote}>
+              Missing facts are intentionally left unfilled. Verify record dates,
+              valuation, zoning, and ownership against the authoritative office before use.
+            </p>
           </section>
 
           {/* ── Contract fuse ── */}

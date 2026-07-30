@@ -103,6 +103,7 @@ export function NeuralNetwork() {
     <Canvas
       camera={{ position: [0, 0, 7], fov: 50 }}
       dpr={[1, 1.5]}
+      gl={{ preserveDrawingBuffer: true }}
       style={{ position: 'absolute', inset: 0 }}
     >
       <NetworkScene />

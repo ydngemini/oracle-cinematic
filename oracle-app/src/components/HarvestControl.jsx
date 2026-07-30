@@ -3,6 +3,8 @@ import { crmGet, crmPost, crmPut } from '../state/useCrmApi';
 import styles from './HarvestControl.module.css';
 
 const integer = new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 });
+const MUNICIPAL_HARVESTS_ENABLED =
+  import.meta.env.VITE_MUNICIPAL_HARVESTS_ENABLED === 'true';
 
 function duration(seconds) {
   const value = Number(seconds);
@@ -25,17 +27,26 @@ export function HarvestControl() {
   const [rerun, setRerun] = useState(null);
   const [reason, setReason] = useState('Manual source verification and controlled refresh.');
 
-  const load = useCallback(() => Promise.all([
-    crmGet('/api/harvests'),
-    crmGet('/api/harvests/jobs?limit=20'),
-  ]).then(
-    ([status, jobData]) => {
-      setFeed(status);
-      setJobs(Array.isArray(jobData?.jobs) ? jobData.jobs : []);
-      setError(null);
-    },
-    setError,
-  ), []);
+  const load = useCallback(() => {
+    if (!MUNICIPAL_HARVESTS_ENABLED) {
+      return Promise.resolve().then(() => {
+        setFeed({ sources: [], scheduler: { running: false }, feature_enabled: false });
+        setJobs([]);
+        setError(null);
+      });
+    }
+    return Promise.all([
+      crmGet('/api/harvests'),
+      crmGet('/api/harvests/jobs?limit=20'),
+    ]).then(
+      ([status, jobData]) => {
+        setFeed(status);
+        setJobs(Array.isArray(jobData?.jobs) ? jobData.jobs : []);
+        setError(null);
+      },
+      setError,
+    );
+  }, []);
 
   useEffect(() => {
     load();
@@ -74,6 +85,9 @@ export function HarvestControl() {
       </header>
 
       {error && <p className={styles.error} role="alert">{error.message || 'Harvest status is unavailable.'}</p>}
+      {feed?.feature_enabled === false && (
+        <p>Municipal harvest controls are disabled for this deployment.</p>
+      )}
 
       {!feed ? <div className={styles.skeleton} aria-hidden="true" /> : (
         <>
@@ -87,7 +101,9 @@ export function HarvestControl() {
               <li key={source.source_key} className={styles.source}>
                 <header>
                   <div><strong>{source.display_name || title(source.source_key)}</strong><small>{source.jurisdiction || 'public records'}</small></div>
-                  <span className={styles.circuit} data-state={source.circuit_state || 'closed'}>{title(source.circuit_state || 'closed')}</span>
+                  <span className={styles.circuit} data-state={source.health_status || 'unknown'}>
+                    {title(source.health_status || 'unknown')}
+                  </span>
                 </header>
                 <dl className={styles.stats}>
                   <div><dt>Freshness</dt><dd>{duration(source.source_freshness_seconds)}</dd></div>
@@ -97,7 +113,7 @@ export function HarvestControl() {
                   <div><dt>Fetched</dt><dd>{integer.format(Number(source.latest_fetched) || 0)}</dd></div>
                   <div><dt>Inserted</dt><dd>{integer.format(Number(source.latest_inserted) || 0)}</dd></div>
                 </dl>
-                {source.latest_error_summary || source.last_error ? <p className={styles.sourceError}>{source.latest_error_summary || source.last_error}</p> : null}
+                {source.health_detail || source.latest_error_summary || source.last_error ? <p className={styles.sourceError}>{source.health_detail || source.latest_error_summary || source.last_error}</p> : null}
                 <footer>
                   <button type="button" onClick={() => toggle(source)} disabled={Boolean(busy)}>
                     {source.enabled ? 'Pause schedule' : 'Enable schedule'}

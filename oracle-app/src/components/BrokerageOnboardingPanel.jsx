@@ -9,12 +9,20 @@ function human(value) {
   return String(value || 'not started').replaceAll('_', ' ');
 }
 
+function initialGoogleNotice() {
+  const outcome = new URLSearchParams(window.location.search).get('google');
+  if (!outcome) return '';
+  return outcome === 'connected'
+    ? 'Google Calendar connected.'
+    : 'Google Calendar connection was not completed.';
+}
+
 export function BrokerageOnboardingPanel() {
   const [status, setStatus] = useState(null);
   const [team, setTeam] = useState([]);
   const [approvals, setApprovals] = useState([]);
   const [error, setError] = useState('');
-  const [notice, setNotice] = useState('');
+  const [notice, setNotice] = useState(initialGoogleNotice);
   const [busy, setBusy] = useState(false);
   const [reason, setReason] = useState('Reviewed brokerage membership, license details, and AI settings.');
   const [form, setForm] = useState({
@@ -60,6 +68,15 @@ export function BrokerageOnboardingPanel() {
 
   useEffect(() => { load(); }, [load]);
 
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const outcome = params.get('google');
+    if (!outcome) return;
+    params.delete('google');
+    const next = `${window.location.pathname}${params.size ? `?${params}` : ''}${window.location.hash}`;
+    window.history.replaceState({}, '', next);
+  }, []);
+
   const updateLicense = (index, key, value) => setForm((current) => ({
     ...current,
     licenses: current.licenses.map((license, itemIndex) => itemIndex === index ? { ...license, [key]: value } : license),
@@ -92,6 +109,17 @@ export function BrokerageOnboardingPanel() {
       .finally(() => setBusy(false));
   };
 
+  const connectGoogle = () => {
+    setBusy(true); setNotice(''); setError('');
+    const returnPath = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+    crmPost('/api/commands/providers/google/oauth/start', { return_path: returnPath })
+      .then((result) => window.location.assign(result.authorization_url))
+      .catch((reasonValue) => {
+        setError(reasonValue.message || 'Google Calendar connection failed.');
+        setBusy(false);
+      });
+  };
+
   return (
     <section className={styles.wrap} aria-labelledby="brokerage-onboarding-title" aria-busy={!status || busy}>
       <header className={styles.heading}>
@@ -106,7 +134,13 @@ export function BrokerageOnboardingPanel() {
         <div className={styles.statusGrid}>
           <div><span>Membership</span><strong>{human(status.membership?.status)}</strong></div>
           <div><span>License</span><strong>{human(status.licenses?.[0]?.verification_status)}</strong></div>
-          <div><span>Google</span><strong>{status.google_connected ? 'connected' : 'not connected'}</strong></div>
+          <div className={styles.providerStatus}>
+            <span>Google</span>
+            <strong>{status.google_connected ? 'connected' : 'not connected'}</strong>
+            <button type="button" onClick={connectGoogle} disabled={busy}>
+              {status.google_connected ? 'Reconnect Calendar' : 'Connect Calendar'}
+            </button>
+          </div>
           <div><span>Style model</span><strong>{human(status.membership?.training_status)}</strong></div>
         </div>
       )}

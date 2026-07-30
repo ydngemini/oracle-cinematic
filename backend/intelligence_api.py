@@ -441,7 +441,15 @@ async def market_forecast(
         citations=_citations(body.sources),
         source_ids=_source_ids(body.sources),
         result=result,
-        confidence=max(0.45, min(0.85, len(body.observations) / 12)),
+        confidence=max(
+            0.35,
+            min(
+                0.88,
+                0.40
+                + 0.35 * float(result["source_coverage"]["coverage"])
+                + 0.02 * len(result["historical_years"]),
+            ),
+        ),
         warnings=list(result["warnings"]),
         review_required=True,
     )

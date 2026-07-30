@@ -1,0 +1,333 @@
+.panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.panelTop {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.panelKicker {
+  font-family: var(--font-display);
+  font-size: var(--text-xs);
+  letter-spacing: var(--tracking-widest);
+  text-transform: uppercase;
+  color: var(--oracle-amber-dim);
+}
+
+.panelHeader h2 {
+  margin-top: var(--space-1);
+  font-size: var(--text-2xl);
+}
+
+.panelHeader p {
+  margin-top: var(--space-1);
+  color: var(--oracle-text-dim);
+  font-size: var(--text-sm);
+}
+
+.refresh {
+  width: 44px;
+  height: 44px;
+  border: 1px solid var(--oracle-border-bright);
+  border-radius: var(--radius-md);
+  background: var(--oracle-glass);
+  color: var(--oracle-text-dim);
+  display: grid;
+  place-items: center;
+}
+
+.refresh:hover {
+  color: var(--oracle-amber);
+  background: var(--oracle-glass-hover);
+}
+
+.meta {
+  display: flex;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.chip {
+  border-radius: var(--radius-pill);
+  padding: 2px 10px;
+  border: 1px solid var(--oracle-border-subtle);
+  font-family: var(--font-display);
+  font-size: var(--text-xs);
+  color: var(--oracle-text-ghost);
+}
+
+.metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--space-3);
+}
+
+.metric {
+  padding: var(--space-3);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--oracle-border);
+  background: var(--oracle-glass);
+}
+
+.metric dt {
+  color: var(--oracle-text-ghost);
+  font-family: var(--font-display);
+  font-size: var(--text-xs);
+  letter-spacing: var(--tracking-wide);
+}
+
+.metric dd {
+  margin-top: var(--space-1);
+  color: var(--oracle-text);
+  font-family: var(--font-display);
+  font-size: var(--text-lg);
+  font-variant-numeric: tabular-nums;
+}
+
+.list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.card {
+  border: 1px solid var(--oracle-border);
+  border-radius: var(--radius-lg);
+  background: var(--oracle-glass);
+  overflow: hidden;
+}
+
+.cardHead {
+  width: 100%;
+  border: 0;
+  padding: var(--space-4);
+  background: transparent;
+  text-align: left;
+  display: grid;
+  gap: var(--space-2);
+  color: inherit;
+}
+
+.titleRow {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.dealTitle {
+  margin: 0;
+  font-size: var(--text-base);
+}
+
+.state {
+  text-transform: uppercase;
+  font-size: var(--text-xs);
+  letter-spacing: var(--tracking-wide);
+  font-family: var(--font-display);
+  padding: 2px 10px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--oracle-border-bright);
+  color: var(--oracle-text-dim);
+}
+
+.state[data-status='active'] {
+  color: var(--oracle-green);
+  border-color: var(--oracle-green-dim);
+}
+
+.state[data-status='under_contract'] {
+  color: var(--oracle-amber);
+  border-color: var(--oracle-amber-dim);
+}
+
+.state[data-status='closed'] {
+  color: var(--oracle-text-dim);
+  border-color: var(--oracle-border-subtle);
+}
+
+.state[data-status='cancelled'] {
+  color: var(--oracle-red);
+  border-color: var(--oracle-red-dim);
+}
+
+.metaLine {
+  color: var(--oracle-text-ghost);
+  font-size: var(--text-xs);
+}
+
+.actions {
+  margin-top: var(--space-1);
+  display: flex;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.action {
+  min-height: 38px;
+  min-width: 104px;
+  padding: 8px var(--space-3);
+  border: 1px solid var(--oracle-border-bright);
+  border-radius: var(--radius-md);
+  font-size: var(--text-xs);
+}
+
+.action[data-kind='ghost'] { background: transparent; }
+
+.details {
+  border-top: 1px solid var(--oracle-border-subtle);
+  padding: var(--space-4);
+  display: grid;
+  gap: var(--space-3);
+}
+
+.error {
+  margin: 0;
+  color: var(--oracle-red);
+  font-size: var(--text-sm);
+}
+
+.termGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-3);
+}
+
+.termRow {
+  display: grid;
+  gap: 6px;
+}
+
+.field label,
+.termRow label {
+  font-size: var(--text-xs);
+  color: var(--oracle-text-ghost);
+}
+
+.field {
+  display: grid;
+  gap: 6px;
+}
+
+.input {
+  min-height: 42px;
+  border: 1px solid var(--oracle-border);
+  border-radius: var(--radius-md);
+  background: var(--oracle-glass);
+  color: var(--oracle-text);
+  padding: 0 var(--space-3);
+  font: inherit;
+  font-size: var(--text-sm);
+  width: 100%;
+}
+
+.offerBar {
+  margin-top: var(--space-3);
+  border: 1px solid var(--oracle-border-subtle);
+  border-radius: var(--radius-md);
+  padding: var(--space-3);
+  display: grid;
+  gap: var(--space-3);
+}
+
+.offerRow {
+  display: grid;
+  gap: var(--space-3);
+  align-items: end;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.offerActions {
+  display: flex;
+  align-items: flex-end;
+  min-height: 42px;
+}
+
+.offerList {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.offerItem {
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--oracle-border-subtle);
+  border-radius: var(--radius-md);
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  justify-content: space-between;
+}
+
+.offerItem[data-status='accepted'] { border-color: var(--oracle-green-dim); }
+
+.offerItemText {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.small {
+  font-size: var(--text-xs);
+  color: var(--oracle-text-ghost);
+  display: inline-flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.status {
+  flex: 0 0 auto;
+  text-transform: uppercase;
+  font-family: var(--font-display);
+  letter-spacing: var(--tracking-wide);
+  font-size: var(--text-xs);
+  color: var(--oracle-text-ghost);
+}
+
+.status[data-status='submitted'] { color: var(--oracle-amber); }
+.status[data-status='accepted'] { color: var(--oracle-green); }
+
+.empty,
+.skeleton {
+  border: 1px dashed var(--oracle-border-subtle);
+  border-radius: var(--radius-md);
+  padding: var(--space-3);
+  color: var(--oracle-text-ghost);
+  font-size: var(--text-sm);
+}
+
+@media (max-width: 840px) {
+  .metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .termGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .offerItem {
+    gap: var(--space-2);
+  }
+}
+
+@media (min-width: 1024px) {
+  .offerRow {
+    grid-template-columns: 1.2fr 1.2fr 1.2fr 1.4fr 1fr auto;
+  }
+
+  .offerActions {
+    min-width: 112px;
+  }
+}

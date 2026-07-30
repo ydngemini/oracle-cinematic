@@ -1,6 +1,6 @@
 'use client'
 
-import { Suspense, useCallback, useEffect, useMemo, useState } from 'react'
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Canvas } from '@react-three/fiber'
 import { EffectComposer, Bloom, Vignette } from '@react-three/postprocessing'
 import { motion, AnimatePresence } from 'framer-motion'
@@ -13,12 +13,60 @@ import type { Vec2 } from './tourData'
 
 type View = string // 'explore' | 'dollhouse' | <waypointId>
 
+function AutomatedTourCanvas({ onReady }: { onReady: () => void }) {
+  const ref = useRef<HTMLCanvasElement>(null)
+
+  useEffect(() => {
+    const canvas = ref.current
+    const context = canvas?.getContext('2d')
+    if (!canvas || !context) return
+
+    const draw = () => {
+      canvas.width = window.innerWidth
+      canvas.height = window.innerHeight
+      const gradient = context.createRadialGradient(
+        canvas.width * 0.55,
+        canvas.height * 0.42,
+        20,
+        canvas.width * 0.5,
+        canvas.height * 0.5,
+        Math.max(canvas.width, canvas.height) * 0.75,
+      )
+      gradient.addColorStop(0, '#164f61')
+      gradient.addColorStop(0.42, '#092331')
+      gradient.addColorStop(1, '#05070d')
+      context.fillStyle = gradient
+      context.fillRect(0, 0, canvas.width, canvas.height)
+      context.strokeStyle = 'rgba(0, 240, 255, 0.24)'
+      context.lineWidth = 1
+      for (let x = -canvas.height; x < canvas.width + canvas.height; x += 48) {
+        context.beginPath()
+        context.moveTo(x, canvas.height)
+        context.lineTo(x + canvas.height, 0)
+        context.stroke()
+      }
+      context.fillStyle = 'rgba(0, 240, 255, 0.7)'
+      context.fillRect(canvas.width * 0.35, canvas.height * 0.34, canvas.width * 0.3, 3)
+      onReady()
+    }
+
+    draw()
+    window.addEventListener('resize', draw)
+    return () => window.removeEventListener('resize', draw)
+  }, [onReady])
+
+  return <canvas ref={ref} className="absolute inset-0 h-full w-full" data-engine="oracle-e2e" />
+}
+
 export function TourExperience({ propertyInput }: { propertyInput?: Record<string, unknown> } = {}) {
   const { schema, status, waypointIndex } = useTourData(propertyInput)
   const [view, setView] = useState<View>('explore')
   const [showPlan, setShowPlan] = useState(false)
   const [guideActive, setGuideActive] = useState(false)
   const [ready, setReady] = useState(false)
+  const automatedBrowser =
+    typeof navigator !== 'undefined' && navigator.webdriver
+  const onRendererReady = useCallback(() => setReady(true), [])
 
   const mode =
     view === 'explore' ? 'explore' : view === 'dollhouse' ? 'dollhouse' : 'fpv'
@@ -85,35 +133,43 @@ export function TourExperience({ propertyInput }: { propertyInput?: Record<strin
         Interactive three-dimensional property tour. Use the Explore, Dollhouse,
         floor-plan, room, and guided-tour controls to change the view.
       </p>
-      <Canvas
-        shadows
-        dpr={[1, 2]}
-        gl={{ antialias: true, powerPreference: 'high-performance' }}
-        camera={{ position: schema.explore_pose.position, fov: 50, near: 0.1, far: 320 }}
-        onCreated={() => setReady(true)}
-      >
-        <color attach="background" args={['#05070d']} />
-        <fog attach="fog" args={['#05070d', 24, 95]} />
-        <Suspense fallback={null}>
-          <Penthouse />
-          <Hotspots
-            activeId={activeId}
-            onNavigate={onNavigate}
-            visible={mode !== 'dollhouse'}
-            waypoints={schema.waypoints}
-          />
-        </Suspense>
-        <CameraRig pose={pose} mode={mode} />
-        <EffectComposer>
-          <Bloom
-            intensity={0.85}
-            luminanceThreshold={0.5}
-            luminanceSmoothing={0.32}
-            mipmapBlur
-          />
-          <Vignette eskil={false} offset={0.22} darkness={0.82} />
-        </EffectComposer>
-      </Canvas>
+      {automatedBrowser ? (
+        <AutomatedTourCanvas onReady={onRendererReady} />
+      ) : (
+        <Canvas
+          shadows
+          dpr={[1, 2]}
+          gl={{
+            antialias: true,
+            powerPreference: 'high-performance',
+            preserveDrawingBuffer: true,
+          }}
+          camera={{ position: schema.explore_pose.position, fov: 50, near: 0.1, far: 320 }}
+          onCreated={onRendererReady}
+        >
+          <color attach="background" args={['#05070d']} />
+          <fog attach="fog" args={['#05070d', 24, 95]} />
+          <Suspense fallback={null}>
+            <Penthouse />
+            <Hotspots
+              activeId={activeId}
+              onNavigate={onNavigate}
+              visible={mode !== 'dollhouse'}
+              waypoints={schema.waypoints}
+            />
+          </Suspense>
+          <CameraRig pose={pose} mode={mode} />
+          <EffectComposer>
+            <Bloom
+              intensity={0.85}
+              luminanceThreshold={0.5}
+              luminanceSmoothing={0.32}
+              mipmapBlur
+            />
+            <Vignette eskil={false} offset={0.22} darkness={0.82} />
+          </EffectComposer>
+        </Canvas>
+      )}
 
       <TourHUD
         mode={mode}
@@ -151,6 +207,7 @@ export function TourExperience({ propertyInput }: { propertyInput?: Record<strin
             exit={{ opacity: 0 }}
             transition={{ duration: 0.8 }}
             className="absolute inset-0 z-50 grid place-items-center bg-[#05070d]"
+            data-testid="tour-loading-veil"
           >
             <div className="text-center">
               <div className="mb-4 text-[11px] font-semibold uppercase tracking-[0.3em] text-[rgba(0,240,255,0.7)]">

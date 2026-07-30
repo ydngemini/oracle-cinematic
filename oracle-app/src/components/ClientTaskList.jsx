@@ -1,9 +1,15 @@
 import { useCallback, useEffect, useState } from 'react';
 import { crmGet, crmPost, crmPatch } from '../state/useCrmApi';
 import { GLYPHS, relTime, fmtDate, errMessage } from './ClientShared';
+import { PersonalCommandComposer } from './PersonalCommandComposer';
 import styles from './ClientPanes.module.css';
 
-const PRIORITIES = ['low', 'medium', 'high'];
+const PRIORITIES = ['low', 'normal', 'high', 'urgent'];
+const taskFromResponse = (data) => {
+  if (data?.task && typeof data.task === 'object') return data.task;
+  if (data && typeof data === 'object' && data.id) return data;
+  return null;
+};
 const isDone = (t) => String(t?.status || '').toLowerCase() === 'done';
 const isOverdue = (t) => {
   if (isDone(t) || !t?.due_at) return false;
@@ -22,7 +28,7 @@ export default function ClientTaskList({ clientId, onChange }) {
   const [error, setError] = useState(null);
   const [title, setTitle] = useState('');
   const [due, setDue] = useState('');
-  const [priority, setPriority] = useState('medium');
+  const [priority, setPriority] = useState('normal');
   const [adding, setAdding] = useState(false);
   const [addError, setAddError] = useState('');
   const [busyId, setBusyId] = useState(null);
@@ -51,9 +57,10 @@ export default function ClientTaskList({ clientId, onChange }) {
     setAddError('');
     crmPost(`/api/crm/clients/${clientId}/tasks`, body).then(
       (data) => {
-        const made = data?.task ?? { id: `tmp-${Date.now()}`, title: t, priority, status: 'open', due_at: body.due_at || null, created_at: new Date().toISOString() };
-        setTasks((prev) => [made, ...(Array.isArray(prev) ? prev : [])]);
-        setTitle(''); setDue(''); setPriority('medium');
+        const made = taskFromResponse(data);
+        if (made) setTasks((prev) => [made, ...(Array.isArray(prev) ? prev : [])]);
+        else load();
+        setTitle(''); setDue(''); setPriority('normal');
         setAdding(false);
         onChange?.();
       },
@@ -66,8 +73,12 @@ export default function ClientTaskList({ clientId, onChange }) {
     setBusyId(task.id);
     crmPatch(`/api/crm/tasks/${task.id}`, { status: next }).then(
       (data) => {
-        const updated = data?.task ?? { ...task, status: next, completed_at: next === 'done' ? new Date().toISOString() : null };
-        setTasks((prev) => (Array.isArray(prev) ? prev.map((t) => (t.id === task.id ? { ...t, ...updated } : t)) : prev));
+        const updated = taskFromResponse(data);
+        if (updated) {
+          setTasks((prev) => (Array.isArray(prev) ? prev.map((t) => (t.id === task.id ? { ...t, ...updated } : t)) : prev));
+        } else {
+          load();
+        }
         setBusyId(null);
         onChange?.();
       },
@@ -113,39 +124,44 @@ export default function ClientTaskList({ clientId, onChange }) {
 
   return (
     <div className={styles.pane}>
-      <div className={styles.composer}>
-        <div className={styles.composerRow}>
-          <input
-            className={styles.input}
-            value={title}
-            onChange={(e) => { setTitle(e.target.value); if (addError) setAddError(''); }}
-            onKeyDown={onKey}
-            placeholder="Add a task…"
-            aria-label="Task title"
-          />
+      <PersonalCommandComposer clientId={clientId} compact />
+
+      <details className={styles.manualTask}>
+        <summary>Add a manual task</summary>
+        <div className={styles.composer}>
+          <div className={styles.composerRow}>
+            <input
+              className={styles.input}
+              value={title}
+              onChange={(e) => { setTitle(e.target.value); if (addError) setAddError(''); }}
+              onKeyDown={onKey}
+              placeholder="Add a task…"
+              aria-label="Task title"
+            />
+          </div>
+          <div className={styles.composerMeta}>
+            <input
+              className={styles.metaInput}
+              type="date"
+              value={due}
+              onChange={(e) => setDue(e.target.value)}
+              aria-label="Due date"
+            />
+            <select
+              className={styles.selectChip}
+              value={priority}
+              onChange={(e) => setPriority(e.target.value)}
+              aria-label="Priority"
+            >
+              {PRIORITIES.map((p) => <option key={p} value={p}>{p}</option>)}
+            </select>
+            <button type="button" className={styles.addBtn} onClick={add} disabled={adding}>
+              {GLYPHS.plus}{adding ? 'Adding…' : 'Add Task'}
+            </button>
+          </div>
+          {addError && <span className={styles.err} role="alert">{addError}</span>}
         </div>
-        <div className={styles.composerMeta}>
-          <input
-            className={styles.metaInput}
-            type="date"
-            value={due}
-            onChange={(e) => setDue(e.target.value)}
-            aria-label="Due date"
-          />
-          <select
-            className={styles.selectChip}
-            value={priority}
-            onChange={(e) => setPriority(e.target.value)}
-            aria-label="Priority"
-          >
-            {PRIORITIES.map((p) => <option key={p} value={p}>{p}</option>)}
-          </select>
-          <button type="button" className={styles.addBtn} onClick={add} disabled={adding}>
-            {GLYPHS.plus}{adding ? 'Adding…' : 'Add Task'}
-          </button>
-        </div>
-        {addError && <span className={styles.err} role="alert">{addError}</span>}
-      </div>
+      </details>
 
       {tasks === null ? (
         <div className={styles.skel} aria-hidden="true"><div className={styles.skelRow} /><div className={styles.skelRow} /></div>

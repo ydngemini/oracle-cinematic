@@ -18,7 +18,9 @@ class PennsylvaniaPhillyOPAHarvester(CartoHarvester):
     TABLE = "opa_properties_public"
     SELECT = (
         "parcel_number, location, owner_1, owner_2, mailing_street, mailing_city_state, "
-        "mailing_zip, market_value, sale_date, sale_price, category_code_description"
+        "mailing_zip, zip_code, market_value, sale_date, sale_price, "
+        "number_of_bedrooms, number_of_bathrooms, number_of_rooms, year_built, "
+        "total_livable_area, total_area, category_code_description"
     )
     # Residential categories only.
     WHERE = "category_code_description ILIKE '%RESIDENTIAL%'"
@@ -34,9 +36,9 @@ class PennsylvaniaPhillyOPAHarvester(CartoHarvester):
         return PropertyRecord(
             parcel_id=parcel,
             address=addr,
-            city=str(row.get("mailing_city_state") or "Philadelphia").strip(),
+            city="Philadelphia",
             state=self.STATE,
-            zip_code=str(row.get("mailing_zip") or "").strip()[:10],
+            zip_code=str(row.get("zip_code") or "").strip()[:10],
             owner_name=owner,
             owner_type=classify_owner(owner),
             estimated_value=to_float(row.get("market_value")),
@@ -44,4 +46,19 @@ class PennsylvaniaPhillyOPAHarvester(CartoHarvester):
             is_absentee_owner=absentee,
             distress_flags=["absentee_owner"] if absentee else [],
             last_sale_date=str(row.get("sale_date") or "").strip()[:10] or None,
+            county="Philadelphia",
+            bedrooms=to_float(row.get("number_of_bedrooms")) or None,
+            bathrooms=to_float(row.get("number_of_bathrooms")) or None,
+            rooms=to_float(row.get("number_of_rooms")) or None,
+            year_built=(
+                int(year)
+                if (year := to_float(row.get("year_built"))) >= 1600
+                else None
+            ),
+            property_class=(
+                str(row.get("category_code_description") or "").strip() or None
+            ),
+            last_sale_price=to_float(row.get("sale_price")) or None,
+            lot_area_sqft=to_float(row.get("total_area")) or None,
+            building_area_sqft=to_float(row.get("total_livable_area")) or None,
         )

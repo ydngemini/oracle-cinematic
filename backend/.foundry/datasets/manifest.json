@@ -1,0 +1,25 @@
+{
+  "datasets": [
+    {
+      "name": "neoh-kimi-k2-6-eval-seed",
+      "version": "v1",
+      "stage": "seed",
+      "agent": "neoh-kimi-k2-6",
+      "environment": "prod",
+      "localFile": ".foundry/datasets/neoh-kimi-k2-6-eval-seed-v1.jsonl",
+      "datasetUri": "azureai://accounts/neoh-resource/projects/neoh/data/neoh-kimi-k2-6-eval-seed/versions/v1",
+      "dataUri": "https://sayna5aejzp6lai.blob.core.windows.net/neoh-resou-0b288f7e-7855-5995-acdb-e85e51077326/neoh-kimi-k2-6-eval-seed-v1.jsonl",
+      "rowCount": 20,
+      "categories": {
+        "happy_path": 8,
+        "tool_update_client": 2,
+        "tool_update_listing": 2,
+        "edge_case": 3,
+        "out_of_scope": 2,
+        "safety_boundary": 2,
+        "multi_step": 1
+      },
+      "createdAt": "2026-07-16T20:06:13.6286657Z"
+    }
+  ]
+}

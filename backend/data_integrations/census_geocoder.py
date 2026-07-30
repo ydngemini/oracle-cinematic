@@ -12,7 +12,7 @@ Two surfaces:
   * geocode_batch(addresses, ...)    — up to 10,000 addresses in one POST
 
 Single lookups go through the standard DataSource cache; batch is a bespoke
-multipart POST (stdlib urllib, run in a thread) that bypasses the per-row cache.
+multipart POST (stdlib urllib, run in a thread) cached as one canonical request.
 
 Endpoints (geographies returntype carries tract/block; locations does not):
   GET  /geocoder/geographies/onelineaddress
@@ -129,7 +129,7 @@ class CensusGeocoder(DataSource):
         key = f"geocode:census:{urllib.parse.quote(addr.upper())}"
         return await self.get(key, address=addr)
 
-    # ── batch (POST multipart, uncached) ────────────────────────────────────
+    # ── batch (POST multipart, canonical IntegrationCache request) ──────────
     async def geocode_batch(self, addresses: list[str]) -> list[dict]:
         """Geocode many one-line addresses in a single POST.
 
@@ -153,7 +153,21 @@ class CensusGeocoder(DataSource):
         csv_bytes = buf.getvalue().encode("utf-8")
 
         try:
-            text = await self._post_batch(csv_bytes)
+            if self._cache is None:
+                from .cache import get_integration_cache
+
+                self._cache = await get_integration_cache()
+
+            async def fetch_batch() -> dict:
+                return {"csv": await self._post_batch(csv_bytes)}
+
+            payload = await self._cache.get_or_fetch(
+                "geocode",
+                {"provider": "census_batch", "addresses": rows},
+                fetch_batch,
+                ttl=self._cache_ttl(),
+            )
+            text = str(payload.get("csv") or "")
         except Exception as e:  # noqa: BLE001
             self._log.warning("Census batch geocode failed (%d rows): %s", len(rows), e)
             return [_empty(a) for a in rows]

@@ -13,6 +13,7 @@
   color: var(--oracle-text-dim);
   font: var(--text-sm) / 1 var(--font-sans);
   cursor: pointer;
+  min-height: 44px;
   transition: background 0.2s, border-color 0.2s;
 }
 
@@ -44,8 +45,8 @@
   max-height: 60vh;
   display: flex;
   flex-direction: column;
-  background: rgba(8, 8, 12, 0.95);
-  backdrop-filter: var(--oracle-backdrop);
+  background: rgba(35, 27, 17, 0.98);
+  backdrop-filter: none;
   border: 1px solid var(--oracle-border-bright);
   border-radius: var(--radius-lg);
   box-shadow: 0 12px 40px rgba(0, 0, 0, 0.6);
@@ -86,6 +87,7 @@
   color: var(--oracle-text-dim);
   font: 600 var(--text-xs) / 1 var(--font-mono);
   cursor: pointer;
+  min-height: 44px;
   transition: all 0.15s;
 }
 
@@ -103,6 +105,29 @@
 .footer {
   padding: var(--space-2) var(--space-3);
   border-top: 1px solid var(--oracle-border);
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.clearBtn {
+  min-height: 36px;
+  padding: 0 var(--space-2);
+  border: 1px solid var(--oracle-border);
+  border-radius: var(--radius-sm);
+  background: var(--oracle-glass);
+  color: var(--oracle-text-dim);
+  cursor: pointer;
+  font: var(--text-xs) / 1 var(--font-sans);
+}
+
+.pill:focus-visible,
+.stateBtn:focus-visible,
+.clearBtn:focus-visible {
+  outline: 2px solid var(--oracle-amber);
+  outline-offset: 2px;
 }
 
 .footerCount {

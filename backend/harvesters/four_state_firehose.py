@@ -89,5 +89,29 @@ class RegionalParcelAdapter(PropertyHarvester):
         )
         return []
 
+    async def harvest_region(
+        self,
+        *,
+        states: Optional[list[str]] = None,
+        max_records_per_state: Optional[int] = None,
+        concurrency: int = 2,
+    ) -> dict:
+        """Run resumable DE/PA/NJ/MD ingestion with tenant-state checkpoints."""
+        from .firehose import MultiStateFirehose
+
+        selected = [state.upper() for state in (states or list(_REGIONAL))]
+        invalid = sorted(set(selected) - set(_REGIONAL))
+        if invalid:
+            raise ValueError(f"regional states must be one of {sorted(_REGIONAL)}: {invalid}")
+        result = await MultiStateFirehose(
+            self.tenant_id,
+            states=selected,
+            agent_id="regional-checkpointed",
+        ).run(
+            max_records_per_state=max_records_per_state or self.max_records,
+            concurrency=concurrency,
+        )
+        return {**result, "checkpointed": True, "region": sorted(selected)}
+
 
 __all__ = ["RegionalParcelAdapter", "state_for_zip"]

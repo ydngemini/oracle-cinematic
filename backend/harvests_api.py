@@ -312,33 +312,53 @@ async def _harvest_job(payload: dict[str, Any], reporter) -> dict[str, Any]:
         raise
 
     await reporter.progress(90, f"{source_key}: recording coverage")
+    has_state_failures = int(result.get("errors") or 0) > 0
+    run_state = "partial" if has_state_failures else "succeeded"
     async with tenant_tx(ctx) as conn:
         await conn.execute(
             """
             UPDATE harvest_runs
-               SET state='succeeded',requests=$2,fetched=$3,normalized=$4,
-                   aggregated=$5,inserted=$6,retries=$7,completed_at=now(),metrics=$8::jsonb
+               SET state=$2,requests=$3,fetched=$4,normalized=$5,
+                   aggregated=$6,inserted=$7,retries=$8,cache_hits=$9,
+                   malformed=$10,completed_at=now(),metrics=$11::jsonb,
+                   error_summary=CASE WHEN $2='partial' THEN 'One or more jurisdictions failed.' ELSE NULL END
              WHERE id=$1
             """,
             run["id"],
+            run_state,
             int(result.get("requests") or 0),
             int(result.get("fetched") or 0),
             int(result.get("parsed") or 0),
             int(result.get("aggregated") or result.get("parsed") or 0),
             int(result.get("inserted") or 0),
             int(result.get("retries") or 0),
+            int(result.get("cache_hits") or 0),
+            int(result.get("malformed") or 0),
             json.dumps(result, default=str),
         )
         await conn.execute(
             """
             UPDATE harvest_sources
-               SET last_succeeded_at=now(),coverage=$2::jsonb,
-                   failure_count=0,circuit_state='closed',last_error=NULL,updated_at=now()
+               SET last_succeeded_at=CASE WHEN $5 THEN last_succeeded_at ELSE now() END,
+                   coverage=$2::jsonb,
+                   cache_hits=cache_hits+$3,cache_misses=cache_misses+$4,
+                   failure_count=CASE WHEN $5 THEN failure_count+1 ELSE 0 END,
+                   circuit_state=CASE WHEN $5 AND failure_count+1>=5 THEN 'open'
+                                      WHEN NOT $5 THEN 'closed' ELSE circuit_state END,
+                   health_status=CASE WHEN $5 THEN 'degraded' ELSE 'fresh' END,
+                   health_detail=CASE WHEN $5 THEN 'One or more jurisdictions failed.' ELSE NULL END,
+                   last_health_checked_at=now(),last_error=CASE WHEN $5
+                       THEN 'One or more jurisdictions failed.' ELSE NULL END,updated_at=now()
              WHERE id=$1
             """,
             source["id"],
             json.dumps(result, default=str),
+            int(result.get("cache_hits") or 0),
+            int(result.get("cache_misses") or 0),
+            has_state_failures,
         )
+    if has_state_failures:
+        return {**result, "_terminal_state": "partial"}
     return result
 
 

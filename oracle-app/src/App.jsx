@@ -1,6 +1,9 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { useOracleWebSocket, useOracleDispatch, ACTIONS } from './state';
 import { CrmShell, LoginVault } from './components';
+import { PolicyAcceptanceGate } from './components/PolicyAcceptanceGate';
+import { NetworkProvider } from './context/NetworkContext';
+import { apiPost } from './lib/apiClient';
 import { ReelBackdrop, ReelExperience } from './components/ReelExperience';
 
 function useJarvisVoice() {
@@ -65,76 +68,74 @@ function useJarvisVoice() {
     recognitionRef.current = recognition;
   }, [dispatch]);
 
-  const startListening = useCallback(() => {
-    if (holdingRef.current) return;
-    holdingRef.current = true;
-    dispatch({ type: ACTIONS.SET_JARVIS_LISTENING, payload: true });
-
-    try {
-      recognitionRef.current?.start();
-    } catch { /* not ready / already started — ignore */ }
-  }, [dispatch]);
-
-  const stopListening = useCallback(() => {
-    holdingRef.current = false;
-    dispatch({ type: ACTIONS.SET_JARVIS_LISTENING, payload: false });
-    dispatch({ type: ACTIONS.SET_JARVIS_TRANSCRIPT, payload: '' });
-
-    try {
-      recognitionRef.current?.stop();
-    } catch { /* not running — ignore */ }
-  }, [dispatch]);
-
-  useEffect(() => {
-    function onKeyDown(e) {
-      if (e.code === 'Space' && !e.repeat && e.target === document.body) {
-        e.preventDefault();
-        startListening();
-      }
-    }
-
-    function onKeyUp(e) {
-      if (e.code === 'Space' && e.target === document.body) {
-        e.preventDefault();
-        stopListening();
-      }
-    }
-
-    window.addEventListener('keydown', onKeyDown);
-    window.addEventListener('keyup', onKeyUp);
-
-    return () => {
-      window.removeEventListener('keydown', onKeyDown);
-      window.removeEventListener('keyup', onKeyUp);
-    };
-  }, [startListening, stopListening]);
+  // Voice capture is controlled by explicit press-to-talk controls. A global
+  // Space shortcut used to steal focus after leaving a text field and make the
+  // page look selected; keyboard input now remains native and predictable.
 }
 
-function AuthedApp() {
+function ReadyCrm() {
   useOracleWebSocket();
   useJarvisVoice();
 
-  // The 5-tab agent CRM (2026-06 redesign). The desktop HUD lives on in
-  // DashboardLayout but is no longer mounted — Listings is the landing tab.
   return <CrmShell />;
 }
 
-function NeohApp() {
-  // Auth gate: every REST surface (board moves, dossier, onboarding, CMA)
-  // needs the Bearer token LoginVault stores in sessionStorage. The WS and
-  // Jarvis hooks only mount after auth so the socket connects with a real
-  // identity. VITE_AUTH_BYPASS=1 skips the vault for local dev.
-  const [authed, setAuthed] = useState(
-    () =>
-      import.meta.env.VITE_AUTH_BYPASS === '1' ||
-      !!sessionStorage.getItem('oracle_token')
+function AuthedApp({ onSignOut }) {
+  const [policyReady, setPolicyReady] = useState(false);
+  const markPolicyReady = useCallback(() => setPolicyReady(true), []);
+
+  // The agent CRM opens directly to the source-backed Houses workspace.
+  return (
+    <>
+      {policyReady ? <ReadyCrm /> : null}
+      <PolicyAcceptanceGate onReady={markPolicyReady} onSignOut={onSignOut} />
+    </>
   );
+}
+
+function NeohApp() {
+  const [authed, setAuthed] = useState(() => (
+    import.meta.env.VITE_AUTH_BYPASS === '1' ? true : null
+  ));
+
+  useEffect(() => {
+    if (authed !== null) return;
+    apiPost('/auth/verify', {}, { retries: 0 })
+      .then((identity) => {
+        if (identity?.role) sessionStorage.setItem('oracle_role', identity.role);
+        setAuthed(true);
+      })
+      .catch(() => setAuthed(false));
+  }, [authed]);
+
+  useEffect(() => {
+    const expireSession = () => {
+      sessionStorage.removeItem('oracle_role');
+      setAuthed(false);
+    };
+    window.addEventListener('auth:expired', expireSession);
+    return () => window.removeEventListener('auth:expired', expireSession);
+  }, []);
+
+  const signOut = useCallback(async () => {
+    try { await apiPost('/auth/logout', {}, { retries: 0 }); } catch { /* expire locally regardless */ }
+    sessionStorage.removeItem('oracle_role');
+    setAuthed(false);
+  }, []);
 
   return (
     <div className="neoh-app-shell">
       <ReelBackdrop />
       <div className="neoh-app-foreground">
-        {!authed ? <LoginVault onAuthenticated={() => setAuthed(true)} /> : <AuthedApp />}
+        <NetworkProvider>
+          {authed === null ? (
+            <div role="status" aria-live="polite">Restoring secure session…</div>
+          ) : !authed ? (
+            <LoginVault onAuthenticated={() => setAuthed(true)} />
+          ) : (
+            <AuthedApp onSignOut={signOut} />
+          )}
+        </NetworkProvider>
       </div>
     </div>
   );

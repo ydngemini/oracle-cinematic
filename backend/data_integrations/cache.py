@@ -18,6 +18,10 @@ from typing import Any, Optional
 
 logger = logging.getLogger("oracle.di.cache")
 
+
+class IntegrationCacheUnavailable(RuntimeError):
+    """Raised before an upstream call when the durable cache cannot be used."""
+
 try:
     import redis.asyncio as aioredis
 
@@ -25,7 +29,7 @@ try:
 except ImportError:
     _REDIS_AVAILABLE = False
 
-_REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
+_REDIS_URL = os.environ.get("REDIS_URL", "").strip()
 
 TTL = {
     "fema_flood": 30 * 86_400,
@@ -60,8 +64,15 @@ _SECRET_FIELDS = frozenset(
         "refresh_token",
         "password",
         "secret",
+        "registrationkey",
+        "wsapikey",
+        "key",
     }
 )
+
+_shared_cache: Optional["IntegrationCache"] = None
+_shared_pool_identity: Optional[int] = None
+_shared_lock: Optional[asyncio.Lock] = None
 
 
 def _normalized_key(value: Any) -> str:
@@ -119,7 +130,7 @@ class IntegrationCache:
     @classmethod
     async def create(cls, pg_pool) -> "IntegrationCache":
         redis_client = None
-        if _REDIS_AVAILABLE:
+        if _REDIS_AVAILABLE and _REDIS_URL:
             try:
                 redis_client = aioredis.from_url(
                     _REDIS_URL,
@@ -129,9 +140,14 @@ class IntegrationCache:
                     socket_timeout=2,
                 )
                 await redis_client.ping()
-                logger.info("Redis L1 cache connected at %s", _REDIS_URL)
+                logger.info("Redis L1 cache connected")
             except Exception as exc:  # noqa: BLE001 - PG is authoritative fallback
-                logger.warning("Redis unavailable (%s) — PG-only cache", exc)
+                logger.warning(
+                    "Redis unavailable (%s) — PG-only cache",
+                    type(exc).__name__,
+                )
+                if redis_client is not None:
+                    await redis_client.aclose()
                 redis_client = None
         return cls(pg_pool, redis_client)
 
@@ -177,9 +193,9 @@ class IntegrationCache:
                         """,
                         key,
                     )
-        except Exception as exc:  # noqa: BLE001 - cache failure is observable degradation
-            logger.warning("PG cache GET failed for %s: %s", key, exc)
-            return None
+        except Exception as exc:  # noqa: BLE001 - external reads fail closed
+            logger.error("PG cache GET failed for %s: %s", key, exc)
+            raise IntegrationCacheUnavailable("durable integration cache read failed") from exc
         if not row:
             return None
         return {
@@ -242,12 +258,6 @@ class IntegrationCache:
         stale_seconds = max(ttl, int(stale_ttl or STALE_TTL.get(source_name, STALE_TTL["default"])))
         blob = json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
 
-        if self._redis:
-            try:
-                await self._redis.setex(f"di:{key}", ttl, blob)
-            except Exception as exc:  # noqa: BLE001
-                logger.debug("Redis SET failed for %s: %s", key, exc)
-
         try:
             async with self._pg.acquire() as conn:
                 await conn.execute(
@@ -277,8 +287,14 @@ class IntegrationCache:
                     request_digest,
                 )
             self._metrics["writes"] += 1
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("PG cache SET failed for %s: %s", key, exc)
+        except Exception as exc:  # noqa: BLE001 - never claim an uncached fetch succeeded
+            logger.error("PG cache SET failed for %s: %s", key, exc)
+            raise IntegrationCacheUnavailable("durable integration cache write failed") from exc
+        if self._redis:
+            try:
+                await self._redis.setex(f"di:{key}", ttl, blob)
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("Redis SET failed for %s: %s", key, exc)
 
     async def _refresh(
         self,
@@ -366,9 +382,6 @@ class IntegrationCache:
             self._metrics["refresh_errors"] += 1
             logger.warning("stale cache refresh failed for %s: %s", kwargs.get("key"), exc)
 
-    def metrics(self) -> dict[str, int]:
-        return dict(self._metrics)
-
     async def invalidate(self, key: str) -> None:
         if self._redis:
             try:
@@ -396,3 +409,62 @@ class IntegrationCache:
                 )
         except Exception as exc:  # noqa: BLE001
             logger.warning("Cache invalidate_prefix failed for %s*: %s", prefix, exc)
+
+    def metrics(self) -> dict[str, int]:
+        return dict(self._metrics)
+
+
+async def get_integration_cache() -> IntegrationCache:
+    """Return the process-wide cache bound to the current PostgreSQL pool.
+
+    Connectors call this immediately before external I/O.  If the pool is not
+    available, the call fails closed instead of silently spending quota or
+    producing an untracked observation.
+    """
+    global _shared_cache, _shared_pool_identity, _shared_lock
+    from db.connection import get_pool
+
+    pool = get_pool()
+    if pool is None:
+        raise IntegrationCacheUnavailable("PostgreSQL integration cache is unavailable")
+    identity = id(pool)
+    if _shared_cache is not None and _shared_pool_identity == identity:
+        return _shared_cache
+    if _shared_lock is None:
+        _shared_lock = asyncio.Lock()
+    async with _shared_lock:
+        if _shared_cache is None or _shared_pool_identity != identity:
+            _shared_cache = await IntegrationCache.create(pool)
+            _shared_pool_identity = identity
+    return _shared_cache
+
+
+def reset_shared_cache() -> None:
+    """Test/shutdown seam; the next lookup binds to the then-current DB pool."""
+    global _shared_cache, _shared_pool_identity, _shared_lock
+    _shared_cache = None
+    _shared_pool_identity = None
+    _shared_lock = None
+    IntegrationCache._locks.clear()
+    for task in tuple(IntegrationCache._refresh_tasks):
+        task.cancel()
+    IntegrationCache._refresh_tasks.clear()
+
+
+async def cached_external(
+    source: str,
+    request: Mapping[str, Any],
+    fetcher: Callable[[], Awaitable[dict]],
+    *,
+    ttl: Optional[int] = None,
+    stale_ttl: Optional[int] = None,
+) -> dict:
+    """Mandatory-cache wrapper for legacy connectors during migration."""
+    cache = await get_integration_cache()
+    return await cache.get_or_fetch(
+        source,
+        request,
+        fetcher,
+        ttl=ttl,
+        stale_ttl=stale_ttl,
+    )

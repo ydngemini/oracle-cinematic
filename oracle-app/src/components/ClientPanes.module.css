@@ -8,6 +8,31 @@
   gap: var(--space-3);
 }
 
+.manualTask {
+  overflow: hidden;
+  border: 1px solid var(--oracle-border);
+  border-radius: var(--radius-lg);
+  background: var(--oracle-glass);
+}
+
+.manualTask > summary {
+  min-height: 44px;
+  padding: 0 var(--space-3);
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+  color: var(--oracle-text-dim);
+  font: 600 var(--text-xs)/1 var(--font-display);
+  letter-spacing: var(--tracking-wider);
+  text-transform: uppercase;
+}
+
+.manualTask > .composer {
+  border: 0;
+  border-top: 1px solid var(--oracle-border);
+  border-radius: 0;
+}
+
 /* ── Section heads + composers ──────────────────────────────────────────── */
 .composer {
   display: flex;

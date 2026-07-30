@@ -116,12 +116,13 @@ class PublicRecord:
 
 
 class CountyAssessorHarvester:
-    def __init__(self, graph_engine, websocket=None):
+    def __init__(self, graph_engine, websocket=None, cache=None):
         self.graph = graph_engine
         self.websocket = websocket
         self._running = False
         self._session: Optional[aiohttp.ClientSession] = None
         self._seen_records: set = set()
+        self._cache = cache
         self._stats = {"batches": 0, "records_ingested": 0, "errors": 0}
 
     async def start(self):
@@ -218,39 +219,49 @@ class CountyAssessorHarvester:
         if self._session is None:
             logger.error("_scrape_endpoint called before start() — session not initialised")
             return []
-        for attempt in range(MAX_RETRIES):
+        if self._cache is None:
+            from data_integrations.cache import get_integration_cache
+
+            self._cache = await get_integration_cache()
+
+        async def fetch_upstream() -> dict:
+            for attempt in range(MAX_RETRIES):
+                try:
+                    async with self._session.get(url, params=params) as resp:
+                        if resp.status == 200:
+                            data = await resp.json()
+                            return {"records": data.get("records", data.get("results", []))}
+                        if resp.status == 429:
+                            wait = 2 ** (attempt + 1)
+                            logger.warning("Rate limited on %s, waiting %ss", url, wait)
+                            await asyncio.sleep(wait)
+                            continue
+                        logger.warning("HTTP %s from %s", resp.status, url)
+                        return {"records": []}
+                except aiohttp.ClientError as exc:
+                    logger.error("Request failed (%d/%d): %s", attempt + 1, MAX_RETRIES, exc)
+                    if attempt < MAX_RETRIES - 1:
+                        await asyncio.sleep(2 ** attempt)
+                except Exception as exc:  # noqa: BLE001
+                    logger.error("Unexpected error scraping %s: %s", url, exc)
+                    return {"records": []}
+            return {"records": []}
+
+        payload = await self._cache.get_or_fetch(
+            "county_assessor",
+            {"url": url, "params": params, "record_type": record_type.value},
+            fetch_upstream,
+            ttl=7 * 86_400,
+        )
+        out: list[PublicRecord] = []
+        for item in payload.get("records") or []:
+            if not item:
+                continue
             try:
-                async with self._session.get(url, params=params) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        records = data.get("records", data.get("results", []))
-                        out: list[PublicRecord] = []
-                        for item in records:
-                            if not item:
-                                continue
-                            try:
-                                out.append(parser(item))
-                            except Exception as parse_err:
-                                logger.warning(
-                                    "Parser %s skipped malformed item: %s",
-                                    parser.__name__, parse_err,
-                                )
-                        return out
-                    elif resp.status == 429:
-                        wait = 2 ** (attempt + 1)
-                        logger.warning(f"Rate limited on {url}, waiting {wait}s")
-                        await asyncio.sleep(wait)
-                    else:
-                        logger.warning(f"HTTP {resp.status} from {url}")
-                        return []
-            except aiohttp.ClientError as e:
-                logger.error(f"Request failed ({attempt+1}/{MAX_RETRIES}): {e}")
-                if attempt < MAX_RETRIES - 1:
-                    await asyncio.sleep(2 ** attempt)
-            except Exception as e:
-                logger.error(f"Unexpected error scraping {url}: {e}")
-                return []
-        return []
+                out.append(parser(item))
+            except Exception as parse_err:  # noqa: BLE001
+                logger.warning("Parser %s skipped malformed item: %s", parser.__name__, parse_err)
+        return out
 
     def _parse_deed_record(self, raw: dict) -> PublicRecord:
         return PublicRecord(

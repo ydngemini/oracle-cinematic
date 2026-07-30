@@ -1,0 +1,96 @@
+location: North Central US
+name: neoh-leads-import
+type: Microsoft.App/jobs
+identity:
+  type: UserAssigned
+  userAssignedIdentities:
+    /subscriptions/120ea104-5498-44f6-8e86-5654a1f4419b/resourcegroups/neoh/providers/Microsoft.ManagedIdentity/userAssignedIdentities/neoh-app-id: {}
+properties:
+  environmentId: /subscriptions/120ea104-5498-44f6-8e86-5654a1f4419b/resourceGroups/neoh/providers/Microsoft.App/managedEnvironments/neoh-prod-env
+  configuration:
+    triggerType: Manual
+    replicaRetryLimit: 0
+    replicaTimeout: 7200
+    manualTriggerConfig:
+      parallelism: 1
+      replicaCompletionCount: 1
+    secrets:
+      - name: db-admin-password
+        keyVaultUrl: https://neoh-kv-120ea104.vault.azure.net/secrets/oracle-db-admin-password
+        identity: /subscriptions/120ea104-5498-44f6-8e86-5654a1f4419b/resourcegroups/neoh/providers/Microsoft.ManagedIdentity/userAssignedIdentities/neoh-app-id
+  template:
+    containers:
+      - name: neoh-leads-import
+        image: postgres:16-alpine
+        imageType: ContainerImage
+        command:
+          - /bin/sh
+          - -c
+        args:
+          - |-
+            set -eu
+            archive=/mnt/neoh/imports/neoh-leads-20260717.dump
+            expected_sha=229e4e915932f09d3dbd17985c9211053742132b1e4dbc6ea60509dbdcbd58c5
+            expected_rows=1069026
+
+            echo "Import preflight: checking mounted archive."
+            if [ ! -r "$archive" ]; then
+              echo "Import preflight failed: archive is not readable."
+              exit 11
+            fi
+            actual_sha="$(sha256sum "$archive" | awk '{print $1}')"
+            if [ "$actual_sha" != "$expected_sha" ]; then
+              echo "Import preflight failed: archive checksum mismatch."
+              exit 12
+            fi
+            echo "Import preflight: archive checksum verified."
+
+            if ! current_rows="$(psql -Atqc 'SELECT COUNT(*) FROM public.leads')"; then
+              echo "Import preflight failed: database query failed."
+              exit 13
+            fi
+            if [ "$current_rows" -ne 0 ]; then
+              echo "Refusing lead import: destination contains $current_rows rows."
+              exit 14
+            fi
+            echo "Import preflight: empty destination verified; restoring leads."
+
+            pg_restore \
+              --dbname="host=$PGHOST port=$PGPORT dbname=$PGDATABASE user=$PGUSER sslmode=$PGSSLMODE" \
+              --data-only \
+              --no-owner \
+              --no-privileges \
+              --exit-on-error \
+              --single-transaction \
+              "$archive"
+
+            loaded_rows="$(psql -Atqc 'SELECT COUNT(*) FROM public.leads')"
+            if [ "$loaded_rows" -ne "$expected_rows" ]; then
+              echo "Import verification failed: expected $expected_rows rows, found $loaded_rows."
+              exit 15
+            fi
+            echo "NEOH lead import verified: $loaded_rows rows."
+        env:
+          - name: PGHOST
+            value: neoh-db-120ea104.postgres.database.azure.com
+          - name: PGPORT
+            value: "5432"
+          - name: PGDATABASE
+            value: oracle
+          - name: PGUSER
+            value: oracleadmin
+          - name: PGPASSWORD
+            secretRef: db-admin-password
+          - name: PGSSLMODE
+            value: require
+        resources:
+          cpu: 1
+          memory: 2Gi
+        volumeMounts:
+          - volumeName: neoh-files
+            mountPath: /mnt/neoh
+    volumes:
+      - name: neoh-files
+        storageName: neohfiles
+        storageType: AzureFile
+  workloadProfileName: Consumption

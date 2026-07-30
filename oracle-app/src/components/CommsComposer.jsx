@@ -1,35 +1,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { crmPost } from '../state/useCrmApi';
+import { crmGet, crmPost } from '../state/useCrmApi';
 import styles from './CommsTab.module.css';
 import { GLYPHS, MAX_BODY_HEIGHT, firstNameOf } from './CommsShared';
 
 /* CommsComposer — the fixed comms chrome pinned above the Deck. Channel
-   selector (email/sms/note), an email subject line, the growing body, plus two
-   enterprise affordances: an AI-draft action (POST /comms/draft with intent
-   presets — degrades quietly if the route isn't live) and client-side quick
+   selector (email/SMS/internal note), an email subject line, the growing body,
+   plus two
+   enterprise affordances: a property-specific AI-script action and client-side quick
    templates (localStorage, with {{name}} interpolation). It owns its own send
    state and reports its measured height up so the stream clears it. It never
    fabricates a sent message: the parent only renders what the API echoes back. */
 
 const TEMPLATES_KEY = 'oracle_comms_templates_v1';
-
-const SEED_TEMPLATES = [
-  {
-    id: 'seed-showing',
-    title: 'Showing follow-up',
-    body: 'Hi {{name}}, thanks for taking the time to walk the property today. What were your first impressions? Happy to dig into any of the numbers with you.',
-  },
-  {
-    id: 'seed-offer',
-    title: 'Offer recap',
-    body: 'Hi {{name}}, here is a quick recap of where we landed: purchase price, closing timeline, and contingencies as discussed. Let me know if anything looks off and I will tighten it up.',
-  },
-  {
-    id: 'seed-checkin',
-    title: 'Weekly check-in',
-    body: 'Hi {{name}}, just checking in — anything I can help move forward this week? Happy to jump on a quick call if that is easier.',
-  },
-];
 
 const INTENTS = [
   { id: 'follow_up_showing', label: 'Follow up after showing' },
@@ -42,15 +24,15 @@ const INTENTS = [
 function loadTemplates() {
   try {
     const raw = localStorage.getItem(TEMPLATES_KEY);
-    if (!raw) return SEED_TEMPLATES;
+    if (!raw) return [];
     const parsed = JSON.parse(raw);
     if (Array.isArray(parsed)) {
       return parsed.filter((t) => t && typeof t.body === 'string');
     }
   } catch {
-    /* corrupt or unavailable storage — fall back to seeds */
+    /* corrupt or unavailable storage — start with no user templates */
   }
-  return SEED_TEMPLATES;
+  return [];
 }
 
 function persistTemplates(list) {
@@ -70,6 +52,7 @@ export default function CommsComposer({
   clientId,
   clientName,
   emailBlocked,
+  smsBlocked,
   onSent,
   onRefetch,
   onHeightChange,
@@ -86,15 +69,58 @@ export default function CommsComposer({
   const [draftError, setDraftError] = useState(null);
   const [templates, setTemplates] = useState(loadTemplates);
   const [newTitle, setNewTitle] = useState('');
+  const [properties, setProperties] = useState([]);
+  const [propertyId, setPropertyId] = useState('');
 
   const bodyRef = useRef(null);
   const rootRef = useRef(null);
 
-  // If email is unavailable on this client, a remembered 'email' selection
-  // resolves to a note — no effect, no cascading render. The Email key itself
-  // is disabled, so this only catches a selection carried over from a prior
-  // thread that did have an address.
-  const activeChannel = channel === 'email' && emailBlocked ? 'note' : channel;
+  useEffect(() => {
+    let active = true;
+    if (!clientId) {
+      Promise.resolve().then(() => {
+        if (active) {
+          setProperties([]);
+          setPropertyId('');
+        }
+      });
+      return () => { active = false; };
+    }
+    crmGet(`/api/crm/clients/${encodeURIComponent(clientId)}`).then(
+      (result) => {
+        if (!active) return;
+        const detail = result?.client ?? result;
+        const houses = Array.isArray(detail?.houses) ? detail.houses : [];
+        const normalized = houses
+          .map((house) => ({
+            id: house.id,
+            propertyId: house.lead_id || house.id,
+            address: house.address || 'Property record',
+          }))
+          .filter((house) => house.propertyId);
+        setProperties(normalized);
+        setPropertyId((current) => (
+          normalized.some((house) => house.propertyId === current)
+            ? current
+            : normalized[0]?.propertyId || ''
+        ));
+      },
+      () => {
+        if (active) {
+          setProperties([]);
+          setPropertyId('');
+        }
+      },
+    );
+    return () => { active = false; };
+  }, [clientId]);
+
+  // A remembered channel that is unavailable for this client resolves to an
+  // internal note without a setState effect. The disabled channel key prevents
+  // selecting an address/number the client does not have.
+  const channelIsBlocked =
+    (channel === 'email' && emailBlocked) || (channel === 'sms' && smsBlocked);
+  const activeChannel = channelIsBlocked ? 'note' : channel;
 
   // Report measured height up so the stream's bottom padding always clears the
   // composer (subject field, growing body, and open trays all change it).
@@ -129,7 +155,8 @@ export default function CommsComposer({
     if (!text || sending || !clientId) return;
     setSending(true);
     setSendError(null);
-    const payload = { channel: activeChannel, body: text, direction: 'outbound' };
+    const payload = { channel: activeChannel, body: text };
+    if (activeChannel !== 'note') payload.direction = 'outbound';
     if (activeChannel === 'email' && subject.trim()) payload.subject = subject.trim();
     crmPost(`/api/crm/clients/${clientId}/messages`, payload).then(
       (data) => {
@@ -139,7 +166,13 @@ export default function CommsComposer({
         if (bodyRef.current) bodyRef.current.style.height = 'auto';
         const echoed = data?.message ?? data?.interaction ?? null;
         if (echoed) {
-          onSent?.({ ...echoed, _queued: Boolean(data?.queued_email_id) });
+          const deliveryStatus = data?.delivery_status ?? echoed?.delivery_status ?? null;
+          onSent?.({
+            ...echoed,
+            _queued: Boolean(data?.queued_email_id),
+            _deliveryStatus: deliveryStatus,
+            _loggedOnly: activeChannel === 'sms' && deliveryStatus === 'not_sent',
+          });
         } else {
           onRefetch?.(); // server didn't echo — pull the real thread
         }
@@ -154,13 +187,26 @@ export default function CommsComposer({
   const runDraft = useCallback(
     (intent) => {
       if (!clientId || drafting) return;
+      if (!propertyId) {
+        setDraftError(new Error('Link a property to this client before generating a script.'));
+        return;
+      }
+      if (activeChannel === 'note') {
+        setDraftError(new Error('Choose Email or SMS for a compliant outreach draft.'));
+        return;
+      }
       setDrafting(true);
       setDraftError(null);
-      crmPost('/api/crm/comms/draft', { client_id: clientId, intent }).then(
+      crmPost('/api/comms/generate-script', {
+        client_id: clientId,
+        property_id: propertyId,
+        channel: activeChannel.toUpperCase(),
+        objective: intent,
+      }).then(
         (data) => {
           setDrafting(false);
           const draftSubject = typeof data?.subject === 'string' ? data.subject : '';
-          const draftBody = typeof data?.body === 'string' ? data.body : '';
+          const draftBody = typeof data?.script === 'string' ? data.script : '';
           if (!draftBody && !draftSubject) {
             setDraftError(new Error('The draft came back empty.'));
             return;
@@ -175,7 +221,7 @@ export default function CommsComposer({
         }
       );
     },
-    [clientId, drafting, activeChannel]
+    [clientId, drafting, activeChannel, propertyId]
   );
 
   const insertTemplate = useCallback(
@@ -218,9 +264,25 @@ export default function CommsComposer({
   const sendErrMsg = useMemo(() => {
     if (!sendError) return '';
     return sendError.status === 404
-      ? 'Comms service isn’t online yet — nothing was sent.'
-      : sendError.message || 'The message didn’t go through.';
+      ? 'Comms service isn’t online yet — nothing was saved or sent.'
+      : sendError.message || 'The communication wasn’t saved.';
   }, [sendError]);
+
+  const actionLabel =
+    activeChannel === 'email'
+      ? 'Queue email'
+      : activeChannel === 'sms'
+        ? 'Log SMS without sending'
+        : 'Save internal note';
+  const channelHint = channelIsBlocked
+    ? channel === 'email'
+      ? 'No email on file — switched to an internal note.'
+      : 'No phone on file — switched to an internal note.'
+    : activeChannel === 'sms'
+      ? 'Logged only — no SMS provider is connected.'
+      : activeChannel === 'note'
+        ? 'Internal only — never sent to the client.'
+        : 'Email is queued for delivery.';
 
   const toggleTray = (which) => setTray((cur) => (cur === which ? null : which));
 
@@ -241,6 +303,22 @@ export default function CommsComposer({
             </button>
           </div>
           <p className={styles.trayHint}>Pick an intent — you can edit before sending.</p>
+          <label className={styles.scriptProperty}>
+            <span>Property context</span>
+            <select
+              value={propertyId}
+              onChange={(event) => setPropertyId(event.target.value)}
+              disabled={properties.length === 0}
+            >
+              {properties.length === 0
+                ? <option value="">No linked property</option>
+                : properties.map((property) => (
+                  <option key={`${property.id}:${property.propertyId}`} value={property.propertyId}>
+                    {property.address}
+                  </option>
+                ))}
+            </select>
+          </label>
           <div className={styles.chipWrap}>
             {INTENTS.map((it) => (
               <button
@@ -328,6 +406,7 @@ export default function CommsComposer({
             className={`${styles.chKey}${activeChannel === 'email' ? ` ${styles.chKeyOn}` : ''}`}
             aria-pressed={activeChannel === 'email'}
             disabled={emailBlocked}
+            title={emailBlocked ? 'No email address on file' : 'Compose an email'}
             onClick={() => setChannel('email')}
           >
             Email
@@ -336,6 +415,8 @@ export default function CommsComposer({
             type="button"
             className={`${styles.chKey}${activeChannel === 'sms' ? ` ${styles.chKeyOn}` : ''}`}
             aria-pressed={activeChannel === 'sms'}
+            disabled={smsBlocked}
+            title={smsBlocked ? 'No phone number on file' : 'Log an SMS without sending'}
             onClick={() => setChannel('sms')}
           >
             SMS
@@ -355,7 +436,8 @@ export default function CommsComposer({
             className={`${styles.toolKey}${tray === 'draft' ? ` ${styles.toolKeyOn}` : ''}`}
             onClick={() => toggleTray('draft')}
             aria-pressed={tray === 'draft'}
-            aria-label="AI draft"
+            aria-label="Generate Script with AI Assistant"
+            title="Generate Script with AI Assistant"
           >
             {GLYPHS.sparkle}
           </button>
@@ -371,9 +453,7 @@ export default function CommsComposer({
         </div>
       </div>
 
-      {emailBlocked && (
-        <span className={styles.chHint}>No email on file — SMS or notes only</span>
-      )}
+      <span className={styles.chHint}>{channelHint}</span>
 
       {activeChannel === 'email' && (
         <input
@@ -424,7 +504,8 @@ export default function CommsComposer({
           className={`${styles.sendBtn}${sending ? ` ${styles.sending}` : ''}`}
           onClick={send}
           disabled={!body.trim() || sending}
-          aria-label={sending ? 'Sending' : 'Send'}
+          aria-label={sending ? 'Saving communication' : actionLabel}
+          title={actionLabel}
         >
           {GLYPHS.send}
         </button>

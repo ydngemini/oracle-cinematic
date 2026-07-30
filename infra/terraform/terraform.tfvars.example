@@ -26,6 +26,7 @@ feature_municipal_harvests      = false
 feature_predictive_intelligence = false
 feature_marketplace             = false
 feature_contracts               = false
+feature_ai_chat                 = false
 feature_spatial_tours           = false
 feature_local_models            = false
 feature_automation              = false

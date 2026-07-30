@@ -120,6 +120,12 @@ variable "app_base_url" {
   type        = string
 }
 
+variable "ses_from_email" {
+  description = "Verified SES sender used for approved outbound email commands."
+  type        = string
+  default     = ""
+}
+
 variable "demo_tenant_id" {
   description = "ORACLE_DEMO_TENANT_ID — tenant the seeded real leads live under."
   type        = string
@@ -168,6 +174,12 @@ variable "feature_spatial_tours" {
 
 variable "feature_contracts" {
   description = "Enable approved-template legal document generation and vaulting."
+  type        = bool
+  default     = false
+}
+
+variable "feature_ai_chat" {
+  description = "Enable the tenant-isolated Personal AI chat rail and durable response worker."
   type        = bool
   default     = false
 }

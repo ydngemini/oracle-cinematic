@@ -1,11 +1,12 @@
 import asyncio
+from contextlib import asynccontextmanager
 from uuid import UUID
 
 import pytest
 from fastapi import HTTPException
 
 import media_api
-from tenancy import Role, TenantContext
+from tenancy import Role, TenantContext, require_context
 
 
 CTX = TenantContext(
@@ -13,6 +14,43 @@ CTX = TenantContext(
     tenant_id="11111111-1111-1111-1111-111111111111",
     role=Role.AGENT,
 )
+
+
+def test_media_bytes_require_neoh_authentication():
+    route = next(route for route in media_api.router.routes if route.path == "/api/media/{media_id}")
+    assert any(dependency.call is require_context for dependency in route.dependant.dependencies)
+    with pytest.raises(HTTPException) as exc:
+        require_context(None)
+    assert exc.value.status_code == 401
+
+
+def test_media_bytes_are_loaded_through_tenant_scoped_metadata(monkeypatch):
+    class Conn:
+        async def fetchrow(self, query, media_id):
+            assert "FROM property_media AS pm" in query
+            assert "JOIN media_blobs AS mb" in query
+            assert media_id == UUID("22222222-2222-4222-8222-222222222222")
+            return {"content_type": "image/png", "bytes": b"private-image"}
+
+    received = []
+
+    @asynccontextmanager
+    async def fake_tenant_tx(ctx):
+        received.append(ctx)
+        yield Conn()
+
+    monkeypatch.setattr(media_api, "tenant_tx", fake_tenant_tx)
+    response = asyncio.run(
+        media_api.serve_media(
+            UUID("22222222-2222-4222-8222-222222222222"),
+            ctx=CTX,
+        )
+    )
+
+    assert received == [CTX]
+    assert response.body == b"private-image"
+    assert response.headers["cache-control"] == "private, no-store"
+    assert response.headers["x-content-type-options"] == "nosniff"
 
 
 def test_media_persist_rejects_unbounded_file_count():

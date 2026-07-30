@@ -160,10 +160,35 @@ export default function CommsTab() {
   };
 
   // Normalize → filter → sort once per change.
-  const normalized = useMemo(
-    () => (Array.isArray(threads) ? threads.map(normalizeThread) : []),
-    [threads]
-  );
+  const normalized = useMemo(() => {
+    if (!Array.isArray(threads)) return [];
+    return threads.map((raw) => {
+      const thread = normalizeThread(raw);
+      const client = raw?.client && typeof raw.client === 'object' ? raw.client : null;
+      let phoneKnown = false;
+      let phone = null;
+      if (client && Object.prototype.hasOwnProperty.call(client, 'phone')) {
+        phoneKnown = true;
+        phone = client.phone;
+      } else if (Object.prototype.hasOwnProperty.call(raw || {}, 'phone')) {
+        phoneKnown = true;
+        phone = raw.phone;
+      } else if (Object.prototype.hasOwnProperty.call(raw || {}, 'client_phone')) {
+        phoneKnown = true;
+        phone = raw.client_phone;
+      }
+      const hasMessages = Boolean(
+        thread.lastAt || thread.channelRaw || (Number.isFinite(thread.count) && thread.count > 0)
+      );
+      return {
+        ...thread,
+        channel: hasMessages ? thread.channel : null,
+        hasMessages,
+        phoneKnown,
+        phone,
+      };
+    });
+  }, [threads]);
 
   const unreadTotal = useMemo(
     () => normalized.reduce((n, t) => n + (t.unread ? 1 : 0), 0),
@@ -190,6 +215,7 @@ export default function CommsTab() {
   if (selected) {
     const name = selected.clientName;
     const emailBlocked = selected.emailKnown && !String(selected.email || '').trim();
+    const smsBlocked = selected.phoneKnown && !String(selected.phone || '').trim();
     const loading = messages === null && !msgError;
     const msgErrMsg =
       msgError?.status === 404
@@ -272,6 +298,15 @@ export default function CommsTab() {
 
                 const status = statusMeta(m.status);
                 const when = fmtTime(m.createdAt);
+                const deliveryStatus = firstString(raw?._deliveryStatus, raw?.delivery_status);
+                const recordLabel =
+                  m.queued && !status
+                    ? 'Queued — AI sends'
+                    : (raw?._loggedOnly || (m.channel === 'sms' && deliveryStatus === 'not_sent')) && !status
+                      ? 'Logged only — not sent'
+                      : m.channel === 'note' && !status
+                        ? 'Internal note'
+                        : null;
 
                 return (
                   <li key={m.id} className={`${styles.msg} ${m.out ? styles.msgOut : styles.msgIn}`}>
@@ -313,9 +348,7 @@ export default function CommsTab() {
                         )}
                       </span>
                     </div>
-                    {m.queued && !status && (
-                      <span className={styles.queuedChip}>Queued — AI sends</span>
-                    )}
+                    {recordLabel && <span className={styles.queuedChip}>{recordLabel}</span>}
                   </li>
                 );
               })}
@@ -328,6 +361,7 @@ export default function CommsTab() {
           clientId={selected.clientId}
           clientName={name}
           emailBlocked={emailBlocked}
+          smsBlocked={smsBlocked}
           onSent={handleSent}
           onRefetch={refetchSelected}
           onHeightChange={setComposerPad}
@@ -464,7 +498,9 @@ export default function CommsTab() {
           ) : (
             <ul className={styles.threadList} role="list">
               {visibleThreads.map((t, i) => {
-                const snippet = firstString(t.snippet) ?? 'No messages yet';
+                const snippet = t.hasMessages
+                  ? firstString(t.snippet) ?? 'No messages yet'
+                  : 'Start a conversation';
                 const when = relTime(t.lastAt);
 
                 return (
@@ -492,7 +528,7 @@ export default function CommsTab() {
                             data-dir={t.direction === 'out' ? 'out' : 'in'}
                             aria-hidden="true"
                           >
-                            {GLYPHS[t.channel]}
+                            {GLYPHS[t.channel] || GLYPHS.plus}
                           </span>
                           <span className={styles.snippet}>{snippet}</span>
                           {t.unreadCount && t.unreadCount > 0 ? (

@@ -77,9 +77,48 @@ async def get_data_coverage(
     gap stays visible; this is the source of truth behind the ops-console
     coverage view and the next harvest-batch planning.
     """
-    from data_coverage import report_json, summary as coverage_summary
+    from data_coverage import GEOMETRY_ONLY, report_json, summary as coverage_summary
+    from lead_pipeline import scope_class
 
-    return coverage_summary() if summary_only else report_json()
+    # Static source scope says what a jurisdiction can publish; this scoped
+    # lookup adds the live Azure worker evidence without inventing freshness
+    # for an unprobed market.
+    async with tenant_tx(ctx) as conn:
+        health_rows = await conn.fetch(
+            """
+            SELECT jurisdiction,health_status,last_health_checked_at
+              FROM harvest_sources
+             WHERE tenant_id=$1::uuid AND source_key LIKE 'regional_parcels_%'
+            """,
+            ctx.tenant_id,
+        )
+    health_by_state = {str(row["jurisdiction"]): row for row in health_rows}
+    if summary_only:
+        data = coverage_summary()
+        states = [str(row["jurisdiction"]) for row in health_rows]
+        data["source_health"] = {
+            "observed_jurisdictions": len(states),
+            "fresh": sum(str(row["health_status"]) == "fresh" for row in health_rows),
+            "non_fresh": sum(str(row["health_status"]) != "fresh" for row in health_rows),
+        }
+        return data
+
+    data = report_json()
+    for jurisdiction in data["jurisdictions"]:
+        code = jurisdiction["code"]
+        property_data = jurisdiction["property"]
+        health = health_by_state.get(code)
+        property_data["scope_class"] = scope_class(
+            property_data.get("scope"), geometry_only=code in GEOMETRY_ONLY
+        )
+        property_data["lead_ready"] = (
+            property_data["status"] == "live" and code not in GEOMETRY_ONLY
+        )
+        property_data["health_status"] = str(health["health_status"]) if health else "unknown"
+        property_data["last_health_checked_at"] = (
+            _iso(health["last_health_checked_at"]) if health else None
+        )
+    return data
 
 
 @router.get(
@@ -116,5 +155,4 @@ async def run_harvest_task(
             status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
         ) from exc
     return {"task": task_name, "result": result}
-
 

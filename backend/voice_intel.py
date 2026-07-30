@@ -22,15 +22,22 @@ import importlib.util
 import json
 import logging
 import os
+import re
 import threading
 import uuid
 from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation
+from enum import Enum
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from agent_profile import load_agent_identity
+from audit_ledger import AuditCategory, ledger
 from db.connection import tenant_tx
+from intelligence_engine import IntelligenceInputError, negotiation_guidance
 from ml_forge.bedrock_client import invoke_bedrock_model, PRIMARY_MODEL, SECONDARY_MODEL
 from tenancy import TenantContext, require_context
 import ws_hub
@@ -38,6 +45,7 @@ import ws_hub
 logger = logging.getLogger("oracle.voice_intel")
 
 router = APIRouter(prefix="/api/voice", tags=["Voice Intelligence"])
+comms_router = APIRouter(prefix="/api/comms", tags=["Communications"])
 
 # ── Tunables ──────────────────────────────────────────────────────────────────
 STAGING_DIR = Path(os.getenv("ORACLE_AUDIO_STAGING", "/tmp/oracle_audio"))
@@ -58,6 +66,155 @@ Extract these data points and respond with STRICT JSON only — no prose, no mar
   "seller_sentiment": "<one of: 'High Intent', 'Hesitant', 'Cold', 'Unknown'>",
   "action_summary": "<one sentence: what happened on this walkthrough>"
 }}"""
+
+
+class VoiceSessionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    client_id: Optional[uuid.UUID] = None
+    property_id: Optional[uuid.UUID] = None
+    consent_recorded: bool
+    consent_basis: str = Field(min_length=8, max_length=500)
+
+    @model_validator(mode="after")
+    def require_anchor(self) -> "VoiceSessionRequest":
+        if not self.client_id and not self.property_id:
+            raise ValueError("client_id or property_id is required")
+        if self.consent_recorded and not self.consent_basis.strip():
+            raise ValueError("consent_basis is required")
+        return self
+
+
+class VoiceTelemetryRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    session_id: uuid.UUID
+    transcript_chunk: str = Field(min_length=1, max_length=4_000)
+    speaker: str = Field(default="CLIENT", pattern=r"^(CLIENT|AGENT|AI)$")
+    is_final: bool = False
+
+
+class ScriptChannel(str, Enum):
+    VOICE = "VOICE"
+    SMS = "SMS"
+    EMAIL = "EMAIL"
+
+
+class CommsScriptRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    client_id: uuid.UUID
+    property_id: uuid.UUID
+    channel: ScriptChannel
+    objective: str = Field(min_length=3, max_length=1_000)
+
+
+_COUNTER_CONTEXT = re.compile(
+    r"(?:won['’]?t\s+take\s+less\s+than|wouldn['’]?t\s+take\s+less\s+than|"
+    r"need(?:\s+at\s+least)?|counter(?:ing|\s+offer)?(?:\s+is|\s+at)?|"
+    r"asking(?:\s+for|\s+price\s+is)?|my\s+number\s+is|I(?:'|’)?ll\s+take)"
+    r"[^$0-9]{0,35}\$?\s*(\d{1,3}(?:,\d{3})+(?:\.\d{1,2})?|\d+(?:\.\d{1,2})?)"
+    r"\s*(k|thousand|m|million)?\b",
+    re.IGNORECASE,
+)
+def _json_object(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            decoded = json.loads(value)
+            return decoded if isinstance(decoded, dict) else {}
+        except (TypeError, ValueError):
+            return {}
+    return {}
+
+
+def extract_counter_offer(transcript: str) -> Optional[Decimal]:
+    """Extract only money tied to an explicit negotiation phrase."""
+    match = _COUNTER_CONTEXT.search(transcript)
+    if not match:
+        return None
+    try:
+        amount = Decimal(match.group(1).replace(",", ""))
+    except (InvalidOperation, AttributeError):
+        return None
+    suffix = str(match.group(2) or "").lower()
+    if suffix in {"k", "thousand"}:
+        amount *= Decimal("1000")
+    elif suffix in {"m", "million"}:
+        amount *= Decimal("1000000")
+    if amount < 0 or amount > Decimal("1000000000"):
+        return None
+    return amount.quantize(Decimal("0.01"))
+
+
+def _money_fact(value: Any) -> Optional[Decimal]:
+    try:
+        amount = Decimal(str(value))
+    except (InvalidOperation, TypeError, ValueError):
+        return None
+    return amount if amount.is_finite() and amount >= 0 else None
+
+
+def _property_financials(underwriting: dict[str, Any], payload: dict[str, Any]) -> tuple[Any, Any]:
+    arv = (
+        underwriting.get("arv")
+        or underwriting.get("after_repair_value")
+        or payload.get("arv")
+        or payload.get("after_repair_value")
+    )
+    rehab = (
+        underwriting.get("rehab")
+        or underwriting.get("rehab_estimate")
+        or underwriting.get("estimated_rehab")
+        or payload.get("rehab")
+        or payload.get("rehab_estimate")
+    )
+    return arv, rehab
+
+
+def _objective_objection_response(
+    guidance: dict[str, Any],
+    underwriting: dict[str, Any],
+    payload: dict[str, Any],
+) -> str:
+    facts: list[tuple[str, Decimal]] = []
+    repair_items = (
+        underwriting.get("repair_items")
+        or underwriting.get("rehab_breakdown")
+        or payload.get("repair_items")
+        or {}
+    )
+    if isinstance(repair_items, dict):
+        for label, raw_amount in repair_items.items():
+            amount = _money_fact(
+                raw_amount.get("cost") if isinstance(raw_amount, dict) else raw_amount
+            )
+            if amount is not None:
+                facts.append((str(label).replace("_", " "), amount))
+    elif isinstance(repair_items, list):
+        for item in repair_items:
+            if not isinstance(item, dict):
+                continue
+            amount = _money_fact(item.get("cost") or item.get("estimate"))
+            label = item.get("name") or item.get("item")
+            if amount is not None and label:
+                facts.append((str(label), amount))
+
+    prefix = str(guidance["objection_draft"])
+    if not facts:
+        return prefix
+    label, amount = max(facts, key=lambda item: item[1])
+    return (
+        f"{prefix} The current property record includes {label} at an estimated "
+        f"${amount:,.0f}; verify that estimate and the underlying inspection before responding."
+    )
+
+
+def voice_session_group(tenant_id: str, session_id: str) -> str:
+    return f"voice:{tenant_id}:{session_id}"
+
+
+async def _broadcast_voice(ctx: TenantContext, session_id: str, frame: dict[str, Any]) -> None:
+    await ws_hub.broadcast(ctx.tenant_id, frame)
+    await ws_hub.broadcast(voice_session_group(ctx.tenant_id, session_id), frame)
 
 
 @dataclass(frozen=True)
@@ -156,6 +313,371 @@ async def log_walkthrough(
         lead_id, ctx.tenant_id, size, suffix,
     )
     return {"status": "queued", "bytes": size}
+
+
+@router.post("/session", status_code=status.HTTP_201_CREATED)
+async def create_voice_session(
+    body: VoiceSessionRequest,
+    ctx: TenantContext = Depends(require_context),
+):
+    """Open a tenant-scoped transcription session with an explicit consent record."""
+    async with tenant_tx(ctx) as conn:
+        client_id = body.client_id
+        if client_id:
+            client_exists = await conn.fetchval(
+                "SELECT EXISTS(SELECT 1 FROM clients WHERE id=$1)",
+                client_id,
+            )
+            if not client_exists:
+                raise HTTPException(status.HTTP_404_NOT_FOUND, "Client not found.")
+
+        lead_id = None
+        if body.property_id:
+            lead_id = await conn.fetchval(
+                """
+                SELECT id FROM leads WHERE id=$1
+                UNION ALL
+                SELECT lead_id FROM listings WHERE id=$1 AND lead_id IS NOT NULL
+                LIMIT 1
+                """,
+                body.property_id,
+            )
+            if lead_id is None:
+                raise HTTPException(
+                    status.HTTP_409_CONFLICT,
+                    "Voice telemetry requires a lead-backed property.",
+                )
+
+        session = await conn.fetchrow(
+            """
+            INSERT INTO live_call_sessions (
+                tenant_id,client_id,lead_id,consent_recorded,consent_basis,
+                started_at,transcript_status,created_by
+            ) VALUES ($1::uuid,$2,$3,$4,$5,now(),$6,$7)
+            RETURNING id,started_at,transcript_status
+            """,
+            ctx.tenant_id,
+            client_id,
+            lead_id,
+            body.consent_recorded,
+            body.consent_basis,
+            "active" if body.consent_recorded else "pending",
+            ctx.agent_id,
+        )
+        consent_event = await conn.fetchrow(
+            """
+            INSERT INTO negotiation_events (
+                tenant_id,call_session_id,event_type,payload,model_version,created_by
+            ) VALUES ($1::uuid,$2,'consent',$3::jsonb,
+                      'explicit-transcription-consent-2026.07',$4)
+            RETURNING id
+            """,
+            ctx.tenant_id,
+            session["id"],
+            json.dumps(
+                {
+                    "consent_recorded": body.consent_recorded,
+                    "basis": body.consent_basis,
+                }
+            ),
+            ctx.agent_id,
+        )
+
+    frame = {
+        "type": "VOICE_SESSION",
+        "version": 1,
+        "session_id": str(session["id"]),
+        "consent_recorded": body.consent_recorded,
+        "transcript_status": session["transcript_status"],
+        "started_at": session["started_at"].isoformat(),
+        "event_id": consent_event["id"],
+    }
+    await _broadcast_voice(ctx, str(session["id"]), frame)
+    await ledger.record(
+        category=AuditCategory.USER_STATE_CHANGE,
+        action="voice_session_created",
+        tenant_id=ctx.tenant_id,
+        user_id=ctx.agent_id,
+        target_id=str(session["id"]),
+        metadata={
+            "client_id": str(client_id) if client_id else None,
+            "lead_id": str(lead_id) if lead_id else None,
+            "consent_recorded": body.consent_recorded,
+        },
+    )
+    return frame
+
+
+@router.post("/telemetry")
+async def ingest_voice_telemetry(
+    body: VoiceTelemetryRequest,
+    ctx: TenantContext = Depends(require_context),
+):
+    """Persist a consented transcript chunk and calculate live MAO when applicable."""
+    async with tenant_tx(ctx) as conn:
+        call = await conn.fetchrow(
+            """
+            SELECT session.id,session.client_id,session.lead_id,
+                   session.consent_recorded,session.transcript_status,
+                   lead.underwriting,lead.payload
+              FROM live_call_sessions AS session
+              LEFT JOIN leads AS lead ON lead.id=session.lead_id
+             WHERE session.id=$1
+             FOR SHARE OF session
+            """,
+            body.session_id,
+        )
+        if call is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Voice session not found.")
+        if not call["consent_recorded"]:
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                "Consented transcription is required before telemetry ingestion.",
+            )
+        if call["transcript_status"] in {"complete", "failed", "deleted"}:
+            raise HTTPException(status.HTTP_409_CONFLICT, "Voice session is not active.")
+
+        underwriting = _json_object(call["underwriting"])
+        property_payload = _json_object(call["payload"])
+        counter = extract_counter_offer(body.transcript_chunk) if body.speaker == "CLIENT" else None
+        guidance = None
+        unavailable_reason = None
+        if counter is not None:
+            arv, rehab = _property_financials(underwriting, property_payload)
+            if arv in (None, "") or rehab in (None, ""):
+                unavailable_reason = "ARV and rehab estimates are required for MAO evaluation."
+            else:
+                try:
+                    guidance = negotiation_guidance(
+                        counter_offer=counter,
+                        arv=arv,
+                        rehab=rehab,
+                        acquisition_ratio="0.70",
+                        amber_tolerance="0.05",
+                    )
+                    guidance["arv"] = float(Decimal(str(arv)))
+                    guidance["rehab"] = float(Decimal(str(rehab)))
+                    guidance["objection_draft"] = _objective_objection_response(
+                        guidance,
+                        underwriting,
+                        property_payload,
+                    )
+                except IntelligenceInputError as exc:
+                    unavailable_reason = str(exc)
+
+        event_payload = {
+            "speaker": body.speaker,
+            "is_final": body.is_final,
+            "guidance": guidance,
+            "mao_unavailable_reason": unavailable_reason,
+        }
+        event = await conn.fetchrow(
+            """
+            INSERT INTO negotiation_events (
+                tenant_id,call_session_id,event_type,transcript_excerpt,
+                counter_offer,arv,rehab,mao,threshold,payload,
+                model_version,created_by
+            ) VALUES (
+                $1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,
+                'objective-voice-telemetry-2026.07',$11
+            ) RETURNING id,created_at
+            """,
+            ctx.tenant_id,
+            body.session_id,
+            "counter_offer" if counter is not None else "transcript",
+            body.transcript_chunk,
+            counter,
+            (guidance or {}).get("arv"),
+            (guidance or {}).get("rehab"),
+            (guidance or {}).get("mao"),
+            (guidance or {}).get("threshold"),
+            json.dumps(event_payload, default=str),
+            ctx.agent_id,
+        )
+        await conn.execute(
+            """
+            UPDATE live_call_sessions
+               SET transcript_status='active',started_at=COALESCE(started_at,now())
+             WHERE id=$1
+            """,
+            body.session_id,
+        )
+
+    frame = {
+        "type": "VOICE_TELEMETRY",
+        "version": 1,
+        "session_id": str(body.session_id),
+        "event_id": event["id"],
+        "created_at": event["created_at"].isoformat(),
+        "transcript": {
+            "speaker": body.speaker,
+            "text": body.transcript_chunk,
+            "is_final": body.is_final,
+        },
+        "counter_offer": float(counter) if counter is not None else None,
+        "mao": (guidance or {}).get("mao"),
+        "threshold": (guidance or {}).get("threshold"),
+        "objection_draft": (guidance or {}).get("objection_draft"),
+        "mao_unavailable_reason": unavailable_reason,
+        "formula": "MAO = ARV * 0.70 - Rehab",
+        "requires_agent_approval": True,
+    }
+    await _broadcast_voice(ctx, str(body.session_id), frame)
+    return frame
+
+
+@router.get("/telemetry")
+async def read_voice_telemetry(
+    session_id: Optional[uuid.UUID] = None,
+    after_event_id: int = Query(default=0, ge=0),
+    limit: int = Query(default=100, ge=1, le=250),
+    ctx: TenantContext = Depends(require_context),
+):
+    """REST recovery feed for browsers whose voice socket is offline."""
+    async with tenant_tx(ctx) as conn:
+        if session_id is None:
+            session_id = await conn.fetchval(
+                """
+                SELECT id FROM live_call_sessions
+                 WHERE transcript_status IN ('pending','active')
+                 ORDER BY created_at DESC
+                 LIMIT 1
+                """
+            )
+        if session_id is None:
+            return {"session_id": None, "events": [], "next_event_id": after_event_id}
+        session_exists = await conn.fetchval(
+            "SELECT EXISTS(SELECT 1 FROM live_call_sessions WHERE id=$1)",
+            session_id,
+        )
+        if not session_exists:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Voice session not found.")
+        rows = await conn.fetch(
+            """
+            SELECT id,event_type,transcript_excerpt,counter_offer,arv,rehab,mao,
+                   threshold,payload,created_at
+              FROM negotiation_events
+             WHERE call_session_id=$1 AND id>$2
+             ORDER BY id ASC
+             LIMIT $3
+            """,
+            session_id,
+            after_event_id,
+            limit,
+        )
+
+    events = []
+    for row in rows:
+        payload = _json_object(row["payload"])
+        guidance = _json_object(payload.get("guidance"))
+        events.append(
+            {
+                "type": "VOICE_TELEMETRY",
+                "version": 1,
+                "session_id": str(session_id),
+                "event_id": row["id"],
+                "created_at": row["created_at"].isoformat(),
+                "event_type": row["event_type"],
+                "transcript": {
+                    "speaker": payload.get("speaker") or "SYSTEM",
+                    "text": row["transcript_excerpt"],
+                    "is_final": bool(payload.get("is_final")),
+                } if row["transcript_excerpt"] else None,
+                "counter_offer": float(row["counter_offer"]) if row["counter_offer"] is not None else None,
+                "arv": float(row["arv"]) if row["arv"] is not None else None,
+                "rehab": float(row["rehab"]) if row["rehab"] is not None else None,
+                "mao": float(row["mao"]) if row["mao"] is not None else None,
+                "threshold": row["threshold"],
+                "objection_draft": guidance.get("objection_draft"),
+                "mao_unavailable_reason": payload.get("mao_unavailable_reason"),
+            }
+        )
+    return {
+        "session_id": str(session_id),
+        "events": events,
+        "next_event_id": events[-1]["event_id"] if events else after_event_id,
+    }
+
+
+@comms_router.post("/generate-script")
+async def generate_comms_script(
+    body: CommsScriptRequest,
+    ctx: TenantContext = Depends(require_context),
+):
+    """Build an editable outreach draft exclusively from tenant CRM facts."""
+    async with tenant_tx(ctx) as conn:
+        client = await conn.fetchrow(
+            "SELECT id,full_name,email,phone FROM clients WHERE id=$1 AND archived_at IS NULL",
+            body.client_id,
+        )
+        if client is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Client not found.")
+        property_row = await conn.fetchrow(
+            """
+            SELECT id,address,payload FROM leads WHERE id=$1
+            UNION ALL
+            SELECT id,address,jsonb_build_object('price',price)
+              FROM listings WHERE id=$1
+            LIMIT 1
+            """,
+            body.property_id,
+        )
+        if property_row is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Property not found.")
+        interaction_count = await conn.fetchval(
+            """
+            SELECT count(*) FROM interaction_logs
+             WHERE client_id=$1 AND created_at >= now()-interval '30 days'
+            """,
+            body.client_id,
+        )
+
+    profile = await load_agent_identity(ctx)
+    first_name = str(client["full_name"] or "there").split()[0]
+    address = str(property_row["address"] or "the property")
+    signature = str(profile.get("signature") or profile.get("name") or "").strip()
+    objective = " ".join(body.objective.split())
+    base = f"Hi {first_name}, {objective} Regarding {address}, I’m available to review the verified details with you."
+    if body.channel is ScriptChannel.SMS:
+        script = f"{base} — {profile.get('name') or signature}".strip()
+        subject = None
+    elif body.channel is ScriptChannel.EMAIL:
+        script = f"{base}\n\n{signature}".strip()
+        subject = f"Follow-up regarding {address}"
+    else:
+        from outreach_compliance import AI_VOICE_DISCLOSURE
+
+        script = f"{AI_VOICE_DISCLOSURE} {base}"
+        subject = None
+
+    await ledger.record(
+        category=AuditCategory.USER_STATE_CHANGE,
+        action="comms_script_drafted",
+        tenant_id=ctx.tenant_id,
+        user_id=ctx.agent_id,
+        target_id=str(body.client_id),
+        metadata={
+            "property_id": str(body.property_id),
+            "channel": body.channel.value,
+            "recent_interactions_reviewed": int(interaction_count or 0),
+        },
+    )
+    return {
+        "channel": body.channel.value,
+        "client_id": str(body.client_id),
+        "property_id": str(body.property_id),
+        "subject": subject,
+        "script": script,
+        "requires_approval": True,
+        "facts_used": {
+            "client_name": client["full_name"],
+            "property_address": address,
+            "agent_name": profile.get("name"),
+            "agent_tone": profile.get("communication_tone"),
+            "recent_interactions_reviewed": int(interaction_count or 0),
+        },
+        "compliance_note": "Review state-specific outreach and recording requirements before dispatch.",
+    }
 
 
 # ── Worker pipeline ───────────────────────────────────────────────────────────

@@ -71,6 +71,10 @@ class CourtListenerSource(DataSource):
             return {"error": str(e)}
 
     def normalize(self, raw: dict) -> dict:
+        if raw.get("auth_error"):
+            return {"auth_error": raw["auth_error"], "source": "courtlistener"}
+        if raw.get("error"):
+            return {"error": raw["error"], "source": "courtlistener"}
         data = raw.get("data") or {}
         results = data.get("results", []) or []
         dockets = []
@@ -107,39 +111,29 @@ class CourtListenerSource(DataSource):
         if not court:
             return {"error": "court is required (e.g. 'deb')", "source": "courtlistener"}
         page_size = max(1, min(int(page_size), 100))
-        cache_key = f"courtlistener:dockets:{court}:{date_filed_after or ''}:{page_size}"
-
-        if self._cache:
-            cached = await self._cache.get(cache_key)
-            if cached is not None:
-                self._metrics["cache_hits"] += 1
-                return cached
-
-        raw = await self.fetch(
-            court=court, date_filed_after=date_filed_after, page_size=page_size
-        )
-
-        if raw.get("auth_error"):
-            if not self._token:
-                return {
-                    "skipped": "set COURTLISTENER_TOKEN",
-                    "detail": "CourtListener v4 dockets require authentication; "
-                              "this source is dormant until a token is provided.",
-                    "court": court,
-                    "source": "courtlistener",
-                }
+        if not self._token:
             return {
-                "error": "authentication failed — check COURTLISTENER_TOKEN",
-                "status": raw["auth_error"],
+                "skipped": "set COURTLISTENER_TOKEN",
+                "detail": "CourtListener v4 dockets require authentication; this source is dormant until a token is provided.",
                 "court": court,
                 "source": "courtlistener",
             }
-        if raw.get("error"):
-            return {"error": raw["error"], "court": court, "source": "courtlistener"}
 
-        result = self.normalize(raw)
+        result = await self.get(
+            f"dockets:{court}:{date_filed_after or ''}:{page_size}",
+            court=court,
+            date_filed_after=date_filed_after,
+            page_size=page_size,
+        )
+        result = result or {"error": "empty response", "source": "courtlistener"}
+        if result.get("auth_error"):
+            return {
+                "error": "authentication failed — check COURTLISTENER_TOKEN",
+                "status": result["auth_error"],
+                "court": court,
+                "source": "courtlistener",
+            }
+        if result.get("error"):
+            return {"error": result["error"], "court": court, "source": "courtlistener"}
         result["court"] = court
-        self._metrics["normalized"] += 1
-        if self._cache:
-            await self._cache.set(cache_key, result, ttl=self._cache_ttl())
         return result

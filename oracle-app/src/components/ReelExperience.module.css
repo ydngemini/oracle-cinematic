@@ -1,77 +1,135 @@
 .reel {
-  --coal: #080806;
-  --charcoal: #12120f;
-  --ivory: #f0eee6;
-  --chalk: #c8c4b8;
-  --bronze: #8c6742;
-  --amber: #c89452;
+  --coal: #0b0b09;
+  --charcoal: #181711;
+  --ivory: #f1eee5;
+  --chalk: #c9c3b5;
+  --bronze: #9a7045;
+  --amber: #cf9c58;
+  position: relative;
   height: 100dvh;
-  overflow-y: auto;
-  overflow-x: clip;
+  overflow: auto;
+  overscroll-behavior: contain;
   color: var(--ivory);
   background: var(--coal);
   font-family: var(--font-sans);
+  scrollbar-color: var(--bronze) var(--coal);
 }
 
 .reel :focus-visible { outline: 2px solid var(--amber); outline-offset: 4px; }
-.skipLink { position: fixed; z-index: 100; top: .75rem; left: .75rem; padding: .7rem .85rem; color: var(--coal); background: var(--ivory); font-size: .68rem; letter-spacing: .1em; text-transform: uppercase; transform: translateY(-160%); transition: transform .16s ease; }
+.skipLink { position: fixed; z-index: 100; top: .75rem; left: .75rem; padding: .7rem .85rem; color: var(--coal); background: var(--ivory); font: .62rem var(--font-mono); letter-spacing: .12em; text-transform: uppercase; transform: translateY(-180%); transition: transform .16s ease; }
 .skipLink:focus { transform: translateY(0); }
-.header { position: fixed; z-index: 20; top: 0; right: 0; left: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: start; gap: 1rem; padding: 1rem clamp(1rem, 3vw, 3rem) 2.75rem; background: linear-gradient(180deg, rgba(8,8,6,.95), rgba(8,8,6,0)); pointer-events: none; }
+.reelAtmosphere, .backdrop {
+  position: fixed;
+  z-index: 0;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  contain: strict;
+  isolation: isolate;
+  background: #161109 url('/media/mountain-waterfall-estate-v1.webp') center / cover no-repeat;
+}
+
+.reelAtmosphere::after,
+.backdrop::after {
+  position: absolute;
+  inset: 0;
+  content: '';
+  background:
+    linear-gradient(102deg, rgba(20, 15, 9, .72) 0%, rgba(20, 15, 9, .34) 48%, rgba(20, 15, 9, .26) 100%),
+    linear-gradient(0deg, rgba(20, 15, 9, .52), transparent 48%);
+}
+
+.reelMedia,
+.backdropMedia {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: center;
+  backface-visibility: hidden;
+  transform: translateZ(0);
+}
+
+.backdrop::after {
+  background:
+    linear-gradient(110deg, rgba(18, 13, 8, .66), rgba(18, 13, 8, .30)),
+    radial-gradient(circle at 72% 24%, rgba(255, 242, 203, .10), transparent 36%),
+    linear-gradient(0deg, rgba(18, 13, 8, .40), transparent 52%);
+}
+
+.backdropMedia { opacity: .96; }
+
+.header { position: fixed; z-index: 20; top: 0; right: 0; left: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: start; gap: 1rem; padding: 1rem clamp(1rem, 3vw, 3rem) 2.75rem; background: linear-gradient(180deg, rgba(11,11,9,.92), rgba(11,11,9,0)); pointer-events: none; }
 .brand, .desktopNav, .menuButton { pointer-events: auto; }
 .brand { display: inline-flex; align-items: baseline; gap: .72rem; width: fit-content; color: var(--ivory); text-decoration: none; text-transform: uppercase; }
-.brand span { font-weight: 700; font-size: .86rem; letter-spacing: .2em; }
-.brand small { color: rgba(240,238,230,.58); font: .58rem var(--font-mono); letter-spacing: .14em; }
+.brand span { font-size: .84rem; font-weight: 700; letter-spacing: .22em; }
+.brand small { color: rgba(241,238,229,.56); font: .56rem var(--font-mono); letter-spacing: .13em; }
 .desktopNav { display: none; }
 .menuButton { border: 0; padding: .25rem 0; color: var(--ivory); background: none; font: .63rem var(--font-mono); letter-spacing: .13em; text-transform: uppercase; cursor: pointer; }
-.counter { padding-top: .26rem; color: rgba(240,238,230,.68); font: .63rem var(--font-mono); letter-spacing: .13em; }
-.mobileNav { position: fixed; z-index: 19; inset: 4.2rem 1rem auto; display: grid; gap: .3rem; padding: .75rem; border: 1px solid rgba(240,238,230,.16); background: rgba(8,8,6,.98); opacity: 0; pointer-events: none; transform: translateY(-.8rem); transition: opacity .2s ease, transform .2s ease; }
-.mobileNav[hidden] { display: none; }
-.mobileNavOpen { opacity: 1; pointer-events: auto; transform: translateY(0); }
+.counter { padding-top: .26rem; color: rgba(241,238,229,.68); font: .63rem var(--font-mono); letter-spacing: .13em; }
+.mobileNav { position: fixed; z-index: 19; top: 4.2rem; right: 1rem; left: 1rem; display: grid; gap: .3rem; padding: .75rem; border: 1px solid rgba(241,238,229,.16); background: rgba(11,11,9,.97); }
 .mobileNav button { display: flex; gap: .75rem; border: 0; padding: .7rem; color: var(--ivory); background: transparent; text-align: left; font: .68rem var(--font-mono); letter-spacing: .08em; text-transform: uppercase; cursor: pointer; }
 .mobileNav button span { color: var(--amber); }
-.sequence { position: relative; }
-.project { display: grid; grid-template-columns: 1fr; align-content: center; gap: 1.35rem; min-height: 100svh; padding: 6rem 1rem 4.25rem; scroll-margin-top: 1rem; }
+
+.sequence { position: relative; z-index: 1; min-height: 100svh; }
+.sequencePin { position: relative; min-height: 100svh; }
+.project { display: grid; grid-template-columns: 1fr; align-content: center; gap: 1.35rem; min-height: 100svh; padding: 6rem 1rem 4.25rem; scroll-margin-top: 1rem; contain: layout paint style; }
 .projectRail { position: relative; z-index: 2; }
-.eyebrow { display: flex; align-items: center; gap: .65rem; margin-bottom: 1rem; color: rgba(240,238,230,.6); font: .6rem var(--font-mono); letter-spacing: .14em; text-transform: uppercase; }
+.eyebrow { display: flex; align-items: center; gap: .65rem; margin-bottom: 1rem; color: rgba(241,238,229,.6); font: .6rem var(--font-mono); letter-spacing: .14em; text-transform: uppercase; }
 .eyebrow span { color: var(--amber); }
-.project h1 { max-width: 12ch; font-size: clamp(2.75rem, 13vw, 6rem); font-weight: 300; line-height: .88; letter-spacing: -.06em; text-transform: uppercase; }
+.project h1 { max-width: 12ch; font-size: clamp(2.75rem, 13vw, 7rem); font-weight: 300; line-height: .86; letter-spacing: -.065em; text-transform: uppercase; }
 .project h1 span { display: block; }
-.description { max-width: 28rem; margin-top: 1rem; color: rgba(240,238,230,.66); font-size: .76rem; line-height: 1.65; letter-spacing: .04em; }
-.mediaStage { position: relative; min-height: min(55svh, 35rem); margin: 0; overflow: hidden; background: var(--charcoal); box-shadow: 0 1.5rem 4rem rgba(0,0,0,.32); }
-.mediaStage::after { position: absolute; inset: 0; border: 1px solid rgba(240,238,230,.16); border-bottom: 2px solid var(--bronze); content: ''; pointer-events: none; }
-.accentamber .mediaStage::after { border-bottom-color: var(--amber); }
-.accentconcrete .mediaStage::after { border-bottom-color: #8d8b84; }
-.mediaStage img { display: block; width: 100%; height: 100%; min-height: inherit; object-fit: cover; filter: saturate(.8) contrast(1.04); transition: transform 1s ease; }
-.project:hover .mediaStage img { transform: scale(1.025); }
-.mediaStage figcaption { position: absolute; z-index: 1; right: .7rem; bottom: .65rem; color: rgba(240,238,230,.65); font: .5rem var(--font-mono); letter-spacing: .12em; text-transform: uppercase; }
+.description { max-width: 27rem; margin-top: 1rem; color: rgba(241,238,229,.68); font-size: .76rem; line-height: 1.65; letter-spacing: .04em; }
+.mediaStage { position: relative; min-height: min(55svh, 35rem); margin: 0; overflow: hidden; contain: paint; background: var(--charcoal); box-shadow: 0 1.5rem 4rem rgba(0,0,0,.32); backface-visibility: hidden; transform: translateZ(0); }
+.mediaStage::after { position: absolute; inset: 0; border: 1px solid rgba(241,238,229,.16); border-bottom: 2px solid var(--bronze); content: ''; pointer-events: none; }
+.mediaStage img { display: block; width: 100%; height: 100%; min-height: inherit; object-fit: cover; }
+.mediaStage figcaption { position: absolute; z-index: 1; right: .7rem; bottom: .65rem; color: rgba(241,238,229,.65); font: .5rem var(--font-mono); letter-spacing: .12em; text-transform: uppercase; }
 .metadata { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; margin: 0; }
-.metadata div { padding-top: .65rem; border-top: 1px solid rgba(240,238,230,.16); }
-.metadata dt { color: rgba(240,238,230,.46); font: .53rem var(--font-mono); letter-spacing: .13em; text-transform: uppercase; }
+.metadata div { padding-top: .65rem; border-top: 1px solid rgba(241,238,229,.16); }
+.metadata dt { color: rgba(241,238,229,.46); font: .53rem var(--font-mono); letter-spacing: .13em; text-transform: uppercase; }
 .metadata dd { margin: .35rem 0 0; color: var(--chalk); font-size: .7rem; line-height: 1.35; }
-.progress { position: fixed; z-index: 18; top: 50%; right: clamp(.75rem, 2vw, 2rem); width: 1px; height: 4.5rem; background: rgba(240,238,230,.18); transform: translateY(-50%); }
+.progress { position: fixed; z-index: 18; top: 50%; right: clamp(.75rem, 2vw, 2rem); width: 1px; height: 4.5rem; background: rgba(241,238,229,.18); transform: translateY(-50%); }
 .progress span { display: block; width: 100%; height: 100%; background: var(--amber); transform-origin: top; transition: transform .35s ease; }
-.backdrop { position: fixed; z-index: 0; inset: 0; overflow: hidden; pointer-events: none; background: #080806; }
-.backdrop::after { position: absolute; z-index: 1; inset: 0; content: ''; background: linear-gradient(135deg, rgba(8,8,6,.73), rgba(8,8,6,.62)); }
-.backdrop img { position: relative; z-index: 0; width: 100%; height: 100%; object-fit: cover; opacity: .76; filter: saturate(.72) contrast(1.04); }
-.waterfallFlow { position: absolute; z-index: 2; top: 40%; left: 9%; width: 14%; height: 54%; opacity: .34; background: repeating-linear-gradient(180deg, rgba(210,231,242,.02) 0 7%, rgba(224,240,247,.8) 10%, rgba(141,187,211,.18) 18%, rgba(230,244,250,.62) 25%, rgba(210,231,242,.02) 35%); background-size: 100% 145%; background-position: 0 0; clip-path: polygon(61% 0, 81% 0, 70% 28%, 87% 50%, 58% 73%, 73% 100%, 27% 100%, 44% 72%, 21% 48%, 44% 25%); filter: blur(2px) brightness(1.25); mix-blend-mode: screen; animation: waterfallRun 1.65s linear infinite; }
-@keyframes waterfallRun { to { background-position: 0 145%; } }
 
 @media (min-width: 760px) {
   .header { grid-template-columns: 1fr auto auto; }
   .desktopNav { display: flex; gap: 1.15rem; }
-  .desktopNav button { border: 0; padding: .25rem 0; color: rgba(240,238,230,.46); background: none; font: .57rem var(--font-mono); letter-spacing: .1em; text-transform: uppercase; cursor: pointer; transition: color .2s ease; }
+  .desktopNav button { border: 0; padding: .25rem 0; color: rgba(241,238,229,.46); background: none; font: .57rem var(--font-mono); letter-spacing: .1em; text-transform: uppercase; cursor: pointer; transition: color .2s ease; }
   .desktopNav .activeNav, .desktopNav button:hover { color: var(--ivory); }
   .menuButton, .mobileNav { display: none; }
-  .project { grid-template-columns: minmax(13rem, .56fr) minmax(26rem, 1.35fr); grid-template-rows: minmax(0, 1fr) auto; column-gap: clamp(2rem, 5vw, 6rem); row-gap: 1.3rem; align-items: center; min-height: 100svh; padding: 7.5rem clamp(2rem, 5vw, 6rem) 3rem; }
+  .sequence { min-height: 100svh; }
+  .sequencePin { overflow: hidden; }
+  .project { position: absolute; inset: 0; grid-template-columns: minmax(13rem, .56fr) minmax(26rem, 1.35fr); grid-template-rows: minmax(0, 1fr) auto; column-gap: clamp(2rem, 5vw, 6rem); row-gap: 1.3rem; align-items: center; min-height: 100svh; padding: 7.5rem clamp(2rem, 5vw, 6rem) 3rem; }
   .projectRail { grid-column: 1; grid-row: 1; }
   .mediaStage { grid-column: 2; grid-row: 1; min-height: clamp(28rem, 66svh, 48rem); }
   .metadata { grid-column: 2; grid-row: 2; grid-template-columns: repeat(4, minmax(0, 1fr)); }
   .project h1 { font-size: clamp(3.3rem, 6.5vw, 7.3rem); }
-  .description { font-size: .75rem; }
+  .project,
+  .mediaStage {
+    will-change: transform, opacity;
+  }
+
+  .reel[data-reel-mode='static'] .sequencePin { overflow: visible; }
+  .reel[data-reel-mode='static'] .project {
+    position: relative;
+    inset: auto;
+    content-visibility: auto;
+    contain-intrinsic-size: auto 100svh;
+    will-change: auto;
+  }
+  .reel[data-reel-mode='static'] .mediaStage { will-change: auto; }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .skipLink, .mobileNav, .mediaStage img, .progress span { transition: none; }
-  .project:hover .mediaStage img { transform: none; }
-  .waterfallFlow { animation: none; }
+  .skipLink, .progress span { transition: none; }
+  .reelMedia, .backdropMedia { animation: none; }
+  .reelAtmosphere, .backdrop {
+    background: #161109 url('/media/mountain-waterfall-estate-v1.webp') center / cover no-repeat;
+  }
+}
+
+@media (min-width: 760px) and (prefers-reduced-motion: reduce) {
+  .sequencePin { overflow: visible; }
+  .project { position: relative; inset: auto; }
+  .project, .mediaStage { will-change: auto; }
 }

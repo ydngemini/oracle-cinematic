@@ -1,9 +1,7 @@
 import { useState, useRef } from 'react';
 import styles from './LoginVault.module.css';
-
-// Same base-URL convention as BillingOverlay/OnboardingGate — there is no Vite
-// proxy, so a relative /auth/* 404s in any deployed build.
-const API_BASE = import.meta.env.VITE_API_BASE ?? 'http://localhost:8000';
+import { apiPost, ApiError } from '../lib/apiClient';
+import { useNetwork } from '../context/useNetwork';
 
 const TITLES = { login: 'Command Center', signup: 'Create account', forgot: 'Reset password', reset: 'Set new password' };
 const CTAS = { login: 'Authenticate', signup: 'Create account', forgot: 'Send reset link', reset: 'Set password & sign in' };
@@ -14,12 +12,11 @@ const CTAS = { login: 'Authenticate', signup: 'Create account', forgot: 'Send re
  *   signup → POST /auth/register (self-serve broker signup → new tenant)
  *   forgot → POST /auth/forgot   (emails a reset link)
  *   reset  → POST /auth/reset    (auto-entered when the URL has ?reset=<token>)
- * On success it stores the JWT in sessionStorage, fades out, and calls
+ * On success the API installs an HttpOnly session cookie, then this gate fades out and calls
  * onAuthenticated() so the parent mounts the dashboard.
  */
 export function LoginVault({ onAuthenticated }) {
-  // Lazy init from the URL so a ?reset=<token> link opens the reset form
-  // directly — done in the initializer (not an effect) to avoid setState-in-effect.
+  const { formatError } = useNetwork();
   const initialReset = (() => {
     try { return new URLSearchParams(window.location.search).get('reset') || ''; } catch { return ''; }
   })();
@@ -39,7 +36,6 @@ export function LoginVault({ onAuthenticated }) {
   const overlayRef = useRef(null);
 
   function finishAuth(data) {
-    sessionStorage.setItem('oracle_token', data.token);
     if (data.role) sessionStorage.setItem('oracle_role', data.role);
     if (data.agent_id) localStorage.setItem('oracle_user_id', data.agent_id);
     if (data.tenant_id) localStorage.setItem('oracle_tenant_id', data.tenant_id);
@@ -58,40 +54,32 @@ export function LoginVault({ onAuthenticated }) {
     setTimeout(finish, 600);
   }
 
-  async function post(path, payload) {
-    const res = await fetch(`${API_BASE}${path}`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
-    });
-    const body = await res.json().catch(() => ({}));
-    return { ok: res.ok, body };
-  }
-
   async function handleSubmit(e) {
     e.preventDefault();
     if (loading || fading) return;
     setError(''); setNotice(''); setLoading(true);
     try {
       if (mode === 'login') {
-        const { ok, body } = await post('/auth/login', { agent_id: agentId, passphrase });
-        if (!ok) { setError(body.detail ?? 'Authentication failed.'); setLoading(false); return; }
+        const body = await apiPost('/auth/login', { agent_id: agentId, passphrase }, { retries: 0 });
         finishAuth(body);
       } else if (mode === 'signup') {
-        const { ok, body } = await post('/auth/register', { email, password, full_name: fullName, company });
-        if (!ok) { setError(body.detail ?? 'Could not create account.'); setLoading(false); return; }
+        const body = await apiPost('/auth/register', { email, password, full_name: fullName, company }, { retries: 0 });
         finishAuth(body);
       } else if (mode === 'forgot') {
-        const { ok, body } = await post('/auth/forgot', { email });
+        const body = await apiPost('/auth/forgot', { email }, { retries: 0 });
         setLoading(false);
-        if (!ok) { setError(body.detail ?? 'Could not send reset link.'); return; }
         setNotice(body.detail ?? 'If that email has an account, a reset link is on its way.');
       } else {
-        const { ok, body } = await post('/auth/reset', { token: resetToken, new_password: password });
-        if (!ok) { setError(body.detail ?? 'Could not reset password.'); setLoading(false); return; }
+        const body = await apiPost('/auth/reset', { token: resetToken, new_password: password }, { retries: 0 });
         finishAuth(body);
       }
-    } catch {
-      setError('Network error — backend unreachable.');
+    } catch (err) {
       setLoading(false);
+      if (err instanceof ApiError) {
+        setError(formatError(err));
+      } else {
+        setError('Network error — backend unreachable.');
+      }
     }
   }
 

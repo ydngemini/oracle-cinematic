@@ -1,8 +1,7 @@
 import { useState } from 'react';
 import { useOracleState, useOracleDispatch, ACTIONS } from '../state';
+import { apiPost } from '../lib/apiClient';
 import styles from './OnboardingGate.module.css';
-
-const API_BASE = import.meta.env.VITE_API_BASE ?? 'http://localhost:8000';
 
 // Three lethal data points — nothing else. Agents close 5-page wizards.
 const EXPERIENCE_TIERS = [
@@ -56,24 +55,11 @@ export function OnboardingGate() {
     setSubmitting(true);
     setError('');
     try {
-      const token = sessionStorage.getItem('oracle_token');
-      const res = await fetch(`${API_BASE}/api/agents/profile`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        },
-        body: JSON.stringify({
-          experience_level: experience,
-          target_zips: zips,
-          monthly_deal_target: volume,
-        }),
+      const saved = await apiPost('/api/agents/profile', {
+        experience_level: experience,
+        target_zips: zips,
+        monthly_deal_target: volume,
       });
-      if (!res.ok) {
-        const detail = await res.json().catch(() => ({}));
-        throw new Error(detail.detail || `profile save failed (${res.status})`);
-      }
-      const saved = await res.json();
       dispatch({
         type: ACTIONS.PROFILE_SAVED,
         payload: { markets: saved.target_markets },

@@ -25,6 +25,7 @@ class Feature(str, Enum):
     LOCAL_MODELS = "local_models"
     SPATIAL_TOURS = "spatial_tours"
     CONTRACTS = "contracts"
+    AI_CHAT = "ai_chat"
 
 
 _FEATURE_ENV = {
@@ -35,6 +36,7 @@ _FEATURE_ENV = {
     Feature.LOCAL_MODELS: "ORACLE_FEATURE_LOCAL_MODELS",
     Feature.SPATIAL_TOURS: "ORACLE_FEATURE_SPATIAL_TOURS",
     Feature.CONTRACTS: "ORACLE_FEATURE_CONTRACTS",
+    Feature.AI_CHAT: "ORACLE_FEATURE_AI_CHAT",
 }
 
 
@@ -131,6 +133,7 @@ class IntelligenceEnvelope(BaseModel):
 
 class ActionRisk(str, Enum):
     READ_ONLY = "read_only"
+    INTERNAL_EDIT = "internal_edit"
     OUTREACH = "outreach"
     LIVE_CALL = "live_call"
     CALENDAR_WRITE = "calendar_write"

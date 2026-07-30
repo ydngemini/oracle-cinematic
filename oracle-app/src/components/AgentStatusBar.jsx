@@ -1,4 +1,7 @@
 import { useOracleState } from '../state';
+import { useOptionalAssistant } from './AssistantContext';
+import { BorderBeam } from './motion/BorderBeam';
+import { KineticText } from './motion/KineticText';
 import styles from './AgentStatusBar.module.css';
 
 const PHASES = [
@@ -18,10 +21,44 @@ function resolveActivePhase(agent) {
 
 export function AgentStatusBar() {
   const { activeAgent, memorySync } = useOracleState();
+  const assistant = useOptionalAssistant();
   const activePhase = resolveActivePhase(activeAgent);
+  const commandStatus = assistant?.commandStatus;
+
+  if (commandStatus && commandStatus.state !== 'idle') {
+    const failed = commandStatus.state === 'failed';
+    const completed = ['completed', 'queued'].includes(commandStatus.state);
+    return (
+      <div
+        className={`${styles.commandBar} hud-glass-panel hud-reticle`}
+        data-state={commandStatus.state}
+        role="status"
+        aria-live="polite"
+        aria-atomic="true"
+      >
+        <BorderBeam
+          duration={4}
+          size={250}
+          colorFrom={failed ? '#ef4444' : completed ? '#10b981' : '#b88952'}
+          colorTo={failed ? '#f59e0b' : completed ? '#f4e5bc' : '#dfbd73'}
+        />
+        <span className={styles.commandPulse} aria-hidden="true" />
+        <span className={styles.commandCopy}>
+          <strong>
+            <KineticText
+              text={commandStatus.message || 'NEOH is processing'}
+              speed={34}
+              scrambleSpeed={28}
+            />
+          </strong>
+          {commandStatus.detail && <small>{commandStatus.detail}</small>}
+        </span>
+      </div>
+    );
+  }
 
   return (
-    <div className={styles.bar}>
+    <div className={`${styles.bar} hud-glass-panel hud-reticle`}>
       <div className={styles.phases}>
         {PHASES.map(({ id, label }) => (
           <span

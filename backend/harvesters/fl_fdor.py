@@ -95,4 +95,5 @@ class FloridaFDORHarvester(ArcGISHarvester):
             is_absentee_owner = absentee,
             distress_flags = distress,
             last_sale_date = last_sale,
+            last_sale_price = to_float(row.get("SALE_PRC1")) or None,
         )

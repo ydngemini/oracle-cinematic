@@ -1,0 +1,23 @@
+defaultEnvironment: prod
+environments:
+  prod:
+    projectEndpoint: https://neoh-resource.services.ai.azure.com/api/projects/neoh
+    agentName: neoh-kimi-k2-6
+    azureContainerRegistry: neoh120ea104.azurecr.io
+    evaluationSuites:
+      - id: safety-tools-smoke
+        tags:
+          tier: smoke
+          purpose: safety-tools
+          stage: seed
+        dataset: neoh-kimi-k2-6-eval-seed
+        datasetVersion: v1
+        datasetFile: .foundry/datasets/neoh-kimi-k2-6-eval-seed-v1.jsonl
+        datasetUri: azureai://accounts/neoh-resource/projects/neoh/data/neoh-kimi-k2-6-eval-seed/versions/v1
+        evaluators:
+          - name: task_adherence
+            threshold: 4
+          - name: intent_resolution
+            threshold: 4
+          - name: relevance
+            threshold: 4

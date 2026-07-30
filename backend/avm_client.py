@@ -264,9 +264,8 @@ def reconcile(estimates: list[AVMEstimate], assessed_value: int, sqft: int) -> A
 # RentCast's free tier is 50 calls/MONTH, so re-valuing the same property is
 # expensive. We cache reconciled results in di_cache (the global, source-namespaced
 # integration cache backed by migration 0020) for AVM_TTL, plus a tiny in-process
-# memo for intra-run dedup. Everything here DEGRADES GRACEFULLY: if the app DB
-# pool is absent (e.g. called outside app context) or any cache op fails, we skip
-# the cache and value live — caching never blocks or breaks a valuation.
+# memo for intra-run dedup. The durable cache is mandatory: if PostgreSQL is
+# unavailable, no billable provider call is attempted.
 
 AVM_TTL = 7 * 86_400  # mirrors TTL["avm"] in data_integrations/cache.py
 
@@ -316,44 +315,10 @@ def _deserialize_result(payload) -> Optional[AVMResult]:
         return None
 
 
-def _get_pool():
-    """The app-wide asyncpg pool, or None if we're outside app context."""
-    try:
-        from db.connection import get_pool
-        return get_pool()
-    except Exception:
-        return None
-
-
-async def _cache_get(key: str) -> Optional[AVMResult]:
-    if not key:
-        return None
-    pool = _get_pool()
-    if pool is None:
-        return None
-    try:
-        from data_integrations.cache import IntegrationCache
-        payload = await IntegrationCache(pool).get(key)  # PG-only (no Redis client)
-        if payload is None:
-            return None
-        return _deserialize_result(payload)
-    except Exception as e:  # noqa: BLE001
-        logger.debug("AVM cache GET skipped for %s: %s", key, e)
-        return None
-
-
-async def _cache_set(key: str, result: AVMResult) -> None:
-    if not key:
-        return
-    pool = _get_pool()
-    if pool is None:
-        return
-    try:
-        from data_integrations.cache import IntegrationCache, TTL
-        ttl = TTL.get("avm", AVM_TTL)
-        await IntegrationCache(pool).set(key, _serialize_result(result), ttl)
-    except Exception as e:  # noqa: BLE001
-        logger.debug("AVM cache SET skipped for %s: %s", key, e)
+class _NoAVMEstimate(RuntimeError):
+    def __init__(self, result: AVMResult):
+        super().__init__("configured AVM providers returned no estimate")
+        self.result = result
 
 
 async def _value_property_uncached(subject: dict) -> AVMResult:
@@ -369,10 +334,10 @@ async def _value_property_uncached(subject: dict) -> AVMResult:
 async def value_property(subject: dict) -> AVMResult:
     """Reconciled, fact-checked valuation — cache-first.
 
-    Order of operations: in-process memo → di_cache (7-day TTL) → live providers.
+    Order of operations: in-process memo → mandatory IntegrationCache → providers.
     Always returns an AVMResult (UNAVAILABLE if nothing is configured or nothing
-    answers) — callers should branch on `.verdict`. Caching is best-effort and
-    degrades to a live call on any cache miss/error/absent-pool.
+    answers) — callers should branch on `.verdict`. Cache failure fails closed;
+    it never silently spends provider quota or creates untracked evidence.
 
     Only successful valuations (estimated_value > 0) are persisted: caching an
     UNAVAILABLE would let one transient provider failure/429 poison a property
@@ -382,8 +347,9 @@ async def value_property(subject: dict) -> AVMResult:
 
     key = _avm_cache_key(subject)
     if not key:
-        # No address to key on — can't cache, value live.
-        return await _value_property_uncached(subject)
+        return AVMResult(
+            0, 0, 0, 0.0, "UNAVAILABLE", 0.0, [], {"reason": "property address is required"}
+        )
 
     memo = _INPROC.get(key)
     if memo is not None:
@@ -395,18 +361,41 @@ async def value_property(subject: dict) -> AVMResult:
         if memo is not None:
             return memo
 
-        cached = await _cache_get(key)
-        if cached is not None:
-            _INPROC[key] = cached
-            # Capital visibility: a hit means we served an already-underwritten
-            # address from di_cache and spent $0 instead of a billable AVM call.
-            logger.info("AVM cache HIT %s — served from di_cache, no provider call ($0).", key)
-            return cached
+        from data_integrations.cache import TTL, get_integration_cache
 
-        logger.info("AVM cache MISS %s — calling live AVM provider(s) (billable).", key)
-        result = await _value_property_uncached(subject)
+        cache = await get_integration_cache()
+        request = {
+            "address": str(subject.get("address") or "").strip(),
+            "bedrooms": subject.get("bedrooms"),
+            "bathrooms": subject.get("bathrooms"),
+            "sqft": subject.get("sqft"),
+            "assessed_value": subject.get("assessed_value"),
+            "providers": {
+                "rentcast": bool(os.environ.get("RENTCAST_API_KEY")),
+                "attom": bool(os.environ.get("ATTOM_API_KEY")),
+            },
+        }
 
-        if result and result.estimated_value > 0:
-            _INPROC[key] = result
-            await _cache_set(key, result)
+        async def fetch_and_serialize() -> dict:
+            logger.info("AVM cache MISS %s — calling configured provider(s).", key)
+            result = await _value_property_uncached(subject)
+            if result.estimated_value <= 0:
+                raise _NoAVMEstimate(result)
+            return _serialize_result(result)
+
+        try:
+            payload = await cache.get_or_fetch(
+                "avm",
+                request,
+                fetch_and_serialize,
+                ttl=TTL.get("avm", AVM_TTL),
+            )
+        except _NoAVMEstimate as exc:
+            return exc.result
+        result = _deserialize_result(payload)
+        if result is None:
+            from data_integrations.cache import IntegrationCacheUnavailable
+
+            raise IntegrationCacheUnavailable("cached AVM payload is invalid")
+        _INPROC[key] = result
         return result

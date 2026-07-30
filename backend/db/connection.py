@@ -44,6 +44,7 @@ DB_NAME = os.getenv("ORACLE_DB_NAME", "oracle")
 DB_USER = os.getenv("ORACLE_DB_USER", "oracle_app_login")
 AWS_REGION = os.getenv("AWS_REGION", "us-east-2")
 RDS_CA_BUNDLE = os.getenv("ORACLE_RDS_CA_BUNDLE", "/etc/ssl/certs/rds-global-bundle.pem")
+DB_CA_BUNDLE = os.getenv("ORACLE_DB_CA_BUNDLE", RDS_CA_BUNDLE)
 
 # Local-dev escape hatch: if a static password is supplied we connect with plain
 # password auth (and SSL off unless ORACLE_DB_SSLMODE says otherwise) instead of
@@ -61,8 +62,8 @@ _pool = None  # asyncpg.Pool, lazily created
 
 
 def _build_ssl_context() -> ssl.SSLContext:
-    """TLS 1.3 only, server certificate verified against the RDS CA bundle."""
-    ctx = ssl.create_default_context(cafile=RDS_CA_BUNDLE)
+    """TLS 1.3 only, with a provider-specific or system CA bundle."""
+    ctx = ssl.create_default_context(cafile=DB_CA_BUNDLE)
     ctx.minimum_version = ssl.TLSVersion.TLSv1_3
     ctx.check_hostname = True
     ctx.verify_mode = ssl.CERT_REQUIRED
@@ -173,6 +174,12 @@ async def close_pool():
             logger.warning("Error while closing DB pool: %s", exc)
         finally:
             _pool = None
+            try:
+                from data_integrations.cache import reset_shared_cache
+
+                reset_shared_cache()
+            except Exception:  # noqa: BLE001 - shutdown remains best effort
+                pass
         logger.info("DB pool closed.")
 
 

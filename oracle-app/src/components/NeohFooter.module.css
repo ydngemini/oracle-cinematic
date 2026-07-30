@@ -1,0 +1,66 @@
+.footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 2.75rem;
+  margin-top: var(--space-8);
+  padding: var(--space-3) 0 0;
+  overflow: hidden;
+  border-top: 1px solid rgba(244, 229, 188, 0.14);
+  color: var(--oracle-text-dim);
+  font-family: var(--font-display);
+}
+
+.footer::before {
+  position: absolute;
+  top: 0;
+  left: 10%;
+  width: 22%;
+  height: 1px;
+  background: var(--filament-faint);
+  content: '';
+  opacity: 0.75;
+}
+
+.mark {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--oracle-text-dim);
+  font-size: 0.625rem;
+  font-weight: 700;
+  letter-spacing: var(--tracking-wider);
+  white-space: nowrap;
+}
+
+.mark svg {
+  width: 16px;
+  height: 16px;
+  stroke: var(--oracle-amber-dim);
+  stroke-linecap: square;
+  stroke-linejoin: bevel;
+  stroke-width: 1.25;
+}
+
+.mark sup {
+  position: relative;
+  top: -0.25em;
+  margin-left: 1px;
+  color: var(--oracle-amber-dim);
+  font-size: 0.42rem;
+}
+
+.copyright {
+  overflow: hidden;
+  color: rgba(245, 240, 230, 0.44);
+  font-size: 0.5625rem;
+  letter-spacing: 0.06em;
+  text-align: right;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+@media (max-width: 359px) {
+  .copyright { font-size: 0.5rem; letter-spacing: 0.03em; }
+}

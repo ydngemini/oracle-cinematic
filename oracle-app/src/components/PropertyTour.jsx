@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { hasMapsKey, loadMaps3d, geocodeAddress } from '../lib/google3d';
 import { crmGet } from '../state/useCrmApi';
+import useProtectedMedia from '../state/useProtectedMedia';
 import styles from './PropertyTour.module.css';
 
 /**
@@ -41,13 +42,8 @@ const ORBIT_TILT = 65;   // degrees — cinematic low-angle flyover
 const ORBIT_MS = 60000;  // ~60s per revolution — slow, smooth, non-nauseating
 const MANUAL_DEG_PER_FRAME = 0.12; // fallback orbit speed (~7°/s @ 60fps)
 
-const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8000';
-
 function mediaSrc(m) {
-  if (!m) return '';
-  const u = m.url;
-  if (u) return /^https?:\/\//i.test(u) ? u : `${API_BASE}${u.startsWith('/') ? '' : '/'}${u}`;
-  return m.id != null ? `${API_BASE}/api/media/${m.id}` : '';
+  return m?.display_url ?? '';
 }
 
 const FALLBACK_COPY = {
@@ -75,6 +71,7 @@ export default function PropertyTour({ address, lat, lng, leadId, listingId, onC
 
   // Composed photos.
   const [media, setMedia] = useState([]);
+  const displayMedia = useProtectedMedia(media);
   const [lightbox, setLightbox] = useState(null); // index into media, or null
 
   // Honest tour tier (exterior / photos / 360 / full walkthrough) from the
@@ -417,11 +414,11 @@ export default function PropertyTour({ address, lat, lng, leadId, listingId, onC
           {address && <span className={styles.fallbackAddr}>{address}</span>}
 
           {/* Even with no 3D coverage, composed photos are still worth showing. */}
-          {media.length > 0 && (
+          {displayMedia.length > 0 && (
             <div className={styles.fallbackStrip}>
-              {media.slice(0, 8).map((m, i) => (
+              {displayMedia.slice(0, 8).map((m, i) => (
                 <button key={m.id ?? i} type="button" className={styles.fallbackThumb} onClick={() => setLightbox(i)} aria-label={`View photo ${i + 1}`}>
-                  <img src={mediaSrc(m)} alt={`Property photo ${i + 1}`} loading="lazy" decoding="async" />
+                  <img src={mediaSrc(m) || undefined} alt={`Property photo ${i + 1}`} loading="lazy" decoding="async" />
                 </button>
               ))}
             </div>
@@ -494,9 +491,9 @@ export default function PropertyTour({ address, lat, lng, leadId, listingId, onC
       {/* Dock — filmstrip of composed photos + walk controls, anchored bottom. */}
       {status === 'ready' && (
         <div className={styles.dock}>
-          {media.length > 0 && (
+          {displayMedia.length > 0 && (
             <div className={styles.filmstrip} aria-label="Property photos">
-              {media.map((m, i) => (
+              {displayMedia.map((m, i) => (
                 <button
                   key={m.id ?? i}
                   type="button"
@@ -504,7 +501,7 @@ export default function PropertyTour({ address, lat, lng, leadId, listingId, onC
                   onClick={() => setLightbox(i)}
                   aria-label={`View photo ${i + 1}`}
                 >
-                  <img src={mediaSrc(m)} alt={`Property photo ${i + 1}`} loading="lazy" decoding="async" />
+                  <img src={mediaSrc(m) || undefined} alt={`Property photo ${i + 1}`} loading="lazy" decoding="async" />
                   <span className={styles.filmTag}>{i + 1}</span>
                 </button>
               ))}
@@ -552,8 +549,8 @@ export default function PropertyTour({ address, lat, lng, leadId, listingId, onC
 
       <span className={styles.attribution}>Imagery © Google</span>
 
-      {lightbox != null && media[lightbox] && (
-        <Lightbox media={media} index={lightbox} onClose={() => setLightbox(null)} onIndex={setLightbox} />
+      {lightbox != null && displayMedia[lightbox] && (
+        <Lightbox media={displayMedia} index={lightbox} onClose={() => setLightbox(null)} onIndex={setLightbox} />
       )}
     </div>
   );
@@ -598,7 +595,7 @@ function Lightbox({ media, index, onClose, onIndex }) {
       onKeyDown={trapFocus}
       onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
     >
-      <img className={styles.lightboxImg} src={mediaSrc(media[index])} alt={`Property photo ${index + 1}`} />
+      <img className={styles.lightboxImg} src={mediaSrc(media[index]) || undefined} alt={`Property photo ${index + 1}`} />
       <button ref={closeRef} type="button" className={styles.lbClose} onClick={onClose} aria-label="Close photo">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" /></svg>
       </button>

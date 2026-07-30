@@ -156,7 +156,7 @@ async def mls_search(
     schema.  Filters include price range, beds/baths, sqft, property type,
     status, and optional radius search when ``lat``/``lng`` are provided.
     """
-    conditions: list[str] = ["1 = 1"]
+    conditions: list[str] = ["mls_id <> 'rentcast'"]
     args: list[Any] = []
     idx = 0
 
@@ -275,7 +275,7 @@ async def get_mls_listing(
     listing_id = _require_uuid(listing_id, "listing_id")
     row = await _fetchrow(
         ctx,
-        "SELECT * FROM oracle_mls_listings WHERE id = $1::uuid",
+        "SELECT * FROM oracle_mls_listings WHERE id = $1::uuid AND mls_id <> 'rentcast'",
         listing_id,
     )
     if not row:
@@ -319,4 +319,3 @@ async def get_mls_listing(
 # ===========================================================================
 # 4. Market Data API
 # ===========================================================================
-

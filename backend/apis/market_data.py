@@ -60,11 +60,22 @@ async def get_fred_latest(series_id: str) -> Optional[dict]:
     url = f"{_FRED_BASE}{params}"
 
     try:
-        req = urllib.request.Request(url)
-        raw = await asyncio.to_thread(
-            lambda: urllib.request.urlopen(req, timeout=10).read().decode()
+        from data_integrations.cache import cached_external
+
+        async def fetch_upstream() -> dict:
+            req = urllib.request.Request(url)
+            raw = await asyncio.to_thread(
+                lambda: urllib.request.urlopen(req, timeout=10).read().decode()
+            )
+            return {"data": json.loads(raw)}
+
+        payload = await cached_external(
+            "fred",
+            {"series_id": series_id, "sort_order": "desc", "limit": 1},
+            fetch_upstream,
+            ttl=24 * 3_600,
         )
-        data = json.loads(raw)
+        data = payload.get("data") or {}
         obs = data.get("observations", [])
         if not obs:
             return None
@@ -153,13 +164,24 @@ async def _bls_post(payload: dict) -> Optional[dict]:
         payload = {**payload, "registrationkey": _BLS_API_KEY}
     body = json.dumps(payload).encode()
     try:
-        req = urllib.request.Request(
-            url, data=body, headers={"Content-Type": "application/json"}
+        from data_integrations.cache import cached_external
+
+        async def fetch_upstream() -> dict:
+            req = urllib.request.Request(
+                url, data=body, headers={"Content-Type": "application/json"}
+            )
+            raw = await asyncio.to_thread(
+                lambda: urllib.request.urlopen(req, timeout=15).read().decode()
+            )
+            return {"data": json.loads(raw)}
+
+        cached = await cached_external(
+            "bls_laus",
+            {key: value for key, value in payload.items() if key != "registrationkey"},
+            fetch_upstream,
+            ttl=24 * 3_600,
         )
-        raw = await asyncio.to_thread(
-            lambda: urllib.request.urlopen(req, timeout=15).read().decode()
-        )
-        return json.loads(raw)
+        return cached.get("data")
     except Exception as e:
         logger.warning("BLS API request failed: %s", e)
         return None
@@ -236,11 +258,22 @@ async def get_treasury_rates() -> Optional[dict]:
     url = "https://home.treasury.gov/resource-center/data-chart-center/interest-rates/daily-treasury-rates.csv/all/2026?type=daily_treasury_yield_curve&field_tdr_date_value=2026&page&_format=json"
 
     try:
-        req = urllib.request.Request(url)
-        raw = await asyncio.to_thread(
-            lambda: urllib.request.urlopen(req, timeout=10).read().decode()
+        from data_integrations.cache import cached_external
+
+        async def fetch_upstream() -> dict:
+            req = urllib.request.Request(url)
+            raw = await asyncio.to_thread(
+                lambda: urllib.request.urlopen(req, timeout=10).read().decode()
+            )
+            return {"data": json.loads(raw)}
+
+        payload = await cached_external(
+            "treasury",
+            {"dataset": "daily_treasury_yield_curve", "year": 2026},
+            fetch_upstream,
+            ttl=24 * 3_600,
         )
-        data = json.loads(raw)
+        data = payload.get("data") or []
         if not data:
             return None
         latest = data[-1] if isinstance(data, list) else None

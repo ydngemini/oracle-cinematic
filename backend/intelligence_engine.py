@@ -151,13 +151,15 @@ def calculate_underwriting(
 
 
 _DISTRESS_WEIGHTS: dict[str, float] = {
-    "tax_delinquency": 0.22,
-    "vacancy": 0.16,
-    "open_violations": 0.15,
+    "tax_delinquency": 0.20,
+    "vacancy": 0.14,
+    "open_violations": 0.14,
     "eviction_aggregate": 0.06,
-    "stalled_permits": 0.12,
-    "foreclosure_filing": 0.22,
-    "deferred_maintenance": 0.07,
+    "permit_activity": 0.07,
+    "stalled_permits": 0.08,
+    "foreclosure_filing": 0.20,
+    "property_history": 0.06,
+    "deferred_maintenance": 0.05,
 }
 
 
@@ -375,7 +377,23 @@ def forecast_micro_market(
     if horizon_years < 1 or horizon_years > 5:
         raise IntelligenceInputError("horizon_years must be between 1 and 5")
 
-    by_year: dict[int, list[float]] = {}
+    required_indicators = {
+        "permits",
+        "crime_aggregate",
+        "flood_exposure",
+        "census_trends",
+        "sales",
+        "inventory",
+        "commercial_activity",
+    }
+    aliases = {
+        "permit": "permits",
+        "crime": "crime_aggregate",
+        "flood": "flood_exposure",
+        "census": "census_trends",
+        "commercial": "commercial_activity",
+    }
+    by_indicator: dict[str, dict[int, list[float]]] = {}
     for index, observation in enumerate(observations):
         try:
             year = int(observation["year"])
@@ -384,15 +402,65 @@ def forecast_micro_market(
             raise IntelligenceInputError(f"observations[{index}] needs numeric year and value") from exc
         if not math.isfinite(value):
             raise IntelligenceInputError(f"observations[{index}].value must be finite")
-        by_year.setdefault(year, []).append(value)
-    points = sorted((float(year), statistics.fmean(values)) for year, values in by_year.items())
+        raw_indicator = str(observation.get("indicator") or "market_index").strip().lower()
+        indicator = aliases.get(raw_indicator, raw_indicator)
+        if indicator != "market_index" and indicator not in required_indicators:
+            raise IntelligenceInputError(
+                f"observations[{index}].indicator is unsupported: {raw_indicator}"
+            )
+        by_indicator.setdefault(indicator, {}).setdefault(year, []).append(value)
+
+    usable: dict[str, dict[int, float]] = {}
+    insufficient: list[str] = []
+    indicator_trends: dict[str, dict[str, Any]] = {}
+    for indicator, yearly_values in sorted(by_indicator.items()):
+        annual = {
+            year: statistics.fmean(values) for year, values in yearly_values.items()
+        }
+        if len(annual) < 3:
+            insufficient.append(indicator)
+            continue
+        raw_points = sorted((float(year), value) for year, value in annual.items())
+        raw_slope, _, raw_error = _linear_fit(raw_points)
+        baseline = statistics.fmean(abs(value) for value in annual.values())
+        if baseline == 0:
+            insufficient.append(indicator)
+            continue
+        usable[indicator] = {
+            year: (value / baseline) * 100.0 for year, value in annual.items()
+        }
+        indicator_trends[indicator] = {
+            "annual_slope_raw_units": round(raw_slope, 6),
+            "residual_standard_error": round(raw_error, 6),
+            "historical_years": sorted(annual),
+            "normalization_baseline": round(baseline, 6),
+        }
+
+    if not usable:
+        raise IntelligenceInputError(
+            "at least one indicator needs three annual observations"
+        )
+
+    composite_years = sorted({year for annual in usable.values() for year in annual})
+    composite: list[tuple[float, float]] = []
+    for year in composite_years:
+        values = [annual[year] for annual in usable.values() if year in annual]
+        if values:
+            composite.append((float(year), statistics.fmean(values)))
+    points = composite
     slope, intercept, residual_error = _linear_fit(points)
     last_year = int(points[-1][0])
     forecasts: list[dict[str, Any]] = []
     for step in range(1, horizon_years + 1):
         year = last_year + step
         estimate = intercept + slope * year
-        uncertainty = 1.96 * residual_error * math.sqrt(1 + (step / len(points)))
+        observed_required = required_indicators.intersection(usable)
+        coverage = len(observed_required) / len(required_indicators)
+        coverage_penalty = (1.0 - coverage) * max(5.0, abs(estimate) * 0.15)
+        uncertainty = (
+            1.96 * residual_error * math.sqrt(1 + (step / len(points)))
+            + coverage_penalty
+        )
         forecasts.append(
             {
                 "year": year,
@@ -407,10 +475,22 @@ def forecast_micro_market(
     return {
         "model_version": FORECAST_MODEL_VERSION,
         "method": "ordinary_least_squares_on_annual_aggregate",
+        "target": "normalized_composite_market_index",
         "historical_years": [int(point[0]) for point in points],
         "annual_slope": round(slope, 6),
         "residual_standard_error": round(residual_error, 6),
         "forecast": forecasts,
+        "indicator_trends": indicator_trends,
+        "source_coverage": {
+            "required_indicators": sorted(required_indicators),
+            "observed_indicators": sorted(required_indicators.intersection(usable)),
+            "missing_indicators": sorted(required_indicators - set(usable)),
+            "insufficient_indicators": sorted(insufficient),
+            "coverage": round(
+                len(required_indicators.intersection(usable)) / len(required_indicators),
+                4,
+            ),
+        },
         "fair_housing_review": {
             "status": "required_before_operational_use",
             "allowed_scope": "aggregate market planning only",
@@ -419,6 +499,11 @@ def forecast_micro_market(
         "warnings": [
             "Projection is a trend scenario, not a guarantee.",
             "Material policy, climate, financing, inventory, or data-definition changes can invalidate the fitted trend.",
+            *(
+                ["Required indicator coverage is incomplete; confidence intervals were widened."]
+                if required_indicators - set(usable)
+                else []
+            ),
         ],
     }
 

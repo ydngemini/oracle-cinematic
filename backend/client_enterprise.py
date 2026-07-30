@@ -46,6 +46,7 @@ from crm import (
     _iso,
     _loads,
     _log_activity,
+    _public_message_channel,
     _require_uuid,
 )
 
@@ -131,14 +132,15 @@ def _message_json(r) -> dict:
     return {
         "id": str(r["id"]),
         "direction": r["direction"],
-        "channel": r["interaction_type"],
+        "channel": _public_message_channel(r["interaction_type"]),
         "subject": r["subject"],
         "body": payload.get("body"),
         "actor_role": r["actor_role"],
         "created_at": _iso(r["created_at"]),
-        # interaction_logs has no per-row delivery state; honest null rather than
-        # a fabricated status. Outbound email delivery lives in email_outbox.
+        # interaction_logs has no provider-confirmed delivery state; honest null
+        # rather than a fabricated status. Log-only metadata travels separately.
         "status": None,
+        "delivery_status": payload.get("delivery_status"),
     }
 
 

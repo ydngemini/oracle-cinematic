@@ -1,0 +1,39 @@
+.library { display: flex; flex-direction: column; gap: var(--space-3); padding: var(--space-4); border: 1px solid var(--oracle-border); border-radius: var(--radius-lg); background: var(--oracle-glass); }
+.header { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-3); }
+.kicker, .type { font-family: var(--font-display); font-size: .5625rem; font-weight: 700; letter-spacing: var(--tracking-wider); text-transform: uppercase; color: var(--oracle-amber-dim); }
+.header h2 { margin-top: var(--space-1); font-family: var(--font-display); font-size: var(--text-sm); letter-spacing: var(--tracking-wider); text-transform: uppercase; color: var(--oracle-text); }
+.header p { max-width: 44rem; margin-top: var(--space-2); font-size: var(--text-xs); line-height: var(--leading-relaxed); color: var(--oracle-text-dim); }
+.count { flex: 0 0 auto; padding: 2px 8px; border: 1px solid var(--oracle-border); border-radius: var(--radius-pill); font-family: var(--font-display); font-size: .5625rem; letter-spacing: var(--tracking-wide); text-transform: uppercase; color: var(--oracle-text-ghost); white-space: nowrap; }
+.controls { display: grid; grid-template-columns: minmax(9rem, .85fr) minmax(10rem, 1fr) minmax(0, 1.75fr); gap: var(--space-3); }
+.controls label { display: flex; flex-direction: column; gap: var(--space-1); min-width: 0; }
+.controls label > span { font-family: var(--font-display); font-size: .5625rem; font-weight: 600; letter-spacing: var(--tracking-wider); text-transform: uppercase; color: var(--oracle-text-ghost); }
+.controls select { width: 100%; min-height: 42px; min-width: 0; padding: 0 var(--space-2); border: 1px solid var(--oracle-border-bright); border-radius: var(--radius-sm); background: var(--oracle-glass-hover); color: var(--oracle-text); font: inherit; }
+.controls select:focus-visible, .selectionFooter a:focus-visible, .regulator:focus-visible { outline: 2px solid var(--oracle-amber); outline-offset: 2px; }
+.controls select:disabled { cursor: wait; color: var(--oracle-text-ghost); }
+.selection { display: flex; flex-direction: column; gap: var(--space-3); padding: var(--space-3); border: 1px solid var(--oracle-border-bright); border-radius: var(--radius-md); background: rgba(13, 25, 37, .5); }
+.selectionTop { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-3); }
+.selection h3 { margin-top: 2px; font-size: var(--text-base); color: var(--oracle-text-heading); }
+.selectionTop p { margin-top: 2px; font-size: var(--text-xs); color: var(--oracle-text-ghost); }
+.status { flex: 0 0 auto; padding: 3px 7px; border: 1px solid var(--oracle-border); border-radius: var(--radius-pill); font-family: var(--font-display); font-size: .5625rem; letter-spacing: var(--tracking-wide); text-transform: uppercase; color: var(--oracle-text-ghost); }
+.status[data-status='approved_source'], .status[data-status='source_linked'] { border-color: rgba(95, 207, 157, .35); color: var(--oracle-green); }
+.metadata { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); overflow: hidden; border-top: 1px solid var(--oracle-border-subtle); border-bottom: 1px solid var(--oracle-border-subtle); }
+.metadata div { min-width: 0; padding: var(--space-2) var(--space-3); border-right: 1px solid var(--oracle-border-subtle); }
+.metadata div:last-child { border-right: 0; }
+.metadata dt { font-family: var(--font-display); font-size: .5rem; font-weight: 600; letter-spacing: var(--tracking-wider); text-transform: uppercase; color: var(--oracle-text-ghost); }
+.metadata dd { margin-top: 2px; overflow: hidden; color: var(--oracle-text-dim); font-size: var(--text-xs); text-overflow: ellipsis; white-space: nowrap; }
+.notes, .citations { font-size: var(--text-xs); line-height: var(--leading-relaxed); color: var(--oracle-text-dim); }
+.citations { color: var(--oracle-text-ghost); }
+.citations strong { color: var(--oracle-text-dim); }
+.selectionFooter { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); padding-top: var(--space-2); border-top: 1px solid var(--oracle-border-subtle); }
+.selectionFooter p { font-size: var(--text-xs); line-height: var(--leading-relaxed); color: var(--oracle-text-ghost); }
+.selectionFooter a, .regulator { flex: 0 0 auto; min-height: 36px; display: inline-flex; align-items: center; padding: 0 var(--space-3); border: 1px solid var(--oracle-amber-dim); border-radius: var(--radius-sm); color: var(--oracle-amber); font-family: var(--font-display); font-size: .5625rem; font-weight: 700; letter-spacing: var(--tracking-wider); text-transform: uppercase; }
+.selectionFooter a:hover, .regulator:hover { background: var(--oracle-amber-ghost); }
+.selectionFooter > span { flex: 0 0 auto; font-family: var(--font-display); font-size: .5625rem; letter-spacing: var(--tracking-wide); text-transform: uppercase; color: var(--oracle-text-ghost); }
+.regulator { align-self: flex-start; }
+.notice, .empty, .error { padding: var(--space-2) var(--space-3); border-left: 2px solid var(--oracle-amber-dim); background: var(--oracle-glass); font-size: var(--text-xs); line-height: var(--leading-relaxed); color: var(--oracle-text-ghost); }
+.error { border-color: var(--oracle-red-dim); color: var(--oracle-text-dim); }
+.skeleton { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-3); }
+.skeleton div { height: 96px; border: 1px solid var(--oracle-border); border-radius: var(--radius-md); background: linear-gradient(100deg, var(--oracle-glass) 28%, var(--oracle-shimmer) 50%, var(--oracle-glass) 72%); background-size: 220% 100%; animation: oracle-sheen 1.5s var(--ease-in-out) infinite; }
+@media (max-width: 760px) { .header, .selectionFooter { align-items: flex-start; flex-direction: column; } .controls { grid-template-columns: 1fr; } .metadata { grid-template-columns: repeat(2, minmax(0, 1fr)); } .metadata div:nth-child(2n) { border-right: 0; } .metadata div:nth-child(n + 3) { border-top: 1px solid var(--oracle-border-subtle); } }
+@media (max-width: 420px) { .selectionTop { flex-direction: column; } .metadata { grid-template-columns: 1fr; } .metadata div { border-right: 0; } .metadata div + div { border-top: 1px solid var(--oracle-border-subtle); } .skeleton { grid-template-columns: 1fr; } }
+@media (prefers-reduced-motion: reduce) { .skeleton div { animation: none; } }

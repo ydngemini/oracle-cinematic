@@ -1,0 +1,44 @@
+.wrap { display: flex; flex-direction: column; gap: var(--space-3); }
+.commandBox { position: relative; overflow: hidden; padding: var(--space-4); border: 1px solid rgba(223, 189, 115, .30); border-radius: var(--radius-lg); background: linear-gradient(145deg, rgba(223, 189, 115, .08), rgba(35, 27, 17, .90)); box-shadow: var(--shadow-e1); }
+.heading { display: flex; align-items: center; gap: var(--space-3); }
+.botMark { width: 42px; height: 42px; flex: 0 0 42px; display: grid; place-items: center; border: 1px solid var(--oracle-amber-dim); border-radius: var(--radius-md); color: var(--oracle-amber); background: var(--oracle-amber-ghost); }
+.botMark svg { width: 21px; height: 21px; }
+.heading h2 { font-size: var(--text-md); }
+.heading p { margin-top: var(--space-1); color: var(--oracle-text-dim); font-size: var(--text-xs); }
+.inputLabel, .draftLabel { margin-top: var(--space-3); display: flex; flex-direction: column; gap: var(--space-2); }
+.inputLabel > span, .draftLabel > span { font: 600 .625rem/1 var(--font-mono); letter-spacing: var(--tracking-wider); text-transform: uppercase; color: var(--oracle-text-dim); }
+.inputLabel textarea { min-height: 96px; width: 100%; resize: vertical; line-height: 1.55; }
+.compact .inputLabel textarea { min-height: 76px; }
+.commandActions { margin-top: var(--space-3); display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); }
+.commandActions > span { color: var(--oracle-text-ghost); font: .625rem/1 var(--font-mono); }
+.commandActions button, .authorize, .cancel { min-height: 44px; padding: 0 var(--space-4); display: inline-flex; align-items: center; justify-content: center; gap: var(--space-2); border: 1px solid var(--oracle-amber-dim); border-radius: var(--radius-md); background: var(--oracle-amber-ghost); color: var(--oracle-amber); font: 600 var(--text-xs)/1 var(--font-mono); letter-spacing: var(--tracking-wide); text-transform: uppercase; }
+.commandActions button svg, .authorize svg { width: 17px; height: 17px; }
+.commandActions button:disabled, .authorize:disabled { opacity: .42; cursor: not-allowed; }
+.error, .warning { margin-top: var(--space-3); padding: var(--space-2) var(--space-3); border-left: 2px solid var(--oracle-red); background: rgba(220,80,80,.08); color: #efb1b1; font-size: var(--text-xs); }
+.modalLayer { position: fixed; inset: 0; z-index: calc(var(--z-modal) + 10); display: grid; place-items: center; padding: var(--space-4); }
+.scrim { position: absolute; inset: 0; width: 100%; border-radius: 0; background: rgba(19,13,7,.76); backdrop-filter: none; }
+.modal { position: relative; width: min(100%, 620px); max-height: calc(100dvh - var(--safe-top) - var(--safe-bottom) - 2rem); overflow-y: auto; padding: var(--space-4); border: 1px solid rgba(223, 189, 115, .30); border-radius: var(--radius-xl); background: rgba(35, 27, 17, .96); box-shadow: var(--shadow-float); -webkit-overflow-scrolling: touch; }
+.modal > header { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-3); }
+.modal h2 { margin-top: var(--space-2); font-size: var(--text-xl); }
+.intentBadge { display: inline-flex; padding: 3px 8px; border: 1px solid var(--oracle-amber-dim); border-radius: var(--radius-pill); color: var(--oracle-amber); font: 600 .625rem/1 var(--font-mono); letter-spacing: var(--tracking-wider); }
+.close { width: 44px; height: 44px; display: grid; place-items: center; border: 1px solid var(--oracle-border-bright); background: var(--oracle-glass); }
+.close svg { width: 19px; height: 19px; }
+.target { margin-top: var(--space-4); display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: var(--space-2); }
+.target div { min-width: 0; padding: var(--space-3); border: 1px solid var(--oracle-border); border-radius: var(--radius-md); background: var(--oracle-glass); }
+.target dt { color: var(--oracle-text-ghost); font: .5625rem/1 var(--font-mono); letter-spacing: var(--tracking-wider); text-transform: uppercase; }
+.target dd { margin-top: var(--space-2); overflow-wrap: anywhere; color: var(--oracle-text); font-size: var(--text-sm); }
+.draftLabel textarea { width: 100%; min-height: 240px; resize: vertical; font: var(--text-xs)/1.5 var(--font-mono); }
+.modal footer { margin-top: var(--space-4); padding-bottom: var(--safe-bottom); display: flex; align-items: center; justify-content: flex-end; gap: var(--space-2); }
+.cancel { border-color: var(--oracle-border-bright); color: var(--oracle-text-dim); background: var(--oracle-glass); }
+.authorize { color: #17130c; background: var(--oracle-amber); }
+.completeIcon { width: 24px; color: var(--oracle-green); }
+@media (max-width: 540px) {
+  .modalLayer { padding: 0; align-items: end; }
+  .modal { width: 100%; max-height: min(92dvh, var(--visual-viewport-height, 92dvh)); border-radius: var(--radius-xl) var(--radius-xl) 0 0; border-bottom: 0; }
+  .target { grid-template-columns: 1fr; }
+  .modal footer { position: sticky; bottom: 0; padding-top: var(--space-3); background: #231b11; }
+  .modal footer button { flex: 1; }
+}
+@media (max-width: 719px), (prefers-reduced-transparency: reduce) {
+  .commandBox, .modal { background: rgba(35, 27, 17, .98); backdrop-filter: none; -webkit-backdrop-filter: none; }
+}

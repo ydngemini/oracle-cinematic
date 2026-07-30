@@ -92,9 +92,9 @@ async def get_agent_license_status(
         """
         SELECT l.*, u.tenant_id
         FROM agent_licenses l
-        JOIN users u ON u.id::text = l.agent_id::text
-        WHERE l.agent_id = $1
-        ORDER BY l.state_code, l.expiry_date
+        JOIN users u ON u.id = l.user_id
+        WHERE lower(u.agent_id) = lower($1)
+        ORDER BY l.state_code, COALESCE(l.expires_on, l.expiry_date)
         """,
         aid,
     )
@@ -102,7 +102,7 @@ async def get_agent_license_status(
     today = date.today()
     licenses: list[AgentLicense] = []
     for r in rows:
-        expiry = r.get("expiry_date")
+        expiry = r.get("expires_on") or r.get("expiry_date")
         days = (expiry - today).days if isinstance(expiry, date) else None
         ce_req = r.get("ce_hours_required", _CE_HOURS_BY_STATE.get(r["state_code"], 0))
         ce_done = r.get("ce_hours_completed", 0)
@@ -224,4 +224,3 @@ async def log_ce_credits(
 # ===========================================================================
 # 3. MLS Integration API
 # ===========================================================================
-

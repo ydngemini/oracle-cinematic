@@ -13,6 +13,7 @@ program:
   GET  /api/data/bls/unemployment       — BLS LAUS local unemployment (state/metro)
   GET  /api/data/fbi/crime              — FBI CDE agencies-by-county / agency series
   GET  /api/data/bankruptcy             — CourtListener federal bankruptcy dockets
+  GET  /api/data/regrid/parcel          — Regrid nationwide parcel facts by address
 
 Round 1 (geocode/fema/epa) is fully keyless. Round 2 adds Eviction Lab (keyless,
 ODC-BY), BLS LAUS (keyless v1), FBI CDE (DEMO_KEY-keyless) and CourtListener
@@ -21,8 +22,9 @@ ODC-BY), BLS LAUS (keyless v1), FBI CDE (DEMO_KEY-keyless) and CourtListener
 All endpoints are authenticated (Depends(require_context)) but return only
 public, non-tenant data. The lead wires include_router(router) in server.py.
 
-Sources + the L2 cache are built lazily on first use (cache degrades to None if
-the pool/di_cache is unavailable — every source still works, just uncached).
+Sources + the L2 cache are built lazily on first use. External requests fail
+closed with 503 if the durable cache is unavailable; no connector has an
+uncached quota/privacy bypass.
 """
 
 from __future__ import annotations
@@ -43,33 +45,34 @@ router = APIRouter(prefix="/api/data", tags=["data-sources"])
 
 _ZIP_RE = re.compile(r"^\d{5}$")
 _STATE_RE = re.compile(r"^[A-Za-z]{2}$")
+_MARKET_METRIC_RE = re.compile(r"^[a-z0-9_]{1,80}$")
 
 # Lazily-built singletons (one per process).
 _cache = None
-_cache_tried = False
 _geocoder = None
 _fema = None
 _epa = None
 _eviction = None
 _fbi = None
 _courtlistener = None
+_regrid = None
 
 
 async def _cache_layer():
-    """Build the IntegrationCache once; tolerate its absence (uncached mode)."""
-    global _cache, _cache_tried
-    if _cache_tried:
+    """Build the mandatory IntegrationCache once for this process."""
+    global _cache
+    if _cache is not None:
         return _cache
-    _cache_tried = True
     try:
-        from db.connection import get_pool
-        from data_integrations.cache import IntegrationCache
-        pool = get_pool()
-        if pool is not None:
-            _cache = await IntegrationCache.create(pool)
-    except Exception as e:  # noqa: BLE001 — cache is optional, never block a read
-        log.warning("data-sources cache unavailable (uncached mode): %s", e)
-        _cache = None
+        from data_integrations.cache import get_integration_cache
+
+        _cache = await get_integration_cache()
+    except Exception as e:  # noqa: BLE001 - normalize dependency failures
+        log.error("mandatory data-sources cache unavailable: %s", e)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="External data cache is unavailable; upstream request was not attempted.",
+        ) from e
     return _cache
 
 
@@ -121,6 +124,15 @@ async def _get_courtlistener():
     return _courtlistener
 
 
+async def _get_regrid():
+    global _regrid
+    if _regrid is None:
+        from data_integrations.regrid import RegridParcelSource
+
+        _regrid = RegridParcelSource(cache=await _cache_layer())
+    return _regrid
+
+
 class BatchGeocodeRequest(BaseModel):
     addresses: list[str] = Field(..., min_length=1, max_length=10_000)
 
@@ -130,7 +142,8 @@ async def health(ctx: TenantContext = Depends(require_context)) -> dict:
     cache = await _cache_layer()
     return {
         "ok": True,
-        "cache_enabled": cache is not None,
+        "cache_enabled": True,
+        "cache_required": True,
         "sources": {
             "census_geocoder": (await _get_geocoder()).metrics(),
             "openfema": (await _get_fema()).metrics(),
@@ -138,6 +151,12 @@ async def health(ctx: TenantContext = Depends(require_context)) -> dict:
             "eviction_lab": (await _get_eviction()).metrics(),
             "fbi_crime": (await _get_fbi()).metrics(),
             "courtlistener": (await _get_courtlistener()).metrics(),
+            "regrid_parcel": {
+                **(await _get_regrid()).metrics(),
+                "configured": (await _get_regrid()).configured,
+                "nationwide": True,
+                "model_training_prohibited": True,
+            },
             "bls_laus": {"source": "bls_laus", "keyless_v1": True},
         },
     }
@@ -285,3 +304,166 @@ async def bankruptcy(
     return await (await _get_courtlistener()).bankruptcy_dockets(
         court, date_filed_after=since, page_size=limit
     )
+
+
+_REGRID_PATH_RE = re.compile(
+    r"^/us/[a-z0-9][a-z0-9_-]*(?:/[a-z0-9][a-z0-9_-]*){0,4}/?$", re.IGNORECASE
+)
+
+
+@router.get("/regrid/parcel")
+async def regrid_parcel(
+    address: str = Query(..., min_length=3, max_length=400),
+    path: Optional[str] = Query(
+        None,
+        min_length=4,
+        max_length=300,
+        description="Optional Regrid /us/state/county/city path to disambiguate an address",
+    ),
+    limit: int = Query(1, ge=1, le=5, description="Maximum matched parcels (1–5)"),
+    include_geometry: bool = Query(
+        False,
+        description="Include parcel GeoJSON only when a map needs it",
+    ),
+    ctx: TenantContext = Depends(require_context),
+) -> dict:
+    """Return allow-listed nationwide public parcel facts for an address.
+
+    The Regrid credential stays server-side.  Enhanced ownership, matched
+    secondary addresses, building footprints, custom fields, and mailing
+    addresses are not returned through this surface.
+    """
+    path_normalized = (path or "").strip() or None
+    if path_normalized and not _REGRID_PATH_RE.fullmatch(path_normalized):
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            "path must be a Regrid US path such as /us/de/new-castle/wilmington",
+        )
+
+    source = await _get_regrid()
+    if not source.configured:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "Regrid parcel lookup is not configured.",
+        )
+
+    try:
+        return await source.lookup_address(
+            address,
+            path=path_normalized,
+            limit=limit,
+            include_geometry=include_geometry,
+        )
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001 - provider details may include a URL
+        from data_integrations.cache import IntegrationCacheUnavailable
+        from data_integrations.regrid import (
+            RegridConfigurationError,
+            RegridCoverageError,
+            RegridUpstreamError,
+        )
+
+        if isinstance(exc, IntegrationCacheUnavailable):
+            raise HTTPException(
+                status.HTTP_503_SERVICE_UNAVAILABLE,
+                "External data cache is unavailable; upstream request was not attempted.",
+            ) from exc
+        if isinstance(exc, RegridConfigurationError):
+            raise HTTPException(
+                status.HTTP_503_SERVICE_UNAVAILABLE,
+                "Regrid parcel lookup is not configured.",
+            ) from exc
+        if isinstance(exc, RegridCoverageError):
+            raise HTTPException(
+                status.HTTP_403_FORBIDDEN,
+                "The configured Regrid account does not include this location.",
+            ) from exc
+        if isinstance(exc, RegridUpstreamError):
+            raise HTTPException(
+                status.HTTP_502_BAD_GATEWAY,
+                "Regrid parcel lookup is temporarily unavailable.",
+            ) from exc
+        log.exception("unexpected Regrid parcel lookup failure")
+        raise HTTPException(
+            status.HTTP_502_BAD_GATEWAY,
+            "Regrid parcel lookup is temporarily unavailable.",
+        ) from exc
+
+
+@router.get("/market-research")
+async def market_research(
+    state: Optional[str] = Query(None, min_length=2, max_length=2),
+    metric: Optional[str] = Query(None, min_length=1, max_length=80),
+    limit: int = Query(250, ge=1, le=1000),
+    ctx: TenantContext = Depends(require_context),
+) -> dict:
+    """Latest source-attributed aggregate housing metrics.
+
+    These rows describe state markets and are never individual property
+    listings. Zillow/Redfin attribution remains attached to each observation.
+    """
+    normalized_state = state.strip().upper() if state else None
+    if normalized_state and not _STATE_RE.fullmatch(normalized_state):
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "state must be two letters")
+    normalized_metric = metric.strip().lower() if metric else None
+    if normalized_metric and not _MARKET_METRIC_RE.fullmatch(normalized_metric):
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "invalid metric")
+
+    conditions = []
+    args: list[object] = []
+    if normalized_state:
+        args.append(normalized_state)
+        conditions.append(f"state_code = ${len(args)}")
+    if normalized_metric:
+        args.append(normalized_metric)
+        conditions.append(f"metric_key = ${len(args)}")
+    where = " AND ".join(conditions) if conditions else "TRUE"
+    args.append(limit)
+
+    from db.connection import tenant_tx
+
+    try:
+        async with tenant_tx(ctx) as conn:
+            rows = await conn.fetch(
+                f"""
+                SELECT * FROM (
+                    SELECT DISTINCT ON (source_key,metric_key,state_code)
+                           source_key,metric_key,state_code,geography_name,
+                           period_end,value,unit,source_url,dataset_sha256,
+                           dataset_updated_at,retrieved_at,metadata
+                      FROM public_market_metrics
+                     WHERE {where}
+                     ORDER BY source_key,metric_key,state_code,period_end DESC
+                ) latest
+                ORDER BY state_code,metric_key,source_key
+                LIMIT ${len(args)}
+                """,
+                *args,
+            )
+    except Exception as exc:  # noqa: BLE001
+        log.error("market research query failed: %s", exc)
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "Market research catalog is unavailable.",
+        ) from exc
+    return {
+        "metrics": [
+            {
+                **dict(row),
+                "period_end": row["period_end"].isoformat(),
+                "dataset_updated_at": (
+                    row["dataset_updated_at"].isoformat()
+                    if row["dataset_updated_at"] else None
+                ),
+                "retrieved_at": row["retrieved_at"].isoformat(),
+                "value": float(row["value"]),
+            }
+            for row in rows
+        ],
+        "count": len(rows),
+        "state": normalized_state,
+        "metric": normalized_metric,
+        "data_classification": "aggregate_market_research",
+        "individual_listings": False,
+    }

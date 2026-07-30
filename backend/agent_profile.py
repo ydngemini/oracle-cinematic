@@ -34,6 +34,53 @@ EXPERIENCE_LEVELS = {"scout", "closer", "fund"}
 VOLUME_TARGETS = {"1-2", "3-5", "6+"}
 
 
+async def load_agent_identity(ctx: TenantContext) -> dict[str, Any]:
+    """Load the authenticated agent's approved drafting identity under RLS."""
+    async with tenant_tx(ctx) as conn:
+        profile = await conn.fetchrow(
+            """
+            SELECT display_name,public_email,phone,brokerage,email_signature
+              FROM user_profiles
+             WHERE user_id=$1
+            """,
+            ctx.agent_id,
+        )
+        user = await conn.fetchrow(
+            "SELECT id FROM users WHERE lower(agent_id)=lower($1)",
+            ctx.agent_id,
+        )
+        membership = None
+        settings = None
+        if user is not None:
+            membership = await conn.fetchrow(
+                "SELECT team_name,title,status FROM team_memberships WHERE user_id=$1",
+                user["id"],
+            )
+            settings = await conn.fetchrow(
+                "SELECT approved_tone,preferences FROM agent_ai_settings WHERE user_id=$1",
+                user["id"],
+            )
+
+    profile_data = dict(profile) if profile else {}
+    membership_data = dict(membership) if membership else {}
+    settings_data = dict(settings) if settings else {}
+    preferences = settings_data.get("preferences") or {}
+    if isinstance(preferences, str):
+        try:
+            preferences = json.loads(preferences)
+        except ValueError:
+            preferences = {}
+    return {
+        "name": profile_data.get("display_name") or ctx.agent_id,
+        "brokerage": profile_data.get("brokerage") or membership_data.get("team_name") or "",
+        "communication_tone": settings_data.get("approved_tone") or preferences.get("tone") or "neutral",
+        "signature": profile_data.get("email_signature") or "",
+        "phone_number": profile_data.get("phone") or "",
+        "public_email": profile_data.get("public_email") or "",
+        "membership_status": membership_data.get("status") or "",
+    }
+
+
 class OnboardingProfile(BaseModel):
     experience_level: str = Field(..., description="scout | closer | fund")
     target_zips: list[str] = Field(..., min_length=1, max_length=20)
@@ -210,11 +257,13 @@ async def submit_brokerage_onboarding(
             license_row = await conn.fetchrow(
                 """
                 INSERT INTO agent_licenses (
-                    tenant_id,user_id,state_code,license_number,license_type,expires_on
-                ) VALUES ($1::uuid,$2,$3,$4,$5,$6) RETURNING id
+                    tenant_id,user_id,agent_id,state_code,license_number,license_type,
+                    expires_on,expiry_date
+                ) VALUES ($1::uuid,$2,$3,$4,$5,$6,$7,$7) RETURNING id
                 """,
                 ctx.tenant_id,
                 user["id"],
+                ctx.agent_id,
                 license_input.state_code,
                 license_input.license_number,
                 license_input.license_type,
@@ -335,7 +384,18 @@ async def my_brokerage_onboarding(ctx: TenantContext = Depends(require_context))
             "SELECT id,role FROM users WHERE lower(agent_id)=lower($1)", ctx.agent_id
         )
         if user is None:
-            raise HTTPException(status_code=404, detail="User record not found.")
+            # Environment-injected operator accounts are valid authenticated
+            # principals but intentionally do not require a mutable users row.
+            # Return an empty onboarding profile so Personal AI remains usable
+            # instead of surfacing a noisy 404 for those accounts.
+            return {
+                "user_role": ctx.role.value,
+                "membership": None,
+                "licenses": [],
+                "ai_settings": None,
+                "google_connected": False,
+                "style_training_examples": 0,
+            }
         membership = await conn.fetchrow(
             "SELECT * FROM team_memberships WHERE user_id=$1", user["id"]
         )

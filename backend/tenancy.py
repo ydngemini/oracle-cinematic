@@ -22,7 +22,9 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Optional
 
-from fastapi import Header, HTTPException, status
+from fastapi import Header, HTTPException, Request, status
+
+from policy_contract import PLATFORM_POLICY_VERSION
 
 # ---------------------------------------------------------------------------
 # Logging — never log token strings or raw passphrase material.
@@ -153,9 +155,11 @@ async def apply_rls_context(conn, ctx: TenantContext) -> None:
     schema.sql RLS policies evaluate against this request's identity."""
     await conn.execute(
         "SELECT set_config('app.current_tenant', $1, true),"
-        "       set_config('app.current_role',   $2, true)",
+        "       set_config('app.current_role',   $2, true),"
+        "       set_config('app.current_agent',  $3, true)",
         ctx.tenant_id,
         ctx.role.value,
+        ctx.agent_id,
     )
     log.debug(
         "RLS context applied: tenant_id=%r role=%r agent_id=%r.",
@@ -170,7 +174,12 @@ async def apply_rls_context(conn, ctx: TenantContext) -> None:
 # TenantContext. Imported lazily to avoid a circular import with auth.py.
 # ---------------------------------------------------------------------------
 
-def require_context(authorization: Optional[str] = Header(default=None)) -> TenantContext:
+def _context_from_authorization(
+    authorization: Optional[str],
+    *,
+    allow_policy_pending: bool,
+    allow_stale_policy: bool,
+) -> TenantContext:
     from auth import decode_token  # lazy: auth imports nothing from tenancy
 
     if not authorization or not authorization.startswith("Bearer "):
@@ -180,6 +189,24 @@ def require_context(authorization: Optional[str] = Header(default=None)) -> Tena
         )
 
     payload = decode_token(authorization.removeprefix("Bearer ").strip())
+
+    if payload.get("purpose"):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token is not valid for this endpoint.",
+        )
+
+    if payload.get("policy_pending") and not allow_policy_pending:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Accept the platform policy to continue.",
+        )
+
+    if payload.get("policy_version") != PLATFORM_POLICY_VERSION and not allow_stale_policy:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Accept the current platform policy to continue.",
+        )
 
     tenant_id = payload.get("tenant_id")
     raw_role = payload.get("role")
@@ -231,3 +258,39 @@ def require_context(authorization: Optional[str] = Header(default=None)) -> Tena
         ctx.role.value,
     )
     return ctx
+
+
+def _request_authorization(request: Request, authorization: Optional[str]) -> Optional[str]:
+    """Prefer an explicit bearer token, otherwise authenticate with the secure session cookie."""
+    # Preserve direct-call compatibility used by internal WebSocket validation
+    # and unit tests while FastAPI supplies a Request for dependency injection.
+    if isinstance(request, str):
+        return request
+    if isinstance(authorization, str) and authorization:
+        return authorization
+    token = request.cookies.get("oracle_session", "") if request is not None else ""
+    return f"Bearer {token}" if token else None
+
+
+def require_context(
+    request: Request,
+    authorization: Optional[str] = Header(default=None),
+) -> TenantContext:
+    """Decode a normal application token, rejecting pending or stale-policy sessions."""
+    return _context_from_authorization(
+        _request_authorization(request, authorization),
+        allow_policy_pending=False,
+        allow_stale_policy=False,
+    )
+
+
+def require_policy_context(
+    request: Request,
+    authorization: Optional[str] = Header(default=None),
+) -> TenantContext:
+    """Permit the policy endpoints to renew stale or pending signed sessions."""
+    return _context_from_authorization(
+        _request_authorization(request, authorization),
+        allow_policy_pending=True,
+        allow_stale_policy=True,
+    )

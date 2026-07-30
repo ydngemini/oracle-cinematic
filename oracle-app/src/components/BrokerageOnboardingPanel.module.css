@@ -8,6 +8,9 @@
 .statusGrid div:nth-child(2n) { border-right: 0; } .statusGrid div:nth-child(n+3) { border-bottom: 0; }
 .statusGrid span { font-family: var(--font-display); font-size: .5rem; letter-spacing: var(--tracking-wide); text-transform: uppercase; color: var(--oracle-text-ghost); }
 .statusGrid strong { font-size: var(--text-xs); text-transform: capitalize; color: var(--oracle-text); }
+.statusGrid .providerStatus { align-items: flex-start; }
+.providerStatus button { min-height: 36px; margin-top: var(--space-1); padding: 0 var(--space-2); border: 1px solid var(--oracle-green-dim); border-radius: var(--radius-sm); font-family: var(--font-display); font-size: .5rem; letter-spacing: var(--tracking-wide); text-transform: uppercase; color: var(--oracle-green); }
+.providerStatus button:disabled { cursor: wait; opacity: .5; }
 .form { display: flex; flex-direction: column; gap: var(--space-3); }
 .twoCol { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-3); }
 .form label, .reason { display: flex; flex-direction: column; gap: var(--space-2); }

@@ -1,0 +1,37 @@
+.panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  border: 1px solid var(--oracle-border-bright);
+  border-radius: var(--radius-lg);
+  background:
+    linear-gradient(135deg, rgba(196, 157, 76, .08), transparent 42%),
+    var(--oracle-glass);
+  box-shadow: var(--shadow-inset), 0 18px 50px rgba(0, 0, 0, .2);
+}
+
+.head { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-3); }
+.head h3, .panel h3 { margin: var(--space-1) 0 0; font-family: var(--font-display); font-size: var(--text-lg); color: var(--oracle-text-heading); }
+.kicker { font-family: var(--font-display); font-size: .5625rem; letter-spacing: var(--tracking-widest); text-transform: uppercase; color: var(--oracle-amber-dim); }
+.context, .panel > p { margin: 0; font-size: var(--text-xs); line-height: var(--leading-relaxed); color: var(--oracle-text-dim); }
+.close { width: 44px; height: 44px; display: grid; place-items: center; border: 1px solid var(--oracle-border); border-radius: var(--radius-md); color: var(--oracle-text-dim); font-size: 1.3rem; }
+.form { display: flex; flex-direction: column; gap: var(--space-3); }
+.columns { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-2); }
+.field { display: flex; flex-direction: column; gap: var(--space-1); min-width: 0; }
+.field > span { font-family: var(--font-display); font-size: .5625rem; letter-spacing: var(--tracking-wider); text-transform: uppercase; color: var(--oracle-text-ghost); }
+.field input, .field select, .field textarea {
+  width: 100%; min-height: 44px; padding: 0 var(--space-3); border: 1px solid var(--oracle-border);
+  border-radius: var(--radius-md); background: rgba(4, 8, 14, .58); color: var(--oracle-text); font: var(--text-sm) / 1.4 var(--font-sans);
+}
+.field textarea { min-height: 80px; padding-block: var(--space-2); resize: vertical; }
+.field input:focus-visible, .field select:focus-visible, .field textarea:focus-visible, .close:focus-visible, .primary:focus-visible, .secondary:focus-visible { outline: 2px solid var(--oracle-amber); outline-offset: 2px; }
+.notice, .error { margin: 0; padding: var(--space-2) var(--space-3); border-radius: var(--radius-md); font-size: var(--text-xs); line-height: var(--leading-relaxed); }
+.notice { border: 1px solid var(--oracle-border); color: var(--oracle-text-dim); }
+.error { border: 1px solid var(--oracle-red-dim); color: var(--oracle-red); }
+.actions { display: flex; justify-content: flex-end; gap: var(--space-2); }
+.primary, .secondary { min-height: 44px; padding: 0 var(--space-4); border-radius: var(--radius-md); font-family: var(--font-display); font-size: var(--text-xs); letter-spacing: var(--tracking-wide); text-transform: uppercase; }
+.primary { border: 1px solid var(--oracle-amber-dim); background: var(--oracle-amber-ghost); color: var(--oracle-amber); }
+.secondary { border: 1px solid var(--oracle-border); color: var(--oracle-text-dim); }
+.primary:disabled { opacity: .45; cursor: not-allowed; }
+@media (max-width: 360px) { .columns { grid-template-columns: 1fr; } }

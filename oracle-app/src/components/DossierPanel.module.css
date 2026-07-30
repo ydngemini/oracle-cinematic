@@ -267,6 +267,77 @@
   letter-spacing: 0.01em;
 }
 
+/* ─── Public record detail ─────────────────────────────────────────────── */
+
+.provenance {
+  display: grid;
+  grid-template-columns: 1.5fr 1fr 0.55fr;
+  gap: 1px;
+  margin-bottom: 0.7rem;
+  background: rgba(120, 200, 255, 0.12);
+  border: 1px solid rgba(120, 200, 255, 0.12);
+}
+
+.provenance > div {
+  min-width: 0;
+  padding: 0.5rem 0.6rem;
+  background: rgba(8, 9, 13, 0.96);
+}
+
+.provenance span,
+.publicFacts dt {
+  display: block;
+  margin-bottom: 0.22rem;
+  font-size: 0.42rem;
+  font-weight: 600;
+  letter-spacing: 0.24em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.25);
+}
+
+.provenance strong {
+  display: block;
+  overflow: hidden;
+  color: rgba(150, 215, 255, 0.9);
+  font-size: 0.58rem;
+  font-weight: 500;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  text-transform: none;
+  white-space: nowrap;
+}
+
+.publicFacts {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1px;
+  margin: 0 0 0.55rem;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.publicFacts > div {
+  min-width: 0;
+  padding: 0.5rem 0.6rem;
+  background: rgba(8, 9, 13, 0.96);
+}
+
+.publicFacts dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: rgba(245, 240, 230, 0.76);
+  font-size: 0.64rem;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.35;
+}
+
+.sourceNote {
+  margin: 0 0 0.4rem;
+  color: rgba(120, 200, 255, 0.52);
+  font-size: 0.55rem;
+  line-height: 1.55;
+}
+
 /* ─── Contract Fuse ──────────────────────────────────────────────────────── */
 
 .fuseRow {
@@ -598,5 +669,11 @@
 
   .fuseBurn {
     transition: none;
+  }
+}
+
+@media (max-width: 380px) {
+  .provenance {
+    grid-template-columns: 1fr;
   }
 }

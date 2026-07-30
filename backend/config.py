@@ -41,6 +41,43 @@ def flag(name: str, default: bool = False) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
+# Resolve stable JWT scope values before ``auth`` is imported. Managed
+# deployments already provide one of the public application origins, so they do
+# not need duplicate secrets merely to mint and validate this service's tokens.
+# Explicit JWT settings always win.
+def _first_setting(*names: str) -> str:
+    for name in names:
+        value = (os.environ.get(name) or "").strip()
+        if value:
+            return value.rstrip("/")
+    return ""
+
+
+ORACLE_DOMAIN: str = _first_setting(
+    "ORACLE_DOMAIN",
+    "ORACLE_PUBLIC_BASE_URL",
+    "ORACLE_BASE_URL",
+)
+JWT_ISSUER: str = _first_setting(
+    "ORACLE_JWT_ISSUER",
+    "ORACLE_JWT_TENANT_ISSUER",
+) or ORACLE_DOMAIN
+JWT_AUDIENCE: str = _first_setting(
+    "ORACLE_JWT_AUDIENCE",
+    "ORACLE_JWT_TENANT_AUDIENCE",
+) or ORACLE_DOMAIN or JWT_ISSUER
+
+# ``auth.py`` intentionally reads these at import time. Publishing the resolved
+# non-secret values here keeps its issuer/audience pair complete when server.py
+# imports this module first, while preserving explicit operator configuration.
+if JWT_ISSUER:
+    os.environ.setdefault("ORACLE_JWT_ISSUER", JWT_ISSUER)
+if JWT_AUDIENCE:
+    os.environ.setdefault("ORACLE_JWT_AUDIENCE", JWT_AUDIENCE)
+
+ENABLE_WEBHOOKS: bool = flag("ORACLE_ENABLE_WEBHOOKS", default=False)
+
+
 # ---------------------------------------------------------------------------
 # Portable paths — env-overridable, defaulting under ORACLE_MODELS_DIR instead
 # of a machine-specific absolute path.
@@ -62,25 +99,55 @@ LLAMA_CPP_PATH: Path = Path(
 _REQUIRED_IN_PROD: list[tuple[str, str]] = [
     ("ORACLE_SECRET_KEY", "JWT signing"),
     ("ORACLE_ENCRYPTION_MASTER_KEY", "PII encryption (pgcrypto)"),
+    ("ORACLE_JWT_ISSUER", "JWT issuer binding"),
+    ("ORACLE_JWT_AUDIENCE", "JWT audience binding"),
+]
+
+_WEBHOOK_SECRETS: list[tuple[str, str]] = [
+    ("ORACLE_ACS_WEBHOOK_SECRET", "ACS webhook authentication"),
+    ("ORACLE_CUSTOM_CALL_WEBHOOK_SECRET", "custom-call webhook authentication"),
 ]
 
 
 def validate_or_die() -> None:
     """Fail the boot fast when a production deployment is missing a critical
     secret. In development, log the relaxed posture and continue."""
+    # ACS readiness check — log warnings for missing telephony config (non-fatal)
+    _acs_missing = []
+    if not os.environ.get("ACS_CONNECTION_STRING"):
+        _acs_missing.append("ACS_CONNECTION_STRING")
+    if not os.environ.get("ACS_FROM_NUMBER"):
+        _acs_missing.append("ACS_FROM_NUMBER")
+    if not os.environ.get("ORACLE_PUBLIC_BASE_URL"):
+        _acs_missing.append("ORACLE_PUBLIC_BASE_URL")
+    if _acs_missing:
+        log.warning(
+            "ACS phone calls are NOT operational — missing: %s",
+            ", ".join(_acs_missing),
+        )
+    else:
+        log.info("ACS telephony config is present — phone calls are operational.")
+
     if IS_DEV:
         log.warning(
             "ORACLE_ENV=%r — DEV mode; production secret validation relaxed.",
             ORACLE_ENV or "(unset)",
         )
         return
-    missing = [f"{name} ({why})" for name, why in _REQUIRED_IN_PROD if not os.environ.get(name)]
+    enable_webhooks = flag("ORACLE_ENABLE_WEBHOOKS", default=False)
+    required = list(_REQUIRED_IN_PROD)
+    if enable_webhooks:
+        required.extend(_WEBHOOK_SECRETS)
+    missing = [f"{name} ({why})" for name, why in required if not os.environ.get(name)]
     if missing:
         raise RuntimeError(
             "Refusing to start: missing required production secret(s): "
             + "; ".join(missing)
         )
-    log.info("Config validated for production — all required secrets present.")
+    log.info(
+        "Config validated for production — all required settings present; webhooks=%s.",
+        "enabled" if enable_webhooks else "disabled",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -88,29 +155,50 @@ def validate_or_die() -> None:
 # Grouped by subsystem; defaults shown where the reader supplies one.
 # ---------------------------------------------------------------------------
 ENV_VARS: dict[str, tuple[str, ...]] = {
-    "core": ("ORACLE_ENV", "ORACLE_SECRET_KEY", "ORACLE_ENCRYPTION_MASTER_KEY",
+    "core": ("ORACLE_ENV", "ORACLE_DOMAIN", "ORACLE_SECRET_KEY", "ORACLE_ENCRYPTION_MASTER_KEY",
              "ORACLE_CORS_ORIGINS", "ORACLE_BASE_URL", "ORACLE_DEMO_TENANT_ID",
              "ORACLE_ENABLE_DEMO_LOGINS", "ORACLE_JWT_ISSUER", "ORACLE_JWT_AUDIENCE",
+             "ORACLE_JWT_TENANT_ISSUER", "ORACLE_JWT_TENANT_AUDIENCE",
              "ORACLE_ADMIN_ID", "ORACLE_ADMIN_PASSPHRASE"),
     "db": ("ORACLE_DB_HOST", "ORACLE_DB_PORT", "ORACLE_DB_NAME", "ORACLE_DB_USER",
            "ORACLE_DB_PASSWORD", "ORACLE_DB_SSLMODE", "ORACLE_DB_POOL_MIN",
-           "ORACLE_DB_POOL_MAX", "ORACLE_RDS_CA_BUNDLE"),
+           "ORACLE_DB_POOL_MAX", "ORACLE_RDS_CA_BUNDLE", "ORACLE_DB_CA_BUNDLE",
+           "ORACLE_DB_ADMIN_USER", "ORACLE_DB_ADMIN_PASSWORD",
+           "ORACLE_DB_APP_PASSWORD", "ORACLE_DB_MAINTENANCE_NAME"),
     "stripe": ("STRIPE_SECRET_KEY", "STRIPE_WEBHOOK_SECRET", "STRIPE_PRICE_ID",
                "STRIPE_AUTOMATIC_TAX", "STRIPE_REQUIRE_TOS"),
     "spatial": ("SPATIAL_DEVICE", "SPATIAL_RESOLUTION", "SPATIAL_ALLOW_WEB_SCRAPE",
-                "GS_PATH", "DUST3R_PATH", "ORACLE_SPLAT_DIR"),
+                "GS_PATH", "DUST3R_PATH", "ORACLE_SPLAT_DIR", "ORACLE_SPLAT_STORAGE"),
     "voice": ("QWEN_VOICE_MODEL", "LLAMA_CPP_PATH", "VOICE_GPU_LAYERS",
               "ORACLE_WHISPER_MODEL", "ORACLE_AUDIO_STAGING", "ORACLE_AUDIO_MAX_BYTES"),
-    "ml": ("AWS_REGION", "BEDROCK_REGION"),
+    "ml": (
+        "AWS_REGION", "BEDROCK_REGION", "ORACLE_AI_CHAT_PROVIDER",
+        "ORACLE_FOUNDRY_PROJECT_ENDPOINT", "ORACLE_FOUNDRY_AGENT_NAME",
+        "ORACLE_FOUNDRY_MODEL", "ORACLE_MARKET_AI_SUPERVISOR_ENABLED",
+        "ORACLE_MARKET_AI_SUPERVISOR_MODEL",
+        "ORACLE_MARKET_AI_SUPERVISOR_TIMEOUT_SECONDS", "AZURE_CLIENT_ID",
+    ),
+    "federal_sources": ("GOVINFO_API_KEY", "DATA_GOV_API_KEY"),
+    "commands": (
+        "ORACLE_PUBLIC_BASE_URL", "ORACLE_SES_FROM_EMAIL",
+        "GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "GOOGLE_OAUTH_REDIRECT_URI",
+        "ACS_CONNECTION_STRING", "ACS_FROM_NUMBER",
+        "ORACLE_ENABLE_WEBHOOKS", "ORACLE_ACS_WEBHOOK_SECRET",
+        "ORACLE_CUSTOM_CALL_WEBHOOK_SECRET",
+        "ORACLE_CUSTOM_CALL_API_URL", "ORACLE_CUSTOM_CALL_AUTH_TOKEN",
+        "ORACLE_CUSTOM_CALL_FROM_NUMBER",
+    ),
     "ops": ("ORACLE_WS_IDLE_TIMEOUT", "ORACLE_TOUR_RATE_LIMIT", "ORACLE_AUDIT_SQLITE",
             "ORACLE_DISPOSITION_SWEEP_INTERVAL", "ORACLE_DANGER_ZONE_DAYS",
             "SCOUT_REGIONAL_ENABLED", "ZILLOW_COOKIE",
-            "QWEN_VOICE_DEPLOYMENT", "QWEN_VOICE_NAMESPACE", "QWEN_VOICE_HPA"),
+            "QWEN_VOICE_DEPLOYMENT", "QWEN_VOICE_NAMESPACE", "QWEN_VOICE_HPA",
+            "ORACLE_CLAMD_SOCKET", "ORACLE_CLAMD_HOST", "ORACLE_CLAMD_PORT"),
     "platform_features": (
         "ORACLE_FEATURE_AUTOMATION", "ORACLE_FEATURE_MUNICIPAL_HARVESTS",
         "ORACLE_FEATURE_PREDICTIVE_INTELLIGENCE", "ORACLE_FEATURE_MARKETPLACE",
         "ORACLE_FEATURE_LOCAL_MODELS", "ORACLE_FEATURE_SPATIAL_TOURS",
-        "ORACLE_FEATURE_CONTRACTS", "ORACLE_RAW_SOURCE_RETENTION_DAYS",
+        "ORACLE_FEATURE_CONTRACTS", "ORACLE_FEATURE_AI_CHAT", "ORACLE_RAW_SOURCE_RETENTION_DAYS",
         "ORACLE_CALL_AUDIO_RETENTION_DAYS", "ORACLE_CALL_TRANSCRIPT_RETENTION_DAYS",
     ),
+    "shared_storage": ("ORACLE_SHARED_STORAGE_DIR", "ORACLE_CONTRACT_OUTPUT_DIR"),
 }

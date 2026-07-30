@@ -146,33 +146,6 @@
   padding: var(--space-4) 0;
 }
 
-.addBtn {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: var(--space-2);
-  width: 100%;
-  padding: var(--space-3);
-  background: var(--oracle-glass);
-  border: 1px dashed var(--oracle-border-bright);
-  border-radius: var(--radius-md);
-  color: var(--oracle-text-dim);
-  font: var(--text-sm) / 1 var(--font-sans);
-  cursor: pointer;
-  transition: background 0.15s, color 0.15s;
-}
-
-.addBtn:hover {
-  background: var(--oracle-glass-hover);
-  color: var(--oracle-amber);
-}
-
-.addGlyph {
-  width: 16px;
-  height: 16px;
-  display: flex;
-}
-
 /* Skeleton / Error */
 .skeleton { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-3); }
 .skelCard { height: 100px; border-radius: var(--radius-md); background: var(--oracle-glass); animation: pulse 1.2s infinite; }

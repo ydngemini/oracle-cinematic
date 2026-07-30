@@ -17,7 +17,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
 
 from admin_ops import require_platform_admin
-from tenancy import TenantContext
+from tenancy import Role, TenantContext, require_context
 
 logger = logging.getLogger("oracle.admin_c2")
 
@@ -153,7 +153,7 @@ async def _query_hpa_metrics() -> dict:
             ],
         }
     except Exception as e:
-        logger.warning(f"K8s HPA query failed: {e}")
+        logger.warning("K8s HPA query failed: %s", e)
         return {"error": str(e), "replicas": None}
 
 
@@ -186,7 +186,7 @@ async def _query_pod_count() -> dict:
 
         return {"running": running, "pending": pending, "total": len(pods)}
     except Exception as e:
-        logger.warning(f"K8s pod query failed: {e}")
+        logger.warning("K8s pod query failed: %s", e)
         return {"running": 0, "pending": 0, "error": str(e)}
 
 
@@ -221,7 +221,7 @@ async def _run_surge(graph, websocket: Optional[WebSocket] = None):
         "timestamp": start_time,
     })
 
-    logger.info(f"CHAOS SURGE — injecting {SURGE_TOTAL} leads over {SURGE_WINDOW_SECONDS}s")
+    logger.info("CHAOS SURGE — injecting %d leads over %ss", SURGE_TOTAL, SURGE_WINDOW_SECONDS)
 
     try:
         for batch_idx in range(50):
@@ -278,7 +278,7 @@ async def _run_surge(graph, websocket: Optional[WebSocket] = None):
         }
 
         await _broadcast_telemetry(result)
-        logger.info(f"CHAOS SURGE COMPLETE — {injected} leads in {duration:.1f}s")
+        logger.info("CHAOS SURGE COMPLETE — %d leads in %.1fs", injected, duration)
         return result
 
     finally:
@@ -327,28 +327,34 @@ async def surge_status(ctx: TenantContext = Depends(require_platform_admin)):
 async def surge_telemetry_ws(websocket: WebSocket):
     """Real-time telemetry stream for the frontend to watch HPA scaling.
 
-    Platform-admin only. WebSockets can't carry an Authorization header, so the
-    JWT is passed as the ?token= query param (same convention as /ws) and the
-    socket is closed with 1008 (policy violation) for missing/invalid tokens or
-    any non-platform_admin caller."""
-    raw_token = websocket.query_params.get("token", "")
+    Platform-admin only. The browser supplies ``oracle.jwt`` and the JWT as two
+    WebSocket subprotocols so credentials stay out of URLs and access logs."""
+    offered = [
+        value.strip()
+        for value in websocket.headers.get("sec-websocket-protocol", "").split(",")
+        if value.strip()
+    ]
+    raw_token = offered[1] if len(offered) == 2 and offered[0] == "oracle.jwt" else ""
+    if not raw_token:
+        await websocket.close(code=4401)
+        return
     try:
-        from auth import decode_token
-
-        claims = decode_token(raw_token)
+        ctx = require_context(f"Bearer {raw_token}")
     except Exception:  # noqa: BLE001 — missing/invalid/expired token
-        await websocket.close(code=1008)
+        await websocket.close(code=4401)
         return
-    if claims.get("role") != "platform_admin":
-        await websocket.close(code=1008)
+    if ctx.role is not Role.PLATFORM_ADMIN:
+        await websocket.close(code=4403)
         return
 
-    await websocket.accept()
+    await websocket.accept(subprotocol="oracle.jwt")
     _surge_subscribers.append(websocket)
 
     try:
         while True:
             await websocket.receive_text()
     except WebSocketDisconnect:
+        pass
+    finally:
         if websocket in _surge_subscribers:
             _surge_subscribers.remove(websocket)

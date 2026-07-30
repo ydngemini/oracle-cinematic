@@ -18,6 +18,8 @@
 .circuit { padding: 3px 7px; border: 1px solid var(--oracle-green-dim); border-radius: var(--radius-pill); font-family: var(--font-display); font-size: .5625rem; letter-spacing: var(--tracking-wide); text-transform: uppercase; color: var(--oracle-green); }
 .circuit[data-state='open'] { color: var(--oracle-red); border-color: var(--oracle-red-dim); }
 .circuit[data-state='half_open'] { color: var(--oracle-amber); border-color: var(--oracle-amber-dim); }
+.circuit[data-state='stale'], .circuit[data-state='degraded'], .circuit[data-state='unknown'] { color: var(--oracle-amber); border-color: var(--oracle-amber-dim); }
+.circuit[data-state='failed'] { color: var(--oracle-red); border-color: var(--oracle-red-dim); }
 .stats { margin-top: var(--space-3); display: grid; grid-template-columns: repeat(3, 1fr); border: 1px solid var(--oracle-border-subtle); border-radius: var(--radius-md); overflow: hidden; }
 .stats div { padding: var(--space-2); text-align: center; border-right: 1px solid var(--oracle-border-subtle); border-bottom: 1px solid var(--oracle-border-subtle); }
 .stats div:nth-child(3n) { border-right: 0; }

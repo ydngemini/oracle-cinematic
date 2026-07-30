@@ -11,14 +11,14 @@ services:
     environment:
       POSTGRES_DB: oracle
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: ${ORACLE_DB_PASSWORD:-postgres}
+      POSTGRES_PASSWORD: ${ORACLE_DB_PASSWORD:?ORACLE_DB_PASSWORD is required}
     volumes:
       - pg_data:/var/lib/postgresql/data
       # Apply migrations at container first-start. Order matters — psql runs
       # them alphabetically, which matches the 0001/0002/0003 numbering scheme.
       - ./backend/db/migrations:/docker-entrypoint-initdb.d:ro
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d oracle"]
       interval: 5s
@@ -34,6 +34,8 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
+      args:
+        INSTALL_TEST_DEPS: "true"
     restart: unless-stopped
     depends_on:
       db:
@@ -56,7 +58,7 @@ services:
       ORACLE_DB_PORT: "5432"
       ORACLE_DB_NAME: oracle
       ORACLE_DB_USER: postgres
-      ORACLE_DB_PASSWORD: ${ORACLE_DB_PASSWORD:-postgres}
+      ORACLE_DB_PASSWORD: ${ORACLE_DB_PASSWORD:?ORACLE_DB_PASSWORD is required}
       ORACLE_DB_SSLMODE: disable
       # Development exercises the full surface. Production Terraform defaults
       # every new high-risk capability to false for staged rollout.
@@ -67,6 +69,9 @@ services:
       ORACLE_FEATURE_LOCAL_MODELS: "true"
       ORACLE_FEATURE_SPATIAL_TOURS: "true"
       ORACLE_FEATURE_CONTRACTS: "true"
+      ORACLE_FEATURE_AI_CHAT: "true"
+      ORACLE_AI_CHAT_MODEL: us.amazon.nova-pro-v1:0
+      ORACLE_LOCAL_LLM_URL: http://host.docker.internal:8090/v1/chat/completions
       # Real local LLM — agent-mind's inner monologue streams from the llama.cpp
       # server running on the HOST (Llama-3.2-1B). The container reaches the host
       # via host.docker.internal (mapped to host-gateway in extra_hosts below).
@@ -89,8 +94,11 @@ services:
     volumes:
       # Mount source so --reload sees edits without rebuild.
       - ./backend:/app
+      # The backend suite validates the isolated RunPod worker entrypoint too.
+      # Keep it read-only; the application never writes into infrastructure code.
+      - ./infra/reconstruction-runpod:/infra/reconstruction-runpod:ro
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     command: >
       uvicorn server:app
         --host 0.0.0.0
@@ -121,11 +129,12 @@ services:
       # HTTP-referrer + API restrictions in the Google Cloud Console; never place
       # confidential credentials on a VITE_ channel. Value comes from the repo-root .env.
       VITE_GOOGLE_MAPS_KEY: ${VITE_GOOGLE_MAPS_KEY:-}
+      VITE_GOOGLE_MAP_ID: ${VITE_GOOGLE_MAP_ID:-}
     volumes:
       - ./oracle-app:/app
       - npm_cache:/app/node_modules
     ports:
-      - "5173:5173"
+      - "127.0.0.1:5173:5173"
     command: sh -c "npm install && npm run dev -- --host 0.0.0.0"
 
 volumes:

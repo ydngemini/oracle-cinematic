@@ -43,10 +43,13 @@ OUTPUT_PATH = os.path.join(
     "output",
     "de_assignment_contracts.jsonl",
 )
-CONTRACT_OUTPUT_DIR = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)),
-    "output",
-    "contracts",
+CONTRACT_OUTPUT_DIR = os.environ.get(
+    "ORACLE_CONTRACT_OUTPUT_DIR",
+    os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        "output",
+        "contracts",
+    ),
 )
 
 DEFAULT_ASSIGNOR_NAME = os.getenv("ORACLE_ASSIGNOR_NAME", "Neoh Acquisitions LLC")
@@ -698,7 +701,8 @@ _TEMPLATE_FIELD_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 _MAX_TEMPLATE_BYTES = 100_000
 _MAX_FIELD_CHARS = 4_000
 _DOCUMENT_TYPES = {
-    "assignment", "seller_purchase", "buyer_purchase", "joint_venture", "redline"
+    "assignment", "seller_purchase", "buyer_purchase", "joint_venture", "redline",
+    "account_security_esa",
 }
 _MONEY_FIELDS = {
     "purchase_price", "wholesale_buy_price", "investor_buy_price",
@@ -889,6 +893,304 @@ def render_approved_contract_template(
     }
     if assignment_result is not None:
         result["assignment_fee_calculated"] = assignment_result["assignment_fee_calculated"]
+    return result
+
+
+_WORKSPACE_DATE_FIELDS = {"current_date", "original_contract_date", "closing_date"}
+
+
+def _workspace_missing_marker(field_name: str) -> str:
+    """Return an explicit placeholder instead of inventing a contract term."""
+    return f"[[MISSING: {field_name}]]"
+
+
+def _workspace_error(
+    *,
+    document_type: str,
+    template_sha: str,
+    issues: list[str],
+) -> dict[str, Any]:
+    return {
+        "status": "FATAL_ERROR",
+        "document_type": document_type,
+        "missing_variables": list(dict.fromkeys(issues)),
+        "final_contract_text": "",
+        "template_sha256": template_sha,
+    }
+
+
+def _workspace_input_hash(transaction_data: Mapping[str, Any]) -> str:
+    return hashlib.sha256(
+        json.dumps(
+            dict(transaction_data),
+            sort_keys=True,
+            default=str,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def _workspace_draft_text(text_value: str) -> str:
+    """Make the downloadable state unambiguous without blocking draft work."""
+    return (
+        "AI-ASSISTED WORKING DRAFT\n"
+        "Preview, save, and device-download copy. Not for signature.\n\n"
+        f"{text_value}"
+    )
+
+
+def _validate_workspace_assignment_values(raw: Mapping[str, Any]) -> list[str]:
+    """Validate supplied assignment values while allowing genuinely missing ones.
+
+    The full renderer remains the final strict gate.  This narrower check gives
+    the draft workspace a useful incomplete state without ever formatting an
+    unsafe, malformed, or fabricated term into the preview.
+    """
+    issues: list[str] = []
+    for field_name in _WORKSPACE_DATE_FIELDS:
+        value = raw.get(field_name)
+        if not _is_missing(value) and _parsed_iso_date(str(value)) is None:
+            issues.append(f"{field_name}_invalid")
+
+    current_date = _parsed_iso_date(str(raw.get("current_date") or ""))
+    original_date = _parsed_iso_date(str(raw.get("original_contract_date") or ""))
+    closing_date = _parsed_iso_date(str(raw.get("closing_date") or ""))
+    if current_date and original_date and original_date > current_date:
+        issues.append("original_contract_date_after_assignment_date")
+    if current_date and closing_date and closing_date < current_date:
+        issues.append("closing_date_before_assignment_date")
+
+    wholesale = _money(raw.get("wholesale_buy_price"))
+    investor = _money(raw.get("investor_buy_price"))
+    earnest = _money(raw.get("earnest_money_deposit"))
+    if not _is_missing(raw.get("wholesale_buy_price")) and (
+        wholesale is None or wholesale <= 0
+    ):
+        issues.append("wholesale_buy_price_must_be_positive")
+    if not _is_missing(raw.get("investor_buy_price")) and (
+        investor is None or investor <= 0
+    ):
+        issues.append("investor_buy_price_must_be_positive")
+    if not _is_missing(raw.get("earnest_money_deposit")):
+        if earnest is None or earnest < 0:
+            issues.append("earnest_money_deposit_must_be_nonnegative")
+        elif earnest != earnest.quantize(Decimal("0.01")):
+            issues.append("earnest_money_deposit_has_subcent_precision")
+    if wholesale is not None and investor is not None and investor < wholesale:
+        issues.append("assignment_fee_negative")
+    return issues
+
+
+def render_contract_workspace_draft(
+    *,
+    document_type: str,
+    body_template: str,
+    required_fields: list[str],
+    transaction_data: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Render an encrypted-workspace preview without guessing missing terms.
+
+    Unlike :func:`render_approved_contract_template`, this function intentionally
+    permits missing required values.  Each unknown becomes a visible marker so
+    a person or Personal AI can finish the draft later.  Supplied values still
+    receive the same scalar and injection validation as final rendering.
+    """
+    validation = validate_contract_template(document_type, body_template, required_fields)
+    if not validation["valid"]:
+        return _workspace_error(
+            document_type=document_type,
+            template_sha=validation["template_sha256"],
+            issues=validation["issues"],
+        )
+
+    raw: dict[str, Any] = dict(transaction_data)
+    if document_type == "redline":
+        original_text = raw.get("original_text")
+        proposed_text = raw.get("proposed_text")
+        missing = [
+            name
+            for name, value in (
+                ("original_text", original_text),
+                ("proposed_text", proposed_text),
+            )
+            if _is_missing(value)
+        ]
+        for field_name, value in (
+            ("original_text", original_text),
+            ("proposed_text", proposed_text),
+        ):
+            if _is_missing(value):
+                continue
+            if not isinstance(value, str) or len(value) > _MAX_TEMPLATE_BYTES or "\x00" in value:
+                return _workspace_error(
+                    document_type=document_type,
+                    template_sha=validation["template_sha256"],
+                    issues=[f"{field_name}_invalid"],
+                )
+            try:
+                value.encode("cp1252")
+            except UnicodeEncodeError:
+                return _workspace_error(
+                    document_type=document_type,
+                    template_sha=validation["template_sha256"],
+                    issues=[f"{field_name}_unsupported_characters"],
+                )
+        if missing:
+            draft = _workspace_draft_text(
+                "DEFENSIVE REDLINE REVIEW\n\n"
+                f"Original text: {_workspace_missing_marker('original_text')}\n"
+                f"Proposed text: {_workspace_missing_marker('proposed_text')}"
+            )
+            return {
+                "status": "INCOMPLETE",
+                "document_type": document_type,
+                "missing_variables": missing,
+                "final_contract_text": draft,
+                "template_sha256": validation["template_sha256"],
+                "input_sha256": _workspace_input_hash(transaction_data),
+                "content_sha256": hashlib.sha256(draft.encode("utf-8")).hexdigest(),
+                "professional_review_required": True,
+                "warnings": [
+                    "The comparison has not run because both source texts are required.",
+                    "Unknown terms are shown as explicit missing-field markers.",
+                ],
+            }
+        result = defensive_redline(str(original_text), str(proposed_text))
+        if result["status"] != "SUCCESS":
+            return {
+                **result,
+                "template_sha256": validation["template_sha256"],
+            }
+        draft = _workspace_draft_text(result["final_contract_text"])
+        return {
+            **result,
+            "status": "READY",
+            "final_contract_text": draft,
+            "template_sha256": validation["template_sha256"],
+            "input_sha256": _workspace_input_hash(transaction_data),
+            "content_sha256": hashlib.sha256(draft.encode("utf-8")).hexdigest(),
+            "warnings": [
+                "AI-assisted working draft saved from the supplied source text.",
+                *result.get("warnings", []),
+            ],
+        }
+
+    if document_type == "assignment":
+        raw.update(normalize_assignment_payload(transaction_data))
+        assignment_issues = _validate_workspace_assignment_values(raw)
+        condition_value = raw.get("condition_flag")
+        if not _is_missing(condition_value) and _normalize_condition_flag(condition_value) is None:
+            assignment_issues.append("condition_flag_invalid")
+        if assignment_issues:
+            return _workspace_error(
+                document_type=document_type,
+                template_sha=validation["template_sha256"],
+                issues=assignment_issues,
+            )
+    else:
+        date_issues = [
+            f"{field_name}_invalid"
+            for field_name in _WORKSPACE_DATE_FIELDS
+            if not _is_missing(raw.get(field_name))
+            and _parsed_iso_date(str(raw.get(field_name))) is None
+        ]
+        if date_issues:
+            return _workspace_error(
+                document_type=document_type,
+                template_sha=validation["template_sha256"],
+                issues=date_issues,
+            )
+
+    context: dict[str, str] = {}
+    missing: list[str] = []
+    scalar_issues: list[str] = []
+    for field_name in validation["placeholders"]:
+        if field_name == "assignment_fee":
+            wholesale = _money(raw.get("wholesale_buy_price"))
+            investor = _money(raw.get("investor_buy_price"))
+            if wholesale is None or investor is None:
+                context[field_name] = _workspace_missing_marker("assignment_fee")
+            else:
+                context[field_name] = _money_text(investor - wholesale)
+            continue
+        if field_name == "section_4_contingency":
+            condition = _normalize_condition_flag(raw.get("condition_flag"))
+            context[field_name] = (
+                CONTINGENCY_CLAUSES.get(condition or "None", "")
+                if condition is not None
+                else _workspace_missing_marker("condition_flag")
+            )
+            continue
+        value = raw.get(field_name)
+        if _is_missing(value):
+            context[field_name] = _workspace_missing_marker(field_name)
+            continue
+        rendered, issue = _safe_contract_scalar(field_name, value)
+        if issue:
+            scalar_issues.append(issue)
+        else:
+            context[field_name] = rendered or ""
+
+    for field_name in validation["required_fields"]:
+        value = raw.get(field_name)
+        if _is_missing(value):
+            missing.append(field_name)
+            continue
+        if field_name == "condition_flag":
+            continue
+        _, issue = _safe_contract_scalar(field_name, value)
+        if issue:
+            scalar_issues.append(issue)
+
+    if scalar_issues:
+        return _workspace_error(
+            document_type=document_type,
+            template_sha=validation["template_sha256"],
+            issues=scalar_issues,
+        )
+    try:
+        preview = body_template.format_map(context)
+    except (KeyError, ValueError) as exc:
+        return _workspace_error(
+            document_type=document_type,
+            template_sha=validation["template_sha256"],
+            issues=[f"template_render_failed:{type(exc).__name__}"],
+        )
+
+    missing = list(dict.fromkeys(missing))
+    if not missing:
+        strict = render_approved_contract_template(
+            document_type=document_type,
+            body_template=body_template,
+            required_fields=required_fields,
+            transaction_data=transaction_data,
+        )
+        if strict["status"] != "SUCCESS":
+            return strict
+        preview = strict["final_contract_text"]
+
+    draft = _workspace_draft_text(preview)
+    result = {
+        "status": "READY" if not missing else "INCOMPLETE",
+        "document_type": document_type,
+        "missing_variables": missing,
+        "final_contract_text": draft,
+        "template_sha256": validation["template_sha256"],
+        "input_sha256": _workspace_input_hash(transaction_data),
+        "content_sha256": hashlib.sha256(draft.encode("utf-8")).hexdigest(),
+        "professional_review_required": True,
+        "warnings": [
+            "AI-assisted working draft. It is encrypted when saved and can be downloaded to your device.",
+            *(
+                ["Complete every marked field before moving this draft forward."]
+                if missing
+                else ["All required values are present; final signature status remains separate."]
+            ),
+        ],
+    }
+    if document_type == "assignment" and not missing:
+        strict_assignment = draft_assignment_contract(transaction_data)
+        result["assignment_fee_calculated"] = strict_assignment.get("assignment_fee_calculated")
     return result
 
 

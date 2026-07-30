@@ -1,0 +1,36 @@
+.kineticText {
+  min-width: 0;
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  white-space: pre-wrap;
+}
+
+.visualText {
+  display: inline;
+}
+
+.character {
+  display: inline-block;
+  width: 1ch;
+  color: rgba(244, 229, 188, 0.72);
+  opacity: 0.48;
+  text-align: center;
+  text-shadow: 0 0 8px rgba(244, 229, 188, 0.30);
+  transition:
+    color var(--duration-micro) var(--ease-out),
+    opacity var(--duration-fast) var(--ease-out),
+    text-shadow var(--duration-fast) var(--ease-out);
+}
+
+.character[data-resolved='true'] {
+  color: inherit;
+  opacity: 1;
+  text-shadow: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .character {
+    transition: none;
+  }
+}

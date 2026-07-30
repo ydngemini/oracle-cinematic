@@ -22,7 +22,7 @@ import json
 import logging
 import os
 import time
-from typing import Optional
+from typing import Any, Literal, Optional
 
 from .base import BaseHarvester, RateLimiter
 from .de_firstmap import DelawareFirstMapHarvester
@@ -138,39 +138,259 @@ REGISTRY = {
 }
 
 
+FirehoseMode = Literal["harvest", "probe", "catalog_backfill"]
+
+
+class _LiveProbeCache:
+    """Minimal cache seam that forces a real, non-persisted probe request."""
+
+    @staticmethod
+    def metrics() -> dict[str, int]:
+        return {"hits": 0, "misses": 0}
+
+    async def get_or_fetch(self, _source, _request, fetcher, **_kwargs):
+        return await fetcher()
+
+
 class MultiStateFirehose:
-    def __init__(self, tenant_id: str, states: Optional[list[str]] = None, agent_id: str = "firehose"):
+    def __init__(
+        self,
+        tenant_id: str,
+        states: Optional[list[str]] = None,
+        agent_id: str = "firehose",
+        *,
+        mode: FirehoseMode = "harvest",
+    ):
         if not tenant_id:
             raise ValueError("tenant_id required (ORACLE_INGEST_TENANT_ID).")
+        if mode not in {"harvest", "probe", "catalog_backfill"}:
+            raise ValueError(f"Unknown firehose mode: {mode!r}")
         self.tenant_id = tenant_id
         self.agent_id = agent_id
+        self.mode: FirehoseMode = mode
         self.states = [s.upper() for s in (states or list(REGISTRY))]
         unknown = [s for s in self.states if s not in REGISTRY]
         if unknown:
             raise ValueError(f"Unknown state(s): {unknown}. Known: {list(REGISTRY)}")
-        # One shared limiter keeps the whole run polite even under concurrency.
-        self.limiter = RateLimiter()
+        # Each source gets its own polite limiter. A global limiter needlessly
+        # serialized unrelated government hosts and made national refreshes
+        # several times slower without reducing load on any individual portal.
+        self.limiters = {state: RateLimiter() for state in self.states}
 
     def _build(self, state: str):
         cls = REGISTRY[state]
         if issubclass(cls, BaseHarvester):
-            return cls(self.tenant_id, agent_id=f"{self.agent_id}-{state.lower()}", limiter=self.limiter)
+            return cls(
+                self.tenant_id,
+                agent_id=f"{self.agent_id}-{state.lower()}",
+                limiter=self.limiters[state],
+            )
         # MdSdatHarvester predates BaseHarvester (Playwright path) — its own limiter.
         return cls(self.tenant_id, agent_id=f"{self.agent_id}-md")
 
+    def _tracking_source_key(self, state: str) -> str:
+        if self.mode == "catalog_backfill":
+            return f"property_characteristics_backfill_{state.lower()}"
+        return f"regional_parcels_{state.lower()}"
+
+    async def _checkpoint(self, state: str) -> int:
+        from db.connection import tenant_tx
+        from tenancy import Role, TenantContext
+
+        ctx = TenantContext(
+            agent_id=self.agent_id,
+            tenant_id=self.tenant_id,
+            role=Role.PLATFORM_ADMIN,
+        )
+        async with tenant_tx(ctx) as conn:
+            value = await conn.fetchval(
+                """
+                SELECT cursor_value FROM harvest_sources
+                 WHERE tenant_id=$1::uuid AND source_key=$2
+                """,
+                self.tenant_id,
+                self._tracking_source_key(state),
+            )
+        try:
+            return max(0, int(value or 0))
+        except (TypeError, ValueError):
+            return 0
+
+    async def _save_checkpoint(
+        self, state: str, metrics: dict[str, Any], adapter_name: str
+    ) -> None:
+        from db.connection import tenant_tx
+        from tenancy import Role, TenantContext
+
+        ctx = TenantContext(
+            agent_id=self.agent_id,
+            tenant_id=self.tenant_id,
+            role=Role.PLATFORM_ADMIN,
+        )
+        checkpoint = metrics.get("checkpoint")
+        async with tenant_tx(ctx) as conn:
+            await conn.execute(
+                """
+                INSERT INTO harvest_sources (
+                    tenant_id,source_key,display_name,jurisdiction,adapter,
+                    cursor_value,cursor_observed_at,last_started_at,
+                    last_succeeded_at,last_record_observed_at,coverage
+                ) VALUES ($1::uuid,$2,$3,$4,$5,$6,now(),now(),now(),now(),$7::jsonb)
+                ON CONFLICT (tenant_id,source_key) DO UPDATE SET
+                    cursor_value=EXCLUDED.cursor_value,
+                    cursor_observed_at=EXCLUDED.cursor_observed_at,
+                    last_succeeded_at=EXCLUDED.last_succeeded_at,
+                    last_record_observed_at=EXCLUDED.last_record_observed_at,
+                    coverage=EXCLUDED.coverage,
+                    failure_count=0,circuit_state='closed',last_error=NULL,
+                    last_health_checked_at=now(),health_status='fresh',health_detail=NULL,
+                    updated_at=now()
+                """,
+                self.tenant_id,
+                self._tracking_source_key(state),
+                f"{state} checkpointed parcel ingestion",
+                state,
+                adapter_name,
+                str(checkpoint) if checkpoint is not None else None,
+                json.dumps(metrics, default=str),
+            )
+
+    async def _record_failure(self, state: str, harvester: Any, error: Exception) -> None:
+        """Persist a per-jurisdiction failure without aborting other states."""
+        from db.connection import tenant_tx
+        from harvest_health import safe_health_detail
+        from tenancy import Role, TenantContext
+
+        ctx = TenantContext(
+            agent_id=self.agent_id,
+            tenant_id=self.tenant_id,
+            role=Role.PLATFORM_ADMIN,
+        )
+        detail = safe_health_detail(error)
+        async with tenant_tx(ctx) as conn:
+            await conn.execute(
+                """
+                INSERT INTO harvest_sources (
+                    tenant_id,source_key,display_name,jurisdiction,adapter,
+                    last_started_at,last_health_checked_at,health_status,health_detail,
+                    failure_count,circuit_state,last_error
+                ) VALUES ($1::uuid,$2,$3,$4,$5,now(),now(),'degraded',$6,1,'closed',$6)
+                ON CONFLICT (tenant_id,source_key) DO UPDATE SET
+                    last_started_at=now(),last_health_checked_at=now(),
+                    failure_count=harvest_sources.failure_count+1,
+                    circuit_state=CASE WHEN harvest_sources.failure_count+1>=5
+                        THEN 'open' ELSE harvest_sources.circuit_state END,
+                    health_status=CASE WHEN harvest_sources.failure_count+1>=5
+                        THEN 'failed' ELSE 'degraded' END,
+                    health_detail=EXCLUDED.health_detail,last_error=EXCLUDED.last_error,
+                    updated_at=now()
+                """,
+                self.tenant_id,
+                self._tracking_source_key(state),
+                str(getattr(harvester, "SOURCE_LABEL", f"{state} public parcels")),
+                state,
+                type(harvester).__name__,
+                detail,
+            )
+
+    async def _record_probe_success(
+        self,
+        state: str,
+        metrics: dict[str, Any],
+        adapter_name: str,
+    ) -> None:
+        """Record source reachability without changing its durable cursor."""
+        from db.connection import tenant_tx
+        from tenancy import Role, TenantContext
+
+        ctx = TenantContext(
+            agent_id=self.agent_id,
+            tenant_id=self.tenant_id,
+            role=Role.PLATFORM_ADMIN,
+        )
+        async with tenant_tx(ctx) as conn:
+            await conn.execute(
+                """
+                INSERT INTO harvest_sources (
+                    tenant_id,source_key,display_name,jurisdiction,adapter,
+                    last_started_at,last_succeeded_at,last_record_observed_at,
+                    last_health_checked_at,health_status,coverage
+                ) VALUES (
+                    $1::uuid,$2,$3,$4,$5,now(),now(),now(),now(),'fresh',$6::jsonb
+                )
+                ON CONFLICT (tenant_id,source_key) DO UPDATE SET
+                    last_started_at=now(),last_succeeded_at=now(),
+                    last_record_observed_at=now(),last_health_checked_at=now(),
+                    health_status='fresh',health_detail=NULL,failure_count=0,
+                    circuit_state='closed',last_error=NULL,
+                    coverage=harvest_sources.coverage || EXCLUDED.coverage,
+                    updated_at=now()
+                """,
+                self.tenant_id,
+                f"regional_parcels_{state.lower()}",
+                str(metrics.get("source") or f"{state} public parcels"),
+                state,
+                adapter_name,
+                json.dumps(
+                    {
+                        "probe_fetched": int(metrics.get("fetched") or 0),
+                        "probe_checked_at": time.time(),
+                    }
+                ),
+            )
+
     async def _run_one(self, state: str, max_records: Optional[int], sem: asyncio.Semaphore) -> dict:
         async with sem:
+            harvester = self._build(state)
             try:
-                return await self._build(state).harvest(max_records=max_records)
+                checkpoint = 0 if self.mode == "probe" else await self._checkpoint(state)
+                if self.mode == "probe":
+                    # A health probe must observe the live portal and must not
+                    # write 51 throwaway response rows into PostgreSQL.
+                    harvester._cache = _LiveProbeCache()
+                metrics = await harvester.harvest(
+                    max_records=max_records,
+                    checkpoint=checkpoint,
+                    persist=self.mode == "harvest",
+                )
+                if self.mode == "catalog_backfill":
+                    from .base import upsert_public_records
+
+                    records = list(getattr(harvester, "_records", []))
+                    metrics["inserted"] = await upsert_public_records(
+                        self.tenant_id,
+                        self.agent_id,
+                        records,
+                        metrics=metrics,
+                    )
+                    await self._save_checkpoint(
+                        state, metrics, type(harvester).__name__
+                    )
+                elif self.mode == "probe":
+                    await self._record_probe_success(
+                        state, metrics, type(harvester).__name__
+                    )
+                else:
+                    await self._save_checkpoint(
+                        state, metrics, type(harvester).__name__
+                    )
+                return metrics
             except Exception as e:  # noqa: BLE001 — isolate one portal's failure
                 logger.error("[%s] harvest failed: %s", state, e)
+                try:
+                    await self._record_failure(state, harvester, e)
+                except Exception as persistence_error:  # noqa: BLE001 -- preserve original failure signal
+                    logger.error("[%s] could not persist harvest failure: %s", state, persistence_error)
                 return {"state": state, "error": str(e)[:200],
                         "fetched": 0, "parsed": 0, "inserted": 0}
 
     async def run(self, *, max_records_per_state: Optional[int] = None, concurrency: int = 2) -> dict:
         t0 = time.monotonic()
-        logger.info("Firehose run: %s (concurrency=%d, cap=%s/state)",
-                    ", ".join(self.states), concurrency, max_records_per_state or "∞")
+        logger.info(
+            "Firehose run: %s (mode=%s, concurrency=%d, cap=%s/state)",
+            ", ".join(self.states), self.mode, concurrency,
+            max_records_per_state or "∞",
+        )
         sem = asyncio.Semaphore(max(1, concurrency))
         per_state = await asyncio.gather(
             *(self._run_one(s, max_records_per_state, sem) for s in self.states)
@@ -178,11 +398,23 @@ class MultiStateFirehose:
 
         results = {m["state"]: m for m in per_state}
         totals = {
+            "requests": sum(m.get("requests", 0) for m in per_state),
+            "retries": sum(m.get("retries", 0) for m in per_state),
+            "cache_hits": sum(m.get("cache_hits", 0) for m in per_state),
+            "cache_misses": sum(m.get("cache_misses", 0) for m in per_state),
             "fetched": sum(m.get("fetched", 0) for m in per_state),
             "parsed": sum(m.get("parsed", 0) for m in per_state),
             "inserted": sum(m.get("inserted", 0) for m in per_state),
             "errors": sum(1 for m in per_state if m.get("error")),
+            "failed_states": sorted(m["state"] for m in per_state if m.get("error")),
+            "zero_result_states": sorted(
+                m["state"] for m in per_state
+                if not m.get("error") and int(m.get("fetched") or 0) == 0
+            ),
             "elapsed_s": round(time.monotonic() - t0, 2),
+            "checkpointed_states": sum(
+                1 for m in per_state if "checkpoint_complete" in m
+            ),
         }
         logger.info("Firehose complete in %.1fs — inserted=%d across %d states (%d errors)",
                     totals["elapsed_s"], totals["inserted"],

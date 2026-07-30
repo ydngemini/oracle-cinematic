@@ -2,13 +2,15 @@ FROM python:3.12-slim
 
 # Build argument allows pinning a custom pip index (e.g. a private PyPI mirror).
 ARG PIP_INDEX_URL=https://pypi.org/simple
+ARG INSTALL_TEST_DEPS=false
 
 WORKDIR /app
 
 # Install dependencies in a separate layer so rebuilds skip this step when
 # only source code changes (requirements.txt changes less often than .py files).
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+COPY requirements.txt requirements-test.txt ./
+RUN pip install --no-cache-dir -r requirements.txt \
+    && if [ "$INSTALL_TEST_DEPS" = "true" ]; then pip install --no-cache-dir -r requirements-test.txt; fi
 
 # Playwright + Chromium — required by the browser-based state harvesters (e.g.
 # Maryland SDAT, harvesters/md_sdat_ingest.py) so the parcel-harvest national
