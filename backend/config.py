@@ -110,7 +110,6 @@ _WEBHOOK_SECRETS: list[tuple[str, str]] = [
 
 _QWEN_REALTIME_SETTINGS: list[tuple[str, str]] = [
     ("DASHSCOPE_API_KEY", "Qwen Omni realtime authentication"),
-    ("DASHSCOPE_WORKSPACE_ID", "Qwen Omni realtime workspace routing"),
 ]
 
 
@@ -150,6 +149,15 @@ def validate_or_die() -> None:
                 ("ORACLE_ACS_WEBHOOK_SECRET", "ACS media WebSocket authentication")
             )
     missing = [f"{name} ({why})" for name, why in required if not os.environ.get(name)]
+    if (
+        flag("ORACLE_QWEN_REALTIME_ENABLED", default=False)
+        and not os.environ.get("DASHSCOPE_WORKSPACE_ID")
+        and not os.environ.get("DASHSCOPE_REALTIME_URL")
+    ):
+        missing.append(
+            "DASHSCOPE_WORKSPACE_ID or DASHSCOPE_REALTIME_URL "
+            "(Qwen Omni realtime workspace routing)"
+        )
     if missing:
         raise RuntimeError(
             "Refusing to start: missing required production secret(s): "
