@@ -151,3 +151,81 @@ def test_inbound_call_connected_event_does_not_replay_greeting(monkeypatch):
         )
     )
     assert played == []
+
+
+
+def test_disclosure_completion_starts_qwen_media_when_enabled(monkeypatch):
+    redis = _FakeRedis()
+    started = []
+    listened = []
+    monkeypatch.setenv("ORACLE_ENCRYPTION_MASTER_KEY", "test-acs-state-master-key")
+    monkeypatch.setenv("ORACLE_QWEN_REALTIME_ENABLED", "1")
+
+    async def get_redis():
+        return redis
+
+    async def start_qwen(call_connection_id, state=None):
+        started.append((call_connection_id, state["tenant_id"]))
+
+    async def start_listening(call_connection_id):
+        listened.append(call_connection_id)
+
+    monkeypatch.setattr(acs_call_handler, "_get_redis", get_redis)
+    monkeypatch.setattr(
+        acs_call_handler,
+        "start_qwen_media_streaming",
+        start_qwen,
+    )
+    monkeypatch.setattr(acs_call_handler, "start_listening", start_listening)
+
+    asyncio.run(
+        acs_call_handler.initialize_call_state(
+            "qwen-call",
+            "+15551234567",
+            tenant_id="tenant-abc",
+            credentials={
+                "connection_string": "endpoint=https://tenant.example;accesskey=secret",
+                "from_number": "+15557654321",
+            },
+        )
+    )
+    asyncio.run(acs_call_handler.handle_play_completed("qwen-call", "greeting"))
+
+    assert started == [("qwen-call", "tenant-abc")]
+    assert listened == []
+
+
+def test_qwen_failed_state_uses_legacy_recognition(monkeypatch):
+    redis = _FakeRedis()
+    listened = []
+    monkeypatch.setenv("ORACLE_ENCRYPTION_MASTER_KEY", "test-acs-state-master-key")
+    monkeypatch.setenv("ORACLE_QWEN_REALTIME_ENABLED", "1")
+
+    async def get_redis():
+        return redis
+
+    async def start_listening(call_connection_id):
+        listened.append(call_connection_id)
+
+    monkeypatch.setattr(acs_call_handler, "_get_redis", get_redis)
+    monkeypatch.setattr(acs_call_handler, "start_listening", start_listening)
+
+    asyncio.run(
+        acs_call_handler.initialize_call_state(
+            "fallback-call",
+            "+15551234567",
+            tenant_id="tenant-abc",
+            credentials={
+                "connection_string": "endpoint=https://tenant.example;accesskey=secret",
+                "from_number": "+15557654321",
+            },
+        )
+    )
+    state = json.loads(redis.values["acs:call_state:fallback-call"])
+    state["qwen_realtime_failed"] = True
+    redis.values["acs:call_state:fallback-call"] = json.dumps(state)
+
+    asyncio.run(
+        acs_call_handler.handle_play_completed("fallback-call", "greeting")
+    )
+    assert listened == ["fallback-call"]
