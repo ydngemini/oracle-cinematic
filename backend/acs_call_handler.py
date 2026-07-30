@@ -1,7 +1,12 @@
 """Distributed ACS call handling for inbound and outbound conversations.
 
-Both call directions use the same media callback cycle:
-PlayCompleted -> RecognizeCompleted -> AI response -> Play -> ...
+The default call path uses the media callback cycle:
+PlayCompleted -> RecognizeCompleted -> AI response -> Play.
+
+When ORACLE_QWEN_REALTIME_ENABLED is on, the disclosure greeting remains an
+ACS TextSource operation, then PlayCompleted starts a bidirectional 16 kHz PCM
+stream through qwen_omni_realtime.py. If that bridge fails, the call falls back
+to the default recognition path.
 
 Call state and the tenant-scoped ACS connection details are stored in Redis
 with a bounded TTL. This allows any backend replica to service a callback after
@@ -285,6 +290,60 @@ def _get_callback_url() -> str:
     )
 
 
+def qwen_realtime_enabled(state: Optional[Mapping[str, Any]] = None) -> bool:
+    raw = os.getenv("ORACLE_QWEN_REALTIME_ENABLED", "")
+    enabled = raw.strip().lower() in {"1", "true", "yes", "on"}
+    return enabled and not bool((state or {}).get("qwen_realtime_failed"))
+
+
+def _get_media_streaming_url() -> str:
+    base = os.getenv("ORACLE_PUBLIC_BASE_URL", "").rstrip("/")
+    if not base:
+        raise RuntimeError(
+            "ORACLE_PUBLIC_BASE_URL is not set - absolute media URL required for ACS"
+        )
+    parsed = urllib.parse.urlsplit(base)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise RuntimeError("ORACLE_PUBLIC_BASE_URL must be an absolute HTTP(S) URL")
+    scheme = "wss" if parsed.scheme == "https" else "ws"
+    secret = os.getenv("ORACLE_ACS_WEBHOOK_SECRET", "").strip()
+    if not secret:
+        raise RuntimeError("ORACLE_ACS_WEBHOOK_SECRET is not configured")
+    return urllib.parse.urlunsplit(
+        (
+            scheme,
+            parsed.netloc,
+            "/api/commands/media/acs",
+            urllib.parse.urlencode({"token": secret}),
+            "",
+        )
+    )
+
+
+def build_qwen_media_streaming_options() -> Any:
+    """Build an inactive bidirectional stream; disclosure plays before start."""
+    if not qwen_realtime_enabled():
+        return None
+    from azure.communication.callautomation import (
+        AudioFormat,
+        MediaStreamingAudioChannelType,
+        MediaStreamingContentType,
+        MediaStreamingOptions,
+        StreamingTransportType,
+    )
+
+    return MediaStreamingOptions(
+        transport_url=_get_media_streaming_url(),
+        transport_type=StreamingTransportType.WEBSOCKET,
+        content_type=MediaStreamingContentType.AUDIO,
+        audio_channel_type=MediaStreamingAudioChannelType.MIXED,
+        start_media_streaming=False,
+        enable_bidirectional=True,
+        enable_dtmf_tones=True,
+        audio_format=AudioFormat.PCM16_K_MONO,
+    )
+
+
 async def answer_incoming_call(
     incoming_call_context: str,
     caller_number: str,
@@ -310,6 +369,7 @@ async def answer_incoming_call(
             incoming_call_context=incoming_call_context,
             callback_url=callback_url,
             operation_context="answered",
+            media_streaming=build_qwen_media_streaming_options(),
         )
         return props.call_connection_id or ""
 
@@ -533,8 +593,75 @@ async def handle_play_completed(
         if operation_context == "farewell":
             await _hangup(call_connection_id, state)
             return
-        if operation_context in {"greeting", "response", "no_input_retry"}:
+        if operation_context == "greeting" and qwen_realtime_enabled(state):
+            await start_qwen_media_streaming(call_connection_id, state)
+        elif operation_context in {"greeting", "response", "no_input_retry"}:
             await start_listening(call_connection_id)
+
+
+async def start_qwen_media_streaming(
+    call_connection_id: str,
+    state: Optional[dict[str, Any]] = None,
+) -> None:
+    """Start the configured ACS media socket only after disclosure playback."""
+    call_state = state or await _load_call_state(call_connection_id)
+    if call_state is None:
+        logger.error(
+            "Cannot start Qwen media without Redis state: cid=%s",
+            call_connection_id,
+        )
+        return
+    if not qwen_realtime_enabled(call_state):
+        await start_listening(call_connection_id)
+        return
+
+    def _start() -> None:
+        connection = _get_client(call_state).get_call_connection(call_connection_id)
+        connection.start_media_streaming(operation_context="qwen-omni-realtime")
+
+    try:
+        await asyncio.to_thread(_start)
+    except Exception:
+        logger.exception(
+            "Qwen media streaming could not start; falling back: cid=%s",
+            call_connection_id,
+        )
+        call_state["qwen_realtime_failed"] = True
+        await _save_call_state(call_connection_id, call_state)
+        await start_listening(call_connection_id)
+        return
+    call_state["stage"] = "qwen_streaming"
+    await _save_call_state(call_connection_id, call_state)
+    logger.info("Qwen realtime media started: cid=%s", call_connection_id)
+
+
+async def fallback_from_qwen_media(call_connection_id: str) -> None:
+    """Stop a failed realtime stream and resume the legacy ACS STT/TTS cycle."""
+    async with _call_lock(call_connection_id):
+        state = await _load_call_state(call_connection_id)
+        if state is None or state.get("stage") in {"ending", "completed"}:
+            return
+
+        def _stop() -> None:
+            connection = _get_client(state).get_call_connection(call_connection_id)
+            connection.stop_media_streaming(operation_context="qwen-fallback")
+
+        try:
+            await asyncio.to_thread(_stop)
+        except Exception:
+            logger.debug(
+                "ACS media stop failed during Qwen fallback: cid=%s",
+                call_connection_id,
+                exc_info=True,
+            )
+        state["qwen_realtime_failed"] = True
+        state["stage"] = "qwen_fallback"
+        await _save_call_state(call_connection_id, state)
+        await start_listening(call_connection_id)
+        logger.warning(
+            "Qwen realtime failed; ACS recognition fallback active: cid=%s",
+            call_connection_id,
+        )
 
 
 async def cleanup_call(call_connection_id: str) -> None:
