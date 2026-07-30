@@ -144,12 +144,18 @@ async def place_acs_call(
             CallInvite,
             PhoneNumberIdentifier,
         )
+        from acs_call_handler import build_qwen_media_streaming_options
+
         client = CallAutomationClient.from_connection_string(connection_string)
         call_invite = CallInvite(
             target=PhoneNumberIdentifier(to_number),
             source_caller_id_number=PhoneNumberIdentifier(from_number),
         )
-        result = client.create_call(call_invite, callback_url)
+        result = client.create_call(
+            call_invite,
+            callback_url,
+            media_streaming=build_qwen_media_streaming_options(),
+        )
         return result.call_connection_id or ""
 
     reference = await asyncio.wait_for(asyncio.to_thread(_call), timeout=25.0)
