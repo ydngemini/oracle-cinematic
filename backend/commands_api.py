@@ -1760,6 +1760,7 @@ async def acs_webhook(request: Request):
 async def acs_qwen_media(websocket: WebSocket):
     """Authenticated bidirectional ACS PCM stream bridged to Qwen Omni."""
     from qwen_omni_realtime import (
+        QwenCallLimitReached,
         QwenOmniRealtimeBridge,
         QwenRealtimeError,
         verify_media_token,
@@ -1781,6 +1782,11 @@ async def acs_qwen_media(websocket: WebSocket):
         await bridge.run()
     except WebSocketDisconnect:
         logger.info("ACS media socket disconnected: cid=%s", call_connection_id)
+    except QwenCallLimitReached:
+        logger.info("Qwen realtime turn limit reached: cid=%s", call_connection_id)
+        from acs_call_handler import end_qwen_call
+
+        await end_qwen_call(call_connection_id)
     except QwenRealtimeError:
         logger.exception("Qwen realtime bridge failed: cid=%s", call_connection_id)
         from acs_call_handler import fallback_from_qwen_media
