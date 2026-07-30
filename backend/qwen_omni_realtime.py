@@ -1,12 +1,12 @@
-"""Alibaba Qwen Omni realtime bridge for Azure Communication Services calls.
+"""Alibaba Qwen Omni realtime bridges for ACS and Twilio phone calls.
 
-ACS streams 16 kHz mono PCM to this service over a bidirectional WebSocket.
-The bridge forwards those chunks to Qwen3.5 Omni Flash Realtime and streams the
-model's 24 kHz PCM response back to ACS after stateful 24 -> 16 kHz resampling.
+ACS streams 16 kHz mono PCM while Twilio Media Streams uses 8 kHz G.711
+mu-law. Both transports are normalized to Qwen's PCM input and Qwen's 24 kHz
+PCM response is converted back to the provider's wire format.
 
-The bridge deliberately owns no call credentials and persists no audio. ACS
-credentials remain in the encrypted Redis call state managed by
-acs_call_handler.py; the DashScope API key is read only from the environment.
+The bridges deliberately own no call credentials and persist no audio.
+Provider call state is managed in Redis; the DashScope API key is read only
+from the environment.
 """
 
 from __future__ import annotations
@@ -33,8 +33,10 @@ logger = logging.getLogger("oracle.qwen_omni_realtime")
 
 _INPUT_SAMPLE_RATE = 16_000
 _OUTPUT_SAMPLE_RATE = 24_000
+_TWILIO_SAMPLE_RATE = 8_000
 _SAMPLE_WIDTH = 2
 _CHANNELS = 1
+_MAX_PROVIDER_AUDIO_BYTES = 64 * 1024
 _DEFAULT_MODEL = "qwen3.5-omni-flash-realtime"
 _DEFAULT_VOICE = "Ethan"
 _SESSION_READY_TIMEOUT = 10.0
@@ -154,6 +156,26 @@ def acs_audio_frame(audio_b64: str) -> dict[str, Any]:
 
 def acs_stop_audio_frame() -> dict[str, Any]:
     return {"Kind": "StopAudio", "AudioData": None, "StopAudio": {}}
+
+
+def twilio_audio_frame(stream_sid: str, audio_b64: str) -> dict[str, Any]:
+    return {
+        "event": "media",
+        "streamSid": stream_sid,
+        "media": {"payload": audio_b64},
+    }
+
+
+def twilio_clear_audio_frame(stream_sid: str) -> dict[str, Any]:
+    return {"event": "clear", "streamSid": stream_sid}
+
+
+def twilio_mark_frame(stream_sid: str, name: str) -> dict[str, Any]:
+    return {
+        "event": "mark",
+        "streamSid": stream_sid,
+        "mark": {"name": name},
+    }
 
 
 def _system_instructions() -> str:
@@ -342,8 +364,9 @@ class QwenOmniRealtimeBridge:
                 self._responding = True
             elif event_type == "response.done":
                 self._responding = False
+                await self._mark_response_complete()
             elif event_type == "input_audio_buffer.speech_started":
-                await self.acs_websocket.send_json(acs_stop_audio_frame())
+                await self._clear_provider_audio()
                 if self._responding:
                     await self._send_qwen({"type": "response.cancel"})
                     self._responding = False
@@ -359,18 +382,7 @@ class QwenOmniRealtimeBridge:
                         self.call_connection_id,
                     )
                     continue
-                pcm_16k, self._resample_state = audioop.ratecv(
-                    pcm_24k,
-                    _SAMPLE_WIDTH,
-                    _CHANNELS,
-                    _OUTPUT_SAMPLE_RATE,
-                    _INPUT_SAMPLE_RATE,
-                    self._resample_state,
-                )
-                if pcm_16k:
-                    await self.acs_websocket.send_json(
-                        acs_audio_frame(base64.b64encode(pcm_16k).decode("ascii"))
-                    )
+                await self._send_provider_audio(pcm_24k)
             elif event_type == "conversation.item.input_audio_transcription.completed":
                 transcript = str(event.get("transcript") or "").strip()
                 if transcript:
@@ -387,3 +399,138 @@ class QwenOmniRealtimeBridge:
                         )
 
         raise QwenRealtimeError("Qwen realtime connection closed unexpectedly")
+
+    async def _send_provider_audio(self, pcm_24k: bytes) -> None:
+        pcm_16k, self._resample_state = audioop.ratecv(
+            pcm_24k,
+            _SAMPLE_WIDTH,
+            _CHANNELS,
+            _OUTPUT_SAMPLE_RATE,
+            _INPUT_SAMPLE_RATE,
+            self._resample_state,
+        )
+        if pcm_16k:
+            await self.acs_websocket.send_json(
+                acs_audio_frame(base64.b64encode(pcm_16k).decode("ascii"))
+            )
+
+    async def _clear_provider_audio(self) -> None:
+        await self.acs_websocket.send_json(acs_stop_audio_frame())
+
+    async def _mark_response_complete(self) -> None:
+        return
+
+
+class TwilioQwenRealtimeBridge(QwenOmniRealtimeBridge):
+    """One Qwen session bound to one authenticated Twilio bidirectional Stream."""
+
+    def __init__(
+        self,
+        twilio_websocket: WebSocket,
+        call_sid: str,
+        start_event: dict[str, Any],
+        settings: Optional[QwenRealtimeSettings] = None,
+    ) -> None:
+        super().__init__(twilio_websocket, call_sid, settings=settings)
+        start = start_event.get("start")
+        if not isinstance(start, dict):
+            raise QwenRealtimeError("Twilio start event is missing")
+        stream_sid = str(start.get("streamSid") or start_event.get("streamSid") or "")
+        media_format = start.get("mediaFormat")
+        if not stream_sid.startswith("MZ") or len(stream_sid) > 64:
+            raise QwenRealtimeError("Twilio stream SID is invalid")
+        if not isinstance(media_format, dict):
+            raise QwenRealtimeError("Twilio media format is missing")
+        if (
+            str(media_format.get("encoding") or "").lower() != "audio/x-mulaw"
+            or int(media_format.get("sampleRate") or 0) != _TWILIO_SAMPLE_RATE
+            or int(media_format.get("channels") or 0) != _CHANNELS
+        ):
+            raise QwenRealtimeError(
+                "Twilio media must be 8 kHz mono G.711 mu-law"
+            )
+        self.stream_sid = stream_sid
+        self._input_resample_state: Any = None
+        self._mark_sequence = 0
+
+    async def _acs_to_qwen(self) -> None:
+        while True:
+            message = await self.acs_websocket.receive_text()
+            try:
+                event = json.loads(message)
+            except (TypeError, ValueError):
+                logger.warning(
+                    "Ignoring malformed Twilio media packet: cid=%s",
+                    self.call_connection_id,
+                )
+                continue
+            if not isinstance(event, dict):
+                continue
+            event_type = str(event.get("event") or "")
+            if event_type == "stop":
+                return
+            if event_type != "media" or event.get("streamSid") != self.stream_sid:
+                continue
+            media = event.get("media")
+            audio_b64 = media.get("payload") if isinstance(media, dict) else None
+            if not isinstance(audio_b64, str) or not audio_b64:
+                continue
+            try:
+                mulaw_8k = base64.b64decode(audio_b64, validate=True)
+            except (TypeError, ValueError):
+                logger.warning(
+                    "Ignoring invalid Twilio audio payload: cid=%s",
+                    self.call_connection_id,
+                )
+                continue
+            if not mulaw_8k or len(mulaw_8k) > _MAX_PROVIDER_AUDIO_BYTES:
+                continue
+            pcm_8k = audioop.ulaw2lin(mulaw_8k, _SAMPLE_WIDTH)
+            pcm_16k, self._input_resample_state = audioop.ratecv(
+                pcm_8k,
+                _SAMPLE_WIDTH,
+                _CHANNELS,
+                _TWILIO_SAMPLE_RATE,
+                _INPUT_SAMPLE_RATE,
+                self._input_resample_state,
+            )
+            if pcm_16k:
+                await self._send_qwen(
+                    {
+                        "type": "input_audio_buffer.append",
+                        "audio": base64.b64encode(pcm_16k).decode("ascii"),
+                    }
+                )
+
+    async def _send_provider_audio(self, pcm_24k: bytes) -> None:
+        pcm_8k, self._resample_state = audioop.ratecv(
+            pcm_24k,
+            _SAMPLE_WIDTH,
+            _CHANNELS,
+            _OUTPUT_SAMPLE_RATE,
+            _TWILIO_SAMPLE_RATE,
+            self._resample_state,
+        )
+        if not pcm_8k:
+            return
+        mulaw_8k = audioop.lin2ulaw(pcm_8k, _SAMPLE_WIDTH)
+        await self.acs_websocket.send_json(
+            twilio_audio_frame(
+                self.stream_sid,
+                base64.b64encode(mulaw_8k).decode("ascii"),
+            )
+        )
+
+    async def _clear_provider_audio(self) -> None:
+        await self.acs_websocket.send_json(
+            twilio_clear_audio_frame(self.stream_sid)
+        )
+
+    async def _mark_response_complete(self) -> None:
+        self._mark_sequence += 1
+        await self.acs_websocket.send_json(
+            twilio_mark_frame(
+                self.stream_sid,
+                f"qwen-response-{self._mark_sequence}",
+            )
+        )

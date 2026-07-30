@@ -190,6 +190,12 @@ variable "qwen_realtime_enabled" {
   default     = false
 }
 
+variable "twilio_qwen_realtime_enabled" {
+  description = "Route approved Twilio calls through bidirectional Media Streams and Qwen realtime."
+  type        = bool
+  default     = false
+}
+
 variable "acs_resource_id" {
   description = "Full Azure Communication Services resource ID used as the signed media WebSocket JWT audience."
   type        = string
@@ -214,7 +220,7 @@ variable "qwen_realtime_region" {
 }
 
 variable "qwen_realtime_model" {
-  description = "Qwen realtime model ID used by the ACS media bridge."
+  description = "Qwen realtime model ID used by the ACS and Twilio media bridges."
   type        = string
   default     = "qwen3.5-omni-flash-realtime"
 }

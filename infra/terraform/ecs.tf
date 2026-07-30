@@ -27,7 +27,7 @@ locals {
     { name = "ORACLE_PUBLIC_BASE_URL", value = var.app_base_url },
     { name = "GOOGLE_OAUTH_REDIRECT_URI", value = "${var.app_base_url}/api/commands/providers/google/oauth/callback" },
     { name = "ORACLE_SES_FROM_EMAIL", value = var.ses_from_email },
-    { name = "ORACLE_TWILIO_STATUS_CALLBACK", value = "${var.app_base_url}/api/commands/webhooks/twilio" },
+    { name = "ORACLE_TWILIO_STATUS_CALLBACK", value = "${var.app_base_url}/api/commands/webhooks/twilio/status" },
     { name = "ORACLE_DEMO_TENANT_ID", value = var.demo_tenant_id },
     { name = "ORACLE_ENABLE_DEMO_LOGINS", value = "0" },
     # Real lead ingestion: FREE open-data firehose (51 state portals, no API key) — NOT
@@ -51,6 +51,7 @@ locals {
     # Qwen Omni realtime is dark by default. When enabled, ACS waits until the
     # mandatory disclosure finishes, then opens a bidirectional PCM stream.
     { name = "ORACLE_QWEN_REALTIME_ENABLED", value = tostring(var.qwen_realtime_enabled) },
+    { name = "ORACLE_TWILIO_QWEN_REALTIME_ENABLED", value = tostring(var.twilio_qwen_realtime_enabled) },
     { name = "ORACLE_ACS_RESOURCE_ID", value = var.acs_resource_id },
     { name = "DASHSCOPE_WORKSPACE_ID", value = var.qwen_realtime_workspace_id },
     { name = "DASHSCOPE_REGION", value = var.qwen_realtime_region },
@@ -119,7 +120,7 @@ locals {
       name      = k
       valueFrom = "${aws_secretsmanager_secret.app.arn}:${k}::"
     }
-    ], var.qwen_realtime_enabled ? [{
+    ], (var.qwen_realtime_enabled || var.twilio_qwen_realtime_enabled) ? [{
       name      = "DASHSCOPE_API_KEY"
       valueFrom = "${aws_secretsmanager_secret.app.arn}:DASHSCOPE_API_KEY::"
       }] : [], var.reconstruction_provider == "runpod" ? [{
@@ -171,10 +172,10 @@ resource "aws_ecs_task_definition" "backend" {
     }
     precondition {
       condition = (
-        !var.qwen_realtime_enabled ||
+        !(var.qwen_realtime_enabled || var.twilio_qwen_realtime_enabled) ||
         can(regex("^[A-Za-z0-9_-]{3,128}$", var.qwen_realtime_workspace_id))
       )
-      error_message = "qwen_realtime_workspace_id is required when qwen_realtime_enabled is true."
+      error_message = "qwen_realtime_workspace_id is required when an ACS or Twilio Qwen realtime bridge is enabled."
     }
     precondition {
       condition = (

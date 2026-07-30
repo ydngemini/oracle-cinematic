@@ -42,6 +42,7 @@ from audit_ledger import AuditCategory, ledger
 from automation_jobs import enqueue_job, register_handler
 from command_providers import (
     ProviderConfigurationError,
+    abort_twilio_call,
     create_google_calendar_event,
     place_acs_call,
     place_custom_http_call,
@@ -176,9 +177,8 @@ def _validate_twilio_webhook_signature(
             return
 
     logger.warning(
-        "twilio webhook signature validation failed path=%s signature=%s",
+        "twilio webhook signature validation failed path=%s",
         suffix,
-        signature,
     )
     raise HTTPException(status_code=400, detail="Invalid Twilio signature.")
 
@@ -1970,9 +1970,32 @@ async def _execute_command_job(payload: dict[str, Any], reporter) -> dict[str, A
                 except (TypeError, ValueError):
                     pass
             try:
+                from twilio_call_handler import (
+                    ensure_twilio_call_state_available,
+                    initialize_twilio_call_state,
+                )
+
+                await ensure_twilio_call_state_available()
                 provider_result = await place_twilio_call(
                     {**draft, "target": target}, credentials=twilio_credentials
                 )
+                account_sid = str(
+                    (twilio_credentials or {}).get("account_sid")
+                    or os.getenv("TWILIO_ACCOUNT_SID", "")
+                )
+                try:
+                    await initialize_twilio_call_state(
+                        provider_result.reference,
+                        str(target.get("phone") or ""),
+                        tenant_id=ctx.tenant_id,
+                        account_sid=account_sid,
+                    )
+                except Exception:
+                    await abort_twilio_call(
+                        provider_result.reference,
+                        credentials=twilio_credentials,
+                    )
+                    raise
             except ProviderConfigurationError:
                 provider_result = None
                 try:
@@ -2138,22 +2161,50 @@ register_handler("command:execute", _execute_command_job)
 
 @router.post("/webhooks/twilio", include_in_schema=False)
 async def twilio_webhook(request: Request):
-    """Entry point for Twilio outbound calls. Returns TwiML that plays the greeting
-    then gathers speech. The speech is forwarded to /webhooks/twilio/speech."""
+    """Return signed, state-bound TwiML for an approved outbound Twilio call."""
     from outreach_compliance import AI_VOICE_DISCLOSURE
-    from urllib.parse import urlencode
+    from twilio_call_handler import (
+        create_twilio_bridge_token,
+        load_twilio_call_state,
+        twilio_media_websocket_url,
+        twilio_qwen_enabled,
+    )
 
     form = await request.form()
     _validate_twilio_webhook_signature(request, form, "/api/commands/webhooks/twilio")
-    call_sid = form.get("CallSid", "")
-    caller = form.get("Called", "") or form.get("To", "")
-
-    print(f"[TWILIO-WEBHOOK] CallSid={call_sid} caller={caller}", flush=True)
+    call_sid = str(form.get("CallSid") or "")
+    state = await load_twilio_call_state(
+        call_sid,
+        wait_for_initialization=True,
+    )
+    if state is None:
+        logger.error("Rejecting unmanaged Twilio call: sid=%s", call_sid)
+        twiml = """<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+    <Say voice="Polly.Joanna">This call cannot be connected safely. Goodbye.</Say>
+    <Hangup/>
+</Response>"""
+        return Response(content=twiml, media_type="application/xml")
 
     greeting = (
         AI_VOICE_DISCLOSURE
         + " I'm NEOH, your real estate AI assistant. How can I help you today?"
     )
+    if twilio_qwen_enabled(state):
+        stream_url = twilio_media_websocket_url()
+        bridge_token = create_twilio_bridge_token(call_sid)
+        twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+    <Say voice="Polly.Joanna">{_xml_escape(greeting)}</Say>
+    <Connect>
+        <Stream url="{_xml_escape(stream_url)}">
+            <Parameter name="bridge_token" value="{_xml_escape(bridge_token)}"/>
+        </Stream>
+    </Connect>
+    <Say voice="Polly.Joanna">The realtime assistant is unavailable. Goodbye.</Say>
+</Response>"""
+        logger.info("Twilio Qwen Media Stream authorized in TwiML: sid=%s", call_sid)
+        return Response(content=twiml, media_type="application/xml")
 
     speech_url = f"{os.getenv('ORACLE_PUBLIC_BASE_URL', '').rstrip('/')}/api/commands/webhooks/twilio/speech"
     gather_attribs = f'input="speech" action="{speech_url}" method="POST" timeout="5" speechTimeout="auto"'
@@ -2167,6 +2218,121 @@ async def twilio_webhook(request: Request):
     <Say voice="Polly.Joanna">I didn't catch that. Goodbye.</Say>
 </Response>"""
     return Response(content=twiml, media_type="application/xml")
+
+
+@router.post("/webhooks/twilio/status", include_in_schema=False)
+async def twilio_status_webhook(request: Request):
+    """Consume signed Twilio call lifecycle events and release Redis state."""
+    from twilio_call_handler import cleanup_twilio_call
+
+    form = await request.form()
+    _validate_twilio_webhook_signature(
+        request,
+        form,
+        "/api/commands/webhooks/twilio/status",
+    )
+    call_sid = str(form.get("CallSid") or "")
+    call_status = str(form.get("CallStatus") or "").strip().lower()
+    if call_sid:
+        if call_status in {"in-progress", "answered"}:
+            _update_call_session(call_sid, "in-progress")
+        elif call_status in {"completed", "busy", "failed", "no-answer", "canceled"}:
+            _update_call_session(call_sid, "completed")
+            await cleanup_twilio_call(call_sid)
+    logger.info(
+        "Twilio call status received: sid=%s status=%s",
+        call_sid,
+        call_status or "unknown",
+    )
+    return Response(status_code=204)
+
+
+@router.websocket("/media/twilio")
+async def twilio_qwen_media(websocket: WebSocket):
+    """Authenticate and bridge Twilio's 8 kHz mu-law stream to Qwen Omni."""
+    from qwen_omni_realtime import (
+        QwenCallLimitReached,
+        QwenRealtimeError,
+        TwilioQwenRealtimeBridge,
+    )
+    from twilio_call_handler import (
+        authorize_twilio_media,
+        mark_twilio_streaming,
+        verify_twilio_websocket_signature,
+    )
+
+    signature = websocket.headers.get("x-twilio-signature", "")
+    is_authentic = await asyncio.to_thread(
+        verify_twilio_websocket_signature,
+        signature,
+    )
+    if not is_authentic:
+        await websocket.close(code=4403)
+        return
+
+    await websocket.accept()
+    start_event: Optional[dict[str, Any]] = None
+    try:
+        for _ in range(2):
+            raw_message = await asyncio.wait_for(
+                websocket.receive_text(),
+                timeout=5.0,
+            )
+            if len(raw_message) > 64 * 1024:
+                await websocket.close(code=4400)
+                return
+            event = json.loads(raw_message)
+            if isinstance(event, dict) and event.get("event") == "start":
+                start_event = event
+                break
+    except WebSocketDisconnect:
+        return
+    except (asyncio.TimeoutError, TypeError, ValueError):
+        await websocket.close(code=4400)
+        return
+
+    if start_event is None:
+        await websocket.close(code=4400)
+        return
+    start = start_event.get("start")
+    if not isinstance(start, dict):
+        await websocket.close(code=4400)
+        return
+    call_sid = str(start.get("callSid") or "")
+    account_sid = str(start.get("accountSid") or "")
+    parameters = start.get("customParameters")
+    bridge_token = (
+        str(parameters.get("bridge_token") or "")
+        if isinstance(parameters, dict)
+        else ""
+    )
+    if not await authorize_twilio_media(call_sid, account_sid, bridge_token):
+        await websocket.close(code=4403)
+        return
+
+    try:
+        bridge = TwilioQwenRealtimeBridge(
+            websocket,
+            call_sid,
+            start_event,
+        )
+    except QwenRealtimeError:
+        await websocket.close(code=4400)
+        return
+    await mark_twilio_streaming(call_sid)
+    try:
+        await bridge.run()
+    except WebSocketDisconnect:
+        logger.info("Twilio media socket disconnected: sid=%s", call_sid)
+    except QwenCallLimitReached:
+        logger.info("Qwen realtime turn limit reached: sid=%s", call_sid)
+        await abort_twilio_call(call_sid)
+    except QwenRealtimeError:
+        logger.exception("Twilio/Qwen realtime bridge failed: sid=%s", call_sid)
+        await websocket.close(code=1011)
+    except Exception:
+        logger.exception("Unexpected Twilio/Qwen bridge failure: sid=%s", call_sid)
+        await websocket.close(code=1011)
 
 
 @router.post("/webhooks/twilio/speech", include_in_schema=False)

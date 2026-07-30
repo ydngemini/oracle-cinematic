@@ -110,7 +110,13 @@ _WEBHOOK_SECRETS: list[tuple[str, str]] = [
 
 _QWEN_REALTIME_SETTINGS: list[tuple[str, str]] = [
     ("DASHSCOPE_API_KEY", "Qwen Omni realtime authentication"),
-    ("ORACLE_ACS_RESOURCE_ID", "ACS signed WebSocket JWT audience"),
+]
+
+_TWILIO_REALTIME_SETTINGS: list[tuple[str, str]] = [
+    ("TWILIO_ACCOUNT_SID", "Twilio Media Streams account binding"),
+    ("TWILIO_AUTH_TOKEN", "Twilio WebSocket signature validation"),
+    ("TWILIO_FROM_NUMBER", "Twilio outbound caller ID"),
+    ("ORACLE_PUBLIC_BASE_URL", "Twilio WSS endpoint routing"),
 ]
 
 
@@ -143,11 +149,22 @@ def validate_or_die() -> None:
     required = list(_REQUIRED_IN_PROD)
     if enable_webhooks:
         required.extend(_WEBHOOK_SECRETS)
-    if flag("ORACLE_QWEN_REALTIME_ENABLED", default=False):
+    acs_qwen_enabled = flag("ORACLE_QWEN_REALTIME_ENABLED", default=False)
+    twilio_qwen_enabled = flag(
+        "ORACLE_TWILIO_QWEN_REALTIME_ENABLED",
+        default=False,
+    )
+    if acs_qwen_enabled or twilio_qwen_enabled:
         required.extend(_QWEN_REALTIME_SETTINGS)
+    if acs_qwen_enabled:
+        required.append(
+            ("ORACLE_ACS_RESOURCE_ID", "ACS signed WebSocket JWT audience")
+        )
+    if twilio_qwen_enabled:
+        required.extend(_TWILIO_REALTIME_SETTINGS)
     missing = [f"{name} ({why})" for name, why in required if not os.environ.get(name)]
     if (
-        flag("ORACLE_QWEN_REALTIME_ENABLED", default=False)
+        (acs_qwen_enabled or twilio_qwen_enabled)
         and not os.environ.get("DASHSCOPE_WORKSPACE_ID")
         and not os.environ.get("DASHSCOPE_REALTIME_URL")
     ):
@@ -191,7 +208,7 @@ ENV_VARS: dict[str, tuple[str, ...]] = {
         "ORACLE_QWEN_REALTIME_ENABLED", "DASHSCOPE_API_KEY",
         "DASHSCOPE_WORKSPACE_ID", "DASHSCOPE_REGION", "DASHSCOPE_REALTIME_URL",
         "QWEN_REALTIME_MODEL", "QWEN_REALTIME_VOICE", "QWEN_REALTIME_MAX_TURNS",
-        "ORACLE_ACS_RESOURCE_ID",
+        "ORACLE_ACS_RESOURCE_ID", "ORACLE_TWILIO_QWEN_REALTIME_ENABLED",
     ),
     "ml": (
         "AWS_REGION", "BEDROCK_REGION", "ORACLE_AI_CHAT_PROVIDER",
@@ -205,6 +222,8 @@ ENV_VARS: dict[str, tuple[str, ...]] = {
         "ORACLE_PUBLIC_BASE_URL", "ORACLE_SES_FROM_EMAIL",
         "GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "GOOGLE_OAUTH_REDIRECT_URI",
         "ACS_CONNECTION_STRING", "ACS_FROM_NUMBER",
+        "TWILIO_ACCOUNT_SID", "TWILIO_API_KEY", "TWILIO_API_SECRET",
+        "TWILIO_AUTH_TOKEN", "TWILIO_FROM_NUMBER", "ORACLE_TWILIO_TWIML_URL",
         "ORACLE_ENABLE_WEBHOOKS", "ORACLE_ACS_WEBHOOK_SECRET",
         "ORACLE_CUSTOM_CALL_WEBHOOK_SECRET",
         "ORACLE_CUSTOM_CALL_API_URL", "ORACLE_CUSTOM_CALL_AUTH_TOKEN",

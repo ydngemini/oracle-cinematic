@@ -34,6 +34,7 @@ feature_automation              = false
 # Alibaba Qwen3.5 Omni Flash Realtime call engine. Before enabling, add
 # DASHSCOPE_API_KEY to the app Secrets Manager JSON and set your workspace ID.
 qwen_realtime_enabled      = false
+twilio_qwen_realtime_enabled = false
 acs_resource_id            = "" # /subscriptions/.../providers/Microsoft.Communication/CommunicationServices/...
 qwen_realtime_workspace_id = ""
 qwen_realtime_region       = "intl" # Singapore; use "cn" for Beijing
