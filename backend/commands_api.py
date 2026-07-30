@@ -22,7 +22,16 @@ from enum import Enum
 from typing import Any, Optional, TYPE_CHECKING
 
 import aiohttp
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    HTTPException,
+    Query,
+    Request,
+    WebSocket,
+    WebSocketDisconnect,
+    status,
+)
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from starlette.responses import RedirectResponse, Response
 
@@ -1745,6 +1754,46 @@ async def acs_webhook(request: Request):
                 _asyncio.ensure_future(start_outbound_conversation(cid, to_number))
 
     return {"accepted": True}
+
+
+@router.websocket("/media/acs")
+async def acs_qwen_media(websocket: WebSocket):
+    """Authenticated bidirectional ACS PCM stream bridged to Qwen Omni."""
+    from qwen_omni_realtime import (
+        QwenOmniRealtimeBridge,
+        QwenRealtimeError,
+        verify_media_token,
+    )
+
+    token = websocket.query_params.get("token", "")
+    if not verify_media_token(token):
+        await websocket.close(code=4403)
+        return
+
+    call_connection_id = websocket.headers.get("x-ms-call-connection-id", "").strip()
+    if not call_connection_id:
+        await websocket.close(code=4400)
+        return
+
+    await websocket.accept()
+    bridge = QwenOmniRealtimeBridge(websocket, call_connection_id)
+    try:
+        await bridge.run()
+    except WebSocketDisconnect:
+        logger.info("ACS media socket disconnected: cid=%s", call_connection_id)
+    except QwenRealtimeError:
+        logger.exception("Qwen realtime bridge failed: cid=%s", call_connection_id)
+        from acs_call_handler import fallback_from_qwen_media
+
+        await fallback_from_qwen_media(call_connection_id)
+    except Exception:
+        logger.exception(
+            "Unexpected ACS/Qwen media bridge failure: cid=%s",
+            call_connection_id,
+        )
+        from acs_call_handler import fallback_from_qwen_media
+
+        await fallback_from_qwen_media(call_connection_id)
 
 
 async def _handle_incoming_acs_call(incoming_call_context: str, from_number: str) -> None:
