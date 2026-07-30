@@ -187,10 +187,14 @@ def _validate_config_in_subprocess(**settings: str) -> subprocess.CompletedProce
         "ORACLE_ACS_WEBHOOK_SECRET",
         "ORACLE_CUSTOM_CALL_WEBHOOK_SECRET",
         "ORACLE_QWEN_REALTIME_ENABLED",
+        "ORACLE_TWILIO_QWEN_REALTIME_ENABLED",
         "ORACLE_ACS_RESOURCE_ID",
         "DASHSCOPE_API_KEY",
         "DASHSCOPE_WORKSPACE_ID",
         "DASHSCOPE_REALTIME_URL",
+        "TWILIO_ACCOUNT_SID",
+        "TWILIO_AUTH_TOKEN",
+        "TWILIO_FROM_NUMBER",
     ):
         environment.pop(name, None)
     environment.update({"PYTHONPATH": str(_BACKEND_DIR), **settings})
@@ -244,6 +248,29 @@ def test_production_config_resolves_jwt_scope_and_gates_webhook_secrets():
     )
     assert qwen_without_acs_audience.returncode != 0
     assert "ORACLE_ACS_RESOURCE_ID" in qwen_without_acs_audience.stderr
+
+    twilio_qwen_without_twilio = _validate_config_in_subprocess(
+        **base,
+        ORACLE_TWILIO_QWEN_REALTIME_ENABLED="true",
+        DASHSCOPE_API_KEY="test-dashscope-key",
+        DASHSCOPE_WORKSPACE_ID="ws-test",
+    )
+    assert twilio_qwen_without_twilio.returncode != 0
+    assert "TWILIO_ACCOUNT_SID" in twilio_qwen_without_twilio.stderr
+    assert "TWILIO_AUTH_TOKEN" in twilio_qwen_without_twilio.stderr
+    assert "TWILIO_FROM_NUMBER" in twilio_qwen_without_twilio.stderr
+
+    twilio_qwen_ready = _validate_config_in_subprocess(
+        **base,
+        ORACLE_PUBLIC_BASE_URL="https://api.neoh.example",
+        ORACLE_TWILIO_QWEN_REALTIME_ENABLED="true",
+        DASHSCOPE_API_KEY="test-dashscope-key",
+        DASHSCOPE_WORKSPACE_ID="ws-test",
+        TWILIO_ACCOUNT_SID="AC" + ("a" * 32),
+        TWILIO_AUTH_TOKEN="test-twilio-auth-token",
+        TWILIO_FROM_NUMBER="+15555550101",
+    )
+    assert twilio_qwen_ready.returncode == 0, twilio_qwen_ready.stderr
 
 
 class _WebhookRequest:

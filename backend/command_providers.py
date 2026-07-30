@@ -280,7 +280,11 @@ async def place_twilio_call(
     )
     to_number = str((draft.get("target") or {}).get("phone") or "").strip()
     callback_base = os.getenv("ORACLE_PUBLIC_BASE_URL", "").rstrip("/")
-    status_callback = f"{callback_base}/api/commands/webhooks/twilio" if callback_base else ""
+    status_callback = (
+        f"{callback_base}/api/commands/webhooks/twilio/status"
+        if callback_base
+        else ""
+    )
     if not status_callback:
         logger.warning(
             "ORACLE_PUBLIC_BASE_URL is not set — Twilio call status callbacks will be lost"
@@ -297,25 +301,70 @@ async def place_twilio_call(
         raise ProviderConfigurationError("TWILIO_FROM_NUMBER is not configured")
     if not to_number.startswith("+"):
         raise ProviderRequestError("approved call target must be E.164")
+    if not twiml_url:
+        raise ProviderConfigurationError("Twilio TwiML URL is not configured")
 
     def _call() -> str:
+        from twilio.base.exceptions import TwilioRestException
         from twilio.rest import Client
 
         client = Client(api_key, api_secret, account_sid) if api_key else Client(account_sid, auth_token)
-        call = client.calls.create(
-            to=to_number,
-            from_=from_number,
-            url=twiml_url,
-            status_callback=status_callback or None,
-            status_callback_event=["answered", "completed"],
-            timeout=30,
-        )
+        try:
+            call = client.calls.create(
+                to=to_number,
+                from_=from_number,
+                url=twiml_url,
+                status_callback=status_callback or None,
+                status_callback_event=["initiated", "ringing", "answered", "completed"],
+                timeout=30,
+            )
+        except TwilioRestException as exc:
+            raise ProviderRequestError(
+                f"Twilio rejected the call request (code {exc.code or 'unknown'})."
+            ) from exc
         return call.sid
 
     reference = await asyncio.wait_for(asyncio.to_thread(_call), timeout=25.0)
     if not reference:
         raise ProviderRequestError("Twilio did not return a call SID")
     return ProviderResult("twilio", reference, "queued", {"to": to_number, "from": from_number})
+
+
+async def abort_twilio_call(
+    call_sid: str,
+    *,
+    credentials: Optional[Mapping[str, Any]] = None,
+) -> None:
+    """Best-effort termination when durable Twilio state cannot be established."""
+    credentials = dict(credentials or {})
+    account_sid = str(
+        credentials.get("account_sid") or os.getenv("TWILIO_ACCOUNT_SID", "")
+    )
+    api_key = str(credentials.get("api_key") or os.getenv("TWILIO_API_KEY", ""))
+    api_secret = str(
+        credentials.get("api_secret") or os.getenv("TWILIO_API_SECRET", "")
+    )
+    auth_token = str(
+        credentials.get("auth_token") or os.getenv("TWILIO_AUTH_TOKEN", "")
+    )
+    if not account_sid or (not auth_token and not (api_key and api_secret)):
+        logger.error("Cannot terminate unmanaged Twilio call: credentials missing")
+        return
+
+    def _hangup() -> None:
+        from twilio.rest import Client
+
+        client = (
+            Client(api_key, api_secret, account_sid)
+            if api_key
+            else Client(account_sid, auth_token)
+        )
+        client.calls(call_sid).update(status="completed")
+
+    try:
+        await asyncio.wait_for(asyncio.to_thread(_hangup), timeout=15.0)
+    except Exception:
+        logger.exception("Failed to terminate unmanaged Twilio call: sid=%s", call_sid)
 
 
 def _extract_call_reference(payload: Any) -> str:
