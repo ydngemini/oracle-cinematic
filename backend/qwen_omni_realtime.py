@@ -332,3 +332,5 @@ class QwenOmniRealtimeBridge:
                         self.call_connection_id,
                         len(transcript),
                     )
+
+        raise QwenRealtimeError("Qwen realtime connection closed unexpectedly")
