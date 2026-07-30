@@ -664,6 +664,36 @@ async def fallback_from_qwen_media(call_connection_id: str) -> None:
         )
 
 
+async def end_qwen_call(call_connection_id: str) -> None:
+    """Stop realtime media and end a call that reached its turn ceiling."""
+    async with _call_lock(call_connection_id):
+        state = await _load_call_state(call_connection_id)
+        if state is None:
+            return
+
+        def _stop() -> None:
+            connection = _get_client(state).get_call_connection(call_connection_id)
+            connection.stop_media_streaming(operation_context="qwen-turn-limit")
+
+        try:
+            await asyncio.to_thread(_stop)
+        except Exception:
+            logger.debug(
+                "ACS media stop failed at Qwen turn limit: cid=%s",
+                call_connection_id,
+                exc_info=True,
+            )
+        await _play_text(
+            call_connection_id,
+            "I've reached my conversation limit. Please call back or visit "
+            "neohrs.com. Goodbye.",
+            operation_context="farewell",
+            state=state,
+        )
+        state["stage"] = "ending"
+        await _save_call_state(call_connection_id, state)
+
+
 async def cleanup_call(call_connection_id: str) -> None:
     try:
         redis = await _get_redis()
