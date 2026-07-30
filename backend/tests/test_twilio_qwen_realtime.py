@@ -221,6 +221,20 @@ def test_twilio_media_authorization_requires_live_matching_state(monkeypatch):
     )
 
 
+def test_twilio_realtime_is_disabled_for_voice_trial(monkeypatch):
+    monkeypatch.setenv("ORACLE_TWILIO_QWEN_REALTIME_ENABLED", "true")
+    monkeypatch.setenv("ORACLE_TWILIO_ACCOUNT_TIER", "trial")
+
+    assert twilio_call_handler.twilio_qwen_enabled() is False
+
+
+def test_twilio_realtime_is_enabled_after_upgrade(monkeypatch):
+    monkeypatch.setenv("ORACLE_TWILIO_QWEN_REALTIME_ENABLED", "true")
+    monkeypatch.setenv("ORACLE_TWILIO_ACCOUNT_TIER", "full")
+
+    assert twilio_call_handler.twilio_qwen_enabled() is True
+
+
 async def _async_value(value):
     return value
 

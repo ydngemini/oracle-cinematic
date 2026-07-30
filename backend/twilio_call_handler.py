@@ -37,7 +37,12 @@ def twilio_qwen_enabled(state: Optional[Mapping[str, Any]] = None) -> bool:
     if state is not None and state.get("qwen_realtime_enabled") is False:
         return False
     raw = os.getenv("ORACLE_TWILIO_QWEN_REALTIME_ENABLED", "false")
-    return raw.strip().lower() in {"1", "true", "yes", "on"}
+    requested = raw.strip().lower() in {"1", "true", "yes", "on"}
+    account_tier = os.getenv("ORACLE_TWILIO_ACCOUNT_TIER", "").strip().lower()
+    # Twilio's current Voice Trial explicitly strips the <Stream> verb. Keep
+    # the supported <Gather> conversation path active until the account is
+    # upgraded instead of presenting a realtime bridge that cannot connect.
+    return requested and account_tier not in {"trial", "free-trial"}
 
 
 async def _get_redis() -> Any:

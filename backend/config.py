@@ -154,6 +154,16 @@ def validate_or_die() -> None:
         "ORACLE_TWILIO_QWEN_REALTIME_ENABLED",
         default=False,
     )
+    twilio_account_tier = os.environ.get(
+        "ORACLE_TWILIO_ACCOUNT_TIER",
+        "",
+    ).strip().lower()
+    if twilio_qwen_enabled and twilio_account_tier in {"trial", "free-trial"}:
+        log.warning(
+            "Twilio realtime is disabled because Voice Trial blocks the "
+            "<Stream> verb; the supported <Gather> fallback remains active."
+        )
+        twilio_qwen_enabled = False
     if acs_qwen_enabled or twilio_qwen_enabled:
         required.extend(_QWEN_REALTIME_SETTINGS)
     if acs_qwen_enabled:
@@ -209,6 +219,7 @@ ENV_VARS: dict[str, tuple[str, ...]] = {
         "DASHSCOPE_WORKSPACE_ID", "DASHSCOPE_REGION", "DASHSCOPE_REALTIME_URL",
         "QWEN_REALTIME_MODEL", "QWEN_REALTIME_VOICE", "QWEN_REALTIME_MAX_TURNS",
         "ORACLE_ACS_RESOURCE_ID", "ORACLE_TWILIO_QWEN_REALTIME_ENABLED",
+        "ORACLE_TWILIO_ACCOUNT_TIER",
     ),
     "ml": (
         "AWS_REGION", "BEDROCK_REGION", "ORACLE_AI_CHAT_PROVIDER",
@@ -224,6 +235,7 @@ ENV_VARS: dict[str, tuple[str, ...]] = {
         "ACS_CONNECTION_STRING", "ACS_FROM_NUMBER",
         "TWILIO_ACCOUNT_SID", "TWILIO_API_KEY", "TWILIO_API_SECRET",
         "TWILIO_AUTH_TOKEN", "TWILIO_FROM_NUMBER", "ORACLE_TWILIO_TWIML_URL",
+        "ORACLE_TWILIO_ACCOUNT_TIER",
         "ORACLE_ENABLE_WEBHOOKS", "ORACLE_ACS_WEBHOOK_SECRET",
         "ORACLE_CUSTOM_CALL_WEBHOOK_SECRET",
         "ORACLE_CUSTOM_CALL_API_URL", "ORACLE_CUSTOM_CALL_AUTH_TOKEN",

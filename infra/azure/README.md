@@ -109,11 +109,13 @@ healthy. The media WebSocket accepts only the signed bearer JWT supplied by
 ACS and binds `x-ms-call-connection-id` to live Redis state; it never accepts a
 DashScope key or reusable webhook secret from the client.
 
-For Twilio, set `ORACLE_TWILIO_QWEN_REALTIME_ENABLED=true` only after the
-account owns the configured voice-capable `TWILIO_FROM_NUMBER`. The TwiML
-webhook plays the disclosure before `<Connect><Stream>`. The media WebSocket
-validates Twilio's signed handshake and binds the start frame to live Redis
-state; signed status callbacks remove state when the call ends.
+For Twilio, set `ORACLE_TWILIO_ACCOUNT_TIER=trial` while the project is on the
+Voice Trial. Twilio strips `<Stream>` from trial TwiML, so the application
+keeps the supported `<Gather>` AI conversation path active. After upgrading,
+set the tier to `full` and set `ORACLE_TWILIO_QWEN_REALTIME_ENABLED=true`.
+The TwiML webhook then plays the disclosure before `<Connect><Stream>`. The
+media WebSocket validates Twilio's signed handshake and binds the start frame
+to live Redis state; signed status callbacks remove state when the call ends.
 
 ### Twilio migration recovery verification
 
