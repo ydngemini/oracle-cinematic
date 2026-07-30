@@ -96,6 +96,19 @@ before that image receives production traffic; forward migration
 `0046_azure_security_forward_fixes.sql` repairs databases that already recorded
 the earlier 0036 and 0043 filenames.
 
+### Qwen Omni realtime calls
+
+Store `DASHSCOPE_API_KEY` in Key Vault and expose it to the API container only
+through a managed-identity secret reference. Configure
+`DASHSCOPE_WORKSPACE_ID`, `DASHSCOPE_REGION`, `QWEN_REALTIME_MODEL`,
+`QWEN_REALTIME_VOICE`, and the full Azure Communication Services resource ID
+as `ORACLE_ACS_RESOURCE_ID`.
+
+Keep `ORACLE_QWEN_REALTIME_ENABLED=false` until the candidate revision is
+healthy. The media WebSocket accepts only the signed bearer JWT supplied by
+ACS and binds `x-ms-call-connection-id` to live Redis state; it never accepts a
+DashScope key or reusable webhook secret from the client.
+
 ### Twilio migration recovery verification
 
 On 2026-07-27, production migration metadata showed that

@@ -229,3 +229,41 @@ def test_qwen_failed_state_uses_legacy_recognition(monkeypatch):
         acs_call_handler.handle_play_completed("fallback-call", "greeting")
     )
     assert listened == ["fallback-call"]
+
+
+def test_qwen_media_url_has_no_reusable_query_secret(monkeypatch):
+    monkeypatch.setenv("ORACLE_PUBLIC_BASE_URL", "https://api.neoh.example")
+    monkeypatch.setenv("ORACLE_ACS_WEBHOOK_SECRET", "must-not-leak")
+    assert acs_call_handler._get_media_streaming_url() == (
+        "wss://api.neoh.example/api/commands/media/acs"
+    )
+
+
+def test_qwen_media_authorization_requires_live_enabled_call(monkeypatch):
+    redis = _FakeRedis()
+    monkeypatch.setenv("ORACLE_ENCRYPTION_MASTER_KEY", "test-acs-state-master-key")
+    monkeypatch.setenv("ORACLE_QWEN_REALTIME_ENABLED", "1")
+
+    async def get_redis():
+        return redis
+
+    monkeypatch.setattr(acs_call_handler, "_get_redis", get_redis)
+    asyncio.run(
+        acs_call_handler.initialize_call_state(
+            "active-qwen-call",
+            "+15551234567",
+            tenant_id="tenant-abc",
+            credentials={
+                "connection_string": "endpoint=https://tenant.example;accesskey=secret",
+                "from_number": "+15557654321",
+            },
+        )
+    )
+
+    assert asyncio.run(
+        acs_call_handler.authorize_qwen_media_call("active-qwen-call")
+    )
+    assert not asyncio.run(
+        acs_call_handler.authorize_qwen_media_call("unknown-call")
+    )
+    assert not asyncio.run(acs_call_handler.authorize_qwen_media_call(""))

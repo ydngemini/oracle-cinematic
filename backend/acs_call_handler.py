@@ -306,18 +306,33 @@ def _get_media_streaming_url() -> str:
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         raise RuntimeError("ORACLE_PUBLIC_BASE_URL must be an absolute HTTP(S) URL")
     scheme = "wss" if parsed.scheme == "https" else "ws"
-    secret = os.getenv("ORACLE_ACS_WEBHOOK_SECRET", "").strip()
-    if not secret:
-        raise RuntimeError("ORACLE_ACS_WEBHOOK_SECRET is not configured")
     return urllib.parse.urlunsplit(
         (
             scheme,
             parsed.netloc,
             "/api/commands/media/acs",
-            urllib.parse.urlencode({"token": secret}),
+            "",
             "",
         )
     )
+
+
+async def authorize_qwen_media_call(call_connection_id: str) -> bool:
+    """Bind an authenticated ACS media socket to a live, enabled call."""
+    if not call_connection_id or len(call_connection_id) > 256:
+        return False
+    try:
+        state = await _load_call_state(
+            call_connection_id,
+            wait_for_initialization=True,
+        )
+    except ACSCallStateUnavailable:
+        logger.exception(
+            "ACS media authorization could not read call state: cid=%s",
+            call_connection_id,
+        )
+        return False
+    return state is not None and qwen_realtime_enabled(state)
 
 
 def build_qwen_media_streaming_options() -> Any:

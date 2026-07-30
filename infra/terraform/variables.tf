@@ -190,6 +190,12 @@ variable "qwen_realtime_enabled" {
   default     = false
 }
 
+variable "acs_resource_id" {
+  description = "Full Azure Communication Services resource ID used as the signed media WebSocket JWT audience."
+  type        = string
+  default     = ""
+}
+
 variable "qwen_realtime_workspace_id" {
   description = "Alibaba Model Studio workspace ID (Singapore or Beijing)."
   type        = string

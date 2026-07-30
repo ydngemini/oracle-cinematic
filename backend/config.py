@@ -110,6 +110,7 @@ _WEBHOOK_SECRETS: list[tuple[str, str]] = [
 
 _QWEN_REALTIME_SETTINGS: list[tuple[str, str]] = [
     ("DASHSCOPE_API_KEY", "Qwen Omni realtime authentication"),
+    ("ORACLE_ACS_RESOURCE_ID", "ACS signed WebSocket JWT audience"),
 ]
 
 
@@ -144,10 +145,6 @@ def validate_or_die() -> None:
         required.extend(_WEBHOOK_SECRETS)
     if flag("ORACLE_QWEN_REALTIME_ENABLED", default=False):
         required.extend(_QWEN_REALTIME_SETTINGS)
-        if not enable_webhooks:
-            required.append(
-                ("ORACLE_ACS_WEBHOOK_SECRET", "ACS media WebSocket authentication")
-            )
     missing = [f"{name} ({why})" for name, why in required if not os.environ.get(name)]
     if (
         flag("ORACLE_QWEN_REALTIME_ENABLED", default=False)
@@ -194,6 +191,7 @@ ENV_VARS: dict[str, tuple[str, ...]] = {
         "ORACLE_QWEN_REALTIME_ENABLED", "DASHSCOPE_API_KEY",
         "DASHSCOPE_WORKSPACE_ID", "DASHSCOPE_REGION", "DASHSCOPE_REALTIME_URL",
         "QWEN_REALTIME_MODEL", "QWEN_REALTIME_VOICE", "QWEN_REALTIME_MAX_TURNS",
+        "ORACLE_ACS_RESOURCE_ID",
     ),
     "ml": (
         "AWS_REGION", "BEDROCK_REGION", "ORACLE_AI_CHAT_PROVIDER",

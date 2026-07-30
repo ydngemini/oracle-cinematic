@@ -14,16 +14,18 @@ from __future__ import annotations
 import asyncio
 import audioop
 import base64
-import hmac
 import json
 import logging
 import os
 import time
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Any, Optional
 
+import jwt
 import websockets
 from fastapi import WebSocket
+from jwt import InvalidTokenError, PyJWKClient, PyJWKClientError
 
 from outreach_compliance import AI_VOICE_DISCLOSURE
 
@@ -36,6 +38,8 @@ _CHANNELS = 1
 _DEFAULT_MODEL = "qwen3.5-omni-flash-realtime"
 _DEFAULT_VOICE = "Ethan"
 _SESSION_READY_TIMEOUT = 10.0
+_ACS_JWKS_URL = "https://acscallautomation.communication.azure.com/calling/keys"
+_ACS_JWT_ISSUER = "https://acscallautomation.communication.azure.com"
 
 
 class QwenRealtimeError(RuntimeError):
@@ -98,12 +102,46 @@ class QwenRealtimeSettings:
         return f"{base}{separator}model={self.model}"
 
 
-def verify_media_token(token: str) -> bool:
-    expected = os.getenv("ORACLE_ACS_WEBHOOK_SECRET", "").strip()
-    return bool(expected) and hmac.compare_digest(
-        expected.encode("utf-8"),
-        (token or "").encode("utf-8"),
+@lru_cache(maxsize=1)
+def _acs_jwks_client() -> PyJWKClient:
+    """Cache ACS signing metadata while preserving routine key-set refreshes."""
+    return PyJWKClient(
+        _ACS_JWKS_URL,
+        cache_keys=True,
+        max_cached_keys=16,
+        cache_jwk_set=True,
+        lifespan=300,
+        timeout=5,
     )
+
+
+def verify_acs_websocket_jwt(authorization: str) -> bool:
+    """Validate the signed JWT ACS supplies during the WebSocket handshake."""
+    scheme, separator, token = (authorization or "").strip().partition(" ")
+    audience = os.getenv("ORACLE_ACS_RESOURCE_ID", "").strip()
+    if (
+        scheme.lower() != "bearer"
+        or not separator
+        or not token.strip()
+        or not audience
+    ):
+        return False
+
+    token = token.strip()
+    try:
+        signing_key = _acs_jwks_client().get_signing_key_from_jwt(token)
+        jwt.decode(
+            token,
+            signing_key.key,
+            algorithms=["RS256"],
+            issuer=_ACS_JWT_ISSUER,
+            audience=audience,
+            leeway=30,
+            options={"require": ["exp", "iss", "aud"]},
+        )
+    except (InvalidTokenError, PyJWKClientError, OSError, ValueError):
+        return False
+    return True
 
 
 def acs_audio_frame(audio_b64: str) -> dict[str, Any]:

@@ -1763,17 +1763,26 @@ async def acs_qwen_media(websocket: WebSocket):
         QwenCallLimitReached,
         QwenOmniRealtimeBridge,
         QwenRealtimeError,
-        verify_media_token,
+        verify_acs_websocket_jwt,
     )
 
-    token = websocket.query_params.get("token", "")
-    if not verify_media_token(token):
+    authorization = websocket.headers.get("authorization", "")
+    is_authentic = await asyncio.to_thread(
+        verify_acs_websocket_jwt,
+        authorization,
+    )
+    if not is_authentic:
         await websocket.close(code=4403)
         return
 
     call_connection_id = websocket.headers.get("x-ms-call-connection-id", "").strip()
     if not call_connection_id:
         await websocket.close(code=4400)
+        return
+    from acs_call_handler import authorize_qwen_media_call
+
+    if not await authorize_qwen_media_call(call_connection_id):
+        await websocket.close(code=4403)
         return
 
     await websocket.accept()

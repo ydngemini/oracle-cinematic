@@ -186,6 +186,11 @@ def _validate_config_in_subprocess(**settings: str) -> subprocess.CompletedProce
         "ORACLE_ENABLE_WEBHOOKS",
         "ORACLE_ACS_WEBHOOK_SECRET",
         "ORACLE_CUSTOM_CALL_WEBHOOK_SECRET",
+        "ORACLE_QWEN_REALTIME_ENABLED",
+        "ORACLE_ACS_RESOURCE_ID",
+        "DASHSCOPE_API_KEY",
+        "DASHSCOPE_WORKSPACE_ID",
+        "DASHSCOPE_REALTIME_URL",
     ):
         environment.pop(name, None)
     environment.update({"PYTHONPATH": str(_BACKEND_DIR), **settings})
@@ -230,6 +235,15 @@ def test_production_config_resolves_jwt_scope_and_gates_webhook_secrets():
     assert webhooks_enabled.returncode != 0
     assert "ORACLE_ACS_WEBHOOK_SECRET" in webhooks_enabled.stderr
     assert "ORACLE_CUSTOM_CALL_WEBHOOK_SECRET" in webhooks_enabled.stderr
+
+    qwen_without_acs_audience = _validate_config_in_subprocess(
+        **base,
+        ORACLE_QWEN_REALTIME_ENABLED="true",
+        DASHSCOPE_API_KEY="test-dashscope-key",
+        DASHSCOPE_WORKSPACE_ID="ws-test",
+    )
+    assert qwen_without_acs_audience.returncode != 0
+    assert "ORACLE_ACS_RESOURCE_ID" in qwen_without_acs_audience.stderr
 
 
 class _WebhookRequest:
