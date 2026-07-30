@@ -42,6 +42,10 @@ class QwenRealtimeError(RuntimeError):
     """Raised when a Qwen realtime session cannot safely continue."""
 
 
+class QwenCallLimitReached(QwenRealtimeError):
+    """Raised when a call reaches the configured conversation-turn ceiling."""
+
+
 @dataclass(frozen=True)
 class QwenRealtimeSettings:
     api_key: str
@@ -147,6 +151,11 @@ class QwenOmniRealtimeBridge:
         self._responding = False
         self._resample_state: Any = None
         self._closed = False
+        self._turns = 0
+        self._max_turns = max(
+            1,
+            min(80, int(os.getenv("QWEN_REALTIME_MAX_TURNS", "20"))),
+        )
 
     async def run(self) -> None:
         logger.info(
@@ -327,10 +336,16 @@ class QwenOmniRealtimeBridge:
             elif event_type == "conversation.item.input_audio_transcription.completed":
                 transcript = str(event.get("transcript") or "").strip()
                 if transcript:
+                    self._turns += 1
                     logger.info(
-                        "Qwen caller turn transcribed: cid=%s chars=%d",
+                        "Qwen caller turn transcribed: cid=%s chars=%d turn=%d",
                         self.call_connection_id,
                         len(transcript),
+                        self._turns,
                     )
+                    if self._turns >= self._max_turns:
+                        raise QwenCallLimitReached(
+                            f"Qwen call reached {self._max_turns} turns"
+                        )
 
         raise QwenRealtimeError("Qwen realtime connection closed unexpectedly")
