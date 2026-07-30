@@ -1,9 +1,8 @@
 import base64
-import os
-
 import pytest
 
 from qwen_omni_realtime import (
+    QwenOmniRealtimeBridge,
     QwenRealtimeError,
     QwenRealtimeSettings,
     acs_audio_frame,
@@ -71,3 +70,11 @@ def test_acs_outbound_media_frames_match_wire_contract():
         "AudioData": None,
         "StopAudio": {},
     }
+
+
+
+def test_turn_limit_is_bounded(monkeypatch):
+    settings = QwenRealtimeSettings(api_key="secret", workspace_id="ws")
+    monkeypatch.setenv("QWEN_REALTIME_MAX_TURNS", "999")
+    bridge = QwenOmniRealtimeBridge(object(), "call-123", settings=settings)
+    assert bridge._max_turns == 80
