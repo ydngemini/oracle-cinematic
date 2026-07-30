@@ -48,6 +48,13 @@ locals {
     { name = "ORACLE_FEATURE_AI_CHAT", value = tostring(var.feature_ai_chat) },
     { name = "ORACLE_RAW_SOURCE_RETENTION_DAYS", value = tostring(var.raw_source_retention_days) },
     { name = "ORACLE_CALL_TRANSCRIPT_RETENTION_DAYS", value = tostring(var.call_transcript_retention_days) },
+    # Qwen Omni realtime is dark by default. When enabled, ACS waits until the
+    # mandatory disclosure finishes, then opens a bidirectional PCM stream.
+    { name = "ORACLE_QWEN_REALTIME_ENABLED", value = tostring(var.qwen_realtime_enabled) },
+    { name = "DASHSCOPE_WORKSPACE_ID", value = var.qwen_realtime_workspace_id },
+    { name = "DASHSCOPE_REGION", value = var.qwen_realtime_region },
+    { name = "QWEN_REALTIME_MODEL", value = var.qwen_realtime_model },
+    { name = "QWEN_REALTIME_VOICE", value = var.qwen_realtime_voice },
     # Operator/admin login id (platform_admin). Passphrase is the ORACLE_ADMIN_PASSPHRASE
     # secret. NOTE: this is the ONLY login path — Neoh has no self-serve signup yet.
     { name = "ORACLE_ADMIN_ID", value = "ydnop@ydnhft.com" },
@@ -111,7 +118,10 @@ locals {
       name      = k
       valueFrom = "${aws_secretsmanager_secret.app.arn}:${k}::"
     }
-    ], var.reconstruction_provider == "runpod" ? [{
+    ], var.qwen_realtime_enabled ? [{
+      name      = "DASHSCOPE_API_KEY"
+      valueFrom = "${aws_secretsmanager_secret.app.arn}:DASHSCOPE_API_KEY::"
+    }] : [], var.reconstruction_provider == "runpod" ? [{
       name      = "RUNPOD_API_KEY"
       valueFrom = "${aws_secretsmanager_secret.app.arn}:RUNPOD_API_KEY::"
   }] : [])
@@ -157,6 +167,13 @@ resource "aws_ecs_task_definition" "backend" {
         can(regex("^[A-Za-z0-9_-]{3,128}$", var.runpod_endpoint_id))
       )
       error_message = "runpod_endpoint_id is required when reconstruction_provider is runpod."
+    }
+    precondition {
+      condition = (
+        !var.qwen_realtime_enabled ||
+        can(regex("^[A-Za-z0-9_-]{3,128}$", var.qwen_realtime_workspace_id))
+      )
+      error_message = "qwen_realtime_workspace_id is required when qwen_realtime_enabled is true."
     }
   }
 }
