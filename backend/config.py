@@ -108,6 +108,11 @@ _WEBHOOK_SECRETS: list[tuple[str, str]] = [
     ("ORACLE_CUSTOM_CALL_WEBHOOK_SECRET", "custom-call webhook authentication"),
 ]
 
+_QWEN_REALTIME_SETTINGS: list[tuple[str, str]] = [
+    ("DASHSCOPE_API_KEY", "Qwen Omni realtime authentication"),
+    ("ORACLE_ACS_RESOURCE_ID", "ACS signed WebSocket JWT audience"),
+]
+
 
 def validate_or_die() -> None:
     """Fail the boot fast when a production deployment is missing a critical
@@ -138,7 +143,18 @@ def validate_or_die() -> None:
     required = list(_REQUIRED_IN_PROD)
     if enable_webhooks:
         required.extend(_WEBHOOK_SECRETS)
+    if flag("ORACLE_QWEN_REALTIME_ENABLED", default=False):
+        required.extend(_QWEN_REALTIME_SETTINGS)
     missing = [f"{name} ({why})" for name, why in required if not os.environ.get(name)]
+    if (
+        flag("ORACLE_QWEN_REALTIME_ENABLED", default=False)
+        and not os.environ.get("DASHSCOPE_WORKSPACE_ID")
+        and not os.environ.get("DASHSCOPE_REALTIME_URL")
+    ):
+        missing.append(
+            "DASHSCOPE_WORKSPACE_ID or DASHSCOPE_REALTIME_URL "
+            "(Qwen Omni realtime workspace routing)"
+        )
     if missing:
         raise RuntimeError(
             "Refusing to start: missing required production secret(s): "
@@ -169,8 +185,14 @@ ENV_VARS: dict[str, tuple[str, ...]] = {
                "STRIPE_AUTOMATIC_TAX", "STRIPE_REQUIRE_TOS"),
     "spatial": ("SPATIAL_DEVICE", "SPATIAL_RESOLUTION", "SPATIAL_ALLOW_WEB_SCRAPE",
                 "GS_PATH", "DUST3R_PATH", "ORACLE_SPLAT_DIR", "ORACLE_SPLAT_STORAGE"),
-    "voice": ("QWEN_VOICE_MODEL", "LLAMA_CPP_PATH", "VOICE_GPU_LAYERS",
-              "ORACLE_WHISPER_MODEL", "ORACLE_AUDIO_STAGING", "ORACLE_AUDIO_MAX_BYTES"),
+    "voice": (
+        "QWEN_VOICE_MODEL", "LLAMA_CPP_PATH", "VOICE_GPU_LAYERS",
+        "ORACLE_WHISPER_MODEL", "ORACLE_AUDIO_STAGING", "ORACLE_AUDIO_MAX_BYTES",
+        "ORACLE_QWEN_REALTIME_ENABLED", "DASHSCOPE_API_KEY",
+        "DASHSCOPE_WORKSPACE_ID", "DASHSCOPE_REGION", "DASHSCOPE_REALTIME_URL",
+        "QWEN_REALTIME_MODEL", "QWEN_REALTIME_VOICE", "QWEN_REALTIME_MAX_TURNS",
+        "ORACLE_ACS_RESOURCE_ID",
+    ),
     "ml": (
         "AWS_REGION", "BEDROCK_REGION", "ORACLE_AI_CHAT_PROVIDER",
         "ORACLE_FOUNDRY_PROJECT_ENDPOINT", "ORACLE_FOUNDRY_AGENT_NAME",

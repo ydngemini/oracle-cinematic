@@ -184,6 +184,47 @@ variable "feature_ai_chat" {
   default     = false
 }
 
+variable "qwen_realtime_enabled" {
+  description = "Route ACS calls through Alibaba Qwen3.5 Omni Flash Realtime."
+  type        = bool
+  default     = false
+}
+
+variable "acs_resource_id" {
+  description = "Full Azure Communication Services resource ID used as the signed media WebSocket JWT audience."
+  type        = string
+  default     = ""
+}
+
+variable "qwen_realtime_workspace_id" {
+  description = "Alibaba Model Studio workspace ID (Singapore or Beijing)."
+  type        = string
+  default     = ""
+}
+
+variable "qwen_realtime_region" {
+  description = "Alibaba Model Studio region: intl (Singapore) or cn (Beijing)."
+  type        = string
+  default     = "intl"
+
+  validation {
+    condition     = contains(["intl", "cn"], var.qwen_realtime_region)
+    error_message = "qwen_realtime_region must be intl or cn."
+  }
+}
+
+variable "qwen_realtime_model" {
+  description = "Qwen realtime model ID used by the ACS media bridge."
+  type        = string
+  default     = "qwen3.5-omni-flash-realtime"
+}
+
+variable "qwen_realtime_voice" {
+  description = "Qwen realtime voice name."
+  type        = string
+  default     = "Ethan"
+}
+
 variable "raw_source_retention_days" {
   description = "Maximum retention for raw licensed/public source payloads before redaction."
   type        = number
