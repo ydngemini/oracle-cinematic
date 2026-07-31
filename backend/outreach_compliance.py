@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import logging
 import re
+import uuid
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, time, timedelta, timezone
@@ -45,7 +46,7 @@ from typing import Optional
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from db.connection import tenant_tx
 from tenancy import TenantContext, require_context
@@ -478,6 +479,14 @@ class ConsentRecord(BaseModel):
     proof_text: Optional[str] = None
     lead_id: Optional[str] = None
     client_id: Optional[str] = None
+
+    @field_validator("lead_id", "client_id")
+    @classmethod
+    def validate_optional_uuid(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        uuid.UUID(value)
+        return value
 
 
 class OptOutRecord(BaseModel):

@@ -28,6 +28,10 @@ class ProviderRequestError(RuntimeError):
     pass
 
 
+class ProviderRejectedError(ProviderRequestError):
+    """The provider rejected the request before creating a remote action."""
+
+
 def _authenticated_callback_url(path: str, secret_env: str) -> str:
     base = os.getenv("ORACLE_PUBLIC_BASE_URL", "").rstrip("/")
     secret = os.getenv(secret_env, "").strip()
@@ -292,6 +296,7 @@ async def place_twilio_call(
     twiml_url = os.getenv("ORACLE_TWILIO_TWIML_URL", "") or (
         f"{callback_base}/api/commands/webhooks/twilio" if callback_base else ""
     )
+    account_tier = os.getenv("ORACLE_TWILIO_ACCOUNT_TIER", "").strip().lower()
 
     if not account_sid:
         raise ProviderConfigurationError("TWILIO_ACCOUNT_SID is not configured")
@@ -303,6 +308,12 @@ async def place_twilio_call(
         raise ProviderRequestError("approved call target must be E.164")
     if not twiml_url:
         raise ProviderConfigurationError("Twilio TwiML URL is not configured")
+    if account_tier in {"trial", "free-trial"}:
+        raise ProviderRejectedError(
+            "Twilio Voice Trial permits only Twilio's predefined outbound "
+            "templates and blocks Media Streams; upgrade the Twilio project "
+            "before placing CRM AI calls."
+        )
 
     def _call() -> str:
         from twilio.base.exceptions import TwilioRestException
@@ -319,7 +330,7 @@ async def place_twilio_call(
                 timeout=30,
             )
         except TwilioRestException as exc:
-            raise ProviderRequestError(
+            raise ProviderRejectedError(
                 f"Twilio rejected the call request (code {exc.code or 'unknown'})."
             ) from exc
         return call.sid

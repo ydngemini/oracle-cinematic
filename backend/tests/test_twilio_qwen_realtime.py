@@ -4,6 +4,7 @@ import base64
 import json
 from types import SimpleNamespace
 
+import pytest
 from starlette.datastructures import FormData
 from twilio.request_validator import RequestValidator
 
@@ -385,6 +386,7 @@ def test_twilio_calls_api_uses_separate_twiml_and_status_urls(monkeypatch):
     monkeypatch.setenv("TWILIO_AUTH_TOKEN", "auth-token")
     monkeypatch.setenv("TWILIO_FROM_NUMBER", "+15555550100")
     monkeypatch.setenv("ORACLE_PUBLIC_BASE_URL", "https://api.example.test")
+    monkeypatch.setenv("ORACLE_TWILIO_ACCOUNT_TIER", "full")
 
     result = asyncio.run(
         command_providers.place_twilio_call(
@@ -405,3 +407,37 @@ def test_twilio_calls_api_uses_separate_twiml_and_status_urls(monkeypatch):
         "answered",
         "completed",
     ]
+
+
+def test_twilio_trial_rejects_before_calls_api_side_effect(monkeypatch):
+    class _Client:
+        def __init__(self, *_args):
+            raise AssertionError("Twilio client must not be created for a trial call")
+
+    import twilio.rest
+
+    monkeypatch.setattr(twilio.rest, "Client", _Client)
+    monkeypatch.setenv("TWILIO_ACCOUNT_SID", ACCOUNT_SID)
+    monkeypatch.setenv("TWILIO_AUTH_TOKEN", "auth-token")
+    monkeypatch.setenv("TWILIO_FROM_NUMBER", "+15555550100")
+    monkeypatch.setenv("ORACLE_PUBLIC_BASE_URL", "https://api.example.test")
+    monkeypatch.setenv("ORACLE_TWILIO_ACCOUNT_TIER", "trial")
+
+    with pytest.raises(
+        command_providers.ProviderRejectedError,
+        match="Voice Trial",
+    ):
+        asyncio.run(
+            command_providers.place_twilio_call(
+                {"target": {"phone": "+15555550101"}}
+            )
+        )
+
+
+def test_definite_provider_rejection_is_not_reconciliation_required():
+    rejected = command_providers.ProviderRejectedError("request rejected")
+    uncertain = command_providers.ProviderRequestError("provider timeout")
+
+    assert not commands_api._provider_submission_is_uncertain(True, rejected)
+    assert commands_api._provider_submission_is_uncertain(True, uncertain)
+    assert not commands_api._provider_submission_is_uncertain(False, uncertain)

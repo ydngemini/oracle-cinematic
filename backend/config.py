@@ -161,7 +161,8 @@ def validate_or_die() -> None:
     if twilio_qwen_enabled and twilio_account_tier in {"trial", "free-trial"}:
         log.warning(
             "Twilio realtime is disabled because Voice Trial blocks the "
-            "<Stream> verb; the supported <Gather> fallback remains active."
+            "<Stream> verb; outbound CRM AI calls remain unavailable until "
+            "the Twilio project is upgraded."
         )
         twilio_qwen_enabled = False
     if acs_qwen_enabled or twilio_qwen_enabled:

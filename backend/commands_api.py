@@ -42,6 +42,7 @@ from audit_ledger import AuditCategory, ledger
 from automation_jobs import enqueue_job, register_handler
 from command_providers import (
     ProviderConfigurationError,
+    ProviderRejectedError,
     abort_twilio_call,
     create_google_calendar_event,
     place_acs_call,
@@ -69,6 +70,17 @@ logger = logging.getLogger("oracle.commands")
 
 router = APIRouter(prefix="/api/commands", tags=["commands"])
 _mind_service: Optional["MindService"] = None
+
+
+def _provider_submission_is_uncertain(
+    submission_started: bool,
+    exc: Exception,
+) -> bool:
+    """Return true only when a provider might have accepted the side effect."""
+    return submission_started and not isinstance(
+        exc,
+        (ProviderConfigurationError, ProviderRejectedError),
+    )
 
 
 def configure_command_mind_service(service: "MindService") -> None:
@@ -2066,7 +2078,7 @@ async def _execute_command_job(payload: dict[str, Any], reporter) -> dict[str, A
                 event_draft, access_token=google_token
             )
     except Exception as exc:
-        uncertain = submission_started and not isinstance(exc, ProviderConfigurationError)
+        uncertain = _provider_submission_is_uncertain(submission_started, exc)
         try:
             async with tenant_tx(ctx) as conn:
                 await conn.execute(

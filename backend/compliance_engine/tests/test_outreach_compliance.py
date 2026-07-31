@@ -15,16 +15,29 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+import pytest
+from pydantic import ValidationError
+
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from outreach_compliance import (  # noqa: E402
     AI_VOICE_DISCLOSURE,
     Channel,
+    ConsentRecord,
     evaluate,
     is_stop_keyword,
     normalize_contact,
     within_calling_window,
 )
+
+
+def test_consent_record_rejects_malformed_optional_uuids():
+    with pytest.raises(ValidationError):
+        ConsentRecord(
+            contact="+13055550142",
+            channel=Channel.VOICE,
+            client_id="null",
+        )
 
 # 2026-06-17 17:00 UTC → 13:00 EDT (NY) / 10:00 PDT (LA): inside the 8am-8pm window.
 NOON_ISH_UTC = datetime(2026, 6, 17, 17, 0, tzinfo=timezone.utc)

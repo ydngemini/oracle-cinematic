@@ -46,10 +46,11 @@ No call audio is written to disk by the bridge.
 Twilio must own a voice-capable `TWILIO_FROM_NUMBER`. A stale, externally owned,
 or merely formatted caller ID is not enough for the Calls API.
 
-Twilio Voice Trial accounts do not support `<Stream>` and cannot open a Media
-Streams WebSocket. Set `ORACLE_TWILIO_ACCOUNT_TIER=trial` while using the
-trial; the application will retain its signed `<Gather>` AI conversation path
-instead. After upgrading the Twilio project, set the tier to `full` and enable
+Twilio Voice Trial accounts accept only Twilio's predefined outbound template
+URLs and do not support `<Stream>`, so they cannot run either this CRM's custom
+TwiML webhook or the Media Streams WebSocket. Set
+`ORACLE_TWILIO_ACCOUNT_TIER=trial` to fail before dialing with an actionable
+error. After upgrading the Twilio project, set the tier to `full` and enable
 `ORACLE_TWILIO_QWEN_REALTIME_ENABLED=true` to activate the deployed realtime
 bridge.
 
