@@ -118,11 +118,12 @@ _PUBLIC_CHARACTERISTIC_ALIASES: dict[str, tuple[str, ...]] = {
     ),
     "year_built": (
         "year_built", "yearbuilt", "yr_built", "yrbuilt", "year_bluilt",
-        "yearblt_res", "char_yrblt", "construction_year",
+        "act_yr_blt", "eff_yr_blt", "yearblt_res", "char_yrblt",
+        "construction_year",
     ),
     "property_class": (
         "property_class", "propertyclass", "propclass", "class",
-        "bldgclass", "building_class", "assessment_class",
+        "bldgclass", "building_class", "assessment_class", "dor_uc", "pa_uc",
     ),
     "last_sale_price": (
         "last_sale_price", "sale_price", "saleprice", "sale_amount",
@@ -134,18 +135,18 @@ _PUBLIC_CHARACTERISTIC_ALIASES: dict[str, tuple[str, ...]] = {
         "bldgarea", "bldg_sf", "living_area", "livingarea",
         "gla_res", "char_bldg_sf", "heated_area", "total_living_area",
         "total_livable_area", "gross_living_area", "finished_area",
-        "square_feet", "sqft", "unit_sf",
+        "square_feet", "sqft", "unit_sf", "tot_lvg_ar", "heatedsquarefeet",
     ),
     "lot_area_sqft": (
         "lot_area_sqft", "lot_sqft", "lotsqft", "lotarea",
-        "land_sqft", "landarea", "char_land_sf",
+        "land_sqft", "landarea", "char_land_sf", "lnd_sqfoot",
     ),
     "lot_acres": (
         "lot_acres", "lotacres", "acreage", "acres",
     ),
     "land_use": (
         "land_use", "landuse", "property_use", "use_description",
-        "property_type", "char_use", "prop_type_descr",
+        "property_type", "char_use", "prop_type_descr", "p_category",
     ),
 }
 _PUBLIC_CHARACTERISTIC_NAMES = {
@@ -346,8 +347,21 @@ def _clean_number(
     """Return a finite, in-range public value or ``None`` when it is unknown."""
     if isinstance(value, bool) or value is None:
         return None
+    candidate: Any = value
+    if isinstance(value, str):
+        candidate = value.strip()
+        if not candidate or candidate.lower() in {
+            "-", "--", "n/a", "na", "none", "null", "not published",
+        }:
+            return None
+        is_parenthesized = candidate.startswith("(") and candidate.endswith(")")
+        if is_parenthesized:
+            candidate = candidate[1:-1]
+        candidate = candidate.replace("$", "").replace(",", "").strip()
+        if is_parenthesized:
+            candidate = f"-{candidate}"
     try:
-        number = float(value)
+        number = float(candidate)
     except (TypeError, ValueError):
         return None
     if not math.isfinite(number):
@@ -704,13 +718,31 @@ async def persist_leads(tenant_id: str, agent_id: str, records: list[PropertyRec
             $25, $26, $27::text[], true, $28::timestamptz, $29, $30::jsonb
         )
         ON CONFLICT (source_key, state, source_record_id) DO UPDATE SET
-            parcel_id = EXCLUDED.parcel_id,
-            county = EXCLUDED.county,
-            city = EXCLUDED.city,
-            zip_code = EXCLUDED.zip_code,
-            address = EXCLUDED.address,
-            owner_name = EXCLUDED.owner_name,
-            owner_type = EXCLUDED.owner_type,
+            parcel_id = COALESCE(
+                NULLIF(EXCLUDED.parcel_id, ''),
+                public_property_records.parcel_id
+            ),
+            county = COALESCE(
+                NULLIF(EXCLUDED.county, ''),
+                public_property_records.county
+            ),
+            city = COALESCE(NULLIF(EXCLUDED.city, ''), public_property_records.city),
+            zip_code = COALESCE(
+                NULLIF(EXCLUDED.zip_code, ''),
+                public_property_records.zip_code
+            ),
+            address = COALESCE(
+                NULLIF(EXCLUDED.address, ''),
+                public_property_records.address
+            ),
+            owner_name = COALESCE(
+                NULLIF(EXCLUDED.owner_name, ''),
+                public_property_records.owner_name
+            ),
+            owner_type = COALESCE(
+                NULLIF(EXCLUDED.owner_type, ''),
+                public_property_records.owner_type
+            ),
             public_record_value = COALESCE(
                 EXCLUDED.public_record_value,
                 public_property_records.public_record_value
@@ -727,9 +759,18 @@ async def persist_leads(tenant_id: str, agent_id: str, records: list[PropertyRec
             bathrooms = COALESCE(EXCLUDED.bathrooms, public_property_records.bathrooms),
             rooms = COALESCE(EXCLUDED.rooms, public_property_records.rooms),
             year_built = COALESCE(EXCLUDED.year_built, public_property_records.year_built),
-            property_class = EXCLUDED.property_class,
-            zoning_district = EXCLUDED.zoning_district,
-            land_use = EXCLUDED.land_use,
+            property_class = COALESCE(
+                NULLIF(EXCLUDED.property_class, ''),
+                public_property_records.property_class
+            ),
+            zoning_district = COALESCE(
+                NULLIF(EXCLUDED.zoning_district, ''),
+                public_property_records.zoning_district
+            ),
+            land_use = COALESCE(
+                NULLIF(EXCLUDED.land_use, ''),
+                public_property_records.land_use
+            ),
             lot_area_sqft = COALESCE(
                 EXCLUDED.lot_area_sqft,
                 public_property_records.lot_area_sqft
@@ -738,8 +779,8 @@ async def persist_leads(tenant_id: str, agent_id: str, records: list[PropertyRec
                 EXCLUDED.building_area_sqft,
                 public_property_records.building_area_sqft
             ),
-            latitude = EXCLUDED.latitude,
-            longitude = EXCLUDED.longitude,
+            latitude = COALESCE(EXCLUDED.latitude, public_property_records.latitude),
+            longitude = COALESCE(EXCLUDED.longitude, public_property_records.longitude),
             source_name = EXCLUDED.source_name,
             coverage_scope = EXCLUDED.coverage_scope,
             detail_level = EXCLUDED.detail_level,
@@ -751,10 +792,23 @@ async def persist_leads(tenant_id: str, agent_id: str, records: list[PropertyRec
             ),
             verification_required = true,
             record_refreshed_at = EXCLUDED.record_refreshed_at,
-            dataset_version = EXCLUDED.dataset_version,
+            dataset_version = COALESCE(
+                NULLIF(EXCLUDED.dataset_version, ''),
+                public_property_records.dataset_version
+            ),
             source_metadata = (
                 public_property_records.source_metadata
                 || EXCLUDED.source_metadata
+                || jsonb_build_object(
+                    'published_field_sources',
+                    COALESCE(
+                        public_property_records.source_metadata->'published_field_sources',
+                        '{}'::jsonb
+                    ) || COALESCE(
+                        EXCLUDED.source_metadata->'published_field_sources',
+                        '{}'::jsonb
+                    )
+                )
             )
     """
 
@@ -855,10 +909,25 @@ async def upsert_public_records(
             $25, $26, $27::text[], true, $28::timestamptz, $29, $30::jsonb
         )
         ON CONFLICT (source_key, state, source_record_id) DO UPDATE SET
-            parcel_id=EXCLUDED.parcel_id, county=EXCLUDED.county,
-            city=EXCLUDED.city, zip_code=EXCLUDED.zip_code,
-            address=EXCLUDED.address, owner_name=EXCLUDED.owner_name,
-            owner_type=EXCLUDED.owner_type,
+            parcel_id=COALESCE(
+                NULLIF(EXCLUDED.parcel_id, ''), public_property_records.parcel_id
+            ),
+            county=COALESCE(
+                NULLIF(EXCLUDED.county, ''), public_property_records.county
+            ),
+            city=COALESCE(NULLIF(EXCLUDED.city, ''), public_property_records.city),
+            zip_code=COALESCE(
+                NULLIF(EXCLUDED.zip_code, ''), public_property_records.zip_code
+            ),
+            address=COALESCE(
+                NULLIF(EXCLUDED.address, ''), public_property_records.address
+            ),
+            owner_name=COALESCE(
+                NULLIF(EXCLUDED.owner_name, ''), public_property_records.owner_name
+            ),
+            owner_type=COALESCE(
+                NULLIF(EXCLUDED.owner_type, ''), public_property_records.owner_type
+            ),
             public_record_value=COALESCE(
                 EXCLUDED.public_record_value,
                 public_property_records.public_record_value
@@ -875,9 +944,15 @@ async def upsert_public_records(
             bathrooms=COALESCE(EXCLUDED.bathrooms, public_property_records.bathrooms),
             rooms=COALESCE(EXCLUDED.rooms, public_property_records.rooms),
             year_built=COALESCE(EXCLUDED.year_built, public_property_records.year_built),
-            property_class=EXCLUDED.property_class,
-            zoning_district=EXCLUDED.zoning_district,
-            land_use=EXCLUDED.land_use,
+            property_class=COALESCE(
+                NULLIF(EXCLUDED.property_class, ''), public_property_records.property_class
+            ),
+            zoning_district=COALESCE(
+                NULLIF(EXCLUDED.zoning_district, ''), public_property_records.zoning_district
+            ),
+            land_use=COALESCE(
+                NULLIF(EXCLUDED.land_use, ''), public_property_records.land_use
+            ),
             lot_area_sqft=COALESCE(
                 EXCLUDED.lot_area_sqft,
                 public_property_records.lot_area_sqft
@@ -886,7 +961,8 @@ async def upsert_public_records(
                 EXCLUDED.building_area_sqft,
                 public_property_records.building_area_sqft
             ),
-            latitude=EXCLUDED.latitude, longitude=EXCLUDED.longitude,
+            latitude=COALESCE(EXCLUDED.latitude, public_property_records.latitude),
+            longitude=COALESCE(EXCLUDED.longitude, public_property_records.longitude),
             source_name=EXCLUDED.source_name,
             coverage_scope=EXCLUDED.coverage_scope,
             detail_level=EXCLUDED.detail_level,
@@ -898,10 +974,23 @@ async def upsert_public_records(
             ),
             verification_required=true,
             record_refreshed_at=EXCLUDED.record_refreshed_at,
-            dataset_version=EXCLUDED.dataset_version,
+            dataset_version=COALESCE(
+                NULLIF(EXCLUDED.dataset_version, ''),
+                public_property_records.dataset_version
+            ),
             source_metadata=(
                 public_property_records.source_metadata
                 || EXCLUDED.source_metadata
+                || jsonb_build_object(
+                    'published_field_sources',
+                    COALESCE(
+                        public_property_records.source_metadata->'published_field_sources',
+                        '{}'::jsonb
+                    ) || COALESCE(
+                        EXCLUDED.source_metadata->'published_field_sources',
+                        '{}'::jsonb
+                    )
+                )
             )
     """
     source_key_default = str(metrics.get("source_key") or "")

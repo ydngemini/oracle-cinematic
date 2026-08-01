@@ -17,6 +17,7 @@ Routes:
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
 import uuid
@@ -59,6 +60,19 @@ def _iso(v: Any) -> Optional[str]:
     if isinstance(v, (datetime,)):
         return v.isoformat()
     return str(v)
+
+
+def _json_object(value: Any) -> dict[str, Any]:
+    """Normalize asyncpg JSON/JSONB values across codec configurations."""
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
 
 
 # ── serializer ────────────────────────────────────────────────────────────────
@@ -478,10 +492,10 @@ def _public_record_json(r: dict) -> dict:
     }
     observed = [key for key, value in required_facts.items() if value is not None]
     missing = [key for key, value in required_facts.items() if value is None]
-    metadata = r.get("source_metadata")
+    metadata = _json_object(r.get("source_metadata"))
     field_sources = (
         metadata.get("published_field_sources", {})
-        if isinstance(metadata, dict)
+        if metadata
         else {}
     )
     record["fact_coverage"] = {
@@ -564,6 +578,96 @@ async def _reconcile_sparse_cook_record(
         logger.warning(
             "Cook County exact-address reconciliation failed for %r: %s",
             str(sparse.get("address"))[:120],
+            exc,
+        )
+        return False
+
+
+def _has_unchecked_public_facts(row: dict[str, Any]) -> bool:
+    """Return true when a supported source can still perform a targeted join."""
+    metadata = _json_object(row.get("source_metadata"))
+    enrichment = (
+        metadata.get("targeted_enrichment", {})
+        if isinstance(metadata, dict)
+        else {}
+    )
+    if isinstance(enrichment, dict) and enrichment.get("completed") is True:
+        return False
+    return any(
+        row.get(field) is None
+        for field in (
+            "county",
+            "last_sale_price",
+            "beds",
+            "baths",
+            "rooms",
+            "year_built",
+            "property_class",
+            "land_use",
+            "lot_area_sqft",
+            "sqft",
+        )
+    )
+
+
+async def _reconcile_sparse_public_record(
+    *,
+    rows: list[dict[str, Any]],
+    ctx: TenantContext,
+    exact_match_only: bool,
+) -> bool:
+    """Join an exact sparse catalog row against its official detail sources.
+
+    This remains bounded to one property per request. Batch coverage continues
+    through the firehose, while an opened or exact-matched record can be made
+    useful immediately without crawling a third-party listing site.
+    """
+    candidate = next(
+        (
+            row
+            for row in rows[:5]
+            if row.get("state") == "FL"
+            and row.get("source_key") in {"firehose:FL", "regional_parcels_fl"}
+            and row.get("parcel_id")
+            and _has_unchecked_public_facts(row)
+            and (
+                not exact_match_only
+                or int(row.get("match_score") or 0) >= 98
+            )
+        ),
+        None,
+    )
+    if candidate is None:
+        return False
+    try:
+        from harvesters.base import upsert_public_records
+        from harvesters.fl_fdor import FloridaFDORHarvester
+
+        harvester = FloridaFDORHarvester(
+            ctx.tenant_id,
+            agent_id="fl-parcel-reconciler",
+        )
+        records = await asyncio.wait_for(
+            harvester.lookup_parcel(str(candidate["parcel_id"])),
+            timeout=30,
+        )
+        if not records:
+            return False
+        metrics = {
+            **harvester.metrics,
+            "source_key": str(candidate.get("source_key") or "firehose:FL"),
+        }
+        await upsert_public_records(
+            ctx.tenant_id,
+            "fl-parcel-reconciler",
+            records,
+            metrics=metrics,
+        )
+        return True
+    except Exception as exc:  # noqa: BLE001 - existing sparse row remains usable
+        logger.warning(
+            "Florida exact-parcel reconciliation failed for %r: %s",
+            str(candidate.get("parcel_id"))[:120],
             exc,
         )
         return False
@@ -680,6 +784,15 @@ async def mls_pipeline_search(
                 count_row = await conn.fetchrow(count_q, *count_args)
                 total = int(count_row["n"]) if count_row else 0
                 rows = [dict(r) for r in await conn.fetch(data_q, *args)]
+        if q and q.strip() and await _reconcile_sparse_public_record(
+            rows=rows,
+            ctx=ctx,
+            exact_match_only=True,
+        ):
+            async with tenant_tx(ctx) as conn:
+                count_row = await conn.fetchrow(count_q, *count_args)
+                total = int(count_row["n"]) if count_row else 0
+                rows = [dict(r) for r in await conn.fetch(data_q, *args)]
     except RuntimeError as exc:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, f"Memory Core offline ({exc})")
     except Exception as exc:  # noqa: BLE001
@@ -733,4 +846,22 @@ async def mls_pipeline_listing(
 
     if not row:
         raise HTTPException(status.HTTP_404_NOT_FOUND, f"Public record {record_id!r} not found.")
-    return _public_record_json(dict(row))
+    row_dict = dict(row)
+    if await _reconcile_sparse_public_record(
+        rows=[row_dict],
+        ctx=ctx,
+        exact_match_only=False,
+    ):
+        try:
+            async with tenant_tx(ctx) as conn:
+                refreshed = await conn.fetchrow(
+                    f"SELECT {_PUBLIC_RECORD_SELECT}, 0 AS match_score, "
+                    f"'record_id_exact' AS match_type "
+                    f"FROM public_property_records WHERE id = $1::uuid",
+                    record_id,
+                )
+            if refreshed:
+                row_dict = dict(refreshed)
+        except Exception as exc:  # noqa: BLE001 - return the first valid row
+            logger.warning("Refreshed public record read failed for %s: %s", record_id, exc)
+    return _public_record_json(row_dict)

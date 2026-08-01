@@ -160,6 +160,28 @@ def test_characteristic_aliases_cover_common_cama_column_names():
     assert record.building_area_sqft == 1542
 
 
+def test_characteristic_aliases_cover_fdor_fields_and_formatted_numbers():
+    record = promote_public_characteristics(
+        _record(
+            year_built=None,
+            property_class=None,
+            building_area_sqft=None,
+            lot_area_sqft=None,
+        ),
+        {
+            "ACT_YR_BLT": "2019",
+            "DOR_UC": "001",
+            "TOT_LVG_AR": "1,563",
+            "LND_SQFOOT": "43,560",
+        },
+    )
+
+    assert record.year_built == 2019
+    assert record.property_class == "001"
+    assert record.building_area_sqft == 1_563
+    assert record.lot_area_sqft == 43_560
+
+
 def test_harvest_persists_private_lead_and_shared_public_catalog(monkeypatch):
     class FakeConnection:
         def __init__(self):
@@ -199,6 +221,8 @@ def test_harvest_persists_private_lead_and_shared_public_catalog(monkeypatch):
     assert "INSERT INTO leads" in private_query
     assert "INSERT INTO public_property_records" in catalog_query
     assert "COALESCE(EXCLUDED.bedrooms" in catalog_query
+    assert "NULLIF(EXCLUDED.property_class, '')" in catalog_query
+    assert "published_field_sources" in catalog_query
     assert "public_property_records.source_metadata" in catalog_query
     assert private_args[0][0] == "11111111-1111-1111-1111-111111111111"
     assert catalog_args[0][0:3] == ("firehose:CA", "PIN-123", "CA")
@@ -241,5 +265,7 @@ def test_targeted_public_reconciliation_binds_a_real_timestamp(monkeypatch):
     assert len(conn.calls) == 1
     query, args = conn.calls[0]
     assert "INSERT INTO public_property_records" in query
+    assert "COALESCE(EXCLUDED.latitude" in query
+    assert "NULLIF(EXCLUDED.land_use, '')" in query
     assert isinstance(args[0][27], datetime)
     assert args[0][27].tzinfo is not None

@@ -7,6 +7,9 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
 import mls_portal
+import harvesters.base
+import harvesters.fl_fdor
+from harvesters.property_adapter import PropertyRecord
 from tenancy import Role, TenantContext
 
 
@@ -32,6 +35,9 @@ class _FakeConnection:
                 "parcel_id": "safe-parcel",
                 "state": "DE",
                 "source_key": "firehose:DE",
+                "source_metadata": (
+                    '{"published_field_sources":{"building_area_sqft":"SQFT"}}'
+                ),
                 "source_name": "New Castle County parcels + ownership",
                 "coverage_scope": "county:New Castle",
                 "detail_level": "standard",
@@ -110,7 +116,7 @@ def test_pipeline_default_count_uses_exact_summary(monkeypatch):
         "observed_count": 1,
         "required_count": 8,
         "complete": False,
-        "source_fields": {},
+        "source_fields": {"building_area_sqft": "SQFT"},
         "policy": "source_published_only",
     }
 
@@ -171,3 +177,102 @@ def test_public_catalog_search_normalizes_exact_address_and_ranks_matches(monkey
         0,
     )
     assert result["accuracy"]["ranked_exact_matches"] is True
+
+
+def test_exact_florida_match_runs_one_bounded_official_source_join(monkeypatch):
+    ctx = TenantContext(
+        agent_id="operator",
+        tenant_id="11111111-1111-1111-1111-111111111111",
+        role=Role.PLATFORM_ADMIN,
+    )
+    calls: dict[str, object] = {}
+    record = PropertyRecord(
+        parcel_id="18466-053-000",
+        address="11380 NE 211TH TER",
+        city="WALDO",
+        state="FL",
+        zip_code="32694",
+        owner_name="CARVER AARON ANDREW",
+        owner_type="individual",
+        estimated_value=262_530,
+        equity_percent=0.0,
+        is_absentee_owner=False,
+        distress_flags=[],
+        last_sale_date=None,
+        county="Alachua",
+        building_area_sqft=1_563,
+        lot_area_sqft=43_560,
+        year_built=2019,
+    )
+
+    async def fake_lookup(_self, parcel_id: str):
+        calls["parcel_id"] = parcel_id
+        return [record]
+
+    async def fake_upsert(tenant_id, agent_id, records, *, metrics):
+        calls["upsert"] = (tenant_id, agent_id, records, metrics)
+        return 1
+
+    monkeypatch.setattr(
+        harvesters.fl_fdor.FloridaFDORHarvester,
+        "lookup_parcel",
+        fake_lookup,
+    )
+    monkeypatch.setattr(harvesters.base, "upsert_public_records", fake_upsert)
+    reconciled = asyncio.run(
+        mls_portal._reconcile_sparse_public_record(
+            rows=[{
+                "parcel_id": "18466-053-000",
+                "state": "FL",
+                "source_key": "firehose:FL",
+                "match_score": 100,
+                "county": None,
+                "last_sale_price": None,
+                "beds": None,
+                "baths": None,
+                "rooms": None,
+                "year_built": None,
+                "property_class": None,
+                "land_use": None,
+                "lot_area_sqft": None,
+                "sqft": None,
+                "source_metadata": {},
+            }],
+            ctx=ctx,
+            exact_match_only=True,
+        )
+    )
+
+    assert reconciled is True
+    assert calls["parcel_id"] == "18466-053-000"
+    tenant_id, agent_id, records, metrics = calls["upsert"]
+    assert tenant_id == ctx.tenant_id
+    assert agent_id == "fl-parcel-reconciler"
+    assert records == [record]
+    assert metrics["source_key"] == "firehose:FL"
+
+
+def test_completed_targeted_enrichment_does_not_repeat_network_join():
+    ctx = TenantContext(
+        agent_id="operator",
+        tenant_id="11111111-1111-1111-1111-111111111111",
+        role=Role.PLATFORM_ADMIN,
+    )
+    reconciled = asyncio.run(
+        mls_portal._reconcile_sparse_public_record(
+            rows=[{
+                "parcel_id": "18466-053-000",
+                "state": "FL",
+                "source_key": "firehose:FL",
+                "match_score": 100,
+                "beds": None,
+                "source_metadata": {
+                    "targeted_enrichment": {"completed": True},
+                },
+            }],
+            ctx=ctx,
+            exact_match_only=True,
+        )
+    )
+
+    assert reconciled is False
