@@ -16,6 +16,7 @@ import httpx
 import ws_hub
 from ai_chat_store import (
     execute_safe_tool,
+    is_agent_tool_available,
     load_response_bundle,
     release_concurrency,
     update_assistant,
@@ -217,7 +218,7 @@ TOOLS = {
     "get_nearest_schools":  _tool("get_nearest_schools", "Nearby schools with ratings and distance for a property address.", {"address": _text("address")}),
 
     # ── Deals & Pipeline (12) ──
-    "list_deals":           _tool("list_deals", "List deals in your pipeline; filter by state, stage, or assignee.", {"state": _text("state"), "stage": _text("stage"), "assignee_id": _text("assignee_id")}, []),
+    "list_deals":           _tool("list_deals", "List owned pipeline deals; filter by state or durable stage.", {"state": _text("state"), "stage": _text("stage")}, []),
     "get_deal_detail":      _tool("get_deal_detail", "Full deal dossier: property, client, contract, notes, deadlines, financials.", {"deal_id": _text("deal_id")}),
     "move_deal_stage":      _tool("move_deal_stage", "Advance a deal to a new stage (contacted, negotiated, under_contract, assigned, closed).", {"deal_id": _text("deal_id"), "stage": _text("stage")}),
     "calculate_deal_roi":   _tool("calculate_deal_roi", "Projected return: assignment fee, wholetail margin, or rental cash-on-cash.", {"deal_id": _text("deal_id")}),
@@ -324,7 +325,7 @@ TOOLS = {
         "phone": _text("phone"), "client_type": {"type": "string", "enum": ["seller","buyer","both"]},
         "stage": {"type": "string", "enum": ["lead","active","nurture","under_contract","closed","lost"]},
         "lead_score": {"type": "integer", "minimum": 0, "maximum": 100},
-        "assignee_id": _text("assignee_id"), "company": _text("company"), "source": _text("source"),
+        "company": _text("company"),
     }, ["client_id"]),
     "update_listing":       _tool("update_listing", "Update the address or lifecycle status of the currently selected owned listing.", {
         "listing_id": _text("listing_id"), "address": _text("address"),
@@ -398,28 +399,36 @@ _READ_ONLY_TOOLS = sorted([
     "list_billing_invoices", "get_portfolio_performance", "calculate_interest_costs",
     "estimate_after_repair_value", "list_property_photos", "generate_tour_link",
     "list_property_videos", "list_agent_commissions",
-    "get_agent_performance", "get_feature_flags", "get_state_laws",
+    "get_agent_performance", "get_team_pipeline", "list_providers", "get_feature_flags", "get_state_laws",
     "check_fair_housing", "get_disclosure_requirements", "list_legal_forms",
     "run_property_background", "search_public_records", "analyze_neighborhood",
     "get_investor_activity_profile", "list_recent_errors",
 ])
 
-_ALWAYS_TOOLS = sorted(["codebase_summary", "web_search"] + _READ_ONLY_TOOLS)
+_ALWAYS_TOOLS = sorted(set(["codebase_summary", "web_search"] + _READ_ONLY_TOOLS))
+
+
+def _tool_is_enabled(name: str) -> bool:
+    """Expose only durable local capabilities and configured external sources."""
+    if not is_agent_tool_available(name):
+        return False
+    # A model cannot use web research without a configured provider. Leaving it
+    # out is more truthful than producing a provider-error tool result.
+    return name != "web_search" or bool(TAVILY_API_KEY)
 
 
 def _tool_config(context_type: str | None) -> dict | None:
-    tools = [TOOLS[name] for name in _ALWAYS_TOOLS if name in TOOLS]
+    tools = [TOOLS[name] for name in _ALWAYS_TOOLS if name in TOOLS and _tool_is_enabled(name)]
     if context_type == "client":
-        tools.append(TOOLS["update_client"])
-        tools.append(TOOLS["add_client_note"])
-        tools.append(TOOLS["set_client_stage"])
-        tools.append(TOOLS["add_client_tag"])
+        tools.extend(TOOLS[name] for name in (
+            "update_client", "add_client_note", "set_client_stage", "add_client_tag",
+        ) if name in TOOLS and _tool_is_enabled(name))
     elif context_type == "listing":
-        tools.append(TOOLS["update_listing"])
+        if _tool_is_enabled("update_listing"):
+            tools.append(TOOLS["update_listing"])
     elif context_type == "lead":
-        tools.append(TOOLS["move_deal_stage"])
-    elif context_type == "contract":
-        tools.append(TOOLS["generate_contract"])
+        if _tool_is_enabled("move_deal_stage"):
+            tools.append(TOOLS["move_deal_stage"])
     return {"tools": tools} if tools else None
 
 
@@ -496,10 +505,12 @@ _FOUNDRY_TOOLS = [
     {"type": "function", "name": "codebase_summary", "description": "Return a map of the NEOH codebase.", "parameters": {"type": "object", "properties": {}}},
     {"type": "function", "name": "search_clients", "description": "Search client database by name, email, phone, stage.", "parameters": {"type": "object", "required": ["query"], "properties": {"query": {"type": "string"}}}},
     {"type": "function", "name": "get_client_detail", "description": "Full client profile.", "parameters": {"type": "object", "required": ["client_id"], "properties": {"client_id": {"type": "string"}}}},
+    {"type": "function", "name": "list_client_tasks", "description": "List tasks for one client or the tenant task queue.", "parameters": {"type": "object", "properties": {"client_id": {"type": "string"}}}},
+    {"type": "function", "name": "list_client_activity", "description": "List a client's recent CRM timeline.", "parameters": {"type": "object", "required": ["client_id"], "properties": {"client_id": {"type": "string"}}}},
+    {"type": "function", "name": "get_client_contact_history", "description": "List recorded client messages and showings.", "parameters": {"type": "object", "required": ["client_id"], "properties": {"client_id": {"type": "string"}}}},
     {"type": "function", "name": "set_client_stage", "description": "Move client pipeline stage.", "parameters": {"type": "object", "required": ["client_id", "stage"], "properties": {"client_id": {"type": "string"}, "stage": {"type": "string", "enum": ["lead","active","nurture","under_contract","closed","lost"]}}}},
     {"type": "function", "name": "add_client_tag", "description": "Tag a client.", "parameters": {"type": "object", "required": ["client_id", "tags"], "properties": {"client_id": {"type": "string"}, "tags": {"type": "string"}}}},
     {"type": "function", "name": "add_client_note", "description": "Append note to client.", "parameters": {"type": "object", "required": ["client_id", "note"], "properties": {"client_id": {"type": "string"}, "note": {"type": "string"}}}},
-    {"type": "function", "name": "assign_client", "description": "Assign client to agent.", "parameters": {"type": "object", "required": ["client_id", "agent_id"], "properties": {"client_id": {"type": "string"}, "agent_id": {"type": "string"}}}},
     {"type": "function", "name": "create_client", "description": "Create new client record.", "parameters": {"type": "object", "required": ["full_name"], "properties": {"full_name": {"type": "string"}, "email": {"type": "string"}, "phone": {"type": "string"}, "client_type": {"type": "string", "enum": ["seller","buyer","both"]}}}},
     {"type": "function", "name": "score_client_lead", "description": "Update lead score 0-100.", "parameters": {"type": "object", "required": ["client_id", "score"], "properties": {"client_id": {"type": "string"}, "score": {"type": "integer", "minimum": 0, "maximum": 100}}}},
     {"type": "function", "name": "search_listings", "description": "Search MLS and owned listings.", "parameters": {"type": "object", "required": ["query"], "properties": {"query": {"type": "string"}, "state": {"type": "string"}}}},
@@ -508,6 +519,7 @@ _FOUNDRY_TOOLS = [
     {"type": "function", "name": "estimate_arv", "description": "Estimate After-Repair Value.", "parameters": {"type": "object", "required": ["address"], "properties": {"address": {"type": "string"}}}},
     {"type": "function", "name": "list_deals", "description": "List pipeline deals.", "parameters": {"type": "object", "properties": {"state": {"type": "string"}, "stage": {"type": "string"}}}},
     {"type": "function", "name": "get_deal_detail", "description": "Full deal dossier.", "parameters": {"type": "object", "required": ["deal_id"], "properties": {"deal_id": {"type": "string"}}}},
+    {"type": "function", "name": "track_deadlines", "description": "List durable contract and transaction deadlines.", "parameters": {"type": "object", "properties": {"deal_id": {"type": "string"}}}},
     {"type": "function", "name": "move_deal_stage", "description": "Advance deal pipeline stage.", "parameters": {"type": "object", "required": ["deal_id", "stage"], "properties": {"deal_id": {"type": "string"}, "stage": {"type": "string"}}}},
     {"type": "function", "name": "run_underwriting_model", "description": "Full deal underwriting analysis.", "parameters": {"type": "object", "required": ["address"], "properties": {"address": {"type": "string"}, "asking_price": {"type": "string"}}}},
     {"type": "function", "name": "get_market_trends", "description": "Market trends by zip code.", "parameters": {"type": "object", "required": ["zip_code"], "properties": {"zip_code": {"type": "string"}}}},
@@ -516,30 +528,45 @@ _FOUNDRY_TOOLS = [
     {"type": "function", "name": "generate_contract", "description": "Draft a contract. Requires review.", "parameters": {"type": "object", "required": ["template_id", "deal_id"], "properties": {"template_id": {"type": "string"}, "deal_id": {"type": "string"}}}},
     {"type": "function", "name": "run_property_background", "description": "Full property background report.", "parameters": {"type": "object", "required": ["address"], "properties": {"address": {"type": "string"}}}},
     {"type": "function", "name": "get_distress_map", "description": "Distress signal density by zip.", "parameters": {"type": "object", "required": ["state"], "properties": {"state": {"type": "string"}, "zip_code": {"type": "string"}}}},
+    {"type": "function", "name": "get_team_pipeline", "description": "Aggregate pipeline stages and near-term expirations.", "parameters": {"type": "object", "properties": {}}},
+    {"type": "function", "name": "list_providers", "description": "List configured provider accounts without credential material.", "parameters": {"type": "object", "properties": {}}},
     {"type": "function", "name": "update_client", "description": "Update selected client profile fields.", "parameters": {"type": "object", "required": ["client_id"], "properties": {"client_id": {"type": "string"}, "full_name": {"type": "string"}, "email": {"type": "string"}, "phone": {"type": "string"}, "stage": {"type": "string", "enum": ["lead","active","nurture","under_contract","closed","lost"]}}}},
     {"type": "function", "name": "update_listing", "description": "Update selected listing address or status.", "parameters": {"type": "object", "required": ["listing_id"], "properties": {"listing_id": {"type": "string"}, "address": {"type": "string"}, "status": {"type": "string", "enum": ["draft","active","pending","sold","withdrawn"]}}}},
     {"type": "function", "name": "call_contact", "description": "Initiate an outbound call. Requires compliance review and user approval.", "parameters": {"type": "object", "required": ["phone", "reason"], "properties": {"client_id": {"type": "string"}, "phone": {"type": "string"}, "reason": {"type": "string"}}}},
 ]
 
+
+def _foundry_tools(context_type: str | None) -> list[dict]:
+    """Apply the same verified-capability policy to Azure Foundry calls."""
+    context_mutations = {
+        "client": {"update_client", "set_client_stage", "add_client_tag", "add_client_note"},
+        "listing": {"update_listing"},
+        "lead": {"move_deal_stage"},
+    }
+    allowed_mutations = context_mutations.get(context_type, set())
+    mutation_names = {name for names in context_mutations.values() for name in names}
+    return [
+        tool for tool in _FOUNDRY_TOOLS
+        if _tool_is_enabled(tool["name"])
+        and (tool["name"] not in mutation_names or tool["name"] in allowed_mutations)
+    ]
+
 _FOUNDRY_INSTRUCTIONS = """You are NEOH, private operating copilot for real-estate wholesaling.
-You run in Azure Container Apps (North Central US) backed by Azure Foundry (agent: neoh-kimi-k2-6, model: Kimi-K2.6).
 
 REAL ESTATE: MAO formula = (ARV × 0.70) - Rehab. Distress signals: tax delinquency, absentee owner, probate, pre-foreclosure, code violations. ARV uses comps within 0.5mi, sold <12mo. Rehab ranges: $15-25/sf light, $25-50/sf mechanical, $50-100+/sf gut. Always add 15% contingency. Fair housing: no discrimination on race, religion, sex, national origin, familial status, disability.
 
-SYSTEM: NEOH has tabs for Listings, Clients (CRM), Communications, Personal AI, Contract Vault, Deal Book, My Profile, Admin Ops. Features: AI chat (you), Memory Core (MAO threshold, target markets, interaction history JIT injection), Model Registry (LoRA training), Command Approval (email/call/calendar), Web Search (Tavily). Security: PostgreSQL RLS tenant isolation, immutable audit ledger with SHA-256 hash chain, pgcrypto AES-256 PII encryption. Data sources: MLS, county assessor, court records, census, Regrid parcels, GovInfo MCP.
+SYSTEM: Only claim access to a capability when it appears in this request's tool list or a server-resolved record. PostgreSQL tenant isolation, approval queues, and encrypted records do not make an unconfigured external source available. Never invent MLS, public-record, legal, billing, or provider data. State that the source requires configuration or a licensed integration when it is absent.
 
-DEPLOYMENT: Azure Container Apps (neoh-api 1-3 replicas, neoh-web SPA, clamav malware scanner). PostgreSQL: neoh-db-120ea104.postgres.database.azure.com (private, oracle_app_login). Key Vault: neoh-kv-120ea104. Container Registry: neoh120ea104.azurecr.io. DNS: livelypebble FQDN (neohrs.com pending). Feature flags enabled: AI_CHAT, CONTRACTS. Disabled: LOCAL_MODELS, AUTOMATION, MUNICIPAL_HARVESTS, PREDICTIVE_INTELLIGENCE, MARKETPLACE, SPATIAL_TOURS.
-
-WEB SEARCH: You have a web_search tool. Use it PROACTIVELY — never wait for the user to say "use web_search". Call it automatically when the user asks about current events, market trends, news, property data, or any fact outside your NEOH knowledge. Call it BEFORE answering when the question clearly needs live data. Cite results briefly.
+WEB SEARCH: Use web_search for current information only when it is present in the tool list. Cite results briefly and never imply that an unavailable search provider was queried.
 
 COMMUNICATION: I can help draft emails and call requests through the command approval system. I answer truthfully about my capabilities and deployment."""
 
 
-def _foundry_response(input_items: list[dict]):
+def _foundry_response(input_items: list[dict], context_type: str | None):
     return _foundry_openai_client().responses.create(
         model=_FOUNDRY_MODEL,
         input=input_items,
-        tools=_FOUNDRY_TOOLS,
+        tools=_foundry_tools(context_type),
         instructions=_FOUNDRY_INSTRUCTIONS,
         store=False,
     )
@@ -552,10 +579,10 @@ async def _foundry_generate(
     runtime_context: str,
 ) -> tuple[str, list[dict], str]:
     input_items = _foundry_inputs(bundle, runtime_context)
-    response = await asyncio.to_thread(_foundry_response, input_items)
-    actions: list[dict] = []
     context_type = bundle["assistant"].get("context_type")
     context_id = str(bundle["assistant"].get("context_id") or "") or None
+    response = await asyncio.to_thread(_foundry_response, input_items, context_type)
+    actions: list[dict] = []
 
     for _ in range(2):
         tool_calls = [item for item in response.output if item.type == "function_call"]
@@ -586,7 +613,7 @@ async def _foundry_generate(
             item.model_dump(mode="json", exclude_none=True) for item in response.output
         ]
         response = await asyncio.to_thread(
-            _foundry_response, input_items + prior_output + tool_outputs
+            _foundry_response, input_items + prior_output + tool_outputs, context_type
         )
     raise RuntimeError("The assistant exceeded the safe tool-call limit")
 
@@ -760,7 +787,7 @@ async def _generate_voice_reply(caller_id: str, speech_text: str) -> str:
         {"role": "user", "content": speech_text[:500]},
     ]
     try:
-        response = await asyncio.to_thread(_foundry_response, input_items)
+        response = await asyncio.to_thread(_foundry_response, input_items, None)
         reply = response.output_text.strip()
         return reply[:300] if reply else "I'm sorry, could you say that differently?"
     except Exception:

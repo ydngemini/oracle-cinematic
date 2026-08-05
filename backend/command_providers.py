@@ -75,8 +75,13 @@ def _http_json(
         raise ProviderRequestError("provider request timed out or was unavailable") from exc
 
 
-async def send_ses_email(draft: Mapping[str, Any]) -> ProviderResult:
-    sender = os.getenv("ORACLE_SES_FROM_EMAIL", "")
+async def send_ses_email(
+    draft: Mapping[str, Any],
+    *,
+    credentials: Optional[Mapping[str, Any]] = None,
+) -> ProviderResult:
+    credentials = dict(credentials or {})
+    sender = str(credentials.get("from_email") or os.getenv("ORACLE_SES_FROM_EMAIL", ""))
     recipient = str((draft.get("target") or {}).get("email") or "").strip()
     subject = str(draft.get("subject") or "").strip()
     body_text = str(draft.get("body") or "").strip()
@@ -91,15 +96,29 @@ async def send_ses_email(draft: Mapping[str, Any]) -> ProviderResult:
         import boto3
         from botocore.config import Config
 
-        client = boto3.client(
-            "sesv2",
-            region_name=os.getenv("AWS_REGION", "us-east-2"),
-            config=Config(
+        client_options: dict[str, Any] = {
+            "region_name": str(
+                credentials.get("region") or os.getenv("AWS_REGION", "us-east-2")
+            ),
+            "config": Config(
                 connect_timeout=8,
                 read_timeout=15,
                 retries={"max_attempts": 2, "mode": "standard"},
             ),
-        )
+        }
+        access_key = str(credentials.get("aws_access_key_id") or "").strip()
+        secret_key = str(credentials.get("aws_secret_access_key") or "").strip()
+        if bool(access_key) != bool(secret_key):
+            raise ProviderConfigurationError(
+                "SES access key id and secret access key must be configured together"
+            )
+        if access_key:
+            client_options["aws_access_key_id"] = access_key
+            client_options["aws_secret_access_key"] = secret_key
+            session_token = str(credentials.get("aws_session_token") or "").strip()
+            if session_token:
+                client_options["aws_session_token"] = session_token
+        client = boto3.client("sesv2", **client_options)
         return client.send_email(
             FromEmailAddress=sender,
             Destination={"ToAddresses": [recipient]},
@@ -116,6 +135,123 @@ async def send_ses_email(draft: Mapping[str, Any]) -> ProviderResult:
     if not reference:
         raise ProviderRequestError("SES did not return a message id")
     return ProviderResult("ses", reference, "submitted", {"recipient": recipient})
+
+
+async def send_twilio_sms(
+    draft: Mapping[str, Any],
+    *,
+    credentials: Optional[Mapping[str, Any]] = None,
+) -> ProviderResult:
+    """Send one previously-approved SMS with a registered Twilio sender."""
+    credentials = dict(credentials or {})
+    account_sid = str(
+        credentials.get("account_sid") or os.getenv("TWILIO_ACCOUNT_SID", "")
+    ).strip()
+    auth_token = str(
+        credentials.get("auth_token") or os.getenv("TWILIO_AUTH_TOKEN", "")
+    ).strip()
+    api_key = str(credentials.get("api_key") or os.getenv("TWILIO_API_KEY", "")).strip()
+    api_secret = str(
+        credentials.get("api_secret") or os.getenv("TWILIO_API_SECRET", "")
+    ).strip()
+    sender = str(
+        credentials.get("sms_sender")
+        or credentials.get("sms_sender_e164")
+        or os.getenv("TWILIO_SMS_FROM_NUMBER", "")
+    ).strip()
+    sender_type = str(credentials.get("sms_sender_type") or "").strip()
+    recipient = str((draft.get("target") or {}).get("phone") or "").strip()
+    body = str(draft.get("body") or "").strip()
+
+    if not account_sid:
+        raise ProviderConfigurationError("TWILIO_ACCOUNT_SID is not configured")
+    if not auth_token and not (api_key and api_secret):
+        raise ProviderConfigurationError("Twilio auth token or API key pair is not configured")
+    if not sender.startswith("+"):
+        raise ProviderConfigurationError("A registered Twilio SMS sender is not configured")
+    if sender_type and sender_type not in {
+        "twilio_registered",
+        "ported",
+        "toll_free_verified",
+    }:
+        raise ProviderConfigurationError("Twilio SMS sender registration is not verified")
+    if not recipient.startswith("+"):
+        raise ProviderRequestError("approved SMS target must be E.164")
+    if not body or len(body) > 1_600:
+        raise ProviderRequestError("approved SMS body must contain 1-1600 characters")
+
+    def _send() -> str:
+        from twilio.base.exceptions import TwilioRestException
+        from twilio.rest import Client
+
+        client = (
+            Client(api_key, api_secret, account_sid)
+            if api_key
+            else Client(account_sid, auth_token)
+        )
+        try:
+            message = client.messages.create(to=recipient, from_=sender, body=body)
+        except TwilioRestException as exc:
+            raise ProviderRejectedError(
+                f"Twilio rejected the SMS request (code {exc.code or 'unknown'})."
+            ) from exc
+        return str(message.sid or "")
+
+    reference = await asyncio.wait_for(asyncio.to_thread(_send), timeout=25.0)
+    if not reference:
+        raise ProviderRequestError("Twilio did not return a message SID")
+    return ProviderResult("twilio_sms", reference, "queued", {"to": recipient})
+
+
+async def send_acs_sms(
+    draft: Mapping[str, Any],
+    *,
+    credentials: Optional[Mapping[str, Any]] = None,
+) -> ProviderResult:
+    """Send one previously-approved SMS through Azure Communication Services."""
+    credentials = dict(credentials or {})
+    connection_string = str(
+        credentials.get("connection_string") or os.getenv("ACS_CONNECTION_STRING", "")
+    ).strip()
+    sender = str(
+        credentials.get("sms_sender")
+        or credentials.get("sms_sender_e164")
+        or os.getenv("ACS_SMS_FROM_NUMBER", "")
+    ).strip()
+    recipient = str((draft.get("target") or {}).get("phone") or "").strip()
+    body = str(draft.get("body") or "").strip()
+    if not connection_string:
+        raise ProviderConfigurationError("ACS connection string is not configured")
+    if not sender:
+        raise ProviderConfigurationError("ACS SMS sender is not configured")
+    if not recipient.startswith("+"):
+        raise ProviderRequestError("approved SMS target must be E.164")
+    if not body or len(body) > 1_600:
+        raise ProviderRequestError("approved SMS body must contain 1-1600 characters")
+
+    def _send() -> str:
+        from azure.communication.sms import SmsClient
+
+        client = SmsClient.from_connection_string(connection_string)
+        results = client.send(
+            from_=sender,
+            to=[recipient],
+            message=body,
+            enable_delivery_report=True,
+        )
+        result = next(iter(results), None)
+        if result is None:
+            return ""
+        successful = bool(getattr(result, "successful", False))
+        if not successful:
+            error_message = str(getattr(result, "error_message", "ACS rejected the SMS"))
+            raise ProviderRejectedError(error_message[:500])
+        return str(getattr(result, "message_id", "") or "")
+
+    reference = await asyncio.wait_for(asyncio.to_thread(_send), timeout=25.0)
+    if not reference:
+        raise ProviderRequestError("ACS did not return a message id")
+    return ProviderResult("acs_sms", reference, "queued", {"to": recipient})
 
 
 async def place_acs_call(
