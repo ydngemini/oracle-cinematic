@@ -58,34 +58,67 @@ def _sql_literal(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
 
 
+def _split_credential(raw: str) -> tuple[str, str]:
+    """Accept either a JSON {username, password} document or a bare password.
+
+    Azure-managed Postgres secrets are commonly stored as just the password, with
+    the administrator login held separately; RDS-managed secrets are always JSON."""
+    default_user = os.environ.get("ORACLE_DB_ADMIN_USER", "postgres")
+    raw = raw.strip()
+    if raw.startswith("{"):
+        parsed = json.loads(raw)
+        return parsed.get("username", default_user), parsed["password"]
+    return default_user, raw
+
+
+def _keyvault_credential() -> tuple[str, str]:
+    """Read the administrator credential from Azure Key Vault.
+
+    Uses the same managed identity the app uses for its versionless Key Vault
+    references, so migrations need no static secret of their own."""
+    from azure.identity import DefaultAzureCredential
+    from azure.keyvault.secrets import SecretClient
+
+    vault_uri = os.environ["ORACLE_KEY_VAULT_URI"]
+    secret_name = os.environ.get("ORACLE_DB_ADMIN_SECRET", "oracle-db-admin-password")
+    client = SecretClient(vault_url=vault_uri, credential=DefaultAzureCredential())
+    return _split_credential(client.get_secret(secret_name).value or "")
+
+
+def _secretsmanager_credential() -> tuple[str, str]:
+    """Legacy AWS path, kept so an RDS deployment can still be migrated."""
+    import boto3
+
+    arn = os.environ["DB_MASTER_SECRET_ARN"]
+    region = os.environ.get("AWS_REGION", "us-east-1")
+    return _split_credential(
+        boto3.client("secretsmanager", region_name=region)
+        .get_secret_value(SecretId=arn)["SecretString"]
+    )
+
+
 def _admin_credentials() -> tuple[str, str]:
     direct_password = os.environ.get("ORACLE_DB_ADMIN_PASSWORD", "")
     if direct_password:
         return os.environ.get("ORACLE_DB_ADMIN_USER", "postgres"), direct_password
 
-    arn = os.environ.get("DB_MASTER_SECRET_ARN", "")
-    if not arn:
-        raise RuntimeError(
-            "ORACLE_DB_ADMIN_PASSWORD or DB_MASTER_SECRET_ARN is required"
-        )
+    if os.environ.get("ORACLE_KEY_VAULT_URI"):
+        return _keyvault_credential()
 
-    import boto3
+    if os.environ.get("DB_MASTER_SECRET_ARN"):
+        return _secretsmanager_credential()
 
-    region = os.environ.get("AWS_REGION", "us-east-1")
-    sec = json.loads(
-        boto3.client("secretsmanager", region_name=region)
-        .get_secret_value(SecretId=arn)["SecretString"]
+    raise RuntimeError(
+        "One of ORACLE_DB_ADMIN_PASSWORD, ORACLE_KEY_VAULT_URI or "
+        "DB_MASTER_SECRET_ARN is required"
     )
-    return sec["username"], sec["password"]
 
 
 def _ssl_context() -> ssl.SSLContext:
-    ca = os.environ.get(
-        "ORACLE_DB_CA_BUNDLE",
-        os.environ.get(
-            "ORACLE_RDS_CA_BUNDLE", "/etc/ssl/certs/rds-global-bundle.pem"
-        ),
-    )
+    # cafile=None uses the system trust store, which verifies Azure Flexible
+    # Server's publicly-rooted certificate. Only RDS needs a pinned bundle, so
+    # defaulting to the RDS .pem made this raise FileNotFoundError on Azure.
+    ca = os.environ.get("ORACLE_DB_CA_BUNDLE") or os.environ.get("ORACLE_RDS_CA_BUNDLE")
     ctx = ssl.create_default_context(cafile=ca)
     ctx.check_hostname = True
     ctx.verify_mode = ssl.CERT_REQUIRED

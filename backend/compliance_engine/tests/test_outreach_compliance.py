@@ -22,8 +22,10 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from outreach_compliance import (  # noqa: E402
     AI_VOICE_DISCLOSURE,
+    BIOMETRIC_VOICE_DISCLOSURE,
     Channel,
     ConsentRecord,
+    VoiceMode,
     evaluate,
     is_stop_keyword,
     normalize_contact,
@@ -102,6 +104,58 @@ def test_voice_blocked_without_written_consent():
     d = _voice(has_consent=True, has_written_consent=False)
     assert not d.allowed
     assert any("written" in b.lower() for b in d.blockers)
+
+
+def test_human_agent_voice_accepts_general_consent_without_ai_disclosure():
+    d = _voice(
+        has_consent=True,
+        has_written_consent=False,
+        voice_mode=VoiceMode.AGENT,
+        recording_enabled=False,
+    )
+    assert d.allowed
+    assert d.required_disclosures == ()
+
+
+def test_human_agent_voice_still_fails_closed_without_consent_basis():
+    d = _voice(
+        has_consent=False,
+        has_written_consent=False,
+        voice_mode=VoiceMode.AGENT,
+        recording_enabled=False,
+    )
+    assert not d.allowed
+    assert any("agent voice" in b for b in d.blockers)
+
+
+def test_unrecorded_human_agent_call_does_not_require_voiceprint_consent():
+    d = _voice(
+        state_code="IL",
+        has_consent=True,
+        has_written_consent=False,
+        has_voiceprint_consent=False,
+        voice_mode=VoiceMode.AGENT,
+        recording_enabled=False,
+    )
+    assert d.allowed
+    assert not any("voiceprint" in blocker for blocker in d.blockers)
+
+
+def test_recorded_human_agent_call_still_owes_the_biometric_disclosure():
+    # BIPA attaches to the recording, not to who is speaking: a human agent
+    # recording an IL recipient must still deliver the consent ask, even though
+    # no AI-identification line is owed.
+    d = _voice(
+        state_code="IL",
+        has_consent=True,
+        has_written_consent=False,
+        has_voiceprint_consent=True,
+        voice_mode=VoiceMode.AGENT,
+        recording_enabled=True,
+    )
+    assert d.allowed
+    assert AI_VOICE_DISCLOSURE not in d.required_disclosures
+    assert BIOMETRIC_VOICE_DISCLOSURE.format(state="IL") in d.required_disclosures
 
 
 def test_voice_blocked_when_suppressed_even_with_consent():

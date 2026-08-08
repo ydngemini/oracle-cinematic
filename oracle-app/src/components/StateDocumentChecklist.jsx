@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { crmGet, crmPost } from '../state/useCrmApi';
 import styles from './StateDocumentChecklist.module.css';
 
-const DEFAULT_STATE = 'DE';
+const DEFAULT_STATE = '';
 
 function messageOf(error, fallback) {
   const detail = error?.detail ?? error?.message;
@@ -139,7 +139,7 @@ export default function StateDocumentChecklist({
     : [];
 
   return (
-    <section className={`${styles.wrap} ${compact ? styles.compact : ''}`} aria-busy={catalog === null}>
+    <section className={`${styles.wrap} ${compact ? styles.compact : ''}`} aria-busy={Boolean(selectedState && catalog === null)}>
       <header className={styles.header}>
         <div>
           <span className={styles.kicker}>State document vault</span>
@@ -160,7 +160,9 @@ export default function StateDocumentChecklist({
       </header>
 
       {error && <p className={styles.error} role="alert">{error}</p>}
-      {catalog === null ? (
+      {!selectedState ? (
+        <p className={styles.empty}>Enter the property’s two-letter state code to load the correct cited document rules.</p>
+      ) : catalog === null ? (
         <div className={styles.loading} aria-label="Loading state documents" />
       ) : documents.length === 0 ? (
         <p className={styles.empty}>No cited document rules are currently registered for {selectedState}.</p>

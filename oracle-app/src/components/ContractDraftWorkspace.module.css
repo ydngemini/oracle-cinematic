@@ -21,7 +21,7 @@
 .fieldGrid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-2); margin-top: var(--space-3); }
 .fieldGrid label { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
 .fieldGrid label > span { font-family: var(--font-display); font-size: .5625rem; font-weight: 600; letter-spacing: var(--tracking-wider); text-transform: uppercase; color: var(--oracle-text-ghost); }
-.fieldGrid input, .fieldGrid textarea { width: 100%; min-width: 0; min-height: 38px; padding: 8px var(--space-2); border: 1px solid var(--oracle-border-bright); border-radius: var(--radius-sm); background: rgba(3, 7, 13, .28); color: var(--oracle-text); font: inherit; font-size: var(--text-xs); }
+.fieldGrid input, .fieldGrid textarea { width: 100%; min-width: 0; min-height: 38px; padding: 8px var(--space-2); border: 1px solid var(--oracle-border-bright); border-radius: var(--radius-sm); background: rgba(8, 8, 8, .28); color: var(--oracle-text); font: inherit; font-size: var(--text-xs); }
 .fieldGrid textarea { min-height: 98px; resize: vertical; line-height: 1.45; }
 .fieldGrid input:focus-visible, .fieldGrid textarea:focus-visible { outline: 2px solid var(--oracle-amber); outline-offset: 1px; }
 .fullField { grid-column: 1 / -1; }
@@ -30,9 +30,9 @@
 .actions button:hover:not(:disabled), .saved button:hover:not(:disabled) { border-color: var(--oracle-amber-dim); background: var(--oracle-amber-ghost); }
 .actions button:disabled, .saved button:disabled { cursor: wait; opacity: .55; }
 .primaryAction { border-color: var(--oracle-amber-dim) !important; }
-.aiAction { color: var(--oracle-text) !important; background: rgba(255, 182, 77, .13) !important; }
+.aiAction { color: var(--oracle-text) !important; background: rgba(255, 188, 31, .13) !important; }
 .previewPanel { display: flex; flex-direction: column; }
-.previewPanel pre { flex: 1; max-height: 38rem; overflow: auto; margin: var(--space-3) 0 0; padding: var(--space-3); border: 1px solid var(--oracle-border-subtle); border-radius: var(--radius-sm); background: rgba(1, 4, 9, .38); color: var(--oracle-text-dim); white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--font-mono, ui-monospace, monospace); font-size: .6875rem; line-height: 1.55; }
+.previewPanel pre { flex: 1; max-height: 38rem; overflow: auto; margin: var(--space-3) 0 0; padding: var(--space-3); border: 1px solid var(--oracle-border-subtle); border-radius: var(--radius-sm); background: rgba(8, 8, 8, .38); color: var(--oracle-text-dim); white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--font-mono, ui-monospace, monospace); font-size: .6875rem; line-height: 1.55; }
 .saved { display: flex; flex-direction: column; gap: var(--space-3); }
 .saved > p { padding: var(--space-3); border: 1px solid var(--oracle-border-subtle); border-radius: var(--radius-md); color: var(--oracle-text-ghost); font-size: var(--text-xs); }
 .saved ul { list-style: none; overflow: hidden; border: 1px solid var(--oracle-border-subtle); border-radius: var(--radius-md); }

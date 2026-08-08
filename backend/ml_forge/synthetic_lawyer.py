@@ -702,7 +702,10 @@ _MAX_TEMPLATE_BYTES = 100_000
 _MAX_FIELD_CHARS = 4_000
 _DOCUMENT_TYPES = {
     "assignment", "seller_purchase", "buyer_purchase", "joint_venture", "redline",
-    "account_security_esa",
+    "account_security_esa", "buyer_representation", "buyer_offer",
+    "inspection_repair_request", "financing_contingency_addendum",
+    "listing_agreement", "seller_disclosure", "counteroffer_addendum",
+    "termination_release",
 }
 _MONEY_FIELDS = {
     "purchase_price", "wholesale_buy_price", "investor_buy_price",

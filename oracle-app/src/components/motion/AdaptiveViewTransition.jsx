@@ -1,4 +1,6 @@
-import { Fragment, ViewTransition, useState } from 'react';
+import * as React from 'react';
+
+const { Fragment, useState } = React;
 
 // Shared feature detection intentionally lives beside the transition wrapper.
 // eslint-disable-next-line react-refresh/only-export-components
@@ -18,7 +20,10 @@ export function hasHighMotionBudget() {
  */
 export function AdaptiveViewTransition({ children, ...transitionProps }) {
   const [enabled] = useState(hasHighMotionBudget);
+  const ViewTransition = React.ViewTransition;
 
-  if (!enabled) return <Fragment>{children}</Fragment>;
+  if (!enabled || typeof ViewTransition !== 'function') {
+    return <Fragment>{children}</Fragment>;
+  }
   return <ViewTransition {...transitionProps}>{children}</ViewTransition>;
 }

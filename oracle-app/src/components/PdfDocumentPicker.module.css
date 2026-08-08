@@ -18,7 +18,7 @@
 .accessNote { margin: var(--space-1) 0 0; color: var(--oracle-text-ghost); font-size: .625rem; line-height: var(--leading-normal); white-space: normal; }
 .actions { flex: 0 0 auto; display: flex; align-items: center; gap: var(--space-2); }
 .actions button { min-height: 36px; padding: 0 var(--space-3); border: 1px solid var(--oracle-amber-dim); border-radius: var(--radius-sm); background: var(--oracle-amber-ghost); color: var(--oracle-amber); font-family: var(--font-display); font-size: .5625rem; font-weight: 700; letter-spacing: var(--tracking-wider); text-transform: uppercase; }
-.actions button:hover:not(:disabled) { border-color: var(--oracle-amber); background: rgba(236, 171, 63, .14); }
+.actions button:hover:not(:disabled) { border-color: var(--oracle-amber); background: rgba(255, 188, 31, .14); }
 .actions .save { border-color: var(--oracle-border-bright); background: transparent; color: var(--oracle-text-dim); }
 .actions .save:hover:not(:disabled) { border-color: var(--oracle-amber-dim); color: var(--oracle-amber); }
 .actions button:disabled { cursor: wait; opacity: .6; }

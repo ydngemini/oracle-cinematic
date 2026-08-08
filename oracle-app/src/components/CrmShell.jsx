@@ -11,10 +11,11 @@ import {
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
 import {
   Bot,
-  FileText,
-  House,
+  BriefcaseBusiness,
+  Building2,
+  CalendarCheck2,
+  CircleHelp,
   MessageSquare,
-  PieChart,
   ShieldAlert,
   UserRound,
   Users,
@@ -32,64 +33,96 @@ import { AssistantProvider } from './AssistantContext';
 import { AssistantShell } from './AssistantShell';
 import { BorderBeam } from './motion/BorderBeam';
 import { AdaptiveViewTransition } from './motion/AdaptiveViewTransition';
+import { ProductTour } from './ProductTour';
 import styles from './CrmShell.module.css';
 
 // Each tab is its own chunk — a field agent on LTE only pays for the tab
 // they open. (Same code-split rationale as PropertyCanvas in the HUD era.)
-const loadHouseSelection = () => import('./HouseSelection');
-const loadPortfolioTab = () => import('./PortfolioTab');
-const loadClientCrmTab = () => import('./ClientCrmTab');
+const loadTodayTab = () => import('./TodayTab');
+const loadPeopleTab = () => import('./PeopleTab');
 const loadCommsTab = () => import('./CommsTab');
+const loadDealsTab = () => import('./DealsTab');
+const loadOurAITab = () => import('./OurAITab');
+const loadPropertiesTab = () => import('./PropertiesTab');
 const loadPersonalAITab = () => import('./PersonalAITab');
-const loadContractVaultTab = () => import('./ContractVaultTab');
 const loadMyProfileTab = () => import('./MyProfileTab');
 const loadAdminOpsTab = () => import('./AdminOpsTab');
 
-const HouseSelection = lazy(loadHouseSelection);
-const PortfolioTab = lazy(loadPortfolioTab);
-const ClientCrmTab = lazy(loadClientCrmTab);
+const TodayTab = lazy(loadTodayTab);
+const PeopleTab = lazy(loadPeopleTab);
 const CommsTab = lazy(loadCommsTab);
+const DealsTab = lazy(loadDealsTab);
+const OurAITab = lazy(loadOurAITab);
+const PropertiesTab = lazy(loadPropertiesTab);
 const PersonalAITab = lazy(loadPersonalAITab);
-const ContractVaultTab = lazy(loadContractVaultTab);
 const MyProfileTab = lazy(loadMyProfileTab);
 const AdminOpsTab = lazy(loadAdminOpsTab);
 
 const TABS = [
-  { id: 'houses', label: 'Houses', Icon: House, Component: HouseSelection, preload: loadHouseSelection },
-  { id: 'portfolio', label: 'Portfolio', Icon: PieChart, Component: PortfolioTab, preload: loadPortfolioTab },
-  { id: 'clients', label: 'Clients', Icon: Users, Component: ClientCrmTab, preload: loadClientCrmTab },
-  { id: 'comms', label: 'Comms', Icon: MessageSquare, Component: CommsTab, preload: loadCommsTab },
-  { id: 'ai', label: 'AI Agent', shortLabel: 'AI', Icon: Bot, Component: PersonalAITab, preload: loadPersonalAITab },
-  { id: 'docs', label: 'Docs', Icon: FileText, Component: ContractVaultTab, preload: loadContractVaultTab },
+  { id: 'today', label: 'Today', Icon: CalendarCheck2, Component: TodayTab, preload: loadTodayTab },
+  { id: 'people', label: 'People', Icon: Users, Component: PeopleTab, preload: loadPeopleTab },
+  { id: 'inbox', label: 'Inbox', Icon: MessageSquare, Component: CommsTab, preload: loadCommsTab },
+  { id: 'deals', label: 'Deals', Icon: BriefcaseBusiness, Component: DealsTab, preload: loadDealsTab },
+  { id: 'property-view', label: 'Property View', Icon: Building2, Component: PropertiesTab, preload: loadPropertiesTab },
+  { id: 'studio', label: 'Our AI', Icon: Bot, Component: OurAITab, preload: loadOurAITab },
 ];
 
-// The sixth key only exists for the platform admin — everyone else never
-// downloads the OPS chunk (lazy) or sees the tab. The backend enforces the
-// real gate (403 on /api/admin/*); this is purely presentational.
-const OPS_TAB = {
-  id: 'ops',
-  label: 'Ops',
-  Icon: ShieldAlert,
-  Component: AdminOpsTab,
-  preload: loadAdminOpsTab,
-};
-
 const TAB_KEY = 'oracle_crm_tab';
+const TAB_PATHS = {
+  today: '/today',
+  people: '/people',
+  inbox: '/inbox',
+  deals: '/deals',
+  // Distinct from the unauthenticated /property-upload/:token client page
+  // routed in App.jsx — different prefix, no collision.
+  'property-view': '/property-view',
+  studio: '/our-ai',
+};
+const SALES_PATHS = new Set([
+  '/our-ai/sales',
+  '/our-ai/sales/agent',
+  '/our-ai/sales/dialer',
+  '/our-ai/sales/plans',
+  '/our-ai/sales/providers',
+  '/our-ai/sales/routing',
+]);
 const LEGACY_TAB_IDS = {
-  pipeline: 'houses',
-  marketplace: 'houses',
-  house: 'houses',
-  'house-profile': 'houses',
-  'personal-ai': 'ai',
-  contracts: 'docs',
-  profile: 'houses',
+  portfolio: 'today',
+  // The houses/marketplace surface lives under Property View, not People —
+  // People is the contact book and has no lead browser or property workspace.
+  houses: 'property-view',
+  clients: 'people',
+  pipeline: 'deals',
+  marketplace: 'property-view',
+  house: 'property-view',
+  'house-profile': 'property-view',
+  comms: 'inbox',
+  ai: 'studio',
+  'personal-ai': 'studio',
+  docs: 'deals',
+  contracts: 'deals',
+  ops: 'today',
+  profile: 'today',
 };
 
 function savedTabId() {
-  const stored = sessionStorage.getItem(TAB_KEY) || 'houses';
+  const stored = sessionStorage.getItem(TAB_KEY) || 'today';
   const resolved = LEGACY_TAB_IDS[stored] || stored;
   if (resolved !== stored) sessionStorage.setItem(TAB_KEY, resolved);
   return resolved;
+}
+
+function routeForPath(pathname = window.location.pathname, { restoreSaved = false } = {}) {
+  const path = pathname.length > 1 ? pathname.replace(/\/+$/, '') : pathname;
+  if (SALES_PATHS.has(path)) return { tab: 'studio', salesRoute: path };
+  const entry = Object.entries(TAB_PATHS).find(([, value]) => value === path);
+  if (entry) return { tab: entry[0], salesRoute: null };
+  // On first mount an unrecognised path — including the bare '/' the app is
+  // usually entered at — resumes the tab the session left off on. On popstate
+  // it must not: `select` has already overwritten sessionStorage with the tab
+  // being navigated away from, so resuming it would leave the view unchanged
+  // while the address bar went back, and Back would look broken.
+  return { tab: restoreSaved ? savedTabId() : 'today', salesRoute: null };
 }
 
 function ViewFallback() {
@@ -104,15 +137,30 @@ function ViewFallback() {
 
 /**
  * CrmShell — the agent CRM frame ("as soon as they open the app,
- * they should be here": Houses is the landing tab). Replaces the desktop
+ * they should be here": Today is the landing tab). Replaces the desktop
  * DashboardLayout; BillingOverlay and OnboardingGate stay as self-gating
  * overlays, exactly as before.
  */
 export function CrmShell() {
   const [profileOpen, setProfileOpen] = useState(false);
+  const [profileView, setProfileView] = useState('settings');
   const profileSheetRef = useRef(null);
   const profileButtonRef = useRef(null);
+  const tourButtonRef = useRef(null);
   const reducedMotion = useReducedMotion();
+  // First visit opens the walkthrough automatically; closeTour records the visit
+  // either way, so it never reopens on its own after that. Read once at mount
+  // rather than in an effect, which would cost an extra render.
+  const [tourOpen, setTourOpen] = useState(() => {
+    try {
+      return !window.localStorage.getItem('oracle_product_tour_v1');
+    } catch {
+      // Private browsing / storage disabled — treat as already seen rather than
+      // reopening the tour on every mount.
+      return false;
+    }
+  });
+  const [tourStep, setTourStep] = useState(0);
 
   useEffect(() => {
     const viewport = window.visualViewport;
@@ -182,22 +230,57 @@ export function CrmShell() {
     };
   }, [profileOpen]);
 
-  // LoginVault stamps oracle_role before this mounts (App's auth gate).
-  const tabs = useMemo(
-    () =>
-      sessionStorage.getItem('oracle_role') === 'platform_admin'
-        ? [...TABS, OPS_TAB]
-        : TABS,
-    []
+  // LoginVault stamps oracle_role before this mounts (App's auth gate). Ops is
+  // intentionally a profile-level destination, never a sixth CRM workspace.
+  const isPlatformAdmin = useMemo(
+    () => sessionStorage.getItem('oracle_role') === 'platform_admin',
+    [],
+  );
+  const tabs = TABS;
+
+  const [active, setActive] = useState(() => routeForPath(undefined, { restoreSaved: true }).tab);
+  const [salesRoute, setSalesRoute] = useState(
+    () => routeForPath(undefined, { restoreSaved: true }).salesRoute,
   );
 
-  const [active, setActive] = useState(savedTabId);
-
-  const select = useCallback((id) => {
+  // `replace` is used by the guided walkthrough: it drives navigation on every
+  // step, and pushing an entry per step would bury the page the user entered
+  // from under ~16 history entries, so Back stops being an escape hatch.
+  const select = useCallback((id, replace = false) => {
+    const path = TAB_PATHS[id] || TAB_PATHS.today;
     startTransition(() => {
       setActive(id);
+      setSalesRoute(null);
       sessionStorage.setItem(TAB_KEY, id);
+      if (window.location.pathname !== path) {
+        window.history[replace ? 'replaceState' : 'pushState']({}, '', path);
+      }
     });
+  }, []);
+
+  const navigateSales = useCallback((path, replace = false) => {
+    if (path !== '/our-ai' && !SALES_PATHS.has(path)) return;
+    startTransition(() => {
+      setActive('studio');
+      setSalesRoute(path === '/our-ai' ? null : path);
+      sessionStorage.setItem(TAB_KEY, 'studio');
+      if (window.location.pathname !== path) {
+        window.history[replace ? 'replaceState' : 'pushState']({}, '', path);
+      }
+    });
+  }, []);
+
+  useEffect(() => {
+    const onPopState = () => {
+      const next = routeForPath();
+      startTransition(() => {
+        setActive(next.tab);
+        setSalesRoute(next.salesRoute);
+        sessionStorage.setItem(TAB_KEY, next.tab);
+      });
+    };
+    window.addEventListener('popstate', onPopState);
+    return () => window.removeEventListener('popstate', onPopState);
   }, []);
 
   const openProfile = useCallback(() => {
@@ -208,10 +291,37 @@ export function CrmShell() {
     startTransition(() => setProfileOpen(false));
   }, []);
 
+  const closeTour = useCallback((completed = false) => {
+    // Dismissing counts too — the tour now opens itself on a first visit, so a
+    // close that recorded nothing would reopen it on the next mount.
+    try {
+      window.localStorage.setItem(
+        'oracle_product_tour_v1',
+        completed ? 'complete' : 'dismissed',
+      );
+    } catch {
+      // Storage unavailable; the tour stays available from the header button.
+    }
+    setTourOpen(false);
+    window.requestAnimationFrame(() => tourButtonRef.current?.focus({ preventScroll: true }));
+  }, []);
+
   // Older sessions may still point to a tab removed from the deck.
-  // Fall back cleanly to Houses until the user selects their next tab.
+  // Fall back cleanly to Today until the user selects their next destination.
   const tab = tabs.find((t) => t.id === active) ?? tabs[0];
   const { Component } = tab;
+  const profileViews = isPlatformAdmin
+    ? [
+        { id: 'settings', label: 'Settings', Icon: UserRound, Component: MyProfileTab, preload: loadMyProfileTab },
+        { id: 'ai', label: 'AI controls', Icon: Bot, Component: PersonalAITab, preload: loadPersonalAITab },
+        { id: 'ops', label: 'Admin', Icon: ShieldAlert, Component: AdminOpsTab, preload: loadAdminOpsTab },
+      ]
+    : [
+        { id: 'settings', label: 'Settings', Icon: UserRound, Component: MyProfileTab, preload: loadMyProfileTab },
+        { id: 'ai', label: 'AI controls', Icon: Bot, Component: PersonalAITab, preload: loadPersonalAITab },
+      ];
+  const activeProfileView = profileViews.find((view) => view.id === profileView) ?? profileViews[0];
+  const ProfileComponent = activeProfileView.Component;
 
   return (
     <StateProvider>
@@ -225,6 +335,17 @@ export function CrmShell() {
         <NeohBrandMark />
         <div className={styles.headerTools}>
           <StateSelector />
+          <button
+            ref={tourButtonRef}
+            type="button"
+            className={styles.profileButton}
+            onClick={() => { setTourStep(0); setTourOpen(true); }}
+            aria-label="Start CRM guided walkthrough"
+            aria-expanded={tourOpen}
+            aria-controls="crm-product-tour"
+          >
+            <CircleHelp aria-hidden="true" />
+          </button>
           <button
             ref={profileButtonRef}
             type="button"
@@ -264,7 +385,11 @@ export function CrmShell() {
                   )}
                 >
                   <AdaptiveViewTransition enter="slide-up" default="none">
-                    <Component />
+                    <Component
+                      onNavigate={select}
+                      salesRoute={salesRoute}
+                      onSalesNavigate={navigateSales}
+                    />
                   </AdaptiveViewTransition>
                 </Suspense>
               </ErrorBoundary>
@@ -308,7 +433,7 @@ export function CrmShell() {
               <div className={styles.profileSheetHead}>
                 <div>
                   <span>Agent settings</span>
-                  <h1 id="agent-profile-title">Profile</h1>
+                  <h2 id="agent-profile-title">{activeProfileView.label}</h2>
                 </div>
                 <button
                   type="button"
@@ -318,10 +443,28 @@ export function CrmShell() {
                   <X aria-hidden="true" />
                 </button>
               </div>
+              <nav className={styles.profileNav} aria-label="Profile and administration">
+                {profileViews.map((view) => {
+                  const Icon = view.Icon;
+                  return (
+                    <button
+                      key={view.id}
+                      type="button"
+                      aria-pressed={activeProfileView.id === view.id}
+                      onClick={() => setProfileView(view.id)}
+                      onPointerEnter={() => { void view.preload?.(); }}
+                      onFocus={() => { void view.preload?.(); }}
+                    >
+                      <Icon aria-hidden="true" />
+                      <span>{view.label}</span>
+                    </button>
+                  );
+                })}
+              </nav>
               <div className={styles.profileSheetBody}>
-                <ErrorBoundary label="Agent profile">
-                  <Suspense fallback={<ViewFallback />}>
-                    <MyProfileTab />
+                <ErrorBoundary label={activeProfileView.label}>
+                  <Suspense key={activeProfileView.id} fallback={<ViewFallback />}>
+                    <ProfileComponent />
                   </Suspense>
                 </ErrorBoundary>
               </div>
@@ -332,6 +475,14 @@ export function CrmShell() {
       <ErrorBoundary label="Personal AI">
         <AssistantShell />
       </ErrorBoundary>
+      <ProductTour
+        open={tourOpen}
+        stepIndex={tourStep}
+        onStepChange={setTourStep}
+        onClose={closeTour}
+        onNavigateTab={select}
+        onNavigateSales={navigateSales}
+      />
 
       <BillingOverlay />
       <OnboardingGate />

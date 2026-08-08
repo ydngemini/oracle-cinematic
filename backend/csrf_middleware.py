@@ -34,6 +34,7 @@ CSRF_EXEMPT_PATHS = {
     "/auth/reset",
     "/auth/verify",
     "/api/commands/webhooks/",
+    "/api/public/lead-intake/",
     "/billing/webhook",
 }
 

@@ -8,16 +8,22 @@
   display: flex;
   flex-direction: column;
   gap: var(--space-4);
+  width: min(100%, 68rem);
+  padding: clamp(var(--space-3), 3vw, var(--space-8)) 0;
 }
 
 /* ── Header row — kicker + refresh key (matches Marketplace) ─────────────── */
 .topRow {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
   gap: var(--space-3);
-  min-height: 44px; /* touch floor */
+  min-height: 7.5rem;
 }
+
+.destinationTitle { min-width: 0; }
+.destinationTitle h1 { margin-top: var(--space-2); font-size: clamp(2.25rem, 7vw, 4.25rem); font-weight: 300; line-height: 0.92; }
+.destinationTitle small { display: block; margin-top: var(--space-2); color: var(--oracle-text-dim); font: 650 0.625rem/1 var(--font-display); letter-spacing: var(--tracking-wider); text-transform: uppercase; }
 
 .kicker {
   font-family: var(--font-display);
@@ -67,6 +73,11 @@
 
 @keyframes spinGlyph {
   to { transform: rotate(360deg); }
+}
+
+@media (max-width: 680px) {
+  .wrap { width: 100%; padding-top: 0; }
+  .topRow { min-height: 6.75rem; }
 }
 
 /* ── LEVEL 1 — thread rows ───────────────────────────────────────────────── */
@@ -235,7 +246,7 @@
   /* Bleed across the view's gutters so scrolled bubbles pass underneath */
   margin: calc(-1 * var(--space-4)) calc(-1 * var(--space-4)) 0;
   padding: var(--space-2) var(--space-4);
-  background: rgba(6, 6, 9, 0.72);
+  background: rgba(8, 8, 8, 0.72);
   backdrop-filter: var(--oracle-backdrop-light);
   -webkit-backdrop-filter: var(--oracle-backdrop-light);
   border-bottom: 1px solid var(--oracle-border);
@@ -508,7 +519,7 @@
   flex-direction: column;
   gap: var(--space-2);
   padding: var(--space-3) var(--space-4);
-  background: rgba(6, 6, 9, 0.82);
+  background: rgba(8, 8, 8, 0.82);
   backdrop-filter: var(--oracle-backdrop);
   -webkit-backdrop-filter: var(--oracle-backdrop);
   border-top: 1px solid var(--oracle-border-bright);

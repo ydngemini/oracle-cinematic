@@ -137,6 +137,138 @@ async def send_ses_email(
     return ProviderResult("ses", reference, "submitted", {"recipient": recipient})
 
 
+async def send_smtp_email(
+    draft: Mapping[str, Any],
+    *,
+    credentials: Optional[Mapping[str, Any]] = None,
+) -> ProviderResult:
+    """Send one previously-approved email over SMTP.
+
+    This is the bring-your-own-mail-server path: `credentials` comes from the
+    tenant's encrypted provider vault, so a brokerage can send through their own
+    server (or their own Google account) without the platform holding it. With
+    no tenant credential it falls back to the platform SMTP environment."""
+    credentials = dict(credentials or {})
+    recipient = str((draft.get("target") or {}).get("email") or "").strip()
+    subject = str(draft.get("subject") or "").strip()
+    body_text = str(draft.get("body") or "").strip()
+    if not recipient or "@" not in recipient:
+        raise ProviderRequestError("approved email target is invalid")
+    if not subject or not body_text:
+        raise ProviderRequestError("approved email subject and body are required")
+
+    def _send() -> str:
+        import smtp_mailer
+
+        try:
+            return smtp_mailer.send(
+                recipient=recipient,
+                subject=subject,
+                text=body_text,
+                credentials=credentials,
+            )
+        except smtp_mailer.SmtpConfigurationError as exc:
+            raise ProviderConfigurationError(str(exc)[:500]) from exc
+        except smtp_mailer.SmtpSendError as exc:
+            raise ProviderRejectedError(str(exc)[:500]) from exc
+
+    reference = await asyncio.wait_for(asyncio.to_thread(_send), timeout=40.0)
+    if not reference:
+        raise ProviderRequestError("SMTP did not return a message id")
+    return ProviderResult("smtp", reference, "submitted", {"recipient": recipient})
+
+
+async def send_acs_email(
+    draft: Mapping[str, Any],
+    *,
+    credentials: Optional[Mapping[str, Any]] = None,
+) -> ProviderResult:
+    """Send one previously-approved email through Azure Communication Services.
+
+    The ACS counterpart to send_ses_email — same validation, same approved-draft
+    contract, so the caller does not care which cloud is behind it."""
+    credentials = dict(credentials or {})
+    connection_string = str(
+        credentials.get("connection_string") or os.getenv("ACS_CONNECTION_STRING", "")
+    ).strip()
+    sender = str(
+        credentials.get("from_email") or os.getenv("ORACLE_ACS_FROM_EMAIL", "")
+    ).strip()
+    recipient = str((draft.get("target") or {}).get("email") or "").strip()
+    subject = str(draft.get("subject") or "").strip()
+    body_text = str(draft.get("body") or "").strip()
+    if not connection_string:
+        raise ProviderConfigurationError("ACS connection string is not configured")
+    if not sender:
+        raise ProviderConfigurationError("ORACLE_ACS_FROM_EMAIL is not configured")
+    if not recipient or "@" not in recipient:
+        raise ProviderRequestError("approved email target is invalid")
+    if not subject or not body_text:
+        raise ProviderRequestError("approved email subject and body are required")
+
+    def _send() -> str:
+        from azure.communication.email import EmailClient
+
+        client = EmailClient.from_connection_string(connection_string)
+        poller = client.begin_send(
+            {
+                "senderAddress": sender,
+                "recipients": {"to": [{"address": recipient}]},
+                "content": {"subject": subject, "plainText": body_text},
+            }
+        )
+        result = poller.result() or {}
+        status = str(result.get("status") or "")
+        # ACS reports a terminal per-message status; anything but Succeeded means
+        # the message was accepted by the SDK but rejected downstream.
+        if status and status.lower() not in ("succeeded", "running", "notstarted"):
+            raise ProviderRejectedError(f"ACS email status {status}"[:500])
+        return str(result.get("id") or "")
+
+    reference = await asyncio.wait_for(asyncio.to_thread(_send), timeout=25.0)
+    if not reference:
+        raise ProviderRequestError("ACS did not return a message id")
+    return ProviderResult("acs_email", reference, "submitted", {"recipient": recipient})
+
+
+def _twilio_credential_error(
+    account_sid: str, auth_token: str, api_key: str, api_secret: str
+) -> Optional[str]:
+    """Validate a Twilio credential set. Returns an error message, or None.
+
+    A usable credential is a *complete* API key pair or an auth token. A half-
+    configured pair is not usable on its own: it must not be preferred over a
+    working auth token, because Client(key, "", sid) 401s on every request.
+    """
+    if not account_sid:
+        return "TWILIO_ACCOUNT_SID is not configured"
+    if bool(api_key) != bool(api_secret):
+        if not auth_token:
+            return "Twilio API key and API secret must be configured together"
+        logger.warning(
+            "Twilio API key pair is incomplete (key=%s secret=%s) — "
+            "falling back to TWILIO_AUTH_TOKEN",
+            bool(api_key),
+            bool(api_secret),
+        )
+    if not auth_token and not (api_key and api_secret):
+        return "Twilio auth token or API key pair is not configured"
+    return None
+
+
+def _twilio_client(account_sid: str, auth_token: str, api_key: str, api_secret: str):
+    """Build a Twilio REST client, preferring a complete API key pair.
+
+    An incomplete pair is ignored rather than used — _twilio_credential_error
+    has already guaranteed an auth token exists in that case.
+    """
+    from twilio.rest import Client
+
+    if api_key and api_secret:
+        return Client(api_key, api_secret, account_sid)
+    return Client(account_sid, auth_token)
+
+
 async def send_twilio_sms(
     draft: Mapping[str, Any],
     *,
@@ -163,10 +295,9 @@ async def send_twilio_sms(
     recipient = str((draft.get("target") or {}).get("phone") or "").strip()
     body = str(draft.get("body") or "").strip()
 
-    if not account_sid:
-        raise ProviderConfigurationError("TWILIO_ACCOUNT_SID is not configured")
-    if not auth_token and not (api_key and api_secret):
-        raise ProviderConfigurationError("Twilio auth token or API key pair is not configured")
+    cred_error = _twilio_credential_error(account_sid, auth_token, api_key, api_secret)
+    if cred_error:
+        raise ProviderConfigurationError(cred_error)
     if not sender.startswith("+"):
         raise ProviderConfigurationError("A registered Twilio SMS sender is not configured")
     if sender_type and sender_type not in {
@@ -182,13 +313,8 @@ async def send_twilio_sms(
 
     def _send() -> str:
         from twilio.base.exceptions import TwilioRestException
-        from twilio.rest import Client
 
-        client = (
-            Client(api_key, api_secret, account_sid)
-            if api_key
-            else Client(account_sid, auth_token)
-        )
+        client = _twilio_client(account_sid, auth_token, api_key, api_secret)
         try:
             message = client.messages.create(to=recipient, from_=sender, body=body)
         except TwilioRestException as exc:
@@ -340,68 +466,6 @@ async def create_google_calendar_event(
     )
 
 
-async def send_gmail(
-    draft: Mapping[str, Any],
-    *,
-    access_token: Optional[str] = None,
-    credentials: Optional[Any] = None,
-) -> ProviderResult:
-    token = access_token
-    if not token and isinstance(credentials, str):
-        token = credentials
-    elif not token and isinstance(credentials, dict):
-        token = credentials.get("access_token") or credentials.get("token") or ""
-    token = token or os.getenv("GOOGLE_CALENDAR_ACCESS_TOKEN", "")
-
-    if not token:
-        service_account_json = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "")
-        if not service_account_json:
-            raise ProviderConfigurationError("Gmail OAuth credential or service account is not configured")
-        try:
-            import google.oauth2.service_account
-            import google.auth.transport.requests
-            sa_info = json.loads(service_account_json)
-            credentials_obj = google.oauth2.service_account.Credentials.from_service_account_info(
-                sa_info, scopes=["https://www.googleapis.com/auth/gmail.send"]
-            )
-            credentials_obj.refresh(google.auth.transport.requests.Request())
-            token = credentials_obj.token
-        except Exception as exc:
-            raise ProviderConfigurationError(f"Gmail service account failed: {exc}") from exc
-
-    recipient = str((draft.get("target") or {}).get("email") or "").strip()
-    subject = str(draft.get("subject") or "").strip()
-    body_text = str(draft.get("body") or "").strip()
-    if not recipient or "@" not in recipient:
-        raise ProviderRequestError("approved email target is invalid")
-    if not subject or not body_text:
-        raise ProviderRequestError("approved email subject and body are required")
-
-    import base64 as b64
-    from email.mime.text import MIMEText
-
-    msg = MIMEText(body_text, "plain", "utf-8")
-    msg["to"] = recipient
-    msg["subject"] = subject
-    raw = b64.urlsafe_b64encode(msg.as_bytes()).decode("ascii")
-
-    request = urllib.request.Request(
-        f"https://gmail.googleapis.com/gmail/v1/users/me/messages/send",
-        data=json.dumps({"raw": raw}).encode("utf-8"),
-        method="POST",
-        headers={
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/json",
-            "User-Agent": "Oracle-CommandRouter/1.0",
-        },
-    )
-    _, response = await asyncio.wait_for(asyncio.to_thread(_http_json, request), timeout=25.0)
-    reference = str(response.get("id") or "")
-    if not reference:
-        raise ProviderRequestError("Gmail did not return a message id")
-    return ProviderResult("gmail", reference, "sent", {"recipient": recipient})
-
-
 async def place_twilio_call(
     draft: Mapping[str, Any],
     *,
@@ -434,10 +498,9 @@ async def place_twilio_call(
     )
     account_tier = os.getenv("ORACLE_TWILIO_ACCOUNT_TIER", "").strip().lower()
 
-    if not account_sid:
-        raise ProviderConfigurationError("TWILIO_ACCOUNT_SID is not configured")
-    if not auth_token and not (api_key and api_secret):
-        raise ProviderConfigurationError("Twilio auth token or API key pair is not configured")
+    cred_error = _twilio_credential_error(account_sid, auth_token, api_key, api_secret)
+    if cred_error:
+        raise ProviderConfigurationError(cred_error)
     if not from_number:
         raise ProviderConfigurationError("TWILIO_FROM_NUMBER is not configured")
     if not to_number.startswith("+"):
@@ -453,9 +516,8 @@ async def place_twilio_call(
 
     def _call() -> str:
         from twilio.base.exceptions import TwilioRestException
-        from twilio.rest import Client
 
-        client = Client(api_key, api_secret, account_sid) if api_key else Client(account_sid, auth_token)
+        client = _twilio_client(account_sid, auth_token, api_key, api_secret)
         try:
             call = client.calls.create(
                 to=to_number,
@@ -494,18 +556,13 @@ async def abort_twilio_call(
     auth_token = str(
         credentials.get("auth_token") or os.getenv("TWILIO_AUTH_TOKEN", "")
     )
-    if not account_sid or (not auth_token and not (api_key and api_secret)):
-        logger.error("Cannot terminate unmanaged Twilio call: credentials missing")
+    cred_error = _twilio_credential_error(account_sid, auth_token, api_key, api_secret)
+    if cred_error:
+        logger.error("Cannot terminate unmanaged Twilio call: %s", cred_error)
         return
 
     def _hangup() -> None:
-        from twilio.rest import Client
-
-        client = (
-            Client(api_key, api_secret, account_sid)
-            if api_key
-            else Client(account_sid, auth_token)
-        )
+        client = _twilio_client(account_sid, auth_token, api_key, api_secret)
         client.calls(call_sid).update(status="completed")
 
     try:

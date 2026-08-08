@@ -7,15 +7,15 @@
 # empty base is only valid behind an ingress that actually proxies /api and /ws.
 
 # ---- build stage ----------------------------------------------------------
-FROM node:20-alpine AS build
+FROM node:24.18.0-alpine AS build
 WORKDIR /app
 
 # Install deps against the lockfile first so this layer caches across source edits.
 COPY package.json package-lock.json* ./
-# React's view-transition build is a pinned canary. Some libraries declare only
-# stable React peer ranges even though they are runtime-compatible, so preserve
-# the lockfile exactly without asking npm to replace the pinned React build.
-RUN npm ci --legacy-peer-deps
+# Install the committed stable dependency graph exactly. Audit metadata and
+# funding lookups are excluded from the image build; release gates run them
+# separately before image publication.
+RUN npm ci --no-audit --no-fund
 
 COPY . .
 
@@ -39,7 +39,7 @@ ENV VITE_MUNICIPAL_HARVESTS_ENABLED=${VITE_MUNICIPAL_HARVESTS_ENABLED}
 RUN npm run build
 
 # ---- serve stage ----------------------------------------------------------
-FROM nginx:1.27-alpine AS serve
+FROM nginx:1.30.4-alpine AS serve
 
 # Drop nginx's default site; install our SPA config (listens on 8080, non-root).
 RUN rm /etc/nginx/conf.d/default.conf

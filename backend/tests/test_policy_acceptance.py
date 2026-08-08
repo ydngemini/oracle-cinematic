@@ -14,7 +14,9 @@ import db.connection
 from policy_acceptance import (
     ACCOUNT_SECURITY_ESA_VERSION,
     PLATFORM_POLICY_VERSION,
+    AccountSecurityAcceptanceRequest,
     PolicyAcceptanceRequest,
+    accept_account_security_esa,
     accept_policy,
     policy_acceptance_status,
     account_security_esa,
@@ -31,18 +33,27 @@ class _PolicyConn:
     def __init__(self, *, required: bool = True):
         self.user = {"id": USER_ID, "policy_acceptance_required": required}
         self.acceptance = None
+        self.security_acceptance = None
 
     async def fetchrow(self, query, *args):
         if "SELECT id, policy_acceptance_required" in query:
             return self.user
         if "SELECT policy_version, accepted_at" in query:
             return self.acceptance
+        if "SELECT agreement_version, accepted_at" in query:
+            return self.security_acceptance
         if "INSERT INTO user_policy_acceptances" in query:
             self.acceptance = {
                 "policy_version": args[2],
                 "accepted_at": datetime.now(timezone.utc),
             }
             return self.acceptance
+        if "INSERT INTO account_security_acceptances" in query:
+            self.security_acceptance = {
+                "agreement_version": args[2],
+                "accepted_at": datetime.now(timezone.utc),
+            }
+            return self.security_acceptance
         raise AssertionError(f"Unexpected fetchrow query: {query}")
 
     async def execute(self, query, *_args):
@@ -94,10 +105,15 @@ def test_policy_status_and_acceptance_exchange_pending_token(monkeypatch):
     before = asyncio.run(policy_acceptance_status(CTX))
     assert before.required is True
     assert before.accepted_at is None
+    assert before.account_security_required is True
 
-    accepted = asyncio.run(accept_policy(PolicyAcceptanceRequest(policy_version=PLATFORM_POLICY_VERSION), CTX))
+    accepted = asyncio.run(accept_policy(PolicyAcceptanceRequest(
+        policy_version=PLATFORM_POLICY_VERSION,
+        account_security_version=ACCOUNT_SECURITY_ESA_VERSION,
+    ), CTX))
     assert accepted.accepted is True
     assert accepted.required is False
+    assert accepted.account_security_required is False
     assert conn.user["policy_acceptance_required"] is False
     assert auth.decode_token(accepted.token).get("policy_pending") is None
     assert auth.decode_token(accepted.token)["policy_version"] == PLATFORM_POLICY_VERSION
@@ -105,6 +121,7 @@ def test_policy_status_and_acceptance_exchange_pending_token(monkeypatch):
     after = asyncio.run(policy_acceptance_status(CTX))
     assert after.required is False
     assert after.accepted_at is not None
+    assert after.account_security_accepted_at is not None
     assert after.policy.title == "NEOH™ Platform Use Policy"
     assert after.token is not None
 
@@ -126,8 +143,26 @@ def test_policy_acceptance_rejects_stale_version(monkeypatch):
     monkeypatch.setattr(db.connection, "tenant_tx", _fake_tenant_tx(conn))
 
     with pytest.raises(HTTPException) as exc:
-        asyncio.run(accept_policy(PolicyAcceptanceRequest(policy_version="old-policy"), CTX))
+        asyncio.run(accept_policy(PolicyAcceptanceRequest(
+            policy_version="old-policy",
+            account_security_version=ACCOUNT_SECURITY_ESA_VERSION,
+        ), CTX))
     assert exc.value.status_code == 422
+
+
+def test_account_security_acceptance_is_persisted_server_side(monkeypatch):
+    conn = _PolicyConn(required=False)
+    monkeypatch.setattr(db.connection, "tenant_tx", _fake_tenant_tx(conn))
+
+    result = asyncio.run(accept_account_security_esa(
+        AccountSecurityAcceptanceRequest(agreement_version=ACCOUNT_SECURITY_ESA_VERSION),
+        CTX,
+    ))
+
+    assert result.accepted is True
+    assert result.required is False
+    assert result.agreement_version == ACCOUNT_SECURITY_ESA_VERSION
+    assert conn.security_acceptance is not None
 
 
 class _RegistrationConn:

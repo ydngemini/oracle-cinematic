@@ -1,4 +1,4 @@
-/* ─── LiveTranscript — Holographic Mission Log ────────────────────────────
+/* ─── LiveTranscript — Cinematic Mission Log ─────────────────────────────
    Design language: PropertyCanvas gold standard
    Each line is a telemetry entry with staggered entrance + hover reveals.
    Depth layers: panel shell → line track → agent tag → body text → glow.
@@ -51,11 +51,11 @@
 @keyframes jarvisDot {
   0%, 100% {
     transform: scale(1);
-    box-shadow: 0 0 6px rgba(180, 130, 255, 0.6);
+    box-shadow: 0 0 6px rgba(171, 171, 171, 0.6);
   }
   50% {
     transform: scale(1.6);
-    box-shadow: 0 0 14px rgba(180, 130, 255, 0.9);
+    box-shadow: 0 0 14px rgba(171, 171, 171, 0.9);
   }
 }
 
@@ -63,7 +63,7 @@
   0%, 100% {
     opacity: 0.9;
     transform: scale(1);
-    box-shadow: 0 0 4px rgba(255, 255, 255, 0.4);
+    box-shadow: 0 0 4px rgba(242, 242, 242, 0.4);
   }
   50% {
     opacity: 0.25;
@@ -78,8 +78,8 @@
 }
 
 @keyframes whisperBorderGlow {
-  0%, 100% { border-color: rgba(120, 200, 255, 0.25); }
-  50%       { border-color: rgba(120, 200, 255, 0.45); }
+  0%, 100% { border-color: rgba(171, 171, 171, 0.25); }
+  50%       { border-color: rgba(171, 171, 171, 0.45); }
 }
 
 /* ─── Panel Shell ────────────────────────────────────────────────────────── */
@@ -87,23 +87,17 @@
 .panel {
   font-family: 'PP Neue Montreal', 'Inter', -apple-system, sans-serif;
 
-  background:
-    linear-gradient(
-      180deg,
-      rgba(255, 255, 255, 0.018) 0%,
-      rgba(255, 255, 255, 0) 40%
-    ),
-    rgba(8, 8, 12, 0.75);
-  backdrop-filter: blur(40px) saturate(1.4);
-  -webkit-backdrop-filter: blur(40px) saturate(1.4);
+  background: var(--oracle-glass);
+  backdrop-filter: var(--oracle-backdrop);
+  -webkit-backdrop-filter: var(--oracle-backdrop);
 
-  border: 1px solid rgba(255, 255, 255, 0.04);
-  border-top: 1px solid rgba(255, 255, 255, 0.07);
+  border: 1px solid var(--oracle-glass-edge);
+  border-top: 1px solid var(--oracle-border-bright);
   border-radius: 2px;
 
   box-shadow:
     0 8px 32px rgba(0, 0, 0, 0.4),
-    0 1px 0 rgba(255, 255, 255, 0.025) inset;
+    0 1px 0 rgba(242, 242, 242, 0.025) inset;
 
   display: flex;
   flex-direction: column;
@@ -130,15 +124,15 @@
   justify-content: space-between;
   gap: 0.75rem;
   padding: 0.72rem 1rem;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
-  background: rgba(255, 255, 255, 0.018);
+  border-bottom: 1px solid rgba(242, 242, 242, 0.06);
+  background: rgba(242, 242, 242, 0.018);
 }
 
 .maoBadge {
   border-radius: 999px;
   padding: 0.34rem 0.65rem;
-  background: rgba(148, 163, 184, 0.1);
-  color: #cbd5e1;
+  background: rgba(171, 171, 171, 0.1);
+  color: #ababab;
   font-size: 0.52rem;
   font-weight: 750;
   letter-spacing: 0.12em;
@@ -150,8 +144,8 @@
 }
 
 .maoBadge[data-threshold='amber'] {
-  background: rgba(245, 158, 11, 0.14);
-  color: #fcd34d;
+  background: rgba(255, 188, 31, 0.14);
+  color: #ffbc1f;
 }
 
 .maoBadge[data-threshold='red'] {
@@ -160,7 +154,7 @@
 }
 
 .maoValue {
-  color: rgba(245, 240, 230, 0.78);
+  color: rgba(242, 242, 242, 0.78);
   font-size: 0.69rem;
   font-variant-numeric: tabular-nums;
 }
@@ -171,12 +165,12 @@
   display: grid;
   gap: 0.28rem;
   padding: 0.72rem 1rem;
-  border-bottom: 1px solid rgba(120, 200, 255, 0.12);
-  background: rgba(120, 200, 255, 0.035);
+  border-bottom: 1px solid rgba(171, 171, 171, 0.12);
+  background: rgba(171, 171, 171, 0.035);
 }
 
 .objection strong {
-  color: rgba(140, 210, 255, 0.85);
+  color: rgba(242, 242, 242, 0.85);
   font-size: 0.58rem;
   letter-spacing: 0.12em;
   text-transform: uppercase;
@@ -184,13 +178,13 @@
 
 .objection p {
   margin: 0;
-  color: rgba(235, 242, 247, 0.83);
+  color: rgba(242, 242, 242, 0.83);
   font-size: 0.72rem;
   line-height: 1.48;
 }
 
 .objection small {
-  color: rgba(255, 255, 255, 0.36);
+  color: rgba(242, 242, 242, 0.36);
   font-size: 0.57rem;
 }
 
@@ -228,16 +222,16 @@
 }
 
 .body::-webkit-scrollbar-track {
-  background: rgba(255, 255, 255, 0.02);
+  background: rgba(242, 242, 242, 0.02);
 }
 
 .body::-webkit-scrollbar-thumb {
-  background: rgba(200, 160, 80, 0.18);
+  background: rgba(255, 188, 31, 0.18);
   border-radius: 1px;
 }
 
 .body::-webkit-scrollbar-thumb:hover {
-  background: rgba(200, 160, 80, 0.35);
+  background: rgba(255, 188, 31, 0.35);
 }
 
 /* ─── Idle State ─────────────────────────────────────────────────────────── */
@@ -246,7 +240,7 @@
   font-size: 0.62rem;
   letter-spacing: 0.22em;
   text-transform: uppercase;
-  color: rgba(255, 255, 255, 0.12);
+  color: rgba(242, 242, 242, 0.12);
   font-weight: 400;
   padding: 0.4rem 0;
   animation: idleBlink 3.5s ease-in-out infinite;
@@ -278,7 +272,7 @@
   top: 20%;
   bottom: 20%;
   width: 1px;
-  background: rgba(200, 160, 80, 0.35);
+  background: rgba(255, 188, 31, 0.35);
   border-radius: 1px;
   opacity: 0;
   transform: scaleY(0.4);
@@ -296,14 +290,14 @@
   transform: translateY(-50%);
   font-size: 0.38rem;
   letter-spacing: 0.25em;
-  color: rgba(255, 255, 255, 0.08);
+  color: rgba(242, 242, 242, 0.08);
   font-variant-numeric: tabular-nums;
   opacity: 0;
   transition: opacity 0.35s ease;
 }
 
 .line:hover {
-  background: rgba(255, 255, 255, 0.022);
+  background: rgba(242, 242, 242, 0.022);
 }
 
 .line:hover::before {
@@ -321,7 +315,7 @@
   font-size: 0.48rem;
   letter-spacing: 0.38em;
   text-transform: uppercase;
-  color: rgba(200, 160, 80, 0.65);
+  color: rgba(255, 188, 31, 0.65);
   font-weight: 600;
   line-height: 1;
 
@@ -333,7 +327,7 @@
 
 .text {
   font-size: 0.78rem;
-  color: rgba(245, 240, 230, 0.88);
+  color: rgba(242, 242, 242, 0.88);
   font-weight: 300;
   line-height: 1.6;
   letter-spacing: -0.008em;
@@ -342,32 +336,32 @@
 /* ─── Whisper Lines ──────────────────────────────────────────────────────── */
 
 .whisperLine .agent {
-  color: rgba(100, 190, 255, 0.75);
+  color: rgba(171, 171, 171, 0.75);
   letter-spacing: 0.3em;
 }
 
 .whisperLine .text {
-  color: rgba(140, 210, 255, 0.72);
+  color: rgba(242, 242, 242, 0.72);
   font-style: italic;
   letter-spacing: 0.005em;
 }
 
 .whisperLine::before {
-  background: rgba(100, 190, 255, 0.4);
+  background: rgba(171, 171, 171, 0.4);
 }
 
 /* ─── Jarvis Lines ───────────────────────────────────────────────────────── */
 
 .jarvisLine .agent {
-  color: rgba(175, 125, 255, 0.75);
+  color: rgba(171, 171, 171, 0.75);
 }
 
 .jarvisLine .text {
-  color: rgba(195, 155, 255, 0.72);
+  color: rgba(242, 242, 242, 0.72);
 }
 
 .jarvisLine::before {
-  background: rgba(175, 125, 255, 0.45);
+  background: rgba(171, 171, 171, 0.45);
 }
 
 /* ─── Jarvis Listening Bar ───────────────────────────────────────────────── */
@@ -378,9 +372,9 @@
   gap: 0.65rem;
   padding: 0.65rem 1.2rem;
 
-  background: rgba(180, 130, 255, 0.035);
-  border-top: 1px solid rgba(180, 130, 255, 0.14);
-  border-bottom: 1px solid rgba(180, 130, 255, 0.08);
+  background: rgba(171, 171, 171, 0.035);
+  border-top: 1px solid rgba(171, 171, 171, 0.14);
+  border-bottom: 1px solid rgba(171, 171, 171, 0.08);
   position: relative;
   overflow: hidden;
 
@@ -394,7 +388,7 @@
   inset: 0;
   background: linear-gradient(
     90deg,
-    rgba(180, 130, 255, 0.04) 0%,
+    rgba(171, 171, 171, 0.04) 0%,
     transparent 60%
   );
   pointer-events: none;
@@ -405,7 +399,7 @@
   width: 7px;
   height: 7px;
   border-radius: 50%;
-  background: rgba(180, 130, 255, 0.9);
+  background: rgba(171, 171, 171, 0.9);
   animation: jarvisDot 0.75s ease-in-out infinite;
 }
 
@@ -413,7 +407,7 @@
   font-size: 0.52rem;
   letter-spacing: 0.22em;
   text-transform: uppercase;
-  color: rgba(195, 155, 255, 0.85);
+  color: rgba(242, 242, 242, 0.85);
   font-weight: 400;
   white-space: nowrap;
   overflow: hidden;
@@ -427,31 +421,31 @@
   align-items: center;
   gap: 0.5rem;
   padding: 0.55rem 0.9rem;
-  border-top: 1px solid rgba(255, 255, 255, 0.04);
+  border-top: 1px solid rgba(242, 242, 242, 0.04);
 
   background:
     linear-gradient(
       180deg,
-      rgba(255, 255, 255, 0) 0%,
-      rgba(255, 255, 255, 0.008) 100%
+      rgba(242, 242, 242, 0) 0%,
+      rgba(242, 242, 242, 0.008) 100%
     ),
-    rgba(4, 4, 6, 0.65);
-  backdrop-filter: blur(24px);
-  -webkit-backdrop-filter: blur(24px);
+    rgba(8, 8, 8, 0.65);
+  backdrop-filter: var(--oracle-backdrop);
+  -webkit-backdrop-filter: var(--oracle-backdrop);
 }
 
 .whisperField {
   flex: 1;
   border: none;
   outline: none;
-  background: rgba(255, 255, 255, 0.028);
-  border: 1px solid rgba(255, 255, 255, 0.055);
+  background: rgba(242, 242, 242, 0.028);
+  border: 1px solid rgba(242, 242, 242, 0.055);
   border-radius: 2px;
   padding: 0.52rem 0.9rem;
   font-family: inherit;
   font-size: 0.71rem;
   font-weight: 300;
-  color: rgba(245, 240, 230, 0.9);
+  color: rgba(242, 242, 242, 0.9);
   letter-spacing: 0.01em;
 
   transition:
@@ -461,26 +455,26 @@
 }
 
 .whisperField::placeholder {
-  color: rgba(255, 255, 255, 0.16);
+  color: rgba(242, 242, 242, 0.16);
   font-style: italic;
   letter-spacing: 0.02em;
 }
 
 .whisperField:focus {
-  background: rgba(120, 200, 255, 0.04);
-  border-color: rgba(120, 200, 255, 0.28);
+  background: rgba(171, 171, 171, 0.04);
+  border-color: rgba(171, 171, 171, 0.28);
   box-shadow:
-    0 0 0 3px rgba(120, 200, 255, 0.04),
-    0 4px 12px rgba(120, 200, 255, 0.06);
+    0 0 0 3px rgba(171, 171, 171, 0.04),
+    0 4px 12px rgba(171, 171, 171, 0.06);
   animation: whisperBorderGlow 2.8s ease-in-out infinite;
 }
 
 .whisperSend {
   flex-shrink: 0;
   border: none;
-  background: rgba(120, 200, 255, 0.07);
-  border: 1px solid rgba(120, 200, 255, 0.18);
-  color: rgba(120, 200, 255, 0.75);
+  background: rgba(171, 171, 171, 0.07);
+  border: 1px solid rgba(171, 171, 171, 0.18);
+  color: rgba(171, 171, 171, 0.75);
   font-family: inherit;
   font-size: 0.48rem;
   font-weight: 600;
@@ -500,11 +494,11 @@
 }
 
 .whisperSend:hover:not(:disabled) {
-  background: rgba(120, 200, 255, 0.14);
-  border-color: rgba(120, 200, 255, 0.38);
-  color: rgba(160, 220, 255, 0.92);
+  background: rgba(171, 171, 171, 0.14);
+  border-color: rgba(171, 171, 171, 0.38);
+  color: rgba(242, 242, 242, 0.92);
   box-shadow:
-    0 0 16px rgba(120, 200, 255, 0.1),
+    0 0 16px rgba(171, 171, 171, 0.1),
     0 4px 12px rgba(0, 0, 0, 0.3);
   transform: translateY(-1px);
 }
@@ -527,10 +521,10 @@
   align-items: center;
   gap: 0.55rem;
   padding: 0.62rem 1.2rem;
-  border-top: 1px solid rgba(255, 255, 255, 0.03);
+  border-top: 1px solid rgba(242, 242, 242, 0.03);
 
   /* Keep footer slightly distinct from whisperInput */
-  background: rgba(4, 4, 6, 0.35);
+  background: rgba(8, 8, 8, 0.35);
 }
 
 .pulse {
@@ -538,7 +532,7 @@
   width: 5px;
   height: 5px;
   border-radius: 50%;
-  background: rgba(245, 240, 230, 0.9);
+  background: rgba(242, 242, 242, 0.9);
   animation: pulseDot 2.6s ease-in-out infinite;
 }
 
@@ -546,7 +540,7 @@
   font-size: 0.43rem;
   letter-spacing: 0.32em;
   text-transform: uppercase;
-  color: rgba(255, 255, 255, 0.18);
+  color: rgba(242, 242, 242, 0.18);
   font-weight: 500;
 }
 

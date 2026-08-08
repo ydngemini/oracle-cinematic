@@ -36,6 +36,10 @@ def _truthy(v: str) -> bool:
 STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY", "")
 STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET", "")
 STRIPE_PRICE_ID = os.getenv("STRIPE_PRICE_ID", "price_REPLACE_ME")
+# Optional usage-based price added alongside the flat one. Unset = flat-only,
+# which is the current shipped plan; usage still accrues locally either way.
+# The ledger and the drain live in billing_usage.py.
+STRIPE_METERED_PRICE_ID = os.getenv("STRIPE_METERED_PRICE_ID", "").strip()
 
 BASE_URL = os.getenv("ORACLE_BASE_URL", "http://localhost:5173")
 
@@ -135,9 +139,18 @@ async def create_checkout_session(
     # before purchase. SaaS sales tax: collect billing address + tax IDs so Stripe
     # Tax can compute and remit. Cancellation is self-serve via the billing portal
     # (channel parity — same online channel used to subscribe).
+    # Base flat price, plus an OPTIONAL metered line. A metered price must be
+    # sent without `quantity` — Stripe rejects the item otherwise, since the
+    # quantity comes from meter events (see billing_usage.drain_usage_to_stripe)
+    # rather than from checkout. When STRIPE_METERED_PRICE_ID is unset this is
+    # byte-for-byte the previous flat-plan behaviour.
+    line_items: list[dict] = [{"price": STRIPE_PRICE_ID, "quantity": 1}]
+    if STRIPE_METERED_PRICE_ID:
+        line_items.append({"price": STRIPE_METERED_PRICE_ID})
+
     session_kwargs = dict(
         mode="subscription",
-        line_items=[{"price": STRIPE_PRICE_ID, "quantity": 1}],
+        line_items=line_items,
         metadata={"tenant_id": body.tenant_id},
         success_url=f"{BASE_URL}/billing/success?session_id={{CHECKOUT_SESSION_ID}}",
         cancel_url=f"{BASE_URL}/billing/cancel",

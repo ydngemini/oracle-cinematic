@@ -1,22 +1,25 @@
-.bar, .commandBar { position: relative; min-height: 36px; display: flex; align-items: center; overflow: hidden; border: 1px solid rgba(244, 229, 188, 0.20); border-radius: var(--radius-md); background: rgba(35, 27, 17, 0.90); }
+.bar, .commandBar { position: relative; min-height: 36px; display: flex; align-items: center; overflow: hidden; border: 1px solid var(--oracle-glass-edge); border-radius: var(--radius-md); background: var(--oracle-glass); backdrop-filter: var(--oracle-backdrop-light); -webkit-backdrop-filter: var(--oracle-backdrop-light); }
 .phases { position: relative; z-index: 1; width: 100%; display: flex; align-items: center; overflow-x: auto; }
 .phase, .memory { min-height: 34px; padding: 0 var(--space-3); display: inline-flex; align-items: center; color: var(--oracle-text-ghost); font: 600 .5625rem/1 var(--font-mono); letter-spacing: var(--tracking-wide); white-space: nowrap; }
 .phase + .phase, .memory { border-left: 1px solid var(--oracle-border-subtle); }
 .phase[data-active='true'] { color: var(--oracle-amber); background: var(--oracle-amber-ghost); }
 .memory[data-active='true'] { color: var(--oracle-green); }
-.commandBar { padding: var(--space-2) var(--space-3); gap: var(--space-3); border-color: rgba(223, 189, 115, 0.42); }
+.commandBar { padding: var(--space-2) var(--space-3); gap: var(--space-3); border-color: rgba(255, 188, 31, 0.32); }
 .commandCopy { position: relative; z-index: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .commandBar strong { color: var(--oracle-text); font-size: var(--text-xs); }
 .commandBar small { overflow: hidden; color: var(--oracle-text-ghost); font: .5625rem/1.35 var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
-.commandPulse { position: relative; z-index: 1; width: 8px; height: 8px; flex: 0 0 8px; border-radius: 50%; background: var(--oracle-gold); box-shadow: 0 0 0 4px rgba(223, 189, 115, .12), 0 0 12px rgba(223, 189, 115, .38); }
+.commandPulse { position: relative; z-index: 1; width: 8px; height: 8px; flex: 0 0 8px; border-radius: 50%; background: var(--oracle-gold); box-shadow: 0 0 0 4px rgba(255, 188, 31, .10), 0 0 10px rgba(255, 188, 31, .24); }
 .commandBar[data-state='failed'] { border-color: var(--oracle-red-dim); }
-.commandBar[data-state='failed'] .commandPulse { background: var(--oracle-red); box-shadow: 0 0 0 4px rgba(220,80,80,.1); }
+.commandBar[data-state='failed'] .commandPulse { background: var(--oracle-red); box-shadow: 0 0 0 4px rgba(220, 80, 80,.1); }
 .commandBar[data-state='completed'], .commandBar[data-state='queued'] { border-color: var(--oracle-green-dim); }
-.commandBar[data-state='completed'] .commandPulse, .commandBar[data-state='queued'] .commandPulse { background: var(--oracle-green); box-shadow: 0 0 0 4px rgba(100,210,140,.1); }
+.commandBar[data-state='completed'] .commandPulse, .commandBar[data-state='queued'] .commandPulse { background: var(--oracle-green); box-shadow: 0 0 0 4px rgba(100, 210, 140,.1); }
 .commandBar[data-state='analyzing'] .commandPulse, .commandBar[data-state='authorizing'] .commandPulse { animation: commandPulse 1.1s ease-in-out infinite; }
 @keyframes commandPulse { 50% { opacity: .35; transform: scale(.75); } }
 @media (max-width: 560px) { .bar { display: none; } }
-@media (max-width: 719px), (prefers-reduced-transparency: reduce) {
-  .bar, .commandBar { background: rgba(35, 27, 17, 0.98); backdrop-filter: none; -webkit-backdrop-filter: none; }
+@media (max-width: 719px) {
+  .bar, .commandBar { backdrop-filter: none; -webkit-backdrop-filter: none; }
+}
+@media (prefers-reduced-transparency: reduce) {
+  .bar, .commandBar { background: rgba(12, 12, 12, 0.96); backdrop-filter: none; -webkit-backdrop-filter: none; }
 }
 @media (prefers-reduced-motion: reduce) { .commandPulse { animation: none !important; } }

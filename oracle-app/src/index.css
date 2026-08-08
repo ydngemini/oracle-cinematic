@@ -1,58 +1,64 @@
 /* ─────────────────────────────────────────────────────────────────────────────
    Oracle Design System — Global Foundation
-   Dark-mode only, no external dependencies, no Tailwind.
+   Waterfall-led graphite interface, no external dependencies, no Tailwind.
    All design tokens live here as CSS custom properties.
    ───────────────────────────────────────────────────────────────────────────── */
 
 /* ── Design Tokens ─────────────────────────────────────────────────────────── */
 :root {
+  /* Brand primitives — one restrained palette across every product surface. */
+  --oracle-silver:        #ababab;
+  --oracle-accent:        #ffbc1f;
+  --oracle-ivory:         #f2f2f2;
+
   /* Backgrounds */
-  --oracle-bg-deep:       #151008;
-  --oracle-bg-mid:        #261d11;
-  --oracle-bg-gradient:   linear-gradient(150deg, rgba(48, 36, 20, .94) 0%, rgba(18, 13, 8, .94) 72%);
-  --oracle-bg-canvas:     #151008;
-  --oracle-bg-atmosphere: radial-gradient(ellipse at 7% 100%, rgba(214, 170, 101, 0.20), transparent 42%),
-                           linear-gradient(160deg, #2a2013 0%, #151008 62%);
+  --oracle-bg-deep:       #080808;
+  --oracle-bg-mid:        #111111;
+  --oracle-bg-gradient:   linear-gradient(150deg, rgba(22, 22, 22, .88) 0%, rgba(8, 8, 8, .92) 72%);
+  --oracle-bg-canvas:     #080808;
+  --oracle-bg-atmosphere: none;
 
-  /* Flat editorial surfaces — translucent enough to reveal the waterfall,
-     without blur or reflective glass effects. */
-  --oracle-glass:         rgba(35, 27, 17, 0.88);
-  --oracle-glass-hover:   rgba(51, 39, 23, 0.94);
-  --oracle-glass-active:  rgba(66, 49, 27, 0.96);
-  --oracle-glass-edge:    rgba(255, 244, 214, 0.24);
+  /* The primary surface is exactly a 20% silver tint. It keeps the real
+     waterfall visible while creating a calm, legible CRM working plane. */
+  --oracle-glass:         rgba(171, 171, 171, 0.20);
+  --oracle-glass-hover:   rgba(171, 171, 171, 0.26);
+  --oracle-glass-active:  rgba(171, 171, 171, 0.30);
+  --oracle-glass-edge:    rgba(242, 242, 242, 0.10);
 
-  /* Backdrop */
+  /* The live 60fps waterfall already supplies visual depth. Backdrop blur on
+     continuously composited panels forces the browser to resample the video
+     every frame, so the 20% glass uses tint, edge light, and shadow instead. */
   --oracle-backdrop:      none;
   --oracle-backdrop-light: none;
 
   /* Borders */
-  --oracle-border:        rgba(255, 250, 237, 0.10);
-  --oracle-border-bright: rgba(255, 244, 214, 0.22);
-  --oracle-border-subtle: rgba(255, 250, 237, 0.075);
+  --oracle-border:        rgba(242, 242, 242, 0.08);
+  --oracle-border-bright: rgba(242, 242, 242, 0.16);
+  --oracle-border-subtle: rgba(242, 242, 242, 0.055);
 
-  /* Accents — muted bronze, pale gold, and white gold */
-  --oracle-bronze:        #b88952;
-  --oracle-gold:          #dfbd73;
-  --oracle-white-gold:    #f4e5bc;
-  --oracle-amber:         #dfbd73;
-  --oracle-amber-dim:     rgba(223, 189, 115, 0.72);
-  --oracle-amber-ghost:   rgba(223, 189, 115, 0.18);
-  --oracle-amber-glow:    rgba(223, 189, 115, 0.14);
-  --oracle-amber-hue:     42deg;   /* for hsl() usage if needed */
+  /* Accent aliases preserve existing component APIs while using one gold. */
+  --oracle-bronze:        #ababab;
+  --oracle-gold:          #ffbc1f;
+  --oracle-white-gold:    #f2f2f2;
+  --oracle-amber:         #ffbc1f;
+  --oracle-amber-dim:     rgba(255, 188, 31, 0.76);
+  --oracle-amber-ghost:   rgba(255, 188, 31, 0.16);
+  --oracle-amber-glow:    rgba(255, 188, 31, 0.12);
+  --oracle-amber-hue:     43deg;
 
   /* Text */
-  --oracle-text:          rgba(255, 250, 240, 0.94);
-  --oracle-text-dim:      rgba(255, 247, 230, 0.72);
-  --oracle-text-ghost:    rgba(255, 247, 230, 0.48);
-  --oracle-text-heading:  #fffaf0;
+  --oracle-text:          #f2f2f2;
+  --oracle-text-dim:      rgba(242, 242, 242, 0.76);
+  --oracle-text-ghost:    rgba(171, 171, 171, 0.88);
+  --oracle-text-heading:  #f2f2f2;
 
   /* Status palette */
   --oracle-green:         rgba(100, 210, 140, 1);
   --oracle-green-dim:     rgba(100, 210, 140, 0.45);
   --oracle-red:           rgba(220, 80, 80, 1);
   --oracle-red-dim:       rgba(220, 80, 80, 0.45);
-  --oracle-blue:          #d9c6a2;
-  --oracle-blue-dim:      rgba(217, 198, 162, 0.58);
+  --oracle-blue:          #ababab;
+  --oracle-blue-dim:      rgba(171, 171, 171, 0.68);
 
   /* Spacing scale */
   --space-1:  0.25rem;   /*  4px */
@@ -123,7 +129,7 @@
   --duration-move: 400ms;
 
   /* Accent — amber filament core highlight (the hot centre of the live line) */
-  --oracle-amber-bright: #f4d995;
+  --oracle-amber-bright: #ffbc1f;
 
   /* Elevation — layered glass tiers (consistent blur/border/shadow rhythm).
      e1 resting card · e2 raised/interactive · e3 floating overlay. */
@@ -134,12 +140,12 @@
   /* Shadows */
   --shadow-panel:   0 0 0 1px var(--oracle-border), 0 8px 32px rgba(0, 0, 0, 0.55), 0 2px 8px rgba(0, 0, 0, 0.35);
   --shadow-float:   0 0 0 1px var(--oracle-border), 0 24px 64px rgba(0, 0, 0, 0.7), 0 4px 16px rgba(0, 0, 0, 0.4);
-  --shadow-amber:   0 0 24px var(--oracle-amber-glow), 0 0 8px var(--oracle-amber-ghost);
-  --shadow-amber-lg: 0 0 36px var(--oracle-amber-glow), 0 0 14px var(--oracle-amber-ghost);
+  --shadow-amber:   0 0 18px var(--oracle-amber-glow);
+  --shadow-amber-lg: 0 0 28px var(--oracle-amber-glow);
   --shadow-inset:   inset 0 1px 0 rgba(255, 255, 255, 0.05);
 
   /* Loading sheen — the band that sweeps across glass skeletons */
-  --oracle-shimmer: rgba(255, 248, 228, 0.12);
+  --oracle-shimmer: rgba(242, 242, 242, 0.12);
 
   /* Focus — premium double ring: dark moat + amber halo (AA-visible on glass) */
   --ring-focus:     0 0 0 2px var(--oracle-bg-deep), 0 0 0 4px var(--oracle-amber-dim);
@@ -148,14 +154,14 @@
      Instrument-cluster type treatment: data (prices, counts, addresses) is
      set in the mono with tabular numerals and wide-tracked caps labels —
      the pocket version of the command center, not another sans-on-white CRM. */
-  --font-display:   var(--font-mono);
+  --font-display:   "Arial Narrow", "Aptos Narrow", "Roboto Condensed", var(--font-sans);
   --deck-height:    64px;
   --safe-top:       env(safe-area-inset-top, 0px);
   --safe-bottom:    env(safe-area-inset-bottom, 0px);
   --crm-header-h:   52px;
 
   /* Filament — the live amber line of the Deck */
-  --filament:        linear-gradient(90deg, transparent, var(--oracle-amber) 35%, rgba(220, 185, 110, 1) 50%, var(--oracle-amber) 65%, transparent);
+  --filament:        linear-gradient(90deg, transparent, var(--oracle-amber) 35%, var(--oracle-amber-bright) 50%, var(--oracle-amber) 65%, transparent);
   --filament-faint:  linear-gradient(90deg, transparent, var(--oracle-amber-dim), transparent);
 }
 
@@ -337,16 +343,16 @@
 
 /* ── Tactical HUD surfaces ────────────────────────────────────────────────── */
 .hud-glass-panel {
-  background: rgba(35, 27, 17, 0.90);
-  border: 1px solid rgba(255, 244, 214, 0.22);
-  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.36);
+  background: var(--oracle-glass);
+  border: 1px solid var(--oracle-glass-edge);
+  box-shadow: var(--shadow-e2);
 }
 
 @supports ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
 .hud-glass-panel {
-    background: rgba(35, 27, 17, 0.90);
-    backdrop-filter: none;
-    -webkit-backdrop-filter: none;
+    background: var(--oracle-glass);
+    backdrop-filter: var(--oracle-backdrop);
+    -webkit-backdrop-filter: var(--oracle-backdrop);
   }
 }
 
@@ -380,9 +386,17 @@
   border-bottom: 1px solid var(--oracle-white-gold);
 }
 
-@media (max-width: 719px), (prefers-reduced-transparency: reduce) {
+@media (max-width: 719px) {
   .hud-glass-panel {
-    background: rgba(31, 23, 14, 0.96);
+    background: var(--oracle-glass);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  .hud-glass-panel {
+    background: rgba(12, 12, 12, 0.96);
     backdrop-filter: none;
     -webkit-backdrop-filter: none;
   }
@@ -513,14 +527,16 @@ button, a, [role="tab"] {
 /* ── Typography ─────────────────────────────────────────────────────────────── */
 h1, h2, h3, h4, h5, h6 {
   color:          var(--oracle-text-heading);
-  font-weight:    600;
+  font-family:    var(--font-display);
+  font-weight:    400;
   line-height:    var(--leading-tight);
-  letter-spacing: var(--tracking-tight);
+  letter-spacing: 0.035em;
 }
 
-h1 { font-size: var(--text-3xl); font-weight: 700; }
-h2 { font-size: var(--text-2xl); font-weight: 600; }
-h3 { font-size: var(--text-xl);  font-weight: 600; }
+h1, h2, h3 { text-transform: uppercase; }
+h1 { font-size: var(--text-3xl); font-weight: 300; }
+h2 { font-size: var(--text-2xl); font-weight: 350; }
+h3 { font-size: var(--text-xl);  font-weight: 400; }
 h4 { font-size: var(--text-lg);  font-weight: 500; }
 h5 { font-size: var(--text-md);  font-weight: 500; }
 h6 { font-size: var(--text-base); font-weight: 500; }
@@ -569,7 +585,7 @@ a {
 }
 
 a:hover {
-  color:      rgba(220, 185, 110, 1);
+  color:      var(--oracle-amber-bright);
   text-decoration: underline;
 }
 

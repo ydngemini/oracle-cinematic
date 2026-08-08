@@ -15,22 +15,55 @@ import time
 from collections import defaultdict
 from typing import Callable
 
-from fastapi import Request, Response
+from fastapi import HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
 logger = logging.getLogger("oracle.rate_limit")
 
-# Rate limit configuration (requests per minute per IP)
+# Rate limit configuration (requests per minute per network identity).  The
+# general API limit is intentionally conservative for anonymous callers.  A
+# signed-in CRM session receives its own tenant/user bucket below so a normal
+# workspace boot (and React's parallel data loaders) cannot exhaust a shared
+# office-NAT allowance.
 RATE_LIMITS = {
     "/auth/login": 10,
     "/auth/register": 5,
     "/auth/forgot": 3,
     "/auth/reset": 3,
+    "/auth/": 120,
     "/api/ai/chat": 20,
+    "/api/public/lead-intake/": 30,
     "/api/crm/tour": 5,
     "/api/": 100,  # Default for all other API endpoints
 }
+
+def _env_int(name: str, default: int, *, minimum: int) -> int:
+    """Read an int env var at import time without letting a blank or malformed
+    value take down the whole API — an unset-but-present ``FOO=`` line copied
+    from .env.prod.example would otherwise raise during `import server`."""
+    raw = (os.getenv(name) or "").strip()
+    if not raw:
+        return max(minimum, default)
+    try:
+        return max(minimum, int(raw))
+    except ValueError:
+        logger.warning(
+            "%s=%r is not an integer — falling back to %d", name, raw, default
+        )
+        return max(minimum, default)
+
+
+AUTHENTICATED_API_RATE_LIMIT = _env_int(
+    "ORACLE_AUTHENTICATED_API_RATE_LIMIT", 600, minimum=100
+)
+
+# CORS preflights get their own generous per-IP bucket rather than being charged
+# against the real request's quota. They still get a ceiling: an unmetered method
+# would be the cheapest way to walk the whole middleware chain for free.
+PREFLIGHT_RATE_LIMIT = _env_int(
+    "ORACLE_PREFLIGHT_RATE_LIMIT", 600, minimum=60
+)
 
 # Burst allowance (extra requests allowed in short bursts)
 BURST_MULTIPLIER = 1.5
@@ -146,7 +179,43 @@ def _get_bucket_for_path(path: str) -> str:
     for endpoint in RATE_LIMITS:
         if path.startswith(endpoint):
             return endpoint
-    return "/api/"
+    return "/other/"
+
+
+def _authenticated_principal(request: Request) -> str | None:
+    """Return an opaque rate-limit identity for a valid browser/API session.
+
+    Merely supplying a different cookie must never create a fresh quota, so the
+    token is signature/expiry checked before its subject is used.  The returned
+    value is hashed to keep tenant and agent identifiers out of Redis keys and
+    logs.
+    """
+
+    authorization = request.headers.get("authorization", "").strip()
+    raw_token = ""
+    if authorization.lower().startswith("bearer "):
+        raw_token = authorization.split(" ", 1)[1].strip()
+    elif request.cookies.get("oracle_session"):
+        raw_token = request.cookies["oracle_session"]
+    if not raw_token:
+        return None
+
+    try:
+        # Lazy import avoids making the middleware/auth module relationship a
+        # startup cycle.  decode_token validates the configured JWT algorithm,
+        # signature, issuer/audience (when configured), and expiry.
+        from auth import decode_token
+
+        claims = decode_token(raw_token)
+    except HTTPException:  # invalid auth is handled by the route itself
+        return None
+
+    subject = str(claims.get("sub") or "").strip()
+    if not subject:
+        return None
+    tenant = str(claims.get("tenant_id") or "unscoped").strip()
+    digest = hashlib.sha256(f"{tenant}:{subject}".encode("utf-8")).hexdigest()
+    return f"principal:{digest}"
 
 
 async def _check_rate_limit_memory(ip: str, endpoint: str, limit: int) -> tuple[bool, int]:
@@ -267,14 +336,37 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         if path.startswith("/static/") or path.endswith((".js", ".css", ".png", ".jpg", ".ico", ".svg")):
             return await call_next(request)
 
-        ip = _get_client_ip(request)
-        limit = _get_limit_for_path(path)
+        is_preflight = request.method == "OPTIONS"
+        if is_preflight:
+            # A preflight is a browser permission probe, not an application
+            # action, so charging it against the endpoint's bucket would halve a
+            # cross-origin client's effective quota. It still gets its own
+            # ceiling — an entirely unmetered method is the cheapest way to walk
+            # the full middleware chain and route resolution for free.
+            limit = PREFLIGHT_RATE_LIMIT
+            bucket = "OPTIONS"
+            identity = _get_client_ip(request)
+        else:
+            limit = _get_limit_for_path(path)
+            bucket = _get_bucket_for_path(path)
+            identity = _get_client_ip(request)
+            if path.startswith("/api/") and bucket == "/api/":
+                principal = _authenticated_principal(request)
+                if principal:
+                    identity = principal
+                    bucket = "/api/authenticated"
+                    limit = AUTHENTICATED_API_RATE_LIMIT
 
-        bucket = _get_bucket_for_path(path)
-        allowed, count = await _check_rate_limit_redis(ip, bucket, limit)
+        allowed, count = await _check_rate_limit_redis(identity, bucket, limit)
 
         if not allowed:
-            logger.warning("Rate limit exceeded: ip=%s path=%s limit=%d count=%d", ip, path, limit, count)
+            logger.warning(
+                "Rate limit exceeded: identity=%s path=%s limit=%d count=%d",
+                identity,
+                path,
+                limit,
+                count,
+            )
             return JSONResponse(
                 status_code=429,
                 content={

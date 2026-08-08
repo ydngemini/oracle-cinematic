@@ -12,7 +12,7 @@
   overflow:   hidden;
 
   /* Cinematic deep-space canvas */
-  background:  #020408;
+  background:  #080808;
   background-image: var(--oracle-bg-canvas);
 }
 
@@ -25,10 +25,10 @@
   pointer-events:   none;
 
   background:
-    radial-gradient(ellipse 120% 60% at 50% 0%,   rgba(200, 160, 80, 0.03) 0%, transparent 65%),
-    radial-gradient(ellipse 80%  80% at 50% 100%,  rgba(8, 8, 20, 0.6)      0%, transparent 70%),
-    radial-gradient(ellipse 100% 100% at 0%   50%, rgba(4, 10, 20, 0.3)      0%, transparent 60%),
-    radial-gradient(ellipse 100% 100% at 100% 50%, rgba(20, 8, 4, 0.2)       0%, transparent 60%);
+    radial-gradient(ellipse 120% 60% at 50% 0%,   rgba(255, 188, 31, 0.03) 0%, transparent 65%),
+    radial-gradient(ellipse 80%  80% at 50% 100%,  rgba(8, 8, 8, 0.6)      0%, transparent 70%),
+    radial-gradient(ellipse 100% 100% at 0%   50%, rgba(8, 8, 8, 0.3)      0%, transparent 60%),
+    radial-gradient(ellipse 100% 100% at 100% 50%, rgba(8, 8, 8, 0.2)       0%, transparent 60%);
 }
 
 /* ── HUD grid — floats above the 3-D canvas ────────────────────────────────── */

@@ -37,7 +37,7 @@
   align-items: center;
   gap: var(--space-3);
   padding: var(--space-3) var(--space-4);
-  background: linear-gradient(180deg, rgba(4, 4, 6, 0.72), rgba(4, 4, 6, 0));
+  background: linear-gradient(180deg, rgba(8, 8, 8, 0.72), rgba(8, 8, 8, 0));
   pointer-events: none;
 }
 
@@ -54,7 +54,7 @@
   padding: var(--space-1) var(--space-2);
   border: 1px solid var(--oracle-amber-ghost);
   border-radius: var(--radius-pill);
-  background: rgba(4, 4, 6, 0.4);
+  background: rgba(8, 8, 8, 0.4);
   white-space: nowrap;
 }
 
@@ -71,7 +71,7 @@
   padding: var(--space-1) var(--space-2);
   border: 1px solid var(--oracle-border-bright);
   border-radius: var(--radius-pill);
-  background: rgba(4, 4, 6, 0.4);
+  background: rgba(8, 8, 8, 0.4);
   white-space: nowrap;
 }
 
@@ -135,7 +135,7 @@
   letter-spacing: var(--tracking-wide);
   text-align: center;
   color: var(--oracle-text);
-  background: rgba(8, 8, 12, 0.62);
+  background: rgba(8, 8, 8, 0.62);
   border: 1px solid var(--oracle-border-bright);
   box-shadow: var(--shadow-panel);
   backdrop-filter: var(--oracle-backdrop-light);
@@ -173,7 +173,7 @@
   padding: var(--space-2);
   overflow-x: auto;
   border-radius: var(--radius-lg);
-  background: rgba(8, 8, 12, 0.55);
+  background: rgba(8, 8, 8, 0.55);
   border: 1px solid var(--oracle-border-bright);
   box-shadow: var(--shadow-panel);
   backdrop-filter: var(--oracle-backdrop-light);
@@ -213,7 +213,7 @@
   font-size: 0.5rem;
   font-weight: 700;
   color: var(--oracle-text-heading);
-  background: rgba(4, 4, 6, 0.6);
+  background: rgba(8, 8, 8, 0.6);
   border-radius: var(--radius-sm);
 }
 
@@ -226,7 +226,7 @@
   gap: var(--space-1);
   padding: var(--space-2);
   border-radius: var(--radius-pill);
-  background: rgba(8, 8, 12, 0.62);
+  background: rgba(8, 8, 8, 0.62);
   border: 1px solid var(--oracle-border-bright);
   box-shadow: var(--shadow-panel);
   backdrop-filter: var(--oracle-backdrop);
@@ -379,7 +379,8 @@
 }
 
 .fallbackHint {
-  max-width: 32ch;
+  /* Wide enough that an actionable auth message stays readable, not a column. */
+  max-width: 46ch;
   font-size: var(--text-sm);
   line-height: var(--leading-relaxed);
   color: var(--oracle-text-dim);
@@ -409,6 +410,14 @@
 }
 
 .fallbackBtn:hover { background: var(--oracle-glass-hover); }
+
+/* Retry + dismiss sit side by side; they wrap on a narrow phone. */
+.fallbackActions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: var(--space-2);
+}
 
 /* Composed photos still surface even when 3D coverage is missing. */
 .fallbackStrip {
@@ -443,7 +452,7 @@
   align-items: center;
   justify-content: center;
   padding: var(--space-5);
-  background: rgba(2, 2, 4, 0.88);
+  background: rgba(8, 8, 8, 0.88);
   backdrop-filter: var(--oracle-backdrop);
   -webkit-backdrop-filter: var(--oracle-backdrop);
   animation: lb-in var(--duration-base) var(--ease-out);
@@ -509,7 +518,7 @@
   font-variant-numeric: tabular-nums;
   letter-spacing: var(--tracking-wider);
   color: var(--oracle-text-dim);
-  background: rgba(4, 4, 6, 0.55);
+  background: rgba(8, 8, 8, 0.55);
   border: 1px solid var(--oracle-border-bright);
   border-radius: var(--radius-pill);
   padding: 4px var(--space-3);

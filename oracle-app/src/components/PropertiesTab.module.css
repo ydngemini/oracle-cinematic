@@ -1,0 +1,102 @@
+.wrap {
+  width: min(100%, 68rem);
+  display: grid;
+  gap: var(--space-6);
+  padding: clamp(var(--space-3), 3vw, var(--space-8)) 0;
+}
+
+.hero {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: var(--space-8);
+  padding-bottom: var(--space-5);
+  border-bottom: 1px solid var(--oracle-border-bright);
+}
+
+.hero > div { max-width: 39rem; }
+
+.kicker {
+  color: var(--oracle-amber);
+  font: 650 0.625rem/1.2 var(--font-display);
+  letter-spacing: var(--tracking-widest);
+  text-transform: uppercase;
+}
+
+.hero h1 {
+  margin-top: var(--space-3);
+  font-size: clamp(2.25rem, 7vw, 4.5rem);
+  font-weight: 300;
+  line-height: 0.92;
+}
+
+.hero p {
+  max-width: 34rem;
+  margin-top: var(--space-3);
+  color: var(--oracle-text-dim);
+  font-size: var(--text-sm);
+  line-height: var(--leading-relaxed);
+}
+
+.switcher {
+  display: inline-flex;
+  gap: var(--space-1);
+  padding: var(--space-1);
+  border: 1px solid var(--oracle-glass-edge);
+  border-radius: var(--radius-sm);
+  background: var(--oracle-glass);
+  backdrop-filter: var(--oracle-backdrop-light);
+  -webkit-backdrop-filter: var(--oracle-backdrop-light);
+}
+
+.switcher button {
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 0 var(--space-3);
+  border: 1px solid transparent;
+  border-radius: 4px;
+  color: var(--oracle-text-dim);
+  background: transparent;
+  font: 650 0.625rem/1 var(--font-display);
+  letter-spacing: var(--tracking-wider);
+  text-transform: uppercase;
+}
+
+.switcher button svg { width: 16px; height: 16px; }
+.switcher button:hover { color: var(--oracle-text); }
+.switcher button[aria-pressed='true'] { border-color: var(--oracle-amber-dim); color: var(--oracle-amber); background: var(--oracle-amber-ghost); }
+.switcher button:focus-visible { outline: none; box-shadow: var(--ring-focus); }
+
+.workspace { min-width: 0; }
+
+.fallback {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.fallback span {
+  height: 8rem;
+  border: 1px solid var(--oracle-border);
+  border-radius: var(--radius-md);
+  background-color: var(--oracle-glass);
+  background-image: linear-gradient(100deg, transparent 28%, var(--oracle-shimmer) 50%, transparent 72%);
+  background-size: 220% 100%;
+  animation: oracle-sheen 1.5s var(--ease-in-out) infinite;
+}
+
+@media (max-width: 680px) {
+  .wrap { width: 100%; padding-top: 0; }
+  .hero { grid-template-columns: 1fr; align-items: start; gap: var(--space-5); }
+  .switcher { width: 100%; backdrop-filter: none; -webkit-backdrop-filter: none; }
+  .switcher button { flex: 1; justify-content: center; }
+}
+
+@media (max-width: 380px) {
+  .switcher button svg { display: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .fallback span { animation: none; }
+}

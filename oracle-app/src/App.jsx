@@ -1,10 +1,14 @@
-import { useEffect, useRef, useState, useCallback } from 'react';
+import { Suspense, lazy, useEffect, useRef, useState, useCallback } from 'react';
 import { useOracleWebSocket, useOracleDispatch, ACTIONS } from './state';
 import { CrmShell, LoginVault } from './components';
 import { PolicyAcceptanceGate } from './components/PolicyAcceptanceGate';
 import { NetworkProvider } from './context/NetworkContext';
-import { apiPost } from './lib/apiClient';
+import { apiGet, apiPost } from './lib/apiClient';
 import { ReelBackdrop, ReelExperience } from './components/ReelExperience';
+import { SitePreview } from './components/SitePreview';
+// Unauthenticated client capture page — the token in the URL is the whole
+// capability, so this route deliberately renders outside the auth shell.
+const PropertyUploadPage = lazy(() => import('./components/PropertyUploadPage'));
 
 function useJarvisVoice() {
   const { dispatch } = useOracleDispatch();
@@ -100,10 +104,12 @@ function NeohApp() {
 
   useEffect(() => {
     if (authed !== null) return;
-    apiPost('/auth/verify', {}, { retries: 0 })
+    apiGet('/auth/session', { retries: 0 })
       .then((identity) => {
-        if (identity?.role) sessionStorage.setItem('oracle_role', identity.role);
-        setAuthed(true);
+        if (identity?.authenticated && identity?.role) {
+          sessionStorage.setItem('oracle_role', identity.role);
+        }
+        setAuthed(Boolean(identity?.authenticated));
       })
       .catch(() => setAuthed(false));
   }, [authed]);
@@ -143,7 +149,18 @@ function NeohApp() {
 
 function App() {
   const isReelRoute = window.location.pathname === '/reel' || window.location.pathname.startsWith('/reel/');
-  return isReelRoute ? <ReelExperience /> : <NeohApp />;
+  const isSitePreviewRoute = window.location.pathname.startsWith('/site-preview/');
+  const isPropertyUploadRoute = window.location.pathname.startsWith('/property-upload/');
+  if (isReelRoute) return <ReelExperience />;
+  if (isSitePreviewRoute) return <SitePreview />;
+  if (isPropertyUploadRoute) {
+    return (
+      <Suspense fallback={null}>
+        <PropertyUploadPage />
+      </Suspense>
+    );
+  }
+  return <NeohApp />;
 }
 
 export default App;

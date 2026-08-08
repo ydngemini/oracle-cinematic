@@ -1,6 +1,6 @@
 /* ─────────────────────────────────────────────────────────────
    BillingOverlay — subscription gate
-   Cinematic modal. Stripe meets sci-fi. Glass tiers, amber CTA,
+   Cinematic modal. Restrained glass tiers, gold CTA,
    staggered feature-list reveal, spring-physics entrance.
    ───────────────────────────────────────────────────────────── */
 
@@ -52,8 +52,8 @@
 }
 
 @keyframes dotGlow {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(200, 160, 80, 0); }
-  50%       { box-shadow: 0 0 6px 2px rgba(200, 160, 80, 0.2); }
+  0%, 100% { box-shadow: 0 0 0 0 rgba(255, 188, 31, 0); }
+  50%       { box-shadow: 0 0 6px 2px rgba(255, 188, 31, 0.2); }
 }
 
 @keyframes spin {
@@ -82,13 +82,9 @@
   overflow-y: auto;
   overscroll-behavior: contain;
 
-  background: rgba(2, 3, 6, 0.82);
-  backdrop-filter: blur(8px) saturate(0.8);
-  -webkit-backdrop-filter: blur(8px) saturate(0.8);
-
-  /* Atmospheric vignette */
-  background-image:
-    radial-gradient(ellipse 70% 50% at 50% 50%, transparent 40%, rgba(0, 0, 0, 0.4) 100%);
+  background: rgba(8, 8, 8, 0.62);
+  backdrop-filter: var(--oracle-backdrop-light);
+  -webkit-backdrop-filter: var(--oracle-backdrop-light);
 
   opacity: 0;
   pointer-events: none;
@@ -111,21 +107,21 @@
   max-height: calc(100dvh - 4rem);
   overflow-y: auto;
   overscroll-behavior: contain;
-  scrollbar-color: rgba(200, 160, 80, 0.32) transparent;
+  scrollbar-color: rgba(255, 188, 31, 0.32) transparent;
   scrollbar-width: thin;
 
-  background: rgba(8, 8, 12, 0.75);
-  backdrop-filter: blur(40px) saturate(1.4);
-  -webkit-backdrop-filter: blur(40px) saturate(1.4);
+  background: var(--oracle-glass);
+  backdrop-filter: var(--oracle-backdrop);
+  -webkit-backdrop-filter: var(--oracle-backdrop);
 
-  border: 1px solid rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--oracle-glass-edge);
   border-radius: 2px;
 
   box-shadow:
     0 8px 32px rgba(0, 0, 0, 0.4),
     0 40px 120px rgba(0, 0, 0, 0.7),
-    0 0 0 1px rgba(200, 160, 80, 0.03),
-    inset 0 1px 0 rgba(255, 255, 255, 0.04),
+    0 0 0 1px rgba(255, 188, 31, 0.03),
+    inset 0 1px 0 rgba(242, 242, 242, 0.04),
     inset 0 -1px 0 rgba(0, 0, 0, 0.3);
 
   padding: 3rem 2.8rem 2.6rem;
@@ -154,9 +150,9 @@
   background: linear-gradient(
     90deg,
     transparent,
-    rgba(200, 160, 80, 0.3) 25%,
-    rgba(200, 160, 80, 0.5) 50%,
-    rgba(200, 160, 80, 0.3) 75%,
+    rgba(255, 188, 31, 0.3) 25%,
+    rgba(255, 188, 31, 0.5) 50%,
+    rgba(255, 188, 31, 0.3) 75%,
     transparent
   );
 }
@@ -170,7 +166,7 @@
   width: 80px;
   height: 80px;
   background:
-    linear-gradient(225deg, rgba(200, 160, 80, 0.04) 0%, transparent 60%);
+    linear-gradient(225deg, rgba(255, 188, 31, 0.04) 0%, transparent 60%);
   pointer-events: none;
 }
 
@@ -198,7 +194,7 @@
   font-weight: 500;
   letter-spacing: 0.36em;
   text-transform: uppercase;
-  color: rgba(200, 160, 80, 0.6);
+  color: rgba(255, 188, 31, 0.6);
 }
 
 .heading {
@@ -206,7 +202,7 @@
   font-size: 1.6rem;
   font-weight: 300;
   letter-spacing: -0.02em;
-  color: rgba(245, 240, 230, 0.94);
+  color: rgba(242, 242, 242, 0.94);
   margin: 0;
   line-height: 1.2;
 }
@@ -215,7 +211,7 @@
   font-family: 'PP Neue Montreal', 'Inter', system-ui, sans-serif;
   font-size: 0.78rem;
   font-weight: 400;
-  color: rgba(255, 255, 255, 0.56);
+  color: rgba(242, 242, 242, 0.56);
   margin: 0;
   line-height: 1.6;
 }
@@ -227,13 +223,13 @@
   gap: 0.2rem;
 
   padding: 1.6rem 0;
-  border-top: 1px solid rgba(255, 255, 255, 0.04);
-  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+  border-top: 1px solid rgba(242, 242, 242, 0.04);
+  border-bottom: 1px solid rgba(242, 242, 242, 0.04);
 
   /* Faint inner glow above/below the price row */
   box-shadow:
-    0 -1px 0 rgba(255, 255, 255, 0.015),
-    0  1px 0 rgba(255, 255, 255, 0.015);
+    0 -1px 0 rgba(242, 242, 242, 0.015),
+    0  1px 0 rgba(242, 242, 242, 0.015);
 }
 
 .srOnly {
@@ -256,7 +252,7 @@
   font-family: 'PP Neue Montreal', 'Inter', system-ui, sans-serif;
   font-size: 1.4rem;
   font-weight: 300;
-  color: rgba(200, 160, 80, 0.5);
+  color: rgba(255, 188, 31, 0.5);
   align-self: flex-start;
   margin-top: 0.55rem;
   line-height: 1;
@@ -267,11 +263,11 @@
   font-size: 4.2rem;
   font-weight: 200;
   letter-spacing: -0.045em;
-  color: rgba(245, 240, 230, 0.97);
+  color: rgba(242, 242, 242, 0.97);
   line-height: 1;
   /* Subtle text-shadow for depth */
   text-shadow:
-    0 0 60px rgba(200, 160, 80, 0.12),
+    0 0 60px rgba(255, 188, 31, 0.12),
     0 2px 8px rgba(0, 0, 0, 0.5);
 }
 
@@ -280,7 +276,7 @@
   font-size: 0.8rem;
   font-weight: 400;
   letter-spacing: 0.06em;
-  color: rgba(255, 255, 255, 0.22);
+  color: rgba(242, 242, 242, 0.22);
   align-self: flex-end;
   padding-bottom: 0.55rem;
 }
@@ -311,7 +307,7 @@
   row-gap: 0.08rem;
   align-items: start;
   padding: 0.65rem 0;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+  border-bottom: 1px solid rgba(242, 242, 242, 0.03);
   transition: background 0.2s ease;
 }
 
@@ -320,14 +316,14 @@
 }
 
 .featureItem:hover {
-  background: rgba(200, 160, 80, 0.02);
+  background: rgba(255, 188, 31, 0.02);
   margin-inline: -0.5rem;
   padding-inline: 0.5rem;
   border-radius: 2px;
 }
 
 .featureItem:hover .featureDot {
-  background: rgba(200, 160, 80, 0.75);
+  background: rgba(255, 188, 31, 0.75);
   animation: dotGlow 1.5s ease infinite;
 }
 
@@ -337,12 +333,12 @@
   width: 4px;
   height: 4px;
   border-radius: 50%;
-  background: rgba(200, 160, 80, 0.45);
+  background: rgba(255, 188, 31, 0.45);
   margin-top: 1px;
   transition:
     background   0.2s ease,
     box-shadow   0.2s ease;
-  box-shadow: 0 0 0 0 rgba(200, 160, 80, 0);
+  box-shadow: 0 0 0 0 rgba(255, 188, 31, 0);
 }
 
 .featureLabel {
@@ -351,7 +347,7 @@
   font-weight: 500;
   letter-spacing: 0.06em;
   text-transform: uppercase;
-  color: rgba(245, 240, 230, 0.82);
+  color: rgba(242, 242, 242, 0.82);
   line-height: 1.3;
 }
 
@@ -359,7 +355,7 @@
   font-family: 'PP Neue Montreal', 'Inter', system-ui, sans-serif;
   font-size: 0.66rem;
   font-weight: 400;
-  color: rgba(255, 255, 255, 0.5);
+  color: rgba(242, 242, 242, 0.5);
   line-height: 1.4;
 }
 
@@ -403,15 +399,15 @@
   width: 2rem;
   height: 2rem;
   margin: 0 auto;
-  border: 2px solid rgba(200, 160, 80, 0.18);
-  border-top-color: rgba(220, 185, 110, 0.92);
+  border: 2px solid rgba(255, 188, 31, 0.18);
+  border-top-color: rgba(255, 188, 31, 0.92);
   border-radius: 50%;
   animation: spin 0.8s linear infinite;
 }
 
 .statusCopy {
   margin: 0;
-  color: rgba(255, 255, 255, 0.68);
+  color: rgba(242, 242, 242, 0.68);
   font-family: 'PP Neue Montreal', 'Inter', system-ui, sans-serif;
   font-size: 0.76rem;
   letter-spacing: 0.08em;
@@ -422,10 +418,10 @@
   width: 100%;
   min-height: 44px;
   padding: 0.9rem 1.25rem;
-  border: 1px solid rgba(200, 160, 80, 0.35);
+  border: 1px solid rgba(255, 188, 31, 0.35);
   border-radius: 2px;
-  background: rgba(200, 160, 80, 0.09);
-  color: rgba(235, 200, 120, 0.96);
+  background: rgba(255, 188, 31, 0.09);
+  color: rgba(255, 188, 31, 0.96);
   cursor: pointer;
   font-family: 'PP Neue Montreal', 'Inter', system-ui, sans-serif;
   font-size: 0.65rem;
@@ -439,9 +435,9 @@
 }
 
 .retryBtn:hover {
-  background: rgba(200, 160, 80, 0.15);
-  border-color: rgba(200, 160, 80, 0.55);
-  color: rgba(245, 215, 145, 1);
+  background: rgba(255, 188, 31, 0.15);
+  border-color: rgba(255, 188, 31, 0.55);
+  color: rgba(255, 188, 31, 1);
 }
 
 /* ── CTA button ──────────────────────────────────────────────── */
@@ -456,9 +452,9 @@
   min-height: 44px;
   padding: 1.1rem 1.5rem;
   border-radius: 2px;
-  border: 1px solid rgba(200, 160, 80, 0.3);
-  background: rgba(200, 160, 80, 0.07);
-  color: rgba(220, 185, 110, 0.92);
+  border: 1px solid rgba(255, 188, 31, 0.3);
+  background: rgba(255, 188, 31, 0.07);
+  color: rgba(255, 188, 31, 0.92);
 
   cursor: pointer;
   position: relative;
@@ -469,8 +465,8 @@
   gap: 0.65rem;
 
   box-shadow:
-    0 0 0 0 rgba(200, 160, 80, 0),
-    inset 0 1px 0 rgba(200, 160, 80, 0.06);
+    0 0 0 0 rgba(255, 188, 31, 0),
+    inset 0 1px 0 rgba(255, 188, 31, 0.06);
 
   transition:
     background    0.32s cubic-bezier(0.16, 1, 0.3, 1),
@@ -491,7 +487,7 @@
   background: linear-gradient(
     90deg,
     transparent,
-    rgba(200, 160, 80, 0.07) 50%,
+    rgba(255, 188, 31, 0.07) 50%,
     transparent
   );
   transition: left 0.6s cubic-bezier(0.16, 1, 0.3, 1);
@@ -505,7 +501,7 @@
   left: 20%;
   right: 20%;
   height: 1px;
-  background: rgba(200, 160, 80, 0.12);
+  background: rgba(255, 188, 31, 0.12);
   transition: opacity 0.3s ease;
 }
 
@@ -514,23 +510,23 @@
 }
 
 .cta:hover:not(:disabled) {
-  background:   rgba(200, 160, 80, 0.13);
-  border-color: rgba(200, 160, 80, 0.5);
-  color:        rgba(235, 200, 120, 1);
+  background:   rgba(255, 188, 31, 0.13);
+  border-color: rgba(255, 188, 31, 0.5);
+  color:        rgba(255, 188, 31, 1);
   transform:    translateY(-2px);
   box-shadow:
     0 8px 24px rgba(0, 0, 0, 0.35),
-    0 0 32px rgba(200, 160, 80, 0.1),
-    inset 0 1px 0 rgba(200, 160, 80, 0.1);
+    0 0 32px rgba(255, 188, 31, 0.1),
+    inset 0 1px 0 rgba(255, 188, 31, 0.1);
 }
 
 .cta:active:not(:disabled) {
   transform:    translateY(0);
-  background:   rgba(200, 160, 80, 0.08);
-  border-color: rgba(200, 160, 80, 0.35);
+  background:   rgba(255, 188, 31, 0.08);
+  border-color: rgba(255, 188, 31, 0.35);
   box-shadow:
     0 2px 8px rgba(0, 0, 0, 0.3),
-    0 0 12px rgba(200, 160, 80, 0.06);
+    0 0 12px rgba(255, 188, 31, 0.06);
 }
 
 .cta:disabled {
@@ -541,12 +537,12 @@
 
 /* Loading state — shimmer border */
 .cta[data-loading="true"] {
-  border-color: rgba(200, 160, 80, 0.22);
+  border-color: rgba(255, 188, 31, 0.22);
   background: linear-gradient(
     90deg,
-    rgba(200, 160, 80, 0.04) 0%,
-    rgba(200, 160, 80, 0.09) 50%,
-    rgba(200, 160, 80, 0.04) 100%
+    rgba(255, 188, 31, 0.04) 0%,
+    rgba(255, 188, 31, 0.09) 50%,
+    rgba(255, 188, 31, 0.04) 100%
   );
   background-size: 200% auto;
   animation: shimmerCtaBg 1.6s linear infinite;
@@ -557,8 +553,8 @@
   display: inline-block;
   width: 14px;
   height: 14px;
-  border: 1.5px solid rgba(200, 160, 80, 0.2);
-  border-top-color: rgba(200, 160, 80, 0.85);
+  border: 1.5px solid rgba(255, 188, 31, 0.2);
+  border-top-color: rgba(255, 188, 31, 0.85);
   border-radius: 50%;
   animation: spin 0.7s linear infinite;
   vertical-align: middle;
@@ -570,10 +566,10 @@
   margin: 0.8rem auto 0;
   padding: 0.5rem 1.2rem;
   min-height: 44px;
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(242, 242, 242, 0.08);
   border-radius: 4px;
   background: transparent;
-  color: rgba(255, 255, 255, 0.5);
+  color: rgba(242, 242, 242, 0.5);
   font-size: 0.55rem;
   letter-spacing: 0.15em;
   text-transform: uppercase;
@@ -582,8 +578,8 @@
 }
 
 .portalBtn:hover {
-  border-color: rgba(200, 160, 80, 0.3);
-  color: rgba(220, 180, 100, 0.8);
+  border-color: rgba(255, 188, 31, 0.3);
+  color: rgba(255, 188, 31, 0.8);
 }
 
 .portalBtn:disabled {
@@ -595,7 +591,7 @@
 .cta:focus-visible,
 .portalBtn:focus-visible,
 .retryBtn:focus-visible {
-  outline: 2px solid rgba(235, 200, 120, 0.95);
+  outline: 2px solid rgba(255, 188, 31, 0.95);
   outline-offset: 3px;
 }
 
@@ -604,7 +600,7 @@
   font-family: 'PP Neue Montreal', 'Inter', system-ui, sans-serif;
   font-size: 0.58rem;
   letter-spacing: 0.1em;
-  color: rgba(255, 255, 255, 0.48);
+  color: rgba(242, 242, 242, 0.48);
   text-align: center;
   margin: 0;
 }

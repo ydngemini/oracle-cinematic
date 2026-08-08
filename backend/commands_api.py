@@ -1,4 +1,4 @@
-"""Approval-gated EMAIL, CALL, and CALENDAR command router."""
+"""Approval-gated EMAIL, SMS, CALL, and CALENDAR command router."""
 
 from __future__ import annotations
 
@@ -48,8 +48,11 @@ from command_providers import (
     place_acs_call,
     place_custom_http_call,
     place_twilio_call,
-    send_gmail,
+    send_acs_email,
+    send_acs_sms,
     send_ses_email,
+    send_smtp_email,
+    send_twilio_sms,
 )
 from crypto import decrypt_pii, derive_tenant_key, encrypt_pii
 from db.connection import tenant_tx
@@ -91,12 +94,14 @@ def configure_command_mind_service(service: "MindService") -> None:
 
 class CommandType(str, Enum):
     EMAIL = "EMAIL"
+    SMS = "SMS"
     CALL = "CALL"
     CALENDAR = "CALENDAR"
 
 
 class ParsedIntent(str, Enum):
     EMAIL = "EMAIL"
+    SMS = "SMS"
     CALL = "CALL"
     CALENDAR = "CALENDAR"
     CONTRACT = "CONTRACT"
@@ -105,12 +110,23 @@ class ParsedIntent(str, Enum):
 
 _RISK = {
     CommandType.EMAIL: ActionRisk.OUTREACH,
+    CommandType.SMS: ActionRisk.OUTREACH,
     CommandType.CALL: ActionRisk.LIVE_CALL,
     CommandType.CALENDAR: ActionRisk.CALENDAR_WRITE,
 }
 
 _EMAIL_RE = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
 _E164_RE = re.compile(r"^\+[1-9]\d{7,14}$")
+
+
+async def _run_sync_in_executor(
+    fn: Any,
+    *args: Any,
+    timeout_seconds: Optional[float] = 5.0,
+) -> Any:
+    if timeout_seconds is None:
+        return await asyncio.to_thread(fn, *args)
+    return await asyncio.wait_for(asyncio.to_thread(fn, *args), timeout=timeout_seconds)
 
 
 def _require_webhook_secret(request: Request, env_name: str) -> None:
@@ -244,6 +260,7 @@ class CommandExecuteRequest(BaseModel):
             return self
         if not self.intent or self.intent not in {
             ParsedIntent.EMAIL,
+            ParsedIntent.SMS,
             ParsedIntent.CALL,
             ParsedIntent.CALENDAR,
         }:
@@ -322,14 +339,15 @@ class GoogleOAuthStart(BaseModel):
         return value
 
 
-_COMMAND_PROVIDERS = {"google", "acs", "ses", "twilio"}
+_COMMAND_PROVIDERS = {"google", "smtp", "acs", "ses", "twilio"}
 _GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 _GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
+# Calendar only. Mail never leaves through a Google account, so requesting
+# gmail.send would be an unused grant over an agent's whole mailbox.
 _GOOGLE_SCOPES = (
     "openid",
     "email",
     "https://www.googleapis.com/auth/calendar.events",
-    "https://www.googleapis.com/auth/gmail.send",
 )
 _OAUTH_STATE_TTL = timedelta(minutes=10)
 
@@ -492,6 +510,32 @@ def _provider_key(tenant_id: str) -> str:
     return derive_tenant_key(tenant_id, master)
 
 
+# Terminal email senders, keyed by ORACLE_EMAIL_PROVIDER. The value is the send
+# function plus the provider_credentials key its per-tenant credential is stored
+# under, so both move together when a new provider is added.
+_EMAIL_SENDERS = {
+    "smtp": (send_smtp_email, "smtp"),
+    "acs": (send_acs_email, "acs"),
+    "ses": (send_ses_email, "ses"),
+}
+
+
+def _resolve_email_provider():
+    """Pick the configured terminal email sender.
+
+    Defaults to SMTP: agent mail goes out through each agent's own Google OAuth
+    grant (the Gmail rungs above this one), and SMTP is the platform-level
+    sender that does not depend on any single agent having consented."""
+    name = os.getenv("ORACLE_EMAIL_PROVIDER", "smtp").strip().lower()
+    try:
+        return _EMAIL_SENDERS[name]
+    except KeyError:
+        raise ProviderConfigurationError(
+            f"ORACLE_EMAIL_PROVIDER={name!r} is not supported; use "
+            + " or ".join(repr(k) for k in sorted(_EMAIL_SENDERS))
+        ) from None
+
+
 async def _load_provider_credential(
     ctx: TenantContext,
     provider: str,
@@ -536,20 +580,39 @@ def _validate_command_payload(
         if len(str(draft["subject"])) > 200 or len(str(draft["body"])) > 20_000:
             raise ValueError("EMAIL draft exceeds size limits")
         return
+    if command_type is CommandType.SMS:
+        phone = str(target.get("phone") or "").strip()
+        if not _E164_RE.match(phone):
+            raise ValueError("SMS target requires an E.164 phone number")
+        if not any(target.get(key) for key in ("contact_id", "lead_id", "client_id")):
+            raise ValueError("SMS target must reference a contact, lead, or client")
+        for key in ("contact_id", "lead_id", "client_id"):
+            if target.get(key):
+                try:
+                    uuid.UUID(str(target[key]))
+                except (ValueError, TypeError, AttributeError) as exc:
+                    raise ValueError(f"SMS target {key} must be a UUID") from exc
+        state_code = str(target.get("state_code") or "").upper()
+        if not re.fullmatch(r"[A-Z]{2}", state_code):
+            raise ValueError("SMS target requires a two-letter state_code")
+        message = str(draft.get("body") or "").strip()
+        if not message or len(message) > 1_600:
+            raise ValueError("SMS draft body must contain 1-1600 characters")
+        return
     if command_type is CommandType.CALL:
         phone = str(target.get("phone") or "").strip()
         if not _E164_RE.match(phone):
             raise ValueError("CALL target requires an E.164 phone number")
-        if not target.get("lead_id") and not target.get("client_id"):
-            raise ValueError("CALL target must reference a lead or client")
-        for key in ("lead_id", "client_id"):
+        if not any(target.get(key) for key in ("contact_id", "lead_id", "client_id")):
+            raise ValueError("CALL target must reference a contact, lead, or client")
+        for key in ("contact_id", "lead_id", "client_id"):
             if target.get(key):
                 try:
                     uuid.UUID(str(target[key]))
                 except (ValueError, TypeError, AttributeError) as exc:
                     raise ValueError(f"CALL target {key} must be a UUID") from exc
         state_code = str(target.get("state_code") or "").upper()
-        if len(state_code) != 2:
+        if not re.fullmatch(r"[A-Z]{2}", state_code):
             raise ValueError("CALL target requires a two-letter state_code")
         return
     event = draft.get("event")
@@ -608,27 +671,86 @@ async def _get_command(ctx: TenantContext, command_id: str, *, lock: bool = Fals
     return row
 
 
+# "text" is an ordinary English noun as often as it is a verb — "email her the
+# text of the counteroffer", "call him about their last text". Left in place
+# those readings win the SMS pattern below (it is tested before CALL and EMAIL)
+# and turn an email or a call into a billable outbound SMS under the wrong
+# compliance gate. Determiner-led noun phrases are stripped before intent
+# matching; "send the client a text" and "the text message" are not determiner-
+# led references to existing content, so they still route to SMS.
+# The modifier slot accepts any word rather than a fixed adjective list: real
+# commands say "the inspection text", "the counteroffer text", "her closing
+# text" — an enumerated whitelist can never cover the nouns a listing throws at
+# it, and each miss silently re-routes an email into a billable SMS. A second
+# determiner is excluded because it starts a NEW noun phrase: without that guard
+# "send the client a text" reads as one span and stops routing to SMS.
+_DETERMINER = r"(?:a|an|the|this|that|these|those|his|her|their|its|my|your|our)"
+_TEXT_AS_NOUN_RE = re.compile(
+    r"\b(?:the|this|that|these|those|his|her|their|its|my|your|our)"
+    rf"(?:\s+(?!{_DETERMINER}\b)[a-z][a-z-]*){{0,2}}"
+    r"\s+texts?\b(?!\s+messages?\b)"
+    r"|\btexts?\s+of\b"
+)
+
+# The action verb an agent actually typed is the strongest possible signal, and
+# it sits at the front: "email the seller the inspection text and my notes" is
+# unambiguously an email no matter what nouns follow. Anchoring on it settles
+# the SMS-before-EMAIL ordering below before the noun heuristics have to.
+_LEADING_VERB_INTENT = (
+    (r"e-?mail", "EMAIL"),
+    (r"sms|text", "SMS"),
+    (r"call|phone|dial", "CALL"),
+)
+_LEADING_VERB_RE = re.compile(
+    r"^(?:please\s+|can\s+you\s+|could\s+you\s+|pls\s+)*"
+    r"(?P<verb>e-?mail|sms|text|call|phone|dial)\b"
+)
+
+
 def _parse_intent(raw_text: str) -> ParsedIntent:
-    text = " ".join(raw_text.lower().split())
-    patterns = (
+    normalized = " ".join(raw_text.lower().split())
+    text = _TEXT_AS_NOUN_RE.sub(" ", normalized)
+
+    # These outrank the comms channels and keep their existing precedence:
+    # "call to schedule a meeting with Bob" is CALENDAR, not CALL.
+    for intent, pattern in (
         (ParsedIntent.MAO_CALC, r"\b(?:mao|max(?:imum)? allowable offer|offer ceiling)\b"),
         (ParsedIntent.CONTRACT, r"\b(?:contract|agreement|assignment)\b"),
         (ParsedIntent.CALENDAR, r"\b(?:calendar|schedule|book|meeting|appointment)\b"),
+    ):
+        if re.search(pattern, text):
+            return intent
+
+    # Among the three comms channels, the verb the agent led with decides —
+    # ordering alone cannot, because "text" is a noun as often as a verb and
+    # SMS has to be tested first for "text her about our call tomorrow".
+    leading = _LEADING_VERB_RE.match(normalized)
+    if leading:
+        verb = leading.group("verb")
+        for pattern, name in _LEADING_VERB_INTENT:
+            if re.fullmatch(pattern, verb):
+                return ParsedIntent[name]
+
+    channels = (
+        # SMS stays before CALL: misrouting a text into the LIVE_CALL risk class
+        # is the more expensive error of the two.
+        (ParsedIntent.SMS, r"\b(?:sms|text message|text)\b"),
         (ParsedIntent.CALL, r"\b(?:call|phone|dial)\b"),
         (ParsedIntent.EMAIL, r"\b(?:email|e-mail|mail)\b"),
     )
-    for intent, pattern in patterns:
+    for intent, pattern in channels:
         if re.search(pattern, text):
             return intent
     raise HTTPException(
         status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-        detail="Command must request EMAIL, CALL, CALENDAR, CONTRACT, or MAO_CALC.",
+        detail="Command must request EMAIL, SMS, CALL, CALENDAR, CONTRACT, or MAO_CALC.",
     )
 
 
 def _name_hint(raw_text: str, intent: ParsedIntent) -> str:
     verb = {
         ParsedIntent.EMAIL: r"(?:email|e-mail|mail)",
+        ParsedIntent.SMS: r"(?:sms|text(?:\s+message)?)",
         ParsedIntent.CALL: r"(?:call|phone|dial)",
         ParsedIntent.CALENDAR: r"(?:schedule(?:\s+a)?(?:\s+call|\s+meeting)?\s+with|book(?:\s+a)?(?:\s+meeting)?\s+with)",
         ParsedIntent.CONTRACT: r"(?:contract(?:\s+for)?|agreement(?:\s+for)?)",
@@ -690,6 +812,11 @@ def _fallback_draft(
         if signature:
             body = f"{body}\n\n{signature}"
         return {"subject": f"Following up about {subject_context}", "body": body}
+    if intent is ParsedIntent.SMS:
+        body = f"Hi {first_name}, I’m following up regarding {subject_context}."
+        if signature:
+            body = f"{body} {signature}"
+        return {"body": body[:1_600]}
     if intent is ParsedIntent.CALL:
         return {
             "opening": f"Hi {first_name}, this is {profile.get('name') or 'your real estate agent'}.",
@@ -869,10 +996,11 @@ async def parse_personal_command(
 
     if intent is ParsedIntent.EMAIL and not target["email"]:
         missing_fields.append("client.email")
-    if intent is ParsedIntent.CALL:
+    if intent in {ParsedIntent.SMS, ParsedIntent.CALL}:
         if not target["phone"]:
             missing_fields.append("client.phone")
-        draft_payload.setdefault("script", draft_payload.get("opening") or body.raw_text)
+        if intent is ParsedIntent.CALL:
+            draft_payload.setdefault("script", draft_payload.get("opening") or body.raw_text)
         target["state_code"] = str(
             (property_context or {}).get("state")
             or ((property_context or {}).get("payload") or {}).get("state_code")
@@ -911,7 +1039,12 @@ async def parse_personal_command(
         if not draft_payload.get("doc_id"):
             missing_fields.append("doc_id")
 
-    if intent in {ParsedIntent.EMAIL, ParsedIntent.CALL, ParsedIntent.CALENDAR} and not missing_fields:
+    if intent in {
+        ParsedIntent.EMAIL,
+        ParsedIntent.SMS,
+        ParsedIntent.CALL,
+        ParsedIntent.CALENDAR,
+    } and not missing_fields:
         create_body = CommandCreate(
             command_type=CommandType(intent.value),
             target=target,
@@ -1027,6 +1160,8 @@ async def classify_command(
     text = body.text.strip().lower()
     if re.match(r"^(email|e-mail|send (an )?email)\b", text):
         command_type = CommandType.EMAIL
+    elif re.match(r"^(sms|text|send (a )?text)\b", text):
+        command_type = CommandType.SMS
     elif re.match(r"^(call|phone|dial)\b", text):
         command_type = CommandType.CALL
     elif re.match(r"^(calendar|schedule|book|set up (a )?meeting)\b", text):
@@ -1034,7 +1169,7 @@ async def classify_command(
     else:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="Command must explicitly request EMAIL, CALL, or CALENDAR.",
+            detail="Command must explicitly request EMAIL, SMS, CALL, or CALENDAR.",
         )
     return {
         "command_type": command_type.value,
@@ -1322,15 +1457,19 @@ async def finish_google_oauth(
             """
             INSERT INTO provider_credentials (
                 tenant_id,provider,account_label,token_ciphertext,
-                refresh_ciphertext,scopes,expires_at,last_validated_at,created_by
-            ) VALUES ($1::uuid,'google',$2,$3,$4,$5::text[],$6,now(),$7)
+                refresh_ciphertext,scopes,expires_at,last_validated_at,created_by,
+                validation_status,validation_error,validated_capabilities
+            ) VALUES ($1::uuid,'google',$2,$3,$4,$5::text[],$6,now(),$7,
+                      'valid',NULL,'{"email":true,"calendar":true}'::jsonb)
             ON CONFLICT (tenant_id,provider,account_label) DO UPDATE SET
                 token_ciphertext=EXCLUDED.token_ciphertext,
                 refresh_ciphertext=COALESCE(
                     EXCLUDED.refresh_ciphertext,provider_credentials.refresh_ciphertext
                 ),
                 scopes=EXCLUDED.scopes,expires_at=EXCLUDED.expires_at,
-                last_validated_at=now(),disabled_at=NULL,updated_at=now()
+                last_validated_at=now(),validation_status='valid',validation_error=NULL,
+                validated_capabilities=EXCLUDED.validated_capabilities,
+                disabled_at=NULL,updated_at=now()
             RETURNING id
             """,
             tenant_id,
@@ -1381,13 +1520,17 @@ async def store_provider_credential(
             """
             INSERT INTO provider_credentials (
                 tenant_id,provider,account_label,token_ciphertext,
-                refresh_ciphertext,scopes,expires_at,last_validated_at,created_by
-            ) VALUES ($1::uuid,$2,$3,$4,$5,$6::text[],$7,now(),$8)
+                refresh_ciphertext,scopes,expires_at,last_validated_at,created_by,
+                validation_status,validation_error,validated_capabilities
+            ) VALUES ($1::uuid,$2,$3,$4,$5,$6::text[],$7,NULL,$8,
+                      'unverified',NULL,'{}'::jsonb)
             ON CONFLICT (tenant_id,provider,account_label) DO UPDATE SET
                 token_ciphertext=EXCLUDED.token_ciphertext,
                 refresh_ciphertext=EXCLUDED.refresh_ciphertext,
                 scopes=EXCLUDED.scopes,expires_at=EXCLUDED.expires_at,
-                last_validated_at=now(),disabled_at=NULL,updated_at=now()
+                last_validated_at=NULL,validation_status='unverified',
+                validation_error=NULL,validated_capabilities='{}'::jsonb,
+                disabled_at=NULL,updated_at=now()
             RETURNING id,provider,account_label,scopes,expires_at,last_validated_at
             """,
             ctx.tenant_id,
@@ -1403,7 +1546,11 @@ async def store_provider_credential(
         **dict(row),
         "id": str(row["id"]),
         "expires_at": row["expires_at"].isoformat() if row["expires_at"] else None,
-        "last_validated_at": row["last_validated_at"].isoformat(),
+        # A freshly stored credential is deliberately unverified, so this column
+        # is NULL until the first validation run — never assume a datetime here.
+        "last_validated_at": (
+            row["last_validated_at"].isoformat() if row["last_validated_at"] else None
+        ),
         "credential_exposed": False,
     }
 
@@ -1779,9 +1926,10 @@ async def acs_qwen_media(websocket: WebSocket):
     )
 
     authorization = websocket.headers.get("authorization", "")
-    is_authentic = await asyncio.to_thread(
+    is_authentic = await _run_sync_in_executor(
         verify_acs_websocket_jwt,
         authorization,
+        timeout_seconds=5.0,
     )
     if not is_authentic:
         await websocket.close(code=4403)
@@ -1892,15 +2040,16 @@ async def _execute_command_job(payload: dict[str, Any], reporter) -> dict[str, A
                 await conn.execute(
                     """
                     INSERT INTO live_call_sessions (
-                        tenant_id,command_id,client_id,lead_id,consent_recorded,
+                        tenant_id,command_id,contact_id,client_id,lead_id,consent_recorded,
                         consent_basis,transcript_status,provider_call_id,created_by
-                    ) VALUES ($1::uuid,$2::uuid,$3::uuid,$4::uuid,false,
+                    ) VALUES ($1::uuid,$2::uuid,$3::uuid,$4::uuid,$5::uuid,false,
                               'awaiting_explicit_live_transcription_consent',
-                              'pending',$5,$6)
+                              'pending',$6,$7)
                     ON CONFLICT (command_id) DO NOTHING
                     """,
                     tenant_id,
                     command_id,
+                    target.get("contact_id"),
                     target.get("client_id"),
                     target.get("lead_id"),
                     command["provider_reference"],
@@ -1955,14 +2104,71 @@ async def _execute_command_job(payload: dict[str, Any], reporter) -> dict[str, A
                 raise RuntimeError("Outreach blocked: " + "; ".join(decision.blockers))
             await reporter.progress(45, "submitting approved email")
             submission_started = True
-            try:
-                google_raw = await _load_provider_credential(ctx, "google")
-                provider_result = await send_gmail({**draft, "target": target}, credentials=google_raw)
-            except Exception:
+            # One sender, chosen by configuration. SMTP is the default, so mail
+            # leaves through a server the operator controls rather than any
+            # third party's API.
+            sender, credential_key = _resolve_email_provider()
+            raw = await _load_provider_credential(ctx, credential_key)
+            credentials = None
+            if raw:
+                malformed = (
+                    f"Encrypted {credential_key.upper()} credential must be a JSON object"
+                )
                 try:
-                    provider_result = await send_gmail({**draft, "target": target})
-                except Exception:
-                    provider_result = await send_ses_email({**draft, "target": target})
+                    credentials = json.loads(raw)
+                except (TypeError, ValueError) as exc:
+                    raise ProviderConfigurationError(malformed) from exc
+                if not isinstance(credentials, dict):
+                    raise ProviderConfigurationError(malformed)
+            provider_result = await sender(
+                {**draft, "target": target}, credentials=credentials
+            )
+        elif command_type is CommandType.SMS:
+            decision = await guard_outreach(
+                ctx,
+                channel=Channel.SMS,
+                contact=str(target["phone"]),
+                state_code=str(target.get("state_code") or ""),
+                tz_name=target.get("timezone"),
+            )
+            if not decision.allowed:
+                raise RuntimeError("SMS blocked: " + "; ".join(decision.blockers))
+            await reporter.progress(45, "submitting approved SMS")
+            twilio_raw = await _load_provider_credential(ctx, "twilio")
+            twilio_credentials = None
+            if twilio_raw:
+                try:
+                    twilio_credentials = json.loads(twilio_raw)
+                except (TypeError, ValueError) as exc:
+                    raise ProviderConfigurationError(
+                        "Encrypted Twilio credential must be a JSON object"
+                    ) from exc
+                if not isinstance(twilio_credentials, dict):
+                    raise ProviderConfigurationError(
+                        "Encrypted Twilio credential must be a JSON object"
+                    )
+            submission_started = True
+            try:
+                provider_result = await send_twilio_sms(
+                    {**draft, "target": target}, credentials=twilio_credentials
+                )
+            except ProviderConfigurationError:
+                acs_raw = await _load_provider_credential(ctx, "acs")
+                acs_credentials = None
+                if acs_raw:
+                    try:
+                        acs_credentials = json.loads(acs_raw)
+                    except (TypeError, ValueError) as exc:
+                        raise ProviderConfigurationError(
+                            "Encrypted ACS credential must be a JSON object"
+                        ) from exc
+                    if not isinstance(acs_credentials, dict):
+                        raise ProviderConfigurationError(
+                            "Encrypted ACS credential must be a JSON object"
+                        )
+                provider_result = await send_acs_sms(
+                    {**draft, "target": target}, credentials=acs_credentials
+                )
         elif command_type is CommandType.CALL:
             decision = await guard_outreach(
                 ctx,
@@ -2127,15 +2333,16 @@ async def _execute_command_job(payload: dict[str, Any], reporter) -> dict[str, A
                     await conn.execute(
                         """
                         INSERT INTO live_call_sessions (
-                            tenant_id,command_id,client_id,lead_id,consent_recorded,
+                            tenant_id,command_id,contact_id,client_id,lead_id,consent_recorded,
                             consent_basis,transcript_status,provider_call_id,created_by
-                        ) VALUES ($1::uuid,$2::uuid,$3::uuid,$4::uuid,false,
+                        ) VALUES ($1::uuid,$2::uuid,$3::uuid,$4::uuid,$5::uuid,false,
                                   'awaiting_explicit_live_transcription_consent',
-                                  'pending',$5,$6)
+                                  'pending',$6,$7)
                         ON CONFLICT (command_id) DO NOTHING
                         """,
                         tenant_id,
                         command_id,
+                        target.get("contact_id"),
                         target.get("client_id"),
                         target.get("lead_id"),
                         provider_result.reference,
@@ -2274,9 +2481,10 @@ async def twilio_qwen_media(websocket: WebSocket):
     )
 
     signature = websocket.headers.get("x-twilio-signature", "")
-    is_authentic = await asyncio.to_thread(
+    is_authentic = await _run_sync_in_executor(
         verify_twilio_websocket_signature,
         signature,
+        timeout_seconds=5.0,
     )
     if not is_authentic:
         await websocket.close(code=4403)

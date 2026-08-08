@@ -1,0 +1,33 @@
+{
+  "// note": "Oracle is a JS/JSX codebase. This config exists so the TypeScript modules added for the floor-plan bridge and the PlayCanvas tour viewer can be typechecked (`npm run typecheck`). Vite transpiles .ts/.tsx via esbuild regardless of this file; it is for editors and CI, not the build.",
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "jsx": "react-jsx",
+
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
+
+    "allowJs": false,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "noEmit": true,
+    "types": ["vite/client"]
+  },
+  "include": [
+    "src/**/*.ts",
+    "src/**/*.tsx"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist",
+    "// pascalGuestBridge runs INSIDE the Pascal editor iframe, not in Oracle. It lives here so the two halves of the protocol stay reviewable together, but it imports @pascal-app/core, which is deliberately not an Oracle dependency (that is the whole point of the iframe boundary). It is typechecked in the Pascal host app instead.",
+    "src/lib/floorplan/pascalGuestBridge.ts"
+  ]
+}

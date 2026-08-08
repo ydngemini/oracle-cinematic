@@ -615,6 +615,38 @@ _READ_ONLY_TOOLS = frozenset({
     "call_contact",
 })
 
+# The catalog in ``ai_chat_agent`` deliberately describes the product roadmap,
+# but an LLM must only be offered tools that can complete against a verified
+# local data source.  External MLS, public-record, legal, and billing tools
+# stay out of the model surface until their licensed provider/workflow exists.
+# This is distinct from the broader read-only catalog above, which is used to
+# decide whether a direct tool request needs a selected write anchor.
+_AGENT_AVAILABLE_TOOLS = frozenset({
+    "codebase_summary",
+    "web_search",
+    "search_clients",
+    "get_client_detail",
+    "list_client_tasks",
+    "list_client_activity",
+    "get_client_contact_history",
+    "list_deals",
+    "get_deal_detail",
+    "track_deadlines",
+    "get_team_pipeline",
+    "list_providers",
+    "update_client",
+    "add_client_note",
+    "set_client_stage",
+    "add_client_tag",
+    "update_listing",
+    "move_deal_stage",
+})
+
+
+def is_agent_tool_available(tool_name: str) -> bool:
+    """Whether a tool is safe to advertise to a chat model in this release."""
+    return tool_name in _AGENT_AVAILABLE_TOOLS
+
 
 def _selected_uuid(
     *,
@@ -641,6 +673,295 @@ def _selected_uuid(
     return target_id, None
 
 
+def _tool_uuid(tool_input: dict, input_name: str) -> tuple[Optional[str], Optional[dict]]:
+    """Validate an untrusted tool UUID before it reaches a tenant query."""
+    try:
+        return str(uuid.UUID(str(tool_input.get(input_name) or "").strip())), None
+    except (ValueError, AttributeError):
+        return None, {"ok": False, "error": f"{input_name} must be a UUID."}
+
+
+def _safe_search_term(value: object) -> tuple[Optional[str], Optional[dict]]:
+    term = str(value or "").strip()
+    if not 1 <= len(term) <= 160:
+        return None, {"ok": False, "error": "query must be 1-160 characters."}
+    # Avoid silently turning user-entered '%' and '_' into unbounded wildcard
+    # searches. The string remains a query parameter, never SQL text.
+    return "%" + term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%", None
+
+
+async def _read_clients(conn, ctx: TenantContext, tool_name: str, tool_input: dict) -> dict:
+    if tool_name == "search_clients":
+        term, error = _safe_search_term(tool_input.get("query"))
+        if error:
+            return error
+        rows = await conn.fetch(
+            """
+            SELECT c.id,c.full_name,c.email,c.phone,c.client_type,c.stage,
+                   c.lead_score,c.assignee_id,c.company,c.last_contacted_at,c.updated_at,
+                   COALESCE(array_agg(DISTINCT ct.tag)
+                       FILTER (WHERE ct.tag IS NOT NULL), ARRAY[]::text[]) AS tags
+              FROM clients c
+              LEFT JOIN client_tags ct
+                ON ct.client_id=c.id AND ct.tenant_id=c.tenant_id
+             WHERE c.tenant_id=$1::uuid AND c.archived_at IS NULL
+               AND (
+                   c.full_name ILIKE $2 ESCAPE '\\'
+                   OR COALESCE(c.email,'') ILIKE $2 ESCAPE '\\'
+                   OR COALESCE(c.phone,'') ILIKE $2 ESCAPE '\\'
+                   OR COALESCE(c.company,'') ILIKE $2 ESCAPE '\\'
+                   OR EXISTS (
+                       SELECT 1 FROM client_tags search_tag
+                        WHERE search_tag.tenant_id=c.tenant_id
+                          AND search_tag.client_id=c.id
+                          AND search_tag.tag ILIKE $2 ESCAPE '\\'
+                   )
+               )
+             GROUP BY c.id
+             ORDER BY c.lead_score DESC,c.updated_at DESC
+             LIMIT 20
+            """,
+            ctx.tenant_id, term,
+        )
+        return {
+            "ok": True,
+            "action_type": tool_name,
+            "count": len(rows),
+            "clients": [_clean(dict(row)) for row in rows],
+        }
+
+    client_id, error = _tool_uuid(tool_input, "client_id")
+    if error:
+        return error
+    client = await conn.fetchrow(
+        """
+        SELECT id,full_name,email,phone,client_type,stage,lead_score,assignee_id,
+               company,preferences,source,last_contacted_at,created_at,updated_at
+          FROM clients
+         WHERE id=$1::uuid AND tenant_id=$2::uuid AND archived_at IS NULL
+        """,
+        client_id, ctx.tenant_id,
+    )
+    if not client:
+        return {"ok": False, "error": "Client not found."}
+
+    if tool_name == "get_client_detail":
+        # tenant_tx yields one asyncpg connection. Execute these independently;
+        # concurrent operations on the same connection are rejected by asyncpg.
+        tags = await conn.fetch(
+            """SELECT tag FROM client_tags
+                 WHERE client_id=$1::uuid AND tenant_id=$2::uuid
+                 ORDER BY lower(tag) LIMIT 50""",
+            client_id, ctx.tenant_id,
+        )
+        notes = await conn.fetch(
+            """SELECT id,body,author_id,pinned,created_at,updated_at
+                 FROM client_notes
+                WHERE client_id=$1::uuid AND tenant_id=$2::uuid
+                ORDER BY pinned DESC,created_at DESC LIMIT 20""",
+            client_id, ctx.tenant_id,
+        )
+        open_tasks = await conn.fetchval(
+            """SELECT count(*) FROM client_tasks
+                 WHERE client_id=$1::uuid AND tenant_id=$2::uuid AND status='open'""",
+            client_id, ctx.tenant_id,
+        )
+        result = _clean(dict(client))
+        result.update({
+            "tags": [row["tag"] for row in tags],
+            "notes": [_clean(dict(row)) for row in notes],
+            "open_task_count": int(open_tasks or 0),
+        })
+        return {"ok": True, "action_type": tool_name, "client": result}
+
+    if tool_name == "list_client_activity":
+        rows = await conn.fetch(
+            """SELECT id,kind,summary,meta,actor,created_at
+                 FROM client_activities
+                WHERE client_id=$1::uuid AND tenant_id=$2::uuid
+                ORDER BY created_at DESC LIMIT 50""",
+            client_id, ctx.tenant_id,
+        )
+        return {
+            "ok": True, "action_type": tool_name, "client_id": client_id,
+            "activity": [_clean(dict(row)) for row in rows],
+        }
+
+    rows = await conn.fetch(
+        """SELECT id,kind,summary,meta,actor,created_at
+             FROM client_activities
+            WHERE client_id=$1::uuid AND tenant_id=$2::uuid
+              AND kind IN ('message','showing')
+            ORDER BY created_at DESC LIMIT 50""",
+        client_id, ctx.tenant_id,
+    )
+    return {
+        "ok": True, "action_type": tool_name, "client_id": client_id,
+        "contact_history": [_clean(dict(row)) for row in rows],
+    }
+
+
+async def _read_client_tasks(conn, ctx: TenantContext, tool_input: dict) -> dict:
+    raw_client_id = tool_input.get("client_id")
+    client_id = None
+    if raw_client_id not in (None, ""):
+        client_id, error = _tool_uuid(tool_input, "client_id")
+        if error:
+            return error
+    rows = await conn.fetch(
+        """
+        SELECT ct.id,ct.client_id,ct.title,ct.details,ct.due_at,ct.status,
+               ct.priority,ct.assignee_id,ct.completed_at,ct.created_at,
+               c.full_name AS client_name
+          FROM client_tasks ct
+          LEFT JOIN clients c ON c.id=ct.client_id AND c.tenant_id=ct.tenant_id
+         WHERE ct.tenant_id=$1::uuid
+           AND ($2::uuid IS NULL OR ct.client_id=$2::uuid)
+         ORDER BY (ct.status='open') DESC,ct.due_at ASC NULLS LAST,ct.created_at DESC
+         LIMIT 50
+        """,
+        ctx.tenant_id, client_id,
+    )
+    return {
+        "ok": True, "action_type": "list_client_tasks", "count": len(rows),
+        "tasks": [_clean(dict(row)) for row in rows],
+    }
+
+
+async def _read_deals(conn, ctx: TenantContext, tool_name: str, tool_input: dict) -> dict:
+    if tool_name == "list_deals":
+        state = str(tool_input.get("state") or "").strip().upper() or None
+        stage = str(tool_input.get("stage") or "").strip() or None
+        if state and (len(state) != 2 or not state.isalpha()):
+            return {"ok": False, "error": "state must be a two-letter code."}
+        allowed_stages = {"draft", "under_contract", "marketing", "assigned", "closed", "expired", "dead"}
+        if stage and stage not in allowed_stages:
+            return {"ok": False, "error": "stage is not a valid pipeline state."}
+        rows = await conn.fetch(
+            """
+            SELECT l.id,l.parcel_id,l.address,l.state,l.motivation_score,l.dossier_status,
+                   l.contract_execution_date,l.contract_expires_at,l.updated_at,
+                   c.id AS seller_client_id,c.full_name AS seller_name
+              FROM leads l
+              LEFT JOIN clients c ON c.id=l.seller_client_id AND c.tenant_id=l.tenant_id
+             WHERE l.tenant_id=$1::uuid
+               AND ($2::text IS NULL OR l.state=$2)
+               AND ($3::text IS NULL OR l.dossier_status=$3)
+             ORDER BY l.contract_expires_at ASC NULLS LAST,l.updated_at DESC
+             LIMIT 50
+            """,
+            ctx.tenant_id, state, stage,
+        )
+        return {"ok": True, "action_type": tool_name, "count": len(rows), "deals": [_clean(dict(row)) for row in rows]}
+
+    if tool_name == "get_deal_detail":
+        deal_id, error = _tool_uuid(tool_input, "deal_id")
+        if error:
+            return error
+        deal = await conn.fetchrow(
+            """
+            SELECT l.id,l.parcel_id,l.address,l.state,l.motivation_score,l.underwriting,
+                   l.payload,l.dossier_status,l.contract_execution_date,l.contract_expires_at,
+                   l.updated_at,c.id AS seller_client_id,c.full_name AS seller_name,
+                   c.email AS seller_email,c.phone AS seller_phone
+              FROM leads l
+              LEFT JOIN clients c ON c.id=l.seller_client_id AND c.tenant_id=l.tenant_id
+             WHERE l.id=$1::uuid AND l.tenant_id=$2::uuid
+            """,
+            deal_id, ctx.tenant_id,
+        )
+        if not deal:
+            return {"ok": False, "error": "Deal not found."}
+        transactions = await conn.fetch(
+            """SELECT id,status,property_address,purchase_price,earnest_money,
+                      financing_amount,offer_deadline,inspection_deadline,
+                      financing_deadline,closing_deadline,updated_at
+                 FROM transactions
+                WHERE lead_id=$1::uuid AND tenant_id=$2::uuid
+                ORDER BY updated_at DESC LIMIT 10""",
+            deal_id, ctx.tenant_id,
+        )
+        return {
+            "ok": True, "action_type": tool_name, "deal": _clean(dict(deal)),
+            "transactions": [_clean(dict(row)) for row in transactions],
+        }
+
+    raw_deal_id = tool_input.get("deal_id")
+    deal_id = None
+    if raw_deal_id not in (None, ""):
+        deal_id, error = _tool_uuid(tool_input, "deal_id")
+        if error:
+            return error
+    rows = await conn.fetch(
+        """
+        WITH deadline_rows AS (
+            SELECT l.id AS deal_id,'contract_expiration'::text AS deadline_type,
+                   l.contract_expires_at::timestamptz AS due_at,l.dossier_status AS status
+              FROM leads l
+             WHERE l.tenant_id=$1::uuid AND l.contract_expires_at IS NOT NULL
+            UNION ALL
+            SELECT t.lead_id,'offer'::text,t.offer_deadline::timestamptz,t.status
+              FROM transactions t
+             WHERE t.tenant_id=$1::uuid AND t.lead_id IS NOT NULL AND t.offer_deadline IS NOT NULL
+            UNION ALL
+            SELECT t.lead_id,'inspection'::text,t.inspection_deadline::timestamptz,t.status
+              FROM transactions t
+             WHERE t.tenant_id=$1::uuid AND t.lead_id IS NOT NULL AND t.inspection_deadline IS NOT NULL
+            UNION ALL
+            SELECT t.lead_id,'financing'::text,t.financing_deadline::timestamptz,t.status
+              FROM transactions t
+             WHERE t.tenant_id=$1::uuid AND t.lead_id IS NOT NULL AND t.financing_deadline IS NOT NULL
+            UNION ALL
+            SELECT t.lead_id,'closing'::text,t.closing_deadline::timestamptz,t.status
+              FROM transactions t
+             WHERE t.tenant_id=$1::uuid AND t.lead_id IS NOT NULL AND t.closing_deadline IS NOT NULL
+        )
+        SELECT d.deal_id,d.deadline_type,d.due_at,d.status,l.address,l.state,
+               (d.due_at < now()) AS overdue
+          FROM deadline_rows d
+          JOIN leads l ON l.id=d.deal_id AND l.tenant_id=$1::uuid
+         WHERE ($2::uuid IS NULL OR d.deal_id=$2::uuid)
+           -- The tool is advertised as "upcoming" and the ASC + LIMIT 50 window
+           -- would otherwise be filled entirely by long-expired history on any
+           -- tenant with closed deals, hiding what is actually due this week.
+           -- A single deal is asked about explicitly, so it keeps its full set.
+           AND ($2::uuid IS NOT NULL OR d.due_at >= now() - interval '14 days')
+         ORDER BY d.due_at ASC
+         LIMIT 50
+        """,
+        ctx.tenant_id, deal_id,
+    )
+    return {"ok": True, "action_type": tool_name, "count": len(rows), "deadlines": [_clean(dict(row)) for row in rows]}
+
+
+async def _read_team_or_providers(conn, ctx: TenantContext, tool_name: str) -> dict:
+    if tool_name == "get_team_pipeline":
+        rows = await conn.fetch(
+            """SELECT dossier_status AS stage,count(*)::int AS deal_count,
+                      count(*) FILTER (
+                          WHERE contract_expires_at IS NOT NULL
+                            AND contract_expires_at <= now() + interval '14 days'
+                            AND contract_expires_at >= now()
+                      )::int AS expiring_within_14_days
+                 FROM leads
+                WHERE tenant_id=$1::uuid
+                GROUP BY dossier_status
+                ORDER BY dossier_status""",
+            ctx.tenant_id,
+        )
+        return {"ok": True, "action_type": tool_name, "stages": [_clean(dict(row)) for row in rows]}
+    rows = await conn.fetch(
+        """SELECT provider,account_label,expires_at,last_validated_at,disabled_at,
+                  validation_status,validation_error,validated_capabilities,updated_at
+             FROM provider_credentials
+            WHERE tenant_id=$1::uuid
+            ORDER BY provider,updated_at DESC""",
+        ctx.tenant_id,
+    )
+    # Ciphertext and refresh credentials never leave the database through AI.
+    return {"ok": True, "action_type": tool_name, "providers": [_clean(dict(row)) for row in rows]}
+
+
 async def _execute_safe_tool(
     ctx: TenantContext, user_id: str, message_id: str, tool_name: str,
     tool_input: dict, context_type: Optional[str], context_id: Optional[str],
@@ -659,13 +980,26 @@ async def _execute_safe_tool(
         return {"ok": False, "error": "Select the record you want me to update first."}
     key = tenant_key(ctx)
     async with tenant_tx(ctx) as conn:
+        if tool_name in {
+            "search_clients", "get_client_detail", "list_client_activity",
+            "get_client_contact_history",
+        }:
+            return await _read_clients(conn, ctx, tool_name, tool_input)
+        if tool_name == "list_client_tasks":
+            return await _read_client_tasks(conn, ctx, tool_input)
+        if tool_name in {"list_deals", "get_deal_detail", "track_deadlines"}:
+            return await _read_deals(conn, ctx, tool_name, tool_input)
+        if tool_name in {"get_team_pipeline", "list_providers"}:
+            return await _read_team_or_providers(conn, ctx, tool_name)
         if tool_name == "update_client":
             model = SafeClientUpdate.model_validate(tool_input)
             if context_type != "client" or str(model.client_id) != context_id:
                 return {"ok": False, "error": "I can only edit the selected client."}
             fields = model.model_dump(exclude={"client_id"}, exclude_none=True)
             table, id_field = "clients", str(model.client_id)
-            permitted = ("full_name","email","phone","client_type","stage","lead_score","assignee_id","company","source")
+            # Assignment remains a human decision and source is immutable unless
+            # a user edits it through the CRM's explicit source field.
+            permitted = ("full_name","email","phone","client_type","stage","lead_score","company")
         elif tool_name == "update_listing":
             model = SafeListingUpdate.model_validate(tool_input)
             if context_type != "listing" or str(model.listing_id) != context_id:
@@ -832,20 +1166,10 @@ async def _execute_safe_tool(
                 "detail": "Client tags persisted.",
             }
         elif tool_name == "assign_client":
-            id_field, target_error = _selected_uuid(
-                tool_input=tool_input,
-                input_name="client_id",
-                context_type=context_type,
-                context_id=context_id,
-                expected_context="client",
-            )
-            if target_error:
-                return target_error
-            agent_id = str(tool_input.get("agent_id", "")).strip()
-            if not agent_id or len(agent_id) > 160:
-                return {"ok": False, "error": "Provide a valid agent_id to assign."}
-            fields = {"assignee_id": agent_id}
-            table, permitted = "clients", ("assignee_id",)
+            return {
+                "ok": False,
+                "error": "AI assignment is disabled. Assign the client explicitly in the CRM.",
+            }
         elif tool_name == "score_client_lead":
             id_field, target_error = _selected_uuid(
                 tool_input=tool_input,
@@ -1048,6 +1372,34 @@ async def _execute_safe_tool(
             before_ct, after_ct, updated["updated_at"],
         )
         if table == "clients":
+            # Only a real value change is a human override — a write that
+            # re-submits the existing stage/score must not take the client off
+            # AI stewardship.
+            stage_changed = "stage" in fields and fields["stage"] != current["stage"]
+            score_changed = (
+                "lead_score" in fields and fields["lead_score"] != current["lead_score"]
+            )
+            if stage_changed or score_changed:
+                await conn.execute(
+                    """
+                    INSERT INTO client_ai_state
+                        (client_id,tenant_id,score_mode,stage_mode,status)
+                    VALUES (
+                        $1::uuid,$2::uuid,
+                        CASE WHEN $3 THEN 'manual' ELSE 'auto' END,
+                        CASE WHEN $4 THEN 'manual' ELSE 'auto' END,
+                        'queued'
+                    )
+                    ON CONFLICT (client_id) DO UPDATE SET
+                        score_mode=CASE WHEN $3 THEN 'manual' ELSE client_ai_state.score_mode END,
+                        stage_mode=CASE WHEN $4 THEN 'manual' ELSE client_ai_state.stage_mode END,
+                        status=CASE WHEN client_ai_state.enabled THEN 'queued' ELSE 'disabled' END
+                    """,
+                    id_field,
+                    ctx.tenant_id,
+                    score_changed,
+                    stage_changed,
+                )
             await conn.execute(
                 """INSERT INTO client_activities
                    (tenant_id,client_id,kind,summary,meta,actor)

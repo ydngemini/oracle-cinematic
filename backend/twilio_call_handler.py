@@ -16,6 +16,7 @@ import os
 import re
 import time
 import urllib.parse
+import uuid
 from typing import Any, Mapping, Optional
 
 logger = logging.getLogger("oracle.twilio_realtime")
@@ -140,12 +141,103 @@ async def initialize_twilio_call_state(
     return state
 
 
+def _require_uuid(value: str, label: str) -> str:
+    try:
+        return str(uuid.UUID(str(value)))
+    except (TypeError, ValueError, AttributeError) as exc:
+        raise ValueError(f"{label} must be a UUID") from exc
+
+
+async def initialize_inbound_twilio_call_state(
+    call_sid: str,
+    callee_number: str,
+    *,
+    tenant_id: str,
+    agent_id: str,
+    account_sid: str,
+    route_id: str,
+    voice_call_id: str,
+    intake_mode: str,
+    contact_id: Optional[str] = None,
+    client_id: Optional[str] = None,
+    forward_available: bool = False,
+) -> dict[str, Any]:
+    """Bind a signed inbound Twilio call to its resolved tenant and agent.
+
+    Caller phone numbers and transcript content deliberately stay out of Redis.
+    They are persisted only in the tenant-encrypted call record.  The short-lived
+    state contains the minimum identifiers needed to authorize the media stream
+    and select the bounded intake persona.
+    """
+    if not _CALL_SID_RE.fullmatch(call_sid or ""):
+        raise ValueError("Twilio call SID is invalid")
+    if not _ACCOUNT_SID_RE.fullmatch(account_sid or ""):
+        raise ValueError("Twilio account SID is invalid")
+    if not str(agent_id or "").strip() or len(str(agent_id)) > 128:
+        raise ValueError("agent_id is invalid")
+    if intake_mode not in {"buyer", "seller", "auto"}:
+        raise ValueError("intake_mode must be buyer, seller, or auto")
+
+    state: dict[str, Any] = {
+        "tenant_id": _require_uuid(tenant_id, "tenant_id"),
+        "agent_id": str(agent_id).strip(),
+        "callee": str(callee_number),
+        "account_sid": account_sid,
+        "route_id": _require_uuid(route_id, "route_id"),
+        "voice_call_id": _require_uuid(voice_call_id, "voice_call_id"),
+        "direction": "inbound",
+        "intake_mode": intake_mode,
+        "stage": "disclosed",
+        "created_at": time.time(),
+        "qwen_realtime_enabled": twilio_qwen_enabled(),
+        # Only whether a hand-off is possible — the agent's own number stays in
+        # the database, consistent with the caller-PII rule above.
+        "forward_available": bool(forward_available),
+    }
+    if contact_id:
+        state["contact_id"] = _require_uuid(contact_id, "contact_id")
+    if client_id:
+        state["client_id"] = _require_uuid(client_id, "client_id")
+    await _save_call_state(call_sid, state)
+    return state
+
+
 async def mark_twilio_streaming(call_sid: str) -> None:
     state = await load_twilio_call_state(call_sid)
     if state is None:
         raise TwilioCallStateUnavailable("Twilio call state is missing.")
     state["stage"] = "qwen_streaming"
     await _save_call_state(call_sid, state)
+
+
+async def twilio_redirect_call(call_sid: str, twiml_url: str) -> None:
+    """Redirect a live Twilio call to new TwiML — the live agent hand-off.
+
+    Passing a URL rather than inline TwiML keeps the destination number out of
+    this process and the resulting request signature-validated like every other
+    Twilio webhook.
+    """
+    if not _CALL_SID_RE.fullmatch(call_sid or ""):
+        raise ValueError("Twilio call SID is invalid")
+    parsed = urllib.parse.urlsplit(twiml_url or "")
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("Twilio redirect URL must be absolute HTTP(S)")
+
+    from command_providers import _twilio_client, _twilio_credential_error
+
+    account_sid = os.getenv("TWILIO_ACCOUNT_SID", "").strip()
+    auth_token = os.getenv("TWILIO_AUTH_TOKEN", "").strip()
+    api_key = os.getenv("TWILIO_API_KEY", "").strip()
+    api_secret = os.getenv("TWILIO_API_SECRET", "").strip()
+    error = _twilio_credential_error(account_sid, auth_token, api_key, api_secret)
+    if error:
+        raise TwilioCallStateUnavailable(f"Cannot redirect call: {error}")
+
+    def _redirect() -> None:
+        client = _twilio_client(account_sid, auth_token, api_key, api_secret)
+        client.calls(call_sid).update(url=twiml_url, method="POST")
+
+    await asyncio.wait_for(asyncio.to_thread(_redirect), timeout=15.0)
 
 
 async def cleanup_twilio_call(call_sid: str) -> None:

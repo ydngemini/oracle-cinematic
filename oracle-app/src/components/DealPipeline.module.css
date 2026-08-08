@@ -7,7 +7,7 @@
   padding: var(--space-5);
   border: 1px solid var(--oracle-glass-edge);
   border-radius: var(--radius-md);
-  background: rgba(6, 12, 21, 0.82);
+  background: rgba(8, 8, 8, 0.82);
   box-shadow: var(--shadow-e2);
   contain: layout paint style;
 }
@@ -114,7 +114,7 @@
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   border-block: 1px solid var(--oracle-border-bright);
-  background: rgba(255, 255, 255, 0.015);
+  background: rgba(242, 242, 242, 0.015);
 }
 
 .metrics > div {
@@ -161,7 +161,7 @@
   padding: 0 var(--space-3);
   border: 1px solid var(--oracle-glass-edge);
   border-radius: var(--radius-sm);
-  background: rgba(255, 255, 255, 0.025);
+  background: rgba(242, 242, 242, 0.025);
 }
 
 .searchField:focus-within,
@@ -212,14 +212,14 @@
   border-radius: var(--radius-sm);
   outline: 0;
   color: var(--oracle-text);
-  background: #101a27;
+  background: #080808;
   font: 500 var(--text-sm)/1 var(--font-sans);
 }
 
 .agentFilters {
   border: 1px solid var(--oracle-border-bright);
   border-radius: var(--radius-sm);
-  background: rgba(255, 255, 255, 0.015);
+  background: rgba(242, 242, 242, 0.015);
 }
 
 .agentFilters summary {
@@ -243,7 +243,7 @@
   padding: 3px;
   border: 1px solid var(--oracle-glass-edge);
   border-radius: var(--radius-sm);
-  background: rgba(255, 255, 255, 0.02);
+  background: rgba(242, 242, 242, 0.02);
 }
 
 .viewToggle button {
@@ -361,7 +361,7 @@
   height: 24px;
   border: 1px solid var(--oracle-glass-edge);
   border-radius: var(--radius-sm);
-  background: rgba(6, 12, 21, 0.88);
+  background: rgba(8, 8, 8, 0.88);
   cursor: pointer;
 }
 
@@ -382,7 +382,7 @@
   border: 1px solid var(--oracle-border-bright);
   border-radius: var(--radius-sm);
   color: inherit;
-  background: rgba(255, 255, 255, 0.018);
+  background: rgba(242, 242, 242, 0.018);
   box-shadow: var(--shadow-e1);
   text-align: left;
   cursor: pointer;
@@ -395,8 +395,8 @@
 }
 
 .leadCard:hover {
-  border-color: rgba(188, 219, 244, 0.25);
-  background: rgba(31, 47, 67, 0.32);
+  border-color: rgba(242, 242, 242, 0.25);
+  background: rgba(8, 8, 8, 0.32);
   transform: translateY(-1px);
 }
 
@@ -407,7 +407,7 @@
 
 .leadCard[data-selected='true'] {
   border-color: var(--oracle-amber-dim);
-  background: rgba(200, 160, 80, 0.075);
+  background: rgba(255, 188, 31, 0.075);
 }
 
 .leadTop,
@@ -448,9 +448,9 @@
 }
 
 .scoreBadge[data-tier='warm'] {
-  color: #e3c887;
-  border-color: rgba(200, 160, 80, 0.25);
-  background: rgba(200, 160, 80, 0.09);
+  color: #ffbc1f;
+  border-color: rgba(255, 188, 31, 0.25);
+  background: rgba(255, 188, 31, 0.09);
 }
 
 .scoreBadge[data-tier='cool'] {
@@ -476,13 +476,13 @@
 }
 
 .ownerChip[data-type='corporate'] {
-  color: #abc9e5;
-  background: rgba(80, 160, 220, 0.09);
+  color: #f2f2f2;
+  background: rgba(171, 171, 171, 0.09);
 }
 
 .ownerChip[data-type='trust'] {
-  color: #d0b7e6;
-  background: rgba(158, 114, 198, 0.1);
+  color: #f2f2f2;
+  background: rgba(171, 171, 171, 0.1);
 }
 
 .ownerName {
@@ -570,9 +570,9 @@
 }
 
 .flag[data-flag='absentee'] {
-  color: #d9c28c;
-  border-color: rgba(200, 160, 80, 0.2);
-  background: rgba(200, 160, 80, 0.06);
+  color: #ffbc1f;
+  border-color: rgba(255, 188, 31, 0.2);
+  background: rgba(255, 188, 31, 0.06);
 }
 
 .moreFlags {
@@ -582,15 +582,15 @@
 }
 
 .countdownChip[data-zone='calm'] {
-  color: #92c9ec;
-  border-color: rgba(80, 160, 220, 0.24);
-  background: rgba(80, 160, 220, 0.08);
+  color: #ababab;
+  border-color: rgba(171, 171, 171, 0.24);
+  background: rgba(171, 171, 171, 0.08);
 }
 
 .countdownChip[data-zone='warn'] {
-  color: #e3c887;
-  border-color: rgba(200, 160, 80, 0.3);
-  background: rgba(200, 160, 80, 0.09);
+  color: #ffbc1f;
+  border-color: rgba(255, 188, 31, 0.3);
+  background: rgba(255, 188, 31, 0.09);
 }
 
 .countdownChip[data-zone='danger'] {
@@ -643,7 +643,7 @@
   border: 1px solid var(--oracle-glass-edge);
   border-radius: var(--radius-sm);
   color: var(--oracle-text-ghost);
-  background: rgba(255, 255, 255, 0.015);
+  background: rgba(242, 242, 242, 0.015);
   font: 600 var(--text-xs)/1 var(--font-mono);
   letter-spacing: var(--tracking-wide);
 }
@@ -680,7 +680,7 @@
   padding: var(--space-2) var(--space-2) var(--space-2) var(--space-4);
   border: 1px solid var(--oracle-glass-edge);
   border-radius: var(--radius-pill);
-  background: rgba(10, 18, 28, 0.94);
+  background: rgba(8, 8, 8, 0.94);
   box-shadow: var(--shadow-float);
   opacity: 0;
   pointer-events: none;

@@ -16,14 +16,14 @@
   overflow: hidden;
   border: 1px solid var(--oracle-glass-edge);
   border-radius: var(--radius-sm);
-  background: linear-gradient(145deg, rgba(244, 229, 188, 0.18), rgba(38, 28, 16, 0.92) 56%, rgba(184, 137, 82, 0.18));
-  box-shadow: inset 0 1px 0 rgba(255, 250, 237, 0.18), 0 5px 14px rgba(0, 0, 0, 0.24);
+  background: rgba(171, 171, 171, 0.20);
+  box-shadow: inset 0 1px 0 rgba(242, 242, 242, 0.12), 0 5px 14px rgba(0, 0, 0, 0.24);
 }
 
 .mark::after {
   position: absolute;
   inset: 3px;
-  border: 1px solid rgba(200, 160, 80, 0.13);
+  border: 1px solid var(--oracle-amber-ghost);
   border-radius: 3px;
   content: '';
   pointer-events: none;
@@ -35,7 +35,7 @@
 }
 
 .field {
-  stroke: rgba(244, 229, 188, 0.20);
+  stroke: rgba(242, 242, 242, 0.20);
   stroke-width: 0.55;
 }
 

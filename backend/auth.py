@@ -225,28 +225,91 @@ async def _lookup_user(agent_id: str):
         )
 
 
-def _send_reset_email(to_email: str, link: str) -> None:
-    """Best-effort password-reset email via SES. If SES isn't set up yet, log and
-    move on — the /forgot endpoint still returns 202 (no account enumeration).
-    Sender configurable via ORACLE_SES_SENDER (must be an SES-verified identity)."""
-    sender = os.environ.get("ORACLE_SES_SENDER", "no-reply@neoh.app")
+def _reset_email_sender() -> str:
+    """Verified sender identity for platform mail. Each provider's own sender
+    variable wins; ORACLE_SES_SENDER is still honoured so an existing SES
+    deployment keeps working."""
+    return (
+        os.environ.get("ORACLE_SMTP_FROM_EMAIL")
+        or os.environ.get("ORACLE_ACS_FROM_EMAIL")
+        or os.environ.get("ORACLE_SES_SENDER")
+        # ydnhft.com is the mail-sending domain (it carries the Google Workspace
+        # tenant, MX and DKIM). The product domain is neohrs.com — DMARC aligns
+        # on the From: domain, so the two being different is fine.
+        or "no-reply@ydnhft.com"
+    )
+
+
+def _send_via_smtp(to_email: str, subject: str, html: str, text: str) -> None:
+    """Platform-level reset mail over SMTP.
+
+    This is the path that works when agents authenticate to Google individually:
+    their OAuth grants send *their* mail, but a password reset goes out before
+    anyone is logged in, so it needs a sender the platform owns."""
+    import smtp_mailer
+
+    smtp_mailer.send(recipient=to_email, subject=subject, text=text, html=html)
+
+
+def _send_via_acs(to_email: str, subject: str, html: str, text: str) -> None:
+    from azure.communication.email import EmailClient
+
+    connection_string = os.environ.get("ACS_CONNECTION_STRING", "").strip()
+    if not connection_string:
+        raise RuntimeError("ACS_CONNECTION_STRING is not configured")
+    client = EmailClient.from_connection_string(connection_string)
+    client.begin_send(
+        {
+            "senderAddress": _reset_email_sender(),
+            "recipients": {"to": [{"address": to_email}]},
+            "content": {"subject": subject, "plainText": text, "html": html},
+        }
+    )
+
+
+def _send_via_ses(to_email: str, subject: str, html: str, text: str) -> None:
+    import boto3
+
     region = os.environ.get("AWS_REGION", "us-east-1")
+    boto3.client("sesv2", region_name=region).send_email(
+        FromEmailAddress=_reset_email_sender(),
+        Destination={"ToAddresses": [to_email]},
+        Content={"Simple": {
+            "Subject": {"Data": subject},
+            "Body": {"Html": {"Data": html}, "Text": {"Data": text}},
+        }},
+    )
+
+
+_RESET_EMAIL_SENDERS = {
+    "smtp": _send_via_smtp,
+    "acs": _send_via_acs,
+    "ses": _send_via_ses,
+}
+
+
+def _send_reset_email(to_email: str, link: str) -> None:
+    """Best-effort password-reset email. If the provider isn't set up yet, log and
+    move on — the /forgot endpoint still returns 202 (no account enumeration).
+
+    Defaults to SMTP, which is the provider that works with per-agent Google
+    OAuth: agent mail rides each agent's own grant, but reset mail is sent to a
+    logged-out user and needs a platform-owned sender."""
+    provider = os.environ.get("ORACLE_EMAIL_PROVIDER", "smtp").strip().lower()
+    subject = "Reset your Neoh password"
+    html = (
+        f'<p>Reset your Neoh password (link valid 30 minutes):</p>'
+        f'<p><a href="{link}">{link}</a></p>'
+    )
+    text = f"Reset your Neoh password (valid 30 minutes): {link}"
     try:
-        import boto3
-        boto3.client("sesv2", region_name=region).send_email(
-            FromEmailAddress=sender,
-            Destination={"ToAddresses": [to_email]},
-            Content={"Simple": {
-                "Subject": {"Data": "Reset your Neoh password"},
-                "Body": {
-                    "Html": {"Data": f'<p>Reset your Neoh password (link valid 30 minutes):</p><p><a href="{link}">{link}</a></p>'},
-                    "Text": {"Data": f"Reset your Neoh password (valid 30 minutes): {link}"},
-                },
-            }},
-        )
-        log.info("Reset email sent to %r", to_email)
+        send = _RESET_EMAIL_SENDERS.get(provider)
+        if send is None:
+            raise RuntimeError(f"ORACLE_EMAIL_PROVIDER={provider!r} is not supported")
+        send(to_email, subject, html, text)
+        log.info("Reset email sent to %r via %s", to_email, provider)
     except Exception as e:  # noqa: BLE001 — email is best-effort; never leak to the caller
-        log.warning("Reset email not sent (SES not configured?): %s", e)
+        log.warning("Reset email not sent via %s (not configured?): %s", provider, e)
 
 # ---------------------------------------------------------------------------
 # In-memory session registry
@@ -416,6 +479,15 @@ class VerifyResponse(BaseModel):
     expires_at: float
 
 
+class SessionStatusResponse(BaseModel):
+    authenticated: bool
+    agent_id: Optional[str] = None
+    tenant_id: Optional[str] = None
+    role: Optional[str] = None
+    issued_at: Optional[float] = None
+    expires_at: Optional[float] = None
+
+
 # ---------------------------------------------------------------------------
 # Token decode — single validation path shared by /verify and the tenancy
 # gatekeeper (tenancy.require_context). Raises 401 on invalid/expired tokens.
@@ -488,6 +560,17 @@ def _set_session_cookie(response: Response, token: str) -> None:
     )
 
 
+def _clear_session_cookie(response: Response) -> None:
+    import config
+
+    response.delete_cookie(
+        "oracle_session",
+        path="/",
+        samesite="lax" if config.IS_DEV else "none",
+        secure=not config.IS_DEV,
+    )
+
+
 def _browser_token(token: str) -> Optional[str]:
     """Keep bearer compatibility for local/API clients, never production browsers."""
     import config
@@ -508,10 +591,39 @@ def logout(response: Response) -> Response:
     # FastAPI's injected Response has no concrete status until the framework
     # builds a response. Returning it directly requires setting the status
     # explicitly or Uvicorn receives ``status_code=None``.
+    import config
+
     response.status_code = status.HTTP_204_NO_CONTENT
-    response.delete_cookie("oracle_session", path="/", samesite="none", secure=True)
-    response.delete_cookie("csrf_token", path="/", samesite="none", secure=True)
+    cookie_secure = not config.IS_DEV
+    cookie_samesite = "lax" if config.IS_DEV else "none"
+    _clear_session_cookie(response)
+    response.delete_cookie(
+        "csrf_token", path="/", samesite=cookie_samesite, secure=cookie_secure
+    )
     return response
+
+
+@router.get("/session", response_model=SessionStatusResponse)
+def session_status(request: Request, response: Response) -> SessionStatusResponse:
+    """Probe an HttpOnly browser session without treating signed-out as an error."""
+    raw_token = request.cookies.get("oracle_session")
+    if not raw_token:
+        return SessionStatusResponse(authenticated=False)
+
+    try:
+        payload = decode_token(raw_token)
+    except HTTPException:
+        _clear_session_cookie(response)
+        return SessionStatusResponse(authenticated=False)
+
+    return SessionStatusResponse(
+        authenticated=True,
+        agent_id=payload["sub"],
+        tenant_id=payload.get("tenant_id"),
+        role=payload.get("role"),
+        issued_at=payload["iat"],
+        expires_at=payload["exp"],
+    )
 
 
 @router.post("/login", response_model=LoginResponse)

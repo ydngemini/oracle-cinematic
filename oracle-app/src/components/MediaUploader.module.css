@@ -281,7 +281,7 @@
   height: 26px;
   border-radius: var(--radius-pill);
   color: var(--oracle-text);
-  background: rgba(4, 4, 6, 0.62);
+  background: rgba(8, 8, 8, 0.62);
   border: 1px solid var(--oracle-border-bright);
   backdrop-filter: var(--oracle-backdrop-light);
   -webkit-backdrop-filter: var(--oracle-backdrop-light);
@@ -361,7 +361,7 @@
   align-items: center;
   justify-content: center;
   padding: var(--space-4);
-  background: rgba(2, 2, 4, 0.86);
+  background: rgba(8, 8, 8, 0.86);
   backdrop-filter: var(--oracle-backdrop);
   -webkit-backdrop-filter: var(--oracle-backdrop);
   animation: lb-in var(--duration-base) var(--ease-out);
@@ -427,7 +427,7 @@
   font-variant-numeric: tabular-nums;
   letter-spacing: var(--tracking-wider);
   color: var(--oracle-text-dim);
-  background: rgba(4, 4, 6, 0.55);
+  background: rgba(8, 8, 8, 0.55);
   border: 1px solid var(--oracle-border-bright);
   border-radius: var(--radius-pill);
   padding: 4px var(--space-3);

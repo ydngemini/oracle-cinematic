@@ -36,10 +36,22 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from db.connection import tenant_tx
 from tenancy import TenantContext, require_context
 from outreach_compliance import Channel, enforce_outreach
+from client_ai_automation import enqueue_client_reconcile
 
 logger = logging.getLogger("oracle.crm")
 
 router = APIRouter(prefix="/api/crm", tags=["Agent CRM"])
+
+
+async def _queue_client_ai(ctx: TenantContext, client_id: str, reason: str) -> None:
+    """Automation lag must never roll back a successful CRM mutation."""
+    try:
+        await enqueue_client_reconcile(ctx, str(client_id), reason=reason)
+    except Exception:  # noqa: BLE001 - durable nightly catch-up repairs enqueue gaps
+        logger.warning(
+            "Client AI enqueue deferred: client=%s reason=%s", client_id, reason,
+            exc_info=True,
+        )
 
 # Mirrors of the database CHECK constraints — validated here for a clean 422
 # instead of a constraint-violation 500 (lead_dossier house style). ``note`` is
@@ -819,6 +831,7 @@ async def create_client(
         "Client created: id=%s type=%s stage=%s (tenant=%s, agent=%s)",
         row["id"], body.client_type, stage, ctx.tenant_id, ctx.agent_id,
     )
+    await _queue_client_ai(ctx, str(row["id"]), "client_created")
     return {"client": _client_json(row, [], None, tags=tags)}
 
 
@@ -875,14 +888,42 @@ async def update_client(
                 *args,
             )
 
+            # A human override only counts when the value actually moved —
+            # re-submitting the existing stage/score must not silently take the
+            # client off AI stewardship.
+            stage_changed = "stage" in fields and fields["stage"] != current["stage"]
+            score_changed = "lead_score" in fields and fields["lead_score"] != current["lead_score"]
+
+            if stage_changed or score_changed:
+                await conn.execute(
+                    """
+                    INSERT INTO client_ai_state
+                        (client_id,tenant_id,score_mode,stage_mode,status)
+                    VALUES (
+                        $1::uuid,$2::uuid,
+                        CASE WHEN $3 THEN 'manual' ELSE 'auto' END,
+                        CASE WHEN $4 THEN 'manual' ELSE 'auto' END,
+                        'queued'
+                    )
+                    ON CONFLICT (client_id) DO UPDATE SET
+                        score_mode=CASE WHEN $3 THEN 'manual' ELSE client_ai_state.score_mode END,
+                        stage_mode=CASE WHEN $4 THEN 'manual' ELSE client_ai_state.stage_mode END,
+                        status=CASE WHEN client_ai_state.enabled THEN 'queued' ELSE 'disabled' END
+                    """,
+                    client_id,
+                    ctx.tenant_id,
+                    score_changed,
+                    stage_changed,
+                )
+
             # Lifecycle activities — only when the value actually moved.
-            if "stage" in fields and fields["stage"] != current["stage"]:
+            if stage_changed:
                 await _log_activity(
                     conn, ctx, client_id, "stage_change",
                     f"Stage: {current['stage']} → {fields['stage']}",
                     {"from": current["stage"], "to": fields["stage"]},
                 )
-            if "lead_score" in fields and fields["lead_score"] != current["lead_score"]:
+            if score_changed:
                 await _log_activity(
                     conn, ctx, client_id, "score_change",
                     f"Lead score: {current['lead_score']} → {fields['lead_score']}",
@@ -908,6 +949,7 @@ async def update_client(
 
     if row is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "client not found")
+    await _queue_client_ai(ctx, client_id, "client_updated")
     return {"client": _client_json(row, [], None, tags=tags)}
 
 
@@ -1217,6 +1259,7 @@ async def link_client_house(
         ctx.tenant_id,
         ctx.agent_id,
     )
+    await _queue_client_ai(ctx, client_id, "property_linked")
     return {"house": house, "created": created}
 
 
@@ -1405,6 +1448,7 @@ async def send_message(
         client_id, public_channel, direction, delivery_status, queued_email_id,
         ctx.tenant_id, ctx.agent_id,
     )
+    await _queue_client_ai(ctx, client_id, "interaction_recorded")
     return {
         "interaction": _interaction_json(interaction),
         "queued_email_id": queued_email_id,
@@ -1471,6 +1515,7 @@ async def create_showing(
         "Showing logged: client=%s listing=%s lead=%s outcome=%s (tenant=%s, agent=%s)",
         body.client_id, body.listing_id, body.lead_id, body.outcome, ctx.tenant_id, ctx.agent_id,
     )
+    await _queue_client_ai(ctx, body.client_id, "showing_recorded")
     return {
         "showing": {
             "id": str(row["id"]),

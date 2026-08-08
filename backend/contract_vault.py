@@ -1,8 +1,9 @@
-"""Private S3 vault for generated legal contracts.
+"""Private vault for generated legal contracts.
 
 Contracts are sensitive documents, so they do not use the public media pipeline.
-This helper stores PDFs in a private S3 bucket with SSE-S3 (AES256) encryption
-at rest and returns short-lived presigned URLs for controlled downloads.
+This helper stores PDFs in private object storage with encryption at rest and
+returns short-lived expiring URLs for controlled downloads. The storage backend
+is injected (see object_storage), so the same rules apply on Azure Blob and S3.
 """
 
 from __future__ import annotations
@@ -15,9 +16,29 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Optional
 
-from botocore.exceptions import BotoCoreError, ClientError
-
 logger = logging.getLogger("oracle.contract_vault")
+
+
+def _transfer_errors() -> tuple[type[BaseException], ...]:
+    """Exception types meaning "the transfer failed", resolved on demand.
+
+    botocore only exists on the legacy S3 path; importing it at module scope
+    pulled the whole AWS SDK into every process that imports the vault — which
+    is every process, since media_api imports it at startup.
+
+    StorageError belongs here because the vault's DEFAULT client is now
+    object_storage.BotoCompatibleStore, which raises it (a RuntimeError, so
+    neither OSError nor ValueError catches it) for an unsupported operation such
+    as minting an expiring link on the azure-files backend. Without it the
+    graceful-degradation path is bypassed and the route 500s."""
+    from object_storage import StorageError
+
+    errors: tuple[type[BaseException], ...] = (OSError, ValueError, StorageError)
+    try:
+        from botocore.exceptions import BotoCoreError, ClientError
+    except ImportError:  # Azure-only deployment: boto3 isn't installed
+        return errors
+    return errors + (BotoCoreError, ClientError)
 
 DEFAULT_BUCKET = "neoh-secure-contracts"
 DEFAULT_EXPIRATION_SECONDS = 3600
@@ -43,10 +64,12 @@ class VaultedContract:
 
 
 class SovereignVault:
-    """S3-backed encrypted contract vault.
+    """Encrypted contract vault over durable object storage.
 
-    boto3 uses the standard credential chain, so local `.env` credentials, an
-    AWS_PROFILE, or an ECS task role all work without hardcoding secrets.
+    The storage client is injected, so the vault's validation, key naming and
+    error handling are the same whichever cloud holds the bytes. By default it
+    resolves from ORACLE_STORAGE_BACKEND (see object_storage); passing
+    `s3_client` explicitly still works and is what the tests use.
     """
 
     def __init__(
@@ -63,10 +86,14 @@ class SovereignVault:
         self.region_name = region_name or os.getenv("AWS_REGION", "us-east-2")
         if s3_client is not None:
             self.s3_client = s3_client
-        else:
-            import boto3  # lazy import; only vault users need the SDK
+        elif os.getenv("ORACLE_STORAGE_BACKEND", "azure-files").strip().lower() == "s3":
+            import boto3  # lazy import; only the legacy AWS path needs the SDK
 
             self.s3_client = boto3.Session(region_name=self.region_name).client("s3")
+        else:
+            from object_storage import BotoCompatibleStore
+
+            self.s3_client = BotoCompatibleStore()
 
     @staticmethod
     def _client_id(value: str) -> str:
@@ -158,7 +185,7 @@ class SovereignVault:
             )
             logger.info("Contract vault upload complete: document_id=%s", document_id)
             return True
-        except (BotoCoreError, ClientError, OSError, ValueError) as exc:
+        except _transfer_errors() as exc:
             logger.error("Contract vault upload failed for document_id=%s: %s", document_id, exc)
             return False
 
@@ -179,7 +206,7 @@ class SovereignVault:
                 Params={"Bucket": self.bucket_name, "Key": key},
                 ExpiresIn=expires_in,
             )
-        except (BotoCoreError, ClientError, ValueError) as exc:
+        except _transfer_errors() as exc:
             logger.error("Contract vault presign failed for document_id=%s: %s", document_id, exc)
             return None
 

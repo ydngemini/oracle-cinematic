@@ -45,8 +45,9 @@
   max-height: 60vh;
   display: flex;
   flex-direction: column;
-  background: rgba(35, 27, 17, 0.98);
-  backdrop-filter: none;
+  background: var(--oracle-glass);
+  backdrop-filter: var(--oracle-backdrop);
+  -webkit-backdrop-filter: var(--oracle-backdrop);
   border: 1px solid var(--oracle-border-bright);
   border-radius: var(--radius-lg);
   box-shadow: 0 12px 40px rgba(0, 0, 0, 0.6);

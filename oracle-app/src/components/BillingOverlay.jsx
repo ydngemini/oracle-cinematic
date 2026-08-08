@@ -5,29 +5,30 @@ import { formatApiError } from '../lib/errorMessages';
 import styles from './BillingOverlay.module.css';
 
 const FEATURES = [
-  { id: 'graph',   label: 'Graph Engine',        detail: 'Cross-county relationship mapping' },
-  { id: 'voice',   label: 'Voice Negotiation',   detail: 'Real-time AI call synthesis' },
-  { id: 'legal',   label: 'Legal Matrix',         detail: 'Probate, lien & title intelligence' },
-  { id: 'scout',   label: 'Scouting Matrix',      detail: 'Continuous public-record ingestion' },
-  { id: 'stage',   label: 'Spatial Staging',      detail: 'WebGL property visualization' },
-  { id: 'analyst', label: 'Novelty Analyst',      detail: 'Equity + life-event scoring' },
+  { id: 'crm',       label: 'Complete CRM',        detail: 'People, property dossiers, inbox, and deals' },
+  { id: 'ai',        label: 'Policy Autopilot',    detail: 'Core AI agents with approval guardrails' },
+  { id: 'site',      label: 'Hyperlocal Website',  detail: 'One source-backed local site and private preview' },
+  { id: 'voice',     label: 'Inbound AI Voice',    detail: 'One routed voice line with transcript and handoff' },
+  { id: 'contracts', label: 'Contract Vault',      detail: 'Tenant-scoped templates, approvals, and documents' },
+  { id: 'property',  label: 'Property View',       detail: 'Address lookup, exterior and interior capture, client upload links' },
+  { id: 'user',      label: 'One Named User',      detail: 'Full export, monthly billing, no setup fee' },
 ];
 
 const DIALOG_COPY = {
   checking: {
-    kicker: 'Neoh Swarm — License Verification',
-    title: 'Verifying your license',
+    kicker: 'Neoh Solo Premium — Access Check',
+    title: 'Verifying your workspace',
     description: 'Please wait while Neoh confirms this workspace\u2019s billing status.',
   },
   error: {
-    kicker: 'Neoh Swarm — Billing Unavailable',
-    title: 'License verification unavailable',
+    kicker: 'Neoh Solo Premium — Billing Unavailable',
+    title: 'Workspace verification unavailable',
     description: 'The workspace remains locked until billing status can be confirmed.',
   },
   purchase: {
-    kicker: 'Neoh Swarm — License Required',
-    title: 'Neoh Swarm License',
-    description: 'Activate full autonomous acquisition intelligence for this agent cluster.',
+    kicker: 'Premium CRM for Independent Agents',
+    title: 'Neoh Solo Premium',
+    description: 'Run relationships, transactions, local marketing, voice, and protected AI from one quiet workspace.',
   },
 };
 
@@ -247,7 +248,7 @@ export function BillingOverlay() {
                     <span>Opening secure checkout…</span>
                   </>
                 ) : (
-                  'Activate License'
+                  'Start Neoh Solo Premium'
                 )}
               </button>
 
@@ -263,7 +264,7 @@ export function BillingOverlay() {
               ) : null}
 
               <p className={styles.fine}>
-                Billed monthly. Cancel anytime. No setup fees.
+                Billed monthly. Cancel anytime. No setup fee. Extra named users are $39/month; telecom, model, e-sign, and ad spend remain transparent usage charges.
               </p>
             </div>
           </>

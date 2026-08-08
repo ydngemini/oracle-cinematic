@@ -1,4 +1,4 @@
-/* ─── LivePulse — Holographic Activity Feed ───────────────────────────────
+/* ─── LivePulse — Cinematic Activity Feed ─────────────────────────────────
    Design language: PropertyCanvas gold standard (see LiveTranscript).
    Newest-first cards drop in from the top as Nexus Bus frames arrive.
    Actor color code: ai → cyan · client → emerald · agent → amber.
@@ -26,7 +26,7 @@
   0%, 100% {
     opacity: 0.9;
     transform: scale(1);
-    box-shadow: 0 0 6px rgba(120, 200, 255, 0.5);
+    box-shadow: 0 0 6px rgba(171, 171, 171, 0.5);
   }
   50% {
     opacity: 0.25;
@@ -45,23 +45,17 @@
 .panel {
   font-family: 'PP Neue Montreal', 'Inter', -apple-system, sans-serif;
 
-  background:
-    linear-gradient(
-      180deg,
-      rgba(255, 255, 255, 0.018) 0%,
-      rgba(255, 255, 255, 0) 40%
-    ),
-    rgba(8, 8, 12, 0.75);
-  backdrop-filter: blur(40px) saturate(1.4);
-  -webkit-backdrop-filter: blur(40px) saturate(1.4);
+  background: var(--oracle-glass);
+  backdrop-filter: var(--oracle-backdrop);
+  -webkit-backdrop-filter: var(--oracle-backdrop);
 
-  border: 1px solid rgba(255, 255, 255, 0.04);
-  border-top: 1px solid rgba(255, 255, 255, 0.07);
+  border: 1px solid var(--oracle-glass-edge);
+  border-top: 1px solid var(--oracle-border-bright);
   border-radius: 2px;
 
   box-shadow:
     0 8px 32px rgba(0, 0, 0, 0.4),
-    0 1px 0 rgba(255, 255, 255, 0.025) inset;
+    0 1px 0 rgba(242, 242, 242, 0.025) inset;
 
   display: flex;
   flex-direction: column;
@@ -87,7 +81,7 @@
   align-items: center;
   gap: 0.55rem;
   padding: 0.62rem 1rem;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+  border-bottom: 1px solid rgba(242, 242, 242, 0.03);
   position: relative;
   z-index: 1;
 }
@@ -97,12 +91,12 @@
   width: 5px;
   height: 5px;
   border-radius: 50%;
-  background: rgba(120, 200, 255, 0.9);
+  background: rgba(171, 171, 171, 0.9);
   animation: pulseDot 2.6s ease-in-out infinite;
 }
 
 .pulse[data-idle='true'] {
-  background: rgba(245, 240, 230, 0.4);
+  background: rgba(242, 242, 242, 0.4);
   box-shadow: none;
 }
 
@@ -110,7 +104,7 @@
   font-size: 0.48rem;
   letter-spacing: 0.38em;
   text-transform: uppercase;
-  color: rgba(200, 160, 80, 0.65);
+  color: rgba(255, 188, 31, 0.65);
   font-weight: 600;
 }
 
@@ -119,7 +113,7 @@
   font-size: 0.46rem;
   letter-spacing: 0.2em;
   font-variant-numeric: tabular-nums;
-  color: rgba(255, 255, 255, 0.18);
+  color: rgba(242, 242, 242, 0.18);
 }
 
 /* ─── Scrolling Body ─────────────────────────────────────────────────────── */
@@ -153,16 +147,16 @@
 }
 
 .body::-webkit-scrollbar-track {
-  background: rgba(255, 255, 255, 0.02);
+  background: rgba(242, 242, 242, 0.02);
 }
 
 .body::-webkit-scrollbar-thumb {
-  background: rgba(200, 160, 80, 0.18);
+  background: rgba(255, 188, 31, 0.18);
   border-radius: 1px;
 }
 
 .body::-webkit-scrollbar-thumb:hover {
-  background: rgba(200, 160, 80, 0.35);
+  background: rgba(255, 188, 31, 0.35);
 }
 
 /* ─── Idle State ─────────────────────────────────────────────────────────── */
@@ -171,7 +165,7 @@
   font-size: 0.62rem;
   letter-spacing: 0.22em;
   text-transform: uppercase;
-  color: rgba(255, 255, 255, 0.12);
+  color: rgba(242, 242, 242, 0.12);
   font-weight: 400;
   padding: 0.4rem 0;
   animation: idleBlink 3.5s ease-in-out infinite;
@@ -208,7 +202,7 @@
   top: 20%;
   bottom: 20%;
   width: 1px;
-  background: var(--pulse-actor, rgba(120, 200, 255, 0.4));
+  background: var(--pulse-actor, rgba(171, 171, 171, 0.4));
   border-radius: 1px;
   opacity: 0;
   transform: scaleY(0.4);
@@ -218,7 +212,7 @@
 }
 
 .card:hover {
-  background: rgba(255, 255, 255, 0.022);
+  background: rgba(242, 242, 242, 0.022);
 }
 
 .card:hover::before {
@@ -227,9 +221,9 @@
 }
 
 /* Actor color variables — drives rail, name, and tag together */
-.card[data-actor='ai']     { --pulse-actor: rgba(120, 200, 255, 0.75); }
+.card[data-actor='ai']     { --pulse-actor: rgba(171, 171, 171, 0.75); }
 .card[data-actor='client'] { --pulse-actor: rgba(90, 220, 160, 0.75); }
-.card[data-actor='agent']  { --pulse-actor: rgba(200, 160, 80, 0.75); }
+.card[data-actor='agent']  { --pulse-actor: rgba(255, 188, 31, 0.75); }
 
 /* ─── Card Top Row ───────────────────────────────────────────────────────── */
 
@@ -245,7 +239,7 @@
   letter-spacing: 0.32em;
   text-transform: uppercase;
   font-weight: 600;
-  color: var(--pulse-actor, rgba(120, 200, 255, 0.75));
+  color: var(--pulse-actor, rgba(171, 171, 171, 0.75));
   white-space: nowrap;
 }
 
@@ -254,8 +248,8 @@
   letter-spacing: 0.25em;
   text-transform: uppercase;
   font-weight: 500;
-  color: rgba(245, 240, 230, 0.45);
-  border: 1px solid rgba(255, 255, 255, 0.07);
+  color: rgba(242, 242, 242, 0.45);
+  border: 1px solid rgba(242, 242, 242, 0.07);
   border-radius: var(--radius-pill, 999px);
   padding: 0.14rem 0.45rem;
   white-space: nowrap;
@@ -266,14 +260,14 @@
   font-size: 0.42rem;
   letter-spacing: 0.18em;
   font-variant-numeric: tabular-nums;
-  color: rgba(255, 255, 255, 0.14);
+  color: rgba(242, 242, 242, 0.14);
 }
 
 /* ─── Card Body ──────────────────────────────────────────────────────────── */
 
 .text {
   font-size: 0.72rem;
-  color: rgba(245, 240, 230, 0.82);
+  color: rgba(242, 242, 242, 0.82);
   font-weight: 300;
   line-height: 1.55;
   letter-spacing: -0.008em;
@@ -284,7 +278,7 @@
   font-size: 0.62rem;
   font-weight: 500;
   font-variant-numeric: tabular-nums;
-  color: var(--pulse-actor, rgba(120, 200, 255, 0.75));
+  color: var(--pulse-actor, rgba(171, 171, 171, 0.75));
 }
 
 /* ─── Inspect Trigger — hover reveal ─────────────────────────────────────── */
@@ -299,12 +293,12 @@
   text-transform: uppercase;
   font-weight: 600;
   text-decoration: none;
-  color: var(--pulse-actor, rgba(120, 200, 255, 0.75));
+  color: var(--pulse-actor, rgba(171, 171, 171, 0.75));
 
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(242, 242, 242, 0.08);
   border-radius: 2px;
   padding: 0.3rem 0.55rem;
-  background: rgba(8, 8, 12, 0.85);
+  background: rgba(8, 8, 8, 0.85);
 
   opacity: 0;
   transform: translateX(4px);
@@ -320,7 +314,7 @@
 }
 
 .inspect:hover {
-  border-color: var(--pulse-actor, rgba(120, 200, 255, 0.4));
+  border-color: var(--pulse-actor, rgba(171, 171, 171, 0.4));
 }
 
 /* ─── Reduced Motion ─────────────────────────────────────────────────────── */

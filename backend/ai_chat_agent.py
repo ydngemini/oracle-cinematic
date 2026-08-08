@@ -9,7 +9,7 @@ import json
 import logging
 import os
 import re
-from typing import Any
+from typing import Any, Optional
 
 import httpx
 
@@ -28,15 +28,50 @@ from tenancy import Role, TenantContext
 logger = logging.getLogger("oracle.ai_chat")
 
 MODEL_ID = os.getenv("ORACLE_AI_CHAT_MODEL", "us.amazon.nova-pro-v1:0")
-AI_PROVIDER = os.getenv("ORACLE_AI_CHAT_PROVIDER", "bedrock").strip().lower()
+# Azure Foundry is the platform's inference plane; an unset variable must not
+# silently route prompts to AWS.
+AI_PROVIDER = os.getenv("ORACLE_AI_CHAT_PROVIDER", "azure-foundry").strip().lower()
+# Whether the legacy Bedrock tier stays in the fallback ladder (see _converse).
+# Selecting Bedrock as the provider outright also enables it: the flag exists to
+# stop an *unset* variable routing to AWS behind the operator's back, not to
+# override an explicit choice — refusing there would leave that deployment with
+# no reachable tier at all.
+BEDROCK_FALLBACK_ENABLED = (
+    os.getenv("ORACLE_AI_BEDROCK_FALLBACK", "0").strip().lower()
+    in ("1", "true", "yes", "on")
+    or AI_PROVIDER == "bedrock"
+)
 FOUNDRY_PROJECT_ENDPOINT = os.getenv("ORACLE_FOUNDRY_PROJECT_ENDPOINT", "").rstrip("/")
 FOUNDRY_AGENT_NAME = os.getenv("ORACLE_FOUNDRY_AGENT_NAME", "neoh-kimi-k2-6")
 FOUNDRY_MODEL_ID = os.getenv("ORACLE_FOUNDRY_MODEL", "Kimi-K2.6")
+_LOCAL_TOOL_ROUNDS = 3
+# Qwen3 and other hybrid-reasoning models emit a <think> block by default, which
+# consumes the whole token budget on a CPU-only host and truncates the real
+# answer. Templates without an enable_thinking variable simply ignore this.
+LOCAL_LLM_DISABLE_THINKING = os.getenv(
+    "ORACLE_LOCAL_LLM_DISABLE_THINKING", "1"
+).strip().lower() not in {"0", "false", "no"}
+# A CPU-only local model is far slower than a hosted one, and a tool round trip
+# multiplies that; 45s was tuned for a single text completion.
+LOCAL_LLM_TIMEOUT = float(os.getenv("ORACLE_LOCAL_LLM_TIMEOUT", "120") or 120)
 LOCAL_LLM_URL = os.getenv(
     "ORACLE_LOCAL_LLM_URL", "http://127.0.0.1:8090/v1/chat/completions"
 )
 TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "")
 TAVILY_SEARCH_URL = "https://api.tavily.com/search"
+
+# Both hosted tiers off leaves only the local llama server, which most container
+# deployments do not run — say so once at boot rather than letting every chat
+# request come back as a generic "temporarily unavailable".
+if AI_PROVIDER == "azure-foundry" and not FOUNDRY_PROJECT_ENDPOINT and not BEDROCK_FALLBACK_ENABLED:
+    logger.error(
+        "AI chat has no hosted inference tier configured: provider is azure-foundry but "
+        "ORACLE_FOUNDRY_PROJECT_ENDPOINT is unset and the Bedrock tier is off. Set "
+        "ORACLE_FOUNDRY_PROJECT_ENDPOINT, or ORACLE_AI_CHAT_PROVIDER=bedrock, or "
+        "ORACLE_AI_BEDROCK_FALLBACK=1. Until then every request depends on a local "
+        "llama server at %s.",
+        LOCAL_LLM_URL,
+    )
 
 _KNOWLEDGE_DIR = os.path.join(os.path.dirname(__file__))
 
@@ -220,7 +255,7 @@ TOOLS = {
     # ── Deals & Pipeline (12) ──
     "list_deals":           _tool("list_deals", "List owned pipeline deals; filter by state or durable stage.", {"state": _text("state"), "stage": _text("stage")}, []),
     "get_deal_detail":      _tool("get_deal_detail", "Full deal dossier: property, client, contract, notes, deadlines, financials.", {"deal_id": _text("deal_id")}),
-    "move_deal_stage":      _tool("move_deal_stage", "Advance a deal to a new stage (contacted, negotiated, under_contract, assigned, closed).", {"deal_id": _text("deal_id"), "stage": _text("stage")}),
+    "move_deal_stage":      _tool("move_deal_stage", "Advance a deal to a new durable stage (draft, under_contract, marketing, assigned, closed, expired, dead).", {"deal_id": _text("deal_id"), "stage": _text("stage")}),
     "calculate_deal_roi":   _tool("calculate_deal_roi", "Projected return: assignment fee, wholetail margin, or rental cash-on-cash.", {"deal_id": _text("deal_id")}),
     "list_active_negotiations": _tool("list_active_negotiations", "Deals currently under negotiation with seller or buyer.", {}),
     "track_deadlines":      _tool("track_deadlines", "Upcoming milestones and deadlines: inspection, financing, closing, assignment.", {"deal_id": _text("deal_id", "Optional")}, []),
@@ -407,6 +442,20 @@ _READ_ONLY_TOOLS = sorted([
 
 _ALWAYS_TOOLS = sorted(set(["codebase_summary", "web_search"] + _READ_ONLY_TOOLS))
 
+_READ_ONLY_TOOL_NAMES = frozenset(_READ_ONLY_TOOLS)
+
+
+def _is_record_change(name: str, receipt: dict) -> bool:
+    """Only real mutations belong in the broadcast `actions` list.
+
+    Read-only lookups also return {"ok": True, ...}, but the UI renders every
+    entry in `actions` as an applied, undoable "Record updated" receipt — and
+    its Undo button POSTs to .../actions/undefined/undo because a read has no
+    action_id. Read payloads also carry whole client rows and provider-credential
+    metadata that have no business in an action broadcast.
+    """
+    return bool(receipt.get("ok")) and name not in _READ_ONLY_TOOL_NAMES
+
 
 def _tool_is_enabled(name: str) -> bool:
     """Expose only durable local capabilities and configured external sources."""
@@ -520,7 +569,7 @@ _FOUNDRY_TOOLS = [
     {"type": "function", "name": "list_deals", "description": "List pipeline deals.", "parameters": {"type": "object", "properties": {"state": {"type": "string"}, "stage": {"type": "string"}}}},
     {"type": "function", "name": "get_deal_detail", "description": "Full deal dossier.", "parameters": {"type": "object", "required": ["deal_id"], "properties": {"deal_id": {"type": "string"}}}},
     {"type": "function", "name": "track_deadlines", "description": "List durable contract and transaction deadlines.", "parameters": {"type": "object", "properties": {"deal_id": {"type": "string"}}}},
-    {"type": "function", "name": "move_deal_stage", "description": "Advance deal pipeline stage.", "parameters": {"type": "object", "required": ["deal_id", "stage"], "properties": {"deal_id": {"type": "string"}, "stage": {"type": "string"}}}},
+    {"type": "function", "name": "move_deal_stage", "description": "Advance deal pipeline stage (draft, under_contract, marketing, assigned, closed, expired, dead).", "parameters": {"type": "object", "required": ["deal_id", "stage"], "properties": {"deal_id": {"type": "string"}, "stage": {"type": "string"}}}},
     {"type": "function", "name": "run_underwriting_model", "description": "Full deal underwriting analysis.", "parameters": {"type": "object", "required": ["address"], "properties": {"address": {"type": "string"}, "asking_price": {"type": "string"}}}},
     {"type": "function", "name": "get_market_trends", "description": "Market trends by zip code.", "parameters": {"type": "object", "required": ["zip_code"], "properties": {"zip_code": {"type": "string"}}}},
     {"type": "function", "name": "get_demographics", "description": "Census demographics by zip.", "parameters": {"type": "object", "required": ["zip_code"], "properties": {"zip_code": {"type": "string"}}}},
@@ -577,12 +626,21 @@ async def _foundry_generate(
     bundle: dict,
     assistant_id: str,
     runtime_context: str,
+    applied: Optional[list[dict]] = None,
 ) -> tuple[str, list[dict], str]:
+    """Azure Foundry tier of the ladder.
+
+    Tool calls here commit real CRM writes, so the caller passes its own list as
+    `applied` to keep the receipts for anything already written when this raises
+    — same contract as `_local_fallback`. Without it a mid-loop Foundry failure
+    would drop the receipts, fall through to the next tier, and re-execute the
+    very same non-idempotent writes.
+    """
     input_items = _foundry_inputs(bundle, runtime_context)
     context_type = bundle["assistant"].get("context_type")
     context_id = str(bundle["assistant"].get("context_id") or "") or None
     response = await asyncio.to_thread(_foundry_response, input_items, context_type)
-    actions: list[dict] = []
+    actions: list[dict] = applied if applied is not None else []
 
     for _ in range(2):
         tool_calls = [item for item in response.output if item.type == "function_call"]
@@ -601,7 +659,7 @@ async def _foundry_generate(
                 ctx, ctx.agent_id, assistant_id, call.name, arguments,
                 context_type, context_id,
             )
-            if receipt.get("ok"):
+            if _is_record_change(call.name, receipt):
                 actions.append(receipt)
             tool_outputs.append({
                 "type": "function_call_output",
@@ -619,6 +677,16 @@ async def _foundry_generate(
 
 
 def _converse(messages: list[dict], system_prompt: str, tool_config: dict | None) -> dict:
+    # Bedrock is the middle tier of Foundry → Bedrock → local. On an Azure-only
+    # deployment there are no AWS credentials to use it with, so reaching for it
+    # on every Foundry hiccup just adds latency and a confusing boto error before
+    # the local fallback runs. Raising here keeps the caller's fallback ladder
+    # (and its already-applied-writes receipts) exactly as it was.
+    if not BEDROCK_FALLBACK_ENABLED:
+        raise RuntimeError(
+            "Bedrock fallback is disabled (set ORACLE_AI_BEDROCK_FALLBACK=1 to enable)"
+        )
+
     from ml_forge.bedrock_client import _get_client
 
     kwargs: dict[str, Any] = {
@@ -632,19 +700,141 @@ def _converse(messages: list[dict], system_prompt: str, tool_config: dict | None
     return _get_client().converse(**kwargs)
 
 
-async def _local_fallback(bundle: dict, system_prompt: str) -> str:
+def _local_tools(context_type: str | None) -> list[dict]:
+    """The same gated tool set, in OpenAI Chat Completions shape.
+
+    _foundry_tools already applies the capability and context-mutation policy, so
+    the local model can never be offered a tool the hosted models are denied.
+    llama.cpp's server speaks the Chat Completions dialect, which nests the
+    schema under "function" rather than inlining it like the Responses API.
+    """
+    return [
+        {
+            "type": "function",
+            "function": {
+                "name": tool["name"],
+                "description": tool.get("description", ""),
+                "parameters": tool.get("parameters")
+                or {"type": "object", "properties": {}},
+            },
+        }
+        for tool in _foundry_tools(context_type)
+    ]
+
+
+async def _local_chat(payload: dict) -> dict:
+    async with httpx.AsyncClient(timeout=LOCAL_LLM_TIMEOUT) as client:
+        response = await client.post(LOCAL_LLM_URL, json=payload)
+        response.raise_for_status()
+        return response.json()
+
+
+async def _local_fallback(
+    ctx: TenantContext | None,
+    bundle: dict,
+    system_prompt: str,
+    assistant_id: str = "",
+    applied: Optional[list[dict]] = None,
+) -> tuple[str, list[dict]]:
+    """Local llama.cpp fallback, with tool calling when the server supports it.
+
+    Returns (text, actions). Tool execution goes through execute_safe_tool, so the
+    anchor-locking, approval gates, and audit trail are identical to the hosted
+    paths — a smaller model gets no extra authority.
+
+    Tool calls here commit real CRM writes, so the caller may pass its own list
+    as `applied` to keep the receipts for anything already written when this
+    raises — otherwise a mid-loop failure would report "unavailable" for changes
+    that actually landed, and the retry would apply them a second time.
+    """
     if bundle["attachments"]:
         raise RuntimeError("Vision and document analysis are temporarily unavailable. Your files remain saved to the record.")
     messages = [{"role": "system", "content": system_prompt}]
     messages.extend(_compact_history(bundle["messages"], 24_000))
-    async with httpx.AsyncClient(timeout=45) as client:
-        response = await client.post(
-            LOCAL_LLM_URL,
-            json={"model": "local", "messages": messages, "temperature": 0.2, "max_tokens": 1000},
+
+    context_type = bundle["assistant"].get("context_type")
+    context_id = str(bundle["assistant"].get("context_id") or "") or None
+    tools = _local_tools(context_type) if ctx is not None else []
+    actions: list[dict] = applied if applied is not None else []
+
+    payload: dict[str, Any] = {
+        "model": "local",
+        "messages": messages,
+        "temperature": 0.2,
+        "max_tokens": 1000,
+    }
+    if LOCAL_LLM_DISABLE_THINKING:
+        payload["chat_template_kwargs"] = {"enable_thinking": False}
+    if tools:
+        payload["tools"] = tools
+        payload["tool_choice"] = "auto"
+
+    for _ in range(_LOCAL_TOOL_ROUNDS):
+        try:
+            data = await _local_chat(payload)
+        except httpx.HTTPStatusError as exc:
+            # An older llama-server (or one started without --jinja) rejects the
+            # tools field. Falling back to plain chat is better than no answer.
+            if not tools or exc.response.status_code not in {400, 404, 422, 500}:
+                raise
+            logger.warning(
+                "Local model rejected tool calling (%s); retrying without tools. "
+                "Start llama-server with --jinja and a tool-capable model to enable it.",
+                exc.response.status_code,
+            )
+            tools = []
+            payload.pop("tools", None)
+            payload.pop("tool_choice", None)
+            data = await _local_chat(payload)
+
+        message = (data.get("choices") or [{}])[0].get("message") or {}
+        tool_calls = message.get("tool_calls") or []
+        if not tool_calls:
+            return str(message.get("content") or "").strip(), actions
+
+        # Echo the assistant turn back verbatim so the model sees its own call.
+        messages.append(
+            {
+                "role": "assistant",
+                "content": message.get("content") or "",
+                "tool_calls": tool_calls,
+            }
         )
-        response.raise_for_status()
-        data = response.json()
-    return str(data["choices"][0]["message"]["content"]).strip()
+        for call in tool_calls:
+            function = call.get("function") or {}
+            name = str(function.get("name") or "")
+            raw_arguments = function.get("arguments")
+            if isinstance(raw_arguments, dict):
+                arguments = raw_arguments
+            else:
+                try:
+                    arguments = json.loads(raw_arguments or "{}")
+                except (TypeError, json.JSONDecodeError):
+                    # Small models emit malformed JSON regularly; report it back
+                    # rather than silently calling the tool with no arguments.
+                    arguments = None
+            if arguments is None or not isinstance(arguments, dict):
+                receipt = {
+                    "ok": False,
+                    "error": "Tool arguments were not valid JSON. Retry with valid JSON.",
+                }
+            else:
+                receipt = await execute_safe_tool(
+                    ctx, ctx.agent_id, assistant_id, name, arguments,
+                    context_type, context_id,
+                )
+                if _is_record_change(name, receipt):
+                    actions.append(receipt)
+            messages.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": str(call.get("id") or name),
+                    "content": json.dumps(receipt, default=str),
+                }
+            )
+        payload["messages"] = messages
+
+    raise RuntimeError("The assistant exceeded the safe tool-call limit")
 
 
 async def _generate(ctx: TenantContext, bundle: dict, assistant_id: str) -> tuple[str, list[dict], str]:
@@ -652,9 +842,25 @@ async def _generate(ctx: TenantContext, bundle: dict, assistant_id: str) -> tupl
     system_prompt = await memory.inject_jit_prompt(ctx.agent_id, BASE_SYSTEM_PROMPT)
     if AI_PROVIDER == "azure-foundry":
         runtime_context = system_prompt.removeprefix(BASE_SYSTEM_PROMPT).strip()
+        foundry_actions: list[dict] = []
         try:
-            return await _foundry_generate(ctx, bundle, assistant_id, runtime_context)
+            return await _foundry_generate(
+                ctx, bundle, assistant_id, runtime_context, applied=foundry_actions
+            )
         except Exception as foundry_error:  # noqa: BLE001
+            # Same rule as the Bedrock and local branches below: writes that
+            # already committed must come back with their receipts. Falling
+            # through to the next tier would replay the whole conversation and
+            # re-execute those non-idempotent CRM writes a second time.
+            if foundry_actions:
+                logger.warning(
+                    "Foundry agent interrupted after applying writes: %s", foundry_error
+                )
+                return (
+                    "The requested record update was applied, but the assistant response was interrupted.",
+                    foundry_actions,
+                    f"azure-foundry:{_FOUNDRY_MODEL}",
+                )
             logger.warning(
                 "Foundry agent request failed; attempting Bedrock fallback: %s",
                 foundry_error,
@@ -684,7 +890,7 @@ async def _generate(ctx: TenantContext, bundle: dict, assistant_id: str) -> tupl
                     ctx, ctx.agent_id, assistant_id, tool_use.get("name", ""),
                     tool_use.get("input") or {}, context_type, context_id,
                 )
-                if receipt.get("ok"):
+                if _is_record_change(tool_use.get("name", ""), receipt):
                     actions.append(receipt)
                 results.append({"toolResult": {
                     "toolUseId": tool_use["toolUseId"],
@@ -698,9 +904,30 @@ async def _generate(ctx: TenantContext, bundle: dict, assistant_id: str) -> tupl
         logger.warning("Nova chat request failed; attempting text-only local fallback: %s", bedrock_error)
         if actions:
             return "The requested record update was applied, but the assistant response was interrupted.", actions, MODEL_ID
+        local_actions: list[dict] = []
         try:
-            return await _local_fallback(bundle, system_prompt), [], "local-text-fallback"
+            text, local_actions = await _local_fallback(
+                ctx, bundle, system_prompt, assistant_id, applied=local_actions
+            )
+            model_label = (
+                "local-tool-fallback" if local_actions else "local-text-fallback"
+            )
+            return (
+                text or "I completed the review but did not receive a text response.",
+                local_actions,
+                model_label,
+            )
         except Exception as local_error:  # noqa: BLE001
+            # Same rule as the Bedrock branch above: writes that already
+            # committed must come back with their receipts, or the user is told
+            # nothing happened and their retry double-applies the change.
+            if local_actions:
+                logger.warning("Local fallback interrupted after applying writes: %s", local_error)
+                return (
+                    "The requested record update was applied, but the assistant response was interrupted.",
+                    local_actions,
+                    "local-tool-fallback",
+                )
             message = str(local_error) if bundle["attachments"] else "The assistant is temporarily unavailable. Please try again."
             raise RuntimeError(message) from local_error
 

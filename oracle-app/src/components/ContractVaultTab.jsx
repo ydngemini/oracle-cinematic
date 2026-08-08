@@ -20,12 +20,13 @@ async function fetchVaultDocuments() {
   }
 }
 
-export default function ContractVaultTab() {
+export default function ContractVaultTab({ embedded = false }) {
   const [documents, setDocuments] = useState(null);
   const [error, setError] = useState('');
   const [refreshing, setRefreshing] = useState(false);
   const [clients, setClients] = useState([]);
   const [selectedClientId, setSelectedClientId] = useState('');
+  const Heading = embedded ? 'h2' : 'h1';
 
   const load = useCallback(async () => {
     setRefreshing(true);
@@ -66,7 +67,7 @@ export default function ContractVaultTab() {
       <header className={styles.hero}>
         <div>
           <span className={styles.kicker}>Contracts</span>
-          <h1 id="contracts-title">PDF documents</h1>
+          <Heading id="contracts-title">PDF documents</Heading>
           <p>Choose a source-controlled form, verified public document, or an approved record from your private vault.</p>
         </div>
         <button className={styles.refresh} type="button" onClick={load} disabled={refreshing} aria-label="Refresh PDF documents">

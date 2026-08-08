@@ -21,6 +21,8 @@ if _BACKEND not in sys.path:
 
 import jwt
 from fastapi import HTTPException
+from starlette.requests import Request
+from starlette.responses import Response
 
 import auth
 
@@ -98,6 +100,37 @@ def test_none_algorithm_attack_rejected():
         assert False, "alg=none token accepted — signature bypass"
     except HTTPException as exc:
         assert exc.status_code == 401
+
+
+def _request_with_cookie(token: str | None = None) -> Request:
+    headers = []
+    if token is not None:
+        headers.append((b"cookie", f"oracle_session={token}".encode()))
+    return Request({"type": "http", "method": "GET", "path": "/auth/session", "headers": headers})
+
+
+def test_session_probe_reports_signed_out_without_401():
+    result = auth.session_status(_request_with_cookie(), Response())
+    assert result.authenticated is False
+    assert result.agent_id is None
+
+
+def test_session_probe_returns_valid_identity():
+    result = auth.session_status(
+        _request_with_cookie(_mint(_valid_claims())),
+        Response(),
+    )
+    assert result.authenticated is True
+    assert result.agent_id == "agent-1"
+    assert result.role == "agent"
+
+
+def test_session_probe_clears_invalid_cookie():
+    response = Response()
+    result = auth.session_status(_request_with_cookie("not.a.jwt"), response)
+    assert result.authenticated is False
+    assert "oracle_session=" in response.headers["set-cookie"]
+    assert "Max-Age=0" in response.headers["set-cookie"]
 
 
 if __name__ == "__main__":

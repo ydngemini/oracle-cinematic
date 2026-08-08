@@ -51,9 +51,7 @@ class SafeClientUpdate(BaseModel):
         Literal["lead", "active", "nurture", "under_contract", "closed", "lost"]
     ] = None
     lead_score: Optional[int] = Field(None, ge=0, le=100)
-    assignee_id: Optional[str] = Field(None, max_length=160)
     company: Optional[str] = Field(None, max_length=200)
-    source: Optional[str] = Field(None, max_length=80)
 
     @field_validator("email")
     @classmethod

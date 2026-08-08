@@ -14,8 +14,15 @@ from fastapi.responses import JSONResponse
 import auth
 import commands_api
 import csrf_middleware
+import rate_limit_middleware
 from csrf_middleware import CSRFMiddleware
-from rate_limit_middleware import _get_client_ip
+from rate_limit_middleware import (
+    AUTHENTICATED_API_RATE_LIMIT,
+    RateLimitMiddleware,
+    _authenticated_principal,
+    _get_bucket_for_path,
+    _get_client_ip,
+)
 from tenancy import _request_authorization
 
 
@@ -51,6 +58,115 @@ def test_managed_proxy_defaults_to_rightmost_public_client(monkeypatch):
 
     monkeypatch.setenv("ORACLE_TRUST_PROXY_HEADERS", "false")
     assert _get_client_ip(request) == "10.0.0.4"
+
+
+def test_authenticated_api_principal_requires_a_valid_token_and_is_opaque(monkeypatch):
+    request = _Request(cookies={"oracle_session": "signed.jwt"})
+    monkeypatch.setattr(
+        auth,
+        "decode_token",
+        lambda token: {
+            "sub": "agent@example.com",
+            "tenant_id": "tenant-123",
+        }
+        if token == "signed.jwt"
+        else None,
+    )
+
+    principal = _authenticated_principal(request)
+    assert principal is not None
+    assert principal.startswith("principal:")
+    assert "agent@example.com" not in principal
+    assert "tenant-123" not in principal
+
+    def reject(_token):
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+    monkeypatch.setattr(auth, "decode_token", reject)
+    assert _authenticated_principal(request) is None
+
+
+def test_auth_status_and_unknown_paths_do_not_share_the_general_api_bucket():
+    assert _get_bucket_for_path("/auth/session") == "/auth/"
+    assert _get_bucket_for_path("/api/crm/contacts") == "/api/"
+    assert _get_bucket_for_path("/robots.txt") == "/other/"
+
+
+def test_authenticated_general_api_gets_a_principal_quota(monkeypatch):
+    observed = []
+
+    async def check(identity, bucket, limit):
+        observed.append((identity, bucket, limit))
+        return True, 1
+
+    monkeypatch.setattr(rate_limit_middleware, "_check_rate_limit_redis", check)
+    monkeypatch.setattr(
+        rate_limit_middleware,
+        "_authenticated_principal",
+        lambda _request: "principal:opaque",
+    )
+    middleware = RateLimitMiddleware(lambda *_args, **_kwargs: None, enabled=True)
+    request = Request({
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "method": "GET",
+        "scheme": "https",
+        "path": "/api/crm/contacts",
+        "raw_path": b"/api/crm/contacts",
+        "query_string": b"",
+        "headers": [],
+        "client": ("198.51.100.9", 443),
+        "server": ("api.neoh.example", 443),
+    })
+
+    async def call_next(_request):
+        return JSONResponse({"ok": True})
+
+    response = asyncio.run(middleware.dispatch(request, call_next))
+    assert response.status_code == 200
+    assert observed == [
+        ("principal:opaque", "/api/authenticated", AUTHENTICATED_API_RATE_LIMIT)
+    ]
+    assert response.headers["X-RateLimit-Limit"] == str(AUTHENTICATED_API_RATE_LIMIT)
+
+
+def test_cors_preflight_uses_its_own_bucket_not_the_endpoint_quota(monkeypatch):
+    """A preflight must not spend the endpoint's quota, but must still be capped.
+
+    An entirely unmetered method would be the cheapest way to walk the whole
+    middleware chain and route resolution from a single IP for free.
+    """
+    observed: list[tuple[str, str, int]] = []
+
+    async def record(identity, bucket, limit):
+        observed.append((identity, bucket, limit))
+        return True, 1
+
+    monkeypatch.setattr(rate_limit_middleware, "_check_rate_limit_redis", record)
+    middleware = RateLimitMiddleware(lambda *_args, **_kwargs: None, enabled=True)
+    request = Request({
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "method": "OPTIONS",
+        "scheme": "https",
+        "path": "/api/crm/contacts",
+        "raw_path": b"/api/crm/contacts",
+        "query_string": b"",
+        "headers": [],
+        "client": ("198.51.100.9", 443),
+        "server": ("api.neoh.example", 443),
+    })
+
+    async def call_next(_request):
+        return Response(status_code=204)
+
+    response = asyncio.run(middleware.dispatch(request, call_next))
+    assert response.status_code == 204
+    assert observed == [
+        ("198.51.100.9", "OPTIONS", rate_limit_middleware.PREFLIGHT_RATE_LIMIT)
+    ]
 
 
 def test_csrf_blocks_json_mutations_without_double_submit_token():
@@ -144,10 +260,16 @@ def test_csrf_bootstrap_reuses_valid_browser_cookie():
     assert response.headers.getlist("set-cookie") == []
 
 
-def test_logout_returns_concrete_no_content_response():
+def test_logout_returns_concrete_no_content_response_with_matching_dev_cookie_scope(monkeypatch):
+    import config
+
+    monkeypatch.setattr(config, "IS_DEV", True)
     response = auth.logout(Response())
     assert response.status_code == 204
-    assert len(response.headers.getlist("set-cookie")) == 2
+    cookies = response.headers.getlist("set-cookie")
+    assert len(cookies) == 2
+    assert all("samesite=lax" in cookie.lower() for cookie in cookies)
+    assert all("secure" not in cookie.lower() for cookie in cookies)
 
 
 def test_shared_redis_initializer_returns_connected_client(monkeypatch):

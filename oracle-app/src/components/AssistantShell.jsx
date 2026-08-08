@@ -61,7 +61,15 @@ function usePressToTalk(setDraft) {
 }
 
 export function AssistantShell() {
-  const { open, setOpen, record, registerRecord, clearRecord } = useAssistant();
+  const {
+    open,
+    setOpen,
+    record,
+    registerRecord,
+    clearRecord,
+    commandRequest,
+    clearCommandRequest,
+  } = useAssistant();
   const { aiChatMessages, aiChatRevision, aiChatConnection } = useOracleState();
   const { dispatch, wsRef } = useOracleDispatch();
   const [draft, setDraft] = useState('');
@@ -92,6 +100,18 @@ export function AssistantShell() {
 
   useEffect(() => { pickerOpenRef.current = pickerOpen; }, [pickerOpen]);
   useEffect(() => { filesOpenRef.current = filesOpen; }, [filesOpen]);
+
+  // Today and record surfaces can hand a draft directly to the global command
+  // layer. The assistant opens with the text staged; it never sends on its own.
+  useEffect(() => {
+    if (!commandRequest) return undefined;
+    const frame = window.requestAnimationFrame(() => {
+      setDraft(commandRequest.rawText || '');
+      clearCommandRequest();
+      setOpen(true);
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [clearCommandRequest, commandRequest, setOpen]);
 
   useEffect(() => {
     let active = true;

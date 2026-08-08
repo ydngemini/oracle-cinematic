@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Oracle — one-command local dev startup
 #
-# Idempotent: safe to run multiple times. Already-running services are left
-# alone; migrations and ignite_memory are idempotent by design (IF NOT EXISTS /
-# ON CONFLICT DO UPDATE).
+# Idempotent: safe to run multiple times. The backend is paused while schema
+# migrations run so its live queries cannot hold relation locks needed by an
+# index migration. Migrations and ignite_memory are idempotent by design (IF
+# NOT EXISTS / ON CONFLICT DO UPDATE).
 #
 # Usage:
 #   ./scripts/dev-start.sh          # normal start
@@ -35,6 +36,16 @@ fi
 
 cd "$PROJECT_ROOT"
 
+# The SYPHER_CORE2 Docker daemon runs inside a persistent DinD helper whose
+# outer container publishes the dev ports. Bind the inner app ports on all
+# helper interfaces so that forwarding works; ordinary host Docker stays
+# loopback-only. Postgres is excluded on purpose — it has its own
+# ORACLE_DB_BIND_HOST in docker-compose.yml and stays on loopback, because it
+# accepts the compose default credentials and holds every tenant's records.
+if [[ "${DOCKER_HOST:-}" == "unix:///media/ydn/SYPHER_CORE2/runpod-docker-socket/docker.sock" ]]; then
+  export ORACLE_BIND_HOST="${ORACLE_BIND_HOST:-0.0.0.0}"
+fi
+
 # ── Optional --reset: nuke volumes so the DB starts clean ─────────────────────
 if [[ "${1:-}" == "--reset" ]]; then
   yellow "Resetting: stopping containers and removing volumes..."
@@ -49,8 +60,12 @@ if [[ ! -f .env ]]; then
 fi
 
 # ── Start compose services (detached) ─────────────────────────────────────────
-bold "Starting Oracle services..."
-docker compose up -d --build
+bold "Building Oracle services..."
+docker compose build
+# On a persisted multi-million-row database, replacing an index may require an
+# ACCESS EXCLUSIVE lock. Keep API queries out of the migration window.
+docker compose stop backend > /dev/null 2>&1 || true
+docker compose up -d db
 
 # ── Wait for DB healthy ───────────────────────────────────────────────────────
 bold "Waiting for DB to become healthy..."
@@ -93,6 +108,11 @@ docker compose exec -T db psql -U postgres -d oracle -q -c \
      ('11111111-1111-1111-1111-111111111111', 'Apex Brokerage',  'apex')
    ON CONFLICT (id) DO NOTHING;"
 green "Tenants seeded."
+
+# Start the API only after the schema is current, then ensure the frontend is
+# present. This ordering also makes ignite_memory safe to execute below.
+bold "Starting application services..."
+docker compose up -d backend frontend
 
 # ── Seed Memory Core (ignite_memory) ─────────────────────────────────────────
 # Creates user_profiles / user_interactions tables and upserts the demo-operator

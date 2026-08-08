@@ -57,7 +57,7 @@ async def load_agent_identity(ctx: TenantContext) -> dict[str, Any]:
                 user["id"],
             )
             settings = await conn.fetchrow(
-                "SELECT approved_tone,preferences FROM agent_ai_settings WHERE user_id=$1",
+                "SELECT approved_tone,autonomy_mode,preferences FROM agent_ai_settings WHERE user_id=$1",
                 user["id"],
             )
 
@@ -74,6 +74,7 @@ async def load_agent_identity(ctx: TenantContext) -> dict[str, Any]:
         "name": profile_data.get("display_name") or ctx.agent_id,
         "brokerage": profile_data.get("brokerage") or membership_data.get("team_name") or "",
         "communication_tone": settings_data.get("approved_tone") or preferences.get("tone") or "neutral",
+        "autonomy_mode": settings_data.get("autonomy_mode") or "policy_autopilot",
         "signature": profile_data.get("email_signature") or "",
         "phone_number": profile_data.get("phone") or "",
         "public_email": profile_data.get("public_email") or "",
@@ -127,6 +128,7 @@ class LicenseInput(BaseModel):
 class AISettingsInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
     approved_tone: Literal["concise", "warm", "formal", "neutral", "direct"] = "neutral"
+    autonomy_mode: Literal["policy_autopilot", "full_autonomy"] = "policy_autopilot"
     autonomous_research: bool = True
     autonomous_drafting: bool = True
     style_training_opt_in: bool = False
@@ -273,11 +275,12 @@ async def submit_brokerage_onboarding(
         await conn.execute(
             """
             INSERT INTO agent_ai_settings (
-                tenant_id,user_id,approved_tone,autonomous_research,
+                tenant_id,user_id,approved_tone,autonomy_mode,autonomous_research,
                 autonomous_drafting,style_training_opt_in,preferences
-            ) VALUES ($1::uuid,$2,$3,$4,$5,$6,$7::jsonb)
+            ) VALUES ($1::uuid,$2,$3,$4,$5,$6,$7,$8::jsonb)
             ON CONFLICT (tenant_id,user_id) DO UPDATE SET
                 approved_tone=EXCLUDED.approved_tone,
+                autonomy_mode=EXCLUDED.autonomy_mode,
                 autonomous_research=EXCLUDED.autonomous_research,
                 autonomous_drafting=EXCLUDED.autonomous_drafting,
                 style_training_opt_in=EXCLUDED.style_training_opt_in,
@@ -286,6 +289,7 @@ async def submit_brokerage_onboarding(
             ctx.tenant_id,
             user["id"],
             body.ai_settings.approved_tone,
+            body.ai_settings.autonomy_mode,
             body.ai_settings.autonomous_research,
             body.ai_settings.autonomous_drafting,
             body.ai_settings.style_training_opt_in,
@@ -304,6 +308,7 @@ async def submit_brokerage_onboarding(
             "team_name": body.team_name,
             "license_ids": license_ids,
             "ai_settings_reviewed": True,
+            "autonomy_mode": body.ai_settings.autonomy_mode,
         },
         expires_in_minutes=7 * 24 * 60,
     )

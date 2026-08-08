@@ -7,12 +7,12 @@
 # (no CORS). VITE_API_BASE / VITE_WS_URL are passed to point at that host.
 
 # ---- build stage ----------------------------------------------------------
-FROM node:20-alpine AS build
+FROM node:24.18.0-alpine AS build
 WORKDIR /app
 
 # Install deps against the lockfile first so this layer caches across source edits.
 COPY package.json package-lock.json* ./
-RUN npm ci
+RUN npm ci --no-audit --no-fund
 
 COPY . .
 
@@ -27,7 +27,7 @@ ENV VITE_WS_URL=${VITE_WS_URL}
 RUN npm run build
 
 # ---- serve stage ----------------------------------------------------------
-FROM nginx:1.27-alpine AS serve
+FROM nginx:1.30.4-alpine AS serve
 
 # Drop nginx's default site; install our SPA config (listens on 8080, non-root).
 RUN rm /etc/nginx/conf.d/default.conf

@@ -61,6 +61,18 @@ class Channel(str, Enum):
     EMAIL = "email"
 
 
+class VoiceMode(str, Enum):
+    """Who is speaking on an outbound voice call.
+
+    AI remains the default so every existing call path keeps the stricter
+    written-consent and artificial-voice disclosure requirements. Browser
+    calls explicitly opt into AGENT mode and default to no recording.
+    """
+
+    AI = "ai"
+    AGENT = "agent"
+
+
 # ── Audit-derived rule data ──────────────────────────────────────────────────
 
 # States with a mini-TCPA private right of action and a tightened calling-hours
@@ -216,13 +228,25 @@ def within_calling_window(
     return ok, local.strftime("%H:%M %Z")
 
 
-def required_disclosures(channel: Channel, state_code: Optional[str]) -> tuple[str, ...]:
+def required_disclosures(
+    channel: Channel,
+    state_code: Optional[str],
+    *,
+    voice_mode: VoiceMode | str = VoiceMode.AI,
+    recording_enabled: bool = True,
+) -> tuple[str, ...]:
     """Disclosures the caller must deliver for a permitted attempt."""
     out: list[str] = []
     sc = (state_code or "").upper()
+    voice_mode = VoiceMode(voice_mode)
     if channel is Channel.VOICE:
-        out.append(AI_VOICE_DISCLOSURE)
-        if sc in VOICEPRINT_CONSENT_STATES:
+        # Artificial-voice identification is an AI-only obligation.
+        if voice_mode is VoiceMode.AI:
+            out.append(AI_VOICE_DISCLOSURE)
+        # Recording / voiceprint consent is owed by whoever records — human
+        # agents included. Mirrors the BIPA gate in evaluate(), which keys off
+        # recording_enabled alone.
+        if recording_enabled and sc in VOICEPRINT_CONSENT_STATES:
             out.append(BIOMETRIC_VOICE_DISCLOSURE.format(state=sc))
     return tuple(out)
 
@@ -239,6 +263,8 @@ def evaluate(
     has_voiceprint_consent: bool = False,
     recent_voice_attempts: int = 0,
     tz_name: Optional[str] = None,
+    voice_mode: VoiceMode | str = VoiceMode.AI,
+    recording_enabled: bool = True,
 ) -> OutreachDecision:
     """Core gate. Combines persisted facts (suppression / consent / frequency,
     supplied by the caller via ConsentLedger) with the pure rule data above into
@@ -246,6 +272,7 @@ def evaluate(
     branch unit-testable.
     """
     channel = Channel(channel)
+    voice_mode = VoiceMode(voice_mode)
     contact = normalize_contact(contact, channel)
     sc = (state_code or "").upper() or None
     blockers: list[str] = []
@@ -259,11 +286,14 @@ def evaluate(
     #    (FCC 24-17): oral consent and an established business relationship do NOT
     #    qualify, so the VOICE gate keys off has_written_consent specifically.
     #    Marketing SMS requires prior express consent (has_consent).
-    if channel is Channel.VOICE and not has_written_consent:
-        blockers.append(
-            "no prior express WRITTEN consent on file for voice "
-            "(FCC 24-17 — oral / prior-business relationship does not qualify for AI voice)"
-        )
+    if channel is Channel.VOICE:
+        if voice_mode is VoiceMode.AI and not has_written_consent:
+            blockers.append(
+                "no prior express WRITTEN consent on file for voice "
+                "(FCC 24-17 — oral / prior-business relationship does not qualify for AI voice)"
+            )
+        elif voice_mode is VoiceMode.AGENT and not has_consent:
+            blockers.append("no consent or prior-business basis on file for agent voice")
     elif channel is Channel.SMS and not has_consent:
         blockers.append("no prior express consent on file for sms")
 
@@ -281,7 +311,7 @@ def evaluate(
         )
 
     # 5. BIPA voiceprint — hard gate in IL, warning elsewhere.
-    if channel is Channel.VOICE:
+    if channel is Channel.VOICE and recording_enabled:
         if sc in VOICEPRINT_CONSENT_STATES and not has_voiceprint_consent:
             blockers.append(f"no BIPA voiceprint consent on file for {sc} recipient")
         elif sc in VOICEPRINT_WARN_STATES:
@@ -298,7 +328,12 @@ def evaluate(
         state_code=sc,
         blockers=tuple(blockers),
         warnings=tuple(warnings),
-        required_disclosures=required_disclosures(channel, sc),
+        required_disclosures=required_disclosures(
+            channel,
+            sc,
+            voice_mode=voice_mode,
+            recording_enabled=recording_enabled,
+        ),
     )
 
 
@@ -409,6 +444,8 @@ async def guard_outreach(
     ctx: TenantContext, *, channel: Channel | str, contact: str,
     state_code: Optional[str], now_utc: Optional[datetime] = None,
     tz_name: Optional[str] = None, log: bool = True, conn=None,
+    voice_mode: VoiceMode | str = VoiceMode.AI,
+    recording_enabled: bool = True,
 ) -> OutreachDecision:
     """Resolve persisted consent/suppression/frequency, evaluate, optionally log
     the attempt, and return the decision. Callers MUST check `.allowed` and, when
@@ -436,6 +473,8 @@ async def guard_outreach(
         has_voiceprint_consent=bool(row["vp_consent"]) if is_voice else False,
         recent_voice_attempts=int(row["recent_voice"]) if is_voice else 0,
         tz_name=tz_name,
+        voice_mode=voice_mode,
+        recording_enabled=recording_enabled,
     )
 
     if log:
@@ -500,6 +539,8 @@ class CheckRequest(BaseModel):
     contact: str
     channel: Channel
     state_code: Optional[str] = None
+    voice_mode: VoiceMode = VoiceMode.AI
+    recording_enabled: bool = True
 
 
 class InboundMessage(BaseModel):
@@ -571,5 +612,7 @@ async def check_outreach(body: CheckRequest, ctx: TenantContext = Depends(requir
     decision = await guard_outreach(
         ctx, channel=body.channel, contact=body.contact,
         state_code=(body.state_code or None), log=False,
+        voice_mode=body.voice_mode,
+        recording_enabled=body.recording_enabled,
     )
     return decision.as_dict()

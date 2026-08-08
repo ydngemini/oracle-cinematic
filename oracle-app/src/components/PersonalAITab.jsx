@@ -167,8 +167,10 @@ export default function PersonalAITab() {
           </section>
 
           <section className={styles.panel} aria-labelledby="ai-boundary-title">
-            <header><h2 id="ai-boundary-title">Current AI boundary</h2><span>{human(settings?.approved_tone, 'neutral')} tone</span></header>
+            <header><h2 id="ai-boundary-title">Current AI boundary</h2><span>{human(settings?.autonomy_mode, 'policy autopilot')}</span></header>
             <ul className={styles.boundaries}>
+              <li><span>Operating mode</span><strong data-enabled>{human(settings?.autonomy_mode, 'policy autopilot')}</strong></li>
+              <li><span>Approved tone</span><strong>{human(settings?.approved_tone, 'neutral')}</strong></li>
               <li><span>Public-record research</span><strong data-enabled={Boolean(settings?.autonomous_research)}>{settings?.autonomous_research ? 'Enabled' : 'Review first'}</strong></li>
               <li><span>Draft preparation</span><strong data-enabled={Boolean(settings?.autonomous_drafting)}>{settings?.autonomous_drafting ? 'Enabled' : 'Review first'}</strong></li>
               <li><span>Style training consent</span><strong data-enabled={Boolean(settings?.style_training_opt_in)}>{settings?.style_training_opt_in ? 'Opted in' : 'Not opted in'}</strong></li>

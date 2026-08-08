@@ -23,6 +23,7 @@ Endpoints
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -50,9 +51,10 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from auth import ALGORITHM, SECRET_KEY
 from audit_ledger import AuditCategory, ledger
+from billing_usage import record_usage
 from contract_vault import SovereignVault, VaultUploadError
 from db.connection import tenant_tx
-from tenancy import TenantContext, require_context
+from tenancy import Role, TenantContext, require_context
 
 log = logging.getLogger("oracle.media_api")
 
@@ -226,6 +228,19 @@ async def _persist(
                 "sort_order": row["sort_order"],
                 "created_at": row["created_at"].isoformat(),
             }
+        )
+        # Capture volume is a tracked metric, not just a gallery side effect.
+        # The comparable outcome in this category (Matterport → CoStar, $1.6B)
+        # priced the accumulated capture corpus rather than the viewer, so the
+        # rate at which captures land is a number worth having a history of.
+        # Keyed on the media id, which is unique per capture — a retry of this
+        # request generates a new id and a genuinely new capture.
+        await record_usage(
+            TenantContext(agent_id="media-capture", tenant_id=tenant_id, role=Role.PLATFORM_ADMIN),
+            metric="media_capture",
+            quantity=1,
+            idempotency_key=f"media-capture:{row['id']}",
+            conn=conn,
         )
 
     return created
@@ -782,18 +797,39 @@ async def serve_media(
     async with tenant_tx(ctx) as conn:
         row = await conn.fetchrow(
             """
-            SELECT mb.content_type, mb.bytes
+            SELECT pm.kind, pm.s3_key, mb.content_type, mb.bytes
               FROM property_media AS pm
-              JOIN media_blobs AS mb ON mb.media_id = pm.id
+              LEFT JOIN media_blobs AS mb ON mb.media_id = pm.id
              WHERE pm.id = $1
             """,
             media_id,
         )
     if row is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Image not found.")
+
+    content = row["bytes"]
+    content_type = row["content_type"]
+    if content is None:
+        # Not every media row is blob-backed: migration 0066 forbids a video row
+        # from carrying a blob at all (CHECK kind <> 'video' OR s3_key IS NOT
+        # NULL), so those bytes live in object storage. A plain JOIN here used to
+        # drop them and 404 every generated video.
+        if not row["s3_key"]:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Image not found.")
+        import object_storage
+
+        try:
+            content = await asyncio.to_thread(object_storage.get_bytes, row["s3_key"])
+        except object_storage.StorageError as exc:
+            log.warning("Object-storage media unreadable: id=%s %s", media_id, exc)
+            raise HTTPException(
+                status.HTTP_502_BAD_GATEWAY, "Media could not be read from storage."
+            ) from exc
+        content_type = "video/mp4" if row["kind"] == "video" else "application/octet-stream"
+
     return Response(
-        content=bytes(row["bytes"]),
-        media_type=row["content_type"],
+        content=bytes(content),
+        media_type=content_type,
         headers={
             "Cache-Control": "private, no-store",
             "Content-Disposition": "inline",

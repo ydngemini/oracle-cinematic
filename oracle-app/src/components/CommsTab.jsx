@@ -237,7 +237,7 @@ export default function CommsTab() {
             {initialsOf(name)}
           </span>
           <span className={styles.headText}>
-            <span className={styles.headName}>{name}</span>
+          <h1 className={styles.headName}>{name}</h1>
             <span className={styles.headSub}>
               {selected.clientType && <span className={styles.headType}>{selected.clientType}</span>}
               {selected.emailKnown && selected.email && (
@@ -380,14 +380,15 @@ export default function CommsTab() {
   return (
     <section
       className={styles.wrap}
-      aria-label="Comms — all conversations"
+      aria-labelledby="inbox-title"
       aria-busy={isLoading || refreshing}
     >
       <header className={styles.topRow}>
-        <span className={styles.kicker}>
-          Comms
-          {unreadTotal > 0 && <span className={styles.unreadTally}>{unreadTotal} unread</span>}
-        </span>
+        <div className={styles.destinationTitle}>
+          <span className={styles.kicker}>Unified communications</span>
+          <h1 id="inbox-title">Inbox</h1>
+          <small>{unreadTotal > 0 ? `${unreadTotal} unread conversations` : 'All caught up'}</small>
+        </div>
         <button
           type="button"
           className={`${styles.refreshBtn} ${refreshing ? styles.refreshing : ''}`}

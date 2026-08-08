@@ -1,4 +1,5 @@
 .footer {
+  position: relative;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -6,9 +7,16 @@
   margin-top: var(--space-8);
   padding: var(--space-3) 0 0;
   overflow: hidden;
-  border-top: 1px solid rgba(244, 229, 188, 0.14);
+  border-top: 1px solid rgba(242, 242, 242, 0.14);
   color: var(--oracle-text-dim);
   font-family: var(--font-display);
+}
+
+@media (max-width: 719px) {
+  .footer {
+    margin-top: var(--space-6);
+    opacity: .72;
+  }
 }
 
 .footer::before {
@@ -52,7 +60,7 @@
 
 .copyright {
   overflow: hidden;
-  color: rgba(245, 240, 230, 0.44);
+  color: rgba(242, 242, 242, 0.44);
   font-size: 0.5625rem;
   letter-spacing: 0.06em;
   text-align: right;

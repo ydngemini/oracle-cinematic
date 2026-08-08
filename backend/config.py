@@ -76,6 +76,7 @@ if JWT_AUDIENCE:
     os.environ.setdefault("ORACLE_JWT_AUDIENCE", JWT_AUDIENCE)
 
 ENABLE_WEBHOOKS: bool = flag("ORACLE_ENABLE_WEBHOOKS", default=False)
+ORACLE_FEATURE_VIDEO_STUDIO: bool = flag("ORACLE_FEATURE_VIDEO_STUDIO", default=False)
 
 
 # ---------------------------------------------------------------------------
@@ -242,7 +243,8 @@ ENV_VARS: dict[str, tuple[str, ...]] = {
         "ORACLE_CUSTOM_CALL_API_URL", "ORACLE_CUSTOM_CALL_AUTH_TOKEN",
         "ORACLE_CUSTOM_CALL_FROM_NUMBER",
     ),
-    "ops": ("ORACLE_WS_IDLE_TIMEOUT", "ORACLE_TOUR_RATE_LIMIT", "ORACLE_AUDIT_SQLITE",
+    "ops": ("ORACLE_WS_IDLE_TIMEOUT", "ORACLE_TOUR_RATE_LIMIT",
+            "ORACLE_AUTHENTICATED_API_RATE_LIMIT", "ORACLE_AUDIT_SQLITE",
             "ORACLE_DISPOSITION_SWEEP_INTERVAL", "ORACLE_DANGER_ZONE_DAYS",
             "SCOUT_REGIONAL_ENABLED", "ZILLOW_COOKIE",
             "QWEN_VOICE_DEPLOYMENT", "QWEN_VOICE_NAMESPACE", "QWEN_VOICE_HPA",
@@ -253,6 +255,18 @@ ENV_VARS: dict[str, tuple[str, ...]] = {
         "ORACLE_FEATURE_LOCAL_MODELS", "ORACLE_FEATURE_SPATIAL_TOURS",
         "ORACLE_FEATURE_CONTRACTS", "ORACLE_FEATURE_AI_CHAT", "ORACLE_RAW_SOURCE_RETENTION_DAYS",
         "ORACLE_CALL_AUDIO_RETENTION_DAYS", "ORACLE_CALL_TRANSCRIPT_RETENTION_DAYS",
+        "ORACLE_FEATURE_VIDEO_STUDIO",  # Enables the Video Marketing Studio tab
+        # feature_enabled() defaults these to TRUE when unset, so they must stay
+        # visible to the config audit. POWER_DIALER gates outbound autodialing.
+        "ORACLE_FEATURE_POWER_DIALER", "ORACLE_FEATURE_SALES_AI",
+        "ORACLE_FEATURE_SMART_PLANS",
+    ),
+    "video_studio": (
+        "ORACLE_AZURE_OPENAI_ENDPOINT",  # Base endpoint for Azure OpenAI (Sora 2)
+        "ORACLE_SORA_DEPLOYMENT",        # Deployment name (default: sora-2-estate)
+        "ORACLE_VIDEO_MAX_IMAGES",       # Max photos per job (default: 4)
+        "ORACLE_VIDEO_CLIP_SECONDS",     # Duration per clip (default: 8)
+        "ORACLE_VIDEO_DAILY_QUOTA",      # Daily seconds cap per tenant (default: 120)
     ),
     "shared_storage": ("ORACLE_SHARED_STORAGE_DIR", "ORACLE_CONTRACT_OUTPUT_DIR"),
 }

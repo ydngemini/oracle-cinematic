@@ -1,6 +1,10 @@
-import { useEffect, useRef, useState } from 'react';
+import { Suspense, lazy, useEffect, useRef, useState } from 'react';
 import { crmGet, crmPut, crmPost } from '../state/useCrmApi';
 import styles from './DossierPanel.module.css';
+
+// The 3D floor-plan editor is a separate chunk (and a separate origin behind
+// the iframe) — a dossier opened to read comps should not pay for it.
+const RehabEditorDrawer = lazy(() => import('./RehabEditorDrawer'));
 
 function money(v) {
   const n = Number(v);
@@ -92,6 +96,8 @@ export function DossierPanel({ leadId, onClose }) {
   const [cmaBusy, setCmaBusy] = useState(false);
   const [cmaError, setCmaError] = useState('');
   const copyTimer = useRef(null);
+
+  const [editorOpen, setEditorOpen] = useState(false);
 
   const [entityEditing, setEntityEditing] = useState(false);
   const [entityName, setEntityName] = useState('');
@@ -229,6 +235,13 @@ export function DossierPanel({ leadId, onClose }) {
               <div><dt>Rehab</dt><dd>{money(dossier.underwriting?.rehab || dossier.underwriting?.rehab_estimate)}</dd></div>
               <div><dt>Est. Value</dt><dd>{money(dossier.payload?.estimated_value || dossier.underwriting?.estimated_value)}</dd></div>
             </dl>
+            <button
+              type="button"
+              className={styles.floorplanBtn}
+              onClick={() => setEditorOpen(true)}
+            >
+              Edit floor plan &amp; rehab in 3D
+            </button>
           </section>
 
           {/* ── Public source detail ── */}
@@ -466,6 +479,20 @@ export function DossierPanel({ leadId, onClose }) {
             </section>
           )}
         </div>
+      )}
+
+      {editorOpen && (
+        <Suspense fallback={null}>
+          <RehabEditorDrawer
+            leadId={leadId}
+            onClose={() => setEditorOpen(false)}
+            onSaved={() => {
+              // Re-pull the dossier so the Underwriting matrix reflects the
+              // rehab total the server just recomputed from the new layout.
+              crmGet(`/api/leads/${leadId}/dossier`).then(setDossier, () => {});
+            }}
+          />
+        </Suspense>
       )}
     </aside>
   );

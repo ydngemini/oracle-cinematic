@@ -34,6 +34,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from db.connection import tenant_tx
 from tenancy import TenantContext, require_context
+from client_ai_automation import automation_state_json
 
 # Reuse the crm.py spine — helpers, constants, the activity logger, and the
 # ClientCard serializer all live there and must stay consistent.
@@ -47,6 +48,7 @@ from crm import (
     _loads,
     _log_activity,
     _public_message_channel,
+    _queue_client_ai,
     _require_uuid,
 )
 
@@ -369,6 +371,7 @@ async def bulk_clients(
             archived = bool(value)
 
     updated = 0
+    updated_ids: list[str] = []
     try:
         async with tenant_tx(ctx) as conn:
             for cid in body.ids:
@@ -394,6 +397,20 @@ async def bulk_clients(
                     cur = await conn.fetchrow("SELECT stage FROM clients WHERE id = $1", cid)
                     await conn.execute("UPDATE clients SET stage = $1 WHERE id = $2", stage_val, cid)
                     if cur and cur["stage"] != stage_val:
+                        # Only a real human override takes the client off AI
+                        # stage management — a no-op bulk set must not.
+                        await conn.execute(
+                            """
+                            INSERT INTO client_ai_state
+                                (client_id,tenant_id,stage_mode,status)
+                            VALUES ($1::uuid,$2::uuid,'manual','queued')
+                            ON CONFLICT (client_id) DO UPDATE SET
+                                stage_mode='manual',
+                                status=CASE WHEN client_ai_state.enabled THEN 'queued' ELSE 'disabled' END
+                            """,
+                            cid,
+                            ctx.tenant_id,
+                        )
                         await _log_activity(conn, ctx, cid, "stage_change",
                                             f"Stage: {cur['stage']} → {stage_val}",
                                             {"from": cur["stage"], "to": stage_val})
@@ -411,6 +428,7 @@ async def bulk_clients(
                                         "Client archived" if archived else "Client restored",
                                         {"archived": archived})
                 updated += 1
+                updated_ids.append(cid)
     except RuntimeError as exc:
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -419,6 +437,8 @@ async def bulk_clients(
 
     logger.info("Bulk %s applied to %d/%d clients (tenant=%s, agent=%s)",
                 action, updated, len(body.ids), ctx.tenant_id, ctx.agent_id)
+    for cid in updated_ids:
+        await _queue_client_ai(ctx, cid, f"bulk_{action}")
     return {"updated": updated}
 
 
@@ -798,6 +818,9 @@ async def get_client_detail(
                     WHERE client_id = $1 ORDER BY created_at DESC LIMIT 1""",
                 client_id,
             )
+            ai_state_row = await conn.fetchrow(
+                "SELECT * FROM client_ai_state WHERE client_id = $1", client_id,
+            )
     except RuntimeError as exc:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, f"Memory Core offline ({exc})")
 
@@ -825,6 +848,7 @@ async def get_client_detail(
     detail["tasks"] = [_task_json(t, c["full_name"]) for t in task_rows]
     detail["timeline"] = [_activity_json(a) for a in timeline_rows]
     detail["showings"] = [_showing_json(s) for s in showing_rows]
+    detail["automation"] = automation_state_json(ai_state_row)
     return detail
 
 
@@ -960,6 +984,7 @@ async def create_note(
             status.HTTP_503_SERVICE_UNAVAILABLE,
             f"Memory Core offline — note not persisted ({exc})",
         )
+    await _queue_client_ai(ctx, client_id, "note_created")
     return _note_json(row)
 
 
@@ -1001,6 +1026,7 @@ async def update_note(
         )
     if row is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "note not found")
+    await _queue_client_ai(ctx, client_id, "note_updated")
     return _note_json(row)
 
 
@@ -1022,6 +1048,7 @@ async def delete_note(
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, f"Memory Core offline ({exc})")
     if deleted is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "note not found")
+    await _queue_client_ai(ctx, client_id, "note_deleted")
     return None
 
 

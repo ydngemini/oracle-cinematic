@@ -58,6 +58,14 @@ DocumentType = Literal[
     "joint_venture",
     "redline",
     "account_security_esa",
+    "buyer_representation",
+    "buyer_offer",
+    "inspection_repair_request",
+    "financing_contingency_addendum",
+    "listing_agreement",
+    "seller_disclosure",
+    "counteroffer_addendum",
+    "termination_release",
 ]
 _WORKSPACE_INPUT_MAX_BYTES = 160_000
 _REGISTERED_PDF_DOWNLOAD_MAX_BYTES = 20 * 1024 * 1024

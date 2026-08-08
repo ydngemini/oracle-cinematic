@@ -1,4 +1,4 @@
-/* The Deck — a flat bronze instrument rail at the thumb line. */
+/* The Deck — a seamless silver-glass instrument rail at the thumb line. */
 
 .deck {
   position: fixed;
@@ -8,11 +8,27 @@
   z-index: var(--z-hud);
   height: calc(var(--deck-height) + var(--safe-bottom));
   padding-bottom: var(--safe-bottom);
-  background: linear-gradient(118deg, rgba(47, 35, 20, 0.94), rgba(22, 16, 9, 0.93));
-  backdrop-filter: none;
-  -webkit-backdrop-filter: none;
+  background: var(--oracle-glass);
+  backdrop-filter: var(--oracle-backdrop);
+  -webkit-backdrop-filter: var(--oracle-backdrop);
   border-top: 1px solid var(--oracle-glass-edge);
-  box-shadow: 0 -14px 38px rgba(0, 0, 0, 0.30), inset 0 1px 0 rgba(255, 244, 214, 0.14);
+  box-shadow: 0 -14px 38px rgba(0, 0, 0, 0.24), inset 0 1px 0 rgba(242, 242, 242, 0.08);
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  .deck {
+    background: rgba(12, 12, 12, 0.96);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+}
+
+@media (max-width: 719px) and (prefers-reduced-transparency: no-preference) {
+  .deck {
+    background: #080808;
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
 }
 
 /* ── Filament — the live amber line across the top edge ─────────────────── */
@@ -22,7 +38,7 @@
   left: 0;
   right: 0;
   height: 2px;
-  background: rgba(255, 255, 255, 0.03);
+  background: rgba(242, 242, 242, 0.03);
   overflow: hidden;
 }
 
@@ -40,9 +56,9 @@
 }
 
 @keyframes filamentSurge {
-  0%   { background: rgba(255, 255, 255, 0.03); }
+  0%   { background: rgba(242, 242, 242, 0.03); }
   18%  { background: var(--filament-faint); }
-  100% { background: rgba(255, 255, 255, 0.03); }
+  100% { background: rgba(242, 242, 242, 0.03); }
 }
 
 /* ── Keys ────────────────────────────────────────────────────────────────── */

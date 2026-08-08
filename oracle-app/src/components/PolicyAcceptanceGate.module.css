@@ -6,9 +6,9 @@
   display: grid;
   place-items: center;
   padding: var(--space-4);
-  background: rgba(2, 7, 14, 0.88);
-  backdrop-filter: blur(16px) saturate(1.15);
-  -webkit-backdrop-filter: blur(16px) saturate(1.15);
+  background: rgba(8, 8, 8, 0.62);
+  backdrop-filter: var(--oracle-backdrop-light);
+  -webkit-backdrop-filter: var(--oracle-backdrop-light);
 }
 
 .loading {
@@ -28,8 +28,10 @@
   overflow-y: auto;
   border: 1px solid var(--oracle-glass-edge);
   border-radius: var(--radius-lg);
-  background: linear-gradient(135deg, rgba(26, 43, 61, 0.92), rgba(7, 14, 26, 0.94));
-  box-shadow: var(--shadow-e3), inset 0 1px 0 rgba(245, 251, 255, 0.09);
+  background: var(--oracle-glass);
+  backdrop-filter: var(--oracle-backdrop);
+  -webkit-backdrop-filter: var(--oracle-backdrop);
+  box-shadow: var(--shadow-e3), inset 0 1px 0 rgba(242, 242, 242, 0.08);
 }
 
 .eyebrow,
@@ -52,7 +54,7 @@
   overflow-y: auto;
   border: 1px solid var(--oracle-border-bright);
   border-radius: var(--radius-md);
-  background: rgba(2, 8, 16, 0.30);
+  background: rgba(171, 171, 171, 0.14);
   color: var(--oracle-text-dim);
   font-size: var(--text-sm);
   line-height: var(--leading-relaxed);
@@ -155,7 +157,7 @@
 }
 
 .primary:hover:not(:disabled),
-.primary:focus-visible { background: rgba(200, 160, 80, 0.20); box-shadow: var(--shadow-amber); }
+.primary:focus-visible { background: rgba(255, 188, 31, 0.20); box-shadow: var(--shadow-amber); }
 .primary:disabled { opacity: 0.45; cursor: not-allowed; }
 
 .secondary { border: 1px solid var(--oracle-border-bright); background: var(--oracle-glass); color: var(--oracle-text); }

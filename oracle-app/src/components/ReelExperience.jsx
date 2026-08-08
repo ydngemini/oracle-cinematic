@@ -160,7 +160,12 @@ export function ReelExperience() {
 
   useEffect(() => {
     if (!menuOpen) return undefined;
-    const close = (event) => event.key === 'Escape' && setMenuOpen(false);
+    const close = (event) => {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      setMenuOpen(false);
+      window.requestAnimationFrame(() => menuTriggerRef.current?.focus({ preventScroll: true }));
+    };
     window.addEventListener('keydown', close);
     return () => window.removeEventListener('keydown', close);
   }, [menuOpen]);

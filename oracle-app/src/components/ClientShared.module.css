@@ -78,9 +78,9 @@
   background: var(--oracle-amber-ghost);
 }
 .stagePill[data-stage='nurture'] {
-  color: rgba(200, 180, 130, 0.9);
-  border-color: rgba(200, 180, 130, 0.35);
-  background: rgba(200, 180, 130, 0.08);
+  color: rgba(255, 188, 31, 0.9);
+  border-color: rgba(255, 188, 31, 0.35);
+  background: rgba(255, 188, 31, 0.08);
 }
 .stagePill[data-stage='under_contract'] {
   color: var(--oracle-green);

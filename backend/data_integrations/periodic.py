@@ -621,6 +621,31 @@ async def _source_health_task() -> dict:
     return {"non_fresh_sources": len(sources), "sources": sources}
 
 
+async def _client_ai_catchup_task() -> dict:
+    """Reconcile clients missed by event hooks or changed outside the CRM API."""
+    from client_ai_automation import enqueue_stale_clients
+
+    return await enqueue_stale_clients(
+        limit=max(1, min(5000, int(os.getenv("ORACLE_CLIENT_AI_SWEEP_LIMIT", "500"))))
+    )
+
+
+async def _usage_meter_drain_task() -> dict:
+    """Push locally-recorded usage to Stripe's meter.
+
+    ``billing_usage`` records unconditionally and reports optionally; the report
+    half needs something on a timer or configured metering silently never bills.
+    A no-op (and cheap) when ``STRIPE_METERED_PRICE_ID`` is unset.
+    """
+    from billing_usage import drain_all_tenants
+
+    return await drain_all_tenants(
+        per_tenant_limit=max(
+            1, min(1000, int(os.getenv("ORACLE_USAGE_DRAIN_BATCH", "200")))
+        )
+    )
+
+
 def build_default_scheduler() -> PeriodicScheduler:
     sched = PeriodicScheduler()
     municipal_enabled = os.getenv(
@@ -706,6 +731,29 @@ def build_default_scheduler() -> PeriodicScheduler:
         name="platform_source_health",
         interval_s=max(3600, TICK_SECONDS),
         run=_source_health_task,
+    ))
+    sched.register(PeriodicTask(
+        name="client_ai_catchup",
+        interval_s=max(
+            3600,
+            float(os.getenv("ORACLE_CLIENT_AI_SWEEP_INTERVAL_HOURS", "24")) * 3600,
+        ),
+        run=_client_ai_catchup_task,
+        enabled=os.getenv("ORACLE_FEATURE_CLIENT_AI_AUTOMATION", "true").strip().lower()
+        in {"1", "true", "yes", "on"},
+    ))
+    # Hourly by default: a meter event carries its own timestamp, so cadence
+    # affects only how fresh Stripe's view is, not what the customer is billed.
+    # Left registered even when metering is unconfigured — the task short-circuits
+    # on that, and the scheduler status page is more useful showing it than hiding it.
+    sched.register(PeriodicTask(
+        name="usage_meter_drain",
+        interval_s=max(
+            300.0,
+            float(os.getenv("ORACLE_USAGE_DRAIN_INTERVAL_MIN", "60")) * 60,
+        ),
+        run=_usage_meter_drain_task,
+        enabled=os.getenv("ORACLE_USAGE_DRAIN_ENABLED", "1") == "1",
     ))
     return sched
 

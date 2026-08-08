@@ -2,7 +2,15 @@ FROM python:3.12-slim
 
 # Build argument allows pinning a custom pip index (e.g. a private PyPI mirror).
 ARG PIP_INDEX_URL=https://pypi.org/simple
+ARG PIP_DEFAULT_TIMEOUT=180
+ARG PIP_RETRIES=10
 ARG INSTALL_TEST_DEPS=false
+
+# Large binary wheels (PyAV, ONNX Runtime, Playwright dependencies) can exceed
+# pip's short default read timeout on a cold local build. Keep retries bounded
+# while allowing slow package mirrors to complete instead of failing startup.
+ENV PIP_DEFAULT_TIMEOUT=${PIP_DEFAULT_TIMEOUT} \
+    PIP_RETRIES=${PIP_RETRIES}
 
 WORKDIR /app
 
@@ -20,8 +28,7 @@ RUN pip install --no-cache-dir -r requirements.txt \
 # is an ENV so it applies at both build (install) and runtime (launch). This is a
 # heavy layer (~apt libs + ~150MB Chromium) but cached unless requirements change.
 ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
-RUN pip install --no-cache-dir playwright \
-    && playwright install --with-deps chromium \
+RUN playwright install --with-deps chromium \
     && chmod -R a+rX /ms-playwright
 
 # Amazon RDS global CA bundle — lets connection.py do TLS verify-full against

@@ -48,6 +48,10 @@ class QwenRealtimeError(RuntimeError):
     """Raised when a Qwen realtime session cannot safely continue."""
 
 
+class QwenHandoffRequested(QwenRealtimeError):
+    """The live call is being transferred to a human agent; end the AI session."""
+
+
 class QwenCallLimitReached(QwenRealtimeError):
     """Raised when a call reaches the configured conversation-turn ceiling."""
 
@@ -241,7 +245,8 @@ class QwenOmniRealtimeBridge:
                 "session": {
                     "modalities": ["text", "audio"],
                     "voice": self.settings.voice,
-                    "instructions": _system_instructions(),
+                    "instructions": self._session_instructions(),
+                    "enable_search": False,
                     "input_audio_format": "pcm",
                     "output_audio_format": "pcm",
                     "input_audio_transcription": {
@@ -307,6 +312,24 @@ class QwenOmniRealtimeBridge:
             raise QwenRealtimeError("Qwen WebSocket is not connected")
         event.setdefault("event_id", f"event_{time.time_ns()}")
         await self.qwen_websocket.send(json.dumps(event, separators=(",", ":")))
+
+    def _session_instructions(self) -> str:
+        return _system_instructions()
+
+    async def _on_transcript_completed(self, role: str, transcript: str) -> None:
+        if role != "caller":
+            return
+        self._turns += 1
+        logger.info(
+            "Qwen caller turn transcribed: cid=%s chars=%d turn=%d",
+            self.call_connection_id,
+            len(transcript),
+            self._turns,
+        )
+        if self._turns >= self._max_turns:
+            raise QwenCallLimitReached(
+                f"Qwen call reached {self._max_turns} turns"
+            )
 
     async def _acs_to_qwen(self) -> None:
         while True:
@@ -386,17 +409,17 @@ class QwenOmniRealtimeBridge:
             elif event_type == "conversation.item.input_audio_transcription.completed":
                 transcript = str(event.get("transcript") or "").strip()
                 if transcript:
-                    self._turns += 1
-                    logger.info(
-                        "Qwen caller turn transcribed: cid=%s chars=%d turn=%d",
-                        self.call_connection_id,
-                        len(transcript),
-                        self._turns,
-                    )
-                    if self._turns >= self._max_turns:
-                        raise QwenCallLimitReached(
-                            f"Qwen call reached {self._max_turns} turns"
-                        )
+                    await self._on_transcript_completed("caller", transcript)
+            elif event_type in {
+                "response.audio_transcript.done",
+                "response.output_audio_transcript.done",
+                "response.text.done",
+            }:
+                transcript = str(
+                    event.get("transcript") or event.get("text") or ""
+                ).strip()
+                if transcript:
+                    await self._on_transcript_completed("assistant", transcript)
 
         raise QwenRealtimeError("Qwen realtime connection closed unexpectedly")
 
@@ -452,6 +475,98 @@ class TwilioQwenRealtimeBridge(QwenOmniRealtimeBridge):
         self.stream_sid = stream_sid
         self._input_resample_state: Any = None
         self._mark_sequence = 0
+        self._call_state: dict[str, Any] = {}
+        self._transcript: list[dict[str, str]] = []
+        self._handoff_started = False
+
+    async def run(self) -> None:
+        from inbound_voice import finalize_inbound_voice_call, mark_inbound_streaming
+        from twilio_call_handler import load_twilio_call_state
+
+        state = await load_twilio_call_state(self.call_connection_id)
+        self._call_state = state if isinstance(state, dict) else {}
+        if self._call_state.get("direction") == "inbound":
+            await mark_inbound_streaming(self.call_connection_id)
+        try:
+            await super().run()
+        except QwenHandoffRequested:
+            # Not a failure: the call lives on, bridged to the agent's phone.
+            logger.info(
+                "Qwen session ended for live agent hand-off: sid=%s",
+                self.call_connection_id,
+            )
+        finally:
+            if self._call_state.get("direction") == "inbound":
+                try:
+                    await finalize_inbound_voice_call(
+                        self.call_connection_id,
+                        self._transcript,
+                        self._call_state,
+                    )
+                except Exception:
+                    logger.exception(
+                        "Inbound transcript handoff failed: sid=%s",
+                        self.call_connection_id,
+                    )
+
+    def _session_instructions(self) -> str:
+        if self._call_state.get("direction") != "inbound":
+            return super()._session_instructions()
+        from inbound_voice import build_inbound_intake_instructions
+
+        return build_inbound_intake_instructions(self._call_state)
+
+    async def _on_transcript_completed(self, role: str, transcript: str) -> None:
+        if transcript:
+            self._transcript.append(
+                {"role": role, "text": transcript[:4_000]}
+            )
+        if role == "caller" and await self._maybe_hand_off():
+            # The caller is being bridged to a human; stop the AI session so the
+            # assistant is not still talking over the transfer.
+            raise QwenHandoffRequested("caller asked for a human agent")
+        await super()._on_transcript_completed(role, transcript)
+
+    async def _maybe_hand_off(self) -> bool:
+        """Redirect the live call to the agent when the caller asks for a person."""
+        if self._handoff_started:
+            return False
+        if not self._call_state.get("forward_available"):
+            return False
+        if self._call_state.get("direction") != "inbound":
+            return False
+
+        from inbound_voice import requested_human_handoff
+
+        if not requested_human_handoff(self._transcript):
+            return False
+
+        self._handoff_started = True
+        try:
+            await self._redirect_to_agent()
+        except Exception:
+            # A failed redirect must not kill the call — the AI keeps handling it.
+            logger.exception(
+                "Live agent hand-off failed; continuing with AI: sid=%s",
+                self.call_connection_id,
+            )
+            self._handoff_started = False
+            return False
+        logger.info(
+            "Live agent hand-off started: sid=%s", self.call_connection_id
+        )
+        return True
+
+    async def _redirect_to_agent(self) -> None:
+        from telephony_api import transfer_webhook_url
+        from twilio_call_handler import twilio_redirect_call
+
+        url = await transfer_webhook_url(
+            self.call_connection_id, reason="caller_request"
+        )
+        if not url:
+            raise QwenRealtimeError("No transfer URL is available for this call")
+        await twilio_redirect_call(self.call_connection_id, url)
 
     async def _acs_to_qwen(self) -> None:
         while True:

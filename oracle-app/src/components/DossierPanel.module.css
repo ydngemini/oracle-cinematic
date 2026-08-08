@@ -53,10 +53,10 @@
 
   font-family: 'PP Neue Montreal', 'Inter', -apple-system, sans-serif;
 
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.02) 0%, rgba(255, 255, 255, 0) 30%),
-    rgba(6, 7, 10, 0.97);
-  border-left: 1px solid rgba(200, 160, 80, 0.18);
+  background: var(--oracle-glass);
+  backdrop-filter: var(--oracle-backdrop);
+  -webkit-backdrop-filter: var(--oracle-backdrop);
+  border-left: 1px solid rgba(255, 188, 31, 0.18);
   box-shadow: -24px 0 64px rgba(0, 0, 0, 0.55);
 
   animation: drawerIn 0.45s cubic-bezier(0.16, 1, 0.3, 1) both;
@@ -83,9 +83,9 @@
   background: linear-gradient(
     180deg,
     transparent 0%,
-    rgba(200, 160, 80, 0.5) 12%,
-    rgba(200, 160, 80, 0.15) 50%,
-    rgba(200, 160, 80, 0.5) 88%,
+    rgba(255, 188, 31, 0.5) 12%,
+    rgba(255, 188, 31, 0.15) 50%,
+    rgba(255, 188, 31, 0.5) 88%,
     transparent 100%
   );
   pointer-events: none;
@@ -98,7 +98,7 @@
   align-items: flex-start;
   gap: 0.8rem;
   padding: 1.3rem 1.3rem 1rem;
-  border-bottom: 1px dashed rgba(255, 255, 255, 0.08);
+  border-bottom: 1px dashed rgba(242, 242, 242, 0.08);
   position: relative;
 }
 
@@ -111,7 +111,7 @@
   display: block;
   font-size: 0.46rem;
   letter-spacing: 0.42em;
-  color: rgba(200, 160, 80, 0.6);
+  color: rgba(255, 188, 31, 0.6);
   font-weight: 600;
   margin-bottom: 0.4rem;
 }
@@ -121,7 +121,7 @@
   font-size: 1.15rem;
   font-weight: 300;
   letter-spacing: -0.01em;
-  color: rgba(245, 240, 230, 0.95);
+  color: rgba(242, 242, 242, 0.95);
   line-height: 1.25;
   overflow-wrap: break-word;
 }
@@ -130,7 +130,7 @@
   font-size: 0.56rem;
   letter-spacing: 0.18em;
   text-transform: uppercase;
-  color: rgba(255, 255, 255, 0.28);
+  color: rgba(242, 242, 242, 0.28);
 }
 
 /* The stamp — rubber-stamped status seal */
@@ -145,7 +145,7 @@
   text-transform: uppercase;
   white-space: nowrap;
 
-  color: rgba(120, 200, 255, 0.8);
+  color: rgba(171, 171, 171, 0.8);
   border: 2px solid currentColor;
   border-radius: 2px;
   opacity: 0.85;
@@ -156,20 +156,20 @@
   mask-size: 80px 80px;
 }
 
-.stamp[data-status='under_contract'] { color: rgba(120, 200, 255, 0.85); }
-.stamp[data-status='marketing']      { color: rgba(230, 195, 130, 0.9); }
+.stamp[data-status='under_contract'] { color: rgba(171, 171, 171, 0.85); }
+.stamp[data-status='marketing']      { color: rgba(255, 188, 31, 0.9); }
 .stamp[data-status='assigned']       { color: rgba(90, 220, 160, 0.85); }
-.stamp[data-status='closed']         { color: rgba(245, 240, 230, 0.85); }
+.stamp[data-status='closed']         { color: rgba(242, 242, 242, 0.85); }
 .stamp[data-status='expired']        { color: rgba(255, 110, 100, 0.9); }
-.stamp[data-status='dead']           { color: rgba(140, 140, 150, 0.6); }
-.stamp[data-status='draft']          { color: rgba(170, 180, 200, 0.7); }
+.stamp[data-status='dead']           { color: rgba(171, 171, 171, 0.6); }
+.stamp[data-status='draft']          { color: rgba(171, 171, 171, 0.7); }
 
 .close {
   flex-shrink: 0;
-  background: rgba(255, 255, 255, 0.03);
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(242, 242, 242, 0.03);
+  border: 1px solid rgba(242, 242, 242, 0.08);
   border-radius: 2px;
-  color: rgba(255, 255, 255, 0.4);
+  color: rgba(242, 242, 242, 0.4);
   font-size: 0.65rem;
   padding: 0.3rem 0.55rem;
   cursor: pointer;
@@ -177,8 +177,8 @@
 }
 
 .close:hover {
-  color: rgba(255, 255, 255, 0.85);
-  border-color: rgba(255, 255, 255, 0.2);
+  color: rgba(242, 242, 242, 0.85);
+  border-color: rgba(242, 242, 242, 0.2);
 }
 
 /* ─── Body ───────────────────────────────────────────────────────────────── */
@@ -194,14 +194,14 @@
 }
 
 .body::-webkit-scrollbar-thumb {
-  background: rgba(200, 160, 80, 0.2);
+  background: rgba(255, 188, 31, 0.2);
 }
 
 .loading {
   padding: 2rem 1.3rem;
   font-size: 0.6rem;
   letter-spacing: 0.32em;
-  color: rgba(255, 255, 255, 0.3);
+  color: rgba(242, 242, 242, 0.3);
   animation: loadingBlink 1.4s ease-in-out infinite;
 }
 
@@ -218,7 +218,7 @@
 
 .section {
   padding: 1.1rem 0 0.2rem;
-  border-bottom: 1px dashed rgba(255, 255, 255, 0.05);
+  border-bottom: 1px dashed rgba(242, 242, 242, 0.05);
 }
 
 .section:last-child {
@@ -231,7 +231,7 @@
   letter-spacing: 0.38em;
   text-transform: uppercase;
   font-weight: 600;
-  color: rgba(200, 160, 80, 0.65);
+  color: rgba(255, 188, 31, 0.65);
 }
 
 /* ─── Underwriting Matrix ────────────────────────────────────────────────── */
@@ -241,12 +241,12 @@
   grid-template-columns: 1fr 1fr;
   gap: 1px;
   margin: 0 0 0.9rem;
-  background: rgba(255, 255, 255, 0.05);
-  border: 1px solid rgba(255, 255, 255, 0.05);
+  background: rgba(242, 242, 242, 0.05);
+  border: 1px solid rgba(242, 242, 242, 0.05);
 }
 
 .matrix > div {
-  background: rgba(8, 9, 13, 0.96);
+  background: rgba(8, 8, 8, 0.96);
   padding: 0.6rem 0.7rem;
 }
 
@@ -254,7 +254,7 @@
   font-size: 0.44rem;
   letter-spacing: 0.28em;
   text-transform: uppercase;
-  color: rgba(255, 255, 255, 0.25);
+  color: rgba(242, 242, 242, 0.25);
   margin-bottom: 0.25rem;
 }
 
@@ -263,7 +263,7 @@
   font-size: 0.95rem;
   font-weight: 300;
   font-variant-numeric: tabular-nums;
-  color: rgba(230, 195, 130, 0.92);
+  color: rgba(255, 188, 31, 0.92);
   letter-spacing: 0.01em;
 }
 
@@ -274,14 +274,14 @@
   grid-template-columns: 1.5fr 1fr 0.55fr;
   gap: 1px;
   margin-bottom: 0.7rem;
-  background: rgba(120, 200, 255, 0.12);
-  border: 1px solid rgba(120, 200, 255, 0.12);
+  background: rgba(171, 171, 171, 0.12);
+  border: 1px solid rgba(171, 171, 171, 0.12);
 }
 
 .provenance > div {
   min-width: 0;
   padding: 0.5rem 0.6rem;
-  background: rgba(8, 9, 13, 0.96);
+  background: rgba(8, 8, 8, 0.96);
 }
 
 .provenance span,
@@ -292,13 +292,13 @@
   font-weight: 600;
   letter-spacing: 0.24em;
   text-transform: uppercase;
-  color: rgba(255, 255, 255, 0.25);
+  color: rgba(242, 242, 242, 0.25);
 }
 
 .provenance strong {
   display: block;
   overflow: hidden;
-  color: rgba(150, 215, 255, 0.9);
+  color: rgba(242, 242, 242, 0.9);
   font-size: 0.58rem;
   font-weight: 500;
   line-height: 1.35;
@@ -312,20 +312,20 @@
   grid-template-columns: 1fr 1fr;
   gap: 1px;
   margin: 0 0 0.55rem;
-  background: rgba(255, 255, 255, 0.05);
-  border: 1px solid rgba(255, 255, 255, 0.05);
+  background: rgba(242, 242, 242, 0.05);
+  border: 1px solid rgba(242, 242, 242, 0.05);
 }
 
 .publicFacts > div {
   min-width: 0;
   padding: 0.5rem 0.6rem;
-  background: rgba(8, 9, 13, 0.96);
+  background: rgba(8, 8, 8, 0.96);
 }
 
 .publicFacts dd {
   margin: 0;
   overflow-wrap: anywhere;
-  color: rgba(245, 240, 230, 0.76);
+  color: rgba(242, 242, 242, 0.76);
   font-size: 0.64rem;
   font-variant-numeric: tabular-nums;
   line-height: 1.35;
@@ -333,7 +333,7 @@
 
 .sourceNote {
   margin: 0 0 0.4rem;
-  color: rgba(120, 200, 255, 0.52);
+  color: rgba(171, 171, 171, 0.52);
   font-size: 0.55rem;
   line-height: 1.55;
 }
@@ -350,7 +350,7 @@
 .fuseTrack {
   flex: 1;
   height: 4px;
-  background: rgba(255, 255, 255, 0.05);
+  background: rgba(242, 242, 242, 0.05);
   border-radius: 2px;
   overflow: hidden;
 }
@@ -362,11 +362,11 @@
 }
 
 .fuseBurn[data-zone='calm'] {
-  background: linear-gradient(90deg, rgba(120, 200, 255, 0.25), rgba(120, 200, 255, 0.75));
+  background: linear-gradient(90deg, rgba(171, 171, 171, 0.25), rgba(171, 171, 171, 0.75));
 }
 
 .fuseBurn[data-zone='warn'] {
-  background: linear-gradient(90deg, rgba(200, 160, 80, 0.3), rgba(230, 195, 130, 0.85));
+  background: linear-gradient(90deg, rgba(255, 188, 31, 0.3), rgba(255, 188, 31, 0.85));
 }
 
 .fuseBurn[data-zone='danger'] {
@@ -381,8 +381,8 @@
   letter-spacing: 0.06em;
 }
 
-.fuseDays[data-zone='calm']   { color: rgba(120, 200, 255, 0.85); }
-.fuseDays[data-zone='warn']   { color: rgba(230, 195, 130, 0.9); }
+.fuseDays[data-zone='calm']   { color: rgba(171, 171, 171, 0.85); }
+.fuseDays[data-zone='warn']   { color: rgba(255, 188, 31, 0.9); }
 .fuseDays[data-zone='danger'] { color: rgba(255, 140, 130, 0.95); }
 
 /* ─── Disposition Assets ─────────────────────────────────────────────────── */
@@ -395,11 +395,11 @@
 }
 
 .assetBlock {
-  border: 1px solid rgba(255, 255, 255, 0.06);
-  border-left: 2px solid rgba(200, 160, 80, 0.4);
+  border: 1px solid rgba(242, 242, 242, 0.06);
+  border-left: 2px solid rgba(255, 188, 31, 0.4);
   border-radius: 2px;
   padding: 0.65rem 0.75rem;
-  background: rgba(255, 255, 255, 0.015);
+  background: rgba(242, 242, 242, 0.015);
 }
 
 .assetHead {
@@ -409,15 +409,15 @@
   margin-bottom: 0.45rem;
   font-size: 0.44rem;
   letter-spacing: 0.32em;
-  color: rgba(255, 255, 255, 0.3);
+  color: rgba(242, 242, 242, 0.3);
   font-weight: 600;
 }
 
 .copyBtn {
   background: none;
-  border: 1px solid rgba(120, 200, 255, 0.2);
+  border: 1px solid rgba(171, 171, 171, 0.2);
   border-radius: 2px;
-  color: rgba(120, 200, 255, 0.7);
+  color: rgba(171, 171, 171, 0.7);
   font-size: 0.42rem;
   font-weight: 600;
   letter-spacing: 0.25em;
@@ -427,15 +427,15 @@
 }
 
 .copyBtn:hover {
-  border-color: rgba(120, 200, 255, 0.45);
-  color: rgba(160, 220, 255, 0.95);
+  border-color: rgba(171, 171, 171, 0.45);
+  color: rgba(242, 242, 242, 0.95);
 }
 
 .assetSubject {
   margin: 0 0 0.4rem;
   font-size: 0.74rem;
   font-weight: 500;
-  color: rgba(245, 240, 230, 0.92);
+  color: rgba(242, 242, 242, 0.92);
   line-height: 1.4;
 }
 
@@ -443,7 +443,7 @@
   margin: 0;
   font-size: 0.68rem;
   font-weight: 300;
-  color: rgba(245, 240, 230, 0.6);
+  color: rgba(242, 242, 242, 0.6);
   line-height: 1.6;
   white-space: pre-wrap;
 }
@@ -453,7 +453,7 @@
   font-size: 0.62rem;
   font-weight: 300;
   font-style: italic;
-  color: rgba(255, 255, 255, 0.22);
+  color: rgba(242, 242, 242, 0.22);
   line-height: 1.5;
 }
 
@@ -476,34 +476,34 @@
   font-size: 0.42rem;
   letter-spacing: 0.28em;
   text-transform: uppercase;
-  color: rgba(255, 255, 255, 0.25);
+  color: rgba(242, 242, 242, 0.25);
 }
 
 .field input {
   width: 100%;
   box-sizing: border-box;
-  background: rgba(255, 255, 255, 0.028);
-  border: 1px solid rgba(255, 255, 255, 0.07);
+  background: rgba(242, 242, 242, 0.028);
+  border: 1px solid rgba(242, 242, 242, 0.07);
   border-radius: 2px;
   padding: 0.45rem 0.5rem;
   font-family: 'JetBrains Mono', ui-monospace, monospace;
   font-size: 0.66rem;
-  color: rgba(245, 240, 230, 0.9);
+  color: rgba(242, 242, 242, 0.9);
   outline: none;
   transition: border-color 0.3s ease;
 }
 
 .field input:focus {
-  border-color: rgba(120, 200, 255, 0.3);
+  border-color: rgba(171, 171, 171, 0.3);
 }
 
 .synthesize {
   grid-column: 1 / -1;
   padding: 0.65rem;
-  background: rgba(200, 160, 80, 0.1);
-  border: 1px solid rgba(200, 160, 80, 0.35);
+  background: rgba(255, 188, 31, 0.1);
+  border: 1px solid rgba(255, 188, 31, 0.35);
   border-radius: 2px;
-  color: rgba(230, 195, 130, 0.92);
+  color: rgba(255, 188, 31, 0.92);
   font-family: inherit;
   font-size: 0.5rem;
   font-weight: 600;
@@ -514,8 +514,8 @@
 }
 
 .synthesize:hover:not(:disabled) {
-  background: rgba(200, 160, 80, 0.18);
-  border-color: rgba(200, 160, 80, 0.55);
+  background: rgba(255, 188, 31, 0.18);
+  border-color: rgba(255, 188, 31, 0.55);
 }
 
 .synthesize:disabled {
@@ -525,17 +525,17 @@
 
 .briefWrap {
   margin: 0.4rem 0 0.9rem;
-  border: 1px solid rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(242, 242, 242, 0.06);
   border-radius: 2px;
   padding: 0.75rem 0.85rem;
-  background: rgba(255, 253, 248, 0.015);
+  background: rgba(242, 242, 242, 0.015);
 }
 
 /* Typewritten brief */
 .brief {
   font-size: 0.68rem;
   font-weight: 300;
-  color: rgba(245, 240, 230, 0.75);
+  color: rgba(242, 242, 242, 0.75);
   line-height: 1.65;
 }
 
@@ -547,7 +547,7 @@
   letter-spacing: 0.22em;
   text-transform: uppercase;
   font-weight: 600;
-  color: rgba(200, 160, 80, 0.75);
+  color: rgba(255, 188, 31, 0.75);
 }
 
 .brief h3:first-child {
@@ -569,18 +569,18 @@
 
 .brief strong {
   font-weight: 600;
-  color: rgba(245, 240, 230, 0.95);
+  color: rgba(242, 242, 242, 0.95);
 }
 
 /* ─── Entity of Record ───────────────────────────────────────────────────── */
 
 .entityCard {
-  border: 1px solid rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(242, 242, 242, 0.06);
   border-left: 2px solid rgba(90, 220, 160, 0.45);
   border-radius: 2px;
   padding: 0.65rem 0.75rem;
   margin-bottom: 0.9rem;
-  background: rgba(255, 255, 255, 0.015);
+  background: rgba(242, 242, 242, 0.015);
 }
 
 .entityName {
@@ -588,7 +588,7 @@
   font-size: 0.82rem;
   font-weight: 500;
   letter-spacing: 0.02em;
-  color: rgba(245, 240, 230, 0.95);
+  color: rgba(242, 242, 242, 0.95);
 }
 
 .entityMeta {
@@ -612,7 +612,7 @@
   align-items: baseline;
   gap: 0.55rem;
   padding: 0.4rem 0;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+  border-bottom: 1px solid rgba(242, 242, 242, 0.03);
 }
 
 .streamLine:last-child {
@@ -624,7 +624,7 @@
   font-size: 0.42rem;
   font-weight: 600;
   letter-spacing: 0.22em;
-  color: rgba(200, 160, 80, 0.7);
+  color: rgba(255, 188, 31, 0.7);
 }
 
 .streamType[data-role='seller'],
@@ -633,14 +633,14 @@
 }
 
 .streamType[data-role='ai_system'] {
-  color: rgba(120, 200, 255, 0.75);
+  color: rgba(171, 171, 171, 0.75);
 }
 
 .streamText {
   flex: 1;
   font-size: 0.62rem;
   font-weight: 300;
-  color: rgba(245, 240, 230, 0.6);
+  color: rgba(242, 242, 242, 0.6);
   line-height: 1.45;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -651,7 +651,7 @@
   flex-shrink: 0;
   font-size: 0.46rem;
   font-variant-numeric: tabular-nums;
-  color: rgba(255, 255, 255, 0.18);
+  color: rgba(242, 242, 242, 0.18);
 }
 
 /* ─── Reduced Motion ─────────────────────────────────────────────────────── */
@@ -677,3 +677,24 @@
     grid-template-columns: 1fr;
   }
 }
+
+/* Entry point to the 3D floor-plan editor + live rehab costing. */
+.floorplanBtn {
+  margin-top: var(--space-2);
+  width: 100%;
+  padding: 9px 12px;
+  border: 1px solid var(--oracle-amber, #f0b429);
+  background: transparent;
+  color: var(--oracle-amber, #f0b429);
+  font-family: var(--font-display);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: background 140ms ease, color 140ms ease;
+}
+.floorplanBtn:hover { background: var(--oracle-amber, #f0b429); color: #0b0b0d; }
+.floorplanBtn:focus-visible { outline: 2px solid var(--oracle-amber); outline-offset: 2px; }
+
+@media (prefers-reduced-motion: reduce) { .floorplanBtn { transition: none; } }

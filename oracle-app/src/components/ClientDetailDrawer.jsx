@@ -67,6 +67,7 @@ export default function ClientDetailDrawer({ card, onClose, onClientChanged }) {
   const [loadErr, setLoadErr] = useState(null);
   const [tab, setTab] = useState('overview');
   const [toast, setToast] = useState('');
+  const [automationBusy, setAutomationBusy] = useState(false);
   const [tlKey, setTlKey] = useState(0);
   const sheetRef = useRef(null);
   const scoreTimer = useRef(null);
@@ -133,6 +134,33 @@ export default function ClientDetailDrawer({ card, onClose, onClientChanged }) {
 
   useEffect(() => () => { if (scoreTimer.current) clearTimeout(scoreTimer.current); }, []);
 
+  // A reconciliation is durable and asynchronous. Poll only while this drawer
+  // is open and the client is actually queued/running; terminal states stop the
+  // loop, so idle profiles cost no network or animation work.
+  useEffect(() => {
+    const status = detail?.automation?.status;
+    if (!clientId || !['queued', 'running'].includes(status)) return undefined;
+    let live = true;
+    let attempts = 0;
+    let timer;
+    const poll = () => {
+      timer = window.setTimeout(() => {
+        crmGet(`/api/crm/clients/${clientId}/automation`).then(
+          (data) => {
+            if (!live) return;
+            const automation = data?.automation;
+            if (automation) setDetail((current) => ({ ...current, automation }));
+            attempts += 1;
+            if (attempts < 12 && ['queued', 'running'].includes(automation?.status)) poll();
+          },
+          () => { attempts += 1; if (live && attempts < 4) poll(); },
+        );
+      }, 1500);
+    };
+    poll();
+    return () => { live = false; if (timer) window.clearTimeout(timer); };
+  }, [clientId, detail?.automation?.status]);
+
   const flashToast = (msg) => { setToast(msg); setTimeout(() => setToast(''), 3200); };
   const bumpTimeline = useCallback(() => setTlKey((k) => k + 1), []);
 
@@ -140,7 +168,14 @@ export default function ClientDetailDrawer({ card, onClose, onClientChanged }) {
   const applyPatch = useCallback((patchBody) => {
     if (!clientId) return;
     const prev = detail;
-    const optimistic = { ...detail, ...patchBody };
+    const automationPatch = { ...(detail?.automation || {}) };
+    if (Object.hasOwn(patchBody, 'lead_score')) automationPatch.score_mode = 'manual';
+    if (Object.hasOwn(patchBody, 'stage')) automationPatch.stage_mode = 'manual';
+    const optimistic = {
+      ...detail,
+      ...patchBody,
+      ...(detail?.automation ? { automation: automationPatch } : {}),
+    };
     setDetail(optimistic);
     onClientChanged?.(optimistic);
     crmPatch(`/api/crm/clients/${clientId}`, patchBody).then(
@@ -161,6 +196,36 @@ export default function ClientDetailDrawer({ card, onClose, onClientChanged }) {
     );
   }, [clientId, detail, onClientChanged, bumpTimeline]);
 
+  const updateAutomation = useCallback((patchBody, successMessage) => {
+    if (!clientId || automationBusy) return;
+    setAutomationBusy(true);
+    crmPatch(`/api/crm/clients/${clientId}/automation`, patchBody).then(
+      (data) => {
+        if (data?.automation) {
+          setDetail((current) => ({ ...current, automation: data.automation }));
+        }
+        if (successMessage) flashToast(successMessage);
+        bumpTimeline();
+      },
+      (error) => flashToast(errMessage(error, 'AI automation')),
+    ).finally(() => setAutomationBusy(false));
+  }, [clientId, automationBusy, bumpTimeline]);
+
+  const refreshAutomation = useCallback(() => {
+    if (!clientId || automationBusy) return;
+    setAutomationBusy(true);
+    crmPost(`/api/crm/clients/${clientId}/automation/reconcile`, {}).then(
+      () => {
+        setDetail((current) => ({
+          ...current,
+          automation: { ...(current?.automation || {}), enabled: true, status: 'queued' },
+        }));
+        flashToast('AI reconciliation queued');
+      },
+      (error) => flashToast(errMessage(error, 'AI reconciliation')),
+    ).finally(() => setAutomationBusy(false));
+  }, [clientId, automationBusy]);
+
   // ── Score stepper (debounced commit) ─────────────────────────────────────
   const score = clampScore(detail?.lead_score);
   const nudgeScore = (delta) => {
@@ -176,6 +241,12 @@ export default function ClientDetailDrawer({ card, onClose, onClientChanged }) {
   const prefChips = prefChipsOf(detail?.preferences);
   const houses = Array.isArray(detail?.houses) ? detail.houses : [];
   const notesCount = Array.isArray(detail?.notes) ? detail.notes.length : null;
+  const automation = detail?.automation || {};
+  const automationStatus = automation.enabled === false ? 'disabled' : (automation.status || 'queued');
+  const automationStatusLabel = {
+    queued: 'Queued', running: 'Reconciling', complete: 'Current', degraded: 'Rules only',
+    failed: 'Needs retry', disabled: 'Paused',
+  }[automationStatus] || 'Queued';
 
   return (
     <div className={styles.layer}>
@@ -215,7 +286,35 @@ export default function ClientDetailDrawer({ card, onClose, onClientChanged }) {
             <button type="button" className={styles.closeBtn} onClick={onClose} aria-label="Close">{GLYPHS.close}</button>
           </div>
 
+          <div className={styles.automationBar} aria-live="polite">
+            <span className={styles.automationIdentity}>
+              <span className={styles.automationDot} data-status={automationStatus} aria-hidden="true" />
+              <span>AI steward</span>
+              <span className={styles.automationState}>{automationStatusLabel}</span>
+            </span>
+            <span className={styles.automationTime}>
+              {automation.last_evaluated_at ? `Updated ${relTime(automation.last_evaluated_at)}` : 'Awaiting first review'}
+            </span>
+            <button type="button" className={styles.automationAction} onClick={refreshAutomation} disabled={automationBusy || automation.enabled === false}>
+              Refresh
+            </button>
+            <button
+              type="button"
+              className={styles.automationAction}
+              onClick={() => updateAutomation({ enabled: automation.enabled === false }, automation.enabled === false ? 'AI steward resumed' : 'AI steward paused')}
+              disabled={automationBusy}
+            >
+              {automation.enabled === false ? 'Resume' : 'Pause'}
+            </button>
+          </div>
+
           {/* Stage pipeline */}
+          <div className={styles.modeRow}>
+            <span>Pipeline stage {automation.stage_mode === 'manual' ? '· Manual' : '· AI managed'}</span>
+            {automation.stage_mode === 'manual' && (
+              <button type="button" onClick={() => updateAutomation({ stage_mode: 'auto' }, 'AI stage management resumed')} disabled={automationBusy}>Use AI stage</button>
+            )}
+          </div>
           <div className={styles.pipeline} role="group" aria-label="Pipeline stage">
             {STAGES.map((s) => (
               <button
@@ -234,7 +333,12 @@ export default function ClientDetailDrawer({ card, onClose, onClientChanged }) {
           {/* Score + assignee */}
           <div className={styles.metaGrid}>
             <div className={styles.metaCell}>
-              <span className={styles.cellLabel}>Lead Score</span>
+              <span className={styles.cellLabelRow}>
+                <span className={styles.cellLabel}>Lead Score {automation.score_mode === 'manual' ? '· Manual' : '· AI'}</span>
+                {automation.score_mode === 'manual' && (
+                  <button type="button" onClick={() => updateAutomation({ score_mode: 'auto' }, 'AI scoring resumed')} disabled={automationBusy}>Use AI</button>
+                )}
+              </span>
               <div className={styles.scoreCtl}>
                 <button type="button" className={styles.stepBtn} onClick={() => nudgeScore(-5)} disabled={score === 0} aria-label="Lower score">{GLYPHS.minus}</button>
                 <span className={styles.scoreNum}>{score === null ? '—' : score}</span>
@@ -280,25 +384,32 @@ export default function ClientDetailDrawer({ card, onClose, onClientChanged }) {
         {/* ── Body ───────────────────────────────────────────────────────── */}
         <div className={styles.body}>
           {tab === 'overview' && (
-            <OverviewPane detail={detail} loadErr={loadErr} prefChips={prefChips} houses={houses} applyPatch={applyPatch} />
+            <OverviewPane
+              detail={detail}
+              loadErr={loadErr}
+              prefChips={prefChips}
+              houses={houses}
+              applyPatch={applyPatch}
+              automation={automation}
+            />
           )}
           {tab === 'timeline' && <ClientTimeline clientId={clientId} reloadKey={tlKey} />}
           {tab === 'notes' && <ClientNotes clientId={clientId} onChange={bumpTimeline} />}
           {tab === 'documents' && (
             <StateDocumentChecklist
               clientId={clientId}
-              stateCode={detail?.state_code || detail?.preferences?.state || 'DE'}
+              stateCode={detail?.state_code || detail?.preferences?.state || ''}
               compact
             />
           )}
-          {tab === 'dossier' && <DossierLinksPane detail={detail} houses={houses} />}
+          {tab === 'dossier' && <DossierLinksPane detail={detail} houses={houses} automation={automation} />}
         </div>
       </div>
     </div>
   );
 }
 
-function DossierLinksPane({ detail, houses }) {
+function DossierLinksPane({ detail, houses, automation }) {
   const leadHouses = houses
     .map((house) => ({ ...house, lead_id: house.lead_id || (house.kind === 'lead' ? house.id : null) }))
     .filter((house) => house.lead_id);
@@ -347,11 +458,17 @@ function DossierLinksPane({ detail, houses }) {
   };
 
   if (leadHouses.length === 0) {
-    return <div className={styles.empty}><span aria-hidden="true">{GLYPHS.house}</span><p className={styles.emptyText}>Link this client to a lead before issuing a read-only dossier.</p></div>;
+    return (
+      <div className={styles.dossierPane}>
+        <AutomationEvidence automation={automation} />
+        <div className={styles.empty}><span aria-hidden="true">{GLYPHS.house}</span><p className={styles.emptyText}>Link this client to a lead before issuing a read-only dossier.</p></div>
+      </div>
+    );
   }
 
   return (
     <div className={styles.dossierPane}>
+      <AutomationEvidence automation={automation} />
       <section className={styles.section}>
         <span className={styles.sectionLabel}>Issue revocable dossier</span>
         <form onSubmit={create} className={styles.dossierForm}>
@@ -444,7 +561,7 @@ function InlineAssignee({ value, onCommit }) {
 }
 
 // ── Overview pane ─────────────────────────────────────────────────────────
-function OverviewPane({ detail, loadErr, prefChips, houses, applyPatch }) {
+function OverviewPane({ detail, loadErr, prefChips, houses, applyPatch, automation }) {
   const [contact, setContact] = useState({ email: detail?.email || '', phone: detail?.phone || '' });
   // Re-sync editable contact fields when the underlying record changes —
   // render-phase reset, not an effect (avoids the setState-in-effect cascade).
@@ -471,6 +588,8 @@ function OverviewPane({ detail, loadErr, prefChips, houses, applyPatch }) {
         <div className={styles.stat}><span className={styles.statNum}>{houses.length}</span><span className={styles.statLabel}>Properties</span></div>
         <div className={styles.stat}><span className={styles.statNum}>{relTime(detail?.last_contacted_at || detail?.last_touch?.created_at) || '—'}</span><span className={styles.statLabel}>Last Contact</span></div>
       </div>
+
+      <AutomationBrief automation={automation} />
 
       <div className={styles.section}>
         <span className={styles.sectionLabel}>Contact</span>
@@ -503,5 +622,74 @@ function OverviewPane({ detail, loadErr, prefChips, houses, applyPatch }) {
         </div>
       </div>
     </div>
+  );
+}
+
+function AutomationEvidence({ automation }) {
+  const evidence = Array.isArray(automation?.evidence) ? automation.evidence : [];
+  return (
+    <section className={`${styles.section} ${styles.automationEvidence}`}>
+      <span className={styles.sectionLabel}>Evidence brief</span>
+      <p>{automation?.summary || 'The AI steward has not completed its first evidence-backed review.'}</p>
+      {evidence.length > 0 && (
+        <ul>{evidence.slice(0, 8).map((item) => <li key={`${item.ref}:${item.label}`}>{item.label}</li>)}</ul>
+      )}
+      <small>Unknown fields stay unknown. Suggested public-record matches require human confirmation.</small>
+    </section>
+  );
+}
+
+function AutomationBrief({ automation }) {
+  const factors = Array.isArray(automation?.score_breakdown) ? automation.score_breakdown : [];
+  const nextActions = Array.isArray(automation?.next_actions) ? automation.next_actions : [];
+  const gaps = Array.isArray(automation?.data_gaps) ? automation.data_gaps : [];
+  const candidates = Array.isArray(automation?.property_candidates) ? automation.property_candidates : [];
+  return (
+    <section className={`${styles.section} ${styles.automationBrief}`} aria-labelledby="ai-brief-title">
+      <div className={styles.briefHeader}>
+        <div>
+          <span className={styles.sectionLabel}>Automatic CRM steward</span>
+          <h3 id="ai-brief-title">Evidence-backed next step</h3>
+        </div>
+        <span className={styles.briefMode}>{automation?.enabled === false ? 'Paused' : 'Internal only'}</span>
+      </div>
+      <p className={styles.briefSummary}>{automation?.summary || 'Waiting for the first CRM reconciliation.'}</p>
+      {factors.length > 0 && (
+        <div className={styles.briefBlock}>
+          <span className={styles.microLabel}>Score factors</span>
+          <ul className={styles.factorList}>
+            {factors.map((factor) => (
+              <li key={factor.code}><span>{factor.label}</span><strong>+{factor.points}</strong></li>
+            ))}
+          </ul>
+        </div>
+      )}
+      <div className={styles.briefColumns}>
+        <div className={styles.briefBlock}>
+          <span className={styles.microLabel}>Next actions</span>
+          {nextActions.length > 0 ? (
+            <ul className={styles.actionList}>{nextActions.map((action) => <li key={action.code}><strong>{action.title}</strong><span>{action.reason}</span></li>)}</ul>
+          ) : <p className={styles.briefEmpty}>No internal follow-up needed.</p>}
+        </div>
+        <div className={styles.briefBlock}>
+          <span className={styles.microLabel}>Data gaps</span>
+          {gaps.length > 0 ? (
+            <ul className={styles.gapList}>{gaps.map((gap) => <li key={gap.code}>{gap.label}</li>)}</ul>
+          ) : <p className={styles.briefEmpty}>No verified gaps flagged.</p>}
+        </div>
+      </div>
+      {candidates.length > 0 && (
+        <div className={styles.candidateBlock}>
+          <span className={styles.microLabel}>Review-only property candidates</span>
+          <ul>{candidates.map((candidate) => (
+            <li key={candidate.public_record_id}>
+              <strong>{candidate.address || candidate.parcel_id || 'Public record'}</strong>
+              <span>{[candidate.city, candidate.state, candidate.zip_code].filter(Boolean).join(', ')} · {candidate.match_basis}</span>
+            </li>
+          ))}</ul>
+          <small>No property is linked until an address or parcel relationship is confirmed.</small>
+        </div>
+      )}
+    </section>
   );
 }

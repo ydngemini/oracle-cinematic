@@ -1,9 +1,14 @@
 import { lazy, Suspense, useEffect, useRef, useState } from 'react';
 import { Building2, ExternalLink, Link2, MapPin, ScanLine } from 'lucide-react';
 import HouseLinkDialog from './HouseLinkDialog';
+import { useTour } from '../state/useTour';
 import styles from './HouseSelection.module.css';
 
 const PropertyTour = lazy(() => import('./PropertyTour'));
+// Tier-3 walkable interior. TourViewer picks the engine from VITE_TOUR_ENGINE
+// (gsplat by default, PlayCanvas opt-in) so this surface stays engine-agnostic.
+const TourViewer = lazy(() => import('./TourViewer'));
+
 const PRICE_FORMAT = new Intl.NumberFormat('en-US', {
   style: 'currency',
   currency: 'USD',
@@ -40,6 +45,9 @@ function trapFocus(event, root) {
 export default function HouseWorkspace({ house }) {
   const [linkOpen, setLinkOpen] = useState(false);
   const [tourOpen, setTourOpen] = useState(false);
+  const [walkOpen, setWalkOpen] = useState(false);
+  // Honest tier resolver — only yields splat_url when a real capture exists.
+  const { tour } = useTour({ leadId: house?.lead_id ?? null });
   const [notice, setNotice] = useState('');
   const tourDialogRef = useRef(null);
   const tourButtonRef = useRef(null);
@@ -175,6 +183,16 @@ export default function HouseWorkspace({ house }) {
           <ExternalLink aria-hidden="true" />
           Open 3D tour
         </button>
+        {tour?.splat_url && (
+          <button
+            type="button"
+            className={styles.secondaryButton}
+            onClick={() => setWalkOpen(true)}
+          >
+            <Building2 aria-hidden="true" />
+            Step inside · walk the 3D space
+          </button>
+        )}
         <button
           type="button"
           className={styles.primaryButton}
@@ -235,6 +253,18 @@ export default function HouseWorkspace({ house }) {
             />
           </Suspense>
         </div>
+      )}
+      {walkOpen && tour?.splat_url && (
+        <Suspense fallback={null}>
+          <TourViewer
+            splatUrl={tour.splat_url}
+            disclosure={tour.disclosure}
+            floors={tour.floors}
+            address={house.address}
+            title={house.address}
+            onClose={() => setWalkOpen(false)}
+          />
+        </Suspense>
       )}
     </aside>
   );

@@ -111,7 +111,7 @@
   min-height: 44px;
   padding: var(--space-3) var(--space-4);
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.018), transparent 60%),
+    linear-gradient(180deg, rgba(242, 242, 242, 0.018), transparent 60%),
     var(--oracle-glass);
   border: 1px solid var(--oracle-border);
   border-top-color: var(--oracle-border-bright); /* etched top light */
@@ -187,7 +187,7 @@
   display: grid;
   grid-template-columns: repeat(3, 1fr);
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.018), transparent 42%),
+    linear-gradient(180deg, rgba(242, 242, 242, 0.018), transparent 42%),
     var(--oracle-glass);
   border: 1px solid var(--oracle-border);
   border-top-color: var(--oracle-border-bright);
@@ -290,7 +290,7 @@
   flex-direction: column;
   padding: 0;
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.018), transparent 24%),
+    linear-gradient(180deg, rgba(242, 242, 242, 0.018), transparent 24%),
     var(--oracle-glass);
   border: 1px solid var(--oracle-border);
   border-top-color: var(--oracle-border-bright);

@@ -81,6 +81,7 @@ class AuditCategory(str, Enum):
     # AI / cost-incurring
     AI_PHONE_CALL     = "AI_PHONE_CALL"      # outbound AI voice call
     GENERATE_TOUR     = "GENERATE_TOUR"      # AI tour generation (money + property data)
+    VIDEO_STUDIO      = "VIDEO_STUDIO"       # Sora video generation (money + property data)
 
     # Legal / contracts
     LEGAL_CONTRACT    = "LEGAL_CONTRACT"     # contract creation / signature

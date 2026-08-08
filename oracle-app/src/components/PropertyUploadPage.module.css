@@ -1,0 +1,138 @@
+/* PropertyUploadPage — unauthenticated client capture page.
+   Mobile-first: most arrivals are a phone opening a texted link. */
+
+.page {
+  min-height: 100dvh;
+  display: grid;
+  place-items: center;
+  padding: var(--space-4, 20px);
+  background: #0a0a0c;
+  color: #f4f4f5;
+}
+
+.srOnly {
+  position: absolute;
+  width: 1px; height: 1px;
+  padding: 0; margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.card {
+  width: min(480px, 100%);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 26px 22px calc(26px + env(safe-area-inset-bottom, 0px));
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(20, 20, 22, 0.6);
+  backdrop-filter: blur(14px);
+}
+
+.kicker {
+  margin: 0;
+  font-size: 0.625rem;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: #f0b429;
+}
+
+.title {
+  margin: 0;
+  font-size: 1.25rem;
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+.body {
+  margin: 0;
+  font-size: 0.875rem;
+  line-height: 1.55;
+  color: rgba(244, 244, 245, 0.72);
+}
+
+.status { font-size: 0.875rem; color: rgba(244, 244, 245, 0.72); }
+
+/* ── surface picker ──────────────────────────────────────────────────────── */
+.surfaces {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.legend {
+  padding: 0 0 8px;
+  font-size: 0.6875rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(244, 244, 245, 0.5);
+}
+
+.surface, .surfaceOn {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 10px 14px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  font-size: 0.8125rem;
+  cursor: pointer;
+  /* 44px min target — this is a phone page. */
+  min-height: 44px;
+}
+.surface input, .surfaceOn input { accent-color: #f0b429; }
+.surfaceOn { border-color: #f0b429; background: rgba(240, 180, 41, 0.1); }
+
+/* ── cta ─────────────────────────────────────────────────────────────────── */
+.cta {
+  width: 100%;
+  min-height: 52px;
+  padding: 15px 20px;
+  border: 0;
+  background: #f0b429;
+  color: #0b0b0d;
+  font-size: 0.9375rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+}
+.cta:disabled { opacity: 0.5; cursor: not-allowed; }
+.cta:active:not(:disabled) { filter: brightness(0.94); }
+
+.fine {
+  margin: 0;
+  font-size: 0.6875rem;
+  line-height: 1.5;
+  color: rgba(244, 244, 245, 0.45);
+}
+
+/* ── upload queue ────────────────────────────────────────────────────────── */
+.queue { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 1px; }
+
+.queue li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 9px 10px;
+  background: rgba(255, 255, 255, 0.04);
+  font-size: 0.75rem;
+}
+.queue li[data-status='done']   { color: #6ee7b7; }
+.queue li[data-status='failed'] { color: #fca5a5; }
+
+.queueName {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: inherit;
+}
+
+.queueStatus { flex: none; font-size: 0.6875rem; opacity: 0.85; text-align: right; }

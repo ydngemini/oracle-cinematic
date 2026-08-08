@@ -1,0 +1,90 @@
+.tour {
+  position: fixed;
+  z-index: 1200;
+  right: max(var(--space-4), env(safe-area-inset-right));
+  bottom: calc(5.4rem + env(safe-area-inset-bottom));
+  width: min(27rem, calc(100vw - (var(--space-4) * 2)));
+  overflow: hidden;
+  border: 1px solid var(--oracle-amber-dim);
+  border-radius: var(--radius-xl);
+  color: var(--oracle-text);
+  background: linear-gradient(150deg, rgba(34, 31, 23, 0.98), rgba(8, 8, 8, 0.98));
+  box-shadow: 0 1.5rem 5rem rgba(0, 0, 0, 0.62), var(--shadow-e2);
+}
+.tour:focus { outline: none; box-shadow: 0 1.5rem 5rem rgba(0, 0, 0, 0.62), var(--ring-focus); }
+.header { min-height: 3.5rem; display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); padding: 0 var(--space-4); border-bottom: 1px solid var(--oracle-border-subtle); }
+.header > span { display: inline-flex; align-items: center; gap: var(--space-2); color: var(--oracle-amber); font: 650 0.625rem/1 var(--font-display); letter-spacing: var(--tracking-widest); text-transform: uppercase; }
+.header svg { width: 16px; height: 16px; }
+.header button { width: 40px; height: 40px; display: grid; place-items: center; border-radius: var(--radius-sm); color: var(--oracle-text-ghost); }
+.header button:hover { color: var(--oracle-text); background: var(--oracle-glass-hover); }
+.header button:focus-visible, .footer button:focus-visible { outline: none; box-shadow: var(--ring-focus); }
+.progress { height: 3px; background: rgba(255, 255, 255, 0.08); }
+.progress span { display: block; height: 100%; background: var(--oracle-amber); transition: width 180ms ease; }
+.body { display: grid; gap: var(--space-3); padding: var(--space-5); }
+.eyebrow { color: var(--oracle-amber-dim); font: 650 0.5625rem/1.2 var(--font-display); letter-spacing: var(--tracking-wider); text-transform: uppercase; }
+.body h2 { color: var(--oracle-text-heading); font: 380 1.6rem/1.08 var(--font-display); }
+.body > p { color: var(--oracle-text-dim); font-size: var(--text-xs); line-height: 1.65; }
+.verify { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: var(--space-3); padding: var(--space-3); border: 1px solid var(--oracle-border-bright); border-radius: var(--radius-md); background: var(--oracle-amber-ghost); }
+.verify svg { width: 18px; height: 18px; color: var(--oracle-amber); }
+.verify span { color: var(--oracle-text-dim); font-size: 0.6875rem; line-height: 1.55; }
+.verify strong { display: block; margin-bottom: 3px; color: var(--oracle-text); font-size: var(--text-xs); }
+.footer { display: flex; justify-content: space-between; gap: var(--space-3); padding: var(--space-4); border-top: 1px solid var(--oracle-border-subtle); }
+.footer button { min-height: 44px; display: inline-flex; align-items: center; justify-content: center; gap: var(--space-2); border-radius: var(--radius-sm); padding: 0 var(--space-4); font: 650 0.625rem/1 var(--font-display); letter-spacing: var(--tracking-wide); text-transform: uppercase; }
+.footer svg { width: 15px; height: 15px; }
+.previous { color: var(--oracle-text-dim); border: 1px solid var(--oracle-border-bright); }
+.previous:hover { color: var(--oracle-text); background: var(--oracle-glass-hover); }
+.previous:disabled { opacity: 0.35; }
+.next { color: #080808; border: 1px solid var(--oracle-amber); background: var(--oracle-amber); }
+.next:hover { filter: brightness(1.06); }
+
+@media (max-width: 540px) {
+  .tour { right: var(--space-2); bottom: calc(4.9rem + env(safe-area-inset-bottom)); width: calc(100vw - (var(--space-2) * 2)); }
+  .body { padding: var(--space-4); }
+}
+@media (prefers-reduced-motion: reduce) { .progress span { transition: none; } }
+
+/* ── Spotlight (guided walkthrough highlighting) ───────────────────────────── */
+/* Four scrim panels leave a real hole over the target instead of an SVG mask,
+   so the highlighted control stays clickable — the walkthrough is non-modal
+   and the user is meant to press the thing being pointed at. */
+.spotlightLayer {
+  position: fixed;
+  inset: 0;
+  z-index: 900;          /* under the tour panel, over the app */
+  pointer-events: none;  /* never intercepts clicks, including the cut-out */
+}
+
+.scrim {
+  position: fixed;
+  background: rgba(6, 7, 10, 0.62);
+  transition: opacity 160ms ease;
+}
+
+.halo {
+  position: fixed;
+  border: 2px solid var(--oracle-amber, #f0b429);
+  border-radius: 8px;
+  box-shadow:
+    0 0 0 3px rgba(240, 180, 41, 0.22),
+    0 0 22px 4px rgba(240, 180, 41, 0.32);
+  animation: tourPulse 1.9s ease-in-out infinite;
+}
+
+@keyframes tourPulse {
+  0%, 100% { box-shadow: 0 0 0 3px rgba(240, 180, 41, 0.22), 0 0 22px 4px rgba(240, 180, 41, 0.30); }
+  50%      { box-shadow: 0 0 0 6px rgba(240, 180, 41, 0.10), 0 0 30px 8px rgba(240, 180, 41, 0.44); }
+}
+
+/* When a target resolves, the panel detaches from its docked corner and sits
+   beside the highlight (placement computed in useSpotlight.placementFor). */
+.tour[data-placement='anchored'] {
+  position: fixed;
+  z-index: 950;
+  transition: top 200ms ease, left 200ms ease;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .halo { animation: none; }
+  .tour[data-placement='anchored'] { transition: none; }
+  .scrim { transition: none; }
+}

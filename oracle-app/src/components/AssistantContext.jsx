@@ -27,6 +27,8 @@ export function AssistantProvider({ children }) {
     });
   }, []);
 
+  const clearCommandRequest = useCallback(() => setCommandRequest(null), []);
+
   const value = useMemo(() => ({
     open,
     setOpen,
@@ -37,8 +39,9 @@ export function AssistantProvider({ children }) {
     setCommandStatus,
     commandRequest,
     requestCommand,
-    clearCommandRequest: () => setCommandRequest(null),
+    clearCommandRequest,
   }), [
+    clearCommandRequest,
     clearRecord,
     commandRequest,
     commandStatus,

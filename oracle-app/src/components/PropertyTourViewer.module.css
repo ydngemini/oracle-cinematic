@@ -1,0 +1,238 @@
+/* PropertyTourViewer — PlayCanvas tour overlay.
+   Mirrors WalkableSplatViewer's shell so the two engines are visually
+   interchangeable while both ship behind VITE_TOUR_ENGINE. */
+
+.overlay {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-modal, 1000);
+  background: #080808;
+  overflow: hidden;
+  touch-action: none; /* we own all gestures (look, pinch, joystick) */
+  user-select: none;
+}
+
+.canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  cursor: grab;
+}
+.canvas:active { cursor: grabbing; }
+
+/* ── header ──────────────────────────────────────────────────────────────── */
+.header {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  pointer-events: none;
+  background: linear-gradient(to bottom, rgba(8, 8, 8, 0.72), transparent);
+}
+.header > * { pointer-events: auto; }
+
+.titleBlock { min-width: 0; }
+
+.title {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 0.9375rem;
+  font-weight: 600;
+  letter-spacing: var(--tracking-wide);
+  color: #f4f4f5;
+}
+
+.address {
+  margin: 2px 0 0;
+  font-size: 0.75rem;
+  color: rgba(244, 244, 245, 0.62);
+}
+
+.close {
+  flex: none;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: rgba(20, 20, 22, 0.55);
+  backdrop-filter: blur(12px);
+  color: #f4f4f5;
+  font-size: 1.25rem;
+  line-height: 1;
+  cursor: pointer;
+  transition: background 140ms ease, border-color 140ms ease;
+}
+.close:hover { background: rgba(38, 38, 42, 0.75); border-color: rgba(255, 255, 255, 0.32); }
+.close:focus-visible { outline: 2px solid var(--oracle-amber); outline-offset: 2px; }
+
+/* ── loading / error ─────────────────────────────────────────────────────── */
+.loading,
+.error {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: min(320px, 76vw);
+  text-align: center;
+  color: rgba(244, 244, 245, 0.86);
+  font-size: 0.8125rem;
+}
+
+.progressTrack {
+  height: 2px;
+  width: 100%;
+  margin-bottom: var(--space-2);
+  background: rgba(255, 255, 255, 0.14);
+  overflow: hidden;
+}
+
+.progressFill {
+  height: 100%;
+  background: var(--oracle-amber, #f0b429);
+  transition: width 180ms ease;
+}
+
+.error {
+  padding: var(--space-3);
+  border: 1px solid rgba(239, 68, 68, 0.4);
+  background: rgba(20, 20, 22, 0.7);
+  backdrop-filter: blur(12px);
+}
+
+/* ── mode toggle ─────────────────────────────────────────────────────────── */
+.modeToggle {
+  position: absolute;
+  top: var(--space-3);
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 1px;
+  padding: 2px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(20, 20, 22, 0.55);
+  backdrop-filter: blur(12px);
+}
+
+.modeButton,
+.modeActive {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border: 0;
+  background: transparent;
+  color: rgba(244, 244, 245, 0.66);
+  font-family: var(--font-display);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: background 140ms ease, color 140ms ease;
+}
+.modeButton:hover { color: #f4f4f5; background: rgba(255, 255, 255, 0.06); }
+.modeActive { color: #0b0b0d; background: var(--oracle-amber, #f0b429); }
+.modeButton:focus-visible,
+.modeActive:focus-visible { outline: 2px solid var(--oracle-amber); outline-offset: 2px; }
+
+.modeButton kbd,
+.modeActive kbd {
+  font-family: var(--font-mono, monospace);
+  font-size: 0.5625rem;
+  padding: 1px 4px;
+  border: 1px solid currentColor;
+  opacity: 0.65;
+}
+
+/* ── floor navigation ────────────────────────────────────────────────────── */
+.floorNav {
+  position: absolute;
+  top: 50%;
+  right: var(--space-3);
+  transform: translateY(-50%);
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 2px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(20, 20, 22, 0.55);
+  backdrop-filter: blur(12px);
+}
+
+.floorButton,
+.floorActive {
+  min-width: 44px;
+  padding: 8px 10px;
+  border: 0;
+  background: transparent;
+  color: rgba(244, 244, 245, 0.66);
+  font-family: var(--font-display);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: var(--tracking-wide);
+  cursor: pointer;
+  transition: background 140ms ease, color 140ms ease;
+}
+.floorButton:hover { color: #f4f4f5; background: rgba(255, 255, 255, 0.06); }
+.floorActive { color: #0b0b0d; background: var(--oracle-amber, #f0b429); }
+
+/* ── touch joystick ──────────────────────────────────────────────────────── */
+.joystick {
+  position: absolute;
+  left: var(--space-4);
+  bottom: calc(var(--space-6) + env(safe-area-inset-bottom, 0px));
+  width: 108px;
+  height: 108px;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  background: rgba(20, 20, 22, 0.4);
+  backdrop-filter: blur(10px);
+  display: grid;
+  place-items: center;
+  touch-action: none;
+}
+
+.joystickKnob {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background: rgba(244, 244, 245, 0.42);
+  pointer-events: none;
+}
+
+/* Desktop drives movement from WASD; the joystick is touch-only. */
+@media (hover: hover) and (pointer: fine) {
+  .joystick { display: none; }
+}
+
+/* ── disclosure ──────────────────────────────────────────────────────────── */
+.disclosure {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  margin: 0;
+  padding: var(--space-2) var(--space-3) calc(var(--space-2) + env(safe-area-inset-bottom, 0px));
+  font-size: 0.6875rem;
+  line-height: 1.4;
+  color: rgba(244, 244, 245, 0.58);
+  text-align: center;
+  background: linear-gradient(to top, rgba(8, 8, 8, 0.82), transparent);
+  pointer-events: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .progressFill,
+  .modeButton,
+  .modeActive,
+  .floorButton,
+  .floorActive,
+  .close { transition: none; }
+}

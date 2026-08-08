@@ -1,7 +1,7 @@
 /* ─────────────────────────────────────────────────────────────
    LoginVault — auth gate overlay
-   Cinematic vault-unlock experience. Dark glass, amber accent.
-   Zero neon. Muted whites, spring easing, biometric feel.
+   Cinematic vault-unlock experience. Silver glass, gold accent.
+   Ivory type, restrained spring easing, biometric feel.
    ───────────────────────────────────────────────────────────── */
 
 /* ── Keyframes ───────────────────────────────────────────────── */
@@ -39,8 +39,8 @@
 }
 
 @keyframes borderPulse {
-  0%, 100% { border-color: rgba(200, 160, 80, 0.12); }
-  50%       { border-color: rgba(200, 160, 80, 0.28); }
+  0%, 100% { border-color: rgba(255, 188, 31, 0.12); }
+  50%       { border-color: rgba(255, 188, 31, 0.28); }
 }
 
 @keyframes dotPulse {
@@ -60,8 +60,8 @@
 }
 
 @keyframes glowPulse {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(200, 160, 80, 0); }
-  50%       { box-shadow: 0 0 0 4px rgba(200, 160, 80, 0.06); }
+  0%, 100% { box-shadow: 0 0 0 0 rgba(255, 188, 31, 0); }
+  50%       { box-shadow: 0 0 0 4px rgba(255, 188, 31, 0.06); }
 }
 
 @keyframes shimmer {
@@ -84,12 +84,8 @@
   align-items: center;
   justify-content: center;
 
-  /* Keep the real waterfall visible while establishing a calm signing plane. */
-  background-color: rgba(19, 13, 7, 0.34);
-  background-image:
-    linear-gradient(110deg, rgba(19, 13, 7, 0.68), rgba(19, 13, 7, 0.22)),
-    radial-gradient(ellipse 80% 60% at 50% 0%, rgba(244, 229, 188, 0.14) 0%, transparent 70%),
-    radial-gradient(ellipse 60% 80% at 50% 100%, rgba(184, 137, 82, 0.18) 0%, transparent 80%);
+  /* The video remains the canvas; contrast is owned by the sign-in surface. */
+  background: transparent;
 
   animation: vaultReveal 0.9s cubic-bezier(0.16, 1, 0.3, 1) both;
 
@@ -109,7 +105,7 @@
   display: none;
 }
 
-/* ── Flat editorial panel ───────────────────────────────────── */
+/* ── Border-light 20% silver glass panel ───────────────────── */
 .panel {
   position: relative;
   width: min(440px, calc(100vw - 2rem));
@@ -117,11 +113,11 @@
   flex-direction: column;
   gap: 2.4rem;
 
-  background: rgba(32, 24, 14, 0.94);
-  backdrop-filter: none;
-  -webkit-backdrop-filter: none;
+  background: rgba(171, 171, 171, 0.20);
+  backdrop-filter: var(--oracle-backdrop);
+  -webkit-backdrop-filter: var(--oracle-backdrop);
 
-  border: 1px solid rgba(255, 244, 214, 0.24);
+  border: 1px solid var(--oracle-glass-edge);
   border-radius: 2px;
 
   padding: 3.2rem 3rem;
@@ -129,7 +125,7 @@
   box-shadow:
     0 8px 32px rgba(0, 0, 0, 0.4),
     0 40px 100px rgba(0, 0, 0, 0.65),
-    inset 0 1px 0 rgba(255, 244, 214, 0.09),
+    inset 0 1px 0 rgba(242, 242, 242, 0.08),
     inset 0 -1px 0 rgba(0, 0, 0, 0.3);
 
   animation: panelDrop 0.85s cubic-bezier(0.16, 1, 0.3, 1) 0.15s both;
@@ -148,9 +144,9 @@
   background: linear-gradient(
     90deg,
     transparent,
-    rgba(200, 160, 80, 0.35) 30%,
-    rgba(200, 160, 80, 0.55) 50%,
-    rgba(200, 160, 80, 0.35) 70%,
+    rgba(255, 188, 31, 0.35) 30%,
+    rgba(255, 188, 31, 0.55) 50%,
+    rgba(255, 188, 31, 0.35) 70%,
     transparent
   );
 }
@@ -165,9 +161,9 @@
   background: linear-gradient(
     to bottom,
     transparent,
-    rgba(200, 160, 80, 0.03) 40%,
-    rgba(200, 160, 80, 0.05) 50%,
-    rgba(200, 160, 80, 0.03) 60%,
+    rgba(255, 188, 31, 0.03) 40%,
+    rgba(255, 188, 31, 0.05) 50%,
+    rgba(255, 188, 31, 0.03) 60%,
     transparent
   );
   pointer-events: none;
@@ -186,14 +182,14 @@
   font-size: 0.6rem;
   letter-spacing: 0.42em;
   text-transform: uppercase;
-  color: rgba(200, 175, 120, 0.8);
+  color: rgba(255, 188, 31, 0.8);
   font-weight: 500;
   /* Subtle amber shimmer on initial load */
   background: linear-gradient(
     90deg,
-    rgba(200, 175, 120, 0.65) 0%,
-    rgba(235, 205, 140, 1) 40%,
-    rgba(200, 175, 120, 0.65) 60%
+    rgba(255, 188, 31, 0.68) 0%,
+    rgba(242, 242, 242, 1) 40%,
+    rgba(255, 188, 31, 0.68) 60%
   );
   background-size: 200% auto;
   background-clip: text;
@@ -209,8 +205,8 @@
   background: linear-gradient(
     to bottom,
     transparent,
-    rgba(255, 255, 255, 0.15) 30%,
-    rgba(255, 255, 255, 0.15) 70%,
+    rgba(242, 242, 242, 0.15) 30%,
+    rgba(242, 242, 242, 0.15) 70%,
     transparent
   );
   flex-shrink: 0;
@@ -220,7 +216,7 @@
   font-size: 0.6rem;
   letter-spacing: 0.28em;
   text-transform: uppercase;
-  color: rgba(255, 248, 230, 0.58);
+  color: rgba(242, 242, 242, 0.68);
   font-weight: 400;
 }
 
@@ -251,14 +247,14 @@
   font-size: 0.52rem;
   letter-spacing: 0.36em;
   text-transform: uppercase;
-  color: rgba(255, 247, 230, 0.66);
+  color: rgba(242, 242, 242, 0.72);
   font-weight: 500;
   user-select: none;
   transition: color 0.25s ease;
 }
 
 .field:focus-within .label {
-  color: rgba(200, 160, 80, 0.7);
+  color: rgba(255, 188, 31, 0.78);
 }
 
 /* ── Input ───────────────────────────────────────────────────── */
@@ -267,19 +263,20 @@
   font-size: 0.875rem;
   font-weight: 300;
   letter-spacing: 0.05em;
-  color: rgba(255, 250, 240, 0.96);
+  color: #f2f2f2;
 
-  background: rgba(255, 248, 230, 0.055);
-  border: 1px solid rgba(255, 244, 214, 0.18);
+  background: rgba(171, 171, 171, 0.16);
+  border: 1px solid rgba(242, 242, 242, 0.12);
   border-radius: 2px;
 
+  min-height: 48px;
   padding: 0.9rem 1.1rem;
   outline: none;
 
   /* Faint inner shadow for depth */
   box-shadow:
     inset 0 1px 3px rgba(0, 0, 0, 0.3),
-    0 0 0 0 rgba(200, 160, 80, 0);
+    0 0 0 0 rgba(255, 188, 31, 0);
 
   transition:
     border-color  0.28s cubic-bezier(0.16, 1, 0.3, 1),
@@ -289,27 +286,27 @@
 }
 
 .input::placeholder {
-  color: rgba(255, 248, 230, 0.42);
+  color: rgba(171, 171, 171, 0.90);
   letter-spacing: 0.04em;
   transition: color 0.2s ease;
 }
 
 .input:hover:not(:focus):not(:disabled) {
-  border-color: rgba(255, 255, 255, 0.09);
-  background: rgba(255, 255, 255, 0.025);
+  border-color: rgba(242, 242, 242, 0.16);
+  background: rgba(171, 171, 171, 0.20);
 }
 
 .input:focus {
-  border-color: rgba(200, 160, 80, 0.4);
-  background:   rgba(200, 160, 80, 0.025);
+  border-color: rgba(255, 188, 31, 0.62);
+  background:   rgba(171, 171, 171, 0.22);
   box-shadow:
     inset 0 1px 3px rgba(0, 0, 0, 0.25),
-    0 0 0 3px rgba(200, 160, 80, 0.07),
-    0 0 20px rgba(200, 160, 80, 0.04);
+    0 0 0 3px rgba(255, 188, 31, 0.10),
+    0 0 20px rgba(255, 188, 31, 0.04);
 }
 
 .input:focus::placeholder {
-  color: rgba(255, 255, 255, 0.06);
+  color: rgba(242, 242, 242, 0.06);
 }
 
 .input:disabled {
@@ -340,12 +337,13 @@
   letter-spacing: 0.4em;
   text-transform: uppercase;
   font-weight: 500;
-  color: rgba(200, 175, 120, 0.65);
+  color: rgba(255, 188, 31, 0.84);
 
-  background: rgba(200, 160, 80, 0.04);
-  border: 1px solid rgba(200, 160, 80, 0.16);
+  background: rgba(255, 188, 31, 0.08);
+  border: 1px solid rgba(255, 188, 31, 0.28);
   border-radius: 2px;
 
+  min-height: 48px;
   padding: 1.05rem 0;
   width: 100%;
   cursor: pointer;
@@ -373,7 +371,7 @@
   background: linear-gradient(
     90deg,
     transparent,
-    rgba(200, 160, 80, 0.06) 50%,
+    rgba(242, 242, 242, 0.12) 50%,
     transparent
   );
   transition: left 0.55s cubic-bezier(0.16, 1, 0.3, 1);
@@ -384,21 +382,21 @@
 }
 
 .submitBtn:hover:not(:disabled) {
-  color:        rgba(225, 195, 125, 0.98);
-  background:   rgba(200, 160, 80, 0.09);
-  border-color: rgba(200, 160, 80, 0.38);
+  color:        #f2f2f2;
+  background:   rgba(255, 188, 31, 0.16);
+  border-color: rgba(255, 188, 31, 0.58);
   box-shadow:
-    0 0 28px rgba(200, 160, 80, 0.08),
+    0 0 24px rgba(255, 188, 31, 0.08),
     0 4px 16px rgba(0, 0, 0, 0.3),
-    inset 0 1px 0 rgba(200, 160, 80, 0.06);
+    inset 0 1px 0 rgba(242, 242, 242, 0.08);
   transform: translateY(-1px);
 }
 
 .submitBtn:active:not(:disabled) {
-  background:   rgba(200, 160, 80, 0.13);
-  border-color: rgba(200, 160, 80, 0.5);
+  background:   rgba(255, 188, 31, 0.20);
+  border-color: rgba(255, 188, 31, 0.68);
   transform:    translateY(0);
-  box-shadow:   0 0 16px rgba(200, 160, 80, 0.06);
+  box-shadow:   0 0 16px rgba(255, 188, 31, 0.06);
 }
 
 .submitBtn:disabled {
@@ -426,7 +424,7 @@
   width: 3px;
   height: 3px;
   border-radius: 50%;
-  background: rgba(200, 175, 120, 0.7);
+  background: rgba(255, 188, 31, 0.82);
   animation: dotPulse 1.2s cubic-bezier(0.455, 0.03, 0.515, 0.955) infinite;
 }
 
@@ -440,7 +438,7 @@
   letter-spacing: 0.24em;
   text-transform: uppercase;
   text-align: center;
-  color: rgba(255, 255, 255, 0.08);
+  color: rgba(242, 242, 242, 0.42);
   font-weight: 400;
   animation: fadeUpNote 0.7s cubic-bezier(0.16, 1, 0.3, 1) 1s both;
 }
@@ -471,5 +469,15 @@
   .panel {
     padding: 2.4rem 1.8rem;
     gap: 2rem;
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  .panel {
+    background: rgba(12, 12, 12, 0.96);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
   }
 }

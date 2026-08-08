@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { hasMapsKey, loadMaps3d, geocodeAddress } from '../lib/google3d';
+import {
+  hasMapsKey, hadMapsAuthFailure, resetMapsAuthFailure, loadMaps3d, geocodeAddress,
+} from '../lib/google3d';
 import { crmGet } from '../state/useCrmApi';
 import useProtectedMedia from '../state/useProtectedMedia';
 import styles from './PropertyTour.module.css';
@@ -42,6 +44,11 @@ const ORBIT_TILT = 65;   // degrees — cinematic low-angle flyover
 const ORBIT_MS = 60000;  // ~60s per revolution — slow, smooth, non-nauseating
 const MANUAL_DEG_PER_FRAME = 0.12; // fallback orbit speed (~7°/s @ 60fps)
 
+// Hard ceiling on the loading veil. google3d.js already bounds each step, so
+// this only catches a step nobody anticipated — but it guarantees the spinner
+// ALWAYS resolves to something the user can act on instead of hanging forever.
+const INIT_TIMEOUT_MS = 25000;
+
 function mediaSrc(m) {
   return m?.display_url ?? '';
 }
@@ -51,7 +58,33 @@ const FALLBACK_COPY = {
   address: 'We could not locate this address for a 3D flyover.',
   coverage: 'Photoreal 3D is unavailable for this address.',
   load: 'The 3D map service could not be reached.',
+  timeout: 'The 3D map service did not respond in time.',
+  auth: 'Google rejected this Maps key for this site. Add it to the key’s allowed HTTP referrers, and confirm the Maps JavaScript API and Map Tiles API are enabled with billing active.',
   error: 'Photoreal 3D is unavailable for this address.',
+};
+
+// Naming the exact origin turns a generic auth error into a one-step fix — it
+// is precisely the string Google wants in the key's referrer allowlist.
+function fallbackCopy(reason) {
+  if (reason === 'auth' && typeof window !== 'undefined') {
+    return `Google rejected this Maps key for ${window.location.origin}. Add ${window.location.origin}/* to the key’s allowed HTTP referrers, and confirm the Maps JavaScript API and Map Tiles API are enabled with billing active.`;
+  }
+  return FALLBACK_COPY[reason] || FALLBACK_COPY.error;
+}
+
+// Loader error codes -> fallback reason. Anything unmapped lands on 'error'.
+const REASON_BY_CODE = {
+  NO_KEY: 'no-key',
+  NO_ADDRESS: 'address',
+  NO_RESULTS: 'address',
+  GEOCODE_FAILED: 'address',
+  SCRIPT_LOAD_FAILED: 'load',
+  MAPS_UNAVAILABLE: 'load',
+  MAPS_AUTH_FAILED: 'auth',
+  MAPS_TIMEOUT: 'timeout',
+  MAPS3D_TIMEOUT: 'timeout',
+  GEOCODE_TIMEOUT: 'timeout',
+  INIT_TIMEOUT: 'timeout',
 };
 
 export default function PropertyTour({ address, lat, lng, leadId, listingId, onClose, title }) {
@@ -68,6 +101,10 @@ export default function PropertyTour({ address, lat, lng, leadId, listingId, onC
   const [playing, setPlaying] = useState(true);
   const [resolvedLabel, setResolvedLabel] = useState('');
   const [hintVisible, setHintVisible] = useState(true);
+  // Bumped by the fallback's "Try again" button — re-runs the init effect below.
+  // google3d.js clears its cached loader promise on every failure, so a retry
+  // genuinely re-fetches instead of re-awaiting the dead attempt.
+  const [attempt, setAttempt] = useState(0);
 
   // Composed photos.
   const [media, setMedia] = useState([]);
@@ -182,7 +219,11 @@ export default function PropertyTour({ address, lat, lng, leadId, listingId, onC
         // its mode → gmp-error → fallback). Prefer MapMode, fall back to the old
         // name so we work across either API revision.
         const MapMode = maps3d.MapMode ?? maps3d.Map3DMode;
-        if (cancelled || !hostRef.current) return;
+        if (cancelled) return;
+        // The stage div went away mid-load (parent swapped it out). Fall through
+        // to the fallback instead of returning silently — a bare `return` here
+        // left `status` on 'loading' and pinned the veil up for good.
+        if (!hostRef.current) throw new Error('HOST_UNMOUNTED');
 
         const center = { lat: coords.lat, lng: coords.lng, altitude: 0 };
         centerRef.current = center;
@@ -209,7 +250,9 @@ export default function PropertyTour({ address, lat, lng, leadId, listingId, onC
         // Tile load / coverage failures surface as element errors — degrade.
         const onElementError = () => {
           if (cancelled) return;
-          setReason('coverage');
+          // An auth failure can surface here too (tiles rejected after the
+          // bootstrap loaded) — don't blame coverage when the key is the cause.
+          setReason(hadMapsAuthFailure() ? 'auth' : 'coverage');
           setStatus('unavailable');
         };
         map.addEventListener('gmp-error', onElementError);
@@ -231,11 +274,13 @@ export default function PropertyTour({ address, lat, lng, leadId, listingId, onC
       } catch (err) {
         if (cancelled) return;
         const code = err?.message || '';
-        const mapped =
-          code === 'NO_KEY' ? 'no-key'
-            : code === 'NO_ADDRESS' || code === 'NO_RESULTS' ? 'address'
-              : code === 'SCRIPT_LOAD_FAILED' || code === 'MAPS_UNAVAILABLE' ? 'load'
-                : 'error';
+        // A reported auth failure outranks whatever code the step happened to
+        // fail with — a rejected key surfaces as a stalled geocode/tile fetch,
+        // and "did not respond in time" would send you chasing the network.
+        const mapped = hadMapsAuthFailure() ? 'auth' : (REASON_BY_CODE[code] ?? 'error');
+        // On-screen copy stays user-facing; the raw code goes to the console so
+        // a misconfigured key can actually be diagnosed.
+        console.warn('[PropertyTour] photoreal 3D unavailable:', code || err);
         setReason(mapped);
         setStatus('unavailable');
       }
@@ -252,7 +297,30 @@ export default function PropertyTour({ address, lat, lng, leadId, listingId, onC
       centerRef.current = null;
       markersRef.current = [];
     };
-  }, [address, lat, lng, title, startOrbit, stopOrbit, takeControl]);
+  }, [address, lat, lng, title, attempt, startOrbit, stopOrbit, takeControl]);
+
+  // Last-resort watchdog on the loading veil. Every await in google3d.js is
+  // already bounded, but a future API change (or a step nobody anticipated)
+  // must never be able to strand the user on "Building 3D flyover…".
+  useEffect(() => {
+    if (status !== 'loading') return undefined;
+    const t = setTimeout(() => {
+      console.warn('[PropertyTour] photoreal 3D unavailable: INIT_TIMEOUT');
+      setReason((r) => r ?? 'timeout');
+      setStatus('unavailable');
+    }, INIT_TIMEOUT_MS);
+    return () => clearTimeout(t);
+  }, [status]);
+
+  const retry = useCallback(() => {
+    if (!hasMapsKey()) return;
+    // Allowlisting a referrer / enabling an API takes effect server-side, so a
+    // retry must clear the sticky auth verdict or it would fail instantly.
+    resetMapsAuthFailure();
+    setReason(null);
+    setStatus('loading');
+    setAttempt((n) => n + 1);
+  }, []);
 
   // Clear the photo overlay when the record loses its id — render-phase reset
   // (avoids the setState-in-effect the linter flags); the fetch stays below.
@@ -408,7 +476,7 @@ export default function PropertyTour({ address, lat, lng, leadId, listingId, onC
           </span>
           <span className={styles.fallbackTitle}>Photoreal 3D unavailable</span>
           <span className={styles.fallbackHint}>
-            {FALLBACK_COPY[reason] || FALLBACK_COPY.error}
+            {fallbackCopy(reason)}
             {reason === 'no-key' ? '' : ' Showing the standard view instead.'}
           </span>
           {address && <span className={styles.fallbackAddr}>{address}</span>}
@@ -424,11 +492,20 @@ export default function PropertyTour({ address, lat, lng, leadId, listingId, onC
             </div>
           )}
 
-          {onClose && (
-            <button type="button" className={styles.fallbackBtn} onClick={onClose}>
-              Back to standard view
-            </button>
-          )}
+          <div className={styles.fallbackActions}>
+            {/* A hung bootstrap or a transient network blip is recoverable now
+                that the loader drops its cached promise on failure. */}
+            {reason !== 'no-key' && (
+              <button type="button" className={styles.fallbackBtn} onClick={retry}>
+                Try again
+              </button>
+            )}
+            {onClose && (
+              <button type="button" className={styles.fallbackBtn} onClick={onClose}>
+                Back to standard view
+              </button>
+            )}
+          </div>
         </div>
 
         {lightbox != null && media[lightbox] && (

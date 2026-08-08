@@ -3,7 +3,7 @@
   inset: 0;
   z-index: 0;
   overflow: hidden;
-  background: radial-gradient(ellipse at 50% 120%, rgba(18, 16, 12, 1) 0%, rgba(4, 4, 6, 1) 70%);
+  background: radial-gradient(ellipse at 50% 120%, rgba(8, 8, 8, 1) 0%, rgba(8, 8, 8, 1) 70%);
 }
 
 .container[data-loaded="true"] {
@@ -29,13 +29,13 @@
   gap: 0.85rem;
   padding: 2rem;
   text-align: center;
-  background: radial-gradient(ellipse at 50% 50%, rgba(18, 16, 12, 0.4) 0%, rgba(4, 4, 6, 0.7) 80%);
+  background: radial-gradient(ellipse at 50% 50%, rgba(8, 8, 8, 0.4) 0%, rgba(8, 8, 8, 0.7) 80%);
 }
 
 .webglFallbackTitle {
   font-size: 0.8rem;
   letter-spacing: 0.4em;
-  color: rgba(200, 170, 120, 0.7);
+  color: rgba(255, 188, 31, 0.7);
   text-transform: uppercase;
 }
 
@@ -44,7 +44,7 @@
   font-size: 0.78rem;
   line-height: 1.5;
   letter-spacing: 0.02em;
-  color: rgba(220, 220, 230, 0.45);
+  color: rgba(242, 242, 242, 0.45);
 }
 
 .canvas:active {
@@ -73,7 +73,7 @@
   opacity: 0.15;
   background: radial-gradient(
     600px circle at var(--glow-x, 50%) var(--glow-y, 50%),
-    rgba(180, 140, 60, 0.12) 0%,
+    rgba(255, 188, 31, 0.10) 0%,
     transparent 70%
   );
   transition: opacity 1.5s ease;
@@ -102,8 +102,8 @@
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: rgba(200, 160, 80, 0.9);
-  box-shadow: 0 0 8px rgba(200, 160, 80, 0.5);
+  background: rgba(255, 188, 31, 0.9);
+  box-shadow: 0 0 8px rgba(255, 188, 31, 0.5);
   animation: breathe 3s ease-in-out infinite;
 }
 
@@ -111,14 +111,14 @@
   font-size: 0.55rem;
   letter-spacing: 0.25em;
   text-transform: uppercase;
-  color: rgba(220, 200, 160, 0.7);
+  color: rgba(255, 188, 31, 0.7);
   font-weight: 500;
 }
 
 .viewHint {
   font-size: 0.45rem;
   letter-spacing: 0.15em;
-  color: rgba(255, 255, 255, 0.2);
+  color: rgba(242, 242, 242, 0.2);
   margin-left: 0.8rem;
 }
 
@@ -145,12 +145,13 @@
   pointer-events: auto;
   cursor: pointer;
 
-  background: rgba(8, 8, 12, 0.75);
-  backdrop-filter: blur(40px) saturate(1.4);
-  border: 1px solid rgba(255, 255, 255, 0.03);
+  background: var(--oracle-glass);
+  backdrop-filter: var(--oracle-backdrop);
+  -webkit-backdrop-filter: var(--oracle-backdrop);
+  border: 1px solid var(--oracle-glass-edge);
   box-shadow:
     0 8px 32px rgba(0, 0, 0, 0.4),
-    0 1px 0 rgba(255, 255, 255, 0.02) inset;
+    0 1px 0 rgba(242, 242, 242, 0.02) inset;
 
   transition:
     border-color 0.4s cubic-bezier(0.16, 1, 0.3, 1),
@@ -160,11 +161,11 @@
 }
 
 .anchorCard[data-active="true"] {
-  border-color: rgba(200, 160, 80, 0.25);
+  border-color: rgba(255, 188, 31, 0.25);
   box-shadow:
     0 12px 40px rgba(0, 0, 0, 0.5),
-    0 0 20px rgba(200, 160, 80, 0.08),
-    0 1px 0 rgba(255, 255, 255, 0.04) inset;
+    0 0 20px rgba(255, 188, 31, 0.08),
+    0 1px 0 rgba(242, 242, 242, 0.04) inset;
   transform: translate(-50%, -100%) scale(1.08) !important;
 }
 
@@ -183,14 +184,14 @@
   font-size: 0.4rem;
   letter-spacing: 0.4em;
   text-transform: uppercase;
-  color: rgba(200, 170, 120, 0.55);
+  color: rgba(255, 188, 31, 0.55);
   font-weight: 600;
 }
 
 .anchorValue {
   font-size: 0.65rem;
   font-weight: 300;
-  color: rgba(245, 240, 230, 0.9);
+  color: rgba(242, 242, 242, 0.9);
   letter-spacing: -0.01em;
   white-space: nowrap;
 }
@@ -202,7 +203,7 @@
   transform: translateX(-50%);
   width: 1px;
   height: 16px;
-  background: linear-gradient(to bottom, rgba(200, 160, 80, 0.5), transparent);
+  background: linear-gradient(to bottom, rgba(255, 188, 31, 0.5), transparent);
 }
 
 .anchorPulse {
@@ -213,7 +214,7 @@
   width: 4px;
   height: 4px;
   border-radius: 50%;
-  background: rgba(200, 160, 80, 0.8);
+  background: rgba(255, 188, 31, 0.8);
   animation: anchorPulseAnim 2s ease-in-out infinite;
 }
 
@@ -236,7 +237,7 @@
   font-size: 0.45rem;
   letter-spacing: 0.3em;
   text-transform: uppercase;
-  color: rgba(210, 148, 30, 0.6);
+  color: rgba(255, 188, 31, 0.6);
   font-weight: 500;
   animation: fadeSlideIn 0.8s cubic-bezier(0.16, 1, 0.3, 1) both;
 }
@@ -245,8 +246,8 @@
   width: 5px;
   height: 5px;
   border-radius: 50%;
-  background: rgba(210, 148, 30, 0.8);
-  box-shadow: 0 0 6px rgba(210, 148, 30, 0.5);
+  background: rgba(255, 188, 31, 0.8);
+  box-shadow: 0 0 6px rgba(255, 188, 31, 0.5);
   animation: breathe 2.5s ease-in-out infinite;
 }
 
@@ -260,8 +261,8 @@
   align-items: center;
   justify-content: center;
   gap: 1.5rem;
-  background: rgba(4, 4, 6, 0.85);
-  backdrop-filter: blur(20px);
+  background: rgba(8, 8, 8, 0.85);
+  backdrop-filter: var(--oracle-backdrop);
   z-index: 20;
   animation: fadeIn 0.6s ease both;
 }
@@ -283,13 +284,13 @@
 
 .loadingTrack {
   fill: none;
-  stroke: rgba(255, 255, 255, 0.04);
+  stroke: rgba(242, 242, 242, 0.04);
   stroke-width: 2;
 }
 
 .loadingProgress {
   fill: none;
-  stroke: rgba(200, 160, 80, 0.8);
+  stroke: rgba(255, 188, 31, 0.8);
   stroke-width: 2;
   stroke-linecap: round;
   stroke-dasharray: 251;
@@ -300,7 +301,7 @@
   position: absolute;
   font-size: 0.75rem;
   font-weight: 300;
-  color: rgba(240, 230, 210, 0.9);
+  color: rgba(242, 242, 242, 0.9);
   letter-spacing: -0.02em;
 }
 
@@ -308,14 +309,14 @@
   font-size: 0.55rem;
   letter-spacing: 0.3em;
   text-transform: uppercase;
-  color: rgba(255, 255, 255, 0.6);
+  color: rgba(242, 242, 242, 0.6);
   font-weight: 500;
 }
 
 .loadingSubtext {
   font-size: 0.45rem;
   letter-spacing: 0.15em;
-  color: rgba(255, 255, 255, 0.2);
+  color: rgba(242, 242, 242, 0.2);
 }
 
 /* ─── Status Badges ────────────────────────────────────────────────────── */
@@ -338,14 +339,14 @@
   padding: 0.35rem 0.8rem;
   border-radius: 2px;
   font-weight: 500;
-  backdrop-filter: blur(20px);
+  backdrop-filter: var(--oracle-backdrop);
   transition: all 0.4s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 .badge[data-type="splat"] {
-  background: rgba(200, 160, 80, 0.06);
-  border: 1px solid rgba(200, 160, 80, 0.2);
-  color: rgba(220, 180, 100, 0.8);
+  background: rgba(255, 188, 31, 0.06);
+  border: 1px solid rgba(255, 188, 31, 0.2);
+  color: rgba(255, 188, 31, 0.8);
 }
 
 .badge[data-type="furnished"] {
@@ -355,9 +356,9 @@
 }
 
 .badge[data-type="spatial"] {
-  background: rgba(120, 140, 200, 0.06);
-  border: 1px solid rgba(120, 140, 200, 0.2);
-  color: rgba(160, 180, 220, 0.8);
+  background: rgba(171, 171, 171, 0.06);
+  border: 1px solid rgba(171, 171, 171, 0.2);
+  color: rgba(171, 171, 171, 0.8);
 }
 
 .badge:hover {
@@ -377,15 +378,15 @@
   align-items: center;
   gap: 0.6rem;
   padding: 0.7rem 1.5rem;
-  border: 1px solid rgba(200, 160, 80, 0.2);
+  border: 1px solid rgba(255, 188, 31, 0.2);
   border-radius: 4px;
-  background: rgba(200, 160, 80, 0.04);
-  backdrop-filter: blur(20px);
+  background: rgba(255, 188, 31, 0.04);
+  backdrop-filter: var(--oracle-backdrop);
 
   font-size: 0.55rem;
   letter-spacing: 0.25em;
   text-transform: uppercase;
-  color: rgba(220, 180, 100, 0.8);
+  color: rgba(255, 188, 31, 0.8);
   font-weight: 500;
   cursor: pointer;
 
@@ -395,9 +396,9 @@
 }
 
 .reconstructBtn:hover {
-  border-color: rgba(200, 160, 80, 0.4);
-  background: rgba(200, 160, 80, 0.08);
-  box-shadow: 0 8px 32px rgba(200, 160, 80, 0.1);
+  border-color: rgba(255, 188, 31, 0.4);
+  background: rgba(255, 188, 31, 0.08);
+  box-shadow: 0 8px 32px rgba(255, 188, 31, 0.1);
   transform: translateX(-50%) translateY(-2px);
 }
 
@@ -461,15 +462,15 @@
   align-items: center;
   gap: 0.6rem;
   padding: 0.7rem 1.4rem;
-  border: 1px solid rgba(200, 160, 80, 0.2);
+  border: 1px solid rgba(255, 188, 31, 0.2);
   border-radius: 4px;
-  background: rgba(200, 160, 80, 0.04);
-  backdrop-filter: blur(20px);
+  background: rgba(255, 188, 31, 0.04);
+  backdrop-filter: var(--oracle-backdrop);
 
   font-size: 0.55rem;
   letter-spacing: 0.25em;
   text-transform: uppercase;
-  color: rgba(220, 180, 100, 0.8);
+  color: rgba(255, 188, 31, 0.8);
   font-weight: 500;
   cursor: pointer;
 
@@ -479,9 +480,9 @@
 }
 
 .tourBtn:hover {
-  border-color: rgba(200, 160, 80, 0.4);
-  background: rgba(200, 160, 80, 0.08);
-  box-shadow: 0 8px 32px rgba(200, 160, 80, 0.1);
+  border-color: rgba(255, 188, 31, 0.4);
+  background: rgba(255, 188, 31, 0.08);
+  box-shadow: 0 8px 32px rgba(255, 188, 31, 0.1);
   transform: translateY(-2px);
 }
 
@@ -494,7 +495,7 @@
   position: absolute;
   inset: 0;
   z-index: 40;
-  background: rgba(2, 2, 4, 0.55);
+  background: rgba(8, 8, 8, 0.55);
   padding: clamp(0.5rem, 2vw, 1.5rem);
 }
 

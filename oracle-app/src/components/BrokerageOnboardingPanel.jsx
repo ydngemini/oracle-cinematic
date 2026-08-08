@@ -27,6 +27,7 @@ export function BrokerageOnboardingPanel() {
   const [reason, setReason] = useState('Reviewed brokerage membership, license details, and AI settings.');
   const [form, setForm] = useState({
     team_name: '', title: '', licenses: [{ ...EMPTY_LICENSE }], approved_tone: 'neutral',
+    autonomy_mode: 'policy_autopilot',
     autonomous_research: true, autonomous_drafting: true, style_training_opt_in: false,
   });
   const role = sessionStorage.getItem('oracle_role') || 'agent';
@@ -53,6 +54,7 @@ export function BrokerageOnboardingPanel() {
         title: membership?.title || current.title,
         licenses,
         approved_tone: settings?.approved_tone || current.approved_tone,
+        autonomy_mode: settings?.autonomy_mode || current.autonomy_mode,
         autonomous_research: settings?.autonomous_research ?? current.autonomous_research,
         autonomous_drafting: settings?.autonomous_drafting ?? current.autonomous_drafting,
         style_training_opt_in: settings?.style_training_opt_in ?? current.style_training_opt_in,
@@ -91,6 +93,7 @@ export function BrokerageOnboardingPanel() {
       licenses: form.licenses.map((license) => ({ ...license, state_code: license.state_code.toUpperCase(), expires_on: license.expires_on || null })),
       ai_settings: {
         approved_tone: form.approved_tone,
+        autonomy_mode: form.autonomy_mode,
         autonomous_research: form.autonomous_research,
         autonomous_drafting: form.autonomous_drafting,
         style_training_opt_in: form.style_training_opt_in,
@@ -168,10 +171,17 @@ export function BrokerageOnboardingPanel() {
         <fieldset className={styles.aiSettings}>
           <legend>AI settings</legend>
           <label className={styles.tone}><span>Approved tone</span><select value={form.approved_tone} onChange={(event) => setForm((current) => ({ ...current, approved_tone: event.target.value }))}><option value="neutral">Neutral</option><option value="concise">Concise</option><option value="warm">Warm</option><option value="formal">Formal</option><option value="direct">Direct</option></select></label>
+          <label className={styles.tone}>
+            <span>Autonomy mode</span>
+            <select value={form.autonomy_mode} onChange={(event) => setForm((current) => ({ ...current, autonomy_mode: event.target.value }))}>
+              <option value="policy_autopilot">Policy autopilot</option>
+              <option value="full_autonomy">Full internal autonomy</option>
+            </select>
+          </label>
           <label><input type="checkbox" checked={form.autonomous_research} onChange={(event) => setForm((current) => ({ ...current, autonomous_research: event.target.checked }))} /><span>Allow autonomous public-record research</span></label>
           <label><input type="checkbox" checked={form.autonomous_drafting} onChange={(event) => setForm((current) => ({ ...current, autonomous_drafting: event.target.checked }))} /><span>Allow autonomous draft preparation</span></label>
           <label><input type="checkbox" checked={form.style_training_opt_in} onChange={(event) => setForm((current) => ({ ...current, style_training_opt_in: event.target.checked }))} /><span>Opt in to consented, PII-redacted style training</span></label>
-          <p>Outreach, calls, legal work, bidding messages, and financial actions always retain approval gates.</p>
+          <p>Full autonomy applies only to private work. Consent, DNC, Fair Housing, spend, outreach, calls, legal work, bidding messages, and financial actions always retain approval gates.</p>
         </fieldset>
 
         <button type="submit" className={styles.primary} disabled={busy}>{busy ? 'Submitting…' : 'Submit for broker approval'}</button>

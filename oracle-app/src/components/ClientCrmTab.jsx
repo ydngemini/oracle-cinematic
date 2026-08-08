@@ -35,7 +35,7 @@ const BULK_ACTIONS = [
  * a quick-add sheet, and the full ClientDetailDrawer. Renders only what
  * /api/crm/clients returns; every other state (loading/empty/error) is graceful.
  */
-export default function ClientCrmTab() {
+export default function ClientCrmTab({ embedded = false }) {
   const [clients, setClients] = useState(null); // null = first load
   const [error, setError] = useState(null);
   const [refreshing, setRefreshing] = useState(false);
@@ -246,11 +246,17 @@ export default function ClientCrmTab() {
   const total = hasList ? clients.length : null;
 
   return (
-    <section className={styles.wrap} aria-label="Client book" aria-busy={isLoading || refreshing}>
-      <header className={styles.topRow}>
-        <span className={styles.kicker}>
-          Client Book{total !== null && <span className={styles.kickerCount}> · {fmtInt.format(total)}</span>}
-        </span>
+    <section className={styles.wrap} aria-labelledby="people-title" aria-busy={isLoading || refreshing}>
+      <header className={styles.topRow} data-embedded={embedded}>
+        {embedded ? (
+          <span className={styles.kicker}>Opportunity book{total !== null ? ` · ${fmtInt.format(total)}` : ''}</span>
+        ) : (
+          <div className={styles.destinationTitle}>
+            <span className={styles.kicker}>Relationship intelligence</span>
+            <h1 id="people-title">People</h1>
+            {total !== null && <small>{fmtInt.format(total)} visible profiles</small>}
+          </div>
+        )}
         <div className={styles.topActions}>
           <button type="button" className={styles.newProfileBtn} onClick={openSheet}>
             {GLYPHS.plus} New profile
@@ -260,7 +266,7 @@ export default function ClientCrmTab() {
             className={`${styles.refreshBtn} ${refreshing ? styles.refreshing : ''}`}
             onClick={refresh}
             disabled={refreshing || isLoading}
-            aria-label="Refresh client book"
+            aria-label="Refresh people"
           >
             {GLYPHS.refresh}
           </button>

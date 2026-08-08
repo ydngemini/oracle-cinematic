@@ -76,6 +76,21 @@ async def resolve_tour(
             lead_id,
             listing_id,
         )
+        # The saved floor plan (if any) supplies the tour's floor navigation:
+        # level list + storey height → per-floor camera heights in the viewer.
+        plan_row = await conn.fetchrow(
+            """
+            SELECT document
+              FROM property_floorplans
+             WHERE (($1::uuid IS NOT NULL AND lead_id = $1)
+                 OR ($2::uuid IS NOT NULL AND listing_id = $2))
+             LIMIT 1
+            """,
+            lead_id,
+            listing_id,
+        )
+
+    floors = _floors_from_plan(plan_row["document"] if plan_row else None)
 
     photos = [r for r in rows if r["kind"] == "photo"]
     panos = [r for r in rows if r["kind"] in ("pano", "tour")]
@@ -110,7 +125,47 @@ async def resolve_tour(
         "splat_url": splats[0]["url"] if has_splat else None,
         "pano_manifest_url": panos[0]["url"] if has_pano else None,
         "photo_count": len(photos),
+        "floors": floors,
     }
+
+
+def _floors_from_plan(document) -> list[dict]:
+    """Viewer floor list from a saved FloorplanDocument, or [] when none exists.
+
+    y is each level's floor plane in metres: index × storey height, where storey
+    height is the median wall height in the plan (walls carry it) falling back
+    to 2.5 m. An empty list simply hides the viewer's floor navigation — it must
+    never invent storeys for a plan nobody drew."""
+    import json as _json
+
+    if not document:
+        return []
+    if isinstance(document, str):
+        try:
+            document = _json.loads(document)
+        except ValueError:
+            return []
+
+    levels = document.get("levels") or []
+    if not levels:
+        return []
+
+    heights = sorted(
+        wall.get("height") for wall in document.get("walls") or []
+        if isinstance(wall.get("height"), (int, float)) and wall.get("height") > 0
+    )
+    storey = heights[len(heights) // 2] if heights else 2.5
+
+    floors = []
+    for level in sorted(levels, key=lambda item: item.get("index", 0)):
+        index = int(level.get("index", 0))
+        floors.append({
+            "id": str(level.get("id") or f"level_{index}"),
+            "name": str(level.get("name") or f"Level {index + 1}"),
+            "index": index,
+            "y": round(index * storey, 2),
+        })
+    return floors
 
 
 # ---------------------------------------------------------------------------

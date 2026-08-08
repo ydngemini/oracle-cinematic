@@ -15,11 +15,13 @@ import config
 from fastapi import Depends, FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from cors_config import get_allowed_origins
 
 from graph_engine import PropertyGraph
 from auth import router as auth_router
 from policy_acceptance import router as policy_acceptance_router
 from billing import router as billing_router
+from billing_usage import router as billing_usage_router
 from audit_ledger import router as audit_router, ledger, AuditCategory
 from audit_middleware import AuditMiddleware, audit_action, audit_now, drain_pending
 from tenancy import require_context, TenantContext
@@ -45,7 +47,10 @@ from disposition_enforcer import start_disposition_enforcer, stop_disposition_en
 from lead_dossier import router as lead_dossier_router
 from cma_generator import router as cma_router
 from crm import router as crm_router
+from contacts_api import router as contacts_router
 from client_enterprise import router as client_enterprise_router
+from client_ai_automation import router as client_ai_router
+from telephony_api import router as telephony_router
 from ai_chat_api import router as ai_chat_router, handle_chat_websocket
 import ws_hub
 from legal_agent import format_for_websocket
@@ -97,6 +102,9 @@ async def lifespan(app: FastAPI):
     await start_voice_workers()
     await start_reconstruction_workers()
     await start_disposition_enforcer()
+    if config.ORACLE_FEATURE_VIDEO_STUDIO:
+        from video_studio import start_video_studio_workers, stop_video_studio_workers
+        await start_video_studio_workers()
     from data_integrations.periodic import start_periodic_scheduler, stop_periodic_scheduler
     from automation_jobs import start_job_workers, stop_job_workers
     # Importing periodic registers every job handler before workers can claim a
@@ -129,6 +137,9 @@ async def lifespan(app: FastAPI):
         await stop_disposition_enforcer()
         await stop_voice_workers()
         await stop_reconstruction_workers()
+        if config.ORACLE_FEATURE_VIDEO_STUDIO:
+            from video_studio import stop_video_studio_workers
+            await stop_video_studio_workers()
         await drain_pending()
         await mind_service.stop()
         await ws_hub.stop()
@@ -153,21 +164,7 @@ async def _integration_cache_dependency_error(
         },
     )
 
-_ALLOWED_ORIGINS = os.getenv(
-    "ORACLE_CORS_ORIGINS",
-    # 5173 = main Neoh app; 5174 = AWS observability dashboard (its /auth/login
-    # is cross-origin in dev). Prod overrides this via ORACLE_CORS_ORIGINS.
-    "http://localhost:3000,http://localhost:5173,http://localhost:5174,"
-    "http://127.0.0.1:3000,http://127.0.0.1:5173,http://127.0.0.1:5174",
-).split(",")
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=_ALLOWED_ORIGINS,
-    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    allow_headers=["Content-Type", "Authorization", "X-CSRF-Token"],
-    allow_credentials=True,
-)
+_ALLOWED_ORIGINS = get_allowed_origins()
 
 app.add_middleware(AuditMiddleware)
 app.add_middleware(RateLimitMiddleware, enabled=not os.environ.get("ORACLE_DISABLE_RATE_LIMIT"))
@@ -198,9 +195,22 @@ async def _security_headers(request: Request, call_next):
         response.headers.setdefault(key, value)
     return response
 
+
+# Starlette runs the most recently-added middleware outermost. Register CORS
+# after authentication/security middleware so even 401s, 403s, and unexpected
+# error responses carry the browser-visible CORS headers for an allowed origin.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_ALLOWED_ORIGINS,
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization", "X-CSRF-Token"],
+    allow_credentials=True,
+)
+
 app.include_router(auth_router)
 app.include_router(policy_acceptance_router)
 app.include_router(billing_router)
+app.include_router(billing_usage_router)
 app.include_router(audit_router)
 if os.environ.get("ORACLE_ENV", "").lower() in {"dev", "development", "local"}:
     app.include_router(admin_c2_router)
@@ -216,7 +226,10 @@ app.include_router(agent_profile_router)
 app.include_router(lead_dossier_router)
 app.include_router(cma_router)
 app.include_router(crm_router)
+app.include_router(contacts_router)
 app.include_router(client_enterprise_router)
+app.include_router(client_ai_router)
+app.include_router(telephony_router)
 app.include_router(ai_chat_router)
 app.include_router(outreach_compliance_router)
 from admin_ops import router as admin_ops_router  # noqa: E402 — late import, matches local router convention
@@ -237,11 +250,33 @@ app.include_router(pipeline_api_router)
 from media_api import router as media_api_router  # noqa: E402 — 2D image upload/serve (agent JWT + portal token; bytes in media_blobs)
 app.include_router(media_api_router)
 
+if config.ORACLE_FEATURE_VIDEO_STUDIO:
+    # Imported inside the flag so a malformed ORACLE_VIDEO_* value cannot fail
+    # startup on deployments that do not run the studio at all.
+    from video_studio_api import router as video_studio_router  # noqa: E402 — Sora 2 video marketing studio
+    app.include_router(video_studio_router)
+else:
+    logger.info(
+        "Video Studio router NOT mounted — ORACLE_FEATURE_VIDEO_STUDIO is disabled. "
+        "Set ORACLE_FEATURE_VIDEO_STUDIO=1 to enable."
+    )
+
 from tour_api import router as tour_api_router  # noqa: E402 — walkable-tour tier resolver (exterior/photos/360/splat)
 app.include_router(tour_api_router)
 
-from aws_observability import router as aws_obs_router  # noqa: E402 — AWS infrastructure observability
-app.include_router(aws_obs_router)
+from floorplan_api import router as floorplan_api_router  # noqa: E402 — structured floor plans (3D editor + vision pipeline)
+app.include_router(floorplan_api_router)
+
+from property_view_api import router as property_view_router  # noqa: E402 — Property View: address-first page + agent/client media capture
+app.include_router(property_view_router)
+
+# AWS infrastructure observability. Mounted only when explicitly enabled — the
+# same flag that gates its broadcaster above. The module imports boto3 eagerly
+# and every route needs AWS credentials, so on an Azure deployment mounting it
+# would load the whole AWS SDK at startup to serve endpoints that cannot work.
+if os.environ.get("AWS_OBSERVABILITY_ENABLED", "").lower() in {"1", "true", "yes"}:
+    from aws_observability import router as aws_obs_router  # noqa: E402
+    app.include_router(aws_obs_router)
 
 # Real-estate intelligence platform surfaces.  Import these before the
 # application lifespan starts so their durable-job handlers are registered
@@ -254,7 +289,15 @@ from intelligence_api import router as intelligence_router  # noqa: E402
 from marketplace_api import router as marketplace_router  # noqa: E402
 from models_api import router as models_router  # noqa: E402
 from portfolio_api import router as portfolio_router  # noqa: E402
+from sales_api import router as sales_router  # noqa: E402
+from lead_routing_api import public_router as lead_intake_router, router as lead_routing_router  # noqa: E402
+from sites_api import router as sites_router  # noqa: E402
 from spatial_intelligence_api import router as spatial_intelligence_router  # noqa: E402
+# Imported for its register_handler() side effect only — speed_to_lead exposes no
+# router. lead_routing_api already pulls it in transitively, but relying on that
+# means an unrelated refactor of that import could silently unregister the
+# handler and leave every queued first-response job stuck as an unknown type.
+import speed_to_lead  # noqa: E402,F401
 
 app.include_router(commands_router)
 app.include_router(contracts_router)
@@ -264,6 +307,10 @@ app.include_router(intelligence_router)
 app.include_router(marketplace_router)
 app.include_router(models_router)
 app.include_router(portfolio_router)
+app.include_router(sales_router)
+app.include_router(lead_routing_router)
+app.include_router(lead_intake_router)
+app.include_router(sites_router)
 app.include_router(spatial_intelligence_router)
 
 from apis.geocoding import geocode, reverse_geocode

@@ -8,6 +8,11 @@ __pycache__/
 *.pyc
 .env
 .env*.local
+# Timestamped .env backups (.env.bak-1785952705) hold the same live keys as
+# .env itself — without this they are untracked-but-stageable and a routine
+# `git add -A` commits real credentials.
+.env.bak*
+.env.backup*
 *.local
 .DS_Store
 *.log

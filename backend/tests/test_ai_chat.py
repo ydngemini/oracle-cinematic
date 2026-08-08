@@ -1,6 +1,7 @@
 import asyncio
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+from types import SimpleNamespace
 import json
 from pathlib import Path
 import uuid
@@ -9,7 +10,13 @@ import pytest
 from pydantic import ValidationError
 
 import ws_hub
-from ai_chat_agent import BASE_SYSTEM_PROMPT, _compact_history, _foundry_inputs
+from ai_chat_agent import (
+    BASE_SYSTEM_PROMPT,
+    _compact_history,
+    _foundry_inputs,
+    _foundry_tools,
+    _tool_config,
+)
 from ai_chat_api import _clamd_scan_sync, _safe_filename, _sniff_type
 from ai_chat_models import ChatSendFrame
 import ai_chat_store
@@ -233,6 +240,136 @@ def test_contract_tool_fails_closed_until_controlled_workflow_exists(monkeypatch
     assert "attorney review" in receipt["error"]
 
 
+def test_agent_tool_config_only_advertises_durable_execution_paths():
+    config = _tool_config("client")
+    assert config is not None
+    names = [tool["toolSpec"]["name"] for tool in config["tools"]]
+    assert len(names) == len(set(names))
+    assert "search_clients" in names
+    assert "list_deals" in names
+    assert "get_team_pipeline" in names
+    assert "list_providers" in names
+    assert "search_listings" not in names
+    assert "generate_contract" not in names
+    assert "assign_client" not in names
+    assert all(ai_chat_store.is_agent_tool_available(name) for name in names)
+
+
+def test_foundry_tool_config_uses_the_same_capability_gate():
+    client_names = {tool["name"] for tool in _foundry_tools("client")}
+    lead_names = {tool["name"] for tool in _foundry_tools("lead")}
+    assert {"search_clients", "list_client_tasks", "track_deadlines", "list_providers"} <= client_names
+    assert "set_client_stage" in client_names
+    assert "move_deal_stage" not in client_names
+    assert "move_deal_stage" in lead_names
+    assert "search_listings" not in client_names
+    assert "generate_contract" not in client_names
+    assert "call_contact" not in client_names
+    assert all(ai_chat_store.is_agent_tool_available(name) for name in client_names | lead_names)
+
+
+def test_client_search_is_parameterized_tenant_scoped_and_escapes_wildcards(monkeypatch):
+    class _Conn:
+        def __init__(self):
+            self.query = ""
+            self.args = ()
+
+        async def fetch(self, query, *args):
+            self.query = query
+            self.args = args
+            return []
+
+    conn = _Conn()
+
+    @asynccontextmanager
+    async def tx(_ctx):
+        yield conn
+
+    monkeypatch.setenv("ORACLE_ENCRYPTION_MASTER_KEY", "test-encryption-key")
+    monkeypatch.setattr(ai_chat_store, "tenant_tx", tx)
+    ctx = TenantContext(
+        agent_id="agent-alice",
+        tenant_id=str(uuid.uuid4()),
+        role=Role.AGENT,
+    )
+    receipt = asyncio.run(ai_chat_store.execute_safe_tool(
+        ctx, ctx.agent_id, str(uuid.uuid4()), "search_clients",
+        {"query": "100%_match"}, None, None,
+    ))
+    assert receipt == {"ok": True, "action_type": "search_clients", "count": 0, "clients": []}
+    assert "c.tenant_id=$1::uuid" in conn.query
+    assert "ILIKE $2" in conn.query
+    assert conn.args[0] == ctx.tenant_id
+    assert conn.args[1] == "%100\\%\\_match%"
+
+
+def test_read_tool_rejects_invalid_record_id_before_querying(monkeypatch):
+    class _Conn:
+        async def fetchrow(self, *_args):
+            raise AssertionError("invalid IDs must not reach the database")
+
+    @asynccontextmanager
+    async def tx(_ctx):
+        yield _Conn()
+
+    monkeypatch.setenv("ORACLE_ENCRYPTION_MASTER_KEY", "test-encryption-key")
+    monkeypatch.setattr(ai_chat_store, "tenant_tx", tx)
+    ctx = TenantContext(
+        agent_id="agent-alice",
+        tenant_id=str(uuid.uuid4()),
+        role=Role.AGENT,
+    )
+    receipt = asyncio.run(ai_chat_store.execute_safe_tool(
+        ctx, ctx.agent_id, str(uuid.uuid4()), "get_deal_detail",
+        {"deal_id": "not-a-uuid"}, None, None,
+    ))
+    assert receipt == {"ok": False, "error": "deal_id must be a UUID."}
+
+
+def test_client_detail_reads_all_children_on_the_same_tenant_connection(monkeypatch):
+    client_id = str(uuid.uuid4())
+
+    class _Conn:
+        def __init__(self):
+            self.calls = []
+
+        async def fetchrow(self, query, *args):
+            self.calls.append(("fetchrow", query, args))
+            return {
+                "id": uuid.UUID(client_id), "full_name": "Avery Seller", "email": "avery@example.test",
+                "phone": None, "client_type": "seller", "stage": "lead", "lead_score": 75,
+                "assignee_id": None, "company": None, "preferences": {}, "source": "manual",
+                "last_contacted_at": None, "created_at": datetime.now(timezone.utc),
+                "updated_at": datetime.now(timezone.utc),
+            }
+
+        async def fetch(self, query, *args):
+            self.calls.append(("fetch", query, args))
+            return [{"tag": "priority"}] if "client_tags" in query else []
+
+        async def fetchval(self, query, *args):
+            self.calls.append(("fetchval", query, args))
+            return 2
+
+    conn = _Conn()
+
+    @asynccontextmanager
+    async def tx(_ctx):
+        yield conn
+
+    monkeypatch.setenv("ORACLE_ENCRYPTION_MASTER_KEY", "test-encryption-key")
+    monkeypatch.setattr(ai_chat_store, "tenant_tx", tx)
+    ctx = TenantContext(agent_id="agent-alice", tenant_id=str(uuid.uuid4()), role=Role.AGENT)
+    receipt = asyncio.run(ai_chat_store.execute_safe_tool(
+        ctx, ctx.agent_id, str(uuid.uuid4()), "get_client_detail",
+        {"client_id": client_id}, None, None,
+    ))
+    assert receipt["ok"] is True
+    assert receipt["client"]["tags"] == ["priority"]
+    assert receipt["client"]["open_task_count"] == 2
+    assert all(args[-1] == ctx.tenant_id for _method, _query, args in conn.calls)
+
+
 def test_redis_lock_is_initialized_before_first_context_use():
     assert rate_limiter._redis_lock is not None
 
@@ -286,3 +423,224 @@ def test_acs_migration_preserves_supported_twilio_credentials():
     assert "DELETE FROM provider_credentials" not in forward_migration
     assert "'twilio'" in forward_migration
     assert "'acs'" in forward_migration
+
+
+# ── Local model tool calling ─────────────────────────────────────────────────
+def test_local_tools_use_chat_completions_shape_and_the_same_gate():
+    """The local model gets the hosted policy, in the dialect llama.cpp speaks."""
+    import ai_chat_agent
+
+    tools = ai_chat_agent._local_tools("client")
+    assert tools, "expected at least one gated tool"
+    for tool in tools:
+        assert tool["type"] == "function"
+        # Chat Completions nests under "function"; the Responses API inlines it.
+        assert set(tool["function"]) >= {"name", "description", "parameters"}
+        assert tool["function"]["parameters"]["type"] == "object"
+
+    local_names = {tool["function"]["name"] for tool in tools}
+    assert local_names == {tool["name"] for tool in ai_chat_agent._foundry_tools("client")}
+
+    # A listing context must not be offered client mutations, same as Foundry.
+    listing_names = {
+        tool["function"]["name"] for tool in ai_chat_agent._local_tools("listing")
+    }
+    assert "update_client" not in listing_names
+    assert "update_listing" in listing_names or not listing_names
+
+
+def test_local_fallback_runs_a_tool_loop_through_the_safe_executor(monkeypatch):
+    import ai_chat_agent
+
+    executed = []
+
+    async def fake_execute(ctx, agent_id, assistant_id, name, args, ctype, cid):
+        executed.append((name, args, ctype, cid))
+        return {"ok": True, "summary": "note added"}
+
+    responses = [
+        {"choices": [{"message": {
+            "role": "assistant", "content": "",
+            "tool_calls": [{"id": "call_1", "type": "function", "function": {
+                "name": "add_client_note", "arguments": '{"note": "prefers weekends"}',
+            }}],
+        }}]},
+        {"choices": [{"message": {"role": "assistant", "content": "Saved the note."}}]},
+    ]
+    sent = []
+
+    async def fake_chat(payload):
+        sent.append(payload)
+        return responses[len(sent) - 1]
+
+    monkeypatch.setattr(ai_chat_agent, "execute_safe_tool", fake_execute)
+    monkeypatch.setattr(ai_chat_agent, "_local_chat", fake_chat)
+
+    ctx = SimpleNamespace(agent_id="agent@example.test")
+    bundle = {
+        "attachments": [], "record": None,
+        "assistant": {"context_type": "client", "context_id": "c-1"},
+        "messages": [{"role": "user", "content": "note that they prefer weekends"}],
+    }
+    text, actions = asyncio.run(
+        ai_chat_agent._local_fallback(ctx, bundle, "system", "asst-1")
+    )
+
+    assert text == "Saved the note."
+    assert len(actions) == 1
+    # The tool ran through execute_safe_tool, carrying the anchor context.
+    assert executed == [("add_client_note", {"note": "prefers weekends"}, "client", "c-1")]
+    # The tool result was fed back so the model could answer from the receipt.
+    assert sent[1]["messages"][-1]["role"] == "tool"
+    assert sent[1]["messages"][-1]["tool_call_id"] == "call_1"
+
+
+def test_local_fallback_reports_malformed_tool_arguments_instead_of_guessing(monkeypatch):
+    """A small model emitting broken JSON must not call the tool with no args."""
+    import ai_chat_agent
+
+    async def must_not_execute(*_args, **_kwargs):
+        raise AssertionError("tool must not run with unparseable arguments")
+
+    responses = [
+        {"choices": [{"message": {
+            "role": "assistant", "content": "",
+            "tool_calls": [{"id": "c1", "type": "function", "function": {
+                "name": "add_client_note", "arguments": "{not json",
+            }}],
+        }}]},
+        {"choices": [{"message": {"role": "assistant", "content": "Sorry, retrying."}}]},
+    ]
+    sent = []
+
+    async def fake_chat(payload):
+        sent.append(payload)
+        return responses[len(sent) - 1]
+
+    monkeypatch.setattr(ai_chat_agent, "execute_safe_tool", must_not_execute)
+    monkeypatch.setattr(ai_chat_agent, "_local_chat", fake_chat)
+
+    ctx = SimpleNamespace(agent_id="agent@example.test")
+    bundle = {
+        "attachments": [], "record": None,
+        "assistant": {"context_type": "client", "context_id": "c-1"},
+        "messages": [{"role": "user", "content": "add a note"}],
+    }
+    text, actions = asyncio.run(
+        ai_chat_agent._local_fallback(ctx, bundle, "system", "asst-1")
+    )
+    assert actions == []
+    assert "not valid JSON" in sent[1]["messages"][-1]["content"]
+    assert text == "Sorry, retrying."
+
+
+def test_local_fallback_retries_without_tools_when_the_server_rejects_them(monkeypatch):
+    """An older llama-server without --jinja 400s on `tools`; still answer."""
+    import httpx
+    import ai_chat_agent
+
+    attempts = []
+
+    async def fake_chat(payload):
+        attempts.append("tools" in payload)
+        if "tools" in payload:
+            raise httpx.HTTPStatusError(
+                "bad request",
+                request=httpx.Request("POST", "http://local/v1/chat/completions"),
+                response=httpx.Response(400),
+            )
+        return {"choices": [{"message": {"content": "Plain answer."}}]}
+
+    monkeypatch.setattr(ai_chat_agent, "_local_chat", fake_chat)
+
+    ctx = SimpleNamespace(agent_id="agent@example.test")
+    bundle = {
+        "attachments": [], "record": None,
+        "assistant": {"context_type": "client", "context_id": "c-1"},
+        "messages": [{"role": "user", "content": "hello"}],
+    }
+    text, actions = asyncio.run(
+        ai_chat_agent._local_fallback(ctx, bundle, "system", "asst-1")
+    )
+    assert attempts == [True, False]
+    assert text == "Plain answer."
+    assert actions == []
+
+
+def test_read_only_tool_results_are_not_broadcast_as_record_changes(monkeypatch):
+    """Reads return ok=True too, but the UI renders `actions` as applied, undoable
+    record changes — a search must not show a green "Record updated" receipt with
+    an Undo button that has no action_id to undo."""
+    import ai_chat_agent
+
+    async def fake_execute(ctx, agent_id, assistant_id, name, args, ctype, cid):
+        return {"ok": True, "action_type": name, "clients": [{"id": "c-1"}]}
+
+    responses = [
+        {"choices": [{"message": {
+            "role": "assistant", "content": "",
+            "tool_calls": [{"id": "call_1", "type": "function", "function": {
+                "name": "search_clients", "arguments": '{"query": "Smith"}',
+            }}],
+        }}]},
+        {"choices": [{"message": {"role": "assistant", "content": "Found one Smith."}}]},
+    ]
+    sent = []
+
+    async def fake_chat(payload):
+        sent.append(payload)
+        return responses[len(sent) - 1]
+
+    monkeypatch.setattr(ai_chat_agent, "execute_safe_tool", fake_execute)
+    monkeypatch.setattr(ai_chat_agent, "_local_chat", fake_chat)
+
+    ctx = SimpleNamespace(agent_id="agent@example.test")
+    bundle = {
+        "attachments": [], "record": None,
+        "assistant": {"context_type": "client", "context_id": "c-1"},
+        "messages": [{"role": "user", "content": "find my clients named Smith"}],
+    }
+    text, actions = asyncio.run(
+        ai_chat_agent._local_fallback(ctx, bundle, "system", "asst-1")
+    )
+
+    assert text == "Found one Smith."
+    assert actions == []
+    # The model still sees the result — only the broadcast is filtered.
+    assert sent[1]["messages"][-1]["role"] == "tool"
+
+
+def test_local_fallback_keeps_receipts_for_writes_that_already_committed(monkeypatch):
+    """Exhausting the tool-call budget must not discard writes that landed, or the
+    user is told nothing happened and their retry applies the change twice."""
+    import ai_chat_agent
+
+    async def fake_execute(ctx, agent_id, assistant_id, name, args, ctype, cid):
+        return {"ok": True, "action_id": "a-1", "summary": "stage moved"}
+
+    async def fake_chat(payload):
+        return {"choices": [{"message": {
+            "role": "assistant", "content": "",
+            "tool_calls": [{"id": "call_n", "type": "function", "function": {
+                "name": "set_client_stage", "arguments": '{"stage": "under_contract"}',
+            }}],
+        }}]}
+
+    monkeypatch.setattr(ai_chat_agent, "execute_safe_tool", fake_execute)
+    monkeypatch.setattr(ai_chat_agent, "_local_chat", fake_chat)
+
+    ctx = SimpleNamespace(agent_id="agent@example.test")
+    bundle = {
+        "attachments": [], "record": None,
+        "assistant": {"context_type": "client", "context_id": "c-1"},
+        "messages": [{"role": "user", "content": "move them to under contract"}],
+    }
+    applied: list[dict] = []
+    with pytest.raises(RuntimeError):
+        asyncio.run(
+            ai_chat_agent._local_fallback(
+                ctx, bundle, "system", "asst-1", applied=applied
+            )
+        )
+    assert len(applied) == ai_chat_agent._LOCAL_TOOL_ROUNDS
+    assert applied[0]["action_id"] == "a-1"

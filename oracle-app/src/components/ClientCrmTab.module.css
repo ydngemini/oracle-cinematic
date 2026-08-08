@@ -8,16 +8,24 @@
   display: flex;
   flex-direction: column;
   gap: var(--space-4);
+  width: min(100%, 68rem);
+  padding: clamp(var(--space-3), 3vw, var(--space-8)) 0;
 }
 
 /* ── Header row — kicker + refresh key ───────────────────────────────────── */
 .topRow {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
   gap: var(--space-3);
-  min-height: 44px; /* touch floor */
+  min-height: 7.5rem;
 }
+
+.topRow[data-embedded='true'] { min-height: 44px; align-items: center; }
+
+.destinationTitle { min-width: 0; }
+.destinationTitle h1 { margin-top: var(--space-2); font-size: clamp(2.25rem, 7vw, 4.25rem); font-weight: 300; line-height: 0.92; }
+.destinationTitle small { display: block; margin-top: var(--space-2); color: var(--oracle-text-dim); font: 650 0.625rem/1 var(--font-display); letter-spacing: var(--tracking-wider); text-transform: uppercase; }
 
 .topActions {
   display: flex;
@@ -99,6 +107,12 @@
 
 @keyframes spinGlyph {
   to { transform: rotate(360deg); }
+}
+
+@media (max-width: 680px) {
+  .wrap { width: 100%; padding-top: 0; }
+  .topRow { min-height: 6.75rem; }
+  .newProfileBtn { padding-inline: var(--space-2); }
 }
 
 /* ── Two-port segmented control — amber port / blue port ─────────────────── */

@@ -26,6 +26,13 @@ class Feature(str, Enum):
     SPATIAL_TOURS = "spatial_tours"
     CONTRACTS = "contracts"
     AI_CHAT = "ai_chat"
+    SALES_AI = "sales_ai"
+    POWER_DIALER = "power_dialer"
+    SMART_PLANS = "smart_plans"
+    # Auto-contacts inbound leads. Unlike the flags above it defaults OFF at every
+    # call site (see speed_to_lead._enabled) — it is the only feature here that
+    # initiates contact with a consumer without an agent asking it to.
+    SPEED_TO_LEAD = "speed_to_lead"
 
 
 _FEATURE_ENV = {
@@ -37,6 +44,10 @@ _FEATURE_ENV = {
     Feature.SPATIAL_TOURS: "ORACLE_FEATURE_SPATIAL_TOURS",
     Feature.CONTRACTS: "ORACLE_FEATURE_CONTRACTS",
     Feature.AI_CHAT: "ORACLE_FEATURE_AI_CHAT",
+    Feature.SALES_AI: "ORACLE_FEATURE_SALES_AI",
+    Feature.POWER_DIALER: "ORACLE_FEATURE_POWER_DIALER",
+    Feature.SMART_PLANS: "ORACLE_FEATURE_SMART_PLANS",
+    Feature.SPEED_TO_LEAD: "ORACLE_FEATURE_SPEED_TO_LEAD",
 }
 
 

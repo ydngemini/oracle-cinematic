@@ -7,18 +7,25 @@
     "dev": "vite",
     "build": "vite build",
     "lint": "eslint .",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --config vitest.config.js",
+    "test:watch": "vitest --config vitest.config.js"
   },
   "dependencies": {
+    "@twilio/voice-sdk": "^2.18.3",
     "framer-motion": "^12.43.0",
     "gsap": "^3.15.0",
     "gsplat": "^1.2.9",
     "lucide-react": "^0.468.0",
-    "react": "^19.3.0-canary-96fcba90-20260728",
-    "react-dom": "^19.3.0-canary-96fcba90-20260728"
+    "playcanvas": "^2.21.3",
+    "react": "19.2.8",
+    "react-dom": "19.2.8"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.2",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^6.0.1",
@@ -26,7 +33,10 @@
     "eslint-plugin-react-hooks": "^7.1.1",
     "eslint-plugin-react-refresh": "^0.5.2",
     "globals": "^17.6.0",
+    "jsdom": "^29.1.1",
+    "typescript": "^7.0.2",
     "vite": "^8.0.12",
+    "vitest": "^4.1.10",
     "workbox-expiration": "7.4.0",
     "workbox-routing": "7.4.0",
     "workbox-strategies": "7.4.0"

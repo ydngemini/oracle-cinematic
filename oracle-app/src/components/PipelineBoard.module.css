@@ -35,9 +35,9 @@
 
   font-family: 'PP Neue Montreal', 'Inter', -apple-system, sans-serif;
 
-  background: rgba(2, 4, 8, 0.88);
-  backdrop-filter: blur(24px) saturate(1.3);
-  -webkit-backdrop-filter: blur(24px) saturate(1.3);
+  background: rgba(8, 8, 8, 0.88);
+  backdrop-filter: var(--oracle-backdrop);
+  -webkit-backdrop-filter: var(--oracle-backdrop);
 
   animation: backdropFadeIn 0.35s ease both;
 }
@@ -56,7 +56,7 @@
   letter-spacing: 0.38em;
   text-transform: uppercase;
   font-weight: 600;
-  color: rgba(200, 160, 80, 0.75);
+  color: rgba(255, 188, 31, 0.75);
 }
 
 .hint {
@@ -64,7 +64,7 @@
   font-size: 0.46rem;
   letter-spacing: 0.25em;
   text-transform: uppercase;
-  color: rgba(255, 255, 255, 0.16);
+  color: rgba(242, 242, 242, 0.16);
 }
 
 .chromeRight {
@@ -80,10 +80,10 @@
 }
 
 .close {
-  background: rgba(255, 255, 255, 0.03);
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(242, 242, 242, 0.03);
+  border: 1px solid rgba(242, 242, 242, 0.08);
   border-radius: 2px;
-  color: rgba(255, 255, 255, 0.4);
+  color: rgba(242, 242, 242, 0.4);
   font-size: 0.7rem;
   padding: 0.35rem 0.6rem;
   cursor: pointer;
@@ -91,8 +91,8 @@
 }
 
 .close:hover {
-  color: rgba(255, 255, 255, 0.85);
-  border-color: rgba(255, 255, 255, 0.2);
+  color: rgba(242, 242, 242, 0.85);
+  border-color: rgba(242, 242, 242, 0.2);
 }
 
 /* ─── Lanes ──────────────────────────────────────────────────────────────── */
@@ -111,7 +111,7 @@
 }
 
 .lanes::-webkit-scrollbar-thumb {
-  background: rgba(200, 160, 80, 0.2);
+  background: rgba(255, 188, 31, 0.2);
   border-radius: 2px;
 }
 
@@ -122,10 +122,10 @@
   min-height: 0;
 
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.015) 0%, rgba(255, 255, 255, 0) 35%),
-    rgba(8, 8, 12, 0.7);
-  border: 1px solid rgba(255, 255, 255, 0.045);
-  border-top: 2px solid var(--lane-accent, rgba(160, 170, 190, 0.35));
+    linear-gradient(180deg, rgba(242, 242, 242, 0.015) 0%, rgba(242, 242, 242, 0) 35%),
+    rgba(8, 8, 8, 0.7);
+  border: 1px solid rgba(242, 242, 242, 0.045);
+  border-top: 2px solid var(--lane-accent, rgba(171, 171, 171, 0.35));
   border-radius: 3px;
 
   animation: laneRise 0.45s cubic-bezier(0.16, 1, 0.3, 1) both;
@@ -133,17 +133,17 @@
 }
 
 /* Lane accents — one hue per dossier state */
-.lane[data-stage='draft']          { --lane-accent: rgba(160, 170, 190, 0.45); }
-.lane[data-stage='under_contract'] { --lane-accent: rgba(120, 200, 255, 0.6); }
-.lane[data-stage='marketing']      { --lane-accent: rgba(200, 160, 80, 0.65); }
+.lane[data-stage='draft']          { --lane-accent: rgba(171, 171, 171, 0.45); }
+.lane[data-stage='under_contract'] { --lane-accent: rgba(171, 171, 171, 0.6); }
+.lane[data-stage='marketing']      { --lane-accent: rgba(255, 188, 31, 0.65); }
 .lane[data-stage='assigned']       { --lane-accent: rgba(90, 220, 160, 0.6); }
-.lane[data-stage='closed']         { --lane-accent: rgba(245, 240, 230, 0.55); }
+.lane[data-stage='closed']         { --lane-accent: rgba(242, 242, 242, 0.55); }
 .lane[data-stage='expired']        { --lane-accent: rgba(255, 95, 95, 0.6); }
-.lane[data-stage='dead']           { --lane-accent: rgba(120, 120, 130, 0.3); }
+.lane[data-stage='dead']           { --lane-accent: rgba(171, 171, 171, 0.3); }
 
 .lane[data-hover='true'] {
   border-color: var(--lane-accent);
-  box-shadow: 0 0 24px rgba(120, 200, 255, 0.08) inset;
+  box-shadow: 0 0 24px rgba(171, 171, 171, 0.08) inset;
 }
 
 .laneHeader {
@@ -151,7 +151,7 @@
   justify-content: space-between;
   align-items: baseline;
   padding: 0.6rem 0.75rem;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.035);
+  border-bottom: 1px solid rgba(242, 242, 242, 0.035);
 }
 
 .laneTitle {
@@ -159,13 +159,13 @@
   letter-spacing: 0.3em;
   text-transform: uppercase;
   font-weight: 600;
-  color: var(--lane-accent, rgba(255, 255, 255, 0.5));
+  color: var(--lane-accent, rgba(242, 242, 242, 0.5));
 }
 
 .laneCount {
   font-size: 0.5rem;
   font-variant-numeric: tabular-nums;
-  color: rgba(255, 255, 255, 0.22);
+  color: rgba(242, 242, 242, 0.22);
 }
 
 .laneBody {
@@ -183,12 +183,12 @@
 }
 
 .laneBody::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.07);
+  background: rgba(242, 242, 242, 0.07);
 }
 
 .laneEmpty {
   text-align: center;
-  color: rgba(255, 255, 255, 0.07);
+  color: rgba(242, 242, 242, 0.07);
   font-size: 0.7rem;
   padding: 0.8rem 0;
   margin: 0;
@@ -198,8 +198,8 @@
 
 .card {
   padding: 0.6rem 0.7rem;
-  background: rgba(255, 255, 255, 0.025);
-  border: 1px solid rgba(255, 255, 255, 0.055);
+  background: rgba(242, 242, 242, 0.025);
+  border: 1px solid rgba(242, 242, 242, 0.055);
   border-radius: 3px;
   cursor: grab;
 
@@ -211,8 +211,8 @@
 }
 
 .card:hover {
-  border-color: var(--lane-accent, rgba(120, 200, 255, 0.3));
-  background: rgba(255, 255, 255, 0.04);
+  border-color: var(--lane-accent, rgba(171, 171, 171, 0.3));
+  background: rgba(242, 242, 242, 0.04);
   transform: translateY(-1px);
 }
 
@@ -222,8 +222,8 @@
 
 .card:focus-visible {
   outline: none;
-  border-color: var(--lane-accent, rgba(120, 200, 255, 0.5));
-  box-shadow: 0 0 0 2px rgba(120, 200, 255, 0.25);
+  border-color: var(--lane-accent, rgba(171, 171, 171, 0.5));
+  box-shadow: 0 0 0 2px rgba(171, 171, 171, 0.25);
 }
 
 .card[data-dragging='true'] {
@@ -234,7 +234,7 @@
   margin: 0 0 0.4rem;
   font-size: 0.72rem;
   font-weight: 400;
-  color: rgba(245, 240, 230, 0.88);
+  color: rgba(242, 242, 242, 0.88);
   line-height: 1.35;
   white-space: nowrap;
   overflow: hidden;
@@ -249,13 +249,13 @@
 }
 
 .cardValue {
-  color: rgba(120, 200, 255, 0.8);
+  color: rgba(171, 171, 171, 0.8);
   font-variant-numeric: tabular-nums;
   font-weight: 500;
 }
 
 .cardGeo {
-  color: rgba(255, 255, 255, 0.22);
+  color: rgba(242, 242, 242, 0.22);
   letter-spacing: 0.15em;
 }
 
@@ -269,13 +269,13 @@
 }
 
 .cardClock[data-zone='calm'] {
-  color: rgba(120, 200, 255, 0.8);
-  border: 1px solid rgba(120, 200, 255, 0.2);
+  color: rgba(171, 171, 171, 0.8);
+  border: 1px solid rgba(171, 171, 171, 0.2);
 }
 
 .cardClock[data-zone='warn'] {
-  color: rgba(230, 195, 130, 0.9);
-  border: 1px solid rgba(200, 160, 80, 0.35);
+  color: rgba(255, 188, 31, 0.9);
+  border: 1px solid rgba(255, 188, 31, 0.35);
 }
 
 .cardClock[data-zone='danger'] {

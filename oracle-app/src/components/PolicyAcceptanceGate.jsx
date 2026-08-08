@@ -159,12 +159,6 @@ function getStoredAccountSecurityAcknowledgement() {
   }
 }
 
-function isEsaAcknowledged(agreement) {
-  const stored = getStoredAccountSecurityAcknowledgement();
-  if (!stored) return false;
-  return stored.version === (agreement?.version || FALLBACK_ESA_VERSION);
-}
-
 /**
  * New self-serve accounts receive a short-lived pending token. This gate is the
  * only client surface that can exchange it for a normal application token.
@@ -175,6 +169,7 @@ export function PolicyAcceptanceGate({ onReady, onSignOut }) {
   const [policy, setPolicy] = useState(null);
   const [accountSecurityAgreement, setAccountSecurityAgreement] = useState(null);
   const [acceptedSecurityAgreement, setAcceptedSecurityAgreement] = useState(false);
+  const [securitySubmitting, setSecuritySubmitting] = useState(false);
   const [accepted, setAccepted] = useState(false);
   const [acceptedOffline, setAcceptedOffline] = useState(false);
   const [allowOfflineContinue, setAllowOfflineContinue] = useState(false);
@@ -204,7 +199,7 @@ export function PolicyAcceptanceGate({ onReady, onSignOut }) {
           setPhase('required');
           return;
         }
-        if (!isEsaAcknowledged(agreementToShow)) {
+        if (payload.account_security_required === true) {
           setPhase('esa');
           return;
         }
@@ -245,27 +240,19 @@ export function PolicyAcceptanceGate({ onReady, onSignOut }) {
     setPhase('submitting');
     setError('');
     try {
-      const payload = await apiPost('/auth/policy-acceptance', { policy_version: policyVersion });
-      if (payload.accepted !== true) {
+      const payload = await apiPost('/auth/policy-acceptance', {
+        policy_version: policyVersion,
+        account_security_version: accountSecurityAgreement?.version || FALLBACK_ESA_VERSION,
+      });
+      if (payload.accepted !== true || payload.account_security_required === true) {
         throw new ApiError('Unable to record your acknowledgement.', 0, false);
       }
-      sessionStorage.setItem(
-        ESA_ACK_KEY,
-        JSON.stringify({
-          version: accountSecurityAgreement?.version || FALLBACK_ESA_VERSION,
-          acknowledgedAt: new Date().toISOString(),
-        }),
-      );
       if (payload.role) sessionStorage.setItem('oracle_role', payload.role);
       setPhase('resolved');
       onReady?.();
     } catch (requestError) {
       setError(requestError instanceof ApiError ? formatApiError(requestError) : 'Unable to record your acknowledgement.');
       setPhase('required');
-      const storedAck = getStoredAccountSecurityAcknowledgement();
-      if (storedAck && accountSecurityAgreement && storedAck.version === accountSecurityAgreement.version) {
-        setAcceptedSecurityAgreement(true);
-      }
     }
   }
 
@@ -282,17 +269,27 @@ export function PolicyAcceptanceGate({ onReady, onSignOut }) {
     onReady?.();
   }
 
-  function acceptOnlyAccountSecurityAgreement(event) {
+  async function acceptOnlyAccountSecurityAgreement(event) {
     event.preventDefault();
-    sessionStorage.setItem(
-      ESA_ACK_KEY,
-      JSON.stringify({
-        version: accountSecurityAgreement?.version || FALLBACK_ESA_VERSION,
-        acknowledgedAt: new Date().toISOString(),
-      }),
-    );
-    setPhase('resolved');
-    onReady?.();
+    if (!acceptedSecurityAgreement || securitySubmitting) return;
+    setSecuritySubmitting(true);
+    setError('');
+    try {
+      const payload = await apiPost('/auth/account-security-esa', {
+        agreement_version: accountSecurityAgreement?.version || FALLBACK_ESA_VERSION,
+      });
+      if (payload.accepted !== true || payload.required === true) {
+        throw new ApiError('Unable to record your account-security acknowledgement.', 0, false);
+      }
+      setPhase('resolved');
+      onReady?.();
+    } catch (requestError) {
+      setError(requestError instanceof ApiError
+        ? formatApiError(requestError)
+        : 'Unable to record your account-security acknowledgement.');
+    } finally {
+      setSecuritySubmitting(false);
+    }
   }
 
   if (phase === 'resolved') return null;
@@ -341,12 +338,13 @@ export function PolicyAcceptanceGate({ onReady, onSignOut }) {
             <button
               type="submit"
               className={styles.primary}
-              disabled={!acceptedSecurityAgreement}
+              disabled={!acceptedSecurityAgreement || securitySubmitting}
             >
-              Acknowledge ESA and continue
+              {securitySubmitting ? 'Recording…' : 'Acknowledge ESA and continue'}
             </button>
-            <button type="button" className={styles.tertiary} onClick={onSignOut}>Decline and sign out</button>
+            <button type="button" className={styles.tertiary} onClick={onSignOut} disabled={securitySubmitting}>Decline and sign out</button>
           </div>
+          {error && <p className={styles.error} role="alert">{error}</p>}
         </form>
       </section>
     );

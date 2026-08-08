@@ -14,10 +14,6 @@ import time
 import os
 from typing import Optional
 
-import boto3
-from botocore.config import Config
-from botocore.exceptions import ClientError, BotoCoreError
-
 logger = logging.getLogger("oracle.ml_forge.bedrock")
 
 AWS_REGION = os.environ.get("BEDROCK_REGION", "us-east-1")
@@ -32,17 +28,29 @@ MAX_DELAY = 64.0
 _client = None
 
 
-_BOTO_CONFIG = Config(
-    connect_timeout=10,
-    read_timeout=120,
-    retries={"max_attempts": 0},  # retries handled manually with backoff below
-)
+def _boto_errors():
+    """Resolve botocore's exception classes on demand.
+
+    Importing them at module scope pulled the whole AWS SDK into every process
+    that touched voice_intel, which on an Azure-only deployment is pure startup
+    cost for a code path that never runs."""
+    from botocore.exceptions import BotoCoreError, ClientError
+
+    return ClientError, BotoCoreError
 
 
 def _get_client():
     global _client
     if _client is None:
-        kwargs = {"region_name": AWS_REGION, "config": _BOTO_CONFIG}
+        import boto3  # lazy — see _boto_errors
+        from botocore.config import Config
+
+        boto_config = Config(
+            connect_timeout=10,
+            read_timeout=120,
+            retries={"max_attempts": 0},  # retries handled manually with backoff below
+        )
+        kwargs = {"region_name": AWS_REGION, "config": boto_config}
         # Optional dedicated Bedrock credentials. Lets Bedrock invoke a different
         # AWS account than the rest of the app (e.g. the account where Bedrock is
         # actually enabled) without disturbing S3/other AWS_* default-chain usage.
@@ -99,6 +107,8 @@ def invoke_bedrock_model(
     Returns the generated text, or None if all retries are exhausted.
     """
     client = _get_client()
+    # Safe to resolve now: _get_client() has already imported the SDK.
+    ClientError, BotoCoreError = _boto_errors()
     payload = _build_payload(model_id, prompt, max_tokens)
     body = json.dumps(payload)
 

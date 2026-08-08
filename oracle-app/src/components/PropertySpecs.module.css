@@ -1,6 +1,6 @@
 /* ============================================================
    PropertySpecs.module.css
-   Holographic property data panel — cinematic glass, animated
+   Cinematic property data panel — restrained glass, animated
    number reveals, layered depth. Oracle design system.
    ============================================================ */
 
@@ -51,8 +51,8 @@
 }
 
 @keyframes borderGlow {
-  0%, 100% { box-shadow: inset 0 0 0 1px rgba(200, 160, 80, 0.12); }
-  50%       { box-shadow: inset 0 0 0 1px rgba(200, 160, 80, 0.28); }
+  0%, 100% { box-shadow: inset 0 0 0 1px rgba(255, 188, 31, 0.12); }
+  50%       { box-shadow: inset 0 0 0 1px rgba(255, 188, 31, 0.28); }
 }
 
 @keyframes dotPulse {
@@ -80,11 +80,11 @@
 
 .panel {
   position: relative;
-  background: rgba(8, 8, 12, 0.75);
-  backdrop-filter: blur(40px) saturate(1.4);
-  -webkit-backdrop-filter: blur(40px) saturate(1.4);
-  border: 1px solid rgba(255, 255, 255, 0.04);
-  border-top: 1px solid rgba(255, 255, 255, 0.07);
+  background: var(--oracle-glass);
+  backdrop-filter: var(--oracle-backdrop);
+  -webkit-backdrop-filter: var(--oracle-backdrop);
+  border: 1px solid var(--oracle-glass-edge);
+  border-top: 1px solid var(--oracle-border-bright);
   border-radius: 3px;
   padding: 2.4rem 2rem;
   display: flex;
@@ -94,7 +94,7 @@
 
   /* Layered depth shadows */
   box-shadow:
-    0 1px 0 rgba(255, 255, 255, 0.03) inset,
+    0 1px 0 rgba(242, 242, 242, 0.03) inset,
     0 -1px 0 rgba(0, 0, 0, 0.6) inset,
     0 24px 80px rgba(0, 0, 0, 0.5),
     0 4px 16px rgba(0, 0, 0, 0.35),
@@ -105,11 +105,11 @@
   /* Ambient inner vignette */
   --panel-vignette: radial-gradient(
     ellipse 120% 120% at 50% -10%,
-    rgba(200, 160, 80, 0.03) 0%,
+    rgba(255, 188, 31, 0.03) 0%,
     transparent 70%
   );
   background-image: var(--panel-vignette);
-  background-color: rgba(8, 8, 12, 0.75);
+  background-color: rgba(171, 171, 171, 0.20);
 }
 
 /* Subtle horizontal scan line that traverses the panel once on mount */
@@ -120,7 +120,7 @@
   background: linear-gradient(
     to bottom,
     transparent 0%,
-    rgba(200, 160, 80, 0.04) 50%,
+    rgba(255, 188, 31, 0.04) 50%,
     transparent 100%
   );
   height: 40%;
@@ -141,9 +141,9 @@
   background: linear-gradient(
     90deg,
     transparent,
-    rgba(200, 160, 80, 0.35) 40%,
-    rgba(255, 255, 255, 0.15) 50%,
-    rgba(200, 160, 80, 0.35) 60%,
+    rgba(255, 188, 31, 0.35) 40%,
+    rgba(242, 242, 242, 0.15) 50%,
+    rgba(255, 188, 31, 0.35) 60%,
     transparent
   );
   pointer-events: none;
@@ -164,17 +164,17 @@
   font-size: 0.52rem;
   letter-spacing: 0.38em;
   text-transform: uppercase;
-  color: rgba(200, 160, 80, 0.55);
+  color: rgba(255, 188, 31, 0.55);
   font-weight: 600;
 
   /* Shimmer sweep on mount */
   background: linear-gradient(
     90deg,
-    rgba(200, 160, 80, 0.4) 0%,
-    rgba(200, 160, 80, 0.9) 40%,
-    rgba(255, 220, 140, 1) 50%,
-    rgba(200, 160, 80, 0.9) 60%,
-    rgba(200, 160, 80, 0.4) 100%
+    rgba(255, 188, 31, 0.4) 0%,
+    rgba(255, 188, 31, 0.9) 40%,
+    rgba(255, 188, 31, 1) 50%,
+    rgba(255, 188, 31, 0.9) 60%,
+    rgba(255, 188, 31, 0.4) 100%
   );
   background-size: 200% auto;
   -webkit-background-clip: text;
@@ -187,7 +187,7 @@
   font-size: 1.25rem;
   font-weight: 300;
   letter-spacing: -0.015em;
-  color: rgba(245, 240, 230, 0.92);
+  color: rgba(242, 242, 242, 0.92);
   margin: 0;
   line-height: 1.3;
   transition: color 0.5s cubic-bezier(0.16, 1, 0.3, 1);
@@ -199,7 +199,7 @@
   display: grid;
   grid-template-columns: repeat(3, 1fr);
   gap: 1px;
-  background: rgba(255, 255, 255, 0.03);
+  background: rgba(242, 242, 242, 0.03);
   border-radius: 2px;
   overflow: hidden;
   position: relative;
@@ -207,7 +207,7 @@
 
   /* Ambient glow frame */
   box-shadow:
-    0 0 0 1px rgba(255, 255, 255, 0.02),
+    0 0 0 1px rgba(242, 242, 242, 0.02),
     0 4px 24px rgba(0, 0, 0, 0.3);
 }
 
@@ -217,7 +217,7 @@
   align-items: center;
   justify-content: center;
   padding: 1.8rem 0.8rem 1.6rem;
-  background: rgba(12, 14, 22, 0.9);
+  background: rgba(8, 8, 8, 0.9);
   gap: 0.35rem;
   position: relative;
   overflow: hidden;
@@ -240,7 +240,7 @@
   inset: 0;
   background: radial-gradient(
     ellipse 80% 60% at 50% 100%,
-    rgba(200, 160, 80, 0.04) 0%,
+    rgba(255, 188, 31, 0.04) 0%,
     transparent 70%
   );
   opacity: 0;
@@ -249,7 +249,7 @@
 }
 
 .heroCard:hover {
-  background: rgba(16, 18, 28, 0.95);
+  background: rgba(8, 8, 8, 0.95);
 }
 
 .heroCard:hover::before {
@@ -267,7 +267,7 @@
   background: linear-gradient(
     90deg,
     transparent,
-    rgba(255, 255, 255, 0.025),
+    rgba(242, 242, 242, 0.025),
     transparent
   );
   transition: left 0.6s cubic-bezier(0.16, 1, 0.3, 1);
@@ -288,19 +288,19 @@
   font-size: 0.5rem;
   letter-spacing: 0.32em;
   text-transform: uppercase;
-  color: rgba(200, 160, 80, 0.45);
+  color: rgba(255, 188, 31, 0.45);
   font-weight: 600;
   transition: color 0.3s ease;
 }
 
 .heroCard:hover .cardLabel {
-  color: rgba(200, 160, 80, 0.7);
+  color: rgba(255, 188, 31, 0.7);
 }
 
 .cardValue {
   font-size: 1.65rem;
   font-weight: 200;
-  color: rgba(245, 242, 235, 0.95);
+  color: rgba(242, 242, 242, 0.95);
   letter-spacing: -0.025em;
   line-height: 1;
   transition: color 0.3s ease;
@@ -313,20 +313,20 @@
 }
 
 .heroCard:hover .cardValue {
-  color: rgba(255, 248, 235, 1);
+  color: rgba(242, 242, 242, 1);
 }
 
 .cardUnit {
   font-size: 0.52rem;
   letter-spacing: 0.22em;
   text-transform: uppercase;
-  color: rgba(200, 200, 200, 0.25);
+  color: rgba(171, 171, 171, 0.25);
   margin-top: 0.2rem;
   transition: color 0.3s ease;
 }
 
 .heroCard:hover .cardUnit {
-  color: rgba(200, 160, 80, 0.35);
+  color: rgba(255, 188, 31, 0.35);
 }
 
 /* ----- Detail strip ----- */
@@ -336,8 +336,8 @@
   align-items: baseline;
   gap: 2rem;
   padding: 1.1rem 0;
-  border-top: 1px solid rgba(255, 255, 255, 0.04);
-  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+  border-top: 1px solid rgba(242, 242, 242, 0.04);
+  border-bottom: 1px solid rgba(242, 242, 242, 0.04);
   position: relative;
   z-index: 3;
 }
@@ -351,7 +351,7 @@
   width: 2px;
   height: 50%;
   transform: translateY(-50%);
-  background: rgba(200, 160, 80, 0.2);
+  background: rgba(255, 188, 31, 0.2);
   border-radius: 0 1px 1px 0;
 }
 
@@ -365,23 +365,23 @@
   font-size: 0.48rem;
   letter-spacing: 0.28em;
   text-transform: uppercase;
-  color: rgba(180, 180, 180, 0.32);
+  color: rgba(171, 171, 171, 0.32);
   transition: color 0.3s ease;
 }
 
 .detailItem:hover .detailLabel {
-  color: rgba(200, 160, 80, 0.5);
+  color: rgba(255, 188, 31, 0.5);
 }
 
 .detailValue {
   font-size: 0.82rem;
-  color: rgba(230, 228, 222, 0.82);
+  color: rgba(242, 242, 242, 0.82);
   font-weight: 400;
   transition: color 0.3s ease;
 }
 
 .detailItem:hover .detailValue {
-  color: rgba(245, 240, 230, 0.95);
+  color: rgba(242, 242, 242, 0.95);
 }
 
 /* ----- Status bar ----- */
@@ -398,7 +398,7 @@
   font-size: 0.48rem;
   letter-spacing: 0.24em;
   text-transform: uppercase;
-  color: rgba(180, 180, 180, 0.28);
+  color: rgba(171, 171, 171, 0.28);
 }
 
 .statusBadge {
@@ -408,9 +408,9 @@
   text-transform: uppercase;
   padding: 0.32rem 0.9rem;
   border-radius: 1px;
-  background: rgba(255, 255, 255, 0.025);
-  border: 1px solid rgba(255, 255, 255, 0.07);
-  color: rgba(200, 200, 200, 0.45);
+  background: rgba(242, 242, 242, 0.025);
+  border: 1px solid rgba(242, 242, 242, 0.07);
+  color: rgba(171, 171, 171, 0.45);
   overflow: hidden;
   transition:
     background 0.6s cubic-bezier(0.16, 1, 0.3, 1),
@@ -427,7 +427,7 @@
   background: linear-gradient(
     90deg,
     transparent 0%,
-    rgba(200, 160, 80, 0.1) 50%,
+    rgba(255, 188, 31, 0.1) 50%,
     transparent 100%
   );
   transform: translateX(-100%);
@@ -435,12 +435,12 @@
 }
 
 .statusBadge[data-active="true"] {
-  background: rgba(200, 160, 80, 0.08);
-  border-color: rgba(200, 160, 80, 0.32);
-  color: rgba(220, 180, 100, 0.92);
+  background: rgba(255, 188, 31, 0.08);
+  border-color: rgba(255, 188, 31, 0.32);
+  color: rgba(255, 188, 31, 0.92);
   box-shadow:
-    0 0 12px rgba(200, 160, 80, 0.08),
-    inset 0 1px 0 rgba(255, 220, 140, 0.1);
+    0 0 12px rgba(255, 188, 31, 0.08),
+    inset 0 1px 0 rgba(255, 188, 31, 0.1);
 }
 
 .statusBadge[data-active="true"]::before {
@@ -466,33 +466,33 @@
 }
 
 .modeToggle:focus-visible {
-  outline: 2px solid rgba(220, 180, 100, 0.9);
+  outline: 2px solid rgba(255, 188, 31, 0.9);
   outline-offset: 4px;
 }
 
 .modeToggle:hover .toggleTrack {
-  box-shadow: 0 0 16px rgba(200, 160, 80, 0.1);
+  box-shadow: 0 0 16px rgba(255, 188, 31, 0.1);
 }
 
 .modeLabel {
   font-size: 0.48rem;
   letter-spacing: 0.28em;
   text-transform: uppercase;
-  color: rgba(180, 180, 180, 0.28);
+  color: rgba(171, 171, 171, 0.28);
   font-weight: 600;
   transition: color 0.45s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 .modeLabel[data-active="true"] {
-  color: rgba(240, 238, 232, 0.92);
+  color: rgba(242, 242, 242, 0.92);
 }
 
 .toggleTrack {
   position: relative;
   width: 3.2rem;
   height: 1.45rem;
-  background: rgba(255, 255, 255, 0.03);
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(242, 242, 242, 0.03);
+  border: 1px solid rgba(242, 242, 242, 0.1);
   border-radius: 0;
   transition:
     border-color 0.45s cubic-bezier(0.16, 1, 0.3, 1),
@@ -503,13 +503,13 @@
 
 /* Inert background pulse while on AI mode */
 .toggleTrack[data-mode="ai"] {
-  border-color: rgba(200, 160, 80, 0.42);
+  border-color: rgba(255, 188, 31, 0.42);
   animation: borderGlow 2.8s ease-in-out infinite;
 }
 
 .toggleTrack[data-mode="manual"] {
-  border-color: rgba(100, 200, 180, 0.42);
-  background: rgba(100, 200, 180, 0.03);
+  border-color: rgba(171, 171, 171, 0.42);
+  background: rgba(171, 171, 171, 0.03);
   animation: none;
 }
 
@@ -521,11 +521,11 @@
   height: calc(100% - 4px);
   background: linear-gradient(
     135deg,
-    rgba(220, 180, 100, 0.95),
-    rgba(200, 140, 60, 0.95)
+    rgba(255, 188, 31, 0.95),
+    rgba(255, 188, 31, 0.95)
   );
   box-shadow:
-    0 0 8px rgba(200, 160, 80, 0.5),
+    0 0 8px rgba(255, 188, 31, 0.5),
     0 1px 4px rgba(0, 0, 0, 0.4);
   transition:
     transform    0.4s cubic-bezier(0.16, 1, 0.3, 1),
@@ -537,11 +537,11 @@
   transform: translateX(calc(100% + 2px));
   background: linear-gradient(
     135deg,
-    rgba(120, 220, 200, 0.95),
-    rgba(80, 180, 160, 0.95)
+    rgba(171, 171, 171, 0.95),
+    rgba(171, 171, 171, 0.95)
   );
   box-shadow:
-    0 0 8px rgba(100, 200, 180, 0.5),
+    0 0 8px rgba(171, 171, 171, 0.5),
     0 1px 4px rgba(0, 0, 0, 0.4);
 }
 
@@ -552,7 +552,7 @@
   flex-direction: column;
   gap: 0.85rem;
   padding-top: 1.3rem;
-  border-top: 1px solid rgba(100, 200, 180, 0.1);
+  border-top: 1px solid rgba(171, 171, 171, 0.1);
   position: relative;
   z-index: 3;
 }
@@ -567,7 +567,7 @@
   width: 1px;
   background: linear-gradient(
     to bottom,
-    rgba(100, 200, 180, 0.3),
+    rgba(171, 171, 171, 0.3),
     transparent
   );
 }
@@ -576,7 +576,7 @@
   font-size: 0.49rem;
   letter-spacing: 0.32em;
   text-transform: uppercase;
-  color: rgba(100, 200, 180, 0.6);
+  color: rgba(171, 171, 171, 0.6);
   font-weight: 600;
   animation: tealScanPulse 2.4s ease-in-out infinite;
 }
@@ -584,7 +584,7 @@
 .compsLoading {
   font-size: 0.6rem;
   letter-spacing: 0.16em;
-  color: rgba(200, 200, 200, 0.28);
+  color: rgba(171, 171, 171, 0.28);
   font-style: italic;
 }
 
@@ -593,9 +593,9 @@
   flex-direction: column;
   gap: 0.55rem;
   padding: 1rem 1rem 1rem 1.2rem;
-  background: rgba(12, 14, 22, 0.85);
-  border: 1px solid rgba(100, 200, 180, 0.07);
-  border-left: 2px solid rgba(100, 200, 180, 0.35);
+  background: rgba(8, 8, 8, 0.85);
+  border: 1px solid rgba(171, 171, 171, 0.07);
+  border-left: 2px solid rgba(171, 171, 171, 0.35);
   position: relative;
   overflow: hidden;
 
@@ -608,12 +608,12 @@
 }
 
 .compCard:hover {
-  background: rgba(16, 20, 28, 0.92);
-  border-color: rgba(100, 200, 180, 0.14);
-  border-left-color: rgba(100, 200, 180, 0.55);
+  background: rgba(8, 8, 8, 0.92);
+  border-color: rgba(171, 171, 171, 0.14);
+  border-left-color: rgba(171, 171, 171, 0.55);
   box-shadow:
     0 4px 20px rgba(0, 0, 0, 0.3),
-    inset 0 0 24px rgba(100, 200, 180, 0.02);
+    inset 0 0 24px rgba(171, 171, 171, 0.02);
 }
 
 /* Inner top highlight */
@@ -626,21 +626,21 @@
   height: 1px;
   background: linear-gradient(
     90deg,
-    rgba(100, 200, 180, 0.2),
+    rgba(171, 171, 171, 0.2),
     transparent
   );
 }
 
 .compAddress {
   font-size: 0.7rem;
-  color: rgba(240, 238, 232, 0.82);
+  color: rgba(242, 242, 242, 0.82);
   font-weight: 400;
   letter-spacing: 0.01em;
   transition: color 0.3s ease;
 }
 
 .compCard:hover .compAddress {
-  color: rgba(245, 242, 235, 0.95);
+  color: rgba(242, 242, 242, 0.95);
 }
 
 .compRow {
@@ -658,23 +658,23 @@
   font-size: 0.44rem;
   letter-spacing: 0.22em;
   text-transform: uppercase;
-  color: rgba(180, 180, 180, 0.32);
+  color: rgba(171, 171, 171, 0.32);
   transition: color 0.3s ease;
 }
 
 .compCard:hover .compStatLabel {
-  color: rgba(100, 200, 180, 0.45);
+  color: rgba(171, 171, 171, 0.45);
 }
 
 .compStatValue {
   font-size: 0.72rem;
-  color: rgba(230, 228, 222, 0.82);
+  color: rgba(242, 242, 242, 0.82);
   font-weight: 500;
   transition: color 0.3s ease;
 }
 
 .compCard:hover .compStatValue {
-  color: rgba(245, 242, 235, 0.92);
+  color: rgba(242, 242, 242, 0.92);
 }
 
 /* ----- Reduced motion ----- */
@@ -706,7 +706,7 @@
 
   .kicker {
     background: none;
-    -webkit-text-fill-color: rgba(200, 160, 80, 0.55);
+    -webkit-text-fill-color: rgba(255, 188, 31, 0.55);
   }
 }
 

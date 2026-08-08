@@ -18,7 +18,11 @@ services:
       # them alphabetically, which matches the 0001/0002/0003 numbering scheme.
       - ./backend/db/migrations:/docker-entrypoint-initdb.d:ro
     ports:
-      - "127.0.0.1:5432:5432"
+      # Deliberately NOT ORACLE_BIND_HOST: widening the app ports so a DinD
+      # helper can forward them must never also publish the database. Every
+      # service reaches Postgres over the compose network, so this publish is
+      # only for a developer's local psql — override it knowingly or not at all.
+      - "${ORACLE_DB_BIND_HOST:-127.0.0.1}:5432:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d oracle"]
       interval: 5s
@@ -70,6 +74,10 @@ services:
       ORACLE_FEATURE_SPATIAL_TOURS: "true"
       ORACLE_FEATURE_CONTRACTS: "true"
       ORACLE_FEATURE_AI_CHAT: "true"
+      ORACLE_FEATURE_SALES_AI: "true"
+      ORACLE_FEATURE_POWER_DIALER: "true"
+      ORACLE_FEATURE_SMART_PLANS: "true"
+      ORACLE_FEATURE_VIDEO_STUDIO: "true"
       ORACLE_AI_CHAT_MODEL: us.amazon.nova-pro-v1:0
       ORACLE_LOCAL_LLM_URL: http://host.docker.internal:8090/v1/chat/completions
       # Real local LLM — agent-mind's inner monologue streams from the llama.cpp
@@ -89,8 +97,13 @@ services:
     # Linux Docker doesn't resolve host.docker.internal by default — map it to
     # the host gateway so the container can reach host-run services (the local
     # llama.cpp LLM on :8090) via LLAMA_SERVER_URL above.
+    #
+    # Under Docker-in-Docker, `host-gateway` resolves to the COMPOSE network
+    # gateway (172.18.0.1), which cannot reach a server bound on the real host —
+    # the LLM is only reachable via the outer bridge (172.17.0.1). Override with
+    # ORACLE_HOST_GATEWAY_IP in that case; the default stays portable.
     extra_hosts:
-      - "host.docker.internal:host-gateway"
+      - "host.docker.internal:${ORACLE_HOST_GATEWAY_IP:-host-gateway}"
     volumes:
       # Mount source so --reload sees edits without rebuild.
       - ./backend:/app
@@ -98,7 +111,7 @@ services:
       # Keep it read-only; the application never writes into infrastructure code.
       - ./infra/reconstruction-runpod:/infra/reconstruction-runpod:ro
     ports:
-      - "127.0.0.1:8000:8000"
+      - "${ORACLE_BIND_HOST:-127.0.0.1}:8000:8000"
     command: >
       uvicorn server:app
         --host 0.0.0.0
@@ -107,12 +120,12 @@ services:
         --reload-dir /app
 
   # ── Vite dev server (React frontend) ─────────────────────────────────────────
-  # Runs `npm run dev` on node:20-alpine. The container needs internet access
+  # Runs `npm run dev` on the supported Node 24 LTS line. The container needs internet access
   # on first run to fetch node_modules; after that, the bind-mount cache persists.
   # VITE_WS_URL points to the backend container via the host's loopback so the
   # browser WebSocket opens to localhost:8000, not the container hostname.
   frontend:
-    image: node:20-alpine
+    image: node:24.18.0-alpine
     working_dir: /app
     restart: unless-stopped
     depends_on:
@@ -134,8 +147,11 @@ services:
       - ./oracle-app:/app
       - npm_cache:/app/node_modules
     ports:
-      - "127.0.0.1:5173:5173"
-    command: sh -c "npm install && npm run dev -- --host 0.0.0.0"
+      - "${ORACLE_BIND_HOST:-127.0.0.1}:5173:5173"
+    # Install the committed stable dependency graph before starting Vite. The
+    # named node_modules volume keeps restarts fast while npm ci prevents a
+    # stale or canary-only graph from surviving a lockfile change.
+    command: sh -c "npm ci --no-audit --no-fund && npm run dev -- --host 0.0.0.0"
 
 volumes:
   pg_data:    # PostgreSQL data — survives `docker compose down`

@@ -1,6 +1,6 @@
 /* ============================================================
    WalkerBubble.module.css
-   Neural-network AI agent thought bubble — streaming text
+   AI agent thought bubble — streaming text
    visualization with glass depth, typing indicator, and
    per-agent color theming. Oracle design system.
    ============================================================ */
@@ -81,11 +81,11 @@
   max-width: 340px;
   min-width: 200px;
   padding: 1rem 1.25rem 1.1rem;
-  background: rgba(8, 8, 12, 0.75);
-  backdrop-filter: blur(40px) saturate(1.4);
-  -webkit-backdrop-filter: blur(40px) saturate(1.4);
-  border: 1px solid rgba(255, 255, 255, 0.05);
-  border-top: 1px solid rgba(255, 255, 255, 0.09);
+  background: var(--oracle-glass);
+  backdrop-filter: var(--oracle-backdrop);
+  -webkit-backdrop-filter: var(--oracle-backdrop);
+  border: 1px solid var(--oracle-glass-edge);
+  border-top: 1px solid var(--oracle-border-bright);
 
   /* Asymmetric radius — chat-bubble geometry */
   border-radius: 14px 14px 4px 14px;
@@ -93,8 +93,8 @@
   box-shadow:
     0 8px 32px rgba(0, 0, 0, 0.5),
     0 2px 8px rgba(0, 0, 0, 0.35),
-    0 0 1px rgba(255, 255, 255, 0.08),
-    inset 0 1px 0 rgba(255, 255, 255, 0.04);
+    0 0 1px rgba(242, 242, 242, 0.08),
+    inset 0 1px 0 rgba(242, 242, 242, 0.04);
 
   z-index: 900;
   pointer-events: none;
@@ -114,9 +114,9 @@
   animation: bubbleEnter 0.55s cubic-bezier(0.16, 1, 0.3, 1) both;
 
   /* CSS custom property for per-agent color theming */
-  --agent-color: rgba(255, 184, 0, 1);
-  --agent-color-faint: rgba(255, 184, 0, 0.3);
-  --agent-color-mid: rgba(255, 184, 0, 0.12);
+  --agent-color: rgba(255, 188, 31, 1);
+  --agent-color-faint: rgba(255, 188, 31, 0.3);
+  --agent-color-mid: rgba(255, 188, 31, 0.12);
 }
 
 /* Top-edge prismatic highlight */
@@ -131,7 +131,7 @@
     90deg,
     transparent,
     var(--agent-color-mid) 40%,
-    rgba(255, 255, 255, 0.1) 50%,
+    rgba(242, 242, 242, 0.1) 50%,
     var(--agent-color-mid) 60%,
     transparent
   );
@@ -165,13 +165,13 @@
 
 /* Streaming state — amplified border glow */
 .bubble[data-streaming="true"] {
-  border-color: rgba(255, 255, 255, 0.06);
+  border-color: rgba(242, 242, 242, 0.06);
   box-shadow:
     0 8px 32px rgba(0, 0, 0, 0.55),
     0 2px 8px rgba(0, 0, 0, 0.35),
     0 0 28px var(--agent-color-mid),
-    0 0 1px rgba(255, 255, 255, 0.08),
-    inset 0 1px 0 rgba(255, 255, 255, 0.05);
+    0 0 1px rgba(242, 242, 242, 0.08),
+    inset 0 1px 0 rgba(242, 242, 242, 0.05);
   animation: bubbleEnter 0.55s cubic-bezier(0.16, 1, 0.3, 1) both,
              borderPulse 2.2s ease-in-out infinite;
 }
@@ -220,7 +220,7 @@
   width: 4px;
   height: 4px;
   border-radius: 50%;
-  background: rgba(255, 255, 255, 0.45);
+  background: rgba(242, 242, 242, 0.45);
   margin-left: auto;
   flex-shrink: 0;
   animation: streamPulse 0.65s ease-in-out infinite;
@@ -238,7 +238,7 @@
   width: 4px;
   height: 4px;
   border-radius: 50%;
-  background: rgba(255, 255, 255, 0.45);
+  background: rgba(242, 242, 242, 0.45);
   animation: streamPulse 0.65s ease-in-out infinite;
 }
 
@@ -260,7 +260,7 @@
   font-weight: 300;
   line-height: 1.55;
   letter-spacing: -0.005em;
-  color: rgba(245, 240, 230, 0.88);
+  color: rgba(242, 242, 242, 0.88);
   word-break: break-word;
   position: relative;
   z-index: 1;
@@ -269,7 +269,7 @@
 /* ----- Streaming cursor ----- */
 
 .cursor {
-  color: var(--agent-color, rgba(255, 184, 0, 0.85));
+  color: var(--agent-color, rgba(255, 188, 31, 0.85));
   font-weight: 200;
   animation: blink 0.72s step-end infinite;
   margin-left: 1px;
@@ -297,7 +297,7 @@
   height: 0;
   border-left: 6px solid transparent;
   border-right: 6px solid transparent;
-  border-top: 6px solid rgba(8, 8, 12, 0.78);
+  border-top: 6px solid rgba(8, 8, 8, 0.78);
   pointer-events: none;
   z-index: 2;
 }
@@ -312,7 +312,7 @@
   height: 0;
   border-left: 6px solid transparent;
   border-right: 6px solid transparent;
-  border-top: 6px solid rgba(8, 8, 12, 0.78);
+  border-top: 6px solid rgba(8, 8, 8, 0.78);
   left: auto;
   right: 16px;
   bottom: -6px;
