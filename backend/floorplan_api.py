@@ -17,6 +17,7 @@ Design notes:
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import math
@@ -214,11 +215,28 @@ class SaveFloorplanRequest(_Strict):
     # Optional snapshot of the line items this layout produced, stored on the
     # revision so an estimate stays reproducible after the cost table changes.
     rehab_items: Optional[list[dict[str, Any]]] = None
+    # Provenance carried through opaquely from whichever machine pipeline call
+    # (auto-dimensions / extract-parcel / extract-image) last touched this
+    # layout. Absent when the document is hand-drawn or unmodified since a
+    # pre-migration save — both render as "provenance unknown", not "measured".
+    dimension_manifest: Optional[dict[str, Any]] = None
+    scaffold_sha256: Optional[str] = Field(default=None, pattern=r"^[0-9a-f]{64}$")
 
 
 # ---------------------------------------------------------------------------
 # Server-side metric derivation (authoritative)
 # ---------------------------------------------------------------------------
+
+def _scaffold_sha256(document_json_obj: Any) -> str:
+    """Hash a machine-produced document at the moment it was generated.
+
+    Canonical (sorted-key, no whitespace) so the same geometry always hashes
+    the same regardless of key order — this is compared byte-for-byte later
+    against a saved revision's own document to detect an unedited accept.
+    """
+    canonical = json.dumps(document_json_obj, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
 
 def _polygon_area_m2(polygon: list[Point2D]) -> float:
     """Shoelace. Absolute value — winding order is not guaranteed."""
@@ -264,11 +282,16 @@ async def _assert_subject_exists(conn, lead_id, listing_id) -> None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Listing not found.")
 
 
+def _jsonb(value: Any) -> Any:
+    if isinstance(value, str):  # asyncpg returns jsonb as str unless a codec is set
+        return json.loads(value)
+    return value
+
+
 def _row_to_response(row) -> dict[str, Any]:
-    document = row["document"]
-    if isinstance(document, str):  # asyncpg returns jsonb as str unless a codec is set
-        document = json.loads(document)
+    document = _jsonb(row["document"])
     ai_generated = bool(row["ai_generated"])
+    manifest = _jsonb(row["dimension_manifest"]) if "dimension_manifest" in row.keys() else None
     return {
         "floorplan_id": str(row["id"]),
         "schema_version": row["schema_version"],
@@ -285,7 +308,47 @@ def _row_to_response(row) -> dict[str, Any]:
         "confidence": float(row["confidence"]) if row["confidence"] is not None else None,
         # Surfaced on every read so the UI cannot forget to show it.
         "disclosure": FLOORPLAN_AI_DISCLOSURE if ai_generated else None,
+        # NULL (not {}) means provenance genuinely unknown — a manual draw, or
+        # a row saved before 0075. The UI must not treat that as "measured".
+        "dimension_manifest": manifest,
+        "scaffold_sha256": row["scaffold_sha256"] if "scaffold_sha256" in row.keys() else None,
+        "revision": None,  # the live head is not pinned to one revision number
         "updated_at": row["updated_at"].isoformat(),
+    }
+
+
+def _revision_row_to_response(row) -> dict[str, Any]:
+    """Map a `property_floorplan_revisions` row to the same response shape.
+
+    That table has no schema_version/source/ai_generated/model_version/
+    confidence/room_count/level_count columns of its own — it never needed
+    them, because the full document (including its embedded `provenance`) is
+    already there. Deriving from the document keeps a historical read
+    consistent with the live head, which is populated from the same
+    `doc.provenance` at save time.
+    """
+    document = _jsonb(row["document"])
+    provenance = (document or {}).get("provenance") or {}
+    ai_generated = bool(provenance.get("ai_generated"))
+    return {
+        "floorplan_id": str(row["floorplan_id"]),
+        "schema_version": (document or {}).get("schema_version", SCHEMA_VERSION),
+        "document": document,
+        "metrics": {
+            "total_sqft": float(row["total_sqft"]),
+            "wall_linear_ft": float(row["wall_linear_ft"]),
+            "room_count": len((document or {}).get("rooms") or []),
+            "level_count": len((document or {}).get("levels") or []),
+        },
+        "source": provenance.get("source", "manual"),
+        "ai_generated": ai_generated,
+        "model_version": provenance.get("model_version"),
+        "confidence": provenance.get("confidence"),
+        "disclosure": FLOORPLAN_AI_DISCLOSURE if ai_generated else None,
+        "dimension_manifest": _jsonb(row["dimension_manifest"]),
+        "scaffold_sha256": row["scaffold_sha256"],
+        "revision": row["revision"],
+        "updated_at": row["created_at"].isoformat(),
     }
 
 
@@ -297,17 +360,27 @@ def _row_to_response(row) -> dict[str, Any]:
 async def get_floorplan(
     lead_id: Optional[UUID] = Query(default=None),
     listing_id: Optional[UUID] = Query(default=None),
+    revision: Optional[int] = Query(
+        default=None, ge=1,
+        description="Load a specific past revision (read-only) instead of the live head.",
+    ),
     ctx: TenantContext = Depends(require_context),
 ):
-    """Fetch the current floor plan for one property. 204 when none exists."""
+    """Fetch the current floor plan for one property. 204 when none exists.
+
+    `?revision=` loads a past revision from history instead of the live head —
+    the browser this drawer's revisions panel opens is read-only by construction:
+    there is no write path that takes a revision number, only /crm/floorplan PUT,
+    which always advances a new revision from whatever is currently loaded.
+    """
     _subject_or_422(lead_id, listing_id)
 
     async with tenant_tx(ctx) as conn:
-        row = await conn.fetchrow(
+        head = await conn.fetchrow(
             """
             SELECT id, schema_version, document, total_sqft, wall_linear_ft,
                    room_count, level_count, source, ai_generated, model_version,
-                   confidence, updated_at
+                   confidence, dimension_manifest, scaffold_sha256, updated_at
               FROM property_floorplans
              WHERE (($1::uuid IS NOT NULL AND lead_id = $1)
                  OR ($2::uuid IS NOT NULL AND listing_id = $2))
@@ -316,17 +389,36 @@ async def get_floorplan(
             lead_id, listing_id,
         )
 
-    if row is None:
-        # Empty rather than 404: "this property has no plan yet" is a normal
-        # state the drawer renders as a blank editor.
-        return {"floorplan_id": None, "document": None, "metrics": None}
+        if head is None:
+            if revision is not None:
+                # A revision number with no floorplan at all is a stale link
+                # (the plan was deleted or never existed), not "no plan yet".
+                raise HTTPException(status.HTTP_404_NOT_FOUND, "Floor plan not found.")
+            # Empty rather than 404: "this property has no plan yet" is a
+            # normal state the drawer renders as a blank editor.
+            return {"floorplan_id": None, "document": None, "metrics": None}
 
-    if row["schema_version"] > SCHEMA_VERSION:
-        raise HTTPException(
-            status.HTTP_409_CONFLICT,
-            "This floor plan was saved by a newer client version and cannot be read safely.",
+        if revision is None:
+            if head["schema_version"] > SCHEMA_VERSION:
+                raise HTTPException(
+                    status.HTTP_409_CONFLICT,
+                    "This floor plan was saved by a newer client version and cannot be read safely.",
+                )
+            return _row_to_response(head)
+
+        rev_row = await conn.fetchrow(
+            """
+            SELECT floorplan_id, revision, document, total_sqft, wall_linear_ft,
+                   dimension_manifest, scaffold_sha256, created_at
+              FROM property_floorplan_revisions
+             WHERE floorplan_id = $1 AND revision = $2
+            """,
+            head["id"], revision,
         )
-    return _row_to_response(row)
+
+    if rev_row is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"Revision {revision} not found.")
+    return _revision_row_to_response(rev_row)
 
 
 @router.put("/crm/floorplan")
@@ -372,21 +464,27 @@ async def save_floorplan(
             lead_id, listing_id,
         )
 
+        manifest_json = (
+            json.dumps(body.dimension_manifest) if body.dimension_manifest is not None else None
+        )
+
         if existing is None:
             row = await conn.fetchrow(
                 """
                 INSERT INTO property_floorplans (
                     tenant_id, lead_id, listing_id, schema_version, document,
                     total_sqft, wall_linear_ft, room_count, level_count,
-                    source, ai_generated, model_version, confidence, created_by
+                    source, ai_generated, model_version, confidence,
+                    dimension_manifest, scaffold_sha256, created_by
                 )
-                VALUES ($1,$2,$3,$4,$5::jsonb,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+                VALUES ($1,$2,$3,$4,$5::jsonb,$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb,$15,$16)
                 RETURNING id
                 """,
                 ctx.tenant_id, lead_id, listing_id, doc.schema_version, document_json,
                 metrics["total_sqft"], metrics["wall_linear_ft"],
                 metrics["room_count"], metrics["level_count"],
                 prov.source, prov.ai_generated, prov.model_version, prov.confidence,
+                manifest_json, body.scaffold_sha256,
                 ctx.agent_id,
             )
             floorplan_id = row["id"]
@@ -405,6 +503,8 @@ async def save_floorplan(
                        ai_generated = $9,
                        model_version = $10,
                        confidence = $11,
+                       dimension_manifest = $12::jsonb,
+                       scaffold_sha256 = $13,
                        updated_at = now()
                  WHERE id = $1
                 """,
@@ -412,6 +512,7 @@ async def save_floorplan(
                 metrics["total_sqft"], metrics["wall_linear_ft"],
                 metrics["room_count"], metrics["level_count"],
                 prov.source, prov.ai_generated, prov.model_version, prov.confidence,
+                manifest_json, body.scaffold_sha256,
             )
 
         next_revision = await conn.fetchval(
@@ -422,12 +523,14 @@ async def save_floorplan(
             """
             INSERT INTO property_floorplan_revisions (
                 tenant_id, floorplan_id, revision, document,
-                total_sqft, wall_linear_ft, rehab_items, created_by
+                total_sqft, wall_linear_ft, rehab_items,
+                dimension_manifest, scaffold_sha256, created_by
             )
-            VALUES ($1,$2,$3,$4::jsonb,$5,$6,$7::jsonb,$8)
+            VALUES ($1,$2,$3,$4::jsonb,$5,$6,$7::jsonb,$8::jsonb,$9,$10)
             """,
             ctx.tenant_id, floorplan_id, next_revision, document_json,
-            metrics["total_sqft"], metrics["wall_linear_ft"], rehab_json, ctx.agent_id,
+            metrics["total_sqft"], metrics["wall_linear_ft"], rehab_json,
+            manifest_json, body.scaffold_sha256, ctx.agent_id,
         )
 
     return {
@@ -561,11 +664,15 @@ async def auto_dimensions(
         sourced_levels=best.levels if best else None,
         wall_height_m=wall_height_m,
     )
+    document_json_obj = document.to_json()
 
     return {
-        "document": document.to_json(),
+        "document": document_json_obj,
         "manifest": manifest.to_json(),
         "estimated_fields": manifest.estimated_fields(),
+        # Hashed now, at generation — before the agent has touched anything —
+        # so a later save can prove whether it was accepted unchanged.
+        "scaffold_sha256": _scaffold_sha256(document_json_obj),
         "footprint": {
             "found": best is not None,
             "source": best.source if best else None,
@@ -605,14 +712,16 @@ async def extract_parcel(
     except ExtractionError as exc:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
 
+    document_json_obj = document.to_json()
     return {
-        "document": document.to_json(),
+        "document": document_json_obj,
         "metrics": {
             "total_sqft": round(document.total_sqft, 2),
             "room_count": len(document.rooms),
         },
         "disclosure": FLOORPLAN_AI_DISCLOSURE,
         "saved": False,
+        "scaffold_sha256": _scaffold_sha256(document_json_obj),
     }
 
 
@@ -678,8 +787,9 @@ async def extract_image(
         # API keeps working; this endpoint degrades honestly instead of 500ing.
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(exc)) from exc
 
+    document_json_obj = document.to_json()
     return {
-        "document": document.to_json(),
+        "document": document_json_obj,
         "metrics": {
             "total_sqft": round(document.total_sqft, 2),
             "room_count": len(document.rooms),
@@ -689,6 +799,7 @@ async def extract_image(
         "confidence": document.provenance.confidence,
         "disclosure": FLOORPLAN_AI_DISCLOSURE,
         "saved": False,
+        "scaffold_sha256": _scaffold_sha256(document_json_obj),
     }
 
 

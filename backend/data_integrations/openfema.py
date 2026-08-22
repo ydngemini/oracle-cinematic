@@ -5,7 +5,8 @@ OpenFEMA is US-government public-domain: no key, no signup, commercial-OK.
 DisasterDeclarationsSummaries gives every federal disaster/emergency
 declaration (storms, floods, fires, etc.) down to the county (designatedArea +
 fipsStateCode/fipsCountyCode) — a distress/risk overlay that complements the
-FEMA NFHL flood layer (fema_flood.py) with *event* history rather than zones.
+FEMA NFHL flood layer (apis/property_data.get_flood_zone) with *event* history
+rather than zones.
 
 API: https://www.fema.gov/api/open/v2/DisasterDeclarationsSummaries
 OData-style query params: $filter, $select, $orderby, $top, $inlinecount.

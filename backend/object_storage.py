@@ -62,16 +62,65 @@ def is_configured() -> bool:
     """Whether durable storage can actually accept a write right now.
 
     Callers use this to degrade honestly (a 503 that says video is unavailable)
-    instead of raising a KeyError from deep inside an upload handler."""
+    instead of raising a KeyError from deep inside an upload handler.
+
+    For the mount-backed backend this means the mount is really there and
+    really writable — not merely that someone set a path string. ORACLE_MEDIA_ROOT
+    defaults to /mnt/neoh, which exists on a deployed replica and does not exist
+    on a developer's laptop, so a name-only check answered "yes" everywhere and
+    the first write failed. That was survivable while this only gated video
+    (which 503s and says so); it is not survivable now that photos route through
+    here too.
+
+    Never raises: a caller asking "can I write?" must always get an answer.
+    """
     try:
         backend = _check_backend()
     except StorageError:
         return False
     if backend == "azure-files":
-        return bool(str(MEDIA_ROOT).strip())
+        return _mount_is_writable()
     if backend == "azure-blob":
         return bool(BLOB_CONNECTION_STRING or BLOB_ACCOUNT_URL)
     return bool(S3_BUCKET)
+
+
+# Probing the filesystem on every upload would be wasteful, and the answer only
+# changes when a mount appears or goes away — a process restart either way.
+_mount_writable: Optional[bool] = None
+
+
+def _mount_is_writable() -> bool:
+    global _mount_writable
+    if _mount_writable is not None:
+        return _mount_writable
+
+    root = str(MEDIA_ROOT).strip()
+    if not root:
+        _mount_writable = False
+        return False
+    try:
+        MEDIA_ROOT.mkdir(parents=True, exist_ok=True)
+        _mount_writable = os.access(MEDIA_ROOT, os.W_OK)
+        if not _mount_writable:
+            logger.info(
+                "Media root %s exists but is not writable; falling back to database blobs.",
+                MEDIA_ROOT,
+            )
+    except OSError as exc:
+        logger.info(
+            "Media root %s is not usable (%s); falling back to database blobs.",
+            MEDIA_ROOT, exc,
+        )
+        _mount_writable = False
+    return _mount_writable
+
+
+def reset_configuration_cache() -> None:
+    """Forget the cached mount probe. For tests, and for a re-check after a
+    mount is attached without restarting the process."""
+    global _mount_writable
+    _mount_writable = None
 
 
 def _safe_destination(key: str) -> Path:

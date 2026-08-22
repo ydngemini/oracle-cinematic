@@ -51,6 +51,7 @@ class _FakeConnection:
         self.pending_ledger = []
         self.in_transaction = False
         self.lock_held = False
+        self.checksums: dict[str, str] = {}
 
     def transaction(self):
         return _FakeTransaction(self)
@@ -66,6 +67,14 @@ class _FakeConnection:
         if sql == run_migrations._CREATE_LEDGER_SQL:
             assert not self.in_transaction
             self.events.append(("create_ledger",))
+        elif sql == run_migrations._EXTEND_LEDGER_SQL:
+            # Provenance columns are added outside the per-migration
+            # transaction, alongside the CREATE TABLE IF NOT EXISTS.
+            assert not self.in_transaction
+            self.events.append(("extend_ledger",))
+        elif sql.startswith("UPDATE schema_migrations SET sha256"):
+            assert not self.in_transaction
+            self.events.append(("backfill_checksum", args[0]))
         elif sql == run_migrations._RECORD_MIGRATION_SQL:
             assert self.in_transaction
             self.events.append(("ledger", args[0]))
@@ -86,9 +95,12 @@ class _FakeConnection:
     async def fetch(self, sql, *args):
         assert self.lock_held
         assert not self.in_transaction
-        assert sql == "SELECT filename FROM schema_migrations"
+        assert sql == "SELECT filename, sha256 FROM schema_migrations"
         self.events.append(("fetch_applied",))
-        return [{"filename": filename} for filename in sorted(self.applied)]
+        return [
+            {"filename": filename, "sha256": self.checksums.get(filename)}
+            for filename in sorted(self.applied)
+        ]
 
     async def fetchval(self, sql, *args):
         assert sql == run_migrations._UNLOCK_SQL
@@ -124,6 +136,7 @@ def test_advisory_lock_is_held_until_migration_commit(tmp_path, monkeypatch):
     assert _event_names(conn) == [
         "lock",
         "create_ledger",
+        "extend_ledger",
         "fetch_applied",
         "begin",
         "migration",
@@ -150,6 +163,7 @@ def test_ledger_failure_rolls_back_migration_sql(tmp_path, monkeypatch):
     assert _event_names(conn) == [
         "lock",
         "create_ledger",
+        "extend_ledger",
         "fetch_applied",
         "begin",
         "migration",
@@ -179,6 +193,7 @@ def test_duplicate_in_legacy_file_is_not_backfilled_into_ledger(
     assert _event_names(conn) == [
         "lock",
         "create_ledger",
+        "extend_ledger",
         "fetch_applied",
         "begin",
         "migration",
@@ -198,3 +213,34 @@ def test_direct_admin_credentials_remain_provider_neutral(monkeypatch):
         "azure_admin",
         "key-vault-password",
     )
+
+
+def test_a_recorded_migration_whose_file_changed_is_reported_and_not_re_applied(tmp_path):
+    """The database no longer matches the repository. Re-applying would be
+    wrong — the earlier version already ran — and silence is how two
+    environments drift apart unnoticed."""
+    path = _write_migration(tmp_path, "CREATE TABLE example (id int);\n")
+    conn = _FakeConnection()
+    conn.lock_held = False
+    conn.applied.add("0001_example.sql")
+    conn.checksums["0001_example.sql"] = "0" * 64
+
+    code = asyncio.run(run_migrations._run_migrations(conn, [path]))
+
+    assert code == 4, "a drifted ledger must not exit 0"
+    assert "migration" not in _event_names(conn), "the file was re-applied"
+
+
+def test_a_recorded_migration_with_no_checksum_gets_one_without_re_applying(tmp_path):
+    """Rows written before the sha256 column existed were genuine applications;
+    backfilling the digest makes future drift detectable without pretending the
+    migration ran again."""
+    path = _write_migration(tmp_path, "CREATE TABLE example (id int);\n")
+    conn = _FakeConnection()
+    conn.applied.add("0001_example.sql")
+
+    code = asyncio.run(run_migrations._run_migrations(conn, [path]))
+
+    assert code == 0
+    assert ("backfill_checksum", "0001_example.sql") in conn.events
+    assert "migration" not in _event_names(conn)

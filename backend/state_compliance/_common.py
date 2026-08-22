@@ -149,6 +149,103 @@ async def _fetchrow(ctx: TenantContext, query: str, *args) -> Optional[dict]:
 
 
 # ---------------------------------------------------------------------------
+# Dataset availability
+# ---------------------------------------------------------------------------
+#
+# Several tables in this schema are read by a route and written by nothing —
+# no INSERT, no COPY, no migration seed, anywhere in the codebase. A caller
+# cannot tell that apart from a genuine answer, because both arrive as an empty
+# result: `[]` reads as "Texas requires no disclosure forms" and a 404 reads as
+# "we checked, that county has no data". Both are false, and both are the kind
+# of unsupported positive claim this codebase does not make.
+#
+# So: an empty result for *this* subject stays an empty result, and only a
+# table with no rows at all reports DATASET_NOT_LOADED. The distinction is the
+# whole point — it costs one cheap EXISTS, and only on the path that was
+# already returning nothing.
+
+DATASET_NOT_LOADED = "DATASET_NOT_LOADED"
+
+# How an operator would actually populate each one, so the error is actionable
+# rather than merely honest.
+_DATASET_LOAD_HINTS: dict[str, str] = {
+    "county_market_stats": (
+        "No loader exists. County market aggregates would come from a Census/BLS "
+        "or MLS-derived pipeline that has not been built."
+    ),
+    "parcel_zoning": (
+        "No loader exists. Zoning geometry would come from a municipal GIS "
+        "harvest; see backend/harvesters/ for the parcel equivalents."
+    ),
+    "mls_boards": (
+        "No loader exists. The MLS board registry is unpopulated; live listing "
+        "access goes through ORACLE_RESO_* feeds instead."
+    ),
+    "state_disclosure_forms": (
+        "Seeded by migration 0035 for a subset of states only, and never refreshed. "
+        "If this table is empty the seed did not run."
+    ),
+    "state_contract_templates": (
+        "Seeded by migration 0035 for a subset of states only, and never refreshed. "
+        "If this table is empty the seed did not run."
+    ),
+    "state_advertising_rules": (
+        "Seeded by migration 0035 for a subset of states only, and never refreshed. "
+        "If this table is empty the seed did not run."
+    ),
+    "state_reciprocity_matrix": (
+        "No loader exists. The route falls back to a small in-code matrix; rows "
+        "here would override it."
+    ),
+}
+
+
+def dataset_load_hint(dataset: str) -> str:
+    """How an operator would populate a table, for callers outside this package.
+
+    The hints are the same ones the 404 body carries; this exists so the agent
+    tool surface can say the same thing in a tool result without reaching into
+    a private dict that a rename would silently break.
+    """
+    return _DATASET_LOAD_HINTS.get(
+        dataset, "No loader for this table exists in the codebase."
+    )
+
+
+def dataset_not_loaded(dataset: str) -> HTTPException:
+    """404 stating the dataset was never loaded — not that the subject has none.
+
+    Deliberately keeps the 404 status so existing callers' not-found handling
+    still fires; the body is what changes. `code` is machine-readable so a UI
+    can render "this data isn't loaded on this deployment" rather than the
+    much more damaging "no results found".
+    """
+    return HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail={
+            "code": DATASET_NOT_LOADED,
+            "dataset": dataset,
+            "reason": (
+                f"The {dataset!r} table is empty on this deployment, so this "
+                f"endpoint cannot answer. This is not a finding that no data exists."
+            ),
+            "how_to_populate": dataset_load_hint(dataset),
+        },
+    )
+
+
+async def _require_dataset_loaded(ctx: TenantContext, table: str) -> None:
+    """Raise DATASET_NOT_LOADED when `table` holds no rows at all.
+
+    Call this only after a query already came back empty — on the populated
+    path it never runs, so the extra round trip costs nothing in the normal case.
+    """
+    probe = await _fetch(ctx, f"SELECT 1 AS present FROM {table} LIMIT 1")  # noqa: S608 — fixed identifiers, never user input
+    if not probe:
+        raise dataset_not_loaded(table)
+
+
+# ---------------------------------------------------------------------------
 # Pydantic schemas — States
 # ---------------------------------------------------------------------------
 

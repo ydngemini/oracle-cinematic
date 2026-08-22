@@ -19,6 +19,8 @@ class _FakeConnection:
         self.count_args: tuple = ()
         self.data_query = ""
         self.data_args: tuple = ()
+        self.lead_lookup_query = ""
+        self.lead_lookup_args: tuple = ()
 
     async def fetchrow(self, query: str, *args):
         self.count_query = query
@@ -26,6 +28,13 @@ class _FakeConnection:
         return {"n": 34_999}
 
     async def fetch(self, query: str, *args):
+        # The catalog page and the tenant-lead resolution are separate queries
+        # on the same connection. Record only the catalog one, or the assertions
+        # below silently start describing the lead lookup instead.
+        if " FROM leads\n" in query:
+            self.lead_lookup_query = query
+            self.lead_lookup_args = args
+            return []
         self.data_query = query
         self.data_args = args
         return [
@@ -86,7 +95,16 @@ def _run_search(monkeypatch, ctx: TenantContext, **kwargs):
     return result, conn
 
 
-def test_pipeline_default_count_uses_exact_summary(monkeypatch):
+def test_pipeline_default_count_uses_a_planner_estimate_not_a_full_scan(monkeypatch):
+    """An unfiltered browse has no WHERE to bound it, so an exact COUNT(*)
+    means a full scan of the whole catalog on every page load — measured
+    against the real table at 6.3M rows / 4.7GB, and the query that OOM'd a
+    7.6GB dev box running it directly. `pg_class.reltuples` costs ~15ms
+    because it reads a statistic instead of the table, and the response must
+    say the total is an estimate rather than presenting it as exact — the
+    same "never assert a positive fact the data can't support" rule the
+    honesty tests elsewhere in this suite pin.
+    """
     ctx = TenantContext(
         agent_id="operator",
         tenant_id="00000000-0000-0000-0000-000000000000",
@@ -94,12 +112,22 @@ def test_pipeline_default_count_uses_exact_summary(monkeypatch):
     )
     result, conn = _run_search(monkeypatch, ctx)
 
-    assert "FROM public_property_records" in conn.count_query
+    assert "reltuples" in conn.count_query
+    assert "pg_class" in conn.count_query
+    assert "FROM public_property_records" not in conn.count_query, (
+        "the unfiltered path is doing a real table scan again"
+    )
     assert conn.count_args == ()
     assert "ORDER BY match_score DESC, record_refreshed_at DESC, id ASC" in conn.data_query
-    assert conn.data_args == (mls_portal.PAGE_SIZE, 0)
+    # LIMIT is PAGE_SIZE+1: has_more is read off the fetched rows, never off
+    # the (possibly estimated) total — see the has_more tests below.
+    assert conn.data_args == (mls_portal.PAGE_SIZE + 1, 0)
     assert result["total"] == 34_999
-    assert result["has_more"] is True
+    assert result["total_is_estimate"] is True
+    # The fake returns exactly one row regardless of LIMIT, i.e. fewer than
+    # PAGE_SIZE+1 — this is the last-page case, and has_more must reflect
+    # that even though `total` (34,999) would suggest otherwise.
+    assert result["has_more"] is False
     assert result["source"] == "shared public property catalog"
     assert result["coverage"]["jurisdictions_live"] == 51
     assert result["listings"][0]["fact_coverage"] == {
@@ -124,16 +152,115 @@ def test_pipeline_default_count_uses_exact_summary(monkeypatch):
 def test_public_catalog_state_search_is_normalized_and_not_tenant_scoped(monkeypatch):
     tenant_id = "22222222-2222-2222-2222-222222222222"
     ctx = TenantContext(agent_id="agent", tenant_id=tenant_id, role=Role.AGENT)
-    _result, conn = _run_search(monkeypatch, ctx, state="de", page=2)
+    result, conn = _run_search(monkeypatch, ctx, state="de", page=2)
 
+    # A state filter is index-bounded (idx_public_property_state_recent), so
+    # unlike the unfiltered browse this keeps the exact COUNT(*) — a filtered
+    # result set is cheap to count and the number is worth being exact about.
     assert "FROM public_property_records" in conn.count_query
     assert "tenant_id" not in conn.count_query
     assert "state = $1" in conn.count_query
     assert conn.count_args == ("DE",)
+    assert result["total_is_estimate"] is False
     assert "tenant_id" not in conn.data_query
     assert "state = $1" in conn.data_query
     assert "ORDER BY match_score DESC, record_refreshed_at DESC, id ASC" in conn.data_query
-    assert conn.data_args == ("DE", mls_portal.PAGE_SIZE, mls_portal.PAGE_SIZE)
+    assert conn.data_args == ("DE", mls_portal.PAGE_SIZE + 1, mls_portal.PAGE_SIZE)
+
+
+class _FakeConnectionNRows(_FakeConnection):
+    """Returns exactly `row_count` catalog rows, so has_more can be exercised
+    at both sides of the PAGE_SIZE+1 boundary. `total` is deliberately absurd
+    (1) so a test relying on total-vs-offset arithmetic instead of the actual
+    fetched-row count would fail loudly rather than passing by coincidence.
+    """
+
+    def __init__(self, row_count: int) -> None:
+        super().__init__()
+        self._row_count = row_count
+
+    async def fetchrow(self, query: str, *args):
+        self.count_query = query
+        self.count_args = args
+        return {"n": 1}
+
+    async def fetch(self, query: str, *args):
+        if " FROM leads\n" in query:
+            self.lead_lookup_query = query
+            self.lead_lookup_args = args
+            return []
+        self.data_query = query
+        self.data_args = args
+        base = {
+            "id": "11111111-1111-1111-1111-111111111111",
+            "public_record_id": "11111111-1111-1111-1111-111111111111",
+            "parcel_id": "safe-parcel",
+            "state": "DE",
+            "source_key": "firehose:DE",
+            "source_metadata": "{}",
+            "source_name": "New Castle County parcels + ownership",
+            "coverage_scope": "county:New Castle",
+            "detail_level": "standard",
+            "observed_fields": ["parcel_id", "state"],
+            "verification_required": True,
+            "record_refreshed_at": datetime.now(timezone.utc),
+            "match_score": 0,
+            "match_type": "browse",
+            "sqft": 1400,
+            "address": "",
+            "city": "",
+            "zip": "",
+            "county": "",
+            "owner_name": "",
+            "owner_type": "",
+            "last_sale_date": None,
+            "is_absentee": False,
+            "price": None,
+            "equity_percent": None,
+            "distress_flags": [],
+        }
+        return [dict(base) for _ in range(self._row_count)]
+
+
+def _run_search_with_conn(monkeypatch, ctx, conn, **kwargs):
+    params = {
+        "city": None, "state": None, "zip": None, "min_price": None,
+        "max_price": None, "beds": None, "q": None, "page": 1,
+    }
+    params.update(kwargs)
+
+    @asynccontextmanager
+    async def fake_tenant_tx(received_ctx):
+        assert received_ctx == ctx
+        yield conn
+
+    monkeypatch.setattr(mls_portal, "tenant_tx", fake_tenant_tx)
+    return asyncio.run(mls_portal.mls_pipeline_search(ctx=ctx, **params))
+
+
+def test_has_more_is_read_from_fetched_rows_not_from_total(monkeypatch):
+    """The whole point of fetching PAGE_SIZE+1: pagination must stay correct
+    even when `total` is an estimate that disagrees with what was actually
+    fetched. Both fakes here report the same absurd total=1; only the row
+    count fetched decides has_more, and the returned page is trimmed back to
+    PAGE_SIZE either way."""
+    ctx = TenantContext(
+        agent_id="operator",
+        tenant_id="00000000-0000-0000-0000-000000000000",
+        role=Role.PLATFORM_ADMIN,
+    )
+
+    full_page_plus_one = _run_search_with_conn(
+        monkeypatch, ctx, _FakeConnectionNRows(mls_portal.PAGE_SIZE + 1)
+    )
+    assert full_page_plus_one["has_more"] is True
+    assert len(full_page_plus_one["listings"]) == mls_portal.PAGE_SIZE
+
+    exactly_one_short = _run_search_with_conn(
+        monkeypatch, ctx, _FakeConnectionNRows(mls_portal.PAGE_SIZE)
+    )
+    assert exactly_one_short["has_more"] is False
+    assert len(exactly_one_short["listings"]) == mls_portal.PAGE_SIZE
 
 
 def test_public_catalog_complex_filter_keeps_exact_catalog_count(monkeypatch):
@@ -142,13 +269,14 @@ def test_public_catalog_complex_filter_keeps_exact_catalog_count(monkeypatch):
         tenant_id="00000000-0000-0000-0000-000000000000",
         role=Role.PLATFORM_ADMIN,
     )
-    _result, conn = _run_search(monkeypatch, ctx, city="Milford", min_price=100_000)
+    result, conn = _run_search(monkeypatch, ctx, city="Milford", min_price=100_000)
 
     assert "FROM public_property_records" in conn.count_query
     assert "lead_pipeline_counts" not in conn.count_query
     assert "city ILIKE $1" in conn.count_query
     assert conn.count_args == ("Milford", 100_000)
-    assert conn.data_args == ("Milford", 100_000, mls_portal.PAGE_SIZE, 0)
+    assert result["total_is_estimate"] is False
+    assert conn.data_args == ("Milford", 100_000, mls_portal.PAGE_SIZE + 1, 0)
 
 
 def test_public_catalog_search_normalizes_exact_address_and_ranks_matches(monkeypatch):
@@ -173,10 +301,11 @@ def test_public_catalog_search_normalizes_exact_address_and_ranks_matches(monkey
         "DE",
         "%15 Main St., Dover%",
         "15mainstdover",
-        mls_portal.PAGE_SIZE,
+        mls_portal.PAGE_SIZE + 1,
         0,
     )
     assert result["accuracy"]["ranked_exact_matches"] is True
+    assert result["total_is_estimate"] is False
 
 
 def test_exact_florida_match_runs_one_bounded_official_source_join(monkeypatch):

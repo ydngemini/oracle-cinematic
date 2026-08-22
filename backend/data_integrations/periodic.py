@@ -517,7 +517,32 @@ async def _market_research_task() -> dict:
         from market_research_agent import run_market_research_sync
     except Exception as exc:  # noqa: BLE001
         return {"skipped": f"market research agent import failed: {exc}"}
-    return await run_market_research_sync()
+    result = await run_market_research_sync()
+
+    # Project what just landed into state_market_stats, which is the table the
+    # compliance/market routes and the get_market_trends tool actually read.
+    # Without this the sync refreshed public_market_metrics while every caller
+    # continued to be served migration 0025's 2024-10-01 seed.
+    try:
+        import os as _os
+
+        from db.connection import tenant_tx
+        from state_market_projection import project_state_market_stats
+        from tenancy import Role, TenantContext
+
+        # Same platform identity the market sync writes under — both tables are
+        # platform-wide reference data, not tenant rows.
+        ctx = TenantContext(
+            agent_id="state-market-projection",
+            tenant_id=_os.getenv("ORACLE_INGEST_TENANT_ID")
+            or _os.getenv("ORACLE_PLATFORM_TENANT_ID", "00000000-0000-0000-0000-000000000000"),
+            role=Role.PLATFORM_ADMIN,
+        )
+        async with tenant_tx(ctx) as conn:
+            result["state_market_stats"] = await project_state_market_stats(conn)
+    except Exception as exc:  # noqa: BLE001 — the sync's own result is still worth returning
+        result["state_market_stats"] = {"error": str(exc)[:200]}
+    return result
 
 
 async def _retention_cleanup_task() -> dict:

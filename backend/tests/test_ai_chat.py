@@ -1,4 +1,5 @@
 import asyncio
+import re
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from types import SimpleNamespace
@@ -8,6 +9,8 @@ import uuid
 
 import pytest
 from pydantic import ValidationError
+
+import ai_chat_agent
 
 import ws_hub
 from ai_chat_agent import (
@@ -171,18 +174,29 @@ def test_personal_ai_note_reports_success_only_after_insert(monkeypatch):
     client_id = str(uuid.uuid4())
     message_id = str(uuid.uuid4())
     note_id = uuid.uuid4()
+    activity_id = uuid.uuid4()
+    action_id = uuid.uuid4()
 
     class _Conn:
         def __init__(self):
             self.executed = []
 
         async def fetchval(self, query, *args):
+            if "pgp_sym_encrypt" in query:
+                return b"ciphertext"
             assert "tenant_id=$2::uuid" in query
             return 1
 
         async def fetchrow(self, query, *args):
-            assert "INSERT INTO client_notes" in query
-            return {"id": note_id, "created_at": datetime.now(timezone.utc)}
+            self.executed.append((query, args))
+            if "INSERT INTO client_notes" in query:
+                return {"id": note_id, "created_at": datetime.now(timezone.utc)}
+            if "INSERT INTO client_activities" in query:
+                return {"id": activity_id}
+            if "INSERT INTO ai_chat_actions" in query:
+                return {"id": action_id,
+                        "undo_expires_at": datetime.now(timezone.utc)}
+            raise AssertionError(f"unexpected statement: {query[:80]}")
 
         async def execute(self, query, *args):
             self.executed.append((query, args))
@@ -213,6 +227,15 @@ def test_personal_ai_note_reports_success_only_after_insert(monkeypatch):
     assert receipt["ok"] is True
     assert receipt["note_id"] == str(note_id)
     assert any("INSERT INTO client_activities" in query for query, _ in conn.executed)
+    # The note is a mutation, so it must land in the undo ledger. Without this
+    # the UI still rendered an "applied, undoable" receipt — with an Undo button
+    # that POSTed to .../actions/undefined/undo.
+    assert receipt["action_id"] == str(action_id)
+    assert receipt["undoable"] is True
+    ledger = next(args for query, args in conn.executed
+                  if "INSERT INTO ai_chat_actions" in query)
+    assert "row_delete" in ledger
+    assert str(note_id) in json.dumps(ledger[-1])
 
 
 def test_contract_tool_fails_closed_until_controlled_workflow_exists(monkeypatch):
@@ -249,10 +272,48 @@ def test_agent_tool_config_only_advertises_durable_execution_paths():
     assert "list_deals" in names
     assert "get_team_pipeline" in names
     assert "list_providers" in names
-    assert "search_listings" not in names
+    # search_listings was previously asserted absent because nothing could
+    # execute it. It has a handler now, so the durable form of that assertion is
+    # the rule, not the name: a tool is advertised exactly when a handler exists.
+    assert "search_listings" in names
     assert "generate_contract" not in names
-    assert "assign_client" not in names
+    # assign_client was a flat refusal ("AI assignment is disabled"). P11 turns
+    # it into a ledgered field update that first checks the target is an active
+    # member of the workspace — assignee_id is free text, and the refusal was
+    # standing in for that check.
+    assert "assign_client" in names
     assert all(ai_chat_store.is_agent_tool_available(name) for name in names)
+
+
+def test_no_advertised_tool_falls_through_to_not_implemented():
+    """The allowlist may never run ahead of the execution path.
+
+    Every name offered to the model has to reach a handler; anything that does
+    not would answer "not implemented in this execution path" — the model would
+    have been told a capability exists and then be refused by the code that was
+    supposed to provide it.
+    """
+    from ai_tools_read import TOOLS_HANDLED
+
+    # Derived from the dispatcher's own source rather than restated here: a
+    # hand-kept copy is the thing this test exists to catch.
+    store_source = (
+        Path(ai_chat_store.__file__).read_text().split("async def _execute_safe_tool", 1)[1]
+    )
+    from ai_tools_gated import TOOLS_HANDLED as GATED
+
+    handled_elsewhere = set(GATED)
+    handled_elsewhere |= set(re.findall(r'tool_name == "([a-z_]+)"', store_source))
+    for group in re.findall(r'tool_name in [\{\(]([^}\)]*)[\}\)]', store_source):
+        handled_elsewhere |= set(re.findall(r'"([a-z_]+)"', group))
+
+    advertised = {
+        tool["toolSpec"]["name"]
+        for context in (None, "client", "listing", "lead")
+        for tool in (_tool_config(context) or {"tools": []})["tools"]
+    }
+    unreachable = advertised - TOOLS_HANDLED - handled_elsewhere
+    assert not unreachable, f"advertised with no handler: {sorted(unreachable)}"
 
 
 def test_foundry_tool_config_uses_the_same_capability_gate():
@@ -262,9 +323,13 @@ def test_foundry_tool_config_uses_the_same_capability_gate():
     assert "set_client_stage" in client_names
     assert "move_deal_stage" not in client_names
     assert "move_deal_stage" in lead_names
-    assert "search_listings" not in client_names
+    assert "search_listings" in client_names
     assert "generate_contract" not in client_names
-    assert "call_contact" not in client_names
+    # call_contact is offered now, but only with a client selected and only as
+    # a request: it stages a command_executions row for a human to approve and
+    # reaches no provider. It used to accept a model-supplied phone number.
+    assert "call_contact" in client_names
+    assert "call_contact" not in {tool["name"] for tool in _foundry_tools(None)}
     assert all(ai_chat_store.is_agent_tool_available(name) for name in client_names | lead_names)
 
 
@@ -456,7 +521,10 @@ def test_local_fallback_runs_a_tool_loop_through_the_safe_executor(monkeypatch):
 
     async def fake_execute(ctx, agent_id, assistant_id, name, args, ctype, cid):
         executed.append((name, args, ctype, cid))
-        return {"ok": True, "summary": "note added"}
+        # An applied mutation carries its ai_chat_actions row; a receipt without
+        # one is not broadcast as an applied record change.
+        return {"ok": True, "action_id": "act-1", "undoable": True,
+                "summary": "note added"}
 
     responses = [
         {"choices": [{"message": {
@@ -469,7 +537,7 @@ def test_local_fallback_runs_a_tool_loop_through_the_safe_executor(monkeypatch):
     ]
     sent = []
 
-    async def fake_chat(payload):
+    async def fake_chat(payload, **_kwargs):
         sent.append(payload)
         return responses[len(sent) - 1]
 
@@ -513,7 +581,7 @@ def test_local_fallback_reports_malformed_tool_arguments_instead_of_guessing(mon
     ]
     sent = []
 
-    async def fake_chat(payload):
+    async def fake_chat(payload, **_kwargs):
         sent.append(payload)
         return responses[len(sent) - 1]
 
@@ -541,7 +609,7 @@ def test_local_fallback_retries_without_tools_when_the_server_rejects_them(monke
 
     attempts = []
 
-    async def fake_chat(payload):
+    async def fake_chat(payload, **_kwargs):
         attempts.append("tools" in payload)
         if "tools" in payload:
             raise httpx.HTTPStatusError(
@@ -587,7 +655,7 @@ def test_read_only_tool_results_are_not_broadcast_as_record_changes(monkeypatch)
     ]
     sent = []
 
-    async def fake_chat(payload):
+    async def fake_chat(payload, **_kwargs):
         sent.append(payload)
         return responses[len(sent) - 1]
 
@@ -618,7 +686,7 @@ def test_local_fallback_keeps_receipts_for_writes_that_already_committed(monkeyp
     async def fake_execute(ctx, agent_id, assistant_id, name, args, ctype, cid):
         return {"ok": True, "action_id": "a-1", "summary": "stage moved"}
 
-    async def fake_chat(payload):
+    async def fake_chat(payload, **_kwargs):
         return {"choices": [{"message": {
             "role": "assistant", "content": "",
             "tool_calls": [{"id": "call_n", "type": "function", "function": {
@@ -644,3 +712,135 @@ def test_local_fallback_keeps_receipts_for_writes_that_already_committed(monkeyp
         )
     assert len(applied) == ai_chat_agent._LOCAL_TOOL_ROUNDS
     assert applied[0]["action_id"] == "a-1"
+
+
+def test_voice_reply_abandons_a_slow_tier_inside_the_live_call_budget(monkeypatch):
+    """A phone caller is waiting and Twilio will not.
+
+    The per-tier timeouts are sized for a chat box (120s). On a <Gather> action
+    request Twilio gives up around 15s, plays its own error over the caller and
+    drops the call — so a slow tier has to be abandoned long before its own
+    timeout fires, and the remaining tiers skipped rather than stacked on top.
+    """
+    import time
+    import ai_chat_agent
+
+    foundry_calls = []
+
+    async def never_answers(payload, **_kwargs):
+        await asyncio.sleep(30)
+
+    def fake_foundry(*args, **kwargs):
+        foundry_calls.append(args)
+        return SimpleNamespace(output_text="late answer")
+
+    # This test is about the pre-gateway ladder, which _generate_voice_reply
+    # now uses only when no gateway provider is configured. Stating that here
+    # keeps the subject fixed — otherwise a developer with Foundry credentials
+    # in .env silently exercises a different code path than CI does.
+    monkeypatch.setattr(ai_chat_agent, "_gateway_chat_providers", lambda: [])
+    monkeypatch.setattr(ai_chat_agent, "FIREWORKS_ENABLED", True)
+    monkeypatch.setattr(ai_chat_agent, "FIREWORKS_API_KEY", "fw-test-key")
+    monkeypatch.setattr(ai_chat_agent, "VOICE_REPLY_BUDGET_SECONDS", 0.3)
+    monkeypatch.setattr(ai_chat_agent, "_local_chat", never_answers)
+    monkeypatch.setattr(ai_chat_agent, "_foundry_response", fake_foundry)
+
+    started = time.monotonic()
+    reply = asyncio.run(ai_chat_agent._generate_voice_reply("+15555550123", "hello?"))
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 3, f"voice reply overran the live-call budget ({elapsed:.1f}s)"
+    assert reply == ai_chat_agent._VOICE_STALL_LINE
+    # Budget already spent: a second tier here would only push the caller further
+    # past the point where Twilio has hung up on them.
+    assert foundry_calls == []
+
+
+# ---------------------------------------------------------------------------
+# Voice replies through the gateway (P1 remainder)
+# ---------------------------------------------------------------------------
+
+def _voice_provider():
+    import llm_gateway
+
+    return llm_gateway.Provider(name="fireworks", model="fireworks_ai/m")
+
+
+def test_voice_reply_gives_the_gateway_the_whole_call_budget(monkeypatch):
+    """Twilio abandons a <Gather> around 15s and talks over the caller. Two
+    fallbacks each given a fresh 8s would spend 16 — so the budget bounds the
+    whole call, which is what complete() implements."""
+    import llm_gateway
+
+    captured = {}
+
+    async def _complete(prompt, **kwargs):
+        captured.update(kwargs)
+        return "Sure, I can help with that."
+
+    monkeypatch.setattr(ai_chat_agent, "_gateway_chat_providers", lambda: [_voice_provider()])
+    monkeypatch.setattr(llm_gateway, "complete", _complete)
+
+    reply = asyncio.run(ai_chat_agent._generate_voice_reply("+15555550123", "hello?"))
+
+    assert reply == "Sure, I can help with that."
+    assert captured["timeout"] == ai_chat_agent.VOICE_REPLY_BUDGET_SECONDS
+    # The latency ladder, not the analysis one — a caller is on the line.
+    assert captured["task"] == "fast"
+
+
+def test_voice_reply_returns_the_stall_line_rather_than_raising(monkeypatch):
+    """A live call never gets a traceback. Every failure is a spoken sentence."""
+    import llm_gateway
+
+    async def _boom(prompt, **kwargs):
+        raise llm_gateway.LLMUnavailable("every provider failed")
+
+    monkeypatch.setattr(ai_chat_agent, "_gateway_chat_providers", lambda: [_voice_provider()])
+    monkeypatch.setattr(llm_gateway, "complete", _boom)
+
+    reply = asyncio.run(ai_chat_agent._generate_voice_reply("+15555550123", "hello?"))
+    assert reply == ai_chat_agent._VOICE_STALL_LINE
+
+
+def test_voice_reply_is_capped_so_the_caller_is_not_read_a_monologue(monkeypatch):
+    import llm_gateway
+
+    async def _long(prompt, **kwargs):
+        return "word " * 400
+
+    monkeypatch.setattr(ai_chat_agent, "_gateway_chat_providers", lambda: [_voice_provider()])
+    monkeypatch.setattr(llm_gateway, "complete", _long)
+
+    reply = asyncio.run(ai_chat_agent._generate_voice_reply("+15555550123", "hello?"))
+    assert len(reply) <= 300
+
+
+def test_a_blank_completion_becomes_the_stall_line(monkeypatch):
+    import llm_gateway
+
+    async def _blank(prompt, **kwargs):
+        return "   "
+
+    monkeypatch.setattr(ai_chat_agent, "_gateway_chat_providers", lambda: [_voice_provider()])
+    monkeypatch.setattr(llm_gateway, "complete", _blank)
+
+    reply = asyncio.run(ai_chat_agent._generate_voice_reply("+15555550123", "hello?"))
+    assert reply == ai_chat_agent._VOICE_STALL_LINE
+
+
+def test_without_a_gateway_the_original_ladder_still_answers_callers(monkeypatch):
+    """A deployment that has not installed litellm must not answer every turn
+    with a stall line — the pre-gateway ladder is kept for exactly that."""
+    called = {}
+
+    async def _direct(caller_id, speech_text):
+        called["used"] = True
+        return "answered by the direct path"
+
+    monkeypatch.setattr(ai_chat_agent, "_gateway_chat_providers", lambda: [])
+    monkeypatch.setattr(ai_chat_agent, "_voice_reply_direct", _direct)
+
+    reply = asyncio.run(ai_chat_agent._generate_voice_reply("+15555550123", "hello?"))
+    assert called.get("used") is True
+    assert reply == "answered by the direct path"

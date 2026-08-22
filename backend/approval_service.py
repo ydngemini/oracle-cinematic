@@ -9,6 +9,7 @@ from typing import Any, Mapping, Optional
 from audit_ledger import AuditCategory, ledger
 from automation_jobs import canonical_json, payload_hash
 from db.connection import tenant_tx
+from decision_traces import SURFACE_APPROVAL, record_decision
 from platform_policy import ActionRisk, validate_approval_reason
 from tenancy import Role, TenantContext, require_role
 
@@ -90,7 +91,17 @@ async def decide_approval(
     *,
     decision: str,
     reason: str,
+    edited_payload: Optional[Mapping[str, Any]] = None,
 ) -> dict[str, Any]:
+    """Decide a pending approval, optionally recording what the human changed.
+
+    `edited_payload` does NOT alter what gets executed — the approved action
+    still uses the immutable `draft_payload`, which is the whole point of the
+    payload hash. It exists so an approve-with-corrections carries its
+    correction into the training corpus, where the (draft, corrected) pair is
+    the single most valuable signal the platform produces. An edit that hashes
+    to the draft is recorded as a plain acceptance.
+    """
     if decision not in {"approved", "rejected"}:
         raise ValueError("decision must be approved or rejected")
     reason = validate_approval_reason(reason)
@@ -142,6 +153,34 @@ async def decide_approval(
         user_id=ctx.agent_id,
         target_id=approval_id,
         metadata={"reason": reason, "risk_class": existing["risk_class"]},
+    )
+
+    # Capture the judgement as training signal. This runs after the decision is
+    # committed and audited, and cannot fail it — see decision_traces. The
+    # latency is measured from the request, and is a weak confidence proxy only.
+    # Read the raw row, not `approval`: approval_dict() isoformats every
+    # datetime for the wire, and a string here would silently drop the latency
+    # and insert a text value into a timestamptz column.
+    decided_at = row["decided_at"] or datetime.now(timezone.utc)
+    latency_ms: Optional[int] = None
+    requested_at = existing["requested_at"]
+    if isinstance(decided_at, datetime) and isinstance(requested_at, datetime):
+        latency_ms = max(0, int((decided_at - requested_at).total_seconds() * 1000))
+    await record_decision(
+        ctx,
+        surface=SURFACE_APPROVAL,
+        action_type=existing["action_type"],
+        risk_class=existing["risk_class"],
+        source_table="action_approvals",
+        source_id=approval_id,
+        proposal=_json_value(existing["draft_payload"]) or {},
+        final=edited_payload,
+        # The row's own status, not the requested decision: an approval that had
+        # already expired is written as 'expired' above, and recording it as
+        # 'approved' would put a decision in the corpus that never happened.
+        decision=approval["status"],
+        decided_at=decided_at,
+        decision_latency_ms=latency_ms,
     )
     return approval
 

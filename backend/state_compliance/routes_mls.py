@@ -24,6 +24,7 @@ from ._common import (
     ALL_STATE_CODES, _ATTORNEY_REVIEW_STATES, _MANDATORY_DISCLOSURE_STATES,
     _TDS_STATES, _FEDERAL_LEAD_PAINT_THRESHOLD_YEAR,
     _iso, _num, _require_state, _require_uuid, _fetch, _fetchrow,
+    _require_dataset_loaded,
 )
 from .models import (  # noqa: F401  (re-exported for route handlers)
     StateSummary,
@@ -78,6 +79,9 @@ async def list_mls_regions(
     query += " ORDER BY mls_name"
 
     rows = await _fetch(ctx, query, *args)
+    if not rows:
+        # An empty registry is not "this state has no MLS boards".
+        await _require_dataset_loaded(ctx, "mls_boards")
     return [
         MLSRegion(
             mls_id=str(r.get("id", uuid.uuid4())),
@@ -156,57 +160,85 @@ async def mls_search(
     schema.  Filters include price range, beds/baths, sqft, property type,
     status, and optional radius search when ``lat``/``lng`` are provided.
     """
-    conditions: list[str] = ["mls_id <> 'rentcast'"]
-    args: list[Any] = []
-    idx = 0
+    def _build(include_radius: bool) -> tuple[str, str, list[Any], list[Any]]:
+        """Compose the count and page queries; returns (count_q, data_q, count_args, data_args)."""
+        conditions: list[str] = ["mls_id <> 'rentcast'"]
+        args: list[Any] = []
+        idx = 0
 
-    def _arg(v: Any) -> str:
-        nonlocal idx
-        args.append(v)
-        idx += 1
-        return f"${idx}"
+        def _arg(v: Any) -> str:
+            nonlocal idx
+            args.append(v)
+            idx += 1
+            return f"${idx}"
 
-    if body.mls_ids:
-        conditions.append(f"mls_id = ANY({_arg(body.mls_ids)})")
-    if body.state_codes:
-        conditions.append(f"state_code = ANY({_arg(body.state_codes)})")
-    if body.min_price is not None:
-        conditions.append(f"list_price >= {_arg(body.min_price)}")
-    if body.max_price is not None:
-        conditions.append(f"list_price <= {_arg(body.max_price)}")
-    if body.min_beds is not None:
-        conditions.append(f"beds >= {_arg(body.min_beds)}")
-    if body.min_baths is not None:
-        conditions.append(f"(baths_full + baths_half * 0.5) >= {_arg(body.min_baths)}")
-    if body.min_sqft is not None:
-        conditions.append(f"sqft >= {_arg(body.min_sqft)}")
-    if body.max_sqft is not None:
-        conditions.append(f"sqft <= {_arg(body.max_sqft)}")
-    if body.property_types:
-        conditions.append(f"property_type = ANY({_arg(body.property_types)})")
-    if body.status:
-        conditions.append(f"status = {_arg(body.status)}")
-    if body.lat is not None and body.lng is not None and body.radius_miles is not None:
-        # PostGIS: earth_distance via the earthdistance extension (miles).
-        conditions.append(
-            f"earth_distance(ll_to_earth(latitude, longitude), "
-            f"ll_to_earth({_arg(body.lat)}, {_arg(body.lng)})) "
-            f"<= {_arg(body.radius_miles * 1609.34)}"
+        if body.mls_ids:
+            conditions.append(f"mls_id = ANY({_arg(body.mls_ids)})")
+        if body.state_codes:
+            conditions.append(f"state_code = ANY({_arg(body.state_codes)})")
+        if body.min_price is not None:
+            conditions.append(f"list_price >= {_arg(body.min_price)}")
+        if body.max_price is not None:
+            conditions.append(f"list_price <= {_arg(body.max_price)}")
+        if body.min_beds is not None:
+            conditions.append(f"beds >= {_arg(body.min_beds)}")
+        if body.min_baths is not None:
+            conditions.append(f"(baths_full + baths_half * 0.5) >= {_arg(body.min_baths)}")
+        if body.min_sqft is not None:
+            conditions.append(f"sqft >= {_arg(body.min_sqft)}")
+        if body.max_sqft is not None:
+            conditions.append(f"sqft <= {_arg(body.max_sqft)}")
+        if body.property_types:
+            conditions.append(f"property_type = ANY({_arg(body.property_types)})")
+        if body.status:
+            conditions.append(f"status = {_arg(body.status)}")
+        if include_radius:
+            # earth_distance/ll_to_earth come from the `earthdistance` extension,
+            # which 0013 creates best-effort — see the retry below.
+            conditions.append(
+                f"earth_distance(ll_to_earth(latitude, longitude), "
+                f"ll_to_earth({_arg(body.lat)}, {_arg(body.lng)})) "
+                f"<= {_arg(body.radius_miles * 1609.34)}"
+            )
+
+        where = " AND ".join(conditions)
+        count_args = list(args)  # everything bound so far — no LIMIT/OFFSET
+        count_q = f"SELECT COUNT(*) FROM oracle_mls_listings WHERE {where}"
+        data_q = (
+            f"SELECT * FROM oracle_mls_listings WHERE {where} "
+            f"ORDER BY list_date DESC NULLS LAST "
+            f"LIMIT {_arg(body.limit)} OFFSET {_arg(body.offset)}"
         )
+        return count_q, data_q, count_args, args
 
-    where = " AND ".join(conditions)
-    count_q = f"SELECT COUNT(*) FROM oracle_mls_listings WHERE {where}"
-    data_q = (
-        f"SELECT * FROM oracle_mls_listings WHERE {where} "
-        f"ORDER BY list_date DESC NULLS LAST "
-        f"LIMIT {_arg(body.limit)} OFFSET {_arg(body.offset)}"
+    async def _run(count_q: str, data_q: str, count_args: list, data_args: list):
+        async with tenant_tx(ctx) as conn:
+            count_row = await conn.fetchrow(count_q, *count_args)
+            total = int(count_row["count"]) if count_row else 0
+            rows = [dict(r) for r in await conn.fetch(data_q, *data_args)]
+            return total, rows
+
+    wants_radius = (
+        body.lat is not None and body.lng is not None and body.radius_miles is not None
     )
+    radius_applied = wants_radius
 
     try:
-        async with tenant_tx(ctx) as conn:
-            count_row = await conn.fetchrow(count_q, *args[: idx - 2])
-            total = int(count_row["count"]) if count_row else 0
-            rows = [dict(r) for r in await conn.fetch(data_q, *args)]
+        try:
+            total, rows = await _run(*_build(include_radius=wants_radius))
+        except Exception as exc:
+            # 42883 = undefined_function: the earthdistance extension is absent.
+            # Retry without the distance predicate and say so on the response —
+            # dropping the filter silently would present listings from anywhere
+            # in the dataset as being within the caller's radius.
+            if not wants_radius or getattr(exc, "sqlstate", None) != "42883":
+                raise
+            logger.warning(
+                "MLS radius search unavailable (earthdistance/cube missing) — "
+                "returning distance-unfiltered results with radius_applied=false."
+            )
+            radius_applied = False
+            total, rows = await _run(*_build(include_radius=False))
     except HTTPException:
         raise
     except Exception as exc:
@@ -256,6 +288,7 @@ async def mls_search(
         offset=body.offset,
         limit=body.limit,
         listings=listings,
+        radius_applied=radius_applied,
     )
 
 

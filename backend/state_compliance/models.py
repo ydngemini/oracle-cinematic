@@ -108,9 +108,14 @@ class StateProfile(BaseModel):
     ce_hours_per_cycle: Optional[int] = None
     license_renewal_years: int = 2
     buyer_agency_required: bool = False
-    dual_agency_permitted: bool = True
-    designated_agency_permitted: bool = True
-    sub_agency_permitted: bool = True
+    # None = not researched for this state. These are licensing-relevant legal
+    # facts, so a default of True would state that a form of agency is
+    # permitted somewhere nobody checked. Migration 0069 NULLs the two that
+    # were never seeded; dual_agency_permitted IS seeded per state and normally
+    # arrives populated.
+    dual_agency_permitted: Optional[bool] = None
+    designated_agency_permitted: Optional[bool] = None
+    sub_agency_permitted: Optional[bool] = None
     earnest_money_escrow_days: Optional[int] = None
     closing_attorney_states: bool = False
     transfer_tax_rate: Optional[float] = None
@@ -140,7 +145,11 @@ class LicenseRequirements(BaseModel):
 class ReciprocityInfo(BaseModel):
     from_state: str
     to_state: str
-    reciprocity_class: str  # "full" | "partial" | "none"
+    # "full" | "partial" | "none" | "unknown". "none" is a researched finding
+    # that the pair has no reciprocity; "unknown" means we hold no data for it.
+    # Collapsing the second into the first tells an agent they cannot practise
+    # in a state we never checked.
+    reciprocity_class: str
     additional_requirements: list[str] = Field(default_factory=list)
     notes: Optional[str] = None
 
@@ -276,6 +285,12 @@ class MLSSearchResponse(BaseModel):
     offset: int
     limit: int
     listings: list[NormalizedListing]
+    # False when lat/lng/radius were supplied but the radius filter could not be
+    # applied (the `earthdistance` extension is created best-effort by 0013 and
+    # may be absent). The results are then unfiltered by distance — returning
+    # them silently would present listings anywhere in the dataset as "within
+    # your radius".
+    radius_applied: bool = True
 
 
 # ---------------------------------------------------------------------------
@@ -295,6 +310,12 @@ class StateMarketOverview(BaseModel):
     list_to_sale_ratio: Optional[float] = None
     avg_price_per_sqft: Optional[float] = None
     as_of_date: Optional[date] = None
+    # How old the underlying row is, and whether that is old enough that a
+    # caller should not price a deal off it. `as_of_date` alone was already
+    # returned, but nothing made a two-year-old figure look any different from
+    # this morning's.
+    data_vintage_days: Optional[int] = None
+    is_stale: bool = False
 
 
 class CountyMarketData(BaseModel):
@@ -316,9 +337,17 @@ class CountyMarketData(BaseModel):
 class FloodZoneResult(BaseModel):
     latitude: float
     longitude: float
-    fema_zone: str          # e.g. "AE", "X", "VE", "0.2PCT"
+    # "UNKNOWN" when no NFHL source could answer for this coordinate. Flood
+    # status is a materially disclosable condition in a real-estate
+    # transaction, so "we could not determine it" must be representable and
+    # must not collapse into zone X — the designation that means "surveyed,
+    # and found to be outside the SFHA".
+    fema_zone: str          # e.g. "AE", "X", "VE", "0.2PCT", "UNKNOWN"
     zone_description: str
-    flood_insurance_required: bool
+    # None = undetermined. A hard False here reads downstream as "no flood
+    # insurance needed", which is an assertion no absent dataset can support.
+    flood_insurance_required: Optional[bool]
+    data_available: bool = True
     firm_panel: Optional[str] = None
     firm_date: Optional[date] = None
     community_name: Optional[str] = None
@@ -344,6 +373,17 @@ class SchoolsResponse(BaseModel):
     longitude: float
     radius_miles: float
     districts: list[SchoolDistrict]
+    # False when the radius could not be honoured — the live NCES fallback is a
+    # point-in-polygon lookup that returns the containing district only, and the
+    # local table needs the `earthdistance` extension, which may be absent.
+    # Without this a caller reads one district as "the only one within 5 miles".
+    radius_applied: bool = True
+    # "local_dataset" | "nces_edge" | "none"
+    source: str = "local_dataset"
+    # False when no source could answer at all. An empty `districts` list is
+    # otherwise indistinguishable from "this coordinate has no school districts",
+    # which is not a thing that is true of anywhere in the US.
+    data_available: bool = True
 
 
 class ZoningResult(BaseModel):

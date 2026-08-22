@@ -35,6 +35,12 @@ RATE_LIMITS = {
     "/api/ai/chat": 20,
     "/api/public/lead-intake/": 30,
     "/api/crm/tour": 5,
+    # AI tour generation. Previously enforced by a module-level list in
+    # server.py, which made the ceiling process-global: every tenant on a
+    # replica shared it, and each replica enforced its own copy, so N replicas
+    # allowed N× the intended rate while one busy tenant could consume the whole
+    # allowance for everyone. Here it is per-principal and cross-replica.
+    "/api/generate-tour": int(os.getenv("ORACLE_TOUR_RATE_LIMIT", "10")),
     "/api/": 100,  # Default for all other API endpoints
 }
 
@@ -65,8 +71,6 @@ PREFLIGHT_RATE_LIMIT = _env_int(
     "ORACLE_PREFLIGHT_RATE_LIMIT", 600, minimum=60
 )
 
-# Burst allowance (extra requests allowed in short bursts)
-BURST_MULTIPLIER = 1.5
 WINDOW_SECONDS = 60
 
 # In-memory fallback (per-process, not distributed)
@@ -350,12 +354,28 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             limit = _get_limit_for_path(path)
             bucket = _get_bucket_for_path(path)
             identity = _get_client_ip(request)
-            if path.startswith("/api/") and bucket == "/api/":
+            if path.startswith("/api/"):
+                # Resolve the principal for EVERY /api/ path, not only the
+                # generic bucket. A path with its own RATE_LIMITS entry — chat,
+                # tours — previously stayed keyed on client IP even for a fully
+                # authenticated user, so an office behind one NAT shared 20 chat
+                # messages a minute between all of them.
+                #
+                # The per-path limits themselves were never wrong; the identity
+                # was. 20/min is a sensible allowance *per agent*, so the bucket
+                # and limit stay put and only the identity changes.
                 principal = _authenticated_principal(request)
                 if principal:
                     identity = principal
-                    bucket = "/api/authenticated"
-                    limit = AUTHENTICATED_API_RATE_LIMIT
+                    if bucket == "/api/":
+                        # The catch-all exists as a ceiling for unattributed
+                        # traffic; a caller we can name gets the higher
+                        # documented allowance instead.
+                        bucket = "/api/authenticated"
+                        limit = AUTHENTICATED_API_RATE_LIMIT
+
+            # Anonymous callers are unchanged: identity stays the client IP, so
+            # an unauthenticated flood is still contained per source.
 
         allowed, count = await _check_rate_limit_redis(identity, bucket, limit)
 

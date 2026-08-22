@@ -713,12 +713,18 @@ def _parse_intent(raw_text: str) -> ParsedIntent:
 
     # These outrank the comms channels and keep their existing precedence:
     # "call to schedule a meeting with Bob" is CALENDAR, not CALL.
+    #
+    # Matched against the UNSTRIPPED text on purpose. The noun-stripper exists
+    # only to stop the noun "text" being read as the SMS verb, and none of these
+    # keywords can ever be that noun — but the stripper swallows whatever sits
+    # between a determiner and "text", so "send the assignment text to Maria"
+    # became "send to maria" and 422'd a command that used to route to CONTRACT.
     for intent, pattern in (
         (ParsedIntent.MAO_CALC, r"\b(?:mao|max(?:imum)? allowable offer|offer ceiling)\b"),
         (ParsedIntent.CONTRACT, r"\b(?:contract|agreement|assignment)\b"),
         (ParsedIntent.CALENDAR, r"\b(?:calendar|schedule|book|meeting|appointment)\b"),
     ):
-        if re.search(pattern, text):
+        if re.search(pattern, normalized):
             return intent
 
     # Among the three comms channels, the verb the agent led with decides —
@@ -1179,13 +1185,34 @@ async def classify_command(
     }
 
 
-@router.post("", status_code=status.HTTP_201_CREATED)
-async def create_command(
-    body: CommandCreate,
-    ctx: TenantContext = Depends(require_context),
-):
+async def stage_command(
+    ctx: TenantContext,
+    *,
+    command_type: CommandType,
+    target: dict[str, Any],
+    draft: dict[str, Any],
+    context: dict[str, Any],
+    idempotency_key: str,
+    created_by: str,
+    scheduled_at: Optional[datetime] = None,
+    approval_expires_minutes: int = 1_440,
+) -> dict[str, Any]:
+    """Put an outreach command in `awaiting_approval` and return it.
+
+    Extracted from ``create_command`` so the AI tool surface stages an outreach
+    request through the same path a human does: one row in command_executions,
+    one approval, and execution only via ``approve_command`` — which enqueues
+    ``command:execute``, where ``guard_outreach`` runs before any provider call.
+
+    The AI tools previously called ``create_approval`` directly. That produced a
+    pending approval with no command behind it, so approving it did nothing at
+    all: ``decide_approval`` only records the decision, and every executing
+    caller in this codebase enqueues the work itself afterwards. The receipt
+    still said "an admin must approve before the call is placed".
+    """
     require_feature(Feature.AUTOMATION)
-    enforce_public_property_data(body.context)
+    _validate_command_payload(command_type, target, draft)
+    enforce_public_property_data(context)
     async with tenant_tx(ctx) as conn:
         existing = await conn.fetchrow(
             """
@@ -1193,7 +1220,7 @@ async def create_command(
             WHERE tenant_id=$1::uuid AND idempotency_key=$2
             """,
             ctx.tenant_id,
-            body.idempotency_key,
+            idempotency_key,
         )
     if existing:
         return {"command": _command_dict(existing), "created": False}
@@ -1201,20 +1228,20 @@ async def create_command(
     command_id = str(uuid.uuid4())
     execution = _execution_payload(
         command_id=command_id,
-        command_type=body.command_type,
-        target=body.target,
-        draft=body.draft,
-        context=body.context,
+        command_type=command_type,
+        target=target,
+        draft=draft,
+        context=context,
         tenant_id=ctx.tenant_id,
     )
     approval = await create_approval(
         ctx,
-        action_type=f"command:{body.command_type.value}",
-        risk=_RISK[body.command_type],
+        action_type=f"command:{command_type.value}",
+        risk=_RISK[command_type],
         target_type="command",
         target_id=command_id,
         draft_payload=execution,
-        expires_in_minutes=body.approval_expires_minutes,
+        expires_in_minutes=approval_expires_minutes,
     )
     async with tenant_tx(ctx) as conn:
         row = await conn.fetchrow(
@@ -1233,17 +1260,36 @@ async def create_command(
             """,
             command_id,
             ctx.tenant_id,
-            body.command_type.value,
-            f"explicit_{body.command_type.value.lower()}",
-            _RISK[body.command_type].value,
-            json.dumps(body.target),
-            json.dumps({"content": body.draft, "context": body.context}),
+            command_type.value,
+            f"explicit_{command_type.value.lower()}",
+            _RISK[command_type].value,
+            json.dumps(target),
+            json.dumps({"content": draft, "context": context}),
             str(approval["id"]),
-            body.idempotency_key,
-            body.scheduled_at,
-            ctx.agent_id,
+            idempotency_key,
+            scheduled_at,
+            created_by,
         )
     return {"command": _command_dict(row), "approval": approval, "created": True}
+
+
+@router.post("", status_code=status.HTTP_201_CREATED)
+async def create_command(
+    body: CommandCreate,
+    ctx: TenantContext = Depends(require_context),
+):
+    """The human path into the same staging function the AI tools use."""
+    return await stage_command(
+        ctx,
+        command_type=body.command_type,
+        target=body.target,
+        draft=body.draft,
+        context=body.context,
+        idempotency_key=body.idempotency_key,
+        created_by=ctx.agent_id,
+        scheduled_at=body.scheduled_at,
+        approval_expires_minutes=body.approval_expires_minutes,
+    )
 
 
 @router.get("")
@@ -2409,12 +2455,17 @@ async def twilio_webhook(request: Request):
         AI_VOICE_DISCLOSURE
         + " I'm NEOH, your real estate AI assistant. How can I help you today?"
     )
+    # The number Twilio dialled, which is what the TTS allowlist is keyed on —
+    # not the caller's, so a test number cannot be spoofed into the feature by
+    # whoever is calling.
+    to_number = str(form.get("To") or "")
+    greeting_speech = await _spoken(greeting, to_number=to_number)
     if twilio_qwen_enabled(state):
         stream_url = twilio_media_websocket_url()
         bridge_token = create_twilio_bridge_token(call_sid)
         twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-    <Say voice="Polly.Joanna">{_xml_escape(greeting)}</Say>
+    {greeting_speech}
     <Connect>
         <Stream url="{_xml_escape(stream_url)}">
             <Parameter name="bridge_token" value="{_xml_escape(bridge_token)}"/>
@@ -2430,13 +2481,51 @@ async def twilio_webhook(request: Request):
 
     twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-    <Say voice="Polly.Joanna">{_xml_escape(greeting)}</Say>
+    {greeting_speech}
     <Gather {gather_attribs}>
         <Say voice="Polly.Joanna">I'm listening.</Say>
     </Gather>
     <Say voice="Polly.Joanna">I didn't catch that. Goodbye.</Say>
 </Response>"""
     return Response(content=twiml, media_type="application/xml")
+
+
+async def _spoken(text: str, *, to_number: str) -> str:
+    """One line of TwiML speech: ElevenLabs when permitted, Polly otherwise.
+
+    Returns a `<Play>` element for a call on the TTS test allowlist and a
+    `<Say>` for everything else — including every failure path inside
+    voice_tts, which returns None rather than raising. The caller has to hear
+    something: the first line of every call is the FCC-required AI disclosure,
+    and silence there is both a broken call and a compliance failure.
+    """
+    import voice_tts
+
+    url = await voice_tts.play_url(text, to_number=to_number)
+    if url:
+        return f'<Play>{_xml_escape(url)}</Play>'
+    return f'<Say voice="Polly.Joanna">{_xml_escape(text)}</Say>'
+
+
+@router.get("/webhooks/twilio/tts/{token}.mp3", include_in_schema=False)
+async def twilio_tts_audio(token: str):
+    """Serve a rendered line to Twilio.
+
+    Unauthenticated because Twilio fetches it directly, which is safe here: the
+    token is a SHA-256 prefix of the audio itself, so it is unguessable and
+    reveals nothing but a line the caller is about to hear anyway. Entries
+    expire minutes after the call leg that created them.
+    """
+    import voice_tts
+
+    audio = await voice_tts.cache.get(token)
+    if audio is None:
+        raise HTTPException(status_code=404, detail="Audio expired.")
+    return Response(
+        content=audio,
+        media_type="audio/mpeg",
+        headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
+    )
 
 
 @router.post("/webhooks/twilio/status", include_in_schema=False)
@@ -2583,9 +2672,16 @@ async def twilio_speech(request: Request):
     speech_url = f"{os.getenv('ORACLE_PUBLIC_BASE_URL', '').rstrip('/')}/api/commands/webhooks/twilio/speech"
     gather_attribs = f'input="speech" action="{speech_url}" method="POST" timeout="5" speechTimeout="auto"'
 
+    # The reply is the line worth hearing in a voice demo — the greeting is
+    # fixed text, this is the conversation. Synthesis happens after
+    # _generate_voice_reply has already spent its budget, so voice_tts keeps a
+    # short timeout of its own and falls back to Say rather than extending the
+    # wait a caller is already sitting through.
+    reply_speech = await _spoken(ai_reply, to_number=str(form.get("To") or ""))
+
     twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-    <Say voice="Polly.Joanna">{_xml_escape(ai_reply)}</Say>
+    {reply_speech}
     <Gather {gather_attribs}>
         <Say voice="Polly.Joanna"></Say>
     </Gather>

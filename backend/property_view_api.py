@@ -13,8 +13,11 @@ Deliberate boundaries:
     is gated off (SPATIAL_ALLOW_WEB_SCRAPE) for ToS reasons and stays that way.
     "Found through internet listings" here means geocoding + licensed/public
     data providers + any RESO feed the tenant is actually authorised for.
-  * Video is S3-only (migration 0066 enforces it). media_blobs is bytea, which
-    is fine for photos and ruinous for video.
+  * Video is object-storage-only (migration 0066 enforces it). Photos and 360s
+    go there too whenever storage is configured — a 25 MB equirect in a bytea
+    column is the same problem as a video under a different `kind`. media_blobs
+    remains the fallback for deployments with no storage backend, and for rows
+    written before one existed. See media_storage.
   * Client-supplied media is untrusted: quota-capped, size-capped, magic-byte
     sniffed, and held for review.
 """
@@ -32,6 +35,7 @@ from uuid import UUID, uuid4
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+import media_storage
 from db.connection import tenant_tx
 from tenancy import Role, TenantContext, require_context
 
@@ -82,6 +86,56 @@ def _sniff_video(data: bytes) -> Optional[str]:
     if data.startswith(b"\x1a\x45\xdf\xa3"):
         return "video/webm"
     return None
+
+
+# An equirectangular projection covers 360° horizontally by 180° vertically, so
+# it is always 2:1. Real-world exports drift a pixel or two, and some rigs crop
+# a little vertically, so this is a tolerance rather than an equality test.
+_EQUIRECT_RATIO = 2.0
+_EQUIRECT_TOLERANCE = 0.06
+
+
+def _require_equirectangular(data: bytes, filename: Optional[str]) -> None:
+    """Reject an image the agent labelled 360° that plainly is not one.
+
+    This validates a claim the caller already made; it never reclassifies. A
+    flat photo accepted as a pano becomes a scene the viewer wraps onto a
+    sphere, which looks like a smeared room rather than an error — so failing
+    loudly at upload is far kinder than degrading at render time.
+
+    Pillow is a hard dependency of the video studio path and is always present;
+    if it somehow is not, accept the agent's word rather than blocking capture.
+    """
+    try:
+        from io import BytesIO
+
+        from PIL import Image
+
+        with Image.open(BytesIO(data)) as image:
+            width, height = image.size
+    except ImportError:  # pragma: no cover — Pillow ships in requirements.txt
+        log.warning("Pillow unavailable; accepting %r as a 360° scene unchecked.", filename)
+        return
+    except Exception as exc:  # noqa: BLE001 — unreadable image
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            f"{filename or 'file'} could not be read as an image.",
+        ) from exc
+
+    if height <= 0:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            f"{filename or 'file'} has no usable dimensions.",
+        )
+
+    ratio = width / height
+    if abs(ratio - _EQUIRECT_RATIO) > _EQUIRECT_TOLERANCE:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            f"{filename or 'file'} is {width}×{height} ({ratio:.2f}:1). A 360° "
+            f"scene must be equirectangular — close to 2:1. Upload it as a "
+            f"regular photo instead.",
+        )
 
 
 def _hash_token(token: str) -> bytes:
@@ -278,21 +332,33 @@ async def create_subject(
 @router.post("/crm/property-view/media", status_code=status.HTTP_201_CREATED)
 async def agent_upload_media(
     surface: str = Form(default="exterior"),
+    capture: str = Form(default="auto"),
+    floor_index: int = Form(default=0),
     files: list[UploadFile] = File(...),
     lead_id: Optional[UUID] = Query(default=None),
     listing_id: Optional[UUID] = Query(default=None),
     ctx: TenantContext = Depends(require_context),
 ):
-    """Agent-authenticated upload that accepts photos AND video with a surface
-    tag.
+    """Agent-authenticated upload that accepts photos, video AND 360° panoramas.
 
     The pre-existing /crm/leads/{id}/media route is photo-only (its _persist
     hardcodes kind='photo' and sniffs images), so this is a separate route
     rather than a change to it — media_api's contract is relied on elsewhere.
+
+    `capture` is what the agent says they shot: "auto" (photo or video, sniffed)
+    or "pano" (equirectangular 360). It is deliberately an explicit choice and
+    not inferred: a 2:1 aspect ratio is what an equirect image happens to have,
+    not what makes it one, and silently promoting a wide crop to a 360 scene
+    would put a flat photo inside a walkthrough. The ratio is checked as
+    *validation* of the claim, and a mismatch is rejected rather than downgraded.
     """
     _subject_or_422(lead_id, listing_id)
     if surface not in _VALID_SURFACES:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Unknown surface.")
+    if capture not in {"auto", "pano"}:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Unknown capture type.")
+    if not 0 <= floor_index <= 200:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "floor_index out of range.")
     if not files:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Provide at least one file.")
     if len(files) > 40:
@@ -339,14 +405,23 @@ async def agent_upload_media(
                     f"{upload.filename or 'file'} is not an accepted image or video.",
                 )
 
-            limit = MAX_PHOTO_BYTES if kind == "photo" else MAX_VIDEO_BYTES
+            if capture == "pano":
+                if kind != "photo":
+                    raise HTTPException(
+                        status.HTTP_422_UNPROCESSABLE_ENTITY,
+                        f"{upload.filename or 'file'} is not an image; a 360° scene "
+                        "must be an equirectangular photo.",
+                    )
+                _require_equirectangular(data, upload.filename)
+                kind = "pano"
+
+            limit = MAX_PHOTO_BYTES if kind in ("photo", "pano") else MAX_VIDEO_BYTES
             if len(data) > limit:
                 raise HTTPException(
                     status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
                     f"{upload.filename or kind} exceeds the {limit // (1024 * 1024)} MB limit.",
                 )
 
-            s3_key = None
             if kind == "video":
                 import object_storage
 
@@ -357,6 +432,13 @@ async def agent_upload_media(
                         "on this deployment. Photos still work.",
                     )
                 s3_key = _put_video_to_storage(data, content_type, str(ctx.tenant_id))
+            else:
+                # Photos and 360s go to storage too when it exists. A 25 MB
+                # equirect in a bytea column is the same problem as a video,
+                # just under a different `kind`.
+                s3_key = await media_storage.put_media_bytes(
+                    data, content_type, str(ctx.tenant_id), kind=kind
+                )
 
             # `url` is NOT NULL and embeds the row id, so generate the id here
             # and do it in one INSERT (same rationale as media_api._persist).
@@ -365,22 +447,41 @@ async def agent_upload_media(
                 """
                 INSERT INTO property_media (
                     id, tenant_id, lead_id, listing_id, kind, surface, url,
-                    s3_key, sort_order, uploaded_via, review_status
+                    s3_key, sort_order, content_type, uploaded_via, review_status
                 )
-                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'agent','approved')
+                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'agent','approved')
                 """,
                 media_id, ctx.tenant_id, lead_id, listing_id, kind, surface,
-                f"/api/media/{media_id}", s3_key, next_order,
+                f"/api/media/{media_id}", s3_key, next_order, content_type,
             )
             next_order += 1
 
-            if kind == "photo":
+            if kind in ("photo", "pano") and s3_key is None:
                 await conn.execute(
                     """
                     INSERT INTO media_blobs (media_id, content_type, byte_size, bytes)
                     VALUES ($1,$2,$3,$4)
                     """,
                     media_id, content_type, len(data), data,
+                )
+
+            if kind == "pano":
+                # A pano is only useful as a place you can stand, so the scene
+                # row is created with the media rather than in a second step
+                # nothing calls — which is how 'pano' stayed unreachable before.
+                # Position and heading stay NULL: the agent has given us an
+                # ordered set of vantage points, not a survey.
+                await conn.execute(
+                    """
+                    INSERT INTO property_pano_scenes (
+                        tenant_id, media_id, lead_id, listing_id,
+                        floor_index, label, sort_order
+                    )
+                    VALUES ($1,$2,$3,$4,$5,$6,$7)
+                    ON CONFLICT (media_id) DO NOTHING
+                    """,
+                    ctx.tenant_id, media_id, lead_id, listing_id,
+                    floor_index, (upload.filename or "")[:120], next_order - 1,
                 )
 
             created.append({"id": str(media_id), "kind": kind, "surface": surface})
@@ -621,9 +722,12 @@ async def client_upload(
     async with tenant_tx(system_ctx) as conn:
         link = await _resolve_link(conn, token)
 
-        s3_key = None
         if kind == "video":
             s3_key = _put_video_to_storage(data, content_type, str(link["tenant_id"]))
+        else:
+            s3_key = await media_storage.put_media_bytes(
+                data, content_type, str(link["tenant_id"]), kind=kind
+            )
 
         # `url` is NOT NULL and embeds the row id (see media_api._persist).
         media_id = uuid4()
@@ -631,15 +735,15 @@ async def client_upload(
             """
             INSERT INTO property_media (
                 id, tenant_id, lead_id, listing_id, kind, surface, url, s3_key,
-                uploaded_via, review_status
+                content_type, uploaded_via, review_status
             )
-            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'client_link','pending')
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'client_link','pending')
             """,
             media_id, link["tenant_id"], link["lead_id"], link["listing_id"],
-            kind, surface, f"/api/media/{media_id}", s3_key,
+            kind, surface, f"/api/media/{media_id}", s3_key, content_type,
         )
 
-        if kind == "photo":
+        if kind == "photo" and s3_key is None:
             await conn.execute(
                 """
                 INSERT INTO media_blobs (media_id, content_type, byte_size, bytes)

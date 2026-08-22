@@ -23,12 +23,21 @@ from typing import Optional
 from graph_engine import PropertyGraph
 from harvesters.county_assessor import CountyAssessorHarvester
 from agents.agent_analyst import AnalystAgent, CMAResult
-from spatial_agent import reconstruct_property, should_trigger_reconstruction, property_id
 from legal_agent import format_for_websocket, generate_legal_package
 from agents.scout import ScoutAgent
 from harvesters.four_state_firehose import RegionalParcelAdapter
 from real_leads import fetch_real_records
 from outreach_compliance import AI_VOICE_DISCLOSURE
+
+def property_id(address: str) -> str:
+    """Stable display key for an address (was spatial_agent.property_id).
+
+    Only ever used to give the predictive cache a consistent id per address.
+    Deliberately not used to locate any stored artifact — deriving a file path
+    from an address is what made reconstructions guessable.
+    """
+    return hashlib.sha256(address.lower().strip().encode()).hexdigest()[:16]
+
 
 logger = logging.getLogger("oracle.workflow_engine")
 
@@ -62,8 +71,14 @@ COUNTY_HARVEST_ENABLED = os.environ.get("COUNTY_HARVEST_ENABLED", "").lower() in
 
 
 class WorkflowEngine:
-    def __init__(self, websocket=None, mind_service=None, tenant_id="", user_id=""):
+    def __init__(self, websocket=None, mind_service=None, tenant_id="", user_id="", publish=None):
         self.websocket = websocket
+        # Optional async `publish(payload: dict)`. When the engine is shared
+        # across a tenant's sockets it has no socket of its own, and frames go
+        # to the hub instead. Without this, a socketless engine would run every
+        # loop and emit nothing — the `if self.websocket:` guards would silently
+        # swallow STATUS_UPDATE, STAGE_PROPERTY and DATA_PULLED.
+        self.publish = publish
         self.mind_service = mind_service
         # Operator identity — used to seed the graph from this tenant's real
         # leads (RLS-scoped) so the visible pipeline runs on real parcels.
@@ -85,8 +100,6 @@ class WorkflowEngine:
         self._analysis_task: Optional[asyncio.Task] = None
         self._predictive_task: Optional[asyncio.Task] = None
         self._scout_task: Optional[asyncio.Task] = None
-        # Fire-and-forget reconstruct tasks — tracked so stop() can cancel them.
-        self._recon_tasks: set[asyncio.Task] = set()
         self._last_pushed_ids: list[str] = []
         self._stats = {
             "cycles": 0,
@@ -142,7 +155,7 @@ class WorkflowEngine:
                 self._scout_task,
             )
             if t is not None
-        ] + list(self._recon_tasks)
+        ]
 
         for t in tasks_to_cancel:
             t.cancel()
@@ -150,7 +163,6 @@ class WorkflowEngine:
         if tasks_to_cancel:
             await asyncio.gather(*tasks_to_cancel, return_exceptions=True)
 
-        self._recon_tasks.clear()
         await self._emit_status("WORKFLOW ENGINE — pipeline shutdown complete")
 
     async def _seed_real_leads(self):
@@ -219,7 +231,7 @@ class WorkflowEngine:
                 hit["cma"] = cma_result.to_dict()
                 hit["estimated_value"] = cma_result.estimated_value
 
-                await self.websocket.send_text(json.dumps({
+                await self._send({
                     "type": "DATA_PULLED",
                     "data": {
                         "address": address,
@@ -246,23 +258,23 @@ class WorkflowEngine:
                         "bathrooms": hit["bathrooms"],
                         "novelty": novelty,
                     },
-                })) if self.websocket else None
+                }) if self._has_transport else None
 
             await asyncio.sleep(0.5)
 
-            if should_trigger_reconstruction(novelty):
-                _t = asyncio.create_task(
-                    reconstruct_property(address, self.websocket)
-                )
-                self._recon_tasks.add(_t)
-                _t.add_done_callback(self._recon_tasks.discard)
+            # A high novelty score used to auto-start a reconstruction here.
+            # That path scraped listing-site images for an address nobody had
+            # asked about and wrote the result to an unauthenticated public
+            # directory — it was removed with the rest of that pipeline. A
+            # capture now begins only when an agent explicitly starts one
+            # against a property they own, through /api/crm/reconstruction-jobs.
 
-            if self.websocket:
-                await self.websocket.send_text(json.dumps({"type": "STAGE_PROPERTY"}))
+            if self._has_transport:
+                await self._send({"type": "STAGE_PROPERTY"})
 
             await asyncio.sleep(1.0)
 
-            if self.websocket:
+            if self._has_transport:
                 # No real telephony is placed here — this is a scripted demo
                 # transcript. It leads with AI_VOICE_DISCLOSURE (TCPA / FCC 24-17:
                 # an artificial voice must disclose itself) and every line carries
@@ -278,16 +290,16 @@ class WorkflowEngine:
                 ]
                 for line in dialogue:
                     await asyncio.sleep(0.8)
-                    await self.websocket.send_text(json.dumps({
+                    await self._send({
                         "type": "TRANSCRIPT_LINE",
                         "agent": line["agent"],
                         "text": line["text"],
                         "simulated": True,
-                    }))
+                    })
 
             await asyncio.sleep(1.2)
 
-            if self.websocket:
+            if self._has_transport:
                 await self._emit_status("AGENT LEGAL — generating contract package")
                 await asyncio.sleep(0.6)
                 # The contract price is the conservative MAX ACQUISITION OFFER
@@ -305,8 +317,11 @@ class WorkflowEngine:
                     "distress_severity": cma_result.distress_severity if cma_result else "UNKNOWN",
                     "owner_name": hit["owner_name"],
                 }
+                # format_for_websocket returns a JSON *string*; _send takes a
+                # dict so the hub can attach routing fields, so decode it here
+                # rather than giving _send two input shapes.
                 legal_payload = format_for_websocket(property_data, strategy="wholesale")
-                await self.websocket.send_text(legal_payload)
+                await self._send(json.loads(legal_payload))
 
             self._stats["high_value_targets"] += 1
             break
@@ -335,14 +350,14 @@ class WorkflowEngine:
                     if len(top_props) >= PREDICTIVE_CACHE_TOP_N:
                         break
 
-                if top_props and self.websocket:
+                if top_props and self._has_transport:
                     new_ids = [p["propertyId"] for p in top_props]
                     if new_ids != self._last_pushed_ids:
                         self._last_pushed_ids = new_ids
-                        await self.websocket.send_text(json.dumps({
+                        await self._send({
                             "type": "PREDICTIVE_CACHE",
                             "properties": top_props,
-                        }))
+                        })
             except asyncio.CancelledError:
                 break
             except Exception as e:
@@ -415,14 +430,32 @@ class WorkflowEngine:
             payload.get('parcel_id'), score,
         )
 
+    async def _send(self, payload: dict) -> bool:
+        """Emit one frame through whichever transport this engine has.
+
+        Returns whether anything was sent, so callers that build expensive
+        payloads can skip the work when nothing is listening.
+        """
+        if self.publish is not None:
+            await self.publish(payload)
+            return True
+        if self.websocket is not None:
+            await self.websocket.send_text(json.dumps(payload))
+            return True
+        return False
+
+    @property
+    def _has_transport(self) -> bool:
+        return self.publish is not None or self.websocket is not None
+
     async def _emit_status(self, message: str):
         logger.info(message)
-        if self.websocket:
+        if self._has_transport:
             try:
-                await self.websocket.send_text(json.dumps({
+                await self._send({
                     "type": "STATUS_UPDATE",
                     "agent": message,
-                }))
+                })
             except Exception:
                 pass
 

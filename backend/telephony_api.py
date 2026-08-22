@@ -907,7 +907,15 @@ async def twilio_inbound_transfer(endpoint_key: str, request: Request) -> Respon
     is read from the database at transfer time instead of travelling over the
     wire.
     """
+    # Twilio signs the FULL request URL, query string included, and
+    # transfer_webhook_url() always appends `?reason=…`. Validating against a
+    # bare path therefore never matched: every hand-off 400'd, Twilio played its
+    # generic error over the caller and dropped the call right after the AI
+    # promised to connect them — and record_forward_attempt never ran, so the
+    # call record showed no hand-off at all.
     suffix = f"/api/telephony/webhooks/twilio/inbound/{endpoint_key}/transfer"
+    if request.url.query:
+        suffix = f"{suffix}?{request.url.query}"
     form = await request.form()
     call_sid = str(form.get("CallSid") or "")
     account_sid = str(form.get("AccountSid") or "")

@@ -1,11 +1,19 @@
 """
 Platform Admin Ops — the all-seeing surface behind the OPS tab.
 
-Every route is double-gated: require_context decodes the Bearer JWT, then
-require_platform_admin rejects anything that isn't the platform_admin role.
+Every route is double-gated: require_context decodes the Bearer JWT, then a
+role dependency gates it. Two trust levels share this prefix, and each route
+declares which one it wants:
+
+  * require_platform_admin        — the fleet-wide surfaces below.
+  * require_broker_owner_or_admin — brokerage self-service: permission policy,
+                                    role-change request/execute, anomalies.
+
 Queries still run inside tenant_tx(ctx) — the platform admin's RLS escape
 (app_is_platform_admin(), migration 0001) is what makes the cross-tenant
-reads legal at the Postgres level; nothing here bypasses the policy layer.
+reads legal at the Postgres level; nothing here bypasses the policy layer. The
+broker-owner routes hold no such escape, so RLS confines them to their own
+brokerage regardless of what they ask for.
 
 Surfaces:
   * /overview — per-tenant fleet counts + live sessions + WS socket groups.
@@ -62,6 +70,100 @@ def require_platform_admin(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Platform admin only.",
         )
+    return ctx
+
+
+@router.get("/runtime-load")
+async def runtime_load(ctx: TenantContext = Depends(require_platform_admin)):
+    """What this replica is actually carrying, right now.
+
+    Exists because the load characteristics that matter here are per-replica and
+    per-connection, and none of them are visible from the outside: how many
+    asyncio tasks a socket really costs, how much of the pool the background
+    workers hold, and how much ambient LLM traffic the process generates with
+    nobody typing.
+
+    Reported per replica on purpose — `instance` distinguishes the answers when
+    several are running, and averaging them would hide the one that is saturated.
+    """
+    import asyncio as _asyncio
+
+    import ws_hub as _ws_hub
+    from db.connection import pool_stats
+
+    sockets_by_tenant = _ws_hub.connection_counts()
+    stats = pool_stats()
+
+    # `usable_for_requests` / `reserved_for_listener` come from pool_stats(),
+    # which is also where init_pool() widens the pool by the same constant.
+    # Recomputing them here would be a second source of truth that could drift
+    # from the sizing the pool was actually built with.
+    listener_active = bool(getattr(_ws_hub, "_listener_started", False))
+
+    try:
+        tasks = len([t for t in _asyncio.all_tasks() if not t.done()])
+    except RuntimeError:  # pragma: no cover — no running loop
+        tasks = 0
+
+    return {
+        "instance": getattr(_ws_hub, "_instance_id", "unknown"),
+        "websockets": {
+            "total": sum(sockets_by_tenant.values()),
+            "tenants": len(sockets_by_tenant),
+            "by_tenant": sockets_by_tenant,
+        },
+        "asyncio_tasks": tasks,
+        "db_pool": {
+            # Defaults cover the pool-not-initialised case, where pool_stats()
+            # returns {} — reporting 0 usable is honest there, and reporting
+            # nothing at all would make the key's absence look like a bug.
+            "usable_for_requests": 0,
+            "reserved_for_listener": 0,
+            **stats,
+            # Whether the reserved slot is actually claimed right now. Distinct
+            # from the reservation itself: the capacity is set aside at pool
+            # construction, but the listener connects later.
+            "listener_active": listener_active,
+        },
+        # None rather than 0 when nothing is counting: an unmetered gateway
+        # must not read as "no ambient traffic".
+        "ambient_llm_calls_last_minute": _ambient_llm_calls_last_minute(),
+    }
+
+
+def _ambient_llm_calls_last_minute() -> Optional[int]:
+    """Ambient (non-user-initiated) model calls in the last 60s, if counted.
+
+    Returns None until a gateway exposes a counter — reporting 0 would claim a
+    measurement nobody took, and the whole point of this endpoint is to size a
+    fix against real numbers.
+    """
+    try:
+        import llm_gateway  # noqa: PLC0415 — optional until the gateway lands
+    except ImportError:
+        return None
+    counter = getattr(llm_gateway, "ambient_calls_last_minute", None)
+    return counter() if callable(counter) else None
+
+
+def require_broker_owner_or_admin(
+    ctx: TenantContext = Depends(require_context),
+) -> TenantContext:
+    """Broker owners and platform admins.
+
+    This router carries two trust levels under one `/api/admin` prefix: most of
+    it is platform-admin only, while brokerage self-service (permission policy,
+    role-change request/execute, anomaly review) is legitimately open to a
+    broker owner managing their own brokerage.
+
+    That second set used to enforce itself with a `require_role(...)` call in
+    the first line of each handler, so the decorator told you nothing about who
+    could call the route and a new handler copy-pasted from a neighbour would
+    silently inherit the wrong gate. Same policy, declared where it can be read.
+
+    `require_role` already treats platform_admin as permitted everywhere.
+    """
+    require_role(ctx, Role.BROKER_OWNER)
     return ctx
 
 
@@ -418,8 +520,7 @@ class RoleChangeDecision(BaseModel):
 
 
 @router.get("/permission-policy")
-async def permission_policy(ctx: TenantContext = Depends(require_context)):
-    require_role(ctx, Role.BROKER_OWNER)
+async def permission_policy(ctx: TenantContext = Depends(require_broker_owner_or_admin)):
     return {
         "broker_managed_roles": ["agent", "broker_owner"],
         "platform_admin_assignment_via_api": False,
@@ -434,9 +535,8 @@ async def permission_policy(ctx: TenantContext = Depends(require_context)):
 @router.post("/role-changes", status_code=201)
 async def request_role_change(
     body: RoleChangeRequest,
-    ctx: TenantContext = Depends(require_context),
+    ctx: TenantContext = Depends(require_broker_owner_or_admin),
 ):
-    require_role(ctx, Role.BROKER_OWNER)
     reason = validate_approval_reason(body.reason)
     async with tenant_tx(ctx) as conn:
         target = await conn.fetchrow(
@@ -474,9 +574,8 @@ async def request_role_change(
 async def execute_role_change(
     approval_id: uuid.UUID,
     body: RoleChangeDecision,
-    ctx: TenantContext = Depends(require_context),
+    ctx: TenantContext = Depends(require_broker_owner_or_admin),
 ):
-    require_role(ctx, Role.BROKER_OWNER)
     async with tenant_tx(ctx) as conn:
         approval_row = await conn.fetchrow(
             "SELECT * FROM action_approvals WHERE id=$1::uuid",
@@ -555,9 +654,8 @@ async def execute_role_change(
 async def anomaly_alerts(
     severity: Optional[str] = Query(default=None, pattern=r"^(low|medium|high|critical)$"),
     limit: int = Query(default=100, ge=1, le=500),
-    ctx: TenantContext = Depends(require_context),
+    ctx: TenantContext = Depends(require_broker_owner_or_admin),
 ):
-    require_role(ctx, Role.BROKER_OWNER)
     async with tenant_tx(ctx) as conn:
         rows = await conn.fetch(
             """

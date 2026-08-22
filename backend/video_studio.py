@@ -41,6 +41,7 @@ from pathlib import Path
 from typing import Any, Optional
 from uuid import UUID, uuid4
 
+import media_storage
 from db.connection import tenant_tx
 from tenancy import Role, TenantContext
 
@@ -89,19 +90,30 @@ class QuotaExceeded(VideoStudioError):
 # Sora 2 client — sync (worker runs it in a thread), requests-based.
 # ---------------------------------------------------------------------------
 @lru_cache(maxsize=1)
+def _sora_credential():
+    """The long-lived credential object — safe to cache, refreshes internally."""
+    from azure.identity import DefaultAzureCredential
+
+    return DefaultAzureCredential(
+        exclude_interactive_browser_credential=True,
+        managed_identity_client_id=os.getenv("AZURE_CLIENT_ID") or None,
+    )
+
+
 def _sora_token() -> str:
-    """Entra access token for the cognitive-services scope (managed identity)."""
+    """Entra access token for the cognitive-services scope (managed identity).
+
+    Deliberately NOT cached. Entra access tokens expire in ~60-90 minutes; an
+    @lru_cache here pins the first one forever and every job after expiry 401s
+    until the container restarts. Cache the credential (which refreshes on its
+    own) and mint per use — the same shape db/connection.py:_azure_credential()
+    uses. DefaultAzureCredential keeps its own token cache, so this is cheap.
+    """
     if SORA_API_KEY:
         return ""
     if not AZURE_OPENAI_ENDPOINT:
         raise VideoStudioError("ORACLE_AZURE_OPENAI_ENDPOINT is not configured")
-    from azure.identity import DefaultAzureCredential
-
-    credential = DefaultAzureCredential(
-        exclude_interactive_browser_credential=True,
-        managed_identity_client_id=os.getenv("AZURE_CLIENT_ID") or None,
-    )
-    token = credential.get_token("https://cognitiveservices.azure.com/.default")
+    token = _sora_credential().get_token("https://cognitiveservices.azure.com/.default")
     return token.token
 
 
@@ -624,10 +636,20 @@ async def _claim_next_job(worker_id: str) -> Optional[dict[str, Any]]:
     async with tenant_tx(ctx) as conn:
         row = await conn.fetchrow(
             """
+            -- An in-flight job is reclaimable ONLY once its lease has expired.
+            -- FOR UPDATE SKIP LOCKED protects the row for the length of this
+            -- transaction and no longer, so without the updated_at test a second
+            -- worker picks up a job seconds after the first started generating —
+            -- Sora bills the same reel twice, both workers reserve quota, and
+            -- both call _store_video, orphaning one uploaded MP4. The pipeline
+            -- heartbeats updated_at through _set_status at each stage, so a live
+            -- job keeps renewing while a crashed one goes stale and is recovered.
             WITH candidate AS (
                 SELECT id
                   FROM video_studio_jobs
-                 WHERE status IN ('queued', 'scripting', 'generating', 'stitching')
+                 WHERE status = 'queued'
+                    OR (status IN ('scripting', 'generating', 'stitching')
+                        AND updated_at < now() - ($1::int * interval '1 second'))
                  ORDER BY created_at ASC
                  FOR UPDATE SKIP LOCKED
                  LIMIT 1
@@ -638,6 +660,7 @@ async def _claim_next_job(worker_id: str) -> Optional[dict[str, Any]]:
              WHERE j.id = candidate.id
             RETURNING j.*
             """,
+            JOB_LEASE_SECONDS,
         )
         if row is None:
             return None
@@ -680,19 +703,25 @@ async def _load_input_images(ctx: TenantContext, image_media_ids: list[str]) -> 
         return []
     results: list[bytes] = []
     async with tenant_tx(ctx) as conn:
+        # LEFT JOIN: a storage-backed photo has no media_blobs row, and an
+        # inner join here dropped it — the studio then rendered a reel from
+        # fewer images than the agent selected, without saying so.
         rows = await conn.fetch(
             """
-            SELECT mb.bytes
+            SELECT pm.id, pm.s3_key, mb.bytes
               FROM property_media AS pm
-              JOIN media_blobs AS mb ON mb.media_id = pm.id
+              LEFT JOIN media_blobs AS mb ON mb.media_id = pm.id
              WHERE pm.id = ANY($1::uuid[])
                AND pm.kind = 'photo'
+               AND (pm.s3_key IS NOT NULL OR mb.media_id IS NOT NULL)
              ORDER BY array_position($1::uuid[], pm.id)
             """,
             [UUID(value) for value in image_media_ids],
         )
-        for row in rows:
-            results.append(bytes(row["bytes"]))
+    for row in rows:
+        data = await media_storage.load_media_bytes(row)
+        if data is not None:
+            results.append(data)
     return results
 
 
@@ -752,8 +781,9 @@ async def _store_video(
         await conn.execute(
             """
             INSERT INTO property_media
-                (id, tenant_id, lead_id, listing_id, kind, url, sort_order, s3_key)
-            VALUES ($1, $2, $3, $4, 'video', $5, $6, $7)
+                (id, tenant_id, lead_id, listing_id, kind, url, sort_order,
+                 s3_key, content_type)
+            VALUES ($1, $2, $3, $4, 'video', $5, $6, $7, 'video/mp4')
             """,
             media_id,
             ctx.tenant_id,
@@ -805,11 +835,19 @@ async def _process_job(row: dict[str, Any], worker_id: str) -> None:
             raise QuotaExceeded(
                 f"Daily video quota exceeded — {estimated}s requested, {remaining:.0f}s remaining"
             )
-        # quota_daily_slot is not in the app role's GRANT UPDATE column list
-        # (migration 0063), so the reservation rides the slot the row was
-        # inserted with — which is CURRENT_DATE for anything queued today.
+        # Stamp the slot to the day the quota is actually SPENT, not the day the
+        # job was queued. _quota_consumed_today filters quota_daily_slot =
+        # CURRENT_DATE, so a job queued at 23:55 and generated after midnight
+        # would otherwise reserve against yesterday's slot — invisible to today's
+        # SUM, letting the whole backlog through the cap. Migration 0068 adds the
+        # GRANT UPDATE that makes this column writable by the app role.
         await conn.execute(
-            "UPDATE video_studio_jobs SET quota_consumed_units = $2 WHERE id = $1",
+            """
+            UPDATE video_studio_jobs
+               SET quota_consumed_units = $2,
+                   quota_daily_slot = CURRENT_DATE
+             WHERE id = $1
+            """,
             UUID(job_id),
             float(estimated),
         )
@@ -842,6 +880,12 @@ async def _process_job(row: dict[str, Any], worker_id: str) -> None:
     try:
         for index, prompt in enumerate(prompts[:clip_count]):
             image = images[index] if index < len(images) else None
+            # Renew the claim before each clip. Sora takes minutes per clip, so a
+            # multi-clip job can easily outlive JOB_LEASE_SECONDS between stage
+            # transitions — and a lease that expires mid-generation is exactly
+            # the double-billing _claim_next_job's lease test exists to prevent.
+            # The updated_at trigger fires on this UPDATE, which is the heartbeat.
+            await _set_status(ctx, job_id, "generating")
             clip_bytes = await generate_clip(
                 prompt, size, clip_seconds, image_bytes=image
             )

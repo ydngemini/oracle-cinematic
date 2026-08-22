@@ -78,13 +78,21 @@ class TennesseeShelbyHarvester(ArcGISHarvester):
         if not parcel_id or not owner:
             return None
 
-        city_zip_raw = str(row.get("OwnerCityStZip") or "").strip()
-        city, zip_code = _parse_city_zip(city_zip_raw)
-        if not city:
-            city = "Memphis"
-
         owner_addr = str(row.get("OwnerAddress") or "").strip()
         is_absentee = bool(owner_addr) and norm(owner_addr) != norm(address)
+
+        # OwnerCityStZip is the OWNER's mailing city and ZIP, as this module's
+        # own field map says. For an owner-occupied parcel that is also the
+        # property's; for an absentee owner it is somewhere else entirely, and
+        # writing it into the property record put Dover, Delaware's 19901 onto
+        # 48 parcels in Dover, Tennessee. Same rule wy_parcels.py already
+        # applies: use it when the owner lives there, leave it blank otherwise.
+        city_zip_raw = str(row.get("OwnerCityStZip") or "").strip()
+        parsed_city, parsed_zip = _parse_city_zip(city_zip_raw)
+        city = "" if is_absentee else parsed_city
+        zip_code = "" if is_absentee else parsed_zip
+        # Defaulting to "Memphis" asserted a location the row does not carry.
+        # Shelby County contains six other municipalities.
 
         value = to_float(row.get("TotalAppraisal"))
 

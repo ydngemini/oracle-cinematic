@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import uuid
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -13,31 +14,18 @@ from typing import Any, Optional
 from fastapi import HTTPException, status
 
 from ai_chat_models import SafeClientUpdate, SafeListingUpdate
+from ai_tool_policy import READ_ONLY_TOOLS
+# Aliased to the historical private names: ~50 call sites in this module
+# use them, and renaming those would bury the real change.
+from ai_tools_gated import TOOLS_HANDLED as _GATED_TOOL_NAMES, execute as _execute_gated_tool
+from ai_tools_read import TOOLS_HANDLED as _READ_TOOL_NAMES, execute as _execute_read_tool
+from record_json import clean as _clean, json_value as _json
 from crypto import derive_tenant_key
 from db.connection import tenant_tx
 from rate_limiter import distributed_rate_limiter
 from tenancy import TenantContext
 
 logger = logging.getLogger("oracle.ai_chat_store")
-
-
-def _json(value: Any, default: Any = None) -> Any:
-    if isinstance(value, str):
-        try:
-            return json.loads(value)
-        except (TypeError, ValueError):
-            return default
-    return default if value is None else value
-
-
-def _clean(value: Any) -> Any:
-    if isinstance(value, (datetime, uuid.UUID, Decimal)):
-        return str(value)
-    if isinstance(value, dict):
-        return {key: _clean(item) for key, item in value.items()}
-    if isinstance(value, list):
-        return [_clean(item) for item in value]
-    return value
 
 
 def tenant_key(ctx: TenantContext) -> str:
@@ -576,44 +564,16 @@ async def update_assistant(
         )
 
 
-_READ_ONLY_TOOLS = frozenset({
-    "codebase_summary", "web_search",
-    "search_clients", "get_client_detail", "list_client_tasks", "list_client_activity",
-    "get_client_contact_history", "suggest_client_matches", "list_client_documents",
-    "search_listings", "get_listing_detail", "list_comparable_sales",
-    "estimate_arv", "estimate_rehab", "calculate_mao", "list_market_snapshots",
-    "get_flood_zone", "get_zoning_info", "list_tax_records", "get_owner_history",
-    "check_permits", "get_property_distress", "list_property_liens", "get_nearest_schools",
-    "list_deals", "get_deal_detail", "calculate_deal_roi",
-    "list_active_negotiations", "track_deadlines", "analyze_deal_risk",
-    "suggest_disposition", "list_closing_checklist", "list_counter_offers",
-    "get_transaction_workflow", "get_deal_financial_summary", "compare_financing_options",
-    "get_market_trends", "compare_markets", "get_demographics", "get_rent_estimates",
-    "get_absorption_rate", "list_hot_markets", "get_distress_map",
-    "get_investment_activity", "forecast_appreciation", "get_days_on_market",
-    "get_price_reductions", "get_market_heatmap",
-    "list_contract_templates", "review_contract_terms", "check_contract_deadlines",
-    "list_required_disclosures", "verify_contract_signatures", "list_document_history",
-    "extract_contract_data", "compare_contract_versions", "list_contract_parties",
-    "get_form_library",
-    "calculate_cash_on_cash", "estimate_holding_costs", "calculate_cap_rate",
-    "run_underwriting_model", "estimate_closing_costs", "calculate_break_even",
-    "list_billing_invoices", "get_portfolio_performance", "calculate_interest_costs",
-    "estimate_after_repair_value",
-    "list_property_photos", "generate_tour_link", "list_property_videos",
-    "get_document_download_url", "get_splat_status",
-    "get_agent_performance", "list_team_members", "get_agent_profile",
-    "list_agent_commissions", "get_onboarding_status", "get_team_pipeline",
-    "list_providers", "get_billing_status",
-    "get_tenant_health", "get_database_stats", "list_recent_errors",
-    "get_feature_flags", "get_audit_trail", "get_job_queue",
-    "list_integration_status", "run_health_check",
-    "get_state_laws", "check_fair_housing", "get_disclosure_requirements",
-    "list_legal_forms", "check_attorney_review", "get_retention_policy",
-    "run_property_background", "search_public_records", "analyze_neighborhood",
-    "get_investor_activity_profile", "get_firehose_summary", "get_govinfo_record",
-    "call_contact",
-})
+# Both this module and ``ai_chat_agent`` used to carry their own literal list
+# of read-only tool names, and they had drifted apart. Membership decides
+# whether a tool needs a selected record (below) and whether a result is
+# broadcast as an applied record change (``ai_chat_agent._is_record_change``),
+# so two answers to "is this a mutation?" was a bug waiting for a caller.
+# ``call_contact`` was in this list while its handler creates a LIVE_CALL
+# approval. It is classified LIVE_CALL now and, unlike before, requires a
+# selected client: it used to take a model-supplied phone number.
+_READ_ONLY_TOOLS = READ_ONLY_TOOLS
+
 
 # The catalog in ``ai_chat_agent`` deliberately describes the product roadmap,
 # but an LLM must only be offered tools that can complete against a verified
@@ -621,6 +581,11 @@ _READ_ONLY_TOOLS = frozenset({
 # stay out of the model surface until their licensed provider/workflow exists.
 # This is distinct from the broader read-only catalog above, which is used to
 # decide whether a direct tool request needs a selected write anchor.
+#
+# ``_READ_TOOL_NAMES`` is unioned in rather than listed by hand: a name is
+# offered to the model exactly when ``ai_tools_read`` has a handler for it, so
+# the allowlist cannot drift ahead of the implementation and advertise a tool
+# that would answer "not implemented in this execution path".
 _AGENT_AVAILABLE_TOOLS = frozenset({
     "codebase_summary",
     "web_search",
@@ -640,7 +605,26 @@ _AGENT_AVAILABLE_TOOLS = frozenset({
     "add_client_tag",
     "update_listing",
     "move_deal_stage",
-})
+    # P11 internal writes. Each records an ai_chat_actions row, so each is
+    # reversible from its receipt; create_client is recorded but declares
+    # itself not undoable, because deleting a client cascades to ten tables.
+    "score_client_lead",
+    "assign_client",
+    "archive_client",
+    "create_client",
+    "create_deal_note",
+    # P11 gated outreach. Each stages a command_executions row for approval and
+    # touches no provider; the send happens in commands_api after a human
+    # decides, behind guard_outreach.
+    "draft_email",
+    "draft_sms",
+    "call_contact",
+    # P12 financial / legal / calendar. Same shape: a request with an approval
+    # id, and execution only through the human decision path.
+    "draft_contract",
+    "schedule_event",
+    "publish_to_marketplace",
+} | _READ_TOOL_NAMES)
 
 
 def is_agent_tool_available(tool_name: str) -> bool:
@@ -962,6 +946,80 @@ async def _read_team_or_providers(conn, ctx: TenantContext, tool_name: str) -> d
     return {"ok": True, "action_type": tool_name, "providers": [_clean(dict(row)) for row in rows]}
 
 
+# Columns an undo is allowed to write back, per record type. The `before` state
+# is decrypted out of the ledger and its keys are interpolated into SQL as
+# column names — so this is simultaneously the list of what is reversible and
+# the thing that keeps that interpolation from being an injection point.
+_UNDO_COLUMNS: dict[str, tuple[str, frozenset[str]]] = {
+    "client": ("clients", frozenset({
+        "full_name", "email", "phone", "client_type", "stage", "lead_score",
+        "company", "assignee_id", "archived_at",
+    })),
+    "listing": ("listings", frozenset({"address", "status", "price"})),
+    "lead": ("leads", frozenset({"dossier_status", "contract_execution_date"})),
+    "deal": ("transactions", frozenset({"notes"})),
+}
+
+# Tables a row_delete undo may remove from. Nothing in the schema references
+# any of them, so deleting a row the assistant inserted deletes exactly that
+# row and nothing downstream of it. `clients` is deliberately absent: a client
+# delete cascades to ten tables, which is not an undo.
+_UNDO_DELETABLE_TABLES = frozenset({"client_notes", "client_tags", "client_activities"})
+
+
+async def _record_action(
+    conn, ctx: TenantContext, *, key: str, user_id: str, message_id: str,
+    tool_name: str, record_type: str, record_id: str, before: dict, after: dict,
+    undo_kind: str, expected_updated_at=None, undo_payload: Optional[dict] = None,
+):
+    """Write the ledger row that makes a mutation undoable.
+
+    Every tool that changes a record goes through here. It used to be inline in
+    the shared field-update tail, which meant the six tools that returned early
+    wrote no ledger row at all while still being broadcast to the UI as applied,
+    undoable receipts — an Undo button pointing at no action id.
+
+    ``undo_kind`` is NOT NULL in the schema on purpose: a new tool that forgets
+    to say how it is reversed fails here rather than shipping another dead button.
+    """
+    before_ct = await _encrypt_text(conn, json.dumps(before, default=str), key)
+    after_ct = await _encrypt_text(conn, json.dumps(after, default=str), key)
+    return await conn.fetchrow(
+        """INSERT INTO ai_chat_actions
+               (tenant_id,user_id,message_id,action_type,record_type,record_id,
+                before_ciphertext,after_ciphertext,expected_updated_at,
+                undo_kind,undo_payload)
+             VALUES ($1::uuid,$2,$3::uuid,$4,$5,$6::uuid,$7,$8,$9,$10,$11::jsonb)
+             RETURNING id,undo_expires_at""",
+        ctx.tenant_id, user_id, message_id, tool_name, record_type, record_id,
+        before_ct, after_ct, expected_updated_at, undo_kind,
+        json.dumps(undo_payload) if undo_payload is not None else None,
+    )
+
+
+def _applied(
+    tool_name: str, action, *, record_type: str, record_id: str, undo_kind: str,
+    undo_unavailable_reason: Optional[str] = None, **extra,
+) -> dict:
+    """The receipt shape for an applied mutation.
+
+    ``undoable`` is what the UI reads: an action recorded for audit but not
+    reversible must not render a button that cannot work.
+    """
+    undoable = undo_kind != "none"
+    return {
+        "ok": True,
+        "action_type": tool_name,
+        "action_id": str(action["id"]),
+        "record_type": record_type,
+        "record_id": str(record_id),
+        "undoable": undoable,
+        "undo_expires_at": action["undo_expires_at"].isoformat() if undoable else None,
+        "undo_unavailable_reason": None if undoable else undo_unavailable_reason,
+        **extra,
+    }
+
+
 async def _execute_safe_tool(
     ctx: TenantContext, user_id: str, message_id: str, tool_name: str,
     tool_input: dict, context_type: Optional[str], context_id: Optional[str],
@@ -974,6 +1032,7 @@ async def _execute_safe_tool(
             "create_client",
             "generate_contract",
             "generate_assignment_agreement",
+            "publish_to_marketplace",
         )
     )
     if needs_context and (not context_type or not context_id):
@@ -991,6 +1050,8 @@ async def _execute_safe_tool(
             return await _read_deals(conn, ctx, tool_name, tool_input)
         if tool_name in {"get_team_pipeline", "list_providers"}:
             return await _read_team_or_providers(conn, ctx, tool_name)
+        if tool_name in _READ_TOOL_NAMES:
+            return await _execute_read_tool(conn, ctx, tool_name, tool_input)
         if tool_name == "update_client":
             model = SafeClientUpdate.model_validate(tool_input)
             if context_type != "client" or str(model.client_id) != context_id:
@@ -1047,22 +1108,30 @@ async def _execute_safe_tool(
                      RETURNING id,created_at""",
                 ctx.tenant_id, target_id, note, user_id,
             )
-            await conn.execute(
+            activity_row = await conn.fetchrow(
                 """INSERT INTO client_activities
                        (tenant_id,client_id,kind,summary,meta,actor)
                      VALUES ($1::uuid,$2::uuid,'note','Note added',
-                             jsonb_build_object('note_id',$3::text),$4)""",
+                             jsonb_build_object('note_id',$3::text),$4)
+                     RETURNING id""",
                 ctx.tenant_id, target_id, str(note_row["id"]), user_id,
             )
-            return {
-                "ok": True,
-                "action_type": tool_name,
-                "record_type": "client",
-                "record_id": target_id,
-                "note_id": str(note_row["id"]),
-                "created_at": note_row["created_at"].isoformat(),
-                "detail": "Note recorded in the client activity feed.",
-            }
+            action = await _record_action(
+                conn, ctx, key=key, user_id=user_id, message_id=message_id,
+                tool_name=tool_name, record_type="client", record_id=target_id,
+                before={}, after={"note": note}, undo_kind="row_delete",
+                undo_payload={"deletes": [
+                    {"table": "client_notes", "ids": [str(note_row["id"])]},
+                    {"table": "client_activities", "ids": [str(activity_row["id"])]},
+                ]},
+            )
+            return _applied(
+                tool_name, action, record_type="client", record_id=target_id,
+                undo_kind="row_delete",
+                note_id=str(note_row["id"]),
+                created_at=note_row["created_at"].isoformat(),
+                detail="Note recorded in the client activity feed.",
+            )
         elif tool_name == "create_deal_note":
             raw_deal_id = str(tool_input.get("deal_id") or "").strip()
             try:
@@ -1084,25 +1153,44 @@ async def _execute_safe_tool(
             note = str(tool_input.get("note", "")).strip()
             if not note or len(note) > 5000:
                 return {"ok": False, "error": "Note must be 1-5000 characters."}
+            # Read the prior text under FOR UPDATE rather than through a
+            # sub-SELECT in RETURNING: that would work, because a subquery sees
+            # the statement's own snapshot, but the correctness of the undo
+            # should not rest on knowing that rule.
+            previous_notes = await conn.fetchrow(
+                f"""SELECT notes FROM transactions
+                     WHERE id=$1::uuid AND tenant_id=$2::uuid
+                       AND {anchor_column}=$3::uuid FOR UPDATE""",
+                deal_id, ctx.tenant_id, anchor_id,
+            )
+            if not previous_notes:
+                return {"ok": False, "error": "Deal not found."}
             deal_row = await conn.fetchrow(
                 f"""UPDATE transactions
                       SET notes=concat_ws(E'\n\n',NULLIF(notes,''),$3),
                           updated_by=$4,version=version+1,updated_at=now()
                     WHERE id=$1::uuid AND tenant_id=$2::uuid
                       AND {anchor_column}=$5::uuid
-                    RETURNING id,version,updated_at""",
+                    RETURNING id,version,updated_at,notes""",
                 deal_id, ctx.tenant_id, note, user_id, anchor_id,
             )
             if not deal_row:
                 return {"ok": False, "error": "Deal not found."}
-            return {
-                "ok": True,
-                "action_type": tool_name,
-                "record_type": "deal",
-                "record_id": deal_id,
-                "version": deal_row["version"],
-                "detail": "Deal note persisted.",
-            }
+            # The note is appended, so the reversal is the text as it stood —
+            # not an empty string, which would delete whatever was there first.
+            action = await _record_action(
+                conn, ctx, key=key, user_id=user_id, message_id=message_id,
+                tool_name=tool_name, record_type="deal", record_id=deal_id,
+                before={"notes": previous_notes["notes"]},
+                after={"notes": deal_row["notes"]},
+                undo_kind="field_restore",
+                expected_updated_at=deal_row["updated_at"],
+            )
+            return _applied(
+                tool_name, action, record_type="deal", record_id=deal_id,
+                undo_kind="field_restore", version=deal_row["version"],
+                detail="Deal note persisted.",
+            )
         elif tool_name == "set_client_stage":
             id_field, target_error = _selected_uuid(
                 tool_input=tool_input,
@@ -1143,33 +1231,78 @@ async def _execute_safe_tool(
                 target_id, ctx.tenant_id,
             ):
                 return {"ok": False, "error": "The selected client no longer exists."}
+            # RETURNING yields nothing for a tag that already existed, which is
+            # exactly right: an undo must remove the tags this action added and
+            # leave a pre-existing one alone.
+            inserted_tag_ids: list[str] = []
+            added_tags: list[str] = []
             for tag in tags:
-                await conn.execute(
+                row = await conn.fetchrow(
                     """INSERT INTO client_tags (tenant_id,client_id,tag)
                          VALUES ($1::uuid,$2::uuid,$3)
-                         ON CONFLICT DO NOTHING""",
+                         ON CONFLICT DO NOTHING
+                         RETURNING id""",
                     ctx.tenant_id, target_id, tag,
                 )
-            await conn.execute(
+                if row:
+                    inserted_tag_ids.append(str(row["id"]))
+                    added_tags.append(tag)
+            activity_row = await conn.fetchrow(
                 """INSERT INTO client_activities
                        (tenant_id,client_id,kind,summary,meta,actor)
                      VALUES ($1::uuid,$2::uuid,'tag',$3,
-                             jsonb_build_object('tags',$4::text[]),$5)""",
+                             jsonb_build_object('tags',$4::text[]),$5)
+                     RETURNING id""",
                 ctx.tenant_id, target_id, f"Tagged: {', '.join(tags)}", tags, user_id,
             )
-            return {
-                "ok": True,
-                "action_type": tool_name,
-                "record_type": "client",
-                "record_id": target_id,
-                "tags": tags,
-                "detail": "Client tags persisted.",
-            }
+            action = await _record_action(
+                conn, ctx, key=key, user_id=user_id, message_id=message_id,
+                tool_name=tool_name, record_type="client", record_id=target_id,
+                before={}, after={"tags_added": added_tags},
+                undo_kind="row_delete",
+                undo_payload={"deletes": [
+                    {"table": "client_tags", "ids": inserted_tag_ids},
+                    {"table": "client_activities", "ids": [str(activity_row["id"])]},
+                ]},
+            )
+            return _applied(
+                tool_name, action, record_type="client", record_id=target_id,
+                undo_kind="row_delete", tags=tags, tags_added=added_tags,
+                tags_already_present=[t for t in tags if t not in added_tags],
+                detail="Client tags persisted.",
+            )
         elif tool_name == "assign_client":
-            return {
-                "ok": False,
-                "error": "AI assignment is disabled. Assign the client explicitly in the CRM.",
-            }
+            id_field, target_error = _selected_uuid(
+                tool_input=tool_input,
+                input_name="client_id",
+                context_type=context_type,
+                context_id=context_id,
+                expected_context="client",
+            )
+            if target_error:
+                return target_error
+            assignee = str(tool_input.get("agent_id") or "").strip()
+            if not assignee or len(assignee) > 160:
+                return {"ok": False, "error": "agent_id must be 1-160 characters."}
+            # The reason this was a flat refusal is the reason it needs a check
+            # rather than a ban: assignee_id is a free-text column, so without
+            # this an assistant could route a client to a string that is nobody.
+            # It is not a permission boundary — the RLS policy on clients is
+            # tenant-only — so reassignment stays an INTERNAL_EDIT.
+            if not await conn.fetchval(
+                """SELECT 1 FROM team_memberships
+                    WHERE tenant_id=$1::uuid AND user_id=$2 AND status='active'""",
+                ctx.tenant_id, assignee,
+            ):
+                return {
+                    "ok": False,
+                    "error": (
+                        f"{assignee!r} is not an active member of this workspace, "
+                        f"so the client would be assigned to nobody."
+                    ),
+                }
+            fields = {"assignee_id": assignee}
+            table, permitted = "clients", ("assignee_id",)
         elif tool_name == "score_client_lead":
             id_field, target_error = _selected_uuid(
                 tool_input=tool_input,
@@ -1203,7 +1336,7 @@ async def _execute_safe_tool(
                       SET archived_at=now(),updated_at=now()
                     WHERE id=$1::uuid AND tenant_id=$2::uuid
                       AND archived_at IS NULL
-                    RETURNING id,archived_at""",
+                    RETURNING id,archived_at,updated_at""",
                 target_id, ctx.tenant_id,
             )
             if not archived:
@@ -1215,14 +1348,22 @@ async def _execute_safe_tool(
                              '{"archived":true}'::jsonb,$3)""",
                 ctx.tenant_id, target_id, user_id,
             )
-            return {
-                "ok": True,
-                "action_type": tool_name,
-                "record_type": "client",
-                "record_id": target_id,
-                "archived_at": archived["archived_at"].isoformat(),
-                "detail": "Client archived.",
-            }
+            # The archive activity row is deliberately left behind by an undo:
+            # it happened, and the timeline should say so.
+            action = await _record_action(
+                conn, ctx, key=key, user_id=user_id, message_id=message_id,
+                tool_name=tool_name, record_type="client", record_id=target_id,
+                before={"archived_at": None},
+                after={"archived_at": archived["archived_at"]},
+                undo_kind="field_restore",
+                expected_updated_at=archived["updated_at"],
+            )
+            return _applied(
+                tool_name, action, record_type="client", record_id=target_id,
+                undo_kind="field_restore",
+                archived_at=archived["archived_at"].isoformat(),
+                detail="Client archived.",
+            )
         elif tool_name == "create_client":
             name = str(tool_input.get("full_name", "")).strip()
             email = str(tool_input.get("email") or "").strip() or None
@@ -1252,14 +1393,28 @@ async def _execute_safe_tool(
                 ctx.tenant_id, client["id"], f"Client created: {name}",
                 client_type, user_id,
             )
-            return {
-                "ok": True,
-                "action_type": tool_name,
-                "record_type": "client",
-                "record_id": str(client["id"]),
-                "created_at": client["created_at"].isoformat(),
-                "detail": f"Client '{name}' created.",
-            }
+            # Recorded for audit, but not reversible: deleting a client cascades
+            # to buyer profiles, notes, tasks, tags, showings, interaction logs
+            # and the email outbox, any of which may have appeared in the undo
+            # window. Archiving is the reversal this domain actually has, and
+            # saying so beats a button that would quietly destroy ten tables.
+            action = await _record_action(
+                conn, ctx, key=key, user_id=user_id, message_id=message_id,
+                tool_name=tool_name, record_type="client",
+                record_id=str(client["id"]), before={},
+                after={"full_name": name, "client_type": client_type},
+                undo_kind="none",
+            )
+            return _applied(
+                tool_name, action, record_type="client",
+                record_id=str(client["id"]), undo_kind="none",
+                undo_unavailable_reason=(
+                    "Deleting a client would cascade to everything attached to "
+                    "it since. Use archive_client instead, which is reversible."
+                ),
+                created_at=client["created_at"].isoformat(),
+                detail=f"Client '{name}' created.",
+            )
         elif tool_name == "move_deal_stage":
             stage = str(tool_input.get("stage", ""))
             if context_type != "lead":
@@ -1277,6 +1432,13 @@ async def _execute_safe_tool(
                     "ok": False,
                     "error": "That stage is not a durable pipeline state. Use draft, under_contract, marketing, assigned, closed, expired, or dead.",
                 }
+            previous = await conn.fetchrow(
+                """SELECT dossier_status,contract_execution_date FROM leads
+                    WHERE id=$1::uuid AND tenant_id=$2::uuid FOR UPDATE""",
+                deal_id, ctx.tenant_id,
+            )
+            if not previous:
+                return {"ok": False, "error": "The selected pipeline lead no longer exists."}
             moved = await conn.fetchrow(
                 """UPDATE leads
                       SET dossier_status=$1,
@@ -1285,55 +1447,48 @@ async def _execute_safe_tool(
                               THEN now() ELSE contract_execution_date END,
                           updated_at=now()
                     WHERE id=$2::uuid AND tenant_id=$3::uuid
-                    RETURNING id,dossier_status,contract_expires_at""",
+                    RETURNING id,dossier_status,contract_execution_date,
+                              contract_expires_at,updated_at""",
                 stage, deal_id, ctx.tenant_id,
             )
             if not moved:
                 return {"ok": False, "error": "The selected pipeline lead no longer exists."}
-            return {
-                "ok": True,
-                "action_type": tool_name,
-                "record_type": "lead",
-                "record_id": deal_id,
-                "stage": moved["dossier_status"],
-                "detail": f"Pipeline lead moved to {moved['dossier_status']}.",
-            }
+            # contract_execution_date is stamped as a side effect of moving to
+            # under_contract, so an undo that restored only the stage would
+            # leave a lead that was never under contract carrying an execution
+            # date.
+            action = await _record_action(
+                conn, ctx, key=key, user_id=user_id, message_id=message_id,
+                tool_name=tool_name, record_type="lead", record_id=deal_id,
+                before={"dossier_status": previous["dossier_status"],
+                        "contract_execution_date": previous["contract_execution_date"]},
+                after={"dossier_status": moved["dossier_status"],
+                       "contract_execution_date": moved["contract_execution_date"]},
+                undo_kind="field_restore",
+                expected_updated_at=moved["updated_at"],
+            )
+            return _applied(
+                tool_name, action, record_type="lead", record_id=deal_id,
+                undo_kind="field_restore", stage=moved["dossier_status"],
+                detail=f"Pipeline lead moved to {moved['dossier_status']}.",
+            )
         elif tool_name in ("generate_contract", "generate_assignment_agreement"):
             return {
                 "ok": False,
                 "error": (
-                    "Contract generation requires complete transaction inputs and "
-                    "attorney review before a vault job can be queued. Open Contract "
-                    "Vault to create and approve the draft."
+                    "Use draft_contract instead. It reads every term from the "
+                    "transaction, names any that are not recorded rather than "
+                    "inventing them, and files the result for attorney review. "
+                    "These two names remain refusals because they imply the "
+                    "assistant generates the terms."
                 ),
             }
-        elif tool_name == "call_contact":
-            phone = str(tool_input.get("phone", "")).strip()
-            reason = str(tool_input.get("reason", "")).strip()
-            if not phone or len(phone) < 7:
-                return {"ok": False, "error": "A valid phone number is required."}
-            if not reason:
-                return {"ok": False, "error": "A reason for the call is required."}
-            client_id = str(tool_input.get("client_id") or context_id or "")
-            try:
-                from approval_service import create_approval
-                from platform_policy import ActionRisk
-                approval = await create_approval(
-                    ctx,
-                    action_type="CALL",
-                    risk=ActionRisk.LIVE_CALL,
-                    target_type="client" if client_id else "contact",
-                    target_id=client_id or phone,
-                    draft_payload={"phone": phone, "reason": reason, "client_id": client_id},
-                    expires_in_minutes=60,
-                )
-                return {
-                    "ok": True, "action_type": "call_contact",
-                    "approval_id": str(approval["id"]),
-                    "detail": f"Call request submitted for approval. Phone: {phone}. Reason: {reason[:200]}. An admin must approve before the call is placed."
-                }
-            except Exception as exc:
-                return {"ok": False, "error": f"Call request failed: {exc}"}
+        elif tool_name in _GATED_TOOL_NAMES:
+            return await _execute_gated_tool(
+                conn, ctx, tool_name, tool_input,
+                user_id=user_id, message_id=message_id,
+                context_type=context_type, context_id=context_id,
+            )
         else:
             return {
                 "ok": False,
@@ -1360,16 +1515,11 @@ async def _execute_safe_tool(
             f"AND tenant_id=${len(values)+2}::uuid{live_record_clause} RETURNING updated_at",
             *values, id_field, ctx.tenant_id,
         )
-        before_ct = await _encrypt_text(conn, json.dumps(before, default=str), key)
-        after_ct = await _encrypt_text(conn, json.dumps(fields, default=str), key)
-        action = await conn.fetchrow(
-            """INSERT INTO ai_chat_actions
-                   (tenant_id,user_id,message_id,action_type,record_type,record_id,
-                    before_ciphertext,after_ciphertext,expected_updated_at)
-                 VALUES ($1::uuid,$2,$3::uuid,$4,$5,$6::uuid,$7,$8,$9)
-                 RETURNING id,undo_expires_at""",
-            ctx.tenant_id, user_id, message_id, tool_name, context_type, context_id,
-            before_ct, after_ct, updated["updated_at"],
+        action = await _record_action(
+            conn, ctx, key=key, user_id=user_id, message_id=message_id,
+            tool_name=tool_name, record_type=context_type, record_id=context_id,
+            before=before, after=fields, undo_kind="field_restore",
+            expected_updated_at=updated["updated_at"],
         )
         if table == "clients":
             # Only a real value change is a human override — a write that
@@ -1407,11 +1557,10 @@ async def _execute_safe_tool(
                 ctx.tenant_id, id_field, "Personal AI updated the client profile",
                 json.dumps({"fields": sorted(fields)}), user_id,
             )
-    return {
-        "ok": True, "action_id": str(action["id"]), "record_type": context_type,
-        "record_id": context_id, "fields": fields,
-        "undo_expires_at": action["undo_expires_at"].isoformat(),
-    }
+    return _applied(
+        tool_name, action, record_type=context_type, record_id=context_id,
+        undo_kind="field_restore", fields=fields,
+    )
 
 
 async def execute_safe_tool(
@@ -1437,6 +1586,68 @@ async def execute_safe_tool(
         }
 
 
+async def _undo_field_restore(conn, ctx: TenantContext, action, *, key: str,
+                              action_id: str) -> None:
+    """Put the recorded column values back, refusing on a concurrent edit."""
+    mapping = _UNDO_COLUMNS.get(action["record_type"])
+    if not mapping:
+        raise HTTPException(status.HTTP_409_CONFLICT, "Action cannot be undone")
+    table, allowed = mapping
+    current = await conn.fetchrow(
+        f"SELECT updated_at FROM {table} WHERE id=$1::uuid AND tenant_id=$2::uuid FOR UPDATE",
+        action["record_id"], ctx.tenant_id,
+    )
+    if not current or current["updated_at"] != action["expected_updated_at"]:
+        await conn.execute("UPDATE ai_chat_actions SET status='conflict' WHERE id=$1::uuid", action_id)
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "Record changed after this action; undo was not applied",
+        )
+    before = json.loads(await _decrypt_text(conn, action["before_ciphertext"], key))
+    if not isinstance(before, dict) or not before:
+        raise HTTPException(status.HTTP_409_CONFLICT, "Action cannot be undone")
+    # These keys become column names in the statement below. They come out of
+    # our own ciphertext, but an allowlist is what makes that interpolation
+    # safe by construction rather than by trust.
+    unexpected = sorted(set(before) - allowed)
+    if unexpected:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            f"Action refers to fields that are not restorable: {', '.join(unexpected)}",
+        )
+    assignments = ",".join(f"{name}=${index}" for index, name in enumerate(before, start=1))
+    values = list(before.values())
+    await conn.execute(
+        f"UPDATE {table} SET {assignments},updated_at=now() "
+        f"WHERE id=${len(values)+1}::uuid AND tenant_id=${len(values)+2}::uuid",
+        *values, action["record_id"], ctx.tenant_id,
+    )
+
+
+async def _undo_row_delete(conn, ctx: TenantContext, action) -> None:
+    """Remove exactly the rows the action inserted.
+
+    No ``expected_updated_at`` check: these rows are append-only additions to a
+    timeline, so a later note by someone else is not a conflict with removing
+    this one. The tenant predicate and the recorded ids are the whole scope.
+    """
+    payload = _json(action["undo_payload"], {}) or {}
+    for target in payload.get("deletes", []):
+        table = str(target.get("table") or "")
+        ids = [str(value) for value in target.get("ids") or []]
+        if not ids:
+            continue
+        if table not in _UNDO_DELETABLE_TABLES:
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                f"Undo cannot delete from {table!r}.",
+            )
+        await conn.execute(
+            f"DELETE FROM {table} WHERE tenant_id=$1::uuid AND id = ANY($2::uuid[])",
+            ctx.tenant_id, ids,
+        )
+
+
 async def undo_action(ctx: TenantContext, action_id: str) -> dict:
     key = tenant_key(ctx)
     async with tenant_tx(ctx) as conn:
@@ -1451,24 +1662,16 @@ async def undo_action(ctx: TenantContext, action_id: str) -> dict:
             raise HTTPException(status.HTTP_409_CONFLICT, "Action is no longer undoable")
         if action["undo_expires_at"] <= datetime.now(timezone.utc):
             raise HTTPException(status.HTTP_409_CONFLICT, "Undo window has expired")
-        table = {"client": "clients", "listing": "listings", "lead": "leads"}.get(action["record_type"])
-        if not table:
-            raise HTTPException(status.HTTP_409_CONFLICT, "Action cannot be undone")
-        current = await conn.fetchrow(
-            f"SELECT updated_at FROM {table} WHERE id=$1::uuid AND tenant_id=$2::uuid FOR UPDATE",
-            action["record_id"], ctx.tenant_id,
-        )
-        if not current or current["updated_at"] != action["expected_updated_at"]:
-            await conn.execute("UPDATE ai_chat_actions SET status='conflict' WHERE id=$1::uuid", action_id)
-            raise HTTPException(status.HTTP_409_CONFLICT, "Record changed after this action; undo was not applied")
-        before = json.loads(await _decrypt_text(conn, action["before_ciphertext"], key))
-        assignments = ",".join(f"{name}=${index}" for index, name in enumerate(before, start=1))
-        values = list(before.values())
-        await conn.execute(
-            f"UPDATE {table} SET {assignments} WHERE id=${len(values)+1}::uuid "
-            f"AND tenant_id=${len(values)+2}::uuid",
-            *values, action["record_id"], ctx.tenant_id,
-        )
+        undo_kind = action["undo_kind"]
+        if undo_kind == "none":
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                "This action was recorded for audit but cannot be reversed.",
+            )
+        if undo_kind == "row_delete":
+            await _undo_row_delete(conn, ctx, action)
+        else:
+            await _undo_field_restore(conn, ctx, action, key=key, action_id=action_id)
         await conn.execute(
             "UPDATE ai_chat_actions SET status='undone',undone_at=now() WHERE id=$1::uuid",
             action_id,

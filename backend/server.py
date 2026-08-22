@@ -52,9 +52,9 @@ from client_enterprise import router as client_enterprise_router
 from client_ai_automation import router as client_ai_router
 from telephony_api import router as telephony_router
 from ai_chat_api import router as ai_chat_router, handle_chat_websocket
+import tenant_engines
 import ws_hub
 from legal_agent import format_for_websocket
-from spatial_agent import reconstruct_property, should_trigger_reconstruction
 from tour_generator import generate_tour
 from workflow_engine import WorkflowEngine
 from qwen_voice_agent import QwenVoiceAgent
@@ -102,6 +102,15 @@ async def lifespan(app: FastAPI):
     await start_voice_workers()
     await start_reconstruction_workers()
     await start_disposition_enforcer()
+    # Import litellm at startup rather than in front of a caller: the first
+    # request in a fresh process otherwise pays seconds of import time that no
+    # request deadline can cover (it happens before the timeout starts).
+    try:
+        import llm_gateway
+        await asyncio.to_thread(llm_gateway.warm)
+    except Exception as exc:  # noqa: BLE001 — warming is an optimisation, never a boot blocker
+        logger.warning("llm_gateway warm-up skipped: %s", exc)
+
     if config.ORACLE_FEATURE_VIDEO_STUDIO:
         from video_studio import start_video_studio_workers, stop_video_studio_workers
         await start_video_studio_workers()
@@ -114,6 +123,11 @@ async def lifespan(app: FastAPI):
     # AWS observability broadcaster is opt-in: it polls Cost Explorer (billed
     # per call) and the infra APIs. Off unless AWS_OBSERVABILITY_ENABLED is set;
     # even when enabled, the loop only calls AWS while a client is connected.
+    # One ambient monologue producer for the whole replica. Previously every
+    # socket ran its own loop at one LLM call per 6s; this is one call per
+    # tenant-with-viewers per interval.
+    monologue_task = asyncio.create_task(ambient_monologue_producer())
+
     metrics_task = None
     if os.environ.get("AWS_OBSERVABILITY_ENABLED", "").lower() in {"1", "true", "yes"}:
         from aws_observability import broadcast_metrics
@@ -126,6 +140,13 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
+        monologue_task.cancel()
+        try:
+            await monologue_task
+        except asyncio.CancelledError:
+            pass
+        # Stop every tenant engine, including any still inside its linger window.
+        await tenant_engines.shutdown_all()
         if metrics_task is not None:
             metrics_task.cancel()
             try:
@@ -318,13 +339,14 @@ from apis.census import get_demographics_by_zip
 from apis.property_data import enrich_property, get_flood_zone
 from apis.market_data import get_market_snapshot
 
-from fastapi.staticfiles import StaticFiles
-from pathlib import Path
-
-# Serve the same directory spatial_agent writes to — it owns the env override
-# and the container-safe fallback (ORACLE_SPLAT_DIR / /tmp/oracle_splats).
-from spatial_agent import SPLAT_OUTPUT_DIR
-app.mount("/public/splats", StaticFiles(directory=str(SPLAT_OUTPUT_DIR)), name="splats")
+# There is deliberately no static mount for reconstructions.
+#
+# `/public/splats` used to serve SPLAT_OUTPUT_DIR through StaticFiles with no
+# authentication, at `{sha256(address)[:16]}.splat` — a path anyone who knew an
+# address could compute. That made every finished reconstruction of a customer's
+# home readable by anyone. Splats now go to object storage and are served by the
+# authenticated /api/media/{id} route, which joins through the tenant-scoped
+# property_media row like every other asset.
 
 
 @app.get("/health")
@@ -360,9 +382,38 @@ async def health() -> JSONResponse:
     return JSONResponse(content=body, status_code=status_code)
 
 
-_tour_gen_timestamps: list[float] = []
-_TOUR_GEN_RATE_LIMIT = int(os.getenv("ORACLE_TOUR_RATE_LIMIT", "10"))  # per minute
-_TOUR_GEN_WINDOW = 60.0
+# Optional routers are mounted conditionally above, so on any given deployment
+# some API surfaces simply are not there. Without a way to ask, a shipped UI
+# panel discovers this by firing its requests and collecting 404s — which is
+# exactly what VideoStudioPanel did, because ORACLE_FEATURE_VIDEO_STUDIO
+# defaults off and it had no way to know.
+#
+# Answers from the live route table rather than by re-reading the environment:
+# the question a client actually has is "can I call this", and a flag that was
+# read at import time is one indirection away from that.
+_OPTIONAL_SURFACES: dict[str, str] = {
+    "video_studio": "/api/video-studio",
+    "aws_observability": "/api/aws",
+    "chaos_c2": "/admin/surge",
+}
+
+
+@app.get("/api/platform/capabilities")
+async def platform_capabilities(
+    ctx: TenantContext = Depends(require_context),
+) -> JSONResponse:
+    """Report which optional API surfaces this deployment actually mounted.
+
+    Lets a client render an honest "not enabled here" state instead of a broken
+    one. Authenticated because the shape of a deployment is not public.
+    """
+    mounted = [getattr(route, "path", "") for route in app.routes]
+    return JSONResponse(
+        content={
+            name: any(path.startswith(prefix) for path in mounted)
+            for name, prefix in _OPTIONAL_SURFACES.items()
+        }
+    )
 
 
 @app.post("/api/generate-tour")
@@ -375,12 +426,10 @@ async def api_generate_tour(
     Accepts: { address, sqft, bedrooms, bathrooms, features[], description, price }
     Returns: Complete tour schema (waypoints, poses, floor plan, narrations)
     """
-    now = time.monotonic()
-    _tour_gen_timestamps[:] = [t for t in _tour_gen_timestamps if now - t < _TOUR_GEN_WINDOW]
-    if len(_tour_gen_timestamps) >= _TOUR_GEN_RATE_LIMIT:
-        return JSONResponse({"error": "rate limit exceeded — try again shortly"}, status_code=429)
-    _tour_gen_timestamps.append(now)
-
+    # Rate limiting lives in RateLimitMiddleware under the /api/generate-tour
+    # bucket — per principal and shared across replicas. The counter that used
+    # to be here was a module-level list, so the ceiling was per *process* and
+    # shared by every tenant on it.
     body = await request.json()
     if not body.get("address") and not body.get("description"):
         return JSONResponse({"error": "address or description required"}, status_code=400)
@@ -447,41 +496,55 @@ mind_service = MindService()
 configure_command_mind_service(mind_service)
 
 
-async def monologue_loop(websocket: WebSocket):
-    """Continuously streams agent inner thoughts to the Walker speech bubble."""
-    agent_cycle = ["SCOUT", "ANALYST", "CLOSER", "LEGAL"]
-    idx = 0
+AMBIENT_MONOLOGUE_INTERVAL = float(os.getenv("ORACLE_MONOLOGUE_INTERVAL", "20"))
+_AGENT_CYCLE = ("SCOUT", "ANALYST", "CLOSER", "LEGAL")
 
+
+async def ambient_monologue_producer():
+    """Generate one ambient thought per tenant per interval, for the whole replica.
+
+    This replaces a per-socket loop that ran one LLM call every 6 seconds for
+    every connected client. Fifty agents in one brokerage produced ~500 calls a
+    minute to show them fifty copies of the same ambient flavour text — on a
+    deployment where no replica runs a local model, so each call was a failing
+    health probe followed by a hosted request.
+
+    Now: one call per tenant per interval, delivered to all of that tenant's
+    sockets. Fifty agents in one tenant cost 3 calls/minute rather than 500.
+
+    Delivery is local-only. Every replica runs this loop, so publishing across
+    replicas would deliver each other's thoughts on top of its own.
+    """
+    idx = 0
     while True:
-        await asyncio.sleep(6.0)
-        agent_id = agent_cycle[idx % len(agent_cycle)]
+        await asyncio.sleep(AMBIENT_MONOLOGUE_INTERVAL)
+        tenants = ws_hub.tenants_with_sockets()
+        if not tenants:
+            continue  # nobody watching; generate nothing
+
+        agent_id = _AGENT_CYCLE[idx % len(_AGENT_CYCLE)]
         idx += 1
 
-        tokens_sent = 0
-        async for token in mind_service.stream_monologue(agent_id):
-            if tokens_sent == 0:
-                await websocket.send_text(json.dumps({
-                    "type": "AGENT_THOUGHT",
-                    "agent": agent_id,
-                    "mode": "start",
-                    "token": token,
-                }))
-            else:
-                await websocket.send_text(json.dumps({
-                    "type": "AGENT_THOUGHT",
-                    "agent": agent_id,
-                    "mode": "stream",
-                    "token": token,
-                }))
-            tokens_sent += 1
+        for tenant_id in tenants:
+            try:
+                tokens = [token async for token in mind_service.stream_monologue(agent_id)]
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 — ambient copy is never critical
+                logger.debug("Ambient monologue generation failed: %s", exc)
+                continue
+            if not tokens:
+                continue
 
-        if tokens_sent > 0:
-            await websocket.send_text(json.dumps({
+            # One frame, not one per token. The old loop sent ~80 frames per
+            # thought per socket; the text is not typed live by a human and the
+            # client can animate it locally if it wants to.
+            await ws_hub.deliver_local(tenant_id, {
                 "type": "AGENT_THOUGHT",
                 "agent": agent_id,
-                "mode": "end",
-                "token": "",
-            }))
+                "mode": "full",
+                "token": "".join(tokens),
+            })
 
 
 async def restore_session(websocket: WebSocket, user_id: str, tenant_id: str):
@@ -903,6 +966,18 @@ async def websocket_endpoint(websocket: WebSocket):
         await websocket.close(code=4401)
         return
     ctx, used_subprotocol = identity
+
+    # Refuse past the replica's ceiling rather than degrading for everyone
+    # already on it. 1013 "Try Again Later" is the code clients are expected to
+    # retry on, so this reads as capacity rather than as rejection.
+    if ws_hub.at_capacity():
+        logger.warning(
+            "WebSocket refused — replica at capacity (%d connections)",
+            ws_hub.total_connections(),
+        )
+        await websocket.close(code=1013, reason="server at capacity, retry shortly")
+        return
+
     await websocket.accept(subprotocol="oracle.jwt" if used_subprotocol else None)
 
     # Production identity is claim-derived. Query parameters never override it.
@@ -928,12 +1003,24 @@ async def websocket_endpoint(websocket: WebSocket):
         ws_hub.unregister(tenant_id, websocket, user_id)
         return
 
+    # Per-user, per-interaction — stays per socket. Voice is a conversation with
+    # one agent, not ambient tenant-wide work.
     voice_agent = QwenVoiceAgent(websocket=websocket)
-    engine = WorkflowEngine(
-        websocket=websocket,
-        mind_service=mind_service,
-        tenant_id=tenant_id,
-        user_id=user_id,
+
+    # Shared across this tenant's sockets on this replica. The engine publishes
+    # through ws_hub, so it needs no socket of its own.
+    async def _publish_to_tenant(payload: dict) -> None:
+        await ws_hub.deliver_local(tenant_id, payload)
+
+    engine = await tenant_engines.acquire(
+        tenant_id,
+        factory=lambda: WorkflowEngine(
+            websocket=None,
+            publish=_publish_to_tenant,
+            mind_service=mind_service,
+            tenant_id=tenant_id,
+            user_id=user_id,
+        ),
     )
 
     # Background tasks spawned during this session.  We cancel all of them on
@@ -1005,10 +1092,6 @@ async def websocket_endpoint(websocket: WebSocket):
                         })
                 elif msg_type == "REQUEST_DEAL_PIPELINE":
                     await push_deal_pipeline(websocket, ctx, msg)
-                elif msg_type == "REQUEST_RECONSTRUCTION":
-                    address = msg.get("address", "")
-                    if address:
-                        _spawn(reconstruct_property(address, websocket))
                 elif msg_type == "OBSERVE":
                     mind_service.observe(
                         msg.get("agent", "SCOUT"),
@@ -1030,9 +1113,11 @@ async def websocket_endpoint(websocket: WebSocket):
 
     try:
         await asyncio.gather(
-            engine.start(),
+            # `engine.start()` is no longer awaited here — the engine belongs to
+            # the tenant, not this socket, and tenant_engines.acquire() has
+            # already started it. Gathering it per socket would have made the
+            # first client's disconnect tear down everyone's pipeline.
             listen_for_client_messages(),
-            monologue_loop(websocket),
             idle_watchdog(),
         )
     except WebSocketDisconnect:
@@ -1041,11 +1126,14 @@ async def websocket_endpoint(websocket: WebSocket):
         logger.error("WebSocket session error for %s: %s", client_label, exc, exc_info=True)
     finally:
         ws_hub.unregister(tenant_id, websocket, user_id)
-        # Shut down the workflow engine (cancels harvest/analysis/scout/recon tasks).
+        # Drop this socket's claim on the tenant engine. The engine keeps
+        # running while any other socket for the tenant holds a reference, and
+        # lingers briefly after the last one so a page reload does not pay for
+        # a full teardown and re-seed.
         try:
-            await engine.stop()
+            await tenant_engines.release(tenant_id)
         except Exception as _e:  # noqa: BLE001
-            logger.debug("engine.stop() raised during cleanup for %s: %s", client_label, _e)
+            logger.debug("tenant_engines.release raised for %s: %s", client_label, _e)
         # Cancel any remaining server-level background tasks spawned during this session.
         if _bg_tasks:
             logger.debug("Cancelling %d background task(s) for %s", len(_bg_tasks), client_label)

@@ -431,12 +431,56 @@ _PUBLIC_RECORD_SELECT = """
 """
 
 
-def _public_record_json(r: dict) -> dict:
-    """Map one allow-listed catalog row to the existing property-card contract."""
+async def _lead_ids_for_records(conn, rows: list[dict]) -> dict[tuple[str, str], str]:
+    """Map (parcel_id, state) -> this tenant's lead id, for a page of records.
+
+    The public catalog is shared across tenants; a lead is the tenant's own row
+    for the same parcel. Everything downstream of the property card is keyed on
+    that lead id — the tour resolver, the media list, the tier badge — so a page
+    served without it strands every interior affordance regardless of what has
+    actually been captured.
+
+    One query per page, not per row. Called inside an existing tenant_tx, so RLS
+    scopes the result to the caller's tenant with no predicate needed here.
+    Matches the (parcel_id, state) lookup crm.link_client_house already relies on.
+    """
+    keys = {
+        (str(r["parcel_id"]), str(r["state"]))
+        for r in rows
+        if r.get("parcel_id") and r.get("state")
+    }
+    if not keys:
+        return {}
+
+    parcels = [k[0] for k in keys]
+    states = [k[1] for k in keys]
+    found = await conn.fetch(
+        """
+        SELECT DISTINCT ON (parcel_id, state) parcel_id, state, id
+          FROM leads
+         WHERE (parcel_id, state) = ANY(
+                   SELECT * FROM unnest($1::text[], $2::text[])
+               )
+         ORDER BY parcel_id, state, updated_at DESC, id ASC
+        """,
+        parcels,
+        states,
+    )
+    return {(str(r["parcel_id"]), str(r["state"])): str(r["id"]) for r in found}
+
+
+def _public_record_json(r: dict, lead_ids: Optional[dict] = None) -> dict:
+    """Map one allow-listed catalog row to the existing property-card contract.
+
+    `lead_ids` comes from _lead_ids_for_records. Absent (or no match) leaves
+    lead_id None, which is correct: the tenant has no lead for this parcel, so
+    there is nothing captured against it and the tour stays at exterior tier.
+    """
+    parcel_key = (str(r.get("parcel_id") or ""), str(r.get("state") or ""))
     record = {
         "id": r.get("id"),
         "public_record_id": r.get("public_record_id") or r.get("id"),
-        "lead_id": None,
+        "lead_id": (lead_ids or {}).get(parcel_key),
         "mls_number": r.get("parcel_id") or "",
         "parcel_id": r.get("parcel_id") or "",
         "address": r.get("address") or "",
@@ -663,6 +707,27 @@ async def _reconcile_sparse_public_record(
             records,
             metrics=metrics,
         )
+
+        # Keep the raw observation for this one parcel. /api/intelligence will
+        # not score anything without a citable source_record_id, and bulk
+        # retention is off for the parcel firehoses because storing raw JSON for
+        # every parcel in 51 states is unbounded. A property somebody just
+        # opened is precisely the one worth a row.
+        try:
+            retained = await harvester.retain_observations(
+                harvester.last_raw_rows, reason="parcel_reconciliation"
+            )
+            if retained:
+                logger.info(
+                    "Retained %d observation(s) for researched parcel %s",
+                    retained, str(candidate.get("parcel_id"))[:80],
+                )
+        except Exception as exc:  # noqa: BLE001 — the reconciliation itself succeeded
+            logger.warning(
+                "Could not retain observation for parcel %r: %s",
+                str(candidate.get("parcel_id"))[:120], exc,
+            )
+
         return True
     except Exception as exc:  # noqa: BLE001 - existing sparse row remains usable
         logger.warning(
@@ -758,22 +823,45 @@ async def mls_pipeline_search(
         )
 
     where = " AND ".join(conditions) if conditions else "TRUE"
+    is_unfiltered = where == "TRUE"
     offset = (page - 1) * PAGE_SIZE
     count_args = list(args)
     count_q = f"SELECT COUNT(*) AS n FROM public_property_records WHERE {where}"
 
+    # Fetch one row past the page so has_more never depends on `total` — that
+    # keeps pagination correct even when total is an estimate (below).
     data_q = (
         f"SELECT {_PUBLIC_RECORD_SELECT}, {rank_sql} AS match_score, "
         f"{match_type_sql} AS match_type "
         f"FROM public_property_records WHERE {where} "
         f"ORDER BY match_score DESC, record_refreshed_at DESC, id ASC "
-        f"LIMIT {_arg(PAGE_SIZE)} OFFSET {_arg(offset)}"
+        f"LIMIT {_arg(PAGE_SIZE + 1)} OFFSET {_arg(offset)}"
     )
 
+    async def _count_total(conn) -> tuple[int, bool]:
+        """(total, is_estimate).
+
+        An unfiltered browse has no WHERE to bound it, so COUNT(*) is a full
+        scan of the whole catalog on every page load — measured at 6.3M rows /
+        4.7GB, expensive on any box and the thing that OOM'd this one. The
+        planner's own row-count estimate (`pg_class.reltuples`, refreshed by
+        autovacuum/ANALYZE) costs nothing and is accurate enough for a browse
+        total; it must never be presented as exact, so callers get the flag
+        and the response says so via `total_is_estimate`.
+        """
+        if not is_unfiltered:
+            count_row = await conn.fetchrow(count_q, *count_args)
+            return (int(count_row["n"]) if count_row else 0), False
+        estimate_row = await conn.fetchrow(
+            "SELECT reltuples::bigint AS n FROM pg_class WHERE oid = 'public_property_records'::regclass"
+        )
+        estimate = int(estimate_row["n"]) if estimate_row and estimate_row["n"] is not None else 0
+        return max(estimate, 0), True
+
+    lead_ids: dict = {}
     try:
         async with tenant_tx(ctx) as conn:
-            count_row = await conn.fetchrow(count_q, *count_args)
-            total = int(count_row["n"]) if count_row else 0
+            total, total_is_estimate = await _count_total(conn)
             rows = [dict(r) for r in await conn.fetch(data_q, *args)]
         if q and q.strip() and await _reconcile_sparse_cook_record(
             query_text=" ".join(q.split()),
@@ -781,8 +869,7 @@ async def mls_pipeline_search(
             ctx=ctx,
         ):
             async with tenant_tx(ctx) as conn:
-                count_row = await conn.fetchrow(count_q, *count_args)
-                total = int(count_row["n"]) if count_row else 0
+                total, total_is_estimate = await _count_total(conn)
                 rows = [dict(r) for r in await conn.fetch(data_q, *args)]
         if q and q.strip() and await _reconcile_sparse_public_record(
             rows=rows,
@@ -790,22 +877,30 @@ async def mls_pipeline_search(
             exact_match_only=True,
         ):
             async with tenant_tx(ctx) as conn:
-                count_row = await conn.fetchrow(count_q, *count_args)
-                total = int(count_row["n"]) if count_row else 0
+                total, total_is_estimate = await _count_total(conn)
                 rows = [dict(r) for r in await conn.fetch(data_q, *args)]
+
+        # After every reconciliation path above has settled `rows` — the two
+        # re-reads are conditional, so resolving inside one of them would leave
+        # the other paths without lead ids.
+        has_more = len(rows) > PAGE_SIZE
+        rows = rows[:PAGE_SIZE]
+        async with tenant_tx(ctx) as conn:
+            lead_ids = await _lead_ids_for_records(conn, rows)
     except RuntimeError as exc:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, f"Memory Core offline ({exc})")
     except Exception as exc:  # noqa: BLE001
         logger.error("Public property record search failed: %s", exc)
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Memory Core offline.")
 
-    listings = [_public_record_json(r) for r in rows]
+    listings = [_public_record_json(r, lead_ids) for r in rows]
     return {
         "listings": listings,
         "total": total,
+        "total_is_estimate": total_is_estimate,
         "page": page,
         "page_size": PAGE_SIZE,
-        "has_more": offset + len(listings) < total,
+        "has_more": has_more,
         "degraded": False,
         "source": "shared public property catalog",
         "notice": _public_coverage_json()["notice"],
@@ -864,4 +959,14 @@ async def mls_pipeline_listing(
                 row_dict = dict(refreshed)
         except Exception as exc:  # noqa: BLE001 - return the first valid row
             logger.warning("Refreshed public record read failed for %s: %s", record_id, exc)
-    return _public_record_json(row_dict)
+
+    # Resolve the tenant's lead for this parcel so the detail card can reach the
+    # tour, media and tier badge — same reason as the list handler above.
+    lead_ids: dict = {}
+    try:
+        async with tenant_tx(ctx) as conn:
+            lead_ids = await _lead_ids_for_records(conn, [row_dict])
+    except Exception as exc:  # noqa: BLE001 — the record itself is still valid
+        logger.warning("Lead resolution failed for public record %s: %s", record_id, exc)
+
+    return _public_record_json(row_dict, lead_ids)

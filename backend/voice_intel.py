@@ -51,8 +51,11 @@ comms_router = APIRouter(prefix="/api/comms", tags=["Communications"])
 STAGING_DIR = Path(os.getenv("ORACLE_AUDIO_STAGING", "/tmp/oracle_audio"))
 MAX_AUDIO_BYTES = int(os.getenv("ORACLE_AUDIO_MAX_BYTES", str(25 * 1024 * 1024)))
 ALLOWED_SUFFIXES = {".m4a", ".wav", ".mp3", ".webm", ".ogg"}
-QUEUE_MAX = 100
-WORKER_COUNT = 2
+QUEUE_MAX = int(os.getenv("ORACLE_VOICE_QUEUE_MAX", "100"))
+# Tunable alongside ORACLE_JOB_WORKERS and RECON_WORKER_COUNT. Transcription is
+# the heaviest per-task work in the process, so this is the knob that decides
+# how much CPU a replica gives to voice versus serving requests.
+WORKER_COUNT = max(1, int(os.getenv("ORACLE_VOICE_WORKERS", "2")))
 WHISPER_MODEL_SIZE = os.getenv("ORACLE_WHISPER_MODEL", "base")
 
 EXTRACTION_PROMPT = """Analyze the following real-estate agent voice walkthrough note:

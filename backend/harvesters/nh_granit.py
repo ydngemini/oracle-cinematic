@@ -65,13 +65,20 @@ class NewHampshireGRANITHarvester(ArcGISHarvester):
         mail_state = str(row.get("MailingState") or "").strip()
         zip_raw = str(row.get("MailingZip") or "").strip()
         # NH zip codes sometimes arrive as "03052-" — strip trailing dash
-        zip_code = zip_raw.rstrip("-").strip()[:10]
+        mailing_zip = zip_raw.rstrip("-").strip()[:10]
 
         # Absentee: mailing state is not NH, or mailing city differs from property town
         is_absentee = (
             (mail_state and mail_state.upper() not in ("NH", "N H"))
             or (mail_city and norm(mail_city) != norm(town))
         )
+
+        # MailingZip is the OWNER's zip. NH publishes no situs zip, so for an
+        # owner-occupied parcel it is a safe proxy and for an absentee owner it
+        # is the owner's address, not the property's. Same rule as
+        # wy_parcels.py. `city` is unaffected — it comes from Town, which is
+        # the property's.
+        zip_code = "" if is_absentee else mailing_zip
 
         # State-owned parcels are not investor targets
         is_state = str(row.get("IsStateOwned") or "").strip().lower() in ("1", "true", "yes")

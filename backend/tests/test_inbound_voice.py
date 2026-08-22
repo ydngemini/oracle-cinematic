@@ -1,6 +1,7 @@
 import asyncio
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
+from urllib.parse import urlencode
 
 import pytest
 from pydantic import ValidationError
@@ -50,8 +51,14 @@ class FakeRequest:
             "X-Twilio-Signature": signature,
             "host": "internal.invalid",
         }
-        self.url = SimpleNamespace(netloc="internal.invalid", scheme="http")
         self.query_params = dict(query_params or {})
+        # Starlette keeps `url.query` and `query_params` in sync; the signature
+        # validators read the raw string because Twilio signs the URL verbatim.
+        self.url = SimpleNamespace(
+            netloc="internal.invalid",
+            scheme="http",
+            query=urlencode(self.query_params),
+        )
 
     async def form(self):
         return self._form
@@ -547,7 +554,14 @@ def test_unavailable_ai_still_hangs_up_when_no_forward_number_is_set(monkeypatch
 
 def test_transfer_webhook_dials_the_number_resolved_from_the_database(monkeypatch):
     public_base = "https://api.example.test"
-    suffix = f"/api/telephony/webhooks/twilio/inbound/{ENDPOINT_KEY}/transfer"
+    # transfer_webhook_url() hands Twilio a URL carrying `?reason=…`, and Twilio
+    # signs whatever URL it was given — query string included. Signing the bare
+    # path here would only prove the endpoint accepts a signature it will never
+    # actually receive.
+    suffix = (
+        f"/api/telephony/webhooks/twilio/inbound/{ENDPOINT_KEY}/transfer"
+        "?reason=caller_request"
+    )
     auth_token = "twilio-auth-token"
     form = {"CallSid": CALL_SID, "AccountSid": ACCOUNT_SID}
     signature = RequestValidator(auth_token).compute_signature(public_base + suffix, form)
@@ -594,7 +608,10 @@ def test_transfer_webhook_dials_the_number_resolved_from_the_database(monkeypatc
 
 def test_transfer_webhook_never_leaks_a_disabled_route(monkeypatch):
     public_base = "https://api.example.test"
-    suffix = f"/api/telephony/webhooks/twilio/inbound/{ENDPOINT_KEY}/transfer"
+    suffix = (
+        f"/api/telephony/webhooks/twilio/inbound/{ENDPOINT_KEY}/transfer"
+        "?reason=caller_request"
+    )
     auth_token = "twilio-auth-token"
     form = {"CallSid": CALL_SID, "AccountSid": ACCOUNT_SID}
     signature = RequestValidator(auth_token).compute_signature(public_base + suffix, form)
@@ -622,6 +639,41 @@ def test_transfer_webhook_never_leaks_a_disabled_route(monkeypatch):
     body = response.body.decode("utf-8")
     assert "<Dial" not in body
     assert "<Hangup/>" in body
+
+
+def test_transfer_webhook_rejects_a_signature_that_omits_the_query_string(monkeypatch):
+    """Guard the fix: validating against the bare path must not be accepted.
+
+    A signature computed over the path alone is exactly what the endpoint used
+    to compare against, and it is a value no real Twilio request can ever carry.
+    Accepting it would mean the query string had dropped out of the signed URL
+    again — silently, because the happy-path test above would still pass.
+    """
+    public_base = "https://api.example.test"
+    bare_path = f"/api/telephony/webhooks/twilio/inbound/{ENDPOINT_KEY}/transfer"
+    auth_token = "twilio-auth-token"
+    form = {"CallSid": CALL_SID, "AccountSid": ACCOUNT_SID}
+    signature = RequestValidator(auth_token).compute_signature(public_base + bare_path, form)
+    monkeypatch.setenv("TWILIO_AUTH_TOKEN", auth_token)
+    monkeypatch.setenv("ORACLE_PUBLIC_BASE_URL", public_base)
+
+    async def resolve_call_route(_endpoint, _sid, _account):
+        return {"tenant_id": TENANT_ID, "twilio_account_sid": ACCOUNT_SID}
+
+    async def route_tokens(_route):
+        return [auth_token]
+
+    monkeypatch.setattr(telephony_api, "resolve_inbound_call_route", resolve_call_route)
+    monkeypatch.setattr(telephony_api, "_route_twilio_tokens", route_tokens)
+
+    with pytest.raises(telephony_api.HTTPException) as excinfo:
+        asyncio.run(
+            telephony_api.twilio_inbound_transfer(
+                ENDPOINT_KEY,
+                FakeRequest(form, signature, {"reason": "caller_request"}),
+            )
+        )
+    assert excinfo.value.status_code == 400
 
 
 def test_bridge_hands_off_once_and_stops_the_ai_session(monkeypatch):

@@ -2,15 +2,25 @@
 
 Agents (in-app, JWT) and homeowners (passwordless client portal) attach property
 photos to a lead or listing. The metadata row lives in the existing tenant-scoped
-`property_media` table (kind='photo'); the raw bytes live in the non-tenant-scoped
-`media_blobs` table (migration 0022). Delivery always joins through the
-tenant-scoped metadata row inside ``tenant_tx`` so possession of a media UUID is
-never sufficient to read another tenant's image.
+`property_media` table; delivery always joins through that row inside
+``tenant_tx`` so possession of a media UUID is never sufficient to read another
+tenant's image.
 
-Why bytes-in-Postgres instead of files-on-disk: the container runs as uid 1001
-against a bind mount that is not reliably writable (CLAUDE.md / prod-readiness
-audit), and per-tenant RLS makes a shared writable dir awkward. A DB blob keyed
-by the media row's random uuid is the robust, deployment-agnostic choice.
+Where the bytes live depends on the deployment, and both shapes are permanent:
+
+  * object storage (`property_media.s3_key`) whenever ORACLE_STORAGE_BACKEND is
+    configured — the default for anything real. See media_storage.
+  * `media_blobs.bytes` otherwise, so a bare `docker compose up` needs no cloud
+    account, and for every row written before storage was configured.
+
+The blob table was originally the only option, on the reasoning that the
+container's bind mount was not reliably writable and per-tenant RLS made a
+shared directory awkward. Both are still true of a *local disk*; neither applies
+to object storage, and keeping full-size images in a bytea column made the
+primary database the image server — every thumbnail view a row read competing
+for the same connection pool, every byte replicated and backed up. Storage is
+now preferred wherever it exists; nothing migrates existing blobs, and
+media_storage.load_media_bytes reads either.
 
 Endpoints
   POST   /api/crm/leads/{lead_id}/media        (agent JWT)  — upload photo(s)
@@ -53,6 +63,7 @@ from auth import ALGORITHM, SECRET_KEY
 from audit_ledger import AuditCategory, ledger
 from billing_usage import record_usage
 from contract_vault import SovereignVault, VaultUploadError
+import media_storage
 from db.connection import tenant_tx
 from tenancy import Role, TenantContext, require_context
 
@@ -105,6 +116,13 @@ class ContractSynthesisRequest(BaseModel):
 # (capture wizard / reconstruction worker) writes 'pano'/'splat'/'tour' rows that
 # the tour resolver (tour_api.py) reads to pick the highest available tier.
 _ALLOWED_KINDS = {"photo", "pano", "splat", "tour", "floorplan", "document"}
+
+# `private` is load-bearing: it lets the requesting user's browser cache the
+# image but forbids any shared cache (proxy, CDN) from holding a tenant-scoped
+# asset it could hand to somebody else. `immutable` is honest here because a
+# media id is never reused — this route was previously `no-store`, which meant
+# every thumbnail re-read the full file from the database on every render.
+_MEDIA_CACHE_CONTROL = "private, max-age=86400, immutable"
 
 # Magic-byte sniff → canonical content-type. We trust the file signature over the
 # client-declared Content-Type (which is attacker-controlled and easily spoofed).
@@ -195,11 +213,18 @@ async def _persist(
         # the whole thing is a single INSERT (a writable CTE can't UPDATE the row
         # its own INSERT just created — same-statement snapshot).
         new_id = uuid4()
+        # Durable storage when configured, blob otherwise. Done before the row
+        # is written because s3_key is part of the INSERT — same ordering the
+        # video path has always used.
+        s3_key = await media_storage.put_media_bytes(
+            data, content_type, str(tenant_id), kind=kind
+        )
         row = await conn.fetchrow(
             """
             INSERT INTO property_media
-                (id, tenant_id, lead_id, listing_id, kind, url, sort_order)
-            VALUES ($1, $2, $3, $4, $7, $5, $6)
+                (id, tenant_id, lead_id, listing_id, kind, url, sort_order,
+                 s3_key, content_type)
+            VALUES ($1, $2, $3, $4, $7, $5, $6, $8, $9)
             RETURNING id, url, kind, sort_order, created_at
             """,
             new_id,
@@ -209,17 +234,20 @@ async def _persist(
             f"/api/media/{new_id}",
             base,
             kind,
-        )
-        await conn.execute(
-            """
-            INSERT INTO media_blobs (media_id, content_type, byte_size, bytes)
-            VALUES ($1, $2, $3, $4)
-            """,
-            row["id"],
+            s3_key,
             content_type,
-            len(data),
-            data,
         )
+        if s3_key is None:
+            await conn.execute(
+                """
+                INSERT INTO media_blobs (media_id, content_type, byte_size, bytes)
+                VALUES ($1, $2, $3, $4)
+                """,
+                row["id"],
+                content_type,
+                len(data),
+                data,
+            )
         created.append(
             {
                 "id": str(row["id"]),
@@ -793,11 +821,26 @@ async def generate_assignment_contract(
 async def serve_media(
     media_id: UUID,
     ctx: TenantContext = Depends(require_context),
+    if_none_match: Optional[str] = Header(default=None, alias="If-None-Match"),
 ):
+    # A media row's bytes never change — a replacement upload gets a new id — so
+    # the id alone is a sound strong validator. Answering a repeat view with 304
+    # is what stops a gallery of eight photos costing eight full reads every time
+    # someone opens the property.
+    etag = f'"{media_id}"'
+    if if_none_match and etag in {tag.strip() for tag in if_none_match.split(",")}:
+        # Still inside the authenticated route: a 304 confirms nothing to a
+        # caller who could not already read the row.
+        return Response(status_code=status.HTTP_304_NOT_MODIFIED, headers={
+            "ETag": etag,
+            "Cache-Control": _MEDIA_CACHE_CONTROL,
+        })
+
     async with tenant_tx(ctx) as conn:
         row = await conn.fetchrow(
             """
-            SELECT pm.kind, pm.s3_key, mb.content_type, mb.bytes
+            SELECT pm.kind, pm.s3_key, pm.content_type AS media_content_type,
+                   mb.content_type, mb.bytes
               FROM property_media AS pm
               LEFT JOIN media_blobs AS mb ON mb.media_id = pm.id
              WHERE pm.id = $1
@@ -825,13 +868,22 @@ async def serve_media(
             raise HTTPException(
                 status.HTTP_502_BAD_GATEWAY, "Media could not be read from storage."
             ) from exc
-        content_type = "video/mp4" if row["kind"] == "video" else "application/octet-stream"
+        # Use the type recorded at upload. Hardcoding video/mp4 here served an
+        # iPhone .mov (sniffed video/quicktime) or a .webm as mp4, and under
+        # X-Content-Type-Options: nosniff the browser refuses to re-sniff — the
+        # player just goes black with no error. Fall back only when the row
+        # predates migration 0068, which added the column.
+        content_type = (
+            row["media_content_type"]
+            or ("video/mp4" if row["kind"] == "video" else "application/octet-stream")
+        )
 
     return Response(
         content=bytes(content),
         media_type=content_type,
         headers={
-            "Cache-Control": "private, no-store",
+            "Cache-Control": _MEDIA_CACHE_CONTROL,
+            "ETag": etag,
             "Content-Disposition": "inline",
             "X-Content-Type-Options": "nosniff",
         },

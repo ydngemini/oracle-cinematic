@@ -122,6 +122,73 @@ async def browse_marketplace(
     return {"publications": [_row(row) for row in rows]}
 
 
+@router.get("/publications")
+async def list_own_publications(
+    limit: int = Query(default=100, ge=1, le=200),
+    ctx: TenantContext = Depends(require_context),
+):
+    """This tenant's own publications, in EVERY state — including drafts.
+
+    Distinct from `GET /api/marketplace`, which is the shared platform
+    marketplace and by design shows only published/under-offer inventory. A
+    draft is created by `from-contract` and can only be published from here:
+    without this route a freshly-created draft was invisible to its own
+    author, so the publish step had nothing to act on.
+
+    Scoped to the caller's tenant explicitly. The RLS read policy would also
+    admit other tenants' *published* rows (that is what makes the marketplace
+    shared), which is exactly what this route must not return.
+    """
+    require_feature(Feature.MARKETPLACE)
+    async with tenant_tx(ctx) as conn:
+        rows = await conn.fetch(
+            """
+            SELECT * FROM marketplace_publications
+             WHERE tenant_id=$1::uuid
+             ORDER BY updated_at DESC LIMIT $2
+            """,
+            ctx.tenant_id,
+            limit,
+        )
+    return {"publications": [_row(row) for row in rows]}
+
+
+@router.get("/buyers/profiles")
+async def list_buyer_profiles(
+    limit: int = Query(default=100, ge=1, le=200),
+    ctx: TenantContext = Depends(require_context),
+):
+    """Buyer profiles for this tenant, each with its active request count.
+
+    `POST /buyers/requests` takes a `buyer_profile_id`, and until now nothing
+    could enumerate those ids — a profile was writable but not findable, so a
+    request could only ever be attached to a profile created in the same
+    breath. The count comes back with the profile because a profile with no
+    active request never participates in matching, and that is worth seeing
+    before wondering why a buyer matched nothing.
+    """
+    require_feature(Feature.MARKETPLACE)
+    async with tenant_tx(ctx) as conn:
+        rows = await conn.fetch(
+            """
+            SELECT p.*,
+                   c.full_name AS client_name,
+                   (SELECT count(*)::int FROM buyer_requests r
+                     WHERE r.buyer_profile_id = p.id
+                       AND r.status='active'
+                       AND (r.expires_at IS NULL OR r.expires_at > now())
+                   ) AS active_request_count
+              FROM buyer_profiles p
+              LEFT JOIN clients c ON c.id = p.client_id
+             WHERE p.tenant_id=$1::uuid AND p.active=true
+             ORDER BY p.updated_at DESC LIMIT $2
+            """,
+            ctx.tenant_id,
+            limit,
+        )
+    return {"profiles": [_row(row) for row in rows]}
+
+
 @router.post("/publications/from-contract/{contract_id}", status_code=status.HTTP_201_CREATED)
 async def create_publication_from_contract(
     contract_id: UUID,

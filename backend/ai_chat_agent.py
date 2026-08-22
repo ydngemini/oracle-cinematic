@@ -14,6 +14,7 @@ from typing import Any, Optional
 import httpx
 
 import ws_hub
+from ai_tool_policy import READ_ONLY_TOOLS
 from ai_chat_store import (
     execute_safe_tool,
     is_agent_tool_available,
@@ -57,19 +58,61 @@ LOCAL_LLM_TIMEOUT = float(os.getenv("ORACLE_LOCAL_LLM_TIMEOUT", "120") or 120)
 LOCAL_LLM_URL = os.getenv(
     "ORACLE_LOCAL_LLM_URL", "http://127.0.0.1:8090/v1/chat/completions"
 )
+# ── Fireworks AI ──────────────────────────────────────────────────────────────
+# Fireworks is OpenAI-compatible, so it reuses the Chat Completions tool loop in
+# _local_fallback rather than getting a second copy of the write-receipt logic.
+FIREWORKS_API_KEY = os.getenv("ORACLE_FIREWORKS_API_KEY", "") or os.getenv(
+    "FIREWORKS_API_KEY", ""
+)
+FIREWORKS_URL = os.getenv(
+    "ORACLE_FIREWORKS_URL", "https://api.fireworks.ai/inference/v1/chat/completions"
+)
+FIREWORKS_MODEL = os.getenv(
+    "ORACLE_FIREWORKS_MODEL", "accounts/fireworks/models/kimi-k2p7-code"
+)
+# Reasoning models spend the budget on `reasoning_content` before emitting any
+# `content`; at the local tier's 1000 the reply comes back empty with
+# finish_reason="length". Give the hosted tier room to actually answer.
+FIREWORKS_MAX_TOKENS = int(os.getenv("ORACLE_FIREWORKS_MAX_TOKENS", "4000") or 4000)
+FIREWORKS_TIMEOUT = float(os.getenv("ORACLE_FIREWORKS_TIMEOUT", "120") or 120)
+# Ceiling for one spoken turn, across every inference tier combined. 120s is a
+# fine budget for a chat box and a call-ending one for a phone line: Twilio
+# gives a <Gather> action request ~15s before it abandons the request and plays
+# its own error over the caller. Sized well under that to leave room for TwiML
+# rendering and the round trip back to the provider.
+VOICE_REPLY_BUDGET_SECONDS = float(
+    os.getenv("ORACLE_VOICE_REPLY_BUDGET_SECONDS", "8") or 8
+)
+FIREWORKS_ENABLED = bool(FIREWORKS_API_KEY) and (
+    AI_PROVIDER == "fireworks"
+    or os.getenv("ORACLE_AI_FIREWORKS_FALLBACK", "0").strip().lower()
+    in ("1", "true", "yes", "on")
+)
 TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "")
 TAVILY_SEARCH_URL = "https://api.tavily.com/search"
 
 # Both hosted tiers off leaves only the local llama server, which most container
 # deployments do not run — say so once at boot rather than letting every chat
 # request come back as a generic "temporarily unavailable".
-if AI_PROVIDER == "azure-foundry" and not FOUNDRY_PROJECT_ENDPOINT and not BEDROCK_FALLBACK_ENABLED:
+if AI_PROVIDER == "fireworks" and not FIREWORKS_API_KEY:
+    logger.error(
+        "AI chat provider is fireworks but no API key is set. Set "
+        "ORACLE_FIREWORKS_API_KEY (or FIREWORKS_API_KEY). Until then every request "
+        "depends on a local llama server at %s.",
+        LOCAL_LLM_URL,
+    )
+elif (
+    AI_PROVIDER == "azure-foundry"
+    and not FOUNDRY_PROJECT_ENDPOINT
+    and not BEDROCK_FALLBACK_ENABLED
+    and not FIREWORKS_ENABLED
+):
     logger.error(
         "AI chat has no hosted inference tier configured: provider is azure-foundry but "
         "ORACLE_FOUNDRY_PROJECT_ENDPOINT is unset and the Bedrock tier is off. Set "
-        "ORACLE_FOUNDRY_PROJECT_ENDPOINT, or ORACLE_AI_CHAT_PROVIDER=bedrock, or "
-        "ORACLE_AI_BEDROCK_FALLBACK=1. Until then every request depends on a local "
-        "llama server at %s.",
+        "ORACLE_FOUNDRY_PROJECT_ENDPOINT, or ORACLE_AI_CHAT_PROVIDER=fireworks, or "
+        "ORACLE_AI_CHAT_PROVIDER=bedrock, or ORACLE_AI_BEDROCK_FALLBACK=1. Until then "
+        "every request depends on a local llama server at %s.",
         LOCAL_LLM_URL,
     )
 
@@ -162,12 +205,35 @@ def _codebase_summary() -> str:
     return _CODEBASE_MAP
 
 
+_web_research_source = None
+
+
+async def _keyless_web_search(query: str) -> str:
+    """Keyless fallback: DuckDuckGo instant answers + Wikipedia.
+
+    Raises rather than returning a plausible empty string. The agent must be
+    able to tell "the web has nothing on this" from "no search happened" — a
+    bland "no results" reads as the former and licenses the model to fill the
+    gap from memory.
+    """
+    global _web_research_source
+    from data_integrations.cache import get_integration_cache
+    from data_integrations.web_research import WebResearchSource, format_for_agent
+
+    if _web_research_source is None:
+        _web_research_source = WebResearchSource(cache=await get_integration_cache())
+    return format_for_agent(await _web_research_source.search(query))
+
+
 async def _web_search(query: str, max_results: int = 10) -> str:
-    if not TAVILY_API_KEY:
-        raise RuntimeError("Web search is not configured")
     sanitized = query.strip()[:400]
     if len(sanitized) < 3:
         raise ValueError("Search query must be at least 3 characters")
+    if not TAVILY_API_KEY:
+        # Tavily is the better index when it is paid for; without it the agent
+        # previously had no web access at all, and its prompt forbids claiming
+        # sources it does not have.
+        return await _keyless_web_search(sanitized)
     try:
         import urllib.request
         import urllib.error
@@ -197,9 +263,11 @@ async def _web_search(query: str, max_results: int = 10) -> str:
         return "\n\n".join(lines) or "No results found for that query."
     except urllib.error.HTTPError as exc:
         body = exc.read().decode("utf-8", errors="replace")[:300]
-        raise RuntimeError(f"Search provider error: {body}") from exc
-    except Exception as exc:
-        raise RuntimeError(f"Web search failed: {exc}") from exc
+        logger.warning("Tavily search failed (%s); trying the keyless provider.", body)
+        return await _keyless_web_search(sanitized)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Tavily search failed (%s); trying the keyless provider.", exc)
+        return await _keyless_web_search(sanitized)
 
 
 def _tool(name, desc, props=None, required=None):
@@ -233,14 +301,19 @@ TOOLS = {
     "list_client_documents": _tool("list_client_documents", "List contracts, disclosures, and attachments associated with a client.", {"client_id": _text("client_id")}),
     "merge_duplicate_clients": _tool("merge_duplicate_clients", "Merge two client records into one, preserving history. Requires review.", {"keep_id": _text("keep_id"), "merge_id": _text("merge_id")}),
     "create_client":        _tool("create_client", "Create a new client record.", {"full_name": _text("full_name"), "email": _text("email", "Optional"), "phone": _text("phone", "Optional"), "client_type": _text("client_type", "seller, buyer, or both")}, ["full_name"]),
-    "call_contact":         _tool("call_contact", "Initiate an outbound call to a client or lead. Requires compliance review and user approval.", {"client_id": _text("client_id", "Optional — the client to call"), "phone": _text("phone", "E.164 format +1XXXYYYZZZZ"), "reason": _text("reason", "Brief summary of why you are calling")}, ["phone", "reason"]),
+    "call_contact":         _tool("call_contact", "Request an outbound call to the selected client. Stages the request for human approval and never dials. The number comes from the client record, not from you.", {"client_id": _text("client_id", "The selected client to call"), "reason": _text("reason", "Why you are calling — the approver reads this")}, ["client_id", "reason"]),
+    "draft_email":          _tool("draft_email", "Draft an email to the selected client and stage it for human approval. Nothing is sent by this tool; the address comes from the client record.", {"client_id": _text("client_id", "The selected client"), "subject": _text("subject"), "body": _text("body", "Full message text")}, ["client_id", "subject", "body"]),
+    "draft_contract":       _tool("draft_contract", "Draft a contract for the selected deal from an approved template and queue it for attorney review. Every term is read from the transaction; nothing is executed, signed, or binding, and the document text is not returned.", {"deal_id": _text("deal_id", "The selected pipeline lead"), "template_key": _text("template_key", "e.g. seller-purchase-standard")}, ["deal_id", "template_key"]),
+    "schedule_event":       _tool("schedule_event", "Draft a calendar entry with the selected client and queue it for approval. Nothing is written to a calendar by this tool.", {"client_id": _text("client_id", "The selected client"), "summary": _text("summary"), "start": _text("start", "ISO-8601 with UTC offset"), "end": _text("end", "ISO-8601 with UTC offset"), "description": _text("description", "Optional agenda")}, ["client_id", "summary", "start", "end"]),
+    "publish_to_marketplace": _tool("publish_to_marketplace", "Create a draft marketplace listing from a signed contract and queue it for approval. The listing stays invisible to buyers and limited to this workspace until a human approves and widens it.", {"contract_id": _text("contract_id", "A signed assignment or seller-purchase contract"), "asking_price": _text("asking_price", "Optional")}, ["contract_id"]),
+    "draft_sms":            _tool("draft_sms", "Draft a text message to the selected client and stage it for human approval. Nothing is sent by this tool; the number comes from the client record.", {"client_id": _text("client_id", "The selected client"), "body": _text("body", "Message text, 1-1600 characters")}, ["client_id", "body"]),
 
     # ── Listings & Property (15) ──
     "search_listings":      _tool("search_listings", "Search MLS and owned listings by address, zip, price range, status, or state.", {"query": _text("query"), "state": _text("state", "2-letter code"), "min_price": _text("min_price"), "max_price": _text("max_price")}, ["query"]),
-    "get_listing_detail":   _tool("get_listing_detail", "Full listing detail: price, beds, baths, sqft, year, lot, status, lead, zoning, comps.", {"listing_id": _text("listing_id")}),
+    "get_listing_detail":   _tool("get_listing_detail", "Full listing detail for an owned listing: price, status, seller, media and showing counts, plus beds/baths/sqft/zoning from a matched public record when one exists. Does not return comps — use list_comparable_sales.", {"listing_id": _text("listing_id")}),
     "list_comparable_sales": _tool("list_comparable_sales", "Find recently sold comps within a radius of a property address.", {"address": _text("address"), "radius_miles": _text("radius_miles", "default 0.5"), "limit": _text("limit", "default 10")}, ["address"]),
-    "estimate_arv":         _tool("estimate_arv", "Estimate After-Repair Value using comps, sqft, and market trends. Returns a range and confidence.", {"address": _text("address"), "sqft": _text("sqft"), "beds": _text("beds"), "baths": _text("baths")}, ["address"]),
-    "estimate_rehab":       _tool("estimate_rehab", "Estimate renovation costs using year-built, sqft, condition tier, and local labor rates.", {"address": _text("address"), "year_built": _text("year_built"), "condition": _text("condition", "light, moderate, major, gut")}, ["address"]),
+    "estimate_arv":         _tool("estimate_arv", "Estimate After-Repair Value from the median price per square foot of sold public records near the address. Returns a low/high range from the comparable spread; confidence is not scored because nothing here is calibrated against realised sale prices.", {"address": _text("address"), "sqft": _text("sqft"), "beds": _text("beds"), "baths": _text("baths")}, ["address"]),
+    "estimate_rehab":       _tool("estimate_rehab", "Estimate renovation cost as square footage times a national rule-of-thumb band for the condition tier, plus a 15% contingency. No local labour or material rates exist on this deployment; year built is used only to flag pre-1978 and pre-1950 risks.", {"address": _text("address"), "year_built": _text("year_built"), "condition": _text("condition", "light, moderate, major, gut")}, ["address", "condition"]),
     "calculate_mao":        _tool("calculate_mao", "Calculate Maximum Allowable Offer using the formula MAO = (ARV × 0.70) - Rehab.", {"arv": _text("arv"), "rehab": _text("rehab"), "holding_costs": _text("holding_costs")}, ["arv", "rehab"]),
     "list_market_snapshots": _tool("list_market_snapshots", "Market statistics by zip or city: median price, DOM, inventory, absorption, rent ratio.", {"zip_code": _text("zip_code")}),
     "get_flood_zone":       _tool("get_flood_zone", "FEMA flood zone designation for a property address.", {"address": _text("address")}),
@@ -267,7 +340,7 @@ TOOLS = {
     "get_transaction_workflow": _tool("get_transaction_workflow", "Transaction steps, required documents, and approval gates for a deal.", {"deal_id": _text("deal_id")}),
 
     # ── Market Intelligence (12) ──
-    "get_market_trends":    _tool("get_market_trends", "Price trends, DOM shifts, inventory changes, and forecast for a zip or city.", {"zip_code": _text("zip_code")}),
+    "get_market_trends":    _tool("get_market_trends", "County and state market aggregates for the geography a ZIP resolves to. No zip-level aggregate and no forecast exist on this deployment; every figure returns with the geography it actually covers and its as-of date.", {"zip_code": _text("zip_code")}),
     "compare_markets":      _tool("compare_markets", "Side-by-side comparison of two zip codes or cities across 8 key metrics.", {"zip_a": _text("zip_a"), "zip_b": _text("zip_b")}, ["zip_a", "zip_b"]),
     "get_demographics":     _tool("get_demographics", "Census demographics: population, income, age, education, employment for a zip.", {"zip_code": _text("zip_code")}),
     "get_rent_estimates":   _tool("get_rent_estimates", "Estimated market rent by bedroom count for a zip code.", {"zip_code": _text("zip_code")}),
@@ -276,7 +349,7 @@ TOOLS = {
     "get_distress_map":     _tool("get_distress_map", "Distress signal density by zip: pre-foreclosure, tax delinquency, absentee rate.", {"state": _text("state"), "zip_code": _text("zip_code")}),
     "get_investment_activity": _tool("get_investment_activity", "Institutional and investor purchase activity, LLC-buyer trends, by zip.", {"zip_code": _text("zip_code")}),
     "forecast_appreciation": _tool("forecast_appreciation", "1–5 year appreciation forecast for a market using historical trends.", {"zip_code": _text("zip_code")}),
-    "get_days_on_market":   _tool("get_days_on_market", "Average DOM for active listings, pending, and sold by property type.", {"zip_code": _text("zip_code")}),
+    "get_days_on_market":   _tool("get_days_on_market", "Days on market for a ZIP from the MLS cache when it holds listings there, plus county and state medians as context. Not broken down by property type.", {"zip_code": _text("zip_code")}),
     "get_price_reductions": _tool("get_price_reductions", "Listings with recent price drops — negotiation opportunity signals.", {"zip_code": _text("zip_code")}),
     "get_market_heatmap":   _tool("get_market_heatmap", "Visual summary of activity, price, distress, and velocity across a market.", {"state": _text("state"), "zip_code": _text("zip_code")}),
 
@@ -301,11 +374,11 @@ TOOLS = {
     "run_underwriting_model": _tool("run_underwriting_model", "Full deal underwriting: ARV, rehab, MAO, ROI, cap rate, cash-on-cash, break-even. Returns a scored verdict.", {"address": _text("address"), "asking_price": _text("asking_price")}, ["address"]),
     "estimate_closing_costs": _tool("estimate_closing_costs", "Estimated closing costs: title, escrow, recording, transfer tax, attorney fees.", {"property_value": _text("property_value"), "state": _text("state")}, ["property_value"]),
     "calculate_break_even": _tool("calculate_break_even", "Break-even timeline: how many months of holding until profit on this deal.", {"deal_id": _text("deal_id")}),
-    "list_billing_invoices": _tool("list_billing_invoices", "Subscription invoices and payment history for the brokerage.", {}),
+    "list_billing_invoices": _tool("list_billing_invoices", "Metered usage not yet reported for billing. Issued invoices are held by the payment processor and are not mirrored on this platform, so none are returned.", {}),
     "get_portfolio_performance": _tool("get_portfolio_performance", "Aggregate returns across all deals: total deals, average ROI, average margin, pipeline value.", {}),
     "calculate_interest_costs": _tool("calculate_interest_costs", "Hard money or private lending interest costs over a projected holding period.", {"loan_amount": _text("loan_amount"), "interest_rate": _text("interest_rate"), "months": _text("months", "holding period")}, ["loan_amount", "interest_rate"]),
     "estimate_after_repair_value": _tool("estimate_after_repair_value", "Detailed ARV with comps, adjustments, confidence score, and low/mid/high range.", {"address": _text("address"), "sqft": _text("sqft")}, ["address"]),
-    "get_deal_financial_summary": _tool("get_deal_financial_summary", "All financials for a deal: purchase, rehab, holding, closing, assignment fee, net profit.", {"deal_id": _text("deal_id")}),
+    "get_deal_financial_summary": _tool("get_deal_financial_summary", "Recorded financials for a deal: asking and purchase price, earnest money, financing, accepted offer, and any stored ARV/rehab/MAO. Holding costs, closing costs, assignment fee and net profit are not stored and come back named as unrecorded rather than computed.", {"deal_id": _text("deal_id")}),
     "compare_financing_options": _tool("compare_financing_options", "Compare hard money, private, conventional, and cash for a deal.", {"deal_id": _text("deal_id")}),
 
     # ── Media & Assets (6) ──
@@ -324,17 +397,17 @@ TOOLS = {
     "get_onboarding_status": _tool("get_onboarding_status", "Brokerage onboarding completeness: licenses, settings, billing, AI config.", {}),
     "get_team_pipeline":    _tool("get_team_pipeline", "Team-wide deal view: all agents, all stages, aggregate metrics.", {}),
     "list_providers":       _tool("list_providers", "Connected provider accounts: Google, Twilio, SES, Stripe status.", {}),
-    "get_billing_status":   _tool("get_billing_status", "Current subscription plan, renewal date, and payment method.", {}),
+    "get_billing_status":   _tool("get_billing_status", "Subscription plan, status and renewal date, plus how much usage is waiting to be reported. Card details are held by the payment processor and are never stored here.", {}),
 
     # ── Ops & Admin (8) ──
     "get_tenant_health":    _tool("get_tenant_health", "System health: API latency, DB pool size, job queue depth, cache freshness.", {}),
-    "get_database_stats":   _tool("get_database_stats", "Database connection pool, migration version, table sizes, index usage.", {}),
-    "list_recent_errors":   _tool("list_recent_errors", "Recent system errors and warnings from the application log.", {}),
-    "get_feature_flags":    _tool("get_feature_flags", "Current feature flag state: what is enabled and what is disabled.", {}),
+    "get_database_stats":   _tool("get_database_stats", "Connection-pool state and this workspace's row counts. Table sizes and index-usage counters are database-wide and are returned only to a platform admin; the migration version is reported only if a schema_migrations ledger exists.", {}),
+    "list_recent_errors":   _tool("list_recent_errors", "Recent failures recorded in the job queue and the audit anomaly log. There is no queryable application log — an error that only reached stdout is not visible here.", {}),
+    "get_feature_flags":    _tool("get_feature_flags", "Which features are enabled on this deployment, including any whose call site defaults differently from the generic flag. Deployment-wide, not per workspace.", {}),
     "get_audit_trail":      _tool("get_audit_trail", "Recent audit events: logins, data exports, AI actions, webhooks.", {"limit": _text("limit", "default 20")}, []),
     "get_job_queue":        _tool("get_job_queue", "Pending and active durable automation jobs with status.", {}),
     "list_integration_status": _tool("list_integration_status", "All external integrations and their health: MLS, SES, Stripe, Foundry, Regrid.", {}),
-    "run_health_check":     _tool("run_health_check", "Full system health check: DB, Redis/cache, Foundry, MLS feed, Stripe, SES.", {}),
+    "run_health_check":     _tool("run_health_check", "Database reachability and latency, pool state, failed jobs, and stored provider validation status. Reads local state only — no third party is contacted, and the tool says which checks it did not perform.", {}),
 
     # ── Legal & Compliance (6) ──
     "get_state_laws":       _tool("get_state_laws", "Key real estate regulations for a state: wholesaling, disclosures, licenses.", {"state": _text("state", "2-letter code")}),
@@ -413,34 +486,23 @@ def _bedrock_messages(bundle: dict) -> list[dict]:
     return messages
 
 
-_READ_ONLY_TOOLS = sorted([
-    "codebase_summary", "web_search",
-    "search_clients", "get_client_detail", "list_client_tasks", "list_client_activity",
-    "get_client_contact_history", "suggest_client_matches", "list_client_documents",
-    "search_listings", "get_listing_detail", "list_comparable_sales",
-    "estimate_arv", "estimate_rehab", "calculate_mao", "list_market_snapshots",
-    "get_flood_zone", "get_zoning_info", "list_tax_records", "get_owner_history",
-    "check_permits", "list_deals", "get_deal_detail", "calculate_deal_roi",
-    "list_active_negotiations", "track_deadlines", "analyze_deal_risk",
-    "suggest_disposition", "list_closing_checklist", "get_market_trends",
-    "compare_markets", "get_demographics", "get_rent_estimates",
-    "get_absorption_rate", "list_hot_markets", "get_distress_map",
-    "get_investment_activity", "forecast_appreciation", "get_days_on_market",
-    "get_price_reductions", "get_market_heatmap", "list_contract_templates",
-    "review_contract_terms", "check_contract_deadlines", "list_required_disclosures",
-    "verify_contract_signatures", "list_document_history", "extract_contract_data",
-    "calculate_cash_on_cash", "estimate_holding_costs", "calculate_cap_rate",
-    "run_underwriting_model", "estimate_closing_costs", "calculate_break_even",
-    "list_billing_invoices", "get_portfolio_performance", "calculate_interest_costs",
-    "estimate_after_repair_value", "list_property_photos", "generate_tour_link",
-    "list_property_videos", "list_agent_commissions",
-    "get_agent_performance", "get_team_pipeline", "list_providers", "get_feature_flags", "get_state_laws",
-    "check_fair_housing", "get_disclosure_requirements", "list_legal_forms",
-    "run_property_background", "search_public_records", "analyze_neighborhood",
-    "get_investor_activity_profile", "list_recent_errors",
-])
+# Derived from ai_tool_policy, not restated: this list previously diverged from
+# the one in ai_chat_store — get_transaction_workflow and
+# get_deal_financial_summary were read-only there and absent here, so
+# _is_record_change below would have broadcast either read as an applied
+# "Record updated" receipt with an Undo button pointing at no action id.
+_READ_ONLY_TOOLS = sorted(READ_ONLY_TOOLS)
 
-_ALWAYS_TOOLS = sorted(set(["codebase_summary", "web_search"] + _READ_ONLY_TOOLS))
+# Writes that need no selected record: a client is created from nothing, and a
+# marketplace listing is anchored to a signed contract rather than to whatever
+# happens to be open. Both are exempt from the "select the record you want me
+# to update" gate in _execute_safe_tool.
+_CONTEXTLESS_WRITE_TOOLS = ("create_client", "publish_to_marketplace")
+
+_ALWAYS_TOOLS = sorted(set(
+    ["codebase_summary", "web_search"] + _READ_ONLY_TOOLS
+    + list(_CONTEXTLESS_WRITE_TOOLS)
+))
 
 _READ_ONLY_TOOL_NAMES = frozenset(_READ_ONLY_TOOLS)
 
@@ -454,30 +516,59 @@ def _is_record_change(name: str, receipt: dict) -> bool:
     action_id. Read payloads also carry whole client rows and provider-credential
     metadata that have no business in an action broadcast.
     """
-    return bool(receipt.get("ok")) and name not in _READ_ONLY_TOOL_NAMES
+    # An applied mutation is one with a ledger row. Gated tools also return
+    # ok=True — with an approval id and `sent: False` — and rendering a staged
+    # request as an applied "Record updated" receipt would claim it happened.
+    return (
+        bool(receipt.get("ok"))
+        and name not in _READ_ONLY_TOOL_NAMES
+        and bool(receipt.get("action_id"))
+    )
 
 
 def _tool_is_enabled(name: str) -> bool:
     """Expose only durable local capabilities and configured external sources."""
     if not is_agent_tool_available(name):
         return False
-    # A model cannot use web research without a configured provider. Leaving it
-    # out is more truthful than producing a provider-error tool result.
-    return name != "web_search" or bool(TAVILY_API_KEY)
+    # web_search no longer depends on TAVILY_API_KEY: there is a keyless
+    # provider behind the same seam, so the tool always has a real
+    # implementation. It raises when neither can answer, which is what the
+    # execution path needs to report honestly.
+    return True
+
+
+# Which mutations a selected record unlocks. Both the Bedrock and the Foundry
+# tool builders read this one mapping — they previously each carried their own
+# copy, which is how the two read-only lists in this codebase came to disagree.
+#
+# The INTERNAL_EDIT names here each write an ai_chat_actions row, so each is
+# reversible from its receipt; create_client is the exception and says so in its
+# own receipt, since deleting a client cascades. The OUTREACH/LIVE_CALL names
+# write nothing at all — they stage a command for a human to approve.
+_CONTEXT_WRITE_TOOLS: dict[str, tuple[str, ...]] = {
+    "client": (
+        "update_client", "add_client_note", "set_client_stage", "add_client_tag",
+        "score_client_lead", "assign_client", "archive_client", "create_deal_note",
+        # Gated outreach: these stage a request against the selected client and
+        # send nothing. They need a record for the same reason the edits do —
+        # the address and number come from it, not from the model.
+        "draft_email", "draft_sms", "call_contact", "schedule_event",
+    ),
+    "listing": ("update_listing", "create_deal_note"),
+    "lead": ("move_deal_stage", "create_deal_note", "draft_contract"),
+}
+
+_CONTEXT_WRITE_NAMES = frozenset(
+    name for names in _CONTEXT_WRITE_TOOLS.values() for name in names
+)
 
 
 def _tool_config(context_type: str | None) -> dict | None:
     tools = [TOOLS[name] for name in _ALWAYS_TOOLS if name in TOOLS and _tool_is_enabled(name)]
-    if context_type == "client":
-        tools.extend(TOOLS[name] for name in (
-            "update_client", "add_client_note", "set_client_stage", "add_client_tag",
-        ) if name in TOOLS and _tool_is_enabled(name))
-    elif context_type == "listing":
-        if _tool_is_enabled("update_listing"):
-            tools.append(TOOLS["update_listing"])
-    elif context_type == "lead":
-        if _tool_is_enabled("move_deal_stage"):
-            tools.append(TOOLS["move_deal_stage"])
+    tools.extend(
+        TOOLS[name] for name in _CONTEXT_WRITE_TOOLS.get(context_type, ())
+        if name in TOOLS and _tool_is_enabled(name)
+    )
     return {"tools": tools} if tools else None
 
 
@@ -549,55 +640,36 @@ def _foundry_openai_client():
 
 _FOUNDRY_MODEL = os.getenv("ORACLE_FOUNDRY_MODEL", "Kimi-K2.6")
 
-_FOUNDRY_TOOLS = [
-    {"type": "function", "name": "web_search", "description": "Search the live web for market data, news, public records.", "parameters": {"type": "object", "required": ["query"], "properties": {"query": {"type": "string"}}}},
-    {"type": "function", "name": "codebase_summary", "description": "Return a map of the NEOH codebase.", "parameters": {"type": "object", "properties": {}}},
-    {"type": "function", "name": "search_clients", "description": "Search client database by name, email, phone, stage.", "parameters": {"type": "object", "required": ["query"], "properties": {"query": {"type": "string"}}}},
-    {"type": "function", "name": "get_client_detail", "description": "Full client profile.", "parameters": {"type": "object", "required": ["client_id"], "properties": {"client_id": {"type": "string"}}}},
-    {"type": "function", "name": "list_client_tasks", "description": "List tasks for one client or the tenant task queue.", "parameters": {"type": "object", "properties": {"client_id": {"type": "string"}}}},
-    {"type": "function", "name": "list_client_activity", "description": "List a client's recent CRM timeline.", "parameters": {"type": "object", "required": ["client_id"], "properties": {"client_id": {"type": "string"}}}},
-    {"type": "function", "name": "get_client_contact_history", "description": "List recorded client messages and showings.", "parameters": {"type": "object", "required": ["client_id"], "properties": {"client_id": {"type": "string"}}}},
-    {"type": "function", "name": "set_client_stage", "description": "Move client pipeline stage.", "parameters": {"type": "object", "required": ["client_id", "stage"], "properties": {"client_id": {"type": "string"}, "stage": {"type": "string", "enum": ["lead","active","nurture","under_contract","closed","lost"]}}}},
-    {"type": "function", "name": "add_client_tag", "description": "Tag a client.", "parameters": {"type": "object", "required": ["client_id", "tags"], "properties": {"client_id": {"type": "string"}, "tags": {"type": "string"}}}},
-    {"type": "function", "name": "add_client_note", "description": "Append note to client.", "parameters": {"type": "object", "required": ["client_id", "note"], "properties": {"client_id": {"type": "string"}, "note": {"type": "string"}}}},
-    {"type": "function", "name": "create_client", "description": "Create new client record.", "parameters": {"type": "object", "required": ["full_name"], "properties": {"full_name": {"type": "string"}, "email": {"type": "string"}, "phone": {"type": "string"}, "client_type": {"type": "string", "enum": ["seller","buyer","both"]}}}},
-    {"type": "function", "name": "score_client_lead", "description": "Update lead score 0-100.", "parameters": {"type": "object", "required": ["client_id", "score"], "properties": {"client_id": {"type": "string"}, "score": {"type": "integer", "minimum": 0, "maximum": 100}}}},
-    {"type": "function", "name": "search_listings", "description": "Search MLS and owned listings.", "parameters": {"type": "object", "required": ["query"], "properties": {"query": {"type": "string"}, "state": {"type": "string"}}}},
-    {"type": "function", "name": "get_listing_detail", "description": "Full listing detail.", "parameters": {"type": "object", "required": ["listing_id"], "properties": {"listing_id": {"type": "string"}}}},
-    {"type": "function", "name": "calculate_mao", "description": "MAO = (ARV x 0.70) - Rehab.", "parameters": {"type": "object", "required": ["arv", "rehab"], "properties": {"arv": {"type": "string"}, "rehab": {"type": "string"}}}},
-    {"type": "function", "name": "estimate_arv", "description": "Estimate After-Repair Value.", "parameters": {"type": "object", "required": ["address"], "properties": {"address": {"type": "string"}}}},
-    {"type": "function", "name": "list_deals", "description": "List pipeline deals.", "parameters": {"type": "object", "properties": {"state": {"type": "string"}, "stage": {"type": "string"}}}},
-    {"type": "function", "name": "get_deal_detail", "description": "Full deal dossier.", "parameters": {"type": "object", "required": ["deal_id"], "properties": {"deal_id": {"type": "string"}}}},
-    {"type": "function", "name": "track_deadlines", "description": "List durable contract and transaction deadlines.", "parameters": {"type": "object", "properties": {"deal_id": {"type": "string"}}}},
-    {"type": "function", "name": "move_deal_stage", "description": "Advance deal pipeline stage (draft, under_contract, marketing, assigned, closed, expired, dead).", "parameters": {"type": "object", "required": ["deal_id", "stage"], "properties": {"deal_id": {"type": "string"}, "stage": {"type": "string"}}}},
-    {"type": "function", "name": "run_underwriting_model", "description": "Full deal underwriting analysis.", "parameters": {"type": "object", "required": ["address"], "properties": {"address": {"type": "string"}, "asking_price": {"type": "string"}}}},
-    {"type": "function", "name": "get_market_trends", "description": "Market trends by zip code.", "parameters": {"type": "object", "required": ["zip_code"], "properties": {"zip_code": {"type": "string"}}}},
-    {"type": "function", "name": "get_demographics", "description": "Census demographics by zip.", "parameters": {"type": "object", "required": ["zip_code"], "properties": {"zip_code": {"type": "string"}}}},
-    {"type": "function", "name": "review_contract_terms", "description": "Summarize contract terms.", "parameters": {"type": "object", "required": ["contract_id"], "properties": {"contract_id": {"type": "string"}}}},
-    {"type": "function", "name": "generate_contract", "description": "Draft a contract. Requires review.", "parameters": {"type": "object", "required": ["template_id", "deal_id"], "properties": {"template_id": {"type": "string"}, "deal_id": {"type": "string"}}}},
-    {"type": "function", "name": "run_property_background", "description": "Full property background report.", "parameters": {"type": "object", "required": ["address"], "properties": {"address": {"type": "string"}}}},
-    {"type": "function", "name": "get_distress_map", "description": "Distress signal density by zip.", "parameters": {"type": "object", "required": ["state"], "properties": {"state": {"type": "string"}, "zip_code": {"type": "string"}}}},
-    {"type": "function", "name": "get_team_pipeline", "description": "Aggregate pipeline stages and near-term expirations.", "parameters": {"type": "object", "properties": {}}},
-    {"type": "function", "name": "list_providers", "description": "List configured provider accounts without credential material.", "parameters": {"type": "object", "properties": {}}},
-    {"type": "function", "name": "update_client", "description": "Update selected client profile fields.", "parameters": {"type": "object", "required": ["client_id"], "properties": {"client_id": {"type": "string"}, "full_name": {"type": "string"}, "email": {"type": "string"}, "phone": {"type": "string"}, "stage": {"type": "string", "enum": ["lead","active","nurture","under_contract","closed","lost"]}}}},
-    {"type": "function", "name": "update_listing", "description": "Update selected listing address or status.", "parameters": {"type": "object", "required": ["listing_id"], "properties": {"listing_id": {"type": "string"}, "address": {"type": "string"}, "status": {"type": "string", "enum": ["draft","active","pending","sold","withdrawn"]}}}},
-    {"type": "function", "name": "call_contact", "description": "Initiate an outbound call. Requires compliance review and user approval.", "parameters": {"type": "object", "required": ["phone", "reason"], "properties": {"client_id": {"type": "string"}, "phone": {"type": "string"}, "reason": {"type": "string"}}}},
-]
+def _foundry_spec(tool: dict) -> dict:
+    """Translate a Bedrock toolSpec into the Responses API's function shape.
+
+    This was a third hand-maintained catalog of 32 entries, and it had already
+    fallen 13 tools behind the one in TOOLS — so a Foundry deployment silently
+    offered a smaller surface than a Bedrock one, with its own shorter and by
+    now less accurate descriptions. The two formats differ only in where the
+    name, description and JSON schema sit, so there is nothing here worth
+    maintaining by hand.
+    """
+    spec = tool["toolSpec"]
+    return {
+        "type": "function",
+        "name": spec["name"],
+        "description": spec["description"],
+        "parameters": spec["inputSchema"]["json"],
+    }
+
+
+_FOUNDRY_TOOLS = [_foundry_spec(TOOLS[name]) for name in sorted(TOOLS)]
 
 
 def _foundry_tools(context_type: str | None) -> list[dict]:
     """Apply the same verified-capability policy to Azure Foundry calls."""
-    context_mutations = {
-        "client": {"update_client", "set_client_stage", "add_client_tag", "add_client_note"},
-        "listing": {"update_listing"},
-        "lead": {"move_deal_stage"},
-    }
-    allowed_mutations = context_mutations.get(context_type, set())
-    mutation_names = {name for names in context_mutations.values() for name in names}
+    allowed_mutations = set(_CONTEXT_WRITE_TOOLS.get(context_type, ()))
     return [
         tool for tool in _FOUNDRY_TOOLS
         if _tool_is_enabled(tool["name"])
-        and (tool["name"] not in mutation_names or tool["name"] in allowed_mutations)
+        and (tool["name"] not in _CONTEXT_WRITE_NAMES
+             or tool["name"] in allowed_mutations)
     ]
 
 _FOUNDRY_INSTRUCTIONS = """You are NEOH, private operating copilot for real-estate wholesaling.
@@ -722,9 +794,20 @@ def _local_tools(context_type: str | None) -> list[dict]:
     ]
 
 
-async def _local_chat(payload: dict) -> dict:
-    async with httpx.AsyncClient(timeout=LOCAL_LLM_TIMEOUT) as client:
-        response = await client.post(LOCAL_LLM_URL, json=payload)
+async def _local_chat(
+    payload: dict,
+    url: str = "",
+    api_key: str = "",
+    timeout: float = 0.0,
+) -> dict:
+    """POST an OpenAI Chat Completions payload.
+
+    Defaults target the local llama.cpp server. Fireworks passes its own URL and
+    bearer key through the same call so both tiers share one transport.
+    """
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else None
+    async with httpx.AsyncClient(timeout=timeout or LOCAL_LLM_TIMEOUT) as client:
+        response = await client.post(url or LOCAL_LLM_URL, json=payload, headers=headers)
         response.raise_for_status()
         return response.json()
 
@@ -735,8 +818,26 @@ async def _local_fallback(
     system_prompt: str,
     assistant_id: str = "",
     applied: Optional[list[dict]] = None,
+    *,
+    url: str = "",
+    api_key: str = "",
+    model: str = "local",
+    max_tokens: int = 1000,
+    timeout: float = 0.0,
+    disable_thinking: Optional[bool] = None,
+    gateway_provider: Any = None,
 ) -> tuple[str, list[dict]]:
     """Local llama.cpp fallback, with tool calling when the server supports it.
+
+    The keyword arguments retarget this same loop at any OpenAI-compatible
+    endpoint (Fireworks). They default to the local llama.cpp server, so the
+    existing fallback behaviour is unchanged when they are omitted.
+
+    ``gateway_provider`` swaps the transport for ``llm_gateway.tool_round``
+    without touching the loop itself. The loop already speaks the OpenAI shape
+    the gateway returns, so anchor-locking, approval gates, receipts and the
+    write-guard below are byte-for-byte what they were — only the code that
+    moves bytes changes, which is the point of having one seam.
 
     Returns (text, actions). Tool execution goes through execute_safe_tool, so the
     anchor-locking, approval gates, and audit trail are identical to the hosted
@@ -758,20 +859,35 @@ async def _local_fallback(
     actions: list[dict] = applied if applied is not None else []
 
     payload: dict[str, Any] = {
-        "model": "local",
+        "model": model,
         "messages": messages,
         "temperature": 0.2,
-        "max_tokens": 1000,
+        "max_tokens": max_tokens,
     }
-    if LOCAL_LLM_DISABLE_THINKING:
+    # chat_template_kwargs is a llama.cpp extension; hosted providers reject it.
+    if LOCAL_LLM_DISABLE_THINKING if disable_thinking is None else disable_thinking:
         payload["chat_template_kwargs"] = {"enable_thinking": False}
     if tools:
         payload["tools"] = tools
         payload["tool_choice"] = "auto"
 
+    async def _round() -> dict:
+        if gateway_provider is not None:
+            import llm_gateway
+
+            return await llm_gateway.tool_round(
+                payload["messages"],
+                payload.get("tools") or [],
+                provider=gateway_provider,
+                max_tokens=payload["max_tokens"],
+                temperature=payload["temperature"],
+                timeout=timeout or 120.0,
+            )
+        return await _local_chat(payload, url=url, api_key=api_key, timeout=timeout)
+
     for _ in range(_LOCAL_TOOL_ROUNDS):
         try:
-            data = await _local_chat(payload)
+            data = await _round()
         except httpx.HTTPStatusError as exc:
             # An older llama-server (or one started without --jinja) rejects the
             # tools field. Falling back to plain chat is better than no answer.
@@ -785,7 +901,7 @@ async def _local_fallback(
             tools = []
             payload.pop("tools", None)
             payload.pop("tool_choice", None)
-            data = await _local_chat(payload)
+            data = await _round()
 
         message = (data.get("choices") or [{}])[0].get("message") or {}
         tool_calls = message.get("tool_calls") or []
@@ -837,9 +953,117 @@ async def _local_fallback(
     raise RuntimeError("The assistant exceeded the safe tool-call limit")
 
 
+async def _fireworks_generate(
+    ctx: TenantContext, bundle: dict, system_prompt: str, assistant_id: str,
+    applied: list[dict],
+) -> tuple[str, list[dict], str]:
+    """Fireworks AI tier — the OpenAI-compatible loop against a hosted model."""
+    text, actions = await _local_fallback(
+        ctx, bundle, system_prompt, assistant_id, applied=applied,
+        url=FIREWORKS_URL,
+        api_key=FIREWORKS_API_KEY,
+        model=FIREWORKS_MODEL,
+        max_tokens=FIREWORKS_MAX_TOKENS,
+        timeout=FIREWORKS_TIMEOUT,
+        # llama.cpp-only knob; Fireworks rejects unknown template kwargs.
+        disable_thinking=False,
+    )
+    return (
+        text or "I completed the review but did not receive a text response.",
+        actions,
+        f"fireworks:{FIREWORKS_MODEL}",
+    )
+
+
+def _gateway_chat_providers() -> list:
+    """Hosted chat providers, best first, or an empty list.
+
+    Empty means the gateway has nothing configured (or litellm is not
+    installed), in which case _generate falls straight through to the tiers
+    that existed before it — so a deployment that has not adopted the gateway
+    behaves exactly as it did.
+    """
+    if os.getenv("ORACLE_LLM_GATEWAY", "1").strip().lower() not in ("1", "true", "yes", "on"):
+        return []
+    import importlib.util
+
+    if importlib.util.find_spec("litellm") is None:
+        return []
+    try:
+        import llm_gateway
+
+        # Local llama is already the final fallback below; including it here
+        # would run it twice with different plumbing.
+        return [p for p in llm_gateway.providers_for("analysis") if p.name != "local"]
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("llm_gateway unavailable for chat: %s", exc)
+        return []
+
+
 async def _generate(ctx: TenantContext, bundle: dict, assistant_id: str) -> tuple[str, list[dict], str]:
     memory = SessionManager(ctx)
     system_prompt = await memory.inject_jit_prompt(ctx.agent_id, BASE_SYSTEM_PROMPT)
+    # Hosted chat runs through llm_gateway: one place that knows which
+    # providers exist, one call counter, one deadline. The loop, the tool
+    # execution and the receipts are unchanged — only the transport moved.
+    #
+    # The ladder is walked here rather than inside the gateway because only
+    # this function can see `actions`. The gateway refuses to retry a tool
+    # round for exactly the reason this loop guards: once a CRM write has
+    # committed, replaying the conversation applies it twice. So a fall-through
+    # to the next provider is legal only while nothing has been written.
+    for provider in _gateway_chat_providers():
+        provider_actions: list[dict] = []
+        try:
+            text, provider_actions = await _local_fallback(
+                ctx, bundle, system_prompt, assistant_id, applied=provider_actions,
+                model=provider.model, max_tokens=FIREWORKS_MAX_TOKENS,
+                timeout=FIREWORKS_TIMEOUT, disable_thinking=False,
+                gateway_provider=provider,
+            )
+            return (
+                text or "I completed the review but did not receive a text response.",
+                provider_actions,
+                f"{provider.name}:{provider.model}",
+            )
+        except Exception as provider_error:  # noqa: BLE001
+            if provider_actions:
+                logger.warning(
+                    "%s interrupted after applying writes: %s",
+                    provider.name, provider_error,
+                )
+                return (
+                    "The requested record update was applied, but the assistant response was interrupted.",
+                    provider_actions,
+                    f"{provider.name}:{provider.model}",
+                )
+            logger.warning(
+                "%s chat failed; falling through to the next provider: %s",
+                provider.name, provider_error,
+            )
+
+    if FIREWORKS_ENABLED:
+        fireworks_actions: list[dict] = []
+        try:
+            return await _fireworks_generate(
+                ctx, bundle, system_prompt, assistant_id, fireworks_actions
+            )
+        except Exception as fireworks_error:  # noqa: BLE001
+            # Same rule as every other tier: writes that already committed must
+            # come back with their receipts, or the retry double-applies them.
+            if fireworks_actions:
+                logger.warning(
+                    "Fireworks interrupted after applying writes: %s", fireworks_error
+                )
+                return (
+                    "The requested record update was applied, but the assistant response was interrupted.",
+                    fireworks_actions,
+                    f"fireworks:{FIREWORKS_MODEL}",
+                )
+            logger.warning(
+                "Fireworks request failed; falling through to the next tier: %s",
+                fireworks_error,
+            )
     if AI_PROVIDER == "azure-foundry":
         runtime_context = system_prompt.removeprefix(BASE_SYSTEM_PROMPT).strip()
         foundry_actions: list[dict] = []
@@ -1007,15 +1231,126 @@ CALLER: {text}
 NEOH REPLIES:"""
 
 
+_VOICE_STALL_LINE = "One moment please — I need a second to think about that."
+
+
 async def _generate_voice_reply(caller_id: str, speech_text: str) -> str:
+    """Compose the spoken reply for a live phone turn, through the gateway.
+
+    The ladder this replaces was the same shape the gateway already implements:
+    try each configured tier against ONE wall-clock budget, because the caller
+    is on the line. Twilio abandons a <Gather> action around 15s and plays its
+    own error over the caller, so a stall line delivered on time beats a perfect
+    answer delivered after the call is gone. ``complete()`` bounds the whole
+    call rather than each attempt for exactly that reason — two fallbacks each
+    given a fresh 8s would spend 16.
+
+    One behaviour narrowed deliberately. The old Foundry branch answered an
+    empty completion with "could you say that differently?", inviting a rephrase.
+    The gateway treats empty content as a provider *failure* and tries the next
+    tier first — which is the better response to a reasoning model that spent its
+    budget thinking — so by the time this raises, every tier has failed and the
+    stall line is the honest answer rather than blaming the caller's diction.
+    """
+    if not _gateway_chat_providers():
+        # No gateway on this deployment: the original ladder still answers
+        # callers rather than leaving them with a stall line on every turn.
+        return await _voice_reply_direct(caller_id, speech_text)
+
+    import llm_gateway
+
     prompt = _VOICE_PROMPT.format(text=speech_text[:500])
+    try:
+        reply = await llm_gateway.complete(
+            speech_text[:500],
+            task="fast",
+            system=prompt,
+            max_tokens=FIREWORKS_MAX_TOKENS,
+            temperature=0.3,
+            timeout=VOICE_REPLY_BUDGET_SECONDS,
+        )
+    except Exception as exc:  # noqa: BLE001 — a live call never gets a traceback
+        logger.warning(
+            "Voice reply unavailable within the %.1fs live-call budget: %s",
+            VOICE_REPLY_BUDGET_SECONDS, exc,
+        )
+        return _VOICE_STALL_LINE
+    # 300 characters is roughly 20 seconds of speech; past that the caller is
+    # listening to a monologue rather than a conversation.
+    return reply.strip()[:300] or _VOICE_STALL_LINE
+
+
+async def _voice_reply_direct(caller_id: str, speech_text: str) -> str:
+    """Compose the spoken reply for a live phone turn.
+
+    Fireworks first: Foundry is unreachable on this deployment, and its failure
+    path returns a stall line, so without this every caller hears "One moment
+    please" on every turn for the whole call.
+
+    The whole ladder runs against one wall-clock budget. The per-tier timeouts
+    are sized for a browser chat session (120s), but the callers here are
+    provider webhooks holding an open phone call: Twilio abandons a <Gather>
+    action request around 15s and plays its own error over the caller, and by
+    then this coroutine's own error handling is moot — the call is already gone.
+    A stall line delivered on time beats a perfect answer delivered after the
+    caller has been hung up on.
+    """
+    prompt = _VOICE_PROMPT.format(text=speech_text[:500])
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + VOICE_REPLY_BUDGET_SECONDS
+
+    def _remaining() -> float:
+        return deadline - loop.time()
+
+    if FIREWORKS_ENABLED:
+        try:
+            data = await asyncio.wait_for(
+                _local_chat(
+                    {
+                        "model": FIREWORKS_MODEL,
+                        "messages": [
+                            {"role": "system", "content": prompt},
+                            {"role": "user", "content": speech_text[:500]},
+                        ],
+                        "temperature": 0.3,
+                        # A caller is waiting on the line, but a reasoning model
+                        # emits nothing at all if the budget only covers reasoning.
+                        "max_tokens": FIREWORKS_MAX_TOKENS,
+                    },
+                    url=FIREWORKS_URL,
+                    api_key=FIREWORKS_API_KEY,
+                    timeout=min(FIREWORKS_TIMEOUT, max(_remaining(), 0.1)),
+                ),
+                timeout=max(_remaining(), 0.1),
+            )
+            message = (data.get("choices") or [{}])[0].get("message") or {}
+            reply = str(message.get("content") or "").strip()
+            if reply:
+                return reply[:300]
+            logger.warning("Fireworks voice reply was empty; trying Foundry")
+        except asyncio.TimeoutError:
+            logger.warning(
+                "Fireworks voice reply exceeded the %.1fs live-call budget", VOICE_REPLY_BUDGET_SECONDS
+            )
+        except Exception as fireworks_error:  # noqa: BLE001
+            logger.warning("Fireworks voice reply failed: %s", fireworks_error)
+
+    if _remaining() <= 0:
+        # Falling through to Foundry now could only overrun the budget further.
+        return _VOICE_STALL_LINE
+
     input_items = [
         {"role": "system", "content": prompt},
         {"role": "user", "content": speech_text[:500]},
     ]
     try:
-        response = await asyncio.to_thread(_foundry_response, input_items, None)
+        # wait_for stops us waiting, but cannot cancel the worker thread — the
+        # orphan finishes into a discarded future, which is harmless here.
+        response = await asyncio.wait_for(
+            asyncio.to_thread(_foundry_response, input_items, None),
+            timeout=_remaining(),
+        )
         reply = response.output_text.strip()
         return reply[:300] if reply else "I'm sorry, could you say that differently?"
     except Exception:
-        return "One moment please — I need a second to think about that."
+        return _VOICE_STALL_LINE

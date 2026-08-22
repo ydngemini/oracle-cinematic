@@ -376,25 +376,87 @@ def _clean_transcript(
     return cleaned
 
 
-def _requested_opt_out(transcript: Sequence[Mapping[str, str]]) -> bool:
-    caller_text = " ".join(
-        item["text"].lower() for item in transcript if item.get("role") == "caller"
-    )
-    compact_tokens = {
-        token for token in re.findall(r"[a-z]+(?:-[a-z]+)?", caller_text)
+_OPT_OUT_PHRASES = (
+    "do not contact",
+    "don't contact",
+    "do not call",
+    "don't call",
+    "never call",
+    "never contact",
+    "stop calling",
+    "stop contacting",
+    "stop texting",
+    "stop messaging",
+    "quit calling",
+    "quit contacting",
+    "remove me",
+    "take me off",
+    "take my name off",
+    "lose my number",
+    "unsubscribe",
+    "opt out",
+    "opt me out",
+)
+
+# Words that can sit alongside a bare stop keyword without changing that it is
+# the whole instruction. "I said stop", "please, stop", "no — stop" are all the
+# caller saying stop; "stop by the house on Tuesday" is not.
+_OPT_OUT_FILLER = frozenset(
+    {
+        "i", "im", "id", "ive", "me", "my", "you", "your",
+        "please", "just", "now", "really", "actually", "seriously",
+        "ok", "okay", "no", "nope", "yes", "yeah", "yep", "well", "so", "and",
+        "but", "um", "uh", "look", "listen", "hey", "sir", "maam",
+        "said", "say", "saying", "sorry", "thanks", "thank",
     }
-    normalized_stop = {keyword.replace(" ", "") for keyword in STOP_KEYWORDS}
-    if compact_tokens & normalized_stop:
+)
+
+# Clause boundaries. A stop keyword is an opt-out when it is the entirety of
+# some clause the caller uttered, not merely present somewhere in the turn.
+# Note the plain hyphen is absent on purpose: splitting on it would break
+# "opt-out" into two clauses and lose the keyword entirely.
+_CLAUSE_SPLIT_RE = re.compile(r"[.,;:!?—–]+|\b(?:and|but|so|then|because)\b")
+
+
+def _requested_opt_out(transcript: Sequence[Mapping[str, str]]) -> bool:
+    """True when the caller asked not to be contacted again.
+
+    STOP_KEYWORDS is an SMS convention: the whole message body is one word. In a
+    free-form voice transcript those same words turn up inside ordinary
+    sentences — "I need to sell before the END of the summer", "I want to CANCEL
+    my listing with my current agent" — and scanning the joined transcript for
+    any of them permanently marked genuine inbound sellers do-not-contact,
+    discarded the answers they had just given, and left no path in this module
+    that ever clears the flag.
+
+    So: an explicit opt-out phrase anywhere, or a stop keyword that constitutes
+    a whole *clause* rather than the whole *utterance*. Requiring the utterance
+    to be nothing but the keyword is too strict in the other direction — real
+    callers say "I'm not interested, stop." and "I said stop" far more often
+    than they say a bare "stop", and under TCPA an opt-out is valid by "any
+    reasonable method". Clause scope is what separates those from "stop by the
+    house on Tuesday", where the keyword is a verb with an object.
+    """
+    utterances = [
+        item["text"].lower() for item in transcript if item.get("role") == "caller"
+    ]
+    caller_text = " ".join(utterances)
+    if any(phrase in caller_text for phrase in _OPT_OUT_PHRASES):
         return True
-    phrases = (
-        "do not contact",
-        "don't contact",
-        "remove me",
-        "take me off",
-        "do not call",
-        "don't call",
-    )
-    return any(phrase in caller_text for phrase in phrases)
+
+    normalized_stop = {keyword.replace(" ", "") for keyword in STOP_KEYWORDS}
+    for utterance in utterances:
+        for clause in _CLAUSE_SPLIT_RE.split(utterance):
+            if not clause:
+                continue
+            tokens = [
+                token
+                for token in re.findall(r"[a-z]+(?:-[a-z]+)?", clause)
+                if token not in _OPT_OUT_FILLER
+            ]
+            if len(tokens) == 1 and tokens[0] in normalized_stop:
+                return True
+    return False
 
 
 def requested_human_handoff(transcript: Sequence[Mapping[str, str]]) -> bool:

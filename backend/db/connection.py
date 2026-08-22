@@ -36,6 +36,7 @@ import asyncio
 import logging
 import os
 import ssl
+import time
 from contextlib import asynccontextmanager
 from typing import Optional
 
@@ -107,6 +108,29 @@ DB_SSLMODE = os.getenv("ORACLE_DB_SSLMODE", "")  # 'disable' (default for local)
 # Pool sizing — configurable via env; init_pool() kwargs take precedence.
 _ENV_POOL_MIN = int(os.getenv("ORACLE_DB_POOL_MIN", "2"))
 _ENV_POOL_MAX = int(os.getenv("ORACLE_DB_POOL_MAX", "10"))
+
+# ws_hub holds one connection open for the process lifetime to run LISTEN
+# (ws_hub.py). It is never returned, so it is capacity no request can use.
+# init_pool() adds this to the requested max so ORACLE_DB_POOL_MAX keeps meaning
+# "connections available to requests".
+LISTENER_RESERVED_CONNECTIONS = 1
+
+# How long a connection may go unprobed before _health_check_connection pays for
+# another round trip. 0 restores the previous probe-on-every-checkout behaviour.
+HEALTH_CHECK_INTERVAL_SECONDS = float(
+    os.getenv("ORACLE_DB_HEALTH_CHECK_INTERVAL", "30")
+)
+
+# Keyed by backend server PID, not by the connection object: asyncpg hands the
+# setup callback a PoolConnectionProxy whose __slots__ has no __weakref__, so it
+# can neither be weak-referenced nor tagged with an attribute. The server PID is
+# public API on the proxy, unique per live physical connection, and a *replaced*
+# connection gets a fresh PID — so a stale entry can never vouch for a new
+# connection. (OS-level PID reuse after wraparound would at worst skip one probe
+# within the interval.) Entries are pruned in _prune_verification_cache; a plain
+# dict here would otherwise grow by one tiny entry per connection ever replaced.
+_connection_last_verified: dict[int, float] = {}
+_VERIFICATION_CACHE_MAX = 64
 
 _pool = None  # asyncpg.Pool, lazily created
 
@@ -183,10 +207,51 @@ def _passwordless_credential():
 
 
 async def _health_check_connection(conn) -> None:
-    """asyncpg pool `setup` callback — run a cheap health probe on every
-    connection that is checked out of the pool. If the connection is stale or
-    broken the query raises, asyncpg discards it and opens a fresh one."""
+    """asyncpg pool `setup` callback — probe a connection before handing it out.
+
+    The probe is skipped for connections used recently. `SELECT 1` is cheap in
+    CPU but costs a full round trip, and this deployment runs the app in North
+    Central US against a database in Central US — so an unconditional probe
+    added that latency to *every* checkout, including the fast path where the
+    connection was verified moments earlier.
+
+    A connection idle longer than the interval is the one that might have been
+    dropped by a firewall or failover, and that is the case still probed. A
+    connection broken *since* the probe raises on first real use and asyncpg
+    discards it either way, so the probe was never the only line of defence.
+    """
+    try:
+        key = conn.get_server_pid()
+    except Exception:  # noqa: BLE001 — no PID, no cache; just probe
+        key = None
+    now = time.monotonic()
+    if key is not None:
+        last_ok = _connection_last_verified.get(key)
+        if last_ok is not None and (now - last_ok) < HEALTH_CHECK_INTERVAL_SECONDS:
+            return
     await conn.execute("SELECT 1")
+    if key is not None:
+        _connection_last_verified[key] = now
+        _prune_verification_cache(now)
+
+
+def _prune_verification_cache(now: float) -> None:
+    """Drop entries too old to suppress a probe anyway.
+
+    Any entry older than the interval no longer changes behaviour — its
+    connection would be probed regardless — so discarding it is free. Only runs
+    when the dict outgrows a bound several times any sane pool size, keeping the
+    fast path a plain dict get/set.
+    """
+    if len(_connection_last_verified) <= _VERIFICATION_CACHE_MAX:
+        return
+    stale = [
+        pid
+        for pid, ts in _connection_last_verified.items()
+        if now - ts >= HEALTH_CHECK_INTERVAL_SECONDS
+    ]
+    for pid in stale:
+        _connection_last_verified.pop(pid, None)
 
 
 def pool_stats() -> dict:
@@ -194,11 +259,18 @@ def pool_stats() -> dict:
     has not been initialised. Safe to call at any time (e.g. from /health)."""
     if _pool is None:
         return {}
+    max_size = _pool.get_max_size()
     return {
         "min_size": _pool.get_min_size(),
-        "max_size": _pool.get_max_size(),
+        "max_size": max_size,
         "size": _pool.get_size(),
         "idle": _pool.get_idle_size(),
+        # What a request can actually obtain. Reported separately because
+        # max_size includes the listener's permanent connection, and an operator
+        # sizing replicas against Postgres max_connections off the raw number is
+        # over by one per replica.
+        "usable_for_requests": max(0, max_size - LISTENER_RESERVED_CONNECTIONS),
+        "reserved_for_listener": LISTENER_RESERVED_CONNECTIONS,
     }
 
 
@@ -213,10 +285,21 @@ async def init_pool(min_size: int = _ENV_POOL_MIN, max_size: int = _ENV_POOL_MAX
     min_size / max_size default to ORACLE_DB_POOL_MIN / ORACLE_DB_POOL_MAX env
     vars (both fall back to 2 / 10 if unset). Explicit keyword arguments always
     win over the env values, preserving backward-compatibility for call sites that
-    already pass numeric literals."""
+    already pass numeric literals.
+
+    The pool is widened by `LISTENER_RESERVED_CONNECTIONS` beyond the requested
+    size. `ws_hub` holds one connection open for the process lifetime to run
+    LISTEN, so on a pool of 10 a request could only ever obtain 9 — the
+    configured number silently meant one less than it said, which matters most
+    on pools this small. Widening rather than subtracting keeps
+    ORACLE_DB_POOL_MAX meaning "connections available to requests", which is the
+    number an operator is actually sizing against Postgres `max_connections`."""
     global _pool
     if _pool is not None:
         return _pool
+
+    requested_max = max_size
+    max_size = max_size + LISTENER_RESERVED_CONNECTIONS
 
     import asyncpg  # lazy
 
@@ -253,11 +336,14 @@ async def init_pool(min_size: int = _ENV_POOL_MIN, max_size: int = _ENV_POOL_MAX
 
     stats = pool_stats()
     logger.info(
-        "DB pool ready — host=%s db=%s min=%d max=%d size=%d idle=%d",
+        "DB pool ready — host=%s db=%s min=%d max=%d (%d usable for requests, "
+        "%d reserved for the ws_hub listener) size=%d idle=%d",
         DB_HOST or "localhost",
         DB_NAME,
         stats.get("min_size", min_size),
         stats.get("max_size", max_size),
+        requested_max,
+        LISTENER_RESERVED_CONNECTIONS,
         stats.get("size", 0),
         stats.get("idle", 0),
     )

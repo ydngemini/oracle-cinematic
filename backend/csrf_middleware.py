@@ -34,7 +34,16 @@ CSRF_EXEMPT_PATHS = {
     "/auth/reset",
     "/auth/verify",
     "/api/commands/webhooks/",
+    # Twilio posts these; they authenticate by X-Twilio-Signature over the full
+    # URL + params, not by session cookie. Without the exemption every inbound
+    # call, agent-dial status callback and live-agent transfer was rejected 403
+    # by this middleware before its signature check ever ran.
+    "/api/telephony/webhooks/",
     "/api/public/lead-intake/",
+    # Unauthenticated client capture: the single-use link token IS the
+    # capability. There is no ambient session credential for an attacker to
+    # ride, which is the only thing CSRF defends against.
+    "/api/public/property-upload/",
     "/billing/webhook",
 }
 

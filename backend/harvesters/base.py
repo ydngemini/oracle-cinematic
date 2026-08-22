@@ -1158,9 +1158,42 @@ class BaseHarvester(ABC):
 
     STATE: str = "??"
     SOURCE_LABEL: str = "unknown"
+    # Explicit key for sources that have one. Most harvesters do not set it; see
+    # the `source_key` property below for the fallback.
     SOURCE_KEY: str = ""
     RETAIN_RAW: bool = False
     SOQL_CURSOR_FIELD: str = ""
+
+    # Terms the retained observations are held under. These are written to
+    # source_licenses and are what /api/intelligence cites when it justifies a
+    # score, so they are a claim about what this data may lawfully be used for.
+    #
+    # The defaults describe county/municipal open data, which is what every
+    # harvester in this repo reads today. A harvester over anything else — a
+    # licensed feed, a scraped portal, an API with terms — MUST state its own,
+    # because an unstated licence is an assertion nobody checked.
+    LICENSE_NAME: str = "municipal-open-data"
+    # May the data be attached to an individual property record?
+    PROPERTY_LEVEL_ALLOWED: bool = True
+    # May it be used to contact the owner? Deliberately False by default: open
+    # data being public does not make it lawful outreach material.
+    OUTREACH_USE_ALLOWED: bool = False
+
+    # Raw rows from the most recent targeted lookup, for on-demand retention.
+    # Empty on a bulk harvest, which retains through its own path.
+    last_raw_rows: list[dict] = []
+
+    @property
+    def source_key(self) -> str:
+        """Stable identifier for this harvester's source.
+
+        Falls back to the per-state firehose key rather than an empty string.
+        Retention used to require SOURCE_KEY and only 6 of 60 harvesters set
+        one, so `_retain_raw` silently returned for the other 54 — which is why
+        `source_records` had almost no rows, and why every /api/intelligence
+        route 422'd for want of a citable observation.
+        """
+        return self.SOURCE_KEY or f"firehose:{self.STATE}"
 
     def __init__(
         self,
@@ -1181,7 +1214,7 @@ class BaseHarvester(ABC):
         self.metrics = {
             "state": self.STATE,
             "source": self.SOURCE_LABEL,
-            "source_key": self.SOURCE_KEY or f"firehose:{self.STATE}",
+            "source_key": self.source_key,
             "requests": 0, "retries": 0,
             "fetched": 0, "parsed": 0, "skipped": 0, "aggregated": 0,
             "inserted": 0, "raw_retained": 0,
@@ -1278,7 +1311,7 @@ class BaseHarvester(ABC):
         return ""
 
     async def _load_cursor(self) -> Optional[str]:
-        if not self.RETAIN_RAW or not self.SOURCE_KEY:
+        if not self.RETAIN_RAW:
             return None
         from db.connection import tenant_tx
         from tenancy import Role, TenantContext
@@ -1295,7 +1328,7 @@ class BaseHarvester(ABC):
                 WHERE tenant_id=$1::uuid AND source_key=$2
                 """,
                 self.tenant_id,
-                self.SOURCE_KEY,
+                self.source_key,
             )
 
     @staticmethod
@@ -1316,10 +1349,49 @@ class BaseHarvester(ABC):
         ]
         return max(values, key=self._cursor_sort_key) if values else self._cursor_start
 
+    async def retain_observations(self, rows: list[dict], *, reason: str = "on_demand") -> int:
+        """Persist raw observations for rows fetched outside a bulk harvest.
+
+        `/api/intelligence` will not score anything without a citable
+        `source_record_id`, and those only exist where retention ran. Bulk
+        retention (`RETAIN_RAW`) is off for the parcel firehoses on purpose —
+        keeping raw JSON for every parcel in 51 states is unbounded storage for
+        data nobody has looked at.
+
+        This is the other half: when a property is actually researched, keep
+        that one observation. It costs a row per property somebody opened, and
+        it is what makes the intelligence routes usable on real records.
+
+        Deliberately independent of RETAIN_RAW, which governs the bulk path.
+        Returns the number of rows persisted.
+        """
+        if not rows:
+            return 0
+        return await self._persist_observations(rows, request_context={"reason": reason})
+
     async def _retain_raw(self, rows: list[dict], cursor_end: Optional[str]) -> None:
         """Persist exact public observations and advance the cursor atomically."""
-        if not self.RETAIN_RAW or not self.SOURCE_KEY:
+        if not self.RETAIN_RAW:
             return
+        await self._persist_observations(
+            rows,
+            request_context={
+                "cursor_start": self._cursor_start,
+                "cursor_end": cursor_end,
+            },
+            cursor_end=cursor_end,
+        )
+
+    async def _persist_observations(
+        self,
+        rows: list[dict],
+        *,
+        request_context: dict,
+        cursor_end: Optional[str] = None,
+    ) -> int:
+        """Write the licence + observation rows. Advances the cursor only when
+        `cursor_end` is supplied, so an on-demand lookup cannot make the bulk
+        harvest think it has already covered ground it has not."""
         from db.connection import tenant_tx
         from tenancy import Role, TenantContext
 
@@ -1330,36 +1402,37 @@ class BaseHarvester(ABC):
         )
         retrieved_at = datetime.now(timezone.utc)
         request_material = json.dumps(
-            {
-                "source": self.SOURCE_KEY,
-                "cursor_start": self._cursor_start,
-                "cursor_end": cursor_end,
-            },
+            {"source": self.source_key, **request_context},
             sort_keys=True,
             separators=(",", ":"),
+            default=str,
         )
         request_hash = hashlib.sha256(request_material.encode("utf-8")).hexdigest()
         retention_days = max(
             1,
             min(3650, int(os.getenv("ORACLE_RAW_SOURCE_RETENTION_DAYS", "730"))),
         )
+        written = 0
         async with tenant_tx(ctx) as conn:
             license_row = await conn.fetchrow(
                 """
                 INSERT INTO source_licenses (
                     tenant_id,source_key,source_name,source_url,license_name,
                     property_level_allowed,outreach_use_allowed,retention_days
-                ) VALUES ($1::uuid,$2,$3,$4,'municipal-open-data',true,false,$5)
+                ) VALUES ($1::uuid,$2,$3,$4,$6,$7,$8,$5)
                 ON CONFLICT (tenant_id,source_key) DO UPDATE SET
                     source_name=EXCLUDED.source_name,source_url=EXCLUDED.source_url,
                     active=true,updated_at=now()
                 RETURNING id,retention_days
                 """,
                 self.tenant_id,
-                self.SOURCE_KEY,
+                self.source_key,
                 self.SOURCE_LABEL,
                 getattr(self, "RESOURCE_URL", None),
                 retention_days,
+                self.LICENSE_NAME,
+                self.PROPERTY_LEVEL_ALLOWED,
+                self.OUTREACH_USE_ALLOWED,
             )
             for row in rows:
                 raw_blob = json.dumps(row, sort_keys=True, separators=(",", ":"), default=str)
@@ -1383,7 +1456,7 @@ class BaseHarvester(ABC):
                     """,
                     self.tenant_id,
                     license_row["id"],
-                    self.SOURCE_KEY,
+                    self.source_key,
                     record_key,
                     self.raw_property_key(row) or None,
                     self.STATE,
@@ -1394,6 +1467,11 @@ class BaseHarvester(ABC):
                     str(license_row["retention_days"]),
                 )
                 self.metrics["raw_retained"] += 1
+                written += 1
+            if cursor_end is None:
+                # On-demand lookup: no cursor to advance, and no claim that a
+                # bulk pass happened.
+                return written
             await conn.execute(
                 """
                 INSERT INTO harvest_sources (
@@ -1411,13 +1489,14 @@ class BaseHarvester(ABC):
                     updated_at=now()
                 """,
                 self.tenant_id,
-                self.SOURCE_KEY,
+                self.source_key,
                 self.SOURCE_LABEL,
                 self.STATE,
                 type(self).__name__,
                 cursor_end,
                 json.dumps({"fetched": len(rows), "raw_retained": self.metrics["raw_retained"]}),
             )
+        return written
 
     async def harvest(
         self,

@@ -187,6 +187,10 @@ class FloridaFDORHarvester(ArcGISHarvester):
             where=f"PARCEL_ID='{escaped}'",
             out_fields=self.OUT_FIELDS,
         )
+        # Kept so the caller can retain this observation on demand. A targeted
+        # lookup is exactly the case where a citable source_record is worth
+        # storing — somebody is researching this property right now.
+        self.last_raw_rows = list(rows)
         records: list[PropertyRecord] = []
         for row in rows:
             record = self.map_record(row)

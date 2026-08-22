@@ -119,7 +119,18 @@ async def get_flood_zone(lat: float, lng: float) -> Optional[dict]:
         result = payload.get("result") or {}
         features = result.get("features", [])
         if not features:
-            return {"zone": "X", "risk": "minimal", "in_sfha": False}
+            # Zone X is itself a mapped NFHL polygon, so "no intersecting
+            # feature" does not mean "surveyed and found low-risk" — it means
+            # this coordinate falls outside NFHL coverage entirely. Reporting X
+            # here asserted minimal flood hazard for every unmapped location in
+            # the country.
+            return {
+                "zone": "UNKNOWN",
+                "risk": "unknown",
+                "in_sfha": False,
+                "mapped": False,
+                "source": "fema_nfhl",
+            }
 
         attrs = features[0].get("attributes", {})
         zone = attrs.get("FLD_ZONE", "X")
@@ -137,6 +148,7 @@ async def get_flood_zone(lat: float, lng: float) -> Optional[dict]:
             "zone_subtype": attrs.get("ZONE_SUBTY", ""),
             "risk": risk_map.get(zone, "unknown"),
             "in_sfha": in_sfha,
+            "mapped": True,
             "source": "fema_nfhl",
         }
     except Exception as e:

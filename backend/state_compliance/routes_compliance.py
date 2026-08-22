@@ -75,8 +75,8 @@ async def compliance_check(
     lead-paint) are flagged separately from state-mandated items.
 
     This endpoint is purely computational — it does not persist anything.  Call
-    ``POST /api/compliance/checklist`` (via the transaction router) to
-    materialise the result as a tracked checklist row.
+    ``POST /api/compliance/checklist`` to materialise the result as tracked
+    checklist rows against a transaction.
     """
     result = _engine.check(body)
     logger.info(
@@ -87,6 +87,79 @@ async def compliance_check(
         ctx.tenant_id,
     )
     return result
+
+
+class ChecklistMaterializeBody(BaseModel):
+    """A transaction to attach a checklist to, and the context to compute it from."""
+
+    transaction_id: str
+    context: TransactionContext
+
+
+# Declared before the parameterised GET below so the literal path wins — see
+# backend/tests/test_route_shadowing.py.
+@router.post(
+    "/api/compliance/checklist",
+    response_model=ComplianceChecklist,
+    summary="Materialise a disclosure checklist against a transaction",
+)
+async def materialise_compliance_checklist(
+    body: ChecklistMaterializeBody,
+    ctx: TenantContext = Depends(require_context),
+) -> ComplianceChecklist:
+    """Turn a compliance check into tracked checklist rows for a transaction.
+
+    This is the write half that ``GET /api/compliance/checklist/{id}`` was
+    always documented against but which never existed, leaving that endpoint
+    reporting ``total_items: 0`` on every transaction forever.
+
+    Safe to re-run. Items already present for the transaction keep whatever
+    delivery or signature state has been recorded against them — a correction
+    to the transaction's details adds newly-required disclosures without
+    discarding work already done on the ones that were required before.
+
+    Disclosures that are no longer required are deliberately **not** deleted:
+    an item an agent has already delivered or signed is a record of what
+    happened, and silently removing it would erase evidence of compliance.
+    """
+    txn_id = _require_uuid(body.transaction_id, "transaction_id")
+
+    # Confirm the transaction is this tenant's before writing anything against
+    # it. RLS would scope the read anyway; this turns a silent empty write into
+    # an explicit 404.
+    txn_row = await _fetchrow(
+        ctx,
+        "SELECT state_code FROM transactions WHERE id = $1",
+        txn_id,
+    )
+    if not txn_row:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Transaction {txn_id!r} not found.",
+        )
+
+    result = _engine.check(body.context)
+
+    async with tenant_tx(ctx) as conn:
+        for disclosure in result.required_disclosures:
+            await conn.execute(
+                """
+                INSERT INTO compliance_checklist_items
+                    (tenant_id, transaction_id, disclosure_id, form_name, status)
+                VALUES ($1::uuid, $2::uuid, $3, $4, 'pending')
+                ON CONFLICT (transaction_id, disclosure_id) DO NOTHING
+                """,
+                ctx.tenant_id,
+                txn_id,
+                disclosure.disclosure_id,
+                disclosure.form_name,
+            )
+
+    logger.info(
+        "Materialised compliance checklist: txn=%s state=%s required=%d tenant=%s",
+        txn_id, body.context.state_code, result.total_required, ctx.tenant_id,
+    )
+    return await get_compliance_checklist(txn_id, ctx)
 
 
 @router.get(

@@ -22,6 +22,11 @@ logger = logging.getLogger("oracle.ws_hub")
 
 _sockets: dict[str, set[WebSocket]] = defaultdict(set)
 _user_sockets: dict[tuple[str, str], set[WebSocket]] = defaultdict(set)
+# Per-replica socket ceiling. Each connection costs an idle watchdog, a reader
+# task and a share of the tenant engine; past some number a replica degrades for
+# everyone on it rather than for the marginal connection. 0 disables the cap.
+MAX_CONNECTIONS_PER_REPLICA = int(os.getenv("ORACLE_WS_MAX_CONNECTIONS", "120"))
+
 _CHANNEL = "oracle_ws_events"
 _MAX_NOTIFY_BYTES = 7_500  # PostgreSQL NOTIFY payload hard limit is 8,000 bytes.
 _instance_id = str(uuid.uuid4())
@@ -60,6 +65,45 @@ def unregister(tenant_id: str, ws: WebSocket, user_id: Optional[str] = None) -> 
 def connection_counts() -> dict[str, int]:
     """Live socket count per tenant group — surfaced on /api/admin/system."""
     return {tenant_id: len(socks) for tenant_id, socks in _sockets.items()}
+
+
+def total_connections() -> int:
+    """Sockets held by this replica, across every tenant."""
+    return sum(len(socks) for socks in _sockets.values())
+
+
+def at_capacity() -> bool:
+    """Whether this replica is already holding its configured maximum.
+
+    Connections were previously uncapped, so the failure mode under load was
+    memory pressure and scheduler starvation rather than a clear refusal. A
+    refused connection the UI can explain is a better outcome than a degraded
+    one nobody can attribute.
+    """
+    return MAX_CONNECTIONS_PER_REPLICA > 0 and total_connections() >= MAX_CONNECTIONS_PER_REPLICA
+
+
+def tenants_with_sockets() -> list[str]:
+    """Tenants this replica currently holds at least one socket for.
+
+    The ambient producer iterates this instead of every known tenant, so work is
+    only done for tenants that have someone watching.
+    """
+    return [tenant_id for tenant_id, socks in _sockets.items() if socks]
+
+
+async def deliver_local(tenant_id: str, payload: dict) -> int:
+    """Deliver to this replica's sockets only — no cross-replica publish.
+
+    `broadcast()` also NOTIFYs so other replicas can reach their own sockets,
+    which costs a pool acquire and a `pg_notify` per frame. Ambient content is
+    generated independently on every replica, so publishing it would duplicate
+    the frame for anyone connected elsewhere while adding database work per
+    frame per replica. Use this for anything a replica generates for itself;
+    use `broadcast()` for facts that originate in one place and must reach
+    everyone.
+    """
+    return await _deliver_local(tenant_id, payload)
 
 
 async def _send_group(tenant_id: str, payload: dict) -> int:

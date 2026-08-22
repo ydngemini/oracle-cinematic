@@ -27,6 +27,7 @@ from typing import Optional
 from uuid import UUID, uuid4
 
 import ws_hub
+import media_storage
 from db.connection import tenant_tx
 from tenancy import TenantContext
 from reconstruction_providers import (
@@ -73,18 +74,84 @@ async def _set_status(ctx: TenantContext, job_id: str, status: str, **fields) ->
         )
 
 
-async def _gather_source_images(job: ReconstructionJob, dest: Path) -> list[Path]:
-    """Pull the property's uploaded photos (RLS-scoped) into a work dir as the
-    reconstruction input. Empty is fine for the stub provider."""
+# A walk-through video is the natural way to capture a house with a phone, and
+# reconstruction wants overlapping stills. Two frames a second is roughly a step
+# apart at walking pace, which lands inside the 70–80% overlap the solver needs
+# without producing hundreds of near-identical frames.
+_VIDEO_SAMPLE_FPS = float(os.environ.get("RECON_VIDEO_SAMPLE_FPS", "2") or 2)
+# Hard ceiling per video so one long clip cannot blow past the provider's own
+# image cap (MAX_CAPTURE_IMAGES) or fill the work dir.
+_VIDEO_MAX_FRAMES = int(os.environ.get("RECON_VIDEO_MAX_FRAMES", "240") or 240)
+
+
+async def _extract_video_frames(video: Path, dest: Path, prefix: str) -> list[Path]:
+    """Sample stills out of a capture video. Returns [] when nothing usable came out.
+
+    Raises ProviderError when ffmpeg is missing entirely: a capture made of
+    video would otherwise reconstruct from zero images and report success, which
+    is the failure mode this whole phase exists to remove.
+    """
+    if not shutil.which("ffmpeg"):
+        raise ProviderError(
+            "This capture is video, but ffmpeg is not installed on the backend "
+            "so frames cannot be extracted. Install ffmpeg (it is in the "
+            "backend image) or upload still photos instead."
+        )
+
+    pattern = str(dest / f"{prefix}_%04d.jpg")
+    proc = await asyncio.create_subprocess_exec(
+        "ffmpeg", "-nostdin", "-loglevel", "error",
+        "-i", str(video),
+        "-vf", f"fps={_VIDEO_SAMPLE_FPS}",
+        "-frames:v", str(_VIDEO_MAX_FRAMES),
+        "-q:v", "2",
+        pattern,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT,
+    )
+    try:
+        output, _ = await asyncio.wait_for(proc.communicate(), timeout=900)
+    except asyncio.TimeoutError:
+        proc.kill()
+        raise ProviderError(f"Frame extraction timed out for {video.name}.")
+
+    if proc.returncode != 0:
+        detail = (output or b"")[-400:].decode("utf-8", "replace").strip()
+        raise ProviderError(f"Frame extraction failed for {video.name}: {detail}")
+
+    frames = sorted(dest.glob(f"{prefix}_*.jpg"))
+    logger.info("Extracted %d frame(s) from %s at %sfps", len(frames), video.name, _VIDEO_SAMPLE_FPS)
+    return frames
+
+
+async def _gather_source_images(
+    job: ReconstructionJob, dest: Path
+) -> tuple[list[Path], dict]:
+    """Pull the property's capture media (RLS-scoped) into a work dir as the
+    reconstruction input.
+
+    Photos are used as-is; videos are sampled into stills. Returns the image
+    paths and a count of what went in, which the capture session records so
+    "which media produced this splat" stays answerable afterwards.
+
+    Empty is fine for the stub provider, which captures nothing anyway.
+    """
     dest.mkdir(parents=True, exist_ok=True)
     out: list[Path] = []
+    counts = {"photos": 0, "videos": 0, "frames": 0}
     async with tenant_tx(job.ctx) as conn:
+        # LEFT JOIN, not JOIN: photos uploaded on a deployment with object
+        # storage carry an s3_key and no blob row. An inner join silently
+        # returned zero images for them, so the reconstruction ran on nothing
+        # and produced a "successful" job with no capture behind it.
         rows = await conn.fetch(
             """
-            SELECT pm.id, mb.bytes, mb.content_type
+            SELECT pm.id, pm.kind, pm.s3_key, mb.bytes,
+                   COALESCE(pm.content_type, mb.content_type) AS content_type
               FROM property_media pm
-              JOIN media_blobs mb ON mb.media_id = pm.id
-             WHERE pm.kind = 'photo'
+              LEFT JOIN media_blobs mb ON mb.media_id = pm.id
+             WHERE pm.kind IN ('photo', 'video')
+               AND (pm.s3_key IS NOT NULL OR mb.media_id IS NOT NULL)
                AND (($1::uuid IS NOT NULL AND pm.lead_id = $1)
                  OR ($2::uuid IS NOT NULL AND pm.listing_id = $2))
              ORDER BY pm.sort_order ASC
@@ -93,11 +160,42 @@ async def _gather_source_images(job: ReconstructionJob, dest: Path) -> list[Path
             UUID(job.listing_id) if job.listing_id else None,
         )
     for r in rows:
+        try:
+            data = await media_storage.load_media_bytes(r)
+        except Exception as exc:  # noqa: BLE001 — one unreadable item is not fatal
+            logger.warning("Skipping unreadable source media %s: %s", r["id"], exc)
+            continue
+        if data is None:
+            continue
+
+        if r["kind"] == "video":
+            # Staged to disk first: ffmpeg reads a file, and a capture video can
+            # be hundreds of megabytes that we do not want to hold twice.
+            container = ".mov" if "quicktime" in (r["content_type"] or "") else ".mp4"
+            staged = dest / f"{r['id']}{container}"
+            staged.write_bytes(data)
+            try:
+                frames = await _extract_video_frames(staged, dest, str(r["id"]))
+                out.extend(frames)
+                counts["videos"] += 1
+                counts["frames"] += len(frames)
+            finally:
+                # The frames are the input; the video itself must not be handed
+                # to a provider expecting images.
+                staged.unlink(missing_ok=True)
+            continue
+
         ext = ".png" if (r["content_type"] or "").endswith("png") else ".jpg"
         p = dest / f"{r['id']}{ext}"
-        p.write_bytes(bytes(r["bytes"]))
+        p.write_bytes(data)
         out.append(p)
-    return out
+        counts["photos"] += 1
+
+    logger.info(
+        "Capture input for job %s: %d photo(s), %d video(s) -> %d frame(s), %d image(s) total",
+        job.job_id, counts["photos"], counts["videos"], counts["frames"], len(out),
+    )
+    return out, counts
 
 
 async def _convert_to_splat(src: Path, work_dir: Path, media_id: str) -> Path:
@@ -124,17 +222,22 @@ async def _convert_to_splat(src: Path, work_dir: Path, media_id: str) -> Path:
     return out
 
 
-def _store_splat(src_splat: Path, media_id: str, *, provider: str, address: str) -> tuple[str, Optional[str]]:
-    """Persist the .splat + an AI-provenance manifest. Returns (public_url, s3_key)
-    where s3_key is None for the filesystem seam (we don't own a remote object).
+async def _store_splat(
+    src_splat: Path, media_id: str, *, provider: str, address: str, tenant_id: str
+) -> tuple[str, Optional[str]]:
+    """Persist the .splat + its AI-provenance manifest. Returns (url, storage_key).
 
-    Two seams, selected by ORACLE_SPLAT_STORAGE:
-      • fs  (default) — copy into SPLAT_OUTPUT_DIR, served by server.py at
-        /public/splats/{id}.splat. In the dev stack ORACLE_SPLAT_DIR points at the
-        bind-mounted /app/.splatdata so the file survives `--force-recreate`.
-      • s3  — Fargate prod has no persistent disk, so push the splat + manifest to
-        S3 and serve them via the bucket (or a CDN in front of it). The object key
-        is recorded on the property_media row so we own the canonical artifact.
+    One seam: object storage, whichever backend is configured (a mounted
+    filesystem, Azure Blob, or S3 — see object_storage). The returned URL is the
+    authenticated `/api/media/{id}` route, the same one every photo and video
+    goes through, so reading a reconstruction requires a token that can read the
+    property_media row behind it.
+
+    This replaced two seams selected by ORACLE_SPLAT_STORAGE. The default one
+    copied the splat into a directory served by an unauthenticated StaticFiles
+    mount at `/public/splats/{id}.splat`, and the other returned a raw bucket or
+    CDN URL. Both meant a finished reconstruction of somebody's home was
+    fetchable by anyone who could guess or observe the filename.
     """
     manifest = {
         "mediaId": media_id,
@@ -143,46 +246,48 @@ def _store_splat(src_splat: Path, media_id: str, *, provider: str, address: str)
         "generator": provider,
         "disclosure": SPATIAL_AI_DISCLOSURE,
     }
-    storage = os.environ.get("ORACLE_SPLAT_STORAGE", "fs").lower()
 
-    if storage == "s3":  # pragma: no cover — prod path (needs bucket + boto3 + creds)
-        bucket = os.environ.get("ORACLE_SPLAT_S3_BUCKET")
-        if not bucket:
-            raise ProviderError(
-                "ORACLE_SPLAT_STORAGE=s3 but ORACLE_SPLAT_S3_BUCKET is unset — "
-                "set the bucket name (and optionally ORACLE_SPLAT_CDN_BASE)."
-            )
-        import boto3  # lazy import — only the prod S3 path needs the AWS SDK
-        s3 = boto3.client("s3")
-        splat_key = f"splats/{media_id}.splat"
-        manifest_key = f"splats/{media_id}.json"
-        s3.put_object(
-            Bucket=bucket, Key=splat_key,
-            Body=src_splat.read_bytes(), ContentType="application/octet-stream",
+    if not media_storage.storage_available():
+        raise ProviderError(
+            "Object storage is not configured, so a finished reconstruction has "
+            "nowhere durable to live. Set ORACLE_STORAGE_BACKEND (and its "
+            "backend's settings) before running captures."
         )
-        s3.put_object(
-            Bucket=bucket, Key=manifest_key,
-            Body=json.dumps(manifest, indent=2).encode("utf-8"),
-            ContentType="application/json",
-        )
-        # Public URL: CDN base if fronted by CloudFront, else the raw S3 endpoint.
-        cdn_base = os.environ.get("ORACLE_SPLAT_CDN_BASE", f"https://{bucket}.s3.amazonaws.com")
-        return f"{cdn_base.rstrip('/')}/{splat_key}", splat_key
 
-    # ── filesystem seam (default) ──────────────────────────────────────────────
-    SPLAT_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    dest = SPLAT_OUTPUT_DIR / f"{media_id}.splat"
-    if src_splat.resolve() != dest.resolve():
-        shutil.copyfile(src_splat, dest)
-    (SPLAT_OUTPUT_DIR / f"{media_id}.json").write_text(json.dumps(manifest, indent=2))
-    return f"/public/splats/{media_id}.splat", None
+    import object_storage
+
+    splat_key = f"splats/{tenant_id}/{media_id}.splat"
+    manifest_key = f"splats/{tenant_id}/{media_id}.json"
+    await asyncio.to_thread(
+        object_storage.put_file, splat_key, src_splat, "application/octet-stream"
+    )
+    await asyncio.to_thread(
+        object_storage.put_bytes,
+        manifest_key,
+        json.dumps(manifest, indent=2).encode("utf-8"),
+        "application/json",
+    )
+    return f"/api/media/{media_id}", splat_key
 
 
 async def _record_media(
-    job: ReconstructionJob, media_id: str, url: str, s3_key: Optional[str] = None
+    job: ReconstructionJob,
+    media_id: str,
+    url: str,
+    s3_key: Optional[str] = None,
+    *,
+    provenance: str = "captured",
+    generator: Optional[str] = None,
 ) -> None:
     """Insert the splat as a property_media row the resolver reads for tier 3.
-    s3_key is the canonical object key when stored on S3 (None for the fs seam)."""
+
+    s3_key is the canonical object key when stored on S3 (None for the fs seam).
+
+    `provenance` is what the row actually depicts, taken from the provider that
+    produced it. It is the only thing standing between the stub provider's demo
+    room and the tour telling a user they are walking through the actual home,
+    so it is passed explicitly rather than defaulted at the call site.
+    """
     async with tenant_tx(job.ctx) as conn:
         base = await conn.fetchval(
             """
@@ -196,8 +301,11 @@ async def _record_media(
         )
         await conn.execute(
             """
-            INSERT INTO property_media (id, tenant_id, lead_id, listing_id, kind, url, s3_key, sort_order)
-            VALUES ($1, $2, $3, $4, 'splat', $5, $6, $7)
+            INSERT INTO property_media (
+                id, tenant_id, lead_id, listing_id, kind, url, s3_key, sort_order,
+                provenance, generator
+            )
+            VALUES ($1, $2, $3, $4, 'splat', $5, $6, $7, $8, $9)
             """,
             UUID(media_id),
             job.ctx.tenant_id,
@@ -206,20 +314,124 @@ async def _record_media(
             url,
             s3_key,
             int(base) + 1,
+            provenance,
+            generator,
         )
+
+
+async def _open_capture_session(job: ReconstructionJob) -> Optional[str]:
+    """Record this attempt. Returns the session id, or None if it cannot be written.
+
+    Best-effort on purpose: the session is provenance, not a precondition, and a
+    reconstruction the agent is waiting on should not fail because a bookkeeping
+    row could not be inserted.
+    """
+    try:
+        async with tenant_tx(job.ctx) as conn:
+            row = await conn.fetchrow(
+                """
+                INSERT INTO capture_sessions
+                    (tenant_id, lead_id, listing_id, reconstruction_job_id, status)
+                VALUES ($1, $2, $3, $4::uuid, 'running')
+                RETURNING id
+                """,
+                job.ctx.tenant_id,
+                UUID(job.lead_id) if job.lead_id else None,
+                UUID(job.listing_id) if job.listing_id else None,
+                job.job_id,
+            )
+            return str(row["id"]) if row else None
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Could not open a capture session for job %s: %s", job.job_id, exc)
+        return None
+
+
+async def _close_capture_session(
+    job: ReconstructionJob,
+    session_id: Optional[str],
+    *,
+    status: str,
+    counts: Optional[dict] = None,
+    result_media_id: Optional[str] = None,
+    failure_reason: Optional[str] = None,
+) -> None:
+    """Finish the session record, and retire any earlier successful attempt.
+
+    Superseding matters: without it a re-capture leaves two splats on the
+    property and the resolver picks by sort order, so a corrected capture can
+    lose to the bad one it was meant to replace.
+    """
+    if session_id is None:
+        return
+    try:
+        async with tenant_tx(job.ctx) as conn:
+            await conn.execute(
+                """
+                UPDATE capture_sessions
+                   SET status = $2,
+                       photo_count = COALESCE($3, photo_count),
+                       video_count = COALESCE($4, video_count),
+                       frame_count = COALESCE($5, frame_count),
+                       result_media_id = $6::uuid,
+                       failure_reason = $7,
+                       completed_at = now()
+                 WHERE id = $1::uuid
+                """,
+                session_id, status,
+                (counts or {}).get("photos"),
+                (counts or {}).get("videos"),
+                (counts or {}).get("frames"),
+                result_media_id,
+                failure_reason,
+            )
+            if status == "succeeded":
+                await conn.execute(
+                    """
+                    UPDATE capture_sessions
+                       SET status = 'superseded'
+                     WHERE id <> $1::uuid
+                       AND status = 'succeeded'
+                       AND (($2::uuid IS NOT NULL AND lead_id = $2)
+                         OR ($3::uuid IS NOT NULL AND listing_id = $3))
+                    """,
+                    session_id,
+                    UUID(job.lead_id) if job.lead_id else None,
+                    UUID(job.listing_id) if job.listing_id else None,
+                )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Could not close capture session %s: %s", session_id, exc)
 
 
 async def _process(job: ReconstructionJob) -> None:
     provider = get_provider()
     await _set_status(job.ctx, job.job_id, "running", provider=provider.name, progress=10)
     media_id = str(uuid4())
-    with tempfile.TemporaryDirectory(prefix="recon_") as tmp:
-        work = Path(tmp)
-        images = await _gather_source_images(job, work / "images")
-        raw = await provider.reconstruct(images, work)            # .ply or .splat
-        splat = await _convert_to_splat(raw, work, media_id)      # standard .splat
-        url, s3_key = _store_splat(splat, media_id, provider=provider.name, address=job.listing_id or job.lead_id or "")
-        await _record_media(job, media_id, url, s3_key)
+    session_id = await _open_capture_session(job)
+    try:
+        with tempfile.TemporaryDirectory(prefix="recon_") as tmp:
+            work = Path(tmp)
+            images, counts = await _gather_source_images(job, work / "images")
+            raw = await provider.reconstruct(images, work)            # .ply or .splat
+            splat = await _convert_to_splat(raw, work, media_id)      # standard .splat
+            url, s3_key = await _store_splat(
+                splat, media_id,
+                provider=provider.name,
+                address=job.listing_id or job.lead_id or "",
+                tenant_id=str(job.ctx.tenant_id),
+            )
+            await _record_media(
+                job, media_id, url, s3_key,
+                provenance=getattr(provider, "produces", "captured"),
+                generator=provider.name,
+            )
+    except Exception as exc:
+        await _close_capture_session(
+            job, session_id, status="failed", failure_reason=str(exc)[:2000]
+        )
+        raise
+    await _close_capture_session(
+        job, session_id, status="succeeded", counts=counts, result_media_id=media_id
+    )
     await _set_status(job.ctx, job.job_id, "succeeded", media_id=UUID(media_id), progress=100)
     try:
         await ws_hub.broadcast(job.ctx.tenant_id, {

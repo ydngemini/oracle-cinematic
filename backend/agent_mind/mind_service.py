@@ -12,7 +12,7 @@ import asyncio
 import json
 import os
 import re
-import threading
+import logging
 import time
 from dataclasses import dataclass, field
 from typing import Optional
@@ -27,6 +27,8 @@ COMPLETION_ENDPOINT = f"{LLAMA_SERVER_URL}/completion"
 HEALTH_ENDPOINT = f"{LLAMA_SERVER_URL}/health"
 
 MAX_MEMORY_ENTRIES = 24
+log = logging.getLogger("oracle.agent_mind")
+
 MONOLOGUE_MAX_TOKENS = 80
 MONOLOGUE_TEMPERATURE = 0.7
 COMMAND_MAX_TOKENS = 700
@@ -364,42 +366,36 @@ class MindService:
         return thought or None
 
     async def _stream_monologue_bedrock(self, agent_id: str):
-        """Bridge the SYNC bedrock stream_converse generator into async tokens."""
-        bedrock = self._bedrock()
-        if bedrock is None:
-            return
+        """Stream a monologue through the LLM gateway.
+
+        This used to run the synchronous ``stream_converse`` generator on a raw
+        ``threading.Thread``, push each delta back through an ``asyncio.Queue``
+        with a sentinel, and wrap the whole worker in ``except Exception: pass``
+        — so a stream that failed produced exactly the same empty result as one
+        that had nothing to say. The gateway is async-native, so the thread, the
+        queue, the sentinel and the silent except all go away together.
+        """
+        import llm_gateway
 
         mind = self.get_or_create_mind(agent_id)
         system_text, user_text = mind.build_bedrock_prompt()
 
-        loop = asyncio.get_running_loop()
-        queue: asyncio.Queue = asyncio.Queue()
-        _SENTINEL = object()
-
-        def _worker():
-            try:
-                for delta in bedrock.stream_converse(
-                    bedrock.SECONDARY_MODEL,
-                    system_text,
-                    user_text,
-                    max_tokens=MONOLOGUE_MAX_TOKENS,
-                    temperature=MONOLOGUE_TEMPERATURE,
-                ):
-                    loop.call_soon_threadsafe(queue.put_nowait, delta)
-            except Exception:
-                pass
-            finally:
-                loop.call_soon_threadsafe(queue.put_nowait, _SENTINEL)
-
-        threading.Thread(target=_worker, daemon=True).start()
-
         full_text = ""
-        while True:
-            item = await queue.get()
-            if item is _SENTINEL:
-                break
-            full_text += item
-            yield item
+        try:
+            async for delta in llm_gateway.stream(
+                user_text,
+                task="fast",
+                system=system_text,
+                max_tokens=MONOLOGUE_MAX_TOKENS,
+                temperature=MONOLOGUE_TEMPERATURE,
+            ):
+                full_text += delta
+                yield delta
+        except llm_gateway.LLMUnavailable as exc:
+            # Ambient flavour, so a failure is not worth surfacing to the user —
+            # but it is worth recording, which the old silent except was not.
+            log.warning("monologue stream unavailable for %s: %s", agent_id, exc)
+            return
 
         if full_text.strip():
             mind.current_thought = full_text.strip()

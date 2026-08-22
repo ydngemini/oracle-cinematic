@@ -150,6 +150,67 @@ def calculate_underwriting(
     }
 
 
+def calculate_mao(
+    *,
+    arv: Any,
+    rehab: Any,
+    holding_costs: Any = "0",
+    acquisition_ratio: Any = "0.70",
+) -> dict[str, Any]:
+    """Maximum Allowable Offer from already-established ARV and rehab figures.
+
+    ``calculate_underwriting`` derives ARV from comparables and therefore
+    requires ``subject_sqft``; a caller who already has an ARV has no square
+    footage to give it, and passing a placeholder would put a fabricated
+    price-per-square-foot into the trace. This is the same formula with the
+    same rounding, entered one step later.
+
+    ``holding_costs`` is an *extension* of the classic 70% rule, not part of
+    it, so the returned ``formula`` states exactly which arithmetic ran rather
+    than leaving the caller to assume the textbook version.
+    """
+    value = _decimal(arv, "arv", minimum=Decimal("0"))
+    repairs = _decimal(rehab, "rehab", minimum=Decimal("0"))
+    holding = _decimal(holding_costs, "holding_costs", minimum=Decimal("0"))
+    ratio = _decimal(acquisition_ratio, "acquisition_ratio", minimum=Decimal("0"))
+    if ratio > Decimal("1"):
+        raise IntelligenceInputError("acquisition_ratio cannot exceed 1")
+
+    mao = max(Decimal("0"), (ratio * value) - repairs - holding)
+    formula = "MAO = max(0, acquisition_ratio × ARV − rehab"
+    formula += " − holding_costs)" if holding > 0 else ")"
+
+    risks: list[str] = []
+    if repairs == 0:
+        risks.append("No rehab cost was entered; MAO may be overstated.")
+    if mao == 0:
+        risks.append(
+            "Costs meet or exceed the acquisition ratio applied to ARV; the "
+            "formula floors at 0 rather than returning a negative offer."
+        )
+
+    return {
+        "model_version": UNDERWRITING_MODEL_VERSION,
+        "mao": _money(mao),
+        "acquisition_ratio": float(ratio),
+        "trace": {
+            "inputs": {
+                "arv": _money(value),
+                "rehab": _money(repairs),
+                "holding_costs": _money(holding),
+                "acquisition_ratio": float(ratio),
+            },
+            "formulas": [formula],
+            "assumptions": [
+                "ARV and rehab were supplied by the caller and carry whatever "
+                "evidence produced them; this function does not verify either."
+            ],
+            "risks": risks,
+            "outputs": {"mao": _money(mao)},
+        },
+    }
+
+
 _DISTRESS_WEIGHTS: dict[str, float] = {
     "tax_delinquency": 0.20,
     "vacancy": 0.14,

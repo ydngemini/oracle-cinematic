@@ -298,16 +298,24 @@ async def usage_summary(
     async with tenant_tx(ctx) as conn:
         rows = await conn.fetch(
             """
+            -- tenant_id is filtered explicitly, not left to RLS — the same rule
+            -- drain_usage_to_stripe documents. require_role(BROKER_OWNER) passes
+            -- for platform admins, and under that context the 0067 policy is
+            -- `app_is_platform_admin() OR tenant_id = app_current_tenant()`,
+            -- i.e. wide open: without this predicate an admin's own usage panel
+            -- reports the sum of EVERY tenant's activity as its own.
             SELECT metric,
                    sum(quantity)::numeric AS quantity,
                    count(*)::int AS events,
                    count(*) FILTER (WHERE reported_at IS NOT NULL)::int AS reported,
                    max(occurred_at) AS last_at
               FROM billing_usage_events
-             WHERE occurred_at >= now() - ($1::int * interval '1 day')
+             WHERE tenant_id = $2::uuid
+               AND occurred_at >= now() - ($1::int * interval '1 day')
              GROUP BY metric ORDER BY metric
             """,
             days,
+            ctx.tenant_id,
         )
     return {
         "window_days": days,

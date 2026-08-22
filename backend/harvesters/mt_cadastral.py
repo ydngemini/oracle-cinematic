@@ -110,7 +110,11 @@ class MontanaCadastralHarvester(ArcGISHarvester):
             address=address,
             city=prop_city or owner_city.title(),
             state=self.STATE,
-            zip_code=prop_zip or owner_zip,
+            # The situs zip when published; the owner's only when the owner
+            # lives there. This module's own absentee check compares the two,
+            # so falling back to owner_zip for an absentee parcel wrote a zip
+            # it had just established was somewhere else.
+            zip_code=prop_zip or ("" if is_absentee else owner_zip),
             owner_name=owner,
             owner_type=classify_owner(owner),
             estimated_value=total_val,
