@@ -24,72 +24,19 @@ const projects = [
   },
 ];
 
+/**
+ * The estate backdrop behind the CRM.
+ *
+ * This used to autoplay a looping 917 KB video (plus a 341 KB mobile cut),
+ * falling back to a still only for `prefers-reduced-motion` or Save-Data. It is
+ * now always the still: the .webp already existed as the video's poster, so
+ * nothing new is fetched and 1.26 MB comes off every page load. Ambient motion
+ * behind an operational CRM earned none of that weight, and dropping it also
+ * removes the play/pause/visibilitychange machinery that had to babysit it.
+ *
+ * The .mp4 files remain on disk — deleting assets is a separate decision.
+ */
 function EstateBackground({ className }) {
-  const videoRef = useRef(null);
-  const reducedMotion = useReducedMotion();
-  const [saveData, setSaveData] = useState(
-    () => Boolean(navigator.connection?.saveData),
-  );
-  const showMotion = !reducedMotion && !saveData;
-
-  useEffect(() => {
-    const connection = navigator.connection;
-    if (!connection?.addEventListener) return undefined;
-    const updateSaveData = () => setSaveData(Boolean(connection.saveData));
-    connection.addEventListener('change', updateSaveData);
-    return () => connection.removeEventListener('change', updateSaveData);
-  }, []);
-
-  useEffect(() => {
-    const video = videoRef.current;
-    if (!video || !showMotion) return undefined;
-
-    const syncPlayback = () => {
-      if (document.hidden) {
-        video.pause();
-        return;
-      }
-      void video.play().catch(() => {
-        // The poster remains visible if a browser blocks ambient autoplay.
-      });
-    };
-
-    document.addEventListener('visibilitychange', syncPlayback);
-    video.addEventListener('canplay', syncPlayback);
-    syncPlayback();
-
-    return () => {
-      document.removeEventListener('visibilitychange', syncPlayback);
-      video.removeEventListener('canplay', syncPlayback);
-      video.pause();
-    };
-  }, [showMotion]);
-
-  if (showMotion) {
-    return (
-      <video
-        ref={videoRef}
-        className={className}
-        poster="/media/mountain-waterfall-estate-v1.webp"
-        autoPlay
-        muted
-        loop
-        playsInline
-        preload="metadata"
-        aria-hidden="true"
-        tabIndex={-1}
-        disablePictureInPicture
-      >
-        <source
-          src="/media/mountain-waterfall-estate-v1-mobile.mp4"
-          type="video/mp4"
-          media="(max-width: 759px)"
-        />
-        <source src="/media/mountain-waterfall-estate-v1.mp4" type="video/mp4" />
-      </video>
-    );
-  }
-
   return (
     <img
       className={className}

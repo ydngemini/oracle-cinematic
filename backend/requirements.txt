@@ -36,6 +36,7 @@ playwright==1.62.0             # Browser-backed public-record harvesters
 # ── Microsoft Foundry ─────────────────────────────────────────────────────────
 azure-ai-projects==2.3.0       # Foundry prompt-agent administration + Responses client
 azure-identity==1.25.3         # Managed identity in Azure; Azure CLI credential locally
+google-auth==2.43.0            # ADC for Vertex AI (Veo video provider); no key material in env
 azure-keyvault-secrets==4.10.0 # Migration admin credential (run_migrations.py)
 azure-storage-blob==12.30.0    # object_storage azure-blob backend + SAS links
                                # (also a hard dependency of azure-ai-projects)

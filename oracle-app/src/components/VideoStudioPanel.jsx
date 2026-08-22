@@ -251,7 +251,7 @@ export default function VideoStudioPanel() {
       <section className={styles.wrap} aria-labelledby="video-studio-title">
         <header className={styles.hero}>
           <div>
-            <span className={styles.kicker}>Sora 2 marketing engine</span>
+            <span className={styles.kicker}>Marketing reel engine</span>
             <h1 id="video-studio-title">Video Studio</h1>
             <p>Not enabled on this deployment.</p>
           </div>
@@ -269,9 +269,17 @@ export default function VideoStudioPanel() {
     <section className={styles.wrap} aria-labelledby="video-studio-title">
       <header className={styles.hero}>
         <div>
-          <span className={styles.kicker}>Sora 2 marketing engine</span>
+          <span className={styles.kicker}>Marketing reel engine</span>
           <h1 id="video-studio-title">Video Studio</h1>
           <p>Turn property data and photos into a scripted, narrated marketing reel.</p>
+          {/* The backend now reports whether a video provider can actually
+              generate, and why not. Without this the first sign of an
+              unconfigured provider was a 503 after the script was written. */}
+          {config && config.provider_ready === false ? (
+            <p className={styles.providerDown} role="status">
+              Video generation is unavailable: {config.provider_reason}
+            </p>
+          ) : null}
         </div>
         <div className={styles.heroActions}>
           <button type="button" className={styles.iconButton} onClick={loadJobs} aria-label="Refresh video jobs">
@@ -463,7 +471,7 @@ export default function VideoStudioPanel() {
                   <input type="checkbox" checked={voiceover} onChange={(event) => setVoiceover(event.target.checked)} />
                   <span>
                     <strong>Native voiceover</strong>
-                    <small>Sora generates synchronized spoken audio — no separate TTS.</small>
+                    <small>The video model generates synchronized spoken audio — no separate TTS.</small>
                   </span>
                 </label>
                 <label className={styles.checkRow}>

@@ -53,7 +53,6 @@ logger = logging.getLogger("oracle.video_studio")
 AZURE_OPENAI_ENDPOINT: str = os.getenv("ORACLE_AZURE_OPENAI_ENDPOINT", "").rstrip("/")
 SORA_DEPLOYMENT: str = os.getenv("ORACLE_SORA_DEPLOYMENT", "sora-2-estate")
 SORA_API_KEY: str = os.getenv("ORACLE_AZURE_OPENAI_API_KEY", "")
-SORA_API_VERSION: str = os.getenv("ORACLE_SORA_API_VERSION", "")
 
 MAX_IMAGES: int = int(os.getenv("ORACLE_VIDEO_MAX_IMAGES", "4"))
 CLIP_SECONDS: int = int(os.getenv("ORACLE_VIDEO_CLIP_SECONDS", "8"))
@@ -69,7 +68,6 @@ ACTIVE_STATUSES: frozenset[str] = frozenset(
 )
 
 _PLATFORM_TENANT_ID = os.getenv("ORACLE_DEMO_TENANT_ID", "00000000-0000-0000-0000-000000000001")
-_VIDEO_SLOTS = asyncio.Semaphore(2)  # Sora: max 2 pending jobs per resource
 
 _SORA_TIMEOUTS = {
     "submit": int(os.getenv("ORACLE_VIDEO_SUBMIT_TIMEOUT_SECONDS", "60")),
@@ -202,22 +200,29 @@ def _sora_download(job_id: str) -> bytes:
 async def generate_clip(
     prompt: str, size: str, seconds: int, image_bytes: Optional[bytes] = None
 ) -> bytes:
-    """Generate one clip end-to-end under the 2-slot semaphore."""
-    async with _VIDEO_SLOTS:
-        job_id = await asyncio.to_thread(
-            _sora_submit, prompt=prompt, size=size, seconds=seconds, image_bytes=image_bytes
+    """Generate one clip through the configured provider.
+
+    This function is the whole provider seam: everything above it (scripting,
+    prompt segmentation, captions, stitching, quota, storage, the durable
+    worker) is provider-agnostic, and everything below it now lives in
+    video_providers.py. Sora's deprecation is therefore a config change rather
+    than a rewrite.
+
+    Concurrency moved onto the provider — the old module-level 2-slot semaphore
+    encoded *Sora's* per-resource limit and would have silently applied it to a
+    backend with a different ceiling.
+    """
+    from video_providers import VideoProviderError, get_provider
+
+    provider = get_provider()
+    try:
+        return await provider.generate(
+            prompt=prompt, size=size, seconds=seconds, image_bytes=image_bytes
         )
-        deadline = time.monotonic() + int(os.getenv("ORACLE_VIDEO_JOB_TIMEOUT_SECONDS", "1800"))
-        while True:
-            if time.monotonic() > deadline:
-                raise VideoStudioError(f"Sora job {job_id} timed out")
-            status, error = await asyncio.to_thread(_sora_status, job_id)
-            if status in ("succeeded", "completed"):
-                break
-            if status in ("failed", "cancelled"):
-                raise VideoStudioError(error or f"Sora job {job_id} {status}")
-            await asyncio.sleep(POLL_SECONDS)
-        return await asyncio.to_thread(_sora_download, job_id)
+    except VideoProviderError as exc:
+        # Keep the worker's existing failure contract: it catches VideoStudioError
+        # and writes the message to the job row.
+        raise VideoStudioError(str(exc)) from exc
 
 
 # ---------------------------------------------------------------------------
@@ -778,12 +783,21 @@ async def _store_video(
             UUID(lead_id) if lead_id else None,
             UUID(listing_id) if listing_id else None,
         )
+        # provenance/generator are NOT optional here. Migration 0071 defaults
+        # provenance to 'captured' and states that only 'captured' may support a
+        # claim that the media shows the actual home. Omitting them — as this
+        # INSERT did — made the database assert that a fully model-generated
+        # marketing reel was a real capture of the property. The reconstruction
+        # path has always written both (reconstruction_worker.py:424).
+        from video_providers import get_provider
+
+        provider = get_provider()
         await conn.execute(
             """
             INSERT INTO property_media
                 (id, tenant_id, lead_id, listing_id, kind, url, sort_order,
-                 s3_key, content_type)
-            VALUES ($1, $2, $3, $4, 'video', $5, $6, $7, 'video/mp4')
+                 s3_key, content_type, provenance, generator)
+            VALUES ($1, $2, $3, $4, 'video', $5, $6, $7, 'video/mp4', $8, $9)
             """,
             media_id,
             ctx.tenant_id,
@@ -792,6 +806,8 @@ async def _store_video(
             f"/api/media/{media_id}",
             int(base) + 1,
             storage_key,
+            provider.produces,
+            provider.name,
         )
     return str(media_id)
 

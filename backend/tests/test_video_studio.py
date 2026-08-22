@@ -675,7 +675,25 @@ def test_verify_images_owned_rejects_cross_tenant(monkeypatch):
     assert error.value.status_code == 422
 
 
+class _ReadyProvider:
+    """A configured provider double.
+
+    Tests that are about quota, validation or ownership must not also depend on
+    whether a video backend happens to be wired, so they install this.
+    """
+    name = "fake"
+    produces = "ai_generated"
+
+    def available(self):
+        return (True, "")
+
+
+def _install_ready_provider(monkeypatch):
+    import video_providers
+    monkeypatch.setattr(video_providers, "get_provider", lambda: _ReadyProvider())
+
 def test_create_job_quota_429(monkeypatch):
+    _install_ready_provider(monkeypatch)
     conn = _FakeConn(quota_consumed=115.0)
     monkeypatch.setattr(api, "tenant_tx", _fake_tenant_tx(conn))
     monkeypatch.setattr(studio, "DAILY_QUOTA_SECONDS", 120)

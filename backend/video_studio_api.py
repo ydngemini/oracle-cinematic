@@ -31,6 +31,7 @@ from audit_ledger import AuditCategory, ledger
 from db.connection import tenant_tx
 from tenancy import TenantContext, require_context
 
+import video_providers
 import video_studio as studio
 
 log = logging.getLogger("oracle.video_studio_api")
@@ -147,6 +148,18 @@ async def create_video_job(
         pass
     _require_property_anchor(body)
     await _verify_images_owned(ctx, body.images)
+
+    # Refuse BEFORE quota is reserved. Previously an unconfigured provider was
+    # discovered inside the worker, so the user spent their daily seconds and
+    # then watched the reel fail — the failure looked like a bad generation
+    # rather than a deployment that was never wired. Mirrors tour_api.py:310,
+    # which forwards the provider's reason verbatim.
+    ready, why = video_providers.get_provider().available()
+    if not ready:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            f"Video provider unavailable: {why}",
+        )
 
     async with tenant_tx(ctx) as conn:
         consumed = await studio._quota_consumed_today(ctx, conn)
@@ -352,11 +365,19 @@ async def video_studio_config(ctx: TenantContext = Depends(require_context)):
     """Feature/limits surface for the studio UI (no secrets)."""
     async with tenant_tx(ctx) as conn:
         consumed = await studio._quota_consumed_today(ctx, conn)
+    provider = video_providers.get_provider()
+    ready, why = provider.available()
     return {
         "max_images": studio.MAX_IMAGES,
         "clip_seconds": studio.CLIP_SECONDS,
         "daily_quota_seconds": studio.DAILY_QUOTA_SECONDS,
         "consumed_seconds": round(consumed, 2),
         "allowed_sizes": sorted(studio.ALLOWED_SIZES),
-        "deployment": studio.SORA_DEPLOYMENT,
+        # `deployment` used to leak the Sora deployment name here and the UI never
+        # read it. What the UI actually needs is whether it can generate at all,
+        # and why not — so it can say so before a user fills in a script and
+        # spends quota on a 503.
+        "provider": provider.name,
+        "provider_ready": ready,
+        "provider_reason": why,
     }

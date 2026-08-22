@@ -299,3 +299,12 @@
 @media (prefers-reduced-transparency: reduce) {
   .jobs, .builder { background: rgba(12, 12, 12, 0.96); backdrop-filter: none; -webkit-backdrop-filter: none; }
 }
+
+/* Provider unavailable. Amber, not grey: this is the reason nothing will
+   generate, not incidental help text. */
+.providerDown {
+  margin-top: var(--space-2);
+  font-size: 0.8125rem;
+  line-height: 1.5;
+  color: var(--oracle-amber, #f0b429);
+}

@@ -315,7 +315,11 @@ export default function PropertyViewTab() {
   return (
     <section className={styles.wrap} aria-labelledby="property-view-title">
       <header className={styles.head}>
-        <h1 id="property-view-title" className={styles.title}>Property View</h1>
+        {/* h2, not h1: PropertiesTab already renders the tab's h1. Two h1 on one
+            page is an a11y violation, and repeating the tab title verbatim made
+            "Property View" appear twice on screen. Names the sub-view instead,
+            matching ListingsInventory's h2. */}
+        <h2 id="property-view-title" className={styles.title}>Address lookup</h2>
         <p className={styles.sub}>
           Enter an address to pull what public records say about it, then capture
           exterior and interior media yourself or invite the owner to send theirs.

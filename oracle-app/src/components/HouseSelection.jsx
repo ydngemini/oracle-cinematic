@@ -184,7 +184,7 @@ export default function HouseSelection() {
       <header className={styles.hero}>
         <div>
           <span className={styles.eyebrow}>Property workspace</span>
-          <h1 id="houses-title">House selection</h1>
+          <h2 id="houses-title">House selection</h2>
         </div>
         <p>
           Browse source-backed public property records, or create a manual CRM

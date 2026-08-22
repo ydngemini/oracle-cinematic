@@ -237,7 +237,9 @@ export default function CommsTab() {
             {initialsOf(name)}
           </span>
           <span className={styles.headText}>
-          <h1 className={styles.headName}>{name}</h1>
+          {/* h2: the tab's h1 is "Inbox" below. A contact's name is not the
+              page title, and two h1 on one page is an a11y violation. */}
+          <h2 className={styles.headName}>{name}</h2>
             <span className={styles.headSub}>
               {selected.clientType && <span className={styles.headType}>{selected.clientType}</span>}
               {selected.emailKnown && selected.email && (
