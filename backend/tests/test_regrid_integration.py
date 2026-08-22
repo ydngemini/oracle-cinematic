@@ -198,3 +198,112 @@ def test_regrid_route_preserves_provider_coverage_denial(monkeypatch):
         assert "does not include this location" in error.value.detail
 
     asyncio.run(exercise())
+
+
+# ---------------------------------------------------------------------------
+# Credential expiry — an expired token must never read as a transient outage.
+# ---------------------------------------------------------------------------
+import base64 as _b64
+import json as _json
+import time as _time
+import urllib.error as _urlerr
+
+from data_integrations.regrid import RegridAuthError, RegridUpstreamError
+
+
+def _token(exp_offset_seconds: int) -> str:
+    """A Regrid-shaped JWT. Unsigned — nothing verifies it, we only read `exp`."""
+    header = _b64.urlsafe_b64encode(b'{"alg":"HS256"}').decode().rstrip("=")
+    payload = _b64.urlsafe_b64encode(
+        _json.dumps({"iss": "regrid.com", "exp": int(_time.time()) + exp_offset_seconds}).encode()
+    ).decode().rstrip("=")
+    return f"{header}.{payload}.sig"
+
+
+class TestTokenExpiry:
+    def test_an_expired_token_is_not_reported_as_configured(self, monkeypatch):
+        # The live defect: /api/data/health answered `configured: true` for a
+        # token that had lapsed a week earlier.
+        monkeypatch.setenv("REGRID_API_TOKEN", _token(-86_400))
+        source = RegridParcelSource()
+        assert source.token_expired is True
+        assert source.configured is False
+
+    def test_a_valid_token_is_configured(self, monkeypatch):
+        monkeypatch.setenv("REGRID_API_TOKEN", _token(+20 * 86_400))
+        source = RegridParcelSource()
+        assert source.token_expired is False
+        assert source.configured is True
+        assert source.token_expiry_note() == ""   # outside the warning window
+
+    def test_warns_inside_the_window_without_failing(self, monkeypatch):
+        # Regrid issues 30-day tokens, so a warning has to arrive before the cliff.
+        monkeypatch.setenv("REGRID_API_TOKEN", _token(+3 * 86_400))
+        source = RegridParcelSource()
+        assert source.configured is True
+        assert "expires" in source.token_expiry_note()
+
+    def test_an_opaque_token_is_not_assumed_expired(self, monkeypatch):
+        # Not every credential is a JWT. Absence of an exp claim must not be
+        # read as "expired" — that would break a working non-JWT token.
+        monkeypatch.setenv("REGRID_API_TOKEN", "plain-opaque-token")
+        source = RegridParcelSource()
+        assert source.token_expires_at is None
+        assert source.token_expired is False
+        assert source.configured is True
+
+    def test_expired_token_refuses_before_spending_a_request(self, monkeypatch):
+        """No network call: the token already says it cannot succeed, and the
+        retry ladder would otherwise hammer a credential that never will."""
+        monkeypatch.setenv("REGRID_API_TOKEN", _token(-3600))
+        source = RegridParcelSource()
+
+        async def _must_not_call(*_a, **_k):
+            raise AssertionError("network request attempted with an expired token")
+
+        monkeypatch.setattr(source, "_get_json", _must_not_call)
+        with pytest.raises(RegridAuthError, match="expired"):
+            asyncio.run(source.fetch(address="1 Main St"))
+
+
+class TestAuthFailureIsNotAnOutage:
+    def test_401_raises_auth_error_not_upstream_error(self, monkeypatch):
+        """The live defect: 401 fell through to RegridUpstreamError, which the
+        API rendered as 502 'temporarily unavailable' — an affirmatively false
+        claim, since an expired credential is permanent until rotated."""
+        monkeypatch.setenv("REGRID_API_TOKEN", "plain-opaque-token")
+        source = RegridParcelSource()
+
+        async def _401(*_a, **_k):
+            raise _urlerr.HTTPError("https://app.regrid.com", 401, "Unauthorized", {}, None)
+
+        monkeypatch.setattr(source, "_get_json", _401)
+        with pytest.raises(RegridAuthError) as error:
+            asyncio.run(source.fetch(address="1 Main St"))
+        # The message must name the credential to rotate.
+        assert "REGRID_API_TOKEN" in str(error.value)
+
+    def test_403_still_means_coverage_not_credentials(self, monkeypatch):
+        # Regrid uses 403 for "valid token, no access to this geography". Folding
+        # it into the auth branch would make a specific false claim about the
+        # credential when the real issue is the location.
+        monkeypatch.setenv("REGRID_API_TOKEN", "plain-opaque-token")
+        source = RegridParcelSource()
+
+        async def _403(*_a, **_k):
+            raise _urlerr.HTTPError("https://app.regrid.com", 403, "Forbidden", {}, None)
+
+        monkeypatch.setattr(source, "_get_json", _403)
+        with pytest.raises(RegridCoverageError):
+            asyncio.run(source.fetch(address="1 Main St"))
+
+    def test_500_is_still_a_transient_outage(self, monkeypatch):
+        monkeypatch.setenv("REGRID_API_TOKEN", "plain-opaque-token")
+        source = RegridParcelSource()
+
+        async def _500(*_a, **_k):
+            raise _urlerr.HTTPError("https://app.regrid.com", 500, "Server Error", {}, None)
+
+        monkeypatch.setattr(source, "_get_json", _500)
+        with pytest.raises(RegridUpstreamError):
+            asyncio.run(source.fetch(address="1 Main St"))

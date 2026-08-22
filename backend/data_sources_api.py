@@ -137,6 +137,31 @@ class BatchGeocodeRequest(BaseModel):
     addresses: list[str] = Field(..., min_length=1, max_length=10_000)
 
 
+async def _regrid_health() -> dict:
+    """Regrid health including credential expiry.
+
+    This previously reported `configured: bool(token)`, so a token that had
+    lapsed a week earlier still read as configured — the one health signal that
+    existed actively asserted the wrong thing.
+    """
+    source = await _get_regrid()
+    payload: dict = {
+        **source.metrics(),
+        "configured": source.configured,
+        "nationwide": True,
+        "model_training_prohibited": True,
+        "credential_expired": source.token_expired,
+    }
+    expires = source.token_expires_at
+    if expires is not None:
+        payload["credential_expires_at"] = expires.isoformat()
+        payload["credential_days_remaining"] = source.days_until_expiry
+    note = source.token_expiry_note()
+    if note:
+        payload["credential_note"] = note
+    return payload
+
+
 @router.get("/health")
 async def health(ctx: TenantContext = Depends(require_context)) -> dict:
     cache = await _cache_layer()
@@ -151,12 +176,7 @@ async def health(ctx: TenantContext = Depends(require_context)) -> dict:
             "eviction_lab": (await _get_eviction()).metrics(),
             "fbi_crime": (await _get_fbi()).metrics(),
             "courtlistener": (await _get_courtlistener()).metrics(),
-            "regrid_parcel": {
-                **(await _get_regrid()).metrics(),
-                "configured": (await _get_regrid()).configured,
-                "nationwide": True,
-                "model_training_prohibited": True,
-            },
+            "regrid_parcel": await _regrid_health(),
             "bls_laus": {"source": "bls_laus", "keyless_v1": True},
         },
     }
@@ -359,6 +379,7 @@ async def regrid_parcel(
     except Exception as exc:  # noqa: BLE001 - provider details may include a URL
         from data_integrations.cache import IntegrationCacheUnavailable
         from data_integrations.regrid import (
+            RegridAuthError,
             RegridConfigurationError,
             RegridCoverageError,
             RegridUpstreamError,
@@ -378,6 +399,14 @@ async def regrid_parcel(
             raise HTTPException(
                 status.HTTP_403_FORBIDDEN,
                 "The configured Regrid account does not include this location.",
+            ) from exc
+        if isinstance(exc, RegridAuthError):
+            # 503, not 502 "temporarily unavailable": an expired or revoked token
+            # is permanent until it is rotated, and calling that temporary invites
+            # a retry that can never succeed while hiding a one-line fix.
+            raise HTTPException(
+                status.HTTP_503_SERVICE_UNAVAILABLE,
+                str(exc),
             ) from exc
         if isinstance(exc, RegridUpstreamError):
             raise HTTPException(

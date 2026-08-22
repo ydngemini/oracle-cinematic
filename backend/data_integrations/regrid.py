@@ -14,9 +14,12 @@ enforce that restriction as well.
 
 from __future__ import annotations
 
+import base64
+import json
 import os
 import urllib.error
 import urllib.parse
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 from .base import DataIntegrationError, DataSource, RateLimiter, RetryConfig
@@ -26,6 +29,8 @@ from .cache import IntegrationCache
 _ADDRESS_URL = "https://app.regrid.com/api/v2/parcels/address"
 _TTL_REGRID_PARCEL = 7 * 86_400
 _MAX_LIMIT = 5
+#: Regrid issues 30-day tokens, so warn well inside one cycle.
+_EXPIRY_WARNING_DAYS = 7
 
 
 class RegridConfigurationError(DataIntegrationError):
@@ -38,6 +43,17 @@ class RegridUpstreamError(DataIntegrationError):
 
 class RegridCoverageError(DataIntegrationError):
     """The configured token is valid but lacks access to the requested area."""
+
+
+class RegridAuthError(DataIntegrationError):
+    """The token was rejected — expired or revoked.
+
+    Distinct from RegridUpstreamError on purpose. An expired credential is
+    permanent until someone rotates it, so reporting it as "temporarily
+    unavailable" states something the deployment cannot support: it invites a
+    retry that will never succeed and hides a one-line fix. Regrid tokens are
+    30-day JWTs, so this is a recurring condition, not an exotic one.
+    """
 
 
 def _value(fields: dict[str, Any], *keys: str) -> Any:
@@ -73,7 +89,60 @@ class RegridParcelSource(DataSource):
 
     @property
     def configured(self) -> bool:
-        return bool(self._token)
+        """Whether a token is present AND not known-expired.
+
+        This used to report presence alone, which is why /api/data/health kept
+        answering `configured: true` for a token that had lapsed a week earlier —
+        the single health signal that existed asserted the wrong thing.
+        """
+        return bool(self._token) and not self.token_expired
+
+    def _token_claims(self) -> dict[str, Any]:
+        """Decode the JWT payload. No secret needed and no signature check —
+        we are reading the issuer's own expiry, not trusting the token."""
+        if not self._token:
+            return {}
+        try:
+            payload = self._token.split(".")[1]
+            payload += "=" * (-len(payload) % 4)
+            return json.loads(base64.urlsafe_b64decode(payload))
+        except Exception:  # noqa: BLE001 — an opaque token is not an error here
+            return {}
+
+    @property
+    def token_expires_at(self) -> Optional[datetime]:
+        exp = self._token_claims().get("exp")
+        if not isinstance(exp, (int, float)):
+            return None
+        return datetime.fromtimestamp(exp, tz=timezone.utc)
+
+    @property
+    def days_until_expiry(self) -> Optional[int]:
+        expires = self.token_expires_at
+        if expires is None:
+            return None
+        return (expires - datetime.now(timezone.utc)).days
+
+    @property
+    def token_expired(self) -> bool:
+        expires = self.token_expires_at
+        return expires is not None and expires <= datetime.now(timezone.utc)
+
+    def token_expiry_note(self) -> str:
+        """Human-readable expiry state, or "" when the token is opaque.
+
+        Shape borrowed from routes_agents.py:119-135, which already computes
+        days_until_expiry + a warning window for agent licences.
+        """
+        expires = self.token_expires_at
+        if expires is None:
+            return ""
+        days = self.days_until_expiry
+        if self.token_expired:
+            return f"REGRID_API_TOKEN expired {expires.date().isoformat()}"
+        if days is not None and days <= _EXPIRY_WARNING_DAYS:
+            return f"REGRID_API_TOKEN expires {expires.date().isoformat()} ({days}d)"
+        return ""
 
     def _cache_ttl(self) -> int:
         return _TTL_REGRID_PARCEL
@@ -86,8 +155,15 @@ class RegridParcelSource(DataSource):
         limit: int = 1,
         include_geometry: bool = False,
     ) -> dict:
-        if not self.configured:
+        if not self._token:
             raise RegridConfigurationError("REGRID_API_TOKEN is not configured")
+        if self.token_expired:
+            # Don't spend a request to be told what the token already says. This
+            # also stops the retry ladder from hammering a credential that
+            # cannot succeed.
+            raise RegridAuthError(
+                f"{self.token_expiry_note()}. Rotate REGRID_API_TOKEN."
+            )
 
         params = {
             "query": address,
@@ -118,6 +194,14 @@ class RegridParcelSource(DataSource):
                 self._log.info("Regrid parcel lookup denied by provider coverage")
                 raise RegridCoverageError(
                     "Regrid access does not include the requested location"
+                ) from exc
+            if exc.code in (401, 402):
+                # 401 = rejected token. Say which credential and whether we can
+                # tell it has expired, so the log line is actionable on its own.
+                detail = self.token_expiry_note() or "the token was rejected"
+                self._log.error("Regrid credential rejected (HTTP %s) — %s", exc.code, detail)
+                raise RegridAuthError(
+                    f"Regrid credential rejected — {detail}. Rotate REGRID_API_TOKEN."
                 ) from exc
             self._log.warning("Regrid parcel lookup failed (HTTP %s)", exc.code)
             raise RegridUpstreamError("Regrid parcel lookup is unavailable") from exc

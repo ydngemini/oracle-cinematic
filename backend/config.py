@@ -262,11 +262,21 @@ ENV_VARS: dict[str, tuple[str, ...]] = {
         "ORACLE_FEATURE_SMART_PLANS",
     ),
     "video_studio": (
-        "ORACLE_AZURE_OPENAI_ENDPOINT",  # Base endpoint for Azure OpenAI (Sora 2)
-        "ORACLE_SORA_DEPLOYMENT",        # Deployment name (default: sora-2-estate)
+        "ORACLE_VIDEO_PROVIDER",         # sora | veo (default: sora)
+        "ORACLE_AZURE_OPENAI_ENDPOINT",  # Sora: base endpoint (retires 2026-09-15)
+        "ORACLE_SORA_DEPLOYMENT",        # Sora: deployment name (default: sora-2-estate)
+        "ORACLE_VEO_PROJECT",            # Veo: billing-enabled GCP project
+        "ORACLE_VEO_LOCATION",           # Veo: region (default: us-central1)
+        "ORACLE_VEO_MODEL",              # Veo: model id (default: veo-3.1-generate-001)
         "ORACLE_VIDEO_MAX_IMAGES",       # Max photos per job (default: 4)
         "ORACLE_VIDEO_CLIP_SECONDS",     # Duration per clip (default: 8)
         "ORACLE_VIDEO_DAILY_QUOTA",      # Daily seconds cap per tenant (default: 120)
+    ),
+    # Licensed data providers. REGRID_API_TOKEN was absent from this catalogue
+    # despite the module docstring claiming it lists every var the backend reads —
+    # which is part of why a 30-day token could lapse unnoticed.
+    "data_providers": (
+        "REGRID_API_TOKEN",              # 30-day JWT; expiry is surfaced at /api/data/health
     ),
     "shared_storage": ("ORACLE_SHARED_STORAGE_DIR", "ORACLE_CONTRACT_OUTPUT_DIR"),
 }

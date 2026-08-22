@@ -27,6 +27,7 @@ import json
 import logging
 import math
 import os
+import urllib.error
 import urllib.parse
 from dataclasses import asdict, dataclass, field
 from typing import Any, Optional
@@ -228,6 +229,22 @@ async def regrid_footprints(address: str) -> list[FootprintCandidate]:
     if not token or not address.strip():
         return []
 
+    # An expired token is worth one loud line. Returning [] silently is right for
+    # "unconfigured" — the open source still answers — but a credential that
+    # lapsed looks identical to a parcel with no match, and the caller then
+    # reports found:false and fills the geometry with estimates. The licensed
+    # source failing and the property having no footprint are different facts.
+    from .regrid import RegridParcelSource
+
+    probe = RegridParcelSource()
+    if probe.token_expired:
+        logger.error(
+            "Regrid footprint lookup skipped — %s. Rotate REGRID_API_TOKEN; "
+            "falling back to OpenStreetMap.",
+            probe.token_expiry_note(),
+        )
+        return []
+
     params = {
         "query": address,
         "limit": "1",
@@ -240,6 +257,16 @@ async def regrid_footprints(address: str) -> list[FootprintCandidate]:
     url = "https://app.regrid.com/api/v2/parcels/address?" + urllib.parse.urlencode(params)
     try:
         payload = await _fetch_json(url)
+    except urllib.error.HTTPError as exc:
+        if exc.code in (401, 402):
+            logger.error(
+                "Regrid footprint lookup rejected the credential (HTTP %s) — "
+                "rotate REGRID_API_TOKEN; falling back to OpenStreetMap.",
+                exc.code,
+            )
+        else:
+            logger.warning("Regrid footprint lookup failed (HTTP %s)", exc.code)
+        return []
     except Exception as exc:  # noqa: BLE001
         logger.warning("Regrid footprint lookup failed: %s", exc)
         return []
