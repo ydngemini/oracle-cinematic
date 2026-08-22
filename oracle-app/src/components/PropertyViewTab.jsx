@@ -1,9 +1,16 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Camera, Check, Copy, Home, Link2, Loader2, MapPin, Plus, Search, Trash2, Upload, Video, X,
+  Building2, Camera, Check, Copy, Globe, Home, Link2, Loader2, MapPin, Plus, Search, Trash2, Upload, Video, X,
 } from 'lucide-react';
+import CaptureSessionPanel from './CaptureSessionPanel';
 import { crmGet, crmPost, crmDelete, crmUpload } from '../state/useCrmApi';
+import { useTour } from '../state/useTour';
+import { tourOffer } from '../lib/tour/tourOffer';
 import styles from './PropertyViewTab.module.css';
+
+// Same entry point HouseWorkspace uses, so both surfaces pick the engine
+// from VITE_TOUR_ENGINE and neither can drift onto its own viewer.
+const TourViewer = lazy(() => import('./TourViewer'));
 
 /**
  * Property View — one address, what public records say about it, and the media
@@ -59,6 +66,16 @@ export default function PropertyViewTab() {
   const [view, setView] = useState(null);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState(null);
+  // Which subject the walk was opened for. Storing the subject rather than a
+  // bare boolean makes "close it when the property changes" a derivation
+  // instead of an effect that fires a second render.
+  const [walkOpenFor, setWalkOpenFor] = useState(null);
+  // 'auto' = photo/video sniffed by the server; 'pano' = the agent asserting
+  // these are equirectangular 360s. Deliberately a choice, never inferred —
+  // the server validates the claim and refuses a flat photo rather than
+  // wrapping it onto a sphere and calling it a room.
+  const [captureMode, setCaptureMode] = useState('auto');
+  const [floorIndex, setFloorIndex] = useState(0);
   const [mintedLink, setMintedLink] = useState(null);
   const [activeSurface, setActiveSurface] = useState('exterior');
 
@@ -70,6 +87,22 @@ export default function PropertyViewTab() {
     if (!subject) return null;
     return subject.leadId ? `lead_id=${subject.leadId}` : `listing_id=${subject.listingId}`;
   }, [subject]);
+
+  // --- tour ----------------------------------------------------------------
+  // This surface is where a capture is STARTED (CaptureSessionPanel below), so
+  // it is where a user looks for the result. It previously had no way to show
+  // one: the tour existed, the viewer existed, and nothing on this page
+  // reached them.
+  const { tour } = useTour({
+    leadId: subject?.leadId ?? null,
+    listingId: subject?.listingId ?? null,
+  });
+  const offer = tourOffer(tour);
+  const panoCount = Number(tour?.pano_scene_count) || 0;
+
+  // Closes itself when the subject changes: a walk through the previous
+  // property can never stay open over the new one's record.
+  const walkOpen = walkOpenFor != null && walkOpenFor === subjectQs;
 
   // --- address lookup ------------------------------------------------------
   const runLookup = useCallback(async (event) => {
@@ -186,6 +219,19 @@ export default function PropertyViewTab() {
     event.target.value = ''; // allow re-picking the same file after a failure
     if (!files.length || !subjectQs) return;
 
+    // The route refuses a video labelled 360° anyway; saying so here names the
+    // offending file instead of failing the whole batch with a server error.
+    if (captureMode === 'pano') {
+      const video = files.find((f) => f.type.startsWith('video/'));
+      if (video) {
+        setNotice({
+          tone: 'error',
+          text: `${video.name} is a video. A 360° scene must be an equirectangular photo.`,
+        });
+        return;
+      }
+    }
+
     const tooBig = files.find((f) => {
       const capMb = f.type.startsWith('video/') ? MAX_VIDEO_MB : MAX_PHOTO_MB;
       return f.size > capMb * 1024 * 1024;
@@ -204,6 +250,8 @@ export default function PropertyViewTab() {
     // and computes sort_order once, so per-file requests would interleave.
     const form = new FormData();
     form.append('surface', activeSurface);
+    form.append('capture', captureMode);
+    if (captureMode === 'pano') form.append('floor_index', String(floorIndex));
     for (const file of files) form.append('files', file);
 
     try {
@@ -216,7 +264,7 @@ export default function PropertyViewTab() {
     } finally {
       setBusy(false);
     }
-  }, [subjectQs, activeSurface, refreshView]);
+  }, [subjectQs, activeSurface, captureMode, floorIndex, refreshView]);
 
   const mintLink = useCallback(async () => {
     if (!subjectQs) return;
@@ -256,6 +304,11 @@ export default function PropertyViewTab() {
   }, [refreshView]);
 
   const surfaceMedia = view?.by_surface?.[activeSurface] || [];
+  // The reconstruction worker reads every photo on the property, not just the
+  // surface being viewed, so the readiness count has to match what it will see.
+  const photoTotal = Object.values(view?.by_surface || {})
+    .flat()
+    .filter((item) => item?.kind === 'photo').length;
   const enrich = lookup?.enrichment;
   const hasCandidates = Boolean(candidates?.leads?.length || candidates?.listings?.length);
 
@@ -376,9 +429,68 @@ export default function PropertyViewTab() {
             ))}
           </div>
 
+          {/* Capture mode. The 360 route has existed on the server since the
+              pano work landed — it validates the equirect claim and writes
+              property_pano_scenes — but nothing in the UI ever sent
+              `capture`, so every upload defaulted to "auto" and the no-GPU
+              route to a walkable tour was unreachable. */}
+          <div className={styles.captureModes} role="radiogroup" aria-label="What you are uploading">
+            <button
+              type="button"
+              role="radio"
+              aria-checked={captureMode === 'auto'}
+              className={captureMode === 'auto' ? styles.modeActive : styles.mode}
+              onClick={() => setCaptureMode('auto')}
+            >
+              Photos &amp; video
+            </button>
+            <button
+              type="button"
+              role="radio"
+              aria-checked={captureMode === 'pano'}
+              className={captureMode === 'pano' ? styles.modeActive : styles.mode}
+              onClick={() => setCaptureMode('pano')}
+            >
+              <Globe aria-hidden="true" /> 360° scenes
+            </button>
+          </div>
+
+          {captureMode === 'pano' ? (
+            <div className={styles.panoHint}>
+              <p>
+                Equirectangular photos only — close to <strong>2:1</strong> (the server
+                rejects anything outside 1.94–2.06 rather than smearing a flat photo
+                onto a sphere). Any 360 camera or a phone&apos;s panorama-sphere mode works.
+              </p>
+              <p className={styles.panoProgress}>
+                {/* Two is the walkable threshold, server-side and in panoGraph.
+                    One scene is a view — there is no route from a place to itself. */}
+                {panoCount === 0
+                  ? 'No 360° scenes yet. Two or more make a walkable tour — no GPU needed.'
+                  : panoCount === 1
+                    ? '1 scene uploaded — one more makes it walkable.'
+                    : `${panoCount} scenes — this property has a walkable 360° tour.`}
+              </p>
+              <label className={styles.floorLabel}>
+                Floor
+                <input
+                  type="number"
+                  min="0"
+                  max="200"
+                  value={floorIndex}
+                  onChange={(e) => setFloorIndex(Math.max(0, Math.min(200, Number(e.target.value) || 0)))}
+                />
+                <span>0 = ground. Scenes group by storey in the viewer.</span>
+              </label>
+            </div>
+          ) : null}
+
           <div className={styles.actions}>
             <button type="button" className={styles.primary} onClick={() => fileInputRef.current?.click()} disabled={busy}>
-              <Upload aria-hidden="true" /> Upload {activeSurface} photos or video
+              <Upload aria-hidden="true" />{' '}
+              {captureMode === 'pano'
+                ? `Upload 360° scenes${floorIndex ? ` (floor ${floorIndex})` : ''}`
+                : `Upload ${activeSurface} photos or video`}
             </button>
             <button type="button" className={styles.secondary} onClick={mintLink} disabled={busy}>
               <Link2 aria-hidden="true" /> Invite client to upload
@@ -387,7 +499,7 @@ export default function PropertyViewTab() {
               ref={fileInputRef}
               type="file"
               multiple
-              accept="image/*,video/mp4,video/quicktime,video/webm"
+              accept={captureMode === 'pano' ? 'image/*' : 'image/*,video/mp4,video/quicktime,video/webm'}
               className={styles.srOnly}
               onChange={onPickFiles}
             />
@@ -455,6 +567,61 @@ export default function PropertyViewTab() {
               ))
             )}
           </div>
+
+          {/* Reconstruction lives beside the photos it consumes. It used to be
+              a self-contained wizard with its own uploader and no importer —
+              so nothing could reach it, and the only way to start a capture was
+              unreachable. */}
+          {/* The result of a capture, beside the control that starts one. When
+              there is nothing to walk this renders the reason rather than
+              rendering nothing — an empty space is indistinguishable from a
+              missing feature, which is how this surface read before. */}
+          <section className={styles.tourSection} aria-label="3D tour">
+            <h3>3D tour</h3>
+            {offer.kind === 'walkable' ? (
+              <>
+                <button
+                  type="button"
+                  className={styles.primary}
+                  onClick={() => setWalkOpenFor(subjectQs)}
+                >
+                  <Building2 aria-hidden="true" /> {offer.label}
+                </button>
+                {offer.isDemo ? (
+                  <p className={styles.tourWarn}>
+                    This walkable space is a stand-in, not a capture of this address.
+                  </p>
+                ) : null}
+              </>
+            ) : (
+              <p className={styles.tourEmpty}>{offer.reason}</p>
+            )}
+          </section>
+
+          <CaptureSessionPanel
+            leadId={subject?.leadId}
+            listingId={subject?.listingId}
+            photoCount={photoTotal}
+            onComplete={refreshView}
+          />
+
+          {walkOpen && offer.kind === 'walkable' ? (
+            <Suspense fallback={null}>
+              <TourViewer
+                splatUrl={tour.splat_url}
+                panoScenes={tour.pano_scenes}
+                disclosure={tour.disclosure}
+                floors={tour.floors}
+                address={lookup?.address || ''}
+                title={lookup?.address || 'Property tour'}
+                // The badge has to survive into the viewer. Once someone is
+                // walking around, the button that carried the caveat is off
+                // screen and a stand-in space looks like a real capture.
+                isThisProperty={tour.is_this_property !== false}
+                onClose={() => setWalkOpenFor(null)}
+              />
+            </Suspense>
+          ) : null}
 
           {view?.upload_links?.length ? (
             <section className={styles.linksSection} aria-label="Client upload links">

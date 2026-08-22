@@ -2,11 +2,13 @@ import { lazy, Suspense, useEffect, useRef, useState } from 'react';
 import { Building2, ExternalLink, Link2, MapPin, ScanLine } from 'lucide-react';
 import HouseLinkDialog from './HouseLinkDialog';
 import { useTour } from '../state/useTour';
+import { tourOffer } from '../lib/tour/tourOffer';
 import styles from './HouseSelection.module.css';
 
 const PropertyTour = lazy(() => import('./PropertyTour'));
 // Tier-3 walkable interior. TourViewer picks the engine from VITE_TOUR_ENGINE
-// (gsplat by default, PlayCanvas opt-in) so this surface stays engine-agnostic.
+// (PlayCanvas by default since 2026-08-07, gsplat opt-in) so this surface stays
+// engine-agnostic.
 const TourViewer = lazy(() => import('./TourViewer'));
 
 const PRICE_FORMAT = new Intl.NumberFormat('en-US', {
@@ -42,12 +44,15 @@ function trapFocus(event, root) {
   }
 }
 
-export default function HouseWorkspace({ house }) {
+export default function HouseWorkspace({ house, onHouseUpdate }) {
   const [linkOpen, setLinkOpen] = useState(false);
   const [tourOpen, setTourOpen] = useState(false);
   const [walkOpen, setWalkOpen] = useState(false);
   // Honest tier resolver — only yields splat_url when a real capture exists.
   const { tour } = useTour({ leadId: house?.lead_id ?? null });
+  // Shared with PropertyViewTab. The wording is a claim about evidence, not
+  // a caption, so it lives in one tested place rather than in two copies.
+  const offer = tourOffer(tour);
   const [notice, setNotice] = useState('');
   const tourDialogRef = useRef(null);
   const tourButtonRef = useRef(null);
@@ -183,14 +188,14 @@ export default function HouseWorkspace({ house }) {
           <ExternalLink aria-hidden="true" />
           Open 3D tour
         </button>
-        {tour?.splat_url && (
+        {offer.kind === 'walkable' && (
           <button
             type="button"
             className={styles.secondaryButton}
             onClick={() => setWalkOpen(true)}
           >
             <Building2 aria-hidden="true" />
-            Step inside · walk the 3D space
+            {offer.label}
           </button>
         )}
         <button
@@ -220,6 +225,17 @@ export default function HouseWorkspace({ house }) {
                 ? `Linked to ${client.full_name}.`
                 : `Already linked to ${client.full_name}.`,
             );
+            // The link created (or found) this tenant's lead for the parcel and
+            // returned its id. Everything interior hangs off that id — the tour
+            // resolver, the photo filmstrip, the tier badge — so hand it up
+            // rather than discarding it and waiting for a refetch.
+            const linked = result?.house;
+            if (linked?.lead_id || linked?.listing_id) {
+              onHouseUpdate?.({
+                lead_id: linked.lead_id ?? house?.lead_id ?? null,
+                listing_id: linked.listing_id ?? house?.listing_id ?? null,
+              });
+            }
             setLinkOpen(false);
           }}
         />
@@ -254,14 +270,19 @@ export default function HouseWorkspace({ house }) {
           </Suspense>
         </div>
       )}
-      {walkOpen && tour?.splat_url && (
+      {walkOpen && offer.kind === 'walkable' && (
         <Suspense fallback={null}>
           <TourViewer
             splatUrl={tour.splat_url}
+            panoScenes={tour.pano_scenes}
             disclosure={tour.disclosure}
             floors={tour.floors}
             address={house.address}
             title={house.address}
+            // The badge has to persist inside the viewer, not just on the button
+            // that opened it — once someone is walking around, the entry point
+            // is off screen and the space looks exactly like a real capture.
+            isThisProperty={tour.is_this_property !== false}
             onClose={() => setWalkOpen(false)}
           />
         </Suspense>

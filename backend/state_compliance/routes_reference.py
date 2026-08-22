@@ -28,6 +28,7 @@ from ._common import (
     _TDS_STATES, _FEDERAL_LEAD_PAINT_THRESHOLD_YEAR,
     _CE_HOURS_BY_STATE, _RECIPROCITY_MATRIX,
     _iso, _num, _require_state, _require_uuid, _fetch, _fetchrow,
+    _require_dataset_loaded,
 )
 from .models import (  # noqa: F401  (re-exported for route handlers)
     StateSummary,
@@ -170,6 +171,39 @@ def _autofill_fields(document_type: str) -> list[str]:
     return fields[document_type]
 
 
+
+# Known issuer prefixes, so a derived label reads as a document rather than as a
+# database key. Nothing here renames a document — it only expands the acronym the
+# form_id already carries.
+_FORM_ID_ISSUERS = {
+    "EPA": "EPA",
+    "HUD": "HUD",
+    "CFPB": "CFPB",
+    "IRS": "IRS",
+    "FHA": "FHA",
+    "VA": "VA",
+}
+
+
+def _name_from_form_id(form_id: str) -> str:
+    """Turn `CFPB-LOAN-ESTIMATE` into `CFPB Loan Estimate`.
+
+    Used only when a rule requires several documents and the seed author named
+    none of them — FEDERAL-RESPA-001 requires both a Loan Estimate and a Closing
+    Disclosure, and calling both by the rule's title made them indistinguishable
+    on screen. The form_id is an identifier the seed already asserts, so
+    expanding it invents no fact; it just stops two different obligations from
+    rendering as one repeated row.
+    """
+    parts = [p for p in form_id.replace("_", "-").split("-") if p]
+    if not parts:
+        return ""
+    words = []
+    for part in parts:
+        upper = part.upper()
+        words.append(_FORM_ID_ISSUERS.get(upper, upper if len(part) <= 3 and part.isupper() else part.capitalize()))
+    return " ".join(words)
+
 @router.get(
     "/api/compliance/documents/{state_code}",
     summary="State document pre-list from the cited compliance catalog",
@@ -194,6 +228,16 @@ async def compliance_document_prelist(
     documents: list[dict[str, Any]] = []
     seen: set[str] = set()
     for rule in rules:
+        # A rule requiring ONE document should keep its official title —
+        # "Seller's Disclosure of Real Property Condition Report" is the name of
+        # the form, and degrading it to a form_id would be a regression. Only
+        # when a rule bundles several distinct documents does the title stop
+        # identifying any one of them, and only then is a derived label better.
+        contributing = sum(
+            1
+            for a in rule.required_actions
+            if str(a.get("form_id") or "").strip() or str(a.get("document") or "").strip()
+        )
         for action in rule.required_actions:
             form_id = str(action.get("form_id") or "").strip()
             document_name = str(action.get("document") or "").strip()
@@ -204,11 +248,26 @@ async def compliance_document_prelist(
                 continue
             seen.add(doc_id)
             document_type = _document_type(rule, doc_id)
+            # One rule can require several genuinely different documents —
+            # FEDERAL-RESPA-001 requires BOTH a Loan Estimate and a Closing
+            # Disclosure; FEDERAL-LEAD-PAINT-001 requires the disclosure AND the
+            # EPA pamphlet. Naming every one of them `rule.title` rendered them
+            # as identical rows, so an agent could tick one believing the other
+            # was covered. The action's own name wins when the seed author gave
+            # one; otherwise the form_id is carried alongside so two rows under
+            # the same obligation are still distinguishable. Nothing is invented:
+            # if neither exists the title stands as before.
             documents.append(
                 {
                     "doc_id": doc_id,
                     "type": document_type,
-                    "name": rule.title,
+                    "name": (
+                        document_name
+                        or (_name_from_form_id(form_id) if contributing > 1 else "")
+                        or rule.title
+                    ),
+                    "form_id": form_id or None,
+                    "obligation": rule.title,
                     "mandatory": str(rule.severity).lower() == "required",
                     "ai_autofill_fields": _autofill_fields(document_type),
                     "generation_available": False,
@@ -535,9 +594,13 @@ async def get_state_profile(
             ce_hours_per_cycle=row.get("ce_hours_per_cycle", _CE_HOURS_BY_STATE.get(code)),
             license_renewal_years=row.get("license_renewal_years", 2),
             buyer_agency_required=row.get("buyer_agency_required", False),
-            dual_agency_permitted=row.get("dual_agency_permitted", True),
-            designated_agency_permitted=row.get("designated_agency_permitted", True),
-            sub_agency_permitted=row.get("sub_agency_permitted", True),
+            # No `, True` fallbacks: an absent or NULL agency column means the
+            # question was never researched for this state, and coalescing it
+            # to "permitted" is a licensing claim the data does not support.
+            # See migration 0069.
+            dual_agency_permitted=row.get("dual_agency_permitted"),
+            designated_agency_permitted=row.get("designated_agency_permitted"),
+            sub_agency_permitted=row.get("sub_agency_permitted"),
             earnest_money_escrow_days=row.get("earnest_money_escrow_days"),
             closing_attorney_states=code in ATTORNEY_CLOSE_STATES,
             transfer_tax_rate=row.get("transfer_tax_rate"),
@@ -581,6 +644,11 @@ async def list_state_forms(
     query += " ORDER BY form_type, form_name"
 
     rows = await _fetch(ctx, query, *args)
+    if not rows:
+        # Every US state mandates *some* disclosure paperwork, so an empty list
+        # here is never a true statement about the state — it means the table
+        # was not seeded.
+        await _require_dataset_loaded(ctx, "state_disclosure_forms")
     return [
         DisclosureForm(
             form_id=str(r["id"]) if "id" in r else str(uuid.uuid4()),
@@ -620,6 +688,8 @@ async def list_state_contracts(
     query += " ORDER BY template_name"
 
     rows = await _fetch(ctx, query, *args)
+    if not rows:
+        await _require_dataset_loaded(ctx, "state_contract_templates")
     return [
         ContractTemplate(
             template_id=str(r.get("id", uuid.uuid4())),
@@ -659,6 +729,10 @@ async def list_advertising_rules(
     query += " ORDER BY category, id"
 
     rows = await _fetch(ctx, query, *args)
+    if not rows:
+        # Advertising rules are a compliance surface — silently returning "no
+        # rules apply" is the most dangerous empty list in this module.
+        await _require_dataset_loaded(ctx, "state_advertising_rules")
     return [
         AdvertisingRule(
             rule_id=str(r.get("id", uuid.uuid4())),
@@ -772,11 +846,20 @@ async def get_reciprocity(
             notes=row.get("notes"),
         )
 
-    # Fallback to module-level constant matrix.
-    rec_class = _RECIPROCITY_MATRIX.get((fc, tc), "none")
+    # Fallback to module-level constant matrix. A pair the constant does not
+    # cover is "unknown", never "none" — reporting "no reciprocity" for a pair
+    # nobody researched would tell an agent they cannot practise somewhere on
+    # the strength of missing data.
+    rec_class = _RECIPROCITY_MATRIX.get((fc, tc), "unknown")
     notes = (
         "Reciprocity data not yet seeded for this pair — defaulting to module constant. "
         "Verify with the destination state's real estate commission."
+        if rec_class != "unknown"
+        else (
+            "No reciprocity data is held for this pair. This is not a finding that "
+            "reciprocity is unavailable — confirm with the destination state's real "
+            "estate commission."
+        )
     )
     return ReciprocityInfo(
         from_state=fc,

@@ -1,0 +1,9 @@
+{
+  "// note": "Ceilings, not targets. Lower deliberately; raise only with a stated reason.",
+  "// raised": "2026-08-22, three small raises in one session, none adding a dependency: (1) +2.2 KB raw / +1.0 KB gzip \u2014 tour affordance on Property View (src/lib/tour/tourOffer.ts), measured against a reconstructed pre-change baseline that sat exactly at the old ceiling; (2) +0.8 KB gzip \u2014 360\u00b0 capture mode (mode toggle, equirect requirement, floor selector); (3) +0.2 KB raw \u2014 form_id and obligation on the state document checklist, so two documents required by one rule stay distinguishable. Viewers remain lazy: TourViewer/PanoViewer/WalkableSplatViewer are still separate chunks, so none of this is viewer weight entering the main bundle.",
+  "// largest": "src-qRzu0KV7.js",
+  "largestChunkBytes": 2325752,
+  "largestChunkGzipBytes": 591589,
+  "totalBytes": 3758639,
+  "totalGzipBytes": 1035109
+}

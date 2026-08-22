@@ -184,7 +184,19 @@ export default function StateDocumentChecklist({
                   <span className={styles.meta}>
                     {document.type.replaceAll('_', ' ')}
                     {document.version ? ` · v${document.version}` : ''}
+                    {/* The form id is the only thing that separates two
+                        documents required by one rule — a Loan Estimate from a
+                        Closing Disclosure. Showing it means a row is still
+                        identifiable even if two names ever collide again. */}
+                    {document.form_id ? ` · ${document.form_id}` : ''}
                   </span>
+                  {/* Which statutory obligation this document satisfies. Without
+                      it a derived name loses the rule it belongs to. */}
+                  {document.obligation && document.obligation !== document.name ? (
+                    <span className={styles.obligation}>
+                      Satisfies: {document.obligation}
+                    </span>
+                  ) : null}
                   <span className={styles.fields}>
                     Autofill: {document.ai_autofill_fields.join(', ')}
                   </span>

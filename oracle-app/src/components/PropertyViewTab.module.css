@@ -378,6 +378,102 @@
   color: var(--text-secondary, rgba(244, 244, 245, 0.48));
 }
 
+/* ── capture mode (photos/video vs 360) ──────────────────────────────────── */
+.captureModes {
+  display: inline-flex;
+  gap: 1px;
+  margin: 0 0 var(--space-3);
+  border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.14));
+}
+.mode, .modeActive {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 9px 15px;
+  border: 0;
+  background: transparent;
+  color: var(--text-secondary, rgba(244, 244, 245, 0.62));
+  font-family: var(--font-display);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+  cursor: pointer;
+}
+.mode:hover { color: var(--text-primary, #f4f4f5); }
+.modeActive {
+  background: var(--oracle-amber, #f0b429);
+  color: #0b0b0d;
+}
+.mode svg, .modeActive svg { width: 14px; height: 14px; }
+
+.panoHint {
+  margin: 0 0 var(--space-3);
+  padding: 12px 14px;
+  background: rgba(255, 255, 255, 0.03);
+  border-left: 2px solid var(--oracle-amber, #f0b429);
+}
+.panoHint p {
+  margin: 0 0 var(--space-2);
+  font-size: 0.75rem;
+  line-height: 1.55;
+  color: var(--text-secondary, rgba(244, 244, 245, 0.62));
+}
+/* Progress toward the walkable threshold. Amber because it is the thing the
+   agent is working toward, not incidental help text. */
+.panoProgress { color: var(--oracle-amber, #f0b429); }
+.floorLabel {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: 0.6875rem;
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+  color: var(--text-secondary, rgba(244, 244, 245, 0.48));
+}
+.floorLabel input {
+  width: 64px;
+  padding: 6px 8px;
+  border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.14));
+  background: rgba(0, 0, 0, 0.35);
+  color: var(--text-primary, #f4f4f5);
+  font-size: 0.75rem;
+}
+.floorLabel span { text-transform: none; letter-spacing: 0; }
+
+/* ── 3D tour ─────────────────────────────────────────────────────────────── */
+.tourSection {
+  margin: var(--space-4) 0;
+}
+.tourSection h3 {
+  margin: 0 0 var(--space-2);
+  font-family: var(--font-display);
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: var(--tracking-widest);
+  text-transform: uppercase;
+  color: var(--text-secondary, rgba(244, 244, 245, 0.62));
+}
+/* The "no tour yet" line. Deliberately legible rather than a faint hint —
+   it is the difference between "not captured" and "feature missing". */
+.tourEmpty {
+  margin: 0;
+  padding: 11px 13px;
+  background: rgba(255, 255, 255, 0.03);
+  border-left: 2px solid var(--border-subtle, rgba(255, 255, 255, 0.14));
+  font-size: 0.75rem;
+  line-height: 1.5;
+  color: var(--text-secondary, rgba(244, 244, 245, 0.62));
+}
+/* A stand-in space is walkable, so the caveat must carry visual weight the
+   button does not — amber, not the muted grey of ordinary help text. */
+.tourWarn {
+  margin: var(--space-2) 0 0;
+  font-size: 0.6875rem;
+  line-height: 1.5;
+  color: var(--oracle-amber, #f0b429);
+}
+
 /* ── links list ──────────────────────────────────────────────────────────── */
 .linksSection h3 {
   margin: 0 0 var(--space-2);
