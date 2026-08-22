@@ -154,12 +154,21 @@ async def create_video_job(
     # then watched the reel fail — the failure looked like a bad generation
     # rather than a deployment that was never wired. Mirrors tour_api.py:310,
     # which forwards the provider's reason verbatim.
-    ready, why = video_providers.get_provider().available()
+    provider = video_providers.get_provider()
+    ready, why = provider.available()
     if not ready:
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE,
             f"Video provider unavailable: {why}",
         )
+    # Clip length is a vendor constraint, not a preference: Kling accepts 5s or
+    # 10s and nothing else. Catching it here means a misconfigured deployment
+    # fails on the first request with an actionable message, rather than after
+    # the quota transaction and a round-trip to the vendor.
+    try:
+        provider.check_seconds(studio.CLIP_SECONDS)
+    except video_providers.VideoProviderError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
 
     async with tenant_tx(ctx) as conn:
         consumed = await studio._quota_consumed_today(ctx, conn)

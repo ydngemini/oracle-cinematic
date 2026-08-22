@@ -282,3 +282,145 @@ class TestProvenance:
         # written inside tenant_tx; the claim is that the columns are supplied at
         # all, which is exactly what was missing.
         assert "provenance" in insert and "generator" in insert
+
+
+class TestKlingDurationAccuracy:
+    """Kling accepts 5s or 10s and nothing else.
+
+    Oracle's ORACLE_VIDEO_CLIP_SECONDS defaults to 8, which Kling rejects. The
+    tempting fix is to round 8 up to 10 — that is refused on purpose: it bills
+    25% more than was asked for and returns a reel of a different length than
+    the caller requested. A one-minute reel is 6 clips x 10s, stitched.
+    """
+
+    def test_accepts_the_two_lengths_kling_supports(self):
+        provider = vp.FalKlingProvider()
+        provider.check_seconds(5)
+        provider.check_seconds(10)   # no raise
+
+    def test_refuses_the_default_8s_rather_than_rounding(self, monkeypatch):
+        provider = vp.FalKlingProvider()
+        with pytest.raises(vp.VideoProviderError) as error:
+            provider.check_seconds(8)
+        # The message must name the fix, not just the failure.
+        assert "ORACLE_VIDEO_CLIP_SECONDS" in str(error.value)
+        assert "5, 10" in str(error.value)
+
+    def test_refuses_a_60s_single_clip(self):
+        # 60s is a reel length, not a clip length. Asking the vendor for it
+        # would fail at the API; saying so here explains why.
+        with pytest.raises(vp.VideoProviderError):
+            vp.FalKlingProvider().check_seconds(60)
+
+    def test_a_provider_with_no_constraint_accepts_anything(self):
+        # Sora takes a free integer; the check must not impose Kling's rule on it.
+        assert vp.SoraProvider().allowed_seconds is None
+        vp.SoraProvider().check_seconds(8)   # no raise
+
+    def test_generate_refuses_before_spending_a_request(self, monkeypatch):
+        provider = vp.FalKlingProvider()
+        monkeypatch.setenv("FAL_KEY", "test-key")
+
+        def _must_not_submit(*_a, **_k):
+            raise AssertionError("submitted to fal with an invalid duration")
+
+        monkeypatch.setattr(provider, "_submit", _must_not_submit)
+        with pytest.raises(vp.VideoProviderError, match="accepts clips of"):
+            asyncio.run(provider.generate(prompt="p", size="1280x720", seconds=8))
+
+
+class TestKlingTransport:
+    def _capture_submit(self, monkeypatch, **kwargs):
+        captured = {}
+
+        class _Resp:
+            status_code = 200
+            text = ""
+
+            @staticmethod
+            def json():
+                return {"request_id": "req-123"}
+
+        def _post(url, json=None, headers=None, timeout=None):
+            captured.update(url=url, body=json, headers=headers)
+            return _Resp()
+
+        import requests
+        monkeypatch.setattr(requests, "post", _post)
+        monkeypatch.setenv("FAL_KEY", "test-key")
+        vp.FalKlingProvider()._submit(**kwargs)
+        return captured
+
+    def test_uses_fal_queue_endpoint_and_key_auth(self, monkeypatch):
+        c = self._capture_submit(
+            monkeypatch, prompt="a house", size="1280x720", seconds=10, image_bytes=None
+        )
+        assert c["url"].startswith("https://queue.fal.run/")
+        assert c["headers"]["Authorization"] == "Key test-key"
+
+    def test_duration_is_sent_as_a_string_enum(self, monkeypatch):
+        # fal's schema types duration as "5"/"10", not a number.
+        c = self._capture_submit(
+            monkeypatch, prompt="p", size="1280x720", seconds=10, image_bytes=None
+        )
+        assert c["body"]["duration"] == "10"
+        assert isinstance(c["body"]["duration"], str)
+
+    def test_image_is_inlined_as_a_data_uri(self, monkeypatch):
+        # Avoids uploading the property photo to third-party storage as a
+        # separately-retained object.
+        c = self._capture_submit(
+            monkeypatch, prompt="p", size="720x1280", seconds=5, image_bytes=b"JPEGDATA"
+        )
+        assert c["body"]["image_url"].startswith("data:image/jpeg;base64,")
+        import base64
+        payload = c["body"]["image_url"].split(",", 1)[1]
+        assert base64.b64decode(payload) == b"JPEGDATA"
+
+    def test_aspect_ratio_follows_the_requested_size(self, monkeypatch):
+        assert self._capture_submit(
+            monkeypatch, prompt="p", size="720x1280", seconds=5, image_bytes=None
+        )["body"]["aspect_ratio"] == "9:16"
+
+    def test_a_rejected_key_says_so_rather_than_reporting_an_outage(self, monkeypatch):
+        class _Resp:
+            status_code = 401
+            text = "unauthorized"
+
+            @staticmethod
+            def json():
+                return {}
+
+        import requests
+        monkeypatch.setattr(requests, "post", lambda *a, **k: _Resp())
+        monkeypatch.setenv("FAL_KEY", "bad-key")
+        with pytest.raises(vp.VideoProviderError, match="FAL_KEY"):
+            vp.FalKlingProvider()._submit(
+                prompt="p", size="1280x720", seconds=10, image_bytes=None
+            )
+
+    def test_availability_names_the_missing_key(self, monkeypatch):
+        monkeypatch.delenv("FAL_KEY", raising=False)
+        ready, why = vp.FalKlingProvider().available()
+        assert ready is False and "FAL_KEY" in why
+
+    def test_selected_by_either_name(self, monkeypatch):
+        for alias in ("fal-kling", "kling"):
+            vp.reset_provider_cache()
+            monkeypatch.setenv("ORACLE_VIDEO_PROVIDER", alias)
+            assert vp.get_provider().name == "fal-kling"
+
+
+class TestSixtySecondReel:
+    def test_six_ten_second_clips_reach_one_minute(self):
+        """The reel-length ceiling is MAX_IMAGES x CLIP_SECONDS, because one clip
+        is generated per image. 4 x 8s could only ever reach 32s."""
+        import video_studio
+
+        assert video_studio.MAX_IMAGES >= 6
+        assert video_studio.MAX_IMAGES * 10 >= 60
+
+    def test_a_60s_reel_fits_the_daily_quota_at_least_once(self):
+        import video_studio
+
+        assert video_studio.DAILY_QUOTA_SECONDS >= 60

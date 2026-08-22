@@ -683,9 +683,13 @@ class _ReadyProvider:
     """
     name = "fake"
     produces = "ai_generated"
+    allowed_seconds = None   # accepts any clip length
 
     def available(self):
         return (True, "")
+
+    def check_seconds(self, seconds):
+        return None
 
 
 def _install_ready_provider(monkeypatch):

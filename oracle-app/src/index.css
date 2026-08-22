@@ -25,11 +25,22 @@
   --oracle-glass-active:  rgba(171, 171, 171, 0.30);
   --oracle-glass-edge:    rgba(242, 242, 242, 0.10);
 
-  /* The live 60fps waterfall already supplies visual depth. Backdrop blur on
-     continuously composited panels forces the browser to resample the video
-     every frame, so the 20% glass uses tint, edge light, and shadow instead. */
-  --oracle-backdrop:      none;
-  --oracle-backdrop-light: none;
+  /* Backdrop blur was disabled because the backdrop was a looping 60fps video:
+     blurring a continuously composited layer forces the browser to resample it
+     every frame. That backdrop is now a still image (see EstateBackground), so
+     the resample happens once and the cost disappears — the reason for `none`
+     went away with the video.
+
+     Turning it on is not decoration. At 20% tint with no blur, scrolled content
+     reads straight through the fixed header and tab deck and collides with the
+     logo and nav labels, which is why those bars looked broken. Blur is what
+     separates the layers; without it "glass" is just a see-through bar.
+
+     Still guarded three ways below: @supports, disabled under 719px where the
+     GPU cost is least affordable, and replaced by a near-opaque panel under
+     prefers-reduced-transparency. */
+  --oracle-backdrop:      blur(20px) saturate(135%);
+  --oracle-backdrop-light: blur(12px) saturate(120%);
 
   /* Borders */
   --oracle-border:        rgba(242, 242, 242, 0.08);

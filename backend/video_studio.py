@@ -54,7 +54,10 @@ AZURE_OPENAI_ENDPOINT: str = os.getenv("ORACLE_AZURE_OPENAI_ENDPOINT", "").rstri
 SORA_DEPLOYMENT: str = os.getenv("ORACLE_SORA_DEPLOYMENT", "sora-2-estate")
 SORA_API_KEY: str = os.getenv("ORACLE_AZURE_OPENAI_API_KEY", "")
 
-MAX_IMAGES: int = int(os.getenv("ORACLE_VIDEO_MAX_IMAGES", "4"))
+# One clip is generated per image, so this is also the reel-length ceiling:
+# 6 images x 10s = a 60s reel. Raised from 4 when Kling became an option —
+# 4 x 8s could only ever reach 32s.
+MAX_IMAGES: int = int(os.getenv("ORACLE_VIDEO_MAX_IMAGES", "6"))
 CLIP_SECONDS: int = int(os.getenv("ORACLE_VIDEO_CLIP_SECONDS", "8"))
 DAILY_QUOTA_SECONDS: int = int(os.getenv("ORACLE_VIDEO_DAILY_QUOTA", "120"))
 POLL_SECONDS: float = float(os.getenv("ORACLE_VIDEO_POLL_SECONDS", "5"))

@@ -55,6 +55,21 @@ class VideoProvider:
     produces: str = "ai_generated"
     #: Concurrent in-flight generations permitted by the vendor.
     max_concurrent: int = 1
+    #: Clip lengths the vendor accepts. None = any length.
+    #: Declared rather than assumed because vendors differ sharply: Sora takes a
+    #: free integer, Kling takes exactly 5 or 10. A provider that silently
+    #: rounded to its nearest legal value would bill for a length nobody asked
+    #: for and return a reel that is not the duration the caller requested.
+    allowed_seconds: Optional[tuple[int, ...]] = None
+
+    def check_seconds(self, seconds: int) -> None:
+        """Raise unless this provider accepts a clip of `seconds`."""
+        if self.allowed_seconds and seconds not in self.allowed_seconds:
+            allowed = ", ".join(str(v) for v in self.allowed_seconds)
+            raise VideoProviderError(
+                f"{self.name} accepts clips of {allowed}s only — {seconds}s was requested. "
+                f"Set ORACLE_VIDEO_CLIP_SECONDS to one of: {allowed}."
+            )
 
     def __init__(self) -> None:
         self._slots = asyncio.Semaphore(self.max_concurrent)
@@ -356,6 +371,167 @@ class VeoProvider(VideoProvider):
 
 
 # ---------------------------------------------------------------------------
+# Kling via fal.ai — the commercial path that needs no cloud subscription
+# ---------------------------------------------------------------------------
+class FalKlingProvider(VideoProvider):
+    """Kling on fal.ai.
+
+    Chosen because it needs only an API key: no GCP project, no billing account,
+    no ADC. Veo-via-Vertex is the better model on paper but is unreachable while
+    every GCP billing account is closed, and a provider that cannot run is worth
+    nothing on a deadline.
+
+    Transport is fal's REST queue (the JS SDK is not used):
+
+        POST https://queue.fal.run/{model}                              -> request_id
+        GET  https://queue.fal.run/{model}/requests/{id}/status         -> IN_QUEUE | IN_PROGRESS | COMPLETED
+        GET  https://queue.fal.run/{model}/requests/{id}                -> {"video": {"url": ...}}
+
+    Auth is `Authorization: Key $FAL_KEY`.
+
+    **Duration is 5s or 10s — nothing else.** Oracle's ORACLE_VIDEO_CLIP_SECONDS
+    defaults to 8, which Kling rejects, so `allowed_seconds` refuses it up front
+    rather than letting the vendor fail mid-job. We deliberately do NOT round 8
+    up to 10: that would bill 25% more than asked and hand back a reel of a
+    different length than the caller requested. A one-minute reel is therefore
+    6 clips x 10s, stitched by the existing PyAV path.
+
+    The finished video comes back as a URL rather than bytes, so unlike Sora and
+    Veo this provider has a fetch step.
+    """
+
+    name = "fal-kling"
+    produces = "ai_generated"
+    #: fal queues rather than rejecting over-submission, so this is throughput
+    #: shaping rather than a hard vendor cap.
+    max_concurrent = 3
+    allowed_seconds = (5, 10)
+
+    @property
+    def _key(self) -> str:
+        return os.getenv("FAL_KEY", "").strip()
+
+    @property
+    def _model(self) -> str:
+        """fal model slug. Configurable because fal versions models in the path,
+        so a new Kling release is a config change rather than a code change."""
+        return os.getenv(
+            "ORACLE_FAL_VIDEO_MODEL", "fal-ai/kling-video/v2.5-turbo/pro/image-to-video"
+        ).strip().strip("/")
+
+    def available(self) -> tuple[bool, str]:
+        if not self._key:
+            return (False, "set FAL_KEY (fal.ai API key)")
+        if not self._model:
+            return (False, "set ORACLE_FAL_VIDEO_MODEL")
+        return (True, "")
+
+    def _headers(self) -> dict[str, str]:
+        return {"Authorization": f"Key {self._key}", "Content-Type": "application/json"}
+
+    def _submit(self, *, prompt: str, size: str, seconds: int, image_bytes: Optional[bytes]) -> str:
+        import requests
+
+        aspect = _SIZE_TO_ASPECT.get(size)
+        if aspect is None:
+            raise VideoProviderError(f"Kling has no aspect ratio for size {size!r}")
+
+        body: dict[str, object] = {
+            "prompt": prompt,
+            # fal's schema types duration as a string enum, not a number.
+            "duration": str(seconds),
+            "aspect_ratio": aspect,
+        }
+        if image_bytes is not None:
+            # fal accepts a data URI wherever it accepts an image URL, which
+            # avoids uploading the property photo to third-party storage as a
+            # separate, separately-retained object.
+            body["image_url"] = (
+                "data:image/jpeg;base64," + base64.b64encode(image_bytes).decode("ascii")
+            )
+        try:
+            response = requests.post(
+                f"https://queue.fal.run/{self._model}",
+                json=body, headers=self._headers(), timeout=_timeout("submit"),
+            )
+        except requests.RequestException as exc:
+            raise VideoProviderError(f"fal submit failed: {exc}") from exc
+        if response.status_code == 401:
+            raise VideoProviderError("fal rejected FAL_KEY — rotate or check the key")
+        if response.status_code not in (200, 201, 202):
+            raise VideoProviderError(
+                f"fal submit returned {response.status_code}: {response.text[:300]}"
+            )
+        request_id = (response.json() or {}).get("request_id")
+        if not request_id:
+            raise VideoProviderError("fal submit returned no request_id")
+        return str(request_id)
+
+    def _status(self, request_id: str) -> tuple[str, str]:
+        """Return (status, error). status is fal's own enum, uppercased."""
+        import requests
+
+        url = f"https://queue.fal.run/{self._model}/requests/{request_id}/status"
+        try:
+            response = requests.get(url, headers=self._headers(), timeout=_timeout("poll"))
+        except requests.RequestException as exc:
+            raise VideoProviderError(f"fal status poll failed: {exc}") from exc
+        if response.status_code != 200:
+            raise VideoProviderError(
+                f"fal status returned {response.status_code}: {response.text[:300]}"
+            )
+        body = response.json() or {}
+        return str(body.get("status", "")).upper(), str(body.get("error") or "")[:400]
+
+    def _result(self, request_id: str) -> bytes:
+        import requests
+
+        url = f"https://queue.fal.run/{self._model}/requests/{request_id}"
+        try:
+            response = requests.get(url, headers=self._headers(), timeout=_timeout("poll"))
+        except requests.RequestException as exc:
+            raise VideoProviderError(f"fal result fetch failed: {exc}") from exc
+        if response.status_code != 200:
+            raise VideoProviderError(
+                f"fal result returned {response.status_code}: {response.text[:300]}"
+            )
+        payload = response.json() or {}
+        video_url = ((payload.get("video") or {}) or {}).get("url")
+        if not video_url:
+            raise VideoProviderError(f"fal result had no video url: {json.dumps(payload)[:200]}")
+        try:
+            media = requests.get(video_url, timeout=_timeout("download"))
+        except requests.RequestException as exc:
+            raise VideoProviderError(f"fal video download failed: {exc}") from exc
+        if media.status_code != 200:
+            raise VideoProviderError(f"fal video download returned {media.status_code}")
+        if not media.content:
+            raise VideoProviderError("fal returned an empty video")
+        return media.content
+
+    async def generate(
+        self, *, prompt: str, size: str, seconds: int, image_bytes: Optional[bytes] = None
+    ) -> bytes:
+        self.check_seconds(seconds)
+        async with self._slot():
+            request_id = await asyncio.to_thread(
+                self._submit, prompt=prompt, size=size, seconds=seconds, image_bytes=image_bytes
+            )
+            deadline = time.monotonic() + _job_timeout()
+            poll = _poll_seconds()
+            while True:
+                if time.monotonic() > deadline:
+                    raise VideoProviderError(f"fal request {request_id} timed out")
+                status, error = await asyncio.to_thread(self._status, request_id)
+                if status == "COMPLETED":
+                    break
+                if status in ("FAILED", "ERROR", "CANCELLED"):
+                    raise VideoProviderError(error or f"fal request {request_id} {status}")
+                await asyncio.sleep(poll)
+            return await asyncio.to_thread(self._result, request_id)
+
+
+# ---------------------------------------------------------------------------
 # Shared timing knobs (read at call time so tests can monkeypatch env)
 # ---------------------------------------------------------------------------
 def _timeout(kind: str) -> int:
@@ -380,6 +556,8 @@ def _poll_seconds() -> float:
 _PROVIDERS: dict[str, type[VideoProvider]] = {
     "sora": SoraProvider,
     "veo": VeoProvider,
+    "fal-kling": FalKlingProvider,
+    "kling": FalKlingProvider,   # convenience alias
 }
 
 _INSTANCES: dict[str, VideoProvider] = {}
