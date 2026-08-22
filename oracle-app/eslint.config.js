@@ -22,7 +22,6 @@ export default defineConfig([
     files: [
       'src/components/ClientShared.jsx',
       'src/components/DealPipeline.jsx',
-      'src/components/MediaUploader.jsx',
       'src/state/StateContext.jsx',
     ],
     rules: {

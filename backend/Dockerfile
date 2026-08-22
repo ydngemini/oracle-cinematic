@@ -31,6 +31,16 @@ ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 RUN playwright install --with-deps chromium \
     && chmod -R a+rX /ms-playwright
 
+# ffmpeg — the reconstruction worker samples frames out of a capture video
+# before handing images to a provider. Extraction happens here rather than in a
+# provider image because every provider's contract is reconstruct(images,
+# work_dir): doing it per-provider would mean changing that contract and
+# reimplementing it in each backend. One small apt package keeps a phone walk
+# video usable everywhere, including the local stub.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+
 # Amazon RDS global CA bundle — lets connection.py do TLS verify-full against
 # Aurora (HARDENING.md §1, rds.force_ssl=1). ORACLE_RDS_CA_BUNDLE points here.
 ADD https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem /etc/ssl/certs/rds-global-bundle.pem

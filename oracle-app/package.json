@@ -10,7 +10,9 @@
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
     "test": "vitest run --config vitest.config.js",
-    "test:watch": "vitest --config vitest.config.js"
+    "test:watch": "vitest --config vitest.config.js",
+    "bundle:check": "node scripts/check-bundle-budget.mjs",
+    "bundle:update": "node scripts/check-bundle-budget.mjs --update"
   },
   "dependencies": {
     "@twilio/voice-sdk": "^2.18.3",

@@ -121,6 +121,42 @@ an ACS call it cannot manage across replicas. Redis traffic stays on the
 Container Apps virtual network through the private endpoint and private DNS
 zone; public network access is disabled.
 
+## Inference provider (Fireworks AI)
+
+Fireworks is the hosted inference tier. Azure Foundry and Bedrock are both
+unreachable — Foundry has no endpoint configured, and the Bedrock credentials
+return `UnrecognizedClientException` — so without this the only model answering
+is the local llama.cpp server, which no Container Apps revision runs. Every AI
+feature then fails closed with "The assistant is temporarily unavailable."
+
+The `neoh-api` container needs three settings:
+
+- `ORACLE_AI_CHAT_PROVIDER=fireworks` — a plain value, not a secret.
+- `ORACLE_FIREWORKS_API_KEY` uses the Container Apps secret reference
+  `fireworks-api-key`, backed by the versionless Key Vault secret
+  `fireworks-api-key` through the `neoh-app-id` managed identity.
+- `ORACLE_FIREWORKS_MODEL` names the model, e.g.
+  `accounts/fireworks/models/kimi-k2p7-code`.
+
+Run `infra/scripts/set-fireworks-secret.sh` to create the Key Vault secret and
+bind it. It cannot run while the subscription is suspended: Key Vault still
+answers metadata calls, so `az keyvault secret list` returns every name, but the
+data plane is Forbidden and reading or writing a secret *value* fails with
+`(Forbidden) The subscription associated with this vault has been disabled`.
+A working `secret list` is not evidence the vault is usable.
+
+Never place the Fireworks key in source, an image layer, `docker-compose.yml`,
+or a literal Container Apps environment value — local dev reads it from the
+gitignored `.env` instead.
+
+Two settings are load-bearing and should not be lowered:
+`ORACLE_FIREWORKS_MAX_TOKENS` (chat, default 4000) and
+`ORACLE_FIREWORKS_MIN_TOKENS` (`ml_forge/bedrock_client.py`, default 2048).
+The default model is a reasoning model that spends its budget on
+`reasoning_content` before emitting any `content`; below those floors it returns
+an empty string with `finish_reason: "length"`, which reads as a broken
+integration rather than a truncated one.
+
 Set `ORACLE_ENABLE_WEBHOOKS=true` only after both
 `ORACLE_ACS_WEBHOOK_SECRET` and `ORACLE_CUSTOM_CALL_WEBHOOK_SECRET` are backed
 by Key Vault references. The migration job must run the newly built API image

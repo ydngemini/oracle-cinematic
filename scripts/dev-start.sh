@@ -85,17 +85,34 @@ echo  # newline after dots
 green "DB is healthy."
 
 # ── Apply migrations ──────────────────────────────────────────────────────────
-# Migrations live in backend/db/migrations/ and are also mounted into the
-# postgres container's /docker-entrypoint-initdb.d/ — they run automatically
-# on a fresh volume. This step re-applies them for an already-initialised DB
-# (psql errors on duplicate objects are silenced; all migrations are idempotent).
+# Through backend/run_migrations.py — the same runner production uses — rather
+# than a psql loop.
+#
+# The loop this replaces piped every .sql through psql with `> /dev/null 2>&1`,
+# so a migration that genuinely FAILED printed "(already applied / no-op)",
+# indistinguishable from an idempotent skip. It also wrote no ledger, which is
+# why dev had no way to answer "which migrations has this database had".
+#
+# --reconcile first: a database built by that loop has the schema but no ledger,
+# so the runner would otherwise try to re-apply all 76 files. Reconcile records
+# the ones whose declared objects are provably present, refuses on any that are
+# half-present, and leaves the rest for the normal apply below.
+bold "Reconciling migration ledger..."
+# `run --rm --no-deps`, not `exec`: the API is deliberately not started until
+# after the schema is current (see the lock note above), so there is no backend
+# container to exec into. Production runs the same script as a one-off job.
+docker compose run --rm --no-deps \
+  -e ORACLE_DB_HOST=db -e ORACLE_DB_SSL=disable \
+  -e ORACLE_DB_ADMIN_USER=postgres -e ORACLE_DB_ADMIN_PASSWORD=postgres \
+  -e ORACLE_MIGRATIONS_DIR=/app/db/migrations \
+  backend python /app/run_migrations.py --reconcile
+
 bold "Applying schema migrations..."
-for sql_file in "$PROJECT_ROOT"/backend/db/migrations/*.sql; do
-  filename="$(basename "$sql_file")"
-  printf '  applying %s... ' "$filename"
-  docker compose exec -T db psql -U postgres -d oracle \
-    < "$sql_file" > /dev/null 2>&1 && echo "ok" || echo "(already applied / no-op)"
-done
+docker compose run --rm --no-deps \
+  -e ORACLE_DB_HOST=db -e ORACLE_DB_SSL=disable \
+  -e ORACLE_DB_ADMIN_USER=postgres -e ORACLE_DB_ADMIN_PASSWORD=postgres \
+  -e ORACLE_MIGRATIONS_DIR=/app/db/migrations \
+  backend python /app/run_migrations.py
 green "Migrations done."
 
 # ── Seed demo tenants ─────────────────────────────────────────────────────────

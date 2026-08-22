@@ -1,0 +1,104 @@
+name: CI
+
+# The repository had no automated enforcement before this workflow: 670+ tests
+# and nothing that ran them on a push. A working-tree change that broke two of
+# its own tests reached the branch unnoticed, which is exactly the class of
+# mistake this exists to catch.
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+# A second push to the same branch makes the first run's answer irrelevant.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    name: backend tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      # Matches backend/Dockerfile (python:3.12-slim) so a green run here means
+      # the same interpreter the image ships.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            backend/requirements.txt
+            backend/requirements-test.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r backend/requirements.txt -r backend/requirements-test.txt
+
+      # conftest.py sets ORACLE_ENV=dev and a throwaway secret itself, and the
+      # suite needs no database — it runs entirely on fakes and monkeypatching.
+      - name: Run tests
+        working-directory: backend
+        run: python -m pytest tests -q
+
+  frontend:
+    name: frontend lint and build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      # Matches the node image in docker-compose.yml.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: oracle-app/package-lock.json
+
+      - name: Install dependencies
+        working-directory: oracle-app
+        run: npm ci --no-audit --no-fund
+
+      # Two lint extensions were attempted here and both are blocked upstream,
+      # verified 2026-08-11 — don't re-attempt without checking these first:
+      #
+      #   * typescript-eslint (to lint .ts/.tsx) peer-requires TypeScript
+      #     <6.1.0 at its newest release; this repo is on 7.0.2. No published
+      #     version supports it. `typecheck` below is what guards those files
+      #     meanwhile — it is the only gate that reads them at all.
+      #   * eslint-plugin-jsx-a11y peer-supports ESLint <=9; this repo is on 10.
+      #     It loads fine, but installing it makes `npm ci` fail outright, which
+      #     breaks this whole job. Accessibility is covered by axe-core inside
+      #     vitest instead (see the accessibility phase of the plan).
+      - name: Lint
+        working-directory: oracle-app
+        run: npx eslint src --max-warnings=0
+
+      # The only gate that reads PropertyTourViewer.tsx, lib/tour/* and
+      # lib/floorplan/* at all.
+      - name: Typecheck
+        working-directory: oracle-app
+        run: npm run typecheck
+
+      - name: Unit tests
+        working-directory: oracle-app
+        run: npm test
+
+      # Catches what lint and unit tests cannot: a bad import path or a
+      # component that fails to compile still lints clean and is never imported
+      # by a test.
+      - name: Build
+        working-directory: oracle-app
+        run: npm run build
+
+      # Bundle weight only ever regresses by accident. Vite warns and exits 0;
+      # this exits 1.
+      - name: Bundle budget
+        working-directory: oracle-app
+        run: npm run bundle:check

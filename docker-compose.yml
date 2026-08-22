@@ -92,7 +92,8 @@ services:
       # (world-writable on the host so uid 1001 can write it) so generated .splat
       # files PERSIST across `docker compose up --force-recreate` instead of living
       # in the ephemeral /tmp fallback. This single var overrides spatial_agent's
-      # default for BOTH the worker write path and server.py's /public/splats mount.
+      # scratch space for reconstruction providers that stage files on disk.
+      # Finished splats go to object storage and are served by /api/media/{id}.
       ORACLE_SPLAT_DIR: /app/.splatdata
     # Linux Docker doesn't resolve host.docker.internal by default — map it to
     # the host gateway so the container can reach host-run services (the local

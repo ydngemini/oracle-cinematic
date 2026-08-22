@@ -16,6 +16,13 @@ redis==5.2.1                   # Distributed rate limits + durable ACS callback 
 PyJWT==2.13.0                  # JWT encode/decode in auth.py (>= 2.x returns str)
 cryptography==50.0.0           # Authenticated encryption for Redis ACS call state
 
+# ── LLM gateway ───────────────────────────────────────────────────────────────
+# One seam for every model call (backend/llm_gateway.py), replacing two
+# hand-rolled provider ladders. Wide transitive tree, but the runtime image
+# already carries openai, tokenizers, aiohttp, httpx, pydantic and pyyaml — the
+# genuinely new weight is litellm itself plus tiktoken and jinja2.
+litellm==1.97.0
+
 # ── Payments ───────────────────────────────────────────────────────────────────
 stripe==15.2.0                 # Checkout sessions + webhook verification
 
@@ -68,3 +75,5 @@ numpy>=1.26,<3                 # opencv's array interface; pinned major-open
 
 # ── Config ─────────────────────────────────────────────────────────────────────
 python-dotenv==1.2.2           # Load .env in local dev; no-op in prod (env already set)
+# GPU reconstruction via OnCompute operator-key signing (OnComputeProvider)
+eth-account>=0.13

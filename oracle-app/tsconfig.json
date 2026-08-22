@@ -26,8 +26,6 @@
   ],
   "exclude": [
     "node_modules",
-    "dist",
-    "// pascalGuestBridge runs INSIDE the Pascal editor iframe, not in Oracle. It lives here so the two halves of the protocol stay reviewable together, but it imports @pascal-app/core, which is deliberately not an Oracle dependency (that is the whole point of the iframe boundary). It is typechecked in the Pascal host app instead.",
-    "src/lib/floorplan/pascalGuestBridge.ts"
+    "dist"
   ]
 }
