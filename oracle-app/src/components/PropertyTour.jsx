@@ -188,7 +188,8 @@ export default function PropertyTour({ address, lat, lng, leadId, listingId, onC
 
     // Reset to the loading veil whenever the target address/coords change. This
     // is an intentional sync with an external system (the Google 3D element),
-    // not derived state — same accepted pattern as PropertyCanvas's init flags.
+    // not derived state — the same accepted pattern the WebGL viewers use for
+    // their init flags.
     /* eslint-disable react-hooks/set-state-in-effect */
     setStatus('loading');
     setReason(null);
@@ -369,6 +370,14 @@ export default function PropertyTour({ address, lat, lng, leadId, listingId, onC
           // coordinates. With no media geolocation we skip the pin entirely and
           // leave the filmstrip/lightbox as the way to browse photos — never
           // fabricate a spatial position from the photo index.
+          //
+          // Nothing populates these today: property_media has no lat/lng and
+          // GET /api/crm/media does not project any, so this branch is dormant
+          // by design rather than broken. It goes live when capture starts
+          // recording EXIF position — which pano scene placement needs anyway.
+          // Deliberately not adding the columns before a writer exists; an
+          // unpopulated column read as fact is the failure this codebase keeps
+          // having to undo.
           const mediaLat = Number(m.lat ?? m.latitude);
           const mediaLng = Number(m.lng ?? m.longitude);
           if (!Number.isFinite(mediaLat) || !Number.isFinite(mediaLng)) return;
@@ -508,8 +517,11 @@ export default function PropertyTour({ address, lat, lng, leadId, listingId, onC
           </div>
         </div>
 
-        {lightbox != null && media[lightbox] && (
-          <Lightbox media={media} index={lightbox} onClose={() => setLightbox(null)} onIndex={setLightbox} />
+        {/* displayMedia, not media: mediaSrc() reads `display_url`, which only
+            the resolved copies carry. Passing the raw rows here rendered an
+            empty <img> — the ready-path lightbox below already gets this right. */}
+        {lightbox != null && displayMedia[lightbox] && (
+          <Lightbox media={displayMedia} index={lightbox} onClose={() => setLightbox(null)} onIndex={setLightbox} />
         )}
       </div>
     );

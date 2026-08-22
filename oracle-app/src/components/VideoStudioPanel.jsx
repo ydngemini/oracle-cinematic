@@ -60,6 +60,8 @@ export default function VideoStudioPanel() {
   const [submitError, setSubmitError] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [created, setCreated] = useState(null);
+  // null = still asking, true/false = answered. See the capabilities effect below.
+  const [available, setAvailable] = useState(null);
 
   const pollTimer = useRef(null);
   const loadJobs = useCallback(() => {
@@ -98,9 +100,32 @@ export default function VideoStudioPanel() {
     );
   }, [leadId, listingId]);
 
+  // The Video Studio router is mounted only when ORACLE_FEATURE_VIDEO_STUDIO is
+  // set, which it is not by default. Ask first: without this the panel fires
+  // eight requests, collects eight 404s, and renders them as if the studio were
+  // broken rather than simply not turned on for this deployment.
   useEffect(() => {
-    loadJobs();
-    loadConfig();
+    let cancelled = false;
+    crmGet('/api/platform/capabilities').then(
+      (payload) => {
+        if (cancelled) return;
+        const enabled = payload?.video_studio !== false;
+        setAvailable(enabled);
+        if (enabled) {
+          loadJobs();
+          loadConfig();
+        }
+      },
+      // Capabilities itself failing tells us nothing about the studio; try the
+      // real calls rather than hiding a working feature behind a transient error.
+      () => {
+        if (cancelled) return;
+        setAvailable(true);
+        loadJobs();
+        loadConfig();
+      },
+    );
+    return () => { cancelled = true; };
   }, [loadJobs, loadConfig]);
 
   // Load the property photo filmstrip whenever the anchor changes.
@@ -220,6 +245,25 @@ export default function VideoStudioPanel() {
   const activeCount = (jobs || []).filter((job) => ACTIVE_STATUSES.includes(job.status)).length;
   const consumed = config?.consumed_seconds ?? 0;
   const quota = config?.daily_quota_seconds ?? 0;
+
+  if (available === false) {
+    return (
+      <section className={styles.wrap} aria-labelledby="video-studio-title">
+        <header className={styles.hero}>
+          <div>
+            <span className={styles.kicker}>Sora 2 marketing engine</span>
+            <h1 id="video-studio-title">Video Studio</h1>
+            <p>Not enabled on this deployment.</p>
+          </div>
+        </header>
+        <p className={styles.quota} role="status">
+          Video generation is turned off here, so nothing has failed and no quota
+          has been used. An administrator can enable it by setting{' '}
+          <code>ORACLE_FEATURE_VIDEO_STUDIO</code> and restarting the backend.
+        </p>
+      </section>
+    );
+  }
 
   return (
     <section className={styles.wrap} aria-labelledby="video-studio-title">

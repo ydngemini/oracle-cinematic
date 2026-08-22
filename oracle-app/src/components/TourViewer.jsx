@@ -25,16 +25,52 @@ import { Suspense, lazy, useMemo } from 'react';
 
 const WalkableSplatViewer = lazy(() => import('./WalkableSplatViewer'));
 const PropertyTourViewer = lazy(() => import('./PropertyTourViewer'));
+// Tier 2. Raw WebGL and no engine dependency at all, so it is a much smaller
+// chunk than either splat renderer — which matters because it is the tier most
+// properties will actually reach.
+const PanoViewer = lazy(() => import('./PanoViewer'));
 
 const ENGINE = (import.meta.env.VITE_TOUR_ENGINE || 'playcanvas').toLowerCase();
 
-export function TourViewer({ splatUrl, disclosure, address, title, floors, onClose }) {
+export function TourViewer({
+  splatUrl, panoScenes, disclosure, address, title, floors, onClose, isThisProperty = true,
+}) {
   // PropertyTourViewer re-initialises its whole engine when `assets` changes
   // identity, so this must be stable across re-renders.
   const assets = useMemo(
     () => (splatUrl ? [{ id: 'property-splat', url: splatUrl }] : []),
     [splatUrl],
   );
+
+  // A generated demo space renders identically to a real capture, so the only
+  // thing separating "this is your house" from "this is a sample room" is what
+  // the viewer says. Prepend it to the disclosure both engines already display,
+  // rather than adding a second overlay each engine would have to implement.
+  const shownDisclosure = isThisProperty
+    ? disclosure
+    : [
+        'This is a generated demo space, not a capture of this property.',
+        disclosure,
+      ].filter(Boolean).join(' ');
+
+  // Tier 3 outranks tier 2 when a real capture exists, but a demo splat does
+  // not: 360s of the actual property beat a generated room every time.
+  const preferPano = Array.isArray(panoScenes) && panoScenes.length >= 2
+    && (!splatUrl || !isThisProperty);
+
+  if (preferPano) {
+    return (
+      <Suspense fallback={null}>
+        <PanoViewer
+          scenes={panoScenes}
+          disclosure={disclosure}
+          address={address}
+          title={title}
+          onClose={onClose}
+        />
+      </Suspense>
+    );
+  }
 
   if (!splatUrl) return null;
 
@@ -45,9 +81,9 @@ export function TourViewer({ splatUrl, disclosure, address, title, floors, onClo
           assets={assets}
           floors={floors || []}
           address={address}
-          title={title}
+          title={isThisProperty ? title : `${title} — demo space`}
           aiGenerated
-          disclosure={disclosure}
+          disclosure={shownDisclosure}
           onClose={onClose}
         />
       </Suspense>
@@ -58,9 +94,9 @@ export function TourViewer({ splatUrl, disclosure, address, title, floors, onClo
     <Suspense fallback={null}>
       <WalkableSplatViewer
         splatUrl={splatUrl}
-        disclosure={disclosure}
+        disclosure={shownDisclosure}
         address={address}
-        title={title}
+        title={isThisProperty ? title : `${title} — demo space`}
         onClose={onClose}
       />
     </Suspense>

@@ -37,7 +37,7 @@ import { ProductTour } from './ProductTour';
 import styles from './CrmShell.module.css';
 
 // Each tab is its own chunk — a field agent on LTE only pays for the tab
-// they open. (Same code-split rationale as PropertyCanvas in the HUD era.)
+// they open. (Same code-split rationale the HUD used for its 3D canvas.)
 const loadTodayTab = () => import('./TodayTab');
 const loadPeopleTab = () => import('./PeopleTab');
 const loadCommsTab = () => import('./CommsTab');
@@ -138,7 +138,7 @@ function ViewFallback() {
 /**
  * CrmShell — the agent CRM frame ("as soon as they open the app,
  * they should be here": Today is the landing tab). Replaces the desktop
- * DashboardLayout; BillingOverlay and OnboardingGate stay as self-gating
+ * the retired DashboardLayout; BillingOverlay and OnboardingGate stay as self-gating
  * overlays, exactly as before.
  */
 export function CrmShell() {

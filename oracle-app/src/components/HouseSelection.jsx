@@ -81,6 +81,7 @@ export default function HouseSelection() {
   const [records, setRecords] = useState(null);
   const [meta, setMeta] = useState({
     total: 0,
+    totalIsEstimate: false,
     page: 1,
     pageSize: 24,
     hasMore: false,
@@ -107,6 +108,7 @@ export default function HouseSelection() {
         setRecords(rows);
         setMeta({
           total: Number(data?.total) || 0,
+          totalIsEstimate: data?.total_is_estimate === true,
           page: Number(data?.page) || query.page,
           pageSize: Number(data?.page_size) || 24,
           hasMore: data?.has_more === true,
@@ -143,6 +145,16 @@ export default function HouseSelection() {
 
   const selectRecord = useCallback((record) => {
     startTransition(() => setSelected(record));
+  }, []);
+
+  // Linking a house to a client creates the tenant's lead for that parcel, and
+  // the POST returns its id. `selected` is owned here, so the workspace cannot
+  // record it itself — without this the agent links a house and the interior
+  // affordances stay hidden until a full refetch happens to pick the lead up.
+  // The record id is unchanged, so the keyed transition above does not remount.
+  const applyHouseUpdate = useCallback((patch) => {
+    if (!patch) return;
+    setSelected((current) => (current ? { ...current, ...patch } : current));
   }, []);
 
   const selectManualHouse = useCallback((event) => {
@@ -230,7 +242,8 @@ export default function HouseSelection() {
           </form>
 
           <div className={styles.resultBar} aria-live="polite">
-            <span>
+            <span title={meta.totalIsEstimate ? 'Estimated from catalog statistics, not an exact count.' : undefined}>
+              {meta.totalIsEstimate ? '≈' : ''}
               {COUNT_FORMAT.format(meta.total)} public {meta.total === 1 ? 'record' : 'records'}
             </span>
             {meta.total > 0 && <span>{pageStart}–{pageEnd}</span>}
@@ -320,7 +333,7 @@ export default function HouseSelection() {
           exit="fade-out"
           default="none"
         >
-          <HouseWorkspace house={selected} />
+          <HouseWorkspace house={selected} onHouseUpdate={applyHouseUpdate} />
         </AdaptiveViewTransition>
       </div>
     </section>

@@ -1,0 +1,158 @@
+.wrap { display: grid; gap: var(--space-5); }
+
+.head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: var(--space-6);
+}
+.head h2 { margin: 0; color: rgba(242, 242, 242, 0.9); font-size: 15px; }
+.head p { margin: 4px 0 0; color: rgba(242, 242, 242, 0.45); font-size: 11px; line-height: 1.5; max-width: 46ch; }
+
+.headActions { display: flex; gap: var(--space-2); }
+.headActions button,
+.formActions button {
+  min-height: 34px;
+  padding: 0 11px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid rgba(242, 242, 242, 0.14);
+  border-radius: 9px;
+  color: rgba(242, 242, 242, 0.72);
+  background: rgba(171, 171, 171, 0.05);
+  font-size: 10px;
+  cursor: pointer;
+}
+.headActions button svg,
+.formActions button svg { width: 13px; height: 13px; }
+.headActions button:disabled,
+.formActions button:disabled { opacity: 0.45; cursor: not-allowed; }
+.primary { border-color: rgba(110, 190, 145, 0.3) !important; color: #90d7ad !important; }
+
+.spin { animation: spin 900ms linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .spin { animation: none; } }
+
+/* ── form ─────────────────────────────────────────────────────────────── */
+.form {
+  display: grid;
+  gap: var(--space-4);
+  padding: var(--space-4);
+  border: 1px solid rgba(242, 242, 242, 0.1);
+  border-radius: 12px;
+  background: rgba(171, 171, 171, 0.035);
+}
+.form label { display: grid; gap: 4px; min-width: 0; }
+.form label > span { color: rgba(242, 242, 242, 0.5); font-size: 9px; letter-spacing: 0.1em; text-transform: uppercase; }
+.form input,
+.form select {
+  min-height: 34px;
+  padding: 0 9px;
+  border: 1px solid rgba(242, 242, 242, 0.14);
+  border-radius: 8px;
+  color: rgba(242, 242, 242, 0.86);
+  background: rgba(12, 12, 12, 0.5);
+  font-size: 12px;
+}
+.form input:focus-visible,
+.form select:focus-visible { outline: none; box-shadow: var(--ring-focus); }
+
+.row { display: grid; grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr)); gap: var(--space-3); }
+
+.specsFieldset,
+.sellerFieldset {
+  display: grid;
+  gap: var(--space-3);
+  margin: 0;
+  padding: var(--space-3);
+  border: 1px solid rgba(242, 242, 242, 0.08);
+  border-radius: 10px;
+}
+.specsFieldset legend,
+.sellerFieldset legend {
+  padding: 0 6px;
+  color: rgba(242, 242, 242, 0.66);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.specsFieldset legend small {
+  display: block;
+  margin-top: 3px;
+  max-width: 44ch;
+  color: rgba(255, 188, 31, 0.6);
+  font-size: 9px;
+  letter-spacing: 0;
+  text-transform: none;
+  line-height: 1.45;
+}
+
+.modes { display: flex; flex-wrap: wrap; gap: var(--space-3); }
+.mode { display: inline-flex !important; grid-template-columns: none !important; align-items: center; gap: 6px; cursor: pointer; }
+.mode span { color: rgba(242, 242, 242, 0.72); font-size: 11px; letter-spacing: 0; text-transform: none; }
+
+.formActions { display: flex; justify-content: flex-end; gap: var(--space-2); }
+
+/* ── cards ────────────────────────────────────────────────────────────── */
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr)); gap: var(--space-4); }
+
+.card {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  overflow: hidden;
+  border: 1px solid rgba(242, 242, 242, 0.1);
+  border-radius: 12px;
+  background: rgba(171, 171, 171, 0.04);
+}
+.cover { position: relative; aspect-ratio: 16 / 10; background: rgba(12, 12, 12, 0.55); }
+.cover img { width: 100%; height: 100%; object-fit: cover; }
+.noCover {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 6px;
+  color: rgba(242, 242, 242, 0.3);
+}
+.noCover svg { width: 18px; height: 18px; }
+.noCover small { font-size: 9px; }
+
+.cardBody { display: grid; gap: 6px; align-content: start; padding: var(--space-3); }
+.cardBody header { display: flex; align-items: start; justify-content: space-between; gap: var(--space-2); }
+.cardBody strong { min-width: 0; color: rgba(242, 242, 242, 0.88); font-size: 12px; line-height: 1.35; }
+
+.status {
+  flex: none;
+  padding: 2px 7px;
+  border-radius: 999px;
+  border: 1px solid rgba(242, 242, 242, 0.14);
+  color: rgba(242, 242, 242, 0.6);
+  font-size: 8px;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+.status[data-status='active'] { border-color: rgba(110, 190, 145, 0.32); color: #90d7ad; }
+.status[data-status='sold'] { border-color: rgba(242, 242, 242, 0.2); color: rgba(242, 242, 242, 0.44); }
+.status[data-status='withdrawn'] { border-color: rgba(242, 242, 242, 0.2); color: rgba(242, 242, 242, 0.44); }
+.status[data-status='pending'] { border-color: rgba(255, 188, 31, 0.34); color: rgba(255, 188, 31, 0.82); }
+
+.price { margin: 0; color: rgba(242, 242, 242, 0.74); font-size: 12px; }
+.specs { margin: 0; color: rgba(242, 242, 242, 0.5); font-size: 10px; }
+/* Amber, matching the platform's convention for "this is a gap, not a value". */
+.specsMissing { margin: 0; color: rgba(255, 188, 31, 0.62); font-size: 9px; line-height: 1.45; }
+
+.cardBody footer { margin-top: 2px; }
+.seller { display: inline-flex; align-items: center; gap: 5px; color: rgba(242, 242, 242, 0.5); font-size: 10px; }
+.seller svg { width: 11px; height: 11px; }
+.sellerMissing { color: rgba(242, 242, 242, 0.32); font-size: 10px; }
+
+.muted { display: inline-flex; align-items: center; gap: 7px; margin: 0; color: rgba(242, 242, 242, 0.4); font-size: 11px; }
+.muted svg { width: 13px; height: 13px; }
+.error { margin: 0; color: rgba(255, 138, 128, 0.86); font-size: 11px; line-height: 1.5; }
+
+@media (max-width: 40rem) {
+  .head { grid-template-columns: minmax(0, 1fr); }
+  .headActions { justify-content: flex-start; }
+}

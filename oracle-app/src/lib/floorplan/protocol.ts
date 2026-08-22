@@ -1,21 +1,21 @@
 /**
- * Typed postMessage contract between Oracle (host) and the Pascal 3D building
- * editor (guest, running in its own bundle inside an iframe).
+ * The floor-plan document schema — persisted to Postgres as jsonb, produced by
+ * FloorplanCanvas (manual drawing) or by backend/floorplan_pipeline (parcel
+ * geometry, a raster image, or the complete-dimensions auto-fill), and
+ * consumed by useRehabCalculator for live costing.
  *
- * Why an iframe: Pascal is React Three Fiber + Three.js + WebGPU and its npm
- * package ships raw .tsx with a `next` peer dependency. Oracle is Vite, and
- * CLAUDE.md forbids Three.js in this bundle. Isolating Pascal behind an origin
- * boundary keeps three/R3F/drei/Radix/Tailwind/next out of Oracle entirely and
- * gives us a hard crash boundary around a WebGPU canvas.
+ * An earlier design embedded the third-party Pascal 3D editor over a
+ * postMessage bridge in an iframe. That was never viable: Pascal's public
+ * embed is read-only with no JavaScript API, oEmbed endpoint, or postMessage
+ * interface, so the guest half of the bridge this file once documented could
+ * never be written. The editor is in-house now (FloorplanCanvas, plain SVG),
+ * which is also why CLAUDE.md's "no Three.js in Oracle" rule is moot here
+ * rather than worked around.
  *
- * This file is the ONLY shared vocabulary between the two apps. Copy it into
- * the Pascal host app verbatim (or publish it as a tiny shared package) so both
- * sides are compiled against the same message union.
- *
- * UNITS: Pascal's scene graph is metric — WallNode.start/end are [x, z] metres,
- * thickness/height are metres, ZoneNode.polygon is [x, z] metres. Everything
- * that crosses this boundary stays METRIC. Conversion to imperial happens once,
- * in metrics.ts, at the point of rehab costing. Do not convert twice.
+ * UNITS: the document is metric — Wall.start/end are [x, z] metres,
+ * thickness/height are metres, Room.polygon is [x, z] metres. Everything in
+ * this schema stays METRIC. Conversion to imperial happens once, in
+ * metrics.ts, at the point of rehab costing. Do not convert twice.
  */
 
 export const FLOORPLAN_PROTOCOL_VERSION = 1;
@@ -111,6 +111,31 @@ export interface FloorplanDocument {
     notes?: string;
   };
 }
+
+// ---------------------------------------------------------------------------
+// Dimension provenance — what backend/floorplan_pipeline/dimensions.py's
+// complete_dimensions() attributes on every construction number it resolves.
+// Persisted alongside the document (migration 0075) so a saved plan keeps
+// answering "where did this number come from" after reload, not only in the
+// toast at the moment auto-fill ran.
+// ---------------------------------------------------------------------------
+
+export type DimensionProvenance = 'measured' | 'sourced' | 'estimated' | 'default';
+
+export interface DimensionValue {
+  value: number;
+  unit: string;
+  provenance: DimensionProvenance;
+  /** Human-readable reason, e.g. "US frame construction default". Always
+   * present so an estimated/default value can say WHY, not just THAT. */
+  basis: string;
+}
+
+/** Keyed by dimension name (e.g. "storey_height_m", "total_floor_area_sqft").
+ * NULL on the document as a whole means provenance is genuinely unknown — a
+ * manual draw, or a plan saved before this schema existed — and must render
+ * as "provenance unknown", never as though every field were measured. */
+export type DimensionManifest = Record<string, DimensionValue>;
 
 export const EMPTY_FLOORPLAN: FloorplanDocument = {
   schema_version: FLOORPLAN_PROTOCOL_VERSION,

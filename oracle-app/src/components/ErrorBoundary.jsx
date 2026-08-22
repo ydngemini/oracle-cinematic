@@ -3,7 +3,7 @@ import styles from './ErrorBoundary.module.css';
 
 /**
  * App-level resilience boundary. Without this, a throw in ANY descendant
- * (WebSocket hook, Jarvis SpeechRecognition, PropertyCanvas/gsplat, DealPipeline)
+ * (WebSocket hook, Jarvis SpeechRecognition, the gsplat/WebGL viewers, DealPipeline)
  * unmounts the whole tree and leaves a black screen. Catch it, keep the shell,
  * and offer a recovery path instead of a dead page.
  *

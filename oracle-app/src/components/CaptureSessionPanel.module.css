@@ -1,0 +1,139 @@
+/* Capture session controls on Property View. Glassmorphism to match the
+   surrounding panels; pure CSS Modules, no UI library. */
+
+.panel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  padding: 1rem 1.1rem 1.15rem;
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  background: rgba(255, 255, 255, 0.035);
+  backdrop-filter: blur(8px);
+}
+
+.head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.head h3 {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.sub {
+  margin: 0.2rem 0 0;
+  font-size: 0.82rem;
+  color: #8fa3bd;
+}
+
+.link {
+  font: inherit;
+  font-size: 0.82rem;
+  color: #7cc4ff;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.tips {
+  margin: 0;
+  padding-left: 1.1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  font-size: 0.82rem;
+  line-height: 1.45;
+  color: #b9c6d8;
+}
+
+.ready,
+.notReady,
+.error {
+  margin: 0;
+  font-size: 0.84rem;
+  line-height: 1.45;
+}
+
+.ready { color: #8fe0b0; }
+.notReady { color: #e8c98a; }
+.error { color: #ffb4b4; }
+
+.progressWrap {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.progressBar {
+  height: 6px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.1);
+  overflow: hidden;
+}
+
+.progressFill {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #4f9dff, #7cc4ff);
+  transition: width 400ms ease;
+}
+
+.progressText {
+  margin: 0;
+  font-size: 0.8rem;
+  color: #8fa3bd;
+}
+
+.actions {
+  display: flex;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+
+.primary,
+.secondary {
+  font: inherit;
+  font-size: 0.86rem;
+  padding: 0.45rem 1rem;
+  border-radius: 999px;
+  cursor: pointer;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  transition: background 120ms ease, border-color 120ms ease;
+}
+
+.primary {
+  color: #08131f;
+  background: #7cc4ff;
+  border-color: #7cc4ff;
+  font-weight: 600;
+}
+
+.primary:hover:not(:disabled) { background: #9ad2ff; }
+
+.primary:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.secondary {
+  color: inherit;
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.secondary:hover { background: rgba(255, 255, 255, 0.12); }
+
+@media (prefers-reduced-motion: reduce) {
+  .progressFill,
+  .primary,
+  .secondary { transition: none; }
+}

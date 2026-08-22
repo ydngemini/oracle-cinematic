@@ -1,0 +1,153 @@
+/* 360° walkthrough overlay. Mirrors WalkableSplatViewer's glassmorphism so the
+   two tour tiers feel like one surface. Pure CSS Modules — no UI library. */
+
+.overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1200;
+  display: flex;
+  flex-direction: column;
+  background: #0b0d10;
+  color: #e8ecf2;
+}
+
+.canvas {
+  flex: 1 1 auto;
+  width: 100%;
+  min-height: 0;
+  display: block;
+  touch-action: none; /* the drag-look owns the gesture */
+  cursor: grab;
+  outline: none;
+}
+
+.canvas:active { cursor: grabbing; }
+
+/* Keyboard users must be able to see which surface has focus — the canvas is
+   an interactive control here, not decoration. */
+.canvas:focus-visible {
+  outline: 2px solid #7cc4ff;
+  outline-offset: -4px;
+}
+
+.bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.75rem 1rem;
+  background: rgba(16, 19, 24, 0.86);
+  backdrop-filter: blur(10px);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.kicker {
+  display: block;
+  font-size: 0.72rem;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: #8fa3bd;
+}
+
+.addr {
+  display: block;
+  font-size: 0.95rem;
+  font-weight: 600;
+}
+
+.closeBtn,
+.room,
+.roomActive,
+.hotspot {
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  background: rgba(255, 255, 255, 0.06);
+  transition: background 120ms ease, border-color 120ms ease;
+}
+
+.closeBtn { padding: 0.45rem 0.95rem; }
+.closeBtn:hover { background: rgba(255, 255, 255, 0.12); }
+
+.hotspot {
+  position: absolute;
+  top: 52%;
+  transform: translate(-50%, -50%);
+  padding: 0.5rem 1rem;
+  background: rgba(12, 16, 22, 0.78);
+  border-color: rgba(124, 196, 255, 0.55);
+  box-shadow: 0 6px 22px rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(6px);
+  white-space: nowrap;
+}
+
+.hotspot:hover { background: rgba(124, 196, 255, 0.22); }
+
+.rooms {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.9rem 1.4rem;
+  padding: 0.7rem 1rem;
+  background: rgba(16, 19, 24, 0.9);
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.floorGroup {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.floorLabel {
+  font-size: 0.7rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #8fa3bd;
+  margin-right: 0.2rem;
+}
+
+.room,
+.roomActive { padding: 0.35rem 0.85rem; font-size: 0.85rem; }
+.room:hover { background: rgba(255, 255, 255, 0.12); }
+
+.roomActive {
+  background: rgba(124, 196, 255, 0.22);
+  border-color: rgba(124, 196, 255, 0.6);
+  font-weight: 600;
+}
+
+.center {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  padding: 2rem;
+  text-align: center;
+  pointer-events: none;
+}
+
+.loadingText { color: #b9c6d8; }
+.errText { color: #ffb4b4; max-width: 34rem; }
+.hint { color: #8fa3bd; font-size: 0.85rem; max-width: 34rem; }
+
+.disclosure {
+  margin: 0;
+  padding: 0.6rem 1rem 0.9rem;
+  font-size: 0.78rem;
+  line-height: 1.45;
+  color: #90a1b8;
+  background: rgba(11, 13, 16, 0.95);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .closeBtn,
+  .room,
+  .roomActive,
+  .hotspot { transition: none; }
+}

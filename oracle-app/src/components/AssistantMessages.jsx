@@ -8,13 +8,25 @@ function timeLabel(value) {
 
 function ActionReceipt({ action, onUndo, undoing }) {
   const fields = Object.entries(action.fields || {});
-  const canUndo = action.status !== 'undone';
+  const undone = action.status === 'undone';
+  // Every one of these three has to hold. The button used to render on `status`
+  // alone, so the six tools that wrote no ledger row produced an Undo that
+  // POSTed to /api/ai/chat/actions/undefined/undo.
+  const canUndo = !undone && action.undoable !== false && Boolean(action.action_id);
+  const detail = fields.length
+    ? fields.map(([key, value]) => `${key.replaceAll('_', ' ')}: ${value ?? 'cleared'}`).join(' · ')
+    : action.detail;
   return (
     <div className={styles.actionReceipt}>
       <span className={styles.actionMark} aria-hidden="true">✓</span>
       <div>
-        <strong>{action.status === 'undone' ? 'Change undone' : 'Record updated'}</strong>
-        <small>{fields.map(([key, value]) => `${key.replaceAll('_', ' ')}: ${value ?? 'cleared'}`).join(' · ')}</small>
+        <strong>{undone ? 'Change undone' : action.detail || 'Record updated'}</strong>
+        {detail && detail !== action.detail && <small>{detail}</small>}
+        {!undone && action.undoable === false && (
+          <small>
+            {action.undo_unavailable_reason || 'This change cannot be undone from here.'}
+          </small>
+        )}
       </div>
       {canUndo && (
         <button type="button" onClick={() => onUndo(action)} disabled={undoing === action.action_id}>

@@ -1,5 +1,5 @@
 import { lazy, Suspense, useState } from 'react';
-import { House, MapPin } from 'lucide-react';
+import { House, MapPin, Store } from 'lucide-react';
 import { ErrorBoundary } from './ErrorBoundary';
 import styles from './PropertiesTab.module.css';
 
@@ -9,10 +9,16 @@ import styles from './PropertiesTab.module.css';
 // same switcher pattern DealsTab uses for Transactions/Contracts.
 const PropertyViewTab = lazy(() => import('./PropertyViewTab'));
 const HouseSelection = lazy(() => import('./HouseSelection'));
+// GET/POST /api/crm/listings had no caller anywhere, so a listing could not be
+// created through the product — while the assistant could already anchor to one
+// and update_listing is an allowlisted tool. Distinct from Houses, which
+// browses public parcel records the workspace does not own.
+const ListingsInventory = lazy(() => import('./ListingsInventory'));
 
 const VIEWS = [
   { id: 'address', label: 'Address', Icon: MapPin },
   { id: 'houses', label: 'Houses', Icon: House },
+  { id: 'listings', label: 'Listings', Icon: Store },
 ];
 
 function ViewFallback() {
@@ -46,9 +52,11 @@ export default function PropertiesTab() {
       </header>
 
       <div className={styles.workspace}>
-        <ErrorBoundary label={view === 'address' ? 'Property View' : 'Houses'}>
+        <ErrorBoundary label={VIEWS.find((entry) => entry.id === view)?.label ?? 'Property View'}>
           <Suspense fallback={<ViewFallback />}>
-            {view === 'address' ? <PropertyViewTab /> : <HouseSelection />}
+            {view === 'address' && <PropertyViewTab />}
+            {view === 'houses' && <HouseSelection />}
+            {view === 'listings' && <ListingsInventory />}
           </Suspense>
         </ErrorBoundary>
       </div>

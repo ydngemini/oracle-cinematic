@@ -82,27 +82,42 @@ async function idbDelete(storeName, key) {
 
 // ─── Predictive Pre-Download Engine ──────────────────────────────────────────
 
-const SPLAT_BASE = '/public/splats';
+// Reconstructions are served by the authenticated media route, keyed by the
+// media row's id. They used to come from an unauthenticated `/public/splats`
+// mount at a filename derived from the address — that mount is gone, and with
+// it the ability to prefetch by address. `mediaId` here is the id the tour
+// resolver hands back in `splat_url`, so a prefetch is only possible for a
+// property the user has already been shown.
 const API_BASE = self.location.origin;
 // Splats are 10-60MB each, so a fixed count thrashes once a few listings are
 // walked. Bound by total BYTES (primary) with a generous count as a secondary
-// guard. propertyId here is the unique splat filename (one row → one file).
+// guard.
 const MAX_CACHED_SPLATS = 30;
 const MAX_CACHE_BYTES = 400 * 1024 * 1024; // ~400 MB of cached splats
 
-async function prefetchSplat(propertyId) {
-  const existing = await idbGet(STORE_SPLATS, propertyId);
+async function prefetchSplat(mediaId) {
+  // No media id means nothing has been captured for this property, or the
+  // caller has not resolved its tour yet. Either way there is nothing to fetch.
+  if (!mediaId) return;
+
+  const existing = await idbGet(STORE_SPLATS, mediaId);
   if (existing?.blob) return;
 
-  const url = `${API_BASE}${SPLAT_BASE}/${propertyId}.splat`;
+  const url = `${API_BASE}/api/media/${mediaId}`;
 
   try {
-    const resp = await fetch(url, { mode: 'cors', credentials: 'same-origin' });
+    // same-origin credentials so the authenticated route accepts it; a 401/403
+    // simply means this user may not read it, and `resp.ok` handles that.
+    const resp = await fetch(url, { credentials: 'same-origin' });
     if (!resp.ok) return;
 
     const blob = await resp.blob();
     await idbPut(STORE_SPLATS, {
-      propertyId,
+      // The store's keyPath is still named `propertyId` (renaming it would need
+      // an IndexedDB version bump for no behavioural gain); the value is the
+      // media id, which is what both the prefetch and the fetch interception
+      // can actually see in a `/api/media/{id}` URL.
+      propertyId: mediaId,
       blob,
       size: blob.size,
       cachedAt: Date.now(),
@@ -158,7 +173,7 @@ self.addEventListener('message', async (event) => {
       const pid = prop.propertyId || prop.property_id;
       if (!pid) return;
 
-      await prefetchSplat(pid);
+      await prefetchSplat(prop.splatMediaId || prop.splat_media_id);
 
       if (prop.legalPayload) {
         await prefetchLegal(pid, prop.legalPayload);
@@ -232,10 +247,14 @@ self.addEventListener('message', async (event) => {
 
 // ─── Fetch Intercept: Serve splats from IndexedDB if cached ──────────────────
 
+// Serve a prefetched reconstruction from IndexedDB. Deliberately does NOT
+// store on the fetch path: this route now matches `/api/media/*`, which is
+// every photo as well as every splat, and caching all of them here would fill
+// the 400 MB splat budget with thumbnails. Only prefetchSplat() writes, and it
+// only runs for ids the app has explicitly nominated.
 async function serveSplat(request) {
-  const filename = request.url.split('/').pop();
-  const propertyId = filename.replace('.splat', '');
-  const cached = await idbGet(STORE_SPLATS, propertyId);
+  const mediaId = new URL(request.url).pathname.split('/').pop();
+  const cached = await idbGet(STORE_SPLATS, mediaId);
   if (cached?.blob) {
     return new Response(cached.blob, {
       status: 200,
@@ -246,24 +265,13 @@ async function serveSplat(request) {
       },
     });
   }
-  const response = await fetch(request);
-  if (response.ok) {
-    const blob = await response.clone().blob();
-    idbPut(STORE_SPLATS, {
-      propertyId,
-      blob,
-      size: blob.size,
-      cachedAt: Date.now(),
-    }).catch(() => {});
-  }
-  return response;
+  return fetch(request);
 }
 
 registerRoute(
   ({ url }) => (
     url.origin === self.location.origin
-    && url.pathname.startsWith(SPLAT_BASE)
-    && url.pathname.endsWith('.splat')
+    && url.pathname.startsWith('/api/media/')
   ),
   ({ request }) => serveSplat(request),
 );

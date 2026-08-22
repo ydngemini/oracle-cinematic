@@ -1,14 +1,18 @@
 import { lazy, Suspense, useState } from 'react';
-import { BriefcaseBusiness, FileCheck2 } from 'lucide-react';
+import { BriefcaseBusiness, FileCheck2, Store } from 'lucide-react';
 import { ErrorBoundary } from './ErrorBoundary';
 import styles from './DealsTab.module.css';
 
 const DealBook = lazy(() => import('./DealBook'));
 const ContractVaultTab = lazy(() => import('./ContractVaultTab'));
+// Disposition lives here rather than in its own top-level tab: a publication
+// only exists once a contract is signed, so it is the tail of this workflow.
+const MarketplaceBrowse = lazy(() => import('./MarketplaceBrowse'));
 
 const VIEWS = [
   { id: 'transactions', label: 'Transactions', Icon: BriefcaseBusiness },
   { id: 'contracts', label: 'Contracts', Icon: FileCheck2 },
+  { id: 'marketplace', label: 'Marketplace', Icon: Store },
 ];
 
 function ViewFallback() {
@@ -42,9 +46,11 @@ export default function DealsTab() {
       </header>
 
       <div className={styles.workspace}>
-        <ErrorBoundary label={view === 'transactions' ? 'Transactions' : 'Contracts'}>
+        <ErrorBoundary label={VIEWS.find((v) => v.id === view)?.label || 'Deals'}>
           <Suspense fallback={<ViewFallback />}>
-            {view === 'transactions' ? <DealBook /> : <ContractVaultTab embedded />}
+            {view === 'transactions' ? <DealBook /> : null}
+            {view === 'contracts' ? <ContractVaultTab embedded /> : null}
+            {view === 'marketplace' ? <MarketplaceBrowse /> : null}
           </Suspense>
         </ErrorBoundary>
       </div>

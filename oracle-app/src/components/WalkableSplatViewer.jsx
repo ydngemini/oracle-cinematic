@@ -6,7 +6,7 @@ import styles from './WalkableSplatViewer.module.css';
  * WalkableSplatViewer — first-person walk-INSIDE a property's Gaussian splat.
  *
  * Per-listing modal overlay (mirrors how PropertyTour is launched). Owns its own
- * gsplat renderer/scene/camera (never the global PropertyCanvas singleton) and a
+ * gsplat renderer/scene/camera (never a shared global one) and a
  * compact first-person controller: WASD + drag-look on desktop, an on-screen
  * joystick + drag-look on touch. Movement is clamped to the loaded splat's bounds
  * (expanded) so you can't walk out into the void where the capture has no data.
@@ -40,7 +40,7 @@ export default function WalkableSplatViewer({ splatUrl, disclosure, address, tit
     try {
       renderer = new SPLAT.WebGLRenderer(canvas);
     } catch {
-      // Same degradation as PropertyCanvas: WebGL unavailable → CSS fallback.
+      // WebGL unavailable → CSS fallback, same as PanoViewer.
       // One-shot flag flip on init failure; the effect returns immediately after.
       // eslint-disable-next-line react-hooks/set-state-in-effect
       setStatus('nowebgl');

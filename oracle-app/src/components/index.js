@@ -6,8 +6,9 @@ export { AgentStatusBar } from './AgentStatusBar';
 export { PropertySpecs } from './PropertySpecs';
 export { LiveTranscript } from './LiveTranscript';
 export { LivePulse } from './LivePulse';
-// PropertyCanvas is intentionally NOT re-exported here so gsplat stays out of
-// the initial CRM chunk.
+// The tour viewers (gsplat / PlayCanvas / PanoViewer) are intentionally NOT
+// re-exported here — they are reached through TourViewer's lazy imports so
+// their engines stay out of the initial CRM chunk.
 export { LoginVault } from './LoginVault';
 export { BillingOverlay } from './BillingOverlay';
 export { WalkerBubble } from './WalkerBubble';

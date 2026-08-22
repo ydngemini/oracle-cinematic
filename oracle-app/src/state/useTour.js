@@ -11,7 +11,8 @@ import { crmGet } from './useCrmApi';
  * if the resolver is offline we behave as exterior-only and never over-promise.
  *
  * @returns {{ tour: object|null }} tour = { best_tier, badge, honest_note,
- *   walkable_interior, disclosure, tiers, splat_url, pano_manifest_url, photo_count }
+ *   walkable_interior, is_this_property, disclosure, tiers, splat_url,
+ *   pano_scenes, pano_scene_count, photo_count }
  */
 export function useTour({ leadId, listingId }) {
   const [tour, setTour] = useState(null);

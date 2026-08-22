@@ -1,4 +1,4 @@
-/* RehabEditorDrawer — Pascal editor iframe + live rehab line items. */
+/* RehabEditorDrawer — in-house SVG floor-plan canvas + live rehab line items. */
 
 .overlay {
   position: fixed;
@@ -199,6 +199,66 @@
   color: rgba(244, 244, 245, 0.66);
 }
 
+/* ── dimension provenance ────────────────────────────────────────────────── */
+.provenance { display: flex; flex-direction: column; gap: 6px; }
+
+.provenanceHead { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+
+.provenanceTitle {
+  font-size: 0.625rem;
+  font-weight: 600;
+  letter-spacing: var(--tracking-widest);
+  text-transform: uppercase;
+  color: rgba(244, 244, 245, 0.45);
+}
+
+.provenanceStale {
+  font-size: 0.625rem;
+  color: rgba(240, 180, 41, 0.85);
+  cursor: help;
+}
+
+.provenanceList {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-2);
+  margin: 0;
+}
+.provenanceList > div { display: flex; flex-direction: column; gap: 1px; }
+.provenanceList dt {
+  font-size: 0.5625rem;
+  letter-spacing: var(--tracking-widest);
+  text-transform: uppercase;
+  color: rgba(244, 244, 245, 0.45);
+}
+.provenanceList dd {
+  margin: 0;
+  font-size: 0.8125rem;
+  color: #f4f4f5;
+  font-variant-numeric: tabular-nums;
+}
+/* An estimated or default value is a guess, never a measurement — the dashed
+   underline and muted tone must stay visually distinct from a plain dd at a
+   glance, not only via the ≈ prefix a skim can miss. */
+.provenanceList div[data-guess='true'] dd {
+  color: rgba(244, 244, 245, 0.7);
+  border-bottom: 1px dashed rgba(244, 244, 245, 0.35);
+  width: fit-content;
+  cursor: help;
+}
+
+.provenanceChip {
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: rgba(110, 231, 183, 0.12);
+  color: #6ee7b7;
+  font-size: 0.5625rem;
+  letter-spacing: 0.02em;
+  text-transform: none;
+  vertical-align: middle;
+}
+
 /* ── line items ──────────────────────────────────────────────────────────── */
 .lineItems { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 1px; }
 
@@ -258,6 +318,99 @@
   cursor: pointer;
 }
 .reset:hover { border-color: var(--oracle-amber, #f0b429); color: #f4f4f5; }
+
+.historyBanner {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin: 0;
+  padding: 9px var(--space-4);
+  font-size: 0.75rem;
+  border-left: 2px solid rgba(240, 180, 41, 0.5);
+  background: rgba(240, 180, 41, 0.08);
+  color: rgba(244, 244, 245, 0.85);
+}
+.historyBanner button {
+  border: 1px solid rgba(244, 244, 245, 0.25);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  padding: 3px 10px;
+  border-radius: 999px;
+  cursor: pointer;
+}
+.historyBanner button:hover { border-color: rgba(244, 244, 245, 0.5); }
+
+.revisionsPanel {
+  position: absolute;
+  top: 56px;
+  right: var(--space-4);
+  z-index: 5;
+  width: 260px;
+  max-height: 60vh;
+  overflow-y: auto;
+  border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.12));
+  border-radius: 10px;
+  background: #141416;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
+}
+
+.revisionsPanelHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.12));
+  font-size: 0.6875rem;
+  letter-spacing: var(--tracking-widest);
+  text-transform: uppercase;
+  color: rgba(244, 244, 245, 0.6);
+}
+.revisionsPanelHead .close { padding: 2px; }
+
+.revisionsPanel > .muted { padding: 12px; }
+
+.revisionsList { list-style: none; margin: 0; padding: 4px; display: flex; flex-direction: column; gap: 2px; }
+.revisionsList button {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding: 8px 10px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: #f4f4f5;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.revisionsList button:hover { background: rgba(255, 255, 255, 0.06); }
+.revisionNumber { font-weight: 600; font-size: 0.8125rem; }
+
+.uploadBody { display: flex; flex-direction: column; gap: 10px; padding: 12px; }
+
+.uploadField { display: flex; flex-direction: column; gap: 4px; }
+.uploadField span {
+  font-size: 0.5625rem;
+  letter-spacing: var(--tracking-widest);
+  text-transform: uppercase;
+  color: rgba(244, 244, 245, 0.45);
+}
+.uploadField input {
+  padding: 6px 8px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.3);
+  color: #f4f4f5;
+  font-size: 0.75rem;
+}
+.uploadField input[type='file'] { padding: 4px; }
+.uploadField input:focus { outline: none; border-color: var(--oracle-amber, #f0b429); }
+
+.uploadBody .save { align-self: flex-start; }
 
 .ok, .error {
   flex: none;
