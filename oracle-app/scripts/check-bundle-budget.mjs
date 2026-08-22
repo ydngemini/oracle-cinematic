@@ -81,11 +81,20 @@ const limits = [
   ['totalGzipBytes', 'total JS (gzip)'],
 ];
 
+// Build output is not byte-identical across environments: zlib differs between
+// Node versions and the minifier's output can shift by a few bytes for reasons
+// unrelated to the source. `--update` pins the budget to whatever the updating
+// machine measured, so without slack the very next CI run fails by a rounding
+// error — which is exactly what happened at 1010.9 KB against a 1010.8 KB
+// ceiling. The tolerance below absorbs that noise and nothing else: adding a
+// module costs tens of KB, so 2 KB cannot hide a real regression.
+const TOLERANCE_BYTES = 2 * 1024;
+
 const failures = [];
 for (const [key, label] of limits) {
   const limit = budget[key];
   if (typeof limit !== 'number') continue;
-  if (actual[key] > limit) {
+  if (actual[key] > limit + TOLERANCE_BYTES) {
     failures.push(`  ${label}: ${kb(actual[key])} exceeds budget ${kb(limit)} (+${kb(actual[key] - limit)})`);
   }
 }
