@@ -39,15 +39,19 @@ export interface LoadedTourAsset {
 /**
  * Map a URL to the PlayCanvas asset type. Extension is authoritative.
  *
- * `.splat` is the only splat format accepted. The reconstruction worker emits
- * it (fixed 32-byte rows), the existing gsplat viewer reads it, and it is what
- * the tour resolver hands back — so one format travels the whole pipeline.
+ * `.sog` is the delivery format, and `.splat` is still accepted because assets
+ * recorded before the format fix are stored as `.splat` and render fine. The
+ * pipeline used to target `.splat` alone, which turned out to be unreachable:
+ * splat-transform lists `.splat` as input-only in every released version, so
+ * the worker's conversion step failed for every provider that emits PLY. `.sog`
+ * is what the tool writes and what PlayCanvas renders (`GSplatSogResource`
+ * ships in the engine version this app already depends on).
  *
- * `.ply` is deliberately NOT accepted. It is the raw training output: an order
- * of magnitude larger for the same scene, which on a phone means a long stall
- * on a metered connection before anything renders. Anything that produces PLY
- * must run splat-transform before the URL reaches a viewer, and failing loudly
- * here is how that stays true.
+ * `.ply` is still deliberately NOT accepted. It is the raw training output: an
+ * order of magnitude larger for the same scene, which on a phone means a long
+ * stall on a metered connection before anything renders. Anything that produces
+ * PLY must run splat-transform before the URL reaches a viewer, and failing
+ * loudly here is how that stays true.
  */
 export function inferAssetKind(url: string): TourAssetKind {
   // Strip query/hash first — presigned S3 URLs carry a long query string and
@@ -55,10 +59,10 @@ export function inferAssetKind(url: string): TourAssetKind {
   const path = url.split(/[?#]/, 1)[0].toLowerCase();
   if (path.endsWith('.ply')) {
     throw new UnsupportedTourAssetError(
-      'PLY is not a delivery format — convert to .splat before serving it to a viewer.',
+      'PLY is not a delivery format — convert to .sog before serving it to a viewer.',
     );
   }
-  if (path.endsWith('.splat')) return 'gsplat';
+  if (path.endsWith('.sog') || path.endsWith('.splat')) return 'gsplat';
   if (path.endsWith('.glb') || path.endsWith('.gltf')) return 'container';
   if (/\.(png|jpe?g|webp|ktx2|basis)$/.test(path)) return 'texture';
   return 'model';

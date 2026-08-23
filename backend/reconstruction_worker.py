@@ -8,9 +8,14 @@ an in-process asyncio.Queue + fixed worker pool started/stopped in the server
 lifespan; callers POST → 202 → poll a reconstruction_jobs row.
 
 Pipeline (provider-agnostic; see reconstruction_providers.py):
-  gather source photos → provider.reconstruct() → .ply/.splat
-  → convert to standard .splat (PlayCanvas splat-transform) → store
+  gather source photos → provider.reconstruct() → .ply/.spz/.sog/.splat
+  → convert to .sog (PlayCanvas splat-transform) → store
   → property_media row kind='splat' (+ AI-disclosure manifest) → broadcast SPLAT_READY
+
+The delivery format is `.sog`, not `.splat`. See _convert_to_delivery: no
+released splat-transform can write `.splat`, so the old target was unreachable
+for every provider that emits PLY. The row's `kind` stays 'splat' — it names the
+kind of media, not the container — and stored `.splat` assets still load.
 """
 
 from __future__ import annotations
@@ -31,8 +36,11 @@ import media_storage
 from db.connection import tenant_tx
 from tenancy import TenantContext
 from reconstruction_providers import (
+    CONVERTIBLE_SUFFIXES,
+    DELIVERY_SUFFIX,
     SPATIAL_AI_DISCLOSURE,
     SPLAT_OUTPUT_DIR,
+    SPLAT_TRANSFORM_VERSION,
     ProviderError,
     get_provider,
 )
@@ -198,27 +206,76 @@ async def _gather_source_images(
     return out, counts
 
 
-async def _convert_to_splat(src: Path, work_dir: Path, media_id: str) -> Path:
-    """A provider may return .splat (use as-is) or .ply (convert via the MIT
-    PlayCanvas splat-transform — NOT spatial_agent's non-standard converter)."""
-    if src.suffix == ".splat":
+async def _convert_to_delivery(src: Path, work_dir: Path, media_id: str) -> Path:
+    """Convert a provider's raw output into the format the viewer is served.
+
+    **Delivery is `.sog`, and that is forced on us rather than preferred.**
+    This function used to ask splat-transform to write `.splat`, which it has
+    never been able to do: `.splat` (antimatter15) is an *input* format in every
+    published version — v2.7.1, v3.0.0 and 3.3.0 all list it `input ✅ /
+    output ❌`, and the pinned binary's own `--help` agrees:
+
+        SUPPORTED OUTPUTS
+          .ply .compressed.ply .sog .spz meta.json lod-meta.json .glb
+          .csv .html .voxel.json .webp null
+
+    So every provider that emits PLY from splatfacto — `local`, `cloud`,
+    `aws_batch`, `runpod`, `oncompute`, i.e. all the real ones — failed here,
+    and only StubProvider ever got through, because `write_demo_splat` writes
+    `.splat` bytes itself and never invokes the converter. That is the whole
+    reason the only splat ever to reach the database is the synthetic one.
+
+    `.sog` is the right target rather than a workaround: splat-transform writes
+    it and calls it recommended, the PlayCanvas engine already in `package.json`
+    renders it (`GSplatSogData` / `GSplatSogResource` ship in 2.21.3), it is the
+    format SuperSplat's own viewer loads, and it is roughly an order of
+    magnitude smaller than PLY — which is what makes phone-scan upload and
+    service-worker prefetch tractable at all.
+
+    Anything already deliverable passes through untouched. That keeps `.splat`
+    working: assets recorded before this change still load, and the stub path
+    still runs on hosts with no Node installed.
+    """
+    name = src.name.lower()
+    if name.endswith(DELIVERY_SUFFIX) or name.endswith(".splat"):
+        # .sog is current; .splat is legacy-but-renderable, so neither needs a
+        # conversion pass. Converting .splat here would make the stub path
+        # depend on Node for no gain.
         return src
-    out = work_dir / f"{media_id}.splat"
+
+    if not any(name.endswith(ext) for ext in CONVERTIBLE_SUFFIXES):
+        raise ProviderError(
+            f"{src.name!r} is not a splat format this pipeline can deliver "
+            f"(expected one of {', '.join(CONVERTIBLE_SUFFIXES)}, .sog or .splat)"
+        )
+
+    out = work_dir / f"{media_id}{DELIVERY_SUFFIX}"
     if shutil.which("splat-transform"):
         cmd = ["splat-transform", str(src), str(out)]
     elif shutil.which("npx"):
-        cmd = ["npx", "-y", "@playcanvas/splat-transform", str(src), str(out)]
+        # Pinned deliberately. An unpinned `npx -y` resolves to whatever is
+        # latest at run time, which is exactly how the format support this
+        # pipeline depended on changed underneath it without a code change.
+        cmd = ["npx", "-y", f"@playcanvas/splat-transform@{SPLAT_TRANSFORM_VERSION}",
+               str(src), str(out)]
     else:
         raise ProviderError(
-            "splat-transform not installed — cannot convert .ply "
-            "(npm i -g @playcanvas/splat-transform)"
+            f"splat-transform not installed — cannot convert {src.suffix} to "
+            f"{DELIVERY_SUFFIX} (npm i -g "
+            f"@playcanvas/splat-transform@{SPLAT_TRANSFORM_VERSION}; needs Node >= 22)"
         )
     proc = await asyncio.create_subprocess_exec(
         *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT
     )
     o, _ = await asyncio.wait_for(proc.communicate(), timeout=600)
     if proc.returncode != 0 or not out.is_file():
-        raise ProviderError(f"splat-transform failed: {(o or b'')[-400:].decode('utf-8', 'replace')}")
+        tail = (o or b"")[-400:].decode("utf-8", "replace")
+        # Name the input format. An SPZ v4 file hitting a splat-transform too
+        # old to read it fails right here, and "conversion failed" alone sends
+        # the reader looking at the GPU job instead of the pin.
+        raise ProviderError(
+            f"splat-transform could not convert {src.name} to {DELIVERY_SUFFIX}: {tail}"
+        )
     return out
 
 
@@ -256,7 +313,12 @@ async def _store_splat(
 
     import object_storage
 
-    splat_key = f"splats/{tenant_id}/{media_id}.splat"
+    # Follow the artifact's real suffix rather than hardcoding one. The
+    # converter passes a legacy .splat through untouched, so a fixed .sog key
+    # here would label those bytes as a format they are not — and the extension
+    # is what the frontend's assetLoader dispatches on.
+    suffix = DELIVERY_SUFFIX if src_splat.name.lower().endswith(DELIVERY_SUFFIX) else ".splat"
+    splat_key = f"splats/{tenant_id}/{media_id}{suffix}"
     manifest_key = f"splats/{tenant_id}/{media_id}.json"
     await asyncio.to_thread(
         object_storage.put_file, splat_key, src_splat, "application/octet-stream"
@@ -411,8 +473,8 @@ async def _process(job: ReconstructionJob) -> None:
         with tempfile.TemporaryDirectory(prefix="recon_") as tmp:
             work = Path(tmp)
             images, counts = await _gather_source_images(job, work / "images")
-            raw = await provider.reconstruct(images, work)            # .ply or .splat
-            splat = await _convert_to_splat(raw, work, media_id)      # standard .splat
+            raw = await provider.reconstruct(images, work)            # .ply/.spz/.sog/.splat
+            splat = await _convert_to_delivery(raw, work, media_id)   # .sog (or legacy .splat)
             url, s3_key = await _store_splat(
                 splat, media_id,
                 provider=provider.name,

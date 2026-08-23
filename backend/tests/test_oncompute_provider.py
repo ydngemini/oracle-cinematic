@@ -241,7 +241,11 @@ def test_a_failed_job_surfaces_the_node_status_text(monkeypatch, configured, tmp
 
 def test_a_misaligned_artifact_is_refused(monkeypatch, configured, tmp_path):
     session = _Session(result_content=b"not-a-splat")
-    with pytest.raises(rp.ProviderError, match="invalid .splat"):
+    # The message names the reason (row alignment) rather than a generic
+    # "invalid", and the check is format-scoped: .sog is a compressed container
+    # with no 32-byte invariant, so applying one there would reject 31 of every
+    # 32 valid reconstructions.
+    with pytest.raises(rp.ProviderError, match=r"truncated \.splat"):
         _run(monkeypatch, session, tmp_path)
 
 

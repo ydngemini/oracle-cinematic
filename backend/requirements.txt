@@ -31,6 +31,9 @@ aiohttp==3.14.3                # Agent Mind llama-server streaming (mind_service
 websockets==15.0.1             # ACS <-> Qwen Omni realtime audio bridge
 httpx==0.28.1                  # K8s HPA / pod queries in admin_c2.py (lazy import — not in venv yet)
 requests==2.34.2               # RunPod reconstruction provider HTTP submit/poll
+# PodProvider pushes a capture to a rented RunPod GPU over SSH and pulls the
+# .sog back. Lazy-imported, so only the pods reconstruction path needs it.
+asyncssh==2.24.0
 playwright==1.62.0             # Browser-backed public-record harvesters
 
 # ── Microsoft Foundry ─────────────────────────────────────────────────────────

@@ -32,9 +32,21 @@ export default function WalkableSplatViewer({ splatUrl, disclosure, address, tit
   const [progress, setProgress] = useState(0);
   const [hintVisible, setHintVisible] = useState(true);
 
+  // The gsplat package ships Loader (.splat), PLYLoader and SplatvLoader — there
+  // is no SOG reader. Since the pipeline delivers .sog, this fallback engine
+  // cannot open a current reconstruction, and should say so rather than surface
+  // a generic "couldn't load": the fix is an env change (VITE_TOUR_ENGINE), not
+  // a retry, and only the operator can make it.
+  //
+  // Derived during render rather than set from the effect: it is a pure
+  // function of the prop, so making it state would mean a render that paints
+  // "loading" before correcting itself.
+  const unsupportedFormat =
+    Boolean(splatUrl) && absUrl(splatUrl).split(/[?#]/, 1)[0].toLowerCase().endsWith('.sog');
+
   useEffect(() => {
     const canvas = canvasRef.current;
-    if (!canvas || !splatUrl) return undefined;
+    if (!canvas || !splatUrl || unsupportedFormat) return undefined;
 
     let renderer;
     try {
@@ -160,7 +172,7 @@ export default function WalkableSplatViewer({ splatUrl, disclosure, address, tit
       try { renderer.dispose(); } catch { /* noop */ }
       ctrlRef.current = null;
     };
-  }, [splatUrl]);
+  }, [splatUrl, unsupportedFormat]);
 
   // ── on-screen joystick (touch) — writes normalized vector into the controller ──
   const joyRef = useRef(null);
@@ -182,7 +194,17 @@ export default function WalkableSplatViewer({ splatUrl, disclosure, address, tit
     <div className={styles.overlay} role="dialog" aria-modal="true" aria-label={`Walk inside ${title || address || 'property'}`}>
       <canvas ref={canvasRef} className={styles.canvas} />
 
-      {status === 'loading' && (
+      {unsupportedFormat && (
+        <div className={styles.center} role="alert">
+          <p className={styles.errText}>
+            This walkthrough is a .sog file, which the fallback gsplat renderer
+            cannot read. Unset VITE_TOUR_ENGINE to use the PlayCanvas engine,
+            which renders it.
+          </p>
+          <button type="button" className={styles.ghostBtn} onClick={onClose}>Close</button>
+        </div>
+      )}
+      {!unsupportedFormat && status === 'loading' && (
         <div className={styles.center} aria-live="polite">
           <span className={styles.spinner} aria-hidden="true" />
           <span className={styles.loadingText}>Loading walkthrough… {progress}%</span>

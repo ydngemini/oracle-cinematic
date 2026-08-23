@@ -23,7 +23,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # chaining). NodeSource gives Node 20.
 
 # .ply -> .splat converter (MIT) + awscli for S3 I/O.
-RUN npm install -g @playcanvas/splat-transform \
+RUN npm install -g @playcanvas/splat-transform@3.3.0 \
     && pip3 install --upgrade pip awscli
 
 # Torch (CUDA 12.1) then nerfstudio (pulls tinycudann/gsplat — Apache-2.0).

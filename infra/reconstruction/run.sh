@@ -1,12 +1,16 @@
 #!/usr/bin/env bash
 # Neoh reconstruction job — runs inside the AWS Batch GPU container.
 # Reads capture images from INPUT_S3, runs COLMAP poses + 3D Gaussian Splatting
-# (nerfstudio splatfacto, Apache-2.0), converts the .ply to the antimatter15
-# .splat the gsplat web viewer loads, and uploads it to OUTPUT_S3.
+# (nerfstudio splatfacto, Apache-2.0), converts the .ply to the .sog the
+# PlayCanvas viewer loads, and uploads it to OUTPUT_S3.
+#
+# .sog, not .splat: splat-transform cannot WRITE .splat in any released version
+# (it is input-only), so the previous `splat-transform "$PLY" model.splat` step
+# failed on every real run. .sog is what the tool writes and the engine reads.
 set -euo pipefail
 
 : "${INPUT_S3:?INPUT_S3 (s3://bucket/recon-inputs/<job>) is required}"
-: "${OUTPUT_S3:?OUTPUT_S3 (s3://bucket/recon-outputs/<job>/model.splat) is required}"
+: "${OUTPUT_S3:?OUTPUT_S3 (s3://bucket/recon-outputs/<job>/model.sog) is required}"
 ITERS="${RECON_ITERS:-7000}"
 
 WORK=/work
@@ -33,9 +37,10 @@ ns-export gaussian-splat --load-config "$CONFIG" --output-dir "$WORK/export"
 PLY=$(find "$WORK/export" -name '*.ply' | head -1)
 [ -n "$PLY" ] || { echo "!! no .ply exported" >&2; exit 4; }
 
-echo ">> [4/4] .ply -> .splat (PlayCanvas splat-transform, MIT)"
-splat-transform "$PLY" "$WORK/model.splat"
+echo ">> [4/4] .ply -> .sog (PlayCanvas splat-transform, MIT)"
+splat-transform "$PLY" "$WORK/model.sog"
+[ -s "$WORK/model.sog" ] || { echo "!! splat-transform produced no .sog" >&2; exit 5; }
 
 echo ">> uploading to $OUTPUT_S3"
-aws s3 cp "$WORK/model.splat" "$OUTPUT_S3" --content-type application/octet-stream
+aws s3 cp "$WORK/model.sog" "$OUTPUT_S3" --content-type application/octet-stream
 echo ">> done"

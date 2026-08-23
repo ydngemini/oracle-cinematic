@@ -29,7 +29,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # supplies Node 22, the converter's declared minimum runtime.
 
 # .ply -> .splat converter (MIT).
-RUN npm install -g @playcanvas/splat-transform@3.0.0 && npm cache clean --force \
+RUN npm install -g @playcanvas/splat-transform@3.3.0 && npm cache clean --force \
     && pip3 install --upgrade pip==26.1.2
 
 # Torch (CUDA 12.1) then nerfstudio. gsplat/nerfacc install as prebuilt wheels and

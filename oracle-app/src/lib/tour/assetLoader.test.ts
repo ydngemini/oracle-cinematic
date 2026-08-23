@@ -1,11 +1,19 @@
 /**
  * Tour asset kind resolution.
  *
- * The rule this pins down: `.splat` is the only splat format that reaches a
- * viewer. PLY is training output — roughly an order of magnitude larger for the
- * same scene — and reconstruction_worker converts it before anything is served.
- * Refusing it here keeps that invariant enforced at the boundary rather than
- * assumed.
+ * The rule this pins down: only a *delivery* format reaches a viewer. That is
+ * `.sog` today, plus `.splat` for assets recorded before the format fix — both
+ * render, so both are accepted.
+ *
+ * The pipeline used to target `.splat` alone, which turned out to be a format
+ * splat-transform cannot write (it is input-only in every released version), so
+ * conversion failed for every provider that emits PLY. `.sog` is what the tool
+ * writes and what PlayCanvas renders.
+ *
+ * PLY stays refused: it is training output, roughly an order of magnitude larger
+ * for the same scene, and reconstruction_worker converts it before anything is
+ * served. Refusing it here keeps that invariant enforced at the boundary rather
+ * than assumed.
  */
 
 import { describe, expect, it } from 'vitest';
@@ -13,8 +21,20 @@ import { describe, expect, it } from 'vitest';
 import { inferAssetKind, UnsupportedTourAssetError } from './assetLoader';
 
 describe('inferAssetKind', () => {
-  it('maps .splat to the gsplat component', () => {
+  it('maps .sog to the gsplat component', () => {
+    expect(inferAssetKind('https://cdn.example/recon/model.sog')).toBe('gsplat');
+  });
+
+  it('still maps legacy .splat assets to the gsplat component', () => {
+    // Rows written before the delivery format changed are still served, and
+    // still render. Dropping this would orphan every existing reconstruction.
     expect(inferAssetKind('https://cdn.example/recon/model.splat')).toBe('gsplat');
+  });
+
+  it('ignores the query string on a presigned .sog URL', () => {
+    expect(
+      inferAssetKind('https://cdn.example/recon/job-7/model.sog?X-Amz-Signature=abc'),
+    ).toBe('gsplat');
   });
 
   it('ignores the query string on presigned URLs', () => {
@@ -53,8 +73,10 @@ describe('inferAssetKind', () => {
     });
 
     it('names the fix in the message', () => {
-      // The operator needs to know to run splat-transform, not just that it failed.
-      expect(() => inferAssetKind('https://cdn.example/point_cloud.ply')).toThrow(/\.splat/);
+      // The operator needs to know to run splat-transform, not just that it
+      // failed — and specifically to target .sog, since asking that tool for a
+      // .splat is what silently broke the pipeline in the first place.
+      expect(() => inferAssetKind('https://cdn.example/point_cloud.ply')).toThrow(/\.sog/);
     });
 
     it('is case-insensitive', () => {

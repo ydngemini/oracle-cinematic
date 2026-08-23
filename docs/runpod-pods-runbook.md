@@ -29,9 +29,14 @@ Peak VRAM is the splat training step (~12–22 GB, scaling with gaussian count).
 COLMAP itself is light (1–3 GB). So **24 GB is the comfortable tier** and 16 GB
 is a risky floor.
 
+Prices re-measured live 2026-08-23 against the GraphQL `gpuTypes` query. An
+earlier revision of this table called the 3090 the cheapest 24 GB card; the
+**A5000 undercuts it at $0.160/hr**, and `PodProvider` now tries it first.
+
 | GPU | VRAM | $/hr | Note |
 |---|---|---|---|
-| RTX 3090 | 24 G | **$0.220** | cheapest 24 GB — best value here |
+| RTX A5000 | 24 G | **$0.160** | cheapest 24 GB — best value here |
+| RTX 3090 | 24 G | $0.220 | |
 | RTX 3090 Ti | 24 G | $0.270 | |
 | RTX 4090 | 24 G | $0.340 | fastest of the 24 GB tier |
 | A40 | 48 G | $0.350 | headroom for very large captures |
@@ -128,7 +133,20 @@ Subsample to 40–60 views unless the capture genuinely needs more.
 
 ## 7. Wiring it back into Oracle
 
-Nothing to build for a one-off — pull `scene.splat` off the pod and register it:
+**This is automatic now — `PodProvider` in `backend/reconstruction_providers.py`
+does the whole lifecycle unattended:** create pod → wait for SSH → push images →
+run the pipeline → pull `model.sog` → **terminate**. Set
+`RECONSTRUCTION_PROVIDER=runpod_pod`. Termination is in a `finally` and is also
+swept by `PodProvider.reap_stale_pods()`, because a pod bills by the hour whether
+or not it computes and nothing in the product surfaces a leaked one.
+
+Note the output is **`.sog`, not `.splat`**. splat-transform lists `.splat` as
+input-only in every released version, so the `splat-transform "$PLY" model.splat`
+step this runbook used to recommend fails on every real run — which is why no
+reconstruction ever completed end to end. `.sog` is what the tool writes and what
+the PlayCanvas engine renders.
+
+Only for a manual one-off — pull `model.sog` off the pod and register it:
 
 ```sql
 INSERT INTO property_media (id, tenant_id, lead_id, kind, url, s3_key,
@@ -137,13 +155,28 @@ VALUES (gen_random_uuid(), :tenant, :lead, 'splat', :url, :key,
         'application/octet-stream', 'captured', 'runpod-pod');
 ```
 
-**`provenance` decides everything downstream.** `tour_api.py:133` treats only
-`captured` as evidence about the property: a `captured` splat earns tier 3 and
-`is_this_property: true`; anything else is a demo, tier 0, and the viewer shows a
-permanent "not this home" badge. Set it to `captured` **only** if the splat was
-reconstructed from photographs of that address.
+(`kind` stays `'splat'` — it names the kind of media, not the container.)
 
-For an ongoing service rather than a one-off, a `PodProvider` would belong beside
-`RunPodProvider` in `reconstruction_providers.py` — same `available() ->
-(ready, reason)` contract, but renting and releasing a pod per job instead of
-calling a serverless endpoint.
+**`provenance` decides everything downstream.** The tour resolver treats only
+`captured` as evidence about the property: a `captured` asset reports
+`is_this_property: true`, anything else is labelled a demo and the viewer shows a
+permanent "not this home" badge on that asset. Set it to `captured` **only** if
+the splat was reconstructed from photographs of that address.
+
+Note the labelling is now **per asset**, not per tour — a generated capture
+sitting beside genuine 360s no longer marks the whole tour as not-this-property.
+
+### Env
+
+| Var | Default | Notes |
+|---|---|---|
+| `RECONSTRUCTION_PROVIDER` | — | set to `runpod_pod` |
+| `RECON_POD_GPU_IDS` | A5000, 3090, 4090, A40 | preference order; RunPod takes the first available |
+| `RECON_POD_MAX_COST_USD` | `2.00` | hard per-job ceiling; the pod is killed when it is reached |
+| `RECON_POD_MIN_BALANCE_USD` | `1.00` | `available()` refuses below this, naming the balance |
+| `RECON_POD_DISK_GB` | `40` | container disk, not VRAM |
+| `RECON_POD_TIMEOUT` | `5400` | wall-clock ceiling |
+
+`available()` reads the **live balance**, so an unfunded account reports
+"RunPod balance is $-0.05 … add credits" instead of failing mid-job. That is the
+same distinction the Regrid fix drew between an expired credential and an outage.

@@ -29,6 +29,8 @@ import os
 import re
 import shutil
 import struct
+import time
+import uuid
 from pathlib import Path
 from typing import Optional
 from urllib.parse import urlparse
@@ -82,6 +84,81 @@ def _staged_image_name(index: int, path: Path) -> str:
     if not re.fullmatch(r"\.[a-z0-9]{1,10}", suffix):
         suffix = ".img"
     return f"{index:04d}{suffix}"
+
+
+#: The format a finished reconstruction is delivered in.
+#:
+#: This is `.sog`, and it is forced rather than chosen. The pipeline used to
+#: target `.splat` (antimatter15) and asked PlayCanvas splat-transform to write
+#: it — which no released version can do. v2.7.1, v3.0.0 and 3.3.0 all list
+#: `.splat` as input-only, and the pinned binary's own --help agrees. So every
+#: provider that emits PLY from splatfacto failed at conversion, and only
+#: StubProvider (which writes .splat bytes directly, bypassing the converter)
+#: ever succeeded. `.sog` is what splat-transform writes, what the PlayCanvas
+#: engine in package.json renders, and ~10x smaller than PLY.
+DELIVERY_SUFFIX = ".sog"
+
+#: Raw formats a provider may return; all convert to DELIVERY_SUFFIX.
+CONVERTIBLE_SUFFIXES = (".ply", ".compressed.ply", ".spz", ".ksplat")
+
+#: Pinned, and it must stay pinned — keep in step with the container images.
+#: This pipeline depended on format support upstream never had; an unpinned
+#: resolve is how that kind of drift arrives with no diff to review.
+SPLAT_TRANSFORM_VERSION = "3.3.0"
+
+
+def _validate_artifact(path: Path, *, provider: str) -> None:
+    """Reject an artifact that cannot be a splat, without assuming its format.
+
+    The 32-byte row check is specific to `.splat`: that format is a headerless
+    array of fixed 32-byte records, so a size that is not a multiple of 32 is
+    proof of truncation. `.sog` is a compressed container and has no such
+    invariant — applying the check to one would fail every valid file, turning
+    a working reconstruction into "invalid artifact" 31 times out of 32.
+    """
+    if not path.is_file():
+        raise ProviderError(f"{provider} produced no reconstruction artifact")
+    size = path.stat().st_size
+    if size == 0:
+        raise ProviderError(f"{provider} produced an empty reconstruction artifact")
+    name = path.name.lower()
+    if name.endswith(".splat") and size % 32 != 0:
+        raise ProviderError(
+            f"{provider} produced a truncated .splat artifact "
+            f"({size} bytes is not a multiple of the 32-byte row)"
+        )
+    if name.endswith(".ply"):
+        with path.open("rb") as fh:
+            if fh.read(3) != b"ply":
+                raise ProviderError(f"{provider} produced an invalid .ply artifact")
+
+
+def _download_first_available(s3, bucket: str, out_key: str, work_dir: Path, *, provider: str) -> Path:
+    """Fetch whichever delivery format the remote container actually wrote.
+
+    The container images now emit `model.sog`, but an image built before the
+    format fix emits `model.splat`, and both are renderable. Trying the current
+    format first and falling back means a redeploy of the backend does not
+    require rebuilding and republishing every worker image on the same day.
+
+    Raises with the *last* transport error rather than a generic "not found",
+    so a permissions failure does not get reported as a missing artifact.
+    """
+    stem = out_key.rsplit("/", 1)[-1].rsplit(".", 1)[0]
+    prefix = out_key.rsplit("/", 1)[0]
+    last_error: Optional[Exception] = None
+    for suffix in (DELIVERY_SUFFIX, ".splat"):
+        candidate = work_dir / f"{stem}{suffix}"
+        try:
+            s3.download_file(bucket, f"{prefix}/{stem}{suffix}", str(candidate))
+        except Exception as exc:  # noqa: BLE001 - try the next format, keep the reason
+            last_error = exc
+            continue
+        return candidate
+    raise ProviderError(
+        f"{provider} wrote no readable artifact "
+        f"({stem}{DELIVERY_SUFFIX} or {stem}.splat): {last_error}"
+    )
 
 
 def _validate_remote_output_url(value: object, service_url: str) -> str:
@@ -365,7 +442,14 @@ async def _http_reconstruct(url: str, headers: dict, images: list[Path], work_di
                     st.get("output_url") or st.get("ply_url") or st.get("splat_url"),
                     url,
                 )
-                ext = ".splat" if urlparse(dl).path.lower().endswith(".splat") else ".ply"
+                # Recognise every delivery format. Defaulting anything
+                # unknown to .ply meant a .sog artifact was checked for a "ply"
+                # magic header it does not have, and rejected as invalid.
+                _p = urlparse(dl).path.lower()
+                ext = next(
+                    (e for e in (DELIVERY_SUFFIX, ".splat", ".spz", ".compressed.ply") if _p.endswith(e)),
+                    ".ply",
+                )
                 out = work_dir / f"remote{ext}"
                 async with s.get(dl, allow_redirects=False) as r:
                     if r.status >= 400:
@@ -387,12 +471,7 @@ async def _http_reconstruct(url: str, headers: dict, images: list[Path], work_di
                             output_file.write(chunk)
                 if written <= 0:
                     raise ProviderError("remote job returned an empty artifact")
-                if ext == ".splat" and written % 32 != 0:
-                    raise ProviderError("remote job returned an invalid .splat artifact")
-                if ext == ".ply":
-                    with out.open("rb") as artifact_file:
-                        if artifact_file.read(3) != b"ply":
-                            raise ProviderError("remote job returned an invalid .ply artifact")
+                _validate_artifact(out, provider="remote job")
                 return out
             if status in ("failed", "error", "cancelled"):
                 raise ProviderError(f"remote job ended with status {status}")
@@ -479,7 +558,7 @@ class AwsBatchProvider(ReconstructionProvider):
 
         job_key = _uuid.uuid4().hex
         in_prefix = f"recon-inputs/{job_key}"
-        out_key = f"recon-outputs/{job_key}/model.splat"
+        out_key = f"recon-outputs/{job_key}/model{DELIVERY_SUFFIX}"
         for index, path in enumerate(images):
             s3.upload_file(
                 str(path),
@@ -518,10 +597,12 @@ class AwsBatchProvider(ReconstructionProvider):
                 log.exception("Unable to terminate timed-out AWS Batch reconstruction job %s", job_id)
             raise ProviderError("AWS Batch reconstruction did not finish within budget")
 
-        out = work_dir / "model.splat"
-        s3.download_file(bucket, out_key, str(out))
-        if not out.is_file() or out.stat().st_size == 0 or out.stat().st_size % 32 != 0:
-            raise ProviderError("AWS Batch produced an invalid .splat artifact")
+        # Accept either delivery format: a current image writes model.sog, an
+        # image built before the format fix writes model.splat. Both render.
+        out = _download_first_available(
+            s3, bucket, out_key, work_dir, provider="AWS Batch"
+        )
+        _validate_artifact(out, provider="AWS Batch")
         return out
 
 
@@ -588,7 +669,7 @@ class RunPodProvider(ReconstructionProvider):
         s3 = boto3.client("s3", region_name=region)
         job_key = _uuid.uuid4().hex
         in_prefix = f"recon-inputs/{job_key}"
-        out_key = f"recon-outputs/{job_key}/model.splat"
+        out_key = f"recon-outputs/{job_key}/model{DELIVERY_SUFFIX}"
         url_ttl = timeout + 1800  # presigned URLs must outlive queue-wait + run
         image_urls = []
         for index, p in enumerate(images):
@@ -648,10 +729,12 @@ class RunPodProvider(ReconstructionProvider):
                 except Exception:  # noqa: BLE001 - preserve the original provider failure
                     log.exception("Unable to cancel abandoned RunPod reconstruction job %s", job_id)
 
-        out = work_dir / "model.splat"
-        s3.download_file(bucket, out_key, str(out))
-        if not out.is_file() or out.stat().st_size == 0 or out.stat().st_size % 32 != 0:
-            raise ProviderError("RunPod produced an invalid .splat artifact")
+        # Accept either delivery format: a current image writes model.sog, an
+        # image built before the format fix writes model.splat. Both render.
+        out = _download_first_available(
+            s3, bucket, out_key, work_dir, provider="RunPod"
+        )
+        _validate_artifact(out, provider="RunPod")
         return out
 
 
@@ -1001,9 +1084,493 @@ class OnComputeProvider(ReconstructionProvider):
         else:
             out.write_bytes(raw)
 
-        if not out.is_file() or out.stat().st_size == 0 or out.stat().st_size % 32 != 0:
-            raise ProviderError("OnCompute produced an invalid .splat artifact")
+        _validate_artifact(out, provider="OnCompute")
         return out
+
+
+# ---------------------------------------------------------------------------
+# RunPod pods — rent a GPU VM per job, run the pipeline, hand back the .sog
+# ---------------------------------------------------------------------------
+
+_RUNPOD_REST = "https://rest.runpod.io/v1"
+_RUNPOD_GRAPHQL = "https://api.runpod.io/graphql"
+
+#: Indirection so a test can expire the provisioning window without moving
+#: time.monotonic for the event loop as well.
+def _now() -> float:
+    return time.monotonic()
+
+#: Every pod this provider creates is named `neoh-recon-<epoch>-<rand>`.
+#:
+#: The prefix lets the reaper tell our pods from anything the operator started
+#: by hand, so a sweep can never collect an interactive session. The epoch is
+#: there because the Pod API returns no creation timestamp at all — encoding it
+#: in the name is what makes a leaked pod's age knowable without extra state.
+POD_NAME_PREFIX = "neoh-recon-"
+
+#: Preference order, cheapest-adequate first. `gpuTypeIds` takes a list and
+#: RunPod picks the first available, so this degrades on its own when a tier is
+#: sold out. 24 GB is the floor that matters: splatfacto peaks at 12-22 GB
+#: depending on gaussian count, while COLMAP needs only 1-3 GB.
+#:
+#: Prices measured live 2026-08-23: A5000 $0.16/hr, 3090 $0.22, 4090 $0.34,
+#: A40 $0.35. docs/runpod-pods-runbook.md called the 3090 the cheapest 24 GB
+#: card, which the A5000 undercuts.
+_DEFAULT_POD_GPUS = (
+    "NVIDIA RTX A5000",
+    "NVIDIA GeForce RTX 3090",
+    "NVIDIA GeForce RTX 4090",
+    "NVIDIA A40",
+)
+
+#: Fallback hourly rate for the cost ceiling, used only when RunPod does not
+#: report costPerHr for the pod it just created. Deliberately pessimistic: an
+#: over-estimate ends the job early, an under-estimate overspends.
+_POD_FALLBACK_HOURLY = 0.40
+
+#: Pinned. A trainer resolved at run time is how version skew arrives with no
+#: diff to review — one run was lost entirely to a pip-installed gsplat whose
+#: examples were cloned from `main`.
+_POD_GSPLAT_VERSION = "1.5.3"
+
+#: Exhaustive matching is O(n^2): 43 images is 903 pairs and solved in minutes,
+#: 128 is 8,128 pairs and exceeded 40 minutes on an L4. Image count, not GPU
+#: tier, dominates what a reconstruction costs, so the capture is subsampled
+#: before it is ever uploaded.
+POD_TARGET_IMAGES = 60
+
+#: The remote pipeline. Kept in the repo rather than only baked into an image so
+#: the exact sequence is reviewable, and so a generic CUDA image still works.
+#:
+#: Two things here are load-bearing, both learned the hard way:
+#:
+#:  * COLMAP links Qt and builds a QGuiApplication even for CLI subcommands, so
+#:    on a headless box it aborts with SIGABRT inside createPlatformIntegration()
+#:    *before reading a single image* — and the failure looks like a corrupt
+#:    capture, not a missing display. QT_QPA_PLATFORM=offscreen covers the CPU
+#:    paths; GPU SIFT needs a real GL context, hence xvfb-run. Measured: with no
+#:    display `colmap feature_extractor` exits rc=-6 in 0s; under xvfb it
+#:    processed 43 images in 27s and the solve registered 43/43 at 0.51px.
+#:  * The gsplat reference trainer imports viser and nerfview at module scope,
+#:    before --disable-viewer is parsed, and `examples/datasets/` ships no
+#:    __init__.py, so `import datasets.colmap` picks up HuggingFace's `datasets`
+#:    package instead.
+POD_PIPELINE = r"""
+set -euo pipefail
+cd /workspace
+
+command -v colmap >/dev/null || { apt-get -qq update && apt-get -qq install -y colmap xvfb; }
+command -v xvfb-run >/dev/null || { apt-get -qq update && apt-get -qq install -y xvfb; }
+export QT_QPA_PLATFORM=offscreen
+X="xvfb-run -a --server-args=-screen 0 1024x768x24"
+
+$X colmap feature_extractor  --database_path db.db --image_path images \
+                             --ImageReader.single_camera 1 --SiftExtraction.use_gpu 1
+$X colmap exhaustive_matcher --database_path db.db --SiftMatching.use_gpu 1
+mkdir -p sparse
+$X colmap mapper             --database_path db.db --image_path images --output_path sparse
+test -d sparse/0 || { echo "!! COLMAP registered no cameras" >&2; exit 3; }
+$X colmap model_analyzer     --path sparse/0
+
+python -c "import gsplat" 2>/dev/null || \
+  pip install -q "gsplat==__GSPLAT__" viser nerfview splines jaxtyping tensorboard tyro
+if [ ! -d gs ]; then
+  git clone --depth 1 --branch "v$(python -c 'import gsplat;print(gsplat.__version__.split("+")[0])')" \
+      https://github.com/nerfstudio-project/gsplat.git gs
+fi
+touch gs/examples/datasets/__init__.py
+
+cd gs/examples && python simple_trainer.py default \
+    --data-dir /workspace --data-factor 1 --result-dir /workspace/out \
+    --max-steps __STEPS__ --save-steps __STEPS__ --disable-viewer
+cd /workspace
+
+PLY=$(find /workspace/out -name '*.ply' | head -1)
+test -n "$PLY" || { echo "!! training produced no .ply" >&2; exit 4; }
+
+command -v splat-transform >/dev/null || npm install -g "@playcanvas/splat-transform@__ST__"
+# .sog, never .splat: splat-transform lists .splat input-only in every released
+# version, so asking it to write one fails on every real run.
+splat-transform "$PLY" /workspace/model.sog
+test -s /workspace/model.sog || { echo "!! conversion produced no .sog" >&2; exit 5; }
+echo "OK $(stat -c%s /workspace/model.sog) bytes"
+"""
+
+
+def _subsample_capture(images: list[Path], target: int) -> list[Path]:
+    """Evenly thin a capture to `target` frames, keeping coverage.
+
+    Evenly spaced rather than truncated: a walk-through video sampled at 2fps
+    produces frames in spatial order, so taking the first N would reconstruct
+    one room in detail and leave the rest of the house unsolved.
+    """
+    if target <= 0 or len(images) <= target:
+        return list(images)
+    step = len(images) / target
+    return [images[min(len(images) - 1, int(i * step))] for i in range(target)]
+
+
+def _pod_name() -> str:
+    """`neoh-recon-<epoch>-<rand>` — see POD_NAME_PREFIX for why the epoch."""
+    return f"{POD_NAME_PREFIX}{int(time.time())}-{uuid.uuid4().hex[:8]}"
+
+
+def _pod_age_seconds(name: str) -> Optional[int]:
+    """Age from the name, or None when it does not carry a timestamp.
+
+    None means "cannot tell", and the reaper leaves those alone rather than
+    guessing — terminating a pod on an unreadable name would be the one bug
+    worse than leaking one.
+    """
+    if not name.startswith(POD_NAME_PREFIX):
+        return None
+    stamp = name[len(POD_NAME_PREFIX):].split("-", 1)[0]
+    try:
+        created = int(stamp)
+    except ValueError:
+        return None
+    age = int(time.time()) - created
+    return age if age >= 0 else None
+
+
+class PodProvider(ReconstructionProvider):
+    """Reconstruction on a rented RunPod GPU VM, start to finish, unattended.
+
+    Distinct from RunPodProvider, which targets RunPod *serverless* — a surface
+    that is dead for this account (workers never left `initializing`; the
+    endpoint was deleted 2026-08-14) and which stages captures through S3
+    presigned URLs. That staging could never work here: RECON_S3_BUCKET is unset
+    and ORACLE_STORAGE_BACKEND defaults to azure-files, so adding credits would
+    not have made it run. This provider moves bytes over SSH and touches no
+    object store.
+
+    Lifecycle: create pod -> wait for SSH -> push images -> run the pipeline ->
+    pull the .sog -> **terminate**. Termination is in a `finally` and is also
+    swept by `reap_stale_pods`, because a pod bills by the hour whether or not
+    it computes and a leak is completely silent: an idle 3090 left running
+    overnight is about $5, and nothing in the product would show it.
+    """
+
+    name = "runpod_pod"
+    produces = "captured"
+
+    # -- configuration ------------------------------------------------------
+    @staticmethod
+    def _settings() -> dict:
+        api = os.environ.get("RUNPOD_API_KEY", "").strip()
+        if not api:
+            raise ProviderError("RUNPOD_API_KEY is required")
+
+        image = os.environ.get(
+            "RECON_POD_IMAGE",
+            "runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04",
+        ).strip()
+        if not image:
+            raise ProviderError("RECON_POD_IMAGE must not be empty")
+
+        def _num(var: str, default: str, lo: float, hi: float, cast=float):
+            raw = os.environ.get(var, default)
+            try:
+                value = cast(raw)
+            except (TypeError, ValueError) as exc:
+                raise ProviderError(f"{var} must be a number") from exc
+            if not lo <= value <= hi:
+                raise ProviderError(f"{var} must be between {lo} and {hi}")
+            return value
+
+        gpus = [g.strip() for g in os.environ.get("RECON_POD_GPU_IDS", "").split(",") if g.strip()]
+        cloud = os.environ.get("RECON_POD_CLOUD_TYPE", "SECURE").strip().upper() or "SECURE"
+        if cloud not in ("SECURE", "COMMUNITY"):
+            raise ProviderError("RECON_POD_CLOUD_TYPE must be SECURE or COMMUNITY")
+
+        return {
+            "api_key": api,
+            "image": image,
+            "gpu_ids": gpus or list(_DEFAULT_POD_GPUS),
+            "disk_gb": _num("RECON_POD_DISK_GB", "40", 20, 500, int),
+            "volume_gb": _num("RECON_POD_VOLUME_GB", "0", 0, 500, int),
+            "timeout": _num("RECON_POD_TIMEOUT", "5400", MIN_RUNPOD_TIMEOUT, MAX_RUNPOD_TIMEOUT, int),
+            # A ceiling on one job, in dollars. The pod is terminated when the
+            # budget is spent even if training has not converged, so a wedged
+            # job costs a known amount rather than an unbounded one.
+            "max_cost": _num("RECON_POD_MAX_COST_USD", "2.00", 0.05, 100.0),
+            # Refuse to start below this. An empty or negative balance is a
+            # permanent, fixable condition and must be reported as one.
+            "min_balance": _num("RECON_POD_MIN_BALANCE_USD", "1.00", 0.0, 1000.0),
+            "cloud_type": cloud,
+            "steps": _num("RECON_POD_STEPS", "7000", 500, 60000, int),
+        }
+
+    # -- HTTP ---------------------------------------------------------------
+    @staticmethod
+    def _rest(api_key: str, method: str, path: str, *, json_body=None, timeout: int = 60):
+        import requests  # lazy — only this path needs it
+
+        response = requests.request(
+            method,
+            f"{_RUNPOD_REST}{path}",
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            json=json_body,
+            timeout=timeout,
+        )
+        if response.status_code >= 400:
+            raise ProviderError(
+                f"RunPod {method} {path} failed ({response.status_code}): {response.text[:300]}"
+            )
+        if not response.content:
+            return None
+        try:
+            return response.json()
+        except ValueError:
+            return None
+
+    @classmethod
+    def _balance(cls, api_key: str) -> float:
+        import requests
+
+        response = requests.post(
+            _RUNPOD_GRAPHQL,
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            json={"query": "query { myself { clientBalance } }"},
+            timeout=30,
+        )
+        if response.status_code >= 400:
+            raise ProviderError(f"RunPod balance query failed ({response.status_code})")
+        payload = response.json()
+        if payload.get("errors"):
+            raise ProviderError(f"RunPod rejected the API key: {str(payload['errors'])[:200]}")
+        value = ((payload.get("data") or {}).get("myself") or {}).get("clientBalance")
+        if value is None:
+            raise ProviderError("RunPod returned no balance for this account")
+        return float(value)
+
+    # -- readiness ----------------------------------------------------------
+    def available(self) -> tuple[bool, str]:
+        """(ready, reason-if-not).
+
+        The balance is read live rather than inferred from configuration.
+        RunPodProvider checked only that env vars were *shaped* correctly, so it
+        reported ready and then failed mid-job — which reads as an outage rather
+        than the fixable billing state it is. Same distinction the Regrid fix
+        drew between an expired credential and a provider being down.
+        """
+        try:
+            settings = self._settings()
+        except ProviderError as exc:
+            return (False, str(exc))
+
+        try:
+            import asyncssh  # noqa: F401  - presence check only
+        except ImportError:
+            return (False, "asyncssh is not installed (pip install asyncssh)")
+
+        try:
+            balance = self._balance(settings["api_key"])
+        except ProviderError as exc:
+            return (False, str(exc))
+        except Exception as exc:  # noqa: BLE001 - network/parse: report, don't crash the poll
+            return (False, f"could not read the RunPod balance: {exc}")
+
+        if balance < settings["min_balance"]:
+            return (
+                False,
+                f"RunPod balance is ${balance:.2f}, below the "
+                f"${settings['min_balance']:.2f} minimum — add credits at "
+                f"runpod.io/console/user/billing",
+            )
+        return (True, "")
+
+    # -- the job ------------------------------------------------------------
+    async def reconstruct(self, images: list[Path], work_dir: Path) -> Path:
+        _validate_capture_images(images, minimum=MIN_CAPTURE_IMAGES)
+        settings = self._settings()
+
+        # Subsampled here rather than on the pod: matching cost is quadratic in
+        # image count, so trimming before upload is the biggest lever on price.
+        staged = _subsample_capture(images, POD_TARGET_IMAGES)
+        if len(staged) < len(images):
+            log.info(
+                "Subsampled capture from %d to %d images (exhaustive matching is O(n^2))",
+                len(images), len(staged),
+            )
+
+        # Appended by _launch the moment RunPod returns an id, before anything
+        # can fail. Binding the id from _launch's *return value* left a window
+        # where the pod existed but the name did not — a timeout, a network
+        # error mid-poll or a cancellation in there leaked a billing pod.
+        launched: list[str] = []
+        try:
+            host, port, key, hourly = await self._launch(settings, launched)
+            return await self._run_on_pod(settings, host, port, key, hourly, staged, work_dir)
+        finally:
+            # Unconditional, and it must stay that way: a pod bills by the hour
+            # whether or not it computes, and nothing surfaces a leaked one.
+            for pod_id in launched:
+                await asyncio.to_thread(self._terminate, settings["api_key"], pod_id)
+
+    async def _launch(self, settings: dict, launched: list[str]):
+        """Create a pod and wait for SSH. Returns (host, port, key, hourly).
+
+        `launched` is an out-parameter on purpose: the pod id is recorded there
+        the instant it exists, so the caller's `finally` can terminate it no
+        matter where this method fails afterwards.
+        """
+        import asyncssh
+
+        # An ephemeral keypair per job: nothing long-lived to store, rotate or
+        # leak, and the key dies with the reconstruction that used it.
+        key = asyncssh.generate_private_key("ssh-ed25519")
+        public_key = key.export_public_key().decode().strip()
+
+        created = await asyncio.to_thread(
+            self._rest, settings["api_key"], "POST", "/pods",
+            json_body={
+                "name": _pod_name(),
+                "imageName": settings["image"],
+                "gpuTypeIds": settings["gpu_ids"],
+                "gpuCount": 1,
+                "containerDiskInGb": settings["disk_gb"],
+                "volumeInGb": settings["volume_gb"],
+                "ports": ["22/tcp"],
+                "cloudType": settings["cloud_type"],
+                "supportPublicIp": True,
+                # Pre-emption mid-training wastes the entire spend, and spot
+                # matched on-demand at these tiers when it was measured.
+                "interruptible": False,
+                "env": {"PUBLIC_KEY": public_key},
+            },
+        ) or {}
+        pod_id = created.get("id")
+        if not pod_id:
+            raise ProviderError(f"RunPod did not return a pod id: {str(created)[:200]}")
+        launched.append(pod_id)          # billing starts here, so ownership does too
+        log.info("RunPod pod %s provisioning (%s)", pod_id, settings["image"])
+
+        hourly = float(created.get("costPerHr") or 0) or _POD_FALLBACK_HOURLY
+        deadline = _now() + min(900, settings["timeout"])
+        while _now() < deadline:
+            pod = await asyncio.to_thread(
+                self._rest, settings["api_key"], "GET", f"/pods/{pod_id}"
+            ) or {}
+            host = pod.get("publicIp")
+            port = (pod.get("portMappings") or {}).get("22")
+            if host and port:
+                hourly = float(pod.get("costPerHr") or 0) or hourly
+                return host, int(port), key, hourly
+            await asyncio.sleep(5)
+
+        raise ProviderError(
+            "RunPod pod never exposed SSH within the provisioning window "
+            "(the pod is being terminated)"
+        )
+
+    async def _run_on_pod(self, settings, host, port, key, hourly, images, work_dir) -> Path:
+        import asyncssh
+
+        # Bound by money as well as time: whichever ceiling comes first ends the
+        # job, so a wedged run costs a known amount. Computed from the rate
+        # RunPod actually charged for this pod, not an assumed one.
+        budget_seconds = int((settings["max_cost"] / max(hourly, 0.01)) * 3600)
+        deadline = min(settings["timeout"], budget_seconds)
+
+        last_error: Optional[Exception] = None
+        conn = None
+        for _ in range(30):  # sshd comes up a little after the port is mapped
+            try:
+                conn = await asyncssh.connect(
+                    host, port=port, username="root", client_keys=[key],
+                    # A pod is created fresh for this job and destroyed after it;
+                    # there is no prior host key that pinning could compare to.
+                    known_hosts=None,
+                )
+                break
+            except Exception as exc:  # noqa: BLE001 - retry until the window closes
+                last_error = exc
+                await asyncio.sleep(5)
+        if conn is None:
+            raise ProviderError(f"Could not open SSH to the RunPod pod: {last_error}")
+
+        script = (
+            POD_PIPELINE
+            .replace("__STEPS__", str(settings["steps"]))
+            .replace("__ST__", SPLAT_TRANSFORM_VERSION)
+            .replace("__GSPLAT__", _POD_GSPLAT_VERSION)
+        )
+
+        async with conn:
+            await conn.run("mkdir -p /workspace/images", check=True)
+            async with conn.start_sftp_client() as sftp:
+                for index, path in enumerate(images):
+                    await sftp.put(
+                        str(path), f"/workspace/images/{_staged_image_name(index, path)}"
+                    )
+                async with sftp.open("/workspace/run.sh", "w") as handle:
+                    await handle.write(script)
+
+            try:
+                result = await asyncio.wait_for(
+                    conn.run("bash /workspace/run.sh", check=False), timeout=deadline
+                )
+            except asyncio.TimeoutError as exc:
+                raise ProviderError(
+                    f"Reconstruction exceeded its budget ({deadline}s at "
+                    f"${hourly:.2f}/hr, ceiling ${settings['max_cost']:.2f}); "
+                    f"the pod is being terminated"
+                ) from exc
+
+            if result.exit_status != 0:
+                tail = f"{result.stdout or ''}{result.stderr or ''}"[-1200:]
+                raise ProviderError(
+                    f"Pod pipeline failed (exit {result.exit_status}): {tail}"
+                )
+
+            out = work_dir / f"model{DELIVERY_SUFFIX}"
+            async with conn.start_sftp_client() as sftp:
+                await sftp.get("/workspace/model.sog", str(out))
+
+        _validate_artifact(out, provider="RunPod pod")
+        return out
+
+    # -- cleanup ------------------------------------------------------------
+    @classmethod
+    def _terminate(cls, api_key: str, pod_id: str) -> None:
+        try:
+            cls._rest(api_key, "DELETE", f"/pods/{pod_id}")
+            log.info("RunPod pod %s terminated", pod_id)
+        except Exception:  # noqa: BLE001 - never mask the original job failure
+            log.exception(
+                "FAILED to terminate RunPod pod %s — it is STILL BILLING. "
+                "Terminate it at runpod.io/console/pods", pod_id
+            )
+
+    @classmethod
+    def reap_stale_pods(cls, max_age_seconds: int = 4 * 3600) -> list[str]:
+        """Terminate our own pods that outlived any plausible job.
+
+        The `finally` in reconstruct covers a failing job; it cannot cover the
+        backend being killed between creating a pod and reaching that block. In
+        that window the pod bills indefinitely and nothing points at it.
+
+        Only pods carrying POD_NAME_PREFIX are touched: an interactive pod the
+        operator started by hand must never be collected by an automatic sweep.
+        """
+        settings = cls._settings()
+        pods = cls._rest(settings["api_key"], "GET", "/pods") or []
+        if isinstance(pods, dict):
+            pods = pods.get("data") or []
+
+        reaped: list[str] = []
+        for pod in pods:
+            age = _pod_age_seconds(pod.get("name") or "")
+            if age is None or age < max_age_seconds:
+                continue
+            log.warning(
+                "Reaping leaked RunPod pod %s (%s), age %ds",
+                pod.get("id"), pod.get("name"), age,
+            )
+            cls._terminate(settings["api_key"], pod["id"])
+            reaped.append(pod["id"])
+        return reaped
 
 
 _PROVIDERS = {
@@ -1014,6 +1581,11 @@ _PROVIDERS = {
     "aws_batch": AwsBatchProvider,
     "aws": AwsBatchProvider,
     "runpod": RunPodProvider,
+    # The pods path: rents a GPU VM per job rather than calling a serverless
+    # endpoint. `runpod` above targets serverless, which is dead for this
+    # account and stages through an S3 bucket that is not configured here.
+    "runpod_pod": PodProvider,
+    "pod": PodProvider,
     "oncompute": OnComputeProvider,
 }
 
