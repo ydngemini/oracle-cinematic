@@ -286,6 +286,11 @@ def _text(name, desc=""):
 
 TOOLS = {
     # ── CRM & Clients (15) ──
+    # ── Spatial capture: tours, reconstruction, video (3) ──
+    "get_property_tour":    _tool("get_property_tour", "What 3D tour assets a property has — walkable capture, 360 scenes, photos, floor plan — each with whether it actually depicts this property, plus why an interior capture is missing if it is.", {"lead_id": _text("lead_id", "Either this or listing_id"), "listing_id": _text("listing_id", "Either this or lead_id")}, []),
+    "request_property_reconstruction": _tool("request_property_reconstruction", "Request a photoreal 3D reconstruction of a property from its uploaded photos. Rents a GPU and costs money, so this only REQUESTS it — a human approves before anything runs.", {"lead_id": _text("lead_id", "Either this or listing_id"), "listing_id": _text("listing_id", "Either this or lead_id")}, []),
+    "request_listing_video": _tool("request_listing_video", "Request an AI-generated marketing video for a property. Bills a video provider, so this only REQUESTS it — a human approves and picks the imagery before anything is generated.", {"brief": _text("brief", "What the video should show"), "lead_id": _text("lead_id", "Either this or listing_id"), "listing_id": _text("listing_id", "Either this or lead_id")}, ["brief"]),
+
     "search_clients":       _tool("search_clients", "Search the client database by name, email, phone, stage, company, or tag.", {"query": _text("query")}),
     "get_client_detail":    _tool("get_client_detail", "Return the full profile, preferences, notes, tags, and assigned agent for a client.", {"client_id": _text("client_id")}),
     "list_client_tasks":    _tool("list_client_tasks", "List pending and completed tasks for a client or across all clients.", {"client_id": _text("client_id", "Optional — omit to list all")}, []),

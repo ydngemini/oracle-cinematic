@@ -33,6 +33,8 @@ from tenancy import TenantContext
 
 
 TOOLS_HANDLED = frozenset({
+    "request_property_reconstruction",
+    "request_listing_video",
     "draft_email",
     "draft_sms",
     "call_contact",
@@ -572,6 +574,159 @@ async def _publish_to_marketplace(ctx, *, tool_input) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Spatial capture and marketing video — jobs that spend money
+# ---------------------------------------------------------------------------
+
+async def _property_anchor(conn, ctx: TenantContext, tool_input: dict):
+    """Resolve lead_id/listing_id and prove the row is in this workspace.
+
+    Checked before anything is staged: reconstruction_jobs FKs would otherwise
+    raise on a bogus or cross-tenant id, and an approval pointing at a property
+    the approver cannot see is worse than no approval.
+    """
+    import uuid as _uuid
+
+    lead_raw = str(tool_input.get("lead_id") or "").strip()
+    listing_raw = str(tool_input.get("listing_id") or "").strip()
+    if not lead_raw and not listing_raw:
+        return None, _err("Provide lead_id or listing_id.")
+
+    field, raw, table = (
+        ("lead_id", lead_raw, "leads") if lead_raw else ("listing_id", listing_raw, "listings")
+    )
+    try:
+        anchor = _uuid.UUID(raw)
+    except (ValueError, AttributeError):
+        return None, _err(f"{field} must be a UUID.")
+
+    # RLS scopes this to the caller's tenant, so a hit proves visibility.
+    if not await conn.fetchval(f"SELECT 1 FROM {table} WHERE id = $1", anchor):
+        return None, _err(f"No {table[:-1]} with that id in this workspace.")
+    return {"field": field, "id": str(anchor), "target_type": table[:-1]}, None
+
+
+async def _request_property_reconstruction(conn, ctx, *, tool_input, user_id) -> dict:
+    """Ask for a 3D reconstruction of a property. Rents a GPU; does not start one.
+
+    This spends real money — a pod-based reconstruction is roughly $0.25-0.35 —
+    so it stages an approval and returns. The GPU is rented later, on the path a
+    human decision triggers, which is the same rule every other gated tool
+    follows: a tool that could act would make its own approval decorative.
+
+    Readiness is checked *before* staging. Queuing an approval for a job that
+    cannot run — no credits, no provider configured — spends a human's attention
+    on a decision that has no effect, and the provider's own reason says exactly
+    what to fix.
+    """
+    from approval_service import create_approval
+    from platform_policy import ActionRisk
+
+    anchor, error = await _property_anchor(conn, ctx, tool_input)
+    if error:
+        return error
+
+    # `available()` only reports readiness; it neither reconstructs nor rents.
+    from reconstruction_providers import get_provider
+
+    provider = get_provider()
+    ready, reason = provider.available()
+    if not ready:
+        return _err(
+            f"A reconstruction cannot be run right now: {reason}. "
+            f"Nothing was requested."
+        )
+
+    approval = await create_approval(
+        ctx,
+        action_type="property_reconstruction",
+        risk=ActionRisk.FINANCIAL,
+        target_type=anchor["target_type"],
+        target_id=anchor["id"],
+        draft_payload={
+            anchor["field"]: anchor["id"],
+            "provider": provider.name,
+            # What the resulting media will be allowed to claim. Recorded in the
+            # approval so the approver sees it, and so a later change of
+            # provider cannot quietly upgrade the claim.
+            "provenance": getattr(provider, "produces", "captured"),
+            "requested_by": user_id,
+        },
+    )
+    return {
+        "ok": True,
+        "action_type": "request_property_reconstruction",
+        "approval_id": str(approval.get("id") or ""),
+        "target_id": anchor["id"],
+        "provider": provider.name,
+        "started": False,
+        "detail": (
+            "A 3D reconstruction was requested and is awaiting approval. No GPU "
+            "has been rented and nothing has been charged. Approving it starts "
+            "the job; it takes roughly 30-60 minutes."
+        ),
+    }
+
+
+async def _request_listing_video(conn, ctx, *, tool_input, user_id) -> dict:
+    """Ask for a marketing video. Bills a video provider; does not generate one.
+
+    The source imagery is deliberately not chosen here. Listing photos scraped
+    from a portal are copyrighted works owned by the photographer or brokerage,
+    and docs/data-access-tiers.md records that gate as one that stays shut — so
+    the approver picks from media this workspace holds rather than the model
+    naming a URL it found.
+    """
+    from approval_service import create_approval
+    from platform_policy import ActionRisk
+
+    anchor, error = await _property_anchor(conn, ctx, tool_input)
+    if error:
+        return error
+
+    brief = str(tool_input.get("brief") or "").strip()[:1_000]
+    if not brief:
+        return _err("brief is required: say what the video should show.")
+
+    # Aliased: reconstruction_providers exports a get_provider too, and the
+    # two factories return entirely different things.
+    from video_providers import get_provider as get_video_provider
+
+    provider = get_video_provider()
+    ready, reason = provider.available()
+    if not ready:
+        return _err(f"Video generation is not available: {reason}. Nothing was requested.")
+
+    approval = await create_approval(
+        ctx,
+        action_type="listing_video",
+        risk=ActionRisk.FINANCIAL,
+        target_type=anchor["target_type"],
+        target_id=anchor["id"],
+        draft_payload={
+            anchor["field"]: anchor["id"],
+            "brief": brief,
+            "provider": getattr(provider, "name", "unknown"),
+            # Always. A generated walkthrough is not footage of the home, and
+            # the label travels with the media rather than being decided later.
+            "provenance": "ai_generated",
+            "requested_by": user_id,
+        },
+    )
+    return {
+        "ok": True,
+        "action_type": "request_listing_video",
+        "approval_id": str(approval.get("id") or ""),
+        "target_id": anchor["id"],
+        "generated": False,
+        "detail": (
+            "A marketing video was requested and is awaiting approval. Nothing "
+            "has been generated or charged. The finished video is labelled "
+            "AI-generated; it is not footage of the property."
+        ),
+    }
+
+
+# ---------------------------------------------------------------------------
 # Dispatch
 # ---------------------------------------------------------------------------
 
@@ -583,6 +738,16 @@ async def execute(conn, ctx: TenantContext, tool_name: str, tool_input: dict, *,
 
     if tool_name == "publish_to_marketplace":
         return await _publish_to_marketplace(ctx, tool_input=tool_input)
+
+    if tool_name == "request_property_reconstruction":
+        return await _request_property_reconstruction(
+            conn, ctx, tool_input=tool_input, user_id=user_id
+        )
+
+    if tool_name == "request_listing_video":
+        return await _request_listing_video(
+            conn, ctx, tool_input=tool_input, user_id=user_id
+        )
 
     from ai_chat_store import _selected_uuid
 

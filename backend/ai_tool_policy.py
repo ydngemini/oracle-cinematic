@@ -50,6 +50,8 @@ CONSENT_WRITE_NAMES: frozenset[str] = frozenset({
 TOOL_RISK: dict[str, ActionRisk] = {
     # ── Read-only (101) ────────────────────────────────────────────────
     "analyze_deal_risk": ActionRisk.READ_ONLY,
+    # Reads what a property can show and why anything is missing. No spend.
+    "get_property_tour": ActionRisk.READ_ONLY,
     "analyze_neighborhood": ActionRisk.READ_ONLY,
     "calculate_break_even": ActionRisk.READ_ONLY,
     "calculate_cap_rate": ActionRisk.READ_ONLY,
@@ -190,6 +192,13 @@ TOOL_RISK: dict[str, ActionRisk] = {
     # Publication is a disposition decision with money behind it, which is why
     # marketplace_api already classifies it FINANCIAL.
     "publish_to_marketplace": ActionRisk.FINANCIAL,
+
+    # Both of these spend real money per call — a pod reconstruction rents a GPU
+    # (~$0.25-0.35), a video bills a generation provider. FINANCIAL is what puts
+    # them behind an approval, so the model requests the spend and a human makes
+    # it. An agent that could loop on either would bill without a ceiling.
+    "request_property_reconstruction": ActionRisk.FINANCIAL,
+    "request_listing_video": ActionRisk.FINANCIAL,
 
     # ── Contacts a consumer on a live channel (1) ────────────────
     "call_contact": ActionRisk.LIVE_CALL,

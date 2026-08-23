@@ -51,6 +51,7 @@ from tenancy import TenantContext
 
 
 TOOLS_HANDLED = frozenset({
+    "get_property_tour",
     "search_listings",
     "get_listing_detail",
     "list_comparable_sales",
@@ -1865,7 +1866,90 @@ async def _run_health_check(conn, ctx: TenantContext, tool_input: dict) -> dict:
 # Dispatch
 # ---------------------------------------------------------------------------
 
+async def _get_property_tour(conn, ctx: TenantContext, tool_input: dict) -> dict:
+    """What a property can actually show, and why anything is missing.
+
+    The agent had no way to see this at all — no tour, capture or reconstruction
+    tool existed on the surface — so "is there a 3D tour of 12 Oak St?" was
+    unanswerable and any answer it gave was invented.
+
+    Two things it must get right. The asset list is the *union* of what exists,
+    not a single best one, because a property can hold a capture and 360s and
+    photos at once. And each asset carries its own provenance, so the agent can
+    say "the 360s are of this house, the 3D model is a demo" instead of
+    flattening both into one claim.
+
+    When nothing is available, the reason is the provider's own `available()`
+    string, verbatim. That is the difference between the agent saying "RunPod
+    has no credits — add some at runpod.io" and "3D tours are unavailable",
+    which sends someone looking for an outage that is not there.
+    """
+    from uuid import UUID as _UUID
+
+    import tour_api
+
+    lead_raw = str(tool_input.get("lead_id") or "").strip()
+    listing_raw = str(tool_input.get("listing_id") or "").strip()
+    if not lead_raw and not listing_raw:
+        return {"error": "Provide lead_id or listing_id."}
+
+    def _uuid_or_none(raw: str, field: str):
+        if not raw:
+            return None, None
+        try:
+            return _UUID(raw), None
+        except (ValueError, AttributeError):
+            return None, {"error": f"{field} must be a UUID."}
+
+    lead_id, err = _uuid_or_none(lead_raw, "lead_id")
+    if err:
+        return err
+    listing_id, err = _uuid_or_none(listing_raw, "listing_id")
+    if err:
+        return err
+
+    rows, scene_rows, plan_row = await tour_api.fetch_tour_rows(conn, lead_id, listing_id)
+    tour = tour_api.build_tour(rows, scene_rows, plan_row,
+                               lead_id=lead_id, listing_id=listing_id)
+
+    assets = [
+        {
+            "kind": asset["kind"],
+            "label": asset["label"],
+            "shows_this_property": asset["is_this_property"],
+            "provenance": asset.get("provenance"),
+            "walkable": asset.get("walkable", False),
+            "count": asset.get("count"),
+        }
+        for asset in tour["assets"]
+    ]
+
+    # Why an interior capture is missing, in the provider's own words.
+    missing_reason = ""
+    if not any(a["kind"] == "splat" and a["shows_this_property"] for a in assets):
+        try:
+            from reconstruction_providers import get_provider
+
+            ready, reason = get_provider().available()
+            missing_reason = "" if ready else reason
+        except Exception as exc:  # noqa: BLE001 - a config error is an answer, not a crash
+            missing_reason = str(exc)
+
+    return {
+        "assets": assets,
+        "has_walkable_interior": any(a["walkable"] for a in assets),
+        "interior_capture_unavailable_because": missing_reason,
+        "note": (
+            "These are everything this property has; they combine into one tour "
+            "rather than replacing each other. `shows_this_property` false means "
+            "the asset is a demo or generated space and must never be described "
+            "as this home."
+        ),
+    }
+
+
 _HANDLERS = {
+    "get_property_tour": _get_property_tour,
     "search_listings": _search_listings,
     "get_listing_detail": _get_listing_detail,
     "list_comparable_sales": _list_comparable_sales,

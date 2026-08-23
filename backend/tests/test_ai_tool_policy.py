@@ -285,6 +285,10 @@ def test_the_gated_module_cannot_reach_a_provider():
         "send_twilio_sms", "send_acs_sms", "send_email", "smtplib",
         "SovereignVault", "publish_publication", "approve_command",
         "decide_approval", "enqueue_job", "write_contract_pdf",
+        # Spatial + video: the request tools must not rent a GPU or bill a
+        # generation provider. `enqueue`/`ReconstructionJob` start the worker,
+        # `reconstruct` runs the pipeline, `create_video_job` bills the provider.
+        "enqueue", "ReconstructionJob", "reconstruct", "create_video_job",
     }
     # Read from the parse tree, not the file text: the module docstring names
     # publish_publication when explaining where the action actually happens,
