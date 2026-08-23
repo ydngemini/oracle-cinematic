@@ -24,6 +24,7 @@ import json
 import logging
 import os
 import re
+import time
 from dataclasses import dataclass, field, asdict, fields
 from typing import Optional
 
@@ -71,9 +72,43 @@ class AVMResult:
 
 # ── Providers ────────────────────────────────────────────────────────────────
 
+# ── Credential cooldown ───────────────────────────────────────────────────────
+# The result cache above deliberately stores only successes — caching an
+# UNAVAILABLE per property would let one transient failure poison that property
+# for a week. But that choice left a hole with the OPPOSITE shape: an auth
+# failure (401/403) is not a fact about a property, it is a fact about the KEY,
+# and it is wrong for every address at once. With a dead credential, every
+# valuation request anywhere in the app made another doomed provider call —
+# observed live as an endless RentCast-403 stream during a UI sweep.
+#
+# So auth failures are remembered per PROVIDER, not per property, and only
+# briefly. Five minutes is long enough to collapse a click-storm into one
+# upstream call, short enough that a rotated key is picked up without a restart.
+# Transient statuses (429/5xx) are deliberately NOT counted here — retrying
+# those on the next request is correct behaviour.
+
+_CREDENTIAL_COOLDOWN_SECONDS = 300.0
+_credential_down_until: dict[str, float] = {}
+
+
+def _credential_down(provider: str) -> bool:
+    return time.monotonic() < _credential_down_until.get(provider, 0.0)
+
+
+def _mark_credential_rejected(provider: str, status: int) -> None:
+    _credential_down_until[provider] = time.monotonic() + _CREDENTIAL_COOLDOWN_SECONDS
+    logger.warning(
+        "%s AVM: credential rejected (HTTP %s) — suppressing calls for %.0fs. "
+        "Rotate the key; the cooldown lifts itself.",
+        provider, status, _CREDENTIAL_COOLDOWN_SECONDS,
+    )
+
+
 async def _rentcast_avm(session: aiohttp.ClientSession, subject: dict) -> Optional[AVMEstimate]:
     key = os.environ.get("RENTCAST_API_KEY", "")
     if not key:
+        return None
+    if _credential_down("RentCast"):
         return None
     address = subject.get("address") or ""
     if not address:
@@ -92,8 +127,11 @@ async def _rentcast_avm(session: aiohttp.ClientSession, subject: dict) -> Option
             params=params,
             headers={"X-Api-Key": key, "accept": "application/json"},
         ) as resp:
-            if resp.status == 401:
-                logger.warning("RentCast AVM: API key rejected (401) — set a valid RENTCAST_API_KEY.")
+            if resp.status in (401, 403):
+                # RentCast answers 403 (not only 401) for an invalid or
+                # plan-suspended key — the live failure that motivated the
+                # cooldown was a 403 stream.
+                _mark_credential_rejected("RentCast", resp.status)
                 return None
             if resp.status != 200:
                 logger.warning("RentCast AVM: HTTP %s for %s", resp.status, address)
@@ -129,6 +167,8 @@ async def _attom_avm(session: aiohttp.ClientSession, subject: dict) -> Optional[
     key = os.environ.get("ATTOM_API_KEY", "")
     if not key:
         return None
+    if _credential_down("ATTOM"):
+        return None
     address = subject.get("address") or ""
     if not address:
         return None
@@ -142,6 +182,9 @@ async def _attom_avm(session: aiohttp.ClientSession, subject: dict) -> Optional[
             params={"address1": address1, "address2": address2},
             headers={"apikey": key, "accept": "application/json"},
         ) as resp:
+            if resp.status in (401, 403):
+                _mark_credential_rejected("ATTOM", resp.status)
+                return None
             if resp.status != 200:
                 logger.warning("ATTOM AVM: HTTP %s for %s", resp.status, address)
                 return None
