@@ -65,60 +65,75 @@ async def resolve_tour(
     listing_id: Optional[UUID] = Query(default=None),
     ctx: TenantContext = Depends(require_context),
 ):
-    """Resolve the best available tour tier for one property (lead or listing).
+    """Resolve the tour for one property (lead or listing).
 
-    Returns the tier flags, the chosen tier + honest badge/note, and the asset
-    URLs the viewer needs (splat_url for tier 3, pano_scenes for tier 2).
-    The frontend only offers a "Step inside" affordance when best_tier >= 2."""
+    Returns `assets`: every asset the property has — 3D capture, 360 scenes,
+    photos, floor plan, exterior — each carrying its own provenance and label.
+    They compose into one tour rather than competing for a single slot.
+
+    The `best_tier` / `badge` / `splat_url` fields are derived from `assets` and
+    kept for existing callers. They are a summary, not a filter: selecting on
+    them is what caused a property holding a splat, 360s and photos to display
+    only the splat, and a property holding photos alone to display nothing."""
     if lead_id is None and listing_id is None:
         raise HTTPException(
             status.HTTP_422_UNPROCESSABLE_ENTITY, "Provide lead_id or listing_id."
         )
 
     async with tenant_tx(ctx) as conn:
-        rows = await conn.fetch(
-            """
-            SELECT id, kind, url, sort_order,
-                   COALESCE(provenance, 'captured') AS provenance
-              FROM property_media
-             WHERE (($1::uuid IS NOT NULL AND lead_id = $1)
-                 OR ($2::uuid IS NOT NULL AND listing_id = $2))
-             ORDER BY sort_order ASC, created_at ASC
-            """,
-            lead_id,
-            listing_id,
-        )
-        # Vantage points for a 360 walkthrough. Ordered the way the agent
-        # captured them, which is the fallback walk sequence when no explicit
-        # adjacency has been recorded.
-        scene_rows = await conn.fetch(
-            """
-            SELECT s.id, s.media_id, s.floor_index, s.label, s.sort_order,
-                   s.position_x, s.position_y, s.position_z, s.heading_deg,
-                   s.neighbour_ids, m.url
-              FROM property_pano_scenes AS s
-              JOIN property_media       AS m ON m.id = s.media_id
-             WHERE (($1::uuid IS NOT NULL AND s.lead_id = $1)
-                 OR ($2::uuid IS NOT NULL AND s.listing_id = $2))
-             ORDER BY s.floor_index ASC, s.sort_order ASC, s.created_at ASC
-            """,
-            lead_id,
-            listing_id,
-        )
-        # The saved floor plan (if any) supplies the tour's floor navigation:
-        # level list + storey height → per-floor camera heights in the viewer.
-        plan_row = await conn.fetchrow(
-            """
-            SELECT document
-              FROM property_floorplans
-             WHERE (($1::uuid IS NOT NULL AND lead_id = $1)
-                 OR ($2::uuid IS NOT NULL AND listing_id = $2))
-             LIMIT 1
-            """,
-            lead_id,
-            listing_id,
-        )
+        rows, scene_rows, plan_row = await fetch_tour_rows(conn, lead_id, listing_id)
 
+    return build_tour(rows, scene_rows, plan_row, lead_id=lead_id, listing_id=listing_id)
+
+
+async def fetch_tour_rows(conn, lead_id, listing_id):
+    """The three reads behind a tour, on a caller-supplied connection.
+
+    Separated from resolve_tour so the agent tool surface can answer "what does
+    this property have" without opening a second transaction inside the one it
+    is already running in.
+    """
+    rows = await conn.fetch(
+        """
+        SELECT id, kind, url, sort_order,
+               COALESCE(provenance, 'captured') AS provenance
+          FROM property_media
+         WHERE (($1::uuid IS NOT NULL AND lead_id = $1)
+             OR ($2::uuid IS NOT NULL AND listing_id = $2))
+         ORDER BY sort_order ASC, created_at ASC
+        """,
+        lead_id, listing_id,
+    )
+    scene_rows = await conn.fetch(
+        """
+        SELECT s.id, s.media_id, s.floor_index, s.label, s.sort_order,
+               s.position_x, s.position_y, s.position_z, s.heading_deg,
+               s.neighbour_ids, m.url,
+               COALESCE(m.provenance, 'captured') AS provenance
+          FROM property_pano_scenes AS s
+          JOIN property_media       AS m ON m.id = s.media_id
+         WHERE (($1::uuid IS NOT NULL AND s.lead_id = $1)
+             OR ($2::uuid IS NOT NULL AND s.listing_id = $2))
+         ORDER BY s.floor_index ASC, s.sort_order ASC, s.created_at ASC
+        """,
+        lead_id, listing_id,
+    )
+    plan_row = await conn.fetchrow(
+        """
+        SELECT document
+          FROM property_floorplans
+         WHERE (($1::uuid IS NOT NULL AND lead_id = $1)
+             OR ($2::uuid IS NOT NULL AND listing_id = $2))
+         LIMIT 1
+        """,
+        lead_id, listing_id,
+    )
+    return rows, scene_rows, plan_row
+
+
+def build_tour(rows, scene_rows, plan_row, *, lead_id=None, listing_id=None) -> dict:
+    """Assemble the tour from already-fetched rows. Pure, so it is testable
+    without a database and reusable by any caller that has the rows."""
     floors = _floors_from_plan(plan_row["document"] if plan_row else None)
 
     def _captured(row) -> bool:
@@ -168,7 +183,105 @@ async def resolve_tour(
     # walkable interior *of this home*, which is what the flag means to callers.
     is_demo = has_demo_splat and not has_splat
 
+    # ---- the tour itself: every asset, each labelled for what it is ---------
+    #
+    # `best_tier` below picks a single winner, and the viewer used to render
+    # only that winner: a property holding a splat AND 360s AND photos showed
+    # the splat and silently dropped the rest, discarding captures the agent
+    # paid to take. Worse, a property with photos but no splat opened nothing at
+    # all, because the viewer bailed when there was no splat_url.
+    #
+    # So the tour is the union of what exists, not the maximum of it. Ordering
+    # is most-immersive-first, which decides only what opens by default — it
+    # never removes anything from the list.
+    #
+    # Honesty moves onto each asset. One tour-wide `is_this_property` had to be
+    # computed from the splat alone, which is why real 360s of a house were
+    # suppressed whenever a demo splat sat beside them: the flag said "not this
+    # property" and the viewer believed it about everything.
+    assets: list[dict] = []
+
+    for row in all_splats:
+        captured = _captured(row)
+        assets.append({
+            "kind": "splat",
+            "url": row["url"],
+            "provenance": row["provenance"],
+            "is_this_property": captured,
+            "walkable": True,
+            "label": "Full 3D walkthrough" if captured else _DEMO_BADGE,
+            "note": _TIER_NOTE[3] if captured else _DEMO_NOTE,
+            "disclosure": SPATIAL_AI_DISCLOSURE,
+        })
+
+    if scenes:
+        # >= 2 vantage points is what makes it a walkthrough rather than a
+        # single view; one 360 still belongs in the tour, just not described as
+        # somewhere you can move between rooms.
+        real_scenes = [sc for sc in scenes if sc["is_this_property"]]
+        assets.append({
+            "kind": "pano",
+            "scenes": scenes,
+            "count": len(scenes),
+            "provenance": "captured" if len(real_scenes) == len(scenes) else "mixed",
+            "is_this_property": bool(real_scenes) and len(real_scenes) == len(scenes),
+            "walkable": has_pano,
+            "label": "360° walkthrough" if has_pano else "360° view",
+            "note": _TIER_NOTE[2] if has_pano else
+                    "A single 360° capture of this property — a view, not a walkthrough.",
+            "disclosure": None,
+        })
+
+    if has_photos:
+        assets.append({
+            "kind": "photo",
+            "count": len(photos),
+            "urls": [r["url"] for r in photos],
+            "provenance": "captured",
+            "is_this_property": True,
+            "walkable": False,
+            "label": f"{len(photos)} photo{'s' if len(photos) != 1 else ''}",
+            "note": "Photographs of this property.",
+            "disclosure": None,
+        })
+
+    if floors:
+        assets.append({
+            "kind": "floorplan",
+            "floors": floors,
+            "count": len(floors),
+            # Geometry may be estimated rather than surveyed; the floor plan
+            # surfaces its own per-dimension provenance, so this asset does not
+            # claim measurement it cannot back.
+            "provenance": "recorded",
+            "is_this_property": True,
+            "walkable": False,
+            "label": "Floor plan",
+            "note": "Recorded floor plan for this property.",
+            "disclosure": None,
+        })
+
+    # The exterior always exists, because the property always has an address.
+    assets.append({
+        "kind": "exterior",
+        "provenance": "licensed",
+        "is_this_property": True,
+        "walkable": False,
+        "label": "Exterior 3D",
+        "note": _TIER_NOTE[0],
+        "disclosure": None,
+    })
+
     return {
+        # The tour. Everything the property actually has, each item carrying its
+        # own provenance so a label describes the asset on screen rather than
+        # the tour as a whole.
+        "assets": assets,
+
+        # ---- derived, kept for existing callers -------------------------
+        # These summarise `assets`; they no longer decide what is shown. A
+        # caller that renders only the winner drops real captures, which is the
+        # bug this shape replaces. Read `assets` and render all of it.
         "best_tier": best,
         "badge": _DEMO_BADGE if is_demo else _TIER_BADGE[best],
         "honest_note": _DEMO_NOTE if is_demo else _TIER_NOTE[best],
@@ -226,6 +339,11 @@ def _pano_scenes(rows) -> list[dict]:
             ),
             "heading_deg": r["heading_deg"],
             "neighbours": [str(n) for n in (r["neighbour_ids"] or [])],
+            # Per-scene, not per-tour. A property can hold real 360s of the
+            # house alongside a generated asset, and one flag over the whole
+            # tour cannot say which is which.
+            "provenance": r["provenance"],
+            "is_this_property": r["provenance"] == "captured",
         }
         for r in rows
     ]

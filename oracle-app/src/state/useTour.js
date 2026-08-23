@@ -10,9 +10,15 @@ import { crmGet } from './useCrmApi';
  * Async-only setState (no synchronous set-state-in-effect). Silent-null degrade:
  * if the resolver is offline we behave as exterior-only and never over-promise.
  *
- * @returns {{ tour: object|null }} tour = { best_tier, badge, honest_note,
- *   walkable_interior, is_this_property, disclosure, tiers, splat_url,
- *   pano_scenes, pano_scene_count, photo_count }
+ * @returns {{ tour: object|null }} tour = { assets, best_tier, badge,
+ *   honest_note, walkable_interior, is_this_property, disclosure, tiers,
+ *   splat_url, pano_scenes, pano_scene_count, photo_count }
+ *
+ * `assets` is the tour: every asset the property has — 3D capture, 360 scenes,
+ * photos, floor plan, exterior — each with its own provenance and label. The
+ * remaining fields summarise it and are kept for existing callers; selecting on
+ * them is what made a property with a capture, 360s and photos display only the
+ * capture, and a property with photos alone display nothing.
  */
 export function useTour({ leadId, listingId }) {
   const [tour, setTour] = useState(null);

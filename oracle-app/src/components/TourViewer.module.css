@@ -1,0 +1,73 @@
+/* Mode switcher for a composed tour. Mirrors PanoViewer/WalkableSplatViewer
+   glassmorphism so the tour reads as one surface regardless of which renderer
+   is drawing. Pure CSS Modules — no UI library. */
+
+.switcher {
+  position: fixed;
+  z-index: 1300; /* above either viewer overlay (1200) */
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: max(1rem, env(safe-area-inset-bottom, 0px));
+  display: flex;
+  gap: 0.25rem;
+  padding: 0.25rem;
+  border-radius: 999px;
+  background: rgba(16, 19, 24, 0.72);
+  backdrop-filter: blur(20px) saturate(135%);
+  -webkit-backdrop-filter: blur(20px) saturate(135%);
+  border: 1px solid rgba(232, 236, 242, 0.14);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.45);
+  max-width: calc(100vw - 2rem);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.switcher::-webkit-scrollbar { display: none; }
+
+.tab {
+  flex: 0 0 auto;
+  appearance: none;
+  border: 0;
+  cursor: pointer;
+  white-space: nowrap;
+  font: inherit;
+  font-size: 0.8125rem;
+  line-height: 1;
+  padding: 0.5rem 0.875rem;
+  border-radius: 999px;
+  color: #b9c2cf;
+  background: transparent;
+  transition: background 120ms ease, color 120ms ease;
+}
+
+.tab:hover { color: #e8ecf2; background: rgba(232, 236, 242, 0.08); }
+
+.tab:focus-visible {
+  outline: 2px solid #7cc4ff;
+  outline-offset: 2px;
+}
+
+.tabActive {
+  color: #0b0d10;
+  background: #e8ecf2;
+}
+
+.tabActive:hover { color: #0b0d10; background: #e8ecf2; }
+
+/* A mode showing something that is not this property is marked on the control
+   itself, so the distinction survives switching between modes rather than
+   living only in the overlay text. */
+.tabDemo::after {
+  content: '';
+  display: inline-block;
+  width: 0.4rem;
+  height: 0.4rem;
+  margin-left: 0.4rem;
+  border-radius: 50%;
+  background: #e0a34a;
+  vertical-align: middle;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tab { transition: none; }
+}

@@ -41,9 +41,13 @@ def _media(kind, *, provenance="captured", url=None, media_id="33333333-3333-433
     }
 
 
-def _scene(scene_id, *, floor=0, order=0, label="", position=None, neighbours=None):
+def _scene(scene_id, *, floor=0, order=0, label="", position=None, neighbours=None,
+           provenance="captured"):
     return {
         "id": scene_id,
+        # The resolver reads each scene's provenance rather than assuming every
+        # 360 depicts the property, so the fixture has to model it too.
+        "provenance": provenance,
         "media_id": f"m-{scene_id}",
         "url": f"/api/media/m-{scene_id}",
         "floor_index": floor,
