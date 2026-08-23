@@ -170,3 +170,78 @@ def test_adapter_normalises_transfer_failures_to_oserror(files_backend, tmp_path
 
     with pytest.raises(OSError):
         store.upload_file(str(tmp_path / "missing.pdf"), "b", "vault/doc.pdf")
+
+
+# --- write capabilities handed to machines we do not control ------------------
+#
+# PodProvider's blob transport hands a rented RunPod GPU a URL so it can deposit
+# a finished reconstruction. That URL is the *entire* capability of a machine we
+# never talk to again and do not control, so what it grants is a security
+# boundary rather than a detail.
+
+def _sas_kwargs(monkeypatch, mod, *, write):
+    """Capture what would be signed, without an Azure account."""
+    captured: dict = {}
+
+    class _Perm:
+        def __init__(self, **flags):
+            captured["permission"] = flags
+
+    class _Service:
+        account_name = "acct"
+        url = "https://acct.blob.core.windows.net"
+
+        class credential:  # noqa: N801 - stands in for a shared-key credential
+            account_key = "k"
+
+    def _generate(**kwargs):
+        captured.update({k: v for k, v in kwargs.items() if k != "permission"})
+        return "sig=stub"
+
+    fake = type("m", (), {"BlobSasPermissions": _Perm, "generate_blob_sas": _generate})
+    monkeypatch.setitem(__import__("sys").modules, "azure.storage.blob", fake)
+    monkeypatch.setattr(mod, "_blob_service", lambda: _Service())
+    mod._blob_sas_url("recon-outputs/job/model.sog", 3600, write=write)
+    return captured
+
+
+def test_a_write_url_grants_only_create_and_write(monkeypatch):
+    """No read, no list, no delete. The pod must be able to deposit its result
+    and must NOT be able to enumerate the container, read other tenants'
+    reconstructions, or overwrite anything it was not given."""
+    mod = _reload(monkeypatch, ORACLE_STORAGE_BACKEND="azure-blob",
+                  ORACLE_BLOB_ACCOUNT_URL="https://acct.blob.core.windows.net")
+    granted = _sas_kwargs(monkeypatch, mod, write=True)["permission"]
+
+    assert granted.get("write") is True
+    assert granted.get("create") is True
+    for forbidden in ("read", "list", "delete", "add", "update"):
+        assert not granted.get(forbidden), (
+            f"a write URL handed to a rented GPU must not grant {forbidden}"
+        )
+
+
+def test_a_read_url_grants_no_write(monkeypatch):
+    mod = _reload(monkeypatch, ORACLE_STORAGE_BACKEND="azure-blob",
+                  ORACLE_BLOB_ACCOUNT_URL="https://acct.blob.core.windows.net")
+    granted = _sas_kwargs(monkeypatch, mod, write=False)["permission"]
+
+    assert granted.get("read") is True
+    for forbidden in ("write", "create", "delete", "list"):
+        assert not granted.get(forbidden)
+
+
+def test_a_write_url_is_scoped_to_one_blob(monkeypatch):
+    """Scoped to the exact key, not a prefix or the container."""
+    mod = _reload(monkeypatch, ORACLE_STORAGE_BACKEND="azure-blob",
+                  ORACLE_BLOB_ACCOUNT_URL="https://acct.blob.core.windows.net")
+    captured = _sas_kwargs(monkeypatch, mod, write=True)
+
+    assert captured["blob_name"] == "recon-outputs/job/model.sog"
+
+
+def test_a_mount_cannot_hand_out_a_write_url(files_backend):
+    """azure-files returns None rather than something unusable, so the caller
+    can refuse the job up front instead of computing a result with nowhere to
+    put it."""
+    assert files_backend.presigned_put_url("recon-outputs/job/model.sog") is None

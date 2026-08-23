@@ -240,6 +240,33 @@ def signed_url(key: str, expires_seconds: int = 3600) -> Optional[str]:
     )
 
 
+def presigned_put_url(key: str, expires_seconds: int = 3600) -> Optional[str]:
+    """A URL something outside this process can PUT one object to, or None.
+
+    The write-side twin of `signed_url`, and it exists for exactly one
+    caller: a rented GPU that has to hand back a reconstruction without
+    holding any of our credentials.
+
+    azure-files returns None for the same reason it does on the read side — a
+    mounted share has no URL to hand out. A deployment on azure-files therefore
+    has no blob transport, which `PodProvider.available()` reports rather than
+    discovering mid-job.
+    """
+    backend = _check_backend()
+
+    if backend == "azure-files":
+        return None
+
+    if backend == "azure-blob":
+        return _blob_sas_url(key, expires_seconds, write=True)
+
+    import boto3
+
+    return boto3.client("s3", region_name=S3_REGION).generate_presigned_url(
+        "put_object", Params={"Bucket": S3_BUCKET, "Key": key}, ExpiresIn=expires_seconds
+    )
+
+
 # --- azure blob plumbing ------------------------------------------------------
 
 def _content_settings(content_type: str):
@@ -269,18 +296,30 @@ def _blob_client(key: str):
     return _blob_service().get_blob_client(container=BLOB_CONTAINER, blob=key)
 
 
-def _blob_sas_url(key: str, expires_seconds: int) -> str:
+def _blob_sas_url(key: str, expires_seconds: int, *, write: bool = False) -> str:
+    """A time-limited URL for one blob.
+
+    `write=True` grants create+write on that single blob and nothing else — no
+    read, no list, no delete, and no reach beyond the exact key. That matters
+    because a write SAS is handed to a rented GPU we do not control: the pod
+    must be able to deposit its result and must not be able to enumerate or
+    overwrite anything else in the container.
+    """
     from azure.storage.blob import BlobSasPermissions, generate_blob_sas
 
     service = _blob_service()
     start = _dt.datetime.now(_dt.timezone.utc)
     expiry = start + _dt.timedelta(seconds=expires_seconds)
 
+    permission = (
+        BlobSasPermissions(create=True, write=True) if write
+        else BlobSasPermissions(read=True)
+    )
     kwargs: dict[str, Any] = {
         "account_name": service.account_name,
         "container_name": BLOB_CONTAINER,
         "blob_name": key,
-        "permission": BlobSasPermissions(read=True),
+        "permission": permission,
         "expiry": expiry,
     }
     if service.credential is not None and getattr(service.credential, "account_key", None):

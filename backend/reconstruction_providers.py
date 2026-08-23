@@ -1197,6 +1197,35 @@ echo "OK $(stat -c%s /workspace/model.sog) bytes"
 """
 
 
+#: Fetches its own inputs and posts its own result, because in this transport
+#: nothing ever connects *to* the pod. The pod holds two capability URLs and no
+#: credentials: a read SAS per input and a write SAS for exactly one output key.
+#:
+#: The script itself arrives the same way rather than being embedded in the
+#: container command — RunPod's dockerStartCmd is not the place for a hundred
+#: lines of shell, and a long argv is a truncation bug waiting to happen.
+POD_BLOB_BOOTSTRAP = r"""
+set -euo pipefail
+mkdir -p /workspace/images
+cd /workspace
+
+curl -fsSL "$NEOH_MANIFEST_URL" -o /workspace/manifest.txt
+n=0
+while IFS= read -r url; do
+  [ -n "$url" ] || continue
+  n=$((n+1))
+  curl -fsSL "$url" -o "$(printf '/workspace/images/%04d.jpg' "$n")"
+done < /workspace/manifest.txt
+echo ">> fetched $n source images"
+
+bash /workspace/pipeline.sh
+
+# x-ms-blob-type is required by Azure and ignored by S3, so one PUT covers both.
+curl -fsS -X PUT -T /workspace/model.sog      -H "x-ms-blob-type: BlockBlob"      -H "Content-Type: application/octet-stream"      "$NEOH_OUTPUT_URL"
+echo ">> uploaded"
+"""
+
+
 def _subsample_capture(images: list[Path], target: int) -> list[Path]:
     """Evenly thin a capture to `target` frames, keeping coverage.
 
@@ -1283,6 +1312,13 @@ class PodProvider(ReconstructionProvider):
         if cloud not in ("SECURE", "COMMUNITY"):
             raise ProviderError("RECON_POD_CLOUD_TYPE must be SECURE or COMMUNITY")
 
+        # ssh is primary: it streams, needs no object store, and works on the
+        # default azure-files backend. blob is the fallback for a deployment
+        # that cannot open outbound 22 to RunPod.
+        transport = (os.environ.get("RECON_POD_TRANSPORT", "ssh").strip().lower() or "ssh")
+        if transport not in ("ssh", "blob"):
+            raise ProviderError("RECON_POD_TRANSPORT must be 'ssh' or 'blob'")
+
         return {
             "api_key": api,
             "image": image,
@@ -1298,6 +1334,7 @@ class PodProvider(ReconstructionProvider):
             # permanent, fixable condition and must be reported as one.
             "min_balance": _num("RECON_POD_MIN_BALANCE_USD", "1.00", 0.0, 1000.0),
             "cloud_type": cloud,
+            "transport": transport,
             "steps": _num("RECON_POD_STEPS", "7000", 500, 60000, int),
         }
 
@@ -1359,10 +1396,31 @@ class PodProvider(ReconstructionProvider):
         except ProviderError as exc:
             return (False, str(exc))
 
-        try:
-            import asyncssh  # noqa: F401  - presence check only
-        except ImportError:
-            return (False, "asyncssh is not installed (pip install asyncssh)")
+        if settings["transport"] == "ssh":
+            try:
+                import asyncssh  # noqa: F401  - presence check only
+            except ImportError:
+                return (
+                    False,
+                    "asyncssh is not installed (pip install asyncssh), or set "
+                    "RECON_POD_TRANSPORT=blob to hand the job over object storage",
+                )
+        else:
+            # Checked here rather than discovered mid-job: azure-files has no
+            # URL to hand out, so a pod could never return its result and the
+            # failure would look like a reconstruction that silently never
+            # finished.
+            import object_storage
+
+            if not object_storage.is_configured():
+                return (False, "RECON_POD_TRANSPORT=blob needs ORACLE_STORAGE_BACKEND configured")
+            if object_storage.BACKEND == "azure-files":
+                return (
+                    False,
+                    "RECON_POD_TRANSPORT=blob cannot use ORACLE_STORAGE_BACKEND="
+                    "azure-files (a mounted share has no URL to hand a pod). Use "
+                    "azure-blob or s3, or the ssh transport.",
+                )
 
         try:
             balance = self._balance(settings["api_key"])
@@ -1400,6 +1458,8 @@ class PodProvider(ReconstructionProvider):
         # error mid-poll or a cancellation in there leaked a billing pod.
         launched: list[str] = []
         try:
+            if settings["transport"] == "blob":
+                return await self._run_via_blob(settings, launched, staged, work_dir)
             host, port, key, hourly = await self._launch(settings, launched)
             return await self._run_on_pod(settings, host, port, key, hourly, staged, work_dir)
         finally:
@@ -1530,6 +1590,121 @@ class PodProvider(ReconstructionProvider):
 
         _validate_artifact(out, provider="RunPod pod")
         return out
+
+    # -- transport 2: object storage, for deploys with no SSH egress ---------
+    async def _run_via_blob(self, settings, launched, images, work_dir) -> Path:
+        """Run a job without ever connecting to the pod.
+
+        SSH is the primary transport and the better one — it streams, it needs
+        no object store, and it works on the default azure-files backend. But a
+        deployment that cannot open outbound 22 to RunPod had no path at all,
+        which is what this closes.
+
+        The shape is deliberately capability-based: the pod is handed a read SAS
+        per input and a write SAS for exactly one output key, and holds no
+        credential of ours. It cannot list the container, read anything it was
+        not given, or write anywhere else. That matters more here than over SSH,
+        because in this direction we never talk to the machine again — we only
+        wait for a blob to appear.
+        """
+        import object_storage
+
+        job_key = uuid.uuid4().hex
+        in_prefix = f"recon-inputs/{job_key}"
+        out_key = f"recon-outputs/{job_key}/model{DELIVERY_SUFFIX}"
+        # The URLs must outlive queue wait plus the whole run, or the pod loses
+        # the ability to hand back a result it has already paid to compute.
+        ttl = int(settings["timeout"]) + 3600
+
+        def _stage() -> tuple[str, str, str]:
+            urls = []
+            for index, path in enumerate(images):
+                key = f"{in_prefix}/{_staged_image_name(index, path)}"
+                object_storage.put_file(key, path, "image/jpeg")
+                urls.append(object_storage.signed_url(key, ttl))
+
+            pipeline = (
+                POD_PIPELINE
+                .replace("__STEPS__", str(settings["steps"]))
+                .replace("__ST__", SPLAT_TRANSFORM_VERSION)
+                .replace("__GSPLAT__", _POD_GSPLAT_VERSION)
+            )
+            object_storage.put_bytes(f"{in_prefix}/manifest.txt",
+                                     "\n".join(urls).encode(), "text/plain")
+            object_storage.put_bytes(f"{in_prefix}/pipeline.sh",
+                                     pipeline.encode(), "text/x-shellscript")
+            object_storage.put_bytes(f"{in_prefix}/bootstrap.sh",
+                                     POD_BLOB_BOOTSTRAP.encode(), "text/x-shellscript")
+
+            output_url = object_storage.presigned_put_url(out_key, ttl)
+            if not output_url:
+                raise ProviderError(
+                    "The blob transport needs a storage backend that can issue a "
+                    "write URL. ORACLE_STORAGE_BACKEND=azure-files cannot (a "
+                    "mounted share has no URL), so use the ssh transport there."
+                )
+            return (
+                object_storage.signed_url(f"{in_prefix}/manifest.txt", ttl),
+                object_storage.signed_url(f"{in_prefix}/bootstrap.sh", ttl),
+                output_url,
+            )
+
+        manifest_url, bootstrap_url, output_url = await asyncio.to_thread(_stage)
+
+        created = await asyncio.to_thread(
+            self._rest, settings["api_key"], "POST", "/pods",
+            json_body={
+                "name": _pod_name(),
+                "imageName": settings["image"],
+                "gpuTypeIds": settings["gpu_ids"],
+                "gpuCount": 1,
+                "containerDiskInGb": settings["disk_gb"],
+                "volumeInGb": settings["volume_gb"],
+                "cloudType": settings["cloud_type"],
+                "interruptible": False,
+                "env": {
+                    "NEOH_MANIFEST_URL": manifest_url,
+                    "NEOH_OUTPUT_URL": output_url,
+                    "NEOH_BOOTSTRAP_URL": bootstrap_url,
+                },
+                # Tiny on purpose: the real script is fetched, not embedded.
+                # `pipeline.sh` is pulled by the bootstrap from the same prefix.
+                "dockerStartCmd": [
+                    "bash", "-lc",
+                    'curl -fsSL "$NEOH_BOOTSTRAP_URL" -o /workspace/bootstrap.sh && '
+                    'curl -fsSL "${NEOH_MANIFEST_URL%manifest.txt}pipeline.sh" '
+                    '-o /workspace/pipeline.sh && bash /workspace/bootstrap.sh',
+                ],
+            },
+        ) or {}
+        pod_id = created.get("id")
+        if not pod_id:
+            raise ProviderError(f"RunPod did not return a pod id: {str(created)[:200]}")
+        launched.append(pod_id)
+        log.info("RunPod pod %s running (blob transport, job %s)", pod_id, job_key)
+
+        hourly = float(created.get("costPerHr") or 0) or _POD_FALLBACK_HOURLY
+        budget_seconds = int((settings["max_cost"] / max(hourly, 0.01)) * 3600)
+        deadline = _now() + min(settings["timeout"], budget_seconds)
+
+        # Nothing reports progress in this direction, so the finished artifact
+        # appearing IS the completion signal.
+        while _now() < deadline:
+            try:
+                payload = await asyncio.to_thread(object_storage.get_bytes, out_key)
+            except Exception:  # noqa: BLE001 - not there yet is the normal case
+                await asyncio.sleep(20)
+                continue
+            out = work_dir / f"model{DELIVERY_SUFFIX}"
+            out.write_bytes(payload)
+            _validate_artifact(out, provider="RunPod pod")
+            return out
+
+        raise ProviderError(
+            f"Reconstruction produced no artifact within its budget "
+            f"({int(settings['max_cost'] / max(hourly, 0.01) * 3600)}s at "
+            f"${hourly:.2f}/hr); the pod is being terminated"
+        )
 
     # -- cleanup ------------------------------------------------------------
     @classmethod

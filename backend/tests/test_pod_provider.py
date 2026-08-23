@@ -319,3 +319,193 @@ def test_the_remote_pipeline_pins_every_tool_it_installs():
     examples cloned from main. An unpinned install is that bug waiting."""
     assert 'gsplat==__GSPLAT__' in POD_PIPELINE
     assert 'splat-transform@__ST__' in POD_PIPELINE
+
+
+# ---------------------------------------------------------------------------
+# Transport 2: object storage, for deploys with no SSH egress
+# ---------------------------------------------------------------------------
+
+class _FakeStorage:
+    """Records what was staged and hands out capability URLs."""
+
+    BACKEND = "azure-blob"
+
+    def __init__(self, *, output_after=0):
+        self.put_keys: list[str] = []
+        self.read_urls: list[str] = []
+        self.write_urls: list[str] = []
+        self._polls = 0
+        self._output_after = output_after
+
+    def is_configured(self):
+        return True
+
+    def put_file(self, key, path, content_type):
+        self.put_keys.append(key)
+
+    def put_bytes(self, key, data, content_type="application/octet-stream"):
+        self.put_keys.append(key)
+
+    def signed_url(self, key, ttl):
+        url = f"https://blob.test/{key}?sig=read&se={ttl}"
+        self.read_urls.append(url)
+        return url
+
+    def presigned_put_url(self, key, ttl):
+        url = f"https://blob.test/{key}?sig=write&se={ttl}"
+        self.write_urls.append(url)
+        return url
+
+    def get_bytes(self, key):
+        self._polls += 1
+        if self._polls <= self._output_after:
+            raise FileNotFoundError(key)
+        return b"SOG\x00compressed-payload"
+
+
+def _blob_env(monkeypatch):
+    monkeypatch.setenv("RUNPOD_API_KEY", "test-key")
+    monkeypatch.setenv("RECON_POD_TRANSPORT", "blob")
+
+
+def test_the_blob_transport_never_connects_to_the_pod(monkeypatch, tmp_path):
+    """The whole point of the fallback: no outbound 22, so nothing ever opens a
+    connection to the rented machine."""
+    _blob_env(monkeypatch)
+    storage = _FakeStorage()
+    monkeypatch.setitem(__import__("sys").modules, "object_storage", storage)
+
+    def no_ssh(*a, **k):
+        raise AssertionError("the blob transport must not open SSH")
+
+    monkeypatch.setattr(PodProvider, "_launch", no_ssh)
+    monkeypatch.setattr(PodProvider, "_terminate", classmethod(lambda cls, k, p: None))
+
+    created = {}
+
+    def fake_rest(api_key, method, path, *, json_body=None, timeout=60):
+        if method == "POST":
+            created.update(json_body)
+            return {"id": "pod-blob", "costPerHr": 0.16}
+        return {}
+
+    monkeypatch.setattr(PodProvider, "_rest", staticmethod(fake_rest))
+    monkeypatch.setattr(rp.asyncio, "sleep", _noop_sleep)
+
+    out = asyncio.run(PodProvider().reconstruct(_images(tmp_path), tmp_path))
+
+    assert out.name == f"model{DELIVERY_SUFFIX}"
+    assert created["dockerStartCmd"], "the pod must start the job itself"
+    # The pipeline and bootstrap are fetched, not embedded: a hundred lines of
+    # shell in argv is a truncation bug waiting to happen.
+    assert len(" ".join(created["dockerStartCmd"])) < 400
+
+
+def test_the_pod_receives_capability_urls_and_no_credentials(monkeypatch, tmp_path):
+    """We never talk to this machine again, so what it holds is all it can do."""
+    _blob_env(monkeypatch)
+    storage = _FakeStorage()
+    monkeypatch.setitem(__import__("sys").modules, "object_storage", storage)
+    monkeypatch.setattr(PodProvider, "_terminate", classmethod(lambda cls, k, p: None))
+
+    created = {}
+
+    def fake_rest(api_key, method, path, *, json_body=None, timeout=60):
+        if method == "POST":
+            created.update(json_body)
+            return {"id": "pod-blob", "costPerHr": 0.16}
+        return {}
+
+    monkeypatch.setattr(PodProvider, "_rest", staticmethod(fake_rest))
+    monkeypatch.setattr(rp.asyncio, "sleep", _noop_sleep)
+    asyncio.run(PodProvider().reconstruct(_images(tmp_path), tmp_path))
+
+    env = created["env"]
+    blob = " ".join(str(v) for v in env.values())
+    for secret in ("RUNPOD_API_KEY", "test-key", "AZURE_STORAGE_CONNECTION_STRING"):
+        assert secret not in blob, f"{secret} must never reach the pod"
+    # Exactly one write capability, scoped to the single output key.
+    assert len(storage.write_urls) == 1
+    assert storage.write_urls[0].endswith("sig=write&se=" + storage.write_urls[0].split("se=")[-1])
+    assert f"model{DELIVERY_SUFFIX}" in storage.write_urls[0]
+
+
+def test_the_finished_artifact_is_the_completion_signal(monkeypatch, tmp_path):
+    """Nothing reports progress in this direction, so the job is done when the
+    blob shows up — not when the pod says so."""
+    _blob_env(monkeypatch)
+    storage = _FakeStorage(output_after=3)   # missing three times, then present
+    monkeypatch.setitem(__import__("sys").modules, "object_storage", storage)
+    monkeypatch.setattr(PodProvider, "_terminate", classmethod(lambda cls, k, p: None))
+    monkeypatch.setattr(PodProvider, "_rest", staticmethod(
+        lambda *a, **k: {"id": "pod-blob", "costPerHr": 0.16}))
+    monkeypatch.setattr(rp.asyncio, "sleep", _noop_sleep)
+
+    out = asyncio.run(PodProvider().reconstruct(_images(tmp_path), tmp_path))
+
+    assert out.read_bytes().startswith(b"SOG")
+
+
+def test_the_pod_is_terminated_on_the_blob_path_too(monkeypatch, tmp_path):
+    _blob_env(monkeypatch)
+    storage = _FakeStorage(output_after=10_000)     # never appears
+    monkeypatch.setitem(__import__("sys").modules, "object_storage", storage)
+    killed = []
+    monkeypatch.setattr(PodProvider, "_terminate",
+                        classmethod(lambda cls, key, pod_id: killed.append(pod_id)))
+    monkeypatch.setattr(PodProvider, "_rest", staticmethod(
+        lambda *a, **k: {"id": "pod-blob", "costPerHr": 0.16}))
+    monkeypatch.setattr(rp, "_now", _clock(step=4000))
+    monkeypatch.setattr(rp.asyncio, "sleep", _noop_sleep)
+
+    with pytest.raises(ProviderError, match="no artifact"):
+        asyncio.run(PodProvider().reconstruct(_images(tmp_path), tmp_path))
+
+    assert killed == ["pod-blob"]
+
+
+def test_a_backend_that_cannot_hand_out_a_url_is_refused_up_front(monkeypatch):
+    """azure-files has no URL to give a pod, so a job would compute and then have
+    nowhere to put the result — which looks like a job that silently never
+    finished rather than a configuration mistake."""
+    _blob_env(monkeypatch)
+    storage = _FakeStorage()
+    storage.BACKEND = "azure-files"
+    monkeypatch.setitem(__import__("sys").modules, "object_storage", storage)
+    monkeypatch.setattr(PodProvider, "_balance", classmethod(lambda cls, key: 9.94))
+
+    ready, reason = PodProvider().available()
+
+    assert ready is False
+    assert "azure-files" in reason and "ssh" in reason
+
+
+def test_the_ssh_transport_still_needs_asyncssh_and_says_so(monkeypatch):
+    monkeypatch.setenv("RUNPOD_API_KEY", "test-key")
+    monkeypatch.setenv("RECON_POD_TRANSPORT", "ssh")
+    monkeypatch.setitem(__import__("sys").modules, "asyncssh", None)
+    monkeypatch.setattr(PodProvider, "_balance", classmethod(lambda cls, key: 9.94))
+
+    import builtins
+    real_import = builtins.__import__
+
+    def blocked(name, *a, **k):
+        if name == "asyncssh":
+            raise ImportError("no asyncssh")
+        return real_import(name, *a, **k)
+
+    monkeypatch.setattr(builtins, "__import__", blocked)
+    ready, reason = PodProvider().available()
+
+    assert ready is False
+    assert "asyncssh" in reason
+    assert "blob" in reason, "the reason should name the fallback"
+
+
+def test_an_unknown_transport_is_refused(monkeypatch):
+    monkeypatch.setenv("RUNPOD_API_KEY", "test-key")
+    monkeypatch.setenv("RECON_POD_TRANSPORT", "carrier-pigeon")
+
+    ready, reason = PodProvider().available()
+
+    assert ready is False and "ssh" in reason and "blob" in reason
