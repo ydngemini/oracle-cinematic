@@ -527,10 +527,81 @@ async def _worker_loop(worker_id: int) -> None:
             _queue.task_done()
 
 
+#: How often to sweep for leaked GPU pods.
+REAP_INTERVAL_SECONDS = int(os.environ.get("RECON_REAP_INTERVAL", "1800") or 1800)
+
+
+def _reap_max_age_seconds() -> int:
+    """How old one of our pods must be before a sweep will terminate it.
+
+    **This must exceed the job timeout, and by a real margin.** The reaper
+    cannot tell a leaked pod from one a *different backend replica* is actively
+    using — it sees only a name and an age — so a max age below the job ceiling
+    would have it terminating live reconstructions mid-training, which reads as
+    a mysterious GPU failure rather than a configuration mistake.
+
+    Derived from the pod timeout rather than set independently, so raising the
+    one moves the other and the relationship cannot silently invert.
+    """
+    try:
+        job_ceiling = int(os.environ.get("RECON_POD_TIMEOUT", "5400") or 5400)
+    except ValueError:
+        job_ceiling = 5400
+    floor = job_ceiling * 2 + 1800
+    try:
+        configured = int(os.environ.get("RECON_REAP_MAX_AGE", "0") or 0)
+    except ValueError:
+        configured = 0
+    if configured and configured < floor:
+        logger.warning(
+            "RECON_REAP_MAX_AGE=%ds is below the safe floor of %ds for a "
+            "%ds job ceiling; using the floor so the sweep cannot terminate a "
+            "reconstruction that is still running.",
+            configured, floor, job_ceiling,
+        )
+    return max(configured, floor)
+
+
+async def _reaper_loop() -> None:
+    """Terminate our own GPU pods that outlived any plausible job.
+
+    A pod bills by the hour whether or not it is computing, and a leak is
+    completely silent — nothing in the product surfaces one. `reconstruct` has a
+    `finally` that covers a failing job, but it cannot cover this process being
+    killed between creating a pod and reaching that block. That window is
+    exactly what this closes, which is why the **first sweep runs immediately at
+    startup**: the most likely leak is one left by the crash that caused this
+    restart.
+
+    A no-op for every provider without a reaper (stub, local, the S3-staged
+    ones), so it costs nothing on a deployment that never rents anything.
+    """
+    while True:
+        try:
+            reap = getattr(get_provider(), "reap_stale_pods", None)
+            if reap is not None:
+                reaped = await asyncio.to_thread(reap, _reap_max_age_seconds())
+                if reaped:
+                    logger.warning(
+                        "Reaped %d leaked GPU pod(s): %s", len(reaped), ", ".join(reaped)
+                    )
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001
+            # Never let a sweep failure take down the worker pool or the server.
+            # An unfunded or misconfigured account raises here every cycle, and
+            # that is a reason to log, not to stop accepting captures.
+            logger.exception("Leaked-pod sweep failed; will retry")
+        await asyncio.sleep(REAP_INTERVAL_SECONDS)
+
+
 async def start_reconstruction_workers() -> None:
     """Called from server lifespan startup."""
     for i in range(WORKER_COUNT):
         _workers.append(asyncio.create_task(_worker_loop(i)))
+    # Tracked in the same list so shutdown cancels it with everything else —
+    # a reaper outliving the pool would keep a dead event loop alive.
+    _workers.append(asyncio.create_task(_reaper_loop()))
 
 
 async def stop_reconstruction_workers() -> None:
