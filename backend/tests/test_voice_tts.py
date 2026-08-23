@@ -221,8 +221,16 @@ def test_the_audio_token_is_derived_from_the_audio_not_the_text(monkeypatch):
 
 
 def test_expired_audio_is_gone_rather_than_stale(monkeypatch):
+    # Both the store and the read must run on the same fake clock. Storing on
+    # the real monotonic() and reading on a fixed 10_000 made the test depend on
+    # host uptime: past ~2.8 hours the real store time exceeds the fake "now",
+    # the age goes negative, and the entry reads as fresh. It failed on a box up
+    # for 7 hours and passed after a reboot, which is the worst kind of red.
+    now = 10_000.0
+    monkeypatch.setattr(voice_tts.time, "monotonic", lambda: now)
     cache = voice_tts._AudioCache()
     asyncio.run(cache.put("tok", b"a"))
-    monkeypatch.setattr(voice_tts.time, "monotonic",
-                        lambda: 10_000.0 + voice_tts._CACHE_TTL_SECONDS)
+    assert asyncio.run(cache.get("tok")) == b"a"          # fresh before the TTL
+
+    now = 10_000.0 + voice_tts._CACHE_TTL_SECONDS + 1
     assert asyncio.run(cache.get("tok")) is None
