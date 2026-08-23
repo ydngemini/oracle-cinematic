@@ -318,6 +318,42 @@
   .scrollableContent {
     padding-inline: var(--space-6);
   }
+
+  /* Agent settings stops being a phone bottom-sheet above 720px.
+     The base rules below 720px are correct for a phone — a sheet rising from
+     the bottom edge, squared off where it meets it. Carried onto a 1280px
+     desktop they produced a 480px strip pinned to the bottom of the screen
+     with two thirds of the viewport empty beside it, and the settings content
+     scrolling inside a column narrower than the page behind it.
+
+     Note this is a WIDTH fix, not a height one: the sheet already sizes to the
+     viewport, and the cramping came from the column, not the vertical space. */
+  .profileLayer {
+    align-items: center;
+    padding: var(--space-6);
+  }
+
+  .profileSheet {
+    width: min(100%, 880px);
+    height: min(84dvh, 860px);
+    /* Centred, so it is bounded on all four sides rather than bleeding off the
+       bottom edge — the border and radius have to close for the same reason. */
+    border: 1px solid var(--oracle-glass-edge);
+    border-radius: var(--radius-xl);
+  }
+
+  /* With the sheet this wide the two or three views always fit, so the
+     horizontal scroll (whose scrollbar is hidden) can no longer silently clip
+     a tab off the right edge. */
+  .profileNav {
+    overflow-x: visible;
+    flex-wrap: wrap;
+    padding-inline: var(--space-4);
+  }
+
+  .profileSheetBody {
+    padding-inline: var(--space-6);
+  }
 }
 
 /* ── Suspense fallback — breathing glass skeletons ──────────────────────── */
