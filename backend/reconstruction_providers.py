@@ -236,10 +236,32 @@ class StubProvider(ReconstructionProvider):
         return write_demo_splat(out)
 
 
-async def _run(cmd: list[str], *, cwd: Optional[Path] = None, timeout: int = REQUEST_TIMEOUT) -> None:
+#: COLMAP links Qt and builds a QGuiApplication even for its CLI subcommands.
+#: On a headless host — which every deployed backend is — that aborts with
+#: SIGABRT inside QGuiApplicationPrivate::createPlatformIntegration() before it
+#: reads a single image, so the failure looks like a corrupt capture rather than
+#: a missing display. Verified on a headless GPU box 2026-08-23: without this,
+#: `colmap feature_extractor` dies with rc=-6 in 0s; with a display available it
+#: extracted features from 43 images in 27s.
+#:
+#: `offscreen` needs no extra process and is enough for COLMAP's CPU paths. GPU
+#: SIFT wants a real GL context, so a deployment that sets
+#: SiftExtraction.use_gpu must run the binary under xvfb-run instead — that is
+#: an image-level concern, which is why this only guarantees the process starts.
+_COLMAP_ENV = {"QT_QPA_PLATFORM": "offscreen"}
+
+
+async def _run(
+    cmd: list[str],
+    *,
+    cwd: Optional[Path] = None,
+    timeout: int = REQUEST_TIMEOUT,
+    env: Optional[dict[str, str]] = None,
+) -> None:
     proc = await asyncio.create_subprocess_exec(
         *cmd, cwd=str(cwd) if cwd else None,
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
+        env={**os.environ, **env} if env else None,
     )
     try:
         out, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
@@ -277,9 +299,9 @@ class LocalGpuProvider(ReconstructionProvider):
         db = work_dir / "colmap.db"
         sparse = work_dir / "sparse"
         sparse.mkdir(exist_ok=True)
-        await _run(["colmap", "feature_extractor", "--database_path", str(db), "--image_path", str(img_dir)])
-        await _run(["colmap", "exhaustive_matcher", "--database_path", str(db)])
-        await _run(["colmap", "mapper", "--database_path", str(db), "--image_path", str(img_dir), "--output_path", str(sparse)])
+        await _run(["colmap", "feature_extractor", "--database_path", str(db), "--image_path", str(img_dir)], env=_COLMAP_ENV)
+        await _run(["colmap", "exhaustive_matcher", "--database_path", str(db)], env=_COLMAP_ENV)
+        await _run(["colmap", "mapper", "--database_path", str(db), "--image_path", str(img_dir), "--output_path", str(sparse)], env=_COLMAP_ENV)
         out_ply = work_dir / "model.ply"
         trainer = os.environ["RECON_TRAINER_CMD"].format(scene=str(work_dir), out=str(out_ply))
         await _run(trainer.split())
