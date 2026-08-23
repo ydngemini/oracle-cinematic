@@ -53,6 +53,7 @@ code's use of a source → update the row in the same commit.**
 | `data_integrations/listings_feed.py` | RESO feed | **IDX (assumed)** | unconfigured | ⚠️ **Highest-risk row.** No feed is configured today, so nothing is being violated. Before one is: write down which tier the agreement grants, and check every consumer of listings data against it. Analytics or AVM enrichment over an IDX feed is the classic breach. |
 | `harvesters/`, `county_assessor/` | County sites | Public record | `COUNTY_HARVEST_ENABLED` (**off**) | Gated after a runaway loop against a dead recorder domain. Public records, but scraped access patterns still need rate limiting and a real User-Agent. |
 | `spatial_agent.py` photo capture | Zillow / Redfin | **Scraped — prohibited** | `SPATIAL_ALLOW_WEB_SCRAPE` (**off**) | Both sites' terms forbid it. This gate must stay off. Do not add a "just for this tenant" bypass. |
+| `data_integrations/property_imagery.py` | Google Street View Static, Mapillary | **Licensed** | `GOOGLE_STREETVIEW_API_KEY` / `MAPILLARY_TOKEN` (both unset) | The replacement for the deleted scraper. Exterior only, and every result is flagged `interior: false` so a streetside frame can never stand in for the inside of a home. Attribution is returned with the image and is mandatory — Google requires its own, Mapillary is CC-BY-SA. Interior photos come from the MLS feed or an owner upload, nowhere else. |
 
 ## Before you ship a data feature, answer these
 
