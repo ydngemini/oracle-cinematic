@@ -18,12 +18,23 @@
   --oracle-bg-canvas:     #080808;
   --oracle-bg-atmosphere: none;
 
-  /* The primary surface is exactly a 20% silver tint. It keeps the real
-     waterfall visible while creating a calm, legible CRM working plane. */
-  --oracle-glass:         rgba(171, 171, 171, 0.20);
-  --oracle-glass-hover:   rgba(171, 171, 171, 0.26);
-  --oracle-glass-active:  rgba(171, 171, 171, 0.30);
-  --oracle-glass-edge:    rgba(242, 242, 242, 0.10);
+  /* The working plane is a warm white tint over the estate still, lifted toward
+     gold rather than neutral silver. The old value was a flat 171-grey, which
+     read as cold plastic once the blur came on and shared no hue with the amber
+     the whole interface signals with.
+
+     Warmth lives in the tint (250,246,238 — white with a gold cast) and the
+     edge carries an explicit gold so panel boundaries catch light the way the
+     brand accent does. Kept low-alpha on purpose: this sits over a photograph,
+     and a heavier wash turns the estate into fog and the text into low
+     contrast. */
+  --oracle-glass:         rgba(250, 246, 238, 0.14);
+  --oracle-glass-hover:   rgba(250, 246, 238, 0.20);
+  --oracle-glass-active:  rgba(252, 244, 226, 0.26);
+  /* Two-tone edge: near-white for legibility, gold for the accent that reads as
+     Neoh rather than as generic frosted glass. */
+  --oracle-glass-edge:    rgba(255, 240, 205, 0.22);
+  --oracle-glass-edge-gold: rgba(255, 188, 31, 0.30);
 
   /* Backdrop blur was disabled because the backdrop was a looping 60fps video:
      blurring a continuously composited layer forces the browser to resample it
@@ -356,7 +367,12 @@
 .hud-glass-panel {
   background: var(--oracle-glass);
   border: 1px solid var(--oracle-glass-edge);
-  box-shadow: var(--shadow-e2);
+  /* A gold hairline along the top edge only. Real glass catches light on one
+     edge; an even border reads as a flat rectangle, which is what made these
+     panels feel like overlays rather than surfaces. */
+  box-shadow:
+    inset 0 1px 0 var(--oracle-glass-edge-gold),
+    var(--shadow-e2);
 }
 
 @supports ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {

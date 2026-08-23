@@ -4,6 +4,20 @@ import { apiPost, ApiError } from '../lib/apiClient';
 import { formatApiError } from '../lib/errorMessages';
 import styles from './BillingOverlay.module.css';
 
+/**
+ * Displayed monthly price.
+ *
+ * WARNING: this is a LABEL, not the amount charged. Checkout bills whatever the
+ * Stripe Price object in STRIPE_PRICE_ID says (backend/billing.py:147 puts it
+ * straight into line_items), and Stripe Prices are immutable — changing an
+ * amount means creating a NEW Price and repointing STRIPE_PRICE_ID at it.
+ *
+ * So editing this number alone makes the page advertise one figure while the
+ * card is charged another. If you change it here, change the Stripe Price too.
+ */
+const PLAN_PRICE_USD = 199;
+
+
 const FEATURES = [
   { id: 'crm',       label: 'Complete CRM',        detail: 'People, property dossiers, inbox, and deals' },
   { id: 'ai',        label: 'Policy Autopilot',    detail: 'Core AI agents with approval guardrails' },
@@ -214,9 +228,9 @@ export function BillingOverlay() {
         {mode === 'purchase' ? (
           <>
             <div className={styles.priceBlock}>
-              <span className={styles.srOnly}>$299 per month</span>
+              <span className={styles.srOnly}>${PLAN_PRICE_USD} per month</span>
               <span className={styles.currency} aria-hidden="true">$</span>
-              <span className={styles.price} aria-hidden="true">299</span>
+              <span className={styles.price} aria-hidden="true">{PLAN_PRICE_USD}</span>
               <span className={styles.period} aria-hidden="true">/mo</span>
             </div>
 
