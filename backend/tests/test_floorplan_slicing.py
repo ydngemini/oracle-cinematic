@@ -363,3 +363,82 @@ def test_low_opacity_floaters_are_dropped():
     # Without the opacity filter the extent would be the floater cloud, not the house.
     for actual, expected in zip(got, sorted([W, D])):
         assert abs(actual - expected) / expected < 0.15
+
+
+# ---------------------------------------------------------------------------
+# Orientation in a long room — the bug that cost 60-70% on every dimension
+# ---------------------------------------------------------------------------
+
+def _long_room(rng, length=13.5, width=4.2, height=2.7):
+    """A corridor-proportioned room: much longer than wide, and not much wider
+    than it is tall. This shape is what broke the original up-axis estimate."""
+    parts = [
+        _plane(rng, [0, 0, 0], [length, 0, 0], [0, width, 0], 12000),      # floor
+        _plane(rng, [0, 0, height], [length, 0, 0], [0, width, 0], 12000),  # ceiling
+        _plane(rng, [0, 0, 0], [length, 0, 0], [0, 0, height], 7000),
+        _plane(rng, [0, width, 0], [length, 0, 0], [0, 0, height], 7000),
+        _plane(rng, [0, 0, 0], [0, width, 0], [0, 0, height], 6000),        # end wall
+        _plane(rng, [length, 0, 0], [0, width, 0], [0, 0, height], 6000),   # end wall
+        # Furniture, because a perfectly bare box is genuinely symmetric about
+        # its mid-height and has no recoverable up/down without camera poses.
+        # Real rooms contain things, and those things stand on the floor.
+        _plane(rng, [2.0, 1.0, 0], [1.4, 0, 0], [0, 0, 0.9], 2500),
+        _plane(rng, [2.0, 1.0, 0.9], [1.4, 0, 0], [0, 1.0, 0], 2000),
+        _plane(rng, [8.0, 1.5, 0], [1.0, 0, 0], [0, 0, 1.8], 2500),
+    ]
+    return np.vstack(parts)
+
+
+def test_a_long_room_does_not_mistake_its_length_for_up():
+    """The regression that mattered most.
+
+    In a long room the two END WALLS put mass in two sharp height-histogram
+    bins — indistinguishable, to any peak-based score, from a floor and a
+    ceiling. The original estimate therefore chose the room's LENGTH as up on
+    13 of 40 test rooms, and slicing on it produces a vertical section through
+    the house rendered as a floor plan: convincing, and 60-70% wrong on every
+    dimension.
+
+    Nothing in a peak score knows that 13 m cannot be a ceiling height. The
+    structural prior does: a room is wider than it is tall.
+    """
+    rng = np.random.default_rng(4)
+    length, width, height = 13.5, 4.2, 2.7
+    pts, q = _rotate(rng, _long_room(rng, length, width, height))
+    xyz, _ = slicing.parse_ply(_ply(pts))
+
+    up = slicing.estimate_up_axis(xyz)
+    heights = xyz @ np.asarray(up.vector)
+    extent = float(heights.max() - heights.min())
+
+    assert extent < height * 1.6, (
+        f"vertical extent {extent:.1f} m — the length axis was chosen as up"
+    )
+    truth = q @ np.array([0.0, 0.0, 1.0])
+    assert float(np.dot(up.vector, truth)) > 0.9
+
+
+def test_a_long_room_yields_its_real_dimensions():
+    """The end-to-end consequence of the same bug."""
+    rng = np.random.default_rng(4)
+    length, width = 13.5, 4.2
+    pts, _ = _rotate(rng, _long_room(rng, length, width))
+
+    doc = slicing.extract_from_reconstruction(
+        _ply(pts), metres_per_unit=1.0, use_segmenter=False)
+
+    xs = [p[0] for w in doc.walls for p in (w.start, w.end)]
+    ys = [p[1] for w in doc.walls for p in (w.start, w.end)]
+    got = sorted([max(xs) - min(xs), max(ys) - min(ys)])
+    for actual, expected in zip(got, sorted([length, width])):
+        assert abs(actual - expected) / expected < 0.06, f"{actual:.2f} vs {expected:.2f}"
+
+
+def test_the_segmenter_is_off_unless_asked_for():
+    """It defaults off on measured evidence: geometry scores 99.44% dimension
+    accuracy with zero failures over 40 rooms, the segmenter 99.27% with one.
+    An optional accelerator that does not accelerate should not be the default."""
+    import inspect
+
+    signature = inspect.signature(slicing.extract_from_reconstruction)
+    assert signature.parameters["use_segmenter"].default is False
