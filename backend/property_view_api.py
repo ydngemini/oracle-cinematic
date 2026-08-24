@@ -50,6 +50,16 @@ MAX_LINK_TTL_HOURS = 24 * 14
 
 MAX_PHOTO_BYTES = 25 * 1024 * 1024      # matches MediaUploader's client guard
 MAX_VIDEO_BYTES = 512 * 1024 * 1024
+#: A phone scan is a whole house, not one frame. Scaniverse and Polycam export
+#: SPZ at roughly a tenth the size of the equivalent PLY, which is what makes
+#: this tractable at all — a PLY-first design would have needed ~250 MB here.
+#:
+#: This is the real gate, not a proxy setting. The API runs uvicorn directly
+#: (backend/Dockerfile) with no nginx in front of it; the 25 MB
+#: client_max_body_size in oracle-app/nginx.conf governs the static frontend
+#: server, which no upload ever posts to. Raising that would have changed
+#: nothing here.
+MAX_SCAN_BYTES = 64 * 1024 * 1024
 
 _VALID_SURFACES = {"exterior", "interior", "aerial", "street", "other"}
 
@@ -85,6 +95,45 @@ def _sniff_video(data: bytes) -> Optional[str]:
             return "video/quicktime" if brand in (b"qt  ",) else "video/mp4"
     if data.startswith(b"\x1a\x45\xdf\xa3"):
         return "video/webm"
+    return None
+
+
+#: SPZ (Niantic) as a uint32 little-endian magic is literally the bytes "NGSP".
+_SPZ_MAGIC = b"NGSP"
+_GZIP_MAGIC = b"\x1f\x8b"
+
+
+def _sniff_pointcloud(data: bytes) -> Optional[str]:
+    """Identify a Gaussian-splat capture by its bytes, never by its filename.
+
+    Sniffed rather than trusted for the same reason every other upload here is:
+    a Content-Type is whatever the client says it is, and this file goes on to
+    be converted and then presented as a walkthrough of someone's home.
+
+    Three shapes are accepted, all of which splat-transform reads:
+
+      * **PLY** — the universal interchange format, and what most desktop tools
+        emit. Ingest only: it is roughly ten times the size of the equivalent
+        SPZ, which is why it is still refused as a *delivery* format.
+      * **SPZ v4+** — starts with the NGSP magic directly (zstd inside).
+      * **SPZ v1-v3** — the same payload wrapped in gzip, so the magic only
+        appears after decompression. Checked properly rather than accepting any
+        gzip file, because "it decompresses" is not evidence of what it is.
+    """
+    if data.startswith(b"ply\n") or data.startswith(b"ply\r\n"):
+        return "application/x-ply"
+    if data.startswith(_SPZ_MAGIC):
+        return "application/x-spz"
+    if data.startswith(_GZIP_MAGIC):
+        try:
+            import gzip
+            import io
+
+            with gzip.GzipFile(fileobj=io.BytesIO(data)) as fh:
+                if fh.read(4) == _SPZ_MAGIC:
+                    return "application/x-spz"
+        except Exception:  # noqa: BLE001 - a gzip that is not an SPZ is simply not one
+            return None
     return None
 
 
@@ -496,6 +545,191 @@ class CreateUploadLink(BaseModel):
     recipient_hint: Optional[str] = Field(default=None, max_length=200)
     ttl_hours: int = Field(default=DEFAULT_LINK_TTL_HOURS, ge=1, le=MAX_LINK_TTL_HOURS)
     max_uploads: int = Field(default=40, ge=1, le=500)
+
+
+@router.post("/crm/property-view/scan", status_code=status.HTTP_201_CREATED)
+async def upload_property_scan(
+    lead_id: Optional[UUID] = Form(default=None),
+    listing_id: Optional[UUID] = Form(default=None),
+    file: UploadFile = File(...),
+    capture_app: str = Form(...),
+    attested: bool = Form(default=False),
+    ctx: TenantContext = Depends(require_context),
+):
+    """Ingest a phone scan of a property as a walkable 3D capture.
+
+    This is the path that does not need a GPU. Scaniverse and Polycam process a
+    scan on the device and export a finished splat, so the owner or agent walks
+    the house with a phone and the tour exists — which is the honest answer to
+    "walk inside this home" that no amount of address lookup can produce.
+
+    **Ingest is PLY or SPZ; delivery stays .sog.** That is not a compromise, it
+    is the same rule the pipeline already follows: PLY is roughly ten times the
+    size of the equivalent scene, and shipping it to a phone on a metered
+    connection means a long stall before anything renders.
+
+    **The attestation is the point of `attested`.** Nothing here can verify that
+    an uploaded file depicts the address it is attached to — the bytes contain a
+    room, not a street address. Recording `provenance='captured'` is what makes
+    the tour say "you are walking through this home", so that claim needs an
+    author rather than being assumed from an upload. The agent makes it
+    explicitly, it is written into the asset's manifest, and an audit_ledger
+    entry names who made it. Without that, the value would be an unbacked
+    assertion dressed as a fact.
+    """
+    if (lead_id is None) == (listing_id is None):
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            "Provide exactly one of lead_id or listing_id.",
+        )
+    if not attested:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            "Confirm this is a scan of this property before uploading. The tour "
+            "presents it as the actual home, and nothing in the file can prove "
+            "the address.",
+        )
+    app_name = (capture_app or "").strip().lower()[:60]
+    if not app_name:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            "capture_app is required — record which app produced the scan.",
+        )
+
+    data = await file.read(MAX_SCAN_BYTES + 1)
+    if not data:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "The scan file is empty.")
+    if len(data) > MAX_SCAN_BYTES:
+        raise HTTPException(
+            status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            f"The scan exceeds the {MAX_SCAN_BYTES // (1024 * 1024)} MB limit. Export "
+            f"as SPZ rather than PLY — it is roughly ten times smaller for the "
+            f"same scene.",
+        )
+
+    source_type = _sniff_pointcloud(data)
+    if source_type is None:
+        raise HTTPException(
+            status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+            f"{file.filename or 'file'} is not a PLY or SPZ splat capture. Export "
+            f"from Scaniverse or Polycam as SPZ (preferred) or PLY.",
+        )
+
+    import object_storage
+
+    if not object_storage.is_configured():
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "Scan uploads need object storage, which is not configured on this "
+            "deployment.",
+        )
+
+    async with tenant_tx(ctx) as conn:
+        # RLS scopes these, so a hit proves the property is visible to the caller.
+        if lead_id is not None and not await conn.fetchval(
+            "SELECT 1 FROM leads WHERE id = $1", lead_id
+        ):
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Lead not found.")
+        if listing_id is not None and not await conn.fetchval(
+            "SELECT 1 FROM listings WHERE id = $1", listing_id
+        ):
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Listing not found.")
+
+    media_id = str(uuid4())
+    suffix = ".ply" if source_type == "application/x-ply" else ".spz"
+
+    import tempfile
+    from pathlib import Path as _Path
+
+    from reconstruction_providers import ProviderError
+    from reconstruction_worker import _convert_to_delivery, _store_splat
+
+    with tempfile.TemporaryDirectory(prefix="scan_") as tmp:
+        work = _Path(tmp)
+        raw = work / f"upload{suffix}"
+        raw.write_bytes(data)
+        try:
+            # The same converter the GPU pipeline ends in, so there stays exactly
+            # one thing that decides what a delivered splat looks like.
+            delivered = await _convert_to_delivery(raw, work, media_id)
+        except ProviderError as exc:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                f"That scan could not be converted for delivery: {exc}",
+            ) from exc
+
+        url, s3_key = await _store_splat(
+            delivered, media_id,
+            provider=app_name,
+            address=str(listing_id or lead_id or ""),
+            tenant_id=str(ctx.tenant_id),
+            # A phone scan is a photographic capture of a real room, not a
+            # reconstruction inferred from photos — the AI disclosure would be a
+            # false statement about how it was made.
+            generated=False,
+            extra_manifest={
+                "capturedWith": app_name,
+                "sourceFormat": source_type,
+                "attestedBy": ctx.agent_id,
+                "attestation": "The uploader confirmed this is a scan of this property.",
+            },
+        )
+
+    async with tenant_tx(ctx) as conn:
+        next_order = await conn.fetchval(
+            """
+            SELECT COALESCE(MAX(sort_order), -1) + 1
+              FROM property_media
+             WHERE (($1::uuid IS NOT NULL AND lead_id = $1)
+                 OR ($2::uuid IS NOT NULL AND listing_id = $2))
+            """,
+            lead_id, listing_id,
+        ) or 0
+        await conn.execute(
+            """
+            INSERT INTO property_media (
+                id, tenant_id, lead_id, listing_id, kind, url, s3_key,
+                content_type, sort_order, provenance, generator
+            )
+            VALUES ($1, $2, $3, $4, 'splat', $5, $6, $7, $8, 'captured', $9)
+            """,
+            UUID(media_id), ctx.tenant_id, lead_id, listing_id, url, s3_key,
+            "application/octet-stream", int(next_order), app_name,
+        )
+
+    # The claim gets a named author. Strike this and 'captured' becomes an
+    # assertion nobody is accountable for.
+    try:
+        from audit_ledger import AuditCategory, ledger
+
+        await ledger.record(
+            category=AuditCategory.USER_STATE_CHANGE,
+            action="property_scan_attested",
+            tenant_id=ctx.tenant_id,
+            user_id=ctx.agent_id,
+            target_id=media_id,
+            metadata={
+                "capture_app": app_name,
+                "source_format": source_type,
+                "lead_id": str(lead_id) if lead_id else None,
+                "listing_id": str(listing_id) if listing_id else None,
+            },
+        )
+    except Exception:  # noqa: BLE001 - the scan is stored; bookkeeping must not undo it
+        log.exception("Could not record the scan attestation for media %s", media_id)
+
+    return {
+        "media_id": media_id,
+        "url": url,
+        "kind": "splat",
+        "provenance": "captured",
+        "generator": app_name,
+        "source_format": source_type,
+        "detail": (
+            "The scan is attached to this property and will appear in its tour "
+            "as a walkable capture of the actual home."
+        ),
+    }
 
 
 @router.post("/crm/property-view/upload-links", status_code=status.HTTP_201_CREATED)

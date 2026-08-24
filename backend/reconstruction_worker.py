@@ -280,7 +280,8 @@ async def _convert_to_delivery(src: Path, work_dir: Path, media_id: str) -> Path
 
 
 async def _store_splat(
-    src_splat: Path, media_id: str, *, provider: str, address: str, tenant_id: str
+    src_splat: Path, media_id: str, *, provider: str, address: str, tenant_id: str,
+    generated: bool = True, extra_manifest: Optional[dict] = None,
 ) -> tuple[str, Optional[str]]:
     """Persist the .splat + its AI-provenance manifest. Returns (url, storage_key).
 
@@ -296,12 +297,18 @@ async def _store_splat(
     CDN URL. Both meant a finished reconstruction of somebody's home was
     fetchable by anyone who could guess or observe the filename.
     """
+    # `generated` is False for a scan someone captured with a phone: those bytes
+    # are a photographic record of a real room, not a reconstruction inferred
+    # from photos, and the AI disclosure would be a false statement about how
+    # they were made. `extra_manifest` is where the uploader's attestation is
+    # recorded, so the claim keeps an author.
     manifest = {
         "mediaId": media_id,
         "address": address,
-        "generated": True,
+        "generated": generated,
         "generator": provider,
-        "disclosure": SPATIAL_AI_DISCLOSURE,
+        **({"disclosure": SPATIAL_AI_DISCLOSURE} if generated else {}),
+        **(extra_manifest or {}),
     }
 
     if not media_storage.storage_available():
