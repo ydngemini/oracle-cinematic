@@ -445,7 +445,7 @@ def test_the_pod_receives_capability_urls_and_no_credentials(monkeypatch, tmp_pa
     # point: what matters is that the pod cannot write anywhere it was not
     # explicitly granted, so every URL it holds is checked against the exact set
     # of keys this job owns.
-    allowed = {f"model{DELIVERY_SUFFIX}", "cameras.json"}
+    allowed = {f"model{DELIVERY_SUFFIX}", "cameras.json", "points.ply"}
     assert storage.write_urls, "the pod must be able to return its result"
     prefixes = set()
     for url in storage.write_urls:
@@ -602,3 +602,23 @@ def test_the_upload_is_bounded_by_the_budget_too(pod_env, monkeypatch, tmp_path)
     message = str(caught.value)
     assert "could not take the capture" in message
     assert "different machine" in message, "the operator needs to know a retry helps"
+
+
+def test_the_trainer_is_asked_for_the_point_cloud_it_must_produce():
+    """`--save-steps` writes .pt checkpoints; the PLY is a separate opt-in.
+
+    Without `--save-ply` the trainer runs to completion, reports its metrics,
+    renders its trajectory video and exits 0 — having written nothing the
+    converter can read. That failure is invisible until the last line of the
+    job, which is the most expensive place to discover anything.
+    """
+    train = [l for l in POD_PIPELINE.splitlines() if "simple_trainer.py" in l]
+    assert train, "the pipeline no longer trains"
+    command = POD_PIPELINE[POD_PIPELINE.index("simple_trainer.py"):]
+    command = command.split("cd /workspace")[0]
+
+    assert "--save-ply" in command, "the trainer will not write a point cloud"
+    assert "--ply-steps" in command, "the PLY must be written at the step we stop on"
+    # And the step it writes at has to be the step we stop at, or the file is
+    # from the middle of training.
+    assert command.count("__STEPS__") >= 3

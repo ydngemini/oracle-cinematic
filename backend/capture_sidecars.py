@@ -1,4 +1,4 @@
-"""Where the cameras were, carried alongside the geometry they produced.
+"""What a reconstruction carries alongside the splat it delivers.
 
 A reconstruction knows something the point cloud alone cannot express: where the
 photographer stood. `floorplan_pipeline.slicing.estimate_up_axis` takes exactly
@@ -19,6 +19,14 @@ that. Mixing a raw COLMAP centre with a normalised cloud does not raise — it
 returns a confident, wrong up axis, which is the failure this pipeline exists to
 prevent. So the frame is recorded in the file and checked on the way out.
 
+There is a second one for the same reason. Delivery is `.sog` — compressed,
+renderable by the viewer already in package.json, an order of magnitude smaller
+than PLY — and `parse_ply` cannot read a single byte of it. So the plan path had
+geometry it could not open sitting next to poses it could not use. The pod now
+also writes a POINTS-ONLY PLY: x, y, z and opacity, which is all `parse_ply`
+reads (it ignores gaussian scale and rotation on purpose), at roughly a
+fifteenth of the full model's size.
+
 Deliberately stdlib-only and free-standing: the writer lives in
 `reconstruction_providers`, the reader in the floor plan path, and neither
 should have to import the other to agree on a file name.
@@ -31,13 +39,37 @@ import logging
 from pathlib import Path
 from typing import Any, Optional, Sequence
 
-log = logging.getLogger("oracle.capture_poses")
+log = logging.getLogger("oracle.capture_sidecars")
 
 #: Appended to the artifact's full name, not swapped for its suffix:
 #: `model.sog` -> `model.sog.cameras.json`. Keeping the artifact name whole
 #: means one glob finds both, and two artifacts that differ only by extension
 #: cannot collide on a single sidecar.
 CAMERA_SIDECAR_SUFFIX = ".cameras.json"
+
+#: The measurable geometry, beside the renderable artifact:
+#: `model.sog` -> `model.sog.points.ply`. Same convention as the poses, and for
+#: the same reason — one glob finds everything one reconstruction produced.
+POINTS_SIDECAR_SUFFIX = ".points.ply"
+
+
+def points_sidecar_for(artifact: Path) -> Path:
+    """The point cloud beside `artifact`, whether or not it exists."""
+    return artifact.with_name(artifact.name + POINTS_SIDECAR_SUFFIX)
+
+
+def geometry_for(artifact: Path) -> Optional[Path]:
+    """The file to hand `parse_ply`, or None if there is nothing readable.
+
+    An artifact that is already a PLY is its own geometry. Anything else — and
+    delivery is `.sog` — needs the points sidecar, because `parse_ply` refuses
+    what it cannot describe rather than guessing at a compressed container.
+    """
+    if artifact.suffix.lower() == ".ply":
+        return artifact
+    sidecar = points_sidecar_for(artifact)
+    return sidecar if sidecar.is_file() else None
+
 
 #: The frame the positions are expressed in.
 #:

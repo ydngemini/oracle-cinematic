@@ -31,6 +31,8 @@ import re
 import shutil
 import struct
 import time
+
+import capture_sidecars
 import uuid
 from pathlib import Path
 from typing import Optional
@@ -1261,9 +1263,17 @@ test -d sparse/0 || { echo "!! COLMAP registered no cameras" >&2; exit 3; }
 colmap model_analyzer     --path sparse/0
 
 say "training __STEPS__ steps"
+# --save-ply is REQUIRED, and its absence is not visible until the very end.
+#
+# `save_ply` defaults to False and `--save-steps` controls .pt CHECKPOINTS, not
+# point clouds — so a run trained all 7000 steps, reported PSNR 23.16 and
+# SSIM 0.807 over 735,049 gaussians, rendered its trajectory video, exited 0,
+# and left nothing for splat-transform to convert. Fifty-two minutes and a
+# whole GPU hour to arrive at "training produced no .ply".
 cd gs/examples && python simple_trainer.py default \
     --data-dir /workspace --data-factor 1 --result-dir /workspace/out \
-    --max-steps __STEPS__ --save-steps __STEPS__ --disable-viewer
+    --max-steps __STEPS__ --save-steps __STEPS__ \
+    --save-ply --ply-steps __STEPS__ --disable-viewer
 cd /workspace
 
 PLY=$(find /workspace/out -name '*.ply' | head -1)
@@ -1296,6 +1306,66 @@ except Exception:
     traceback.print_exc()
     raise SystemExit(1)
 POSES
+
+# A points-only cloud, because the delivered .sog is unreadable to the measurer.
+#
+# Delivery is .sog for good reasons — the viewer renders it and it is an order
+# of magnitude smaller than PLY — but `parse_ply` cannot read a byte of it, so
+# the floor plan path had no geometry to open. The full trained PLY would do
+# (parse_ply ignores everything but x/y/z and opacity) at roughly 175 MB for
+# 735k gaussians; this writes the same information at about a fifteenth of that.
+#
+# OPACITY IS CONVERTED, not copied. A 3DGS PLY stores it as a logit, and the
+# consumer compares it against MIN_OPACITY = 0.35 as a probability. Copying the
+# raw value would silently apply a threshold of sigmoid(0.35) = 0.59 instead —
+# numbers that look right and mean something else, which is the failure mode
+# this whole path keeps producing.
+say "writing a points-only cloud for the plan path"
+python - "$PLY" <<'POINTS' || say "points export failed (continuing without it)"
+import sys, numpy as np
+
+src = open(sys.argv[1], "rb").read()
+head_end = src.find(b"end_header")
+head_end = src.find(b"\n", head_end) + 1
+header = src[:head_end].decode("ascii", "replace")
+
+TYPES = {"float": "<f4", "float32": "<f4", "double": "<f8", "float64": "<f8",
+         "uchar": "u1", "uint8": "u1", "char": "i1", "int8": "i1",
+         "ushort": "<u2", "uint16": "<u2", "short": "<i2", "int16": "<i2",
+         "uint": "<u4", "uint32": "<u4", "int": "<i4", "int32": "<i4"}
+fields, count, in_vertex = [], 0, False
+for line in header.splitlines():
+    parts = line.split()
+    if not parts:
+        continue
+    if parts[0] == "element":
+        in_vertex = parts[1] == "vertex"
+        if in_vertex:
+            count = int(parts[2])
+    elif parts[0] == "property" and in_vertex and parts[1] != "list":
+        fields.append((parts[2], TYPES[parts[1]]))
+
+table = np.frombuffer(src[head_end:head_end + np.dtype(fields).itemsize * count],
+                      dtype=np.dtype(fields))
+out = np.empty(count, dtype=[("x", "<f4"), ("y", "<f4"), ("z", "<f4"),
+                             ("opacity", "<f4")])
+out["x"], out["y"], out["z"] = table["x"], table["y"], table["z"]
+if "opacity" in table.dtype.names:
+    logit = table["opacity"].astype("float64")
+    out["opacity"] = 1.0 / (1.0 + np.exp(-np.clip(logit, -30, 30)))
+else:
+    out["opacity"] = 1.0
+
+with open("/workspace/points.ply", "wb") as handle:
+    handle.write(
+        b"ply\nformat binary_little_endian 1.0\n"
+        + f"element vertex {count}\n".encode()
+        + b"property float x\nproperty float y\nproperty float z\n"
+        + b"property float opacity\nend_header\n"
+    )
+    handle.write(out.tobytes())
+print(f">>> wrote {count} points", file=sys.stderr)
+POINTS
 
 say "converting to .sog"
 command -v splat-transform >/dev/null || \
@@ -1341,6 +1411,10 @@ echo ">> uploaded"
 if [ -s /workspace/cameras.json ] && [ -n "${NEOH_POSES_URL:-}" ]; then
   curl -fsS -X PUT -T /workspace/cameras.json         -H "x-ms-blob-type: BlockBlob"         -H "Content-Type: application/json"         "$NEOH_POSES_URL" && echo ">> uploaded camera poses" || echo ">> camera pose upload failed (ignored)"
 fi
+
+if [ -s /workspace/points.ply ] && [ -n "${NEOH_POINTS_URL:-}" ]; then
+  curl -fsS -X PUT -T /workspace/points.ply         -H "x-ms-blob-type: BlockBlob"         -H "Content-Type: application/octet-stream"         "$NEOH_POINTS_URL" && echo ">> uploaded point cloud" || echo ">> point cloud upload failed (ignored)"
+fi
 """
 
 
@@ -1360,21 +1434,19 @@ def _subsample_capture(images: list[Path], target: int) -> list[Path]:
 def _adopt_camera_poses(artifact: Path, downloaded: Path) -> None:
     """Move the pod's cameras.json into the sidecar the plan path looks for.
 
-    The pod writes a minimal file; `capture_poses` owns the on-disk contract —
+    The pod writes a minimal file; `capture_sidecars` owns the on-disk contract —
     the version, the frame check and the minimum count — so the payload is
     re-emitted through it rather than copied. That way there is exactly one
     place that decides what a valid sidecar is.
     """
-    import capture_poses
-
     try:
         payload = json.loads(downloaded.read_text())
         if not isinstance(payload, dict):
             raise ValueError("not an object")
-        written = capture_poses.write(
+        written = capture_sidecars.write(
             artifact,
             payload.get("positions") or [],
-            frame=payload.get("frame") or capture_poses.FRAME_TRAINED,
+            frame=payload.get("frame") or capture_sidecars.FRAME_TRAINED,
         )
         if written:
             log.info(
@@ -1837,6 +1909,16 @@ class PodProvider(ReconstructionProvider):
                     log.info("Pod returned no camera poses; the plan path will infer up from geometry")
                 else:
                     _adopt_camera_poses(out, poses)
+                # The measurable geometry. Delivery is .sog and `parse_ply`
+                # cannot read it, so without this the plan path has nothing to
+                # open.
+                try:
+                    await sftp.get(
+                        "/workspace/points.ply",
+                        str(capture_sidecars.points_sidecar_for(out)),
+                    )
+                except Exception:  # noqa: BLE001
+                    log.info("Pod returned no point cloud; this splat cannot be measured")
 
         _validate_artifact(out, provider="RunPod pod")
         return out
@@ -1863,11 +1945,12 @@ class PodProvider(ReconstructionProvider):
         in_prefix = f"recon-inputs/{job_key}"
         out_key = f"recon-outputs/{job_key}/model{DELIVERY_SUFFIX}"
         poses_key = f"recon-outputs/{job_key}/cameras.json"
+        points_key = f"recon-outputs/{job_key}/points.ply"
         # The URLs must outlive queue wait plus the whole run, or the pod loses
         # the ability to hand back a result it has already paid to compute.
         ttl = int(settings["timeout"]) + 3600
 
-        def _stage() -> tuple[str, str, str, str]:
+        def _stage() -> tuple[str, str, str, str, str]:
             urls = []
             for index, path in enumerate(images):
                 key = f"{in_prefix}/{_staged_image_name(index, path)}"
@@ -1889,6 +1972,7 @@ class PodProvider(ReconstructionProvider):
 
             output_url = object_storage.presigned_put_url(out_key, ttl)
             poses_url = object_storage.presigned_put_url(poses_key, ttl)
+            points_url = object_storage.presigned_put_url(points_key, ttl)
             if not output_url:
                 raise ProviderError(
                     "The blob transport needs a storage backend that can issue a "
@@ -1900,9 +1984,12 @@ class PodProvider(ReconstructionProvider):
                 object_storage.signed_url(f"{in_prefix}/bootstrap.sh", ttl),
                 output_url,
                 poses_url or "",
+                points_url or "",
             )
 
-        manifest_url, bootstrap_url, output_url, poses_url = await asyncio.to_thread(_stage)
+        manifest_url, bootstrap_url, output_url, poses_url, points_url = (
+            await asyncio.to_thread(_stage)
+        )
 
         created = await asyncio.to_thread(
             self._rest, settings["api_key"], "POST", "/pods",
@@ -1919,6 +2006,7 @@ class PodProvider(ReconstructionProvider):
                     "NEOH_MANIFEST_URL": manifest_url,
                     "NEOH_OUTPUT_URL": output_url,
                     "NEOH_POSES_URL": poses_url,
+                    "NEOH_POINTS_URL": points_url,
                     "NEOH_BOOTSTRAP_URL": bootstrap_url,
                 },
                 # Tiny on purpose: the real script is fetched, not embedded.
@@ -1961,6 +2049,12 @@ class PodProvider(ReconstructionProvider):
                 staged = work_dir / "cameras.json"
                 staged.write_bytes(poses)
                 _adopt_camera_poses(out, staged)
+            try:
+                cloud = await asyncio.to_thread(object_storage.get_bytes, points_key)
+            except Exception:  # noqa: BLE001
+                log.info("Pod returned no point cloud; this splat cannot be measured")
+            else:
+                capture_sidecars.points_sidecar_for(out).write_bytes(cloud)
             _validate_artifact(out, provider="RunPod pod")
             return out
 

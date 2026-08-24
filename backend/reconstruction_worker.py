@@ -206,23 +206,27 @@ async def _gather_source_images(
     return out, counts
 
 
-def _carry_camera_poses(src: Path, out: Path) -> None:
-    """Keep a capture's camera poses attached to the file that gets delivered.
+def _carry_companions(src: Path, out: Path) -> None:
+    """Keep what a capture produced attached to the file that gets delivered.
 
-    The sidecar is written next to the provider's RAW output, and conversion
-    produces a differently-named file. Without this the poses are left behind in
-    a temp directory that is deleted at the end of the job — which is the same
-    way COLMAP's poses were lost before, one step further along.
+    Both companions — the camera poses and the measurable point cloud — are
+    written next to the provider's RAW output, and conversion produces a
+    differently-named file. Without this they are left behind in a temp
+    directory that is deleted at the end of the job, which is the same way
+    COLMAP's poses were lost before, one step further along.
     """
-    import capture_poses
+    import capture_sidecars
 
-    source = capture_poses.sidecar_for(src)
-    if src == out or not source.is_file():
+    if src == out:
         return
-    try:
-        shutil.copyfile(source, capture_poses.sidecar_for(out))
-    except OSError as exc:
-        logger.info("Could not carry camera poses to %s (%s)", out.name, exc)
+    for locate in (capture_sidecars.sidecar_for, capture_sidecars.points_sidecar_for):
+        source = locate(src)
+        if not source.is_file():
+            continue
+        try:
+            shutil.copyfile(source, locate(out))
+        except OSError as exc:
+            logger.info("Could not carry %s to %s (%s)", source.name, out.name, exc)
 
 
 async def _convert_to_delivery(src: Path, work_dir: Path, media_id: str) -> Path:
@@ -295,7 +299,7 @@ async def _convert_to_delivery(src: Path, work_dir: Path, media_id: str) -> Path
         raise ProviderError(
             f"splat-transform could not convert {src.name} to {DELIVERY_SUFFIX}: {tail}"
         )
-    _carry_camera_poses(src, out)
+    _carry_companions(src, out)
     return out
 
 
@@ -361,18 +365,23 @@ async def _store_splat(
     # plan pass can find them the same way it would on disk. Best-effort: the
     # splat is the deliverable and a missing sidecar only means the plan falls
     # back to inferring up from geometry, which is what it did before.
-    import capture_poses
+    import capture_sidecars
 
-    poses = capture_poses.sidecar_for(src_splat)
-    if poses.is_file():
+    for locate, suffix, mime in (
+        (capture_sidecars.sidecar_for, capture_sidecars.CAMERA_SIDECAR_SUFFIX,
+         "application/json"),
+        (capture_sidecars.points_sidecar_for, capture_sidecars.POINTS_SIDECAR_SUFFIX,
+         "application/octet-stream"),
+    ):
+        companion = locate(src_splat)
+        if not companion.is_file():
+            continue
         try:
             await asyncio.to_thread(
-                object_storage.put_file,
-                splat_key + capture_poses.CAMERA_SIDECAR_SUFFIX,
-                poses, "application/json",
+                object_storage.put_file, splat_key + suffix, companion, mime,
             )
         except Exception:  # noqa: BLE001
-            logger.info("Could not store camera poses for media %s", media_id)
+            logger.info("Could not store %s for media %s", companion.name, media_id)
 
     return f"/api/media/{media_id}", splat_key
 

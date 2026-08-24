@@ -18,7 +18,7 @@ import pytest
 
 np = pytest.importorskip("numpy")
 
-import capture_poses
+import capture_sidecars
 
 
 def _positions(n=8):
@@ -29,13 +29,13 @@ def test_a_round_trip_returns_what_was_written(tmp_path):
     artifact = tmp_path / "model.sog"
     artifact.write_bytes(b"not really a splat")
 
-    written = capture_poses.write(artifact, _positions())
+    written = capture_sidecars.write(artifact, _positions())
     assert written is not None and written.is_file()
     assert written.name == "model.sog.cameras.json", (
         "the sidecar keeps the artifact's whole name, so two artifacts differing "
         "only by extension cannot collide on one file"
     )
-    assert capture_poses.read(artifact) == _positions()
+    assert capture_sidecars.read(artifact) == _positions()
 
 
 def test_poses_in_the_wrong_frame_are_refused(tmp_path):
@@ -44,22 +44,22 @@ def test_poses_in_the_wrong_frame_are_refused(tmp_path):
     them would look like it worked."""
     artifact = tmp_path / "model.sog"
     artifact.write_bytes(b"x")
-    capture_poses.write(artifact, _positions(), frame=capture_poses.FRAME_COLMAP)
+    capture_sidecars.write(artifact, _positions(), frame=capture_sidecars.FRAME_COLMAP)
 
-    assert capture_poses.read(artifact, frame=capture_poses.FRAME_TRAINED) is None
-    assert capture_poses.read(artifact, frame=capture_poses.FRAME_COLMAP) == _positions()
+    assert capture_sidecars.read(artifact, frame=capture_sidecars.FRAME_TRAINED) is None
+    assert capture_sidecars.read(artifact, frame=capture_sidecars.FRAME_COLMAP) == _positions()
 
 
 def test_a_future_schema_is_ignored_rather_than_guessed(tmp_path):
     artifact = tmp_path / "model.sog"
     artifact.write_bytes(b"x")
-    capture_poses.sidecar_for(artifact).write_text(json.dumps({
-        "version": capture_poses.SCHEMA_VERSION + 1,
-        "frame": capture_poses.FRAME_TRAINED,
+    capture_sidecars.sidecar_for(artifact).write_text(json.dumps({
+        "version": capture_sidecars.SCHEMA_VERSION + 1,
+        "frame": capture_sidecars.FRAME_TRAINED,
         "positions": _positions(),
     }))
 
-    assert capture_poses.read(artifact) is None
+    assert capture_sidecars.read(artifact) is None
 
 
 @pytest.mark.parametrize("payload", [b"", b"not json", b"[]", b'{"positions": "x"}'])
@@ -69,9 +69,9 @@ def test_an_unreadable_sidecar_is_not_an_incident(tmp_path, payload):
     the plan down with it."""
     artifact = tmp_path / "model.sog"
     artifact.write_bytes(b"x")
-    capture_poses.sidecar_for(artifact).write_bytes(payload)
+    capture_sidecars.sidecar_for(artifact).write_bytes(payload)
 
-    assert capture_poses.read(artifact) is None
+    assert capture_sidecars.read(artifact) is None
 
 
 def test_too_few_poses_are_not_recorded(tmp_path):
@@ -80,14 +80,14 @@ def test_too_few_poses_are_not_recorded(tmp_path):
     artifact = tmp_path / "model.sog"
     artifact.write_bytes(b"x")
 
-    assert capture_poses.write(artifact, _positions(2)) is None
-    assert not capture_poses.sidecar_for(artifact).exists()
+    assert capture_sidecars.write(artifact, _positions(2)) is None
+    assert not capture_sidecars.sidecar_for(artifact).exists()
 
 
 def test_a_missing_sidecar_reads_as_none(tmp_path):
     artifact = tmp_path / "model.sog"
     artifact.write_bytes(b"x")
-    assert capture_poses.read(artifact) is None
+    assert capture_sidecars.read(artifact) is None
 
 
 # ---------------------------------------------------------------------------
@@ -102,7 +102,7 @@ def test_the_plan_path_picks_up_recorded_poses(tmp_path, monkeypatch):
 
     artifact = tmp_path / "model.ply"
     artifact.write_bytes(b"stand-in")
-    capture_poses.write(artifact, _positions())
+    capture_sidecars.write(artifact, _positions())
 
     seen = {}
 
@@ -122,7 +122,7 @@ def test_an_explicit_argument_beats_the_sidecar(tmp_path, monkeypatch):
 
     artifact = tmp_path / "model.ply"
     artifact.write_bytes(b"stand-in")
-    capture_poses.write(artifact, _positions())
+    capture_sidecars.write(artifact, _positions())
     measured = [[9.0, 9.0, 9.0]] * 5
 
     seen = {}
@@ -163,8 +163,8 @@ def test_recorded_poses_actually_change_the_answer(tmp_path):
     blind = slicing.estimate_up_axis(xyz, metres_per_unit=1.0)
     artifact = tmp_path / "model.ply"
     artifact.write_bytes(b"stand-in")
-    capture_poses.write(artifact, cameras.tolist())
-    recorded = capture_poses.read(artifact)
+    capture_sidecars.write(artifact, cameras.tolist())
+    recorded = capture_sidecars.read(artifact)
     assert recorded is not None, "the sidecar is the whole point of this test"
 
     sighted = slicing.estimate_up_axis(
@@ -191,11 +191,11 @@ def test_poses_follow_the_file_that_gets_delivered(tmp_path):
     raw.write_bytes(b"raw")
     delivered = tmp_path / "abc123.sog"
     delivered.write_bytes(b"converted")
-    capture_poses.write(raw, _positions())
+    capture_sidecars.write(raw, _positions())
 
-    reconstruction_worker._carry_camera_poses(raw, delivered)
+    reconstruction_worker._carry_companions(raw, delivered)
 
-    assert capture_poses.read(delivered) == _positions()
+    assert capture_sidecars.read(delivered) == _positions()
 
 
 def test_carrying_poses_is_a_no_op_when_there_are_none(tmp_path):
@@ -206,9 +206,9 @@ def test_carrying_poses_is_a_no_op_when_there_are_none(tmp_path):
     delivered = tmp_path / "abc123.sog"
     delivered.write_bytes(b"converted")
 
-    reconstruction_worker._carry_camera_poses(raw, delivered)      # must not raise
+    reconstruction_worker._carry_companions(raw, delivered)      # must not raise
 
-    assert capture_poses.read(delivered) is None
+    assert capture_sidecars.read(delivered) is None
 
 
 def test_a_passthrough_artifact_keeps_its_own_sidecar(tmp_path):
@@ -218,8 +218,82 @@ def test_a_passthrough_artifact_keeps_its_own_sidecar(tmp_path):
 
     artifact = tmp_path / "model.sog"
     artifact.write_bytes(b"sog")
-    capture_poses.write(artifact, _positions())
+    capture_sidecars.write(artifact, _positions())
 
-    reconstruction_worker._carry_camera_poses(artifact, artifact)
+    reconstruction_worker._carry_companions(artifact, artifact)
 
-    assert capture_poses.read(artifact) == _positions()
+    assert capture_sidecars.read(artifact) == _positions()
+
+
+
+# ---------------------------------------------------------------------------
+# The geometry, which delivery format cannot provide
+# ---------------------------------------------------------------------------
+
+def test_a_ply_artifact_is_its_own_geometry(tmp_path):
+    artifact = tmp_path / "model.ply"
+    artifact.write_bytes(b"ply\n")
+    assert capture_sidecars.geometry_for(artifact) == artifact
+
+
+def test_a_sog_needs_the_points_cloud_beside_it(tmp_path):
+    """Delivery is .sog because the viewer renders it and it is an order of
+    magnitude smaller. `parse_ply` cannot read a byte of it, so without the
+    points cloud the plan path has geometry it cannot open."""
+    artifact = tmp_path / "model.sog"
+    artifact.write_bytes(b"compressed")
+
+    assert capture_sidecars.geometry_for(artifact) is None
+
+    cloud = capture_sidecars.points_sidecar_for(artifact)
+    assert cloud.name == "model.sog.points.ply"
+    cloud.write_bytes(b"ply\n")
+    assert capture_sidecars.geometry_for(artifact) == cloud
+
+
+def test_the_plan_path_refuses_a_sog_it_cannot_measure(tmp_path):
+    pytest.importorskip("cv2")
+    from floorplan_pipeline import slicing
+    from floorplan_pipeline.errors import UnsupportedInput
+
+    artifact = tmp_path / "model.sog"
+    artifact.write_bytes(b"compressed")
+
+    with pytest.raises(UnsupportedInput) as caught:
+        slicing.extract_from_reconstruction_file(artifact)
+
+    assert "viewer" in str(caught.value), "the reason has to name the format mismatch"
+
+
+def test_the_plan_path_reads_the_points_cloud_beside_a_sog(tmp_path, monkeypatch):
+    pytest.importorskip("cv2")
+    from floorplan_pipeline import slicing
+
+    artifact = tmp_path / "model.sog"
+    artifact.write_bytes(b"compressed")
+    capture_sidecars.points_sidecar_for(artifact).write_bytes(b"PLY-BYTES")
+    capture_sidecars.write(artifact, _positions())
+
+    seen = {}
+    monkeypatch.setattr(slicing, "extract_from_reconstruction",
+                        lambda ply_bytes, **kw: seen.update(kw, body=ply_bytes) or "doc")
+    slicing.extract_from_reconstruction_file(artifact)
+
+    assert seen["body"] == b"PLY-BYTES", "it must measure the cloud, not the .sog"
+    assert seen["camera_positions"] == _positions()
+
+
+def test_both_companions_follow_the_delivered_file(tmp_path):
+    import reconstruction_worker
+
+    raw = tmp_path / "model.ply"
+    raw.write_bytes(b"raw")
+    delivered = tmp_path / "abc123.sog"
+    delivered.write_bytes(b"converted")
+    capture_sidecars.write(raw, _positions())
+    capture_sidecars.points_sidecar_for(raw).write_bytes(b"cloud")
+
+    reconstruction_worker._carry_companions(raw, delivered)
+
+    assert capture_sidecars.read(delivered) == _positions()
+    assert capture_sidecars.points_sidecar_for(delivered).read_bytes() == b"cloud"

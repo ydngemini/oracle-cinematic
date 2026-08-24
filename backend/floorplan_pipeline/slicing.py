@@ -1207,16 +1207,28 @@ def extract_from_reconstruction_file(path, *, use_segmenter="auto", **kwargs):
     """
     from pathlib import Path
 
-    import capture_poses
+    import capture_sidecars
 
     path = Path(path)
+
+    # Delivery is `.sog`, which `parse_ply` cannot read a byte of, so the
+    # measurable geometry is the points cloud written beside it. An artifact
+    # that is already a PLY is its own geometry.
+    geometry = capture_sidecars.geometry_for(path)
+    if geometry is None:
+        raise UnsupportedInput(
+            f"{path.name} is not geometry this path can measure, and no "
+            f"{capture_sidecars.POINTS_SIDECAR_SUFFIX} cloud was recorded beside "
+            f"it. A .sog is for the viewer; the plan needs points."
+        )
+
     if kwargs.get("camera_positions") is None:
-        recorded = capture_poses.read(path)
+        recorded = capture_sidecars.read(path)
         if recorded:
             kwargs["camera_positions"] = recorded
             log.info("Using %d recorded camera poses to orient the plan", len(recorded))
     return extract_from_reconstruction(
-        path.read_bytes(), use_segmenter=use_segmenter, **kwargs
+        geometry.read_bytes(), use_segmenter=use_segmenter, **kwargs
     )
 
 
