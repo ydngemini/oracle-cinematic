@@ -305,12 +305,26 @@ def test_the_remote_pipeline_runs_colmap_under_a_display():
     """Headless, COLMAP aborts with SIGABRT inside createPlatformIntegration()
     before reading a single image, and the failure looks like a corrupt capture
     rather than a missing display. GPU SIFT needs a real GL context, so
-    QT_QPA_PLATFORM=offscreen alone is not enough."""
-    for line in POD_PIPELINE.splitlines():
-        stripped = line.strip()
-        if stripped.startswith("$X colmap") or stripped.startswith("colmap "):
-            assert stripped.startswith("$X colmap"), f"colmap without xvfb: {stripped}"
-    assert "xvfb-run" in POD_PIPELINE
+    QT_QPA_PLATFORM=offscreen alone is not enough.
+
+    The display is now a server we start ourselves rather than the `xvfb-run`
+    wrapper: on the pod image that wrapper dies with
+    "/usr/bin/xvfb-run: 184: 0: not found" before COLMAP is reached, which is
+    how the first live run failed. So this asserts the property — a display
+    exists, and it is established before the first colmap call — instead of the
+    mechanism that used to provide it.
+    """
+    lines = [line.strip() for line in POD_PIPELINE.splitlines()]
+    display_at = next(
+        i for i, line in enumerate(lines) if line.startswith("export DISPLAY=")
+    )
+    colmap_at = next(i for i, line in enumerate(lines) if line.startswith("colmap "))
+    assert display_at < colmap_at, "colmap runs before a display exists"
+
+    assert "Xvfb :99" in POD_PIPELINE
+    # Waited for, not assumed: the server takes a moment to create its socket
+    # and COLMAP would race it.
+    assert "/tmp/.X11-unix/X99" in POD_PIPELINE
     assert "QT_QPA_PLATFORM=offscreen" in POD_PIPELINE
 
 
@@ -424,10 +438,25 @@ def test_the_pod_receives_capability_urls_and_no_credentials(monkeypatch, tmp_pa
     blob = " ".join(str(v) for v in env.values())
     for secret in ("RUNPOD_API_KEY", "test-key", "AZURE_STORAGE_CONNECTION_STRING"):
         assert secret not in blob, f"{secret} must never reach the pod"
-    # Exactly one write capability, scoped to the single output key.
-    assert len(storage.write_urls) == 1
-    assert storage.write_urls[0].endswith("sig=write&se=" + storage.write_urls[0].split("se=")[-1])
-    assert f"model{DELIVERY_SUFFIX}" in storage.write_urls[0]
+    # Write capabilities exist ONLY for this job's own output keys.
+    #
+    # This used to assert a count of one, which stopped being the invariant when
+    # the pod started returning camera poses as well. The count was never the
+    # point: what matters is that the pod cannot write anywhere it was not
+    # explicitly granted, so every URL it holds is checked against the exact set
+    # of keys this job owns.
+    allowed = {f"model{DELIVERY_SUFFIX}", "cameras.json"}
+    assert storage.write_urls, "the pod must be able to return its result"
+    prefixes = set()
+    for url in storage.write_urls:
+        path_part = url.split("?")[0]
+        prefix, _, key = path_part.rpartition("/")
+        assert key in allowed, f"write capability for an unexpected key: {key}"
+        assert "recon-outputs/" in prefix, f"write escapes the output area: {url}"
+        assert "sig=write" in url
+        prefixes.add(prefix)
+    assert len(prefixes) == 1, f"writes span more than one job prefix: {prefixes}"
+    assert any(f"model{DELIVERY_SUFFIX}" in url for url in storage.write_urls)
 
 
 def test_the_finished_artifact_is_the_completion_signal(monkeypatch, tmp_path):
@@ -509,3 +538,67 @@ def test_an_unknown_transport_is_refused(monkeypatch):
     ready, reason = PodProvider().available()
 
     assert ready is False and "ssh" in reason and "blob" in reason
+
+
+def test_the_upload_is_bounded_by_the_budget_too(pod_env, monkeypatch, tmp_path):
+    """Only the training run used to be under a timeout.
+
+    RunPod hands out machines whose network is unusable — one took the capture
+    at 17 KB/s, an upload that would have billed for over an hour before the
+    four-hour reaper noticed. Every phase now draws from one clock, and staging
+    gets a slice of it rather than all of it, because a pod that cannot receive
+    60 images will not train on them either.
+    """
+    import sys
+    import types
+
+    class _StalledSftp:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def put(self, *a, **k):
+            await asyncio.sleep(3600)          # the dud machine
+
+        def open(self, *a, **k):
+            raise AssertionError("staging never gets this far")
+
+    class _Conn:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def run(self, *a, **k):
+            return types.SimpleNamespace(exit_status=0, stdout="", stderr="")
+
+        def start_sftp_client(self):
+            return _StalledSftp()
+
+    async def _connect(*a, **k):
+        return _Conn()
+
+    stub = types.SimpleNamespace(connect=_connect)
+    monkeypatch.setitem(sys.modules, "asyncssh", stub)
+    # A tiny ceiling, so the test does not wait out a real budget.
+    monkeypatch.setenv("RECON_POD_TIMEOUT", "600")
+    monkeypatch.setattr(
+        "reconstruction_providers.POD_UPLOAD_BUDGET_SHARE", 0.0, raising=False
+    )
+    monkeypatch.setattr(
+        "reconstruction_providers.POD_UPLOAD_MIN_SECONDS", 0.2, raising=False
+    )
+
+    provider = PodProvider()
+    with pytest.raises(ProviderError) as caught:
+        asyncio.run(provider._run_on_pod(
+            PodProvider._settings(), "1.2.3.4", 22, object(), 0.74,
+            _images(tmp_path, 3), tmp_path,
+        ))
+
+    message = str(caught.value)
+    assert "could not take the capture" in message
+    assert "different machine" in message, "the operator needs to know a retry helps"

@@ -23,6 +23,7 @@ DUSt3R / INRIA-3DGS are deliberately excluded (non-commercial licenses).
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import mimetypes
 import os
@@ -1116,12 +1117,32 @@ POD_NAME_PREFIX = "neoh-recon-"
 #: Prices measured live 2026-08-23: A5000 $0.16/hr, 3090 $0.22, 4090 $0.34,
 #: A40 $0.35. docs/runpod-pods-runbook.md called the 3090 the cheapest 24 GB
 #: card, which the A5000 undercuts.
+#: Widened 2026-08-24 after a live run was refused outright: RunPod answered
+#: "This machine does not have the resources to deploy your pod" for the
+#: four-card list at the default 40 GB container disk, while the SAME request
+#: with a longer list was accepted immediately. `gpuTypeIds` is matched against
+#: whatever is free RIGHT NOW, so a short list is not a cheaper choice, it is a
+#: narrower chance of being placed at all. The 48 GB cards are kept last: they
+#: cost more per hour but are the ones actually idle when the 24 GB tiers are
+#: sold out, and an hour of A6000 beats an hour of not running.
 _DEFAULT_POD_GPUS = (
     "NVIDIA RTX A5000",
     "NVIDIA GeForce RTX 3090",
     "NVIDIA GeForce RTX 4090",
+    "NVIDIA L4",
     "NVIDIA A40",
+    "NVIDIA RTX A6000",
 )
+
+#: Share of a job's budget that staging the capture may consume before the pod
+#: is written off. A machine that cannot receive 60 images in that time will not
+#: train on them either, and the sooner it is abandoned the sooner a retry lands
+#: somewhere healthy.
+POD_UPLOAD_BUDGET_SHARE = 0.25
+
+#: Floor under that share, so a short budget still lets a healthy machine
+#: receive its inputs — a fast pod stages 60 images in about 90 seconds.
+POD_UPLOAD_MIN_SECONDS = 120.0
 
 #: Fallback hourly rate for the cost ceiling, used only when RunPod does not
 #: report costPerHr for the pod it just created. Deliberately pessimistic: an
@@ -1159,27 +1180,87 @@ POD_PIPELINE = r"""
 set -euo pipefail
 cd /workspace
 
-command -v colmap >/dev/null || { apt-get -qq update && apt-get -qq install -y colmap xvfb; }
-command -v xvfb-run >/dev/null || { apt-get -qq update && apt-get -qq install -y xvfb; }
+# Every stage announces itself, and the noisy installers are muted unless they
+# fail. The provider reports the tail of the combined streams, and apt alone
+# emits hundreds of "Setting up ..." lines — enough that a real failure was
+# pushed clean out of the window. The first live run came back as
+# "Pod pipeline failed (exit 1): -1) ... Setting up libxaw7", which says
+# nothing about what broke.
+say() { echo ">>> $*" >&2; }
+quietly() {                      # $1 = label, rest = command
+  local label="$1"; shift
+  if ! "$@" >>/workspace/install.log 2>&1; then
+    say "$label FAILED; last 30 lines:"
+    tail -30 /workspace/install.log >&2
+    return 1
+  fi
+}
+
+if ! command -v colmap >/dev/null || ! command -v xvfb-run >/dev/null; then
+  say "installing colmap + xvfb"
+  quietly "apt-get update" apt-get -qq update
+  quietly "apt-get install" apt-get -qq install -y colmap xvfb
+fi
+command -v colmap >/dev/null || { say "colmap is still not on PATH after install"; exit 2; }
+
 export QT_QPA_PLATFORM=offscreen
-X="xvfb-run -a --server-args=-screen 0 1024x768x24"
 
-$X colmap feature_extractor  --database_path db.db --image_path images \
-                             --ImageReader.single_camera 1 --SiftExtraction.use_gpu 1
-$X colmap exhaustive_matcher --database_path db.db --SiftMatching.use_gpu 1
-mkdir -p sparse
-$X colmap mapper             --database_path db.db --image_path images --output_path sparse
-test -d sparse/0 || { echo "!! COLMAP registered no cameras" >&2; exit 3; }
-$X colmap model_analyzer     --path sparse/0
+# Xvfb is started directly rather than through xvfb-run.
+#
+# COLMAP's GPU SIFT needs an OpenGL context and therefore a display, but
+# Ubuntu's xvfb-run wrapper is a /bin/sh script that fails on this image with
+# "/usr/bin/xvfb-run: 184: 0: not found" before COLMAP is even reached — the
+# first live pod run died there. Owning the server ourselves removes the
+# wrapper, and a stale lock from a recycled pod is cleared rather than inherited.
+rm -f /tmp/.X99-lock
+Xvfb :99 -screen 0 1024x768x24 >/workspace/xvfb.log 2>&1 &
+export DISPLAY=:99
+for _ in $(seq 1 30); do [ -e /tmp/.X11-unix/X99 ] && break; sleep 1; done
+[ -e /tmp/.X11-unix/X99 ] || { say "Xvfb never came up:"; tail -20 /workspace/xvfb.log >&2; exit 2; }
+say "colmap $(colmap -h 2>&1 | head -1 || true); $(ls images | wc -l) images; DISPLAY=$DISPLAY"
 
-python -c "import gsplat" 2>/dev/null || \
-  pip install -q "gsplat==__GSPLAT__" viser nerfview splines jaxtyping tensorboard tyro
+# The trainer and everything it imports are installed and IMPORT-CHECKED before
+# COLMAP runs, not after.
+#
+# Dependencies used to be a hand-written list — gsplat, viser, nerfview,
+# splines, jaxtyping, tensorboard, tyro — which omitted cv2, pycolmap, imageio,
+# torchmetrics, fused_ssim, sklearn, matplotlib and yaml. The job discovered
+# that with `ModuleNotFoundError: No module named 'cv2'` *after* 27 minutes of
+# feature extraction, matching and mapping had already been paid for.
+#
+# Two fixes, and the ordering is the more important one. The list now comes from
+# the cloned tag's OWN requirements.txt, so it cannot drift from the trainer it
+# feeds — and note pycolmap must be the rmbrualla fork pinned there, because
+# PyPI's package of that name exposes a different API entirely. Then the whole
+# import graph is exercised on a throwaway process, so a missing package costs
+# three minutes instead of twenty-seven.
+say "installing gsplat __GSPLAT__ and the trainer's dependencies"
+python -c "import gsplat" 2>/dev/null || quietly "pip install gsplat" pip install -q "gsplat==__GSPLAT__"
 if [ ! -d gs ]; then
-  git clone --depth 1 --branch "v$(python -c 'import gsplat;print(gsplat.__version__.split("+")[0])')" \
+  quietly "git clone gsplat" git clone --depth 1 --branch "v$(python -c 'import gsplat;print(gsplat.__version__.split("+")[0])')" \
       https://github.com/nerfstudio-project/gsplat.git gs
 fi
 touch gs/examples/datasets/__init__.py
+quietly "pip install trainer requirements" pip install -q -r gs/examples/requirements.txt
 
+say "checking the trainer imports"
+( cd gs/examples && python -c "import simple_trainer" ) || {
+  say "the trainer cannot import its own dependencies; not spending COLMAP time on it"
+  exit 6
+}
+
+say "feature extraction"
+colmap feature_extractor  --database_path db.db --image_path images \
+                             --ImageReader.single_camera 1 --SiftExtraction.use_gpu 1
+say "exhaustive matching"
+colmap exhaustive_matcher --database_path db.db --SiftMatching.use_gpu 1
+mkdir -p sparse
+say "mapping"
+colmap mapper             --database_path db.db --image_path images --output_path sparse
+test -d sparse/0 || { echo "!! COLMAP registered no cameras" >&2; exit 3; }
+colmap model_analyzer     --path sparse/0
+
+say "training __STEPS__ steps"
 cd gs/examples && python simple_trainer.py default \
     --data-dir /workspace --data-factor 1 --result-dir /workspace/out \
     --max-steps __STEPS__ --save-steps __STEPS__ --disable-viewer
@@ -1188,7 +1269,37 @@ cd /workspace
 PLY=$(find /workspace/out -name '*.ply' | head -1)
 test -n "$PLY" || { echo "!! training produced no .ply" >&2; exit 4; }
 
-command -v splat-transform >/dev/null || npm install -g "@playcanvas/splat-transform@__ST__"
+# Where the photographer stood, in the frame of the splat we are about to ship.
+#
+# COLMAP already solved this on the way here and the job used to discard it,
+# which left estimate_up_axis's one decisive input with no way to be supplied in
+# production. It settles exactly the rooms geometry cannot: a near-cubic
+# bathroom, a stairwell taller than it is wide.
+#
+# Read back through gsplat's OWN Parser, with the arguments the trainer used,
+# rather than from sparse/0 directly. The Parser normalises the scene — it
+# recentres and rescales — so raw COLMAP centres do not belong to the same frame
+# as the delivered model. Mixing the two does not fail loudly; it returns a
+# confident up axis pointing somewhere else. Same rule as the point segmenter's
+# features: whatever the consumer sees must come from the code that produced it.
+say "exporting camera poses"
+python - <<'POSES' || say "camera pose export failed (continuing without it)"
+import json, sys, traceback
+sys.path.insert(0, "/workspace/gs/examples")
+try:
+    from datasets.colmap import Parser
+    parser = Parser(data_dir="/workspace", factor=1, normalize=True)
+    centres = [[float(v) for v in c2w[:3, 3]] for c2w in parser.camtoworlds]
+    json.dump({"frame": "trained", "positions": centres}, open("/workspace/cameras.json", "w"))
+    print(f">>> exported {len(centres)} camera poses", file=sys.stderr)
+except Exception:
+    traceback.print_exc()
+    raise SystemExit(1)
+POSES
+
+say "converting to .sog"
+command -v splat-transform >/dev/null || \
+  quietly "npm install splat-transform" npm install -g "@playcanvas/splat-transform@__ST__"
 # .sog, never .splat: splat-transform lists .splat input-only in every released
 # version, so asking it to write one fails on every real run.
 splat-transform "$PLY" /workspace/model.sog
@@ -1223,6 +1334,13 @@ bash /workspace/pipeline.sh
 # x-ms-blob-type is required by Azure and ignored by S3, so one PUT covers both.
 curl -fsS -X PUT -T /workspace/model.sog      -H "x-ms-blob-type: BlockBlob"      -H "Content-Type: application/octet-stream"      "$NEOH_OUTPUT_URL"
 echo ">> uploaded"
+
+# Camera poses, if the pipeline produced them. Uploaded second and never
+# allowed to fail the job: the reconstruction is the deliverable, this is an
+# accelerator for one downstream estimate.
+if [ -s /workspace/cameras.json ] && [ -n "${NEOH_POSES_URL:-}" ]; then
+  curl -fsS -X PUT -T /workspace/cameras.json         -H "x-ms-blob-type: BlockBlob"         -H "Content-Type: application/json"         "$NEOH_POSES_URL" && echo ">> uploaded camera poses" || echo ">> camera pose upload failed (ignored)"
+fi
 """
 
 
@@ -1237,6 +1355,90 @@ def _subsample_capture(images: list[Path], target: int) -> list[Path]:
         return list(images)
     step = len(images) / target
     return [images[min(len(images) - 1, int(i * step))] for i in range(target)]
+
+
+def _adopt_camera_poses(artifact: Path, downloaded: Path) -> None:
+    """Move the pod's cameras.json into the sidecar the plan path looks for.
+
+    The pod writes a minimal file; `capture_poses` owns the on-disk contract —
+    the version, the frame check and the minimum count — so the payload is
+    re-emitted through it rather than copied. That way there is exactly one
+    place that decides what a valid sidecar is.
+    """
+    import capture_poses
+
+    try:
+        payload = json.loads(downloaded.read_text())
+        if not isinstance(payload, dict):
+            raise ValueError("not an object")
+        written = capture_poses.write(
+            artifact,
+            payload.get("positions") or [],
+            frame=payload.get("frame") or capture_poses.FRAME_TRAINED,
+        )
+        if written:
+            log.info(
+                "Recorded %d camera poses beside %s",
+                len(payload.get("positions") or []), artifact.name,
+            )
+    except (ValueError, OSError) as exc:
+        # Absent or unreadable poses are a normal outcome, not an incident: the
+        # plan path already handles having none. Logged plainly rather than as a
+        # traceback so it does not read like the reconstruction went wrong.
+        log.info("Ignoring unusable camera poses from the pod (%s)", exc)
+    finally:
+        downloaded.unlink(missing_ok=True)
+
+
+def _pipeline_failure(result) -> str:
+    """The pod's own account of what broke, with the streams kept apart.
+
+    Concatenating stdout and stderr and taking the last 1200 characters made
+    every failure look the same, because whichever stream ended last filled the
+    window — in practice the installer, whose output is enormous and never the
+    reason. stderr carries the `>>>` stage markers and the real error, so it is
+    reported first and given the most room.
+    """
+    err = (result.stderr or "").strip()
+    out = (result.stdout or "").strip()
+    stage = ""
+    for line in reversed(err.splitlines()):
+        if line.startswith(">>> "):
+            stage = f" during: {line[4:]}"
+            break
+    parts = [f"Pod pipeline failed (exit {result.exit_status}){stage}"]
+    if err:
+        parts.append(f"stderr: ...{err[-2000:]}")
+    if out:
+        parts.append(f"stdout: ...{out[-600:]}")
+    return "\n".join(parts)
+
+
+def _pod_placement_error(response, settings: dict) -> str:
+    """Turn RunPod's placement refusal into something an operator can act on.
+
+    "This machine does not have the resources to deploy your pod" and "There
+    are no instances currently available" both read like our request was
+    malformed. Neither is: they mean nothing matching is free this minute, and
+    the fix is to widen the pool or ask for less disk — measured, both work.
+    The raw text names neither the pool that was tried nor the knob that changes
+    it, so a caller reads it as an outage and waits.
+    """
+    text = str(response)
+    capacity = (
+        "does not have the resources" in text
+        or "no instances currently available" in text
+    )
+    if not capacity:
+        return f"RunPod did not return a pod id: {text[:200]}"
+    return (
+        "RunPod had no free machine matching this request: "
+        f"{', '.join(settings['gpu_ids'])} on {settings['cloud_type']} cloud with "
+        f"{settings['disk_gb']} GB of container disk. This is capacity, not "
+        "configuration — the same request is accepted minutes later. Widen the "
+        "pool with RECON_POD_GPU_IDS, lower RECON_POD_DISK_GB, or set "
+        "RECON_POD_CLOUD_TYPE=COMMUNITY, then retry."
+    )
 
 
 def _pod_name() -> str:
@@ -1502,7 +1704,7 @@ class PodProvider(ReconstructionProvider):
         ) or {}
         pod_id = created.get("id")
         if not pod_id:
-            raise ProviderError(f"RunPod did not return a pod id: {str(created)[:200]}")
+            raise ProviderError(_pod_placement_error(created, settings))
         launched.append(pod_id)          # billing starts here, so ownership does too
         log.info("RunPod pod %s provisioning (%s)", pod_id, settings["image"])
 
@@ -1533,6 +1735,31 @@ class PodProvider(ReconstructionProvider):
         budget_seconds = int((settings["max_cost"] / max(hourly, 0.01)) * 3600)
         deadline = min(settings["timeout"], budget_seconds)
 
+        # The budget covers the WHOLE session, not just the training run.
+        #
+        # Only `conn.run` used to be bounded, which left the upload and the
+        # download unbounded — and RunPod hands out machines whose network is
+        # unusable. One pod took the images at 17 KB/s, an upload that would
+        # have run for over an hour billing the whole time, and nothing would
+        # have stopped it before the four-hour reaper. Every phase now draws
+        # from one clock that starts when the pod does.
+        started = _now()
+
+        def _left(phase: str) -> float:
+            remaining = deadline - (_now() - started)
+            if remaining <= 0:
+                raise ProviderError(
+                    f"Reconstruction ran out of budget before {phase} "
+                    f"({deadline}s at ${hourly:.2f}/hr, ceiling "
+                    f"${settings['max_cost']:.2f}); the pod is being terminated"
+                )
+            return remaining
+
+        #: A pod that cannot take its own inputs promptly will not finish the
+        #: job either, and the sooner that is called the sooner a retry lands on
+        #: a different machine. Staging gets a slice of the budget, not all of it.
+        upload_budget = max(POD_UPLOAD_MIN_SECONDS, deadline * POD_UPLOAD_BUDGET_SHARE)
+
         last_error: Optional[Exception] = None
         conn = None
         for _ in range(30):  # sshd comes up a little after the port is mapped
@@ -1557,7 +1784,7 @@ class PodProvider(ReconstructionProvider):
             .replace("__GSPLAT__", _POD_GSPLAT_VERSION)
         )
 
-        async with conn:
+        async def _upload() -> None:
             await conn.run("mkdir -p /workspace/images", check=True)
             async with conn.start_sftp_client() as sftp:
                 for index, path in enumerate(images):
@@ -1567,9 +1794,22 @@ class PodProvider(ReconstructionProvider):
                 async with sftp.open("/workspace/run.sh", "w") as handle:
                     await handle.write(script)
 
+        async with conn:
+            staging = min(upload_budget, _left("the capture was uploaded"))
+            try:
+                await asyncio.wait_for(_upload(), timeout=staging)
+            except asyncio.TimeoutError as exc:
+                raise ProviderError(
+                    f"This pod could not take the capture within {staging:.0f}s "
+                    f"({len(images)} images) — its network is too slow to finish "
+                    f"the job. Retrying will land on a different machine; the pod "
+                    f"is being terminated."
+                ) from exc
+
             try:
                 result = await asyncio.wait_for(
-                    conn.run("bash /workspace/run.sh", check=False), timeout=deadline
+                    conn.run("bash /workspace/run.sh", check=False),
+                    timeout=_left("the pipeline finished"),
                 )
             except asyncio.TimeoutError as exc:
                 raise ProviderError(
@@ -1579,14 +1819,24 @@ class PodProvider(ReconstructionProvider):
                 ) from exc
 
             if result.exit_status != 0:
-                tail = f"{result.stdout or ''}{result.stderr or ''}"[-1200:]
-                raise ProviderError(
-                    f"Pod pipeline failed (exit {result.exit_status}): {tail}"
-                )
+                raise ProviderError(_pipeline_failure(result))
 
             out = work_dir / f"model{DELIVERY_SUFFIX}"
             async with conn.start_sftp_client() as sftp:
-                await sftp.get("/workspace/model.sog", str(out))
+                await asyncio.wait_for(
+                    sftp.get("/workspace/model.sog", str(out)),
+                    timeout=_left("the result was retrieved"),
+                )
+                # Best-effort, and it must stay that way: a reconstruction that
+                # computed is not failed because an accelerator's sidecar is
+                # missing. Older pods do not write one at all.
+                try:
+                    poses = work_dir / "cameras.json"
+                    await sftp.get("/workspace/cameras.json", str(poses))
+                except Exception:  # noqa: BLE001
+                    log.info("Pod returned no camera poses; the plan path will infer up from geometry")
+                else:
+                    _adopt_camera_poses(out, poses)
 
         _validate_artifact(out, provider="RunPod pod")
         return out
@@ -1612,11 +1862,12 @@ class PodProvider(ReconstructionProvider):
         job_key = uuid.uuid4().hex
         in_prefix = f"recon-inputs/{job_key}"
         out_key = f"recon-outputs/{job_key}/model{DELIVERY_SUFFIX}"
+        poses_key = f"recon-outputs/{job_key}/cameras.json"
         # The URLs must outlive queue wait plus the whole run, or the pod loses
         # the ability to hand back a result it has already paid to compute.
         ttl = int(settings["timeout"]) + 3600
 
-        def _stage() -> tuple[str, str, str]:
+        def _stage() -> tuple[str, str, str, str]:
             urls = []
             for index, path in enumerate(images):
                 key = f"{in_prefix}/{_staged_image_name(index, path)}"
@@ -1637,6 +1888,7 @@ class PodProvider(ReconstructionProvider):
                                      POD_BLOB_BOOTSTRAP.encode(), "text/x-shellscript")
 
             output_url = object_storage.presigned_put_url(out_key, ttl)
+            poses_url = object_storage.presigned_put_url(poses_key, ttl)
             if not output_url:
                 raise ProviderError(
                     "The blob transport needs a storage backend that can issue a "
@@ -1647,9 +1899,10 @@ class PodProvider(ReconstructionProvider):
                 object_storage.signed_url(f"{in_prefix}/manifest.txt", ttl),
                 object_storage.signed_url(f"{in_prefix}/bootstrap.sh", ttl),
                 output_url,
+                poses_url or "",
             )
 
-        manifest_url, bootstrap_url, output_url = await asyncio.to_thread(_stage)
+        manifest_url, bootstrap_url, output_url, poses_url = await asyncio.to_thread(_stage)
 
         created = await asyncio.to_thread(
             self._rest, settings["api_key"], "POST", "/pods",
@@ -1665,6 +1918,7 @@ class PodProvider(ReconstructionProvider):
                 "env": {
                     "NEOH_MANIFEST_URL": manifest_url,
                     "NEOH_OUTPUT_URL": output_url,
+                    "NEOH_POSES_URL": poses_url,
                     "NEOH_BOOTSTRAP_URL": bootstrap_url,
                 },
                 # Tiny on purpose: the real script is fetched, not embedded.
@@ -1679,7 +1933,7 @@ class PodProvider(ReconstructionProvider):
         ) or {}
         pod_id = created.get("id")
         if not pod_id:
-            raise ProviderError(f"RunPod did not return a pod id: {str(created)[:200]}")
+            raise ProviderError(_pod_placement_error(created, settings))
         launched.append(pod_id)
         log.info("RunPod pod %s running (blob transport, job %s)", pod_id, job_key)
 
@@ -1697,6 +1951,16 @@ class PodProvider(ReconstructionProvider):
                 continue
             out = work_dir / f"model{DELIVERY_SUFFIX}"
             out.write_bytes(payload)
+            # The same sidecar as the SSH transport, so which transport a
+            # deployment happens to use is not visible downstream.
+            try:
+                poses = await asyncio.to_thread(object_storage.get_bytes, poses_key)
+            except Exception:  # noqa: BLE001
+                log.info("Pod returned no camera poses; the plan path will infer up from geometry")
+            else:
+                staged = work_dir / "cameras.json"
+                staged.write_bytes(poses)
+                _adopt_camera_poses(out, staged)
             _validate_artifact(out, provider="RunPod pod")
             return out
 

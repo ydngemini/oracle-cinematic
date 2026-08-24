@@ -1193,6 +1193,33 @@ def _coverage(document) -> Optional[float]:
     return document.total_area_m2 / footprint
 
 
+def extract_from_reconstruction_file(path, *, use_segmenter="auto", **kwargs):
+    """A plan from a reconstruction on disk, using its camera poses if it has any.
+
+    The bytes-in entry point below cannot find a sidecar — it never sees a path —
+    so every caller that had one would have to know the file convention and read
+    it. That is how `camera_positions` ended up being a parameter no production
+    caller ever passed, while COLMAP was computing exactly those positions on
+    the way to the splat and discarding them at the end of the job.
+
+    Explicitly-supplied `camera_positions` always win: a caller who measured
+    them means it.
+    """
+    from pathlib import Path
+
+    import capture_poses
+
+    path = Path(path)
+    if kwargs.get("camera_positions") is None:
+        recorded = capture_poses.read(path)
+        if recorded:
+            kwargs["camera_positions"] = recorded
+            log.info("Using %d recorded camera poses to orient the plan", len(recorded))
+    return extract_from_reconstruction(
+        path.read_bytes(), use_segmenter=use_segmenter, **kwargs
+    )
+
+
 def extract_from_reconstruction(ply_bytes: bytes, *, use_segmenter="auto", **kwargs):
     """A FloorplanDocument from a reconstruction of the property.
 
