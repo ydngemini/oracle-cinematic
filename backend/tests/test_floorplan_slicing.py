@@ -434,11 +434,201 @@ def test_a_long_room_yields_its_real_dimensions():
         assert abs(actual - expected) / expected < 0.06, f"{actual:.2f} vs {expected:.2f}"
 
 
-def test_the_segmenter_is_off_unless_asked_for():
-    """It defaults off on measured evidence: geometry scores 99.44% dimension
-    accuracy with zero failures over 40 rooms, the segmenter 99.27% with one.
-    An optional accelerator that does not accelerate should not be the default."""
+# ---------------------------------------------------------------------------
+# Choosing between two paths that fail on different houses
+# ---------------------------------------------------------------------------
+
+def test_both_paths_are_tried_by_default():
+    """Neither path can be preferred a priori.
+
+    Over 100 random rooms the geometric and segmented paths score the SAME on
+    average — 93.0% area accuracy, three catastrophic cases each — but not on
+    the same three. Picking either as the default is therefore wrong about half
+    the time it matters, so the default measures instead of assuming.
+    """
     import inspect
 
     signature = inspect.signature(slicing.extract_from_reconstruction)
-    assert signature.parameters["use_segmenter"].default is False
+    assert signature.parameters["use_segmenter"].default == "auto"
+
+
+def test_an_explicit_choice_is_honoured():
+    """auto costs two runs; a caller that knows which it wants can say so."""
+    rng = np.random.default_rng(7)
+    pts, _ = _rotate(rng, _house(rng))
+
+    for choice in (True, False):
+        doc = slicing.extract_from_reconstruction(
+            _ply(pts), metres_per_unit=1.0, use_segmenter=choice)
+        assert len(doc.rooms) >= 1
+
+
+def test_coverage_detects_a_room_that_leaked_away():
+    """The self-check that makes the choice possible without ground truth.
+
+    A room escaping through an unclosed corner merges with the exterior and is
+    discarded as background, so the surviving rooms cover far less of the plan's
+    own footprint than they should. That is visible in the plan alone.
+    """
+    from floorplan_pipeline.schema import FloorplanRoom, FloorplanWall
+
+    walls = [
+        FloorplanWall(id="w1", start=(0.0, 0.0), end=(10.0, 0.0)),
+        FloorplanWall(id="w2", start=(0.0, 6.0), end=(10.0, 6.0)),
+    ]
+    whole = FloorplanRoom(id="r1", name="R", type="other",
+                          polygon=[(0, 0), (10, 0), (10, 6), (0, 6)])
+    half = FloorplanRoom(id="r2", name="R", type="other",
+                         polygon=[(0, 0), (4, 0), (4, 6), (0, 6)])
+
+    complete = type("D", (), {"walls": walls, "rooms": [whole],
+                              "total_area_m2": whole.area})()
+    leaked = type("D", (), {"walls": walls, "rooms": [half],
+                            "total_area_m2": half.area})()
+
+    assert slicing._coverage(complete) > 0.9
+    assert slicing._coverage(leaked) < slicing.MIN_PLAUSIBLE_COVERAGE
+
+
+def test_auto_survives_one_path_failing(monkeypatch):
+    """The paths fail on different inputs, so one refusing is normal and must
+    not take the other down with it."""
+    real = slicing._extract_once
+
+    def one_sided(ply_bytes, *, use_segmenter=False, **kwargs):
+        if use_segmenter:
+            raise slicing.DegenerateGeometry("segmented path found nothing")
+        return real(ply_bytes, use_segmenter=False, **kwargs)
+
+    monkeypatch.setattr(slicing, "_extract_once", one_sided)
+    rng = np.random.default_rng(7)
+    pts, _ = _rotate(rng, _house(rng))
+
+    doc = slicing.extract_from_reconstruction(_ply(pts), metres_per_unit=1.0)
+    assert len(doc.rooms) >= 1
+
+
+def test_auto_still_refuses_when_neither_path_works(monkeypatch):
+    """Two ways of failing is not a reason to invent a plan."""
+    def always_fails(ply_bytes, **kwargs):
+        raise slicing.DegenerateGeometry("nothing usable here")
+
+    monkeypatch.setattr(slicing, "_extract_once", always_fails)
+    rng = np.random.default_rng(7)
+    pts, _ = _rotate(rng, _house(rng))
+
+    with pytest.raises(slicing.DegenerateGeometry):
+        slicing.extract_from_reconstruction(_ply(pts), metres_per_unit=1.0)
+
+
+def test_auto_records_the_coverage_it_chose_on():
+    """Which evidence decided the plan belongs in its provenance."""
+    rng = np.random.default_rng(7)
+    pts, _ = _rotate(rng, _house(rng))
+
+    doc = slicing.extract_from_reconstruction(_ply(pts), metres_per_unit=1.0)
+
+    assert "self-consistency" in (doc.provenance.notes or "")
+
+
+def test_a_missing_scale_is_still_refused_in_auto_mode():
+    """The line that never moves, now across both paths."""
+    rng = np.random.default_rng(7)
+    pts, _ = _rotate(rng, _house(rng))
+
+    with pytest.raises(MissingScale):
+        slicing.extract_from_reconstruction(_ply(pts))
+
+
+def test_the_raster_margin_clears_the_background_threshold():
+    """The margin is not cosmetic — it is sized against a constant in raster.py.
+
+    detect_rooms discards a border-touching component only when it exceeds 20%
+    of the image, so the exterior ring has to clear that decisively. At a 6%
+    margin the ring is ~20.3% — right on the line — so it was counted as a ROOM
+    on roughly half of all plans, and that phantom room is larger than the whole
+    building. It caused every spurious-room error measured.
+    """
+    from floorplan_pipeline import raster
+
+    margin = slicing.RASTER_MARGIN
+    # The building spans 1/(1+2m) of each padded axis, so the ring is whatever
+    # is left of the area.
+    building_fraction = (1.0 / (1.0 + 2 * margin)) ** 2
+    ring_fraction = 1.0 - building_fraction
+
+    assert ring_fraction > 0.20 * 1.4, (
+        f"margin {margin} leaves the exterior ring at {ring_fraction:.1%}, too "
+        f"close to the 20% threshold detect_rooms discards on"
+    )
+    # And not so wide that resolution is thrown away on whitespace.
+    assert building_fraction > 0.5
+
+
+def test_auto_picks_the_more_self_consistent_plan(monkeypatch):
+    """The selection itself, not just the coverage measure.
+
+    Without this, "run both and choose" is indistinguishable from "run both and
+    keep the first", which is what the geometric-only default already was.
+    """
+    from floorplan_pipeline.schema import (
+        FloorplanDocument, FloorplanRoom, FloorplanWall, Provenance,
+    )
+
+    def _plan(polygons):
+        walls = [
+            FloorplanWall(id="w1", start=(0.0, 0.0), end=(10.0, 0.0)),
+            FloorplanWall(id="w2", start=(0.0, 6.0), end=(10.0, 6.0)),
+        ]
+        rooms = [
+            FloorplanRoom(id=f"r{i}", name="R", type="other", polygon=poly)
+            for i, poly in enumerate(polygons)
+        ]
+        return FloorplanDocument(
+            provenance=Provenance(source="reconstruction", ai_generated=True),
+            walls=walls, rooms=rooms,
+        )
+
+    # Geometry loses a room to an unclosed corner; the segmented path keeps both.
+    leaked = _plan([[(0, 0), (4, 0), (4, 6), (0, 6)]])
+    complete = _plan([[(0, 0), (4.6, 0), (4.6, 6), (0, 6)],
+                      [(4.6, 0), (9.6, 0), (9.6, 6), (4.6, 6)]])
+
+    def fake(ply_bytes, *, use_segmenter=False, **kwargs):
+        return complete if use_segmenter else leaked
+
+    monkeypatch.setattr(slicing, "_extract_once", fake)
+    chosen = slicing.extract_from_reconstruction(b"ply\n", metres_per_unit=1.0)
+
+    assert chosen is complete, "auto kept the leaked plan instead of choosing"
+    assert len(chosen.rooms) == 2
+
+
+def test_auto_rejects_a_plan_whose_rooms_exceed_its_footprint(monkeypatch):
+    """The other failure mode: the exterior ring counted as a room, which makes
+    coverage exceed one."""
+    from floorplan_pipeline.schema import (
+        FloorplanDocument, FloorplanRoom, FloorplanWall, Provenance,
+    )
+
+    def _plan(polygons):
+        walls = [
+            FloorplanWall(id="w1", start=(0.0, 0.0), end=(10.0, 0.0)),
+            FloorplanWall(id="w2", start=(0.0, 6.0), end=(10.0, 6.0)),
+        ]
+        return FloorplanDocument(
+            provenance=Provenance(source="reconstruction", ai_generated=True),
+            walls=walls,
+            rooms=[FloorplanRoom(id=f"r{i}", name="R", type="other", polygon=p)
+                   for i, p in enumerate(polygons)],
+        )
+
+    phantom = _plan([[(0, 0), (10, 0), (10, 6), (0, 6)],
+                     [(0, 0), (9, 0), (9, 6), (0, 6)]])        # coverage ~1.9
+    sane = _plan([[(0, 0), (9.4, 0), (9.4, 5.7), (0, 5.7)]])   # coverage ~0.89
+
+    def fake(ply_bytes, *, use_segmenter=False, **kwargs):
+        return phantom if use_segmenter else sane
+
+    monkeypatch.setattr(slicing, "_extract_once", fake)
+    assert slicing.extract_from_reconstruction(b"ply\n", metres_per_unit=1.0) is sane

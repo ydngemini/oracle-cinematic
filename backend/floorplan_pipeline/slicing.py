@@ -72,9 +72,22 @@ MID_BAND = (0.35, 0.75)
 PEAK_SHARE = 0.02
 
 #: Whitespace around the projected building, as a fraction of its extent.
-#: See occupancy_raster — without it the exterior walls sit on the image border
-#: and the room detector discards the interior as background.
-RASTER_MARGIN = 0.06
+#:
+#: Two constraints, and the second is why this is not smaller. Without ANY
+#: margin the exterior walls sit on the image border and detect_rooms discards
+#: the building's interior as background. But detect_rooms only discards a
+#: border-touching component when it exceeds 20% of the image, so the margin
+#: must also be wide enough that the exterior ring clears that bar decisively.
+#:
+#: At 0.06 the ring is ~20.3% of the image — right on the threshold, so it was
+#: counted as a *room* on roughly half of all plans, and that phantom room is
+#: larger than the entire building. It caused every spurious-room error
+#: measured: 1->2 on three houses and 2->3 on two more.
+#:
+#: At 0.12 the building occupies ~65% of the image and the ring ~35%, which is
+#: unambiguous. The cost is resolution: the same RASTER_PX now spans a larger
+#: area, so walls are slightly thinner in pixels.
+RASTER_MARGIN = 0.12
 
 SQFT_PER_M2 = 10.763910416709722
 
@@ -770,7 +783,90 @@ def footprint_area_units2(xyz, up: UpAxis, lo: float, hi: float) -> float:
 # Public entry
 # ---------------------------------------------------------------------------
 
-def extract_from_reconstruction(
+#: A plan's rooms should tile its own footprint. Less than this and something
+#: leaked; the interior escaped through an unclosed corner, merged with the
+#: exterior background and was discarded as such.
+MIN_PLAUSIBLE_COVERAGE = 0.55
+
+#: Rooms cannot cover more than the footprint. Above this and a phantom region
+#: — usually the exterior ring — is being counted as a room.
+MAX_PLAUSIBLE_COVERAGE = 1.02
+
+#: What a correct plan looks like: rooms fill the footprint minus wall thickness.
+TARGET_COVERAGE = 0.90
+
+
+def _coverage(document) -> Optional[float]:
+    """Room area as a fraction of the plan's own bounding box.
+
+    A self-check that needs no ground truth, which is what makes it usable at
+    run time. The two failure modes this pipeline actually has are both visible
+    in it: losing a room to an unclosed corner halves the coverage, and counting
+    the exterior ring as a room pushes it past one.
+    """
+    if not document.walls or not document.rooms:
+        return None
+    xs = [p[0] for wall in document.walls for p in (wall.start, wall.end)]
+    ys = [p[1] for wall in document.walls for p in (wall.start, wall.end)]
+    footprint = (max(xs) - min(xs)) * (max(ys) - min(ys))
+    if footprint <= 0:
+        return None
+    return document.total_area_m2 / footprint
+
+
+def extract_from_reconstruction(ply_bytes: bytes, *, use_segmenter="auto", **kwargs):
+    """A FloorplanDocument from a reconstruction of the property.
+
+    `use_segmenter` is "auto" by default: run both the geometric and the
+    segmented path and keep whichever produces the more self-consistent plan.
+
+    Running both is worth its cost because the two fail on DIFFERENT houses.
+    Measured over 100 random rooms they score the same on average — 93.0% area
+    accuracy each, three catastrophic cases each — but not the same three. The
+    segmenter recovered every case where geometry lost a whole room to an
+    unclosed corner (one returned 38.4 m² of a true 73.7); geometry got cases
+    the segmenter did not.
+
+    Neither can be preferred a priori, so this measures instead. Coverage —
+    room area over the plan's own footprint — detects both failure modes
+    without ground truth, so the choice is made on evidence rather than on a
+    default that is wrong half the time.
+    """
+    if use_segmenter in (True, False):
+        return _extract_once(ply_bytes, use_segmenter=use_segmenter, **kwargs)
+
+    attempts = []
+    for segmented in (False, True):
+        try:
+            document = _extract_once(ply_bytes, use_segmenter=segmented, **kwargs)
+        except (DegenerateGeometry, UnsupportedInput) as exc:
+            attempts.append((None, None, exc))
+            continue
+        attempts.append((document, _coverage(document), None))
+
+    scored = [(doc, cov) for doc, cov, exc in attempts if doc is not None]
+    if not scored:
+        # Both paths refused. Re-raise the geometric path's reason: it is the
+        # one that has been verified, so its diagnosis is the more trustworthy.
+        raise next(exc for _, _, exc in attempts if exc is not None)
+
+    plausible = [
+        (doc, cov) for doc, cov in scored
+        if cov is not None and MIN_PLAUSIBLE_COVERAGE <= cov <= MAX_PLAUSIBLE_COVERAGE
+    ]
+    pool = plausible or scored
+    best, coverage = min(
+        pool, key=lambda item: abs((item[1] if item[1] is not None else 0.0) - TARGET_COVERAGE)
+    )
+    if coverage is not None:
+        best.provenance.notes = " ".join(filter(None, [
+            best.provenance.notes,
+            f"Chosen by self-consistency: rooms cover {coverage:.0%} of the footprint.",
+        ]))
+    return best
+
+
+def _extract_once(
     ply_bytes: bytes,
     *,
     metres_per_unit: Optional[float] = None,
