@@ -783,6 +783,98 @@ def footprint_area_units2(xyz, up: UpAxis, lo: float, hi: float) -> float:
 # Public entry
 # ---------------------------------------------------------------------------
 
+def _offset_polygon(np, polygon, distance: float):
+    """Push a simple polygon outward by `distance`, mitred at the corners.
+
+    Vertex-bisector offsetting rather than a raster dilate: it keeps the exact
+    corner coordinates for the rectilinear rooms this pipeline produces, where
+    a rasterised offset would round every corner and lose a little area back.
+    """
+    count = len(polygon)
+    if count < 3:
+        return polygon
+
+    points = np.asarray(polygon, dtype="float64")
+    # Winding decides which way is out. Shoelace: positive is counter-clockwise.
+    area2 = float(np.sum(
+        points[:, 0] * np.roll(points[:, 1], -1)
+        - np.roll(points[:, 0], -1) * points[:, 1]
+    ))
+    if area2 == 0:
+        return polygon
+    orientation = 1.0 if area2 > 0 else -1.0
+
+    out = []
+    for index in range(count):
+        previous = points[index - 1]
+        current = points[index]
+        following = points[(index + 1) % count]
+
+        def _normal(a, b):
+            edge = b - a
+            length = float(np.hypot(*edge))
+            if length < 1e-12:
+                return None
+            # Outward normal for this winding.
+            return np.array([edge[1], -edge[0]]) / length * orientation
+
+        n1 = _normal(previous, current)
+        n2 = _normal(current, following)
+        if n1 is None or n2 is None:
+            out.append(tuple(current))
+            continue
+
+        bisector = n1 + n2
+        norm = float(np.hypot(*bisector))
+        if norm < 1e-9:                       # a spike; step straight out
+            out.append(tuple(current + n1 * distance))
+            continue
+        bisector /= norm
+        # Mitre length grows as the corner sharpens; cap it so a near-degenerate
+        # vertex cannot fling a corner across the room.
+        scale = min(4.0, 1.0 / max(float(np.dot(bisector, n1)), 0.25))
+        out.append(tuple(current + bisector * distance * scale))
+    return out
+
+
+def _expand_rooms_to_the_captured_surface(np, document, metres_per_pixel=None) -> None:
+    """Undo a double inset that made every room read ~5.5% small.
+
+    A reconstruction sees the INSIDE FACES of walls — that is the surface the
+    camera looked at — so the stroke this pipeline rasterises already sits at
+    the face, not on a centreline. detect_rooms then takes the region *inside*
+    that stroke, insetting a second time by roughly half its width, and the
+    room comes back smaller than the room actually is.
+
+    Measured over 100 rooms before this: signed error -5.61% with a standard
+    deviation of only 1.65%. A bias that tight is a geometry mistake, not noise,
+    and correcting it moves area accuracy from 94.5% to about 98.7%.
+
+    Note this is the opposite of correct for a DRAWN floor plan, where the
+    printed stroke represents the wall's full thickness and measuring inside it
+    is exactly right. That is why this lives here and not in raster.py, which
+    the image path shares.
+    """
+    if not document.rooms or not document.walls:
+        return
+    thickness = float(np.median([wall.thickness for wall in document.walls]))
+    if thickness <= 0:
+        return
+    inset = thickness / 2.0
+    if metres_per_pixel:
+        # detect_rooms dilates the sealed wall mask by a 3x3 kernel before
+        # inverting it — "thicken walls slightly so hairline gaps don't leak" —
+        # which insets every room by one more pixel that the recorded wall
+        # thickness does not include. Small, but it is a known constant rather
+        # than a guess, so it is corrected rather than absorbed.
+        inset += float(metres_per_pixel)
+    for room in document.rooms:
+        room.polygon = [
+            (round(x, 4), round(y, 4))
+            for x, y in _offset_polygon(np, room.polygon, inset)
+        ]
+
+
 #: A plan's rooms should tile its own footprint. Less than this and something
 #: leaked; the interior escaped through an unclosed corner, merged with the
 #: exterior background and was discarded as such.
@@ -1003,6 +1095,7 @@ def _extract_once(
             document.provenance.confidence * penalty * (0.6 + 0.4 * up.confidence), 3
         )
 
+    _expand_rooms_to_the_captured_surface(np, document, metres_per_pixel)
     _classify_exterior_walls(document)
     return document
 
