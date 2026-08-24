@@ -1,0 +1,48 @@
+{
+  "features": [
+    "height_norm",
+    "verticality",
+    "planarity",
+    "linearity",
+    "column_span",
+    "column_density",
+    "local_density"
+  ],
+  "labels": [
+    "floor",
+    "ceiling",
+    "wall",
+    "clutter"
+  ],
+  "trained_on": "synthetic rooms only \u2014 accuracy on real reconstructions is UNMEASURED",
+  "houses": 60,
+  "epochs": 25,
+  "validation": {
+    "floor": {
+      "support": 68867,
+      "recall": 0.9895,
+      "precision": 0.9654
+    },
+    "ceiling": {
+      "support": 29518,
+      "recall": 0.9982,
+      "precision": 0.9318
+    },
+    "wall": {
+      "support": 178464,
+      "recall": 0.9594,
+      "precision": 0.972
+    },
+    "clutter": {
+      "support": 97392,
+      "recall": 0.9414,
+      "precision": 0.9563
+    }
+  },
+  "caveats": [
+    "Classifies points; never produces a dimension or a scale.",
+    "Features are scale-free ratios, so the model cannot key on room size.",
+    "Every training house is randomly rotated, so it cannot key on axes.",
+    "Rectilinear rooms only \u2014 no curved or non-Manhattan walls were generated."
+  ]
+}

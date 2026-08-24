@@ -34,6 +34,10 @@ requests==2.34.2               # RunPod reconstruction provider HTTP submit/poll
 # PodProvider pushes a capture to a rented RunPod GPU over SSH and pulls the
 # .sog back. Lazy-imported, so only the pods reconstruction path needs it.
 asyncssh==2.24.0
+# Runs the floor-plan point segmenter (floorplan_pipeline/segmentation.py) on
+# CPU. Inference only — torch is a TRAINING dependency and is deliberately not
+# here; scripts/train_point_segmenter.py is run offline, not by the backend.
+onnxruntime==1.27.0
 playwright==1.62.0             # Browser-backed public-record harvesters
 
 # ── Microsoft Foundry ─────────────────────────────────────────────────────────

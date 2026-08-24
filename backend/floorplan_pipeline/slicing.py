@@ -43,7 +43,9 @@ import math
 from dataclasses import dataclass
 from typing import Literal, Optional
 
+from . import segmentation
 from .errors import DegenerateGeometry, MissingScale, UnsupportedInput
+from .pointfeatures import LABEL_WALL
 
 log = logging.getLogger("oracle.floorplan.slicing")
 
@@ -631,7 +633,10 @@ def occupancy_raster(xyz, up: UpAxis, lo: float, hi: float, *, sub_slices: int =
     # The mid-height fallback cuts through door openings, so the reach stays
     # short: bridging there would seal real doorways into solid wall and
     # silently merge two rooms into one.
-    reach = 0.08 if band_basis == "ceiling-adjacent" else 0.02
+    # "segmented walls" projects the full height of every wall, so a doorway
+    # is covered by the wall above it and is not a gap either — the same reason
+    # the ceiling band can reach far.
+    reach = 0.08 if band_basis in ("ceiling-adjacent", "segmented walls") else 0.02
     run = max(9, int(min(width, height_px) * reach) | 1)
     along_x = cv2.morphologyEx(
         occupied, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_RECT, (run, 1))
@@ -692,6 +697,7 @@ def extract_from_reconstruction(
     known_total_sqft: Optional[float] = None,
     camera_positions=None,
     min_opacity: float = MIN_OPACITY,
+    use_segmenter: bool = True,
     level_name: str = "Ground Floor",
     level_index: int = 0,
     model_version: str = "floorplan-slice-1.0.0",
@@ -723,9 +729,45 @@ def extract_from_reconstruction(
     right, forward = _ground_basis(np, axis)
     planar = np.stack([xyz @ right, xyz @ forward], axis=1)
     profile = vertical_profile(heights, planar)
-    lo, hi, band_basis = choose_slice_band(profile, heights)
 
-    image_bytes, units_per_pixel = occupancy_raster(xyz, up, lo, hi, band_basis=band_basis)
+    # Prefer a classification of every point over a height band.
+    #
+    # The band is a proxy: it assumes anything high up is a wall, which is why
+    # it needs a ceiling to aim below and why a tall wardrobe still fools it.
+    # When the segmenter is installed, wall points are known, so the whole
+    # height of every wall can be projected — which also gives markedly better
+    # corner coverage than a thin slab.
+    #
+    # It is a preference and not a requirement. Everything below works without
+    # a model, and the geometric path is the one verified against known
+    # dimensions.
+    wall_points = None
+    if use_segmenter:
+        labels = segmentation.segment(
+            xyz, up.vector, floor=profile.floor, ceiling=profile.ceiling
+        )
+        if labels is not None:
+            chosen = xyz[labels == LABEL_WALL]
+            if len(chosen) >= 256:
+                wall_points = chosen
+            else:
+                log.warning(
+                    "Segmenter labelled only %d points as wall; using the height band.",
+                    len(chosen),
+                )
+
+    if wall_points is not None:
+        band_basis = "segmented walls"
+        wall_heights = wall_points @ axis
+        lo, hi = float(wall_heights.min()), float(wall_heights.max())
+        image_bytes, units_per_pixel = occupancy_raster(
+            wall_points, up, lo, hi, band_basis=band_basis
+        )
+    else:
+        lo, hi, band_basis = choose_slice_band(profile, heights)
+        image_bytes, units_per_pixel = occupancy_raster(
+            xyz, up, lo, hi, band_basis=band_basis
+        )
 
     anchor = resolve_scale_anchor(
         metres_per_unit=metres_per_unit,
@@ -749,7 +791,7 @@ def extract_from_reconstruction(
         model_version=model_version,
     )
 
-    if band_basis == "ceiling-adjacent" and document.openings:
+    if band_basis in ("ceiling-adjacent", "segmented walls") and document.openings:
         # A ceiling-adjacent slice sits above every door head, so anything
         # detect_openings found there is a sampling gap wearing a door's
         # clothes. Openings are simply not observable from this band.

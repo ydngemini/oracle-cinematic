@@ -93,6 +93,12 @@ def _extract(rng, **kwargs):
     passthrough = {k: v for k, v in kwargs.items()
                    if k not in ("furniture", "ceiling", "partition")}
     passthrough.setdefault("metres_per_unit", 1.0)
+    # Pinned OFF by default. The learned segmenter is an optional accelerator
+    # and may or may not be installed; the geometric path is the one that must
+    # work everywhere, so it is what this file exercises unless a test says
+    # otherwise. Letting these follow the default would silently stop testing
+    # the fallback the moment a model artifact appeared in the tree.
+    passthrough.setdefault("use_segmenter", False)
     return slicing.extract_from_reconstruction(_ply(pts), **passthrough)
 
 
@@ -251,7 +257,7 @@ def test_no_anchor_means_no_plan():
     pts, _ = _rotate(rng, _house(rng))
 
     with pytest.raises(MissingScale):
-        slicing.extract_from_reconstruction(_ply(pts))
+        slicing.extract_from_reconstruction(_ply(pts), use_segmenter=False)
 
 
 def test_a_surveyed_parcel_footprint_anchors_the_scale():
@@ -260,7 +266,8 @@ def test_a_surveyed_parcel_footprint_anchors_the_scale():
     rng = np.random.default_rng(7)
     pts, _ = _rotate(rng, _house(rng))
 
-    doc = slicing.extract_from_reconstruction(_ply(pts), parcel_footprint_m2=W * D)
+    doc = slicing.extract_from_reconstruction(
+        _ply(pts), parcel_footprint_m2=W * D, use_segmenter=False)
 
     got = sorted([
         max(p[0] for w in doc.walls for p in (w.start, w.end))
@@ -307,9 +314,10 @@ def test_a_guessed_orientation_lowers_the_confidence():
         np.linspace(1.0, W - 1.0, 12), np.linspace(1.0, D - 1.0, 12), np.full(12, 1.55),
     ], axis=1) @ q.T
 
-    blind = slicing.extract_from_reconstruction(_ply(pts), metres_per_unit=1.0)
+    blind = slicing.extract_from_reconstruction(
+        _ply(pts), metres_per_unit=1.0, use_segmenter=False)
     sighted = slicing.extract_from_reconstruction(
-        _ply(pts), metres_per_unit=1.0, camera_positions=eye)
+        _ply(pts), metres_per_unit=1.0, camera_positions=eye, use_segmenter=False)
 
     assert sighted.provenance.confidence > blind.provenance.confidence
 
@@ -347,7 +355,7 @@ def test_low_opacity_floaters_are_dropped():
     pts, _ = _rotate(rng, pts)
 
     doc = slicing.extract_from_reconstruction(
-        _ply(pts, opacity), metres_per_unit=1.0)
+        _ply(pts, opacity), metres_per_unit=1.0, use_segmenter=False)
 
     xs = [p[0] for w in doc.walls for p in (w.start, w.end)]
     ys = [p[1] for w in doc.walls for p in (w.start, w.end)]
