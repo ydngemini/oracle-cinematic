@@ -92,7 +92,18 @@ def synth_house(rng):
         ([0, 0, 0], [0, depth, 0]),
         ([width, 0, 0], [0, depth, 0]),
     ):
-        add(_plane(rng, origin, u, [0, 0, height], count(5000), jitter), LABEL_WALL)
+        wall = _plane(rng, origin, u, [0, 0, height], count(5000), jitter)
+        # Punch a doorway or window. A real wall is not a solid rectangle of
+        # points, and a model that has only seen solid ones treats the gap
+        # around a door as evidence of clutter.
+        for _ in range(rng.integers(0, 3)):
+            along = wall @ np.asarray(u, dtype="float64") / (np.linalg.norm(u) ** 2)
+            level = (wall[:, 2] - 0) / height
+            start = rng.uniform(0.05, 0.75)
+            hole = ((along > start) & (along < start + rng.uniform(0.08, 0.22))
+                    & (level < rng.uniform(0.6, 0.95)))
+            wall = wall[~hole]
+        add(wall, LABEL_WALL)
 
     for _ in range(rng.integers(0, 3)):
         if rng.random() < 0.5:
@@ -128,8 +139,22 @@ def synth_house(rng):
     xyz = np.vstack(clouds)
     label = np.concatenate(labels)
 
-    # Partial coverage: real captures miss corners and back walls.
-    keep = rng.random(len(xyz)) > rng.uniform(0.0, 0.35)
+    # Coverage is NOT uniform. A photographer walks a path and shoots outward,
+    # so density falls off with distance from that path and whole corners go
+    # unobserved. Uniform dropout trains a model that assumes even sampling,
+    # which is the one thing a real capture never is.
+    path = np.stack([
+        rng.uniform(0.2, 0.8, 6) * width,
+        rng.uniform(0.2, 0.8, 6) * depth,
+    ], axis=1)
+    nearest = np.min(
+        np.linalg.norm(xyz[:, None, :2] - path[None, :, :], axis=2), axis=1
+    )
+    reach = rng.uniform(0.25, 1.0) * max(width, depth)
+    seen = np.exp(-nearest / max(reach, 1e-6))
+    keep = rng.random(len(xyz)) < np.clip(seen * rng.uniform(0.7, 1.0), 0.05, 1.0)
+    if keep.sum() < 2000:                      # never starve the sample entirely
+        keep = rng.random(len(xyz)) > 0.4
     xyz, label = xyz[keep], label[keep]
 
     # Into an arbitrary frame, the way structure-from-motion delivers it.
@@ -160,7 +185,12 @@ def build_dataset(houses: int, seed: int):
 # Model
 # ---------------------------------------------------------------------------
 
-def train(features, targets, *, device: str, epochs: int, seed: int):
+def train(features, targets, *, device: str, epochs: int, seed: int,
+          columns: int | None = None):
+    """`columns` trims to the first N features, for ablation."""
+    if columns is not None:
+        features = features[:, :columns]
+
     import torch
     from torch import nn
 
@@ -174,8 +204,9 @@ def train(features, targets, *, device: str, epochs: int, seed: int):
 
     # Small on purpose. Seven interpretable inputs do not need capacity, they
     # need a decision boundary — and this has to run on CPU inside a request.
+    width = features.shape[1]
     model = nn.Sequential(
-        nn.Linear(len(FEATURE_NAMES), 64), nn.ReLU(),
+        nn.Linear(width, 64), nn.ReLU(),
         nn.Linear(64, 64), nn.ReLU(),
         nn.Linear(64, len(LABELS)),
     ).to(device)
@@ -259,7 +290,25 @@ def export(model, out: Path, report: dict, *, houses: int, epochs: int) -> None:
             "Features are scale-free ratios, so the model cannot key on room size.",
             "Every training house is randomly rotated, so it cannot key on axes.",
             "Rectilinear rooms only — no curved or non-Manhattan walls were generated.",
+            "Coverage is modelled as fall-off from a walked path, not uniform dropout.",
+            "Walls carry punched door/window openings; solid-wall training taught the "
+            "v1 model to read the gap beside a door as clutter.",
         ],
+        "real_data": {
+            "status": "NOT USED — accuracy on real reconstructions remains unmeasured",
+            "why": (
+                "S3DIS and ScanNet carry the exact classes this model predicts, but both "
+                "are research-license datasets whose commercial terms are not publicly "
+                "stated, and this ships inside a paid product."
+            ),
+            "candidate": (
+                "3DSES (zenodo.org/records/13323342) is CC-BY-SA-4.0, so commercial use is "
+                "permitted with attribution. EVALUATING on it creates no derivative work "
+                "and would convert 'unmeasured' into a number. TRAINING on it raises a "
+                "share-alike question about the resulting weights that needs a decision, "
+                "not an assumption."
+            ),
+        },
     }
     out.with_suffix(".json").write_text(json.dumps(card, indent=2))
     print(f"\nWrote {out} and {out.with_suffix('.json')}")
@@ -271,6 +320,8 @@ def main() -> int:
     parser.add_argument("--epochs", type=int, default=40)
     parser.add_argument("--seed", type=int, default=17)
     parser.add_argument("--device", default="cpu")
+    parser.add_argument("--ablate", action="store_true",
+                        help="train with and without the v2 context features and compare")
     parser.add_argument(
         "--out", type=Path,
         default=Path(__file__).resolve().parents[1]
@@ -283,6 +334,20 @@ def main() -> int:
     print(f"  {len(features):,} points, {features.shape[1]} features")
     for index, name in enumerate(LABELS):
         print(f"    {name:8s} {int((targets == index).sum()):>10,}")
+
+    if args.ablate:
+        # Same data, same seed, same schedule — only the feature set differs.
+        # Without this, "the new features helped" is an assumption dressed as a
+        # result, since the generator changed at the same time.
+        print("\nAblation: does the v2 context actually help?", flush=True)
+        for columns, label in ((7, "v1  own column only"), (None, "v2  + neighbourhood")):
+            _, scores = train(features, targets, device=args.device,
+                              epochs=args.epochs, seed=args.seed, columns=columns)
+            wall = scores["wall"]
+            clutter = scores["clutter"]
+            print(f"  {label:24s} wall P {wall['precision']:.3f} R {wall['recall']:.3f}"
+                  f" | clutter P {clutter['precision']:.3f} R {clutter['recall']:.3f}",
+                  flush=True)
 
     print(f"\nTraining on {args.device}…", flush=True)
     model, report = train(

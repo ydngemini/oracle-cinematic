@@ -6,7 +6,10 @@
     "linearity",
     "column_span",
     "column_density",
-    "local_density"
+    "local_density",
+    "run_length",
+    "neighbour_span",
+    "neighbour_agreement"
   ],
   "labels": [
     "floor",
@@ -15,34 +18,56 @@
     "clutter"
   ],
   "trained_on": "synthetic rooms only \u2014 accuracy on real reconstructions is UNMEASURED",
-  "houses": 60,
-  "epochs": 25,
+  "houses": 120,
+  "epochs": 30,
   "validation": {
     "floor": {
-      "support": 68867,
-      "recall": 0.9895,
-      "precision": 0.9654
+      "support": 105635,
+      "recall": 0.9793,
+      "precision": 0.9768
     },
     "ceiling": {
-      "support": 29518,
-      "recall": 0.9982,
-      "precision": 0.9318
+      "support": 49821,
+      "recall": 0.9988,
+      "precision": 0.9383
     },
     "wall": {
-      "support": 178464,
-      "recall": 0.9594,
-      "precision": 0.972
+      "support": 219260,
+      "recall": 0.9538,
+      "precision": 0.9644
     },
     "clutter": {
-      "support": 97392,
-      "recall": 0.9414,
-      "precision": 0.9563
+      "support": 145586,
+      "recall": 0.9446,
+      "precision": 0.9515
     }
   },
   "caveats": [
     "Classifies points; never produces a dimension or a scale.",
     "Features are scale-free ratios, so the model cannot key on room size.",
     "Every training house is randomly rotated, so it cannot key on axes.",
-    "Rectilinear rooms only \u2014 no curved or non-Manhattan walls were generated."
-  ]
+    "Rectilinear rooms only \u2014 no curved or non-Manhattan walls were generated.",
+    "Coverage is modelled as fall-off from a walked path, not uniform dropout.",
+    "Walls carry punched door/window openings."
+  ],
+  "ablation": {
+    "note": "same data, same seed, same schedule \u2014 only the feature set differs",
+    "v1_own_column_only": {
+      "wall_precision": 0.951,
+      "wall_recall": 0.937,
+      "clutter_precision": 0.937,
+      "clutter_recall": 0.914
+    },
+    "v2_plus_neighbourhood": {
+      "wall_precision": 0.964,
+      "wall_recall": 0.954,
+      "clutter_precision": 0.952,
+      "clutter_recall": 0.945
+    }
+  },
+  "real_data": {
+    "status": "NOT USED \u2014 accuracy on real reconstructions remains unmeasured",
+    "why": "S3DIS and ScanNet carry the exact classes this model predicts, but both are research-license datasets whose commercial terms are not publicly stated, and this ships inside a paid product.",
+    "candidate": "3DSES (zenodo.org/records/13323342) is CC-BY-SA-4.0. EVALUATING on it creates no derivative work and would convert 'unmeasured' into a number. TRAINING on it raises a share-alike question about the resulting weights that needs a decision, not an assumption."
+  }
 }

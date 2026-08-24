@@ -47,6 +47,15 @@ FEATURE_NAMES = (
     "column_span",
     "column_density",
     "local_density",
+    # --- context, added in v2 ---------------------------------------------
+    # v1 classified every point from its own column alone, which cannot express
+    # the thing that most distinguishes a wall: a wall is a LINE of full-height
+    # columns, a wardrobe is a blob of them. Two points with identical column
+    # statistics are different if one sits in a straight run and the other does
+    # not, and v1 had no way to say so.
+    "run_length",
+    "neighbour_span",
+    "neighbour_agreement",
 )
 
 #: Class ids the segmenter predicts. `clutter` covers furniture, occupants,
@@ -133,6 +142,10 @@ def extract(xyz, up, *, floor: float, ceiling: Optional[float] = None):
     counts = np.bincount(column, minlength=n_columns).astype("float64")
     local_density = counts[column] / max(1.0, counts.max())
 
+    run_length, neighbour_span, neighbour_agreement = _context(
+        np, column_span_by_cell, cx, cy, column
+    )
+
     # --- local shape -------------------------------------------------------
     verticality, planarity, linearity = _local_shape(np, xyz, column, n_columns, axis)
 
@@ -144,7 +157,70 @@ def extract(xyz, up, *, floor: float, ceiling: Optional[float] = None):
         column_span,
         column_density,
         local_density,
+        run_length,
+        neighbour_span,
+        neighbour_agreement,
     ], axis=1).astype("float32")
+
+
+def _context(np, span_by_cell, cx, cy, column):
+    """Neighbourhood structure around each column.
+
+    This is what v1 could not see. A wall and a wardrobe can have identical
+    column statistics — both are tall, both are dense — and the difference is
+    entirely in what surrounds them. A wall's neighbours continue in a straight
+    line for metres; a wardrobe's stop after half of one.
+
+    Three signals, all computed on the column grid the caller already built:
+
+      run_length          longest straight run of tall columns through this
+                          one, along either grid axis, normalised. The strongest
+                          of the three, and the reason for the whole function.
+      neighbour_span      how tall the surrounding columns are, which separates
+                          a wall from an isolated tall object.
+      neighbour_agreement how many neighbours are similarly tall, which
+                          separates a flat surface from a noisy cluster.
+    """
+    size = COLUMN_CELLS + 1
+    grid = span_by_cell.reshape(size, size)
+    # "Tall" relative to the building rather than absolute: a bungalow and a
+    # warehouse must give the same answer, and the features stay scale-free.
+    tall = grid >= 0.6
+
+    # Longest contiguous run of tall cells through each cell, per axis. Done
+    # with cumulative counts rather than a scan so it stays vectorised.
+    def _runs(mask):
+        out = np.zeros_like(mask, dtype="float64")
+        for axis_index in (0, 1):
+            m = mask if axis_index == 0 else mask.T
+            forward = np.zeros_like(m, dtype="int32")
+            backward = np.zeros_like(m, dtype="int32")
+            running = np.zeros(m.shape[1], dtype="int32")
+            for row in range(m.shape[0]):
+                running = np.where(m[row], running + 1, 0)
+                forward[row] = running
+            running[:] = 0
+            for row in range(m.shape[0] - 1, -1, -1):
+                running = np.where(m[row], running + 1, 0)
+                backward[row] = running
+            length = np.where(m, forward + backward - 1, 0).astype("float64")
+            out = np.maximum(out, length if axis_index == 0 else length.T)
+        return out
+
+    run = _runs(tall) / size
+
+    padded = np.pad(grid, 1, mode="edge")
+    stacked = np.stack([
+        padded[dy:dy + size, dx:dx + size]
+        for dy in range(3) for dx in range(3)
+    ])
+    neighbour_mean = stacked.mean(axis=0)
+    agreement = (np.abs(stacked - grid) < 0.15).mean(axis=0)
+
+    flat_run = run.reshape(-1)
+    flat_mean = neighbour_mean.reshape(-1)
+    flat_agree = agreement.reshape(-1)
+    return flat_run[column], flat_mean[column], flat_agree[column]
 
 
 def _local_shape(np, xyz, column, n_columns, axis):
