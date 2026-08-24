@@ -83,6 +83,42 @@ PEAK_BINS = 96
 #: supplied a real scale — see the gate in `estimate_up_axis`.
 MIN_STOREY_M = 1.9
 
+#: How far the up axis may sit from the camera path's flat direction. Wide
+#: enough to absorb a hand-held sweep's wobble, narrow enough to still pick a
+#: single face of a near-cubic room.
+CAMERA_AXIS_DEG = 20.0
+
+#: A camera is confined along gravity — held at eye height — and spread along
+#: every horizontal. This is the largest fraction of the cloud's own extent the
+#: camera path may span before the direction stops looking like gravity.
+#:
+#: Physical, not tuned: a camera carried at eye height wobbles by 0.1-0.3 m
+#: inside a 2.4-3.6 m storey, so the real value is 0.04-0.12 and even a
+#: photographer who crouches stays near 0.2. It was set at 0.5, which is loose
+#: enough to admit a capture that climbed a staircase — there, no direction is
+#: gravity, but the narrow ACROSS-stairs direction scored 0.45 and got adopted,
+#: dragging a 83-degree error out to 48 rather than leaving it alone.
+CAMERA_CONFINEMENT = 0.3
+
+#: How much better the winning direction must confine the cameras than its best
+#: rival. Deliberately modest, because the absolute guard above does the real
+#: work: a capture that climbed a staircase spans most of the height and is
+#: thrown out by CAMERA_CONFINEMENT, not by this. Demanding a full 2x rejected
+#: a 1.1 m stairwell whose true separation is 1.8x.
+CAMERA_MARGIN = 0.7
+
+#: How far a direction must sit from the camera-derived axis to count as a
+#: rival to it. Wider than DISTINCT_AXIS_DEG on purpose: gravity's real
+#: alternatives are the room's other faces, roughly 90 degrees away, while a
+#: direction 28 degrees off is the same answer with error on it — and treating
+#: that shoulder as a rival left the stairwell undecided.
+CAMERA_RIVAL_DEG = 60.0
+
+#: Ceiling on confidence when the camera path and the cloud's structure point
+#: somewhere different. Neither source can be dismissed, so neither answer is
+#: asserted strongly.
+CONFLICT_CONFIDENCE = 0.45
+
 #: Two candidate directions closer together than this are the same answer, not
 #: rival ones. Confidence is the margin over the best genuinely different
 #: direction, so this is what separates "decisive" from "a coin flip".
@@ -413,17 +449,109 @@ def estimate_up_axis(xyz, *, camera_positions=None, metres_per_unit=None) -> UpA
             admissible &= tall_enough
             gate = " Directions too short to be a storey were ruled out."
 
-    reference = float(extents[admissible].min())
-    narrow = extents <= reference * 1.35
-    scores = np.where(admissible & narrow, peaks, -1.0)
-    winner = int(scores.argmax())
+    # Cameras decide the AXIS, not just the sign.
+    #
+    # A walkthrough spreads across the floor and stays at eye height, so the
+    # direction of LEAST variance in the camera path is gravity. That is a
+    # direct measurement, and it is the only thing that resolves the shapes
+    # geometry cannot: a near-cubic bathroom, a galley kitchen whose width and
+    # ceiling height differ by 100 mm, a stairwell that is taller than it is
+    # wide. None of those is decidable from the cloud alone — a rectangular box
+    # maps any face-pair onto any other, so no scale-free measure separates
+    # them — and this file previously spent the camera evidence on the sign
+    # alone while the axis was left to a prior that cannot win.
+    #
+    # Trusted only when the path really does look like one held at eye height:
+    # a capture that climbed a staircase, or one with too few poses, falls
+    # through to the geometry rather than reporting the stairs as gravity.
+    camera_axis = None
+    if camera_positions is not None and len(camera_positions) >= 4:
+        cameras = np.asarray(camera_positions, dtype="float64") - xyz.mean(axis=0)
+        # CONFINEMENT, not the camera path's own shape. The measure is the
+        # camera spread along a direction as a fraction of the CLOUD's extent
+        # along it: a photographer covers most of the room horizontally but
+        # holds the camera at one height, so gravity is where that fraction
+        # collapses. Reading the path's shape alone fails exactly where the help
+        # is needed — in a 1.1 m wide stairwell the horizontal spread of the
+        # walk is no larger than the wobble in its height.
+        span = np.ptp(cameras @ candidates.T, axis=0)
+        # Minimise the RAW span, then validate with the ratio — not the other
+        # way round. Span-over-extent has no sharp minimum at gravity: tilting
+        # off it toward a long axis inflates the cloud's extent faster than the
+        # camera path's spread, so in the stairwell the ratio was flat to within
+        # 0.0001 across a 28-degree cone and the argmin sat off-axis. The raw
+        # span has no such problem — tilting immediately picks up the length of
+        # the walk.
+        tightest = int(span.argmin())
+        apart = np.abs(candidates @ candidates[tightest]) < math.cos(
+            math.radians(CAMERA_RIVAL_DEG)
+        )
+        # Locate with the raw span, DECIDE with the ratio. Each measure is
+        # good at one job and bad at the other: the raw span has a sharp
+        # minimum at gravity but goes undecided in a narrow room, where the
+        # walk is nearly as confined across the space as it is in height
+        # (0.256 m against 0.266 m in a 1.1 m stairwell). Dividing by the
+        # cloud's own extent is what separates those — 0.25 m of wobble inside
+        # a 3.6 m storey is confinement; 0.37 m across a 1.1 m width is just a
+        # narrow room.
+        confinement = span / np.maximum(extents, 1e-9)
+        rival = float(confinement[apart].min()) if apart.any() else math.inf
+        confined = float(confinement[tightest])
+        # Two conditions, and both matter. The ratio says this looks like eye
+        # height inside a storey rather than a path that climbed; the margin
+        # says no genuinely different direction confines the cameras as well —
+        # which is what rules out a straight corridor walk, where the path is
+        # equally narrow across the corridor and along gravity.
+        if confined <= CAMERA_CONFINEMENT and confined <= rival * CAMERA_MARGIN:
+            camera_axis = candidates[tightest] / np.linalg.norm(candidates[tightest])
+
+    # Keep what geometry alone would have said, so the two can be compared.
+    geometric = admissible.copy()
+
+    if camera_axis is not None:
+        aligned = np.abs(candidates @ camera_axis)
+        near = aligned >= math.cos(math.radians(CAMERA_AXIS_DEG))
+        if near.any():
+            admissible = near
+            gate = " Axis measured from the camera path."
+
+    def _choose(mask):
+        """Winner, its coarse score, and the band used — from one admissible set.
+
+        Factored out because the camera answer and the geometry-only answer have
+        to be computed the SAME way to be comparable. Deriving the band once,
+        after the camera restriction, and then re-using it to ask "what would
+        geometry have said" gives the wrong answer to that question: the band is
+        part of the decision, not a fixed backdrop.
+        """
+        # The reference extent comes from directions that are actually PLANAR.
+        #
+        # It used to be the smallest admissible extent over all 131 candidates,
+        # which in a room with no clearly thin axis is a TILTED direction
+        # corresponding to no surface at all. The 1.35x band was then measured
+        # around a number the building does not have, and it excluded the real
+        # ceiling: a 2.0 x 2.2 x 2.4 m bathroom and a 2.4 x 4.5 x 2.5 m galley
+        # kitchen both came back 90 degrees out on that alone. A direction that
+        # is not a plane normal smears its planes across bins and scores low, so
+        # filtering on the peak first keeps the reference on a real surface.
+        #
+        # It is not a cure-all. A stairwell is taller than it is wide, which
+        # defeats the whole "a room is wider than it is tall" prior underneath
+        # this, and no reference extent rescues that — only the cameras do.
+        pool = peaks[mask]
+        planar = mask & (peaks >= float(np.percentile(pool, 75)) * 0.5)
+        span_of = extents[planar if planar.any() else mask]
+        reference = float(span_of.min())
+        band = extents <= reference * 1.35
+        scored = np.where(mask & band, peaks, -1.0)
+        if not (scored > 0).any():             # every candidate was ruled out
+            scored = np.where(mask, peaks, -1.0)
+        index = int(scored.argmax())
+        return index, float(peaks[index]), reference, scored
+
+    winner, coarse_best, reference, scores = _choose(admissible)
     axis = candidates[winner] / np.linalg.norm(candidates[winner])
-    best_score = float(peaks[winner])
-    # Kept separate from `best_score`, which refinement below raises. The margin
-    # has to compare like with like: a refined winner against unrefined rivals
-    # is a comparison the winner cannot lose, and it reported 0.60 on rooms
-    # whose axis was 90 degrees out.
-    coarse_best = best_score
+    best_score = coarse_best
 
     # Refine: walk a finer set around the winner, so the answer is not limited
     # by the coarse sampling. A degree of tilt here is metres of drift across a
@@ -463,8 +591,35 @@ def estimate_up_axis(xyz, *, camera_positions=None, metres_per_unit=None) -> UpA
     margin = (coarse_best - rival) / max(coarse_best, 1e-9)
     concentration = 0.25 + 0.75 * min(1.0, max(0.0, margin * 1.5))
 
+    # Two independent sources that disagree is not a confident answer, whichever
+    # one is right.
+    #
+    # A camera path cannot tell "walked along a level floor" from "walked up a
+    # staircase" — the two are the same shape, and only gravity separates them.
+    # So a capture taken while climbing hands this function a path whose
+    # tightest direction is perpendicular to the stairs rather than to the
+    # ground, and no test on the path alone can catch it. What CAN be seen is
+    # that the cameras and the cloud are pointing somewhere different, and that
+    # is worth saying out loud rather than resolving silently in favour of
+    # either one.
+    disagreement = ""
+    if camera_axis is not None and geometric.any():
+        without = candidates[_choose(geometric)[0]]
+        apart_deg = math.degrees(math.acos(min(1.0, abs(float(without @ axis)))))
+        if apart_deg > DISTINCT_AXIS_DEG:
+            concentration = min(concentration, CONFLICT_CONFIDENCE)
+            disagreement = (
+                f" The camera path and the cloud's own structure disagree by "
+                f"{apart_deg:.0f} degrees; the cameras were preferred, but treat "
+                f"this orientation as unconfirmed."
+            )
+
     heights = centred @ axis
-    detail = "Up axis from the narrowest strongly planar direction." + gate
+    # How the AXIS was found. The sign is resolved below and appends to this
+    # rather than replacing it — overwriting threw away both the note that the
+    # cameras had chosen the axis and the warning that they disagreed with the
+    # cloud, which are the two things a reader most needs.
+    orientation = "Up axis from the narrowest strongly planar direction." + gate
     confidence = min(0.95, max(0.05, concentration))
 
     if camera_positions is not None and len(camera_positions) >= 2:
@@ -477,7 +632,7 @@ def estimate_up_axis(xyz, *, camera_positions=None, metres_per_unit=None) -> UpA
             axis = -axis
             heights = -heights
         confidence = min(0.98, confidence + 0.25)
-        detail = "Up axis resolved against camera positions (exact sign)."
+        sign = " Sign resolved against camera positions (exact)."
     else:
         # Without cameras, the sign comes from where the CONTENTS are: chairs,
         # tables, worktops and boxes stand on the floor, so the band just above
@@ -498,21 +653,25 @@ def estimate_up_axis(xyz, *, camera_positions=None, metres_per_unit=None) -> UpA
             axis = -axis
             heights = -heights
         confidence = min(0.6, confidence)
-        detail = (
-            "Up axis inferred from mass distribution; no camera poses were "
-            "supplied, so the sign is a heuristic."
+        sign = (
+            " Sign inferred from where the contents sit; no camera poses were "
+            "supplied, so it is a heuristic."
         )
         if abs(above_low - below_high) <= 0.05 * max(above_low, below_high, 1.0):
             # A bare symmetric room genuinely has no up. Say so rather than
             # letting a coin-flip pass as a measurement.
             confidence = min(confidence, 0.25)
-            detail = (
-                "Up axis found, but its SIGN is ambiguous: the space is close to "
-                "symmetric about its mid-height, so nothing distinguishes floor "
-                "from ceiling. Supply camera positions to resolve it."
+            sign = (
+                " Its SIGN is ambiguous: the space is close to symmetric about "
+                "its mid-height, so nothing distinguishes floor from ceiling. "
+                "Supply camera positions to resolve it."
             )
 
-    return UpAxis(vector=tuple(float(v) for v in axis), confidence=confidence, detail=detail)
+    return UpAxis(
+        vector=tuple(float(v) for v in axis),
+        confidence=confidence,
+        detail=orientation + sign + disagreement,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1083,24 +1242,46 @@ def extract_from_reconstruction(ply_bytes: bytes, *, use_segmenter="auto", **kwa
             continue
         attempts.append((document, _coverage(document), None))
 
-    scored = [(doc, cov) for doc, cov, exc in attempts if doc is not None]
+    scored = [(doc, cov, segmented)
+              for (doc, cov, exc), segmented in zip(attempts, modes)
+              if doc is not None]
     if not scored:
         # Both paths refused. Re-raise the geometric path's reason: it is the
         # one that has been verified, so its diagnosis is the more trustworthy.
         raise next(exc for _, _, exc in attempts if exc is not None)
 
     plausible = [
-        (doc, cov) for doc, cov in scored
-        if cov is not None and MIN_PLAUSIBLE_COVERAGE <= cov <= MAX_PLAUSIBLE_COVERAGE
+        item for item in scored
+        if item[1] is not None and MIN_PLAUSIBLE_COVERAGE <= item[1] <= MAX_PLAUSIBLE_COVERAGE
     ]
     pool = plausible or scored
-    best, coverage = min(
-        pool, key=lambda item: abs((item[1] if item[1] is not None else 0.0) - TARGET_COVERAGE)
+
+    # Coverage decides which candidates are PLAUSIBLE. It does not decide
+    # between two that both are.
+    #
+    # That filter is what earns this mode its keep: it catches the plan that
+    # leaked a room through an unclosed corner, which lands near 0.5 or 0.7
+    # while a correct plan sits at 0.95-0.99. But once both candidates are
+    # inside that band their coverages differ by a couple of points of nothing,
+    # and picking the one nearer TARGET_COVERAGE is a coin flip dressed as a
+    # measurement — measured over 80 houses it threw away enough correct
+    # segmented plans to score 95.0% where the segmenter alone scored 96.2%.
+    #
+    # So among plausible candidates, prefer the segmented one, on the same
+    # evidence: 96.2% correct room counts against geometry's 92.5%, and 98.92%
+    # area against 98.21%. That is a claim about the CURRENT model, so it is
+    # re-measurable — scripts/eval_floorplan.py prints all three modes, and if a
+    # future model loses to geometry there, this preference is what to revisit.
+    preferred = [item for item in pool if item[2]] or pool
+    best, coverage, chosen_segmenter = min(
+        preferred,
+        key=lambda item: abs((item[1] if item[1] is not None else 0.0) - TARGET_COVERAGE),
     )
     if coverage is not None:
         best.provenance.notes = " ".join(filter(None, [
             best.provenance.notes,
-            f"Chosen by self-consistency: rooms cover {coverage:.0%} of the footprint.",
+            f"Chosen by self-consistency ({'segmented' if chosen_segmenter else 'geometric'}): "
+            f"rooms cover {coverage:.0%} of the footprint.",
         ]))
     return best
 

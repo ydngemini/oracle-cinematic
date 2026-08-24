@@ -214,7 +214,7 @@ def build_dataset(houses: int, seed: int):
 # ---------------------------------------------------------------------------
 
 def train(features, targets, groups, *, device: str, epochs: int, seed: int,
-          columns: int | None = None):
+          columns: int | None = None, wall_weight: float = 1.0):
     """`columns` trims to the first N features, for ablation."""
     if columns is not None:
         features = features[:, :columns]
@@ -260,7 +260,17 @@ def train(features, targets, groups, *, device: str, epochs: int, seed: int,
     # Clutter vastly outnumbers ceiling in a partial capture, and an unweighted
     # loss happily predicts "never ceiling" for a good score.
     counts = torch.bincount(y, minlength=len(LABELS)).float()
-    weights = (counts.sum() / (len(LABELS) * counts.clamp(min=1))).to(device)
+    weights = counts.sum() / (len(LABELS) * counts.clamp(min=1))
+
+    # A wall point misread as clutter costs far more than the reverse, and the
+    # loss has no way to know that. Both mistakes are one point; only one of
+    # them punches a hole in the wall mask, and detect_rooms then leaks the
+    # interior out through it and discards the room as background. This is not
+    # hypothetical — a retrained model scored BETTER per point than the one it
+    # was replacing (0.984 wall precision against 0.964) and produced 61%
+    # correct room counts against 95%, purely by relabelling wall as clutter.
+    weights[LABELS.index("wall")] *= float(wall_weight)
+    weights = weights.to(device)
 
     loss_fn = nn.CrossEntropyLoss(weight=weights)
     optimiser = torch.optim.AdamW(model.parameters(), lr=2e-3, weight_decay=1e-4)
@@ -301,7 +311,8 @@ def train(features, targets, groups, *, device: str, epochs: int, seed: int,
     return model.cpu(), report
 
 
-def export(model, out: Path, report: dict, *, houses: int, epochs: int) -> None:
+def export(model, out: Path, report: dict, *, houses: int, epochs: int,
+           wall_weight: float = 1.0, plan_quality: str | None = None) -> None:
     import torch
 
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -330,6 +341,7 @@ def export(model, out: Path, report: dict, *, houses: int, epochs: int) -> None:
         "trained_on": "synthetic rooms only — accuracy on real reconstructions is UNMEASURED",
         "houses": houses,
         "epochs": epochs,
+        "wall_weight": wall_weight,
         "validation": report,
         # The split method belongs beside the numbers. These were previously
         # produced by `torch.randperm` over the concatenated point matrix — a
@@ -344,6 +356,13 @@ def export(model, out: Path, report: dict, *, houses: int, epochs: int) -> None:
             "held-out HOUSES (15%), split before feature extraction — never a "
             "per-point split, which leaks near-duplicate points across the boundary"
         ),
+        # The number this model is actually judged on. Per-point accuracy and
+        # plan quality come apart badly: a model scoring 0.984 wall precision
+        # against another's 0.964 produced 61% correct room counts against 95%,
+        # because calling a wall point clutter costs almost nothing per point
+        # and punches a hole the room then leaks through. Run
+        # scripts/eval_floorplan.py and put the answer here.
+        "plan_quality": plan_quality or "NOT MEASURED — run scripts/eval_floorplan.py",
         "caveats": [
             "Classifies points; never produces a dimension or a scale.",
             "Features are scale-free ratios, so the model cannot key on room size.",
@@ -379,6 +398,12 @@ def main() -> int:
     parser.add_argument("--epochs", type=int, default=40)
     parser.add_argument("--seed", type=int, default=17)
     parser.add_argument("--device", default="cpu")
+    parser.add_argument("--wall-weight", type=float, default=1.0,
+                        help="extra loss weight on the wall class; a wall point "
+                             "misread as clutter costs a whole room")
+    parser.add_argument("--plan-quality", default=None,
+                        help="end-to-end result for this model, recorded in the "
+                             "card — see scripts/eval_floorplan.py")
     parser.add_argument("--ablate", action="store_true",
                         help="train with and without the v2 context features and compare")
     parser.add_argument(
@@ -410,7 +435,8 @@ def main() -> int:
 
     print(f"\nTraining on {args.device}…", flush=True)
     model, report = train(
-        features, targets, groups, device=args.device, epochs=args.epochs, seed=args.seed
+        features, targets, groups, device=args.device, epochs=args.epochs,
+        seed=args.seed, wall_weight=args.wall_weight,
     )
 
     print("\nValidation:")
@@ -418,7 +444,8 @@ def main() -> int:
         print(f"  {name:8s} precision {scores['precision']:.3f}  "
               f"recall {scores['recall']:.3f}  (n={scores['support']:,})")
 
-    export(model, args.out, report, houses=args.houses, epochs=args.epochs)
+    export(model, args.out, report, houses=args.houses, epochs=args.epochs,
+           wall_weight=args.wall_weight, plan_quality=args.plan_quality)
     return 0
 
 

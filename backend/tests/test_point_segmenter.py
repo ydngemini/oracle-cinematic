@@ -367,3 +367,25 @@ def test_an_empty_column_has_no_span(monkeypatch):
         "empty neighbours are still contributing a phantom span"
     )
     assert float(span.min()) == pytest.approx(empty_column_phantom / 9.0, rel=0.05)
+
+
+def test_the_model_card_records_how_it_was_judged():
+    """The card is the only thing telling a reader how far to trust these
+    weights, and the two facts that matter most are the ones it used to omit:
+    how train and validation were split — a per-point split leaks
+    near-duplicates and inflates every figure — and what the model scored on
+    PLANS rather than on points. Per-point accuracy and plan quality come apart
+    badly enough that one model beat another 0.984 to 0.964 on wall precision
+    while producing 61% correct room counts against 95%.
+    """
+    import json
+    from pathlib import Path
+
+    card = Path(segmentation.DEFAULT_MODEL_PATH).with_suffix(".json")
+    if not card.is_file():
+        pytest.skip("no model installed")
+    payload = json.loads(card.read_text())
+
+    assert payload["features"] == list(FEATURE_NAMES), "card drifted from the feature list"
+    assert "HOUSES" in payload.get("validation_protocol", "")
+    assert "NOT MEASURED" not in payload.get("plan_quality", "NOT MEASURED")

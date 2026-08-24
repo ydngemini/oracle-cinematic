@@ -887,3 +887,121 @@ def test_a_plan_that_lost_a_room_is_rejected_by_the_coverage_floor():
 
     assert len(leaked.rooms) == 1
     assert slicing._coverage(leaked) < slicing.MIN_PLAUSIBLE_COVERAGE
+
+
+# ---------------------------------------------------------------------------
+# Cameras decide the axis, not just the sign
+# ---------------------------------------------------------------------------
+
+def _walk(rng, w, d, n=14, height=1.55, wobble=0.06):
+    """A hand-held sweep: spread over the floor, held at roughly eye level."""
+    return np.stack([
+        rng.uniform(0.35, max(0.4, w - 0.35), n),
+        rng.uniform(0.35, max(0.4, d - 0.35), n),
+        height + rng.normal(0, wobble, n),
+    ], axis=1)
+
+
+@pytest.mark.parametrize("w, d, h, label", [
+    (2.0, 2.2, 2.4, "near-cubic bathroom"),
+    (1.1, 3.0, 3.6, "stairwell, taller than wide"),
+])
+def test_cameras_decide_the_axis_where_the_cloud_cannot(w, d, h, label):
+    """Some rooms are not decidable from the cloud at all.
+
+    A rectangular box maps any face-pair onto any other, so no scale-free
+    measure separates a near-cubic room's walls from its floor, and a stairwell
+    is taller than it is wide — which defeats "a room is wider than it is tall"
+    outright. A camera is carried at eye height, so the direction it is confined
+    along IS gravity, and that is a measurement rather than a prior.
+    """
+    rng = np.random.default_rng(3)
+    points = _box(rng, w, d, h)
+    cameras = _walk(rng, w, d)
+    q, _ = np.linalg.qr(np.random.default_rng(9).normal(size=(3, 3)))
+    if np.linalg.det(q) < 0:
+        q[:, 0] = -q[:, 0]
+    truth = q @ np.array([0.0, 0.0, 1.0])
+
+    up = slicing.estimate_up_axis(
+        points @ q.T, metres_per_unit=1.0, camera_positions=cameras @ q.T
+    )
+    error_deg = math.degrees(math.acos(min(1.0, abs(float(np.dot(up.vector, truth))))))
+
+    assert error_deg < 5.0, f"{label}: up axis off by {error_deg:.1f} degrees"
+
+
+def test_a_capture_taken_while_climbing_stairs_is_not_trusted():
+    """A camera path cannot tell "walked along a level floor" from "walked up a
+    staircase" — the two are the same shape. So the confinement test must be
+    tight enough that a climbing path fails it, rather than reporting the
+    direction across the stairs as gravity and making a bad answer worse."""
+    rng = np.random.default_rng(3)
+    points = _box(rng, 1.1, 3.0, 3.6)
+    climbed = np.stack([
+        rng.uniform(0.3, 0.8, 14),
+        np.linspace(0.4, 2.6, 14),
+        np.linspace(0.5, 3.0, 14),          # walked UP
+    ], axis=1)
+
+    up = slicing.estimate_up_axis(
+        points, metres_per_unit=1.0, camera_positions=climbed
+    )
+
+    assert up.confidence <= 0.6, (
+        f"a capture that climbed reported {up.confidence}"
+    )
+
+
+def test_the_two_sources_disagreeing_is_said_out_loud():
+    """Geometry alone gets a stairwell wrong and the cameras get it right, so
+    the answer improves — but two independent sources pointing 80 degrees apart
+    is not a confident measurement whichever one wins, and provenance is what
+    the reader actually sees."""
+    rng = np.random.default_rng(3)
+    points = _box(rng, 1.1, 3.0, 3.6)
+    cameras = _walk(rng, 1.1, 3.0)
+
+    blind = slicing.estimate_up_axis(points, metres_per_unit=1.0)
+    sighted = slicing.estimate_up_axis(
+        points, metres_per_unit=1.0, camera_positions=cameras
+    )
+    apart = math.degrees(math.acos(min(
+        1.0, abs(float(np.dot(blind.vector, sighted.vector)))
+    )))
+
+    assert apart > slicing.DISTINCT_AXIS_DEG, "expected the two to disagree here"
+    assert "disagree" in sighted.detail
+    assert sighted.confidence < 0.95
+
+
+def test_auto_prefers_the_segmented_plan_when_both_are_plausible(monkeypatch):
+    """Coverage decides which candidates are plausible; it does not decide
+    between two that both are.
+
+    Once both land inside the band their coverages differ by nothing, and
+    picking the one nearer TARGET_COVERAGE threw away correct segmented plans —
+    95.0% correct room counts over 80 houses where the segmenter alone scored
+    96.2%.
+    """
+    rng = np.random.default_rng(5)
+    pts, _ = _rotate(rng, _house(rng))
+
+    monkeypatch.setattr(slicing.segmentation, "available", lambda: (True, "installed"))
+    marks = {}
+    original = slicing._extract_once
+
+    def tagged(*args, **kwargs):
+        document = original(*args, **kwargs)
+        marks[id(document)] = bool(kwargs.get("use_segmenter"))
+        return document
+
+    monkeypatch.setattr(slicing, "_extract_once", tagged)
+    chosen = slicing.extract_from_reconstruction(_ply(pts), metres_per_unit=1.0)
+
+    coverage = slicing._coverage(chosen)
+    if coverage is not None and (
+        slicing.MIN_PLAUSIBLE_COVERAGE <= coverage <= slicing.MAX_PLAUSIBLE_COVERAGE
+    ):
+        assert marks.get(id(chosen)) is True, "a plausible segmented plan was passed over"
+        assert "segmented" in chosen.provenance.notes
