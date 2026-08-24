@@ -78,7 +78,11 @@ class FloorplanOpening:
 
 @dataclass(slots=True)
 class Provenance:
-    source: Literal["manual", "ai_vision", "parcel_vector", "imported"]
+    # `reconstruction` is deliberately distinct from `ai_vision`: one is
+    # measured 3D structure sliced horizontally, the other is a model's guess
+    # from flat photos. Collapsing them would put invented and derived geometry
+    # under one word, on a surface that feeds rehab costing.
+    source: Literal["manual", "ai_vision", "parcel_vector", "imported", "reconstruction"]
     ai_generated: bool
     model_version: Optional[str] = None
     confidence: Optional[float] = None

@@ -14,6 +14,14 @@ floorplan_api.py persists and the Pascal editor loads:
        -> requires monocular layout estimation, not OpenCV. Currently returns
           a low-confidence estimate or declines. See STRATEGY below.
 
+    4. PHOTOGRAMMETRIC RECONSTRUCTION  (slicing.py)
+       -> the answer to (3) that does not need a layout model: run the photos
+          through COLMAP + splatfacto and you have real 3D structure, so the
+          plan comes from measured geometry rather than a guess. Slice it
+          horizontally, hand the projection to the raster path above.
+          Interior only — the exterior of record stays the parcel vector,
+          which is exact where a photogrammetric footprint is ~90%.
+
 DELIBERATE HONESTY CONSTRAINT
 -----------------------------
 The vault rule for [[Neoh_Walkable_Tours]] applies here verbatim: we do not
