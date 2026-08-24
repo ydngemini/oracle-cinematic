@@ -71,6 +71,23 @@ MID_BAND = (0.35, 0.75)
 #: count as a dominant horizontal surface.
 PEAK_SHARE = 0.02
 
+#: Points used to search for the up axis. The search is O(points x candidates);
+#: a plane sampled every nth point is still a plane, so this caps the cost
+#: without changing the answer.
+UP_AXIS_SAMPLE = 120_000
+
+#: Histogram resolution for the "is this direction a plane normal" measure.
+PEAK_BINS = 96
+
+#: A storey is at least this tall, in metres. Applied only when the caller
+#: supplied a real scale — see the gate in `estimate_up_axis`.
+MIN_STOREY_M = 1.9
+
+#: Two candidate directions closer together than this are the same answer, not
+#: rival ones. Confidence is the margin over the best genuinely different
+#: direction, so this is what separates "decisive" from "a coin flip".
+DISTINCT_AXIS_DEG = 25.0
+
 #: Whitespace around the projected building, as a fraction of its extent.
 #:
 #: Two constraints, and the second is why this is not smaller. Without ANY
@@ -277,7 +294,7 @@ class UpAxis:
     detail: str
 
 
-def estimate_up_axis(xyz, *, camera_positions=None) -> UpAxis:
+def estimate_up_axis(xyz, *, camera_positions=None, metres_per_unit=None) -> UpAxis:
     """Find which way is up, and say how sure that is.
 
     A reconstruction's coordinate frame is arbitrary — structure-from-motion has
@@ -287,9 +304,11 @@ def estimate_up_axis(xyz, *, camera_positions=None) -> UpAxis:
 
     Method: a building's mass concentrates on two parallel horizontal planes,
     the floor and the ceiling. Project onto each candidate axis and the correct
-    one shows that as two sharp histogram peaks; the other two axes show mass
-    spread across the width of the house. So the up axis is the one whose
-    height distribution is most concentrated.
+    one shows that as one very full histogram bin; the other two axes show mass
+    spread across the width of the house.
+
+    That measure alone is not sufficient, and the two priors that constrain it
+    are the substance of this function — see the comments at each.
 
     The sign is then resolved EXACTLY when camera positions are available:
     cameras live between floor and ceiling, so whichever extreme is further
@@ -303,29 +322,46 @@ def estimate_up_axis(xyz, *, camera_positions=None) -> UpAxis:
 
     centred = xyz - xyz.mean(axis=0)
 
-    # Up is the normal of the LARGEST plane in the room — the floor.
-    #
-    # This was a "which axis has the most concentrated height histogram" score
-    # over the three principal axes, and it was wrong on 13 of 40 test rooms,
-    # every one of them long and narrow. Projecting a long room onto its LENGTH
-    # puts the two end walls in two sharp bins, which scores exactly like floor
-    # and ceiling; the score cannot tell them apart, and it systematically chose
-    # the longest axis. Slicing on it produces a vertical section through the
-    # house rendered as a floor plan — plausible-looking, and 60-70% wrong on
-    # every dimension.
-    #
-    # A floor is much larger than an end wall, so the single fullest bin
-    # separates them where the top-N-bins sum does not. Candidates are sampled
-    # over a hemisphere rather than taken from the three principal axes,
-    # because PCA follows mass and a furnished room's mass is not aligned with
-    # gravity.
-    def _peak(direction):
-        projected = centred @ direction
-        spread = float(projected.max() - projected.min())
-        if spread <= 0:
-            return 0.0
-        hist, _ = np.histogram(projected, bins=96)
-        return float(hist.max()) / max(1, hist.sum())
+    # Finding a DIRECTION does not need every point, and the search below costs
+    # O(points x candidates). A deterministic stride keeps it bounded on the
+    # multi-million-point clouds a real reconstruction produces, and changes no
+    # answer: a plane sampled every nth point is still a plane.
+    sample = centred
+    if len(centred) > UP_AXIS_SAMPLE:
+        sample = centred[:: len(centred) // UP_AXIS_SAMPLE][:UP_AXIS_SAMPLE]
+    sample = np.ascontiguousarray(sample, dtype="float64")
+
+    def _measure(directions):
+        """Extent and fullest-bin share for each direction.
+
+        Blocked rather than one direction at a time: `sample @ block.T` is a
+        single BLAS call that answers 32 directions at once, and the histogram
+        becomes a bincount over offset bin indices. The previous form evaluated
+        the full matmul three times per direction — twice for the extent and
+        once inside the histogram — which was ~830 passes over the cloud per
+        call, doubled again by the "auto" default.
+        """
+        extents = np.empty(len(directions))
+        peaks = np.empty(len(directions))
+        for start in range(0, len(directions), 32):
+            block = directions[start:start + 32]
+            width = len(block)
+            projected = sample @ block.T
+            low = projected.min(axis=0)
+            spread = projected.max(axis=0) - low
+            extents[start:start + width] = spread
+            safe = np.where(spread > 0, spread, 1.0)
+            index = np.clip(
+                ((projected - low) / safe * PEAK_BINS).astype("int64"), 0, PEAK_BINS - 1
+            )
+            index = index + np.arange(width) * PEAK_BINS
+            counts = np.bincount(
+                index.ravel(), minlength=width * PEAK_BINS
+            ).reshape(width, PEAK_BINS)
+            peaks[start:start + width] = np.where(
+                spread > 0, counts.max(axis=1) / len(sample), 0.0
+            )
+        return extents, peaks
 
     # A Fibonacci hemisphere: even coverage, no clustering at the poles.
     count = 128
@@ -336,14 +372,20 @@ def estimate_up_axis(xyz, *, camera_positions=None) -> UpAxis:
     candidates = np.stack(
         [radius * np.cos(theta), radius * np.sin(theta), z], axis=1
     )
-    _, _, components = np.linalg.svd(centred, full_matrices=False)
-    candidates = np.vstack([candidates, components, -components])
+    _, _, components = np.linalg.svd(sample, full_matrices=False)
+    # The principal axes, but NOT their negatives. Every measure below is
+    # exactly sign-invariant, so `-component` is the same candidate scored
+    # twice; all it ever did was guarantee `best == runner_up` whenever a
+    # principal axis won, which pinned the reported confidence to its floor.
+    candidates = np.vstack([candidates, components])
+    candidates /= np.linalg.norm(candidates, axis=1, keepdims=True)
 
-    # Two signals, and the ORDER matters.
+    extents, peaks = _measure(candidates)
+
+    # Two priors, and the ORDER matters.
     #
-    # First the structural prior: a room is wider than it is tall. Height is the
-    # smallest of the three extents in essentially every residential space, so
-    # the up axis is found among the narrowest directions. This is what neither
+    # First the structural prior: a room is wider than it is tall, so the up
+    # axis is found among the NARROWEST directions. This is what neither
     # earlier attempt used, and it is why both kept choosing the room's LENGTH:
     # a long room's two end walls score exactly like a floor and a ceiling on
     # any peak-based measure, and nothing in that measure knows 13 m cannot be
@@ -351,46 +393,78 @@ def estimate_up_axis(xyz, *, camera_positions=None) -> UpAxis:
     #
     # Then the plane evidence breaks the tie among the narrow candidates, which
     # is what pins down the exact normal rather than merely the right family.
-    extents = np.array([
-        float((centred @ direction).max() - (centred @ direction).min())
-        for direction in candidates
-    ])
-    narrow = extents <= extents.min() * 1.35
-    scores = np.array([_peak(direction) for direction in candidates])
-    scores = np.where(narrow, scores, -1.0)
-    axis = candidates[int(scores.argmax())]
-    axis = axis / np.linalg.norm(axis)
+    admissible = np.ones(len(candidates), dtype=bool)
+    gate = ""
+    if metres_per_unit and metres_per_unit > 0:
+        # A known scale upgrades the structural prior to a physical one, and it
+        # has to, because "narrowest" is the wrong question in a narrow room.
+        # The rule below measures every direction against the THINNEST one, and
+        # in a corridor, a galley kitchen, a stairwell or a closet the thinnest
+        # direction is the WIDTH. A 1.2 x 8 x 2.4 m corridor put its own 1.2 m
+        # width in the reference slot, which placed the real 2.4 m ceiling
+        # height outside the band and returned an up axis 90 degrees out —
+        # four of eight ordinary room shapes failed this way, silently.
+        #
+        # Metres settle it: 1.2 m cannot be a storey. Nothing here caps the
+        # upper end, because a two-storey capture is legitimately 5 m tall and
+        # the relative rule below already excludes the long axis.
+        tall_enough = extents * float(metres_per_unit) >= MIN_STOREY_M
+        if tall_enough.any():
+            admissible &= tall_enough
+            gate = " Directions too short to be a storey were ruled out."
+
+    reference = float(extents[admissible].min())
+    narrow = extents <= reference * 1.35
+    scores = np.where(admissible & narrow, peaks, -1.0)
+    winner = int(scores.argmax())
+    axis = candidates[winner] / np.linalg.norm(candidates[winner])
+    best_score = float(peaks[winner])
+    # Kept separate from `best_score`, which refinement below raises. The margin
+    # has to compare like with like: a refined winner against unrefined rivals
+    # is a comparison the winner cannot lose, and it reported 0.60 on rooms
+    # whose axis was 90 degrees out.
+    coarse_best = best_score
 
     # Refine: walk a finer set around the winner, so the answer is not limited
     # by the coarse sampling. A degree of tilt here is metres of drift across a
-    # long wall.
+    # long wall. One generator for all three passes — re-seeding it inside the
+    # loop, as this did, redrew the SAME 48 offsets at each scale, making the
+    # refinement a line search down 48 fixed rays instead of a widening search.
+    rng = np.random.default_rng(0)
     for scale in (0.25, 0.08, 0.025):
-        local = axis + scale * np.random.default_rng(0).normal(size=(48, 3))
+        local = axis + scale * rng.normal(size=(48, 3))
         local /= np.linalg.norm(local, axis=1, keepdims=True)
-        # Refinement keeps the narrowness constraint: without it the walk drifts
+        # Refinement keeps both constraints: without them the walk drifts
         # straight back out to the long axis, which scores better on peaks.
-        local_extents = np.array([
-            float((centred @ direction).max() - (centred @ direction).min())
-            for direction in local
-        ])
-        allowed = local_extents <= extents.min() * 1.35
-        local_scores = np.where(allowed, [_peak(d) for d in local], -1.0)
-        if local_scores.max() > _peak(axis):
+        local_extents, local_peaks = _measure(local)
+        allowed = local_extents <= reference * 1.35
+        if metres_per_unit and metres_per_unit > 0:
+            allowed &= local_extents * float(metres_per_unit) >= MIN_STOREY_M
+        local_scores = np.where(allowed, local_peaks, -1.0)
+        if local_scores.max() > best_score:
+            best_score = float(local_scores.max())
             axis = local[int(local_scores.argmax())]
 
-    # Confidence from how decisively the winner beat the alternatives, rather
-    # than from the raw peak share — a share is a property of the sampling
-    # density and says nothing about whether the choice was close.
-    narrow_scores = scores[scores > 0]
-    if len(narrow_scores) >= 2:
-        runner_up = float(np.sort(narrow_scores)[-2])
-        best_score = float(narrow_scores.max())
-        concentration = 0.25 + 0.75 * min(1.0, (best_score - runner_up) / max(best_score, 1e-9) * 6)
-    else:
-        concentration = 0.5
+    # Confidence is the margin over the best GENUINELY DIFFERENT direction.
+    #
+    # It used to be the margin over the raw runner-up. On a candidate set this
+    # dense the runner-up is always an immediate neighbour of the winner
+    # pointing essentially the same way, so the two scores were near-identical
+    # by construction and almost every capture reported the 0.25 floor —
+    # including ones whose axis was accurate to a third of a degree. A rival
+    # only deserves the name if choosing it would produce a different plan.
+    rival = 0.0
+    considered = scores > 0
+    if considered.any():
+        aligned = np.abs(candidates[considered] @ axis)
+        distinct = aligned < math.cos(math.radians(DISTINCT_AXIS_DEG))
+        if distinct.any():
+            rival = float(scores[considered][distinct].max())
+    margin = (coarse_best - rival) / max(coarse_best, 1e-9)
+    concentration = 0.25 + 0.75 * min(1.0, max(0.0, margin * 1.5))
 
     heights = centred @ axis
-    detail = "Up axis from the most vertically concentrated principal axis."
+    detail = "Up axis from the narrowest strongly planar direction." + gate
     confidence = min(0.95, max(0.05, concentration))
 
     if camera_positions is not None and len(camera_positions) >= 2:
@@ -875,17 +949,71 @@ def _expand_rooms_to_the_captured_surface(np, document, metres_per_pixel=None) -
         ]
 
 
+def _recalibrate_to_known_total(document, known_total_sqft: float) -> None:
+    """Restore the total the caller asserted, after the outward offset.
+
+    `raster.resolve_scale` solves metres-per-pixel precisely so the rooms sum to
+    `known_total_sqft`. `_expand_rooms_to_the_captured_surface` then pushes every
+    room polygon outward by half a wall thickness, which is correct geometry but
+    breaks that equality: a caller passing 1800 sqft got roughly 1900 back. On
+    this path there is no other anchor to re-derive from, so the inflation was
+    pure error against a number the caller supplied as ground truth.
+
+    Rescaling the whole plan about its own centroid is exactly equivalent to
+    having solved a slightly different metres-per-pixel, so rooms, walls and
+    openings stay consistent with each other and with the asserted total.
+    """
+    from .raster import SQFT_PER_M2
+
+    area = document.total_area_m2
+    if area <= 0:
+        return
+    factor = math.sqrt((known_total_sqft / SQFT_PER_M2) / area)
+    if not math.isfinite(factor) or factor <= 0 or abs(factor - 1.0) < 1e-9:
+        return
+
+    points = [p for room in document.rooms for p in room.polygon]
+    if not points:
+        return
+    cx = sum(p[0] for p in points) / len(points)
+    cy = sum(p[1] for p in points) / len(points)
+
+    def _about_centre(point):
+        return (round(cx + (point[0] - cx) * factor, 4),
+                round(cy + (point[1] - cy) * factor, 4))
+
+    for room in document.rooms:
+        room.polygon = [_about_centre(p) for p in room.polygon]
+    for wall in document.walls:
+        wall.start, wall.end = _about_centre(wall.start), _about_centre(wall.end)
+        wall.thickness = round(wall.thickness * factor, 4)
+        wall.height = round(wall.height * factor, 4)
+    for opening in document.openings:
+        opening.width = round(opening.width * factor, 4)
+        opening.height = round(opening.height * factor, 4)
+
+
 #: A plan's rooms should tile its own footprint. Less than this and something
 #: leaked; the interior escaped through an unclosed corner, merged with the
 #: exterior background and was discarded as such.
-MIN_PLAUSIBLE_COVERAGE = 0.55
+MIN_PLAUSIBLE_COVERAGE = 0.88
 
 #: Rooms cannot cover more than the footprint. Above this and a phantom region
 #: — usually the exterior ring — is being counted as a room.
 MAX_PLAUSIBLE_COVERAGE = 1.02
 
 #: What a correct plan looks like: rooms fill the footprint minus wall thickness.
-TARGET_COVERAGE = 0.90
+#:
+#: Measured, not assumed, and re-measured after `_expand_rooms_to_the_captured_
+#: surface` began inflating every room polygon. Over 100 plans whose room count
+#: was exactly right, coverage ran 0.946 to 0.994 with a median of 0.980; the
+#: catastrophic cases — a room lost through an unclosed corner — sat at 0.49,
+#: 0.70, 0.72 and 0.85. These three numbers were tuned before the expansion
+#: existed and were never revisited, so the selector was aiming at 0.90: a
+#: coverage no correct plan produces any more, which made
+#: `min(pool, key=abs(cov - TARGET))` systematically prefer whichever candidate
+#: had LOST geometry.
+TARGET_COVERAGE = 0.97
 
 
 def _coverage(document) -> Optional[float]:
@@ -927,11 +1055,30 @@ def extract_from_reconstruction(ply_bytes: bytes, *, use_segmenter="auto", **kwa
     if use_segmenter in (True, False):
         return _extract_once(ply_bytes, use_segmenter=use_segmenter, **kwargs)
 
+    # Only run the segmented attempt when there is actually a model to run.
+    # Without one `segment()` returns None, `wall_points` stays None, and
+    # `_extract_once(use_segmenter=True)` takes the identical geometric branch —
+    # so every reconstruction paid for two full parse + up-axis + raster passes
+    # to produce two identical documents. segmentation.py is explicit that the
+    # model is optional and often absent, which makes that the common case.
+    installed, _ = segmentation.available()
+    modes = (False, True) if installed else (False,)
+
     attempts = []
-    for segmented in (False, True):
+    for segmented in modes:
         try:
             document = _extract_once(ply_bytes, use_segmenter=segmented, **kwargs)
         except (DegenerateGeometry, UnsupportedInput) as exc:
+            attempts.append((None, None, exc))
+            continue
+        except Exception as exc:  # noqa: BLE001
+            # The segmented attempt is the experimental one and it is never
+            # load-bearing. Anything it raises that the geometric attempt did
+            # not must not destroy a document that already succeeded — the
+            # previous form let it propagate, discarding a good plan.
+            if not segmented:
+                raise
+            log.exception("Segmented attempt failed; keeping the geometric plan")
             attempts.append((None, None, exc))
             continue
         attempts.append((document, _coverage(document), None))
@@ -992,7 +1139,9 @@ def _extract_once(
                 "keeping all points.", int(keep.sum()), len(xyz),
             )
 
-    up = estimate_up_axis(xyz, camera_positions=camera_positions)
+    up = estimate_up_axis(
+        xyz, camera_positions=camera_positions, metres_per_unit=metres_per_unit
+    )
     axis = np.asarray(up.vector, dtype="float64")
     heights = xyz @ axis
     right, forward = _ground_basis(np, axis)
@@ -1051,12 +1200,31 @@ def _extract_once(
             xyz, up, lo, hi, band_basis=band_basis
         )
 
+    # Scale is measured from the GEOMETRIC band in both paths, deliberately.
+    #
+    # `lo`/`hi` above are a thin ceiling-adjacent slab without the segmenter and
+    # the full floor-to-ceiling wall range with it, and those same bounds used
+    # to be handed to `footprint_area_units2`. The hulls differ — the wide band
+    # sweeps in floor, ceiling and any photogrammetric floaters outside the
+    # building — so `metres_per_unit = sqrt(parcel_footprint_m2 / footprint)`
+    # came out different depending on whether a model happened to be installed.
+    # That is a learned scale by the back door: every length and area in the
+    # document multiplied by a different constant, which segmentation.py's own
+    # docstring names as the failure that "looks entirely correct". Worse,
+    # `_coverage` is area over area and therefore scale-invariant, so the
+    # self-consistency selector is structurally blind to it.
+    footprint_units2 = None
+    if parcel_footprint_m2:
+        try:
+            scale_lo, scale_hi, _ = choose_slice_band(profile, heights)
+        except DegenerateGeometry:
+            scale_lo, scale_hi = lo, hi
+        footprint_units2 = footprint_area_units2(xyz, up, scale_lo, scale_hi)
+
     anchor = resolve_scale_anchor(
         metres_per_unit=metres_per_unit,
         parcel_footprint_m2=parcel_footprint_m2,
-        footprint_units2=(
-            footprint_area_units2(xyz, up, lo, hi) if parcel_footprint_m2 else None
-        ),
+        footprint_units2=footprint_units2,
     )
 
     # Either hand the extractor a real metres-per-pixel, or hand it the recorded
@@ -1096,6 +1264,8 @@ def _extract_once(
         )
 
     _expand_rooms_to_the_captured_surface(np, document, metres_per_pixel)
+    if anchor is None and known_total_sqft:
+        _recalibrate_to_known_total(document, known_total_sqft)
     _classify_exterior_walls(document)
     return document
 

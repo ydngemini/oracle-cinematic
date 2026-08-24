@@ -130,14 +130,28 @@ def segment(xyz, up, *, floor: float, ceiling: Optional[float] = None):
         import numpy as np
 
         features = extract(xyz, up, floor=floor, ceiling=ceiling)
-        if features.shape[1] != len(FEATURE_NAMES):
+
+        # Check the width the GRAPH expects, not the width `extract` just
+        # stacked. Comparing `features.shape[1]` to `len(FEATURE_NAMES)` was a
+        # branch that can never be taken — `extract` builds its output from that
+        # same constant — while the mismatch this module exists to catch went
+        # unchecked. The feature count went 7 -> 10 on this branch, so a
+        # deployment pointing ORACLE_FLOORPLAN_SEGMENTER at a mounted v1 model
+        # (the documented reason the override exists) fed a 10-wide tensor to a
+        # 7-input graph, onnxruntime raised inside `session.run`, and the
+        # operator saw a generic "Point segmentation failed" that named neither
+        # the version nor the width.
+        spec = session.get_inputs()[0]
+        expected = spec.shape[-1] if spec.shape else None
+        if isinstance(expected, int) and expected != features.shape[1]:
             log.warning(
-                "Feature width %d does not match the %d this build computes; "
-                "ignoring the segmenter.", features.shape[1], len(FEATURE_NAMES),
+                "Segmenter at %s expects %d features per point; this build computes "
+                "%d (%s). The model is a different version — ignoring it.",
+                _SESSION_PATH, expected, features.shape[1], ", ".join(FEATURE_NAMES),
             )
             return None
 
-        name = session.get_inputs()[0].name
+        name = spec.name
         logits = session.run(None, {name: features})[0]
         if logits.shape[0] != features.shape[0] or logits.shape[1] != len(LABELS):
             log.warning(

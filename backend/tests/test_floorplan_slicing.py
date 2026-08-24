@@ -690,3 +690,200 @@ def test_auto_rejects_a_plan_whose_rooms_exceed_its_footprint(monkeypatch):
 
     monkeypatch.setattr(slicing, "_extract_once", fake)
     assert slicing.extract_from_reconstruction(b"ply\n", metres_per_unit=1.0) is sane
+
+
+# ---------------------------------------------------------------------------
+# Review fixes, 2026-08-24 — each of these failed before the change it pins
+# ---------------------------------------------------------------------------
+
+def _box(rng, w, d, h, *, density=320.0):
+    """A closed empty room, sampled at a constant points-per-square-metre."""
+    def face(origin, u, v):
+        area = float(np.linalg.norm(np.cross(u, v)))
+        return _plane(rng, origin, u, v, max(200, int(area * density)))
+    return np.vstack([
+        face([0, 0, 0], [w, 0, 0], [0, d, 0]), face([0, 0, h], [w, 0, 0], [0, d, 0]),
+        face([0, 0, 0], [w, 0, 0], [0, 0, h]), face([0, d, 0], [w, 0, 0], [0, 0, h]),
+        face([0, 0, 0], [0, d, 0], [0, 0, h]), face([w, 0, 0], [0, d, 0], [0, 0, h]),
+    ])
+
+
+@pytest.mark.parametrize("w, d, h, label", [
+    (1.2, 8.0, 2.4, "corridor"),
+    (0.9, 1.5, 2.4, "closet"),
+])
+def test_a_known_scale_keeps_the_up_axis_off_a_narrow_room_s_width(w, d, h, label):
+    """The narrowness prior asks which direction is THINNEST, and in a corridor
+    that is the WIDTH, not the height.
+
+    A 1.2 x 8 x 2.4 m corridor put its own 1.2 m width in the reference slot,
+    which pushed the real 2.4 m ceiling height outside the admissible band and
+    returned an up axis 90 degrees out — a vertical section through the wall,
+    rendered as a floor plan. Metres settle it: 1.2 m cannot be a storey.
+    """
+    rng = np.random.default_rng(3)
+    pts, q = _rotate(rng, _box(rng, w, d, h))
+    truth = q @ np.array([0.0, 0.0, 1.0])
+
+    up = slicing.estimate_up_axis(pts, metres_per_unit=1.0)
+    error_deg = math.degrees(math.acos(min(1.0, abs(float(np.dot(up.vector, truth))))))
+
+    assert error_deg < 5.0, f"{label}: up axis off by {error_deg:.1f} degrees"
+
+
+def test_confidence_is_not_pinned_by_a_candidate_that_is_the_same_answer():
+    """Confidence is the margin over the best GENUINELY DIFFERENT direction.
+
+    Measured against the raw runner-up it was near-zero by construction — the
+    runner-up on a dense candidate set is an immediate neighbour of the winner
+    pointing essentially the same way — so a plainly decisive orientation
+    reported the floor value.
+    """
+    rng = np.random.default_rng(11)
+    pts, q = _rotate(rng, _house(rng))
+    truth = q @ np.array([0.0, 0.0, 1.0])
+
+    up = slicing.estimate_up_axis(pts, metres_per_unit=1.0)
+    error_deg = math.degrees(math.acos(min(1.0, abs(float(np.dot(up.vector, truth))))))
+
+    assert error_deg < 2.0
+    assert up.confidence > 0.3, (
+        f"an axis accurate to {error_deg:.2f} degrees reported {up.confidence}"
+    )
+
+
+def test_a_near_cubic_room_reports_low_confidence_rather_than_a_guess():
+    """A cube has no distinguishing extent, and no scale-free measure can tell
+    its walls from its floor. The answer may be wrong; saying so is the part
+    that must hold, because provenance.confidence is what the reader sees."""
+    rng = np.random.default_rng(3)
+    pts, _ = _rotate(rng, _box(rng, 2.0, 2.2, 2.4))
+
+    up = slicing.estimate_up_axis(pts, metres_per_unit=1.0)
+
+    assert up.confidence <= 0.4, (
+        f"an ambiguous cube reported {up.confidence}"
+    )
+
+
+def test_the_segmenter_cannot_move_the_metric_scale():
+    """segmentation.py promises no output of the model can produce a dimension.
+
+    The scale anchor is solved against the convex hull of a height band, and
+    enabling the segmenter changed that band from a thin ceiling-adjacent slab
+    to the whole floor-to-ceiling range — sweeping in floor, ceiling and any
+    floaters outside the building. So the same house was scaled by a different
+    constant depending on whether a model happened to be installed.
+
+    The two paths legitimately find different GEOMETRY, so this compares the
+    scale each one resolves rather than the areas: run each path twice, once
+    against the parcel footprint and once at a fixed metres-per-unit, and the
+    ratio is that path's solved scale squared.
+    """
+    rng = np.random.default_rng(5)
+    pts, _ = _rotate(rng, _house(rng))
+    body = _ply(pts)
+
+    def solved_scale(use_segmenter):
+        anchored = slicing.extract_from_reconstruction(
+            body, use_segmenter=use_segmenter, parcel_footprint_m2=W * D)
+        unit = slicing.extract_from_reconstruction(
+            body, use_segmenter=use_segmenter, metres_per_unit=1.0)
+        return math.sqrt(anchored.total_area_m2 / unit.total_area_m2)
+
+    assert solved_scale(False) == pytest.approx(solved_scale(True), rel=0.01), (
+        "the model moved the metric scale"
+    )
+
+
+def test_a_supplied_total_survives_the_outward_offset():
+    """`resolve_scale` solves metres-per-pixel precisely so the rooms sum to the
+    figure the caller supplied. Expanding every room polygon afterwards broke
+    that equality, and this path has no other anchor to re-derive from — so the
+    inflation was pure error against an asserted number."""
+    rng = np.random.default_rng(5)
+    pts, _ = _rotate(rng, _house(rng))
+    known = W * D * 10.763910416709722
+
+    document = slicing.extract_from_reconstruction(
+        _ply(pts), use_segmenter=False, metres_per_unit=None, known_total_sqft=known)
+
+    assert document.total_sqft == pytest.approx(known, rel=0.01)
+
+
+def test_the_auto_mode_survives_a_segmented_attempt_that_explodes(monkeypatch):
+    """The model is never load-bearing. An unexpected failure in the
+    experimental attempt must not discard a geometric document that already
+    succeeded — only DegenerateGeometry and UnsupportedInput were caught."""
+    rng = np.random.default_rng(5)
+    pts, _ = _rotate(rng, _house(rng))
+
+    monkeypatch.setattr(slicing.segmentation, "available", lambda: (True, "installed"))
+    calls = {"n": 0}
+    original = slicing._extract_once
+
+    def exploding(*args, **kwargs):
+        if kwargs.get("use_segmenter"):
+            calls["n"] += 1
+            raise MemoryError("simulated")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(slicing, "_extract_once", exploding)
+    document = slicing.extract_from_reconstruction(_ply(pts), metres_per_unit=1.0)
+
+    assert calls["n"] == 1
+    assert document.rooms
+
+
+def test_auto_does_not_run_twice_when_no_segmenter_is_installed(monkeypatch):
+    """Without a model `segment()` returns None and the segmented attempt takes
+    the identical geometric branch, so the second pass was pure cost."""
+    rng = np.random.default_rng(5)
+    pts, _ = _rotate(rng, _house(rng))
+
+    monkeypatch.setattr(slicing.segmentation, "available", lambda: (False, "no model"))
+    seen = []
+    original = slicing._extract_once
+    monkeypatch.setattr(slicing, "_extract_once",
+                        lambda *a, **k: (seen.append(k.get("use_segmenter")), original(*a, **k))[1])
+
+    slicing.extract_from_reconstruction(_ply(pts), metres_per_unit=1.0)
+
+    assert seen == [False]
+
+
+@pytest.mark.parametrize("seed", [1, 3, 7, 9, 11, 13])
+def test_the_coverage_target_matches_what_a_correct_plan_produces(seed):
+    """MIN/MAX/TARGET were tuned before `_expand_rooms_to_the_captured_surface`
+    inflated every room polygon, and were never revisited.
+
+    Correct plans measure 0.978 to 0.992 here — and over 100 randomised houses,
+    0.946 to 0.994. The target was 0.90, a coverage no correct plan produces any
+    more, which made `min(pool, key=abs(cov - TARGET))` systematically prefer
+    whichever candidate had LOST geometry.
+    """
+    rng = np.random.default_rng(seed)
+    pts, _ = _rotate(rng, _house(rng))
+    document = slicing.extract_from_reconstruction(
+        _ply(pts), use_segmenter=False, metres_per_unit=1.0)
+
+    assert len(document.rooms) == 2, "witness plan is not correct; pick another seed"
+    coverage = slicing._coverage(document)
+    assert slicing.MIN_PLAUSIBLE_COVERAGE < coverage < slicing.MAX_PLAUSIBLE_COVERAGE
+    assert abs(coverage - slicing.TARGET_COVERAGE) < 0.06, (
+        f"a correct plan measures {coverage:.3f}, target is {slicing.TARGET_COVERAGE}"
+    )
+
+
+def test_a_plan_that_lost_a_room_is_rejected_by_the_coverage_floor():
+    """The other half of the same tuning: on this house the geometric path
+    leaks through an unclosed corner and returns one room of a true two, at
+    41.6% coverage. The floor has to sit above that and below what a correct
+    plan produces, or the selector cannot tell them apart."""
+    rng = np.random.default_rng(5)
+    pts, _ = _rotate(rng, _house(rng))
+    leaked = slicing.extract_from_reconstruction(
+        _ply(pts), use_segmenter=False, metres_per_unit=1.0)
+
+    assert len(leaked.rooms) == 1
+    assert slicing._coverage(leaked) < slicing.MIN_PLAUSIBLE_COVERAGE

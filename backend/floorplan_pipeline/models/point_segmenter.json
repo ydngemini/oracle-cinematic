@@ -17,7 +17,7 @@
     "wall",
     "clutter"
   ],
-  "trained_on": "synthetic rooms only \u2014 accuracy on real reconstructions is UNMEASURED",
+  "trained_on": "synthetic rooms only — accuracy on real reconstructions is UNMEASURED",
   "houses": 120,
   "epochs": 30,
   "validation": {
@@ -42,16 +42,17 @@
       "precision": 0.9515
     }
   },
+  "validation_protocol": "SUPERSEDED METHOD — these figures come from a per-POINT train/validation split (torch.randperm over the concatenated point matrix), which put points from the same room on both sides. Points in one grid column share column_span, column_density, run_length, neighbour_span and neighbour_agreement exactly, and _local_shape gives them the same verticality/planarity/linearity, so a validation point usually had a near-duplicate in training. Treat these numbers as leakage-inflated. train_point_segmenter.py now splits by HOUSE before feature extraction; the next retrain will report honest figures under that protocol. The weights themselves are unchanged and remain the measured-best artifact on end-to-end plan quality.",
   "caveats": [
     "Classifies points; never produces a dimension or a scale.",
     "Features are scale-free ratios, so the model cannot key on room size.",
     "Every training house is randomly rotated, so it cannot key on axes.",
-    "Rectilinear rooms only \u2014 no curved or non-Manhattan walls were generated.",
+    "Rectilinear rooms only — no curved or non-Manhattan walls were generated.",
     "Coverage is modelled as fall-off from a walked path, not uniform dropout.",
     "Walls carry punched door/window openings."
   ],
   "ablation": {
-    "note": "same data, same seed, same schedule \u2014 only the feature set differs",
+    "note": "same data, same seed, same schedule — only the feature set differs",
     "v1_own_column_only": {
       "wall_precision": 0.951,
       "wall_recall": 0.937,
@@ -66,7 +67,7 @@
     }
   },
   "real_data": {
-    "status": "NOT USED \u2014 accuracy on real reconstructions remains unmeasured",
+    "status": "NOT USED — accuracy on real reconstructions remains unmeasured",
     "why": "S3DIS and ScanNet carry the exact classes this model predicts, but both are research-license datasets whose commercial terms are not publicly stated, and this ships inside a paid product.",
     "candidate": "3DSES (zenodo.org/records/13323342) is CC-BY-SA-4.0. EVALUATING on it creates no derivative work and would convert 'unmeasured' into a number. TRAINING on it raises a share-alike question about the resulting weights that needs a decision, not an assumption."
   }

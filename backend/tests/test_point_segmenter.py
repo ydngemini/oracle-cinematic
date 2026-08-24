@@ -301,3 +301,69 @@ def test_furniture_is_classified_as_clutter_not_wall():
     island_labels = labels[:len(island)]
     called_wall = float((island_labels == LABEL_WALL).mean())
     assert called_wall < 0.35, f"{called_wall:.0%} of a kitchen island was called wall"
+
+
+def test_a_model_of_the_wrong_version_is_named_rather_than_swallowed(monkeypatch, tmp_path, caplog):
+    """The guard used to compare `extract`'s output width against the constant
+    `extract` itself stacks — a branch that can never be taken — while the real
+    train/serve skew went unchecked.
+
+    The feature count went 7 -> 10 on this branch, so a deployment pointing
+    ORACLE_FLOORPLAN_SEGMENTER at a mounted v1 model (the documented reason the
+    override exists) fed a 10-wide tensor to a 7-input graph. onnxruntime raised
+    inside `session.run`, the blanket except swallowed it, and the operator saw
+    a generic failure naming neither the version nor the width.
+    """
+    torch = pytest.importorskip("torch")
+    pytest.importorskip("onnxruntime")
+
+    stale = tmp_path / "v1.onnx"
+    torch.onnx.export(
+        torch.nn.Linear(len(FEATURE_NAMES) - 3, len(LABELS)),
+        torch.zeros(1, len(FEATURE_NAMES) - 3),
+        str(stale),
+        input_names=["features"], output_names=["logits"],
+        dynamic_axes={"features": {0: "points"}, "logits": {0: "points"}},
+    )
+    monkeypatch.setenv(segmentation.MODEL_ENV, str(stale))
+    segmentation.reset_cache()
+    xyz, up, profile = _aligned_house()
+
+    with caplog.at_level("WARNING"):
+        assert segmentation.segment(xyz, up.vector, floor=profile.floor) is None
+
+    assert "different version" in caplog.text
+    assert str(len(FEATURE_NAMES) - 3) in caplog.text
+
+
+def test_an_empty_column_has_no_span(monkeypatch):
+    """`(highest - lowest + 1) / COLUMN_LEVELS` credited an EMPTY column with a
+    level holding nothing. A point's own column is never empty, so `column_span`
+    was unaffected — but `_context` reads the whole grid, so every empty
+    neighbour biased `neighbour_span` upward and counted as agreeing with any
+    cell below 0.19. Sparse captures have the most empty cells, and they are the
+    partial sweeps this model exists to serve.
+    """
+    from floorplan_pipeline import pointfeatures
+
+    rng = np.random.default_rng(3)
+    # One dense pillar in a corner: almost every grid cell is empty.
+    pillar = _plane(rng, [0.0, 0.0, 0.0], [0.2, 0, 0], [0, 0, H], 4000)
+    floor = _plane(rng, [0, 0, 0], [W, 0, 0], [0, D, 0], 400)
+    xyz = np.vstack([pillar, floor])
+    up = np.array([0.0, 0.0, 1.0])
+
+    features = pointfeatures.extract(xyz, up, floor=0.0, ceiling=H)
+    span = features[:, FEATURE_NAMES.index("neighbour_span")]
+
+    # `neighbour_span` is the mean over a 3x3 patch, and a point's OWN cell is
+    # occupied by definition, so it cannot reach zero — the floor of one
+    # isolated occupied cell is (1 / COLUMN_LEVELS) / 9. What must not survive
+    # is the phantom: with empty columns credited a level, all eight empty
+    # neighbours contributed 1 / COLUMN_LEVELS each and the patch could never
+    # read below that value.
+    empty_column_phantom = 1.0 / pointfeatures.COLUMN_LEVELS
+    assert float(span.min()) < empty_column_phantom * 0.5, (
+        "empty neighbours are still contributing a phantom span"
+    )
+    assert float(span.min()) == pytest.approx(empty_column_phantom / 9.0, rel=0.05)

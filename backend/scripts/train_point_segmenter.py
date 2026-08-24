@@ -60,7 +60,7 @@ def _plane(rng, origin, u, v, n, jitter):
 
 
 def synth_house(rng):
-    """One labelled house. Returns (xyz, labels, up, floor, ceiling_or_None)."""
+    """One labelled house. Returns (xyz, labels, up)."""
     width = rng.uniform(4.0, 16.0)
     depth = rng.uniform(3.5, 13.0)
     height = rng.uniform(2.3, 3.2)
@@ -163,29 +163,57 @@ def synth_house(rng):
         q[:, 0] = -q[:, 0]
     xyz = xyz @ q.T
     up = q @ np.array([0.0, 0.0, 1.0])
-    floor_h = float((xyz @ up).min())
-    return xyz, label, up, floor_h, (floor_h + height if saw_ceiling else None)
+    return xyz, label, up
 
 
 def build_dataset(houses: int, seed: int):
+    """Features, labels, and which house each point came from."""
+    from floorplan_pipeline.slicing import _ground_basis, vertical_profile
+
     rng = np.random.default_rng(seed)
-    features, targets = [], []
+    features, targets, groups = [], [], []
     for index in range(houses):
-        xyz, label, up, floor, ceiling = synth_house(rng)
-        # Identical call to the one the backend makes. This is the whole
-        # defence against train/serve skew.
-        features.append(extract(xyz, up, floor=floor, ceiling=ceiling))
+        xyz, label, up = synth_house(rng)
+
+        # Derive `floor` and `ceiling` the way the BACKEND does, not from the
+        # generator's own truth.
+        #
+        # "Both sides import extract" was the stated defence against train/serve
+        # skew, and it did not cover extract's ARGUMENTS. The trainer passed
+        # `(xyz @ up).min()` — the raw minimum, plus the exact synthetic height;
+        # `_extract_once` passes `profile.floor` and `profile.ceiling`, which are
+        # histogram bin centres. On synthetic data the two agree because nothing
+        # is emitted below z=0. On a real reconstruction, sub-floor
+        # photogrammetric floaters put the naive minimum well below the
+        # histogram peak — and every feature is normalised against
+        # `extent = top - floor`, so a shifted floor rescales `height_norm` and
+        # re-bins `level`, moving the whole feature distribution away from what
+        # the weights were fitted on. Silently, which is the exact failure
+        # pointfeatures.py says it exists to prevent.
+        heights = xyz @ up
+        right, forward = _ground_basis(np, up)
+        planar = np.stack([xyz @ right, xyz @ forward], axis=1)
+        try:
+            profile = vertical_profile(heights, planar)
+        except Exception:                      # a sweep too sparse to profile
+            continue
+
+        features.append(extract(
+            xyz, up, floor=profile.floor,
+            ceiling=profile.ceiling if profile.ceiling_observed else None,
+        ))
         targets.append(label)
+        groups.append(np.full(len(label), index, dtype="int64"))
         if (index + 1) % 25 == 0:
             print(f"  {index + 1}/{houses} houses", flush=True)
-    return np.vstack(features), np.concatenate(targets)
+    return np.vstack(features), np.concatenate(targets), np.concatenate(groups)
 
 
 # ---------------------------------------------------------------------------
 # Model
 # ---------------------------------------------------------------------------
 
-def train(features, targets, *, device: str, epochs: int, seed: int,
+def train(features, targets, groups, *, device: str, epochs: int, seed: int,
           columns: int | None = None):
     """`columns` trims to the first N features, for ablation."""
     if columns is not None:
@@ -198,9 +226,27 @@ def train(features, targets, *, device: str, epochs: int, seed: int,
     x = torch.tensor(features, dtype=torch.float32)
     y = torch.tensor(targets, dtype=torch.long)
 
-    split = int(len(x) * 0.85)
-    order = torch.randperm(len(x))
-    train_idx, val_idx = order[:split], order[split:]
+    # Split by HOUSE, never by point.
+    #
+    # `torch.randperm(len(x))` put points from the same room on both sides of
+    # the split, and those points are not independent samples: every point in
+    # one grid column shares `column_span`, `column_density`, `run_length`,
+    # `neighbour_span` and `neighbour_agreement` exactly, and `_local_shape`
+    # gives them all the same verticality, planarity and linearity. A validation
+    # point therefore usually had a near-duplicate in training, and every number
+    # in the model card — the one artifact telling a reader how far to trust
+    # this — was inflated by that leak.
+    house_ids = np.unique(groups)
+    shuffled = np.random.default_rng(seed).permutation(house_ids)
+    # At least one house on each side, so a small smoke run still reports
+    # something rather than dividing by an empty validation set.
+    cut = max(1, int(len(shuffled) * 0.85))
+    if len(shuffled) > 1:
+        cut = min(cut, len(shuffled) - 1)
+    train_houses = set(shuffled[:cut].tolist())
+    in_train = np.fromiter((g in train_houses for g in groups), dtype=bool, count=len(groups))
+    train_idx = torch.tensor(np.flatnonzero(in_train), dtype=torch.long)
+    val_idx = torch.tensor(np.flatnonzero(~in_train), dtype=torch.long)
 
     # Small on purpose. Seven interpretable inputs do not need capacity, they
     # need a decision boundary — and this has to run on CPU inside a request.
@@ -285,6 +331,19 @@ def export(model, out: Path, report: dict, *, houses: int, epochs: int) -> None:
         "houses": houses,
         "epochs": epochs,
         "validation": report,
+        # The split method belongs beside the numbers. These were previously
+        # produced by `torch.randperm` over the concatenated point matrix — a
+        # per-POINT split, which put points from the same room on both sides.
+        # Points in one grid column share column_span, column_density,
+        # run_length, neighbour_span and neighbour_agreement exactly, and
+        # _local_shape gives them the same verticality/planarity/linearity, so a
+        # validation point usually had a near-duplicate in training and every
+        # figure here was leakage-inflated. A reader cannot tell that from the
+        # numbers alone, so the protocol is recorded.
+        "validation_protocol": (
+            "held-out HOUSES (15%), split before feature extraction — never a "
+            "per-point split, which leaks near-duplicate points across the boundary"
+        ),
         "caveats": [
             "Classifies points; never produces a dimension or a scale.",
             "Features are scale-free ratios, so the model cannot key on room size.",
@@ -330,7 +389,7 @@ def main() -> int:
     args = parser.parse_args()
 
     print(f"Generating {args.houses} synthetic houses…", flush=True)
-    features, targets = build_dataset(args.houses, args.seed)
+    features, targets, groups = build_dataset(args.houses, args.seed)
     print(f"  {len(features):,} points, {features.shape[1]} features")
     for index, name in enumerate(LABELS):
         print(f"    {name:8s} {int((targets == index).sum()):>10,}")
@@ -341,7 +400,7 @@ def main() -> int:
         # result, since the generator changed at the same time.
         print("\nAblation: does the v2 context actually help?", flush=True)
         for columns, label in ((7, "v1  own column only"), (None, "v2  + neighbourhood")):
-            _, scores = train(features, targets, device=args.device,
+            _, scores = train(features, targets, groups, device=args.device,
                               epochs=args.epochs, seed=args.seed, columns=columns)
             wall = scores["wall"]
             clutter = scores["clutter"]
@@ -351,7 +410,7 @@ def main() -> int:
 
     print(f"\nTraining on {args.device}…", flush=True)
     model, report = train(
-        features, targets, device=args.device, epochs=args.epochs, seed=args.seed
+        features, targets, groups, device=args.device, epochs=args.epochs, seed=args.seed
     )
 
     print("\nValidation:")

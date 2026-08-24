@@ -133,7 +133,18 @@ def extract(xyz, up, *, floor: float, ceiling: Optional[float] = None):
     highest = np.where(occupancy.any(axis=1), occupancy.shape[1] - 1 -
                        np.argmax(occupancy[:, ::-1], axis=1), 0)
     lowest = np.where(occupancy.any(axis=1), np.argmax(occupancy, axis=1), 0)
-    column_span_by_cell = (highest - lowest + 1) / COLUMN_LEVELS
+    # `+ 1` counts the level a point occupies, so a column spanning one level
+    # scores 1/COLUMN_LEVELS. An EMPTY column has no such level: the guards
+    # above force highest == lowest == 0, and the `+ 1` then credits it with a
+    # level holding nothing. A point's own column is never empty so `column_span`
+    # was unaffected, but `_context` reads the whole grid — every empty
+    # neighbour biased `neighbour_span` upward and counted as agreeing with any
+    # cell below 0.19. Sparse captures have the most empty cells, and they are
+    # exactly the partial hand-held sweeps this model exists to serve.
+    occupied_columns = occupancy.any(axis=1)
+    column_span_by_cell = np.where(
+        occupied_columns, (highest - lowest + 1) / COLUMN_LEVELS, 0.0
+    )
     column_density_by_cell = occupied_levels / COLUMN_LEVELS
 
     column_span = column_span_by_cell[column]
@@ -143,7 +154,7 @@ def extract(xyz, up, *, floor: float, ceiling: Optional[float] = None):
     local_density = counts[column] / max(1.0, counts.max())
 
     run_length, neighbour_span, neighbour_agreement = _context(
-        np, column_span_by_cell, cx, cy, column
+        np, column_span_by_cell, column
     )
 
     # --- local shape -------------------------------------------------------
@@ -163,7 +174,7 @@ def extract(xyz, up, *, floor: float, ceiling: Optional[float] = None):
     ], axis=1).astype("float32")
 
 
-def _context(np, span_by_cell, cx, cy, column):
+def _context(np, span_by_cell, column):
     """Neighbourhood structure around each column.
 
     This is what v1 could not see. A wall and a wardrobe can have identical
