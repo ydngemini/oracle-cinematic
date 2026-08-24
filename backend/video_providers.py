@@ -553,7 +553,94 @@ def _poll_seconds() -> float:
 # ---------------------------------------------------------------------------
 # Registry
 # ---------------------------------------------------------------------------
+class MockProvider(VideoProvider):
+    """Generates a real, playable clip locally. Bills nothing, calls nobody.
+
+    Video Studio has a long path — quota, script drafting, per-clip generation,
+    stitching, captions, storage, the property_media row — and every provider
+    that could exercise it end to end costs money per run. So a whole class of
+    wiring bug was only ever discoverable by paying for it, one clip at a time.
+
+    This closes that. It is deliberately a *real* encode rather than a canned
+    file: the stitcher, the caption burner and the container checks downstream
+    all care about actual frames, and a placeholder that skipped them would
+    leave exactly the parts most likely to break untested.
+
+    **The output is unmistakable on sight.** Every frame is stamped MOCK with
+    the prompt that produced it. A convincing-looking clip from a provider that
+    generated nothing is worse than no clip: it would be indistinguishable from
+    a real reel in a listing, in a review, or in a screenshot. `produces` stays
+    ai_generated for the same reason — migration 0071 says only `captured` may
+    support a claim about the actual home, and this shows a colour field.
+
+    Never a fallback. It is selected explicitly with ORACLE_VIDEO_PROVIDER=mock,
+    because a provider that silently substituted itself for a failing vendor
+    would hand someone a stamped placeholder while they believed they had a
+    finished video.
+    """
+
+    name = "mock"
+    produces = "ai_generated"
+    max_concurrent = 4          # nothing external to rate-limit against
+    allowed_seconds = None      # no vendor constraint to model
+
+    def available(self) -> tuple[bool, str]:
+        try:
+            import av  # noqa: F401
+        except ImportError:
+            return (False, "PyAV is not installed, so the mock provider cannot encode")
+        return (True, "")
+
+    async def generate(
+        self, *, prompt: str, size: str, seconds: int, image_bytes: Optional[bytes] = None
+    ) -> bytes:
+        return await asyncio.to_thread(self._encode, prompt, size, seconds)
+
+    @staticmethod
+    def _encode(prompt: str, size: str, seconds: int) -> bytes:
+        import io
+
+        import av
+        from PIL import Image, ImageDraw
+
+        try:
+            width, height = (int(v) for v in str(size).lower().split("x", 1))
+        except (TypeError, ValueError):
+            width, height = 1280, 720
+        # H.264 requires even dimensions; an odd size fails inside the encoder
+        # with a message that says nothing about the size.
+        width, height = max(2, width - width % 2), max(2, height - height % 2)
+
+        fps = 24
+        frames = max(1, int(seconds) * fps)
+        label = (prompt or "").strip()[:60] or "mock clip"
+
+        buffer = io.BytesIO()
+        with av.open(buffer, mode="w", format="mp4") as container:
+            stream = container.add_stream("libx264", rate=fps)
+            stream.width, stream.height = width, height
+            stream.pix_fmt = "yuv420p"
+
+            for index in range(frames):
+                # A visibly moving gradient, so a stuck or dropped-frame bug in
+                # the stitcher is obvious rather than hidden behind a still.
+                shade = int(255 * (index / max(1, frames - 1)))
+                image = Image.new("RGB", (width, height), (shade // 3, shade // 2, shade))
+                draw = ImageDraw.Draw(image)
+                draw.text((16, 16), "MOCK - NOT A REAL GENERATION", fill=(255, 255, 255))
+                draw.text((16, 40), label, fill=(255, 255, 255))
+                draw.text((16, 64), f"frame {index + 1}/{frames}", fill=(255, 255, 255))
+                for packet in stream.encode(av.VideoFrame.from_image(image)):
+                    container.mux(packet)
+            for packet in stream.encode():
+                container.mux(packet)
+
+        return buffer.getvalue()
+
+
 _PROVIDERS: dict[str, type[VideoProvider]] = {
+    # Explicit selection only — never a fallback for a failing vendor.
+    "mock": MockProvider,
     "sora": SoraProvider,
     "veo": VeoProvider,
     "fal-kling": FalKlingProvider,

@@ -547,6 +547,149 @@ class CreateUploadLink(BaseModel):
     max_uploads: int = Field(default=40, ge=1, le=500)
 
 
+@router.post("/crm/property-view/imagery", status_code=status.HTTP_201_CREATED)
+async def import_licensed_imagery(
+    lead_id: Optional[UUID] = Form(default=None),
+    listing_id: Optional[UUID] = Form(default=None),
+    address: str = Form(...),
+    lat: Optional[float] = Form(default=None),
+    lng: Optional[float] = Form(default=None),
+    ctx: TenantContext = Depends(require_context),
+):
+    """Attach licensed exterior imagery for an address as property photos.
+
+    This is what lets Video Studio work on a property nobody has photographed
+    yet, without an MLS feed and without touching a listing portal. Video jobs
+    already source from property_media photos, so the missing piece was never
+    the video path — it was having any licensed photo at all for an address.
+
+    Sources are Google Street View and Mapillary (see data_integrations/
+    property_imagery.py). Both are EXTERIOR only, and that is recorded rather
+    than implied: nothing here can show the inside of a home, and a streetside
+    frame presented as an interior is precisely the failure the whole capture
+    surface exists to avoid.
+
+    **The bytes are copied, never the URL.** A Street View image URL carries the
+    API key as a query parameter, so storing it in property_media.url would hand
+    that key to every client that can read the row — and the row is read by the
+    tour, the gallery and the video studio. Mapillary is CC-BY-SA, so its
+    attribution is stored in `caption`, which is rendered with the image;
+    dropping it would put the display out of licence.
+
+    provenance is 'imported' — third-party supplied. Migration 0071 reserves
+    'captured' for media that actually depicts the property, and a photo taken
+    from the street by someone else does not qualify however accurate it is.
+    """
+    if (lead_id is None) == (listing_id is None):
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            "Provide exactly one of lead_id or listing_id.",
+        )
+    if not (address or "").strip():
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "address is required.")
+
+    from data_integrations.property_imagery import (
+        ImageryAuthError,
+        ImageryConfigurationError,
+        PropertyImagerySource,
+    )
+
+    source = PropertyImagerySource()
+    ready, why = source.available()
+    if not ready:
+        # Forwarded verbatim, the way every other provider seam here does it:
+        # "use a server-side key" is actionable, "imagery unavailable" is not.
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, why)
+
+    try:
+        found = await source.fetch(address=address.strip(), lat=lat, lng=lng)
+    except ImageryAuthError as exc:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(exc)) from exc
+    except ImageryConfigurationError as exc:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(exc)) from exc
+
+    if not found.get("matched"):
+        # Not an error: plenty of addresses have no street-level coverage.
+        return {"imported": 0, "images": [], "reason": found.get("reason", ""),
+                "exterior_only": True}
+
+    async with tenant_tx(ctx) as conn:
+        if lead_id is not None and not await conn.fetchval(
+            "SELECT 1 FROM leads WHERE id = $1", lead_id
+        ):
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Lead not found.")
+        if listing_id is not None and not await conn.fetchval(
+            "SELECT 1 FROM listings WHERE id = $1", listing_id
+        ):
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Listing not found.")
+
+    import httpx
+
+    imported: list[dict] = []
+    for image in found["images"]:
+        try:
+            async with httpx.AsyncClient(timeout=30) as client:
+                response = await client.get(image["url"])
+                response.raise_for_status()
+                data = response.content
+        except Exception as exc:  # noqa: BLE001 - one bad frame must not fail the rest
+            log.warning("Could not fetch %s imagery: %s", image.get("source"), exc)
+            continue
+
+        content_type = _sniff_image(data)
+        if content_type is None or len(data) > MAX_PHOTO_BYTES:
+            log.warning("Rejected %s imagery: not an image, or too large", image.get("source"))
+            continue
+
+        media_id = uuid4()
+        s3_key = await media_storage.put_media_bytes(
+            data, content_type, str(ctx.tenant_id), kind="photo"
+        )
+        async with tenant_tx(ctx) as conn:
+            next_order = await conn.fetchval(
+                """
+                SELECT COALESCE(MAX(sort_order), -1) + 1
+                  FROM property_media
+                 WHERE (($1::uuid IS NOT NULL AND lead_id = $1)
+                     OR ($2::uuid IS NOT NULL AND listing_id = $2))
+                """,
+                lead_id, listing_id,
+            ) or 0
+            await conn.execute(
+                """
+                INSERT INTO property_media (
+                    id, tenant_id, lead_id, listing_id, kind, url, s3_key,
+                    content_type, caption, sort_order, provenance, generator
+                )
+                VALUES ($1, $2, $3, $4, 'photo', $5, $6, $7, $8, $9, 'imported', $10)
+                """,
+                media_id, ctx.tenant_id, lead_id, listing_id,
+                f"/api/media/{media_id}", s3_key, content_type,
+                # Rendered with the image. Mapillary is CC-BY-SA and Google
+                # requires its own attribution, so this is a licence term, not
+                # a nicety.
+                image["attribution"], int(next_order), image["source"],
+            )
+        imported.append({
+            "media_id": str(media_id),
+            "source": image["source"],
+            "attribution": image["attribution"],
+            "interior": False,
+        })
+
+    return {
+        "imported": len(imported),
+        "images": imported,
+        # Said explicitly so no caller has to infer it.
+        "exterior_only": True,
+        "detail": (
+            f"{len(imported)} licensed exterior image(s) attached. These show the "
+            f"outside of the property only and carry the attribution they must be "
+            f"displayed with."
+        ),
+    }
+
+
 @router.post("/crm/property-view/scan", status_code=status.HTTP_201_CREATED)
 async def upload_property_scan(
     lead_id: Optional[UUID] = Form(default=None),
