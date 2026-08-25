@@ -78,53 +78,124 @@ Two fixes, and they are not interchangeable:
 # CPU paths — enough on its own, no extra process
 export QT_QPA_PLATFORM=offscreen
 
-# GPU SIFT — needs a real GL context, so xvfb is required
+# GPU SIFT — needs a real GL context, so a display server is required.
+# Start Xvfb DIRECTLY. Do not use xvfb-run.
 apt-get install -y xvfb
-xvfb-run -a --server-args="-screen 0 1024x768x24" colmap feature_extractor ...
+rm -f /tmp/.X99-lock
+Xvfb :99 -screen 0 1024x768x24 &
+export DISPLAY=:99
+for _ in $(seq 1 30); do [ -e /tmp/.X11-unix/X99 ] && break; sleep 1; done
+colmap feature_extractor ...
 ```
 
-`backend/reconstruction_providers.py` now sets `QT_QPA_PLATFORM=offscreen` on all
-three COLMAP calls (commit `40aa275`). A pod image that enables
-`SiftExtraction.use_gpu` must additionally run under `xvfb-run`.
+**`xvfb-run` does not work on this image.** It is a `/bin/sh` wrapper that dies
+with `/usr/bin/xvfb-run: 184: 0: not found` *before COLMAP is reached* — a live
+pod run failed there 2026-08-24. Owning the server directly removes the wrapper,
+and clearing the stale lock means a recycled pod does not inherit one.
+
+`backend/reconstruction_providers.py` does exactly the above and waits on the
+X11 socket rather than sleeping a fixed interval.
 
 ## 5. Second thing that will bite
 
-The gsplat reference trainer needs three things the docs do not mention:
+The gsplat reference trainer needs several things the docs do not mention:
 
-1. **`viser` and `nerfview` are mandatory even headless** — `simple_trainer.py`
-   imports them at module scope, before `--disable-viewer` is parsed.
+1. **Install its dependencies from the cloned tag's own `examples/requirements.txt`.**
+   A hand-written list is how this breaks: one omitted `cv2`, `pycolmap`,
+   `imageio`, `torchmetrics`, `fused_ssim`, `sklearn`, `matplotlib` and `yaml`,
+   and the job discovered that *after* 27 minutes of feature extraction,
+   matching and mapping. Note `pycolmap` must be the **rmbrualla fork** pinned in
+   that file — PyPI's package of the same name exposes a different API.
 2. **Clone the examples at the tag matching the installed library.** Installing
    `gsplat` from pip while taking examples from `main` fails on
    `from gsplat.color_correct import ...`.
 3. **`examples/datasets/` ships no `__init__.py`**, so `import datasets.colmap`
    resolves to HuggingFace's installed `datasets` package instead. Create an
    empty `__init__.py` and run from the examples directory.
+4. **`--save-ply` is required, and `--save-steps` is not it.** `save_ply`
+   defaults to `False` and `--save-steps` controls `.pt` checkpoints. Without it
+   a run trains every step, reports its metrics, renders its trajectory video,
+   exits 0 — and writes nothing the converter can read. Pass
+   `--save-ply --ply-steps <max-steps>`.
 
 Also: `--data-factor N` expects a pre-downsampled `images_N/` directory to exist.
 Use `--data-factor 1` unless you have made one.
 
-## 6. Verified pipeline
+## 5b. Third thing that will bite: the `.sog` writer
 
-This exact sequence solved cleanly on an L4 — **43/43 images registered, 0.51 px
-mean reprojection error**:
+The pod image ships **no node and no npm at all**, and `splat-transform` writes
+`.sog` through **WebGPU**, which needs a **Vulkan loader**. Two separate live
+failures, both at the final line of a job that had already paid for the GPU:
+
+```
+/workspace/run.sh: line 14: npm: command not found
+```
+```
+Couldn't load Vulkan: libvulkan.so.1: cannot open shared object file
+TypeError: Cannot read properties of null (reading 'features')
+    at WebgpuGraphicsDevice.createDevice
+```
 
 ```bash
-apt-get -qq update && apt-get -qq install -y colmap xvfb
-X="xvfb-run -a --server-args=-screen 0 1024x768x24"
+apt-get install -y libvulkan1 mesa-vulkan-drivers   # llvmpipe: no NVIDIA ICD needed
+curl -fsSL https://nodejs.org/dist/v22.23.2/node-v22.23.2-linux-x64.tar.xz \
+  | tar -xJ -C /opt/node --strip-components=1        # apt ships node 12; needs >= 22
+npm install -g @playcanvas/splat-transform@3.3.0
+```
 
-$X colmap feature_extractor  --database_path db.db --image_path images \
-                             --ImageReader.single_camera 1 --SiftExtraction.use_gpu 1
-$X colmap exhaustive_matcher --database_path db.db --SiftMatching.use_gpu 1
-$X colmap mapper             --database_path db.db --image_path images --output_path sparse
-$X colmap model_analyzer     --path sparse/0        # registered images + reprojection error
+**Check the operation, not the tool.** `command -v splat-transform` was true on
+the pod that failed — the binary existed, it just could not write a `.sog` on
+that machine. The pipeline now converts one throwaway gaussian before any GPU
+work starts: three seconds, and it exercises node, splat-transform and Vulkan
+together.
 
-pip install gsplat viser nerfview splines jaxtyping tensorboard tyro
-git clone --depth 1 --branch v$(python -c "import gsplat;print(gsplat.__version__.split('+')[0])") \
+## 6. Verified pipeline
+
+Solved cleanly on an L4 — **43/43 images registered, 0.51 px mean reprojection
+error** — and again on a 4090 2026-08-24 with 60 images of a real room:
+**59/59 registered, 16,143 points, 0.51 px**, training to loss 0.029 / PSNR 23.16
+over ~735k gaussians.
+
+Sections 4, 5 and 5b are all folded in here. **Everything the job needs is
+installed and PROVEN before the GPU work starts** — three separate live runs
+died at the last line on a missing dependency, each after paying for the whole
+reconstruction.
+
+```bash
+# --- everything the job needs, up front -------------------------------------
+apt-get -qq update
+apt-get -qq install -y colmap xvfb libvulkan1 mesa-vulkan-drivers
+
+export QT_QPA_PLATFORM=offscreen
+rm -f /tmp/.X99-lock
+Xvfb :99 -screen 0 1024x768x24 &                    # NOT xvfb-run; see section 4
+export DISPLAY=:99
+for _ in $(seq 1 30); do [ -e /tmp/.X11-unix/X99 ] && break; sleep 1; done
+
+pip install -q gsplat==1.5.3
+git clone --depth 1 --branch v1.5.3 \
     https://github.com/nerfstudio-project/gsplat.git gs
 touch gs/examples/datasets/__init__.py
+pip install -q -r gs/examples/requirements.txt      # the source of truth
+( cd gs/examples && python -c "import simple_trainer" ) || exit 1   # fail in 3 min, not 27
+
+curl -fsSL https://nodejs.org/dist/v22.23.2/node-v22.23.2-linux-x64.tar.xz \
+  | tar -xJ -C /opt/node --strip-components=1
+export PATH=/opt/node/bin:$PATH
+npm install -g @playcanvas/splat-transform@3.3.0
+splat-transform smoke.ply smoke.sog || exit 1       # proves Vulkan, not just PATH
+
+# --- now spend the GPU -------------------------------------------------------
+colmap feature_extractor  --database_path db.db --image_path images \
+                          --ImageReader.single_camera 1 --SiftExtraction.use_gpu 1
+colmap exhaustive_matcher --database_path db.db --SiftMatching.use_gpu 1
+colmap mapper             --database_path db.db --image_path images --output_path sparse
+colmap model_analyzer     --path sparse/0        # registered images + reprojection error
+
 cd gs/examples && python simple_trainer.py default \
-    --data-dir /scene --data-factor 1 --result-dir /out \
-    --max-steps 7000 --save-steps 7000 --disable-viewer
+    --data-dir /workspace --data-factor 1 --result-dir /workspace/out \
+    --max-steps 7000 --save-steps 7000 \
+    --save-ply --ply-steps 7000 --disable-viewer   # --save-ply is NOT optional
 ```
 
 **Image count drives cost.** Exhaustive matching is O(n²): 128 images is 8,128
@@ -171,12 +242,67 @@ sitting beside genuine 360s no longer marks the whole tour as not-this-property.
 | Var | Default | Notes |
 |---|---|---|
 | `RECONSTRUCTION_PROVIDER` | — | set to `runpod_pod` |
-| `RECON_POD_GPU_IDS` | A5000, 3090, 4090, A40 | preference order; RunPod takes the first available |
-| `RECON_POD_MAX_COST_USD` | `2.00` | hard per-job ceiling; the pod is killed when it is reached |
+| `RECON_POD_GPU_IDS` | A5000, 3090, 4090, L4, A40, A6000 | preference order; RunPod takes the first available |
+| `RECON_POD_MAX_COST_USD` | `2.00` | hard per-job ceiling in dollars; the binding limit |
 | `RECON_POD_MIN_BALANCE_USD` | `1.00` | `available()` refuses below this, naming the balance |
 | `RECON_POD_DISK_GB` | `40` | container disk, not VRAM |
-| `RECON_POD_TIMEOUT` | `5400` | wall-clock ceiling |
+| `RECON_POD_TIMEOUT` | `7200` | wall-clock ceiling (max `14400`) |
+| `RECON_POD_MIN_MBPS` | `10` | advertised link speed floor at placement; `0` omits the filter |
+| `RECON_POD_CLOUD_TYPE` | `SECURE` | or `COMMUNITY` |
+| `RECON_POD_TRANSPORT` | `ssh` | or `blob`, for deploys with no outbound 22 |
+| `RECON_POD_IMAGE` | `runpod/pytorch:2.4.0-…` | any CUDA image; the pipeline installs what it needs |
+| `RECON_POD_STEPS` | `7000` | training steps |
+| `RECON_POD_VOLUME_GB` | `0` | persistent volume; only worth it to keep datasets between runs |
 
 `available()` reads the **live balance**, so an unfunded account reports
 "RunPod balance is $-0.05 … add credits" instead of failing mid-job. That is the
 same distinction the Regrid fix drew between an expired credential and an outage.
+
+### What the job returns
+
+Three files, not one. `model.sog` is the viewer artifact; the other two exist
+because `parse_ply` cannot read a byte of `.sog`:
+
+| File | What it is |
+|---|---|
+| `model.sog` | the splat the tour viewer renders |
+| `model.sog.points.ply` | x/y/z + opacity, for the floor plan path to measure |
+| `model.sog.cameras.json` | camera centres **in the trained frame** |
+
+**The frame matters and is checked.** gsplat's Parser recentres and rescales the
+scene before training, so raw COLMAP centres are *not* interchangeable with the
+delivered model. Mixing them does not raise — it returns a confident up axis
+pointing somewhere else. The sidecar records its frame and the reader refuses a
+mismatch.
+
+Consume them with `slicing.extract_from_reconstruction_file(path)`, which
+resolves the geometry and picks up the poses automatically. **Nothing in the
+product calls it yet** — deriving a plan from a reconstruction needs a scale
+anchor (`metres_per_unit`, `parcel_footprint_m2` or `known_total_sqft`) and a
+reconstruction has none of its own, so where that anchor comes from is a product
+decision that has not been made.
+
+### Cost control, and how it has actually failed
+
+- The budget covers the **whole session** — upload, run and download share one
+  clock that starts when the pod does. Only the training run used to be bounded,
+  and a machine that took the capture at 17 KB/s would have billed for an hour
+  before anything noticed.
+- Staging gets a slice of that budget (`POD_UPLOAD_BUDGET_SHARE`, 25%). A pod
+  that cannot receive 60 images will not train on them either; the sooner it is
+  written off, the sooner a retry lands somewhere healthy.
+- **Terminating retries.** Every other call here can fail for free. This one
+  cannot: a single connect timeout to `rest.runpod.io` left a pod running after
+  its budget guard had correctly fired. Five attempts with backoff, and a 404
+  counts as success.
+- **The `finally` cannot save you if the process dies.** Two pods leaked that
+  way during development (one for 2h17m, about $1.90). The backend's reaper
+  sweeps `neoh-recon-*` pods older than `job_ceiling * 2 + 1800`, but it only
+  runs inside the worker loop — if you drive the provider from a script, run
+  your own sweep. `PodProvider.reap_stale_pods()` is the same call.
+
+```bash
+# after any manual run
+python -c "import sys; sys.path.insert(0,'backend'); \
+  import reconstruction_providers as r; print(r.PodProvider.reap_stale_pods(0))"
+```
