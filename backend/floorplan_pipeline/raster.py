@@ -520,6 +520,169 @@ def extract_from_floorplan_image(
     return document
 
 
+#: How hard a room outline is simplified, as a fraction of its perimeter.
+#:
+#: `detect_rooms` uses 0.012, which is right for a DRAWN plan: the true shape is
+#: rectilinear and the job is to find its corners through rasterisation noise.
+#: A room outline traced from measured floor occupancy is not rectilinear, and
+#: 0.012 of a 20 m perimeter is a 24 cm tolerance that takes the alcoves off —
+#: measured, it cost 24% of the area on a real scanned room.
+MEASURED_OUTLINE_EPSILON = 0.004
+
+
+def _rooms_from_sealed_mask(mask, scale: float) -> list[list[Point2D]]:
+    """Interior components of a sealed mask, simplified gently.
+
+    Deliberately not `detect_rooms`: that stage is tuned for drawn plans and is
+    shared with the image path, and the last time a shared stage was tuned for
+    one caller it fired on every mode and made all of them worse. Same rules —
+    skip the background component, drop anything under the minimum room area —
+    with a tolerance that suits a traced outline instead of a drafted one.
+    """
+    cv2, np = _require_cv()
+
+    interior = cv2.bitwise_not(mask)
+    count, labels, stats, _ = cv2.connectedComponentsWithStats(interior, connectivity=4)
+    height, width = interior.shape
+
+    polygons: list[list[Point2D]] = []
+    for label in range(1, count):
+        x, y, w, h, area = stats[label]
+        touches_border = x <= 1 or y <= 1 or (x + w) >= width - 1 or (y + h) >= height - 1
+        if touches_border and area > (width * height) * 0.20:
+            continue
+        if area * scale * scale < MIN_ROOM_AREA_M2:
+            continue
+        component = (labels == label).astype(np.uint8) * 255
+        contours, _ = cv2.findContours(component, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if not contours:
+            continue
+        contour = max(contours, key=cv2.contourArea)
+        approx = cv2.approxPolyDP(
+            contour, MEASURED_OUTLINE_EPSILON * cv2.arcLength(contour, True), True
+        )
+        if len(approx) < 3:
+            continue
+        polygons.append([(float(p[0][0]) * scale, float(p[0][1]) * scale) for p in approx])
+    return polygons
+
+
+def extract_from_wall_mask(
+    mask, *, metres_per_pixel: float, level_name: str = "Ground Floor",
+    level_index: int = 0, wall_height_m: float = 2.5,
+    model_version: str = "floorplan-mask-1.0.0", notes: str = "",
+) -> FloorplanDocument:
+    """A document from an already-sealed wall mask, skipping the drawn-plan pass.
+
+    `extract_from_floorplan_image` is built for a PICTURE of a floor plan, and
+    two of its stages actively destroy a mask that was constructed rather than
+    photographed:
+
+      * `build_wall_mask` re-derives walls with a long-kernel opening, which
+        removes a drawn outline — a 5 px one left 2.34 m² of a 16 m² room;
+      * `render_wall_graph` rebuilds the plan from HOUGH LINE SEGMENTS, and the
+        boundary of a real scanned room is not a set of straight lines.
+
+    Both assumptions are correct for their input and wrong for this one. So this
+    is a sibling path rather than a flag on that one: nothing here touches the
+    image pipeline, because the last time a change was made inside a shared
+    stage it fired on every mode and made all of them worse.
+
+    Walls come from the room boundaries themselves. That is the honest source
+    when the mask was built from measured occupancy — a room's edge is where the
+    floor stopped, and no line-fitting step has been asked to invent a
+    rectilinear version of it.
+    """
+    cv2, np = _require_cv()
+
+    scale = float(metres_per_pixel)
+    if scale <= 0:
+        raise MissingScale("A wall mask carries no scale of its own; supply metres_per_pixel.")
+
+    polygons = _rooms_from_sealed_mask(mask, scale)
+    if not polygons:
+        raise DegenerateGeometry(
+            "The sealed mask enclosed no rooms. Either the floor never closed, "
+            "or everything inside it was classified as wall."
+        )
+
+    # Thickness from the mask itself, the same measure the image path uses.
+    distance = cv2.distanceTransform(mask, cv2.DIST_L2, 5)
+    ridge = distance[distance > 0]
+    thickness_px = float(np.percentile(ridge, 92) * 2.0) if ridge.size else 4.0
+    thickness_m = max(0.05, thickness_px * scale)
+
+    level = FloorplanLevel(
+        id=f"level_{uuid.uuid4().hex[:12]}", name=level_name, index=level_index
+    )
+    rooms = [
+        FloorplanRoom(
+            id=f"zone_{uuid.uuid4().hex[:12]}",
+            name=f"Room {index + 1}",
+            type="other",
+            polygon=[(round(px, 4), round(py, 4)) for px, py in polygon],
+            levelId=level.id,
+        )
+        for index, polygon in enumerate(polygons)
+    ]
+
+    # One wall per room boundary edge. Shared partitions appear from both sides
+    # and are deduplicated on their midpoint, so linear footage — which is
+    # billed directly as framing and drywall — is not doubled.
+    walls: list[FloorplanWall] = []
+    seen: set[tuple[int, int, int]] = set()
+    for polygon in polygons:
+        for index in range(len(polygon)):
+            start, end = polygon[index - 1], polygon[index]
+            length = math.dist(start, end)
+            if length < thickness_m:
+                continue
+            key = (
+                int(round((start[0] + end[0]) / 2 / max(thickness_m, 1e-6))),
+                int(round((start[1] + end[1]) / 2 / max(thickness_m, 1e-6))),
+                int(round(math.degrees(math.atan2(end[1] - start[1], end[0] - start[0])) / 15)) % 12,
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            walls.append(FloorplanWall(
+                id=f"wall_{uuid.uuid4().hex[:12]}",
+                start=(round(start[0], 4), round(start[1], 4)),
+                end=(round(end[0], 4), round(end[1], 4)),
+                thickness=round(thickness_m, 4),
+                height=wall_height_m,
+                levelId=level.id,
+                interior=False,
+            ))
+
+    if not walls:
+        raise DegenerateGeometry("The mask enclosed rooms with no measurable boundary.")
+
+    document = FloorplanDocument(
+        provenance=Provenance(
+            source="ai_vision",
+            ai_generated=True,
+            model_version=model_version,
+            confidence=_confidence(walls, rooms, explicit_scale=True),
+            notes=" ".join(filter(None, [
+                "Rooms bounded by the measured floor rather than by closing walls. "
+                "Openings were not detected: this path has no stroke to read a "
+                "door out of.",
+                notes,
+            ])),
+        ),
+        levels=[level],
+        walls=walls,
+        rooms=rooms,
+        openings=[],
+    )
+    log.info(
+        "mask extraction: %d walls, %d rooms, %.0f sqft (scale=%.5f m/px)",
+        len(walls), len(rooms), document.total_sqft, scale,
+    )
+    return document
+
+
 def _confidence(walls, rooms, *, explicit_scale: bool) -> float:
     """A deliberately conservative self-assessment.
 

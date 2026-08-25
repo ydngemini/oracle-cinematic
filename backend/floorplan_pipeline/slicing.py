@@ -863,6 +863,175 @@ def _consensus_mask(np, cv2, points, heights, lo, hi, *, sub_slices: int, width:
     return votes, sub_slices
 
 
+#: `use_segmenter` value selecting the floor-bounded strategy. Not a boolean
+#: like the other two because it is not a variation on them: it decides what is
+#: interior from the FLOOR instead of asking walls to enclose it.
+FLOOR_BOUNDED = "floor"
+
+#: Fraction of a storey, either side of the floor, taken as floor surface.
+#: Generous: a real floor is not flat to the millimetre and a reconstruction of
+#: one is noisier still. Measured stable over 0.06-0.15 on a LiDAR room.
+FLOOR_BAND = 0.10
+
+#: Share of a column's vertical levels that must be occupied for it to be wall.
+#:
+#: CONTINUITY, not extent. A column holding only floor and ceiling spans the
+#: whole storey while occupying two levels of thirty-two, and reading that as a
+#: wall is how the middle of a room becomes one. Measured on a real scanned
+#: room the median occupied column sits at 0.06 and the 99th percentile at 0.56,
+#: so walls are the top few percent.
+WALL_COLUMN_DENSITY = 0.25
+
+#: Levels a column is cut into when measuring that continuity.
+WALL_COLUMN_LEVELS = 32
+
+#: How far a divider must run, in reconstruction units, to be a wall rather
+#: than furniture. Scale-free callers pass units; with a metric anchor these are
+#: metres, and a metre is already shorter than any partition worth drawing.
+WALL_MIN_RUN_UNITS = 1.0
+
+#: And how much longer than it is wide. A wall is a ridge; a wardrobe is a blob.
+WALL_MIN_ELONGATION = 3.0
+
+
+def floor_bounded_mask(xyz, up: UpAxis, profile):
+    """A sealed wall mask whose interior CANNOT leak, because the floor bounds it.
+
+    Returns (mask, units_per_pixel) with walls at 255, ready for
+    `raster.extract_from_wall_mask`.
+
+    `occupancy_raster` projects a slab and hopes the walls inside it close. On a
+    synthetic house they do. On a real capture they do not — walls have
+    doorways, furniture occludes them, and a scanner sees them in patches — so
+    the flood fill escapes through a gap, merges the interior with the outdoors
+    and discards the lot. Measured on a LiDAR-scanned room: the inverted mask
+    came back as one 60,434-cell region touching the border, and the plan that
+    survived was 11.69 m² of a room nearer 20.
+
+    This inverts which surface is trusted. The floor is the part of an interior
+    that is dense, horizontal, unoccluded and continuous — the part a scanner
+    sees best — so its extent decides what is inside. Walls are then only asked
+    to SUBDIVIDE that region, which is far weaker than asking them to enclose
+    it: a gap now merges two rooms instead of deleting the building.
+
+    Measured on the same room, floor bands of ±0.06, ±0.10 and ±0.15 of a storey
+    gave one region of 19.84, 20.16 and 20.45 m² — stable, so not a coincidence
+    of one threshold.
+    """
+    np = _require_numpy()
+    try:
+        import cv2
+    except ImportError as exc:  # pragma: no cover - environment guard
+        raise UnsupportedInput(
+            "Reconstruction slicing needs opencv-python-headless, which is not installed."
+        ) from exc
+
+    axis = np.asarray(up.vector, dtype="float64")
+    right, forward = _ground_basis(np, axis)
+    heights = xyz @ axis
+    planar = np.stack([xyz @ right, xyz @ forward], axis=1)
+
+    height = float(profile.height or 0.0)
+    if height <= 0:
+        raise DegenerateGeometry("No storey height, so the floor cannot bound anything.")
+
+    # The same margin the image path uses, for the same reason: with the
+    # interior against the border, detect_rooms discards it as background.
+    lo_x, hi_x = float(planar[:, 0].min()), float(planar[:, 0].max())
+    lo_y, hi_y = float(planar[:, 1].min()), float(planar[:, 1].max())
+    pad_x, pad_y = (hi_x - lo_x) * RASTER_MARGIN, (hi_y - lo_y) * RASTER_MARGIN
+    lo_x, hi_x, lo_y, hi_y = lo_x - pad_x, hi_x + pad_x, lo_y - pad_y, hi_y + pad_y
+    span = max(hi_x - lo_x, hi_y - lo_y)
+    if span <= 0:
+        raise DegenerateGeometry("The capture has no planar extent.")
+
+    size = int(RASTER_PX)
+    units_per_pixel = span / size
+    kernel = max(3, (size // 96) | 1)
+
+    def _pixels(selector):
+        px = np.clip(((planar[selector, 0] - lo_x) / span * (size - 1)).astype("int32"), 0, size - 1)
+        py = np.clip(((planar[selector, 1] - lo_y) / span * (size - 1)).astype("int32"), 0, size - 1)
+        return px, py
+
+    # --- what is inside: the floor ------------------------------------------
+    near_floor = (
+        (heights >= profile.floor - FLOOR_BAND * height)
+        & (heights <= profile.floor + FLOOR_BAND * height)
+    )
+    if int(near_floor.sum()) < 256:
+        raise DegenerateGeometry(
+            "Too few floor points to bound the interior — this capture never saw a floor."
+        )
+    interior = np.zeros((size, size), dtype="uint8")
+    px, py = _pixels(near_floor)
+    interior[py, px] = 255
+    # Close what furniture hides, then remove the speckle closing promotes —
+    # unclosed, every rug becomes a room.
+    interior = cv2.morphologyEx(interior, cv2.MORPH_CLOSE, np.ones((kernel, kernel), "uint8"))
+    interior = cv2.morphologyEx(
+        interior, cv2.MORPH_OPEN, np.ones(((max(3, kernel // 2) | 1),) * 2, "uint8")
+    )
+
+    # A reconstruction picks up slivers of pavement through a window. Those are
+    # not rooms, so only the largest continuous floor survives.
+    count, labels, stats, _ = cv2.connectedComponentsWithStats(interior, 8)
+    if count < 2:
+        raise DegenerateGeometry("No continuous floor was found to bound the interior.")
+    biggest = 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))
+    interior = np.where(labels == biggest, 255, 0).astype("uint8")
+
+    # --- what divides it: columns occupied continuously ----------------------
+    levels = WALL_COLUMN_LEVELS
+    level = np.clip(
+        ((heights - profile.floor) / height * (levels - 1)).astype("int64"), 0, levels - 1
+    )
+    # Coarser than the raster on purpose: a column needs enough points in it for
+    # "how continuous is this" to mean anything.
+    coarse = max(64, size // 4)
+    cx = np.clip(((planar[:, 0] - lo_x) / span * (coarse - 1)).astype("int64"), 0, coarse - 1)
+    cy = np.clip(((planar[:, 1] - lo_y) / span * (coarse - 1)).astype("int64"), 0, coarse - 1)
+    occupied = np.zeros((coarse * coarse, levels), dtype=bool)
+    occupied[cy * coarse + cx, level] = True
+    density = (occupied.sum(axis=1) / levels).reshape(coarse, coarse)
+    walls = (density >= WALL_COLUMN_DENSITY).astype("uint8") * 255
+    walls = cv2.resize(walls, (size, size), interpolation=cv2.INTER_NEAREST)
+
+    # A divider is a long thin ridge; a wardrobe is a blob.
+    #
+    # Continuity alone still admits furniture — a bookcase occupies its column
+    # floor to shoulder as faithfully as a wall does. What a wall has and a
+    # wardrobe does not is EXTENT: it runs for metres in one direction. Without
+    # this filter the blobs carve 2.8 m² out of a 20 m² room and leave holes
+    # shaped like the furniture that made them.
+    count, labels, stats, _ = cv2.connectedComponentsWithStats(
+        (walls > 0).astype("uint8"), 8
+    )
+    kept = np.zeros_like(walls)
+    for label in range(1, count):
+        width_px = stats[label, cv2.CC_STAT_WIDTH]
+        height_px = stats[label, cv2.CC_STAT_HEIGHT]
+        longest, shortest = max(width_px, height_px), max(1, min(width_px, height_px))
+        if (longest * units_per_pixel >= WALL_MIN_RUN_UNITS
+                and longest / shortest >= WALL_MIN_ELONGATION):
+            kept[labels == label] = 255
+    walls = kept
+
+    # --- the sealed mask: boundary + dividers, walls at 255 ------------------
+    mask = np.zeros((size, size), dtype="uint8")
+    contours, _ = cv2.findContours(interior, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        raise DegenerateGeometry("The floor region has no outline to bound the rooms.")
+    cv2.drawContours(mask, contours, -1, 255, max(3, size // 256))
+    mask[(walls > 0) & (interior > 0)] = 255
+
+    log.info(
+        "Floor-bounded mask: floor %.1f%% of frame, dividers %.1f%%",
+        100.0 * (interior > 0).mean(), 100.0 * ((walls > 0) & (interior > 0)).mean(),
+    )
+    return mask, units_per_pixel
+
+
 def occupancy_raster(xyz, up: UpAxis, lo: float, hi: float, *, sub_slices: int = 8,
                      band_basis: str = "ceiling-adjacent"):
     """Project the slab to a top-down wall image the raster extractor can read.
@@ -1265,7 +1434,7 @@ def extract_from_reconstruction(ply_bytes: bytes, *, use_segmenter="auto", **kwa
     # to produce two identical documents. segmentation.py is explicit that the
     # model is optional and often absent, which makes that the common case.
     installed, _ = segmentation.available()
-    modes = (False, True) if installed else (False,)
+    modes = [False, True] if installed else [False]
 
     attempts = []
     for segmented in modes:
@@ -1294,10 +1463,34 @@ def extract_from_reconstruction(ply_bytes: bytes, *, use_segmenter="auto", **kwa
         # one that has been verified, so its diagnosis is the more trustworthy.
         raise next(exc for _, _, exc in attempts if exc is not None)
 
-    plausible = [
-        item for item in scored
-        if item[1] is not None and MIN_PLAUSIBLE_COVERAGE <= item[1] <= MAX_PLAUSIBLE_COVERAGE
-    ]
+    def _plausible(items):
+        return [
+            item for item in items
+            if item[1] is not None
+            and MIN_PLAUSIBLE_COVERAGE <= item[1] <= MAX_PLAUSIBLE_COVERAGE
+        ]
+
+    plausible = _plausible(scored)
+
+    # A rescue, not a rival.
+    #
+    # The floor-bounded strategy is only reached once asking walls to enclose a
+    # room has already failed, because that is the only situation where it is
+    # the better answer. Offered as a peer it wins about one synthetic house in
+    # twenty-five — houses where the others were fine — a regression bought for
+    # nothing. Held back until nothing is plausible it changes nothing on a
+    # synthetic plan, and on a real scanned room it recovers 19.5 m² of a
+    # measured 20.16 where the best of the others managed 11.69.
+    if not plausible and (kwargs.get("metres_per_unit") or kwargs.get("parcel_footprint_m2")):
+        try:
+            rescue = _extract_once(ply_bytes, use_segmenter=FLOOR_BOUNDED, **kwargs)
+        except (DegenerateGeometry, UnsupportedInput, MissingScale) as exc:
+            log.info("Floor-bounded rescue also refused: %s", exc)
+        except Exception:  # noqa: BLE001 - a rescue must not destroy the attempt
+            log.exception("Floor-bounded rescue failed")
+        else:
+            scored.append((rescue, _coverage(rescue), FLOOR_BOUNDED))
+            plausible = _plausible(scored)
     pool = plausible or scored
 
     # Coverage decides which candidates are PLAUSIBLE. It does not decide
@@ -1432,7 +1625,15 @@ def _extract_once(
                     len(chosen),
                 )
 
-    if wall_points is not None:
+    if use_segmenter == FLOOR_BOUNDED:
+        # Rooms bounded by the floor rather than by walls that have to close.
+        # Everything below — the scale anchor, the offsets, the provenance — is
+        # shared with the other two, so only the mask differs.
+        band_basis = "floor-bounded"
+        lo, hi, _ = choose_slice_band(profile, heights)
+        mask, units_per_pixel = floor_bounded_mask(xyz, up, profile)
+        image_bytes = None
+    elif wall_points is not None:
         band_basis = "segmented walls"
         wall_heights = wall_points @ axis
         lo, hi = float(wall_heights.min()), float(wall_heights.max())
@@ -1477,14 +1678,28 @@ def _extract_once(
     # and that refusal is the correct behaviour rather than a gap to fill here.
     metres_per_pixel = anchor.metres_per_unit * units_per_pixel if anchor else None
 
-    document = raster.extract_from_floorplan_image(
-        image_bytes,
-        metres_per_pixel=metres_per_pixel,
-        known_total_sqft=known_total_sqft,
-        level_name=level_name,
-        level_index=level_index,
-        model_version=model_version,
-    )
+    if band_basis == "floor-bounded":
+        if metres_per_pixel is None:
+            raise MissingScale(
+                "The floor-bounded path measures a mask, which carries no scale "
+                "of its own. Supply metres_per_unit or a parcel footprint."
+            )
+        document = raster.extract_from_wall_mask(
+            mask,
+            metres_per_pixel=metres_per_pixel,
+            level_name=level_name,
+            level_index=level_index,
+            model_version=model_version,
+        )
+    else:
+        document = raster.extract_from_floorplan_image(
+            image_bytes,
+            metres_per_pixel=metres_per_pixel,
+            known_total_sqft=known_total_sqft,
+            level_name=level_name,
+            level_index=level_index,
+            model_version=model_version,
+        )
 
     if band_basis in ("ceiling-adjacent", "segmented walls") and document.openings:
         # A ceiling-adjacent slice sits above every door head, so anything

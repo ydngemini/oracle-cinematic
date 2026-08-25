@@ -823,7 +823,10 @@ def test_the_auto_mode_survives_a_segmented_attempt_that_explodes(monkeypatch):
     original = slicing._extract_once
 
     def exploding(*args, **kwargs):
-        if kwargs.get("use_segmenter"):
+        # Only the SEGMENTED attempt explodes. The floor-bounded rescue is a
+        # different strategy that may also run when nothing was plausible, and
+        # blowing it up too would test two things at once.
+        if kwargs.get("use_segmenter") is True:
             calls["n"] += 1
             raise MemoryError("simulated")
         return original(*args, **kwargs)
@@ -849,7 +852,12 @@ def test_auto_does_not_run_twice_when_no_segmenter_is_installed(monkeypatch):
 
     slicing.extract_from_reconstruction(_ply(pts), metres_per_unit=1.0)
 
-    assert seen == [False]
+    # No segmented attempt, because there is no model to segment with. A
+    # floor-bounded rescue may follow if nothing scored plausible, which is a
+    # different strategy rather than a second run of the same one.
+    assert True not in seen, f"ran the segmenter with no model installed: {seen}"
+    assert seen[0] is False
+    assert seen.count(False) == 1, f"ran the geometric path twice: {seen}"
 
 
 @pytest.mark.parametrize("seed", [1, 3, 7, 9, 11, 13])
@@ -1038,3 +1046,83 @@ def test_a_plausible_plan_carries_no_such_warning():
 
     assert "unreliable" not in document.provenance.notes
     assert document.provenance.confidence > slicing.IMPLAUSIBLE_COVERAGE_CONFIDENCE
+
+
+# ---------------------------------------------------------------------------
+# Floor-bounded rooms — the strategy for walls that do not close
+# ---------------------------------------------------------------------------
+
+def _scanned_room(rng, w=5.0, d=4.0, h=2.5, doorway=1.0):
+    """A room whose walls have a DOORWAY in them, like a real one.
+
+    The gap is the whole point. Every synthetic house in this file is sealed, so
+    the flood fill has nothing to escape through and the wall-closing strategies
+    always work. A real capture has doorways, and a scanner sees walls in
+    patches — which is how a plan comes back as 11.69 m² of a 20 m² room.
+    """
+    parts = [_plane(rng, [0, 0, 0], [w, 0, 0], [0, d, 0], 40000)]        # floor
+    parts.append(_plane(rng, [0, 0, h], [w, 0, 0], [0, d, 0], 12000))    # ceiling
+    parts.append(_plane(rng, [0, 0, 0], [0, d, 0], [0, 0, h], 8000))
+    parts.append(_plane(rng, [w, 0, 0], [0, d, 0], [0, 0, h], 8000))
+    parts.append(_plane(rng, [0, d, 0], [w, 0, 0], [0, 0, h], 8000))
+    # The near wall is interrupted: two stubs with a doorway between them.
+    stub = (w - doorway) / 2
+    parts.append(_plane(rng, [0, 0, 0], [stub, 0, 0], [0, 0, h], 4000))
+    parts.append(_plane(rng, [stub + doorway, 0, 0], [stub, 0, 0], [0, 0, h], 4000))
+    return np.vstack(parts)
+
+
+def test_a_room_whose_wall_has_a_doorway_is_still_measured():
+    """The failure this strategy exists for.
+
+    Asking walls to enclose a room means one gap merges the interior with the
+    outdoors and the whole thing is discarded as background. Bounding by the
+    FLOOR instead makes a doorway merge two rooms — recoverable — rather than
+    delete the building.
+    """
+    rng = np.random.default_rng(4)
+    pts, _ = _rotate(rng, _scanned_room(rng))
+
+    document = slicing.extract_from_reconstruction(_ply(pts), metres_per_unit=1.0)
+
+    truth = 5.0 * 4.0
+    assert document.rooms, "a room with a doorway in it produced no plan at all"
+    assert document.total_area_m2 > truth * 0.75, (
+        f"recovered only {document.total_area_m2:.1f} m² of {truth:.0f}"
+    )
+
+
+def test_the_rescue_is_not_reached_when_the_walls_already_closed():
+    """It is a rescue, not a rival. Offered as a peer it wins about one
+    synthetic house in twenty-five — houses where the others were fine."""
+    rng = np.random.default_rng(11)
+    pts, _ = _rotate(rng, _house(rng))
+    tried = []
+    original = slicing._extract_once
+
+    def _record(*args, **kwargs):
+        tried.append(kwargs.get("use_segmenter"))
+        return original(*args, **kwargs)
+
+    slicing._extract_once = _record
+    try:
+        document = slicing.extract_from_reconstruction(_ply(pts), metres_per_unit=1.0)
+    finally:
+        slicing._extract_once = original
+
+    assert slicing.FLOOR_BOUNDED not in tried, (
+        "the rescue ran on a plan that was already plausible"
+    )
+    assert slicing.MIN_PLAUSIBLE_COVERAGE <= slicing._coverage(document)
+
+
+def test_the_floor_bounded_path_refuses_without_a_scale():
+    """It measures a mask, which carries no scale of its own — the same refusal
+    every other path makes rather than inventing one."""
+    rng = np.random.default_rng(4)
+    pts, _ = _rotate(rng, _scanned_room(rng))
+
+    with pytest.raises(MissingScale):
+        slicing.extract_from_reconstruction(
+            _ply(pts), use_segmenter=slicing.FLOOR_BOUNDED
+        )
