@@ -659,3 +659,99 @@ def test_a_network_floor_is_asked_for_but_stays_out_of_the_way(pod_env, monkeypa
 
     assert "minDownloadMbps" not in sent, "a disabled filter must not be sent"
     assert "minUploadMbps" not in sent
+
+
+def test_termination_retries_because_its_failure_bills_forever(pod_env, monkeypatch):
+    """Every other request here can fail and cost nothing — the job is lost and
+    that is the end of it. This one is different.
+
+    A single connect timeout to rest.runpod.io left a pod running after its
+    budget guard had correctly fired, and it billed until a sweep noticed. The
+    guard worked; the cleanup did not, on one dropped TCP connection.
+    """
+    attempts = []
+
+    def _rest(api_key, method, path, *, json_body=None, timeout=60):
+        attempts.append(path)
+        if len(attempts) < 3:
+            raise OSError("Connection to rest.runpod.io timed out")
+        return {}
+
+    monkeypatch.setattr(PodProvider, "_rest", staticmethod(_rest))
+    monkeypatch.setattr("reconstruction_providers.time.sleep", lambda _s: None)
+
+    PodProvider._terminate("k", "pod-flaky")
+
+    assert len(attempts) == 3, "it gave up while the pod was still billing"
+
+
+def test_a_pod_that_is_already_gone_is_not_retried(pod_env, monkeypatch, caplog):
+    """404 on DELETE is the outcome asked for, whoever got there first — a
+    sweep, another replica, or an earlier attempt whose response was lost."""
+    attempts = []
+
+    def _rest(api_key, method, path, *, json_body=None, timeout=60):
+        attempts.append(path)
+        raise RuntimeError("RunPod DELETE /pods/x failed (404): not found")
+
+    monkeypatch.setattr(PodProvider, "_rest", staticmethod(_rest))
+    monkeypatch.setattr("reconstruction_providers.time.sleep", lambda _s: None)
+
+    with caplog.at_level("ERROR"):
+        PodProvider._terminate("k", "pod-gone")
+
+    assert len(attempts) == 1
+    assert "STILL BILLING" not in caplog.text, "it alarmed about a pod that is not there"
+
+
+def test_giving_up_on_termination_is_loud(pod_env, monkeypatch, caplog):
+    monkeypatch.setattr(PodProvider, "_rest", staticmethod(
+        lambda *a, **k: (_ for _ in ()).throw(OSError("network is down"))))
+    monkeypatch.setattr("reconstruction_providers.time.sleep", lambda _s: None)
+
+    with caplog.at_level("ERROR"):
+        PodProvider._terminate("k", "pod-doomed")
+
+    assert "STILL BILLING" in caplog.text
+    assert "pod-doomed" in caplog.text
+
+
+def test_a_timeout_says_which_stage_it_died_in(pod_env, monkeypatch):
+    """`conn.run` buffers every byte until the command finishes, so a job cut
+    off by the budget guard reported only that it had been cut off — no stage,
+    no output, nothing to tell whether the ceiling is too tight or the pipeline
+    is wedged. That is what a live run actually produced.
+    """
+    import types
+
+    class _Stream:
+        def __init__(self, lines): self._lines = list(lines)
+        def __aiter__(self): return self
+        async def __anext__(self):
+            if self._lines:
+                return self._lines.pop(0)
+            await asyncio.sleep(3600)          # the wedged pipeline
+
+    class _Proc:
+        stdout = _Stream([">>> installing colmap + xvfb\n", ">>> feature extraction\n",
+                          ">>> training 7000 steps\n"])
+        stderr = _Stream([])
+        exit_status = 0
+        async def __aenter__(self): return self
+        async def __aexit__(self, *exc): return False
+        async def wait(self): await asyncio.sleep(3600)
+
+    conn = types.SimpleNamespace(create_process=lambda cmd: _Proc())
+
+    async def _go():
+        await PodProvider()._run_watching(
+            conn, "bash /workspace/run.sh",
+            timeout=0.4, deadline=7200, hourly=0.74, ceiling=2.0,
+        )
+
+    with pytest.raises(ProviderError) as caught:
+        asyncio.run(_go())
+
+    message = str(caught.value)
+    assert "during: training 7000 steps" in message, message
+    assert "Last output" in message, "the tail is what says whether it was wedged"

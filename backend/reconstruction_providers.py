@@ -23,6 +23,8 @@ DUSt3R / INRIA-3DGS are deliberately excluded (non-commercial licenses).
 from __future__ import annotations
 
 import asyncio
+import types
+from collections import deque
 import json
 import logging
 import mimetypes
@@ -61,7 +63,9 @@ MAX_CAPTURE_IMAGES = 300
 MAX_CAPTURE_IMAGE_BYTES = 50 * 1024 * 1024
 MAX_RECON_ARTIFACT_BYTES = 2 * 1024 * 1024 * 1024
 MIN_RUNPOD_TIMEOUT = 60
-MAX_RUNPOD_TIMEOUT = 7200
+#: Raised when the default became 7200: a default sitting exactly on the
+#: maximum leaves an operator no room to grant a slow capture more time.
+MAX_RUNPOD_TIMEOUT = 14400
 _RUNPOD_ENDPOINT_RE = re.compile(r"^[A-Za-z0-9_-]{3,128}$")
 
 
@@ -1136,6 +1140,29 @@ _DEFAULT_POD_GPUS = (
     "NVIDIA RTX A6000",
 )
 
+#: How many times to try terminating a pod before giving up and shouting.
+#: Cheap: the call is idempotent, and the alternative to retrying is a machine
+#: that bills until something else notices.
+_TERMINATE_ATTEMPTS = 5
+
+#: Lines of pipeline output kept for a failure report. Enough to carry a python
+#: traceback and the stage markers around it, small enough to hold in memory
+#: for the whole run.
+_PIPELINE_TAIL_LINES = 400
+
+
+def _is_already_gone(exc: Exception) -> bool:
+    """Did this failure mean the pod does not exist? Then the job is done.
+
+    A 404 on DELETE is success, not an error - the pod may have been collected
+    by a sweep, by another replica, or by an earlier attempt whose response was
+    lost. Treating it as a failure would retry four more times and then log an
+    alarming line about a pod that is not there.
+    """
+    text = str(exc)
+    return "404" in text or "not found" in text.lower()
+
+
 #: Floor on a pod's advertised network speed, in Mbps, applied at placement.
 #:
 #: Deliberately LOW, and it is not the real defence. RunPod handed out a machine
@@ -1612,7 +1639,15 @@ class PodProvider(ReconstructionProvider):
             "gpu_ids": gpus or list(_DEFAULT_POD_GPUS),
             "disk_gb": _num("RECON_POD_DISK_GB", "40", 20, 500, int),
             "volume_gb": _num("RECON_POD_VOLUME_GB", "0", 0, 500, int),
-            "timeout": _num("RECON_POD_TIMEOUT", "5400", MIN_RUNPOD_TIMEOUT, MAX_RUNPOD_TIMEOUT, int),
+            # 90 minutes was too tight for the work, measured. The pipeline
+            # reached conversion in 3,103s before the trainer's full
+            # requirements were installed from source; those add CUDA
+            # extension builds (fused-ssim, fused-bilagrid) and the next run
+            # was still going at 5,400s. Raised to two hours so the CLOCK stops
+            # being the binding constraint and `max_cost` is — a ceiling in
+            # dollars is the one that means something, and at $0.74/hr two
+            # hours is $1.48 against a $2.00 cap, so money still bites first.
+            "timeout": _num("RECON_POD_TIMEOUT", "7200", MIN_RUNPOD_TIMEOUT, MAX_RUNPOD_TIMEOUT, int),
             # A ceiling on one job, in dollars. The pod is terminated when the
             # budget is spent even if training has not converged, so a wedged
             # job costs a known amount rather than an unbounded one.
@@ -1819,6 +1854,49 @@ class PodProvider(ReconstructionProvider):
             "(the pod is being terminated)"
         )
 
+    async def _run_watching(self, conn, command, *, timeout, deadline, hourly, ceiling):
+        """Run the pipeline while watching it, so a timeout can say WHERE.
+
+        `conn.run` buffers every byte until the command finishes, so a job cut
+        off by the budget guard reported only that it had been cut off — no
+        stage, no output, nothing to tell whether the ceiling is too tight or
+        the pipeline is wedged. Reading incrementally costs nothing and keeps
+        the last `>>>` marker the script emitted.
+        """
+        seen = {"stage": "starting up"}
+        tail: deque[str] = deque(maxlen=_PIPELINE_TAIL_LINES)
+
+        async def _pump(stream):
+            async for line in stream:
+                text = line.rstrip("\n")
+                tail.append(text)
+                if text.startswith(">>> "):
+                    seen["stage"] = text[4:]
+
+        async with conn.create_process(command) as proc:
+            readers = [
+                asyncio.create_task(_pump(proc.stdout)),
+                asyncio.create_task(_pump(proc.stderr)),
+            ]
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=timeout)
+            except asyncio.TimeoutError as exc:
+                raise ProviderError(
+                    f"Reconstruction exceeded its budget ({deadline}s at "
+                    f"${hourly:.2f}/hr, ceiling ${ceiling:.2f}) during: "
+                    f"{seen['stage']}. The pod is being terminated. Last output:"
+                    f"\n...{chr(10).join(tail)[-1200:]}"
+                ) from exc
+            finally:
+                for reader in readers:
+                    reader.cancel()
+
+        return types.SimpleNamespace(
+            exit_status=proc.exit_status,
+            stdout="\n".join(tail),
+            stderr="\n".join(tail),
+        )
+
     async def _run_on_pod(self, settings, host, port, key, hourly, images, work_dir) -> Path:
         import asyncssh
 
@@ -1899,17 +1977,11 @@ class PodProvider(ReconstructionProvider):
                     f"is being terminated."
                 ) from exc
 
-            try:
-                result = await asyncio.wait_for(
-                    conn.run("bash /workspace/run.sh", check=False),
-                    timeout=_left("the pipeline finished"),
-                )
-            except asyncio.TimeoutError as exc:
-                raise ProviderError(
-                    f"Reconstruction exceeded its budget ({deadline}s at "
-                    f"${hourly:.2f}/hr, ceiling ${settings['max_cost']:.2f}); "
-                    f"the pod is being terminated"
-                ) from exc
+            result = await self._run_watching(
+                conn, "bash /workspace/run.sh",
+                timeout=_left("the pipeline finished"),
+                deadline=deadline, hourly=hourly, ceiling=settings["max_cost"],
+            )
 
             if result.exit_status != 0:
                 raise ProviderError(_pipeline_failure(result))
@@ -2088,14 +2160,37 @@ class PodProvider(ReconstructionProvider):
     # -- cleanup ------------------------------------------------------------
     @classmethod
     def _terminate(cls, api_key: str, pod_id: str) -> None:
-        try:
-            cls._rest(api_key, "DELETE", f"/pods/{pod_id}")
-            log.info("RunPod pod %s terminated", pod_id)
-        except Exception:  # noqa: BLE001 - never mask the original job failure
-            log.exception(
-                "FAILED to terminate RunPod pod %s — it is STILL BILLING. "
-                "Terminate it at runpod.io/console/pods", pod_id
-            )
+        """Terminate a pod, retrying — this is the one call that bills forever.
+
+        Every other request in this provider can fail and cost nothing: the job
+        is lost and that is the end of it. This one is different. A single
+        connect timeout to rest.runpod.io left a pod running after its budget
+        guard had correctly fired, and it billed until a sweep noticed. The
+        guard worked; the cleanup did not, and the failure was one dropped TCP
+        connection.
+
+        Retried with backoff, and a 404 counts as success: the pod being gone is
+        the outcome asked for, whoever got there first.
+        """
+        last: Optional[Exception] = None
+        for attempt in range(_TERMINATE_ATTEMPTS):
+            try:
+                cls._rest(api_key, "DELETE", f"/pods/{pod_id}")
+                log.info("RunPod pod %s terminated", pod_id)
+                return
+            except Exception as exc:  # noqa: BLE001 - never mask the job's own failure
+                if _is_already_gone(exc):
+                    log.info("RunPod pod %s was already gone", pod_id)
+                    return
+                last = exc
+                if attempt + 1 < _TERMINATE_ATTEMPTS:
+                    time.sleep(min(2 ** attempt, 15))
+        log.error(
+            "FAILED to terminate RunPod pod %s after %d attempts (%s) - it is "
+            "STILL BILLING. Terminate it at runpod.io/console/pods; a sweep will "
+            "also collect it once it is older than the job ceiling.",
+            pod_id, _TERMINATE_ATTEMPTS, last,
+        )
 
     @classmethod
     def reap_stale_pods(cls, max_age_seconds: int = 4 * 3600) -> list[str]:
