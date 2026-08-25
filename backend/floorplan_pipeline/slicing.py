@@ -1161,6 +1161,11 @@ MIN_PLAUSIBLE_COVERAGE = 0.88
 #: — usually the exterior ring — is being counted as a room.
 MAX_PLAUSIBLE_COVERAGE = 1.02
 
+#: Ceiling on confidence when no candidate landed inside the plausible band.
+#: The plan is still returned — the best of a bad set beats nothing — but it must
+#: not carry a number that implies it was checked and passed.
+IMPLAUSIBLE_COVERAGE_CONFIDENCE = 0.25
+
 #: What a correct plan looks like: rooms fill the footprint minus wall thickness.
 #:
 #: Measured, not assumed, and re-measured after `_expand_rooms_to_the_captured_
@@ -1317,11 +1322,31 @@ def extract_from_reconstruction(ply_bytes: bytes, *, use_segmenter="auto", **kwa
         key=lambda item: abs((item[1] if item[1] is not None else 0.0) - TARGET_COVERAGE),
     )
     if coverage is not None:
+        implausible = not (MIN_PLAUSIBLE_COVERAGE <= coverage <= MAX_PLAUSIBLE_COVERAGE)
         best.provenance.notes = " ".join(filter(None, [
             best.provenance.notes,
             f"Chosen by self-consistency ({'segmented' if chosen_segmenter else 'geometric'}): "
             f"rooms cover {coverage:.0%} of the footprint.",
+            # Say it when nothing was plausible. `pool = plausible or scored`
+            # deliberately returns the best of a bad set rather than nothing,
+            # but shipping that silently is the failure this pipeline exists to
+            # prevent: a real LiDAR room came back at 36% coverage — a single
+            # room fragmented by furniture read as walls — with a confidence of
+            # 0.55 and not a word about it.
+            (
+                f"NOTE: this is outside the {MIN_PLAUSIBLE_COVERAGE:.0%}-"
+                f"{MAX_PLAUSIBLE_COVERAGE:.0%} a correct plan produces. Rooms "
+                f"were probably lost to an unclosed corner, or one room was cut "
+                f"into several by furniture standing where a wall would be. "
+                f"Treat the room count and every area as unreliable."
+                if implausible else ""
+            ),
         ]))
+        if implausible and best.provenance.confidence is not None:
+            # A number the reader can act on, not just prose they might skim.
+            best.provenance.confidence = round(
+                min(best.provenance.confidence, IMPLAUSIBLE_COVERAGE_CONFIDENCE), 3
+            )
     return best
 
 

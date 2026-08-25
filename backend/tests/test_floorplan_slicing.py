@@ -1005,3 +1005,36 @@ def test_auto_prefers_the_segmented_plan_when_both_are_plausible(monkeypatch):
     ):
         assert marks.get(id(chosen)) is True, "a plausible segmented plan was passed over"
         assert "segmented" in chosen.provenance.notes
+
+
+def test_a_plan_no_candidate_could_make_plausible_says_so(monkeypatch):
+    """`pool = plausible or scored` deliberately returns the best of a bad set
+    rather than nothing — but shipping that silently is the failure this
+    pipeline exists to prevent.
+
+    A real LiDAR-scanned room came back at 36% coverage, a single room
+    fragmented by furniture standing where a wall would be, carrying a
+    confidence of 0.55 and not a word about it.
+    """
+    rng = np.random.default_rng(5)
+    pts, _ = _rotate(rng, _house(rng))
+
+    # Force every candidate outside the plausible band.
+    monkeypatch.setattr(slicing, "MIN_PLAUSIBLE_COVERAGE", 0.999)
+    monkeypatch.setattr(slicing, "MAX_PLAUSIBLE_COVERAGE", 1.0)
+    document = slicing.extract_from_reconstruction(_ply(pts), metres_per_unit=1.0)
+
+    assert "unreliable" in document.provenance.notes
+    assert document.provenance.confidence <= slicing.IMPLAUSIBLE_COVERAGE_CONFIDENCE, (
+        "an unchecked plan kept a confidence that implies it passed"
+    )
+
+
+def test_a_plausible_plan_carries_no_such_warning():
+    rng = np.random.default_rng(11)
+    pts, _ = _rotate(rng, _house(rng))
+
+    document = slicing.extract_from_reconstruction(_ply(pts), metres_per_unit=1.0)
+
+    assert "unreliable" not in document.provenance.notes
+    assert document.provenance.confidence > slicing.IMPLAUSIBLE_COVERAGE_CONFIDENCE
