@@ -622,3 +622,40 @@ def test_the_trainer_is_asked_for_the_point_cloud_it_must_produce():
     # And the step it writes at has to be the step we stop at, or the file is
     # from the middle of training.
     assert command.count("__STEPS__") >= 3
+
+
+def test_a_network_floor_is_asked_for_but_stays_out_of_the_way(pod_env, monkeypatch):
+    """RunPod can filter on advertised link speed at placement.
+
+    Kept low on purpose. The machine that took a capture at 17 KB/s never had
+    its advertised speed observed, so there is no evidence a high floor would
+    have excluded it — while a high floor demonstrably narrows placement, which
+    is a failure that HAS been seen. At zero the fields are omitted entirely, so
+    an operator who turns it off gets the widest pool rather than a filter that
+    silently still applies.
+    """
+    monkeypatch.setenv("RECON_POD_MIN_MBPS", "25")
+    assert PodProvider._settings()["min_mbps"] == 25
+
+    monkeypatch.setenv("RECON_POD_MIN_MBPS", "0")
+    assert PodProvider._settings()["min_mbps"] == 0
+
+    sent = {}
+
+    def _rest(api_key, method, path, *, json_body=None, timeout=60):
+        if method == "POST" and path == "/pods":
+            sent.update(json_body or {})
+            return {"id": "pod-net", "costPerHr": 0.5}
+        return {"publicIp": "1.2.3.4", "portMappings": {"22": 9000}, "costPerHr": 0.5}
+
+    monkeypatch.setattr(PodProvider, "_rest", staticmethod(_rest))
+    import types
+    monkeypatch.setitem(
+        __import__("sys").modules, "asyncssh",
+        types.SimpleNamespace(generate_private_key=lambda kind: types.SimpleNamespace(
+            export_public_key=lambda: b"ssh-ed25519 AAAA")),
+    )
+    asyncio.run(PodProvider()._launch(PodProvider._settings(), []))
+
+    assert "minDownloadMbps" not in sent, "a disabled filter must not be sent"
+    assert "minUploadMbps" not in sent

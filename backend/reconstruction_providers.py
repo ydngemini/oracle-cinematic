@@ -1136,6 +1136,18 @@ _DEFAULT_POD_GPUS = (
     "NVIDIA RTX A6000",
 )
 
+#: Floor on a pod's advertised network speed, in Mbps, applied at placement.
+#:
+#: Deliberately LOW, and it is not the real defence. RunPod handed out a machine
+#: that took the capture at 17 KB/s — 0.14 Mbps effective — but its advertised
+#: speed was never observed, so there is no evidence a high floor would have
+#: excluded it, and a high floor demonstrably narrows placement, which is a
+#: failure that HAS been observed ("no free machine matching this request").
+#: So this is a sanity check against a host advertising broken connectivity,
+#: nothing more; POD_UPLOAD_BUDGET_SHARE is what actually catches a machine
+#: that advertises well and delivers badly.
+POD_MIN_MBPS = 10.0
+
 #: Share of a job's budget that staging the capture may consume before the pod
 #: is written off. A machine that cannot receive 60 images in that time will not
 #: train on them either, and the sooner it is abandoned the sooner a retry lands
@@ -1506,10 +1518,11 @@ def _pod_placement_error(response, settings: dict) -> str:
     return (
         "RunPod had no free machine matching this request: "
         f"{', '.join(settings['gpu_ids'])} on {settings['cloud_type']} cloud with "
-        f"{settings['disk_gb']} GB of container disk. This is capacity, not "
+        f"{settings['disk_gb']} GB of container disk and at least "
+        f"{settings['min_mbps']:.0f} Mbps. This is capacity, not "
         "configuration — the same request is accepted minutes later. Widen the "
-        "pool with RECON_POD_GPU_IDS, lower RECON_POD_DISK_GB, or set "
-        "RECON_POD_CLOUD_TYPE=COMMUNITY, then retry."
+        "pool with RECON_POD_GPU_IDS, lower RECON_POD_DISK_GB or "
+        "RECON_POD_MIN_MBPS, or set RECON_POD_CLOUD_TYPE=COMMUNITY, then retry."
     )
 
 
@@ -1607,6 +1620,7 @@ class PodProvider(ReconstructionProvider):
             # Refuse to start below this. An empty or negative balance is a
             # permanent, fixable condition and must be reported as one.
             "min_balance": _num("RECON_POD_MIN_BALANCE_USD", "1.00", 0.0, 1000.0),
+            "min_mbps": _num("RECON_POD_MIN_MBPS", str(POD_MIN_MBPS), 0.0, 10000.0),
             "cloud_type": cloud,
             "transport": transport,
             "steps": _num("RECON_POD_STEPS", "7000", 500, 60000, int),
@@ -1768,6 +1782,13 @@ class PodProvider(ReconstructionProvider):
                 "ports": ["22/tcp"],
                 "cloudType": settings["cloud_type"],
                 "supportPublicIp": True,
+                # Both directions: the capture goes to the pod and the model
+                # comes back, and a host that is bad at one is usually bad at
+                # both. Omitted entirely at 0 so the pool is not narrowed by a
+                # filter the operator turned off.
+                **({"minDownloadMbps": settings["min_mbps"],
+                    "minUploadMbps": settings["min_mbps"]}
+                   if settings["min_mbps"] > 0 else {}),
                 # Pre-emption mid-training wastes the entire spend, and spot
                 # matched on-demand at these tiers when it was measured.
                 "interruptible": False,
