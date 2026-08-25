@@ -275,12 +275,39 @@ delivered model. Mixing them does not raise — it returns a confident up axis
 pointing somewhere else. The sidecar records its frame and the reader refuses a
 mismatch.
 
-Consume them with `slicing.extract_from_reconstruction_file(path)`, which
-resolves the geometry and picks up the poses automatically. **Nothing in the
-product calls it yet** — deriving a plan from a reconstruction needs a scale
-anchor (`metres_per_unit`, `parcel_footprint_m2` or `known_total_sqft`) and a
-reconstruction has none of its own, so where that anchor comes from is a product
-decision that has not been made.
+`slicing.extract_from_reconstruction_file(path)` consumes them — it resolves the
+geometry and picks up the poses on its own — and the worker calls it after every
+successful reconstruction.
+
+### The scale anchor
+
+A reconstruction has no scale: COLMAP solves geometry up to a similarity
+transform, so the cloud is the right shape and an arbitrary size. The pipeline
+refuses without an anchor, because a guessed one multiplies every length and
+area by a constant and looks entirely correct doing it.
+`reconstruction_scale.resolve_anchor()` finds one from what the CRM already
+holds, in this order and for this reason:
+
+1. **Building footprint** (`parcel_footprint_m2`), from the address via licensed
+   parcel data or OpenStreetMap. Compared against the convex hull of the
+   capture's own slice band — an outline against an outline — which does not
+   care how many storeys the building has.
+2. **Recorded living area** (`known_total_sqft`, `leads.sqft`). Solved against
+   the interior area detected, which is right for a single storey and wrong by
+   roughly the storey count for anything taller. `listings` has no square
+   footage column, so a listing-backed capture has only route 1.
+
+Both fail the same way on a **partial capture** — one room measured against a
+whole building reads too large — and neither can detect it, because a plan
+solved against a footprint matches that footprint by construction. So the
+finished plan is cross-checked against a second *independent* figure where one
+exists; a disagreement past 35% is written into the provenance and halves the
+confidence rather than being smoothed over.
+
+No anchor means no plan, and that is the honest outcome.
+
+`ORACLE_FEATURE_RECON_FLOORPLAN=0` turns the whole step off. It never fails the
+job: the splat is the deliverable and has already succeeded.
 
 ### Cost control, and how it has actually failed
 

@@ -518,6 +518,124 @@ async def _close_capture_session(
         logger.warning("Could not close capture session %s: %s", session_id, exc)
 
 
+#: A reconstruction writing a floor plan into the CRM is a visible act, so it
+#: has a switch. Default on — the plan is the point of measuring the property —
+#: but a deployment that wants reconstructions to stay purely visual can say so.
+FLOORPLAN_FROM_RECONSTRUCTION = os.getenv(
+    "ORACLE_FEATURE_RECON_FLOORPLAN", "1"
+).strip().lower() not in ("0", "false", "no", "off")
+
+
+async def _derive_floorplan(job: ReconstructionJob, splat: Path, provider_name: str) -> None:
+    """Turn the finished reconstruction into a measured floor plan, or explain why not.
+
+    This is the step that makes a capture worth more than a picture: the same
+    cloud the viewer renders, measured into rooms and areas that feed rehab
+    costing. It runs here rather than on demand because the geometry and its
+    camera poses are on local disk exactly once, in this function's scope.
+
+    **Never fails the job.** The reconstruction is the deliverable and it has
+    already succeeded; a missing scale anchor, an unmeasurable capture or a
+    footprint provider having a bad afternoon must not turn a good splat into a
+    failed job. Every outcome is logged, and refusing is a normal one — a plan
+    with no anchor would be a document full of confident measurements all wrong
+    by the same constant.
+    """
+    if not FLOORPLAN_FROM_RECONSTRUCTION:
+        return
+
+    import capture_sidecars
+    import reconstruction_scale
+    from floorplan_api import persist_floorplan
+    from floorplan_pipeline.errors import ExtractionError
+
+    if capture_sidecars.geometry_for(splat) is None:
+        logger.info(
+            "No point cloud beside %s, so it cannot be measured; the viewer "
+            "artifact is unaffected.", splat.name,
+        )
+        return
+
+    try:
+        async with tenant_tx(job.ctx) as conn:
+            anchor = await reconstruction_scale.resolve_anchor(
+                conn, lead_id=job.lead_id, listing_id=job.listing_id,
+            )
+            recorded_sqft = None
+            if job.lead_id:
+                recorded_sqft = await conn.fetchval(
+                    "SELECT sqft FROM leads WHERE id = $1", job.lead_id
+                )
+        if anchor is None:
+            logger.info(
+                "No metric anchor for job %s — no floor plan derived. A "
+                "reconstruction has no scale of its own, and a guessed one is "
+                "wrong in every dimension at once.", job.job_id,
+            )
+            return
+
+        document = await asyncio.to_thread(
+            _extract_plan, splat, anchor,
+        )
+
+        # The anchor cannot validate itself. A second, independent figure is
+        # what catches a capture that covered part of the property.
+        disagreement = reconstruction_scale.cross_check(document, anchor, recorded_sqft)
+        document.provenance.notes = " ".join(filter(None, [
+            document.provenance.notes, anchor.describe(), disagreement,
+        ]))
+        if disagreement:
+            # Say it in the number as well as the prose: this is exactly the
+            # case where every dimension is uniformly wrong.
+            if document.provenance.confidence is not None:
+                document.provenance.confidence = round(
+                    document.provenance.confidence * 0.5, 3
+                )
+            logger.warning("Floor plan for job %s: %s", job.job_id, disagreement)
+
+        async with tenant_tx(job.ctx) as conn:
+            floorplan_id, revision = await persist_floorplan(
+                conn, job.ctx, _as_api_document(document),
+                lead_id=UUID(job.lead_id) if job.lead_id else None,
+                listing_id=UUID(job.listing_id) if job.listing_id else None,
+            )
+        logger.info(
+            "Floor plan %s r%d from reconstruction: %d room(s), %.0f sq ft, "
+            "anchored to %s.",
+            floorplan_id, revision, len(document.rooms), document.total_sqft,
+            anchor.kind,
+        )
+    except ExtractionError as exc:
+        # The pipeline refusing is a measurement it declined to fake, not a bug.
+        logger.info("No floor plan from job %s: %s", job.job_id, exc)
+    except Exception:  # noqa: BLE001 - the splat is delivered either way
+        logger.exception("Floor plan derivation failed for job %s", job.job_id)
+
+
+def _extract_plan(splat: Path, anchor):
+    """Blocking extraction, off the event loop.
+
+    `extract_from_reconstruction_file` finds the points cloud beside the splat
+    and picks up the recorded camera poses on its own — which is what settles
+    the orientation of rooms the cloud alone cannot decide.
+    """
+    from floorplan_pipeline import slicing
+
+    return slicing.extract_from_reconstruction_file(splat, **anchor.as_kwargs())
+
+
+def _as_api_document(document):
+    """The pipeline's dataclass as the Pydantic model the writer validates.
+
+    Round-tripping through the wire shape on purpose: the API model is where
+    the schema is enforced, and a server-derived plan should clear exactly the
+    same bar as one posted by a client.
+    """
+    from floorplan_api import FloorplanDocumentIn
+
+    return FloorplanDocumentIn.model_validate(document.to_json())
+
+
 async def _process(job: ReconstructionJob) -> None:
     provider = get_provider()
     await _set_status(job.ctx, job.job_id, "running", provider=provider.name, progress=10)
@@ -540,6 +658,7 @@ async def _process(job: ReconstructionJob) -> None:
                 provenance=getattr(provider, "produces", "captured"),
                 generator=provider.name,
             )
+            await _derive_floorplan(job, splat, provider.name)
     except Exception as exc:
         await _close_capture_session(
             job, session_id, status="failed", failure_reason=str(exc)[:2000]

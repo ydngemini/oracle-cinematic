@@ -443,94 +443,14 @@ async def save_floorplan(
             "AI-generated floor plans must declare a model_version.",
         )
 
-    document_json = json.dumps(doc.model_dump(mode="json"))
-    rehab_json = json.dumps(body.rehab_items) if body.rehab_items is not None else None
-
     async with tenant_tx(ctx) as conn:
         await _assert_subject_exists(conn, lead_id, listing_id)
-
-        # The unique indexes are partial (one per nullable FK), so a single
-        # ON CONFLICT target cannot address both. Do an explicit select-for-
-        # update then insert-or-update inside the transaction instead;
-        # tenant_tx gives us the isolation that makes this safe against a
-        # concurrent double-save from two tabs.
-        existing = await conn.fetchrow(
-            """
-            SELECT id FROM property_floorplans
-             WHERE (($1::uuid IS NOT NULL AND lead_id = $1)
-                 OR ($2::uuid IS NOT NULL AND listing_id = $2))
-             FOR UPDATE
-            """,
-            lead_id, listing_id,
-        )
-
-        manifest_json = (
-            json.dumps(body.dimension_manifest) if body.dimension_manifest is not None else None
-        )
-
-        if existing is None:
-            row = await conn.fetchrow(
-                """
-                INSERT INTO property_floorplans (
-                    tenant_id, lead_id, listing_id, schema_version, document,
-                    total_sqft, wall_linear_ft, room_count, level_count,
-                    source, ai_generated, model_version, confidence,
-                    dimension_manifest, scaffold_sha256, created_by
-                )
-                VALUES ($1,$2,$3,$4,$5::jsonb,$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb,$15,$16)
-                RETURNING id
-                """,
-                ctx.tenant_id, lead_id, listing_id, doc.schema_version, document_json,
-                metrics["total_sqft"], metrics["wall_linear_ft"],
-                metrics["room_count"], metrics["level_count"],
-                prov.source, prov.ai_generated, prov.model_version, prov.confidence,
-                manifest_json, body.scaffold_sha256,
-                ctx.agent_id,
-            )
-            floorplan_id = row["id"]
-        else:
-            floorplan_id = existing["id"]
-            await conn.execute(
-                """
-                UPDATE property_floorplans
-                   SET document = $2::jsonb,
-                       schema_version = $3,
-                       total_sqft = $4,
-                       wall_linear_ft = $5,
-                       room_count = $6,
-                       level_count = $7,
-                       source = $8,
-                       ai_generated = $9,
-                       model_version = $10,
-                       confidence = $11,
-                       dimension_manifest = $12::jsonb,
-                       scaffold_sha256 = $13,
-                       updated_at = now()
-                 WHERE id = $1
-                """,
-                floorplan_id, document_json, doc.schema_version,
-                metrics["total_sqft"], metrics["wall_linear_ft"],
-                metrics["room_count"], metrics["level_count"],
-                prov.source, prov.ai_generated, prov.model_version, prov.confidence,
-                manifest_json, body.scaffold_sha256,
-            )
-
-        next_revision = await conn.fetchval(
-            "SELECT COALESCE(MAX(revision), 0) + 1 FROM property_floorplan_revisions WHERE floorplan_id = $1",
-            floorplan_id,
-        )
-        await conn.execute(
-            """
-            INSERT INTO property_floorplan_revisions (
-                tenant_id, floorplan_id, revision, document,
-                total_sqft, wall_linear_ft, rehab_items,
-                dimension_manifest, scaffold_sha256, created_by
-            )
-            VALUES ($1,$2,$3,$4::jsonb,$5,$6,$7::jsonb,$8::jsonb,$9,$10)
-            """,
-            ctx.tenant_id, floorplan_id, next_revision, document_json,
-            metrics["total_sqft"], metrics["wall_linear_ft"], rehab_json,
-            manifest_json, body.scaffold_sha256, ctx.agent_id,
+        floorplan_id, next_revision = await persist_floorplan(
+            conn, ctx, doc,
+            lead_id=lead_id, listing_id=listing_id,
+            rehab_items=body.rehab_items,
+            dimension_manifest=body.dimension_manifest,
+            scaffold_sha256=body.scaffold_sha256,
         )
 
     return {
@@ -539,6 +459,114 @@ async def save_floorplan(
         "metrics": metrics,
         "disclosure": FLOORPLAN_AI_DISCLOSURE if prov.ai_generated else None,
     }
+
+
+async def persist_floorplan(
+    conn, ctx, doc, *, lead_id=None, listing_id=None,
+    rehab_items=None, dimension_manifest=None, scaffold_sha256=None,
+):
+    """Upsert a plan and append its immutable revision. Returns (id, revision).
+
+    Factored out of the HTTP handler so a plan derived on the server — from a
+    reconstruction, say — lands in exactly the same rows, with the same revision
+    history, as one an agent drew by hand. A second write path would be a second
+    set of bugs, and the revision table is what makes an AI-generated plan
+    auditable at all.
+
+    The caller owns the transaction and has already checked the subject exists;
+    this does the writing only.
+    """
+    metrics = derive_metrics(doc)
+    prov = doc.provenance
+    document_json = json.dumps(doc.model_dump(mode="json"))
+    rehab_json = json.dumps(rehab_items) if rehab_items is not None else None
+
+
+    # The unique indexes are partial (one per nullable FK), so a single
+    # ON CONFLICT target cannot address both. Do an explicit select-for-
+    # update then insert-or-update inside the transaction instead;
+    # tenant_tx gives us the isolation that makes this safe against a
+    # concurrent double-save from two tabs.
+    existing = await conn.fetchrow(
+        """
+        SELECT id FROM property_floorplans
+         WHERE (($1::uuid IS NOT NULL AND lead_id = $1)
+             OR ($2::uuid IS NOT NULL AND listing_id = $2))
+         FOR UPDATE
+        """,
+        lead_id, listing_id,
+    )
+
+    manifest_json = (
+        json.dumps(dimension_manifest) if dimension_manifest is not None else None
+    )
+
+    if existing is None:
+        row = await conn.fetchrow(
+            """
+            INSERT INTO property_floorplans (
+                tenant_id, lead_id, listing_id, schema_version, document,
+                total_sqft, wall_linear_ft, room_count, level_count,
+                source, ai_generated, model_version, confidence,
+                dimension_manifest, scaffold_sha256, created_by
+            )
+            VALUES ($1,$2,$3,$4,$5::jsonb,$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb,$15,$16)
+            RETURNING id
+            """,
+            ctx.tenant_id, lead_id, listing_id, doc.schema_version, document_json,
+            metrics["total_sqft"], metrics["wall_linear_ft"],
+            metrics["room_count"], metrics["level_count"],
+            prov.source, prov.ai_generated, prov.model_version, prov.confidence,
+            manifest_json, scaffold_sha256,
+            ctx.agent_id,
+        )
+        floorplan_id = row["id"]
+    else:
+        floorplan_id = existing["id"]
+        await conn.execute(
+            """
+            UPDATE property_floorplans
+               SET document = $2::jsonb,
+                   schema_version = $3,
+                   total_sqft = $4,
+                   wall_linear_ft = $5,
+                   room_count = $6,
+                   level_count = $7,
+                   source = $8,
+                   ai_generated = $9,
+                   model_version = $10,
+                   confidence = $11,
+                   dimension_manifest = $12::jsonb,
+                   scaffold_sha256 = $13,
+                   updated_at = now()
+             WHERE id = $1
+            """,
+            floorplan_id, document_json, doc.schema_version,
+            metrics["total_sqft"], metrics["wall_linear_ft"],
+            metrics["room_count"], metrics["level_count"],
+            prov.source, prov.ai_generated, prov.model_version, prov.confidence,
+            manifest_json, scaffold_sha256,
+        )
+
+    next_revision = await conn.fetchval(
+        "SELECT COALESCE(MAX(revision), 0) + 1 FROM property_floorplan_revisions WHERE floorplan_id = $1",
+        floorplan_id,
+    )
+    await conn.execute(
+        """
+        INSERT INTO property_floorplan_revisions (
+            tenant_id, floorplan_id, revision, document,
+            total_sqft, wall_linear_ft, rehab_items,
+            dimension_manifest, scaffold_sha256, created_by
+        )
+        VALUES ($1,$2,$3,$4::jsonb,$5,$6,$7::jsonb,$8::jsonb,$9,$10)
+        """,
+        ctx.tenant_id, floorplan_id, next_revision, document_json,
+        metrics["total_sqft"], metrics["wall_linear_ft"], rehab_json,
+        manifest_json, scaffold_sha256, ctx.agent_id,
+    )
+
+    return floorplan_id, next_revision
 
 
 class ExtractParcelRequest(_Strict):
