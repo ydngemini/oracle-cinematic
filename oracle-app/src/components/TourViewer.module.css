@@ -71,3 +71,43 @@
 @media (prefers-reduced-motion: reduce) {
   .tab { transition: none; }
 }
+
+/* The guided route. Sits with the mode switcher rather than over the scene:
+   a control that covers the room is a control that hides what it is touring. */
+.route {
+  position: absolute;
+  left: 50%;
+  bottom: 4.5rem;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.25rem 0.35rem;
+  border-radius: 999px;
+  background: rgba(12, 14, 20, 0.72);
+  backdrop-filter: blur(10px);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  z-index: 6;
+}
+
+.routeStep {
+  min-width: 2rem;
+  height: 2rem;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.92);
+  font-size: 1.25rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.routeStep:disabled { opacity: 0.35; cursor: default; }
+.routeStep:not(:disabled):hover { background: rgba(255, 255, 255, 0.12); }
+
+.routeLabel {
+  padding: 0 0.5rem;
+  font-size: 0.8125rem;
+  color: rgba(255, 255, 255, 0.92);
+  white-space: nowrap;
+}

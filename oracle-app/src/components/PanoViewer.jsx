@@ -133,11 +133,22 @@ function compile(gl, type, source) {
   return shader;
 }
 
-export default function PanoViewer({ scenes = [], disclosure, address, title, onClose }) {
+export default function PanoViewer({
+  scenes = [], disclosure, address, title, onClose, focusSceneId = null,
+}) {
   const canvasRef = useRef(null);
   const stateRef = useRef({ yaw: 0, pitch: 0, drag: false, lastX: 0, lastY: 0 });
   const [status, setStatus] = useState('loading'); // loading | ready | error | nowebgl
   const [currentId, setCurrentId] = useState(() => walkOrder(scenes)[0]?.scene_id ?? null);
+
+  // A guided route drives the viewer from outside; free roam still drives it
+  // from within. Only an actual CHANGE of focus moves the camera, so a visitor
+  // who wanders off the route is not yanked back on every re-render.
+  useEffect(() => {
+    if (focusSceneId && scenes.some((sc) => sc.scene_id === focusSceneId)) {
+      setCurrentId(focusSceneId);
+    }
+  }, [focusSceneId, scenes]);
   // Look direction lives in a ref so the 60fps draw loop never touches React.
   // Hotspot placement does need it at render time though, so interactions
   // mirror the ref into state — once per gesture event, not once per frame.

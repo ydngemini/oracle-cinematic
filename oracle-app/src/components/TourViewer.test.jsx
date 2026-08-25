@@ -154,3 +154,43 @@ describe('the claim follows the asset on screen', () => {
     expect(splat.dataset.disclosure).toBe('AI-generated reconstruction.');
   });
 });
+
+describe('guided route', () => {
+  const scenes = [
+    { scene_id: 'a', url: '/a.jpg', is_this_property: true, neighbours: [] },
+    { scene_id: 'b', url: '/b.jpg', is_this_property: true, neighbours: [] },
+    { scene_id: 'c', url: '/c.jpg', is_this_property: true, neighbours: [] },
+  ];
+  const route = [
+    { id: 'tp_a', index: 0, scene_id: 'a', label: 'Kitchen', narration: '' },
+    { id: 'tp_b', index: 1, scene_id: 'b', label: 'Living Room', narration: '' },
+    { id: 'tp_c', index: 2, scene_id: 'c', label: 'Bedroom', narration: '' },
+  ];
+
+  it('offers the route when there is more than one stop', () => {
+    render(<TourViewer panoScenes={scenes} tourpoints={route} title="1 Test St" />);
+    expect(screen.getByRole('navigation', { name: /guided tour/i })).toBeTruthy();
+    expect(screen.getByText(/3 stops/)).toBeTruthy();
+  });
+
+  it('is not offered when the property has nothing to guide through', () => {
+    render(<TourViewer panoScenes={scenes} tourpoints={[]} title="1 Test St" />);
+    expect(screen.queryByRole('navigation', { name: /guided tour/i })).toBeNull();
+  });
+
+  it('names the stop it has walked you to', () => {
+    render(<TourViewer panoScenes={scenes} tourpoints={route} title="1 Test St" />);
+
+    fireEvent.click(screen.getByRole('button', { name: /start the guided tour/i }));
+
+    expect(screen.getByText(/Kitchen/)).toBeTruthy();
+    expect(screen.getByText(/1 of 3/)).toBeTruthy();
+  });
+
+  it('drops a stop whose scene no longer exists', () => {
+    // Media can be deleted while a tour is open. A route still pointing at it
+    // would walk someone into a room that is not there.
+    render(<TourViewer panoScenes={[scenes[0]]} tourpoints={route} title="1 Test St" />);
+    expect(screen.queryByRole('navigation', { name: /guided tour/i })).toBeNull();
+  });
+});

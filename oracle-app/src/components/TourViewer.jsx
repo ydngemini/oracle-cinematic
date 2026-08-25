@@ -55,7 +55,8 @@ const ENGINE = (import.meta.env.VITE_TOUR_ENGINE || 'playcanvas').toLowerCase();
 const DEMO_PREFIX = 'This is a generated demo space, not a capture of this property.';
 
 export function TourViewer({
-  splatUrl, panoScenes, disclosure, address, title, floors, onClose, isThisProperty = true,
+  splatUrl, panoScenes, disclosure, address, title, floors, onClose,
+  isThisProperty = true, tourpoints,
 }) {
   // PropertyTourViewer re-initialises its whole engine when `assets` changes
   // identity, so this must be stable across re-renders.
@@ -110,6 +111,18 @@ export function TourViewer({
     return modes[0]?.id ?? null;
   }, [splatUrl, isThisProperty, scenes, modes]);
 
+  // The guided route, over the same scenes free roam uses. A route is a VIEW of
+  // the graph — it holds scene ids, never copies of the scenes — so the two
+  // cannot drift apart. Empty means this property has nothing to guide through,
+  // which is a normal answer and simply leaves free roam as the only mode.
+  const route = useMemo(
+    () => (Array.isArray(tourpoints) ? tourpoints : []).filter(
+      (point) => scenes.some((sc) => sc.scene_id === point.scene_id),
+    ),
+    [tourpoints, scenes],
+  );
+  const [stop, setStop] = useState(null);
+
   const [chosenId, setChosenId] = useState(null);
   // Resolved during render rather than synced from an effect: if the chosen
   // mode disappears (media deleted while open) it falls back rather than
@@ -148,6 +161,37 @@ export function TourViewer({
     </nav>
   ) : null;
 
+  // Only offered on the 360 route, because that is the mode whose vantage
+  // points the route is made of. The splat is one continuous space; there is
+  // nothing to step between.
+  const guided = activeId === 'pano' && route.length >= 2 ? (
+    <nav className={styles.route} aria-label="Guided tour">
+      <button
+        type="button"
+        className={styles.routeStep}
+        onClick={() => setStop((at) => Math.max(0, (at ?? 0) - 1))}
+        disabled={(stop ?? 0) <= 0}
+        aria-label="Previous stop"
+      >
+        ‹
+      </button>
+      <span className={styles.routeLabel}>
+        {stop === null
+          ? `Guided tour · ${route.length} stops`
+          : `${route[stop].label} · ${stop + 1} of ${route.length}`}
+      </span>
+      <button
+        type="button"
+        className={styles.routeStep}
+        onClick={() => setStop((at) => Math.min(route.length - 1, (at ?? -1) + 1))}
+        disabled={stop !== null && stop >= route.length - 1}
+        aria-label={stop === null ? 'Start the guided tour' : 'Next stop'}
+      >
+        ›
+      </button>
+    </nav>
+  ) : null;
+
   let viewer;
   if (activeId === 'pano') {
     viewer = (
@@ -157,6 +201,7 @@ export function TourViewer({
         address={address}
         title={shownTitle}
         onClose={onClose}
+        focusSceneId={stop === null ? null : route[stop]?.scene_id ?? null}
       />
     );
   } else if (ENGINE === 'playcanvas') {
@@ -186,6 +231,7 @@ export function TourViewer({
   return (
     <>
       <Suspense fallback={null}>{viewer}</Suspense>
+      {guided}
       {switcher}
     </>
   );

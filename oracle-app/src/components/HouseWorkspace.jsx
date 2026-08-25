@@ -275,6 +275,7 @@ export default function HouseWorkspace({ house, onHouseUpdate }) {
           <TourViewer
             splatUrl={tour.splat_url}
             panoScenes={tour.pano_scenes}
+            tourpoints={tour.tourpoints}
             disclosure={tour.disclosure}
             floors={tour.floors}
             address={house.address}

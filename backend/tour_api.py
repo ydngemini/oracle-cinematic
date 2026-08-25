@@ -134,7 +134,8 @@ async def fetch_tour_rows(conn, lead_id, listing_id):
 def build_tour(rows, scene_rows, plan_row, *, lead_id=None, listing_id=None) -> dict:
     """Assemble the tour from already-fetched rows. Pure, so it is testable
     without a database and reusable by any caller that has the rows."""
-    floors = _floors_from_plan(plan_row["document"] if plan_row else None)
+    document = plan_row["document"] if plan_row else None
+    floors = _floors_from_plan(document)
 
     def _captured(row) -> bool:
         return row["provenance"] == "captured"
@@ -310,6 +311,10 @@ def build_tour(rows, scene_rows, plan_row, *, lead_id=None, listing_id=None) -> 
         "pano_scene_count": len(scenes),
         "photo_count": len(photos),
         "floors": floors,
+        # The guided route over those same scenes. Empty when there is nothing
+        # to guide through, which the viewer reads as "free roam only" rather
+        # than as a missing feature.
+        "tourpoints": _tourpoints(scenes, document, floors),
     }
 
 
@@ -368,6 +373,91 @@ def _pano_scenes(rows) -> list[dict]:
             scene["neighbours"] = adjacent
 
     return scenes
+
+
+def _tourpoints(scenes: list[dict], document, floors: list[dict]) -> list[dict]:
+    """An ordered guided route through the vantage points that exist.
+
+    The scene graph is free roam: a visitor can go anywhere, which is the right
+    default and a poor first impression. SPHR's runtime (MIT, lukehollis/sphr)
+    models the guided version as an ordered list of *tourpoints*, each one
+    moving the camera and saying something, over the same spaces the free-roam
+    mode uses. That separation is the good idea and it is adopted here — the
+    route is a VIEW of the scenes, never a second copy of them, so nothing can
+    drift out of step with the graph it describes.
+
+    Two rules keep this honest:
+
+      * it invents no vantage points. A tourpoint always references a scene the
+        capture actually produced, so the route cannot promise a room nobody
+        photographed;
+      * it names rooms only from a saved floor plan, and only when the counts
+        line up. Guessing "Kitchen" because a route reached its third stop is
+        exactly the kind of confident fiction the rest of this pipeline refuses.
+
+    Ordered by floor and then by capture order, which is the order the
+    photographer walked — a better route than anything derivable from the
+    positions alone, because they were there.
+    """
+    if len(scenes) < 2:
+        # One vantage point is a view, not a tour. Same rule the pano tier uses.
+        return []
+
+    by_floor: dict[int, str] = {int(f["index"]): f["name"] for f in floors}
+    rooms = _room_names(document)
+    ordered = sorted(
+        scenes, key=lambda sc: (int(sc.get("floor_index") or 0), scenes.index(sc))
+    )
+
+    # Room names are only attached when there is one per stop. A partial match
+    # would label some stops and silently leave others, which reads as missing
+    # data rather than as a deliberate absence.
+    named = rooms if len(rooms) == len(ordered) else []
+
+    points = []
+    for position, scene in enumerate(ordered):
+        floor_index = int(scene.get("floor_index") or 0)
+        label = (
+            scene.get("label")
+            or (named[position] if named else "")
+            or (by_floor.get(floor_index) or f"Stop {position + 1}")
+        )
+        points.append({
+            "id": f"tp_{scene['scene_id']}",
+            "index": position,
+            # What the viewer moves to. A reference, never a copy — the scene
+            # carries the position, heading and neighbours.
+            "scene_id": scene["scene_id"],
+            "floor_index": floor_index,
+            "label": label,
+            # Deliberately empty. Narration is authored, not generated: a
+            # sentence invented about a room the model has never seen is the
+            # one thing a property tour must not do.
+            "narration": "",
+            "is_this_property": bool(scene.get("is_this_property", True)),
+        })
+    return points
+
+
+def _room_names(document) -> list[str]:
+    """Room names from a saved plan, in level then plan order, or []."""
+    import json as _json
+
+    if not document:
+        return []
+    if isinstance(document, str):
+        try:
+            document = _json.loads(document)
+        except ValueError:
+            return []
+    rooms = document.get("rooms") or []
+    names = [str(r.get("name") or "").strip() for r in rooms]
+    # The reconstruction path names every room "Room 1", "Room 2" because it
+    # has no OCR pass. Those are placeholders, not names, and a tour that
+    # announces "Room 3" is worse than one that says nothing.
+    if all(name.lower().startswith("room ") for name in names if name):
+        return []
+    return [name for name in names if name]
 
 
 def _floors_from_plan(document) -> list[dict]:
