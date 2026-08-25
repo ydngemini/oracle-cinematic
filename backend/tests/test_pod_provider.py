@@ -755,3 +755,26 @@ def test_a_timeout_says_which_stage_it_died_in(pod_env, monkeypatch):
     message = str(caught.value)
     assert "during: training 7000 steps" in message, message
     assert "Last output" in message, "the tail is what says whether it was wedged"
+
+
+def test_every_tool_the_last_step_needs_is_checked_before_the_gpu_work():
+    """The conversion step is the final line of the job, and the pod image ships
+    no node and no npm at all.
+
+    A run did COLMAP, trained 7000 steps, exported 59 camera poses and wrote
+    743,656 points, then died on "npm: command not found" — 35 minutes of GPU
+    for nothing. Anything the last step needs has to be proven present before
+    the expensive part starts, exactly like the trainer's imports.
+    """
+    lines = [line.strip() for line in POD_PIPELINE.splitlines()]
+
+    def first(predicate):
+        return next(i for i, line in enumerate(lines) if predicate(line))
+
+    checked = first(lambda l: l.startswith("command -v splat-transform") and "exit 2" not in l)
+    gpu_work = first(lambda l: l.startswith("colmap feature_extractor"))
+    assert checked < gpu_work, "splat-transform is proven only after COLMAP has run"
+
+    # And node is pinned rather than resolved at run time.
+    assert "__NODE__" in POD_PIPELINE
+    assert "nodejs.org/dist/__NODE__" in POD_PIPELINE

@@ -1190,6 +1190,10 @@ POD_UPLOAD_MIN_SECONDS = 120.0
 #: over-estimate ends the job early, an under-estimate overspends.
 _POD_FALLBACK_HOURLY = 0.40
 
+#: Pinned for the same reason as everything else here: the pod image ships no
+#: node at all, Ubuntu 22.04's apt has node 12, and splat-transform needs 22.
+_POD_NODE_VERSION = "v22.23.2"
+
 #: Pinned. A trainer resolved at run time is how version skew arrives with no
 #: diff to review — one run was lost entirely to a pip-installed gsplat whose
 #: examples were cloned from `main`.
@@ -1243,6 +1247,35 @@ if ! command -v colmap >/dev/null || ! command -v xvfb-run >/dev/null; then
   quietly "apt-get install" apt-get -qq install -y colmap xvfb
 fi
 command -v colmap >/dev/null || { say "colmap is still not on PATH after install"; exit 2; }
+
+# Node, installed HERE rather than discovered missing at the end.
+#
+# The pod image ships no node and no npm at all, and the conversion step is the
+# very last line of the job — so a run did COLMAP, trained 7000 steps, exported
+# its poses and wrote 743,656 points, and then died on
+# "npm: command not found" with nothing to show for 35 minutes of GPU. Same
+# lesson as the trainer's imports: check what the job needs before spending the
+# expensive part, not after.
+#
+# A pinned static tarball rather than apt or NodeSource: Ubuntu 22.04 ships
+# node 12, splat-transform needs >= 22, and an unpinned installer is how the
+# toolchain changes underneath this with no diff to review.
+if ! command -v splat-transform >/dev/null; then
+  if ! command -v node >/dev/null || [ "$(node -v | sed 's/v\([0-9]*\).*/\1/')" -lt 22 ]; then
+    say "installing node __NODE__"
+    quietly "download node" curl -fsSL -o /tmp/node.tar.xz \
+      "https://nodejs.org/dist/__NODE__/node-__NODE__-linux-x64.tar.xz"
+    mkdir -p /opt/node
+    quietly "unpack node" tar -xJf /tmp/node.tar.xz -C /opt/node --strip-components=1
+    export PATH="/opt/node/bin:$PATH"
+  fi
+  command -v npm >/dev/null || { say "npm is still not on PATH after installing node"; exit 2; }
+  say "installing splat-transform __ST__"
+  quietly "npm install splat-transform" npm install -g "@playcanvas/splat-transform@__ST__"
+fi
+export PATH="/opt/node/bin:$PATH"
+command -v splat-transform >/dev/null || {
+  say "splat-transform is not runnable; the job would die at the last line"; exit 2; }
 
 export QT_QPA_PLATFORM=offscreen
 
@@ -1407,8 +1440,6 @@ print(f">>> wrote {count} points", file=sys.stderr)
 POINTS
 
 say "converting to .sog"
-command -v splat-transform >/dev/null || \
-  quietly "npm install splat-transform" npm install -g "@playcanvas/splat-transform@__ST__"
 # .sog, never .splat: splat-transform lists .splat input-only in every released
 # version, so asking it to write one fails on every real run.
 splat-transform "$PLY" /workspace/model.sog
@@ -1953,6 +1984,7 @@ class PodProvider(ReconstructionProvider):
             .replace("__STEPS__", str(settings["steps"]))
             .replace("__ST__", SPLAT_TRANSFORM_VERSION)
             .replace("__GSPLAT__", _POD_GSPLAT_VERSION)
+            .replace("__NODE__", _POD_NODE_VERSION)
         )
 
         async def _upload() -> None:
@@ -2055,6 +2087,7 @@ class PodProvider(ReconstructionProvider):
                 .replace("__STEPS__", str(settings["steps"]))
                 .replace("__ST__", SPLAT_TRANSFORM_VERSION)
                 .replace("__GSPLAT__", _POD_GSPLAT_VERSION)
+            .replace("__NODE__", _POD_NODE_VERSION)
             )
             object_storage.put_bytes(f"{in_prefix}/manifest.txt",
                                      "\n".join(urls).encode(), "text/plain")
