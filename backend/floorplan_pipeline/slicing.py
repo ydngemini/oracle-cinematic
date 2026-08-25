@@ -935,6 +935,29 @@ def floor_bounded_mask(xyz, up: UpAxis, profile):
     if height <= 0:
         raise DegenerateGeometry("No storey height, so the floor cannot bound anything.")
 
+    # Square the building up before rasterising it.
+    #
+    # Polycam's published pipeline does this second of six steps: find the
+    # building's dominant orientation, rotate the whole scan onto it, then snap
+    # near-axis walls back to square. It matters more here than in the image
+    # path because this outline is TRACED from occupancy rather than drawn — off
+    # axis, a straight wall climbs the pixel grid as a staircase, and
+    # approxPolyDP faithfully returns every step of it. The real room came back
+    # with 33 walls for what is four.
+    #
+    # The plan is left in the squared frame rather than rotated back. A floor
+    # plan has no north, and axis-aligned is the orientation it is drawn in.
+    floor_only = (
+        (heights >= profile.floor - FLOOR_BAND * height)
+        & (heights <= profile.floor + FLOOR_BAND * height)
+    )
+    if int(floor_only.sum()) >= 256:
+        angle = _dominant_angle(cv2, planar[floor_only])
+        if abs(angle) > 1e-6:
+            rotation = np.array([[math.cos(-angle), -math.sin(-angle)],
+                                 [math.sin(-angle), math.cos(-angle)]])
+            planar = planar @ rotation.T
+
     # The same margin the image path uses, for the same reason: with the
     # interior against the border, detect_rooms discards it as background.
     lo_x, hi_x = float(planar[:, 0].min()), float(planar[:, 0].max())

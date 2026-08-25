@@ -529,6 +529,15 @@ def extract_from_floorplan_image(
 #: measured, it cost 24% of the area on a real scanned room.
 MEASURED_OUTLINE_EPSILON = 0.004
 
+#: sin of the angle within which an edge counts as axis-aligned. ~8.6 degrees:
+#: wide enough to catch a staircase artefact, narrow enough to leave a bay
+#: window or a chamfered corner as the angled wall it really is.
+SQUARE_SNAP_SIN = 0.15
+
+#: Twice the triangle area below which three points are one straight wall.
+#: In square metres, so it scales with the plan rather than the raster.
+COLLINEAR_AREA_TOL = 0.02
+
 
 def _rooms_from_sealed_mask(mask, scale: float) -> list[list[Point2D]]:
     """Interior components of a sealed mask, simplified gently.
@@ -563,8 +572,55 @@ def _rooms_from_sealed_mask(mask, scale: float) -> list[list[Point2D]]:
         )
         if len(approx) < 3:
             continue
-        polygons.append([(float(p[0][0]) * scale, float(p[0][1]) * scale) for p in approx])
+        polygon = [(float(p[0][0]) * scale, float(p[0][1]) * scale) for p in approx]
+        polygons.append(_squared_off(polygon))
     return polygons
+
+
+def _squared_off(polygon: list[Point2D]) -> list[Point2D]:
+    """Snap near-axis edges square and drop the vertices that leaves.
+
+    The second half of the alignment step. Rotating the scan onto the
+    building's axes is not enough on a TRACED outline: a straight wall still
+    climbs the pixel grid as a shallow staircase, and every step of it survives
+    polygon simplification as a real corner. The real room came back with 32
+    walls for what is four.
+
+    Only near-axis edges move, and only by the small amount that squares them,
+    so a genuinely angled wall — a bay, a chamfer — is left alone rather than
+    forced into a right angle it does not have.
+    """
+    cv2, np = _require_cv()
+
+    if len(polygon) < 4:
+        return polygon
+    points = np.asarray(polygon, dtype="float64")
+
+    for index in range(len(points)):
+        nxt = (index + 1) % len(points)
+        dx, dy = points[nxt] - points[index]
+        length = math.hypot(dx, dy)
+        if length <= 0:
+            continue
+        if abs(dy) / length <= SQUARE_SNAP_SIN:          # nearly horizontal
+            mid = (points[index][1] + points[nxt][1]) / 2
+            points[index][1] = points[nxt][1] = mid
+        elif abs(dx) / length <= SQUARE_SNAP_SIN:        # nearly vertical
+            mid = (points[index][0] + points[nxt][0]) / 2
+            points[index][0] = points[nxt][0] = mid
+
+    # Squaring makes neighbours collinear; those corners are no longer corners.
+    kept: list[Point2D] = []
+    for index in range(len(points)):
+        previous = points[index - 1]
+        current = points[index]
+        following = points[(index + 1) % len(points)]
+        before = current - previous
+        after = following - current
+        cross = abs(before[0] * after[1] - before[1] * after[0])
+        if cross > COLLINEAR_AREA_TOL and math.hypot(*before) > 1e-9:
+            kept.append((float(current[0]), float(current[1])))
+    return kept if len(kept) >= 3 else [(float(x), float(y)) for x, y in points]
 
 
 def extract_from_wall_mask(

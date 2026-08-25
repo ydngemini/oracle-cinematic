@@ -1126,3 +1126,45 @@ def test_the_floor_bounded_path_refuses_without_a_scale():
         slicing.extract_from_reconstruction(
             _ply(pts), use_segmenter=slicing.FLOOR_BOUNDED
         )
+
+
+def test_a_traced_outline_is_squared_to_the_building_axes():
+    """Polycam's published pipeline squares the building up second of six steps,
+    and it matters more on a TRACED outline than a drawn one: off axis, a
+    straight wall climbs the pixel grid as a staircase and every step survives
+    simplification as a real corner.
+
+    The plan is deliberately left in the squared frame. A floor plan has no
+    north; axis-aligned is the orientation it is drawn in.
+    """
+    from floorplan_pipeline.raster import _squared_off
+
+    # A wall that drifts a few millimetres per metre — a staircase artefact,
+    # not a design feature.
+    ragged = [(0.0, 0.0), (4.0, 0.03), (4.02, 3.0), (0.0, 3.0)]
+    squared = _squared_off(ragged)
+
+    for index in range(len(squared)):
+        start, end = squared[index - 1], squared[index]
+        dx, dy = end[0] - start[0], end[1] - start[1]
+        if math.hypot(dx, dy) < 1e-9:
+            continue
+        assert min(abs(dx), abs(dy)) / math.hypot(dx, dy) < 1e-6, (
+            f"edge {start}->{end} was left off axis"
+        )
+
+
+def test_a_genuinely_angled_wall_is_not_forced_square():
+    """Only near-axis edges move. A bay or a chamfer is a real wall, and
+    snapping it to a right angle it does not have would be inventing geometry."""
+    from floorplan_pipeline.raster import _squared_off
+
+    chamfered = [(0.0, 0.0), (4.0, 0.0), (4.0, 3.0), (2.0, 4.5), (0.0, 3.0)]
+    squared = _squared_off(chamfered)
+
+    diagonals = [
+        (squared[i - 1], squared[i]) for i in range(len(squared))
+        if min(abs(squared[i][0] - squared[i - 1][0]),
+               abs(squared[i][1] - squared[i - 1][1])) > 0.3
+    ]
+    assert diagonals, "the chamfer was squared away"
