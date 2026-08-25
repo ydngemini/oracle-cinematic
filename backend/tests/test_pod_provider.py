@@ -778,3 +778,12 @@ def test_every_tool_the_last_step_needs_is_checked_before_the_gpu_work():
     # And node is pinned rather than resolved at run time.
     assert "__NODE__" in POD_PIPELINE
     assert "nodejs.org/dist/__NODE__" in POD_PIPELINE
+
+    # Having the binary on PATH proves nothing about whether it can CONVERT:
+    # .sog is written through WebGPU and needs a Vulkan loader. A job with
+    # splat-transform installed but no libvulkan.so.1 trained for seventeen
+    # minutes and died on the last line, so the conversion is exercised for
+    # real before any of that is paid for.
+    smoke = first(lambda l: l.startswith('say "checking .sog conversion'))
+    assert smoke < gpu_work, "the conversion is proven only after the GPU work"
+    assert "libvulkan1" in POD_PIPELINE, "the .sog writer has no Vulkan loader"

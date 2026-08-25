@@ -1244,7 +1244,13 @@ quietly() {                      # $1 = label, rest = command
 if ! command -v colmap >/dev/null || ! command -v xvfb-run >/dev/null; then
   say "installing colmap + xvfb"
   quietly "apt-get update" apt-get -qq update
-  quietly "apt-get install" apt-get -qq install -y colmap xvfb
+  # libvulkan1 + a software ICD are NOT optional extras. splat-transform writes
+  # .sog through WebGPU, which needs a Vulkan loader; without it the conversion
+  # dies with "Couldn't load Vulkan: libvulkan.so.1" and then a null-deref in
+  # requireFeature, at the very last line of a 17-minute job. mesa-vulkan-drivers
+  # provides llvmpipe so this does not depend on the NVIDIA ICD being wired up
+  # inside the container.
+  quietly "apt-get install" apt-get -qq install -y colmap xvfb libvulkan1 mesa-vulkan-drivers
 fi
 command -v colmap >/dev/null || { say "colmap is still not on PATH after install"; exit 2; }
 
@@ -1276,6 +1282,30 @@ fi
 export PATH="/opt/node/bin:$PATH"
 command -v splat-transform >/dev/null || {
   say "splat-transform is not runnable; the job would die at the last line"; exit 2; }
+
+# Prove the CONVERSION works, not just that the binary is on PATH.
+#
+# Having splat-transform installed says nothing about whether it can write a
+# .sog: that path goes through WebGPU and needs a Vulkan loader, and a job with
+# the binary present but no libvulkan.so.1 trained for seventeen minutes and
+# then died on the last line. Converting one gaussian costs three seconds and
+# exercises the whole toolchain.
+say "checking .sog conversion end to end"
+python - <<'SMOKE'
+import struct
+fields = ["x","y","z","f_dc_0","f_dc_1","f_dc_2","opacity",
+          "scale_0","scale_1","scale_2","rot_0","rot_1","rot_2","rot_3"]
+header = ("ply\nformat binary_little_endian 1.0\nelement vertex 1\n"
+          + "".join(f"property float {name}\n" for name in fields) + "end_header\n")
+values = [0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 3.0, -3.0, -3.0, -3.0, 1.0, 0.0, 0.0, 0.0]
+open("/workspace/smoke.ply", "wb").write(
+    header.encode() + struct.pack("<%df" % len(values), *values))
+SMOKE
+if ! quietly "smoke .sog conversion" splat-transform /workspace/smoke.ply /workspace/smoke.sog; then
+  say "splat-transform cannot write .sog on this pod — refusing to spend GPU time first"
+  exit 2
+fi
+rm -f /workspace/smoke.ply /workspace/smoke.sog
 
 export QT_QPA_PLATFORM=offscreen
 
