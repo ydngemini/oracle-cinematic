@@ -1250,7 +1250,11 @@ if ! command -v colmap >/dev/null || ! command -v xvfb-run >/dev/null; then
   # requireFeature, at the very last line of a 17-minute job. mesa-vulkan-drivers
   # provides llvmpipe so this does not depend on the NVIDIA ICD being wired up
   # inside the container.
-  quietly "apt-get install" apt-get -qq install -y colmap xvfb libvulkan1 mesa-vulkan-drivers
+  # The Vulkan/GL set is what PlayCanvas documents for running splat-transform
+  # in a container. `vulkan-tools` brings the loader and `vulkaninfo`, which is
+  # the only way to tell "no ICD mounted" from "no GPU" when this goes wrong.
+  quietly "apt-get install" apt-get -qq install -y colmap xvfb \
+    vulkan-tools libgl1 libglvnd0 libglx0 libegl1 libxext6
 fi
 command -v colmap >/dev/null || { say "colmap is still not on PATH after install"; exit 2; }
 
@@ -1301,8 +1305,22 @@ values = [0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 3.0, -3.0, -3.0, -3.0, 1.0, 0.0, 0.0, 0.
 open("/workspace/smoke.ply", "wb").write(
     header.encode() + struct.pack("<%df" % len(values), *values))
 SMOKE
-if ! quietly "smoke .sog conversion" splat-transform /workspace/smoke.ply /workspace/smoke.sog; then
-  say "splat-transform cannot write .sog on this pod — refusing to spend GPU time first"
+# Which device can actually write a .sog here, decided now and reused later.
+#
+# SOG compression is GPU-accelerated and `-g cpu` is the documented route when
+# "GPU drivers are unavailable or problematic" — it is 5-10x slower and it
+# works. Trying GPU first and falling back means a pod whose Vulkan ICD did not
+# mount still finishes its job instead of dying on the last line.
+ST_DEVICE=""
+if quietly "smoke .sog on gpu" splat-transform /workspace/smoke.ply /workspace/smoke.sog; then
+  say "converting on the GPU"
+elif quietly "smoke .sog on cpu" splat-transform -g cpu /workspace/smoke.ply /workspace/smoke.sog; then
+  ST_DEVICE="-g cpu"
+  say "no usable GPU for compression; falling back to CPU (slower, and it works)"
+  vulkaninfo --summary 2>&1 | head -5 >&2 || say "vulkaninfo unavailable"
+else
+  say "splat-transform cannot write .sog on this pod by any route"
+  vulkaninfo --summary 2>&1 | head -20 >&2 || say "vulkaninfo unavailable"
   exit 2
 fi
 rm -f /workspace/smoke.ply /workspace/smoke.sog
@@ -1472,7 +1490,7 @@ POINTS
 say "converting to .sog"
 # .sog, never .splat: splat-transform lists .splat input-only in every released
 # version, so asking it to write one fails on every real run.
-splat-transform "$PLY" /workspace/model.sog
+splat-transform $ST_DEVICE "$PLY" /workspace/model.sog
 test -s /workspace/model.sog || { echo "!! conversion produced no .sog" >&2; exit 5; }
 echo "OK $(stat -c%s /workspace/model.sog) bytes"
 """
@@ -1888,7 +1906,16 @@ class PodProvider(ReconstructionProvider):
                 # Pre-emption mid-training wastes the entire spend, and spot
                 # matched on-demand at these tiers when it was measured.
                 "interruptible": False,
-                "env": {"PUBLIC_KEY": public_key},
+                "env": {
+                    "PUBLIC_KEY": public_key,
+                    # `graphics` is the one that matters, and it is not the
+                    # default: without it the NVIDIA Container Toolkit does not
+                    # mount the Vulkan ICD into the container at all, which is
+                    # why libvulkan.so.1 was simply absent on a machine with a
+                    # perfectly good GPU. Read at container creation, so it has
+                    # to be set here rather than exported in the script.
+                    "NVIDIA_DRIVER_CAPABILITIES": "compute,graphics,utility",
+                },
             },
         ) or {}
         pod_id = created.get("id")

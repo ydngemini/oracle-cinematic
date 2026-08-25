@@ -787,3 +787,45 @@ def test_every_tool_the_last_step_needs_is_checked_before_the_gpu_work():
     smoke = first(lambda l: l.startswith('say "checking .sog conversion'))
     assert smoke < gpu_work, "the conversion is proven only after the GPU work"
     assert "libvulkan1" in POD_PIPELINE, "the .sog writer has no Vulkan loader"
+
+
+def test_the_pod_asks_for_the_driver_capability_that_mounts_vulkan(pod_env, monkeypatch):
+    """`graphics` is not in the default driver capabilities, and without it the
+    NVIDIA Container Toolkit does not mount the Vulkan ICD at all — which is why
+    libvulkan.so.1 was absent on a machine with a perfectly good GPU. It is read
+    at container creation, so it has to be in the pod's env rather than exported
+    by the script.
+    """
+    import types
+
+    sent = {}
+
+    def _rest(api_key, method, path, *, json_body=None, timeout=60):
+        if method == "POST" and path == "/pods":
+            sent.update(json_body or {})
+            return {"id": "pod-vk", "costPerHr": 0.5}
+        return {"publicIp": "1.2.3.4", "portMappings": {"22": 9000}, "costPerHr": 0.5}
+
+    monkeypatch.setattr(PodProvider, "_rest", staticmethod(_rest))
+    monkeypatch.setitem(
+        __import__("sys").modules, "asyncssh",
+        types.SimpleNamespace(generate_private_key=lambda kind: types.SimpleNamespace(
+            export_public_key=lambda: b"ssh-ed25519 AAAA")),
+    )
+    asyncio.run(PodProvider()._launch(PodProvider._settings(), []))
+
+    assert "graphics" in sent["env"]["NVIDIA_DRIVER_CAPABILITIES"]
+
+
+def test_a_pod_with_no_usable_gpu_converts_on_the_cpu_rather_than_failing():
+    """SOG compression is GPU-accelerated, and `-g cpu` is the documented route
+    when GPU drivers are unavailable or problematic. Slower, and it finishes the
+    job — which beats dying on the last line after the whole reconstruction."""
+    assert "-g cpu" in POD_PIPELINE, "there is no fallback when the ICD is missing"
+
+    # The real conversion has to USE whatever the smoke test proved works,
+    # otherwise the fallback is decoration.
+    convert = [l for l in POD_PIPELINE.splitlines()
+               if l.strip().startswith("splat-transform") and "model.sog" in l]
+    assert convert, "the pipeline no longer converts"
+    assert all("$ST_DEVICE" in line for line in convert), convert
