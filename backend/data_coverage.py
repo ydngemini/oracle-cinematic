@@ -140,11 +140,22 @@ GEOMETRY_ONLY: set[str] = {"VA"}
 PORTAL_HINTS: dict[str, str] = {}
 
 # Market/demographic plane — national API integrations (no per-state gap).
+#
+# This list is a capability claim on a surface agents read to decide what the
+# product can answer, so an entry here has to be reachable in a running
+# deployment — not merely present in the tree.
+#
+# USPS was listed and never wired: the module had no importer, no configured
+# secret and no handler, and it has since been deleted. Reviving ZIP+4/DPV needs
+# the licensing review in docs/data-access-tiers.md before it needs code.
+#
+# School districts claimed "+ ratings". Ratings and enrolment come only from the
+# local school_districts table, which nothing in this repository writes, so the
+# live NCES EDGE lookup answers in practice — and that is boundaries alone.
 NATIONAL_INTEGRATIONS: list[tuple[str, str]] = [
     ("Census ACS 5-yr", "demographics, median home value, income (FIPS-keyed)"),
     ("FEMA NFHL", "flood-zone designation by location"),
-    ("School districts", "district boundaries + ratings by address"),
-    ("USPS", "address standardization / ZIP+4"),
+    ("School districts", "containing district boundary by location (NCES EDGE)"),
     ("Geocoder", "address ↔ lat/long ↔ FIPS"),
 ]
 

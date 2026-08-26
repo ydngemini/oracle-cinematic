@@ -46,7 +46,7 @@ code's use of a source → update the row in the same commit.**
 | `data_integrations/courtlistener.py` | courtlistener.com API | Public record | none | Free tier; court records. |
 | `data_integrations/school_districts.py`, `state_gis/` | ArcGIS / state portals | Public record | none | Per-state terms vary; several require attribution. |
 | `data_integrations/regrid.py` | app.regrid.com | **Licensed API** | API key | Parcel data under contract. **Query-time use only** — do not build a derived parcel database from it without checking the agreement. |
-| `data_integrations/usps.py` | shippingapis.com | Licensed API | API key | USPS terms restrict address validation to shipping-related use. Review before using it for marketing list hygiene. |
+| _(USPS — removed)_ | shippingapis.com | Licensed API | API key | `data_integrations/usps.py` was deleted 2026-08-26: never imported, never configured, never tested. It remains the only ZIP+4/DPV option, so if that is wanted again the blocker is this licence, not the code — USPS terms restrict address validation to shipping-related use. Review before using it for marketing list hygiene. |
 | `avm_client.py` → RentCast | api.rentcast.io | **Licensed API** | API key | Valuations. Redistribution of AVM values to third parties is typically NOT granted — keep them inside the tenant. |
 | `avm_client.py` → ATTOM | api.gateway.attomdata.com | **Licensed API** | API key (pending) | Same caution as RentCast. Not yet live. |
 | `data_integrations/geocoder.py` → Nominatim | nominatim.openstreetmap.org | Public (OSM/ODbL) | none | **Usage policy caps ~1 req/s and requires a real User-Agent.** ODbL share-alike applies to derived geodata. Bulk use is a policy violation even though the data is open. |

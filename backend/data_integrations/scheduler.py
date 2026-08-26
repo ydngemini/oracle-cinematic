@@ -27,7 +27,6 @@ class JobType(enum.Enum):
     ASSESSOR_HARVEST = "assessor_harvest"
     GIS_HARVEST = "gis_harvest"
     GEOCODE_LEADS = "geocode_leads"
-    USPS_NORMALIZE = "usps_normalize"
 
 
 @dataclass
