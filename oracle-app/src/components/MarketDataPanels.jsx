@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { Fragment, useCallback, useEffect, useState } from 'react';
 import { crmGet } from '../state/useCrmApi';
 import { useStateCtx } from '../state/StateContext';
 import styles from './MarketDataPanels.module.css';
@@ -40,9 +40,52 @@ function TrendArrow({ value }) {
   );
 }
 
+/**
+ * Tax and demographic detail for one county.
+ *
+ * /api/market/county/{fips} had no caller, so the overview could name a county
+ * and rank it by price while the tax rate an investor actually underwrites on
+ * stayed unreachable. Opens under the row it belongs to.
+ */
+function CountyDetail({ fips }) {
+  const [detail, setDetail] = useState(null);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    let active = true;
+    crmGet(`/api/market/county/${encodeURIComponent(fips)}`).then(
+      (payload) => { if (active) setDetail(payload || null); },
+      (reason) => {
+        if (!active) return;
+        // 404 here means this county has no row yet — a coverage fact, not a
+        // failure, and worth saying differently from a broken request.
+        setError(reason?.status === 404
+          ? 'No county-level record has been ingested for this FIPS.'
+          : reason?.message || 'County detail could not be read.');
+      },
+    );
+    return () => { active = false; };
+  }, [fips]);
+
+  if (error) return <td colSpan={4}>{error}</td>;
+  if (!detail) return <td colSpan={4}>Loading…</td>;
+
+  const pct = (value) => (value == null ? '—' : `${Number(value).toFixed(2)}%`);
+  return (
+    <td colSpan={4}>
+      Effective tax {pct(detail.effective_tax_rate_pct)} ·
+      {' '}median annual tax {detail.median_annual_tax != null ? fmtPrice.format(detail.median_annual_tax) : '—'} ·
+      {' '}ownership {pct(detail.homeownership_rate_pct)} ·
+      {' '}{detail.households != null ? `${fmtInt.format(detail.households)} households` : 'households unknown'}
+      {detail.as_of_date ? ` · as of ${detail.as_of_date}` : ''}
+    </td>
+  );
+}
+
 export function MarketDataPanels() {
   const { primaryState } = useStateCtx();
   const [data, setData] = useState(null);
+  const [openFips, setOpenFips] = useState('');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
@@ -139,12 +182,27 @@ export function MarketDataPanels() {
                 </thead>
                 <tbody>
                   {counties.slice(0, 8).map((c) => (
-                    <tr key={c.fips_code || c.county_name}>
-                      <td className={styles.countyName}>{c.county_name}</td>
-                      <td>{c.median_price != null ? fmtPrice.format(c.median_price) : '—'}</td>
-                      <td>{c.volume != null ? fmtInt.format(c.volume) : '—'}</td>
-                      <td>{c.median_dom != null ? fmtInt.format(c.median_dom) : '—'}</td>
-                    </tr>
+                    <Fragment key={c.fips_code || c.county_name}>
+                      <tr>
+                        <td className={styles.countyName}>
+                          {c.fips_code ? (
+                            <button
+                              type="button"
+                              onClick={() => setOpenFips((current) => (current === c.fips_code ? '' : c.fips_code))}
+                              aria-expanded={openFips === c.fips_code}
+                            >
+                              {c.county_name}
+                            </button>
+                          ) : c.county_name}
+                        </td>
+                        <td>{c.median_price != null ? fmtPrice.format(c.median_price) : '—'}</td>
+                        <td>{c.volume != null ? fmtInt.format(c.volume) : '—'}</td>
+                        <td>{c.median_dom != null ? fmtInt.format(c.median_dom) : '—'}</td>
+                      </tr>
+                      {openFips === c.fips_code ? (
+                        <tr><CountyDetail fips={c.fips_code} /></tr>
+                      ) : null}
+                    </Fragment>
                   ))}
                 </tbody>
               </table>

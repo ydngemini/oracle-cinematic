@@ -293,6 +293,8 @@ export function DossierPanel({ leadId, onClose }) {
             <PublicRecordsDiligence
               state={dossier.state || ''}
               zip={dossier.payload?.zip_code || dossier.payload?.zip || ''}
+              latitude={property.latitude}
+              longitude={property.longitude}
             />
           </Suspense>
 

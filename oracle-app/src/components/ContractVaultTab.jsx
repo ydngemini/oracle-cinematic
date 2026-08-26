@@ -1,6 +1,10 @@
 import { useCallback, useEffect, useState } from 'react';
 import { crmGet } from '../state/useCrmApi';
 import { ContractDraftWorkspace } from './ContractDraftWorkspace';
+// The review lifecycle — revise, approve/reject, record signature. All four
+// endpoints existed and the vault called none of them, so a document could be
+// listed and its PDF opened and nothing else.
+import ContractDocumentPanel from './ContractDocumentPanel';
 import GovInfoSearch from './GovInfoSearch';
 import { PdfDocumentPicker } from './PdfDocumentPicker';
 import StateDocumentChecklist from './StateDocumentChecklist';
@@ -27,6 +31,7 @@ export default function ContractVaultTab({ embedded = false }) {
   const [refreshing, setRefreshing] = useState(false);
   const [clients, setClients] = useState([]);
   const [selectedClientId, setSelectedClientId] = useState('');
+  const [reviewingId, setReviewingId] = useState('');
   const Heading = embedded ? 'h2' : 'h1';
 
   const load = useCallback(async () => {
@@ -108,6 +113,37 @@ export default function ContractVaultTab({ embedded = false }) {
               their PDFs — the whole template-library → draft → AI-complete →
               review path existed on the backend with no way in from the UI. */}
           <ContractDraftWorkspace surface="contracts" />
+
+          {documents.length > 0 ? (
+            <section className={styles.clientVault} aria-labelledby="doc-review-title">
+              <div className={styles.clientVaultHeader}>
+                <div>
+                  <span className={styles.kicker}>Review</span>
+                  <h2 id="doc-review-title">Document lifecycle</h2>
+                </div>
+                <label>
+                  <span>Document</span>
+                  <select
+                    value={reviewingId}
+                    onChange={(event) => setReviewingId(event.target.value)}
+                    aria-label="Document to review"
+                  >
+                    <option value="">Choose document</option>
+                    {documents.map((document) => (
+                      <option key={document.id} value={document.id}>
+                        {document.title || document.template_key || document.id}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+              {reviewingId ? (
+                <ContractDocumentPanel documentId={reviewingId} onChanged={load} />
+              ) : (
+                <p>Choose a document to revise it, approve or reject it, or record its signature.</p>
+              )}
+            </section>
+          ) : null}
           <PdfDocumentPicker documents={documents} />
           <GovInfoSearch />
         </>

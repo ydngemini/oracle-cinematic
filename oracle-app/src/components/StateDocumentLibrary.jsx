@@ -13,6 +13,85 @@ function stateLabel(state) {
   return state?.state_name ? `${state.state_name} (${state.state_code})` : state?.state_code;
 }
 
+/**
+ * The regulatory facts behind a state, beside its document library.
+ *
+ * /api/states/{code}, its advertising rules, and the licensing requirements
+ * endpoint all shipped with no caller — so the library could show WHICH forms a
+ * state uses while the rules governing their use, and whether the agent is even
+ * licensed to practise there, were unreachable.
+ *
+ * Each of the three resolves independently: a state whose licensing has not
+ * been researched must not blank the advertising rules that have been.
+ */
+function StateRegulatoryFacts({ stateCode }) {
+  const [profile, setProfile] = useState(null);
+  const [ads, setAds] = useState(null);
+  const [license, setLicense] = useState(null);
+
+  useEffect(() => {
+    let active = true;
+    Promise.allSettled([
+      crmGet(`/api/states/${encodeURIComponent(stateCode)}`),
+      crmGet(`/api/states/${encodeURIComponent(stateCode)}/advertising-rules`),
+      crmGet(`/api/licensing/requirements/${encodeURIComponent(stateCode)}?license_type=salesperson`),
+    ]).then(([p, a, l]) => {
+      if (!active) return;
+      setProfile(p.status === 'fulfilled' ? p.value : null);
+      setAds(a.status === 'fulfilled' && Array.isArray(a.value) ? a.value : []);
+      setLicense(l.status === 'fulfilled' ? l.value : null);
+    });
+    return () => { active = false; };
+  }, [stateCode]);
+
+  // `null` on a researched-but-unknown field is meaningful here: migration 0069
+  // NULLs the agency facts nobody has verified, precisely so the UI cannot
+  // imply a form of agency is permitted somewhere it was never checked.
+  const yesNo = (value) => (value === null || value === undefined ? 'Not researched' : value ? 'Yes' : 'No');
+
+  return (
+    <div className={styles.metadata}>
+      {profile ? (
+        <>
+          <p><strong>{profile.state_name}</strong> · {profile.license_authority}</p>
+          <p>
+            Attorney review {yesNo(profile.attorney_review_required)} ·
+            {' '}Mandatory disclosure {yesNo(profile.mandatory_disclosure)} ·
+            {' '}TDS {yesNo(profile.has_tds)} ·
+            {' '}Buyer agency agreement {yesNo(profile.buyer_agency_required)}
+          </p>
+          {profile.regulatory_url ? (
+            <p><a href={profile.regulatory_url} target="_blank" rel="noreferrer">Regulator</a></p>
+          ) : null}
+        </>
+      ) : null}
+
+      {license ? (
+        <p>
+          Salesperson licence: {license.pre_license_hours} pre-licence hours ·
+          {' '}{license.ce_hours_per_cycle} CE hours every {license.renewal_cycle_years} years ·
+          {' '}E&amp;O {yesNo(license.errors_omissions_required)} ·
+          {' '}sponsoring broker {yesNo(license.sponsoring_broker_required)}
+        </p>
+      ) : null}
+
+      {ads && ads.length > 0 ? (
+        <ul className={styles.notes}>
+          {ads.slice(0, 6).map((rule) => (
+            <li key={rule.rule_id}>
+              <strong>{rule.category.replace(/_/g, ' ')}</strong> — {rule.requirement}
+              {rule.enforcement_body ? ` (${rule.enforcement_body})` : ''}
+            </li>
+          ))}
+        </ul>
+      ) : null}
+      {ads && ads.length === 0 ? (
+        <p className={styles.notice}>No advertising rules recorded for this state.</p>
+      ) : null}
+    </div>
+  );
+}
+
 export function StateDocumentLibrary() {
   const [states, setStates] = useState([]);
   const [stateCode, setStateCode] = useState(() => sessionStorage.getItem('oracle_contract_library_state') || DEFAULT_STATE);
@@ -85,6 +164,8 @@ export function StateDocumentLibrary() {
 
       {statesError && <p className={styles.error} role="alert">{statesError}</p>}
       {libraryError && <p className={styles.error} role="alert">{libraryError}</p>}
+
+      <StateRegulatoryFacts stateCode={stateCode} />
 
       <div className={styles.controls}>
         <label>

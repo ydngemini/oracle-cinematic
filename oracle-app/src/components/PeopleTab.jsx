@@ -4,6 +4,9 @@ import { crmGet } from '../state/useCrmApi';
 // POST /api/crm/contacts had no caller: People could list the contact book and
 // never add to it, so every person had to arrive via import or an agent tool.
 import ContactIntakePanel from './ContactIntakePanel';
+// GET and PATCH on a contact both had no caller, so a contact could be created
+// and listed and never opened — a wrong number was permanent.
+import ContactDetailPanel from './ContactDetailPanel';
 import { PanelDataStatus } from './PanelDataStatus';
 import styles from './PeopleTab.module.css';
 
@@ -24,7 +27,7 @@ function dataStateLabel(contact) {
   return contact.data_state === 'sealed' ? 'Secured' : 'Migrating';
 }
 
-function ContactList({ contacts, error, loading, refreshing, updatedAt, onRetry, onOpenOpportunities }) {
+function ContactList({ contacts, error, loading, refreshing, updatedAt, onRetry, onOpenOpportunities, openId, onOpen, onChanged }) {
   const [query, setQuery] = useState('');
   const visible = useMemo(() => {
     const needle = query.trim().toLowerCase();
@@ -100,7 +103,21 @@ function ContactList({ contacts, error, loading, refreshing, updatedAt, onRetry,
                 <small>{contact.timezone || 'Timezone not set'}</small>
               </div>
               <span className={styles.security} data-state={contact.data_state}>{dataStateLabel(contact)}</span>
+              <button
+                type="button"
+                onClick={() => onOpen(openId === contact.id ? '' : contact.id)}
+                aria-expanded={openId === contact.id}
+              >
+                {openId === contact.id ? 'Close' : 'Open'}
+              </button>
               {contact.legacy_client_id ? <button type="button" onClick={onOpenOpportunities}>Opportunity</button> : null}
+              {openId === contact.id ? (
+                <ContactDetailPanel
+                  contactId={contact.id}
+                  onClose={() => onOpen('')}
+                  onChanged={onChanged}
+                />
+              ) : null}
             </li>
           ))}
         </ul>
@@ -113,6 +130,7 @@ export default function PeopleTab() {
   const [view, setView] = useState('contacts');
   const [contacts, setContacts] = useState(null);
   const [creating, setCreating] = useState(false);
+  const [openContactId, setOpenContactId] = useState('');
   const [error, setError] = useState(null);
   const [refreshing, setRefreshing] = useState(false);
   const [updatedAt, setUpdatedAt] = useState(null);
@@ -186,6 +204,9 @@ export default function PeopleTab() {
           updatedAt={updatedAt}
           onRetry={load}
           onOpenOpportunities={() => selectView('opportunities')}
+          openId={openContactId}
+          onOpen={setOpenContactId}
+          onChanged={load}
         />
       ) : (
         <Suspense fallback={<div className={styles.skeleton} aria-hidden="true"><span /><span /><span /></div>}>

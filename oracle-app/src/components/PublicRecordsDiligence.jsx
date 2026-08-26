@@ -17,12 +17,43 @@ import styles from './DossierPanel.module.css';
  * as "nothing found". A missing API key and a genuine zero are different facts.
  */
 
-// Only the feeds a property's state and ZIP can answer without further input.
-// Eviction needs a tract FIPS and bankruptcy needs a court id; neither is
-// derivable from what a dossier carries, so they are not requested here.
+// Only the feeds this property's own identifiers can answer. Eviction needs a
+// tract FIPS and bankruptcy needs a federal court id; neither is derivable from
+// what a dossier carries, so neither is requested rather than guessed at.
 const FEEDS = [
   {
+    id: 'flood',
+    needs: 'coordinates',
+    label: 'FEMA flood zone',
+    path: ({ lat, lng }) => (lat && lng ? `/api/market/flood-zone?lat=${lat}&lng=${lng}` : null),
+    summarise: (payload) => {
+      const zone = payload?.zone || payload?.flood_zone;
+      if (!zone) return 'No designation returned.';
+      // Zone X is a real answer meaning minimal hazard — it is not "no data",
+      // and the two were conflated here once before.
+      return payload?.in_sfha ? `${zone} — special flood hazard area` : `${zone}`;
+    },
+  },
+  {
+    id: 'schools',
+    needs: 'coordinates',
+    label: 'School district',
+    path: ({ lat, lng }) => (lat && lng ? `/api/market/schools?lat=${lat}&lng=${lng}&radius=5` : null),
+    summarise: (payload) => {
+      const rows = payload?.districts || payload?.schools || payload?.results || [];
+      if (!Array.isArray(rows) || rows.length === 0) return 'No district returned.';
+      const first = rows[0];
+      const name = first?.district_name || first?.name || 'district';
+      // The live NCES source is point-in-polygon: one result means "the
+      // district you are standing in", not "the only one within the radius".
+      return payload?.radius_applied === false
+        ? `${name} (containing district)`
+        : `${rows.length} within 5 miles · nearest ${name}`;
+    },
+  },
+  {
     id: 'fema',
+    needs: 'state',
     label: 'FEMA disaster declarations',
     path: ({ state }) => (state ? `/api/data/fema/disasters?state=${state}&top=5` : null),
     summarise: (payload) => {
@@ -34,6 +65,7 @@ const FEEDS = [
   },
   {
     id: 'epa',
+    needs: 'ZIP',
     label: 'EPA regulated sites',
     path: ({ zip }) => (zip ? `/api/data/epa/sites?zip=${zip}&rows=5` : null),
     summarise: (payload) => {
@@ -44,6 +76,7 @@ const FEEDS = [
   },
   {
     id: 'crime',
+    needs: 'state',
     label: 'FBI violent crime',
     path: ({ state }) => (state ? `/api/data/fbi/crime?state=${state}&offense=violent-crime` : null),
     summarise: (payload) => {
@@ -54,6 +87,7 @@ const FEEDS = [
   },
   {
     id: 'jobs',
+    needs: 'state',
     label: 'BLS unemployment',
     path: ({ state }) => (state ? `/api/data/bls/unemployment?area=${state}` : null),
     summarise: (payload) => {
@@ -72,9 +106,11 @@ function Feed({ feed, subject }) {
   const load = useCallback(() => {
     const path = feed.path(subject);
     if (!path) {
+      // Say which identifier is missing rather than "no data": an agent can act
+      // on "this property has no coordinates" and cannot act on silence.
       setState({
         status: 'skipped',
-        detail: 'Not requested — this property has no state or ZIP recorded.',
+        detail: `Not requested — this property has no ${feed.needs} recorded.`,
       });
       return undefined;
     }
@@ -106,9 +142,16 @@ function Feed({ feed, subject }) {
   );
 }
 
-export default function PublicRecordsDiligence({ state, zip }) {
-  const subject = { state: (state || '').trim().toUpperCase(), zip: (zip || '').trim() };
-  if (!subject.state && !subject.zip) return null;
+export default function PublicRecordsDiligence({ state, zip, latitude, longitude }) {
+  const lat = Number.isFinite(Number(latitude)) ? Number(latitude) : null;
+  const lng = Number.isFinite(Number(longitude)) ? Number(longitude) : null;
+  const subject = {
+    state: (state || '').trim().toUpperCase(),
+    zip: (zip || '').trim(),
+    lat,
+    lng,
+  };
+  if (!subject.state && !subject.zip && !(lat && lng)) return null;
 
   return (
     <section className={styles.section} aria-label="Public records diligence">

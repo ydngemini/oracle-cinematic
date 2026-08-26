@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { crmGet, crmPost, crmPatch } from '../state/useCrmApi';
+import { crmGet, crmPost, crmPatch, crmDelete } from '../state/useCrmApi';
 import {
   GLYPHS, STAGES, stageLabel, normStage, normalizeType, clampScore,
   relTime, fmtDate, prefChipsOf, errMessage, fmtInt,
@@ -74,6 +74,9 @@ export default function ClientDetailDrawer({ card, onClose, onClientChanged }) {
   const [toast, setToast] = useState('');
   const [automationBusy, setAutomationBusy] = useState(false);
   const [tlKey, setTlKey] = useState(0);
+  // Re-fetch trigger for the detail record, same idiom as tlKey above. Tags are
+  // returned by GET /clients/{id}, so a tag change has to re-read it.
+  const [detailKey, setDetailKey] = useState(0);
   const sheetRef = useRef(null);
   const scoreTimer = useRef(null);
   const onCloseRef = useRef(onClose);
@@ -95,7 +98,7 @@ export default function ClientDetailDrawer({ card, onClose, onClientChanged }) {
       (err) => { if (live) setLoadErr(err); }
     );
     return () => { live = false; };
-  }, [clientId]);
+  }, [clientId, detailKey]);
 
   // Treat the sheet as a real modal: focus enters on open, cannot tab behind
   // the scrim, Escape dismisses, and the opener regains focus on close.
@@ -168,6 +171,7 @@ export default function ClientDetailDrawer({ card, onClose, onClientChanged }) {
 
   const flashToast = (msg) => { setToast(msg); setTimeout(() => setToast(''), 3200); };
   const bumpTimeline = useCallback(() => setTlKey((k) => k + 1), []);
+  const reloadDetail = useCallback(() => setDetailKey((k) => k + 1), []);
 
   // Optimistic PATCH /clients/{id}; revert on failure, bubble the merged card up.
   const applyPatch = useCallback((patchBody) => {
@@ -396,6 +400,8 @@ export default function ClientDetailDrawer({ card, onClose, onClientChanged }) {
               houses={houses}
               applyPatch={applyPatch}
               automation={automation}
+              clientId={clientId}
+              onTagsChanged={reloadDetail}
             />
           )}
           {tab === 'timeline' && <ClientTimeline clientId={clientId} reloadKey={tlKey} />}
@@ -567,7 +573,81 @@ function InlineAssignee({ value, onCommit }) {
 }
 
 // ── Overview pane ─────────────────────────────────────────────────────────
-function OverviewPane({ detail, loadErr, prefChips, houses, applyPatch, automation }) {
+/**
+ * Tags on a client.
+ *
+ * POST and DELETE on /clients/{id}/tags had no caller, so the tag list the
+ * detail endpoint has always returned was read-only in the product — a segment
+ * could be defined against tags nobody could apply.
+ */
+function TagEditor({ clientId, tags, onChanged }) {
+  const [value, setValue] = useState('');
+  const [busy, setBusy] = useState('');
+  const [error, setError] = useState('');
+
+  const add = async () => {
+    const tag = value.trim();
+    if (!tag || busy) return;
+    setBusy('add');
+    setError('');
+    try {
+      await crmPost(`/api/crm/clients/${clientId}/tags`, { tag });
+      setValue('');
+      await onChanged?.();
+    } catch (reason) {
+      setError(reason?.status === 409 ? 'That tag is already applied.' : reason?.message || 'Tag not added.');
+    } finally {
+      setBusy('');
+    }
+  };
+
+  const remove = async (tag) => {
+    if (busy) return;
+    setBusy(tag);
+    setError('');
+    try {
+      await crmDelete(`/api/crm/clients/${clientId}/tags/${encodeURIComponent(tag)}`);
+      await onChanged?.();
+    } catch (reason) {
+      setError(reason?.message || 'Tag not removed.');
+    } finally {
+      setBusy('');
+    }
+  };
+
+  return (
+    <div className={styles.dataRow}>
+      <span className={styles.dataKey}>Tags</span>
+      <span className={styles.dataVal}>
+        {(tags || []).map((tag) => (
+          <button
+            key={tag}
+            type="button"
+            className={styles.inlineEditBtn}
+            onClick={() => remove(tag)}
+            disabled={busy !== ''}
+            aria-label={`Remove tag ${tag}`}
+            title="Remove"
+          >
+            {tag} ×
+          </button>
+        ))}
+        <input
+          className={styles.inlineInput}
+          value={value}
+          onChange={(event) => setValue(event.target.value)}
+          onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); void add(); } }}
+          placeholder="Add tag"
+          maxLength={60}
+          aria-label="Add a tag"
+        />
+        {error ? <small className={styles.errorText}>{error}</small> : null}
+      </span>
+    </div>
+  );
+}
+
+function OverviewPane({ detail, loadErr, prefChips, houses, applyPatch, automation, clientId, onTagsChanged }) {
   const [contact, setContact] = useState({ email: detail?.email || '', phone: detail?.phone || '' });
   // Re-sync editable contact fields when the underlying record changes —
   // render-phase reset, not an effect (avoids the setState-in-effect cascade).
@@ -583,6 +663,9 @@ function OverviewPane({ detail, loadErr, prefChips, houses, applyPatch, automati
   };
   return (
     <div className={styles.overview}>
+      {clientId ? (
+        <TagEditor clientId={clientId} tags={detail?.tags} onChanged={onTagsChanged} />
+      ) : null}
       {loadErr && loadErr.status === 404 && (
         <div className={styles.errorStrip} role="status">
           <span className={styles.errorTick} aria-hidden="true" />

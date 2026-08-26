@@ -18,6 +18,10 @@ import { crmGet, crmPost } from '../state/useCrmApi';
 // barrel but rendered nowhere, so /api/voice/telemetry had no consumer and a
 // dialer operator could place a call without ever seeing it transcribed.
 import { LiveTranscript } from './LiveTranscript';
+// The TCPA consent ledger. The send-time gate always enforced consent, but
+// nothing could WRITE the consent an agent obtained on a call or honour a
+// verbal opt-out — compliance you cannot record is compliance you cannot prove.
+import OutreachConsentPanel from './OutreachConsentPanel';
 import styles from './SalesWorkspace.module.css';
 
 function errorText(error) {
@@ -335,6 +339,8 @@ export default function PowerDialerPage() {
               </div>
             ) : <div className={styles.empty}><PhoneCall aria-hidden="true" /> No browser call history yet.</div>}
           </section>
+
+          <OutreachConsentPanel />
 
           <section className={styles.panel} aria-labelledby="dialer-transcript-title">
             <header className={styles.panelHeader}>

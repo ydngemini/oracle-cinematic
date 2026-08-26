@@ -1,0 +1,164 @@
+/* MlsSearch — retail MLS browse. Same dark-glass idiom as ListingsInventory,
+   which it sits beside in the Property workspace. */
+
+.wrap { display: grid; gap: var(--space-4); }
+
+.head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-4);
+}
+.head h2 { margin: 0; font-size: 1.05rem; }
+.head p {
+  margin: 4px 0 0;
+  max-width: 62ch;
+  color: rgba(242, 242, 242, 0.55);
+  font-size: 0.82rem;
+  line-height: 1.5;
+}
+.head button {
+  display: grid;
+  place-content: center;
+  width: 34px;
+  height: 34px;
+  border: 1px solid rgba(242, 242, 242, 0.12);
+  border-radius: 8px;
+  background: rgba(171, 171, 171, 0.05);
+  color: inherit;
+  cursor: pointer;
+}
+.head button svg { width: 15px; height: 15px; }
+.head button:disabled { opacity: 0.45; cursor: default; }
+
+.filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  border: 1px solid rgba(242, 242, 242, 0.1);
+  border-radius: 12px;
+  background: rgba(171, 171, 171, 0.04);
+}
+.filters label { display: grid; gap: 4px; }
+.filters label span {
+  font-size: 0.66rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(242, 242, 242, 0.45);
+}
+.filters input {
+  width: 8.5rem;
+  padding: 7px 9px;
+  border: 1px solid rgba(242, 242, 242, 0.14);
+  border-radius: 8px;
+  background: rgba(12, 12, 12, 0.45);
+  color: inherit;
+  font: inherit;
+  font-size: 0.85rem;
+}
+.filters > button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  border: 1px solid rgba(242, 242, 242, 0.16);
+  border-radius: 8px;
+  background: rgba(242, 242, 242, 0.08);
+  color: inherit;
+  font: inherit;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+.filters > button svg { width: 14px; height: 14px; }
+.filters > button:disabled { opacity: 0.5; cursor: default; }
+
+.muted { margin: 0; color: rgba(242, 242, 242, 0.5); font-size: 0.78rem; line-height: 1.5; }
+.error { margin: 0; color: #f0838a; font-size: 0.82rem; }
+
+.empty {
+  display: grid;
+  place-items: center;
+  gap: 8px;
+  padding: var(--space-5);
+  border: 1px dashed rgba(242, 242, 242, 0.12);
+  border-radius: 12px;
+  color: rgba(242, 242, 242, 0.4);
+}
+.empty svg { width: 22px; height: 22px; }
+.empty p { margin: 0; font-size: 0.85rem; }
+
+.list { display: grid; gap: var(--space-2); margin: 0; padding: 0; list-style: none; }
+.list li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  border: 1px solid rgba(242, 242, 242, 0.1);
+  border-radius: 10px;
+  background: rgba(171, 171, 171, 0.04);
+}
+.list li > div { min-width: 0; display: grid; gap: 2px; }
+.list li strong { font-size: 0.9rem; }
+.list li small { color: rgba(242, 242, 242, 0.5); font-size: 0.75rem; }
+.list li > span { font-variant-numeric: tabular-nums; font-size: 0.9rem; }
+.list li > button {
+  padding: 6px 12px;
+  border: 1px solid rgba(242, 242, 242, 0.14);
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 0.78rem;
+  cursor: pointer;
+}
+
+/* The detail pane spans the row it opens under. */
+.detail {
+  grid-column: 1 / -1;
+  display: grid;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+  padding: var(--space-3);
+  border-top: 1px solid rgba(242, 242, 242, 0.1);
+}
+.detailHead { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); }
+.detailHead button {
+  padding: 4px 10px;
+  border: 1px solid rgba(242, 242, 242, 0.14);
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 0.72rem;
+  cursor: pointer;
+}
+.detailGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+  gap: var(--space-2);
+  margin: 0;
+}
+.detailGrid div { display: grid; gap: 2px; }
+.detailGrid dt {
+  font-size: 0.64rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(242, 242, 242, 0.42);
+}
+.detailGrid dd { margin: 0; font-size: 0.85rem; font-variant-numeric: tabular-nums; }
+
+.more {
+  justify-self: start;
+  padding: 8px 16px;
+  border: 1px solid rgba(242, 242, 242, 0.14);
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 0.82rem;
+  cursor: pointer;
+}
+.more:disabled { opacity: 0.5; cursor: default; }

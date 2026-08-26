@@ -75,6 +75,11 @@ const ENDPOINTS = {
   billing: '/api/admin/billing-summary',
   anomalies: '/api/admin/anomalies?limit=50',
   runtime: '/api/admin/runtime-load',
+  // National data coverage. routes_coverage answered nobody, so the map of
+  // which of the 51 jurisdictions actually have usable property and compliance
+  // data — the thing that decides where leads can come from at all — was
+  // computed on request and read by no screen.
+  coverage: '/api/market/coverage?summary_only=true',
 };
 
 // Five-endpoint poller. Each key resolves independently (allSettled): a single
@@ -222,6 +227,30 @@ function AnomaliesPanel({ data }) {
         </li>
       ))}
     </ul>
+  );
+}
+
+function CoveragePanel({ data }) {
+  const property = data?.property || {};
+  const compliance = data?.compliance || {};
+  return (
+    <>
+      <div className={styles.sysStrip}>
+        <SysItem label="Jurisdictions" value={fmtInt.format(num(data?.jurisdictions))} />
+        <SysItem label="Property live" value={`${property.pct ?? '—'}%`} />
+        <SysItem label="Lead-usable" value={fmtInt.format(num(property.lead_usable))} />
+        <SysItem label="Geometry only" value={fmtInt.format(num(property.geometry_only))} />
+        <SysItem label="Compliance live" value={fmtInt.format(num(compliance.live))} />
+        <SysItem label="Rules" value={fmtInt.format(num(compliance.rule_count ?? compliance.rules))} />
+      </div>
+      {num(property.geometry_only) > 0 ? (
+        <p className={styles.quietNote}>
+          Geometry-only jurisdictions return parcel shapes without owner or characteristic data,
+          so they count as live coverage but cannot produce a usable lead. Lead-usable is the
+          number that matters for acquisition.
+        </p>
+      ) : null}
+    </>
   );
 }
 
@@ -601,6 +630,12 @@ export default function AdminOpsTab() {
       <Section label="Anomalies">
         <Slot slot={feeds.anomalies} onRetry={refetch} skelHeights={[110]}>
           {(data) => <AnomaliesPanel data={data} />}
+        </Slot>
+      </Section>
+
+      <Section label="Data coverage">
+        <Slot slot={feeds.coverage} onRetry={refetch} skelHeights={[80]}>
+          {(data) => <CoveragePanel data={data} />}
         </Slot>
       </Section>
 
