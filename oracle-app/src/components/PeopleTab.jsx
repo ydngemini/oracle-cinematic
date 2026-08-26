@@ -1,6 +1,9 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { BriefcaseBusiness, RefreshCw, Search, UserRound, UsersRound } from 'lucide-react';
 import { crmGet } from '../state/useCrmApi';
+// POST /api/crm/contacts had no caller: People could list the contact book and
+// never add to it, so every person had to arrive via import or an agent tool.
+import ContactIntakePanel from './ContactIntakePanel';
 import { PanelDataStatus } from './PanelDataStatus';
 import styles from './PeopleTab.module.css';
 
@@ -109,6 +112,7 @@ function ContactList({ contacts, error, loading, refreshing, updatedAt, onRetry,
 export default function PeopleTab() {
   const [view, setView] = useState('contacts');
   const [contacts, setContacts] = useState(null);
+  const [creating, setCreating] = useState(false);
   const [error, setError] = useState(null);
   const [refreshing, setRefreshing] = useState(false);
   const [updatedAt, setUpdatedAt] = useState(null);
@@ -149,8 +153,20 @@ export default function PeopleTab() {
           <h1 id="people-title">People</h1>
           <p>One identity record for every person, with opportunity and property work kept in context.</p>
         </div>
-        <button type="button" className={styles.refresh} onClick={load} disabled={refreshing} aria-label="Refresh contacts"><RefreshCw aria-hidden="true" /></button>
+        <div className={styles.contactHead}>
+          <button type="button" onClick={() => setCreating((open) => !open)} aria-expanded={creating}>
+            {creating ? 'Close' : 'New contact'}
+          </button>
+          <button type="button" className={styles.refresh} onClick={load} disabled={refreshing} aria-label="Refresh contacts"><RefreshCw aria-hidden="true" /></button>
+        </div>
       </header>
+
+      {creating ? (
+        <ContactIntakePanel
+          onCreated={() => { setCreating(false); void load(); }}
+          onCancel={() => setCreating(false)}
+        />
+      ) : null}
 
       <nav className={styles.switcher} aria-label="People workspace">
         <button type="button" aria-pressed={view === 'contacts'} data-source={error ? 'error' : contacts === null ? 'loading' : 'ready'} onClick={() => selectView('contacts')}>

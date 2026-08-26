@@ -12,6 +12,9 @@ import {
   X,
 } from 'lucide-react';
 import { crmGet, crmPost } from '../state/useCrmApi';
+// Nine sites_api routes had no caller: Studio could draft and preview a site and
+// then stopped, so nothing could actually be published, shared, or measured.
+import SitePublishPanel from './SitePublishPanel';
 import { PanelDataStatus } from './PanelDataStatus';
 import styles from './StudioTab.module.css';
 
@@ -91,6 +94,7 @@ function previewUrl(site) {
 export default function StudioTab({ embedded = false }) {
   const [view, setView] = useState('sites');
   const [sites, setSites] = useState(null);
+  const [managingSiteId, setManagingSiteId] = useState(null);
   const [sitesError, setSitesError] = useState(null);
   const [sitesRefreshing, setSitesRefreshing] = useState(false);
   const [sitesUpdatedAt, setSitesUpdatedAt] = useState(null);
@@ -329,6 +333,15 @@ export default function StudioTab({ embedded = false }) {
                   <button type="button" disabled={!hasUrl} onClick={() => openSite(site)}>
                     Preview <ExternalLink aria-hidden="true" />
                   </button>
+                  <button
+                    type="button"
+                    onClick={() => setManagingSiteId((current) => (current === site.id ? null : site.id))}
+                    aria-expanded={managingSiteId === site.id}
+                    disabled={!site.id}
+                  >
+                    {managingSiteId === site.id ? 'Close' : 'Publish & access'}
+                  </button>
+                  {managingSiteId === site.id ? <SitePublishPanel siteId={site.id} /> : null}
                 </li>
               );
             })}

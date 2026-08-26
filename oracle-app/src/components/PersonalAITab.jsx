@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { crmGet } from '../state/useCrmApi';
+import { crmGet, crmPost } from '../state/useCrmApi';
 import { BrokerageOnboardingPanel } from './BrokerageOnboardingPanel';
 import { CommandApprovalPanel } from './CommandApprovalPanel';
 import { PersonalCommandComposer } from './PersonalCommandComposer';
@@ -182,10 +182,7 @@ export default function PersonalAITab() {
             <header><h2 id="personal-models-title">Model registry</h2><span>{data.models.length}</span></header>
             {visibleModels.length === 0 ? <p className={styles.empty}>No model versions are registered for this tenant yet.</p> : (
               <ul className={styles.rows}>{visibleModels.map((model) => (
-                <li key={model.id}>
-                  <div><strong>{model.name}</strong><small>{human(model.model_kind)} · v{model.version}</small></div>
-                  <span data-tone={toneFor(model.status)}>{human(model.status)}</span>
-                </li>
+                <ModelRow key={model.id} model={model} onChanged={load} />
               ))}</ul>
             )}
           </section>
@@ -207,5 +204,67 @@ export default function PersonalAITab() {
       <CommandApprovalPanel />
       <BrokerageOnboardingPanel />
     </section>
+  );
+}
+
+
+/**
+ * One registered model, with the promote/rollback controls the registry always
+ * had and nothing ever called.
+ *
+ * `Decision` requires a reason of at least eight characters, and the endpoints
+ * require BROKER_OWNER. Both are load-bearing: activating a model changes what
+ * every agent in the tenant is talking to, so the registry records who decided
+ * and why. The reason box is therefore not optional polish — the request is
+ * rejected without it.
+ */
+function ModelRow({ model, onChanged }) {
+  const [reason, setReason] = useState('');
+  const [busy, setBusy] = useState('');
+  const [error, setError] = useState('');
+
+  const decide = async (action) => {
+    if (reason.trim().length < 8 || busy) return;
+    setBusy(action);
+    setError('');
+    try {
+      await crmPost(`/api/models/${model.id}/${action}`, { reason: reason.trim() });
+      setReason('');
+      await onChanged?.();
+    } catch (reason_) {
+      setError(
+        reason_?.status === 403
+          ? 'Only a broker owner can change which model is active.'
+          : reason_?.message || 'The registry did not accept that change.',
+      );
+    } finally {
+      setBusy('');
+    }
+  };
+
+  const canPromote = model.status !== 'active';
+
+  return (
+    <li>
+      <div><strong>{model.name}</strong><small>{human(model.model_kind)} · v{model.version}</small></div>
+      <span data-tone={toneFor(model.status)}>{human(model.status)}</span>
+      <div>
+        <input
+          value={reason}
+          onChange={(event) => setReason(event.target.value)}
+          placeholder="Reason (required, 8+ chars)"
+          aria-label={`Reason for changing ${model.name}`}
+          maxLength={500}
+        />
+        <button
+          type="button"
+          onClick={() => decide(canPromote ? 'activate' : 'rollback')}
+          disabled={reason.trim().length < 8 || busy !== ''}
+        >
+          {busy ? 'Working…' : canPromote ? 'Activate' : 'Roll back'}
+        </button>
+      </div>
+      {error ? <small role="alert">{error}</small> : null}
+    </li>
   );
 }

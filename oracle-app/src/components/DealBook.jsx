@@ -1,5 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { crmGet, crmPatch, crmPost } from '../state/useCrmApi';
+// Parties and milestones — both served by portfolio_api since the deal room was
+// built, and both unreachable until now.
+import DealRoomPanel from './DealRoomPanel';
+// The state disclosure checklist. Its GET half reported total_items: 0 on every
+// transaction because nothing ever called the write half that creates the rows.
+import ComplianceChecklistPanel from './ComplianceChecklistPanel';
 import styles from './DealBook.module.css';
 
 const money = new Intl.NumberFormat('en-US', {
@@ -436,6 +442,10 @@ function TransactionCard({ transaction, expanded, onToggle, onTransactionUpdate 
           {transaction.status === 'active' ? (
             <OfferPanel transaction={transaction} onTransactionUpdate={onTransactionUpdate} />
           ) : null}
+
+          <DealRoomPanel transactionId={transaction.id} />
+
+          <ComplianceChecklistPanel transaction={transaction} />
 
           {transaction.status === 'under_contract' ? (
             <div className={styles.offerBar}>

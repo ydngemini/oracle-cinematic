@@ -68,6 +68,13 @@ const ENDPOINTS = {
   activity: '/api/admin/activity?limit=60',
   outbox: '/api/admin/outbox?limit=60',
   system: '/api/admin/system',
+  // Three more admin_ops endpoints that shipped with no caller. They sit behind
+  // different guards — billing and runtime load need platform_admin, anomalies
+  // needs broker-owner-or-admin — so a broker sees the panels they are entitled
+  // to and an ErrorRow on the rest, rather than the whole console failing.
+  billing: '/api/admin/billing-summary',
+  anomalies: '/api/admin/anomalies?limit=50',
+  runtime: '/api/admin/runtime-load',
 };
 
 // Five-endpoint poller. Each key resolves independently (allSettled): a single
@@ -142,6 +149,93 @@ function Slot({ slot, onRetry, skelHeights, children }) {
       {slot.error ? <ErrorRow message={slot.error?.message} onRetry={onRetry} /> : null}
       {children(slot.data)}
     </>
+  );
+}
+
+/* ── BILLING / ANOMALIES / RUNTIME ─────────────────────────────────────────
+   Three admin_ops endpoints that existed with no UI. Billing states plainly
+   when Stripe did not answer, because a zero from our own subscriptions table
+   and a zero because the payment processor was unreachable are different facts,
+   and only one of them is about revenue. */
+
+function BillingPanel({ data }) {
+  const tenants = Array.isArray(data?.tenants) ? data.tenants : [];
+  const byStatus = data?.subscriptions_by_status || {};
+  const revenue = data?.revenue || {};
+  const stripeDown = revenue.stripe_ok === false;
+  return (
+    <>
+      <div className={styles.sysStrip}>
+        {Object.entries(byStatus).map(([status, count]) => (
+          <SysItem key={status} label={status} value={fmtInt.format(num(count))} />
+        ))}
+        <SysItem label="MRR" value={stripeDown ? 'unknown' : (revenue.mrr ?? '—')} />
+        <SysItem label="MTD" value={stripeDown ? 'unknown' : (revenue.mtd_revenue ?? '—')} />
+      </div>
+      {stripeDown ? (
+        <p className={styles.quietNote}>
+          Stripe did not answer, so MRR and month-to-date revenue are unknown — not zero.
+          The subscription counts come from our own database and are unaffected.
+        </p>
+      ) : null}
+      {tenants.length > 0 ? (
+        <ul className={styles.rowList} role="list">
+          {tenants.slice(0, 12).map((row) => (
+            <li key={row.tenant_id} className={styles.userRow}>
+              <div className={styles.rowMain}>
+                <span className={styles.rowTitle}>{row.tenant_name || row.tenant_id}</span>
+                <span className={styles.rowSub}>{row.plan || 'no plan'}</span>
+              </div>
+              <span className={styles.statusChip}>{row.status}</span>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className={styles.quietNote}>No subscriptions recorded.</p>
+      )}
+    </>
+  );
+}
+
+function AnomaliesPanel({ data }) {
+  const alerts = Array.isArray(data?.alerts) ? data.alerts : [];
+  if (alerts.length === 0) {
+    return <p className={styles.quietNote}>No anomaly alerts recorded.</p>;
+  }
+  return (
+    <ul className={styles.rowList} role="list">
+      {alerts.slice(0, 20).map((alert) => (
+        <li key={alert.id} className={styles.userRow}>
+          <div className={styles.rowMain}>
+            <span className={styles.rowTitle}>
+              {alert.description || alert.anomaly_type || 'Anomaly'}
+            </span>
+            {alert.detected_at ? (
+              <span className={styles.rowSub}>{new Date(alert.detected_at).toLocaleString()}</span>
+            ) : null}
+          </div>
+          <span className={styles.roleChip} data-role={
+            alert.severity === 'critical' || alert.severity === 'high' ? 'admin' : 'std'
+          }>
+            {alert.severity || 'unknown'}
+          </span>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function RuntimeLoadPanel({ data }) {
+  const pool = data?.db_pool || {};
+  const sockets = data?.websockets || {};
+  return (
+    <div className={styles.sysStrip}>
+      <SysItem label="Sockets" value={fmtInt.format(num(sockets.total))} />
+      <SysItem label="Tenants" value={fmtInt.format(num(sockets.tenants))} />
+      <SysItem label="Tasks" value={fmtInt.format(num(data?.asyncio_tasks))} />
+      <SysItem label="Pool free" value={fmtInt.format(num(pool.usable_for_requests))} />
+      <SysItem label="LLM/min" value={fmtInt.format(num(data?.ambient_llm_calls_last_minute))} />
+    </div>
   );
 }
 
@@ -497,6 +591,25 @@ export default function AdminOpsTab() {
       <UsersPanel slot={feeds.users} onRetry={refetch} />
       <OutboxPanel slot={feeds.outbox} onRetry={refetch} />
       <ActivityPanel slot={feeds.activity} onRetry={refetch} />
+
+      <Section label="Billing">
+        <Slot slot={feeds.billing} onRetry={refetch} skelHeights={[110]}>
+          {(data) => <BillingPanel data={data} />}
+        </Slot>
+      </Section>
+
+      <Section label="Anomalies">
+        <Slot slot={feeds.anomalies} onRetry={refetch} skelHeights={[110]}>
+          {(data) => <AnomaliesPanel data={data} />}
+        </Slot>
+      </Section>
+
+      <Section label="Runtime load">
+        <Slot slot={feeds.runtime} onRetry={refetch} skelHeights={[80]}>
+          {(data) => <RuntimeLoadPanel data={data} />}
+        </Slot>
+      </Section>
+
       <HarvestControl />
     </section>
   );
