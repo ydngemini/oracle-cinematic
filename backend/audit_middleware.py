@@ -390,8 +390,13 @@ class AuditMiddleware(BaseHTTPMiddleware):
                 claims = decode_token(auth_header.removeprefix("Bearer ").strip())
                 tenant_id = claims.get("tenant_id")
                 user_id = claims.get("sub")
-            except Exception:  # noqa: BLE001 — invalid/expired token
-                pass
+            except Exception as exc:  # noqa: BLE001 — invalid/expired token
+                # An expired token here is routine and must not be noisy. But
+                # this also catches a broken signing key or an import failure,
+                # and every one of those writes an audit row with no tenant and
+                # no user. An unattributed compliance trail should leave a
+                # trace of why, so debug rather than silence.
+                log.debug("audit attribution skipped; token unreadable: %s", exc)
 
         meta = {
             "method": request.method,

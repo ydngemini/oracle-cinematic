@@ -2349,7 +2349,19 @@ async def _execute_command_job(payload: dict[str, Any], reporter) -> dict[str, A
                     "reconciliation_required" if uncertain else "failed",
                 )
         except Exception:
-            pass
+            # This write is the ONLY record that the command failed. If it is
+            # lost the row stays state='executing' forever, carrying no
+            # last_error, and — in the uncertain branch below — this function
+            # still returns a success-shaped dict. Swallowing it silently left
+            # an operator with a permanently stuck command and no trace of
+            # either failure. Log both: the write that failed, and the original
+            # provider error it was trying to record.
+            logger.exception(
+                "command %s failed and its failure could not be recorded; "
+                "the row remains 'executing'. Original error: %s",
+                command_id,
+                exc,
+            )
         if uncertain:
             return {
                 "provider": None,

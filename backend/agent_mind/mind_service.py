@@ -235,8 +235,16 @@ class MindService:
                     if response.status == 200:
                         data = await response.json()
                         return self._json_object(str(data.get("content") or ""))
-            except (aiohttp.ClientError, asyncio.TimeoutError):
-                pass
+                    log.warning(
+                        "local model returned %s; falling back to Bedrock",
+                        response.status,
+                    )
+            except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+                # Falling through to Bedrock is correct — but silently. A local
+                # model that is permanently unreachable then converts every
+                # request into a paid Bedrock call with no signal that it is
+                # happening, so the cost shows up on a bill rather than a log.
+                log.warning("local model unreachable (%s); falling back to Bedrock", exc)
 
         bedrock = self._bedrock()
         if bedrock is None:

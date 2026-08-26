@@ -167,8 +167,16 @@ class PeriodicScheduler:
             self._loop_task.cancel()
             try:
                 await self._loop_task
-            except (asyncio.CancelledError, Exception):  # noqa: BLE001
-                pass
+            except asyncio.CancelledError:
+                pass  # We cancelled it a line ago; this is the expected path.
+            except Exception as exc:  # noqa: BLE001
+                # Reached only when the loop had ALREADY died of its own
+                # accord before stop() was called — awaiting the task re-raises
+                # that original crash here. Catching it alongside
+                # CancelledError erased it at shutdown, so the enrichment
+                # scheduler could be dead for a whole process lifetime with
+                # nothing ever saying why.
+                logger.exception("PeriodicScheduler loop had already crashed: %s", exc)
             self._loop_task = None
 
     async def _loop(self) -> None:

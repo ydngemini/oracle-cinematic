@@ -36,7 +36,6 @@ TTL = {
     "census_acs": 365 * 86_400,
     "census_tiger": 365 * 86_400,
     "geocode": 90 * 86_400,
-    "usps": 30 * 86_400,
     "school_district": 180 * 86_400,
     "county_assessor": 7 * 86_400,
     "state_gis": 7 * 86_400,
@@ -386,8 +385,13 @@ class IntegrationCache:
         if self._redis:
             try:
                 await self._redis.delete(f"di:{key}")
-            except Exception:  # noqa: BLE001
-                pass
+            except Exception as exc:  # noqa: BLE001
+                # Invalidation is not best-effort the way a read is: the caller
+                # is here because the underlying data changed. A silent failure
+                # leaves Redis serving the old value for up to its full TTL —
+                # 30 days for some sources — while reporting success. The
+                # postgres half below already warns; these now match.
+                logger.warning("Redis cache invalidate failed for %s: %s", key, exc)
         try:
             async with self._pg.acquire() as conn:
                 await conn.execute("DELETE FROM di_cache WHERE cache_key = $1", key)
@@ -400,8 +404,10 @@ class IntegrationCache:
                 keys = await self._redis.keys(f"di:{prefix}*")
                 if keys:
                     await self._redis.delete(*keys)
-            except Exception:  # noqa: BLE001
-                pass
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "Redis cache invalidate failed for prefix %s: %s", prefix, exc
+                )
         try:
             async with self._pg.acquire() as conn:
                 await conn.execute(

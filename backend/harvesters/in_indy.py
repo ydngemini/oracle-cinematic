@@ -132,7 +132,12 @@ class IndianaIndyHarvester(ArcGISHarvester):
                 import datetime
                 ts = int(raw_date) / 1000
                 last_sale = datetime.datetime.utcfromtimestamp(ts).strftime("%Y-%m-%d")
-            except Exception:
+            except (ValueError, TypeError, OSError):
+                # Narrowed to match me_parcels/oh_franklin/sc_horry, which do the
+                # identical epoch-ms conversion. A bare `except Exception` here
+                # also swallowed ImportError and AttributeError, so a refactor
+                # that broke this line would have read as "Indiana simply has no
+                # sale dates" rather than as a bug.
                 pass
 
         return PropertyRecord(
