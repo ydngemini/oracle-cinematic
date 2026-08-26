@@ -237,7 +237,9 @@ ENV_VARS: dict[str, tuple[str, ...]] = {
         "ACS_CONNECTION_STRING", "ACS_FROM_NUMBER",
         "TWILIO_ACCOUNT_SID", "TWILIO_API_KEY", "TWILIO_API_SECRET",
         "TWILIO_AUTH_TOKEN", "TWILIO_FROM_NUMBER", "ORACLE_TWILIO_TWIML_URL",
-        "ORACLE_TWILIO_ACCOUNT_TIER",
+        # ORACLE_TWILIO_ACCOUNT_TIER is catalogued under "voice", which is where
+        # it is read. Listing it twice made the catalogue self-contradicting
+        # about which subsystem owns it.
         "ORACLE_ENABLE_WEBHOOKS", "ORACLE_ACS_WEBHOOK_SECRET",
         "ORACLE_CUSTOM_CALL_WEBHOOK_SECRET",
         "ORACLE_CUSTOM_CALL_API_URL", "ORACLE_CUSTOM_CALL_AUTH_TOKEN",
