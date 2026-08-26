@@ -43,9 +43,24 @@ jobs:
 
       # conftest.py sets ORACLE_ENV=dev and a throwaway secret itself, and the
       # suite needs no database — it runs entirely on fakes and monkeypatching.
+      #
+      # compliance_engine/tests is named explicitly because it lives outside
+      # tests/ and so was never collected: 84 tests covering the TCPA/BIPA/CA-ARL
+      # engine ran nowhere, in CI or locally. It needs no fixtures from
+      # tests/conftest.py — both directories are packages with no shared module
+      # names — but conftest's env defaults still apply, because they load once
+      # for the whole session as long as tests stays in the argument list.
       - name: Run tests
         working-directory: backend
-        run: python -m pytest tests -q
+        run: python -m pytest tests compliance_engine/tests -q
+
+      # Fails the build on any known CVE in a pinned dependency. Runs after the
+      # tests so a vulnerable-but-working tree still reports its test result
+      # first. Reads requirements.txt rather than the installed environment, so
+      # what it audits is what production installs.
+      - name: Dependency vulnerabilities
+        working-directory: backend
+        run: python -m pip_audit --strict --skip-editable -r requirements.txt
 
   frontend:
     name: frontend lint and build
