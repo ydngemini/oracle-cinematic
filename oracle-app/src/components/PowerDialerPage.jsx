@@ -13,6 +13,11 @@ import {
   ShieldCheck,
 } from 'lucide-react';
 import { crmGet, crmPost } from '../state/useCrmApi';
+// Live voice telemetry — the running transcript, listening state and
+// negotiation signal for a call in progress. It was exported from the component
+// barrel but rendered nowhere, so /api/voice/telemetry had no consumer and a
+// dialer operator could place a call without ever seeing it transcribed.
+import { LiveTranscript } from './LiveTranscript';
 import styles from './SalesWorkspace.module.css';
 
 function errorText(error) {
@@ -329,6 +334,15 @@ export default function PowerDialerPage() {
                 </table>
               </div>
             ) : <div className={styles.empty}><PhoneCall aria-hidden="true" /> No browser call history yet.</div>}
+          </section>
+
+          <section className={styles.panel} aria-labelledby="dialer-transcript-title">
+            <header className={styles.panelHeader}>
+              <h4 id="dialer-transcript-title">Live transcript</h4>
+            </header>
+            <div className={styles.panelBody}>
+              <LiveTranscript />
+            </div>
           </section>
         </div>
       </div>

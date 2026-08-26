@@ -7,6 +7,10 @@ import {
   defaultPortalAssetScope, Avatar, ScoreMeter,
 } from './ClientShared';
 import ClientTimeline from './ClientTimeline';
+// ClientTaskList shares ClientPanes.module.css with Timeline and Notes — the
+// stylesheet names all three as the drawer's sub-panes — but unlike them it was
+// never imported anywhere, so the CRM task endpoints it calls had no way in.
+import ClientTaskList from './ClientTaskList';
 import ClientNotes from './ClientNotes';
 import StateDocumentChecklist from './StateDocumentChecklist';
 import { useAssistantRecord } from './AssistantContext';
@@ -15,6 +19,7 @@ import styles from './ClientDetailDrawer.module.css';
 const SUBTABS = [
   { id: 'overview', label: 'Overview' },
   { id: 'timeline', label: 'Timeline' },
+  { id: 'tasks', label: 'Tasks' },
   { id: 'notes', label: 'Notes' },
   { id: 'documents', label: 'Documents' },
   { id: 'dossier', label: 'Dossier' },
@@ -394,6 +399,7 @@ export default function ClientDetailDrawer({ card, onClose, onClientChanged }) {
             />
           )}
           {tab === 'timeline' && <ClientTimeline clientId={clientId} reloadKey={tlKey} />}
+          {tab === 'tasks' && <ClientTaskList clientId={clientId} onChange={bumpTimeline} />}
           {tab === 'notes' && <ClientNotes clientId={clientId} onChange={bumpTimeline} />}
           {tab === 'documents' && (
             <StateDocumentChecklist

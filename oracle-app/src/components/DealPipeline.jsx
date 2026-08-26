@@ -22,6 +22,11 @@ import { downloadLeadsCsv } from '../utils/csv';
 import { US_STATES } from '../lib/usStates';
 import { contractCountdown } from './pipelineUtils';
 import { DossierPanel } from './DossierPanel';
+// The workflow engine generates a legal package per property, legal_agent.py
+// pushes it as a LEGAL_PACKAGE frame, useOracleWebSocket dispatches
+// SET_LEGAL_PACKAGE and the reducer stores it — and nothing ever rendered it.
+// LegalMatrix is that renderer; it reads the state this view already holds.
+import { LegalMatrix } from './LegalMatrix';
 import styles from './DealPipeline.module.css';
 
 const PAGE_SIZE = 60;
@@ -172,7 +177,7 @@ const LeadCard = memo(function LeadCard({ lead, selected, onToggle, onOpen }) {
 });
 
 export function DealPipeline() {
-  const { dealPipeline, dealPipelineTotal, dealPipelinePage, marketCoverage } = useOracleState();
+  const { dealPipeline, dealPipelineTotal, dealPipelinePage, marketCoverage, legalPackage } = useOracleState();
   const { wsRef } = useOracleDispatch();
   const [viewMode, setViewMode] = useState('grid');
   const [boardOpen, setBoardOpen] = useState(false);
@@ -555,6 +560,8 @@ export function DealPipeline() {
       {dossierId ? (
         <DossierPanel leadId={dossierId} onClose={() => setDossierId(null)} />
       ) : null}
+
+      <LegalMatrix legalPackage={legalPackage} visible={!!legalPackage} />
 
       {boardOpen ? (
         <Suspense fallback={<div className={styles.modeLoading}>Preparing board…</div>}>

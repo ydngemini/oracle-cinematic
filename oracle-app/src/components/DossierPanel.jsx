@@ -6,6 +6,22 @@ import styles from './DossierPanel.module.css';
 // the iframe) — a dossier opened to read comps should not pay for it.
 const RehabEditorDrawer = lazy(() => import('./RehabEditorDrawer'));
 
+// Deal intake was written and never imported, which meant a transaction could
+// not be created anywhere in the running product — DealBook could close deals
+// and record offers, but nothing could open one. It belongs here because a
+// transaction must be anchored to an explicitly chosen property
+// (portfolio_api._property_anchor), and the dossier is where one is in hand.
+const DealIntakePanel = lazy(() => import('./DealIntakePanel'));
+
+// Stored intelligence for this property. intelligence_api is the largest
+// capability here that no screen ever reached — every analysis it produced was
+// written and read back by nobody.
+const PropertyIntelligencePanel = lazy(() => import('./PropertyIntelligencePanel'));
+
+// Federal/public diligence feeds — FEMA, EPA, FBI, BLS. Eleven routes in
+// data_sources_api had no frontend caller at all.
+const PublicRecordsDiligence = lazy(() => import('./PublicRecordsDiligence'));
+
 function money(v) {
   const n = Number(v);
   if (!n || Number.isNaN(n)) return '—';
@@ -98,6 +114,7 @@ export function DossierPanel({ leadId, onClose }) {
   const copyTimer = useRef(null);
 
   const [editorOpen, setEditorOpen] = useState(false);
+  const [intakeOpen, setIntakeOpen] = useState(false);
 
   const [entityEditing, setEntityEditing] = useState(false);
   const [entityName, setEntityName] = useState('');
@@ -242,7 +259,42 @@ export function DossierPanel({ leadId, onClose }) {
             >
               Edit floor plan &amp; rehab in 3D
             </button>
+            <button
+              type="button"
+              className={styles.floorplanBtn}
+              onClick={() => setIntakeOpen((open) => !open)}
+              aria-expanded={intakeOpen}
+            >
+              {intakeOpen ? 'Cancel deal intake' : 'Start a deal from this property'}
+            </button>
+            {intakeOpen && (
+              <Suspense fallback={<p className={styles.loading}>OPENING INTAKE…</p>}>
+                <DealIntakePanel
+                  propertyId={leadId}
+                  propertySource="pipeline"
+                  address={address}
+                  defaultPrice={
+                    dossier.underwriting?.mao
+                    || dossier.payload?.estimated_value
+                    || dossier.underwriting?.estimated_value
+                  }
+                  onCreated={() => setIntakeOpen(false)}
+                  onCancel={() => setIntakeOpen(false)}
+                />
+              </Suspense>
+            )}
           </section>
+
+          <Suspense fallback={null}>
+            <PropertyIntelligencePanel propertyKey={dossier.parcel_id || ''} />
+          </Suspense>
+
+          <Suspense fallback={null}>
+            <PublicRecordsDiligence
+              state={dossier.state || ''}
+              zip={dossier.payload?.zip_code || dossier.payload?.zip || ''}
+            />
+          </Suspense>
 
           {/* ── Public source detail ── */}
           <section className={styles.section} aria-label="Public property record detail">

@@ -8,6 +8,20 @@
 //
 // Hard rule: with no key, no location, or ZERO_RESULTS coverage we resolve to a
 // graceful empty state so the caller renders the ghost icon — never a broken img.
+//
+// UNUSED ON PURPOSE — do not "fix" this by wiring it into ListingsInventory.
+// That was tried on 2026-08-26 and reverted. A listing card states a missing
+// photo rather than filling the slot, and the decision is pinned by
+// ListingsInventory.test.jsx › "says a photo is missing instead of showing a
+// stand-in image". Street View is a real photograph of the property, but on a
+// LISTING it reads as a claim about how complete the listing is, and the
+// absence of an agent's own photo is information the card is meant to show.
+//
+// This module is kept, not deleted, because the code is correct and the blocker
+// is a product decision rather than a defect. A legitimate home is a surface
+// where imagery is not a completeness claim — a public parcel record being
+// browsed before it is anyone's listing. Label the source wherever it lands;
+// Google's terms require attribution on static imagery.
 
 import { useEffect, useMemo, useState } from 'react';
 

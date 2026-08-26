@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { crmGet } from '../state/useCrmApi';
+import { ContractDraftWorkspace } from './ContractDraftWorkspace';
 import GovInfoSearch from './GovInfoSearch';
 import { PdfDocumentPicker } from './PdfDocumentPicker';
 import StateDocumentChecklist from './StateDocumentChecklist';
@@ -103,6 +104,10 @@ export default function ContractVaultTab({ embedded = false }) {
             </div>
             <StateDocumentChecklist clientId={selectedClientId} compact />
           </section>
+          {/* Drafting. This tab could previously only LIST documents and open
+              their PDFs — the whole template-library → draft → AI-complete →
+              review path existed on the backend with no way in from the UI. */}
+          <ContractDraftWorkspace surface="contracts" />
           <PdfDocumentPicker documents={documents} />
           <GovInfoSearch />
         </>
