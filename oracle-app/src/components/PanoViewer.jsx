@@ -144,11 +144,18 @@ export default function PanoViewer({
   // A guided route drives the viewer from outside; free roam still drives it
   // from within. Only an actual CHANGE of focus moves the camera, so a visitor
   // who wanders off the route is not yanked back on every re-render.
-  useEffect(() => {
+  //
+  // Adjusted during render rather than in an effect: an effect would paint the
+  // old scene first and correct it on the next frame, and it re-fired whenever
+  // the `scenes` array identity changed even though focus had not moved. This
+  // is the same render-phase reset lib/propertyImagery.js uses.
+  const [lastFocus, setLastFocus] = useState(focusSceneId);
+  if (focusSceneId !== lastFocus) {
+    setLastFocus(focusSceneId);
     if (focusSceneId && scenes.some((sc) => sc.scene_id === focusSceneId)) {
       setCurrentId(focusSceneId);
     }
-  }, [focusSceneId, scenes]);
+  }
   // Look direction lives in a ref so the 60fps draw loop never touches React.
   // Hotspot placement does need it at render time though, so interactions
   // mirror the ref into state — once per gesture event, not once per frame.
