@@ -829,3 +829,42 @@ def test_a_pod_with_no_usable_gpu_converts_on_the_cpu_rather_than_failing():
                if l.strip().startswith("splat-transform") and "model.sog" in l]
     assert convert, "the pipeline no longer converts"
     assert all("$ST_DEVICE" in line for line in convert), convert
+
+
+def test_a_walk_is_matched_sequentially_rather_than_every_pair(pod_env):
+    """A property capture is a WALK: frames arrive in the order they were taken
+    and consecutive ones overlap.
+
+    Matching every pair is correct for an unordered photo set and quadratic,
+    which is the only reason the frame budget is as small as it is. Measured on
+    a real house walkthrough, 120 frames thinned to 60 and matched exhaustively
+    registered 21 of them and produced a cloud 35 units tall with a diagonal up
+    axis — spacing a walk that thinly leaves consecutive frames with nothing in
+    common, and no amount of pairwise comparison recovers overlap that is not
+    there.
+    """
+    settings = PodProvider._settings()
+    assert settings["matcher"] == "sequential"
+
+    command = rp._matcher_command(settings["matcher"])
+    assert "sequential_matcher" in command
+    assert "--SequentialMatching.overlap" in command
+
+    # Linear cost buys back the density a walk needs.
+    assert rp.POD_SEQUENTIAL_IMAGES > rp.POD_TARGET_IMAGES
+
+
+def test_the_quadratic_matcher_is_still_reachable(pod_env, monkeypatch):
+    """An unordered photo set has no sequence to exploit, and there every pair
+    is genuinely the right question."""
+    monkeypatch.setenv("RECON_POD_MATCHER", "exhaustive")
+    settings = PodProvider._settings()
+
+    assert settings["matcher"] == "exhaustive"
+    assert "exhaustive_matcher" in rp._matcher_command("exhaustive")
+
+
+def test_an_unknown_matcher_is_refused(pod_env, monkeypatch):
+    monkeypatch.setenv("RECON_POD_MATCHER", "telepathy")
+    with pytest.raises(ProviderError, match="RECON_POD_MATCHER"):
+        PodProvider._settings()

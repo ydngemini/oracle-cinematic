@@ -1199,6 +1199,44 @@ _POD_NODE_VERSION = "v22.23.2"
 #: examples were cloned from `main`.
 _POD_GSPLAT_VERSION = "1.5.3"
 
+#: How COLMAP is asked to find image pairs.
+#:
+#: `sequential` is the default because a property capture is a WALK. The frames
+#: arrive in the order they were taken, consecutive ones overlap, and matching
+#: only neighbours is both linear and exactly where the overlap is. `exhaustive`
+#: compares every pair, which is correct for an unordered photo set and
+#: quadratic — the reason the frame budget below is as small as it is.
+#:
+#: Measured: 120 walkthrough frames thinned to 60 and matched exhaustively
+#: registered 21 of them, producing a cloud 35 units tall with a diagonal up
+#: axis. Spacing a walk that thinly leaves consecutive frames with nothing in
+#: common, and no amount of pairwise comparison recovers overlap that is not
+#: there.
+POD_MATCHERS = ("sequential", "exhaustive")
+
+#: Frames to keep when neighbours are matched rather than all pairs. Linear
+#: cost buys back the density a walk needs; the quadratic path keeps its
+#: smaller budget below.
+POD_SEQUENTIAL_IMAGES = 150
+
+#: How many following frames each frame is compared against. Wide enough to
+#: survive a photographer turning on the spot, and to close a short loop when
+#: they walk back through a doorway.
+POD_SEQUENTIAL_OVERLAP = 15
+
+
+def _matcher_command(matcher: str) -> str:
+    """The COLMAP matcher invocation for this capture's shape."""
+    if matcher == "sequential":
+        return (
+            "colmap sequential_matcher --database_path db.db "
+            "--SiftMatching.use_gpu 1 "
+            f"--SequentialMatching.overlap {POD_SEQUENTIAL_OVERLAP} "
+            "--SequentialMatching.quadratic_overlap 1"
+        )
+    return "colmap exhaustive_matcher --database_path db.db --SiftMatching.use_gpu 1"
+
+
 #: Exhaustive matching is O(n^2): 43 images is 903 pairs and solved in minutes,
 #: 128 is 8,128 pairs and exceeded 40 minutes on an L4. Image count, not GPU
 #: tier, dominates what a reconstruction costs, so the capture is subsampled
@@ -1374,8 +1412,8 @@ say "checking the trainer imports"
 say "feature extraction"
 colmap feature_extractor  --database_path db.db --image_path images \
                              --ImageReader.single_camera 1 --SiftExtraction.use_gpu 1
-say "exhaustive matching"
-colmap exhaustive_matcher --database_path db.db --SiftMatching.use_gpu 1
+say "__MATCHER__ matching"
+__MATCH_CMD__
 mkdir -p sparse
 say "mapping"
 colmap mapper             --database_path db.db --image_path images --output_path sparse
@@ -1708,6 +1746,13 @@ class PodProvider(ReconstructionProvider):
         # ssh is primary: it streams, needs no object store, and works on the
         # default azure-files backend. blob is the fallback for a deployment
         # that cannot open outbound 22 to RunPod.
+        matcher = (os.environ.get("RECON_POD_MATCHER", "sequential").strip().lower()
+                   or "sequential")
+        if matcher not in POD_MATCHERS:
+            raise ProviderError(
+                f"RECON_POD_MATCHER must be one of {', '.join(POD_MATCHERS)}"
+            )
+
         transport = (os.environ.get("RECON_POD_TRANSPORT", "ssh").strip().lower() or "ssh")
         if transport not in ("ssh", "blob"):
             raise ProviderError("RECON_POD_TRANSPORT must be 'ssh' or 'blob'")
@@ -1734,6 +1779,7 @@ class PodProvider(ReconstructionProvider):
             # Refuse to start below this. An empty or negative balance is a
             # permanent, fixable condition and must be reported as one.
             "min_balance": _num("RECON_POD_MIN_BALANCE_USD", "1.00", 0.0, 1000.0),
+            "matcher": matcher,
             "min_mbps": _num("RECON_POD_MIN_MBPS", str(POD_MIN_MBPS), 0.0, 10000.0),
             "cloud_type": cloud,
             "transport": transport,
@@ -1847,11 +1893,15 @@ class PodProvider(ReconstructionProvider):
 
         # Subsampled here rather than on the pod: matching cost is quadratic in
         # image count, so trimming before upload is the biggest lever on price.
-        staged = _subsample_capture(images, POD_TARGET_IMAGES)
+        budget = (
+            POD_SEQUENTIAL_IMAGES if settings["matcher"] == "sequential"
+            else POD_TARGET_IMAGES
+        )
+        staged = _subsample_capture(images, budget)
         if len(staged) < len(images):
             log.info(
-                "Subsampled capture from %d to %d images (exhaustive matching is O(n^2))",
-                len(images), len(staged),
+                "Subsampled capture from %d to %d images for %s matching",
+                len(images), len(staged), settings["matcher"],
             )
 
         # Appended by _launch the moment RunPod returns an id, before anything
@@ -2042,6 +2092,8 @@ class PodProvider(ReconstructionProvider):
             .replace("__ST__", SPLAT_TRANSFORM_VERSION)
             .replace("__GSPLAT__", _POD_GSPLAT_VERSION)
             .replace("__NODE__", _POD_NODE_VERSION)
+            .replace("__MATCHER__", settings["matcher"])
+            .replace("__MATCH_CMD__", _matcher_command(settings["matcher"]))
         )
 
         async def _upload() -> None:
@@ -2145,6 +2197,8 @@ class PodProvider(ReconstructionProvider):
                 .replace("__ST__", SPLAT_TRANSFORM_VERSION)
                 .replace("__GSPLAT__", _POD_GSPLAT_VERSION)
             .replace("__NODE__", _POD_NODE_VERSION)
+            .replace("__MATCHER__", settings["matcher"])
+            .replace("__MATCH_CMD__", _matcher_command(settings["matcher"]))
             )
             object_storage.put_bytes(f"{in_prefix}/manifest.txt",
                                      "\n".join(urls).encode(), "text/plain")
