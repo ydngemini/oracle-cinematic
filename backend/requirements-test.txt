@@ -1,3 +1,9 @@
 # Test-only dependencies.  Production images keep these out unless explicitly
 # built with INSTALL_TEST_DEPS=true.
 pytest==9.1.1
+
+# Dependency CVE gate. Nothing watched the dependency set before this — no
+# pip-audit, no Dependabot, no scheduled scan — which is how Pillow reached 22
+# known CVEs on a path that decodes user-supplied image bytes without anyone
+# noticing. The gate is the fix; the version bump was only the symptom.
+pip-audit==2.10.1

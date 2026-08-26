@@ -66,13 +66,18 @@ twilio==9.10.0
 
 # ── Voice intelligence ─────────────────────────────────────────────────────────
 python-multipart==0.0.31       # FastAPI multipart parsing for UploadFile in voice_intel.py
-pypdf==6.14.2                  # bounded text extraction for private record-bound PDF attachments
+pypdf==6.15.0                  # bounded text extraction for private record-bound PDF attachments
 faster-whisper==1.2.1          # Walkthrough transcription in voice_intel.py
                                # (lazy import — endpoint 503s gracefully if absent)
 
 # ── Video studio (Sora 2) ──────────────────────────────────────────────────────
 av==13.1.0                     # PyAV — clip stitching without an ffmpeg subprocess
-Pillow==10.2.0                 # image resize to Sora's exact target resolution
+Pillow==12.3.0                 # decodes uploaded images; see _resize_to_size / _require_equirectangular
+                               # Was pinned at 10.2.0 with the note "image resize to Sora's exact
+                               # target resolution" — that was never what held the size. ImageOps.fit
+                               # is size-exact by contract regardless of filter, and video_studio.py
+                               # passes Image.LANCZOS explicitly, so the pin protected nothing while
+                               # accumulating 22 CVEs on a path that parses user-supplied bytes.
 
 # ── Floor-plan extraction (floorplan_pipeline) ─────────────────────────────────
 # Classical CV only — no model weights, no GPU. Imported lazily, so the backend
