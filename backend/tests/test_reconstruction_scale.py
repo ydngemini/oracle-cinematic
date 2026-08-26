@@ -267,3 +267,53 @@ def test_the_switch_turns_it_off(tmp_path, monkeypatch):
     asyncio.run(worker._derive_floorplan(_job(tmp_path), _splat_with_cloud(tmp_path), "runpod_pod"))
 
     assert reached == []
+
+
+def test_a_reconstruction_derived_plan_is_accepted_by_the_api_model():
+    """The pipeline produces source="reconstruction" and both the API validator
+    and the DB CHECK rejected it, so a plan derived from a capture could never
+    be saved. Nothing surfaced it until a reconstruction actually tried to write
+    one — until this branch, nothing did.
+
+    Kept distinct from "ai_vision" on purpose: one is measured 3D structure
+    sliced horizontally, the other a model's guess from flat photos, and one
+    word for both puts invented and measured geometry together on a surface that
+    feeds rehab costing.
+    """
+    pytest.importorskip("cv2")
+    import floorplan_api
+
+    assert "reconstruction" in floorplan_api._VALID_SOURCES
+
+    document = floorplan_api.FloorplanDocumentIn.model_validate({
+        "schema_version": 1,
+        "units": "metric",
+        "levels": [{"id": "l1", "name": "Ground Floor", "index": 0}],
+        "walls": [{"id": "w1", "start": [0.0, 0.0], "end": [4.0, 0.0],
+                   "thickness": 0.1, "height": 2.5, "levelId": "l1"}],
+        "rooms": [{"id": "r1", "name": "Room 1", "type": "other",
+                   "polygon": [[0.0, 0.0], [4.0, 0.0], [4.0, 3.0], [0.0, 3.0]],
+                   "levelId": "l1"}],
+        "openings": [],
+        "provenance": {
+            "source": "reconstruction",
+            "ai_generated": True,
+            "model_version": "floorplan-mask-1.0.0",
+            "confidence": 0.5,
+        },
+    })
+
+    assert document.provenance.source == "reconstruction"
+
+
+def test_the_database_check_allows_it_too():
+    """A validator that accepts what the table refuses just moves the failure
+    one layer down, into a transaction that has already done work."""
+    from pathlib import Path
+
+    migration = Path(__file__).resolve().parents[1] / "db" / "migrations" / \
+        "0080_floorplan_reconstruction_source.sql"
+    assert migration.is_file(), "the CHECK was never widened"
+    sql = migration.read_text()
+    assert "reconstruction" in sql
+    assert "DROP CONSTRAINT IF EXISTS" in sql, "re-running the migration must be safe"

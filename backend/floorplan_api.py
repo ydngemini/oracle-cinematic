@@ -54,7 +54,13 @@ MAX_OPENINGS = 2000
 MAX_LEVELS = 40
 MAX_POLYGON_POINTS = 512
 
-_VALID_SOURCES = {"manual", "ai_vision", "parcel_vector", "imported"}
+# "reconstruction" is deliberately distinct from "ai_vision": one is measured 3D
+# structure sliced horizontally, the other is a model's guess from flat photos.
+# Collapsing them would put invented and measured geometry under one word on a
+# surface that feeds rehab costing. `floorplan_pipeline.schema` has carried it
+# since the splat path was built; this list and the DB CHECK (migration 0080)
+# had not caught up, so a reconstruction-derived plan was rejected by both.
+_VALID_SOURCES = {"manual", "ai_vision", "parcel_vector", "imported", "reconstruction"}
 _VALID_ROOM_TYPES = {
     "bedroom", "bathroom", "kitchen", "living", "dining",
     "hallway", "garage", "utility", "closet", "other",
