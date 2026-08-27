@@ -9,7 +9,7 @@
 # Account 151105438863 / us-east-1 / profile neoh.
 set -euo pipefail
 TARGET="${1:-app}"
-PROFILE="${AWS_PROFILE:-swarm-admin}"
+PROFILE="${AWS_PROFILE:-neoh}"   # swarm-admin died with account 404870839825
 REGION="${AWS_REGION:-us-east-1}"
 AWS=(aws --profile "$PROFILE" --region "$REGION")
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -33,7 +33,7 @@ RECON="${REG}/neoh/reconstruction"
 OBS="${REG}/neoh/observability"
 # AWS observability dashboard vhost. The ALB routes this host to the dashboard,
 # and its /api,/auth,/ws to the backend, so the SPA calls the API same-origin.
-OBS_HOST="${OBS_HOST:-obs.neoh.app}"
+OBS_HOST="${OBS_HOST:-obs.neohrs.com}"
 BUCKET="neoh-prod-recon-${ACCT}"
 
 # ── source: git-archive HEAD → S3 (CodeBuild unpacks it as the build context) ──
