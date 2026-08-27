@@ -11,6 +11,9 @@ import ClientTimeline from './ClientTimeline';
 // stylesheet names all three as the drawer's sub-panes — but unlike them it was
 // never imported anywhere, so the CRM task endpoints it calls had no way in.
 import ClientTaskList from './ClientTaskList';
+// POST /api/crm/showings had no caller: the drawer could display a client's
+// showing history while nothing in the product could add to it.
+import ShowingLogger from './ShowingLogger';
 import ClientNotes from './ClientNotes';
 import StateDocumentChecklist from './StateDocumentChecklist';
 import { useAssistantRecord } from './AssistantContext';
@@ -414,7 +417,12 @@ export default function ClientDetailDrawer({ card, onClose, onClientChanged }) {
               compact
             />
           )}
-          {tab === 'dossier' && <DossierLinksPane detail={detail} houses={houses} automation={automation} />}
+          {tab === 'dossier' && (
+            <>
+              <DossierLinksPane detail={detail} houses={houses} automation={automation} />
+              <ShowingLogger clientId={clientId} houses={houses} onLogged={reloadDetail} />
+            </>
+          )}
         </div>
       </div>
     </div>

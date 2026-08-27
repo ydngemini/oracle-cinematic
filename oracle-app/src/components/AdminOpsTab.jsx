@@ -2,6 +2,10 @@ import { useCallback, useEffect, useState } from 'react';
 import { crmGet } from '../state/useCrmApi';
 import { useOracleState } from '../state';
 import { HarvestControl } from './HarvestControl';
+// GET /api/billing/usage had no caller. Usage has been accruing into
+// billing_usage_events all along — recorded regardless of pricing model so the
+// history exists before metering is switched on — and nothing read it back.
+import BillingUsagePanel from './BillingUsagePanel';
 import styles from './AdminOpsTab.module.css';
 
 // Inline stroke glyphs — currentColor, zero icon deps (house rule).
@@ -625,6 +629,10 @@ export default function AdminOpsTab() {
         <Slot slot={feeds.billing} onRetry={refetch} skelHeights={[110]}>
           {(data) => <BillingPanel data={data} />}
         </Slot>
+      </Section>
+
+      <Section label="Usage">
+        <BillingUsagePanel />
       </Section>
 
       <Section label="Anomalies">

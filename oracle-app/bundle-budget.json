@@ -1,9 +1,9 @@
 {
   "// note": "Ceilings, not targets. Lower deliberately; raise only with a stated reason.",
-  "// raised-2026-08-27": "+2.4 KB gzip, no new dependency. Two more caller-less endpoint groups wired: the contract TEMPLATE registry (list, bootstrap, per-template attorney decision, policy) which sits ahead of the drafting workspace already shipped, and lead/listing photo attach + remove \u2014 the GET half was wired, so the product could display a filmstrip it had no way to add to or correct. Photos go through useProtectedMedia because /api/media/{id} is authenticated and a bare <img src> gets a 401. largestChunkBytes unchanged.",
-  "// largest": "src-wL7JQt-x.js",
+  "// raised-2026-08-27": "+6.4 KB gzip across the day, no new dependency. Caller-less endpoint groups wired: the contract TEMPLATE registry (list, bootstrap, per-template attorney decision, policy); lead/listing photo attach and remove \u2014 the GET half was wired, so the product could display a filmstrip it had no way to add to or correct, and photos resolve through useProtectedMedia because /api/media/{id} is authenticated and a bare <img src> gets a 401; billing usage, which had been accruing into billing_usage_events all along and was read back by nobody; and showing logging, where the drawer could display a client's showing history while nothing could add to it. largestChunkBytes unchanged.",
+  "// largest": "src-Cx5-U0Sn.js",
   "largestChunkBytes": 2325752,
-  "largestChunkGzipBytes": 591589,
-  "totalBytes": 3915718,
-  "totalGzipBytes": 1085198
+  "largestChunkGzipBytes": 591588,
+  "totalBytes": 3919802,
+  "totalGzipBytes": 1086350
 }
