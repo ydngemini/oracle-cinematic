@@ -6,6 +6,10 @@ import { HarvestControl } from './HarvestControl';
 // billing_usage_events all along — recorded regardless of pricing model so the
 // history exists before metering is switched on — and nothing read it back.
 import BillingUsagePanel from './BillingUsagePanel';
+// GET /api/data/health had no caller — and it is the endpoint that reports
+// credential EXPIRY. Regrid's token is a 30-day JWT; when it lapses every
+// jurisdiction reports "0 of 8 core facts" and nothing else says why.
+import DataSourceHealthPanel from './DataSourceHealthPanel';
 import styles from './AdminOpsTab.module.css';
 
 // Inline stroke glyphs — currentColor, zero icon deps (house rule).
@@ -639,6 +643,10 @@ export default function AdminOpsTab() {
         <Slot slot={feeds.anomalies} onRetry={refetch} skelHeights={[110]}>
           {(data) => <AnomaliesPanel data={data} />}
         </Slot>
+      </Section>
+
+      <Section label="Data sources">
+        <DataSourceHealthPanel />
       </Section>
 
       <Section label="Data coverage">

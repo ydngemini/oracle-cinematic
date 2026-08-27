@@ -184,15 +184,46 @@ export default function CommsComposer({
     );
   }, [body, sending, clientId, activeChannel, subject, onSent, onRefetch]);
 
+  // Signature-aware fallback draft. /api/crm/comms/draft is not channel-gated
+  // and always returns {subject, body} — it degrades to a clean templated draft
+  // when no LLM is reachable. It had no caller at all, which meant the two cases
+  // generate-script legitimately refuses (a note, or a client with no linked
+  // property) were dead ends rather than a plainer draft.
+  const runFallbackDraft = useCallback(
+    (intent) => {
+      if (!clientId || drafting) return;
+      setDrafting(true);
+      setDraftError(null);
+      crmPost('/api/crm/comms/draft', { client_id: clientId, intent: intent || '' }).then(
+        (data) => {
+          setDrafting(false);
+          const draftSubject = typeof data?.subject === 'string' ? data.subject : '';
+          const draftBody = typeof data?.body === 'string' ? data.body : '';
+          if (!draftBody && !draftSubject) {
+            setDraftError(new Error('The draft came back empty.'));
+            return;
+          }
+          if (draftSubject && activeChannel === 'email') setSubject(draftSubject);
+          if (draftBody) setBody(draftBody);
+          setTray(null);
+        },
+        (err) => {
+          setDrafting(false);
+          setDraftError(err);
+        }
+      );
+    },
+    [clientId, drafting, activeChannel]
+  );
+
   const runDraft = useCallback(
     (intent) => {
       if (!clientId || drafting) return;
-      if (!propertyId) {
-        setDraftError(new Error('Link a property to this client before generating a script.'));
-        return;
-      }
-      if (activeChannel === 'note') {
-        setDraftError(new Error('Choose Email or SMS for a compliant outreach draft.'));
+      // A compliant outreach script needs a property and a real channel. Where
+      // it cannot run, fall through to the signature-aware draft rather than
+      // refusing outright — the agent still gets something to edit.
+      if (!propertyId || activeChannel === 'note') {
+        runFallbackDraft(intent);
         return;
       }
       setDrafting(true);
@@ -217,11 +248,18 @@ export default function CommsComposer({
         },
         (err) => {
           setDrafting(false);
+          // A refused or failed outreach script is still a draft the agent
+          // wanted. Offer the plainer one instead of leaving them with an error
+          // and an empty body.
+          if (err?.status === 422 || err?.status === 409 || err?.status === 503) {
+            runFallbackDraft(intent);
+            return;
+          }
           setDraftError(err);
         }
       );
     },
-    [clientId, drafting, activeChannel, propertyId]
+    [clientId, drafting, activeChannel, propertyId, runFallbackDraft]
   );
 
   const insertTemplate = useCallback(
