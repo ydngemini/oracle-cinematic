@@ -1,0 +1,99 @@
+/* PropertyMediaUploader — photo attach/remove for a lead or listing.
+   Embedded inside existing panels, so it stays visually quiet: no card chrome
+   of its own, just a labelled strip. */
+
+.wrap { display: grid; gap: var(--space-2); }
+
+.head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+.head strong { font-size: 0.82rem; }
+.head span { color: rgba(242, 242, 242, 0.45); font-size: 0.72rem; }
+
+.error { margin: 0; color: #f0838a; font-size: 0.78rem; }
+.empty { margin: 0; color: rgba(242, 242, 242, 0.4); font-size: 0.75rem; }
+
+/* The native file input is replaced by its own label — the default control
+   cannot be styled and reads as a foreign element inside a dark panel. */
+.picker {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  justify-self: start;
+  padding: 6px 12px;
+  border: 1px dashed rgba(242, 242, 242, 0.22);
+  border-radius: 8px;
+  color: rgba(242, 242, 242, 0.75);
+  font-size: 0.76rem;
+  cursor: pointer;
+}
+.picker:hover { border-color: rgba(242, 242, 242, 0.4); }
+.picker input { display: none; }
+.picker:focus-within {
+  outline: 2px solid rgba(242, 242, 242, 0.5);
+  outline-offset: 2px;
+}
+
+.strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.strip li {
+  position: relative;
+  width: 84px;
+  height: 64px;
+  overflow: hidden;
+  border: 1px solid rgba(242, 242, 242, 0.12);
+  border-radius: 6px;
+  background: rgba(12, 12, 12, 0.5);
+}
+.strip img { width: 100%; height: 100%; object-fit: cover; display: block; }
+
+/* Shown while the JWT-authenticated fetch is still resolving to an object URL,
+   so the strip does not reflow when each photo lands. */
+.pending {
+  display: block;
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(
+    100deg,
+    rgba(242, 242, 242, 0.04) 30%,
+    rgba(242, 242, 242, 0.09) 50%,
+    rgba(242, 242, 242, 0.04) 70%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.4s linear infinite;
+}
+@keyframes shimmer {
+  from { background-position: 200% 0; }
+  to { background-position: -200% 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .pending { animation: none; }
+}
+
+.strip li button {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 18px;
+  height: 18px;
+  display: grid;
+  place-content: center;
+  border: none;
+  border-radius: 4px;
+  background: rgba(12, 12, 12, 0.78);
+  color: rgba(242, 242, 242, 0.8);
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+}
+.strip li button:hover { background: rgba(176, 32, 42, 0.85); color: #fff; }
+.strip li button:disabled { opacity: 0.4; cursor: default; }

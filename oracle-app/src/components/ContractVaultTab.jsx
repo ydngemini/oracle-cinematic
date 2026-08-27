@@ -5,6 +5,10 @@ import { ContractDraftWorkspace } from './ContractDraftWorkspace';
 // endpoints existed and the vault called none of them, so a document could be
 // listed and its PDF opened and nothing else.
 import ContractDocumentPanel from './ContractDocumentPanel';
+// The template registry and its approval gate — four more endpoints with no
+// caller. Without them a tenant could not see which templates existed, install
+// the built-in candidates, or record the attorney review that makes one usable.
+import ContractTemplateRegistry from './ContractTemplateRegistry';
 import GovInfoSearch from './GovInfoSearch';
 import { PdfDocumentPicker } from './PdfDocumentPicker';
 import StateDocumentChecklist from './StateDocumentChecklist';
@@ -109,9 +113,14 @@ export default function ContractVaultTab({ embedded = false }) {
             </div>
             <StateDocumentChecklist clientId={selectedClientId} compact />
           </section>
-          {/* Drafting. This tab could previously only LIST documents and open
-              their PDFs — the whole template-library → draft → AI-complete →
-              review path existed on the backend with no way in from the UI. */}
+          {/* This tab could previously only LIST documents and open their PDFs.
+              The whole chain — register a template, get it reviewed, draft from
+              it, complete it, review the document, record the signature —
+              existed on the backend with no way in from the UI. It runs in that
+              order here: registry, then drafting, then the document lifecycle
+              below. */}
+          <ContractTemplateRegistry />
+
           <ContractDraftWorkspace surface="contracts" />
 
           {documents.length > 0 ? (

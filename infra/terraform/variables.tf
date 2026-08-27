@@ -51,7 +51,16 @@ variable "db_name" {
 variable "db_engine_version" {
   description = "Aurora PostgreSQL engine version (PostGIS-capable, matches dev PG16)."
   type        = string
-  default     = "16.4"
+  # 16.4 was pinned for the June 2026 deploy and AWS has since withdrawn it —
+  # CreateDBCluster now fails outright with "Cannot find version 16.4". Moved to
+  # the latest available 16.x rather than jumping majors: the dev database is
+  # PG16, the migrations are written against it, and a major-version gap between
+  # dev and prod is exactly the kind of drift this repo has been burned by.
+  #
+  # Check before a fresh deploy, because AWS withdraws these on its own schedule:
+  #   aws rds describe-db-engine-versions --engine aurora-postgresql \
+  #     --query 'DBEngineVersions[?starts_with(EngineVersion,`16.`)].EngineVersion'
+  default = "16.14"
 }
 
 variable "db_min_acu" {

@@ -22,6 +22,10 @@ const PropertyIntelligencePanel = lazy(() => import('./PropertyIntelligencePanel
 // data_sources_api had no frontend caller at all.
 const PublicRecordsDiligence = lazy(() => import('./PublicRecordsDiligence'));
 
+// Photo attach/remove. The GET half was wired, so the product could display a
+// filmstrip it had no way to add to and no way to correct.
+const PropertyMediaUploader = lazy(() => import('./PropertyMediaUploader'));
+
 function money(v) {
   const n = Number(v);
   if (!n || Number.isNaN(n)) return '—';
@@ -283,6 +287,13 @@ export function DossierPanel({ leadId, onClose }) {
                 />
               </Suspense>
             )}
+          </section>
+
+          <section className={styles.section} aria-label="Property photos">
+            <h3 className={styles.kicker}>Photos</h3>
+            <Suspense fallback={null}>
+              <PropertyMediaUploader leadId={leadId} />
+            </Suspense>
           </section>
 
           <Suspense fallback={null}>

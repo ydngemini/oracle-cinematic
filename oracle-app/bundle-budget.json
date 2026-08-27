@@ -1,10 +1,9 @@
 {
   "// note": "Ceilings, not targets. Lower deliberately; raise only with a stated reason.",
-  "// raised": "2026-08-22, three small raises in one session, none adding a dependency: (1) +2.2 KB raw / +1.0 KB gzip \u2014 tour affordance on Property View (src/lib/tour/tourOffer.ts), measured against a reconstructed pre-change baseline that sat exactly at the old ceiling; (2) +0.8 KB gzip \u2014 360\u00b0 capture mode (mode toggle, equirect requirement, floor selector); (3) +0.2 KB raw \u2014 form_id and obligation on the state document checklist, so two documents required by one rule stay distinguishable. Viewers remain lazy: TourViewer/PanoViewer/WalkableSplatViewer are still separate chunks, so none of this is viewer weight entering the main bundle.",
-  "// raised-2026-08-26": "Backend-parity sweep, run to completion: +146.3 KB raw / +46.5 KB gzip in total, adding NO dependency. Every byte is either code already in this repository that no user could reach, or a panel over an endpoint that shipped with no caller. Routes reached went from 175 to ~240. Phase A (+94.7 KB): fifteen orphaned components mounted, including DealIntakePanel \u2014 the only screen that can create a transaction, so deal creation was impossible in-product. Phases B/C (+51.6 KB): deal room (parties, milestones); state disclosure checklist, whose GET half reported total_items:0 on every transaction because nothing called the write half; contact create, open and edit; site publish, collaborators and attribution funnel; MLS search with listing detail and board coverage; contract document lifecycle (revise, approve/reject, record signature); state regulatory facts and licensing; the TCPA consent ledger; client tags; county tax drill-down; national data coverage; property intelligence and public-records diligence; model activate/rollback. largestChunkBytes is UNCHANGED at 2325752 \u2014 that chunk is PlayCanvas, and it not moving is the check that all of this landed as lazy route chunks rather than main-bundle weight.",
-  "// largest": "src-CGd_F8cc.js",
+  "// raised-2026-08-27": "+2.4 KB gzip, no new dependency. Two more caller-less endpoint groups wired: the contract TEMPLATE registry (list, bootstrap, per-template attorney decision, policy) which sits ahead of the drafting workspace already shipped, and lead/listing photo attach + remove \u2014 the GET half was wired, so the product could display a filmstrip it had no way to add to or correct. Photos go through useProtectedMedia because /api/media/{id} is authenticated and a bare <img src> gets a 401. largestChunkBytes unchanged.",
+  "// largest": "src-wL7JQt-x.js",
   "largestChunkBytes": 2325752,
   "largestChunkGzipBytes": 591589,
-  "totalBytes": 3908421,
-  "totalGzipBytes": 1082747
+  "totalBytes": 3915718,
+  "totalGzipBytes": 1085198
 }
