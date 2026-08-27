@@ -10,6 +10,10 @@ import BillingUsagePanel from './BillingUsagePanel';
 // credential EXPIRY. Regrid's token is a 30-day JWT; when it lapses every
 // jurisdiction reports "0 of 8 core facts" and nothing else says why.
 import DataSourceHealthPanel from './DataSourceHealthPanel';
+// Two-person role approval. All three routes had no caller, so promoting an
+// agent to broker owner could only happen by direct database access — exactly
+// what an approval trail exists to prevent.
+import RoleChangePanel from './RoleChangePanel';
 import styles from './AdminOpsTab.module.css';
 
 // Inline stroke glyphs — currentColor, zero icon deps (house rule).
@@ -632,6 +636,12 @@ export default function AdminOpsTab() {
       <Section label="Billing">
         <Slot slot={feeds.billing} onRetry={refetch} skelHeights={[110]}>
           {(data) => <BillingPanel data={data} />}
+        </Slot>
+      </Section>
+
+      <Section label="Role changes">
+        <Slot slot={feeds.users} onRetry={refetch} skelHeights={[70]}>
+          {(data) => <RoleChangePanel users={data?.users} />}
         </Slot>
       </Section>
 

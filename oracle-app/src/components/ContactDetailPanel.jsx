@@ -1,5 +1,9 @@
 import { useCallback, useEffect, useState } from 'react';
 import { crmGet, crmPatch, crmPost } from '../state/useCrmApi';
+// The three-question buyer/seller intake. Both its routes had no caller, so the
+// structured qualification that turns "someone called" into a budget and a
+// timeline could not be recorded anywhere.
+import ContactIntakeForm from './ContactIntakeForm';
 import styles from './PeopleTab.module.css';
 
 /**
@@ -138,6 +142,8 @@ export default function ContactDetailPanel({ contactId, onClose, onChanged }) {
             Suppression is not the absence of consent. A suppressed contact asked not to be
             contacted, and granting consent here does not lift that.
           </p>
+
+          <ContactIntakeForm contactId={contactId} onSubmitted={load} />
 
           <button type="button" onClick={reserveNurture} disabled={busy !== '' || !contact.nurture_enabled}>
             {busy === 'nurture' ? 'Reserving…' : 'Reserve next nurture touch'}

@@ -1,9 +1,9 @@
 {
   "// note": "Ceilings, not targets. Lower deliberately; raise only with a stated reason.",
-  "// raised-2026-08-27": "+8.7 KB gzip across the day, no new dependency. Caller-less endpoint groups wired: the contract TEMPLATE registry (list, bootstrap, per-template attorney decision, policy); lead/listing photo attach and remove, resolved through useProtectedMedia because /api/media/{id} is authenticated and a bare <img src> gets a 401; billing usage, which had been accruing into billing_usage_events all along and read back by nobody; showing logging, where the drawer could display a client's showing history while nothing could add to it; data-source health, which is the endpoint that reports credential EXPIRY and is why a lapsed Regrid token silently produces '0 of 8 core facts'; and the signature-aware comms draft, now the fallback where the compliance-gated outreach script legitimately refuses. largestChunkBytes unchanged.",
-  "// largest": "src-2tmu5YXs.js",
+  "// raised-2026-08-27": "+10.4 KB gzip across the day, no new dependency, closing the backend-parity sweep. Wired: the contract TEMPLATE registry; lead/listing photo attach and remove, resolved through useProtectedMedia because /api/media/{id} is authenticated and a bare <img src> gets a 401; billing usage, accruing all along and read back by nobody; showing logging; data-source health, which is the endpoint reporting credential EXPIRY and is why a lapsed Regrid token silently produces '0 of 8 core facts'; the signature-aware comms draft, now the fallback where the compliance-gated outreach script legitimately refuses; two-person role-change approval, without which promoting an agent could only happen by direct database access; and the three-question buyer/seller intake, whose questions come FROM the server because they are versioned and parsed downstream. largestChunkBytes unchanged throughout.",
+  "// largest": "src-COsCzm5u.js",
   "largestChunkBytes": 2325752,
   "largestChunkGzipBytes": 591589,
-  "totalBytes": 3922168,
-  "totalGzipBytes": 1086978
+  "totalBytes": 3927542,
+  "totalGzipBytes": 1088435
 }
