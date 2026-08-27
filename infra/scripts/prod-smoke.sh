@@ -16,7 +16,7 @@
 #
 # Identifiers are read from `terraform output` when terraform/state is reachable,
 # otherwise they fall back to the deterministic prod values
-# (project=neoh, environment=prod, account 404870839825, region us-east-1).
+# (project=neoh, environment=prod, account 151105438863, region us-east-1).
 #
 # Usage:
 #   ./prod-smoke.sh
@@ -47,7 +47,7 @@ tf_out() { terraform -chdir="$TF_DIR" output -raw "$1" 2>/dev/null || true; }
 # ── config / resolution (env > terraform > deterministic default) ────────────
 PROFILE="${PROFILE:-swarm-admin}"
 REGION="${REGION:-us-east-1}"
-ACCOUNT_ID="404870839825"
+ACCOUNT_ID="151105438863"
 APP_URL="${APP_URL:-https://neoh.app}"
 
 ALB_DNS="${ALB_DNS:-$(tf_out alb_dns_name)}"

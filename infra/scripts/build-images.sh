@@ -6,7 +6,7 @@
 #   infra/scripts/build-images.sh app     # backend + frontend (fast, ~10 min)
 #   infra/scripts/build-images.sh recon   # GPU reconstruction image (slow, ~30 min)
 #
-# Account 404870839825 / us-east-1 / profile swarm-admin.
+# Account 151105438863 / us-east-1 / profile neoh.
 set -euo pipefail
 TARGET="${1:-app}"
 PROFILE="${AWS_PROFILE:-swarm-admin}"

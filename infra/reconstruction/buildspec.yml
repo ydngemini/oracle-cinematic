@@ -19,7 +19,7 @@ version: 0.2
 # context here is ".".
 #
 # Env vars (set on the CodeBuild project by codebuild-setup.sh):
-#   ECR_REPO_URI        e.g. 404870839825.dkr.ecr.us-east-1.amazonaws.com/neoh/reconstruction
+#   ECR_REPO_URI        e.g. 151105438863.dkr.ecr.us-east-1.amazonaws.com/neoh/reconstruction
 #   AWS_DEFAULT_REGION  e.g. us-east-1
 #   IMAGE_TAG           primary tag (default "v1"); ":latest" is always also pushed
 # ─────────────────────────────────────────────────────────────────────────────

@@ -15,7 +15,7 @@ from dotenv import load_dotenv
 
 REGION = "us-west-2"
 BASE_MODEL = "meta.llama3-3-70b-instruct-v1:0:128k"
-S3_BUCKET = "nexum-oracle-forge-404870839825"
+S3_BUCKET = f"nexum-oracle-forge-{os.environ.get('AWS_ACCOUNT_ID', '151105438863')}"
 S3_KEY = "training_data/swarm_textbook_bedrock.jsonl"
 S3_URI = f"s3://{S3_BUCKET}/{S3_KEY}"
 OUTPUT_S3_URI = f"s3://{S3_BUCKET}/output/"

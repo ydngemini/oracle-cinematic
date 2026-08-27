@@ -32,7 +32,7 @@
 # mutates anything; everything else is read-only.
 #
 # Requires: aws CLI v2 with the swarm-admin profile (service-quotas:*).
-# Account: 404870839825   Region: us-east-1   Profile: swarm-admin
+# Account: 151105438863   Region: us-east-1   Profile: neoh
 # Approval: AWS typically grants G/VT Spot quota increases in ~1 day.
 #
 set -uo pipefail
@@ -56,7 +56,7 @@ fi
 AWS=(aws --profile "$PROFILE" --region "$REGION")
 
 echo "── Neoh GPU Spot quota request ────────────────────────────────────────"
-echo "Account 404870839825 | Region $REGION | Profile $PROFILE"
+echo "Account 151105438863 | Region $REGION | Profile $PROFILE"
 echo "Quota:  $SERVICE_CODE / $QUOTA_CODE (All G and VT Spot Instance Requests)"
 echo "Target: $TARGET vCPUs"
 echo

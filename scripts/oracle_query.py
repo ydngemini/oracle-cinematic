@@ -19,6 +19,11 @@ from dotenv import load_dotenv
 
 REGION = "us-west-2"
 MODEL_ID = "oracle-underwriter-70b"
+# Only used to print a copy-pasteable `aws bedrock` command in an error path.
+# Overridable because the account moved once already (404870839825 -> 151105438863)
+# and a hardcoded id in a help string is how you end up telling someone to run a
+# command against an account they no longer have.
+ACCOUNT_ID = os.environ.get("AWS_ACCOUNT_ID", "151105438863")
 
 SYSTEM_PROMPT = (
     "You are Oracle Underwriter, a Delaware wholesale real estate analyst. "
@@ -107,7 +112,7 @@ def main() -> int:
     except bedrock_runtime.exceptions.ModelNotReadyException:
         print("ERROR: Model not yet ready. Fine-tuning job may still be in progress.")
         print(f"Check: aws bedrock get-model-customization-job --job-identifier "
-              f"arn:aws:bedrock:{REGION}:404870839825:model-customization-job/"
+              f"arn:aws:bedrock:{REGION}:{ACCOUNT_ID}:model-customization-job/"
               f"meta.llama3-3-70b-instruct-v1:0:128k/wbtis0vmhc54")
         return 1
     except Exception as e:

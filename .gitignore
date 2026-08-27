@@ -56,3 +56,11 @@ crash.log
 # ignore the heavy .splat/.json artifacts written into it at runtime.
 backend/.splatdata/*
 !backend/.splatdata/.gitkeep
+
+# Root-owned Terraform leftovers from a pre-2026-08-27 `sudo terraform` run.
+# Moved aside (not deletable without sudo) when the backend was re-pointed to
+# account 151105438863. Safe to `sudo rm -rf` once you are satisfied the new
+# state is good — the old state's only reachable copy is in ~/aws-state-rescue.
+infra/terraform/.terraform-root-owned-old/
+infra/terraform/.terraform.lock.hcl.root-owned-old
+infra/.tf-root-owned-*/

@@ -129,27 +129,33 @@ resource "aws_iam_role_policy" "task" {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Deploy role — scoped CI/operator identity that REPLACES the root access key the
-# `swarm-admin` profile currently uses (SECURITY: a root AKIA key is the highest-
-# risk credential type). Assumed by the operator IAM user via sts:AssumeRole;
-# carries only the permissions the infra/scripts deploy + ops flows actually call.
+# Deploy role — scoped CI/operator identity, so deploys do not run as an
+# administrator. The account this now targets (151105438863) was built with an
+# IAM admin user rather than root keys, so the original hazard this role was
+# written against is already gone; what remains is the narrower goal of keeping
+# AdministratorAccess out of CI.
 #
-# CUTOVER (do NOT delete the root key until this is proven):
+# CUTOVER:
 #   1. terraform apply  (creates the role — additive, safe)
 #   2. add to ~/.aws/config:
 #        [profile neoh-deploy]
-#        role_arn = arn:aws:iam::<acct>:role/neoh-prod-deploy
-#        source_profile = default            # the YDNop IAM user
+#        role_arn = arn:aws:iam::151105438863:role/neoh-prod-deploy
+#        source_profile = neoh               # the neoh-admin IAM user
 #   3. run a full deploy under AWS_PROFILE=neoh-deploy and confirm it works
-#   4. THEN: aws iam delete-access-key for the root key; repoint scripts' default.
+#   4. THEN: repoint scripts to neoh-deploy and stop using the admin profile
+#      for anything routine.
 # ─────────────────────────────────────────────────────────────────────────────
-# YDNop lives in a DIFFERENT account (364238921565) than prod (404870839825), so this
-# is a CROSS-ACCOUNT trust. After apply, the YDNop side must also grant the user
-# sts:AssumeRole on this role's ARN before `source_profile=default` can assume it.
+# 2026-08-27: this is no longer a cross-account trust. Deploys now run from
+# neoh-admin inside the SAME account (151105438863), so the extra sts:AssumeRole
+# grant the old YDNop setup needed on the other side no longer applies.
+#
+# The scoped deploy role still exists and is still the right thing to use:
+# neoh-admin holds AdministratorAccess, and CI should assume this narrower role
+# rather than carry admin. That was the unfinished half of the old cutover.
 variable "deploy_principal_arns" {
   description = "IAM principal ARNs allowed to assume the scoped deploy role."
   type        = list(string)
-  default     = ["arn:aws:iam::364238921565:user/YDNop"]
+  default     = ["arn:aws:iam::151105438863:user/neoh-admin"]
 }
 
 data "aws_iam_policy_document" "deploy_assume" {
