@@ -12,6 +12,7 @@ import statistics
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+from types import MappingProxyType
 from typing import Any, Iterable, Mapping, Sequence
 
 
@@ -211,6 +212,9 @@ def calculate_mao(
     }
 
 
+# Public alias. The API serves these to clients so no screen has to hardcode the
+# signal vocabulary; score_pre_distress() rejects any name outside it, so a copy
+# in the frontend would break the moment a signal is added here.
 _DISTRESS_WEIGHTS: dict[str, float] = {
     "tax_delinquency": 0.20,
     "vacancy": 0.14,
@@ -222,6 +226,8 @@ _DISTRESS_WEIGHTS: dict[str, float] = {
     "property_history": 0.06,
     "deferred_maintenance": 0.05,
 }
+
+DISTRESS_SIGNAL_WEIGHTS: Mapping[str, float] = MappingProxyType(_DISTRESS_WEIGHTS)
 
 
 def score_pre_distress(

@@ -14,6 +14,7 @@ from db.connection import tenant_tx
 from graph_engine import PropertyGraph
 from intelligence_engine import (
     DISTRESS_MODEL_VERSION,
+    DISTRESS_SIGNAL_WEIGHTS,
     FORECAST_MODEL_VERSION,
     HBU_MODEL_VERSION,
     TITLE_MODEL_VERSION,
@@ -44,6 +45,32 @@ router = APIRouter(prefix="/api/intelligence", tags=["intelligence"])
 
 class EvidenceInput(SourceCitation):
     source_record_id: UUID
+
+
+class CitableSource(BaseModel):
+    """One immutable source record, offered to a caller as citable evidence.
+
+    `cite` is exactly an EvidenceInput and nothing more, because SourceCitation
+    sets `extra="forbid"` — a caller that spread the metadata below into a POST
+    body would be rejected. Keeping the citable subset in its own object means
+    the client passes `row.cite` straight through instead of maintaining a
+    field-stripping rule that drifts the moment either model changes.
+
+    The metadata beside it exists so a person can tell WHICH record to cite.
+    `payload_purged` matters most: retention wipes `raw_payload` but keeps the
+    hash and the provenance, so a purged record still proves an observation
+    happened and remains legitimately citable — it just cannot be re-read.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    cite: EvidenceInput
+    source_key: str
+    property_key: Optional[str] = None
+    jurisdiction: Optional[str] = None
+    property_level_allowed: bool
+    payload_purged: bool
+    expires_at: Optional[datetime] = None
 
 
 class AnalysisBase(BaseModel):
@@ -110,13 +137,6 @@ class EntityGraphAnalysis(AnalysisBase):
     record: dict[str, Any]
 
 
-def _citations(sources: list[EvidenceInput]) -> list[SourceCitation]:
-    return [
-        SourceCitation.model_validate(source.model_dump(exclude={"source_record_id"}))
-        for source in sources
-    ]
-
-
 def _source_ids(sources: list[EvidenceInput]) -> list[str]:
     return [str(source.source_record_id) for source in sources]
 
@@ -124,14 +144,29 @@ def _source_ids(sources: list[EvidenceInput]) -> list[str]:
 async def _verified_citations(
     ctx: TenantContext,
     source_ids: list[str],
+    *,
+    property_level: bool = True,
 ) -> list[SourceCitation]:
-    """Resolve provenance from tenant-visible immutable records, never claims."""
+    """Resolve provenance from tenant-visible immutable records, never claims.
+
+    `property_level` gates `source_licenses.property_level_allowed`, which the
+    harvesters have always written and nothing has ever read. The column exists
+    to answer "may this data be attached to an individual property record?", so
+    an analysis whose subject IS a property must not cite a source whose licence
+    says no. Every harvester in the repo leaves the default True today, so this
+    changes no current behaviour — it closes the gap before the first licensed
+    feed arrives, which is the only moment the check is cheap.
+
+    Pass False for market-subject analyses (the forecast), where the licence
+    question does not arise because no individual property is being described.
+    """
     unique_ids = list(dict.fromkeys(source_ids))
     async with tenant_tx(ctx) as conn:
         rows = await conn.fetch(
             """
             SELECT r.id,r.record_key,r.observed_at,r.retrieved_at,
-                   l.source_name,l.source_url,l.license_name
+                   l.source_name,l.source_url,l.license_name,
+                   l.property_level_allowed
               FROM source_records r
               JOIN source_licenses l ON l.id=r.source_license_id
              WHERE r.id=ANY($1::uuid[])
@@ -145,6 +180,20 @@ async def _verified_citations(
             status_code=422,
             detail={"code": "SOURCE_RECORD_NOT_VISIBLE", "source_record_ids": missing},
         )
+    if property_level:
+        forbidden = [
+            source_id
+            for source_id in unique_ids
+            if not by_id[source_id]["property_level_allowed"]
+        ]
+        if forbidden:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "SOURCE_LICENSE_FORBIDS_PROPERTY_USE",
+                    "source_record_ids": forbidden,
+                },
+            )
     return [
         SourceCitation(
             source=by_id[source_id]["source_name"],
@@ -198,7 +247,6 @@ async def _respond(
     analysis_type: str,
     subject_id: str,
     model_version: str,
-    citations: list[SourceCitation],
     source_ids: list[str],
     result: dict[str, Any],
     confidence: float,
@@ -206,11 +254,14 @@ async def _respond(
     trace: Optional[UnderwritingTrace] = None,
     review_required: bool = False,
     evidence_status: EvidenceStatus = EvidenceStatus.INFERRED,
+    property_level: bool = True,
 ) -> dict[str, Any]:
     # Caller-supplied citation labels are display hints only. Immutable source
     # records are authoritative, which prevents fabricated observation dates or
-    # licenses from entering an intelligence response.
-    citations = await _verified_citations(ctx, source_ids)
+    # licenses from entering an intelligence response. This used to take the
+    # caller's citations as an argument and overwrite them on the next line,
+    # which read as though they mattered; they never did.
+    citations = await _verified_citations(ctx, source_ids, property_level=property_level)
     envelope = IntelligenceEnvelope(
         analysis_type=analysis_type,
         subject_id=subject_id,
@@ -234,7 +285,108 @@ async def _respond(
 
 @router.get("/policy")
 async def intelligence_policy(ctx: TenantContext = Depends(require_context)):
-    return PUBLIC_PROPERTY_DATA_POLICY
+    """Policy, plus the vocabularies a caller must speak to author an analysis.
+
+    `score_pre_distress()` raises on any signal name it does not recognise, and
+    the weights decide what a score means. A client that hardcoded either would
+    drift out of step with the engine the first time a signal is added — the
+    same failure the intake questions avoid by being served rather than copied.
+    So the names and weights come from the engine itself.
+    """
+    return {
+        **PUBLIC_PROPERTY_DATA_POLICY,
+        "distress_signals": [
+            {"signal": name, "weight": weight}
+            for name, weight in DISTRESS_SIGNAL_WEIGHTS.items()
+        ],
+        "distress_model_version": DISTRESS_MODEL_VERSION,
+    }
+
+
+# Declared before GET /{property_key}, which would otherwise match "sources"
+# and try to read intelligence for a property of that name.
+@router.get("/sources")
+async def citable_sources(
+    property_key: Optional[str] = Query(default=None, max_length=240),
+    jurisdiction: Optional[str] = Query(default=None, max_length=80),
+    source_key: Optional[str] = Query(default=None, max_length=240),
+    limit: int = Query(default=50, ge=1, le=200),
+    ctx: TenantContext = Depends(require_context),
+):
+    """List the immutable source records this tenant may cite.
+
+    Every POST on this router requires at least one `source_record_id` that
+    `_verified_citations()` can resolve, and until now nothing listed that
+    table. The practical consequence was not a missing convenience: authoring
+    any intelligence at all was impossible through the product, because a person
+    had no way to discover the UUIDs an analysis must cite. Thirteen routes were
+    unreachable behind one absent SELECT.
+
+    At least one of `property_key` or `jurisdiction` is required. Both are
+    indexed; an unfiltered listing would be a sequential scan of every raw
+    record this tenant has ever retained, which is the shape of query that has
+    already cost this codebase a 13.5s response once.
+    """
+    if not property_key and not jurisdiction:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "FILTER_REQUIRED",
+                "message": "Pass property_key or jurisdiction. Listing every retained "
+                           "record for a tenant is a scan, not a query.",
+            },
+        )
+    async with tenant_tx(ctx) as conn:
+        rows = await conn.fetch(
+            """
+            SELECT r.id, r.source_key, r.record_key, r.property_key, r.jurisdiction,
+                   r.observed_at, r.retrieved_at, r.expires_at, r.purged_at,
+                   l.source_name, l.source_url, l.license_name,
+                   l.property_level_allowed
+              FROM source_records r
+              JOIN source_licenses l ON l.id = r.source_license_id
+             WHERE ($1::text IS NULL OR r.property_key = $1)
+               AND ($2::text IS NULL OR r.jurisdiction = $2)
+               AND ($3::text IS NULL OR r.source_key = $3)
+             ORDER BY r.observed_at DESC, r.created_at DESC
+             LIMIT $4
+            """,
+            property_key,
+            jurisdiction,
+            source_key,
+            limit,
+        )
+    sources = [
+        CitableSource(
+            cite=EvidenceInput(
+                source_record_id=row["id"],
+                source=row["source_name"],
+                record_id=row["record_key"],
+                source_url=row["source_url"],
+                observed_at=row["observed_at"].date(),
+                retrieved_at=row["retrieved_at"],
+                license=row["license_name"],
+                evidence_status=EvidenceStatus.OBSERVED,
+            ),
+            source_key=row["source_key"],
+            property_key=row["property_key"],
+            jurisdiction=row["jurisdiction"],
+            property_level_allowed=row["property_level_allowed"],
+            payload_purged=row["purged_at"] is not None,
+            expires_at=row["expires_at"],
+        )
+        for row in rows
+    ]
+    return {
+        "property_key": property_key,
+        "jurisdiction": jurisdiction,
+        "limit": limit,
+        "count": len(sources),
+        # Distinguishing "this property has no retained observations" from
+        # "the harvesters have never run" is the difference between a screen
+        # that tells you to go get data and one that looks broken.
+        "citable": [source.model_dump(mode="json") for source in sources],
+    }
 
 
 @router.post("/pre-distress")
@@ -254,7 +406,6 @@ async def pre_distress(
         analysis_type="pre_distress",
         subject_id=body.property_key,
         model_version=DISTRESS_MODEL_VERSION,
-        citations=_citations(body.sources),
         source_ids=_source_ids(body.sources),
         result=result,
         confidence=confidence,
@@ -351,7 +502,6 @@ async def underwriting(
         analysis_type="underwriting",
         subject_id=body.property_key,
         model_version=UNDERWRITING_MODEL_VERSION,
-        citations=_citations(body.sources),
         source_ids=_source_ids(body.sources),
         result=result,
         confidence=0.85 if len(body.comparables) >= 3 and body.rehab_items else 0.62,
@@ -413,7 +563,6 @@ async def title_intelligence(
         analysis_type="preliminary_title",
         subject_id=body.property_key,
         model_version=TITLE_MODEL_VERSION,
-        citations=_citations(body.sources),
         source_ids=source_ids,
         result=result,
         confidence=confidence,
@@ -438,8 +587,10 @@ async def market_forecast(
         analysis_type="micro_market_forecast",
         subject_id=body.market_key,
         model_version=FORECAST_MODEL_VERSION,
-        citations=_citations(body.sources),
         source_ids=_source_ids(body.sources),
+        # Subject is a market, not a property, so property_level_allowed does
+        # not apply — no individual property is being described.
+        property_level=False,
         result=result,
         confidence=max(
             0.35,
@@ -473,7 +624,6 @@ async def sourcing_detectors(
         analysis_type="public_sourcing_detectors",
         subject_id=body.property_key,
         model_version="public-source-detectors-2026.07",
-        citations=_citations(body.sources),
         source_ids=_source_ids(body.sources),
         result=result,
         confidence=0.7,

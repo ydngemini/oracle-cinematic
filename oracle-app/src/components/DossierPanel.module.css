@@ -698,3 +698,74 @@
 .floorplanBtn:focus-visible { outline: 2px solid var(--oracle-amber); outline-offset: 2px; }
 
 @media (prefers-reduced-motion: reduce) { .floorplanBtn { transition: none; } }
+
+/* ─── Evidence picker + analysis authoring ───────────────────────────────── */
+
+.evidenceList {
+  list-style: none;
+  margin: 0 0 0.7rem;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  max-height: 190px;
+  overflow-y: auto;
+}
+
+.evidenceItem {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  padding: 0.4rem 0.5rem;
+  border: 1px solid rgba(242, 242, 242, 0.06);
+  border-radius: 2px;
+  background: rgba(242, 242, 242, 0.02);
+  font-size: 0.6rem;
+  line-height: 1.45;
+  color: rgba(242, 242, 242, 0.72);
+  cursor: pointer;
+}
+
+.evidenceItem:hover {
+  border-color: rgba(242, 242, 242, 0.14);
+}
+
+.evidenceItem[data-selected='true'] {
+  border-color: rgba(255, 188, 31, 0.4);
+  background: rgba(255, 188, 31, 0.05);
+}
+
+/* A source its licence forbids for property-level use is shown rather than
+   hidden, because "why can I not cite this?" needs an answer on the screen. */
+.evidenceItem[data-blocked='true'] {
+  opacity: 0.45;
+  cursor: not-allowed;
+  border-style: dashed;
+}
+
+.evidenceItem input {
+  margin: 0.15rem 0 0;
+  accent-color: rgba(255, 188, 31, 0.9);
+}
+
+.evidenceMeta {
+  display: block;
+  font-size: 0.52rem;
+  letter-spacing: 0.06em;
+  color: rgba(242, 242, 242, 0.3);
+}
+
+.signalGrid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.4rem 0.5rem;
+  margin-bottom: 0.7rem;
+}
+
+.authorNote {
+  margin: 0.5rem 0 0;
+  font-size: 0.58rem;
+  font-weight: 300;
+  line-height: 1.55;
+  color: rgba(242, 242, 242, 0.3);
+}

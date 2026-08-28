@@ -1,9 +1,9 @@
 {
   "// note": "Ceilings, not targets. Lower deliberately; raise only with a stated reason.",
-  "// raised-2026-08-27": "+10.4 KB gzip across the day, no new dependency, closing the backend-parity sweep. Wired: the contract TEMPLATE registry; lead/listing photo attach and remove, resolved through useProtectedMedia because /api/media/{id} is authenticated and a bare <img src> gets a 401; billing usage, accruing all along and read back by nobody; showing logging; data-source health, which is the endpoint reporting credential EXPIRY and is why a lapsed Regrid token silently produces '0 of 8 core facts'; the signature-aware comms draft, now the fallback where the compliance-gated outreach script legitimately refuses; two-person role-change approval, without which promoting an agent could only happen by direct database access; and the three-question buyer/seller intake, whose questions come FROM the server because they are versioned and parsed downstream. largestChunkBytes unchanged throughout.",
-  "// largest": "src-COsCzm5u.js",
+  "// raised-2026-08-28": "+2.2 KB gzip. One screen: IntelligenceAuthoring, the first caller of GET /api/intelligence/sources. Thirteen intelligence routes were unreachable through the product because every POST requires a source_record_id resolvable against the immutable source_records table and NOTHING listed that table \u2014 the form could be filled in and never submitted. It is a lazy route chunk under DossierPanel, so the main bundle is unchanged and largestChunkBytes did not move; the growth is the new chunk plus the distress-signal vocabulary now served from the engine rather than hardcoded.",
+  "// largest": "src-Dj_51OAc.js",
   "largestChunkBytes": 2325752,
-  "largestChunkGzipBytes": 591589,
-  "totalBytes": 3927542,
-  "totalGzipBytes": 1088435
+  "largestChunkGzipBytes": 591588,
+  "totalBytes": 3932430,
+  "totalGzipBytes": 1090660
 }

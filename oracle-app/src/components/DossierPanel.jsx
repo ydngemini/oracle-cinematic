@@ -17,6 +17,7 @@ const DealIntakePanel = lazy(() => import('./DealIntakePanel'));
 // capability here that no screen ever reached — every analysis it produced was
 // written and read back by nobody.
 const PropertyIntelligencePanel = lazy(() => import('./PropertyIntelligencePanel'));
+const IntelligenceAuthoring = lazy(() => import('./IntelligenceAuthoring'));
 
 // Federal/public diligence feeds — FEMA, EPA, FBI, BLS. Eleven routes in
 // data_sources_api had no frontend caller at all.
@@ -118,6 +119,9 @@ export function DossierPanel({ leadId, onClose }) {
   const copyTimer = useRef(null);
 
   const [editorOpen, setEditorOpen] = useState(false);
+  // Bumped when an analysis is authored, so the stored-intelligence list
+  // reflects the run that just happened instead of going stale beside it.
+  const [intelReloadKey, setIntelReloadKey] = useState(0);
   const [intakeOpen, setIntakeOpen] = useState(false);
 
   const [entityEditing, setEntityEditing] = useState(false);
@@ -297,7 +301,17 @@ export function DossierPanel({ leadId, onClose }) {
           </section>
 
           <Suspense fallback={null}>
-            <PropertyIntelligencePanel propertyKey={dossier.parcel_id || ''} />
+            <PropertyIntelligencePanel
+              propertyKey={dossier.parcel_id || ''}
+              reloadKey={intelReloadKey}
+            />
+          </Suspense>
+
+          <Suspense fallback={null}>
+            <IntelligenceAuthoring
+              propertyKey={dossier.parcel_id || ''}
+              onAuthored={() => setIntelReloadKey((n) => n + 1)}
+            />
           </Suspense>
 
           <Suspense fallback={null}>

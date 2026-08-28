@@ -14,13 +14,12 @@ import styles from './DossierPanel.module.css';
  * This surfaces the READ half — what has been analysed, how confident it was,
  * what evidence backed it, and whether a professional has reviewed it.
  *
- * The authoring half is deliberately absent, and the reason is a real blocker
- * rather than a decision: every POST extends AnalysisBase, which requires
- * `sources` — at least one `source_record_id` that `_verified_citations()`
- * resolves against the `source_records` table. **No endpoint lists that table**,
- * so a person using this product has no way to discover the UUIDs an analysis
- * must cite. A form here could be filled in and never submitted. Wiring
- * authoring needs a source-record listing endpoint first.
+ * The authoring half used to be impossible rather than absent: every POST
+ * extends AnalysisBase, which requires `sources` — at least one
+ * `source_record_id` that `_verified_citations()` resolves against
+ * `source_records` — and no endpoint listed that table, so nobody could
+ * discover the UUIDs an analysis must cite. `GET /api/intelligence/sources`
+ * closed that, and [[IntelligenceAuthoring]] sits directly below this list.
  */
 
 const TYPE_LABEL = {
@@ -50,7 +49,7 @@ function percent(value) {
   return `${Math.round(parsed * 100)}%`;
 }
 
-export default function PropertyIntelligencePanel({ propertyKey }) {
+export default function PropertyIntelligencePanel({ propertyKey, reloadKey = 0 }) {
   const [analyses, setAnalyses] = useState(null);
   const [error, setError] = useState('');
 
@@ -74,7 +73,11 @@ export default function PropertyIntelligencePanel({ propertyKey }) {
   useEffect(() => {
     const frame = window.requestAnimationFrame(() => { void load(); });
     return () => window.cancelAnimationFrame(frame);
-  }, [load]);
+    // reloadKey is a trigger, not an input: authoring an analysis bumps it so
+    // this list re-reads instead of sitting stale beside the run that just
+    // produced a row in it. It belongs here rather than in `load`'s deps,
+    // where it would be an argument the callback never uses.
+  }, [load, reloadKey]);
 
   if (!propertyKey) return null;
 
@@ -87,9 +90,8 @@ export default function PropertyIntelligencePanel({ propertyKey }) {
 
       {analyses !== null && analyses.length === 0 ? (
         <p className={styles.provenance}>
-          No analysis has been run against this property. Underwriting, title, forecast and
-          distress scoring all require cited source records, and nothing in the product lists
-          them yet — so these are produced by the API directly, not from this screen.
+          No analysis has been run against this property yet. Every analysis has to cite
+          public-record evidence, so start below: pick the records, then score.
         </p>
       ) : null}
 
