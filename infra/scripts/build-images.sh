@@ -35,11 +35,11 @@ OBS="${REG}/neoh/observability"
 # so an image built against the wrong host calls the wrong API for its whole life
 # — this hardcoded neoh.app until 2026-08-28, which is a domain that no longer
 # resolves to anything we own. Must match terraform's app_base_url/cors_origins.
-APP_HOST="${APP_HOST:-neohrs.com}"
+APP_HOST="${APP_HOST:-neohrealestate.com}"
 # AWS observability dashboard vhost. The ALB routes this host to the dashboard,
 # and its /api,/auth,/ws to the backend, so the SPA calls the API same-origin.
 # Must be covered by the ACM cert, so it has to stay a subdomain of APP_HOST.
-OBS_HOST="${OBS_HOST:-obs.neohrs.com}"
+OBS_HOST="${OBS_HOST:-obs.neohrealestate.com}"
 BUCKET="neoh-prod-recon-${ACCT}"
 
 # ── source: git-archive HEAD → S3 (CodeBuild unpacks it as the build context) ──

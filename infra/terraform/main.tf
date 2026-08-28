@@ -27,4 +27,12 @@ locals {
   private_subnets = [for i in range(var.az_count) : cidrsubnet(var.vpc_cidr, 4, i + 8)]
 
   account_id = data.aws_caller_identity.current.account_id
+
+  # Defaults derived from the one domain, so a rename is a single tfvars edit
+  # rather than five that must agree. The wildcard certificate covers any host
+  # under it, so obs needs no separate certificate consideration.
+  observability_host = coalesce(
+    var.observability_host != "" ? var.observability_host : null,
+    "obs.${var.domain_name}",
+  )
 }

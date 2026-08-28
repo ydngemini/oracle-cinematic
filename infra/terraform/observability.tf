@@ -1,6 +1,6 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # AWS Observability dashboard — the Neoh-embedded copy (observability-platform/).
-# A 2nd frontend service on the shared ALB, reached at var.observability_host.
+# A 2nd frontend service on the shared ALB, reached at local.observability_host.
 #
 # Routing: the existing alb.tf `api` rule (priority 10, NO host condition) already
 # forwards /api/*, /ws, /auth/*, /billing/*, /health to the backend for EVERY host
@@ -12,9 +12,9 @@
 # (AwsObservabilityReadOnly); runtime flag: ecs.tf backend_env.
 #
 # OPERATOR PREREQS before this serves:
-#   * ACM cert (var.acm_certificate_arn) must cover var.observability_host
+#   * The wildcard certificate in dns.tf covers local.observability_host
 #     (a *.<domain> wildcard covers it automatically; otherwise add a SAN).
-#   * DNS: point var.observability_host at the ALB (aws_lb.main.dns_name).
+#   * DNS: point local.observability_host at the ALB (aws_lb.main.dns_name).
 # ─────────────────────────────────────────────────────────────────────────────
 
 variable "observability_enabled" {
@@ -24,9 +24,9 @@ variable "observability_enabled" {
 }
 
 variable "observability_host" {
-  description = "Host serving the dashboard (e.g. obs.neohrs.com). Must be covered by acm_certificate_arn and resolve to the ALB."
+  description = "Host serving the dashboard. Empty means obs.<domain_name>, which the wildcard certificate covers."
   type        = string
-  default     = "obs.neohrs.com"
+  default     = ""
 }
 
 variable "observability_cpu" {
@@ -154,12 +154,12 @@ resource "aws_lb_listener_rule" "observability_web" {
 
   condition {
     host_header {
-      values = [var.observability_host]
+      values = [local.observability_host]
     }
   }
 }
 
 output "observability_dashboard_url" {
   description = "AWS observability dashboard URL (once DNS for observability_host points at the ALB)."
-  value       = var.observability_enabled ? "https://${var.observability_host}" : "(disabled)"
+  value       = var.observability_enabled ? "https://${local.observability_host}" : "(disabled)"
 }

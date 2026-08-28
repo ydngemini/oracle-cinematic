@@ -68,7 +68,11 @@ resource "aws_lb_listener" "https" {
   port              = 443
   protocol          = "HTTPS"
   ssl_policy        = "ELBSecurityPolicy-TLS13-1-2-2021-06"
-  certificate_arn   = var.acm_certificate_arn
+  # The VALIDATION resource's arn, not the certificate's. Both are the same
+  # string, but depending on the validation makes the listener wait for ISSUED —
+  # ELB refuses a PENDING_VALIDATION cert, which is exactly how this deploy
+  # failed before the domain moved into Route53.
+  certificate_arn = aws_acm_certificate_validation.main.certificate_arn
 
   default_action {
     type             = "forward"

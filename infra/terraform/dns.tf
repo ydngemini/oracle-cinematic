@@ -1,83 +1,62 @@
 # ── DNS ──────────────────────────────────────────────────────────────────────
-# neohrs.com moved off Hostinger's share-dns nameservers on 2026-08-28. Until
-# then the zone was unreachable from here, which is why the ACM certificate sat
-# in PENDING_VALIDATION: the validation CNAME could only be added by hand at the
-# registrar.
+# The domain is registered THROUGH Route53 (route53domains), so registration
+# creates the hosted zone and points the registrar's NS records at it in one
+# step. There is no external registrar to visit and no delegation to wait on —
+# which is the whole reason for buying the name here rather than reusing
+# neohrs.com, whose nameservers sat at Hostinger and could only be changed by
+# hand. That single manual step blocked this deploy for a day.
 #
-# What this file manages is the ALIAS records below and nothing else. The ACM
-# certificate is still requested out-of-band and passed in as
-# var.acm_certificate_arn, its validation CNAME was written into the zone by
-# hand, and SES DKIM is still printed by infra/scripts/setup-ses.sh for manual
-# entry. Having the zone in-account makes automating those possible; it has not
-# done so yet, and an operator reading otherwise would go looking for validation
-# records that do not exist.
+# The zone is therefore looked up, not created: route53domains already made it,
+# and a managed `aws_route53_zone` would either fight that or force-replace it
+# and mint nameservers the registrar half does not know about.
 #
-# The zone was created out-of-band (the deploy was blocked on it) and is adopted
-# here by an import block rather than recreated — recreating it would mint fresh
-# nameservers and break the delegation that was set at the registrar.
-#
-# The registrar still owns the NS delegation. `terraform output route53_name_servers`
-# prints what must be set at Hostinger; nothing in this file can enforce it.
+# What this file manages is the ALIAS records and the ACM validation record.
+# SES DKIM is still printed by infra/scripts/setup-ses.sh for manual entry —
+# that one is not automated yet, and an operator reading otherwise would go
+# looking for records that do not exist.
 
-import {
-  to = aws_route53_zone.main
-  id = "Z01948911TPWLLT18DY2W"
+data "aws_route53_zone" "main" {
+  name         = var.domain_name
+  private_zone = false
 }
 
-resource "aws_route53_zone" "main" {
-  name    = var.domain_name
-  comment = "neohrs.com — moved off Hostinger share-dns 2026-08-28 so ACM DNS validation and the ALB alias can be managed in-account"
+# The certificate and its validation record, both managed here now. Previously
+# the cert was requested by hand and its CNAME pasted at the registrar, which is
+# precisely why it sat in PENDING_VALIDATION for a day. With the zone in-account
+# from the moment of registration, `terraform apply` requests, validates and
+# waits — no console, no copy-paste, no second party.
+resource "aws_acm_certificate" "main" {
+  domain_name               = var.domain_name
+  subject_alternative_names = ["*.${var.domain_name}"]
+  validation_method         = "DNS"
 
-  tags = { Name = "${local.name}-zone" }
+  # The ALB listener holds a reference to this cert, so a replacement has to be
+  # created before the old one can go.
+  lifecycle { create_before_destroy = true }
 
-  # aws_route53_zone.name is ForceNew, and the import above pins a specific zone.
-  # variables.tf defaults domain_name to "" and terraform.tfvars.example carries
-  # app.neoh.example, so a fresh clone would plan to DESTROY the imported zone and
-  # create a replacement — minting new nameservers and orphaning the delegation
-  # set at the registrar, which is the exact outcome the import block exists to
-  # prevent. Fail the plan instead of discovering it in the apply log.
-  lifecycle {
-    precondition {
-      condition     = var.domain_name == "neohrs.com"
-      error_message = "dns.tf imports hosted zone Z01948911TPWLLT18DY2W, which serves neohrs.com. Set domain_name = \"neohrs.com\", or remove the import block and this file if deploying a different domain."
-    }
+  tags = { Name = "${local.name}-cert" }
+}
+
+resource "aws_route53_record" "cert_validation" {
+  # Apex and wildcard share one validation record, so the map collapses to a
+  # single entry — for_each rather than count because ACM does not promise the
+  # order of domain_validation_options.
+  for_each = {
+    for option in aws_acm_certificate.main.domain_validation_options :
+    option.domain_name => option
   }
-}
 
-# Apex and www to the ALB. These REPLACE the parking A records that pointed at
-# 200.103.216.100 — applying them is the actual cutover, and the ALB answers 503
-# for the minute or two before the ECS services pass their health checks. The
-# parking page is not the product, so a short 503 is the better of the two.
-resource "aws_route53_record" "apex" {
-  zone_id = aws_route53_zone.main.zone_id
-  name    = var.domain_name
-  type    = "A"
-
-  # The parking A records are IN the zone but not in state — the zone was
-  # created out-of-band and adopted by import. Route53 refuses to create a
-  # record set that already exists, so without this the apply aborts with
-  # "Tried to create resource record set ... but it already exists" and the
-  # cutover never happens.
+  zone_id         = data.aws_route53_zone.main.zone_id
+  name            = each.value.resource_record_name
+  type            = each.value.resource_record_type
+  records         = [each.value.resource_record_value]
+  ttl             = 60
   allow_overwrite = true
-
-  alias {
-    name                   = aws_lb.main.dns_name
-    zone_id                = aws_lb.main.zone_id
-    evaluate_target_health = true
-  }
 }
 
-resource "aws_route53_record" "www" {
-  zone_id         = aws_route53_zone.main.zone_id
-  name            = "www.${var.domain_name}"
-  type            = "A"
-  allow_overwrite = true
-
-  alias {
-    name                   = aws_lb.main.dns_name
-    zone_id                = aws_lb.main.zone_id
-    evaluate_target_health = true
-  }
+resource "aws_acm_certificate_validation" "main" {
+  certificate_arn         = aws_acm_certificate.main.arn
+  validation_record_fqdns = [for record in aws_route53_record.cert_validation : record.fqdn]
 }
 
 # www resolves to the ALB only so this rule can send it away again. The HTTPS
@@ -119,8 +98,8 @@ resource "aws_lb_listener_rule" "www_redirect" {
 resource "aws_route53_record" "obs" {
   count = var.observability_enabled ? 1 : 0
 
-  zone_id         = aws_route53_zone.main.zone_id
-  name            = var.observability_host
+  zone_id         = data.aws_route53_zone.main.zone_id
+  name            = local.observability_host
   type            = "A"
   allow_overwrite = true
 
@@ -132,10 +111,10 @@ resource "aws_route53_record" "obs" {
 }
 
 output "route53_name_servers" {
-  description = "Set these as the domain's nameservers at the registrar. DNS does not move until they are live."
-  value       = aws_route53_zone.main.name_servers
+  description = "Informational. Registration through route53domains already points the registrar at these."
+  value       = data.aws_route53_zone.main.name_servers
 }
 
 output "route53_zone_id" {
-  value = aws_route53_zone.main.zone_id
+  value = data.aws_route53_zone.main.zone_id
 }

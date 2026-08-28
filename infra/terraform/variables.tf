@@ -30,10 +30,9 @@ variable "az_count" {
 }
 
 # ── TLS / domain ─────────────────────────────────────────────────────────────
-variable "acm_certificate_arn" {
-  description = "ARN of an ISSUED ACM cert in this region covering the app domain. Required for the HTTPS listener."
-  type        = string
-}
+# acm_certificate_arn was an input while the certificate was requested by hand.
+# dns.tf manages it now — see aws_acm_certificate.main.
+
 
 variable "domain_name" {
   description = "Public hostname the app serves on. Its Route53 zone is managed in dns.tf; the NS delegation is not (that is set at the registrar)."
