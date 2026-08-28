@@ -181,3 +181,79 @@ def test_a_generic_stripe_error_is_not_echoed_either(monkeypatch):
     assert excinfo.value.status_code == 502
     assert leak not in excinfo.value.detail
     assert "verification" not in excinfo.value.detail
+
+
+# ── the cancellation path ────────────────────────────────────────────────────
+
+def _portal(ctx=CTX, tenant_id=TENANT_ID):
+    return asyncio.run(
+        billing.create_portal_session(billing.PortalRequest(tenant_id=tenant_id), ctx=ctx)
+    )
+
+
+class _Row(dict):
+    pass
+
+
+def _with_subscription(monkeypatch, customer_id):
+    from contextlib import asynccontextmanager
+
+    class _Conn:
+        async def fetchrow(self, _query, *_args):
+            return None if customer_id is _MISSING else _Row(stripe_customer_id=customer_id)
+
+    @asynccontextmanager
+    async def tx(_ctx):
+        yield _Conn()
+
+    monkeypatch.setattr(billing, "get_pool", lambda: object())
+    monkeypatch.setattr(billing, "tenant_tx", tx)
+
+
+_MISSING = object()
+
+
+def test_a_subscription_with_no_customer_id_is_not_sent_to_stripe(monkeypatch):
+    """A row with a NULL customer id is a broken subscription, not a missing one.
+
+    customer=None reached Stripe and came back as a 502 carrying Stripe's
+    wording. Both cases now read the same to the customer, because from their
+    side both mean the portal is not there.
+    """
+    _with_subscription(monkeypatch, None)
+    monkeypatch.setattr(
+        stripe.billing_portal.Session,
+        "create",
+        staticmethod(lambda **_k: (_ for _ in ()).throw(AssertionError("must not reach Stripe"))),
+    )
+
+    with pytest.raises(HTTPException) as excinfo:
+        _portal()
+
+    assert excinfo.value.status_code == 404
+
+
+def test_the_portal_never_echoes_stripe_to_the_customer(monkeypatch):
+    leak = "No such customer: 'cus_123'; a similar object exists in test mode"
+    _with_subscription(monkeypatch, "cus_123")
+
+    def _raise(**_kwargs):
+        raise stripe.error.InvalidRequestError(leak, param="customer")
+
+    monkeypatch.setattr(stripe.billing_portal.Session, "create", staticmethod(_raise))
+
+    with pytest.raises(HTTPException) as excinfo:
+        _portal()
+
+    assert excinfo.value.status_code == 502
+    assert leak not in excinfo.value.detail
+    assert "cus_123" not in excinfo.value.detail
+
+
+def test_an_agent_cannot_open_another_tenants_portal(monkeypatch):
+    _with_subscription(monkeypatch, "cus_123")
+
+    with pytest.raises(HTTPException) as excinfo:
+        _portal(tenant_id=OTHER_TENANT)
+
+    assert excinfo.value.status_code == 403

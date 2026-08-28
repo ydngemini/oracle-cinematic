@@ -253,7 +253,11 @@ async def create_portal_session(
             body.tenant_id,
         )
 
-    if not row:
+    # A subscription row with no customer id is not "no subscription" — it is a
+    # broken one, and passing customer=None to Stripe turned it into a 502
+    # carrying Stripe's own wording. Both now read the same to the customer,
+    # because from their side both mean the same thing: the portal is not there.
+    if not row or not row["stripe_customer_id"]:
         raise HTTPException(status_code=404, detail="No subscription found")
 
     try:
@@ -262,7 +266,15 @@ async def create_portal_session(
             return_url=f"{BASE_URL}/dashboard",
         )
     except stripe.error.StripeError as exc:
-        raise HTTPException(status_code=502, detail=f"Stripe error: {exc}")
+        # This is the cancellation path — CA ARL requires cancelling to be as
+        # easy as subscribing — so a failure here is one a customer is likely to
+        # be angry about already. Handing them Stripe's internal wording on top
+        # helps nobody, and it names account state they should not see.
+        logger.error("Stripe failed to open the billing portal: %s", exc)
+        raise HTTPException(
+            status_code=502,
+            detail="The billing portal could not be opened. Please try again shortly.",
+        )
 
     return JSONResponse(content={"url": session.url})
 
