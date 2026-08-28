@@ -62,6 +62,26 @@ AUTO_RENEW_DISCLOSURE = os.getenv(
     "until you cancel. You can cancel anytime from Billing in your dashboard.",
 )
 
+# The default above is a placeholder so this module imports without billing
+# configuration. Reaching checkout with it means Stripe answers "No such price"
+# and — because the handler echoed Stripe's text straight back — a paying
+# customer read that at the moment of payment. A misconfiguration should never
+# be discovered by the buyer, so it is caught before the Stripe call instead.
+_PRICE_PLACEHOLDER = "price_REPLACE_ME"
+
+
+def _price_misconfigured() -> str | None:
+    """Why checkout cannot run, or None when the plan price looks usable."""
+    price = (STRIPE_PRICE_ID or "").strip()
+    if not price or price == _PRICE_PLACEHOLDER:
+        return "STRIPE_PRICE_ID is unset (still the placeholder default)"
+    if not price.startswith("price_"):
+        # A product id (prod_...) here is the common slip, and Stripe's refusal
+        # names neither variable nor expectation.
+        return "STRIPE_PRICE_ID is not a Stripe price id — expected price_..."
+    return None
+
+
 stripe.api_key = STRIPE_SECRET_KEY
 
 # Live-key safety interlock. A sk_live_* key bills REAL cards on every checkout and
@@ -92,6 +112,11 @@ if not STRIPE_WEBHOOK_SECRET:
     logger.warning(
         "STRIPE_WEBHOOK_SECRET not set — all incoming webhooks will be rejected "
         "with SignatureVerificationError. Set this variable before going live."
+    )
+if _price_misconfigured():
+    logger.warning(
+        "STRIPE_PRICE_ID is unset or a placeholder — checkout will refuse to "
+        "start until it is set. Set this variable before accepting real traffic."
     )
 
 router = APIRouter(prefix="/billing", tags=["billing"])
@@ -135,6 +160,16 @@ async def create_checkout_session(
             status_code=403,
             detail="Cannot create a checkout session for a different tenant.",
         )
+    # Refuse before calling Stripe rather than after. The customer is already at
+    # the payment step; an operator-configuration failure must not surface there
+    # as though they had done something wrong.
+    price_problem = _price_misconfigured()
+    if price_problem:
+        logger.error("Refusing to open a checkout session: %s", price_problem)
+        raise HTTPException(
+            status_code=503,
+            detail="Checkout is unavailable — the subscription plan is not configured.",
+        )
     # CA ARL / FTC Section 5: affirmative consent + a clear auto-renew disclosure
     # before purchase. SaaS sales tax: collect billing address + tax IDs so Stripe
     # Tax can compute and remit. Cancellation is self-serve via the billing portal
@@ -170,11 +205,25 @@ async def create_checkout_session(
     try:
         session = stripe.checkout.Session.create(**session_kwargs)
     except stripe.error.InvalidRequestError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        # Stripe's message names prices, tax registration and account state.
+        # That is operator detail: the request body here is only a tenant_id, so
+        # an InvalidRequestError is never the caller's fault, and returning it as
+        # a 400 with Stripe's text told the buyer otherwise.
+        logger.error("Stripe rejected the checkout session: %s", exc)
+        raise HTTPException(
+            status_code=502,
+            detail="Checkout could not be started. Please try again shortly.",
+        )
     except stripe.error.AuthenticationError:
         raise HTTPException(status_code=500, detail="Stripe authentication failed")
     except stripe.error.StripeError as exc:
-        raise HTTPException(status_code=502, detail=f"Stripe error: {exc}")
+        # Same reasoning as InvalidRequestError above: Stripe's text is operator
+        # detail, and this branch was leaking it too.
+        logger.error("Stripe failed to create the checkout session: %s", exc)
+        raise HTTPException(
+            status_code=502,
+            detail="Checkout could not be started. Please try again shortly.",
+        )
 
     return CheckoutResponse(session_id=session.id, url=session.url)
 
