@@ -253,8 +253,13 @@ async def _web_search(query: str, max_results: int = 10) -> str:
             },
             method="POST",
         )
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
+        # Offloaded: urlopen is synchronous, so calling it here blocked the
+        # event loop — and therefore every other request in this worker — for
+        # up to the full 15-second timeout while one chat ran one search.
+        raw = await asyncio.to_thread(
+            lambda: urllib.request.urlopen(req, timeout=15).read().decode("utf-8")
+        )
+        data = json.loads(raw)
         answer = data.get("answer", "")
         results = data.get("results", [])[:5]
         lines = [answer.strip()] if answer.strip() else []
