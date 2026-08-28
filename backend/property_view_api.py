@@ -24,6 +24,7 @@ Deliberate boundaries:
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
 import os
@@ -480,7 +481,7 @@ async def agent_upload_media(
                         "Video uploads require object storage, which is not configured "
                         "on this deployment. Photos still work.",
                     )
-                s3_key = _put_video_to_storage(data, content_type, str(ctx.tenant_id))
+                s3_key = await _put_video_to_storage(data, content_type, str(ctx.tenant_id))
             else:
                 # Photos and 360s go to storage too when it exists. A 25 MB
                 # equirect in a bytea column is the same problem as a video,
@@ -1100,7 +1101,7 @@ async def client_upload(
         link = await _resolve_link(conn, token)
 
         if kind == "video":
-            s3_key = _put_video_to_storage(data, content_type, str(link["tenant_id"]))
+            s3_key = await _put_video_to_storage(data, content_type, str(link["tenant_id"]))
         else:
             s3_key = await media_storage.put_media_bytes(
                 data, content_type, str(link["tenant_id"]), kind=kind
@@ -1148,12 +1149,21 @@ async def client_upload(
     }
 
 
-def _put_video_to_storage(data: bytes, content_type: str, tenant_id: str) -> str:
+async def _put_video_to_storage(data: bytes, content_type: str, tenant_id: str) -> str:
     """Store a video in durable object storage and return its key.
 
     Which backend that is — the Azure Files mount, Blob, or the legacy S3
-    bucket — is configuration; see object_storage."""
+    bucket — is configuration; see object_storage.
+
+    Offloaded to a thread, for the reason media_storage.put_media_bytes already
+    states: object_storage.put_bytes is synchronous and does real network I/O.
+    This called it directly from two async endpoints, so a single upload blocked
+    the event loop — every other request in the worker — for the whole S3 PUT.
+    Videos are capped at 512 MB against 25 MB for photos, so the path that was
+    NOT offloaded was the one carrying twenty times the payload, and one of its
+    two callers is the unauthenticated public client-upload link.
+    """
     import object_storage  # local import: keeps cloud SDKs off the hot import path
 
     key = f"property-view/{tenant_id}/{secrets.token_hex(16)}"
-    return object_storage.put_bytes(key, data, content_type)
+    return await asyncio.to_thread(object_storage.put_bytes, key, data, content_type)
