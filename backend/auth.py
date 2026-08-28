@@ -720,20 +720,32 @@ async def register(body: RegisterRequest, response: Response) -> LoginResponse:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, f"Password must be at least {MIN_PASSWORD_LEN} characters.")
 
     from db.connection import tenant_tx
+    import asyncpg
+
     pw_hash = _hash_pw(body.password)
     company = (body.company or "").strip()
-    async with tenant_tx(_admin_ctx()) as conn:
-        if await conn.fetchval("SELECT 1 FROM users WHERE lower(agent_id) = lower($1)", email):
-            raise HTTPException(status.HTTP_409_CONFLICT, "An account with that email already exists.")
-        trow = await conn.fetchrow(
-            "INSERT INTO tenants (slug, name) VALUES ($1, $2) RETURNING id",
-            _slugify(company or email.split("@")[0]), company or email,
-        )
-        await conn.execute(
-            "INSERT INTO users (tenant_id, agent_id, role, password_hash, email, full_name, company, policy_acceptance_required) "
-            "VALUES ($1, $2, 'broker_owner', $3, $4, $5, $6, true)",
-            trow["id"], email, pw_hash, email, body.full_name.strip(), company,
-        )
+    try:
+        async with tenant_tx(_admin_ctx()) as conn:
+            if await conn.fetchval("SELECT 1 FROM users WHERE lower(agent_id) = lower($1)", email):
+                raise HTTPException(status.HTTP_409_CONFLICT, "An account with that email already exists.")
+            trow = await conn.fetchrow(
+                "INSERT INTO tenants (slug, name) VALUES ($1, $2) RETURNING id",
+                _slugify(company or email.split("@")[0]), company or email,
+            )
+            await conn.execute(
+                "INSERT INTO users (tenant_id, agent_id, role, password_hash, email, full_name, company, policy_acceptance_required) "
+                "VALUES ($1, $2, 'broker_owner', $3, $4, $5, $6, true)",
+                trow["id"], email, pw_hash, email, body.full_name.strip(), company,
+            )
+    except asyncpg.UniqueViolationError:
+        # The SELECT above is not atomic with the INSERT. Migration 0082 added a
+        # unique index on lower(agent_id), so a concurrent signup for the same
+        # address now loses here instead of creating a second row for one
+        # account — and the loser deserves the same 409 the sequential case
+        # gets, not a 500.
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, "An account with that email already exists."
+        ) from None
     tenant_id = str(trow["id"])
     token = _issue_jwt(email, tenant_id, "broker_owner", extra={"policy_pending": True})
     _set_session_cookie(response, token)
