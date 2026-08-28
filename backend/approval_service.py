@@ -85,6 +85,14 @@ async def create_approval(
     return approval
 
 
+def _same_agent(left: Optional[str], right: Optional[str]) -> bool:
+    """Whether two agent_ids denote one account.
+
+    Login resolves users with lower(agent_id), so spelling is not identity.
+    """
+    return (left or "").strip().lower() == (right or "").strip().lower()
+
+
 async def decide_approval(
     ctx: TenantContext,
     approval_id: str,
@@ -114,7 +122,13 @@ async def decide_approval(
             raise LookupError("approval not found")
         if existing["risk_class"] == ActionRisk.ROLE_OVERRIDE.value:
             require_role(ctx, Role.BROKER_OWNER)
-            if existing["requested_by"] == ctx.agent_id:
+            # Case-folded deliberately. agent_id is matched with lower() at
+            # login, so one account has many spellings; comparing them exactly
+            # here let a single broker request under one spelling and approve
+            # under another, which is the whole control defeated. The JWT now
+            # carries the canonical spelling too — this is the second lock, not
+            # the only one, because it is the line the guarantee lives on.
+            if _same_agent(existing["requested_by"], ctx.agent_id):
                 raise ValueError("role overrides require a different approving broker")
         if existing["status"] != "pending":
             raise ValueError(f"approval is already {existing['status']}")

@@ -644,6 +644,9 @@ async def login(body: LoginRequest, response: Response) -> LoginResponse:
 
     # --- Rate limit check (per agent_id) -------------------------------------
     limit, remaining, reset = _check_rate_limit(body.agent_id)
+    # The operator/demo dict is an exact-match lookup, so what was typed already
+    # IS the canonical spelling there; only the DB path needs correcting.
+    agent_identity = body.agent_id
 
     # --- Credential validation -----------------------------------------------
     # 1) operator/demo dict (constant-time). 2) DB-backed users (self-serve signups).
@@ -659,6 +662,14 @@ async def login(body: LoginRequest, response: Response) -> LoginResponse:
         row = await _lookup_user(body.agent_id)
         if row and _verify_pw(body.passphrase, row["password_hash"]):
             credentials_ok = True
+            # Identity is the row's agent_id, not what was typed. _lookup_user
+            # matches on lower(agent_id), so "Me@x.com" and "me@x.com" are one
+            # account — but signing the typed spelling into the JWT made them
+            # two identities to every string comparison downstream. That
+            # defeated the two-person role-override control outright: request as
+            # one spelling, approve as the other, and
+            # `existing["requested_by"] == ctx.agent_id` is False.
+            agent_identity = str(row["agent_id"])
             tenant_id, role = str(row["tenant_id"]), row["role"]
             policy_acceptance_required = (
                 bool(row["policy_acceptance_required"])
@@ -676,14 +687,14 @@ async def login(body: LoginRequest, response: Response) -> LoginResponse:
         )
 
     token = _issue_jwt(
-        body.agent_id,
+        agent_identity,
         tenant_id,
         role,
         extra={"policy_pending": True} if policy_acceptance_required else None,
     )
 
-    _register_session(body.agent_id)
-    log.info("Successful login for agent_id=%r, tenant_id=%r.", body.agent_id, tenant_id)
+    _register_session(agent_identity)
+    log.info("Successful login for agent_id=%r, tenant_id=%r.", agent_identity, tenant_id)
 
     _set_session_cookie(response, token)
 

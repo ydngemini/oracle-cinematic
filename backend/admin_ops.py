@@ -545,7 +545,11 @@ async def request_role_change(
         )
     if target is None:
         raise HTTPException(status_code=404, detail="User not found.")
-    if target["agent_id"] == ctx.agent_id:
+    # Case-folded: target["agent_id"] is the canonical row value while
+    # ctx.agent_id came from the token, and login matches on lower(agent_id).
+    # An exact comparison let a broker open a role change on themselves simply
+    # by having signed in with different capitalisation.
+    if (target["agent_id"] or "").strip().lower() == (ctx.agent_id or "").strip().lower():
         raise HTTPException(status_code=409, detail="A broker cannot change their own role.")
     if target["role"] == "platform_admin":
         raise HTTPException(status_code=403, detail="Platform-admin roles are protected.")
