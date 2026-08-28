@@ -1895,7 +1895,7 @@ async def acs_webhook(request: Request):
     for event in events:
         event_type = event.get("eventType") or event.get("type", "")
         data = event.get("data", {})
-        print(f"[ACS-WEBHOOK] event_type={event_type} id={event.get('id','')[:20]}", flush=True)
+        logger.info("acs webhook: event_type=%s id=%s", event_type, event.get("id", "")[:20])
 
         if event_type == "Microsoft.EventGrid.SubscriptionValidationEvent":
             validation_code = data.get("validationCode", "")
@@ -1945,7 +1945,7 @@ async def acs_webhook(request: Request):
         elif event_type == "Microsoft.Communication.CreateCallFailed":
             cid = data.get("callConnectionId", "")
             reason = data.get("resultInformation", {}).get("message", "unknown")
-            print(f"[ACS-WEBHOOK] CreateCallFailed cid={cid} reason={reason}", flush=True)
+            logger.warning("acs webhook: CreateCallFailed cid=%s reason=%s", cid, reason)
             if cid:
                 _update_call_session(cid, "failed")
                 from acs_call_handler import cleanup_call
@@ -2666,7 +2666,16 @@ async def twilio_speech(request: Request):
     speech_text = (form.get("SpeechResult") or "").strip()
     call_sid = form.get("CallSid", "")
 
-    print(f"[TWILIO-SPEECH] CallSid={call_sid} speech={speech_text[:100]}", flush=True)
+    # The transcript itself is deliberately NOT logged. Call transcripts have
+    # their own retention policy (ORACLE_CALL_TRANSCRIPT_RETENTION_DAYS, see
+    # platform_policy.PUBLIC_PROPERTY_DATA_POLICY); printing 100 characters of
+    # what a caller said to stdout put that content in the container log stream
+    # instead, where it lives under the log group's retention and nobody's
+    # transcript policy. The length is enough to debug a silent leg.
+    logger.info(
+        "twilio speech webhook: call_sid=%s speech_chars=%d",
+        call_sid, len(speech_text),
+    )
 
     if not speech_text:
         twiml = """<?xml version="1.0" encoding="UTF-8"?>
@@ -2733,9 +2742,8 @@ async def custom_call_webhook(request: Request):
     if payload.get("reply_url"):
         raise HTTPException(status_code=422, detail="reply_url is not supported.")
 
-    print(
-        f"[CUSTOM-CALL-WEBHOOK] event={event} status={status} call_id={call_id}",
-        flush=True,
+    logger.info(
+        "custom-call webhook: event=%s status=%s call_id=%s", event, status, call_id
     )
 
     if event in {
