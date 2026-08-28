@@ -56,6 +56,22 @@ def test_init_pool_widens_the_requested_maximum(monkeypatch):
         def get_idle_size(self):
             return 0
 
+        def acquire(self):
+            # init_pool now verifies the connection role is one RLS applies to;
+            # a superuser or BYPASSRLS role means tenant isolation is off.
+            # oracle_app_login is neither, so the check passes quietly.
+            from contextlib import asynccontextmanager
+
+            @asynccontextmanager
+            async def _ctx():
+                class _Conn:
+                    async def fetchrow(self, _query):
+                        return {"role": "oracle_app_login", "exempt": False}
+
+                yield _Conn()
+
+            return _ctx()
+
     async def _fake_create_pool(**kwargs):
         captured.update(kwargs)
         return _FakePool()

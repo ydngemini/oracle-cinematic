@@ -279,6 +279,44 @@ def get_pool():
     return _pool
 
 
+async def _assert_rls_is_enforced(pool) -> None:
+    """Refuse a connection role that row-level security does not apply to.
+
+    Tenant isolation on most read paths is RLS and nothing else: the queries
+    select without a tenant predicate and rely on
+    `USING (app_is_platform_admin() OR tenant_id = app_current_tenant())`.
+    PostgreSQL exempts superusers and BYPASSRLS roles from every policy, so
+    connecting as one does not weaken isolation — it removes it, silently, with
+    no error and no log line.
+
+    That is exactly what a local dev box did until 2026-08-28: it connected as
+    `postgres`, and a freshly registered broker could list another tenant's
+    clients. Production was fine because it connects as `oracle_app_login`,
+    which is precisely what made the hole invisible — the one environment where
+    it was broken was the one nobody could observe it in.
+
+    In production this refuses to boot. Serving no requests is better than
+    serving every tenant's data to every tenant.
+    """
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT current_user AS role, "
+            "       bool_or(rolsuper OR rolbypassrls) AS exempt "
+            "  FROM pg_roles WHERE rolname = current_user"
+        )
+    if not row or not row["exempt"]:
+        return
+
+    message = (
+        f"database role {row['role']!r} is a superuser or has BYPASSRLS, so "
+        "row-level security does not apply to it and tenant isolation is not "
+        "enforced. Connect as a non-superuser role such as oracle_app_login."
+    )
+    if os.getenv("ORACLE_ENV", "").lower() in ("prod", "production"):
+        raise RuntimeError(f"Refusing to start: {message}")
+    logger.error("TENANT ISOLATION IS OFF: %s", message)
+
+
 async def init_pool(min_size: int = _ENV_POOL_MIN, max_size: int = _ENV_POOL_MAX):
     """Create the shared pool. Call once on app startup.
 
@@ -310,9 +348,13 @@ async def init_pool(min_size: int = _ENV_POOL_MIN, max_size: int = _ENV_POOL_MAX
             host=DB_HOST or "localhost",
             port=DB_PORT,
             database=DB_NAME,
-            # Aurora's default login role won't exist locally; fall back to the
-            # superuser the dev postgres container ships with.
-            user=os.getenv("ORACLE_DB_USER") or "postgres",
+            # NOT a superuser fallback. Superusers bypass row-level security
+            # unconditionally, and RLS is the ONLY thing enforcing tenant
+            # isolation on most read paths — the queries themselves carry no
+            # tenant predicate. Defaulting to postgres meant a dev box silently
+            # served one broker another broker's clients while every test
+            # stayed green. _assert_rls_is_enforced below catches it either way.
+            user=os.getenv("ORACLE_DB_USER") or "oracle_app_login",
             password=DB_PASSWORD,
             ssl=local_ssl,
             min_size=min_size,
@@ -347,6 +389,7 @@ async def init_pool(min_size: int = _ENV_POOL_MIN, max_size: int = _ENV_POOL_MAX
         stats.get("size", 0),
         stats.get("idle", 0),
     )
+    await _assert_rls_is_enforced(_pool)
     return _pool
 
 

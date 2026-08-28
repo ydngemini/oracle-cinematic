@@ -61,8 +61,15 @@ services:
       ORACLE_DB_HOST: db
       ORACLE_DB_PORT: "5432"
       ORACLE_DB_NAME: oracle
-      ORACLE_DB_USER: postgres
-      ORACLE_DB_PASSWORD: ${ORACLE_DB_PASSWORD:?ORACLE_DB_PASSWORD is required}
+      # NOT postgres. postgres is a superuser, and superusers bypass row-level
+      # security unconditionally — so connecting as it locally disabled every
+      # tenant boundary in the product while leaving the tests green. A brand
+      # new broker could list another tenant's clients on a dev box, and no
+      # amount of local testing would ever show it, because production connects
+      # as oracle_app_login (rolbypassrls = false) and behaves correctly.
+      # Develop against the isolation you ship.
+      ORACLE_DB_USER: ${ORACLE_DB_USER:-oracle_app_login}
+      ORACLE_DB_PASSWORD: ${ORACLE_DB_APP_PASSWORD:?ORACLE_DB_APP_PASSWORD is required}
       ORACLE_DB_SSLMODE: disable
       # Development exercises the full surface. Production Terraform defaults
       # every new high-risk capability to false for staged rollout.
