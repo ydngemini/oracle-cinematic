@@ -6,8 +6,17 @@
 #   aws secretsmanager put-secret-value --secret-id <name> \
 #     --secret-string '{"ORACLE_SECRET_KEY":"...","ORACLE_ENCRYPTION_MASTER_KEY":"...",...}'
 #
-# config.validate_or_die() refuses to boot until ORACLE_SECRET_KEY +
-# ORACLE_ENCRYPTION_MASTER_KEY are real, so populate before the service stabilizes.
+# ORDER MATTERS: put the real values in AFTER `terraform apply`, not before.
+# ignore_changes only suppresses UPDATES, so on first create Terraform writes
+# the placeholders below as the AWSCURRENT version regardless of what is already
+# there — a value set beforehand is silently superseded.
+#
+# config.validate_or_die() refuses to boot on these placeholders. It did NOT
+# until 2026-08-28: it asked only whether each value was non-empty, and
+# "REPLACE_ME" is not empty. A fresh deploy would have come up signing JWTs
+# with the literal string, encrypting PII with it, and serving a public
+# platform_admin account (ecs.tf hardcodes ORACLE_ADMIN_ID) whose password was
+# "REPLACE_ME" — while logging "Config validated for production".
 resource "aws_secretsmanager_secret" "app" {
   name                    = "${local.name}/app"
   description             = "${local.name} backend runtime secrets"

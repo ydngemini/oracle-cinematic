@@ -342,7 +342,9 @@ def test_production_config_resolves_jwt_scope_and_gates_webhook_secrets():
         "ORACLE_ENV": "prod",
         "ORACLE_DOMAIN": "https://api.neoh.example",
         "ORACLE_SECRET_KEY": "test-only-secret-key-with-at-least-32-bytes",
-        "ORACLE_ENCRYPTION_MASTER_KEY": "test-only-encryption-key",
+        # 32+ chars: config.validate_or_die() now refuses a key too short to be
+        # real, and this fixture is about JWT scope, not key strength.
+        "ORACLE_ENCRYPTION_MASTER_KEY": "test-only-encryption-key-32-bytes-min",
     }
     webhooks_disabled = _validate_config_in_subprocess(**base)
     assert webhooks_disabled.returncode == 0, webhooks_disabled.stderr

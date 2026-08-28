@@ -121,6 +121,64 @@ _TWILIO_REALTIME_SETTINGS: list[tuple[str, str]] = [
 ]
 
 
+# ---------------------------------------------------------------------------
+# Placeholder / weak-secret rejection.
+#
+# `validate_or_die` used to ask only `if not os.environ.get(name)`, and
+# infra/terraform/secrets.tf seeds the app secret with the literal string
+# "REPLACE_ME" so the ECS task definition can reference each JSON key before an
+# operator fills it. "REPLACE_ME" is not empty, so it sailed through — a fresh
+# production deploy would boot signing JWTs with it, encrypting PII with it,
+# and, because auth.py registers ORACLE_ADMIN_ID/ORACLE_ADMIN_PASSPHRASE as a
+# platform_admin login whenever both are non-empty (and terraform hardcodes a
+# real ORACLE_ADMIN_ID), serving a public admin account whose password is
+# "REPLACE_ME". validate_or_die then logged "Config validated for production".
+#
+# A secret that is present but worthless is more dangerous than one that is
+# absent, because the absent one already failed the boot.
+# ---------------------------------------------------------------------------
+_PLACEHOLDER_SECRETS: frozenset[str] = frozenset(
+    {
+        "replace_me", "replaceme", "change_me", "changeme", "placeholder",
+        "todo", "tbd", "xxx", "secret", "password", "passphrase", "test",
+        "testing", "example", "dummy", "sample", "default", "none", "null",
+        "unset", "foo", "bar", "admin", "letmein", "123456",
+    }
+)
+
+# Floors, not targets. 32 chars is the usual minimum for an HS256 signing key
+# and for key-derivation input; the operator passphrase reuses auth.py's own
+# MIN_PASSWORD_LEN rather than inventing a second number (kept as a literal
+# here because auth.py imports config, not the other way round).
+_MIN_OPERATOR_PASSPHRASE_LEN = 10
+_SECRETS_NEEDING_STRENGTH: list[tuple[str, str, int]] = [
+    ("ORACLE_SECRET_KEY", "JWT signing", 32),
+    ("ORACLE_ENCRYPTION_MASTER_KEY", "PII encryption (pgcrypto)", 32),
+    ("ORACLE_ADMIN_PASSPHRASE", "platform_admin login", _MIN_OPERATOR_PASSPHRASE_LEN),
+    ("ORACLE_ACS_WEBHOOK_SECRET", "ACS webhook authentication", 16),
+    ("ORACLE_CUSTOM_CALL_WEBHOOK_SECRET", "custom-call webhook authentication", 16),
+]
+
+
+def _weak_secret_reason(value: str, min_len: int) -> str | None:
+    """Why this value is unusable as a secret, or None if it is fine.
+
+    Never returns the value itself — the reason is logged and raised, and a
+    secret that leaks through its own rejection message is no better off.
+    """
+    stripped = value.strip()
+    normalized = stripped.lower().replace("-", "_")
+    if normalized in _PLACEHOLDER_SECRETS:
+        return "it is a placeholder value"
+    if normalized.startswith("replace_me") or normalized.startswith("change_me"):
+        return "it is a placeholder value"
+    if len(stripped) < min_len:
+        return f"it is shorter than the {min_len}-character minimum"
+    if len(set(stripped)) < 4:
+        return "it repeats too few distinct characters to be a real secret"
+    return None
+
+
 def validate_or_die() -> None:
     """Fail the boot fast when a production deployment is missing a critical
     secret. In development, log the relaxed posture and continue."""
@@ -188,6 +246,26 @@ def validate_or_die() -> None:
         raise RuntimeError(
             "Refusing to start: missing required production secret(s): "
             + "; ".join(missing)
+        )
+
+    # Present-but-worthless is checked separately from absent, because the two
+    # failures need different words: one says "you forgot to set this", the
+    # other says "what you set will not protect anything".
+    weak: list[str] = []
+    for name, why, min_len in _SECRETS_NEEDING_STRENGTH:
+        value = os.environ.get(name, "")
+        if not value:
+            # Absence is the `missing` check's business. These entries are
+            # optional (the operator account, the webhook secrets when webhooks
+            # are off), so an unset one is not this function's complaint.
+            continue
+        reason = _weak_secret_reason(value, min_len)
+        if reason:
+            weak.append(f"{name} ({why}) — {reason}")
+    if weak:
+        raise RuntimeError(
+            "Refusing to start: placeholder or weak production secret(s): "
+            + "; ".join(weak)
         )
     log.info(
         "Config validated for production — all required settings present; webhooks=%s.",
