@@ -4,11 +4,11 @@
 # master secret, then runs backend/run_migrations.py (baked into the image) as a
 # one-off task on the backend task def. Idempotent migrations → safe to re-run.
 #
-#   AWS_PROFILE=swarm-admin infra/scripts/run-migrations.sh
+#   AWS_PROFILE=neoh infra/scripts/run-migrations.sh
 #
 # Requires: the backend image already pushed to ECR (infra/scripts/build-images.sh app).
 set -euo pipefail
-AWS=(aws --profile "${AWS_PROFILE:-swarm-admin}" --region "${AWS_REGION:-us-east-1}")
+AWS=(aws --profile "${AWS_PROFILE:-neoh}" --region "${AWS_REGION:-us-east-1}")
 CLUSTER=neoh-prod
 ROLE=""
 GRANT_CREATED=0

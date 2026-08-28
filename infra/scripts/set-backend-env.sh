@@ -3,10 +3,10 @@
 # full `terraform apply` (which would also pull in ecs.tf-only vars like STRIPE_PRICE_ID).
 # Copies the currently-running revision so existing env is preserved.
 #
-#   AWS_PROFILE=swarm-admin bash infra/scripts/set-backend-env.sh KEY=VAL [KEY=VAL ...]
+#   AWS_PROFILE=neoh bash infra/scripts/set-backend-env.sh KEY=VAL [KEY=VAL ...]
 set -euo pipefail
 [ $# -ge 1 ] || { echo "usage: set-backend-env.sh KEY=VAL [KEY=VAL ...]"; exit 1; }
-AWS=(aws --profile "${AWS_PROFILE:-swarm-admin}" --region "${AWS_REGION:-us-east-1}")
+AWS=(aws --profile "${AWS_PROFILE:-neoh}" --region "${AWS_REGION:-us-east-1}")
 
 LIVE=$("${AWS[@]}" ecs describe-services --cluster neoh-prod --services backend \
   --query 'services[0].taskDefinition' --output text)

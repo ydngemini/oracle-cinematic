@@ -3,11 +3,11 @@
 # (DB migrations need Aurora's master creds + a transient IAM grant). Everything
 # before this (stack, images, secrets, DNS, quota) is already done.
 #
-#   AWS_PROFILE=swarm-admin infra/scripts/finish-deploy.sh
+#   AWS_PROFILE=neoh infra/scripts/finish-deploy.sh
 #
 # Idempotent + safe to re-run.
 set -euo pipefail
-export AWS_PROFILE="${AWS_PROFILE:-swarm-admin}"
+export AWS_PROFILE="${AWS_PROFILE:-neoh}"
 export AWS_REGION="${AWS_REGION:-us-east-1}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 AWS=(aws --profile "$AWS_PROFILE" --region "$AWS_REGION")
@@ -30,5 +30,5 @@ echo "   building neoh/reconstruction via CodeBuild..."
 bash "$HERE/build-images.sh" recon || echo "   (recon image build can be retried: infra/scripts/build-images.sh recon)"
 
 echo
-echo "✅ DEPLOY COMPLETE → https://neoh.app"
+echo "✅ DEPLOY COMPLETE → https://neohrs.com"
 echo "   (GPU reconstructions also need the g5 SPOT quota, which was requested and clears in ~1 day.)"

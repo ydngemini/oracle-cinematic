@@ -3,19 +3,19 @@
 # `infra/scripts/build-images.sh app` has pushed fresh backend/frontend/observability
 # images.
 #
-#   AWS_PROFILE=swarm-admin infra/scripts/deploy-update.sh
+#   AWS_PROFILE=neoh infra/scripts/deploy-update.sh
 #
 # Registers a DIGEST-PINNED task-def revision per service from the current :latest
 # image, so ECS runs the exact freshly-built image (never a cached :latest digest),
 # then migrates on the new backend image and rolls both services. Idempotent.
 set -Eeuo pipefail
-export AWS_PROFILE="${AWS_PROFILE:-swarm-admin}"
+export AWS_PROFILE="${AWS_PROFILE:-neoh}"
 export AWS_REGION="${AWS_REGION:-us-east-1}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 AWS=(aws --profile "$AWS_PROFILE" --region "$AWS_REGION")
 ACCT=$("${AWS[@]}" sts get-caller-identity --query Account --output text)
 CLUSTER=neoh-prod
-APP_URL="${APP_URL:-https://neoh.app}"
+APP_URL="${APP_URL:-https://neohrs.com}"
 
 OLD_BE_TD=$("${AWS[@]}" ecs describe-services --cluster "$CLUSTER" --services backend --query 'services[0].taskDefinition' --output text)
 OLD_FE_TD=$("${AWS[@]}" ecs describe-services --cluster "$CLUSTER" --services frontend --query 'services[0].taskDefinition' --output text)
@@ -108,4 +108,4 @@ echo "═══ 3/3  smoke test ═══"
 bash "$HERE/prod-smoke.sh"
 ROLLBACK_ARMED=0
 trap - ERR
-echo "✅ update live → https://neoh.app"
+echo "✅ update live → https://neohrs.com"

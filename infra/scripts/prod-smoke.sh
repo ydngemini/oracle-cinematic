@@ -3,7 +3,7 @@
 # prod-smoke.sh — Post-deploy smoke test for the Neoh production stack.
 #
 # Mostly read-only. Verifies, with clear PASS/FAIL output:
-#   1. The public app health endpoint (https://neoh.app/health), with the ALB
+#   1. The public app health endpoint (https://neohrs.com/health), with the ALB
 #      DNS as a direct fallback so you can tell "app down" from "DNS/cert gap".
 #   2. The API is live by hitting the tour resolver (/api/crm/property-tour) and
 #      the public data health route (/api/data/health). Both sit behind the
@@ -22,9 +22,9 @@
 #   ./prod-smoke.sh
 #
 # Env overrides (any may be set to skip terraform):
-#   PROFILE         (default swarm-admin)
+#   PROFILE         (default neoh)
 #   REGION          (default us-east-1)
-#   APP_URL         (default https://neoh.app)
+#   APP_URL         (default https://neohrs.com)
 #   ALB_DNS         (default: terraform output alb_dns_name)
 #   ECS_CLUSTER     (default: terraform output ecs_cluster -> neoh-prod)
 #   SPLAT_BUCKET    (default: terraform output recon_s3_bucket -> neoh-prod-recon-<acct>)
@@ -35,7 +35,7 @@
 #
 # Exit code: 0 if all hard checks pass, 1 if any hard check fails.
 #
-# Requires: curl, aws CLI v2 (profile swarm-admin). terraform optional.
+# Requires: curl, aws CLI v2 (profile neoh). terraform optional.
 #
 set -uo pipefail
 
@@ -45,10 +45,10 @@ TF_DIR="${TF_DIR:-$SCRIPT_DIR/../terraform}"
 tf_out() { terraform -chdir="$TF_DIR" output -raw "$1" 2>/dev/null || true; }
 
 # ── config / resolution (env > terraform > deterministic default) ────────────
-PROFILE="${PROFILE:-swarm-admin}"
+PROFILE="${PROFILE:-neoh}"
 REGION="${REGION:-us-east-1}"
 ACCOUNT_ID="151105438863"
-APP_URL="${APP_URL:-https://neoh.app}"
+APP_URL="${APP_URL:-https://neohrs.com}"
 
 ALB_DNS="${ALB_DNS:-$(tf_out alb_dns_name)}"
 

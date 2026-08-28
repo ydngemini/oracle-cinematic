@@ -25,19 +25,19 @@
 #   ./request-gpu-quota.sh 16       # request 16 vCPUs
 #
 # Env overrides:
-#   PROFILE   (default swarm-admin)   AWS CLI profile
+#   PROFILE   (default neoh)   AWS CLI profile
 #   REGION    (default us-east-1)     AWS region
 #
 # Idempotent and safe to re-run. Only the request-service-quota-increase call
 # mutates anything; everything else is read-only.
 #
-# Requires: aws CLI v2 with the swarm-admin profile (service-quotas:*).
+# Requires: aws CLI v2 with the neoh profile (service-quotas:*).
 # Account: 151105438863   Region: us-east-1   Profile: neoh
 # Approval: AWS typically grants G/VT Spot quota increases in ~1 day.
 #
 set -uo pipefail
 
-PROFILE="${PROFILE:-swarm-admin}"
+PROFILE="${PROFILE:-neoh}"
 REGION="${REGION:-us-east-1}"
 SERVICE_CODE="ec2"
 QUOTA_CODE="L-3819A6DF"   # "All G and VT Spot Instance Requests"

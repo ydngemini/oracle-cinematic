@@ -36,7 +36,7 @@ variable "acm_certificate_arn" {
 }
 
 variable "domain_name" {
-  description = "Public hostname the app serves on (for documentation/outputs; DNS is managed by you)."
+  description = "Public hostname the app serves on. Its Route53 zone is managed in dns.tf; the NS delegation is not (that is set at the registrar)."
   type        = string
   default     = ""
 }

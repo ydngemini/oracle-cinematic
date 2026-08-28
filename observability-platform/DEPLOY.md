@@ -8,15 +8,15 @@ repo (Cognito/Cloudflare) — the two are independent.
 
 ```
                           ALB (shared with the main app)
-  obs.neoh.app/  ─────────►  observability ECS service (nginx :8080, this app)
-  obs.neoh.app/api/*  ─┐
-  obs.neoh.app/auth/* ─┼───►  backend ECS service (existing alb.tf `api` rule,
-  obs.neoh.app/ws      ┘       priority 10 — no host condition, matches every host)
+  obs.neohrs.com/  ─────────►  observability ECS service (nginx :8080, this app)
+  obs.neohrs.com/api/*  ─┐
+  obs.neohrs.com/auth/* ─┼───►  backend ECS service (existing alb.tf `api` rule,
+  obs.neohrs.com/ws      ┘       priority 10 — no host condition, matches every host)
 ```
 
 The dashboard signs in via `POST /auth/login` and streams `/api/aws/ws` using an
 `oracle.jwt` WebSocket subprotocol,
-both **same-origin** on `obs.neoh.app` → routed to the backend → **no CORS**. The
+both **same-origin** on `obs.neohrs.com` → routed to the backend → **no CORS**. The
 backend's `/api/aws/ws` is auth-gated to `platform_admin`/`broker_owner`.
 Blank `VITE_API_BASE` and `VITE_WS_URL` values select this same-origin behavior.
 
@@ -35,7 +35,7 @@ Blank `VITE_API_BASE` and `VITE_WS_URL` values select this same-origin behavior.
 1. **Commit** the untracked files: `observability-platform/`, `backend/aws_observability.py`.
    `build-images.sh` archives `HEAD`, so it must be committed to build.
 
-2. **Cert**: ensure `var.acm_certificate_arn` covers `obs.neoh.app`. A `*.neoh.app`
+2. **Cert**: ensure `var.acm_certificate_arn` covers `obs.neohrs.com`. A `*.neohrs.com`
    wildcard already covers it; otherwise add it as a SAN and re-validate.
 
 3. **Terraform**:
@@ -49,13 +49,13 @@ Blank `VITE_API_BASE` and `VITE_WS_URL` values select this same-origin behavior.
    Override the host if needed: `-var 'observability_host=obs.example.com'`.
    To NOT grant AWS read / not deploy: `-var 'observability_enabled=false'`.
 
-4. **DNS**: point `obs.neoh.app` at the ALB (`terraform output` → `aws_lb.main.dns_name`;
+4. **DNS**: point `obs.neohrs.com` at the ALB (`terraform output` → `aws_lb.main.dns_name`;
    Route53 ALIAS or a CNAME).
 
 5. **Build + push images** (backend must be rebuilt so the auth-gated `/api/aws/ws`
    router ships; frontend image is the new dashboard):
    ```bash
-   OBS_HOST=obs.neoh.app infra/scripts/build-images.sh app
+   OBS_HOST=obs.neohrs.com infra/scripts/build-images.sh app
    ```
 
 6. **Roll the services** to the new images:
@@ -64,7 +64,7 @@ Blank `VITE_API_BASE` and `VITE_WS_URL` values select this same-origin behavior.
    aws ecs update-service --cluster neoh-prod --service observability --force-new-deployment
    ```
 
-7. **Sign in**: open `https://obs.neoh.app`, log in as a `platform_admin`
+7. **Sign in**: open `https://obs.neohrs.com`, log in as a `platform_admin`
    (e.g. `ydnop@ydnhft.com`). No self-serve signup exists.
 
 ## Security note — the IAM grant

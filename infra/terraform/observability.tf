@@ -24,9 +24,9 @@ variable "observability_enabled" {
 }
 
 variable "observability_host" {
-  description = "Host serving the dashboard (e.g. obs.neoh.app). Must be covered by acm_certificate_arn and resolve to the ALB."
+  description = "Host serving the dashboard (e.g. obs.neohrs.com). Must be covered by acm_certificate_arn and resolve to the ALB."
   type        = string
-  default     = "obs.neoh.app"
+  default     = "obs.neohrs.com"
 }
 
 variable "observability_cpu" {

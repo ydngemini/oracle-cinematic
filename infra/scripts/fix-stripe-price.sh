@@ -3,9 +3,9 @@
 # checkout stops failing with "No such price: price_REPLACE_ME". Reads the price
 # from .env (STRIPE_PRICE_ID) or $1. Also added to ecs.tf for terraform persistence.
 #
-#   AWS_PROFILE=swarm-admin bash infra/scripts/fix-stripe-price.sh
+#   AWS_PROFILE=neoh bash infra/scripts/fix-stripe-price.sh
 set -euo pipefail
-AWS=(aws --profile "${AWS_PROFILE:-swarm-admin}" --region "${AWS_REGION:-us-east-1}")
+AWS=(aws --profile "${AWS_PROFILE:-neoh}" --region "${AWS_REGION:-us-east-1}")
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 PRICE="${1:-$(grep -E '^STRIPE_PRICE_ID' "$ROOT/.env" | head -1 | cut -d= -f2 | tr -d '\"'"'"' ')}"
 case "$PRICE" in price_*) ;; *) echo "!! no valid STRIPE_PRICE_ID (got '$PRICE')"; exit 1;; esac

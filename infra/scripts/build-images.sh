@@ -31,8 +31,14 @@ BE="${REG}/neoh/backend"
 FE="${REG}/neoh/frontend"
 RECON="${REG}/neoh/reconstruction"
 OBS="${REG}/neoh/observability"
+# Public app vhost. Baked into the frontend image at build time as VITE_API_BASE,
+# so an image built against the wrong host calls the wrong API for its whole life
+# — this hardcoded neoh.app until 2026-08-28, which is a domain that no longer
+# resolves to anything we own. Must match terraform's app_base_url/cors_origins.
+APP_HOST="${APP_HOST:-neohrs.com}"
 # AWS observability dashboard vhost. The ALB routes this host to the dashboard,
 # and its /api,/auth,/ws to the backend, so the SPA calls the API same-origin.
+# Must be covered by the ACM cert, so it has to stay a subdomain of APP_HOST.
 OBS_HOST="${OBS_HOST:-obs.neohrs.com}"
 BUCKET="neoh-prod-recon-${ACCT}"
 
@@ -84,7 +90,7 @@ phases:
       - for i in python:3.12-slim node:20-alpine nginx:1.27-alpine; do docker pull public.ecr.aws/docker/library/\$i && docker tag public.ecr.aws/docker/library/\$i \$i; done
       - docker build -t \$BE:latest backend
       - docker push \$BE:latest
-      - docker build --build-arg VITE_API_BASE=https://neoh.app -t \$FE:latest oracle-app
+      - docker build --build-arg VITE_API_BASE=https://${APP_HOST} -t \$FE:latest oracle-app
       - docker push \$FE:latest
       - docker build --build-arg VITE_API_BASE=https://${OBS_HOST} --build-arg VITE_WS_URL=wss://${OBS_HOST} -t \$OBS:latest observability-platform
       - docker push \$OBS:latest

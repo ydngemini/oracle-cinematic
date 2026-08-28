@@ -1,5 +1,5 @@
 // Authenticated REST calls to the Neoh backend's /api/aws/* surface. Same-origin
-// on obs.neoh.app (ALB routes /api/* to the backend), so a Bearer header is all
+// on obs.neohrs.com (ALB routes /api/* to the backend), so a Bearer header is all
 // that's needed — no CORS. Token comes from the same place the WS uses.
 import { resolveToken } from './auth';
 

@@ -17,6 +17,8 @@ real, billable infrastructure.
 - An **ACM certificate** (ISSUED) in your target region covering your domain.
   `aws acm request-certificate --domain-name app.neoh.example --validation-method DNS`
   then add the DNS validation CNAME and wait for status ISSUED. Copy the ARN.
+  The CNAME must be published in the zone the domain's **live nameservers** serve,
+  not merely in a zone you control — ACM resolves it the way the internet does.
 - Terraform >= 1.6, Docker, and the AWS CLI installed.
 - (Recommended) Create the remote-state S3 bucket + DynamoDB lock table, then
   uncomment the `backend "s3"` block in `versions.tf`. State holds secret ARNs.
@@ -110,7 +112,7 @@ temporarily grants access to only the RDS-managed master secret, applies every
 pending numbered migration, and revokes that grant on success or failure:
 
 ```bash
-AWS_PROFILE=swarm-admin infra/scripts/run-migrations.sh
+AWS_PROFILE=neoh infra/scripts/run-migrations.sh
 ```
 
 For break-glass recovery, apply the raw SQL files in **filename order** (`0001`
@@ -153,8 +155,8 @@ task definition, and then run the digest-pinned release:
 
 ```bash
 terraform -chdir=infra/terraform apply
-AWS_PROFILE=swarm-admin infra/scripts/build-images.sh app
-AWS_PROFILE=swarm-admin infra/scripts/deploy-update.sh
+AWS_PROFILE=neoh infra/scripts/build-images.sh app
+AWS_PROFILE=neoh infra/scripts/deploy-update.sh
 ```
 
 Keep `feature_automation` last: EMAIL/CALL/CALENDAR execution additionally needs
@@ -162,8 +164,25 @@ provider credentials, consent/approval testing, and webhook-signature validation
 
 ## 8. DNS + smoke test
 
-- Point `app.neoh.example` at the ALB (Route53 ALIAS to `alb_dns_name`/`alb_zone_id`,
-  or a CNAME).
+DNS for `neohrs.com` is managed in this account (`infra/terraform/dns.tf`) — the
+zone was moved off the registrar's own nameservers on 2026-08-28 precisely so that
+ACM validation and the ALB alias stop being manual steps. The apply creates the
+apex, `www` and observability ALIAS records; nothing here needs a console visit.
+
+The one thing Terraform cannot do is the **NS delegation**, which lives at the
+registrar:
+
+```bash
+terraform output route53_name_servers   # set these four at the registrar
+dig +short NS neohrs.com                # confirm the delegation went live
+```
+
+Until those nameservers are live, every record in the zone is invisible to the
+internet — including the ACM validation CNAME, which is what keeps a certificate
+in `PENDING_VALIDATION`.
+
+- For a domain whose DNS you do NOT hold here, point it at the ALB by hand
+  (Route53 ALIAS to `alb_dns_name`/`alb_zone_id`, or a CNAME).
 - Smoke:
   ```bash
   curl -fsS https://app.neoh.example/health          # backend 200

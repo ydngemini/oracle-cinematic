@@ -195,7 +195,7 @@ data "aws_iam_policy_document" "deploy" {
   }
   statement {
     sid       = "Route53Dns"
-    actions   = ["route53:ChangeResourceRecordSets", "route53:ListHostedZones", "route53:GetChange"]
+    actions   = ["route53:ChangeResourceRecordSets", "route53:ListHostedZones", "route53:ListHostedZonesByName", "route53:GetChange"]
     resources = ["*"]
   }
   statement {
