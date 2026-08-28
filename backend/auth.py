@@ -700,8 +700,13 @@ async def login(body: LoginRequest, response: Response) -> LoginResponse:
 
     _apply_rl_headers(response, limit, remaining, reset)
     return LoginResponse(
+        # The canonical spelling, matching the token's subject. Echoing what was
+        # typed would hand the client an identity the server does not use, and
+        # the frontend stores this — so a later client-side comparison against
+        # anything server-issued would disagree for the same reason the
+        # role-override control did.
+        agent_id=agent_identity,
         token=_browser_token(token),
-        agent_id=body.agent_id,
         expires_in=TOKEN_TTL_SECONDS,
         tenant_id=tenant_id,
         role=role,
