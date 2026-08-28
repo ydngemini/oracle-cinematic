@@ -850,6 +850,16 @@ async def reset_password(body: ResetRequest, response: Response) -> LoginRespons
             # is rolled back together with the token-consumption update.
             raise HTTPException(status.HTTP_400_BAD_REQUEST, _RESET_ERROR_DETAIL)
 
+        # Using one reset link retires the rest. Requesting a reset twice — which
+        # people do when the first mail is slow — used to leave every earlier
+        # link live for its full 30 minutes after the account had already been
+        # recovered, so an intercepted copy of any of them still worked.
+        await conn.execute(
+            "UPDATE password_reset_tokens SET consumed_at = now() "
+            "WHERE user_id = $1 AND consumed_at IS NULL AND expires_at > now()",
+            row["id"],
+        )
+
     current_agent_id = str(row["agent_id"])
     tenant_id = str(row["tenant_id"])
     role = str(row["role"])
@@ -909,7 +919,26 @@ async def change_password(
             "UPDATE users SET password_hash = $2, updated_at = now() WHERE lower(agent_id) = lower($1)",
             agent_id, new_hash,
         )
-    log.info("Password changed (self-service) for agent_id=%r", agent_id)
+        # Kill any outstanding reset link in the same transaction. Changing a
+        # password is what someone does when they think their account is at
+        # risk, and until now it left a live reset token untouched: an attacker
+        # who had already requested one — say from a compromised mailbox — could
+        # still use it afterwards and take the account back. Same transaction as
+        # the hash write so the two can never disagree.
+        revoked = await conn.execute(
+            "UPDATE password_reset_tokens AS reset_token "
+            "SET consumed_at = now() "
+            "FROM users AS account "
+            "WHERE reset_token.user_id = account.id "
+            "AND lower(account.agent_id) = lower($1) "
+            "AND reset_token.consumed_at IS NULL "
+            "AND reset_token.expires_at > now()",
+            agent_id,
+        )
+    log.info(
+        "Password changed (self-service) for agent_id=%r; outstanding reset links revoked (%s)",
+        agent_id, revoked,
+    )
     return {"status": "ok", "detail": "Password updated."}
 
 
