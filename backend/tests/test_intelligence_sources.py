@@ -28,7 +28,8 @@ OBSERVED = datetime(2026, 8, 1, 12, 0, tzinfo=timezone.utc)
 RETRIEVED = datetime(2026, 8, 2, 9, 30, tzinfo=timezone.utc)
 
 
-def _row(record_id=REC_A, *, property_level_allowed=True, purged_at=None, property_key="DE-NCC-0142"):
+def _row(record_id=REC_A, *, property_level_allowed=True, outreach_use_allowed=False,
+         purged_at=None, property_key="DE-NCC-0142"):
     return {
         "id": record_id,
         "source_key": "de-newcastle-assessor",
@@ -43,6 +44,7 @@ def _row(record_id=REC_A, *, property_level_allowed=True, purged_at=None, proper
         "source_url": "https://data.newcastlede.gov/parcels",
         "license_name": "municipal-open-data",
         "property_level_allowed": property_level_allowed,
+        "outreach_use_allowed": outreach_use_allowed,
     }
 
 
@@ -100,6 +102,9 @@ def test_listing_returns_a_body_that_can_be_posted_back_unchanged(monkeypatch):
     entry = payload["citable"][0]
     assert entry["source_key"] == "de-newcastle-assessor"
     assert entry["property_level_allowed"] is True
+    # Open data being public does not make it lawful outreach material, so the
+    # harvester default is False and the listing has to say so.
+    assert entry["outreach_use_allowed"] is False
     assert entry["payload_purged"] is False
 
     evidence = intelligence_api.EvidenceInput.model_validate(entry["cite"])
@@ -214,3 +219,43 @@ def test_sources_route_is_declared_before_the_property_key_catch_all():
     assert paths.index("/api/intelligence/sources") < paths.index(
         "/api/intelligence/{property_key}"
     )
+
+
+# ── the outreach licence ─────────────────────────────────────────────────────
+
+def test_detectors_report_the_outreach_licence_instead_of_refusing(monkeypatch):
+    """`outreach_use_allowed` was written since 0027 and read by nothing.
+
+    Detectors is where public-record evidence becomes a list of people to
+    approach, so it is where the answer belongs — but it reports rather than
+    refuses. Every harvester leaves the flag False, so refusing would disable
+    the endpoint outright; producing the candidates is legitimate, and acting
+    on them is the step that needs the licence.
+    """
+    conn = _Conn([{"source_name": "New Castle County Assessor"}])
+    monkeypatch.setattr(intelligence_api, "tenant_tx", _fake_tx(conn))
+
+    blocked = asyncio.run(
+        intelligence_api._outreach_blocked_sources(CTX, [str(REC_A), str(REC_A)])
+    )
+
+    assert blocked == ["New Castle County Assessor"]
+    # De-duplicated before the query — a source cited twice is one lookup.
+    assert conn.queries[0][1][0] == [str(REC_A)]
+
+
+def test_a_permitting_licence_leaves_the_outreach_path_unblocked(monkeypatch):
+    conn = _Conn([])
+    monkeypatch.setattr(intelligence_api, "tenant_tx", _fake_tx(conn))
+
+    assert asyncio.run(
+        intelligence_api._outreach_blocked_sources(CTX, [str(REC_A)])
+    ) == []
+
+
+def test_no_sources_means_no_query_rather_than_an_empty_ANY(monkeypatch):
+    conn = _Conn([])
+    monkeypatch.setattr(intelligence_api, "tenant_tx", _fake_tx(conn))
+
+    assert asyncio.run(intelligence_api._outreach_blocked_sources(CTX, [])) == []
+    assert conn.queries == []

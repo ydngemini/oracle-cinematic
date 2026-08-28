@@ -181,6 +181,9 @@ export default function IntelligenceAuthoring({ propertyKey, onAuthored }) {
                       {' · observed '}{shortDate(row.cite.observed_at) || 'undated'}
                       {' · '}{row.cite.license}
                       {row.payload_purged ? ' · payload purged (provenance kept)' : ''}
+                      {/* Not a block on analysis — this data may describe the
+                          property, just not be used to contact its owner. */}
+                      {row.outreach_use_allowed === false ? ' · not lawful outreach material' : ''}
                       {blocked ? ' · licence forbids property-level use' : ''}
                     </span>
                   </span>

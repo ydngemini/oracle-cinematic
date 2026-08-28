@@ -69,6 +69,7 @@ class CitableSource(BaseModel):
     property_key: Optional[str] = None
     jurisdiction: Optional[str] = None
     property_level_allowed: bool
+    outreach_use_allowed: bool
     payload_purged: bool
     expires_at: Optional[datetime] = None
 
@@ -208,6 +209,34 @@ async def _verified_citations(
     ]
 
 
+async def _outreach_blocked_sources(
+    ctx: TenantContext,
+    source_ids: list[str],
+) -> list[str]:
+    """Names of cited sources whose licence forbids using the data for contact.
+
+    A second read of rows `_verified_citations()` has already fetched. That is
+    deliberate: threading the flag through would change four call sites to carry
+    a value only this endpoint uses, and detectors is a low-frequency analysis
+    route that runs model inference anyway. The cost is one indexed lookup.
+    """
+    unique_ids = list(dict.fromkeys(source_ids))
+    if not unique_ids:
+        return []
+    async with tenant_tx(ctx) as conn:
+        rows = await conn.fetch(
+            """
+            SELECT DISTINCT l.source_name
+              FROM source_records r
+              JOIN source_licenses l ON l.id = r.source_license_id
+             WHERE r.id = ANY($1::uuid[])
+               AND l.outreach_use_allowed IS NOT TRUE
+            """,
+            unique_ids,
+        )
+    return sorted(row["source_name"] for row in rows)
+
+
 async def _persist(
     ctx: TenantContext,
     envelope: IntelligenceEnvelope,
@@ -342,7 +371,7 @@ async def citable_sources(
             SELECT r.id, r.source_key, r.record_key, r.property_key, r.jurisdiction,
                    r.observed_at, r.retrieved_at, r.expires_at, r.purged_at,
                    l.source_name, l.source_url, l.license_name,
-                   l.property_level_allowed
+                   l.property_level_allowed, l.outreach_use_allowed
               FROM source_records r
               JOIN source_licenses l ON l.id = r.source_license_id
              WHERE ($1::text IS NULL OR r.property_key = $1)
@@ -372,6 +401,7 @@ async def citable_sources(
             property_key=row["property_key"],
             jurisdiction=row["jurisdiction"],
             property_level_allowed=row["property_level_allowed"],
+            outreach_use_allowed=row["outreach_use_allowed"],
             payload_purged=row["purged_at"] is not None,
             expires_at=row["expires_at"],
         )
@@ -613,11 +643,24 @@ async def sourcing_detectors(
 ):
     require_feature(Feature.PREDICTIVE_INTELLIGENCE)
     enforce_public_property_data(body.model_dump())
+    # source_licenses.outreach_use_allowed answers "may this data be used to
+    # contact the owner?" and every harvester leaves it False by default,
+    # because open data being public does not make it lawful outreach material.
+    # It has been written since 0027 and read by nothing.
+    #
+    # This endpoint is where public-record evidence becomes a list of people to
+    # approach, so it is where the answer belongs. It REPORTS rather than
+    # refuses: given the default, refusing would disable detectors outright, and
+    # producing the candidate list is legitimate — acting on it is the step that
+    # needs the licence. The approver simply could not see this before.
+    blocked = await _outreach_blocked_sources(ctx, _source_ids(body.sources))
     result = {
         "candidates": detect_public_sourcing_signals(body.signals),
         "outreach_requires_approval": True,
         "identity_verification_required": True,
         "private_contacts_inferred": False,
+        "outreach_licence_permits_contact": not blocked,
+        "outreach_licence_blocked_sources": blocked,
     }
     return await _respond(
         ctx,
@@ -627,7 +670,18 @@ async def sourcing_detectors(
         source_ids=_source_ids(body.sources),
         result=result,
         confidence=0.7,
-        warnings=["Candidates require source-record review and identity verification before outreach."],
+        warnings=(
+            ["Candidates require source-record review and identity verification before outreach."]
+            + (
+                [
+                    "The licence on " + ", ".join(blocked) + " does not permit using this "
+                    "data to contact an owner. Approving outreach from these candidates "
+                    "needs a separate lawful basis."
+                ]
+                if blocked
+                else []
+            )
+        ),
     )
 
 
