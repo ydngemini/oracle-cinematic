@@ -210,7 +210,11 @@ resource "aws_batch_compute_environment" "recon" {
     instance_role       = aws_iam_instance_profile.recon_instance.arn
     spot_iam_fleet_role = aws_iam_role.recon_spot_fleet.arn
     ec2_configuration {
-      image_type = "ECS_AL2_NVIDIA" # GPU-optimized ECS AMI
+      # AWS Batch rejected ECS_AL2_NVIDIA outright on 2026-08-28:
+      # "Amazon Linux 2 is end-of-life." Same shape as Aurora withdrawing 16.4 —
+      # infra pinned to an AWS default that AWS has since retired, which only
+      # surfaces on a fresh create, never on an existing stack.
+      image_type = "ECS_AL2023_NVIDIA" # GPU-optimized ECS AMI (AL2 is EOL)
     }
     tags = { Name = "${local.name}-recon" }
   }
