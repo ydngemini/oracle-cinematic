@@ -42,6 +42,7 @@ class _PasswordResetStore:
         }
         self.reset_tokens: dict[str, dict] = {}
         self.password_updates = 0
+        self.siblings_revoked = 0
         self.consume_query = ""
         self.raise_on_lookup = False
 
@@ -78,6 +79,22 @@ class _PasswordResetStore:
         raise AssertionError(f"Unexpected fetchrow query: {query}")
 
     async def execute(self, query: str, *args):
+        # Using one reset link retires the rest, so an account recovered after
+        # two "forgot password" clicks does not leave the earlier link live for
+        # the remainder of its 30 minutes.
+        if "SET consumed_at = now()" in query and "WHERE user_id" in query:
+            (user_id,) = args
+            now = datetime.now(timezone.utc)
+            for record in self.reset_tokens.values():
+                if (
+                    record["user_id"] == user_id
+                    and record["consumed_at"] is None
+                    and record["expires_at"] > now
+                ):
+                    record["consumed_at"] = now
+                    self.siblings_revoked += 1
+            return "UPDATE"
+
         if "INSERT INTO password_reset_tokens" not in query:
             raise AssertionError(f"Unexpected execute query: {query}")
 
@@ -339,3 +356,28 @@ def test_password_reset_migration_enforces_rls_and_least_privilege():
     assert "FORCE ROW LEVEL SECURITY" in migration
     assert "GRANT UPDATE (consumed_at)" in migration
     assert "REVOKE ALL ON password_reset_tokens FROM oracle_app" in migration
+
+
+def test_using_one_reset_link_retires_the_others(monkeypatch):
+    """People click "forgot password" twice when the first mail is slow.
+
+    Only the token presented was consumed, so every earlier link stayed usable
+    for the rest of its 30-minute life after the account had already been
+    recovered — an intercepted copy of any of them still worked.
+    """
+    store = _PasswordResetStore()
+    sent_links = _install_store(monkeypatch, store)
+
+    superseded = _request_reset_link(store, sent_links)
+    # _request_reset_link asserts exactly one mail, so clear before the second.
+    sent_links.clear()
+    current = _request_reset_link(store, sent_links)
+    assert superseded != current
+
+    _reset(current)
+
+    assert store.siblings_revoked >= 1
+    live = [r for r in store.reset_tokens.values() if r["consumed_at"] is None]
+    assert live == [], "an earlier reset link survived the reset that superseded it"
+    # And it is genuinely dead, not merely marked.
+    _assert_invalid_reset(superseded)
