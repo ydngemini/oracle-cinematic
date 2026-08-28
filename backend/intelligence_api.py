@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import json
+import logging
 from datetime import date, datetime, time, timezone
 from typing import Any, Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from db.connection import tenant_tx
 from graph_engine import PropertyGraph
@@ -39,6 +40,8 @@ from platform_policy import (
     require_feature,
 )
 from tenancy import TenantContext, require_context
+
+logger = logging.getLogger("oracle.intelligence")
 
 router = APIRouter(prefix="/api/intelligence", tags=["intelligence"])
 
@@ -332,6 +335,29 @@ async def intelligence_policy(ctx: TenantContext = Depends(require_context)):
     }
 
 
+def _citable(row: Any, *, drop_url: bool = False) -> CitableSource:
+    """Build one listing entry from a joined source_records/source_licenses row."""
+    return CitableSource(
+        cite=EvidenceInput(
+            source_record_id=row["id"],
+            source=row["source_name"],
+            record_id=row["record_key"],
+            source_url=None if drop_url else row["source_url"],
+            observed_at=row["observed_at"].date(),
+            retrieved_at=row["retrieved_at"],
+            license=row["license_name"],
+            evidence_status=EvidenceStatus.OBSERVED,
+        ),
+        source_key=row["source_key"],
+        property_key=row["property_key"],
+        jurisdiction=row["jurisdiction"],
+        property_level_allowed=row["property_level_allowed"],
+        outreach_use_allowed=row["outreach_use_allowed"],
+        payload_purged=row["purged_at"] is not None,
+        expires_at=row["expires_at"],
+    )
+
+
 # Declared before GET /{property_key}, which would otherwise match "sources"
 # and try to read intelligence for a property of that name.
 @router.get("/sources")
@@ -365,53 +391,69 @@ async def citable_sources(
                            "record for a tenant is a scan, not a query.",
             },
         )
+    # Predicates are appended for the filters actually supplied rather than
+    # written as `$1 IS NULL OR col = $1`. The null-guard form reads tidier but
+    # is only index-usable while the planner knows the parameter; asyncpg uses
+    # prepared statements, and once PostgreSQL switches to a generic plan the
+    # OR-with-NULL-test becomes an unindexable filter — a sequential scan of
+    # every raw record the tenant has retained, which is the exact cost this
+    # endpoint's guard clause and migration 0081 exist to avoid.
+    predicates: list[str] = []
+    params: list[Any] = []
+    for column, value in (
+        ("r.property_key", property_key),
+        ("r.jurisdiction", jurisdiction),
+        ("r.source_key", source_key),
+    ):
+        if value:
+            params.append(value)
+            predicates.append(f"{column} = ${len(params)}")
+    params.append(limit)
+
     async with tenant_tx(ctx) as conn:
         rows = await conn.fetch(
-            """
+            f"""
             SELECT r.id, r.source_key, r.record_key, r.property_key, r.jurisdiction,
                    r.observed_at, r.retrieved_at, r.expires_at, r.purged_at,
                    l.source_name, l.source_url, l.license_name,
                    l.property_level_allowed, l.outreach_use_allowed
               FROM source_records r
               JOIN source_licenses l ON l.id = r.source_license_id
-             WHERE ($1::text IS NULL OR r.property_key = $1)
-               AND ($2::text IS NULL OR r.jurisdiction = $2)
-               AND ($3::text IS NULL OR r.source_key = $3)
+             WHERE {' AND '.join(predicates)}
              ORDER BY r.observed_at DESC, r.created_at DESC
-             LIMIT $4
+             LIMIT ${len(params)}
             """,
-            property_key,
-            jurisdiction,
-            source_key,
-            limit,
+            *params,
         )
-    sources = [
-        CitableSource(
-            cite=EvidenceInput(
-                source_record_id=row["id"],
-                source=row["source_name"],
-                record_id=row["record_key"],
-                source_url=row["source_url"],
-                observed_at=row["observed_at"].date(),
-                retrieved_at=row["retrieved_at"],
-                license=row["license_name"],
-                evidence_status=EvidenceStatus.OBSERVED,
-            ),
-            source_key=row["source_key"],
-            property_key=row["property_key"],
-            jurisdiction=row["jurisdiction"],
-            property_level_allowed=row["property_level_allowed"],
-            outreach_use_allowed=row["outreach_use_allowed"],
-            payload_purged=row["purged_at"] is not None,
-            expires_at=row["expires_at"],
-        )
-        for row in rows
-    ]
+    sources: list[CitableSource] = []
+    unlistable = 0
+    for row in rows:
+        try:
+            sources.append(_citable(row))
+        except ValidationError:
+            # SourceCitation validates what source_licenses does not constrain:
+            # source_url must be http(s) and source_name at least two characters,
+            # while the table stores both as unconstrained text. One row written
+            # by a harvester with a bare-hostname URL would otherwise raise out of
+            # a list comprehension and 500 the whole listing — re-blocking
+            # authoring for every property in the tenant over a single bad row.
+            try:
+                sources.append(_citable(row, drop_url=True))
+            except ValidationError:
+                logger.warning(
+                    "source record %s cannot be offered as a citation; "
+                    "its licence row is not citable as stored",
+                    row["id"],
+                )
+                unlistable += 1
     return {
         "property_key": property_key,
         "jurisdiction": jurisdiction,
         "limit": limit,
         "count": len(sources),
+        # Non-zero means rows exist that cannot be cited as stored. Silence here
+        # would look identical to a property with fewer observations than it has.
+        "unlistable": unlistable,
         # Distinguishing "this property has no retained observations" from
         # "the harvesters have never run" is the difference between a screen
         # that tells you to go get data and one that looks broken.
@@ -500,7 +542,6 @@ async def highest_best_use(
         analysis_type="highest_best_use",
         subject_id=body.property_key,
         model_version=HBU_MODEL_VERSION,
-        citations=citations,
         source_ids=source_ids,
         result=result,
         confidence=confidence,
@@ -784,7 +825,6 @@ async def entity_graph(
         analysis_type="public_entity_graph",
         subject_id=body.property_key,
         model_version="public-record-entity-join-2026.07",
-        citations=citations,
         source_ids=source_ids,
         result=result,
         confidence=1.0,

@@ -75,6 +75,30 @@ if JWT_ISSUER:
 if JWT_AUDIENCE:
     os.environ.setdefault("ORACLE_JWT_AUDIENCE", JWT_AUDIENCE)
 
+# The one public origin every outbound link is built from — password resets,
+# Stripe success/cancel URLs, client-portal links, command callbacks. Four
+# modules each carried their own `os.getenv("ORACLE_BASE_URL",
+# "http://localhost:5173")`, so a deployment that set ORACLE_DOMAIN or
+# ORACLE_PUBLIC_BASE_URL but not ORACLE_BASE_URL — none of which is required in
+# prod — booted cleanly and mailed real users a localhost reset link.
+#
+# Resolving through ORACLE_DOMAIN closes that: it already falls back
+# ORACLE_DOMAIN -> ORACLE_PUBLIC_BASE_URL -> ORACLE_BASE_URL, and it is
+# effectively guaranteed non-empty in production because JWT_ISSUER derives from
+# it and IS required. The localhost default therefore only survives in dev.
+# A function, not a constant: commands_api and auth resolved this per request,
+# and freezing it at import would silently change that (and break any caller
+# that sets the variable after import, which the OAuth tests legitimately do).
+# Module-level consumers simply call it once at import, as they always did.
+def public_base_url() -> str:
+    """The public origin every outbound link is built from."""
+    resolved = _first_setting(
+        "ORACLE_DOMAIN",
+        "ORACLE_PUBLIC_BASE_URL",
+        "ORACLE_BASE_URL",
+    )
+    return (resolved or "http://localhost:5173").rstrip("/")
+
 ENABLE_WEBHOOKS: bool = flag("ORACLE_ENABLE_WEBHOOKS", default=False)
 ORACLE_FEATURE_VIDEO_STUDIO: bool = flag("ORACLE_FEATURE_VIDEO_STUDIO", default=False)
 

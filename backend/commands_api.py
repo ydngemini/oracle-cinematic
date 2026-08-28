@@ -440,7 +440,9 @@ async def _refresh_google_oauth_token(
 
 
 def _oauth_return_url(return_path: str, outcome: str) -> str:
-    base = os.getenv("ORACLE_BASE_URL", "http://localhost:5173").rstrip("/")
+    import config as _config
+
+    base = _config.public_base_url()
     parsed = urllib.parse.urlsplit(return_path)
     query = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
     query.append(("google", outcome))

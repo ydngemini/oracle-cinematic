@@ -767,11 +767,14 @@ async def forgot_password(body: ForgotRequest):
                     expires_at,
                 )
 
-            # Every other reader of this var (billing, commands, client_portal)
-            # falls back to the dev frontend. This one alone hardcoded a
-            # production hostname — and that hostname, neoh.app, was retired,
-            # so an unconfigured deploy mailed reset links into a dead domain.
-            base = os.environ.get("ORACLE_BASE_URL", "http://localhost:5173").rstrip("/")
+            # This alone hardcoded a production hostname (neoh.app, since
+            # retired), so an unconfigured deploy mailed reset links into a dead
+            # domain. It now shares the one resolved origin with billing,
+            # commands and the client portal — see config.public_base_url() for
+            # why four private copies of the same default was the real bug.
+            import config as _config
+
+            base = _config.public_base_url()
             _send_reset_email(email, f"{base}/?reset={token}")
     except Exception:  # noqa: BLE001 - forgot must never disclose account or infrastructure state
         log.exception("Password reset request could not be completed.")

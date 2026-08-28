@@ -41,7 +41,7 @@ STRIPE_PRICE_ID = os.getenv("STRIPE_PRICE_ID", "price_REPLACE_ME")
 # The ledger and the drain live in billing_usage.py.
 STRIPE_METERED_PRICE_ID = os.getenv("STRIPE_METERED_PRICE_ID", "").strip()
 
-BASE_URL = os.getenv("ORACLE_BASE_URL", "http://localhost:5173")
+BASE_URL = config.public_base_url()
 
 # Compliance toggles (Jun-2026 legal audit).
 # - SaaS sales tax: 25+ jurisdictions tax SaaS; non-collection risks ~30% penalty

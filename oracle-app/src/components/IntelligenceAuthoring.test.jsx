@@ -182,3 +182,65 @@ it('translates the licence refusal into the reason, not the error code', async (
     expect(screen.getByRole('alert').textContent).toMatch(/forbids property-level use/i);
   });
 });
+
+
+// ── what the review caught ───────────────────────────────────────────────────
+
+it('does not post a cleared field as an observed zero', async () => {
+  await renderPanel();
+
+  await click(screen.getByRole('checkbox'));
+  await type(screen.getByLabelText(/tax delinquency/i), '0.8');
+  // Typed, then thought better of it. Number('') is 0, so this used to post
+  // vacancy: 0 — adding its full weight to observed_weight while contributing
+  // nothing, which lowers the score and narrows the confidence band at once.
+  await type(screen.getByLabelText(/vacancy/i), '0.5');
+  await type(screen.getByLabelText(/vacancy/i), '');
+  await click(screen.getByRole('button', { name: /score against/i }));
+
+  await waitFor(() => expect(crmPost).toHaveBeenCalled());
+  expect(crmPost.mock.calls[0][1].signals).toEqual({ tax_delinquency: 0.8 });
+});
+
+it('names an out-of-range entry instead of silently dropping it', async () => {
+  await renderPanel();
+
+  await click(screen.getByRole('checkbox'));
+  await type(screen.getByLabelText(/tax delinquency/i), '5');
+
+  expect(screen.getByRole('alert').textContent).toMatch(/between 0 and 1/i);
+  expect(screen.getByRole('button', { name: /score against/i }).disabled).toBe(true);
+  expect(crmPost).not.toHaveBeenCalled();
+});
+
+it('clears the previous property when the subject changes', async () => {
+  const { rerender } = render(<IntelligenceAuthoring propertyKey="DE-NCC-0142" />);
+  await waitFor(() => expect(crmGet).toHaveBeenCalled());
+  await click(screen.getByRole('checkbox'));
+  await type(screen.getByLabelText(/tax delinquency/i), '0.8');
+
+  // DossierPanel has no `key`, so this is a prop change, not a remount.
+  mockApi({ citable: [source({ cite: { source_record_id: 'ffffffff-ffff-ffff-ffff-ffffffffffff' } })] });
+  await act(async () => {
+    rerender(<IntelligenceAuthoring propertyKey="DE-NCC-9999" />);
+  });
+
+  // Property A's tick and A's number must not still be armed for property B.
+  await waitFor(() => {
+    expect(screen.getByRole('checkbox').checked).toBe(false);
+  });
+  expect(screen.getByLabelText(/tax delinquency/i).value).toBe('');
+  expect(screen.getByRole('button', { name: /score against/i }).disabled).toBe(true);
+});
+
+it('does not blame a lapsed credential for a failed request', async () => {
+  crmGet.mockRejectedValue(Object.assign(new Error('Internal Server Error'), { status: 500 }));
+  await act(async () => {
+    render(<IntelligenceAuthoring propertyKey="DE-NCC-0142" />);
+  });
+
+  await waitFor(() => expect(screen.getByRole('alert')).toBeTruthy());
+  // The empty state sends the user to check a harvester credential. That is the
+  // right diagnosis for "nothing retained" and the wrong one for a 500.
+  expect(screen.queryByText(/credential has usually lapsed/i)).toBeNull();
+});

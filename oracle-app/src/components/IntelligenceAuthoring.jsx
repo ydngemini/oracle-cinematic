@@ -48,7 +48,7 @@ export default function IntelligenceAuthoring({ propertyKey, onAuthored }) {
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
 
-  const load = useCallback(() => {
+  const load = useCallback((isStale = () => false) => {
     if (!propertyKey) return undefined;
     setError('');
     return Promise.all([
@@ -56,19 +56,51 @@ export default function IntelligenceAuthoring({ propertyKey, onAuthored }) {
       crmGet('/api/intelligence/policy'),
     ]).then(
       ([listing, policy]) => {
+        if (isStale()) return;
         setSources(Array.isArray(listing?.citable) ? listing.citable : []);
         setSignals(Array.isArray(policy?.distress_signals) ? policy.distress_signals : []);
       },
       (reason) => {
-        setSources([]);
+        if (isStale()) return;
+        // Deliberately NOT setSources([]). The empty state tells the user their
+        // data credential has probably lapsed, which is the right diagnosis for
+        // "no records retained" and exactly the wrong one for a 500 or a dropped
+        // connection. Leaving it null keeps the error the only thing on screen.
         setError(reason?.message || 'Citable source records could not be read.');
       },
     );
   }, [propertyKey]);
 
+  // DossierPanel is rendered without a `key`, so selecting a different lead
+  // swaps propertyKey underneath this component rather than remounting it.
+  // Without clearing, the previous property's records stay listed and ticked
+  // and its signal numbers stay in the inputs while the new fetch is in flight
+  // — and `ready` is true throughout, so one click records an analysis against
+  // property B whose cited provenance is entirely property A's. The server
+  // accepts it, because those records genuinely are tenant-visible.
+  //
+  // Adjusted during render rather than in an effect: React re-runs this pass
+  // before committing, so the stale evidence is never painted, and an effect
+  // here would show the old property's ticked boxes for a frame.
+  const [lastKey, setLastKey] = useState(propertyKey);
+  if (propertyKey !== lastKey) {
+    setLastKey(propertyKey);
+    setSources(null);
+    setSelected(new Set());
+    setValues({});
+    setError('');
+    setNotice('');
+  }
+
   useEffect(() => {
-    const frame = window.requestAnimationFrame(() => { void load(); });
-    return () => window.cancelAnimationFrame(frame);
+    let cancelled = false;
+    const frame = window.requestAnimationFrame(() => {
+      // Two loads can be in flight across a fast property switch; without this
+      // the slower, older response wins and repopulates the list for a property
+      // the user has already navigated away from.
+      void load(() => cancelled);
+    });
+    return () => { cancelled = true; window.cancelAnimationFrame(frame); };
   }, [load]);
 
   const citable = useMemo(
@@ -93,10 +125,24 @@ export default function IntelligenceAuthoring({ propertyKey, onAuthored }) {
 
   // 0..1 each, and at least one — an empty signal set scores zero at zero
   // coverage, which is a number that looks like a finding and is not one.
-  const scored = Object.entries(values)
+  //
+  // The blank check has to come BEFORE Number(), because Number('') is 0. A
+  // field the user typed into and then cleared would otherwise post as an
+  // observed zero, and score_pre_distress adds that signal's full weight to
+  // observed_weight while contributing nothing to the score — dragging the
+  // result down AND narrowing the confidence band. A lower number, asserted
+  // more confidently, backed by no observation.
+  const entered = Object.entries(values).filter(([, raw]) => String(raw).trim() !== '');
+  const scored = entered
     .map(([name, raw]) => [name, Number(raw)])
     .filter(([, value]) => Number.isFinite(value) && value >= 0 && value <= 1);
-  const ready = selected.size > 0 && scored.length > 0 && !busy;
+  // Anything typed but unusable (out of range, or '0,8' under a comma locale)
+  // must be named rather than silently dropped — the user can see their number
+  // in the box, so a filtered-away entry reads as the app ignoring them.
+  const invalid = entered
+    .filter(([name]) => !scored.some(([scoredName]) => scoredName === name))
+    .map(([name]) => name);
+  const ready = selected.size > 0 && scored.length > 0 && invalid.length === 0 && !busy;
 
   const run = async () => {
     if (!ready) return;
@@ -209,6 +255,12 @@ export default function IntelligenceAuthoring({ propertyKey, onAuthored }) {
               </label>
             ))}
           </div>
+
+          {invalid.length > 0 ? (
+            <p className={styles.error} role="alert">
+              {invalid.map(label).join(', ')} — enter a number between 0 and 1, or clear the field.
+            </p>
+          ) : null}
 
           <button type="button" className={styles.synthesize} onClick={run} disabled={!ready}>
             {busy ? 'Scoring…' : `Score against ${selected.size || 'no'} record${selected.size === 1 ? '' : 's'}`}

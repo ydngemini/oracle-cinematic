@@ -35,7 +35,10 @@ if [ -n "$ZONE" ] && [ "$ZONE" != "None" ]; then
   python3 - "$DOMAIN" <<PY
 import json,sys
 domain=sys.argv[1]
-toks=json.loads('''$TOKENS''')
+# `--query ... --output json` prints the literal `null` when SES has not
+# minted tokens yet; `for t in toks` would then raise TypeError and, under
+# `set -euo pipefail`, abort before the ses:SendEmail grant ever runs.
+toks=json.loads('''$TOKENS''') or []
 ch=[{"Action":"UPSERT","ResourceRecordSet":{"Name":f"{t}._domainkey.{domain}","Type":"CNAME","TTL":1800,"ResourceRecords":[{"Value":f"{t}.dkim.amazonses.com"}]}} for t in toks]
 json.dump({"Changes":ch}, open("/tmp/ses-dkim-batch.json","w"))
 print(f"{len(ch)} records", file=sys.stderr)
@@ -47,7 +50,10 @@ else
   python3 - "$DOMAIN" <<PY
 import json,sys
 domain=sys.argv[1]
-toks=json.loads('''$TOKENS''')
+# `--query ... --output json` prints the literal `null` when SES has not
+# minted tokens yet; `for t in toks` would then raise TypeError and, under
+# `set -euo pipefail`, abort before the ses:SendEmail grant ever runs.
+toks=json.loads('''$TOKENS''') or []
 for t in toks:
     print(f"   CNAME  {t}._domainkey.{domain}  ->  {t}.dkim.amazonses.com")
 if not toks:

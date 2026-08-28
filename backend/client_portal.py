@@ -36,7 +36,9 @@ log = logging.getLogger("oracle.client_portal")
 
 router = APIRouter(prefix="/portal", tags=["client-portal"])
 
-PORTAL_BASE_URL = os.environ.get("ORACLE_BASE_URL", "http://localhost:5173")
+import config as _config
+
+PORTAL_BASE_URL = _config.public_base_url()
 MAX_EXPIRY_DAYS = 90
 
 

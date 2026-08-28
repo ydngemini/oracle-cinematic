@@ -163,6 +163,7 @@ def test_empty_result_is_a_count_not_an_error(monkeypatch):
         "jurisdiction": None,
         "limit": 50,
         "count": 0,
+        "unlistable": 0,
         "citable": [],
     }
 
@@ -259,3 +260,86 @@ def test_no_sources_means_no_query_rather_than_an_empty_ANY(monkeypatch):
 
     assert asyncio.run(intelligence_api._outreach_blocked_sources(CTX, [])) == []
     assert conn.queries == []
+
+
+# ── the refactor ratchet ─────────────────────────────────────────────────────
+
+def test_every_respond_call_site_matches_the_signature():
+    """`_respond` shed its `citations` parameter and two call sites kept passing it.
+
+    /highest-best-use and /entity-graph build a local `citations` for their own
+    use, so they read `citations=citations` rather than the
+    `citations=_citations(body.sources)` the other five used — a different
+    string, so a textual edit missed them. Both routes raised
+    TypeError -> HTTP 500 on every call, *after* their zoning_analyses /
+    entity_nodes writes had already committed.
+
+    Keyword-only arguments make this a runtime error rather than a silent
+    mis-binding, which is good, but nothing catches it until the route is
+    called and neither route has a test. This checks the shape instead.
+    """
+    import ast
+    import inspect
+
+    parameters = set(inspect.signature(intelligence_api._respond).parameters)
+    tree = ast.parse(inspect.getsource(intelligence_api))
+
+    orphans = [
+        (node.lineno, keyword.arg)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and getattr(node.func, "id", "") == "_respond"
+        for keyword in node.keywords
+        if keyword.arg and keyword.arg not in parameters
+    ]
+
+    assert orphans == [], f"_respond called with arguments it does not accept: {orphans}"
+
+
+def test_one_uncitable_row_does_not_500_the_whole_listing(monkeypatch):
+    """source_licenses stores source_url as unconstrained text.
+
+    SourceCitation requires http(s). A harvester that wrote a bare hostname
+    would otherwise raise out of the list comprehension and take down the
+    listing for every property in the tenant — re-blocking authoring entirely
+    over one bad row.
+    """
+    good = _row(REC_A)
+    bare_host = _row(REC_B)
+    bare_host["source_url"] = "data.newcastlede.gov/parcels"
+    conn = _Conn([good, bare_host])
+    monkeypatch.setattr(intelligence_api, "tenant_tx", _fake_tx(conn))
+
+    payload = asyncio.run(_call(conn, property_key="DE-NCC-0142"))
+
+    # Degraded, not dropped: the record still proves an observation, so it stays
+    # citable without the unusable URL.
+    assert payload["count"] == 2
+    assert payload["unlistable"] == 0
+    assert payload["citable"][1]["cite"]["source_url"] is None
+
+
+def test_a_row_that_cannot_be_salvaged_is_counted_not_hidden(monkeypatch):
+    unusable = _row(REC_B)
+    unusable["source_name"] = "x"  # SourceCitation requires min_length=2
+    conn = _Conn([_row(REC_A), unusable])
+    monkeypatch.setattr(intelligence_api, "tenant_tx", _fake_tx(conn))
+
+    payload = asyncio.run(_call(conn, property_key="DE-NCC-0142"))
+
+    assert payload["count"] == 1
+    # Silence would look identical to a property with fewer observations.
+    assert payload["unlistable"] == 1
+
+
+def test_only_the_supplied_filters_become_predicates(monkeypatch):
+    """`$1 IS NULL OR col = $1` is not index-usable under a generic plan."""
+    conn = _Conn([])
+    monkeypatch.setattr(intelligence_api, "tenant_tx", _fake_tx(conn))
+
+    asyncio.run(_call(conn, jurisdiction="DE", limit=25))
+
+    query, args = conn.queries[0]
+    assert "IS NULL OR" not in query
+    assert "r.jurisdiction = $1" in query
+    assert "r.property_key" not in query.split("WHERE", 1)[1]
+    assert args == ("DE", 25)
