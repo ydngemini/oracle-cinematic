@@ -77,3 +77,41 @@ legacy `clients.full_name`, which is what the 0054 seed can produce.
 > subsequent batches, which is also what keeps the loop terminating: a skipped
 > row still matches `cardinality(...) = 0` and would otherwise be re-selected
 > forever.
+
+## `backfill_property_coordinates.py` — geocode public property records
+
+**Why:** 8.59M `public_property_records` carry an address (93.8%) and an owner
+(89.3%), but only **4.3%** carry latitude/longitude. Without a coordinate the
+map view has nothing to plot, and `list_comparable_sales` / `estimate_arv` —
+whose radius search migration 0076 added an index for — can only consider the
+4% that happen to have one. The addresses were always there; nobody resolved
+them.
+
+The Census batch geocoder is keyless and free, and was already wired
+(`data_integrations/census_geocoder.py`). This is a backfill, not a purchase.
+
+```bash
+# match rate only, writes nothing — always run this first
+python backfill_property_coordinates.py --state DE --batches 1 --dry-run
+
+# one state, then the rest
+python backfill_property_coordinates.py --state DE
+python backfill_property_coordinates.py
+```
+
+**Resumable.** Progress is the id cursor and the filter is `latitude IS NULL`,
+so an interrupted run restarts where it stopped and a row that already has a
+coordinate is never re-fetched. Safe to re-run.
+
+**Unmatched rows are not failures.** A demolished parcel or a rural route has no
+coordinate to find. The script exits non-zero only when a run resolves *nothing*,
+which is what an endpoint outage looks like — `geocode_batch` never raises, it
+degrades every row to unmatched, so "0 matched" is the only signal available.
+
+**Courtesy.** Default batch is 5,000 against an API limit of 10,000, with a
+one-second pause between calls. This is a free public endpoint doing real work;
+raise the batch deliberately, not by default.
+
+⚠ As of 2026-08-28 `geocoding.geo.census.gov` was refusing connections (TCP
+connects, then closes) while the rest of the internet was reachable. Re-run the
+dry-run before assuming a problem in the script.
