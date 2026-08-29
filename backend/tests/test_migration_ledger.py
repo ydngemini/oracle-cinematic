@@ -116,13 +116,41 @@ def test_plaintext_is_refused_for_anything_but_a_local_host():
 def test_every_migration_on_disk_parses_without_error():
     """The probe runs against real files; a regex that throws on one of them
     would take the whole reconcile down."""
+    # Named rather than counted. The allowance used to be "at most 8 files
+    # declare nothing", which is a number that gets bumped whenever it fails —
+    # including by a migration that should have declared something and forgot.
+    # Listing them makes each exemption a decision with a reason attached, and
+    # makes an unexpected one fail loudly instead of eating the slack.
+    unprobeable_by_design = {
+        "0003_hardening.sql": "GRANT/REVOKE only — privileges are not objects",
+        "0014_audit_attribution.sql": "backfills attribution on existing rows",
+        "0025_state_reference_seed.sql": "INSERTs reference data",
+        "0026_seed_platform_tenant.sql": "INSERTs the platform tenant",
+        "0037_application_sequence_privileges.sql": "GRANTs on sequences",
+        "0042_seed_platform_operator_profile.sql": "INSERTs the operator profile",
+        "0069_agency_law_unresearched.sql": "NULLs columns that were asserted without research",
+        "0078_zip_state_conflicts.sql": "INSERTs conflict reference data",
+        "0083_force_rls_on_subscriptions.sql": "ALTERs a table flag; FORCE creates no object",
+    }
+
     files = sorted((BACKEND / "db" / "migrations").glob("*.sql"))
     assert len(files) > 70
-    probeable = 0
+
+    silent = set()
     for path in files:
         declared = runner._declared_objects(path.read_text())
         assert isinstance(declared["columns"], list)
-        if any(declared.values()):
-            probeable += 1
-    # Most migrations declare something; the rest are seeds and grants.
-    assert probeable >= len(files) - 8
+        if not any(declared.values()):
+            silent.add(path.name)
+
+    unexpected = silent - set(unprobeable_by_design)
+    assert unexpected == set(), (
+        "these migrations declare no probeable object, so --reconcile cannot "
+        "tell whether they applied. Add DDL the probe can see, or list them "
+        f"above with a reason: {sorted(unexpected)}"
+    )
+
+    # And the reverse: an entry that starts declaring something should lose its
+    # exemption rather than sit there granting slack forever.
+    stale = set(unprobeable_by_design) - silent
+    assert stale == set(), f"no longer unprobeable, drop from the list: {sorted(stale)}"
