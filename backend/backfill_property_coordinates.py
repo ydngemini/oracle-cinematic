@@ -30,6 +30,8 @@ import argparse
 import asyncio
 import os
 import sys
+import urllib.error
+import urllib.request
 from typing import Any
 
 from data_integrations.census_geocoder import CensusGeocoder
@@ -46,6 +48,33 @@ _CTX = TenantContext(
 
 _DEFAULT_BATCH = 5_000
 _MAX_BATCH = 10_000
+
+
+def _preflight(timeout: float = 20.0) -> str | None:
+    """Why the geocoder is unusable from this host, or None if it answers.
+
+    Without this, an unreachable endpoint is indistinguishable from a genuine
+    zero-match run: `geocode_batch` never raises, it degrades every row to
+    unmatched. An operator would watch "0/5000 matched" scroll past for hours
+    and conclude the addresses were bad.
+
+    The specific failure worth naming: the Census geocoder closes the connection
+    on datacenter and cloud egress ranges — TCP connects, TLS or HTTP then dies —
+    while the rest of the internet is reachable. It is not a firewall on this
+    side and not a fault in the addresses.
+    """
+    probe = "https://geocoding.geo.census.gov/geocoder/benchmarks"
+    try:
+        with urllib.request.urlopen(probe, timeout=timeout) as response:
+            if response.status == 200:
+                return None
+            return f"the geocoder answered HTTP {response.status}"
+    except urllib.error.HTTPError as exc:
+        # A response at all means the host is reachable; the batch endpoint may
+        # still work, so this is not disqualifying.
+        return None if exc.code < 500 else f"the geocoder answered HTTP {exc.code}"
+    except Exception as exc:  # noqa: BLE001 - any transport failure is the same answer here
+        return f"{type(exc).__name__}: {exc}"
 
 
 async def _claim(conn, *, after_id: str | None, state: str | None, limit: int) -> list[Any]:
@@ -94,7 +123,30 @@ async def _write(conn, matched: list[tuple[str, float, float]]) -> int:
     return len(matched)
 
 
-async def run(*, state: str | None, batch_size: int, dry_run: bool, limit_batches: int | None) -> int:
+async def run(
+    *,
+    state: str | None,
+    batch_size: int,
+    dry_run: bool,
+    limit_batches: int | None,
+    skip_preflight: bool = False,
+) -> int:
+    if not skip_preflight:
+        unreachable = await asyncio.to_thread(_preflight)
+        if unreachable:
+            print(f"!! the geocoder is not reachable from this host: {unreachable}", file=sys.stderr)
+            # Printed for every reason, not just the ones we recognise: the
+            # operator cannot tell a transient outage from a refused egress
+            # range, and both look like a TCP connection that dies.
+            print(
+                "   Census refuses some datacenter and cloud egress ranges, and it "
+                "also has outages. Retry, or run from a residential connection or "
+                "an HTTPS_PROXY pointing at one.",
+                file=sys.stderr,
+            )
+            print("   Nothing was read or written. --skip-preflight to try anyway.", file=sys.stderr)
+            return 2
+
     geocoder = CensusGeocoder()
     cursor: str | None = None
     seen = written = unmatched = batches = 0
@@ -150,6 +202,10 @@ def main() -> int:
     parser.add_argument("--batch-size", type=int, default=_DEFAULT_BATCH)
     parser.add_argument("--batches", type=int, help="stop after N batches (sampling)")
     parser.add_argument("--dry-run", action="store_true", help="report match rate, write nothing")
+    parser.add_argument(
+        "--skip-preflight", action="store_true",
+        help="run even if the geocoder probe fails (it probes a different endpoint)",
+    )
     args = parser.parse_args()
 
     if not (1 <= args.batch_size <= _MAX_BATCH):
@@ -164,6 +220,7 @@ def main() -> int:
                 batch_size=args.batch_size,
                 dry_run=args.dry_run,
                 limit_batches=args.batches,
+                skip_preflight=args.skip_preflight,
             )
         finally:
             await close_pool()

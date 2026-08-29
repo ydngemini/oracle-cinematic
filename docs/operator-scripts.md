@@ -112,6 +112,17 @@ degrades every row to unmatched, so "0 matched" is the only signal available.
 one-second pause between calls. This is a free public endpoint doing real work;
 raise the batch deliberately, not by default.
 
-⚠ As of 2026-08-28 `geocoding.geo.census.gov` was refusing connections (TCP
-connects, then closes) while the rest of the internet was reachable. Re-run the
-dry-run before assuming a problem in the script.
+**Measured match rate:** 4,494 of 5,000 (89.9%) on Delaware, 2026-08-29.
+
+**A preflight probes the geocoder before touching the database.** Without it an
+unreachable endpoint is indistinguishable from a genuine zero-match run —
+`geocode_batch` never raises, it degrades every row to unmatched, so an operator
+would watch `0/5000 matched` scroll past for hours and conclude the addresses
+were bad. Exit codes: `0` wrote something, `1` resolved nothing, `2` the
+geocoder was unreachable and nothing was read or written.
+
+Census both has outages and refuses some datacenter egress ranges, and the two
+look identical from here (TCP connects, then the connection dies). If the
+preflight fails, retry first; if it persists, run from a residential connection
+or set `HTTPS_PROXY` to one. `--skip-preflight` forces a run anyway, since the
+probe hits a different endpoint than the batch API.
