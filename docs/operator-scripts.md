@@ -126,3 +126,15 @@ look identical from here (TCP connects, then the connection dies). If the
 preflight fails, retry first; if it persists, run from a residential connection
 or set `HTTPS_PROXY` to one. `--skip-preflight` forces a run anyway, since the
 probe hits a different endpoint than the batch API.
+
+**Census is intermittent, and the script is built around that.** The batch
+endpoint can fail while the preflight endpoint answers. A page that resolves
+NOTHING is retried in place — the cursor does not advance — because real data
+matches ~80-90%, so a whole batch resolving nothing is far more likely to be the
+endpoint than the addresses. After three attempts the run stops and exits 1,
+leaving the remaining rows queued for the next run. That matters at this scale:
+without it, one outage would walk the cursor through all 8.2M rows asking
+nothing and report 0% as though the addresses were unmatchable.
+
+Long runs should be detached (`docker compose run -d`), not held open by a shell
+whose timeout will SIGTERM them. Resuming is free, but eight hours is not.

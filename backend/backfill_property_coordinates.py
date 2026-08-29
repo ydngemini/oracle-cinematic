@@ -48,6 +48,10 @@ _CTX = TenantContext(
 
 _DEFAULT_BATCH = 5_000
 _MAX_BATCH = 10_000
+# A page this size resolving NOTHING is the endpoint, not the data.
+_OUTAGE_MIN_BATCH = 50
+_BATCH_ATTEMPTS = 3
+_BATCH_BACKOFF_SECONDS = 30
 
 
 def _preflight(timeout: float = 20.0) -> str | None:
@@ -150,6 +154,7 @@ async def run(
     geocoder = CensusGeocoder()
     cursor: str | None = None
     seen = written = unmatched = batches = 0
+    stopped_on_outage = False
 
     while True:
         async with tenant_tx(_CTX) as conn:
@@ -157,14 +162,49 @@ async def run(
         if not rows:
             break
 
+        addresses = [_one_line(r) for r in rows]
+
+        # Retry the SAME page rather than advancing past it. geocode_batch
+        # degrades a transport failure into "every row unmatched", and Census is
+        # intermittent — so an outage would otherwise walk the cursor through all
+        # 8.2M rows asking nothing, marking them seen, and reporting 0% as though
+        # the addresses were unmatchable. Real data matches ~90%, so a full batch
+        # resolving nothing is far more likely to be the endpoint than the data.
+        matched: list[tuple[str, float, float]] = []
+        results: list[dict] = []
+        for attempt in range(1, _BATCH_ATTEMPTS + 1):
+            results = await geocoder.geocode_batch(addresses)
+            matched = [
+                (str(row["id"]), float(result["lat"]), float(result["lng"]))
+                for row, result in zip(rows, results)
+                if result.get("matched")
+                and result.get("lat") is not None
+                and result.get("lng") is not None
+            ]
+            if matched or len(rows) < _OUTAGE_MIN_BATCH:
+                break
+            if attempt < _BATCH_ATTEMPTS:
+                backoff = _BATCH_BACKOFF_SECONDS * attempt
+                print(
+                    f"  batch {batches + 1}: 0 of {len(rows)} resolved — "
+                    f"retrying the same page in {backoff}s ({attempt}/{_BATCH_ATTEMPTS - 1})",
+                    flush=True,
+                )
+                await asyncio.sleep(backoff)
+
+        if not matched and len(rows) >= _OUTAGE_MIN_BATCH:
+            print(
+                f"!! {len(rows)} consecutive addresses resolved to nothing after "
+                f"{_BATCH_ATTEMPTS} attempts. Treating this as a geocoder outage "
+                f"rather than unmatchable data, and stopping so the remaining rows "
+                f"stay queued. Re-run to resume from here.",
+                file=sys.stderr,
+            )
+            stopped_on_outage = True
+            break
+
         cursor = str(rows[-1]["id"])
         seen += len(rows)
-        results = await geocoder.geocode_batch([_one_line(r) for r in rows])
-
-        matched: list[tuple[str, float, float]] = []
-        for row, result in zip(rows, results):
-            if result.get("matched") and result.get("lat") is not None and result.get("lng") is not None:
-                matched.append((str(row["id"]), float(result["lat"]), float(result["lng"])))
         unmatched += len(rows) - len(matched)
 
         if not dry_run:
@@ -192,7 +232,11 @@ async def run(
         flush=True,
     )
     # Unmatched rows are not failures — a demolished parcel or a rural route has
-    # no coordinate to find. Exit 0 unless nothing at all resolved.
+    # no coordinate to find. Stopping early on an outage IS a failure, and it has
+    # to be reported as one even when it happened on the first page: `not seen`
+    # would otherwise read an outage that resolved nothing as a clean no-op run.
+    if stopped_on_outage:
+        return 1
     return 0 if (written or not seen) else 1
 
 

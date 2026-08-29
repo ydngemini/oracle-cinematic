@@ -180,3 +180,62 @@ def test_a_reachable_geocoder_proceeds(monkeypatch):
 
     assert code == 0
     assert conn.written == [("a", 5.0, 6.0)]
+
+
+# ── outage vs unmatchable data ───────────────────────────────────────────────
+
+def test_an_outage_retries_the_same_page_and_then_stops(monkeypatch, capsys):
+    """A failing endpoint must not walk the cursor through the whole corpus.
+
+    geocode_batch degrades a transport failure into "every row unmatched", and
+    Census is intermittent. Advancing past a failed page would march through all
+    8.2M rows asking nothing, marking them seen, and reporting 0% as though the
+    addresses were unmatchable — an eight-hour no-op that looks like a finding.
+    """
+    page = [_row(str(i)) for i in range(60)]   # >= _OUTAGE_MIN_BATCH
+    conn = _Conn([page, page, page, page])
+    attempts = 0
+
+    class _DeadGeocoder:
+        async def geocode_batch(self, addresses):
+            nonlocal attempts
+            attempts += 1
+            return [{"matched": False, "lat": None, "lng": None} for _ in addresses]
+
+    @asynccontextmanager
+    async def tx(_ctx):
+        yield conn
+
+    real_sleep = asyncio.sleep
+
+    async def _no_pause(_seconds):
+        await real_sleep(0)
+
+    monkeypatch.setattr(backfill, "tenant_tx", tx)
+    monkeypatch.setattr(backfill.asyncio, "sleep", _no_pause)
+    monkeypatch.setattr(backfill, "CensusGeocoder", lambda: _DeadGeocoder())
+    monkeypatch.setattr(backfill, "_preflight", lambda *_a, **_k: None)
+
+    code = asyncio.run(backfill.run(state=None, batch_size=60, dry_run=False, limit_batches=None))
+
+    assert attempts == backfill._BATCH_ATTEMPTS, "the same page is retried, not skipped"
+    assert conn.claims == [(None, None, 60)], "the cursor never advanced past the failed page"
+    assert conn.written == []
+    assert code == 1
+    assert "geocoder outage" in capsys.readouterr().err
+
+
+def test_a_genuinely_unmatchable_short_page_is_not_mistaken_for_an_outage(monkeypatch):
+    """A handful of rural routes resolving to nothing is data, not an outage.
+
+    Below _OUTAGE_MIN_BATCH the zero-match signal is too weak to act on, so the
+    run continues rather than stopping on a tail page.
+    """
+    conn = _Conn([[_row("a"), _row("b")], []])
+    _install(monkeypatch, conn, [{"matched": False, "lat": None, "lng": None}] * 2)
+    monkeypatch.setattr(backfill, "_preflight", lambda *_a, **_k: None)
+
+    code = asyncio.run(backfill.run(state=None, batch_size=2, dry_run=False, limit_batches=None))
+
+    assert [c[0] for c in conn.claims] == [None, "b"], "a short page still advances"
+    assert code == 1  # resolved nothing overall, which is still worth a non-zero exit
