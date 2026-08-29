@@ -58,4 +58,17 @@ USER oracle
 EXPOSE 8000
 
 # Production default. docker-compose.yml overrides this to add --reload.
-CMD ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "8000"]
+#
+# --timeout-graceful-shutdown is not optional here. Shutdown waits on
+# request-level tasks — a WebSocket that never closes among them — and then on a
+# dozen sequential stop_*() awaits in server.py's lifespan, none of which is
+# bounded. Without a ceiling one stuck task hangs the process forever: observed
+# locally as "Waiting for background tasks to complete." with the app serving
+# nothing while still listening. On ECS that is a deploy or scale-in that stalls
+# while the task stays registered and healthy-looking in the target group.
+#
+# 30s is longer than any legitimate drain and shorter than the ALB
+# deregistration delay, so a task that will not stop is killed before the load
+# balancer stops sending it traffic.
+CMD ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "8000", \
+     "--timeout-graceful-shutdown", "30"]

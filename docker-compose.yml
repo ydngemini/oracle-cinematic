@@ -126,6 +126,7 @@ services:
         --port 8000
         --reload
         --reload-dir /app
+        --timeout-graceful-shutdown 10
 
   # ── Vite dev server (React frontend) ─────────────────────────────────────────
   # Runs `npm run dev` on the supported Node 24 LTS line. The container needs internet access
