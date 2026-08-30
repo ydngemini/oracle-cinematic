@@ -58,6 +58,17 @@ METRICS = frozenset({
     "ai_voice_minute",     # AI-handled call minutes
     "transaction_closed",  # a deal reached closed — the outcome-pricing unit
     "media_capture",       # a property capture landed (photo/video/splat/floorplan)
+    # Inference consumption, split because prompt and completion tokens are
+    # priced differently by every provider and summing them loses the ratio that
+    # decides whether a prompt or an answer is the expensive half.
+    #
+    # Requests were already capped (20/min/agent in rate_limiter) but SPEND was
+    # not, and nothing recorded it — so on a flat $299 plan the first sign of a
+    # runaway conversation would have been the provider invoice. Recording it
+    # while metered_billing_enabled is false is the point: the history has to
+    # exist before the pricing question can be answered honestly.
+    "ai_prompt_tokens",
+    "ai_completion_tokens",
 })
 
 # Only one metric maps to a Stripe meter today. The others accrue locally until a
@@ -67,6 +78,46 @@ _STRIPE_REPORTED = frozenset({"lead_engaged"})
 
 def metering_configured() -> bool:
     return bool(STRIPE_METERED_PRICE_ID)
+
+
+async def record_inference(
+    ctx: TenantContext,
+    response: Any,
+    *,
+    idempotency_key: str,
+) -> tuple[int, int]:
+    """Meter one model call's token consumption. Returns what was recorded.
+
+    Every inference path in the product funnels through here rather than each
+    one reaching for record_usage with its own metric name — the same reasoning
+    that puts every tool through a single dispatcher. A path that forgets to
+    meter is invisible, and invisible spend on a flat plan is the whole problem.
+
+    A call that reports no usage records nothing rather than a zero. Zero is a
+    real measurement — "this call cost nothing" — and a provider that simply
+    omits the field has not made that measurement.
+    """
+    from llm_gateway import token_usage_of
+
+    prompt_tokens, completion_tokens = token_usage_of(response)
+    if not (prompt_tokens or completion_tokens):
+        return (0, 0)
+
+    if prompt_tokens:
+        await record_usage(
+            ctx,
+            metric="ai_prompt_tokens",
+            quantity=prompt_tokens,
+            idempotency_key=f"{idempotency_key}:prompt",
+        )
+    if completion_tokens:
+        await record_usage(
+            ctx,
+            metric="ai_completion_tokens",
+            quantity=completion_tokens,
+            idempotency_key=f"{idempotency_key}:completion",
+        )
+    return (prompt_tokens, completion_tokens)
 
 
 async def record_usage(

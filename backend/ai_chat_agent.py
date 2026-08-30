@@ -24,6 +24,7 @@ from ai_chat_store import (
 )
 from automation_jobs import JobReporter, register_handler
 from memory_core.session_manager import SessionManager
+from billing_usage import record_inference
 from tenancy import Role, TenantContext
 
 logger = logging.getLogger("oracle.ai_chat")
@@ -722,9 +723,13 @@ async def _foundry_generate(
     context_type = bundle["assistant"].get("context_type")
     context_id = str(bundle["assistant"].get("context_id") or "") or None
     response = await asyncio.to_thread(_foundry_response, input_items, context_type)
+    # Metered at every model call, not once per turn: a turn that runs tools
+    # calls the model again for each round, and those rounds carry the whole
+    # conversation plus every tool receipt so far. They are the expensive half.
+    await record_inference(ctx, response, idempotency_key=f"chat:{assistant_id}:foundry:0")
     actions: list[dict] = applied if applied is not None else []
 
-    for _ in range(2):
+    for round_index in range(2):
         tool_calls = [item for item in response.output if item.type == "function_call"]
         if not tool_calls:
             content = response.output_text.strip()
@@ -754,6 +759,9 @@ async def _foundry_generate(
         ]
         response = await asyncio.to_thread(
             _foundry_response, input_items + prior_output + tool_outputs, context_type
+        )
+        await record_inference(
+            ctx, response, idempotency_key=f"chat:{assistant_id}:foundry:{round_index + 1}"
         )
     raise RuntimeError("The assistant exceeded the safe tool-call limit")
 

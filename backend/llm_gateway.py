@@ -283,6 +283,44 @@ def _text_of(response: Any) -> str:
     return (content or "").strip()
 
 
+def token_usage_of(response: Any) -> tuple[int, int]:
+    """(prompt_tokens, completion_tokens) from any provider response shape.
+
+    Exists for the same reason as `_text_of`: three call paths reach three
+    different APIs and none of them agrees on the field names. The Responses API
+    says input_tokens/output_tokens, Chat Completions says
+    prompt_tokens/completion_tokens, and a local llama.cpp server may say
+    neither. A caller that guessed one shape would silently meter zero against
+    the others, which is worse than not metering at all — it would look like the
+    spend was measured.
+
+    Returns (0, 0) rather than raising when usage is absent. Failing to record
+    consumption must never fail the request that consumed it.
+    """
+    usage = getattr(response, "usage", None)
+    if usage is None and isinstance(response, dict):
+        usage = response.get("usage")
+    if usage is None:
+        return (0, 0)
+
+    def _field(*names: str) -> int:
+        for name in names:
+            value = (
+                usage.get(name) if isinstance(usage, dict) else getattr(usage, name, None)
+            )
+            if value is not None:
+                try:
+                    return max(0, int(value))
+                except (TypeError, ValueError):
+                    return 0
+        return 0
+
+    return (
+        _field("prompt_tokens", "input_tokens"),
+        _field("completion_tokens", "output_tokens"),
+    )
+
+
 def warm() -> bool:
     """Import litellm now so no live request pays for it.
 

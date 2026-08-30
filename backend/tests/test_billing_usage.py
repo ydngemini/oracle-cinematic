@@ -181,10 +181,12 @@ def test_metering_configured_reflects_the_env(monkeypatch):
 
 
 def test_the_metric_vocabulary_matches_the_migration_check():
-    # Keep this list in step with 0067's CHECK constraint. If they drift, the
-    # first symptom is a production 500 on an INSERT that passed local validation.
+    # Keep this list in step with the CHECK constraint — 0067 created it, 0084
+    # widened it for the token metrics. If they drift, the first symptom is a
+    # production 500 on an INSERT that passed local validation.
     assert METRICS == {
         "lead_engaged", "ai_voice_minute", "transaction_closed", "media_capture",
+        "ai_prompt_tokens", "ai_completion_tokens",
     }
 
 
