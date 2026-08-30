@@ -350,6 +350,50 @@ async def _source_health_probe_task() -> dict:
     return outcome
 
 
+async def _property_coordinate_backfill_task() -> dict:
+    """Resolve coordinates for public records that have an address and no point.
+
+    Sibling of the characteristics backfill below, and constrained the same way:
+    it writes only to the shared public catalog and never invents a fact. The
+    difference is why it must be periodic rather than a one-off script.
+
+    Only 4.3% of 8.59M records carried a coordinate, so the map had nothing to
+    plot and the radius comps search — which migration 0076 built an index for —
+    could see 4% of the corpus. The Census batch geocoder is keyless and free,
+    and it is also intermittent: it returned 89.9% on Delaware, refused every
+    request minutes later, then recovered. A bulk run therefore stops partway
+    through by design rather than walking its cursor over rows it never asked
+    about. Running on a schedule is what turns "stops on an outage" from
+    something an operator has to notice into something that resolves itself.
+
+    Each pass is deliberately small. The point is to converge over days without
+    ever being the reason a Census endpoint is unhappy.
+    """
+    batches = max(1, min(20, int(os.getenv("ORACLE_GEOCODE_BATCHES_PER_RUN", "4"))))
+    size = max(100, min(10_000, int(os.getenv("ORACLE_GEOCODE_BATCH_SIZE", "2000"))))
+    try:
+        from backfill_property_coordinates import run as geocode_run
+    except Exception as exc:  # noqa: BLE001
+        return {"skipped": f"backfill import failed: {exc}"}
+
+    code = await geocode_run(
+        state=os.getenv("ORACLE_GEOCODE_STATE") or None,
+        batch_size=size,
+        dry_run=False,
+        limit_batches=batches,
+        # The scheduler is the retry. A preflight failure here would just be a
+        # slower version of the outage stop that run() already handles, and it
+        # would cost an extra request to a service that is already struggling.
+        skip_preflight=True,
+    )
+    outcome = {"exit_code": code, "batches": batches, "batch_size": size}
+    if code != 0:
+        # Not an error worth alerting on: an outage or a fully-geocoded corpus
+        # both land here, and the next pass settles which.
+        outcome["_terminal_state"] = "partial"
+    return outcome
+
+
 async def _property_characteristics_backfill_task() -> dict:
     """Revisit public sources to populate source-published property facts.
 
@@ -711,6 +755,14 @@ def build_default_scheduler() -> PeriodicScheduler:
         6.0,
         float(os.getenv("ORACLE_PROPERTY_FACT_BACKFILL_INTERVAL_HOURS", "6")),
     )
+    # Hourly by default: small passes that converge over days, and that pick
+    # themselves up after a Census outage without anyone watching.
+    sched.register(PeriodicTask(
+        name="property_coordinate_backfill",
+        interval_s=float(os.getenv("ORACLE_GEOCODE_INTERVAL_H", "1")) * 3600,
+        run=_property_coordinate_backfill_task,
+        enabled=os.getenv("ORACLE_GEOCODE_BACKFILL_ENABLED", "1") == "1",
+    ))
     sched.register(PeriodicTask(
         name="property_characteristics_backfill",
         interval_s=fact_interval_h * 3600,

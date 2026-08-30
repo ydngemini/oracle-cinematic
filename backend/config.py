@@ -333,6 +333,17 @@ ENV_VARS: dict[str, tuple[str, ...]] = {
         "ORACLE_MARKET_AI_SUPERVISOR_TIMEOUT_SECONDS", "AZURE_CLIENT_ID",
     ),
     "federal_sources": ("GOVINFO_API_KEY", "DATA_GOV_API_KEY"),
+    # Coordinate backfill. Only 4.3% of 8.59M public records carried a point, so
+    # the map had nothing to plot and the radius comps search could see 4% of the
+    # corpus. The Census batch geocoder is keyless but intermittent, which is why
+    # this runs on a schedule in small passes rather than as one long job.
+    "geocode": (
+        "ORACLE_GEOCODE_BACKFILL_ENABLED",   # "1" (default) enables the periodic task
+        "ORACLE_GEOCODE_INTERVAL_H",         # hours between passes (default 1)
+        "ORACLE_GEOCODE_BATCHES_PER_RUN",    # pages per pass, clamped 1..20 (default 4)
+        "ORACLE_GEOCODE_BATCH_SIZE",         # addresses per page, clamped 100..10000 (default 2000)
+        "ORACLE_GEOCODE_STATE",              # optional two-letter code to restrict a pass
+    ),
     "commands": (
         "ORACLE_PUBLIC_BASE_URL", "ORACLE_SES_FROM_EMAIL",
         "GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "GOOGLE_OAUTH_REDIRECT_URI",
