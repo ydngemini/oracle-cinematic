@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { Suspense, lazy, useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ArrowUpRight,
   BriefcaseBusiness,
@@ -15,6 +15,8 @@ import { useAssistant } from './AssistantContext';
 import { normalizeThread } from './CommsShared';
 import { PanelDataStatus } from './PanelDataStatus';
 import styles from './TodayTab.module.css';
+
+const MarketSnapshot = lazy(() => import('./MarketSnapshot'));
 
 const integer = new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 });
 
@@ -295,6 +297,12 @@ export default function TodayTab({ onNavigate }) {
         <span aria-hidden="true">/</span>
         <strong>{integer.format(approvalCount)}</strong> approvals
       </p>
+
+      {/* Above first-response: a brand-new broker has no response history and no
+          deals, so this is the first section on the page with anything in it. */}
+      <Suspense fallback={null}>
+        <MarketSnapshot />
+      </Suspense>
 
       {firstResponse.data?.enabled ? (
         <section className={styles.responseStrip} aria-labelledby="first-response-title">

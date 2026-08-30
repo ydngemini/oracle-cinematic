@@ -1,9 +1,9 @@
 {
   "// note": "Ceilings, not targets. Lower deliberately; raise only with a stated reason.",
-  "// raised-2026-08-28": "+2.2 KB gzip. One screen: IntelligenceAuthoring, the first caller of GET /api/intelligence/sources. Thirteen intelligence routes were unreachable through the product because every POST requires a source_record_id resolvable against the immutable source_records table and NOTHING listed that table \u2014 the form could be filled in and never submitted. It is a lazy route chunk under DossierPanel, so the main bundle is unchanged and largestChunkBytes did not move; the growth is the new chunk plus the distress-signal vocabulary now served from the engine rather than hardcoded.",
-  "// largest": "src-Dj_51OAc.js",
+  "// raised-2026-08-29": "+3.9 KB raw. One screen: MarketSnapshot, which closes the first-value gap \u2014 OnboardingGate asked a new broker which ZIPs they work and NOTHING read them back, so a broker answered a wizard about their market and then faced an app with zero leads, zero clients and zero listings. It reuses mls_pipeline_search (already ~80ms) and adds no backend route. Lazy under TodayTab, so the main bundle is unchanged and a broker with no ZIPs never loads it.",
+  "// largest": "src-Cm6WmJGk.js",
   "largestChunkBytes": 2325752,
-  "largestChunkGzipBytes": 591588,
-  "totalBytes": 3932430,
-  "totalGzipBytes": 1090660
+  "largestChunkGzipBytes": 591589,
+  "totalBytes": 3936420,
+  "totalGzipBytes": 1092668
 }

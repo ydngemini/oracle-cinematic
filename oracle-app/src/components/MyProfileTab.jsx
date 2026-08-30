@@ -4,6 +4,7 @@ import { getTenantId, getUserId } from '../state/identity';
 import { LicenseStatusWidget } from './LicenseStatusWidget';
 import { HarvestControl } from './HarvestControl';
 import { BrokerageOnboardingPanel } from './BrokerageOnboardingPanel';
+import { toMarkets } from '../lib/targetMarkets';
 import styles from './MyProfileTab.module.css';
 
 // Inline stroke glyphs — same idiom as TabBar GLYPHS, zero icon deps.
@@ -53,13 +54,6 @@ function toFormState(profile) {
     next[k] = v == null ? '' : String(v);
   }
   return next;
-}
-
-// target_markets may land as an array or a comma-separated string — never trust shape.
-function toMarkets(v) {
-  if (Array.isArray(v)) return v.map((m) => String(m).trim()).filter(Boolean);
-  if (typeof v === 'string') return v.split(',').map((m) => m.trim()).filter(Boolean);
-  return [];
 }
 
 function toText(v) {
