@@ -519,6 +519,66 @@ async def _prebuild_indexes(conn, files: list[str]) -> int:
     return 0
 
 
+
+async def _seed_missing_statistics(conn) -> int:
+    """ANALYZE tables the planner has no statistics for.
+
+    Autovacuum decides what to work on from n_live_tup, so a freshly loaded
+    table whose statistics still say "0 rows" never crosses the scale-factor
+    threshold, is never analyzed, and its statistics stay at 0. That state
+    sustains itself indefinitely — autovacuum being "on" does not rescue it.
+
+    Measured on the dev database before this existed: `leads` reported 0 live
+    tuples against 8,497,050 real ones, `public_property_records` reported 4,941
+    against 8,636,097, and last_vacuum/last_autovacuum were NULL on every large
+    table. The planner then chose against every index on the biggest tables in
+    the system: get_team_pipeline (0093) kept a 13.3s sequential scan even with
+    a purpose-built covering index present, and the pool's 30s command_timeout
+    turned that into an AI tool that simply failed for the broker.
+
+    Only tables with NO statistics at all are touched, so this is expensive
+    exactly once — after the initial load — and a no-op on every later deploy.
+    Failure is logged and swallowed: statistics are a performance property, and
+    refusing to finish a schema migration over them would be the worse trade.
+    """
+    try:
+        rows = await conn.fetch(
+            """
+            SELECT c.relname
+              FROM pg_stat_user_tables s
+              JOIN pg_class c ON c.oid = s.relid
+             WHERE s.last_analyze IS NULL
+               AND s.last_autoanalyze IS NULL
+               AND c.reltuples <= 0
+            """
+        )
+    except Exception:  # noqa: BLE001 - see docstring
+        logger_print("!! could not read planner statistics; skipping ANALYZE")
+        return 0
+
+    if not rows:
+        return 0
+    names = [r["relname"] for r in rows]
+    print(
+        f">> seeding planner statistics for {len(names)} table(s) with none: "
+        f"{', '.join(names[:6])}{'…' if len(names) > 6 else ''}",
+        flush=True,
+    )
+    seeded = 0
+    for name in names:
+        try:
+            await conn.execute(f'ANALYZE "{name}"')
+            seeded += 1
+        except Exception as exc:  # noqa: BLE001
+            print(f"   ANALYZE {name} failed ({exc}); continuing", flush=True)
+    print(f">> statistics seeded for {seeded} table(s)", flush=True)
+    return seeded
+
+
+def logger_print(message: str) -> None:
+    print(message, flush=True)
+
+
 def _strip_outer_transaction(sql: str) -> str:
     """Remove a migration's standalone BEGIN/COMMIT wrapper, if present.
 
@@ -645,6 +705,10 @@ async def _run_migrations(conn, files: list[str]) -> int:
 
             print(f">> applied {name}", flush=True)
             processed += 1
+
+        # After the schema is current and before traffic. Only touches tables
+        # that have no statistics at all, so it is expensive once and free after.
+        await _seed_missing_statistics(conn)
 
         app_password = os.environ.get("ORACLE_DB_APP_PASSWORD", "")
         if app_password:
