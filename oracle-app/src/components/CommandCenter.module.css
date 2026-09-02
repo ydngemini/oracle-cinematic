@@ -52,7 +52,7 @@
 
 .ribbonValue {
   font: 600 var(--text-xl) / 1 var(--font-mono);
-  color: var(--oracle-gold);
+  color: var(--oracle-accent-ink);
   font-variant-numeric: tabular-nums;
 }
 
@@ -95,7 +95,7 @@
 .portfolioValue {
   margin: 0;
   font: 600 var(--text-3xl, 2rem) / 1 var(--font-mono);
-  color: var(--oracle-gold);
+  color: var(--oracle-accent-ink);
   font-variant-numeric: tabular-nums;
   letter-spacing: -0.02em;
 }
@@ -134,7 +134,7 @@
   padding: 3px 7px;
   border-radius: var(--radius-sm);
   background: var(--oracle-amber-ghost);
-  color: var(--oracle-amber-bright);
+  color: var(--oracle-accent-ink);
   font-variant-numeric: tabular-nums;
 }
 
@@ -349,7 +349,7 @@
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  color: var(--oracle-gold);
+  color: var(--oracle-accent-ink);
   margin-bottom: var(--space-3);
 }
 .twinHead .sectionHeading { margin: 0; }

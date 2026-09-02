@@ -17,7 +17,7 @@
 .hero > div { max-width: 37rem; }
 
 .kicker {
-  color: var(--oracle-amber);
+  color: var(--oracle-accent-ink);
   font: 650 0.625rem/1.2 var(--font-display);
   letter-spacing: var(--tracking-widest);
   text-transform: uppercase;
@@ -130,7 +130,7 @@
 .actions li:first-child { border-top: 0; }
 
 .rank {
-  color: var(--oracle-amber);
+  color: var(--oracle-accent-ink);
   font: 650 0.625rem/1 var(--font-mono);
   letter-spacing: var(--tracking-wide);
 }
@@ -149,7 +149,7 @@
 }
 
 .actions small {
-  color: var(--oracle-amber-dim);
+  color: var(--oracle-accent-ink);
   font: 650 0.5625rem/1.2 var(--font-display);
   letter-spacing: var(--tracking-wider);
   text-transform: uppercase;
@@ -180,7 +180,7 @@
   align-items: center;
   gap: var(--space-2);
   padding: 0 var(--space-3);
-  color: var(--oracle-amber);
+  color: var(--oracle-accent-ink);
   background: transparent;
   font: 650 0.625rem/1 var(--font-display);
   letter-spacing: var(--tracking-wide);

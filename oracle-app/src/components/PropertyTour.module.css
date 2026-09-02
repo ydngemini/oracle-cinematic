@@ -50,7 +50,7 @@
   font-weight: 600;
   letter-spacing: var(--tracking-widest);
   text-transform: uppercase;
-  color: var(--oracle-amber-dim);
+  color: var(--oracle-accent-ink);
   padding: var(--space-1) var(--space-2);
   border: 1px solid var(--oracle-amber-ghost);
   border-radius: var(--radius-pill);
@@ -76,7 +76,7 @@
 }
 
 .tierBadge[data-walkable] {
-  color: var(--oracle-amber);
+  color: var(--oracle-accent-ink);
   border-color: var(--oracle-amber);
   background: var(--oracle-amber-ghost);
 }
@@ -280,7 +280,7 @@
 
 .ctrlBtn:hover {
   background: var(--oracle-amber-ghost);
-  color: var(--oracle-amber);
+  color: var(--oracle-accent-ink);
   box-shadow: var(--shadow-amber);
 }
 

@@ -120,7 +120,7 @@
 
 .levelActive {
   background: var(--oracle-glass-active);
-  color: var(--oracle-gold);
+  color: var(--oracle-accent-ink);
   font-weight: 600;
 }
 

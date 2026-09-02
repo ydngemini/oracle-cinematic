@@ -20,7 +20,7 @@
 .manualForm > div > span,
 .dialogHead span {
   display: block;
-  color: var(--oracle-amber-dim);
+  color: var(--oracle-accent-ink);
   font: 600 var(--text-xs)/1 var(--font-mono);
   letter-spacing: var(--tracking-widest);
   text-transform: uppercase;
@@ -92,7 +92,7 @@
 
 .iconButton:hover:not(:disabled),
 .dialogHead button:hover {
-  color: var(--oracle-amber);
+  color: var(--oracle-accent-ink);
   border-color: var(--oracle-amber-dim);
 }
 
@@ -156,7 +156,7 @@
   width: 17px;
   height: 17px;
   flex: none;
-  color: var(--oracle-amber-dim);
+  color: var(--oracle-accent-ink);
 }
 
 .searchField input,
@@ -227,7 +227,7 @@
 
 .secondaryButton:hover:not(:disabled),
 .pagination button:hover:not(:disabled) {
-  color: var(--oracle-amber);
+  color: var(--oracle-accent-ink);
   border-color: var(--oracle-amber-dim);
 }
 
@@ -326,7 +326,7 @@
   height: 40px;
   display: grid;
   place-items: center;
-  color: var(--oracle-amber-dim);
+  color: var(--oracle-accent-ink);
   border: 1px solid var(--oracle-amber-ghost);
 }
 
@@ -376,7 +376,7 @@
 
 .recordCard[data-selected] .recordGlyph,
 .recordCard[data-selected] .recordMeta {
-  color: var(--oracle-amber);
+  color: var(--oracle-accent-ink);
 }
 
 .skeleton {
@@ -423,7 +423,7 @@
   width: 24px;
   height: 24px;
   margin-bottom: var(--space-2);
-  color: var(--oracle-amber-dim);
+  color: var(--oracle-accent-ink);
 }
 
 .pagination {
@@ -502,12 +502,12 @@
   width: 48px;
   height: 48px;
   margin-bottom: auto;
-  color: var(--oracle-amber-dim);
+  color: var(--oracle-accent-ink);
   stroke-width: 1;
 }
 
 .workspaceEmpty > span {
-  color: var(--oracle-amber-dim);
+  color: var(--oracle-accent-ink);
   font: 600 var(--text-xs)/1 var(--font-mono);
   letter-spacing: var(--tracking-widest);
   text-transform: uppercase;
@@ -536,7 +536,7 @@
   align-items: center;
   min-height: 26px;
   padding: 0 var(--space-2);
-  color: var(--oracle-amber);
+  color: var(--oracle-accent-ink);
   border: 1px solid var(--oracle-amber-dim);
   text-transform: uppercase;
 }
@@ -559,7 +559,7 @@
 .workspaceTitle > svg {
   width: 24px;
   height: 24px;
-  color: var(--oracle-amber);
+  color: var(--oracle-accent-ink);
 }
 
 .workspaceTitle h2 {
@@ -630,7 +630,7 @@
 .provenance svg {
   width: 20px;
   height: 20px;
-  color: var(--oracle-amber-dim);
+  color: var(--oracle-accent-ink);
 }
 
 .provenance div {
@@ -766,7 +766,7 @@
   height: 36px;
   display: grid;
   place-items: center;
-  color: var(--oracle-amber-dim);
+  color: var(--oracle-accent-ink);
   border: 1px solid var(--oracle-glass-edge);
 }
 

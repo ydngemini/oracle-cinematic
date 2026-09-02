@@ -17,7 +17,7 @@
 .hero > div { max-width: 39rem; }
 
 .kicker {
-  color: var(--oracle-amber);
+  color: var(--oracle-accent-ink);
   font: 650 0.625rem/1.2 var(--font-display);
   letter-spacing: var(--tracking-widest);
   text-transform: uppercase;

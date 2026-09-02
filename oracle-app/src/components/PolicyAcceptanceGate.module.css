@@ -36,7 +36,7 @@
 
 .eyebrow,
 .version {
-  color: var(--oracle-amber-dim);
+  color: var(--oracle-accent-ink);
   font-family: var(--font-display);
   font-size: var(--text-xs);
   font-weight: 600;
@@ -82,7 +82,7 @@
 }
 
 .policyHeader p {
-  color: var(--oracle-amber-dim);
+  color: var(--oracle-accent-ink);
   font-family: var(--font-display);
   font-size: var(--text-xs);
   font-weight: 600;
@@ -153,7 +153,7 @@
 .primary {
   border: 1px solid var(--oracle-amber-dim);
   background: var(--oracle-amber-ghost);
-  color: var(--oracle-amber-bright);
+  color: var(--oracle-accent-ink);
 }
 
 .primary:hover:not(:disabled),

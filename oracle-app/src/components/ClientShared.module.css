@@ -22,7 +22,7 @@
 .avatar[data-size='lg'] { width: 52px; height: 52px; font-size: var(--text-base); }
 
 .avatar[data-tint='seller'] {
-  color: var(--oracle-amber);
+  color: var(--oracle-accent-ink);
   border-color: var(--oracle-amber-dim);
   box-shadow: 0 0 12px var(--oracle-amber-glow);
 }
@@ -34,7 +34,7 @@
 }
 
 .avatar[data-tint='both'] {
-  color: var(--oracle-amber);
+  color: var(--oracle-accent-ink);
   border-color: var(--oracle-blue-dim);
   box-shadow:
     0 0 10px var(--oracle-amber-glow),
@@ -73,7 +73,7 @@
   background: color-mix(in srgb, var(--oracle-blue) 8%, transparent);
 }
 .stagePill[data-stage='active'] {
-  color: var(--oracle-amber);
+  color: var(--oracle-accent-ink);
   border-color: var(--oracle-amber-dim);
   background: var(--oracle-amber-ghost);
 }

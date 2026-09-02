@@ -116,7 +116,7 @@
   align-items: center;
   gap: 5px;
   padding: 3px 7px;
-  color: var(--oracle-amber);
+  color: var(--oracle-accent-ink);
   background: var(--oracle-amber-ghost);
   font: 650 0.5625rem/1 var(--font-display);
   letter-spacing: var(--tracking-wide);

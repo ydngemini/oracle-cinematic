@@ -26,7 +26,7 @@
   width: 14px;
   height: 14px;
   display: flex;
-  color: var(--oracle-amber-dim);
+  color: var(--oracle-accent-ink);
 }
 
 .pillLabel {
@@ -100,7 +100,7 @@
 .stateBtnActive {
   background: var(--oracle-amber-ghost);
   border-color: var(--oracle-amber-dim);
-  color: var(--oracle-amber);
+  color: var(--oracle-accent-ink);
 }
 
 .footer {
@@ -133,5 +133,5 @@
 
 .footerCount {
   font: var(--text-xs) / 1 var(--font-sans);
-  color: var(--oracle-amber-dim);
+  color: var(--oracle-accent-ink);
 }

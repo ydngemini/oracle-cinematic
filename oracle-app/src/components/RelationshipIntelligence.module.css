@@ -115,7 +115,7 @@
 .readingScore {
   margin: 0;
   font: 600 var(--text-2xl) / 1 var(--font-mono);
-  color: var(--oracle-gold);
+  color: var(--oracle-accent-ink);
   font-variant-numeric: tabular-nums;
 }
 

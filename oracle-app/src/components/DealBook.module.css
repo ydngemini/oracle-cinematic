@@ -16,7 +16,7 @@
   font-size: var(--text-xs);
   letter-spacing: var(--tracking-widest);
   text-transform: uppercase;
-  color: var(--oracle-amber-dim);
+  color: var(--oracle-accent-ink);
 }
 
 .panelHeader h2 {
@@ -42,7 +42,7 @@
 }
 
 .refresh:hover {
-  color: var(--oracle-amber);
+  color: var(--oracle-accent-ink);
   background: var(--oracle-glass-hover);
 }
 
@@ -145,7 +145,7 @@
 }
 
 .state[data-status='under_contract'] {
-  color: var(--oracle-amber);
+  color: var(--oracle-accent-ink);
   border-color: var(--oracle-amber-dim);
 }
 
