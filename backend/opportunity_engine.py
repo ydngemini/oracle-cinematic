@@ -125,7 +125,11 @@ async def perception_coverage(ctx: TenantContext) -> dict[str, Any]:
     async with tenant_tx(ctx) as conn:
         rows = await conn.fetch(
             """
-            SELECT interaction_type, count(*)::int AS n
+            SELECT interaction_type, count(*)::int AS n,
+                   count(*) FILTER (WHERE client_id IS NULL)::int AS unattributed,
+                   count(*) FILTER (
+                       WHERE actor_role IN ('buyer', 'seller')
+                   )::int AS client_originated
               FROM interaction_logs
              WHERE tenant_id = $1::uuid
              GROUP BY 1
@@ -160,6 +164,23 @@ async def perception_coverage(ctx: TenantContext) -> dict[str, Any]:
 
     by_type = {r["interaction_type"]: r["n"] for r in rows}
     total = sum(by_type.values())
+
+    # Two different reasons a captured event still fails to become intent, and
+    # they have different owners, so they are counted apart.
+    #
+    # UNATTRIBUTED: the row is anchored to a parcel but names no person, which
+    # happens when a portal link was opened before its lead was tied to a
+    # client. 0096 stamps client_id at write time and backfilled what existed;
+    # anything left is a CRM linkage gap somebody can go and fix.
+    #
+    # AGENT-ORIGINATED: the row is the brokerage's own activity. It is
+    # deliberately excluded from every intent reading — counting it would
+    # measure how busy the agent has been and report it as how interested the
+    # client is — so it inflates the raw signal count without ever moving a
+    # score. Reporting the split stops "we have 400 events and no intent" from
+    # looking like a broken model.
+    unattributed = sum(r["unattributed"] for r in rows)
+    client_originated = sum(r["client_originated"] for r in rows)
     # Named distinctly on purpose: `scored` already means "clients with an
     # intent model" ten lines up, and reusing it reported 5,252 clients where
     # there are five.
@@ -170,13 +191,16 @@ async def perception_coverage(ctx: TenantContext) -> dict[str, Any]:
         "high_motivation_actionable": motivated_actionable,
         "high_motivation_unreachable": max(0, motivated_total - motivated_actionable),
         "interaction_signals": total,
+        "client_originated_signals": client_originated,
+        "agent_originated_signals": total - client_originated,
+        "unattributed_signals": unattributed,
         "by_type": by_type,
         "clients": clients or 0,
         "clients_with_intent_model": scored or 0,
         # The behavioural detectors need a stream, not a trickle. Naming the
         # threshold means the UI can explain the silence instead of implying
         # there was nothing to find.
-        "behavioural_detectors_active": total >= 50,
+        "behavioural_detectors_active": client_originated >= 50,
         "note": (
             "Behavioural detectors stay silent until interaction_logs carries a "
             "real stream. The schema supports it (portal_view, email, message); "

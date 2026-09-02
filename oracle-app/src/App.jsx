@@ -9,6 +9,7 @@ import { SitePreview } from './components/SitePreview';
 // Unauthenticated client capture page — the token in the URL is the whole
 // capability, so this route deliberately renders outside the auth shell.
 const PropertyUploadPage = lazy(() => import('./components/PropertyUploadPage'));
+const SecureDossierPage = lazy(() => import('./components/SecureDossierPage'));
 
 function useJarvisVoice() {
   const { dispatch } = useOracleDispatch();
@@ -151,12 +152,23 @@ function App() {
   const isReelRoute = window.location.pathname === '/reel' || window.location.pathname.startsWith('/reel/');
   const isSitePreviewRoute = window.location.pathname.startsWith('/site-preview/');
   const isPropertyUploadRoute = window.location.pathname.startsWith('/property-upload/');
+  // The homeowner's dossier. The backend has served this since 0008 and the
+  // agent UI has been minting links to it, but no route consumed them — every
+  // dossier link issued before this landed on the agent application instead.
+  const isSecureDossierRoute = window.location.pathname.startsWith('/vault/secure-access/');
   if (isReelRoute) return <ReelExperience />;
   if (isSitePreviewRoute) return <SitePreview />;
   if (isPropertyUploadRoute) {
     return (
       <Suspense fallback={null}>
         <PropertyUploadPage />
+      </Suspense>
+    );
+  }
+  if (isSecureDossierRoute) {
+    return (
+      <Suspense fallback={null}>
+        <SecureDossierPage />
       </Suspense>
     );
   }

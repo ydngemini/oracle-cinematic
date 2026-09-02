@@ -303,3 +303,118 @@ def test_unscored_client_with_behaviour_reports_behaviour_only():
     observed = intent_states._observed_reading(
         {"listing_view": 4, "showing_request": 1, "calculator_use": 1}, NOW)
     assert intent_states._reconcile(declared, observed)["verdict"] == "behaviour_only"
+
+
+# ── perception producers ────────────────────────────────────────────────────
+
+def test_only_client_originated_actors_count_as_intent():
+    """The filter that keeps the observed score meaningful.
+
+    interaction_logs is shared: crm.py writes actor_role='agent' for every
+    outbound message. Counting those would measure how busy the agent has been
+    and report it as how interested the client is — silently, on every client
+    they touch.
+    """
+    assert set(intent_states.CLIENT_ACTORS) == {"buyer", "seller"}
+    assert "agent" not in intent_states.CLIENT_ACTORS
+    assert "ai_system" not in intent_states.CLIENT_ACTORS
+
+
+def test_portal_payload_is_narrowed_not_stored_wholesale():
+    """The portal body is client-controlled and feeds an intent model.
+
+    An open event sink fills with whatever a future frontend sends and stops
+    meaning anything, so only known keys survive and each is length-capped.
+    """
+    import client_portal
+
+    cleaned = client_portal._clean_portal_payload({
+        "asset": "deed.pdf",
+        "section": "title",
+        "tracking_blob": "x" * 10_000,
+        "nested": {"a": 1},
+        "asset_id": 42,
+    })
+    assert cleaned == {"asset": "deed.pdf", "asset_id": "42", "section": "title"}
+    assert all(len(v) <= 120 for v in cleaned.values())
+
+
+def test_portal_payload_survives_a_hostile_body():
+    """None, lists and scalars must not raise on a public-facing path."""
+    import client_portal
+
+    for hostile in (None, [], "string", 7, {"asset": {"deep": "object"}}):
+        assert client_portal._clean_portal_payload(hostile) == {} or isinstance(
+            client_portal._clean_portal_payload(hostile), dict)
+
+
+def test_joint_venture_portals_record_a_buyer_not_a_seller():
+    """resolve_portal_token has always derived actor_role from link_kind.
+
+    The Python writer has to agree with it, or the same person's activity
+    carries two different actor_roles depending on which path recorded it —
+    and one of those paths would then be excluded from their own intent.
+    """
+    import client_portal
+
+    assert client_portal.PORTAL_EVENTS, "the event allowlist must not be empty"
+    # The rule itself, kept next to the SQL it mirrors.
+    def actor(link_kind):
+        return "buyer" if link_kind == "joint_venture" else "seller"
+
+    assert actor("joint_venture") == "buyer"
+    assert actor("dossier") == "seller"
+    assert actor(None) == "seller"
+
+
+def test_portal_view_cooldown_is_long_enough_to_swallow_a_refresh():
+    """Without it, one left-open tab manufactures engagement.
+
+    The observed score weights repeats, so an uncollapsed reconnect loop would
+    climb on its own — confidently wrong, which is worse than uncaptured.
+    """
+    import client_portal
+    from datetime import timedelta as _td
+
+    assert client_portal.PORTAL_VIEW_COOLDOWN >= _td(minutes=5)
+    assert client_portal.PORTAL_VIEW_COOLDOWN <= _td(hours=1)
+
+
+def test_portal_view_cooldown_matches_the_sql_that_enforces_it():
+    """The guard lives in resolve_portal_token(), not in Python.
+
+    The Python constant existed first and was enforcing nothing, because the
+    path that fires on a page load is the SQL function — a real browser session
+    produced nine rows in ninety seconds through it. If the two intervals drift,
+    the Python path starts admitting rows the SQL path would collapse, and the
+    inflation comes back on whichever route someone happens to add next.
+    """
+    import re
+    from pathlib import Path
+
+    import client_portal
+
+    migration = Path(__file__).resolve().parents[1] / "db" / "migrations" / \
+        "0097_portal_view_refresh_is_not_a_visit.sql"
+    sql = migration.read_text()
+
+    guard = re.search(
+        r"interaction_type = 'portal_view'\s*\n\s*AND il\.created_at > now\(\) "
+        r"- interval '(\d+) minutes'", sql)
+    assert guard, "the NOT EXISTS cooldown is missing from resolve_portal_token"
+    assert int(guard.group(1)) * 60 == client_portal.PORTAL_VIEW_COOLDOWN.total_seconds()
+
+
+def test_access_bookkeeping_is_not_collapsed_with_the_behavioural_row():
+    """access_count answers a security question, not an engagement one.
+
+    An agent checking whether a withdrawn link is still being hit needs the true
+    number of resolutions, so only the intent-bearing row is deduplicated.
+    """
+    from pathlib import Path
+
+    sql = (Path(__file__).resolve().parents[1] / "db" / "migrations" /
+           "0097_portal_view_refresh_is_not_a_visit.sql").read_text()
+    hit_clause = sql.split("WITH hit AS")[1].split("),")[0]
+    assert "access_count = cp.access_count + 1" in hit_clause
+    assert "NOT EXISTS" not in hit_clause, "the cooldown must not gate access accounting"

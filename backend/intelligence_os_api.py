@@ -71,6 +71,11 @@ class PerceptionEvent(BaseModel):
     ]
     payload: dict[str, Any] = Field(default_factory=dict)
     occurred_at: Optional[datetime] = None
+    #: Who did it. Stated by the caller rather than assumed, because the answer
+    #: decides whether the row counts as intent at all: intent_states reads only
+    #: buyer/seller rows. An earlier version hardcoded 'buyer', which would have
+    #: turned any agent-side emitter into a source of fake client intent.
+    actor_role: Literal["buyer", "seller", "agent", "ai_system"] = "buyer"
 
 
 class PerceptionBatch(BaseModel):
@@ -103,10 +108,11 @@ async def capture_events(
                 INSERT INTO interaction_logs
                     (tenant_id, client_id, lead_id, actor_role, interaction_type,
                      payload, created_at)
-                VALUES (app_current_tenant(), $1::uuid, $2::uuid, 'buyer', $3,
-                        $4::jsonb, COALESCE($5, now()))
+                VALUES (app_current_tenant(), $1::uuid, $2::uuid, $3, $4,
+                        $5::jsonb, COALESCE($6, now()))
                 """,
-                event.client_id, event.lead_id, event.interaction_type,
+                event.client_id, event.lead_id, event.actor_role,
+                event.interaction_type,
                 json.dumps(event.payload), event.occurred_at,
             )
             inserted += 1

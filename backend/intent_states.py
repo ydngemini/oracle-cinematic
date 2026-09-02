@@ -37,6 +37,17 @@ from tenancy import TenantContext
 
 logger = logging.getLogger("oracle.intent_states")
 
+#: WHO the row is about. interaction_logs is shared by the brokerage's own
+#: activity and the client's — crm.py writes actor_role='agent' for every
+#: outbound message — so a reading that counts every row measures how busy the
+#: agent has been and reports it as how interested the client is.
+#:
+#: This filter is the whole reason the observed score means anything. The moment
+#: an agent-side surface emits a listing_view (which is exactly what wiring the
+#: property page would do), an unfiltered count would score the agent's own
+#: browsing as their client's intent, silently, on every client they look at.
+CLIENT_ACTORS: tuple[str, ...] = ("buyer", "seller")
+
 #: The window behavioural intent is read over. Long enough to survive a holiday,
 #: short enough that a burst three weeks ago does not read as current heat.
 OBSERVATION_WINDOW_DAYS = 21
@@ -364,9 +375,10 @@ async def read_intent(ctx: TenantContext, client_id: str) -> dict[str, Any]:
              WHERE client_id = $1::uuid
                AND created_at >= $2
                AND interaction_type = ANY($3::text[])
+               AND actor_role = ANY($4::text[])
           GROUP BY interaction_type
             """,
-            client_id, since, list(SIGNAL_WEIGHTS.keys()),
+            client_id, since, list(SIGNAL_WEIGHTS.keys()), list(CLIENT_ACTORS),
         )
 
     counts = {r["interaction_type"]: r["n"] for r in rows}
