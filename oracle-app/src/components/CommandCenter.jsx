@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { AlertTriangle, Clock, Eye, Radar, TrendingUp } from 'lucide-react';
+import { AlertTriangle, Brain, Clock, Eye, Radar, TrendingUp } from 'lucide-react';
 
 import { crmGet } from '../state/useCrmApi';
 import { OpportunityCard } from './IntelligenceFeed';
@@ -148,6 +148,72 @@ function Horizon({ buckets }) {
   );
 }
 
+/**
+ * What Neoh has learned about how this agent decides.
+ *
+ * Shown even while it is still learning, and that is the point: "watching, 6
+ * decisions so far, not enough to describe how you work" tells the agent the
+ * mechanism is real and honest. A panel that appeared only once it had an
+ * opinion would look like it arrived from nowhere.
+ *
+ * Rates are rendered as the interval the API returns, never the bare point
+ * estimate. Showing 100% from three decisions is a claim the agent can falsify
+ * from memory, and that costs the twin its credibility permanently.
+ */
+function AgentTwin({ twin }) {
+  if (!twin) return null;
+
+  return (
+    <section className={styles.twin} aria-labelledby="cc-twin">
+      <div className={styles.twinHead}>
+        <Brain aria-hidden="true" size={15} />
+        <h2 className={styles.sectionHeading} id="cc-twin">How you decide</h2>
+      </div>
+
+      {twin.status === 'learning' ? (
+        <>
+          <p className={styles.twinLearning}>{twin.summary}</p>
+          <p className={styles.twinMeta}>
+            {twin.decisions_needed} more before Neoh will describe a pattern.
+          </p>
+        </>
+      ) : (
+        <>
+          <ul className={styles.twinKinds}>
+            {twin.by_kind?.map((kind) => (
+              <li className={styles.twinKind} key={kind.kind}>
+                <span className={styles.twinKindName}>
+                  {String(kind.kind).replace(/_/g, ' ')}
+                </span>
+                <span className={styles.twinKindNote}>{kind.note}</span>
+              </li>
+            ))}
+          </ul>
+          {twin.confidence_threshold && (
+            <p className={styles.twinThreshold}>{twin.confidence_threshold.detail}</p>
+          )}
+          {twin.stated_reasons?.length > 0 && (
+            <div className={styles.twinReasons}>
+              <h3 className={styles.twinReasonsTitle}>Reasons you have given</h3>
+              <ul>
+                {twin.stated_reasons.map((entry) => (
+                  <li key={`${entry.reason}-${entry.latest}`}>
+                    &ldquo;{entry.reason}&rdquo;
+                    <span className={styles.twinReasonCount}>
+                      ×{entry.times}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+          <p className={styles.twinCaveat}>{twin.caveat}</p>
+        </>
+      )}
+    </section>
+  );
+}
+
 function BlindSpot({ perception }) {
   if (!perception) return null;
   const unreachable = perception.high_motivation_unreachable ?? 0;
@@ -184,6 +250,7 @@ function BlindSpot({ perception }) {
 
 export function CommandCenter() {
   const [briefing, setBriefing] = useState(null);
+  const [twin, setTwin] = useState(null);
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(true);
 
@@ -202,6 +269,12 @@ export function CommandCenter() {
           if (!cancelled) { setError(err?.message || 'The briefing did not load.'); setLoading(false); }
         });
     });
+    // The twin is fetched separately and its failure is swallowed: it is
+    // commentary on the briefing, and losing it must not cost the agent the
+    // briefing itself.
+    crmGet('/api/agent-twin')
+      .then((data) => { if (!cancelled) setTwin(data); })
+      .catch(() => {});
     return () => { cancelled = true; window.cancelAnimationFrame(frame); };
   }, []);
 
@@ -275,6 +348,7 @@ export function CommandCenter() {
       </section>
 
       <Horizon buckets={briefing?.horizon} />
+      <AgentTwin twin={twin} />
       <BlindSpot perception={briefing?.perception} />
     </div>
   );

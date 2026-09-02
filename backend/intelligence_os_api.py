@@ -21,6 +21,7 @@ from typing import Any, Literal, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field
 
+import agent_twin
 import autonomy
 import belief_store
 import command_center
@@ -205,6 +206,72 @@ async def correct(
         raise HTTPException(404, str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
+
+
+# ---------------------------------------------------------------------------
+# Agent Twin
+# ---------------------------------------------------------------------------
+
+class DecisionInput(BaseModel):
+    """What the agent did about one recommendation.
+
+    The opportunity is described rather than referenced by id, because the feed
+    is computed per request and has no stable row to point at. Recording the
+    shape of what was recommended is what makes the decision analysable later.
+    """
+    model_config = ConfigDict(extra="forbid")
+
+    opportunity_kind: str = Field(min_length=1, max_length=64)
+    subject_type: str = Field(min_length=1, max_length=32)
+    subject_id: str = Field(min_length=1, max_length=200)
+    recommended_action: str = Field(min_length=1, max_length=500)
+    outcome: Literal["accepted", "overridden", "deferred", "dismissed"]
+    recommended_confidence: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    recommended_rank: Optional[int] = Field(default=None, ge=1)
+    chosen_action: Optional[str] = Field(default=None, max_length=500)
+    rationale: Optional[str] = Field(default=None, max_length=1000)
+    rationale_source: Optional[Literal["agent_typed", "agent_selected"]] = None
+
+
+@router.post("/agent-twin/decisions", status_code=201)
+async def record_decision(
+    body: DecisionInput, ctx: TenantContext = Depends(require_context),
+):
+    """Record an accept / defer / dismiss against a recommendation.
+
+    Not gated on PREDICTIVE_INTELLIGENCE. Recording what the agent decided is
+    bookkeeping the tenant owns, and a tenant who switches inference on later
+    should arrive with their own history rather than a blank slate.
+    """
+    try:
+        return await agent_twin.record_decision(
+            ctx,
+            opportunity_kind=body.opportunity_kind,
+            subject_type=body.subject_type,
+            subject_id=body.subject_id,
+            recommended_action=body.recommended_action,
+            outcome=body.outcome,
+            recommended_confidence=body.recommended_confidence,
+            recommended_rank=body.recommended_rank,
+            chosen_action=body.chosen_action,
+            rationale=body.rationale,
+            rationale_source=body.rationale_source,
+        )
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+@router.get("/agent-twin")
+async def agent_twin_policy(ctx: TenantContext = Depends(require_context)):
+    """What the recorded decisions say about how this agent works."""
+    require_feature(Feature.PREDICTIVE_INTELLIGENCE)
+    return await agent_twin.policy(ctx)
+
+
+@router.get("/agent-twin/reasons")
+async def decision_reasons():
+    """The one-tap reasons offered alongside free text."""
+    return {"reasons": [{"code": k, "label": v} for k, v in agent_twin.COMMON_REASONS.items()]}
 
 
 # ---------------------------------------------------------------------------

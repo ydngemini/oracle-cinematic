@@ -305,6 +305,17 @@ def test_unscored_client_with_behaviour_reports_behaviour_only():
     assert intent_states._reconcile(declared, observed)["verdict"] == "behaviour_only"
 
 
+def _twin_ctx():
+    """A context for the validation paths, which raise before touching the DB."""
+    from tenancy import Role, TenantContext
+
+    return TenantContext(
+        agent_id="twin-probe",
+        tenant_id="00000000-0000-0000-0000-000000000000",
+        role=Role.AGENT,
+    )
+
+
 # ── perception producers ────────────────────────────────────────────────────
 
 def test_only_client_originated_actors_count_as_intent():
@@ -418,3 +429,133 @@ def test_access_bookkeeping_is_not_collapsed_with_the_behavioural_row():
     hit_clause = sql.split("WITH hit AS")[1].split("),")[0]
     assert "access_count = cp.access_count + 1" in hit_clause
     assert "NOT EXISTS" not in hit_clause, "the cooldown must not gate access accounting"
+
+
+# ── agent twin ──────────────────────────────────────────────────────────────
+
+def test_three_out_of_three_is_not_certainty():
+    """The single most important property in this module.
+
+    A naive proportion reports 3/3 as 100% and tells the agent "you always act
+    on these" — a claim they can falsify from memory, which costs the twin its
+    credibility permanently. Wilson returns an interval that spans most of the
+    range, which is the truth about three observations.
+    """
+    import agent_twin
+
+    point, low, high = agent_twin.wilson_interval(3, 3)
+    assert point == 1.0
+    assert low < 0.5, "a 3/3 lower bound must not imply a reliable preference"
+    assert high == 1.0
+
+
+def test_interval_tightens_as_evidence_accumulates():
+    """The same rate at n=100 has to say more than at n=4."""
+    import agent_twin
+
+    _, low_small, high_small = agent_twin.wilson_interval(3, 4)
+    _, low_big, high_big = agent_twin.wilson_interval(75, 100)
+    assert (high_small - low_small) > (high_big - low_big) * 2
+
+
+def test_zero_of_zero_does_not_divide_by_zero():
+    """A kind with no decisions must return the full range, not raise."""
+    import agent_twin
+
+    point, low, high = agent_twin.wilson_interval(0, 0)
+    assert (point, low, high) == (0.0, 0.0, 1.0)
+
+
+def test_never_accepted_still_has_an_upper_bound():
+    """0/5 is not proof they will never act — the interval has to say so."""
+    import agent_twin
+
+    point, low, high = agent_twin.wilson_interval(0, 5)
+    assert point == 0.0
+    assert high > 0.3, "0/5 must not read as an established refusal"
+
+
+def test_confidence_threshold_withheld_when_the_pattern_is_flat():
+    """If acceptance does not rise with confidence, the agent is not using
+    confidence to decide, and reporting a threshold invents a rule."""
+    import agent_twin
+
+    flat = [
+        {"floor": 0.40, "total": 10, "accepted": 5, "rate": 0.5},
+        {"floor": 0.55, "total": 10, "accepted": 5, "rate": 0.5},
+        {"floor": 0.70, "total": 10, "accepted": 5, "rate": 0.5},
+    ]
+    assert agent_twin._confidence_threshold(flat) is None
+
+
+def test_confidence_threshold_reported_when_the_pattern_is_real():
+    import agent_twin
+
+    rising = [
+        {"floor": 0.40, "total": 10, "accepted": 1, "rate": 0.1},
+        {"floor": 0.55, "total": 10, "accepted": 4, "rate": 0.4},
+        {"floor": 0.70, "total": 10, "accepted": 9, "rate": 0.9},
+    ]
+    result = agent_twin._confidence_threshold(rising)
+    assert result is not None
+    assert result["acts_above"] == 0.70
+    # The supporting counts travel with the claim, not separately.
+    assert "9/10" in result["detail"] or "9 of 10" in result["detail"]
+
+
+def test_confidence_threshold_ignores_thin_buckets():
+    """Two decisions in a bucket cannot establish where someone's line is."""
+    import agent_twin
+
+    thin = [
+        {"floor": 0.40, "total": 2, "accepted": 0, "rate": 0.0},
+        {"floor": 0.70, "total": 3, "accepted": 3, "rate": 1.0},
+    ]
+    assert agent_twin._confidence_threshold(thin) is None
+
+
+def test_deferred_and_dismissed_are_not_merged():
+    """'Not now' and 'not this' are different judgements.
+
+    Collapsing them teaches the twin that a busy Tuesday means a bad
+    recommendation, which is how a learned policy becomes actively wrong.
+    """
+    import agent_twin
+
+    assert "deferred" in agent_twin.OUTCOMES
+    assert "dismissed" in agent_twin.OUTCOMES
+    assert len(set(agent_twin.OUTCOMES)) == len(agent_twin.OUTCOMES)
+
+
+def test_a_rationale_must_say_where_it_came_from():
+    """An inferred reason must never read back as something the agent said."""
+    import asyncio
+
+    import agent_twin
+
+    with pytest.raises(ValueError, match="where it came from"):
+        asyncio.run(agent_twin.record_decision(
+            _twin_ctx(), opportunity_kind="k", subject_type="client",
+            subject_id="1", recommended_action="Call", outcome="dismissed",
+            rationale="not ready", rationale_source=None,
+        ))
+
+
+def test_unknown_outcomes_are_refused_before_the_database():
+    import asyncio
+
+    import agent_twin
+
+    with pytest.raises(ValueError, match="unknown outcome"):
+        asyncio.run(agent_twin.record_decision(
+            _twin_ctx(), opportunity_kind="k", subject_type="client",
+            subject_id="1", recommended_action="Call", outcome="maybe",
+        ))
+
+
+def test_policy_needs_more_evidence_than_a_single_kind_rate():
+    """The whole-agent bar is higher than the per-kind bar, deliberately:
+    describing how someone works is a broader claim than one preference."""
+    import agent_twin
+
+    assert agent_twin.MIN_DECISIONS_FOR_POLICY > agent_twin.MIN_DECISIONS_PER_KIND

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { crmGet } from '../state/useCrmApi';
+import { crmGet, crmPost } from '../state/useCrmApi';
 import styles from './IntelligenceFeed.module.css';
 
 /**
@@ -70,7 +70,116 @@ export function EvidenceList({ items }) {
   );
 }
 
-export function OpportunityCard({ opportunity, rank }) {
+/**
+ * What the agent decided about one recommendation.
+ *
+ * This is the Agent Twin's only source of raw material. Until now a
+ * disagreement left no trace — an agent who thought the top card was wrong
+ * simply did not click it, and the system could not tell "wrong suggestion"
+ * from "right suggestion, busy afternoon".
+ *
+ * Three decisions, not two. "Later" and "Not this" are kept apart because they
+ * are different judgements, and merging them would teach the twin that a busy
+ * Tuesday means a bad recommendation.
+ *
+ * The reason chips appear only after a dismissal, and are skippable. Demanding
+ * a reason for every dismissal gets the control abandoned within a week, and
+ * the data that survives is uniformly whichever option was fastest to click.
+ */
+function DecisionBar({ opportunity, rank, onDecided }) {
+  const [state, setState] = useState('idle'); // idle | asking | done
+  const [chosen, setChosen] = useState(null);
+  const [reasons, setReasons] = useState([]);
+
+  const send = useCallback(async (outcome, rationale, rationaleSource) => {
+    try {
+      await crmPost('/api/agent-twin/decisions', {
+        opportunity_kind: opportunity.kind,
+        subject_type: 'client',
+        subject_id: String(opportunity.subject_id ?? ''),
+        recommended_action: String(opportunity.recommended_action ?? '').slice(0, 500),
+        outcome,
+        recommended_confidence: opportunity.confidence ?? null,
+        recommended_rank: rank ?? null,
+        ...(rationale ? { rationale, rationale_source: rationaleSource } : {}),
+      });
+      onDecided?.(outcome);
+    } catch {
+      // A failed recording must not block the agent's actual work. The card
+      // still resolves; the twin simply learns nothing from this one.
+    }
+  }, [opportunity, rank, onDecided]);
+
+  const decide = useCallback(async (outcome) => {
+    setChosen(outcome);
+    if (outcome === 'dismissed') {
+      setState('asking');
+      if (reasons.length === 0) {
+        try {
+          const payload = await crmGet('/api/agent-twin/reasons');
+          setReasons(payload?.reasons || []);
+        } catch { /* free text alone is fine */ }
+      }
+      await send(outcome);
+      return;
+    }
+    setState('done');
+    await send(outcome);
+  }, [send, reasons.length]);
+
+  if (state === 'done') {
+    return (
+      <p className={styles.decisionDone} role="status">
+        {chosen === 'accepted' ? 'Noted — Neoh will weight these higher for you.'
+          : chosen === 'deferred' ? 'Held for later.'
+            : 'Noted.'}
+      </p>
+    );
+  }
+
+  if (state === 'asking') {
+    return (
+      <div className={styles.decisionReasons}>
+        <p className={styles.decisionPrompt}>Why? Optional, and worth a lot.</p>
+        <div className={styles.reasonChips}>
+          {reasons.map((reason) => (
+            <button
+              type="button"
+              key={reason.code}
+              className={styles.reasonChip}
+              onClick={() => { void send('dismissed', reason.label, 'agent_selected'); setState('done'); }}
+            >
+              {reason.label}
+            </button>
+          ))}
+          <button
+            type="button"
+            className={styles.reasonSkip}
+            onClick={() => setState('done')}
+          >
+            Skip
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className={styles.decisions}>
+      <button type="button" className={styles.decisionPrimary} onClick={() => decide('accepted')}>
+        I&rsquo;ll do this
+      </button>
+      <button type="button" className={styles.decision} onClick={() => decide('deferred')}>
+        Later
+      </button>
+      <button type="button" className={styles.decision} onClick={() => decide('dismissed')}>
+        Not this
+      </button>
+    </div>
+  );
+}
+
+export function OpportunityCard({ opportunity, rank, onDecided }) {
   const kind = String(opportunity.kind || '').replace(/_/g, ' ');
   return (
     <article className={styles.card} aria-labelledby={`opp-${rank}-subject`}>
@@ -88,6 +197,7 @@ export function OpportunityCard({ opportunity, rank }) {
         </p>
         <ConfidenceMeter value={opportunity.confidence} />
         <EvidenceList items={opportunity.evidence} />
+        <DecisionBar opportunity={opportunity} rank={rank} onDecided={onDecided} />
       </div>
     </article>
   );

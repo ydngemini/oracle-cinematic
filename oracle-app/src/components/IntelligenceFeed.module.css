@@ -262,3 +262,89 @@
   .rank { grid-row: auto; }
   .evidenceLabel { min-width: 0; }
 }
+
+/* ── Decision capture ──────────────────────────────────────────────────
+   The Agent Twin's only raw material. Placed at the foot of the card, after
+   the evidence, because the decision should follow reading the case for it —
+   putting it above would invite a reflex click on the ranking alone.
+
+   "I'll do this" is the only emphasised button. Emphasising all three would
+   push toward whichever is visually loudest and bias the very signal this is
+   collecting. */
+.decisions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-top: var(--space-4);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--oracle-border-subtle);
+}
+
+.decision,
+.decisionPrimary {
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--oracle-border);
+  background: transparent;
+  color: var(--oracle-text-dim);
+  font: 500 var(--text-xs) / 1 var(--font-sans);
+  cursor: pointer;
+  transition: color 120ms ease, background 120ms ease, border-color 120ms ease;
+}
+
+.decision:hover { color: var(--oracle-text); background: var(--oracle-glass-hover); }
+.decision:focus-visible,
+.decisionPrimary:focus-visible { outline: 2px solid var(--oracle-gold); outline-offset: 2px; }
+
+.decisionPrimary {
+  border-color: var(--oracle-gold);
+  color: var(--oracle-gold);
+  font-weight: 600;
+}
+.decisionPrimary:hover { background: var(--oracle-amber-ghost); }
+
+.decisionDone {
+  margin: var(--space-4) 0 0;
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--oracle-border-subtle);
+  font-size: var(--text-xs);
+  color: var(--oracle-text-ghost);
+}
+
+.decisionReasons {
+  margin-top: var(--space-4);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--oracle-border-subtle);
+}
+
+.decisionPrompt {
+  margin: 0 0 var(--space-2);
+  font-size: var(--text-xs);
+  color: var(--oracle-text-dim);
+}
+
+.reasonChips { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+
+.reasonChip,
+.reasonSkip {
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--oracle-border-subtle);
+  background: var(--oracle-glass);
+  color: var(--oracle-text);
+  font: 500 var(--text-xs) / 1 var(--font-sans);
+  cursor: pointer;
+}
+
+.reasonChip:hover { background: var(--oracle-glass-hover); }
+.reasonChip:focus-visible,
+.reasonSkip:focus-visible { outline: 2px solid var(--oracle-gold); outline-offset: 2px; }
+
+/* Skip is deliberately as reachable as any reason. A dead-end that forces a
+   choice is how this control stops being used at all. */
+.reasonSkip { border-style: dashed; color: var(--oracle-text-ghost); background: transparent; }
+
+@media (max-width: 719px) {
+  .decisions { gap: var(--space-2); }
+  .decision, .decisionPrimary { flex: 1 1 auto; text-align: center; }
+}
