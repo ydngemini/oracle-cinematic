@@ -28,8 +28,22 @@ that zone up as a **data source** — it expects the zone to already exist. Meas
 | Hosted zones that exist | `neohrs.com.` only |
 | `route53domains list-domains` | returns nothing — **neohrealestate.com is not registered** |
 
-**This blocks everything else.** Nothing can be applied until it resolves, and it
-is a branding decision, not a technical one:
+**Confirmed 2026-09-02: registration is blocked by AWS, not by us.** It has
+failed twice — 2026-08-28 and 2026-08-30 — one second after submission, both
+times with "Contact AWS Support". Meanwhile `check-domain-availability` says
+**AVAILABLE**, so nobody owns it. The account was created 2026-08-27; a six-day-old
+account being held for identity/payment verification fits the signature exactly.
+
+`aws support create-case` returns `SubscriptionRequiredException` on this plan, so
+the case must be filed in the console. Text ready to paste:
+**`docs/aws-domain-support-case.md`**.
+
+**This blocks everything else, and it is the ONLY blocker.** Verified the same day
+by planning against a zone that does exist (`-var domain_name=neohrs.com`):
+**78 to add, 0 to change, 0 to destroy, no errors**. Quotas are clear too —
+EIP 1/5, NAT 1/5, VPC 2/5.
+
+The alternative is a branding decision, not a technical one:
 
 - **Register `neohrealestate.com`** — `route53domains` creates the hosted zone and
   points the registrar at it in one step, which is why `terraform.tfvars` chose it
@@ -62,8 +76,10 @@ its association, the ECS services, DNS records and the ACM certificate.
 
 ## 3. Container images predate the current code
 
-Both `neoh/backend:latest` and `neoh/frontend:latest` were pushed
-**2026-08-28T05:17**. Everything since is absent from them, including the AI tool
+~~Both `neoh/backend:latest` and `neoh/frontend:latest` were pushed
+2026-08-28T05:17.~~ **Rebuilt 2026-09-02T00:31** from committed HEAD via
+CodeBuild `neoh-app-images` — SUCCEEDED. Previously they were pushed
+2026-08-28T05:17. Everything since is absent from them, including the AI tool
 execution ledger (migrations 0087-0088), the geocoder cascade and canary, the
 index migrations 0085-0086 and 0089-0090, and the pypdf CVE bump.
 
