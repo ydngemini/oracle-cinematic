@@ -254,7 +254,7 @@
   font-weight: 600;
   letter-spacing: 0.32em;
   text-transform: uppercase;
-  color: rgba(255, 188, 31, 0.92);
+  color: var(--oracle-accent-ink);
 
   transition:
     background 0.3s cubic-bezier(0.16, 1, 0.3, 1),

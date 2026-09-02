@@ -78,7 +78,7 @@
   background: var(--oracle-amber-ghost);
 }
 .stagePill[data-stage='nurture'] {
-  color: rgba(255, 188, 31, 0.9);
+  color: var(--oracle-accent-ink);
   border-color: rgba(255, 188, 31, 0.35);
   background: rgba(255, 188, 31, 0.08);
 }

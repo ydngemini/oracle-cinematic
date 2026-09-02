@@ -52,7 +52,7 @@
 }
 
 .refresh svg { width: 18px; height: 18px; }
-.refresh:hover { color: var(--oracle-amber); border-color: var(--oracle-amber-dim); }
+.refresh:hover { color: var(--oracle-accent-ink); border-color: var(--oracle-amber-dim); }
 .refresh:focus-visible { outline: none; box-shadow: var(--ring-focus); }
 
 .brief {
@@ -76,7 +76,7 @@
   font-variant-numeric: tabular-nums;
 }
 
-.brief span { color: var(--oracle-amber-dim); }
+.brief span { color: var(--oracle-accent-ink); }
 
 .priority {
   overflow: hidden;
@@ -200,7 +200,7 @@
   border-top: 1px solid var(--oracle-border-subtle);
 }
 
-.clear > svg { width: 30px; height: 30px; color: var(--oracle-amber); stroke-width: 1.4; }
+.clear > svg { width: 30px; height: 30px; color: var(--oracle-accent-ink); stroke-width: 1.4; }
 .clear strong { color: var(--oracle-text); font-size: var(--text-sm); }
 .clear p { margin-top: var(--space-1); color: var(--oracle-text-dim); font-size: var(--text-xs); }
 

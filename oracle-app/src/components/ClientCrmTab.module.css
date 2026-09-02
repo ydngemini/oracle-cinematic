@@ -1240,7 +1240,7 @@
   text-transform: uppercase;
   color: var(--oracle-text-ghost);
 }
-.segAdd:hover { color: var(--oracle-amber); border-color: var(--oracle-amber-dim); }
+.segAdd:hover { color: var(--oracle-accent-ink); border-color: var(--oracle-amber-dim); }
 .segAdd svg { width: 12px; height: 12px; }
 
 .saveView { display: inline-flex; align-items: center; gap: var(--space-1); }
@@ -1311,7 +1311,7 @@
   border: 1px solid var(--oracle-amber-dim);
   color: transparent;
 }
-.bulkCheck[data-on='true'] { color: var(--oracle-amber); background: var(--oracle-amber-ghost); }
+.bulkCheck[data-on='true'] { color: var(--oracle-accent-ink); background: var(--oracle-amber-ghost); }
 .bulkCheck svg { width: 13px; height: 13px; }
 
 .bulkActions {

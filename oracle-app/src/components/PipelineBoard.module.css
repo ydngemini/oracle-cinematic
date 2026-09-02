@@ -56,7 +56,7 @@
   letter-spacing: 0.38em;
   text-transform: uppercase;
   font-weight: 600;
-  color: rgba(255, 188, 31, 0.75);
+  color: var(--oracle-accent-ink);
 }
 
 .hint {
@@ -274,7 +274,7 @@
 }
 
 .cardClock[data-zone='warn'] {
-  color: rgba(255, 188, 31, 0.9);
+  color: var(--oracle-accent-ink);
   border: 1px solid rgba(255, 188, 31, 0.35);
 }
 

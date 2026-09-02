@@ -68,7 +68,7 @@
 }
 
 /* A gap in what the system can see is a warning, not a neutral statistic. */
-.metricWarn .metricValue { color: var(--oracle-amber); }
+.metricWarn .metricValue { color: var(--oracle-accent-ink); }
 
 .blind {
   flex-basis: 100%;

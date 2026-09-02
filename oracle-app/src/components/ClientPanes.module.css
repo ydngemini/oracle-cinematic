@@ -244,7 +244,7 @@
   border: 1px solid var(--oracle-border-bright);
 }
 .prio[data-p='high'] { color: var(--oracle-red); border-color: var(--oracle-red-dim); }
-.prio[data-p='medium'] { color: var(--oracle-amber); border-color: var(--oracle-amber-dim); }
+.prio[data-p='medium'] { color: var(--oracle-accent-ink); border-color: var(--oracle-amber-dim); }
 .prio[data-p='low'] { color: var(--oracle-text-dim); }
 
 /* Complete checkbox (task) */
@@ -288,7 +288,7 @@
 }
 
 .iconBtn:hover { color: var(--oracle-text); background: var(--oracle-glass-hover); }
-.iconBtn[data-active='true'] { color: var(--oracle-amber); }
+.iconBtn[data-active='true'] { color: var(--oracle-accent-ink); }
 .iconBtn[data-danger='true']:hover { color: var(--oracle-red); }
 .iconBtn svg { width: 15px; height: 15px; }
 
@@ -393,7 +393,7 @@
   color: var(--oracle-text-ghost);
 }
 
-.eventKind { color: var(--oracle-amber-dim); }
+.eventKind { color: var(--oracle-accent-ink); }
 
 /* ── Shared empty / error / skeleton ────────────────────────────────────── */
 .empty {

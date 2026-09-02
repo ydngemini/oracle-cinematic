@@ -164,7 +164,7 @@
   font-size: 0.52rem;
   letter-spacing: 0.38em;
   text-transform: uppercase;
-  color: rgba(255, 188, 31, 0.55);
+  color: var(--oracle-accent-ink);
   font-weight: 600;
 
   /* Shimmer sweep on mount */
@@ -288,13 +288,13 @@
   font-size: 0.5rem;
   letter-spacing: 0.32em;
   text-transform: uppercase;
-  color: rgba(255, 188, 31, 0.45);
+  color: var(--oracle-accent-ink);
   font-weight: 600;
   transition: color 0.3s ease;
 }
 
 .heroCard:hover .cardLabel {
-  color: rgba(255, 188, 31, 0.7);
+  color: var(--oracle-accent-ink);
 }
 
 .cardValue {
@@ -326,7 +326,7 @@
 }
 
 .heroCard:hover .cardUnit {
-  color: rgba(255, 188, 31, 0.35);
+  color: var(--oracle-accent-ink);
 }
 
 /* ----- Detail strip ----- */
@@ -370,7 +370,7 @@
 }
 
 .detailItem:hover .detailLabel {
-  color: rgba(255, 188, 31, 0.5);
+  color: var(--oracle-accent-ink);
 }
 
 .detailValue {
@@ -437,7 +437,7 @@
 .statusBadge[data-active="true"] {
   background: rgba(255, 188, 31, 0.08);
   border-color: rgba(255, 188, 31, 0.32);
-  color: rgba(255, 188, 31, 0.92);
+  color: var(--oracle-accent-ink);
   box-shadow:
     0 0 12px rgba(255, 188, 31, 0.08),
     inset 0 1px 0 rgba(255, 188, 31, 0.1);

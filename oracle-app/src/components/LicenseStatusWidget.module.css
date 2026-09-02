@@ -68,7 +68,7 @@
 }
 
 .active .statusBadge { background: rgba(100, 210, 140, 0.12); color: var(--oracle-green); }
-.warning .statusBadge { background: rgba(255, 188, 31, 0.12); color: var(--oracle-amber); }
+.warning .statusBadge { background: rgba(255, 188, 31, 0.12); color: var(--oracle-accent-ink); }
 .urgent .statusBadge { background: rgba(220, 80, 80, 0.12); color: var(--oracle-red); }
 .expired .statusBadge { background: rgba(220, 80, 80, 0.12); color: var(--oracle-red); }
 

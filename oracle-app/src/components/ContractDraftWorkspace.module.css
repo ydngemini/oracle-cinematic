@@ -2,7 +2,7 @@
 .header, .editor > section > header, .saved > header { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-3); }
 .header h2 { margin-top: 3px; font-family: var(--font-display); font-size: var(--text-sm); letter-spacing: var(--tracking-wider); text-transform: uppercase; color: var(--oracle-text); }
 .header p { max-width: 46rem; margin-top: var(--space-2); font-size: var(--text-xs); line-height: 1.55; color: var(--oracle-text-dim); }
-.kicker, .editor header span, .saved header span { font-family: var(--font-display); font-size: .5625rem; font-weight: 600; letter-spacing: var(--tracking-widest); text-transform: uppercase; color: var(--oracle-amber-dim); }
+.kicker, .editor header span, .saved header span { font-family: var(--font-display); font-size: .5625rem; font-weight: 600; letter-spacing: var(--tracking-widest); text-transform: uppercase; color: var(--oracle-accent-ink); }
 .count, .editor header small, .saved header small { flex: 0 0 auto; padding: 3px 8px; border: 1px solid var(--oracle-border); border-radius: var(--radius-pill); font-family: var(--font-display); font-size: .5625rem; letter-spacing: var(--tracking-wide); text-transform: uppercase; color: var(--oracle-text-ghost); }
 .error, .notice { margin: 0; padding: var(--space-2) var(--space-3); border-radius: var(--radius-md); font-size: var(--text-xs); line-height: 1.45; }
 .error { border: 1px solid var(--oracle-red-dim); background: var(--oracle-glass); color: var(--oracle-text-dim); }
@@ -12,7 +12,7 @@
 .templateCard:hover, .templateCard[data-active='true'] { border-color: var(--oracle-amber-dim); background: var(--oracle-amber-ghost); }
 .templateCard:hover { transform: translateY(-1px); }
 .templateCard:focus-visible, .actions button:focus-visible, .saved button:focus-visible { outline: 2px solid var(--oracle-amber); outline-offset: 2px; }
-.templateCard > span { font-family: var(--font-display); font-size: .5rem; letter-spacing: var(--tracking-wider); text-transform: uppercase; color: var(--oracle-amber-dim); }
+.templateCard > span { font-family: var(--font-display); font-size: .5rem; letter-spacing: var(--tracking-wider); text-transform: uppercase; color: var(--oracle-accent-ink); }
 .templateCard strong { font-size: var(--text-xs); line-height: 1.25; }
 .templateCard small { font-size: .625rem; color: var(--oracle-text-ghost); }
 .editor { display: grid; grid-template-columns: minmax(0, .92fr) minmax(0, 1.08fr); gap: var(--space-3); }
@@ -26,7 +26,7 @@
 .fieldGrid input:focus-visible, .fieldGrid textarea:focus-visible { outline: 2px solid var(--oracle-amber); outline-offset: 1px; }
 .fullField { grid-column: 1 / -1; }
 .actions { display: flex; flex-wrap: wrap; gap: var(--space-2); margin-top: var(--space-3); }
-.actions button, .saved button { min-height: 34px; padding: 0 var(--space-2); border: 1px solid var(--oracle-border-bright); border-radius: var(--radius-sm); background: var(--oracle-glass); font-family: var(--font-display); font-size: .5625rem; font-weight: 600; letter-spacing: var(--tracking-wider); text-transform: uppercase; color: var(--oracle-amber); }
+.actions button, .saved button { min-height: 34px; padding: 0 var(--space-2); border: 1px solid var(--oracle-border-bright); border-radius: var(--radius-sm); background: var(--oracle-glass); font-family: var(--font-display); font-size: .5625rem; font-weight: 600; letter-spacing: var(--tracking-wider); text-transform: uppercase; color: var(--oracle-accent-ink); }
 .actions button:hover:not(:disabled), .saved button:hover:not(:disabled) { border-color: var(--oracle-amber-dim); background: var(--oracle-amber-ghost); }
 .actions button:disabled, .saved button:disabled { cursor: wait; opacity: .55; }
 .primaryAction { border-color: var(--oracle-amber-dim) !important; }
@@ -42,7 +42,7 @@
 .saved strong, .saved li small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .saved strong { font-size: var(--text-xs); color: var(--oracle-text); }
 .saved li small { font-size: .625rem; color: var(--oracle-text-ghost); }
-.saved li > span { flex: 0 0 auto; font-family: var(--font-display); font-size: .5625rem; letter-spacing: var(--tracking-wide); text-transform: uppercase; color: var(--oracle-amber); }
+.saved li > span { flex: 0 0 auto; font-family: var(--font-display); font-size: .5625rem; letter-spacing: var(--tracking-wide); text-transform: uppercase; color: var(--oracle-accent-ink); }
 .saved li > span[data-status='ready'] { color: var(--oracle-green); }
 .savedActions { flex: 0 0 auto; display: flex; gap: 6px; }
 .skeleton { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-3); }

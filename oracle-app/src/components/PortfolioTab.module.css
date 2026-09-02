@@ -102,7 +102,7 @@
 }
 
 .metric[data-tone='good'] dd { color: var(--oracle-text-heading); }
-.metric[data-tone='warn'] dd { color: var(--oracle-amber); }
+.metric[data-tone='warn'] dd { color: var(--oracle-accent-ink); }
 .metric[data-tone='danger'] dd { color: var(--oracle-red); }
 
 /* The only persistent content surface: a concise priority queue. */
@@ -366,7 +366,7 @@
 .pulseList li:first-child { border-top: 0; }
 .pulseList time { color: var(--oracle-text-dim); font-size: .625rem; }
 .pulseDot { width: 6px; height: 6px; flex: 0 0 6px; border-radius: 50%; background: var(--oracle-green); }
-.flagList > li > span { flex: 0 0 auto; padding: 3px 7px; color: var(--oracle-amber); background: var(--oracle-amber-ghost); font-size: .58rem; font-weight: 700; }
+.flagList > li > span { flex: 0 0 auto; padding: 3px 7px; color: var(--oracle-accent-ink); background: var(--oracle-amber-ghost); font-size: .58rem; font-weight: 700; }
 .flagList > li > span[data-type='TITLE'] { color: var(--oracle-red); }
 .flagList > li > span[data-type='ZONING'] { color: var(--oracle-green); }
 
@@ -389,7 +389,7 @@
 }
 
 .error p { flex: 1; color: var(--oracle-text-dim); font-size: var(--text-sm); }
-.error button { min-height: 44px; padding: 0 var(--space-3); color: var(--oracle-amber); }
+.error button { min-height: 44px; padding: 0 var(--space-3); color: var(--oracle-accent-ink); }
 
 .skeletons { display: grid; gap: var(--space-5); }
 .skeletonMetrics { display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--space-4); }

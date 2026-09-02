@@ -296,7 +296,7 @@
   color: var(--oracle-text-ghost);
 }
 
-.status[data-status='submitted'] { color: var(--oracle-amber); }
+.status[data-status='submitted'] { color: var(--oracle-accent-ink); }
 .status[data-status='accepted'] { color: var(--oracle-green); }
 
 .empty,
