@@ -52,6 +52,16 @@ MIN_DECISIONS_FOR_POLICY = 20
 #: which is what makes the number worth printing.
 MIN_DECISIONS_PER_KIND = 8
 
+#: Before the twin says anything about whether the agent's choices WORKED. This
+#: is a stronger claim than "which cards you take", so the bar is higher than
+#: MIN_DECISIONS_PER_KIND and the section is omitted entirely below it — the
+#: existing caveat ("observed preferences, not results") stays true and stays
+#: verbatim until it isn't.
+MIN_OUTCOMES_FOR_RESULTS = 20
+
+#: Per kind, within the results section. Mirrors MIN_DECISIONS_PER_KIND.
+MIN_OUTCOMES_PER_KIND = 8
+
 #: 95% two-sided.
 _Z = 1.959963985
 
@@ -213,6 +223,41 @@ def _confidence_threshold(buckets: list[dict[str, Any]]) -> Optional[dict[str, A
     }
 
 
+def _results_section(results: list) -> dict[str, Any]:
+    """Per kind: of the cards you took, how often did something good follow.
+
+    Wilson, withheld below MIN_OUTCOMES_PER_KIND, and the interval spoken —
+    the same three rules as the preference section, because the failure mode
+    is identical: a rate the agent can falsify from memory.
+    """
+    kinds = []
+    for row in results:
+        n, positive = int(row["total"]), int(row["positive"])
+        if n < MIN_OUTCOMES_PER_KIND:
+            kinds.append({
+                "kind": row["kind"], "total": n, "rate": None,
+                "note": f"{n} with a known result so far — too few to read.",
+            })
+            continue
+        point, low, high = wilson_interval(positive, n)
+        kinds.append({
+            "kind": row["kind"], "total": n, "positive": positive,
+            "rate": point, "rate_low": low, "rate_high": high,
+            "note": (
+                f"Of {n} you acted on, {positive} led somewhere "
+                f"({low:.0%}–{high:.0%} at 95% confidence)."
+            ),
+        })
+    return {
+        "by_kind": kinds,
+        "caveat": (
+            "Results are attributed by last touch inside a per-kind window, "
+            "not by a causal model. A closing that followed your call is "
+            "credited to your call; it does not prove the call caused it."
+        ),
+    }
+
+
 async def policy(ctx: TenantContext) -> dict[str, Any]:
     """What this agent's decisions say about how they work.
 
@@ -266,6 +311,20 @@ async def policy(ctx: TenantContext) -> dict[str, Any]:
              WHERE tenant_id = app_current_tenant() AND user_id = app_current_agent()
                AND recommended_confidence IS NOT NULL
           GROUP BY 1 ORDER BY 1
+            """
+        )
+        # Results, where attribution has bound one. Only accepted decisions
+        # can have earned a result; a dismissed card that was later followed
+        # by a closing is the base rate's business, not the twin's.
+        results = await conn.fetch(
+            """
+            SELECT opportunity_kind AS kind,
+                   count(*)::int AS total,
+                   count(*) FILTER (WHERE result_valence > 0)::int AS positive
+              FROM agent_decisions
+             WHERE tenant_id = app_current_tenant() AND user_id = app_current_agent()
+               AND outcome = 'accepted' AND result_kind IS NOT NULL
+          GROUP BY 1 ORDER BY 2 DESC
             """
         )
         reasons = await conn.fetch(
@@ -330,6 +389,11 @@ async def policy(ctx: TenantContext) -> dict[str, Any]:
         # she gets pre-approved" is a rule this agent runs and the model does
         # not have; summarising it into "prefers qualified leads" throws away
         # the only part worth keeping.
+        # Present only when there is enough to say. Absent, not empty: an
+        # empty list reads as "nothing worked", which is not what n=6 means.
+        **({"and_did_it_work": _results_section(results)}
+           if sum(r["total"] for r in results) >= MIN_OUTCOMES_FOR_RESULTS else {}),
+        "outcomes_observed": sum(r["total"] for r in results),
         "stated_reasons": [
             {
                 "reason": r["rationale"],

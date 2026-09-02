@@ -26,10 +26,131 @@ uncalibrated ranking that says so beats a calibrated-looking one that lies.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
-from typing import Any, Optional
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any, Optional
+
+if TYPE_CHECKING:  # pragma: no cover
+    from tenancy import TenantContext
 
 logger = logging.getLogger("oracle.expected_value")
+
+#: Per opportunity kind, before a fitted uplift replaces the stated prior. At
+#: n=30 and p≈0.3 the Wilson interval is roughly ±0.16 — narrow enough that one
+#: deal does not move the ranking. Below that, a "fitted" number is noise
+#: wearing a decimal point.
+MIN_OUTCOMES_PER_KIND_FOR_UPLIFT = 30
+
+#: Tenant-wide, before portfolio() is allowed to call itself calibrated at all.
+MIN_OUTCOMES_FOR_PORTFOLIO = 50
+
+#: A fitted interval wider than this is still a prior, whatever n says.
+MAX_INTERVAL_WIDTH = 0.35
+
+#: How far back fit() looks. Long enough to accumulate outcomes; short enough
+#: that a rate from a different market regime does not sit in the average.
+FIT_WINDOW_DAYS = 365
+
+
+@dataclass
+class Calibration:
+    """What this brokerage's own outcomes say about each kind of action.
+
+    `per_kind` maps an opportunity kind to (uplift, n, low, high). The uplift
+    is a crude difference in rates — P(positive result | acted on) minus the
+    organic base rate — not a causal estimate; there is no counterfactual
+    here, only a comparison against outcomes that followed nothing we did.
+    That is stated on every result that uses it.
+    """
+    per_kind: dict[str, tuple[float, int, float, float]] = field(default_factory=dict)
+    total_outcomes: int = 0
+    base_rate: float = 0.0
+    fitted_at: Optional[str] = None
+
+    def uplift_for(self, kind: str) -> tuple[float, bool]:
+        """(uplift, is_fitted). Falls back to the prior below the thresholds."""
+        entry = self.per_kind.get(kind)
+        if entry is None:
+            return TIMING_UPLIFT.get(kind, DEFAULT_UPLIFT), False
+        uplift, n, low, high = entry
+        if n < MIN_OUTCOMES_PER_KIND_FOR_UPLIFT or (high - low) > MAX_INTERVAL_WIDTH:
+            return TIMING_UPLIFT.get(kind, DEFAULT_UPLIFT), False
+        return uplift, True
+
+
+async def fit(ctx: "TenantContext") -> Calibration:
+    """Fit uplift per opportunity kind from Outcome Memory.
+
+    Reads agent_decisions rows that were accepted AND received a result, groups
+    by opportunity_kind, and compares the positive-result rate against the
+    organic base rate from outcome_events (rows attribution examined and
+    credited to nothing). Both sides come from the same table family and the
+    same window, so a busy quarter inflates both and cancels.
+
+    Never raises: a calibration that cannot be read is an empty one, and an
+    empty one makes value_of() use its priors — which is what it did before
+    this function existed.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    from agent_twin import wilson_interval
+    from db.connection import tenant_tx
+
+    since = datetime.now(timezone.utc) - timedelta(days=FIT_WINDOW_DAYS)
+    try:
+        async with tenant_tx(ctx) as conn:
+            acted = await conn.fetch(
+                """
+                SELECT opportunity_kind,
+                       count(*)::int AS n,
+                       count(*) FILTER (WHERE result_valence > 0)::int AS positive
+                  FROM agent_decisions
+                 WHERE outcome = 'accepted'
+                   AND result_kind IS NOT NULL
+                   AND result_at >= $1
+              GROUP BY opportunity_kind
+                """,
+                since,
+            )
+            organic = await conn.fetchrow(
+                """
+                SELECT count(*)::int AS n,
+                       count(*) FILTER (WHERE outcome_valence > 0)::int AS positive
+                  FROM outcome_events
+                 WHERE attributed_at IS NOT NULL
+                   AND attributed_trace_id IS NULL
+                   AND attributed_decision_id IS NULL
+                   AND occurred_at >= $1
+                """,
+                since,
+            )
+    except Exception:  # noqa: BLE001 — see docstring
+        logger.warning("calibration unavailable; priors stay in force", exc_info=True)
+        return Calibration()
+
+    base_n = int(organic["n"] or 0) if organic else 0
+    base_positive = int(organic["positive"] or 0) if organic else 0
+    base_rate = (base_positive / base_n) if base_n else 0.0
+
+    per_kind: dict[str, tuple[float, int, float, float]] = {}
+    total = base_n
+    for row in acted:
+        n = int(row["n"])
+        total += n
+        point, low, high = wilson_interval(int(row["positive"]), n)
+        # The interval is on the acted-on rate; the uplift is that rate less
+        # the base rate. Both bounds shift by the same constant, so the width
+        # — the thing the threshold checks — is unchanged.
+        per_kind[row["opportunity_kind"]] = (
+            round(point - base_rate, 4), n,
+            round(low - base_rate, 4), round(high - base_rate, 4),
+        )
+
+    return Calibration(
+        per_kind=per_kind,
+        total_outcomes=total,
+        base_rate=round(base_rate, 4),
+        fitted_at=datetime.now(timezone.utc).isoformat(),
+    )
 
 #: Fallback gross commission rate when the tenant has not configured one.
 #: US residential convention for one side of a transaction.
@@ -92,6 +213,7 @@ def value_of(
     commission_rate: float = DEFAULT_COMMISSION_RATE,
     hourly_rate: float = 75.0,
     market_median: Optional[float] = None,
+    calibration: Optional[Calibration] = None,
 ) -> Optional[ValuedAction]:
     """Value one opportunity, or decline to.
 
@@ -115,8 +237,18 @@ def value_of(
     else:
         return None
 
-    uplift = TIMING_UPLIFT.get(kind, DEFAULT_UPLIFT)
-    basis.append(f"{uplift:.0%} assumed uplift from acting now rather than later (uncalibrated)")
+    if calibration is not None:
+        uplift, fitted = calibration.uplift_for(kind)
+    else:
+        uplift, fitted = TIMING_UPLIFT.get(kind, DEFAULT_UPLIFT), False
+    if fitted:
+        _, n, low, high = calibration.per_kind[kind]
+        basis.append(
+            f"{uplift:+.0%} uplift fitted from {n} of this brokerage's own outcomes "
+            f"({low:+.0%} to {high:+.0%} at 95%) — a difference in rates, not a causal estimate"
+        )
+    else:
+        basis.append(f"{uplift:.0%} assumed uplift from acting now rather than later (uncalibrated)")
 
     minutes = ACTION_MINUTES.get(action_type, ACTION_MINUTES["none"])
     cost = (minutes / 60.0) * hourly_rate
@@ -137,23 +269,54 @@ def value_of(
         uplift=uplift,
         cost=cost,
         risk_discount=risk_discount,
-        calibrated=False,
+        calibrated=fitted,
         basis=basis,
     )
 
 
-def portfolio(valued: list[ValuedAction]) -> dict[str, Any]:
-    """The headline number, with the caveat attached to it rather than beside it."""
+def portfolio(
+    valued: list[ValuedAction], *, calibration: Optional[Calibration] = None,
+) -> dict[str, Any]:
+    """The headline number, with the caveat attached to it rather than beside it.
+
+    `calibrated` flips only when enough outcomes exist tenant-wide AND every
+    valued action used a fitted uplift. One prior in the sum makes the total
+    a mixed figure, and a mixed figure labelled "calibrated" is the exact
+    false precision this module refuses.
+    """
     positives = [v for v in valued if v.expected_value > 0]
     total = sum(v.expected_value for v in positives)
+    outcomes = calibration.total_outcomes if calibration else 0
+    all_fitted = bool(positives) and all(v.calibrated for v in positives)
+    calibrated = outcomes >= MIN_OUTCOMES_FOR_PORTFOLIO and all_fitted
+
+    if calibrated:
+        caveat = (
+            f"Fitted from {outcomes} of this brokerage's own outcomes. The uplifts are "
+            f"differences in rates against the organic base rate, not causal "
+            f"estimates; use the ordering, and read the amounts as expectations "
+            f"with the intervals each card shows."
+        )
+    elif outcomes:
+        caveat = (
+            f"Modelled from stated priors. {outcomes} outcome"
+            f"{'' if outcomes == 1 else 's'} recorded so far — "
+            f"{max(0, MIN_OUTCOMES_FOR_PORTFOLIO - outcomes)} more before the "
+            f"portfolio figure is fitted rather than assumed. Use the ordering; "
+            f"treat the dollar amounts as relative, not forecast."
+        )
+    else:
+        caveat = (
+            "Modelled from stated priors, not fitted to this brokerage's own "
+            "closed deals — no outcomes have been recorded yet. Use the ordering; "
+            "treat the dollar amounts as relative, not forecast."
+        )
     return {
         "total_expected_value": round(total, 2),
         "opportunity_count": len(positives),
         "suppressed_negative_ev": len(valued) - len(positives),
-        "calibrated": False,
-        "caveat": (
-            "Modelled from stated priors, not fitted to this brokerage's own "
-            "closed deals — no outcomes have been recorded yet. Use the ordering; "
-            "treat the dollar amounts as relative, not forecast."
-        ),
+        "calibrated": calibrated,
+        "outcomes_observed": outcomes,
+        "outcomes_needed": max(0, MIN_OUTCOMES_FOR_PORTFOLIO - outcomes),
+        "caveat": caveat,
     }

@@ -48,6 +48,13 @@ logger = logging.getLogger("oracle.intent_states")
 #: browsing as their client's intent, silently, on every client they look at.
 CLIENT_ACTORS: tuple[str, ...] = ("buyer", "seller")
 
+#: Client-signal→outcome pairs, tenant-wide, before fitting SIGNAL_WEIGHTS is
+#: even considered. Thirteen weights fitted from fewer than ~15 observations
+#: each is fitting noise, and this module's whole thesis is that a confident
+#: number built on two clicks is worse than an honest gap. Until then the
+#: weights are priors and `read_intent` says so with a count.
+MIN_OUTCOMES_FOR_WEIGHT_FIT = 200
+
 #: The window behavioural intent is read over. Long enough to survive a holiday,
 #: short enough that a burst three weeks ago does not read as current heat.
 OBSERVATION_WINDOW_DAYS = 21
@@ -385,6 +392,17 @@ async def read_intent(ctx: TenantContext, client_id: str) -> dict[str, Any]:
     newest = max((r["newest"] for r in rows), default=None)
 
     known = await belief_store.beliefs_about(ctx, "client", client_id)
+
+    # How much evidence exists for re-fitting the weights. Counted, not used:
+    # the weights stay priors until MIN_OUTCOMES_FOR_WEIGHT_FIT, and the UI
+    # shows the count so "priors" reads as a stage, not a shrug.
+    try:
+        async with tenant_tx(ctx) as conn:
+            outcomes_observed = await conn.fetchval(
+                "SELECT count(*)::int FROM outcome_events WHERE client_id IS NOT NULL"
+            ) or 0
+    except Exception:  # noqa: BLE001 — a missing count must not fail the read
+        outcomes_observed = 0
     timeline = next(iter(known["beliefs"].get("timeline", [])), None)
 
     observed = _observed_reading(counts, newest)
@@ -403,5 +421,10 @@ async def read_intent(ctx: TenantContext, client_id: str) -> dict[str, Any]:
         "state_distribution": _state_distribution(counts, declared, observed),
         "levers": _levers(counts, observed, newest),
         "disputes": known["disputes"],
+        "weights": {
+            "source": "priors",
+            "outcomes_observed": outcomes_observed,
+            "outcomes_needed": max(0, MIN_OUTCOMES_FOR_WEIGHT_FIT - outcomes_observed),
+        },
         "window_days": OBSERVATION_WINDOW_DAYS,
     }
