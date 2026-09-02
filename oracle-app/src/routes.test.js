@@ -52,6 +52,10 @@ describe('legacy addresses', () => {
     expect(resolveLegacyId(null)).toEqual({ view: 'home' });
     // A current id passes through untouched.
     expect(resolveLegacyId('work')).toEqual({ view: 'work' });
+    // A Work type is a destination in its own right — Home's "more in Work"
+    // link relies on this.
+    expect(resolveLegacyId('opportunities')).toEqual({ view: 'work', type: 'opportunities' });
+    expect(resolveLegacyId('missions')).toEqual({ view: 'work', type: 'missions' });
   });
 });
 

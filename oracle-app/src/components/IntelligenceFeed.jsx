@@ -86,7 +86,7 @@ export function EvidenceList({ items }) {
  * a reason for every dismissal gets the control abandoned within a week, and
  * the data that survives is uniformly whichever option was fastest to click.
  */
-function DecisionBar({ opportunity, rank, onDecided }) {
+export function DecisionBar({ opportunity, rank, onDecided }) {
   const [state, setState] = useState('idle'); // idle | asking | done
   const [chosen, setChosen] = useState(null);
   const [reasons, setReasons] = useState([]);

@@ -46,14 +46,15 @@ import styles from './CrmShell.module.css';
 
 // Each tab is its own chunk — a field agent on LTE only pays for the tab
 // they open. (Same code-split rationale the HUD used for its 3D canvas.)
-const loadTodayTab = () => import('./TodayTab');
+const loadNeohHome = () => import('../neoh/NeohHome');
 const loadPeopleTab = () => import('./PeopleTab');
 const loadOurAITab = () => import('./OurAITab');
 const loadPersonalAITab = () => import('./PersonalAITab');
 const loadMyProfileTab = () => import('./MyProfileTab');
 const loadAdminOpsTab = () => import('./AdminOpsTab');
 
-const TodayTab = lazy(loadTodayTab);
+const NeohHome = lazy(() =>
+  import('../neoh/NeohHome').then((m) => ({ default: m.NeohHome })));
 const OurAITab = lazy(loadOurAITab);
 const UniversalWorkspace = lazy(() =>
   import('../neoh/UniversalWorkspace').then((m) => ({ default: m.UniversalWorkspace })));
@@ -68,7 +69,7 @@ const AdminOpsTab = lazy(loadAdminOpsTab);
 // holds everything, Neoh is the conversation. `preload` warms the chunk each
 // view renders first.
 const TABS = [
-  { id: VIEWS.home, label: 'Home', Icon: House, preload: loadTodayTab },
+  { id: VIEWS.home, label: 'Home', Icon: House, preload: loadNeohHome },
   { id: VIEWS.work, label: 'Work', Icon: Search, preload: loadPeopleTab },
   { id: VIEWS.neoh, label: 'Neoh', Icon: Radar, preload: loadOurAITab },
 ];
@@ -402,8 +403,7 @@ export function CrmShell() {
                         initialWorkspace="cowork"
                       />
                     ) : (
-                      // NeohHome lands in U3. Until then Home is Today.
-                      <TodayTab onNavigate={select} />
+                      <NeohHome onNavigate={select} />
                     )}
                   </AdaptiveViewTransition>
                 </Suspense>

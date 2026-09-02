@@ -103,6 +103,9 @@ export function redirectFor(pathname) {
 export function resolveLegacyId(id) {
   if (!id) return { view: VIEWS.home };
   if (id === VIEWS.home || id === VIEWS.work || id === VIEWS.neoh) return { view: id };
+  // A Work type is a valid destination in its own right, so Home's "N more in
+  // Work" can say onNavigate('opportunities') without inventing an alias.
+  if (WORK_TYPES.includes(id)) return { view: VIEWS.work, type: id };
   return LEGACY_TAB_IDS[id] || { view: VIEWS.home };
 }
 
