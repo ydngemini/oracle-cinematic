@@ -651,6 +651,12 @@ def _resolve_websocket_identity(websocket: WebSocket) -> tuple[TenantContext, bo
     return TenantContext(agent_id=user_id, tenant_id=tenant_id, role=Role.AGENT), False
 
 
+#: Ceiling for a FILTERED pipeline count. The UI shows "N shown" as a chip, so
+#: an exact figure past this adds nothing a user acts on, while an uncapped
+#: count over 8.47M rows is what took the frame past command_timeout.
+_PIPELINE_COUNT_CAP = 1000
+
+
 async def push_deal_pipeline(
     websocket: WebSocket, ctx: TenantContext, request: dict | None = None
 ):
@@ -696,7 +702,7 @@ async def push_deal_pipeline(
                     CASE WHEN payload->'provenance'->>'record_refreshed_at' ~
                         '^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?(Z|[+-]\\d{2}:\\d{2})$'
                          THEN (payload->'provenance'->>'record_refreshed_at')::timestamptz END,
-                    updated_at) < now()-interval '45 days))
+                    updated_at) < now()-interval '45 days'))
           AND ($5='all' OR
                ($5='hot' AND motivation_score>=70) OR
                ($5='contract' AND contract_expires_at IS NOT NULL AND contract_expires_at>now()) OR
@@ -729,7 +735,42 @@ async def push_deal_pipeline(
 
     try:
         async with tenant_tx(ctx) as conn:
-            total = await conn.fetchval("SELECT count(*) FROM leads " + where, *filter_args)
+            # `SELECT count(*) FROM leads` is the trap this repo already
+            # documents: 8.47M rows for a single tenant, measured well past the
+            # pool's 30s command_timeout, so the whole DEAL_PIPELINE frame died
+            # and the pipeline never rendered. (It never got that far before —
+            # an unterminated interval literal above made the SQL invalid — so
+            # fixing the syntax only exposed the next failure underneath.)
+            #
+            # Two cases, because they are genuinely different questions:
+            #
+            #   No filters beyond state → lead_pipeline_counts, the
+            #   trigger-maintained rollup from 0038 that ai_tools_read already
+            #   treats as the authority. Exact and instant.
+            #
+            #   Any other filter → the exact answer is unaffordable and not
+            #   worth an outage. Count through a capped subquery so the work is
+            #   bounded by the cap rather than by the table, and report the cap
+            #   as a floor. Saying "1000+" is honest; timing out is not.
+            unfiltered = all(
+                options[key] in (None, "", "all")
+                for key in ("scope", "detail", "freshness", "priority", "query", "map_confidence")
+            )
+            if unfiltered:
+                total = await conn.fetchval(
+                    "SELECT coalesce(sum(row_count), 0)::bigint FROM lead_pipeline_counts "
+                    " WHERE tenant_id = $1::uuid AND ($2::text IS NULL OR state = $2)",
+                    ctx.tenant_id, options["state"],
+                )
+                payload["total_is_exact"] = True
+            else:
+                total = await conn.fetchval(
+                    "SELECT count(*) FROM (SELECT 1 FROM leads " + where
+                    + f" LIMIT {_PIPELINE_COUNT_CAP + 1}) capped",
+                    *filter_args,
+                )
+                payload["total_is_exact"] = total <= _PIPELINE_COUNT_CAP
+                total = min(total, _PIPELINE_COUNT_CAP)
             rows = await conn.fetch(
                 "SELECT id, parcel_id, state, motivation_score, underwriting, payload, updated_at, "
                 "       dossier_status, contract_expires_at, " + MLS_OVERLAY_SELECT + " FROM leads "
