@@ -308,6 +308,7 @@ from govinfo_mcp import router as govinfo_mcp_router  # noqa: E402 — official 
 from harvests_api import router as harvests_router  # noqa: E402
 from intelligence_api import router as intelligence_router  # noqa: E402
 from opportunity_api import router as opportunity_router  # noqa: E402
+from intelligence_os_api import router as intelligence_os_router  # noqa: E402
 from marketplace_api import router as marketplace_router  # noqa: E402
 from models_api import router as models_router  # noqa: E402
 from portfolio_api import router as portfolio_router  # noqa: E402
@@ -327,6 +328,7 @@ app.include_router(govinfo_mcp_router)
 app.include_router(harvests_router)
 app.include_router(intelligence_router)
 app.include_router(opportunity_router)
+app.include_router(intelligence_os_router)
 app.include_router(marketplace_router)
 app.include_router(models_router)
 app.include_router(portfolio_router)

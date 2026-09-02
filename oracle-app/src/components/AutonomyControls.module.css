@@ -1,0 +1,172 @@
+/* ─── Autonomy controls ───────────────────────────────────────────────────
+   A settings screen that argues for itself. Locked rows stay visible because
+   a product that shows the things it refuses to automate is more trustworthy
+   than one that quietly omits them.
+   ──────────────────────────────────────────────────────────────────────── */
+
+.shell {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+  padding: var(--space-5);
+  max-width: 48rem;
+  margin-inline: auto;
+}
+
+.header { display: flex; flex-direction: column; gap: var(--space-2); }
+
+.title {
+  margin: 0;
+  font: 600 var(--text-xl) / 1.2 var(--font-display, var(--font-sans));
+  letter-spacing: -0.015em;
+  color: var(--oracle-text-heading);
+}
+
+.subtitle {
+  margin: 0;
+  font-size: var(--text-sm);
+  line-height: 1.6;
+  color: var(--oracle-text-dim);
+  max-width: 56ch;
+}
+
+.notice {
+  margin: 0;
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--oracle-amber-dim);
+  font-size: var(--text-sm);
+  line-height: 1.55;
+  color: var(--oracle-text);
+}
+
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.row {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--oracle-border-subtle);
+  background: var(--oracle-glass);
+}
+
+.rowHead {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.rowLabel {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin: 0 0 2px;
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--oracle-text-heading);
+}
+
+.lockIcon { color: var(--oracle-text-ghost); flex-shrink: 0; }
+
+.rowDetail {
+  margin: 0;
+  font-size: var(--text-xs);
+  line-height: 1.5;
+  color: var(--oracle-text-dim);
+}
+
+.defaultTag {
+  flex-shrink: 0;
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--oracle-border-subtle);
+  font: var(--text-xs) / 1.4 var(--font-mono);
+  color: var(--oracle-text-ghost);
+}
+
+.levels {
+  display: flex;
+  gap: var(--space-1);
+  padding: 3px;
+  border-radius: var(--radius-sm);
+  background: var(--oracle-backdrop, transparent);
+  border: 1px solid var(--oracle-border-subtle);
+  width: fit-content;
+}
+
+.level {
+  padding: var(--space-2) var(--space-3);
+  border-radius: calc(var(--radius-sm) - 1px);
+  border: none;
+  background: transparent;
+  color: var(--oracle-text-dim);
+  font: 500 var(--text-xs) / 1 var(--font-sans);
+  cursor: pointer;
+  transition: background 120ms ease, color 120ms ease;
+}
+
+.level:hover:not(:disabled) { color: var(--oracle-text); }
+.level:focus-visible { outline: 2px solid var(--oracle-gold); outline-offset: 1px; }
+
+.levelActive {
+  background: var(--oracle-glass-active);
+  color: var(--oracle-gold);
+  font-weight: 600;
+}
+
+/* Not merely faded — a blocked option is a stated rule, and the row's
+   ceiling_reason spells it out below. Opacity alone would read as "loading". */
+.levelBlocked {
+  opacity: 0.35;
+  cursor: not-allowed;
+  text-decoration: line-through;
+}
+
+.ceilingReason {
+  margin: 0;
+  font-size: var(--text-xs);
+  line-height: 1.55;
+  color: var(--oracle-text-ghost);
+  max-width: 60ch;
+}
+
+.skeleton {
+  height: 5rem;
+  border-radius: var(--radius-md);
+  background: var(--oracle-glass);
+  animation: pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 0.5; }
+  50% { opacity: 0.85; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .skeleton { animation: none; opacity: 0.6; }
+}
+
+.error {
+  margin: 0;
+  padding: var(--space-4);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--oracle-red-dim);
+  font-size: var(--text-sm);
+  color: var(--oracle-text);
+}
+
+@media (max-width: 719px) {
+  .shell { padding: var(--space-4) var(--space-3); }
+  .levels { width: 100%; }
+  .level { flex: 1; }
+}

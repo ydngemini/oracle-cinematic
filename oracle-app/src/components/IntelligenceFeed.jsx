@@ -28,7 +28,7 @@ import styles from './IntelligenceFeed.module.css';
  *    to tell those apart or the first surprise destroys their trust in it.
  */
 
-function ConfidenceMeter({ value }) {
+export function ConfidenceMeter({ value }) {
   const pct = Math.round((value ?? 0) * 100);
   // Three bands, because "78%" alone does not tell an agent whether to act.
   const band = pct >= 80 ? 'High' : pct >= 60 ? 'Moderate' : 'Tentative';
@@ -52,7 +52,7 @@ function ConfidenceMeter({ value }) {
   );
 }
 
-function EvidenceList({ items }) {
+export function EvidenceList({ items }) {
   if (!items?.length) return null;
   return (
     <dl className={styles.evidence}>
@@ -70,7 +70,7 @@ function EvidenceList({ items }) {
   );
 }
 
-function OpportunityCard({ opportunity, rank }) {
+export function OpportunityCard({ opportunity, rank }) {
   const kind = String(opportunity.kind || '').replace(/_/g, ' ');
   return (
     <article className={styles.card} aria-labelledby={`opp-${rank}-subject`}>

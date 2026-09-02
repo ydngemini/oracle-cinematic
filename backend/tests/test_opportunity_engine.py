@@ -142,3 +142,23 @@ def test_perception_reports_the_behavioural_gap_rather_than_implying_silence():
         "actionable card, and that count is a data-acquisition gap the agent "
         "should see rather than a quiet week"
     )
+
+
+def test_data_gap_evidence_renders_the_label_not_the_dict():
+    """`data_gaps` holds {"code", "label"} objects.
+
+    Stringifying the whole object put a Python repr on the agent's screen —
+    braces, single quotes and all — under a heading of "Unknown". Caught by
+    looking at the rendered page, not by any test that existed at the time.
+    """
+    rendered = oe.gap_label({"code": "contact-history", "label": "No recorded contact"})
+    assert rendered == "No recorded contact"
+    assert "{" not in rendered and "'" not in rendered
+
+
+def test_data_gap_falls_back_to_code_then_to_nothing():
+    """A producer that omits the label should degrade, not print a dict."""
+    assert oe.gap_label({"code": "source"}) == "source"
+    assert oe.gap_label({}) == ""
+    assert oe.gap_label(None) == ""
+    assert oe.gap_label("plain string") == "plain string"

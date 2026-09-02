@@ -15,6 +15,7 @@ import {
   CheckCircle2,
   CircleDashed,
   FileCheck2,
+  Gauge,
   Globe2,
   House,
   Mail,
@@ -29,6 +30,7 @@ import {
   Search,
   Share2,
   ShieldCheck,
+  SlidersHorizontal,
   Smartphone,
   Sparkles,
   Users,
@@ -41,6 +43,10 @@ import styles from './OurAITab.module.css';
 const PersonalAITab = lazy(() => import('./PersonalAITab'));
 const IntelligenceFeed = lazy(() =>
   import('./IntelligenceFeed').then((m) => ({ default: m.IntelligenceFeed })));
+const CommandCenter = lazy(() =>
+  import('./CommandCenter').then((m) => ({ default: m.CommandCenter })));
+const AutonomyControls = lazy(() =>
+  import('./AutonomyControls').then((m) => ({ default: m.AutonomyControls })));
 const SalesWorkspace = lazy(() => import('./SalesWorkspace'));
 const StudioTab = lazy(() => import('./StudioTab'));
 
@@ -49,6 +55,10 @@ const WORKSPACE_KEY = 'oracle_ai_workspace';
 const WORKSPACES = [
   // First on purpose. The promise is that Neoh says what needs attention
   // before the agent thinks to ask; opening on a prompt would contradict it.
+  // Command leads Intelligence because it answers the broader question — what
+  // changed, what it is worth, what is coming — and the feed is one section of
+  // that answer seen on its own.
+  { id: 'command', label: 'Command', Icon: Gauge },
   { id: 'intelligence', label: 'Intelligence', Icon: Radar },
   { id: 'cowork', label: 'Cowork', Icon: Bot },
   { id: 'sales', label: 'Sales', Icon: PhoneCall },
@@ -56,6 +66,9 @@ const WORKSPACES = [
   { id: 'homeowners', label: 'Homeowners', Icon: House },
   { id: 'automations', label: 'Automations', Icon: Workflow },
   { id: 'sites', label: 'Sites', Icon: Globe2 },
+  // Last, and deliberately not hidden in a settings menu: what the AI may do
+  // unattended is a decision the agent should meet, not go looking for.
+  { id: 'autonomy', label: 'Autonomy', Icon: SlidersHorizontal },
 ];
 
 const SOURCES = [
@@ -86,9 +99,12 @@ const STATUS = {
 };
 
 function savedWorkspace() {
-  if (typeof window === 'undefined') return 'cowork';
+  // Defaults to the briefing, not the chat. The product claim is that Neoh
+  // says what matters before being asked; landing on a prompt would put the
+  // burden of the first question back on the agent.
+  if (typeof window === 'undefined') return 'command';
   const stored = window.sessionStorage.getItem(WORKSPACE_KEY);
-  return WORKSPACES.some((workspace) => workspace.id === stored) ? stored : 'cowork';
+  return WORKSPACES.some((workspace) => workspace.id === stored) ? stored : 'command';
 }
 
 function hasOwn(object, key) {
@@ -675,9 +691,17 @@ export default function OurAITab({
         role="tabpanel"
         aria-labelledby={`ai-workspace-tab-${activeWorkspace.id}`}
       >
-        {activeWorkspace.id === 'intelligence' ? (
+        {activeWorkspace.id === 'command' ? (
+          <Suspense fallback={null}>
+            <CommandCenter />
+          </Suspense>
+        ) : activeWorkspace.id === 'intelligence' ? (
           <Suspense fallback={null}>
             <IntelligenceFeed />
+          </Suspense>
+        ) : activeWorkspace.id === 'autonomy' ? (
+          <Suspense fallback={null}>
+            <AutonomyControls />
           </Suspense>
         ) : activeWorkspace.id === 'cowork' ? (
           <>

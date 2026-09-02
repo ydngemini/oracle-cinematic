@@ -89,6 +89,13 @@ class Opportunity:
     #: True only where acting is reversible AND needs no human judgement, so
     #: "Handle all safe opportunities" cannot send an irreversible thing.
     safe_to_automate: bool = False
+    #: When this stops being actionable, ISO-8601. Only ever set from a date
+    #: that exists in the database — the Command Center files an opportunity
+    #: with no deadline under "Watching" rather than inventing urgency for it,
+    #: because a fabricated deadline trains the agent to ignore the real ones.
+    deadline: Optional[str] = None
+    #: Shape of the work, for costing in expected_value. Not the action itself.
+    action_type: str = "call"
 
     def score(self) -> float:
         """Ranking utility. Confidence gates it; value only breaks ties.
@@ -223,8 +230,29 @@ async def _contract_deadline_opportunities(conn, ctx: TenantContext) -> list[Opp
             )],
             # A deadline needs a judgement call about the deal, not a template.
             safe_to_automate=False,
+            deadline=r["contract_expires_at"].isoformat(),
+            action_type="review",
         ))
     return out
+
+
+
+def gap_label(gap: Any) -> str:
+    """The human sentence for one `data_gaps` entry.
+
+    Entries are {"code": ..., "label": ...} objects. An earlier version passed
+    the whole dict through str(), which put a Python repr on the agent's screen
+    — braces, single quotes and all — under a heading of "Unknown". The label is
+    the sentence written for a person; the code is only the machine handle, and
+    is a poor but survivable fallback when a producer omits the label.
+    """
+    if isinstance(gap, dict):
+        text = gap.get("label") or gap.get("code") or ""
+    elif gap is None:
+        text = ""
+    else:
+        text = str(gap)
+    return str(text)[:120]
 
 
 async def _intent_model_opportunities(conn, ctx: TenantContext) -> list[Opportunity]:
@@ -280,8 +308,12 @@ async def _intent_model_opportunities(conn, ctx: TenantContext) -> list[Opportun
                 source="client_ai_state.summary",
             ))
         for gap in (gaps or [])[:3]:
+            text = gap_label(gap)
+            if not text:
+                continue
             evidence.append(Evidence(
-                label="Unknown", value=str(gap)[:120], source="client_ai_state.data_gaps",
+                label="Not known", value=text,
+                source="client_ai_state.data_gaps",
             ))
         out.append(Opportunity(
             kind="next_best_action",
