@@ -205,11 +205,37 @@ escape hatch and was deliberately enabled.
 
 ---
 
+## 9. Voice and telephony — no carrier at all
+
+~~`TWILIO_ACCOUNT_SID` and `TWILIO_AUTH_TOKEN` are set. SMS and call controls reach
+real phone numbers.~~ **Re-measured 2026-09-02 and that is no longer true.**
+
+| Layer | State |
+|---|---|
+| TTS (ElevenLabs) | **works** — synthesised a real 10,467-byte MP3 |
+| STT (`voice_intel`, local Whisper) | imports clean, no external dependency |
+| Voice code path | complete and covered by the suite |
+| **Twilio credentials** | **401 Unauthorized.** SID is well-formed (`AC`+34) and the token is 32 chars, so they are structurally valid but rejected — rotated, suspended, or the account closed |
+| `TWILIO_API_KEY` | **UNSET while `TWILIO_API_SECRET` is set** — a half-configured pair |
+| ACS | entirely unset, and its subscription is disabled regardless |
+| **`provider_credentials` rows** | **zero, for every provider.** No tenant can place or receive a call |
+| `ORACLE_PUBLIC_BASE_URL` | unset — no webhook callback URL, so even with a working carrier no inbound call or call-progress event can reach the app. Needs the domain (item 1) |
+| `DASHSCOPE_API_KEY` | unset — Qwen Omni realtime unavailable; turn-based TTS/STT still works |
+| `ORACLE_ACS_WEBHOOK_SECRET` | unset — required in prod when webhooks are enabled |
+
+The app degrades honestly: `configured` is computed per tenant from
+`provider_credentials.validation_status`, not from the env, so with no rows it
+correctly reports voice, SMS and email as unavailable rather than failing at
+call time.
+
+**Order of operations:** a working carrier and a number → `ORACLE_PUBLIC_BASE_URL`
+(blocked on item 1) → optionally `DASHSCOPE_API_KEY` for conversational realtime
+voice rather than turn-based.
+
 ## Not a blocker, but live
 
-`TWILIO_ACCOUNT_SID` and `TWILIO_AUTH_TOKEN` are set. SMS and call controls reach real
-phone numbers, and the database holds 100 real Delaware leads. Email
-(`SENDGRID_API_KEY`, `SMTP_HOST`) and ElevenLabs are unset and fail closed.
+The database holds 100 real Delaware leads. Email (`SENDGRID_API_KEY`,
+`SMTP_HOST`) is unset and fails closed. ElevenLabs **is** set and working.
 
 
 ---
