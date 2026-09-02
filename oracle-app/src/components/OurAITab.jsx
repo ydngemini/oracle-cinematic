@@ -24,6 +24,7 @@ import {
   PhoneCall,
   PlugZap,
   RefreshCw,
+  Radar,
   Route,
   Search,
   Share2,
@@ -38,12 +39,17 @@ import { useAssistant } from './AssistantContext';
 import styles from './OurAITab.module.css';
 
 const PersonalAITab = lazy(() => import('./PersonalAITab'));
+const IntelligenceFeed = lazy(() =>
+  import('./IntelligenceFeed').then((m) => ({ default: m.IntelligenceFeed })));
 const SalesWorkspace = lazy(() => import('./SalesWorkspace'));
 const StudioTab = lazy(() => import('./StudioTab'));
 
 const WORKSPACE_KEY = 'oracle_ai_workspace';
 
 const WORKSPACES = [
+  // First on purpose. The promise is that Neoh says what needs attention
+  // before the agent thinks to ask; opening on a prompt would contradict it.
+  { id: 'intelligence', label: 'Intelligence', Icon: Radar },
   { id: 'cowork', label: 'Cowork', Icon: Bot },
   { id: 'sales', label: 'Sales', Icon: PhoneCall },
   { id: 'social', label: 'Social', Icon: Share2 },
@@ -669,7 +675,11 @@ export default function OurAITab({
         role="tabpanel"
         aria-labelledby={`ai-workspace-tab-${activeWorkspace.id}`}
       >
-        {activeWorkspace.id === 'cowork' ? (
+        {activeWorkspace.id === 'intelligence' ? (
+          <Suspense fallback={null}>
+            <IntelligenceFeed />
+          </Suspense>
+        ) : activeWorkspace.id === 'cowork' ? (
           <>
             <MetricRail items={[
               { label: 'CRM relationships', value: formatNumber(data.contacts.length || data.clients.length), detail: `${formatNumber(data.clients.length)} opportunities` },

@@ -1,0 +1,216 @@
+import { useCallback, useEffect, useState } from 'react';
+import { crmGet } from '../state/useCrmApi';
+import styles from './IntelligenceFeed.module.css';
+
+/**
+ * The Intelligence Feed — what needs attention, why, and what to do next.
+ *
+ * Deliberately not a chat box. A prompt makes the agent responsible for
+ * knowing what to ask, which is the hard half of the job; a ranked feed makes
+ * the system responsible for it. The order of these cards IS the product
+ * claim, which is why this is a column and not a grid — a grid presents eight
+ * things as equally important and throws the ranking away.
+ *
+ * Three rules the surface keeps, because breaking any one turns a finding back
+ * into a claim:
+ *
+ * 1. **Every card shows its evidence, expanded.** Not behind a disclosure. A
+ *    citation the agent never opens is the same as no citation, and the whole
+ *    reason to trust a ranked feed is being able to check why something ranked.
+ *
+ * 2. **Confidence is a bar, a number and a word.** Colour alone fails anyone
+ *    who cannot separate amber from blue, and this is the figure a decision
+ *    gets staked on.
+ *
+ * 3. **The perception strip sits above the cards, not below them.** An empty
+ *    feed because it was a quiet week and an empty feed because nothing is
+ *    being captured look identical from the outside. The agent has to be able
+ *    to tell those apart or the first surprise destroys their trust in it.
+ */
+
+function ConfidenceMeter({ value }) {
+  const pct = Math.round((value ?? 0) * 100);
+  // Three bands, because "78%" alone does not tell an agent whether to act.
+  const band = pct >= 80 ? 'High' : pct >= 60 ? 'Moderate' : 'Tentative';
+  return (
+    <div className={styles.confidence}>
+      <div
+        className={styles.meter}
+        role="meter"
+        aria-valuenow={pct}
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-label={`Confidence ${pct} percent, ${band}`}
+      >
+        <span
+          className={`${styles.meterFill} ${pct >= 80 ? styles.meterFillHigh : ''}`}
+          style={{ right: `${100 - pct}%` }}
+        />
+      </div>
+      <span className={styles.confidenceText}>{pct}% · {band}</span>
+    </div>
+  );
+}
+
+function EvidenceList({ items }) {
+  if (!items?.length) return null;
+  return (
+    <dl className={styles.evidence}>
+      {items.map((item, i) => (
+        <div className={styles.evidenceRow} key={`${item.source}-${i}`}>
+          <dt className={styles.evidenceLabel}>{item.label}</dt>
+          <dd className={styles.evidenceValue}>
+            {item.value}
+            {' '}
+            <span className={styles.evidenceSource}>({item.source})</span>
+          </dd>
+        </div>
+      ))}
+    </dl>
+  );
+}
+
+function OpportunityCard({ opportunity, rank }) {
+  const kind = String(opportunity.kind || '').replace(/_/g, ' ');
+  return (
+    <article className={styles.card} aria-labelledby={`opp-${rank}-subject`}>
+      <span className={styles.rank} aria-hidden="true">{String(rank).padStart(2, '0')}</span>
+      <div>
+        <div className={styles.cardHead}>
+          <h3 className={styles.subject} id={`opp-${rank}-subject`}>{opportunity.subject}</h3>
+          <span className={styles.kind}>{kind}</span>
+        </div>
+        <p className={styles.headline}>{opportunity.headline}</p>
+        <p className={styles.why}>{opportunity.why}</p>
+        <p className={styles.action}>
+          <span className={styles.actionLabel}>Next</span>
+          {opportunity.recommended_action}
+        </p>
+        <ConfidenceMeter value={opportunity.confidence} />
+        <EvidenceList items={opportunity.evidence} />
+      </div>
+    </article>
+  );
+}
+
+function PerceptionStrip({ perception }) {
+  if (!perception) return null;
+  const unreachable = perception.high_motivation_unreachable ?? 0;
+  const blind = perception.behavioural_detectors_active === false;
+  return (
+    <section className={styles.perception} aria-label="What this feed can currently see">
+      <div className={styles.metric}>
+        <span className={styles.metricValue}>{perception.clients ?? 0}</span>
+        <span className={styles.metricLabel}>clients</span>
+      </div>
+      <div className={styles.metric}>
+        <span className={styles.metricValue}>{perception.clients_with_intent_model ?? 0}</span>
+        <span className={styles.metricLabel}>with an intent model</span>
+      </div>
+      <div className={`${styles.metric} ${blind ? styles.metricWarn : ''}`}>
+        <span className={styles.metricValue}>{perception.interaction_signals ?? 0}</span>
+        <span className={styles.metricLabel}>behavioural signals</span>
+      </div>
+      {unreachable > 0 && (
+        <div className={`${styles.metric} ${styles.metricWarn}`}>
+          <span className={styles.metricValue}>{unreachable.toLocaleString()}</span>
+          <span className={styles.metricLabel}>scored but unreachable</span>
+        </div>
+      )}
+      {blind && <p className={styles.blind}>{perception.note}</p>}
+      {unreachable > 0 && (
+        <p className={styles.blind}>
+          {unreachable.toLocaleString()} records score highly on the motivation model but
+          carry no street address, so they cannot become an opportunity you could act on.
+          That is a data-acquisition gap, not a quiet week.
+        </p>
+      )}
+    </section>
+  );
+}
+
+export function IntelligenceFeed() {
+  const [state, setState] = useState({ status: 'loading', data: null, error: null });
+
+  const load = useCallback(async (isCancelled = () => false) => {
+    setState((s) => ({ ...s, status: 'loading' }));
+    try {
+      const data = await crmGet('/api/opportunities');
+      if (!isCancelled()) setState({ status: 'ready', data, error: null });
+    } catch (error) {
+      if (!isCancelled()) setState({ status: 'error', data: null, error });
+    }
+  }, []);
+
+  useEffect(() => {
+    // Deferred out of the effect body and cancellable, matching
+    // IntelligenceAuthoring: a scan takes long enough that a remount can leave
+    // two in flight, and without the guard the slower, older response wins and
+    // repaints a feed the agent has already navigated away from.
+    let cancelled = false;
+    const frame = window.requestAnimationFrame(() => { void load(() => cancelled); });
+    return () => { cancelled = true; window.cancelAnimationFrame(frame); };
+  }, [load]);
+
+  if (state.status === 'loading') {
+    return (
+      <div className={styles.feed} aria-busy="true" aria-label="Scanning for opportunities">
+        {[0, 1, 2].map((i) => <div className={styles.skeleton} key={i} />)}
+      </div>
+    );
+  }
+
+  if (state.status === 'error') {
+    return (
+      <div className={styles.feed}>
+        <div className={styles.error} role="alert">
+          <h2 className={styles.emptyTitle}>The scan could not run</h2>
+          <p className={styles.emptyBody}>
+            {state.error?.message || 'The opportunities service did not respond.'}
+          </p>
+          <button type="button" onClick={() => load()}>Try again</button>
+        </div>
+      </div>
+    );
+  }
+
+  const { opportunities = [], perception, scanned_at: scannedAt } = state.data || {};
+
+  return (
+    <div className={styles.feed}>
+      <header className={styles.header}>
+        <h2 className={styles.title}>
+          {opportunities.length > 0
+            ? `${opportunities.length} ${opportunities.length === 1 ? 'opportunity' : 'opportunities'}`
+            : 'Nothing needs attention'}
+        </h2>
+        {scannedAt && (
+          <span className={styles.scanned}>
+            scanned {new Date(scannedAt).toLocaleTimeString()}
+          </span>
+        )}
+      </header>
+
+      <PerceptionStrip perception={perception} />
+
+      {opportunities.length === 0 ? (
+        <div className={styles.empty} role="status">
+          <h3 className={styles.emptyTitle}>No opportunities above the confidence floor</h3>
+          <p className={styles.emptyBody}>
+            Findings below 45% confidence are withheld rather than shown, because a
+            low-confidence guess costs more trust than a missed lead earns. The strip above
+            says what this scan could see.
+          </p>
+        </div>
+      ) : (
+        <ol role="list" style={{ listStyle: 'none', margin: 0, padding: 0, display: 'grid', gap: 'var(--space-4)' }}>
+          {opportunities.map((opportunity, i) => (
+            <li key={`${opportunity.kind}-${opportunity.subject_id || i}`}>
+              <OpportunityCard opportunity={opportunity} rank={i + 1} />
+            </li>
+          ))}
+        </ol>
+      )}
+    </div>
+  );
+}

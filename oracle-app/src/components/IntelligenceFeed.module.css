@@ -1,0 +1,264 @@
+/* ─── IntelligenceFeed — what needs attention, why, and what to do ────────
+   Not a chat box and not a card grid. A ranked column the agent reads
+   top-down, because the whole claim of this surface is that the ORDER is the
+   intelligence. A uniform grid would throw that away.
+
+   Every card carries its evidence and its confidence inline. Hiding either
+   behind a disclosure would make the feed feel authoritative in exactly the
+   way it must not.
+   ──────────────────────────────────────────────────────────────────────── */
+
+.feed {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  padding: var(--space-5);
+  max-width: 62rem;
+  margin-inline: auto;
+}
+
+.header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-4);
+  flex-wrap: wrap;
+}
+
+.title {
+  margin: 0;
+  font-size: var(--text-lg);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--oracle-ivory);
+}
+
+.scanned {
+  color: var(--oracle-silver);
+  font: var(--text-xs) / var(--leading-normal) var(--font-mono);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+/* ── Perception strip ──────────────────────────────────────────────────
+   Deliberately above the cards, not buried in a footer. An empty feed and a
+   blind feed look identical from the outside, and the agent's trust depends
+   on being able to tell them apart at a glance. */
+.perception {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3) var(--space-5);
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-md);
+  background: var(--oracle-glass);
+  border: 1px solid var(--oracle-border-subtle);
+}
+
+.metric { display: flex; flex-direction: column; gap: 2px; }
+
+.metricValue {
+  font: 600 var(--text-base) / 1 var(--font-mono);
+  color: var(--oracle-ivory);
+  font-variant-numeric: tabular-nums;
+}
+
+.metricLabel {
+  font-size: var(--text-xs);
+  color: var(--oracle-silver);
+}
+
+/* A gap in what the system can see is a warning, not a neutral statistic. */
+.metricWarn .metricValue { color: var(--oracle-amber); }
+
+.blind {
+  flex-basis: 100%;
+  margin: 0;
+  padding-top: var(--space-2);
+  border-top: 1px solid var(--oracle-border-subtle);
+  font-size: var(--text-sm);
+  line-height: var(--leading-relaxed);
+  color: var(--oracle-silver);
+}
+
+/* ── Card ──────────────────────────────────────────────────────────────── */
+.card {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: var(--space-2) var(--space-4);
+  padding: var(--space-4);
+  border-radius: var(--radius-lg);
+  background: var(--oracle-glass);
+  border: 1px solid var(--oracle-glass-edge);
+  box-shadow: var(--shadow-e1);
+}
+
+/* Rank is the point of the feed, so it is the first thing on the row. */
+.rank {
+  grid-row: 1 / -1;
+  align-self: start;
+  min-width: 2.25rem;
+  padding-top: 2px;
+  font: 600 var(--text-sm) / 1 var(--font-mono);
+  color: var(--oracle-bronze);
+  font-variant-numeric: tabular-nums;
+}
+
+.cardHead {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+
+.subject {
+  margin: 0;
+  font-size: var(--text-base);
+  font-weight: 600;
+  color: var(--oracle-ivory);
+}
+
+.kind {
+  padding: 2px var(--space-2);
+  border-radius: var(--radius-pill);
+  background: var(--oracle-amber-ghost);
+  color: var(--oracle-amber);
+  font: var(--text-xs) / 1.6 var(--font-mono);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.headline {
+  margin: 0;
+  font-size: var(--text-sm);
+  font-weight: 500;
+  color: var(--oracle-amber-bright);
+}
+
+.why {
+  margin: 0;
+  font-size: var(--text-sm);
+  line-height: var(--leading-relaxed);
+  color: var(--oracle-silver);
+}
+
+.action {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--oracle-ivory);
+}
+
+.actionLabel {
+  color: var(--oracle-bronze);
+  font: var(--text-xs) / 1 var(--font-mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  margin-right: var(--space-2);
+}
+
+/* ── Confidence ────────────────────────────────────────────────────────
+   A bar AND a number AND a word. Colour alone would fail anyone who cannot
+   distinguish amber from blue, and this is the value the agent is being asked
+   to stake a decision on. */
+.confidence {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-top: var(--space-1);
+}
+
+.meter {
+  position: relative;
+  width: 5.5rem;
+  height: 4px;
+  border-radius: var(--radius-pill);
+  background: var(--oracle-border-subtle);
+  overflow: hidden;
+}
+
+.meterFill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: inherit;
+  background: var(--oracle-amber);
+}
+
+.meterFillHigh { background: var(--oracle-blue); }
+
+.confidenceText {
+  font: var(--text-xs) / 1 var(--font-mono);
+  color: var(--oracle-silver);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Evidence ──────────────────────────────────────────────────────────
+   Open by default. The moment this is a disclosure the agent stops reading
+   it, and an unread citation is the same as no citation. */
+.evidence {
+  margin: var(--space-2) 0 0;
+  padding: var(--space-2) var(--space-3);
+  border-left: 2px solid var(--oracle-border);
+  display: grid;
+  gap: var(--space-1);
+}
+
+.evidenceRow {
+  display: flex;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  font-size: var(--text-xs);
+  line-height: var(--leading-normal);
+}
+
+.evidenceLabel { color: var(--oracle-bronze); min-width: 8rem; }
+.evidenceValue { color: var(--oracle-ivory); }
+.evidenceSource {
+  color: var(--oracle-silver);
+  font-family: var(--font-mono);
+  opacity: 0.75;
+}
+
+/* ── States ────────────────────────────────────────────────────────────── */
+.empty, .error {
+  padding: var(--space-10) var(--space-5);
+  text-align: center;
+  border-radius: var(--radius-lg);
+  border: 1px dashed var(--oracle-border);
+}
+
+.emptyTitle {
+  margin: 0 0 var(--space-2);
+  font-size: var(--text-base);
+  color: var(--oracle-ivory);
+}
+
+.emptyBody {
+  margin: 0 auto;
+  max-width: 34rem;
+  font-size: var(--text-sm);
+  line-height: var(--leading-relaxed);
+  color: var(--oracle-silver);
+}
+
+.skeleton {
+  height: 7.5rem;
+  border-radius: var(--radius-lg);
+  background: var(--oracle-glass);
+  border: 1px solid var(--oracle-border-subtle);
+  animation: pulse 1.6s var(--ease-in-out) infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 0.5; }
+  50%      { opacity: 0.85; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .skeleton { animation: none; }
+}
+
+@media (max-width: 719px) {
+  .feed { padding: var(--space-3); }
+  .card { grid-template-columns: minmax(0, 1fr); }
+  .rank { grid-row: auto; }
+  .evidenceLabel { min-width: 0; }
+}
