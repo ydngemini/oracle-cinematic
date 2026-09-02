@@ -101,7 +101,10 @@ function DecisionBar({ opportunity, rank, onDecided }) {
     try {
       const created = await crmPost('/api/agent-twin/decisions', {
         opportunity_kind: opportunity.kind,
-        subject_type: 'client',
+        // Stated by the engine per card. This used to be hardcoded 'client',
+        // which filed every lead-anchored decision under a type it was not and
+        // left Outcome Memory unable to join any of them back.
+        subject_type: opportunity.subject_type || 'client',
         subject_id: String(opportunity.subject_id ?? ''),
         recommended_action: String(opportunity.recommended_action ?? '').slice(0, 500),
         outcome,

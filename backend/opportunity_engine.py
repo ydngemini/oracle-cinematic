@@ -96,6 +96,13 @@ class Opportunity:
     deadline: Optional[str] = None
     #: Shape of the work, for costing in expected_value. Not the action itself.
     action_type: str = "call"
+    #: What subject_id points at. The distress detector emits leads.id, the
+    #: contract detector emits a client id when the lead names one and the
+    #: lead id otherwise — and the feed used to post every decision to the
+    #: twin as subject_type='client'. Every lead-anchored decision was filed
+    #: under a type it was not, and Outcome Memory's join could never reach
+    #: it. Stated per card because it cannot be inferred from the id.
+    subject_type: str = "client"
 
     def score(self) -> float:
         """Ranking utility. Confidence gates it; value only breaks ties.
@@ -114,6 +121,14 @@ class Opportunity:
         out["score"] = self.score()
         return out
 
+
+#: NOTE ON SCOPING. Queries in this module carry `tenant_id = $1::uuid` bound
+#: to ctx.tenant_id. That is NOT the RLS-duplication anti-pattern fixed in
+#: belief_store and intent_states — it is a BUSINESS predicate. A briefing is
+#: one tenant's briefing: a platform admin, whom RLS lets read every tenant,
+#: must still be briefed about their own, not handed a pooled scan of the
+#: whole platform. agent_twin.policy() keeps its per-agent filter for the same
+#: reason. Do not "simplify" these away.
 
 async def perception_coverage(ctx: TenantContext) -> dict[str, Any]:
     """What this engine can and cannot currently see.
@@ -239,6 +254,7 @@ async def _contract_deadline_opportunities(conn, ctx: TenantContext) -> list[Opp
             kind="contract_deadline",
             subject=r["client_name"] or r["address"] or "Unnamed record",
             subject_id=r["client_id"] or r["id"],
+            subject_type="client" if r["client_id"] else "lead",
             headline=f"Contract expires in {days} day{'s' if days != 1 else ''}",
             why=(
                 f"{r['address'] or 'This property'} has a contract expiring "
@@ -396,6 +412,7 @@ async def _distress_opportunities(conn, ctx: TenantContext) -> list[Opportunity]
             kind="distress_signal",
             subject=f"{r['address']}, {r['state']}",
             subject_id=r["id"],
+            subject_type="lead",
             headline=f"Motivation score {score} — untouched",
             why=(
                 f"This record scores {score}/100 on the public-record motivation "

@@ -162,3 +162,32 @@ def test_data_gap_falls_back_to_code_then_to_nothing():
     assert oe.gap_label({}) == ""
     assert oe.gap_label(None) == ""
     assert oe.gap_label("plain string") == "plain string"
+
+
+# ── subject typing ──────────────────────────────────────────────────────────
+
+def test_every_opportunity_states_what_its_subject_id_points_at():
+    """The feed posts decisions to the twin keyed on (subject_type, subject_id).
+
+    The distress detector emits leads.id and the contract detector emits a
+    client id or a lead id depending on the row — and the frontend used to
+    hardcode 'client'. Every lead-anchored decision was filed under the wrong
+    type, and Outcome Memory's join could never reach it.
+    """
+    assert _opportunity().as_dict()["subject_type"] == "client"
+    assert _opportunity(subject_type="lead").as_dict()["subject_type"] == "lead"
+
+
+def test_lead_anchored_detectors_say_so():
+    """Static check, because the detectors need a connection to run. The
+    assignment has to be in the source, per detector, not inferred."""
+    import inspect
+
+    distress = inspect.getsource(oe._distress_opportunities)
+    assert 'subject_type="lead"' in distress
+
+    contract = inspect.getsource(oe._contract_deadline_opportunities)
+    assert 'subject_type="client" if r["client_id"] else "lead"' in contract
+
+    nba = inspect.getsource(oe._intent_model_opportunities)
+    assert "subject_type=" not in nba, "next_best_action is always a client; the default holds"
