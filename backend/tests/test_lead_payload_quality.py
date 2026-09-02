@@ -269,3 +269,59 @@ def test_targeted_public_reconciliation_binds_a_real_timestamp(monkeypatch):
     assert "NULLIF(EXCLUDED.land_use, '')" in query
     assert isinstance(args[0][27], datetime)
     assert args[0][27].tzinfo is not None
+
+
+def test_a_migration_indexes_the_current_payload_schema_version():
+    """Bumping LEAD_PAYLOAD_SCHEMA_VERSION must ship a matching partial index.
+
+    `normalize_public_leads` asks which harvested leads still carry a stale
+    payload envelope. Nothing can index that predicate in general, so migration
+    0086 indexes the *outstanding work* instead — a partial index whose WHERE
+    clause carries the schema version as a literal. When the constant matches,
+    the check is a probe of an empty index. When it does not, the planner
+    ignores the index and the query reverts to a measured 24.8s parallel seq
+    scan over 8.4M rows, which exceeds the pool's command_timeout=30 under load
+    and dead-letters the job with a bare `TimeoutError()`.
+
+    That regression is invisible — the job still returns correct results, just
+    slowly enough to die. So the coupling is asserted here rather than left to
+    be rediscovered from a dead-letter queue.
+    """
+    migrations = Path(__file__).parent.parent / "db" / "migrations"
+    files = sorted(migrations.glob("*.sql"))
+    corpus = {f.name: f.read_text() for f in files}
+    current = f"COALESCE(payload->>'schema_version', '') <> '{LEAD_PAYLOAD_SCHEMA_VERSION}'"
+
+    assert any(current in text for text in corpus.values()), (
+        f"LEAD_PAYLOAD_SCHEMA_VERSION is {LEAD_PAYLOAD_SCHEMA_VERSION} but no migration "
+        f"creates the partial index for it. Add one containing:\n  {current}\n"
+        "See 0086_normalization_and_owner_lookup_indexes.sql for the shape."
+    )
+
+    # The superseded index must also be dropped, and this is the more dangerous
+    # half. A predicate of `<> '3'` is EMPTY while the constant is 3 — that is
+    # what makes the probe free. Bump to 4, let the normalizer finish, and every
+    # row satisfies `<> '3'`, so the old index inflates from 0 to all 8.4M rows
+    # and every write to `leads` pays to maintain an index nothing reads. The
+    # bump guard above would still pass, because a new index was added.
+    stale = [
+        v for v in range(1, int(LEAD_PAYLOAD_SCHEMA_VERSION))
+        if any(f"COALESCE(payload->>'schema_version', '') <> '{v}'" in text
+               for text in corpus.values())
+    ]
+    for version in stale:
+        creating = [
+            name for name, text in corpus.items()
+            if f"COALESCE(payload->>'schema_version', '') <> '{version}'" in text
+            and "CREATE INDEX" in text
+        ]
+        dropped = any(
+            "DROP INDEX" in text and "idx_leads_pending_payload_normalization" in text
+            for text in corpus.values()
+        )
+        assert dropped, (
+            f"a partial index for the superseded schema version {version} is still "
+            f"created by {creating} and never dropped. Once the normalizer finishes, "
+            f"its predicate matches EVERY row, turning a deliberately-empty index into "
+            f"a full one on the hottest table. Add a DROP INDEX for it."
+        )

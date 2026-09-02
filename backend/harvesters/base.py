@@ -1078,19 +1078,34 @@ async def normalize_public_leads(
     examined = normalized = normalized_from_fallback = 0
     async with tenant_tx(ctx) as conn:
         while examined < safe_max_rows:
+            # The schema version is INLINED, not bound. Migration 0086's partial
+            # index carries this same value as a literal in its WHERE clause, and
+            # the planner can only prove the index covers the query while it can
+            # see both sides as constants. asyncpg prepares every statement, and
+            # under plan_cache_mode=auto PostgreSQL switches to a generic plan
+            # after five executions — at which point $1 is opaque,
+            # predicate_implied_by fails, and the index becomes unusable.
+            #
+            # Measured with plan_cache_mode=force_generic_plan: Parallel Seq Scan
+            # over 8.4M rows, 21.9s, versus 0.070ms on the index. That is a
+            # silent regression — correct rows, returned slowly enough to trip
+            # the pool's command_timeout=30 and dead-letter the job.
+            #
+            # Safe to interpolate: LEAD_PAYLOAD_SCHEMA_VERSION is an int constant
+            # defined at the top of this module, never user input. The int() call
+            # makes that structural rather than a promise.
             rows = await conn.fetch(
-                """
+                f"""
                 SELECT id,parcel_id,state,payload,underwriting,updated_at
                   FROM leads
                  WHERE (
                        underwriting->>'source' LIKE 'firehose:%'
                        OR underwriting->>'source' = 'md_sdat'
                  )
-                   AND COALESCE(payload->>'schema_version', '') <> $1
+                   AND COALESCE(payload->>'schema_version', '') <> '{int(LEAD_PAYLOAD_SCHEMA_VERSION)}'
                  ORDER BY updated_at ASC, id ASC
-                 LIMIT $2
+                 LIMIT $1
                 """,
-                str(LEAD_PAYLOAD_SCHEMA_VERSION),
                 min(safe_batch_size, safe_max_rows - examined),
             )
             if not rows:
