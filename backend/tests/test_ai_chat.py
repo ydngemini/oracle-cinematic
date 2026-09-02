@@ -519,8 +519,12 @@ def test_local_fallback_runs_a_tool_loop_through_the_safe_executor(monkeypatch):
 
     executed = []
 
-    async def fake_execute(ctx, agent_id, assistant_id, name, args, ctype, cid):
-        executed.append((name, args, ctype, cid))
+    async def fake_execute(ctx, agent_id, assistant_id, name, args, ctype, cid,
+                           call_index=None):
+        # call_index enrols the call in the execution ledger (migration 0087);
+        # it is recorded here so the loop's threading is covered by a real call
+        # rather than only by the structural check in test_ai_tool_operations.
+        executed.append((name, args, ctype, cid, call_index))
         # An applied mutation carries its ai_chat_actions row; a receipt without
         # one is not broadcast as an applied record change.
         return {"ok": True, "action_id": "act-1", "undoable": True,
@@ -557,7 +561,11 @@ def test_local_fallback_runs_a_tool_loop_through_the_safe_executor(monkeypatch):
     assert text == "Saved the note."
     assert len(actions) == 1
     # The tool ran through execute_safe_tool, carrying the anchor context.
-    assert executed == [("add_client_note", {"note": "prefers weekends"}, "client", "c-1")]
+    # call_index 0: first tool call of the turn, and the identity its execution
+    # ledger row is keyed on.
+    assert executed == [
+        ("add_client_note", {"note": "prefers weekends"}, "client", "c-1", 0)
+    ]
     # The tool result was fed back so the model could answer from the receipt.
     assert sent[1]["messages"][-1]["role"] == "tool"
     assert sent[1]["messages"][-1]["tool_call_id"] == "call_1"
@@ -641,7 +649,8 @@ def test_read_only_tool_results_are_not_broadcast_as_record_changes(monkeypatch)
     an Undo button that has no action_id to undo."""
     import ai_chat_agent
 
-    async def fake_execute(ctx, agent_id, assistant_id, name, args, ctype, cid):
+    async def fake_execute(ctx, agent_id, assistant_id, name, args, ctype, cid,
+                           call_index=None):
         return {"ok": True, "action_type": name, "clients": [{"id": "c-1"}]}
 
     responses = [
@@ -683,7 +692,8 @@ def test_local_fallback_keeps_receipts_for_writes_that_already_committed(monkeyp
     user is told nothing happened and their retry applies the change twice."""
     import ai_chat_agent
 
-    async def fake_execute(ctx, agent_id, assistant_id, name, args, ctype, cid):
+    async def fake_execute(ctx, agent_id, assistant_id, name, args, ctype, cid,
+                           call_index=None):
         return {"ok": True, "action_id": "a-1", "summary": "stage moved"}
 
     async def fake_chat(payload, **_kwargs):

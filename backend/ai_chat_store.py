@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -1020,9 +1021,181 @@ def _applied(
     }
 
 
+# ── Tool execution ledger (ai_tool_operations, migration 0087) ───────────────
+#
+# Makes an effectful tool call replay-safe: a second execution of the same
+# logical operation recognises the first and returns its receipt instead of
+# repeating the mutation. Read-only tools never participate.
+
+
+class ToolIdentityMismatch(Exception):
+    """Same (assistant_id, call_index) presented with different work.
+
+    Not a duplicate and not a new operation — evidence that a round we believed
+    was a replay has diverged. Executing either reading would be a guess.
+    """
+
+
+def _canonical_arguments_hash(tool_name: str, tool_input: dict) -> str:
+    """Stable fingerprint of the work a call is asking for.
+
+    Hashed rather than stored: arguments carry CRM values and this table is not
+    encrypted. sort_keys plus fixed separators means dict ordering and
+    incidental whitespace cannot make identical work look different.
+    """
+    try:
+        canonical = json.dumps(
+            tool_input, sort_keys=True, separators=(",", ":"), default=str,
+        )
+    except (TypeError, ValueError):
+        canonical = repr(sorted((tool_input or {}).items()))
+    return hashlib.sha256(f"{tool_name}\x00{canonical}".encode()).hexdigest()
+
+
+async def _ledger_replay(
+    conn, ctx: TenantContext, assistant_id: str, call_index: int,
+    tool_name: str, arguments_hash: str,
+) -> Optional[dict]:
+    """The receipt of a prior execution of this exact operation, or None.
+
+    None means no durable effect is on record, which is the only condition under
+    which the caller may execute. A 'failed' row also returns None: it is written
+    only after the mutation's transaction rolled back, so there is nothing to
+    protect and the work is safe to retry.
+    """
+    row = await conn.fetchrow(
+        """
+        SELECT tool_name, arguments_hash, status, result
+          FROM ai_tool_operations
+         WHERE tenant_id=$1::uuid AND assistant_id=$2::uuid AND call_index=$3
+        """,
+        ctx.tenant_id, assistant_id, call_index,
+    )
+    if row is None:
+        return None
+    if row["tool_name"] != tool_name or row["arguments_hash"] != arguments_hash:
+        raise ToolIdentityMismatch(
+            f"call_index {call_index} of this turn was {row['tool_name']}, "
+            f"now presented as {tool_name}"
+        )
+    if row["status"] != "completed":
+        return None
+    stored = row["result"]
+    if isinstance(stored, str):
+        try:
+            stored = json.loads(stored)
+        except json.JSONDecodeError:
+            stored = None
+    if isinstance(stored, dict):
+        return {**stored, "replayed": True}
+    # Committed without a receipt: _ledger_attach_result writes in a separate
+    # transaction, so a crash between the two loses the payload but not the
+    # claim. The mutation still happened — it commits with the claim — so a
+    # replay must still refuse to repeat it, and saying so plainly beats
+    # inventing a receipt.
+    return {
+        "ok": True,
+        "replayed": True,
+        "note": "This change was already applied earlier in this turn.",
+    }
+
+
+async def _ledger_claim(
+    conn, ctx: TenantContext, user_id: str, assistant_id: str, call_index: int,
+    tool_name: str, arguments_hash: str,
+) -> None:
+    """Take the operation's identity BEFORE its mutation runs.
+
+    The unique index is the mutex: a concurrent duplicate blocks here and, when
+    the winner commits, loses the insert rather than reaching the handler. That
+    ordering IS the concurrency guarantee — moving this after the mutation would
+    let both duplicates write and only then discover each other.
+
+    Written as 'completed' because it commits atomically with the mutation it
+    describes. If that mutation does not commit, this row never existed, which
+    is why there is no durable 'running' state to strand and no lease, heartbeat
+    or sweeper anywhere in this design.
+    """
+    await conn.execute(
+        """
+        INSERT INTO ai_tool_operations
+            (tenant_id,user_id,assistant_id,call_index,tool_name,arguments_hash,status)
+        VALUES ($1::uuid,$2,$3::uuid,$4,$5,$6,'completed')
+        """,
+        ctx.tenant_id, user_id, assistant_id, call_index, tool_name, arguments_hash,
+    )
+
+
+async def _ledger_attach_result(
+    ctx: TenantContext, assistant_id: str, call_index: int, receipt: dict,
+) -> None:
+    """Attach the receipt to a claim that has already committed.
+
+    Deliberately a SEPARATE transaction, and deliberately best-effort. The
+    correctness guarantee lives entirely in the claim, which commits atomically
+    with the mutation; this is a convenience so a replay hands the model back
+    exactly what it saw the first time. Losing it degrades the replay to the
+    plain "already applied" form — it never permits re-execution. Threading a
+    result back through every return path of a 540-line dispatcher to make this
+    atomic would buy nothing and put the transaction that matters at risk.
+    """
+    try:
+        async with tenant_tx(ctx) as conn:
+            await conn.execute(
+                """
+                UPDATE ai_tool_operations
+                   SET result=$1::jsonb, completed_at=now()
+                 WHERE tenant_id=$2::uuid AND assistant_id=$3::uuid
+                   AND call_index=$4 AND result IS NULL
+                """,
+                json.dumps(receipt, default=str), ctx.tenant_id,
+                assistant_id, call_index,
+            )
+    except Exception:  # noqa: BLE001 - see docstring
+        logger.warning(
+            "Tool operation receipt was not attached: assistant=%s call_index=%s",
+            assistant_id, call_index, exc_info=True,
+        )
+
+
+async def _ledger_record_failure(
+    ctx: TenantContext, user_id: str, assistant_id: str, call_index: int,
+    tool_name: str, arguments_hash: str, error_code: str,
+) -> None:
+    """Record that an attempt ran and did not commit — on a FRESH connection.
+
+    The transaction that held the claim has already rolled back, taking the
+    claim with it, so this cannot reuse that connection.
+
+    This never raises. A failure to record failure must not change what the tool
+    reports, or the ledger becomes a new availability dependency on the very
+    path that is already failing. ON CONFLICT DO NOTHING because a claim that
+    did commit is the authoritative record and must not be overwritten.
+    """
+    try:
+        async with tenant_tx(ctx) as conn:
+            await conn.execute(
+                """
+                INSERT INTO ai_tool_operations
+                    (tenant_id,user_id,assistant_id,call_index,tool_name,
+                     arguments_hash,status,error_code,completed_at)
+                VALUES ($1::uuid,$2,$3::uuid,$4,$5,$6,'failed',$7,now())
+                ON CONFLICT ON CONSTRAINT ai_tool_operations_identity DO NOTHING
+                """,
+                ctx.tenant_id, user_id, assistant_id, call_index, tool_name,
+                arguments_hash, error_code[:120],
+            )
+    except Exception:  # noqa: BLE001 - see docstring
+        logger.warning(
+            "Tool operation failure was not recorded: assistant=%s call_index=%s tool=%s",
+            assistant_id, call_index, tool_name, exc_info=True,
+        )
+
+
 async def _execute_safe_tool(
     ctx: TenantContext, user_id: str, message_id: str, tool_name: str,
     tool_input: dict, context_type: Optional[str], context_id: Optional[str],
+    call_index: Optional[int] = None,
 ) -> dict:
     needs_context = (
         tool_name not in _READ_ONLY_TOOLS
@@ -1038,7 +1211,25 @@ async def _execute_safe_tool(
     if needs_context and (not context_type or not context_id):
         return {"ok": False, "error": "Select the record you want me to update first."}
     key = tenant_key(ctx)
+    # Effectful tools only: the ~101 read-only tools would add ~100 inserts per
+    # turn on the hot path and have no effect to protect.
+    ledgered = call_index is not None and tool_name not in _READ_ONLY_TOOLS
+    arguments_hash = (
+        _canonical_arguments_hash(tool_name, tool_input) if ledgered else ""
+    )
     async with tenant_tx(ctx) as conn:
+        if ledgered:
+            replay = await _ledger_replay(
+                conn, ctx, message_id, call_index, tool_name, arguments_hash,
+            )
+            if replay is not None:
+                return replay
+            # BEFORE the dispatch chain below, never after: the unique index is
+            # what stops a concurrent duplicate from reaching a handler at all.
+            await _ledger_claim(
+                conn, ctx, user_id, message_id, call_index,
+                tool_name, arguments_hash,
+            )
         if tool_name in {
             "search_clients", "get_client_detail", "list_client_activity",
             "get_client_contact_history",
@@ -1566,24 +1757,64 @@ async def _execute_safe_tool(
 async def execute_safe_tool(
     ctx: TenantContext, user_id: str, message_id: str, tool_name: str,
     tool_input: dict, context_type: Optional[str], context_id: Optional[str],
+    call_index: Optional[int] = None,
 ) -> dict:
-    """Execute a tool and never report success unless its durable work completed."""
+    """Execute a tool and never report success unless its durable work completed.
+
+    `call_index` is the call's position within the assistant turn, and supplying
+    it is what enrols an effectful tool in the execution ledger (migration 0087).
+    It defaults to None so direct callers and tests keep the previous unledgered
+    behaviour rather than silently acquiring the identity 0.
+
+    Every exception path below means the dispatcher's transaction rolled back,
+    taking the claim with it — so each records a 'failed' row from a fresh
+    connection. That is strictly more than an absent row can say, because absence
+    cannot distinguish "never started" from "started and died".
+    """
+    ledgered = call_index is not None and tool_name not in _READ_ONLY_TOOLS
+    arguments_hash = (
+        _canonical_arguments_hash(tool_name, tool_input) if ledgered else ""
+    )
+
+    async def _failed(code: str) -> None:
+        if ledgered:
+            await _ledger_record_failure(
+                ctx, user_id, message_id, call_index, tool_name,
+                arguments_hash, code,
+            )
+
     try:
-        return await _execute_safe_tool(
+        receipt = await _execute_safe_tool(
             ctx, user_id, message_id, tool_name, tool_input,
-            context_type, context_id,
+            context_type, context_id, call_index,
         )
+    except ToolIdentityMismatch as exc:
+        logger.error("Tool call identity mismatch: %s", exc)
+        await _failed("TOOL_CALL_IDENTITY_MISMATCH")
+        return {
+            "ok": False,
+            "error": "This tool call conflicts with one already recorded for this turn.",
+        }
     except HTTPException as exc:
+        await _failed("HTTP_REJECTED")
         detail = exc.detail if isinstance(exc.detail, str) else "The request was rejected."
         return {"ok": False, "error": str(detail)[:500]}
     except (TypeError, ValueError) as exc:
+        await _failed("INVALID_TOOL_INPUT")
         return {"ok": False, "error": str(exc)[:500] or "The tool input is invalid."}
     except Exception:  # noqa: BLE001 - provider receives a safe, structured failure
         logger.exception("Personal AI tool mutation failed: tool=%s", tool_name)
+        await _failed("TOOL_HANDLER_ERROR")
         return {
             "ok": False,
             "error": "The requested change could not be persisted. No success was recorded.",
         }
+
+    # A replayed receipt already carries the first execution's stored result;
+    # re-attaching would overwrite that record with a copy of itself.
+    if ledgered and not receipt.get("replayed"):
+        await _ledger_attach_result(ctx, message_id, call_index, receipt)
+    return receipt
 
 
 async def _undo_field_restore(conn, ctx: TenantContext, action, *, key: str,

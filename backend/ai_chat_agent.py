@@ -729,6 +729,10 @@ async def _foundry_generate(
     await record_inference(ctx, response, idempotency_key=f"chat:{assistant_id}:foundry:0")
     actions: list[dict] = applied if applied is not None else []
 
+    # Monotonic across the WHOLE turn, not per round: the ledger's identity is
+    # (assistant_id, call_index), so a per-round counter would make round 2's
+    # first call collide with round 1's and replay the wrong receipt.
+    call_index = 0
     for round_index in range(2):
         tool_calls = [item for item in response.output if item.type == "function_call"]
         if not tool_calls:
@@ -744,8 +748,9 @@ async def _foundry_generate(
                 arguments = {}
             receipt = await execute_safe_tool(
                 ctx, ctx.agent_id, assistant_id, call.name, arguments,
-                context_type, context_id,
+                context_type, context_id, call_index,
             )
+            call_index += 1
             if _is_record_change(call.name, receipt):
                 actions.append(receipt)
             tool_outputs.append({
@@ -903,6 +908,9 @@ async def _local_fallback(
             )
         return await _local_chat(payload, url=url, api_key=api_key, timeout=timeout)
 
+    # See the Foundry loop: the ledger keys on (assistant_id, call_index), so
+    # this counts every tool call in the turn, across rounds.
+    call_index = 0
     for _ in range(_LOCAL_TOOL_ROUNDS):
         try:
             data = await _round()
@@ -955,10 +963,11 @@ async def _local_fallback(
             else:
                 receipt = await execute_safe_tool(
                     ctx, ctx.agent_id, assistant_id, name, arguments,
-                    context_type, context_id,
+                    context_type, context_id, call_index,
                 )
                 if _is_record_change(name, receipt):
                     actions.append(receipt)
+            call_index += 1
             messages.append(
                 {
                     "role": "tool",
