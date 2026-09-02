@@ -66,7 +66,7 @@ twilio==9.10.0
 
 # ── Voice intelligence ─────────────────────────────────────────────────────────
 python-multipart==0.0.31       # FastAPI multipart parsing for UploadFile in voice_intel.py
-pypdf==6.15.0                  # bounded text extraction for private record-bound PDF attachments
+pypdf==6.16.1                  # bounded text extraction for private record-bound PDF attachments
 faster-whisper==1.2.1          # Walkthrough transcription in voice_intel.py
                                # (lazy import — endpoint 503s gracefully if absent)
 
