@@ -707,6 +707,23 @@ async def _client_ai_catchup_task() -> dict:
     )
 
 
+async def _outcome_attribution_task() -> dict:
+    """Bind recorded outcomes to the decisions that earned them.
+
+    ``outcome_memory.record_outcome`` writes facts at the moment they happen;
+    this is the other clock, where a reply from Tuesday finds the text from
+    last week. Rows that match nothing are marked examined too — that is the
+    base rate, and skipping them would leave every rate without a denominator.
+    """
+    from outcome_memory import sweep_all_tenants
+
+    return await sweep_all_tenants(
+        per_tenant_limit=max(
+            1, min(1000, int(os.getenv("ORACLE_OUTCOME_ATTRIBUTION_BATCH", "200")))
+        ),
+    )
+
+
 async def _usage_meter_drain_task() -> dict:
     """Push locally-recorded usage to Stripe's meter.
 
@@ -839,6 +856,20 @@ def build_default_scheduler() -> PeriodicScheduler:
         ),
         run=_usage_meter_drain_task,
         enabled=os.getenv("ORACLE_USAGE_DRAIN_ENABLED", "1") == "1",
+    ))
+    # Fifteen minutes by default. Attribution is deferred rather than inline
+    # because the reply→decision window is fourteen days and a synchronous
+    # join on every inbound message is the wrong cost; a quarter-hour of lag on
+    # a fact that took days to arrive is invisible. The sweep is idempotent —
+    # every write is guarded by IS NULL — so overlap between replicas is safe.
+    sched.register(PeriodicTask(
+        name="outcome_attribution",
+        interval_s=max(
+            60.0,
+            float(os.getenv("ORACLE_OUTCOME_ATTRIBUTION_INTERVAL_MIN", "15")) * 60,
+        ),
+        run=_outcome_attribution_task,
+        enabled=os.getenv("ORACLE_OUTCOME_ATTRIBUTION_ENABLED", "1") == "1",
     ))
     return sched
 
