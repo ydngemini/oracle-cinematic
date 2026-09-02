@@ -18,7 +18,7 @@
 .reel :focus-visible { outline: 2px solid var(--amber); outline-offset: 4px; }
 .skipLink { position: fixed; z-index: 100; top: .75rem; left: .75rem; padding: .7rem .85rem; color: var(--coal); background: var(--ivory); font: .62rem var(--font-mono); letter-spacing: .12em; text-transform: uppercase; transform: translateY(-180%); transition: transform .16s ease; }
 .skipLink:focus { transform: translateY(0); }
-.reelAtmosphere, .backdrop {
+.reelAtmosphere {
   position: fixed;
   z-index: 0;
   inset: 0;
@@ -26,11 +26,13 @@
   pointer-events: none;
   contain: strict;
   isolation: isolate;
-  background: #080808 url('/media/mountain-waterfall-estate-v1.webp') center / cover no-repeat;
+  /* Colour only. The estate still is painted by the <img> this element
+     wraps (.reelMedia), which fully covers it — repeating the file here as
+     a background made the browser decode and composite it twice. */
+  background: #080808;
 }
 
-.reelAtmosphere::after,
-.backdrop::after {
+.reelAtmosphere::after {
   position: absolute;
   inset: 0;
   content: '';
@@ -39,8 +41,7 @@
     linear-gradient(0deg, rgba(8, 8, 8, .38), transparent 48%);
 }
 
-.reelMedia,
-.backdropMedia {
+.reelMedia {
   display: block;
   width: 100%;
   height: 100%;
@@ -49,12 +50,6 @@
   backface-visibility: hidden;
   transform: translateZ(0);
 }
-
-.backdrop::after {
-  background: none;
-}
-
-.backdropMedia { opacity: .96; }
 
 .header { position: fixed; z-index: 20; top: 0; right: 0; left: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: start; gap: 1rem; padding: 1rem clamp(1rem, 3vw, 3rem) 2.75rem; background: linear-gradient(180deg, rgba(8, 8, 8,.84), rgba(8, 8, 8,0)); pointer-events: none; }
 .brand, .desktopNav, .menuButton { pointer-events: auto; }
@@ -119,10 +114,7 @@
 
 @media (prefers-reduced-motion: reduce) {
   .skipLink, .progress span { transition: none; }
-  .reelMedia, .backdropMedia { animation: none; }
-  .reelAtmosphere, .backdrop {
-    background: #080808 url('/media/mountain-waterfall-estate-v1.webp') center / cover no-repeat;
-  }
+  .reelMedia { animation: none; }
 }
 
 @media (prefers-reduced-transparency: reduce) {

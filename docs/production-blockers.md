@@ -1,41 +1,99 @@
 # Production blockers — operator actions
 
 Everything here needs account access, billing, or a vendor fix. None of it is a
-code change; the code side is done and covered by tests. Measured 2026-08-22.
+code change; the code side is done and covered by tests.
 
-Ordered by what blocks the most. **Item 1 makes the rest academic** — there is no
-environment to deploy to until it is fixed.
+**Re-measured 2026-09-02.** The deploy target moved from Azure to AWS account
+`151105438863` since this doc was written, so the ordering below changed
+completely. Four items from that pass are resolved; see "Resolved since
+2026-08-22" at the end.
 
 ---
 
-## 1. Azure subscription is Disabled → `neohrs.com` is down
+## 1. Terraform cannot plan — the configured domain is not registered
 
-`curl https://neohrs.com/` returns nothing; the host is unreachable.
+`terraform plan` in `infra/terraform` ends with:
 
-**The trap: `az account list` lies.** It reports `Enabled` for all three
-subscriptions. Only the ARM REST call tells the truth:
-
-```bash
-az rest --method get \
-  --url "https://management.azure.com/subscriptions/<SUB_ID>?api-version=2020-01-01" \
-  --query state -o tsv
+```
+Error: no matching Route 53 Hosted Zone found
+  with data.aws_route53_zone.main, on dns.tf line 18
 ```
 
-Measured 2026-08-22:
+`terraform.tfvars:23` sets `domain_name = "neohrealestate.com"` and `dns.tf` looks
+that zone up as a **data source** — it expects the zone to already exist. Measured
+2026-09-02 in account `151105438863`:
 
-| Subscription | `az account list` | ARM (authoritative) |
-|---|---|---|
-| `120ea104-5498-44f6-8e86-5654a1f4419b` | Enabled | **Disabled** |
-| `07915f95-d597-4451-9df6-018d77a50476` | Enabled | token expired — unverified |
-| `d03cc686-d248-4804-8918-ab23a2cebd6c` | Enabled | token expired — unverified |
+| | |
+|---|---|
+| Hosted zones that exist | `neohrs.com.` only |
+| `route53domains list-domains` | returns nothing — **neohrealestate.com is not registered** |
 
-**Action:** restore billing on the subscription hosting `neohrs.com`.
-**Verify:** the ARM call returns `Enabled`, then `curl -I https://neohrs.com/`
-returns a status line at all.
+**This blocks everything else.** Nothing can be applied until it resolves, and it
+is a branding decision, not a technical one:
+
+- **Register `neohrealestate.com`** — `route53domains` creates the hosted zone and
+  points the registrar at it in one step, which is why `terraform.tfvars` chose it
+  over reusing `neohrs.com`. Costs a registration fee and needs billing.
+- **Or point `domain_name` at `neohrs.com`**, whose zone already exists
+  (`Z01948911TPWLLT18DY2W`). One-line change, no purchase, but the product ships
+  on the old name.
 
 ---
 
-## 2. Regrid token expired 2026-08-15
+## 2. The application layer has never been applied — 64 resources
+
+The foundation is up; the thing that serves traffic is not.
+
+| Component | State (measured 2026-09-02) |
+|---|---|
+| Aurora `neoh-prod-aurora` 16.14 | **available** |
+| ECR repositories (backend, frontend, observability, reconstruction) | exist |
+| ECS cluster `neoh-prod` | exists |
+| **ECS services** | **none — nothing is running** |
+| **Application Load Balancer** | **none** |
+| Route53 zone | `neohrs.com` only (see item 1) |
+
+`terraform plan` reports **64 to add, 0 to change, 0 to destroy** — ALB, WAF and
+its association, the ECS services, DNS records and the ACM certificate.
+
+**Action:** resolve item 1, then `terraform apply`.
+
+---
+
+## 3. Container images predate the current code
+
+Both `neoh/backend:latest` and `neoh/frontend:latest` were pushed
+**2026-08-28T05:17**. Everything since is absent from them, including the AI tool
+execution ledger (migrations 0087-0088), the geocoder cascade and canary, the
+index migrations 0085-0086 and 0089-0090, and the pypdf CVE bump.
+
+The frontend image also carries a build-time API base URL. It was baked against
+the by-then-dead `neoh.app`, so it must be rebuilt against whichever domain item 1
+settles on — a rebuild is required regardless of that choice.
+
+**Action:** rebuild and push both after item 1, before `terraform apply`.
+
+---
+
+## 4. Migrations have never run in production
+
+Ledger is **89/89 locally**, 21 applied + 68 reconciled, no drift. Production has
+never existed to run them against.
+
+**Action, once the stack is up:**
+
+```bash
+cd backend && python run_migrations.py --prebuild-indexes   # concurrent, no lock
+cd backend && python run_migrations.py --reconcile
+```
+
+`--prebuild-indexes` builds the heavy indexes (0086, 0089-0090) without the
+write-blocking ShareLock; on a populated table the in-transaction build would
+otherwise exceed the pool's 30s `command_timeout` and fail live writes.
+`--reconcile` probes for the objects each migration claims and **refuses a
+half-applied schema** rather than replaying it.
+
+## 5. Regrid token expired 2026-08-15
 
 The token is a **30-day JWT** (`iat 2026-07-16 → exp 2026-08-15`), so this recurs
 roughly monthly. Live call returns `401 {"status":"error","message":"Invalid token"}`.
@@ -66,23 +124,7 @@ rotate** rather than 502 "temporarily unavailable".
 
 ---
 
-## 3. Migrations have never run in production
-
-Ledger is **78/78 locally**; production has never existed to run them against.
-
-**Action, once item 1 is resolved:**
-
-```bash
-cd backend && python run_migrations.py --reconcile
-```
-
-`--reconcile` probes for the objects each migration claims to create and **refuses a
-half-applied schema** rather than replaying it. Do not bypass it — `dev-start.sh` used
-to, which is how a partial schema could look like a clean start.
-
----
-
-## 4. Veo needs a billing-enabled GCP project
+## 6. Veo needs a billing-enabled GCP project
 
 The video provider seam is built and tested; Veo reports unavailable until this is done,
 which is correct behaviour rather than a failure.
@@ -109,7 +151,7 @@ stops working. The seam means the switch is a config change, not a rewrite.
 
 ---
 
-## 5. No GPU path for 3D reconstruction
+## 7. No GPU path for 3D reconstruction
 
 | Route | State |
 |---|---|
@@ -124,15 +166,23 @@ GPU; the capture mode for it now exists in Property View.
 
 ---
 
-## 6. Stripe — untouched by request, one thing recorded
+## 8. Stripe — the recorded finding is now FIXED
 
 Not changed, per instruction. Recording one finding so it is not rediscovered:
 
-`config.py:31` defines `_DEV_VALUES = {"dev", "development", "local"}` — **`"test"` is
-absent**, while `commands_api.py`, `telephony_api.py`, `twilio_call_handler.py`,
-`rate_limit_middleware.py` and `listings_feed.py` each re-derive dev-ness *including*
-`"test"`. So `ORACLE_ENV=test` reads as **production** to `config.IS_DEV`, which silently
-disables the live-key interlock at `billing.py:67-79`.
+**Fixed 2026-09-02, and it was wider than recorded here.** The guard read
+`config.IS_DEV`, so it fired only for `dev|development|local`. Measured:
+
+    ORACLE_ENV unset      -> sk_live_* key SILENTLY ACCEPTED
+    ORACLE_ENV=test       -> sk_live_* key SILENTLY ACCEPTED
+    ORACLE_ENV=staging    -> sk_live_* key SILENTLY ACCEPTED
+
+with **unset being the default**, and the guard's own message claiming it covered
+"dev/unset". The root cause was using `not IS_DEV` to mean "is production" — two
+different questions with every unrecognised value sitting in the gap. `config.py`
+now defines `IS_PROD` separately and `billing.py` gates on `not config.IS_PROD`,
+so anything that is not explicitly production refuses a live key. Two tests pin
+it, one of them against the source because the failure is silent by construction.
 
 Also note `.env` currently sets `ORACLE_ALLOW_LIVE_STRIPE=1`, which is the documented
 escape hatch and was deliberately enabled.
@@ -144,3 +194,17 @@ escape hatch and was deliberately enabled.
 `TWILIO_ACCOUNT_SID` and `TWILIO_AUTH_TOKEN` are set. SMS and call controls reach real
 phone numbers, and the database holds 100 real Delaware leads. Email
 (`SENDGRID_API_KEY`, `SMTP_HOST`) and ElevenLabs are unset and fail closed.
+
+
+---
+
+## Resolved since 2026-08-22
+
+- **Azure subscription Disabled → `neohrs.com` down.** No longer the deploy path;
+  the target is AWS `151105438863`. The Azure item is moot rather than fixed.
+- **RunPod pods "never tried".** They were tried 2026-08-25 and they work; first
+  live GPU reconstructions completed. Serverless remains dead.
+- **84 compliance tests not in CI.** CI runs `pytest tests compliance_engine/tests`;
+  1,619 pass.
+- **pypdf CVEs.** `pip_audit --strict` was failing CI on 3 CVEs in pypdf 6.15.0;
+  bumped to 6.16.1, audit clean.

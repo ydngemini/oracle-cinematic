@@ -25,7 +25,13 @@ const projects = [
 ];
 
 /**
- * The estate backdrop behind the CRM.
+ * The estate still behind the /reel marketing sequence.
+ *
+ * It used to also sit behind the CRM. It no longer does: an operational
+ * interface reads better over the flat atmosphere gradient in index.css, where
+ * the glass panels can spend their blur separating layers instead of fighting
+ * waterfall detail. The reel is a showcase, so here the photograph earns its
+ * place.
  *
  * This used to autoplay a looping 917 KB video (plus a 341 KB mobile cut),
  * falling back to a still only for `prefers-reduced-motion` or Save-Data. It is
@@ -46,14 +52,6 @@ function EstateBackground({ className }) {
       decoding="async"
       fetchPriority="high"
     />
-  );
-}
-
-export function ReelBackdrop() {
-  return (
-    <div className={styles.backdrop} aria-hidden="true">
-      <EstateBackground className={styles.backdropMedia} />
-    </div>
   );
 }
 

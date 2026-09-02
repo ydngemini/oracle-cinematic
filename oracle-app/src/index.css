@@ -16,18 +16,37 @@
   --oracle-bg-mid:        #111111;
   --oracle-bg-gradient:   linear-gradient(150deg, rgba(22, 22, 22, .88) 0%, rgba(8, 8, 8, .92) 72%);
   --oracle-bg-canvas:     #080808;
-  --oracle-bg-atmosphere: none;
+  /* The ground the glass refracts. There is deliberately no photograph here:
+     an operational CRM reads better over a calm field, and a still estate
+     photo behind every panel meant the glass spent its budget fighting
+     waterfall detail instead of separating layers.
 
-  /* The working plane is a warm white tint over the estate still, lifted toward
-     gold rather than neutral silver. The old value was a flat 171-grey, which
+     But flat #080808 is not an option either — backdrop-filter has nothing to
+     blur on a single colour, so panels collapse into plain translucent boxes
+     and the glass stops reading as glass. These four layers exist to give the
+     blur something to pick up: a warm amber bloom top-right and a cool slate
+     bloom bottom-left (two temperatures is what makes a surface read as lit
+     rather than painted), a faint ivory lift along the top edge, and a base
+     vertical gradient so the field is never uniform.
+
+     All of it is very low alpha on purpose. It should register as depth, not
+     as a gradient anyone notices. */
+  --oracle-bg-atmosphere:
+    radial-gradient(115% 85% at 78%  8%, rgba(255, 188, 31, 0.10) 0%, rgba(255, 188, 31, 0.03) 38%, transparent 70%),
+    radial-gradient( 95% 75% at 12% 92%, rgba( 96, 126, 158, 0.12) 0%, rgba( 96, 126, 158, 0.035) 42%, transparent 72%),
+    radial-gradient(140% 120% at 50%  0%, rgba(242, 242, 242, 0.05) 0%, transparent 55%),
+    linear-gradient(178deg, #131313 0%, #0b0b0b 46%, #070707 100%);
+
+  /* The working plane is a warm white tint over the atmosphere gradient,
+     lifted toward gold rather than neutral silver. The old value was a flat 171-grey, which
      read as cold plastic once the blur came on and shared no hue with the amber
      the whole interface signals with.
 
      Warmth lives in the tint (250,246,238 — white with a gold cast) and the
      edge carries an explicit gold so panel boundaries catch light the way the
-     brand accent does. Kept low-alpha on purpose: this sits over a photograph,
-     and a heavier wash turns the estate into fog and the text into low
-     contrast. */
+     brand accent does. Kept low-alpha on purpose: it sits over the atmosphere
+     gradient below, and a heavier wash flattens that field back into the one
+     solid colour the gradient exists to avoid. */
   --oracle-glass:         rgba(250, 246, 238, 0.14);
   --oracle-glass-hover:   rgba(250, 246, 238, 0.20);
   --oracle-glass-active:  rgba(252, 244, 226, 0.26);
@@ -36,11 +55,10 @@
   --oracle-glass-edge:    rgba(255, 240, 205, 0.22);
   --oracle-glass-edge-gold: rgba(255, 188, 31, 0.30);
 
-  /* Backdrop blur was disabled because the backdrop was a looping 60fps video:
-     blurring a continuously composited layer forces the browser to resample it
-     every frame. That backdrop is now a still image (see EstateBackground), so
-     the resample happens once and the cost disappears — the reason for `none`
-     went away with the video.
+  /* Backdrop blur was once disabled because the backdrop was a looping 60fps
+     video: blurring a continuously composited layer forces the browser to
+     resample it every frame. The backdrop is now a static CSS gradient — it
+     composites once and never changes — so that cost is gone entirely.
 
      Turning it on is not decoration. At 20% tint with no blur, scrolled content
      reads straight through the fixed header and tab deck and collides with the
@@ -466,7 +484,6 @@ body {
   line-height:      var(--leading-normal);
   color:            var(--oracle-text);
   background:       var(--oracle-bg-deep);
-  background-image: var(--oracle-bg-atmosphere);
   width:            100%;
   height:           100dvh;
   min-height:       100dvh;
@@ -477,13 +494,30 @@ body {
   overflow:         hidden;
 }
 
-/* The cinematic reel remains a visual background layer for the operational
-   application. The foreground deliberately retains the existing CRM styling
-   and interactions. */
+/* The CRM sits on a flat atmosphere gradient; the cinematic reel now backs only
+   the /reel marketing route. The foreground deliberately retains the existing
+   CRM styling and interactions. */
 .neoh-app-shell {
   position: relative;
   isolation: isolate;
   min-height: 100dvh;
+}
+
+/* The atmosphere is a real element inside .neoh-app-shell rather than a
+   background on <body>, and that placement is the whole point.
+   `isolation: isolate` on .neoh-app-shell and #root each create a Backdrop
+   Root, and backdrop-filter only samples what is painted INSIDE its nearest
+   one. A gradient on <body> lives outside both, so every .hud-glass-panel
+   would blur an empty backdrop and flatten into a plain 14%-alpha box — the
+   exact failure the gradient exists to prevent. <ReelBackdrop /> used to sit
+   here for the same reason, which is why blurring the photo worked. */
+.neoh-app-atmosphere {
+  position: fixed;
+  z-index: 0;
+  inset: 0;
+  pointer-events: none;
+  background-color: var(--oracle-bg-deep);
+  background-image: var(--oracle-bg-atmosphere);
 }
 
 .neoh-app-foreground {

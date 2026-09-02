@@ -4,7 +4,7 @@ import { CrmShell, LoginVault } from './components';
 import { PolicyAcceptanceGate } from './components/PolicyAcceptanceGate';
 import { NetworkProvider } from './context/NetworkContext';
 import { apiGet, apiPost } from './lib/apiClient';
-import { ReelBackdrop, ReelExperience } from './components/ReelExperience';
+import { ReelExperience } from './components/ReelExperience';
 import { SitePreview } from './components/SitePreview';
 // Unauthenticated client capture page — the token in the URL is the whole
 // capability, so this route deliberately renders outside the auth shell.
@@ -131,7 +131,7 @@ function NeohApp() {
 
   return (
     <div className="neoh-app-shell">
-      <ReelBackdrop />
+      <div className="neoh-app-atmosphere" aria-hidden="true" />
       <div className="neoh-app-foreground">
         <NetworkProvider>
           {authed === null ? (
