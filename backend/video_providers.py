@@ -638,6 +638,178 @@ class MockProvider(VideoProvider):
         return buffer.getvalue()
 
 
+class ElevenLabsVideoProvider(VideoProvider):
+    """Video generation on ElevenLabs.
+
+    ElevenLabs aggregates other labs' video models rather than training its own,
+    so this reaches Veo 3.1 and Seedance through a key you already hold for TTS.
+    That is the whole reason it earns a slot next to FalKlingProvider: it gets
+    Veo WITHOUT a GCP project, billing account or ADC, which is precisely the
+    wall VeoProvider has been stuck behind.
+
+    Transport is submit-and-poll, the same shape as fal:
+
+        POST /v1/flows/video                 -> {"id": ..., "status": "pending"}
+        GET  /v1/flows/video/{id}            -> content_url when complete
+
+    Auth is the `xi-api-key` header, shared with voice_tts.
+
+    **Durations are 4, 6 and 8 seconds** — note this is a DIFFERENT constraint
+    from Kling's 5-or-10, and it happens to include Oracle's own
+    ORACLE_VIDEO_CLIP_SECONDS default of 8. Switching here means that default
+    stops needing an override.
+
+    ByteDance (Seedance) is disabled by default for API requests and needs
+    explicit approval from ElevenLabs, so the practical model is Veo.
+
+    ⚠ API video generation requires a **Pro plan or above**. `available()`
+    checks the plan rather than only the key, because a free-tier key
+    authenticates perfectly and then fails at generation time — the failure this
+    codebase keeps getting bitten by, where a config problem reports as
+    something else. The tier check turns that into an accurate refusal up front.
+    """
+
+    name = "elevenlabs"
+    produces = "ai_generated"
+    max_concurrent = 2
+    #: ElevenLabs' documented set. 8 is Oracle's own default.
+    allowed_seconds = (4, 6, 8)
+
+    _BASE = "https://api.elevenlabs.io/v1"
+    #: Plans that may call the video API. A free key authenticates fine and only
+    #: fails when a job is submitted, so this is checked before we promise.
+    _PAID_TIERS = frozenset({
+        "starter", "creator", "pro", "scale", "business", "enterprise", "growing_business",
+    })
+
+    @property
+    def _key(self) -> str:
+        return os.getenv("ELEVENLABS_API_KEY", "").strip()
+
+    @property
+    def _model(self) -> str:
+        """Configurable: ElevenLabs versions models in this field, so a newer
+        Veo is a config change rather than a code change."""
+        return os.getenv(
+            "ORACLE_ELEVENLABS_VIDEO_MODEL", "veo-3.1-fast-generate-001"
+        ).strip()
+
+    def _headers(self) -> dict[str, str]:
+        return {"xi-api-key": self._key, "Content-Type": "application/json"}
+
+    def available(self) -> tuple[bool, str]:
+        if not self._key:
+            return (False, "set ELEVENLABS_API_KEY")
+        if not self._model:
+            return (False, "set ORACLE_ELEVENLABS_VIDEO_MODEL")
+        tier = self._tier()
+        if tier is None:
+            # Network or auth problem. Do not claim unavailable on a transient
+            # failure — say what could not be established.
+            return (False, "could not read the ElevenLabs subscription tier")
+        if tier.lower() not in self._PAID_TIERS:
+            return (
+                False,
+                f"ElevenLabs video needs a paid plan; this key is on '{tier}'. "
+                "Upgrade at elevenlabs.io/pricing, or use ORACLE_VIDEO_PROVIDER=fal-kling.",
+            )
+        return (True, "")
+
+    def _tier(self) -> Optional[str]:
+        import requests
+
+        try:
+            r = requests.get(
+                f"{self._BASE}/user/subscription",
+                headers={"xi-api-key": self._key},
+                timeout=_timeout("poll"),
+            )
+            r.raise_for_status()
+            return str((r.json() or {}).get("tier") or "")
+        except Exception:  # noqa: BLE001 - caller turns None into an honest message
+            return None
+
+    def _submit(self, *, prompt: str, size: str, seconds: int, image_bytes: Optional[bytes]) -> str:
+        import base64
+
+        import requests
+
+        aspect = _SIZE_TO_ASPECT.get(size)
+        if aspect is None:
+            raise VideoProviderError(f"ElevenLabs has no aspect ratio for size {size!r}")
+
+        body: dict[str, object] = {
+            "model_id": self._model,
+            "prompt": prompt,
+            "duration_secs": seconds,
+            "aspect_ratio": aspect,
+            # Native audio, so a reel does not need a separate voiceover pass.
+            "generate_audio": True,
+        }
+        if image_bytes:
+            body["image"] = base64.b64encode(image_bytes).decode("ascii")
+
+        r = requests.post(
+            f"{self._BASE}/flows/video", headers=self._headers(),
+            json=body, timeout=_timeout("submit"),
+        )
+        if r.status_code in (401, 403):
+            raise VideoProviderError(
+                "ElevenLabs rejected the key for video. Video generation requires a "
+                "paid plan even when the same key works for text-to-speech."
+            )
+        r.raise_for_status()
+        job_id = (r.json() or {}).get("id")
+        if not job_id:
+            raise VideoProviderError("ElevenLabs returned no job id")
+        return str(job_id)
+
+    def _poll(self, job_id: str) -> tuple[str, Optional[str], str]:
+        """(status, content_url, error)."""
+        import requests
+
+        r = requests.get(
+            f"{self._BASE}/flows/video/{job_id}",
+            headers={"xi-api-key": self._key}, timeout=_timeout("poll"),
+        )
+        r.raise_for_status()
+        data = r.json() or {}
+        return (
+            str(data.get("status") or "").lower(),
+            data.get("content_url"),
+            str(data.get("error") or ""),
+        )
+
+    def _download(self, url: str) -> bytes:
+        import requests
+
+        r = requests.get(url, timeout=_timeout("download"))
+        r.raise_for_status()
+        return r.content
+
+    async def generate(
+        self, *, prompt: str, size: str, seconds: int, image_bytes: Optional[bytes] = None
+    ) -> bytes:
+        self.check_seconds(seconds)
+        async with self._slot():
+            job_id = await asyncio.to_thread(
+                self._submit, prompt=prompt, size=size, seconds=seconds, image_bytes=image_bytes
+            )
+            deadline = time.monotonic() + _job_timeout()
+            poll = _poll_seconds()
+            while True:
+                if time.monotonic() > deadline:
+                    raise VideoProviderError(f"ElevenLabs job {job_id} timed out")
+                status, content_url, error = await asyncio.to_thread(self._poll, job_id)
+                if status in ("complete", "completed", "succeeded") and content_url:
+                    break
+                if status in ("failed", "error", "cancelled"):
+                    raise VideoProviderError(error or f"ElevenLabs job {job_id} {status}")
+                await asyncio.sleep(poll)
+            # Like fal and unlike Sora, the result is a signed URL, not bytes.
+            return await asyncio.to_thread(self._download, content_url)
+
+
 _PROVIDERS: dict[str, type[VideoProvider]] = {
     # Explicit selection only — never a fallback for a failing vendor.
     "mock": MockProvider,
@@ -645,6 +817,8 @@ _PROVIDERS: dict[str, type[VideoProvider]] = {
     "veo": VeoProvider,
     "fal-kling": FalKlingProvider,
     "kling": FalKlingProvider,   # convenience alias
+    "elevenlabs": ElevenLabsVideoProvider,
+    "11labs": ElevenLabsVideoProvider,   # convenience alias
 }
 
 _INSTANCES: dict[str, VideoProvider] = {}
