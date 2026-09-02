@@ -90,10 +90,16 @@ function DecisionBar({ opportunity, rank, onDecided }) {
   const [state, setState] = useState('idle'); // idle | asking | done
   const [chosen, setChosen] = useState(null);
   const [reasons, setReasons] = useState([]);
+  // The id of the row this dismissal created, so the reason can be attached to
+  // it. The decision and the reason arrive as two interactions but are ONE
+  // decision: posting twice double-counted every reasoned dismissal, so a kind
+  // the agent explained their way out of scored as twice as disliked as one
+  // they skipped in silence.
+  const [decisionId, setDecisionId] = useState(null);
 
-  const send = useCallback(async (outcome, rationale, rationaleSource) => {
+  const send = useCallback(async (outcome) => {
     try {
-      await crmPost('/api/agent-twin/decisions', {
+      const created = await crmPost('/api/agent-twin/decisions', {
         opportunity_kind: opportunity.kind,
         subject_type: 'client',
         subject_id: String(opportunity.subject_id ?? ''),
@@ -101,14 +107,26 @@ function DecisionBar({ opportunity, rank, onDecided }) {
         outcome,
         recommended_confidence: opportunity.confidence ?? null,
         recommended_rank: rank ?? null,
-        ...(rationale ? { rationale, rationale_source: rationaleSource } : {}),
       });
+      setDecisionId(created?.id ?? null);
       onDecided?.(outcome);
     } catch {
       // A failed recording must not block the agent's actual work. The card
       // still resolves; the twin simply learns nothing from this one.
     }
   }, [opportunity, rank, onDecided]);
+
+  // Recorded first, reason second, because the agent may never answer — closing
+  // the tab must not lose the decision itself.
+  const explain = useCallback(async (rationale, rationaleSource) => {
+    setState('done');
+    if (!decisionId) return;
+    try {
+      await crmPost(`/api/agent-twin/decisions/${decisionId}/rationale`, {
+        rationale, rationale_source: rationaleSource,
+      });
+    } catch { /* the decision is already recorded; the reason is a bonus */ }
+  }, [decisionId]);
 
   const decide = useCallback(async (outcome) => {
     setChosen(outcome);
@@ -147,7 +165,7 @@ function DecisionBar({ opportunity, rank, onDecided }) {
               type="button"
               key={reason.code}
               className={styles.reasonChip}
-              onClick={() => { void send('dismissed', reason.label, 'agent_selected'); setState('done'); }}
+              onClick={() => { void explain(reason.label, 'agent_selected'); }}
             >
               {reason.label}
             </button>

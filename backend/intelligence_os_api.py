@@ -261,6 +261,33 @@ async def record_decision(
         raise HTTPException(422, str(exc)) from exc
 
 
+class RationaleInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    rationale: str = Field(min_length=1, max_length=1000)
+    rationale_source: Literal["agent_typed", "agent_selected"]
+
+
+@router.post("/agent-twin/decisions/{decision_id}/rationale")
+async def attach_rationale(
+    decision_id: str, body: RationaleInput,
+    ctx: TenantContext = Depends(require_context),
+):
+    """Attach a reason to a decision already recorded.
+
+    Separate from the insert because the two arrive as separate interactions —
+    the agent dismisses, then is asked why — but they are one decision. Posting
+    a second decision here would double-count it.
+    """
+    try:
+        return await agent_twin.attach_rationale(
+            ctx, decision_id,
+            rationale=body.rationale, rationale_source=body.rationale_source,
+        )
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
 @router.get("/agent-twin")
 async def agent_twin_policy(ctx: TenantContext = Depends(require_context)):
     """What the recorded decisions say about how this agent works."""

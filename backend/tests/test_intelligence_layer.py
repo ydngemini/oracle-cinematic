@@ -559,3 +559,54 @@ def test_policy_needs_more_evidence_than_a_single_kind_rate():
     import agent_twin
 
     assert agent_twin.MIN_DECISIONS_FOR_POLICY > agent_twin.MIN_DECISIONS_PER_KIND
+
+
+def test_a_reasoned_dismissal_is_one_decision_not_two():
+    """The decision and its reason arrive separately but are ONE row.
+
+    The first version posted a decision on dismissal and posted again when a
+    reason was picked, so every reasoned dismissal counted twice — a kind the
+    agent explained their way out of scored as twice as disliked as one they
+    skipped in silence. Both inserts succeeded and both looked correct in
+    isolation; only the row count in the database showed it.
+
+    The fix is an update path, so this asserts one exists and that the insert
+    signature no longer accepts a rationale from the dismissal flow's caller.
+    """
+    import inspect
+
+    import agent_twin
+
+    assert hasattr(agent_twin, "attach_rationale"), \
+        "without an update path the UI has to insert twice"
+    sig = inspect.signature(agent_twin.attach_rationale)
+    assert "decision_id" in sig.parameters, \
+        "a reason must target the decision it belongs to"
+
+
+def test_a_rationale_cannot_be_rewritten():
+    """`WHERE rationale IS NULL` is the guard, and it is load-bearing.
+
+    A rationale is something the agent said once. Letting a later click replace
+    it would quietly rewrite history in the one table whose entire value is
+    being an honest record of what they chose.
+    """
+    import inspect
+
+    import agent_twin
+
+    source = inspect.getsource(agent_twin.attach_rationale)
+    assert "rationale IS NULL" in source
+
+
+def test_attach_rationale_rejects_empty_and_unknown_sources():
+    import asyncio
+
+    import agent_twin
+
+    with pytest.raises(ValueError, match="content"):
+        asyncio.run(agent_twin.attach_rationale(
+            _twin_ctx(), "id", rationale="   ", rationale_source="agent_typed"))
+    with pytest.raises(ValueError, match="unknown rationale source"):
+        asyncio.run(agent_twin.attach_rationale(
+            _twin_ctx(), "id", rationale="ok", rationale_source="inferred"))

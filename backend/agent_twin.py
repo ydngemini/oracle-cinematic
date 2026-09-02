@@ -142,6 +142,50 @@ async def record_decision(
     return {"id": str(row["id"]), "decided_at": row["decided_at"].isoformat()}
 
 
+async def attach_rationale(
+    ctx: TenantContext, decision_id: str, *, rationale: str, rationale_source: str,
+) -> dict[str, Any]:
+    """Attach a reason to a decision that is already recorded.
+
+    The decision and its reason arrive as two separate interactions — the agent
+    dismisses a card, and only then is asked why — but they are ONE decision and
+    must be ONE row. Inserting again on the reason click double-counted every
+    reasoned dismissal, so a kind the agent explained their way out of scored as
+    twice as disliked as one they skipped silently. Caught in the browser, not
+    by a test: both inserts succeeded and both looked correct in isolation.
+
+    Recording happens first and the reason is optional precisely because the
+    agent may never answer — closing the tab must not lose the decision.
+
+    Refuses to overwrite. A rationale is a thing the agent said once; letting a
+    later click replace it would quietly rewrite history in the one table whose
+    entire value is being an honest record of what they chose.
+    """
+    if not rationale or not rationale.strip():
+        raise ValueError("a rationale must have content")
+    if rationale_source not in ("agent_typed", "agent_selected"):
+        raise ValueError(f"unknown rationale source: {rationale_source}")
+
+    async with tenant_tx(ctx) as conn:
+        row = await conn.fetchrow(
+            """
+            UPDATE agent_decisions
+               SET rationale = $2, rationale_source = $3
+             WHERE id = $1::uuid AND rationale IS NULL
+         RETURNING id, outcome, rationale
+            """,
+            decision_id, rationale.strip()[:1000], rationale_source,
+        )
+    if row is None:
+        raise LookupError(
+            f"decision {decision_id} not found, or already carries a reason")
+    return {
+        "id": str(row["id"]),
+        "outcome": row["outcome"],
+        "rationale": row["rationale"],
+    }
+
+
 def _confidence_threshold(buckets: list[dict[str, Any]]) -> Optional[dict[str, Any]]:
     """The confidence at which this agent starts acting.
 

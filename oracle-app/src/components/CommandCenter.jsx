@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { AlertTriangle, Brain, Clock, Eye, Radar, TrendingUp } from 'lucide-react';
 
 import { crmGet } from '../state/useCrmApi';
@@ -254,6 +254,15 @@ export function CommandCenter() {
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(true);
 
+  // The twin is fetched separately and its failure is swallowed: it is
+  // commentary on the briefing, and losing it must not cost the agent the
+  // briefing itself.
+  const loadTwin = useCallback(async () => {
+    try {
+      setTwin(await crmGet('/api/agent-twin'));
+    } catch { /* the briefing stands on its own */ }
+  }, []);
+
   useEffect(() => {
     // Deferred and cancellable, matching IntelligenceFeed: the briefing runs a
     // full opportunity scan, so a remount can leave two in flight and without
@@ -268,15 +277,12 @@ export function CommandCenter() {
         .catch((err) => {
           if (!cancelled) { setError(err?.message || 'The briefing did not load.'); setLoading(false); }
         });
+      // Inside the frame as well, so no state is set synchronously from the
+      // effect body (react-hooks/set-state-in-effect).
+      void loadTwin();
     });
-    // The twin is fetched separately and its failure is swallowed: it is
-    // commentary on the briefing, and losing it must not cost the agent the
-    // briefing itself.
-    crmGet('/api/agent-twin')
-      .then((data) => { if (!cancelled) setTwin(data); })
-      .catch(() => {});
     return () => { cancelled = true; window.cancelAnimationFrame(frame); };
-  }, []);
+  }, [loadTwin]);
 
   if (loading) {
     return (
@@ -329,7 +335,11 @@ export function CommandCenter() {
           <ol className={styles.cards}>
             {opportunities.map((opportunity, index) => (
               <li key={`${opportunity.kind}-${opportunity.subject_id}-${index}`}>
-                <OpportunityCard opportunity={opportunity} rank={index + 1} />
+                <OpportunityCard
+                  opportunity={opportunity}
+                  rank={index + 1}
+                  onDecided={loadTwin}
+                />
                 {opportunity.economics && (
                   <p className={styles.economics}>
                     <span className={styles.economicsValue}>
