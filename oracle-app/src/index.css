@@ -5,17 +5,24 @@
    ───────────────────────────────────────────────────────────────────────────── */
 
 /* ── Design Tokens ─────────────────────────────────────────────────────────── */
+/* ── Tokens ───────────────────────────────────────────────────────────────────
+   LIGHT is the default and every token is declared here. The dark values live
+   in the two blocks that follow and override only what changes. The reasoning
+   that shaped the palette — why the atmosphere is a gradient and not a flat
+   colour, why glass needs something beneath it to blur — still holds in light;
+   the numbers are lower-alpha because near-white gives the blur less to work
+   with, not because the idea changed. */
 :root {
   /* Brand primitives — one restrained palette across every product surface. */
-  --oracle-silver:        #ababab;
+  --oracle-silver:        #6b6b74;
   --oracle-accent:        #ffbc1f;
-  --oracle-ivory:         #f2f2f2;
+  --oracle-ivory:         #17171a;
 
   /* Backgrounds */
-  --oracle-bg-deep:       #080808;
-  --oracle-bg-mid:        #111111;
-  --oracle-bg-gradient:   linear-gradient(150deg, rgba(22, 22, 22, .88) 0%, rgba(8, 8, 8, .92) 72%);
-  --oracle-bg-canvas:     #080808;
+  --oracle-bg-deep:       #fbfaf8;
+  --oracle-bg-mid:        #f4f2ee;
+  --oracle-bg-gradient:   linear-gradient(150deg, rgba(255, 255, 255, .92) 0%, rgba(246, 244, 240, .96) 72%);
+  --oracle-bg-canvas:     #fbfaf8;
   /* The ground the glass refracts. There is deliberately no photograph here:
      an operational CRM reads better over a calm field, and a still estate
      photo behind every panel meant the glass spent its budget fighting
@@ -32,10 +39,10 @@
      All of it is very low alpha on purpose. It should register as depth, not
      as a gradient anyone notices. */
   --oracle-bg-atmosphere:
-    radial-gradient(115% 85% at 78%  8%, rgba(255, 188, 31, 0.10) 0%, rgba(255, 188, 31, 0.03) 38%, transparent 70%),
-    radial-gradient( 95% 75% at 12% 92%, rgba( 96, 126, 158, 0.12) 0%, rgba( 96, 126, 158, 0.035) 42%, transparent 72%),
-    radial-gradient(140% 120% at 50%  0%, rgba(242, 242, 242, 0.05) 0%, transparent 55%),
-    linear-gradient(178deg, #131313 0%, #0b0b0b 46%, #070707 100%);
+    radial-gradient(115% 85% at 78%  8%, rgba(255, 188, 31, 0.055) 0%, rgba(255, 188, 31, 0.018) 38%, transparent 70%),
+    radial-gradient( 95% 75% at 12% 92%, rgba( 96, 126, 158, 0.050) 0%, rgba( 96, 126, 158, 0.015) 42%, transparent 72%),
+    radial-gradient(140% 120% at 50%  0%, rgba( 23,  23,  26, 0.020) 0%, transparent 55%),
+    linear-gradient(178deg, #fdfcfa 0%, #f8f6f2 46%, #f4f2ee 100%);
 
   /* The working plane is a warm white tint over the atmosphere gradient,
      lifted toward gold rather than neutral silver. The old value was a flat 171-grey, which
@@ -47,13 +54,13 @@
      brand accent does. Kept low-alpha on purpose: it sits over the atmosphere
      gradient below, and a heavier wash flattens that field back into the one
      solid colour the gradient exists to avoid. */
-  --oracle-glass:         rgba(250, 246, 238, 0.14);
-  --oracle-glass-hover:   rgba(250, 246, 238, 0.20);
-  --oracle-glass-active:  rgba(252, 244, 226, 0.26);
+  --oracle-glass:         rgba(255, 255, 255, 0.74);
+  --oracle-glass-hover:   rgba(255, 255, 255, 0.82);
+  --oracle-glass-active:  rgba(255, 251, 240, 0.90);
   /* Two-tone edge: near-white for legibility, gold for the accent that reads as
      Neoh rather than as generic frosted glass. */
-  --oracle-glass-edge:    rgba(255, 240, 205, 0.22);
-  --oracle-glass-edge-gold: rgba(255, 188, 31, 0.30);
+  --oracle-glass-edge:    rgba(23, 23, 26, 0.08);
+  --oracle-glass-edge-gold: rgba(138, 93, 0, 0.28);
 
   /* Backdrop blur was once disabled because the backdrop was a looping 60fps
      video: blurring a continuously composited layer forces the browser to
@@ -68,37 +75,37 @@
      Still guarded three ways below: @supports, disabled under 719px where the
      GPU cost is least affordable, and replaced by a near-opaque panel under
      prefers-reduced-transparency. */
-  --oracle-backdrop:      blur(20px) saturate(135%);
-  --oracle-backdrop-light: blur(12px) saturate(120%);
+  --oracle-backdrop:      blur(14px) saturate(105%);
+  --oracle-backdrop-light: blur(10px) saturate(102%);
 
   /* Borders */
-  --oracle-border:        rgba(242, 242, 242, 0.08);
-  --oracle-border-bright: rgba(242, 242, 242, 0.16);
-  --oracle-border-subtle: rgba(242, 242, 242, 0.055);
+  --oracle-border:        rgba(23, 23, 26, 0.10);
+  --oracle-border-bright: rgba(23, 23, 26, 0.18);
+  --oracle-border-subtle: rgba(23, 23, 26, 0.06);
 
   /* Accent aliases preserve existing component APIs while using one gold. */
-  --oracle-bronze:        #ababab;
+  --oracle-bronze:        #6b6b74;
   --oracle-gold:          #ffbc1f;
-  --oracle-white-gold:    #f2f2f2;
+  --oracle-white-gold:    #17171a;
   --oracle-amber:         #ffbc1f;
-  --oracle-amber-dim:     rgba(255, 188, 31, 0.76);
-  --oracle-amber-ghost:   rgba(255, 188, 31, 0.16);
-  --oracle-amber-glow:    rgba(255, 188, 31, 0.12);
+  --oracle-amber-dim:     rgba(255, 188, 31, 0.85);
+  --oracle-amber-ghost:   rgba(255, 188, 31, 0.18);
+  --oracle-amber-glow:    rgba(255, 188, 31, 0.22);
   --oracle-amber-hue:     43deg;
 
   /* Text */
-  --oracle-text:          #f2f2f2;
-  --oracle-text-dim:      rgba(242, 242, 242, 0.76);
-  --oracle-text-ghost:    rgba(171, 171, 171, 0.88);
-  --oracle-text-heading:  #f2f2f2;
+  --oracle-text:          #17171a;
+  --oracle-text-dim:      rgba(23, 23, 26, 0.72);
+  --oracle-text-ghost:    rgba(23, 23, 26, 0.50);
+  --oracle-text-heading:  #0f0f12;
 
   /* Status palette */
-  --oracle-green:         rgba(100, 210, 140, 1);
-  --oracle-green-dim:     rgba(100, 210, 140, 0.45);
-  --oracle-red:           rgba(220, 80, 80, 1);
-  --oracle-red-dim:       rgba(220, 80, 80, 0.45);
-  --oracle-blue:          #ababab;
-  --oracle-blue-dim:      rgba(171, 171, 171, 0.68);
+  --oracle-green:         #1f7a45;
+  --oracle-green-dim:     rgba(31, 122, 69, 0.40);
+  --oracle-red:           #b3261e;
+  --oracle-red-dim:       rgba(179, 38, 30, 0.40);
+  --oracle-blue:          #4a5a7a;
+  --oracle-blue-dim:      rgba(74, 90, 122, 0.60);
 
   /* Spacing scale */
   --space-1:  0.25rem;   /*  4px */
@@ -173,22 +180,22 @@
 
   /* Elevation — layered glass tiers (consistent blur/border/shadow rhythm).
      e1 resting card · e2 raised/interactive · e3 floating overlay. */
-  --shadow-e1:      0 1px 2px rgba(0, 0, 0, 0.4), 0 1px 0 rgba(255, 255, 255, 0.03) inset;
-  --shadow-e2:      0 4px 16px rgba(0, 0, 0, 0.5), 0 1px 0 rgba(255, 255, 255, 0.05) inset;
-  --shadow-e3:      0 16px 48px rgba(0, 0, 0, 0.62), 0 2px 8px rgba(0, 0, 0, 0.4), 0 1px 0 rgba(255, 255, 255, 0.06) inset;
+  --shadow-e1:      0 1px 2px rgba(0, 0, 0, 0.06), 0 1px 0 rgba(255, 255, 255, 0.60) inset;
+  --shadow-e2:      0 4px 14px rgba(0, 0, 0, 0.08), 0 1px 0 rgba(255, 255, 255, 0.70) inset;
+  --shadow-e3:      0 16px 40px rgba(0, 0, 0, 0.12), 0 2px 8px rgba(0, 0, 0, 0.06), 0 1px 0 rgba(255, 255, 255, 0.80) inset;
 
   /* Shadows */
-  --shadow-panel:   0 0 0 1px var(--oracle-border), 0 8px 32px rgba(0, 0, 0, 0.55), 0 2px 8px rgba(0, 0, 0, 0.35);
-  --shadow-float:   0 0 0 1px var(--oracle-border), 0 24px 64px rgba(0, 0, 0, 0.7), 0 4px 16px rgba(0, 0, 0, 0.4);
+  --shadow-panel:   0 0 0 1px var(--oracle-border), 0 8px 24px rgba(0, 0, 0, 0.10), 0 2px 6px rgba(0, 0, 0, 0.05);
+  --shadow-float:   0 0 0 1px var(--oracle-border), 0 24px 48px rgba(0, 0, 0, 0.14), 0 4px 12px rgba(0, 0, 0, 0.06);
   --shadow-amber:   0 0 18px var(--oracle-amber-glow);
   --shadow-amber-lg: 0 0 28px var(--oracle-amber-glow);
-  --shadow-inset:   inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  --shadow-inset:   inset 0 1px 0 rgba(255, 255, 255, 0.70);
 
   /* Loading sheen — the band that sweeps across glass skeletons */
-  --oracle-shimmer: rgba(242, 242, 242, 0.12);
+  --oracle-shimmer: rgba(23, 23, 26, 0.06);
 
   /* Focus — premium double ring: dark moat + amber halo (AA-visible on glass) */
-  --ring-focus:     0 0 0 2px var(--oracle-bg-deep), 0 0 0 4px var(--oracle-amber-dim);
+  --ring-focus:     0 0 0 2px var(--oracle-bg-deep), 0 0 0 4px rgba(138, 93, 0, 0.75);
 
   /* ── CRM mobile layer (the Deck) ──────────────────────────────────────────
      Instrument-cluster type treatment: data (prices, counts, addresses) is
@@ -203,7 +210,141 @@
   /* Filament — the live amber line of the Deck */
   --filament:        linear-gradient(90deg, transparent, var(--oracle-amber) 35%, var(--oracle-amber-bright) 50%, var(--oracle-amber) 65%, transparent);
   --filament-faint:  linear-gradient(90deg, transparent, var(--oracle-amber-dim), transparent);
+
+  /* ── Added with the light base ─────────────────────────────────────────────
+     accent-ink: gold (#ffbc1f) fails AA as TEXT on white everywhere. Gold stays
+     the brand mark — fills, rules, the filament — and accent text uses the ink.
+     surface*: OPAQUE neutrals. New one-screen components use these, not glass;
+     glass is reserved for the header, the deck and overlay sheets, because
+     backdrop-filter only earns its cost where layers actually overlap.
+     glass-solid: the reduced-transparency fallback, previously a hardcoded
+     rgba(12,12,12,.96) that would have stayed black on a white page. */
+  --oracle-accent-ink: #8a5d00;
+  --oracle-surface: #ffffff;
+  --oracle-surface-raised: #ffffff;
+  --oracle-surface-sunken: #f4f2ee;
+  --oracle-glass-solid: rgba(255, 255, 255, 0.96);
+  --shadow-e0: 0 1px 2px rgba(0, 0, 0, 0.05);
+
+  /* Theme-independent additions for the large home items and the morphing surface. */
+  --text-4xl: 3rem;
+  --text-5xl: 3.75rem;
+  --space-16: 4rem;
+  --space-20: 5rem;
+  --radius-2xl: 28px;
 }
+
+/* ── Dark ─────────────────────────────────────────────────────────────────────
+   Light is the default; dark follows the operating system, and an explicit
+   data-theme wins in either direction. The two blocks below are IDENTICAL by
+   construction — generated from one list — and src/index.css.test.js asserts
+   the property sets match, because a preprocessor-free duplicate drifts the
+   first time someone edits one of them by hand. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --oracle-silver: #ababab;
+    --oracle-ivory: #f2f2f2;
+    --oracle-bg-deep: #080808;
+    --oracle-bg-mid: #111111;
+    --oracle-bg-gradient: linear-gradient(150deg, rgba(22, 22, 22, .88) 0%, rgba(8, 8, 8, .92) 72%);
+    --oracle-bg-canvas: #080808;
+    --oracle-bg-atmosphere: radial-gradient(115% 85% at 78%  8%, rgba(255, 188, 31, 0.10) 0%, rgba(255, 188, 31, 0.03) 38%, transparent 70%),
+    radial-gradient( 95% 75% at 12% 92%, rgba( 96, 126, 158, 0.12) 0%, rgba( 96, 126, 158, 0.035) 42%, transparent 72%),
+    radial-gradient(140% 120% at 50%  0%, rgba(242, 242, 242, 0.05) 0%, transparent 55%),
+    linear-gradient(178deg, #131313 0%, #0b0b0b 46%, #070707 100%);
+    --oracle-glass: rgba(250, 246, 238, 0.14);
+    --oracle-glass-hover: rgba(250, 246, 238, 0.20);
+    --oracle-glass-active: rgba(252, 244, 226, 0.26);
+    --oracle-glass-edge: rgba(255, 240, 205, 0.22);
+    --oracle-glass-edge-gold: rgba(255, 188, 31, 0.30);
+    --oracle-backdrop: blur(20px) saturate(135%);
+    --oracle-backdrop-light: blur(12px) saturate(120%);
+    --oracle-border: rgba(242, 242, 242, 0.08);
+    --oracle-border-bright: rgba(242, 242, 242, 0.16);
+    --oracle-border-subtle: rgba(242, 242, 242, 0.055);
+    --oracle-bronze: #ababab;
+    --oracle-white-gold: #f2f2f2;
+    --oracle-amber-dim: rgba(255, 188, 31, 0.76);
+    --oracle-amber-ghost: rgba(255, 188, 31, 0.16);
+    --oracle-amber-glow: rgba(255, 188, 31, 0.12);
+    --oracle-text: #f2f2f2;
+    --oracle-text-dim: rgba(242, 242, 242, 0.76);
+    --oracle-text-ghost: rgba(171, 171, 171, 0.88);
+    --oracle-text-heading: #f2f2f2;
+    --oracle-green: rgba(100, 210, 140, 1);
+    --oracle-green-dim: rgba(100, 210, 140, 0.45);
+    --oracle-red: rgba(220, 80, 80, 1);
+    --oracle-red-dim: rgba(220, 80, 80, 0.45);
+    --oracle-blue: #ababab;
+    --oracle-blue-dim: rgba(171, 171, 171, 0.68);
+    --shadow-e1: 0 1px 2px rgba(0, 0, 0, 0.4), 0 1px 0 rgba(255, 255, 255, 0.03) inset;
+    --shadow-e2: 0 4px 16px rgba(0, 0, 0, 0.5), 0 1px 0 rgba(255, 255, 255, 0.05) inset;
+    --shadow-e3: 0 16px 48px rgba(0, 0, 0, 0.62), 0 2px 8px rgba(0, 0, 0, 0.4), 0 1px 0 rgba(255, 255, 255, 0.06) inset;
+    --shadow-panel: 0 0 0 1px var(--oracle-border), 0 8px 32px rgba(0, 0, 0, 0.55), 0 2px 8px rgba(0, 0, 0, 0.35);
+    --shadow-float: 0 0 0 1px var(--oracle-border), 0 24px 64px rgba(0, 0, 0, 0.7), 0 4px 16px rgba(0, 0, 0, 0.4);
+    --shadow-inset: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+    --oracle-shimmer: rgba(242, 242, 242, 0.12);
+    --ring-focus: 0 0 0 2px var(--oracle-bg-deep), 0 0 0 4px var(--oracle-amber-dim);
+    --oracle-accent-ink: #ffd36b;
+    --oracle-surface: #141416;
+    --oracle-surface-raised: #1a1a1e;
+    --oracle-surface-sunken: #0f0f11;
+    --oracle-glass-solid: rgba(12, 12, 12, 0.96);
+    --shadow-e0: 0 1px 2px rgba(0, 0, 0, 0.35);
+  }
+}
+:root[data-theme="dark"] {
+    --oracle-silver: #ababab;
+    --oracle-ivory: #f2f2f2;
+    --oracle-bg-deep: #080808;
+    --oracle-bg-mid: #111111;
+    --oracle-bg-gradient: linear-gradient(150deg, rgba(22, 22, 22, .88) 0%, rgba(8, 8, 8, .92) 72%);
+    --oracle-bg-canvas: #080808;
+    --oracle-bg-atmosphere: radial-gradient(115% 85% at 78%  8%, rgba(255, 188, 31, 0.10) 0%, rgba(255, 188, 31, 0.03) 38%, transparent 70%),
+    radial-gradient( 95% 75% at 12% 92%, rgba( 96, 126, 158, 0.12) 0%, rgba( 96, 126, 158, 0.035) 42%, transparent 72%),
+    radial-gradient(140% 120% at 50%  0%, rgba(242, 242, 242, 0.05) 0%, transparent 55%),
+    linear-gradient(178deg, #131313 0%, #0b0b0b 46%, #070707 100%);
+    --oracle-glass: rgba(250, 246, 238, 0.14);
+    --oracle-glass-hover: rgba(250, 246, 238, 0.20);
+    --oracle-glass-active: rgba(252, 244, 226, 0.26);
+    --oracle-glass-edge: rgba(255, 240, 205, 0.22);
+    --oracle-glass-edge-gold: rgba(255, 188, 31, 0.30);
+    --oracle-backdrop: blur(20px) saturate(135%);
+    --oracle-backdrop-light: blur(12px) saturate(120%);
+    --oracle-border: rgba(242, 242, 242, 0.08);
+    --oracle-border-bright: rgba(242, 242, 242, 0.16);
+    --oracle-border-subtle: rgba(242, 242, 242, 0.055);
+    --oracle-bronze: #ababab;
+    --oracle-white-gold: #f2f2f2;
+    --oracle-amber-dim: rgba(255, 188, 31, 0.76);
+    --oracle-amber-ghost: rgba(255, 188, 31, 0.16);
+    --oracle-amber-glow: rgba(255, 188, 31, 0.12);
+    --oracle-text: #f2f2f2;
+    --oracle-text-dim: rgba(242, 242, 242, 0.76);
+    --oracle-text-ghost: rgba(171, 171, 171, 0.88);
+    --oracle-text-heading: #f2f2f2;
+    --oracle-green: rgba(100, 210, 140, 1);
+    --oracle-green-dim: rgba(100, 210, 140, 0.45);
+    --oracle-red: rgba(220, 80, 80, 1);
+    --oracle-red-dim: rgba(220, 80, 80, 0.45);
+    --oracle-blue: #ababab;
+    --oracle-blue-dim: rgba(171, 171, 171, 0.68);
+    --shadow-e1: 0 1px 2px rgba(0, 0, 0, 0.4), 0 1px 0 rgba(255, 255, 255, 0.03) inset;
+    --shadow-e2: 0 4px 16px rgba(0, 0, 0, 0.5), 0 1px 0 rgba(255, 255, 255, 0.05) inset;
+    --shadow-e3: 0 16px 48px rgba(0, 0, 0, 0.62), 0 2px 8px rgba(0, 0, 0, 0.4), 0 1px 0 rgba(255, 255, 255, 0.06) inset;
+    --shadow-panel: 0 0 0 1px var(--oracle-border), 0 8px 32px rgba(0, 0, 0, 0.55), 0 2px 8px rgba(0, 0, 0, 0.35);
+    --shadow-float: 0 0 0 1px var(--oracle-border), 0 24px 64px rgba(0, 0, 0, 0.7), 0 4px 16px rgba(0, 0, 0, 0.4);
+    --shadow-inset: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+    --oracle-shimmer: rgba(242, 242, 242, 0.12);
+    --ring-focus: 0 0 0 2px var(--oracle-bg-deep), 0 0 0 4px var(--oracle-amber-dim);
+    --oracle-accent-ink: #ffd36b;
+    --oracle-surface: #141416;
+    --oracle-surface-raised: #1a1a1e;
+    --oracle-surface-sunken: #0f0f11;
+    --oracle-glass-solid: rgba(12, 12, 12, 0.96);
+    --shadow-e0: 0 1px 2px rgba(0, 0, 0, 0.35);
+}
+
 
 
 /* ── Global motion primitives ───────────────────────────────────────────────
@@ -441,7 +582,7 @@
 
 @media (prefers-reduced-transparency: reduce) {
   .hud-glass-panel {
-    background: rgba(12, 12, 12, 0.96);
+    background: var(--oracle-glass-solid);
     backdrop-filter: none;
     -webkit-backdrop-filter: none;
   }
@@ -463,8 +604,11 @@ html {
   scroll-behavior: smooth;
   -webkit-text-size-adjust: 100%;
   text-size-adjust: 100%;
-  color-scheme: dark;
+  color-scheme: light dark;
 }
+
+:root[data-theme="light"] { color-scheme: light; }
+:root[data-theme="dark"]  { color-scheme: dark; }
 
 @media (prefers-reduced-motion: reduce) {
   html { scroll-behavior: auto; }
