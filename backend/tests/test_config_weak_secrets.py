@@ -155,3 +155,71 @@ def test_development_stays_relaxed():
     )
 
     assert result.returncode == 0, result.stderr
+
+
+# ── "not production" is not the same question as "is development" ───────────
+
+def test_is_prod_is_not_the_negation_of_is_dev():
+    """The gap between the two is every unrecognised value, and it is not empty.
+
+    `IS_DEV` answers "is this a developer's machine" and is deliberately narrow —
+    it mounts the chaos router and relaxes auth elsewhere, so a value has to opt
+    in. Using `not IS_DEV` to mean "production" therefore hands production's
+    privileges to "", "test", "staging" and anything else unrecognised.
+    """
+    import importlib
+    import os
+
+    import config as config_module
+
+    original = os.environ.get("ORACLE_ENV")
+    try:
+        for env in ("", "test", "staging", "ci", "qa"):
+            os.environ["ORACLE_ENV"] = env
+            cfg = importlib.reload(config_module)
+            assert not cfg.IS_DEV, f"{env!r} must not read as development"
+            assert not cfg.IS_PROD, f"{env!r} must not read as production"
+
+        for env in ("dev", "development", "local"):
+            os.environ["ORACLE_ENV"] = env
+            cfg = importlib.reload(config_module)
+            assert cfg.IS_DEV and not cfg.IS_PROD
+
+        for env in ("prod", "production"):
+            os.environ["ORACLE_ENV"] = env
+            cfg = importlib.reload(config_module)
+            assert cfg.IS_PROD and not cfg.IS_DEV
+    finally:
+        if original is None:
+            os.environ.pop("ORACLE_ENV", None)
+        else:
+            os.environ["ORACLE_ENV"] = original
+        importlib.reload(config_module)
+
+
+def test_the_live_stripe_interlock_gates_on_not_prod():
+    """A live key must be refused everywhere except explicit production.
+
+    Before this, the guard read `config.IS_DEV`, so it fired only for
+    dev/development/local. Measured: ORACLE_ENV unset, "test" and "staging" all
+    SILENTLY ACCEPTED an sk_live_* key that charges real cards — with unset being
+    the default, and the guard's own message claiming it covered "dev/unset".
+
+    Asserted against the source: the failure is silent by construction (the app
+    boots fine and simply bills real cards), so nothing else would catch a
+    revert.
+    """
+    import ast
+    from pathlib import Path
+
+    src = (Path(__file__).parent.parent / "billing.py").read_text()
+    guard = next(
+        node for node in ast.parse(src).body
+        if isinstance(node, ast.If) and "_IS_LIVE_STRIPE" in ast.dump(node.test)
+    )
+    dumped = ast.dump(guard.test)
+    assert "IS_PROD" in dumped, "the interlock must gate on IS_PROD"
+    assert "IS_DEV" not in dumped, (
+        "gating on IS_DEV lets every non-dev value — including the unset default "
+        "— through with a live key"
+    )
