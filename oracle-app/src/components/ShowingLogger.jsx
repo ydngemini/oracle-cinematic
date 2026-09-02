@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { crmPost } from '../state/useCrmApi';
+import { useCallback, useEffect, useState } from 'react';
+import { crmGet, crmPatch, crmPost } from '../state/useCrmApi';
 import styles from './ClientDetailDrawer.module.css';
 
 /**
@@ -25,6 +25,82 @@ const OUTCOMES = [
   ['no_show', 'No show'],
 ];
 
+/**
+ * The showings already logged for this client, each with a live outcome
+ * control. Until PATCH /showings/{id} existed a showing was write-once — logged
+ * as 'pending' before the buyer had reacted, and 'pending' forever after. A
+ * resolved showing is the one exposure record Outcome Memory learns from.
+ */
+function RecentShowings({ clientId, reloadKey, onResolved }) {
+  const [rows, setRows] = useState(null);
+  const [savingId, setSavingId] = useState('');
+  const [error, setError] = useState('');
+
+  const load = useCallback(async (isCancelled = () => false) => {
+    try {
+      const data = await crmGet(`/api/crm/clients/${clientId}/showings?limit=10`);
+      if (!isCancelled()) setRows(Array.isArray(data?.showings) ? data.showings : []);
+    } catch {
+      if (!isCancelled()) setRows([]);
+    }
+  }, [clientId]);
+
+  useEffect(() => {
+    if (!clientId) return undefined;
+    let cancelled = false;
+    const frame = window.requestAnimationFrame(() => { void load(() => cancelled); });
+    return () => { cancelled = true; window.cancelAnimationFrame(frame); };
+  }, [clientId, load, reloadKey]);
+
+  const resolve = async (id, outcome) => {
+    setSavingId(id);
+    setError('');
+    try {
+      await crmPatch(`/api/crm/showings/${id}`, { outcome });
+      await load();
+      await onResolved?.();
+    } catch (reason) {
+      setError(reason?.message || 'The showing could not be updated.');
+    } finally {
+      setSavingId('');
+    }
+  };
+
+  if (!rows || rows.length === 0) return null;
+
+  return (
+    <div className={styles.field}>
+      <span>Recent showings</span>
+      {error ? <p className={styles.errorText} role="alert">{error}</p> : null}
+      <ul className={styles.plainList}>
+        {rows.map((row) => (
+          <li key={row.id} className={styles.showingRow}>
+            <span className={styles.showingAddress}>
+              {row.address || row.listing_id || row.lead_id}
+              {row.shown_at && (
+                <time dateTime={row.shown_at} className={styles.showingWhen}>
+                  {' · '}{new Date(row.shown_at).toLocaleDateString()}
+                </time>
+              )}
+            </span>
+            <select
+              className={styles.input}
+              value={row.outcome}
+              disabled={savingId === row.id}
+              aria-label={`Outcome for showing at ${row.address || 'property'}`}
+              onChange={(event) => resolve(row.id, event.target.value)}
+            >
+              {OUTCOMES.map(([value, label]) => (
+                <option key={value} value={value}>{label}</option>
+              ))}
+            </select>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 export default function ShowingLogger({ clientId, houses, onLogged }) {
   const [houseId, setHouseId] = useState('');
   const [outcome, setOutcome] = useState('pending');
@@ -32,6 +108,8 @@ export default function ShowingLogger({ clientId, houses, onLogged }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
+  // Bumped after a successful log so the list below re-reads.
+  const [logged, setLogged] = useState(0);
 
   const options = Array.isArray(houses) ? houses.filter((h) => h?.id) : [];
 
@@ -56,6 +134,7 @@ export default function ShowingLogger({ clientId, houses, onLogged }) {
       setFeedback('');
       setOutcome('pending');
       setNotice('Showing logged.');
+      setLogged((n) => n + 1);
       await onLogged?.();
     } catch (reason) {
       setError(reason?.message || 'The showing could not be logged.');
@@ -66,15 +145,19 @@ export default function ShowingLogger({ clientId, houses, onLogged }) {
 
   if (options.length === 0) {
     return (
-      <p className={styles.empty}>
-        No properties are associated with this client yet, so there is nothing to
-        record a showing against.
-      </p>
+      <>
+        <RecentShowings clientId={clientId} reloadKey={logged} onResolved={onLogged} />
+        <p className={styles.empty}>
+          No properties are associated with this client yet, so there is nothing to
+          record a showing against.
+        </p>
+      </>
     );
   }
 
   return (
     <form onSubmit={submit}>
+      <RecentShowings clientId={clientId} reloadKey={logged} onResolved={onLogged} />
       {error ? <p className={styles.errorText} role="alert">{error}</p> : null}
       {notice ? <p role="status">{notice}</p> : null}
 

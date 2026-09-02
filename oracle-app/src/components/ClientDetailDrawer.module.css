@@ -727,3 +727,41 @@
 @media (prefers-reduced-motion: reduce) {
   .sheet, .scrim { animation: none; }
 }
+
+/* ── Recent showings (ShowingLogger) ────────────────────────────────────
+   A list with one live outcome control per row. Until PATCH /showings/{id}
+   existed a showing was write-once, so this is the first place a showing's
+   result can be corrected after the buyer has reacted. */
+.plainList {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: var(--space-2) 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.showingRow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.showingAddress {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-sm);
+  color: var(--oracle-text);
+}
+
+.showingWhen {
+  color: var(--oracle-text-ghost);
+  font-size: var(--text-xs);
+}
+
+@media (max-width: 719px) {
+  .showingRow { grid-template-columns: 1fr; }
+}

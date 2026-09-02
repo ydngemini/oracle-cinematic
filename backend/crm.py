@@ -28,10 +28,10 @@ import logging
 import re
 import uuid
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from db.connection import tenant_tx
 from tenancy import TenantContext, require_context
@@ -319,6 +319,19 @@ class MessageCreate(BaseModel):
         return v
 
 
+#: What a resolved showing means to Outcome Memory. A showing that happened is
+#: `showing_held` whatever the buyer thought of it; an offer is additionally
+#: its own kind, because "they came" and "they bid" are different denominators.
+#: 'pending' maps to nothing — it is the absence of a result, not a result.
+#: Keys are drawn from SHOWING_OUTCOMES (defined above, mirroring 0012).
+SHOWING_OUTCOME_KINDS: dict[str, tuple[str, ...]] = {
+    "interested": ("showing_held",),
+    "passed": ("showing_held",),
+    "offer_made": ("showing_held", "offer_made"),
+    "no_show": ("no_show",),
+}
+
+
 class ShowingCreate(BaseModel):
     client_id: str
     listing_id: Optional[str] = None
@@ -344,6 +357,22 @@ class ShowingCreate(BaseModel):
         if v not in SHOWING_OUTCOMES:
             raise ValueError(f"must be one of {sorted(SHOWING_OUTCOMES)}")
         return v
+
+
+class ShowingUpdate(BaseModel):
+    """Resolve a showing after the fact.
+
+    Until this existed a showing was write-once: `create_showing` inserted it
+    with whatever outcome the agent knew at the time — almost always 'pending',
+    because it is logged before the buyer has reacted — and nothing in the
+    codebase could ever change it. Every showing in the deployment would have
+    read 'pending' forever, and Outcome Memory would have learned nothing from
+    the one exposure record the whole pipeline reads.
+    """
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    outcome: Literal["pending", "interested", "offer_made", "passed", "no_show"]
+    feedback: Optional[str] = Field(None, max_length=4000)
+    shown_at: Optional[datetime] = None
 
 
 class ProfileUpdate(BaseModel):
@@ -1390,6 +1419,37 @@ async def send_message(
                 json.dumps(payload),
             )
 
+            # A reply is an outcome — but only a reply. An inbound message on a
+            # thread we never opened is a cold enquiry, and scoring it as a
+            # response to something would credit whatever card happened to be
+            # nearest in time. So the emitter asks the thread whether we spoke
+            # first. record_outcome rides this transaction via SAVEPOINT and
+            # never raises: the message is logged whether or not the outcome is.
+            if direction == "inbound" and actor_role in ("buyer", "seller"):
+                we_spoke_first = await conn.fetchval(
+                    """
+                    SELECT 1 FROM interaction_logs
+                     WHERE thread_id = $1 AND direction = 'outbound' AND id <> $2
+                     LIMIT 1
+                    """,
+                    interaction["thread_id"], interaction["id"],
+                )
+                if we_spoke_first:
+                    import outcome_memory
+
+                    await outcome_memory.record_outcome(
+                        ctx,
+                        outcome_kind="reply_received",
+                        subject_type="client",
+                        subject_id=str(client_id),
+                        client_id=str(client_id),
+                        source_table="interaction_logs",
+                        source_id=str(interaction["id"]),
+                        occurred_at=interaction["created_at"],
+                        detail={"channel": stored_channel, "thread_id": str(interaction["thread_id"])},
+                        conn=conn,
+                    )
+
             queued_email_id = None
             if stored_channel == "email" and outbound:
                 outbox = await conn.fetchrow(
@@ -1515,19 +1575,130 @@ async def create_showing(
         "Showing logged: client=%s listing=%s lead=%s outcome=%s (tenant=%s, agent=%s)",
         body.client_id, body.listing_id, body.lead_id, body.outcome, ctx.tenant_id, ctx.agent_id,
     )
+    # A showing logged with its result already known is a result. Its own
+    # transaction has committed by here; record_outcome opens its own.
+    await _record_showing_outcomes(ctx, row)
     await _queue_client_ai(ctx, body.client_id, "showing_recorded")
+    return {"showing": _showing_json(row)}
+
+
+def _showing_json(row) -> dict:
     return {
-        "showing": {
-            "id": str(row["id"]),
-            "client_id": str(row["client_id"]),
-            "listing_id": str(row["listing_id"]) if row["listing_id"] else None,
-            "lead_id": str(row["lead_id"]) if row["lead_id"] else None,
-            "shown_at": _iso(row["shown_at"]),
-            "feedback": row["feedback"],
-            "outcome": row["outcome"],
-            "created_at": _iso(row["created_at"]),
-        }
+        "id": str(row["id"]),
+        "client_id": str(row["client_id"]),
+        "listing_id": str(row["listing_id"]) if row["listing_id"] else None,
+        "lead_id": str(row["lead_id"]) if row["lead_id"] else None,
+        "shown_at": _iso(row["shown_at"]),
+        "feedback": row["feedback"],
+        "outcome": row["outcome"],
+        "created_at": _iso(row["created_at"]),
     }
+
+
+async def _record_showing_outcomes(ctx: TenantContext, row) -> None:
+    """Tell Outcome Memory what a resolved showing means.
+
+    One showings row can legitimately yield two kinds (an offer is also a
+    showing that was held); the outcome_events identity key is per kind, so
+    both land and neither can land twice. `pending` yields nothing.
+    """
+    import outcome_memory
+
+    for kind in SHOWING_OUTCOME_KINDS.get(row["outcome"], ()):
+        await outcome_memory.record_outcome(
+            ctx,
+            outcome_kind=kind,
+            subject_type="client",
+            subject_id=str(row["client_id"]),
+            client_id=str(row["client_id"]),
+            source_table="showings",
+            source_id=str(row["id"]),
+            occurred_at=row["shown_at"],
+            detail={
+                "listing_id": str(row["listing_id"]) if row["listing_id"] else None,
+                "lead_id": str(row["lead_id"]) if row["lead_id"] else None,
+            },
+        )
+
+
+@router.get("/clients/{client_id}/showings")
+async def list_showings(
+    client_id: str,
+    ctx: TenantContext = Depends(require_context),
+    limit: int = 20,
+):
+    """A client's showings, newest first, with the ids the resolve control needs.
+
+    The detail payload folds showings into the `houses` rollup without ids,
+    which was fine while a showing was write-once. Resolving one needs the row.
+    """
+    try:
+        uuid.UUID(client_id)
+    except ValueError:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "invalid client id")
+    limit = max(1, min(100, int(limit)))
+    async with tenant_tx(ctx) as conn:
+        rows = await conn.fetch(
+            """
+            SELECT s.id, s.client_id, s.listing_id, s.lead_id, s.shown_at,
+                   s.feedback, s.outcome, s.created_at,
+                   COALESCE(sl.address, sld.address, sld.payload->>'address') AS address
+              FROM showings s
+              LEFT JOIN listings sl  ON sl.id  = s.listing_id
+              LEFT JOIN leads    sld ON sld.id = s.lead_id
+             WHERE s.client_id = $1::uuid
+             ORDER BY s.shown_at DESC, s.created_at DESC
+             LIMIT $2
+            """,
+            client_id, limit,
+        )
+    return {"showings": [dict(_showing_json(r), address=r["address"]) for r in rows]}
+
+
+@router.patch("/showings/{showing_id}")
+async def update_showing(
+    showing_id: str,
+    body: ShowingUpdate,
+    ctx: TenantContext = Depends(require_context),
+):
+    """The first UPDATE path showings has ever had. See ShowingUpdate."""
+    try:
+        uuid.UUID(showing_id)
+    except ValueError:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "invalid showing id")
+
+    shown_at = body.shown_at
+    if shown_at is not None and shown_at.tzinfo is None:
+        shown_at = shown_at.replace(tzinfo=timezone.utc)
+
+    try:
+        async with tenant_tx(ctx) as conn:
+            row = await conn.fetchrow(
+                """
+                UPDATE showings
+                   SET outcome = $2,
+                       feedback = COALESCE($3, feedback),
+                       shown_at = COALESCE($4::timestamptz, shown_at)
+                 WHERE id = $1::uuid
+             RETURNING id, client_id, listing_id, lead_id, shown_at, feedback, outcome, created_at
+                """,
+                showing_id, body.outcome, body.feedback, shown_at,
+            )
+    except RuntimeError as exc:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            f"Memory Core offline — showing not updated ({exc})",
+        )
+    if row is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "showing not found")
+
+    logger.info(
+        "Showing resolved: id=%s outcome=%s (tenant=%s, agent=%s)",
+        showing_id, body.outcome, ctx.tenant_id, ctx.agent_id,
+    )
+    await _record_showing_outcomes(ctx, row)
+    await _queue_client_ai(ctx, str(row["client_id"]), "showing_resolved")
+    return {"showing": _showing_json(row)}
 
 
 # ---------------------------------------------------------------------------
