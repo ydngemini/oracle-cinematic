@@ -234,8 +234,16 @@ export default function OurAITab({
   onNavigate = () => {},
   salesRoute = null,
   onSalesNavigate = () => {},
+  // Set by the Work switcher when a ?type names one of these workspaces
+  // directly. Read once at mount; CrmShell keys the panel on the type, so a
+  // change of type remounts and re-reads it.
+  initialWorkspace = null,
 }) {
-  const [workspace, setWorkspace] = useState(savedWorkspace);
+  const [workspace, setWorkspace] = useState(() => (
+    initialWorkspace && WORKSPACES.some((w) => w.id === initialWorkspace)
+      ? initialWorkspace
+      : savedWorkspace()
+  ));
   const [snapshot, setSnapshot] = useState({
     values: {}, errors: {}, loading: true, refreshing: false, updatedAt: null,
   });
