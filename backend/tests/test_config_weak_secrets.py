@@ -223,3 +223,35 @@ def test_the_live_stripe_interlock_gates_on_not_prod():
         "gating on IS_DEV lets every non-dev value — including the unset default "
         "— through with a live key"
     )
+
+
+def test_a_privilege_error_is_not_reported_as_a_missing_extension():
+    """"permission denied for function pgp_sym_encrypt" contains "function".
+
+    The old mapping branched on that substring and told the reader pgcrypto was
+    not installed and to apply migration 0006 — while pgcrypto WAS installed and
+    0006 HAD run. The role simply lacked EXECUTE, because 0003 revokes it from
+    PUBLIC on every function in `public`, extension functions included, and
+    nothing granted it back until 0091. The message sent every investigation to
+    the wrong place, which is why it survived.
+    """
+    import pytest
+
+    from crypto import CryptoError, _raise_pgcrypto_error
+
+    class _PgError(Exception):
+        def __init__(self, msg, sqlstate):
+            super().__init__(msg)
+            self.sqlstate = sqlstate
+
+    denied = _PgError("permission denied for function pgp_sym_encrypt", "42501")
+    with pytest.raises(CryptoError) as got:
+        _raise_pgcrypto_error("encrypt_pii", denied)
+    text = str(got.value)
+    assert "GRANT" in text and "0091" in text
+    assert "not installed" not in text, "a privilege error must not blame the extension"
+
+    missing = _PgError("function pgp_sym_encrypt(text, text) does not exist", "42883")
+    with pytest.raises(CryptoError) as got:
+        _raise_pgcrypto_error("encrypt_pii", missing)
+    assert "not installed" in str(got.value)
