@@ -15,6 +15,7 @@ pinned here.
 from __future__ import annotations
 
 import importlib.util
+import re
 from pathlib import Path
 
 import pytest
@@ -131,6 +132,10 @@ def test_every_migration_on_disk_parses_without_error():
         "0069_agency_law_unresearched.sql": "NULLs columns that were asserted without research",
         "0078_zip_state_conflicts.sql": "INSERTs conflict reference data",
         "0083_force_rls_on_subscriptions.sql": "ALTERs a table flag; FORCE creates no object",
+        "0085_grant_execute_public_record_date_or_null.sql":
+            "GRANT only — same shape as 0003; a privilege is not an object",
+        "0088_grant_execute_app_current_agent.sql":
+            "GRANT only — same shape as 0003; a privilege is not an object",
     }
 
     files = sorted((BACKEND / "db" / "migrations").glob("*.sql"))
@@ -154,3 +159,136 @@ def test_every_migration_on_disk_parses_without_error():
     # exemption rather than sit there granting slack forever.
     stale = set(unprobeable_by_design) - silent
     assert stale == set(), f"no longer unprobeable, drop from the list: {sorted(stale)}"
+
+
+def test_no_partial_index_predicates_the_planner_cannot_match():
+    """A partial index is usable only if the query IMPLIES its predicate.
+
+    0089 narrowed the owner-name index with
+        WHERE length(regexp_replace(lower(COALESCE(owner_name,'')),...)) >= 5
+    on the sound observation that _property_candidates never queries shorter
+    names. But the query only says `regexp_replace(...) = $1`, and proving that
+    implies `length(<same expression>) >= 5` means folding the bound constant
+    through length() — which predicate_implied_by does not do. The planner
+    silently skipped the index and fell back to a per-row regexp over 8.6M rows:
+    EXPLAIN ANALYZE did not return in 100s, against 0.93ms with the full index.
+    0090 reverted it.
+
+    The distinction that matters: a predicate over a COLUMN (`address IS NOT
+    NULL`, as idx_public_property_address uses) is provable from a strict
+    operator on that column. A predicate over a DERIVED EXPRESSION proves
+    nothing about that expression's value, so it only ever costs you the index.
+
+    This asserts the narrow, checkable form of that rule: no partial index may
+    predicate on length() of an expression.
+    """
+    files = sorted((BACKEND / "db" / "migrations").glob("*.sql"))
+    corpus = "\n".join(f.read_text() for f in files)
+
+    offenders = []
+    for path in files:
+        for stmt in path.read_text().split(";"):
+            if "CREATE INDEX" not in stmt or " WHERE " not in stmt:
+                continue
+            if "length(" not in stmt.split(" WHERE ", 1)[1].lower():
+                continue
+            name = re.search(r"CREATE INDEX(?:\s+IF NOT EXISTS)?\s+(\w+)", stmt)
+            # A later migration dropping it means the mistake was already
+            # corrected; 0089 is left on disk because it is in the ledger.
+            if name and f"DROP INDEX IF EXISTS {name.group(1)}" in corpus:
+                continue
+            offenders.append(path.name)
+    assert offenders == [], (
+        "these migrations create a partial index whose predicate the planner "
+        f"cannot prove from an equality on the same expression: {sorted(set(offenders))}. "
+        "See 0090 for why that silently disables the index."
+    )
+
+
+# ── Concurrent index pre-build (--prebuild-indexes) ─────────────────────────
+#
+# CREATE INDEX holds a ShareLock for the whole build. On an empty database that
+# is instant; applied to a populated production table it is minutes, during
+# which every write dies on the pool's 30s command_timeout. CREATE INDEX
+# CONCURRENTLY avoids the lock but cannot run in a transaction, and the runner
+# wraps each migration in one so the migration and its ledger row commit
+# together.
+#
+# The pre-pass resolves that without weakening either: it builds the indexes
+# concurrently BEFORE the transactional apply reaches them, and because every
+# CREATE INDEX in this repo is written IF NOT EXISTS, the migration's own
+# statement then does no work. No migration file is edited, so no checksum moves.
+#
+# Measured on the dev database with a live writer holding `leads`:
+#   pre-build ran 112s concurrently and never blocked the writer
+#   the apply that followed took 505ms instead of a multi-minute held lock
+
+def test_prebuild_rewrites_create_index_to_concurrent_and_idempotent():
+    stmts = runner._concurrent_index_statements(
+        "CREATE INDEX idx_a ON t (col);"
+    )
+    assert len(stmts) == 1
+    name, sql = stmts[0]
+    assert name == "idx_a"
+    assert "CONCURRENTLY" in sql
+    # Without IF NOT EXISTS the pre-pass would not be re-runnable: a second run
+    # would fail on the index the first one built.
+    assert "IF NOT EXISTS" in sql
+
+
+def test_prebuild_strips_comments_before_splitting_statements():
+    """Migration comments are prose, and prose contains semicolons.
+
+    0086's own header has one. Splitting on ';' first cut the file mid-sentence
+    and hid the CREATE INDEX behind a fragment that no longer started with
+    CREATE, so one of its two indexes was silently never pre-built.
+    """
+    sql = (
+        "-- There is no work left; the job burns I/O to rediscover that.\n"
+        "CREATE INDEX idx_after_a_semicolon_in_a_comment ON t (col);\n"
+    )
+    names = [n for n, _ in runner._concurrent_index_statements(sql)]
+    assert names == ["idx_after_a_semicolon_in_a_comment"]
+
+
+def test_prebuild_ignores_everything_that_is_not_a_create_index():
+    """Tables, grants and policies stay with the transactional apply."""
+    sql = """
+    CREATE TABLE t (id uuid PRIMARY KEY);
+    ALTER TABLE t ENABLE ROW LEVEL SECURITY;
+    GRANT SELECT ON t TO oracle_app;
+    DROP INDEX IF EXISTS idx_old;
+    INSERT INTO t VALUES (gen_random_uuid());
+    """
+    assert runner._concurrent_index_statements(sql) == []
+
+
+def test_prebuild_handles_the_real_index_migrations():
+    """Against the files themselves, not a synthetic sample."""
+    migrations = BACKEND / "db" / "migrations"
+
+    found = runner._concurrent_index_statements(
+        (migrations / "0086_normalization_and_owner_lookup_indexes.sql").read_text()
+    )
+    assert sorted(n for n, _ in found) == [
+        "idx_leads_pending_payload_normalization",
+        "idx_public_property_owner_normalized",
+    ], "both of 0086's indexes must be pre-buildable"
+    for _, sql in found:
+        assert "CONCURRENTLY" in sql and "IF NOT EXISTS" in sql
+
+    # A GRANT-only migration offers nothing to pre-build and must not confuse it.
+    assert runner._concurrent_index_statements(
+        (migrations / "0088_grant_execute_app_current_agent.sql").read_text()
+    ) == []
+
+
+def test_prebuild_preserves_a_partial_index_predicate():
+    """Dropping the WHERE clause would build a different, much larger index."""
+    sql = (
+        "CREATE INDEX IF NOT EXISTS idx_p ON leads (updated_at, id)\n"
+        " WHERE underwriting->>'source' LIKE 'firehose:%';"
+    )
+    _, rewritten = runner._concurrent_index_statements(sql)[0]
+    assert "WHERE" in rewritten and "firehose:%" in rewritten
+    assert rewritten.upper().count("CONCURRENTLY") == 1

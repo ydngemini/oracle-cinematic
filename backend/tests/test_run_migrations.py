@@ -81,6 +81,13 @@ class _FakeConnection:
             if self.fail_ledger:
                 raise _LedgerInsertError("ledger insert failed")
             self.pending_ledger.append(args[0])
+        elif sql.startswith("SET lock_timeout"):
+            # Session-level, so legitimately outside a transaction — and it must
+            # come AFTER the advisory lock, or a deploy would abandon the queue
+            # behind another deploy that is legitimately mid-migration.
+            assert not self.in_transaction
+            assert self.lock_held, "lock_timeout must be set after the advisory lock"
+            self.events.append(("lock_timeout", sql))
         elif sql.startswith("ALTER ROLE oracle_app_login PASSWORD"):
             assert not self.in_transaction
             self.events.append(("configure_role",))
@@ -135,6 +142,7 @@ def test_advisory_lock_is_held_until_migration_commit(tmp_path, monkeypatch):
     assert result == 0
     assert _event_names(conn) == [
         "lock",
+        "lock_timeout",
         "create_ledger",
         "extend_ledger",
         "fetch_applied",
@@ -162,6 +170,7 @@ def test_ledger_failure_rolls_back_migration_sql(tmp_path, monkeypatch):
 
     assert _event_names(conn) == [
         "lock",
+        "lock_timeout",
         "create_ledger",
         "extend_ledger",
         "fetch_applied",
@@ -192,6 +201,7 @@ def test_duplicate_in_legacy_file_is_not_backfilled_into_ledger(
 
     assert _event_names(conn) == [
         "lock",
+        "lock_timeout",
         "create_ledger",
         "extend_ledger",
         "fetch_applied",
