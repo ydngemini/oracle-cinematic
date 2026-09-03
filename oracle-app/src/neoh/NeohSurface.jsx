@@ -1,13 +1,15 @@
 import { AnimatePresence, motion } from 'framer-motion';
 import { ArrowUp, History, X } from 'lucide-react';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { useAssistant } from '../components/AssistantContext';
+import { crmPost } from '../state/useCrmApi';
 import { AssistantMessages } from '../components/AssistantMessages';
 import { useMotionPolicy } from './motion';
 import { inputPlaceholder, isBusy, restLabel, surfaceState } from './surfaceModel';
 import { useGlobalShortcuts } from './useGlobalShortcuts';
 import { useNeohChannel } from './useNeohChannel';
+import { Blocks } from './Blocks';
 import styles from './NeohSurface.module.css';
 
 /**
@@ -27,17 +29,20 @@ import styles from './NeohSurface.module.css';
 
 const MAX_DRAFT = 8_000;
 
-export function NeohSurface({ entityOpen = false }) {
+export function NeohSurface({ entityOpen = false, onOpenEntity }) {
   const { open, setOpen, record, clearRecord, commandRequest, clearCommandRequest } = useAssistant();
   const channel = useNeohChannel({ open });
   const policy = useMotionPolicy();
   const [draft, setDraft] = useState('');
   const [showResult, setShowResult] = useState(false);
+  // The last rendered answer, when the question was one Neoh could draw.
+  const [rendered, setRendered] = useState(null);
+  const [asking, setAsking] = useState(false);
   const inputRef = useRef(null);
   const pillRef = useRef(null);
   const listRef = useRef(null);
 
-  const busy = isBusy(channel.messages);
+  const busy = asking || isBusy(channel.messages);
   const state = surfaceState({ open, entityOpen, messages: channel.messages, showResult });
   const expanded = state === 'input' || state === 'thinking' || state === 'result';
 
@@ -80,11 +85,39 @@ export function NeohSurface({ entityOpen = false }) {
     if (state === 'result' && listRef.current) listRef.current.scrollTop = listRef.current.scrollHeight;
   }, [channel.messages, state]);
 
-  const submit = () => {
-    if (channel.send(draft, record)) {
-      setDraft('');
+  // Ask the deterministic path first; fall through to the model on a miss.
+  // The order matters: a question with a real interface behind it should never
+  // come back as a paragraph, and a question without one must still be
+  // answered rather than refused.
+  // Built once, not during render: `collapse` reads a ref, and the linter is
+  // right that a ref must not be reached for while rendering.
+  const blockContext = useMemo(() => ({
+    onOpen: (href) => { collapse(); onOpenEntity?.(href); },
+    onAct: (item) => setDraft(item.action || ''),
+  }), [collapse, onOpenEntity]);
+
+  const submit = async () => {
+    const text = draft.trim();
+    if (!text) return;
+    setDraft('');
+    setAsking(true);
+    // The ask path is an optimisation, never a gate: if it fails, the question
+    // still reaches the model, which is what would have happened without it.
+    const answer = await crmPost('/api/neoh/ask', { text }).catch(() => null);
+    setAsking(false);
+    if (answer && !answer.fallthrough && (answer.blocks || []).length > 0) {
+      setRendered({ ...answer, question: text });
       setShowResult(true);
+      return;
     }
+    setRendered(null);
+    if (!channel.send(text, record)) {
+      // The channel refused (reconnecting); put the text back rather than
+      // silently eating it.
+      setDraft(text);
+      return;
+    }
+    setShowResult(true);
   };
 
   const onKeyDown = (event) => {
@@ -142,7 +175,15 @@ export function NeohSurface({ entityOpen = false }) {
           >
             {state === 'result' && (
               <div className={styles.messages} ref={listRef}>
-                <AssistantMessages messages={channel.messages} onUndo={channel.undo} undoing={channel.undoing} />
+                {rendered ? (
+                  <div className={styles.answer}>
+                    <p className={styles.question}>{rendered.question}</p>
+                    {rendered.spoken && <p className={styles.spoken}>{rendered.spoken}</p>}
+                    <Blocks blocks={rendered.blocks} ctx={blockContext} />
+                  </div>
+                ) : (
+                  <AssistantMessages messages={channel.messages} onUndo={channel.undo} undoing={channel.undoing} />
+                )}
               </div>
             )}
 

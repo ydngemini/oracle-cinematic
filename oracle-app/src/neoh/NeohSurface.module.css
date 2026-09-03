@@ -180,3 +180,23 @@
 @media (prefers-reduced-motion: reduce) {
   .mark[data-busy="true"] { animation: none; opacity: 0.7; }
 }
+
+/* ── A rendered answer ────────────────────────────────────────────────── */
+
+.answer { display: flex; flex-direction: column; gap: var(--space-3); }
+
+.question {
+  margin: 0;
+  font: 600 var(--text-xs) / 1 var(--font-mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--oracle-text-ghost);
+}
+
+/* The sentence above the blocks. It says what was found and, where it
+   matters, what it is not — so it is prose, sized to be read, not a label. */
+.spoken {
+  margin: 0;
+  font: 500 var(--text-lg) / 1.35 var(--font-sans);
+  color: var(--oracle-text-heading);
+}

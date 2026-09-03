@@ -578,7 +578,7 @@ export function CrmShell() {
           <AssistantShell />
         ) : (
           <Suspense fallback={null}>
-            <NeohSurface entityOpen={Boolean(route.entity)} />
+            <NeohSurface entityOpen={Boolean(route.entity)} onOpenEntity={openEntity} />
           </Suspense>
         )}
       </ErrorBoundary>

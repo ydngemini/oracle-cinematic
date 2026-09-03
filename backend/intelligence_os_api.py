@@ -26,6 +26,7 @@ import autonomy
 import belief_store
 import command_center
 import intent_states
+import neoh_intents
 from db.connection import tenant_tx
 from platform_policy import Feature, require_feature
 from tenancy import TenantContext, require_context
@@ -47,6 +48,32 @@ async def command_center_briefing(
     """The first screen: what changed, what needs attention, what is coming."""
     require_feature(Feature.PREDICTIVE_INTELLIGENCE)
     return await command_center.briefing(ctx, lookback_hours=lookback_hours)
+
+
+# ---------------------------------------------------------------------------
+# Neoh — the universal input
+# ---------------------------------------------------------------------------
+
+class NeohAsk(BaseModel):
+    """One thing typed into the ⌘K box."""
+    model_config = ConfigDict(extra="forbid")
+
+    text: str = Field(min_length=1, max_length=400)
+
+
+@router.post("/neoh/ask")
+async def neoh_ask(body: NeohAsk, ctx: TenantContext = Depends(require_context)):
+    """Render an interface for the question, or say it could not.
+
+    The answer is a list of `{primitive, props}` from a closed vocabulary the
+    frontend knows how to draw — never markup, and never anything a model
+    wrote. A question no pattern covers comes back with `fallthrough: true`,
+    and the caller sends the same text down the existing chat channel instead,
+    so the fixed vocabulary is a fast path in front of the general one rather
+    than a limit on what can be asked.
+    """
+    require_feature(Feature.PREDICTIVE_INTELLIGENCE)
+    return await neoh_intents.ask(ctx, body.text)
 
 
 # ---------------------------------------------------------------------------
