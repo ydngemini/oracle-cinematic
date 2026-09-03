@@ -81,6 +81,10 @@
      surface. Layered as background-image over --oracle-glass so every
      `background-color: var(--oracle-glass)` keeps working unchanged. */
   --oracle-gloss:         linear-gradient(180deg, rgba(255, 255, 255, 0.85) 0%, rgba(255, 255, 255, 0.30) 38%, rgba(255, 255, 255, 0) 100%);
+  /* The ink as raw channels, so a component can vary its ALPHA and still
+     follow the theme. Panels written for the dark shell hardcoded
+     rgba(242,242,242,a) forty-seven times; on white that is invisible. */
+  --oracle-ink-rgb:       23, 23, 26;
 
   /* Borders */
   --oracle-border:        rgba(23, 23, 26, 0.10);
@@ -264,6 +268,7 @@
     --oracle-backdrop: blur(20px) saturate(135%);
     --oracle-backdrop-light: blur(12px) saturate(120%);
     --oracle-gloss: linear-gradient(180deg, rgba(255, 255, 255, 0.07) 0%, rgba(255, 255, 255, 0.02) 40%, rgba(255, 255, 255, 0) 100%);
+    --oracle-ink-rgb: 242, 242, 242;
     --oracle-border: rgba(242, 242, 242, 0.08);
     --oracle-border-bright: rgba(242, 242, 242, 0.16);
     --oracle-border-subtle: rgba(242, 242, 242, 0.055);
@@ -317,6 +322,7 @@
     --oracle-backdrop: blur(20px) saturate(135%);
     --oracle-backdrop-light: blur(12px) saturate(120%);
     --oracle-gloss: linear-gradient(180deg, rgba(255, 255, 255, 0.07) 0%, rgba(255, 255, 255, 0.02) 40%, rgba(255, 255, 255, 0) 100%);
+    --oracle-ink-rgb: 242, 242, 242;
     --oracle-border: rgba(242, 242, 242, 0.08);
     --oracle-border-bright: rgba(242, 242, 242, 0.16);
     --oracle-border-subtle: rgba(242, 242, 242, 0.055);
