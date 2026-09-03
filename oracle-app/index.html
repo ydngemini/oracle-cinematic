@@ -6,7 +6,18 @@
     <!-- viewport-fit=cover: the bottom Deck pads itself with safe-area-inset
          on notched phones; without it iOS letterboxes the standalone PWA. -->
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-    <meta name="theme-color" content="#0a0a0c" />
+    <meta name="theme-color" content="#fbfaf8" />
+    <script>
+      // Stamp the chosen theme before any CSS paints. Light is the default;
+      // a stored 'dark' must not flash white on load. Mirrors src/theme.js.
+      (function () {
+        try {
+          var t = localStorage.getItem('neoh.theme');
+          if (t === 'dark' || t === 'light') document.documentElement.setAttribute('data-theme', t);
+          else if (t !== 'system') document.documentElement.setAttribute('data-theme', 'light');
+        } catch (e) { document.documentElement.setAttribute('data-theme', 'light'); }
+      })();
+    </script>
     <meta name="mobile-web-app-capable" content="yes" />
     <!-- iOS Safari only enables standalone home-screen launch via the apple-
          prefixed meta; it ignores mobile-web-app-capable. Keep both. -->

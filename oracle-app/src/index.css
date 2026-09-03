@@ -54,7 +54,7 @@
      brand accent does. Kept low-alpha on purpose: it sits over the atmosphere
      gradient below, and a heavier wash flattens that field back into the one
      solid colour the gradient exists to avoid. */
-  --oracle-glass:         rgba(255, 255, 255, 0.74);
+  --oracle-glass:         rgba(255, 255, 255, 0.80);
   --oracle-glass-hover:   rgba(255, 255, 255, 0.82);
   --oracle-glass-active:  rgba(255, 251, 240, 0.90);
   /* Two-tone edge: near-white for legibility, gold for the accent that reads as
@@ -75,8 +75,12 @@
      Still guarded three ways below: @supports, disabled under 719px where the
      GPU cost is least affordable, and replaced by a near-opaque panel under
      prefers-reduced-transparency. */
-  --oracle-backdrop:      blur(14px) saturate(105%);
+  --oracle-backdrop:      blur(22px) saturate(140%);
   --oracle-backdrop-light: blur(10px) saturate(102%);
+  /* Gloss: a specular highlight that fades in the top half of a glass
+     surface. Layered as background-image over --oracle-glass so every
+     `background-color: var(--oracle-glass)` keeps working unchanged. */
+  --oracle-gloss:         linear-gradient(180deg, rgba(255, 255, 255, 0.85) 0%, rgba(255, 255, 255, 0.30) 38%, rgba(255, 255, 255, 0) 100%);
 
   /* Borders */
   --oracle-border:        rgba(23, 23, 26, 0.10);
@@ -259,6 +263,7 @@
     --oracle-glass-edge-gold: rgba(255, 188, 31, 0.30);
     --oracle-backdrop: blur(20px) saturate(135%);
     --oracle-backdrop-light: blur(12px) saturate(120%);
+    --oracle-gloss: linear-gradient(180deg, rgba(255, 255, 255, 0.07) 0%, rgba(255, 255, 255, 0.02) 40%, rgba(255, 255, 255, 0) 100%);
     --oracle-border: rgba(242, 242, 242, 0.08);
     --oracle-border-bright: rgba(242, 242, 242, 0.16);
     --oracle-border-subtle: rgba(242, 242, 242, 0.055);
@@ -311,6 +316,7 @@
     --oracle-glass-edge-gold: rgba(255, 188, 31, 0.30);
     --oracle-backdrop: blur(20px) saturate(135%);
     --oracle-backdrop-light: blur(12px) saturate(120%);
+    --oracle-gloss: linear-gradient(180deg, rgba(255, 255, 255, 0.07) 0%, rgba(255, 255, 255, 0.02) 40%, rgba(255, 255, 255, 0) 100%);
     --oracle-border: rgba(242, 242, 242, 0.08);
     --oracle-border-bright: rgba(242, 242, 242, 0.16);
     --oracle-border-subtle: rgba(242, 242, 242, 0.055);
@@ -536,7 +542,7 @@
 
 @supports ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
 .hud-glass-panel {
-    background: var(--oracle-glass);
+    background: var(--oracle-gloss), var(--oracle-glass);
     backdrop-filter: var(--oracle-backdrop);
     -webkit-backdrop-filter: var(--oracle-backdrop);
   }

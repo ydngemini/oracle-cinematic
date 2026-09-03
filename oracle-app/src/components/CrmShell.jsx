@@ -18,6 +18,8 @@ import {
   ShieldAlert,
   UserRound,
   X,
+  Moon,
+  SunMedium,
 } from 'lucide-react';
 import {
   DEFAULT_WORK_TYPE,
@@ -42,6 +44,7 @@ import { AssistantShell } from './AssistantShell';
 import { BorderBeam } from './motion/BorderBeam';
 import { AdaptiveViewTransition } from './motion/AdaptiveViewTransition';
 import { ProductTour } from './ProductTour';
+import { applyTheme, nextTheme, readTheme, resolveTheme, writeTheme } from '../theme';
 import styles from './CrmShell.module.css';
 
 // Each tab is its own chunk — a field agent on LTE only pays for the tab
@@ -320,6 +323,20 @@ export function CrmShell() {
     return () => window.removeEventListener('popstate', onPopState);
   }, []);
 
+  // Light by default; the toggle is the one place a person changes it. The
+  // choice is stamped on <html> and persisted, and index.html re-stamps it
+  // before paint on the next load so dark never flashes white.
+  const [theme, setTheme] = useState(readTheme);
+  const toggleTheme = useCallback(() => {
+    setTheme((current) => {
+      const next = nextTheme(current);
+      writeTheme(next);
+      applyTheme(next);
+      return next;
+    });
+  }, []);
+  const showingDark = resolveTheme(theme) === 'dark';
+
   const openProfile = useCallback(() => {
     startTransition(() => setProfileOpen(true));
   }, []);
@@ -370,6 +387,16 @@ export function CrmShell() {
         <NeohBrandMark />
         <div className={styles.headerTools}>
           <StateSelector />
+          <button
+            type="button"
+            className={styles.profileButton}
+            onClick={toggleTheme}
+            aria-label={showingDark ? 'Switch to light' : 'Switch to dark'}
+            aria-pressed={showingDark}
+            title={showingDark ? 'Light' : 'Dark'}
+          >
+            {showingDark ? <SunMedium aria-hidden="true" /> : <Moon aria-hidden="true" />}
+          </button>
           <button
             ref={tourButtonRef}
             type="button"

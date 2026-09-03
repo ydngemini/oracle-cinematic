@@ -52,7 +52,7 @@ describe('theme tokens', () => {
     }
   });
 
-  it('light is the default and dark follows the OS', () => {
+  it('light is the default; the OS decides only when nothing is stamped', () => {
     expect(css).toMatch(/color-scheme:\s*light dark/);
     expect(css).toMatch(/@media \(prefers-color-scheme: dark\)/);
   });

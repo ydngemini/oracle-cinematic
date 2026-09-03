@@ -24,7 +24,7 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  background: var(--oracle-glass);
+  background: var(--oracle-gloss), var(--oracle-glass);
   backdrop-filter: var(--oracle-backdrop);
   -webkit-backdrop-filter: var(--oracle-backdrop);
   border-bottom: 1px solid var(--oracle-glass-edge);
