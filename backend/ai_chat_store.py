@@ -921,20 +921,50 @@ async def _read_deals(conn, ctx: TenantContext, tool_name: str, tool_input: dict
 
 async def _read_team_or_providers(conn, ctx: TenantContext, tool_name: str) -> dict:
     if tool_name == "get_team_pipeline":
-        rows = await conn.fetch(
-            """SELECT dossier_status AS stage,count(*)::int AS deal_count,
-                      count(*) FILTER (
-                          WHERE contract_expires_at IS NOT NULL
-                            AND contract_expires_at <= now() + interval '14 days'
-                            AND contract_expires_at >= now()
-                      )::int AS expiring_within_14_days
-                 FROM leads
+        # Two fast queries, not one slow one. Counting `leads` directly is the
+        # mistake migration 0038 exists to prevent: on a tenant holding the
+        # harvested corpus this aggregate scanned 8.6M rows in 15.3s, and
+        # asyncpg's 30s command_timeout reported that as a bare TimeoutError —
+        # so the whole chat turn died with no reason attached to it.
+        #
+        # Stage counts come from the rollup (migration 0099 widened its grain
+        # to include dossier_status). "Expiring within 14 days" cannot: it is a
+        # function of now(), and no row change fires a trigger when a deadline
+        # crosses it. That half stays live, on idx_leads_tenant_contract_window.
+        # Both queries bind the tenant explicitly. That is NOT a duplicated RLS
+        # predicate: this tool answers "MY team's pipeline", so a platform
+        # admin must see one tenant rather than the sum of all of them —
+        # business scope, the same documented exception as search_api._properties.
+        # It is also load-bearing for the plan: idx_leads_tenant_contract_window
+        # leads on tenant_id, and without it the 0.7ms range scan below is a
+        # sequential one.
+        stage_rows = await conn.fetch(
+            """SELECT dossier_status AS stage, sum(row_count)::int AS deal_count
+                 FROM lead_pipeline_counts
                 WHERE tenant_id=$1::uuid
                 GROUP BY dossier_status
                 ORDER BY dossier_status""",
             ctx.tenant_id,
         )
-        return {"ok": True, "action_type": tool_name, "stages": [_clean(dict(row)) for row in rows]}
+        expiring_rows = await conn.fetch(
+            """SELECT dossier_status AS stage, count(*)::int AS expiring
+                 FROM leads
+                WHERE tenant_id=$1::uuid
+                  AND contract_expires_at >= now()
+                  AND contract_expires_at <= now() + interval '14 days'
+                GROUP BY dossier_status""",
+            ctx.tenant_id,
+        )
+        expiring = {row["stage"]: row["expiring"] for row in expiring_rows}
+        stages = [
+            {
+                "stage": row["stage"],
+                "deal_count": row["deal_count"],
+                "expiring_within_14_days": expiring.get(row["stage"], 0),
+            }
+            for row in stage_rows
+        ]
+        return {"ok": True, "action_type": tool_name, "stages": [_clean(row) for row in stages]}
     rows = await conn.fetch(
         """SELECT provider,account_label,expires_at,last_validated_at,disabled_at,
                   validation_status,validation_error,validated_capabilities,updated_at
