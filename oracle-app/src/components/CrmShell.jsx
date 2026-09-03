@@ -85,8 +85,8 @@ function savedRoute() {
   return resolved;
 }
 
-function workParams(type, sales = null) {
-  return { type: type || DEFAULT_WORK_TYPE, sales: sales || null };
+function workParams(type, sales = null, q = '') {
+  return { type: type || DEFAULT_WORK_TYPE, sales: sales || null, q: q || '' };
 }
 
 /**
@@ -251,14 +251,32 @@ export function CrmShell() {
   // onNavigate('deals') in the tab components keeps working through the alias
   // table, and the guided walkthrough's per-step navigation still uses
   // `replace` so it does not bury the entry page under sixteen history rows.
-  const select = useCallback((id, replace = false) => {
+  const select = useCallback((id, replaceOrExtra = false, extra = {}) => {
+    // Tab components call select(id) and the tour calls select(id, true);
+    // the Work chips call select(kind, { q }) to switch kind and keep the
+    // query. One signature serves all three.
+    const replace = replaceOrExtra === true;
+    const opts = replaceOrExtra && typeof replaceOrExtra === 'object' ? replaceOrExtra : extra;
     const resolved = resolveLegacyId(id);
     if (resolved.view === VIEWS.work) {
-      go({ view: VIEWS.work, params: workParams(resolved.type), entity: null }, replace);
+      go({ view: VIEWS.work, params: workParams(resolved.type, null, opts.q), entity: null }, replace);
     } else {
       go({ view: resolved.view, params: {}, entity: null }, replace);
     }
   }, [go]);
+
+  // Typing replaces the current entry rather than pushing one per keystroke.
+  const setQuery = useCallback((q) => {
+    go({ view: VIEWS.work, params: workParams(route.params?.type, route.params?.sales, q), entity: null }, true);
+  }, [go, route.params]);
+
+  // An entity address over whatever is beneath. The sheet that renders it
+  // arrives in the next commit; the route plumbing is already here.
+  const openEntity = useCallback((address) => {
+    const next = parse(address, '', { fallbackView: route.view });
+    go({ view: route.view, params: route.params, entity: next.entity }, false);
+    if (next.entity) window.history.pushState({}, '', address);
+  }, [go, route.view, route.params]);
 
   const navigateSales = useCallback((path, replace = false) => {
     if (path === '/our-ai') {
@@ -389,9 +407,12 @@ export function CrmShell() {
                     {route.view === VIEWS.work ? (
                       <UniversalWorkspace
                         type={route.params.type}
+                        query={route.params.q || ''}
                         salesRoute={route.params.sales}
                         onNavigate={select}
                         onSalesNavigate={navigateSales}
+                        onQueryChange={setQuery}
+                        onOpenEntity={openEntity}
                       />
                     ) : route.view === VIEWS.neoh ? (
                       // The full-screen conversation lands in U7. Until then
