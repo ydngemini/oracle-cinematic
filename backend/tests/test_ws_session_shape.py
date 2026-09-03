@@ -11,8 +11,11 @@ Those assertions were written to fail once ambient work was shared per tenant,
 and that inversion was P2's acceptance criterion. They are inverted here rather
 than deleted, so the old shape cannot quietly return.
 
-The arithmetic now: **one call per tenant-with-viewers per interval**, so fifty
-agents in one tenant cost 3 calls/minute rather than 500.
+The arithmetic went 500 calls/minute → 3. It is now **zero**: the ambient
+monologue is deleted outright. Its text reached the browser and was stored in
+the reducer, but the only component that rendered it — WalkerBubble — was
+never mounted, so every one of those calls bought something no one could see.
+The cheapest version of work nobody sees is still the wrong amount.
 """
 
 from __future__ import annotations
@@ -38,134 +41,37 @@ class _FakeWebSocket:
         self.frames.append(payload)
 
 
-class _CountingMind:
-    """Stands in for MindService, counting how often a thought is generated."""
-
-    def __init__(self):
-        self.calls = 0
-
-    async def stream_monologue(self, agent_id: str):
-        self.calls += 1
-        for token in ("Thinking", " about", " Dover"):
-            yield token
-
-
 # ---------------------------------------------------------------------------
-# The ambient cost, measured
+# The ambient cost, removed
 # ---------------------------------------------------------------------------
 
-def test_ambient_generation_is_per_tenant_not_per_socket(monkeypatch):
-    """INVERTED at P2. Two sockets in ONE tenant ⇒ ONE generation.
+def test_no_llm_call_happens_on_a_timer():
+    """INVERTED again, and this time by deletion.
 
-    Previously each socket ran its own loop, so this same scenario produced two
-    independent LLM calls. The whole point of the change is that the number of
-    viewers stops driving the number of calls.
+    The history is worth keeping because the arithmetic is the lesson. The
+    original shape ran one LLM call per socket per 6s — 50 agents in one
+    brokerage cost ~500 calls/minute. P2 made it one call per tenant per 20s,
+    3/minute. Both were paying for the same thing: an ambient "thought" that
+    reached the browser, was stored in the reducer, and was rendered by
+    exactly one component — WalkerBubble, which was never mounted anywhere in
+    the tree. The cheapest version of work nobody sees is still the wrong
+    amount, so the producer, the frame, the reducer state and the component
+    are all gone.
+
+    What this guards: nothing may reintroduce a timer that generates text.
     """
-    import server
-    import ws_hub
-
-    mind = _CountingMind()
-    monkeypatch.setattr(server, "mind_service", mind)
-    monkeypatch.setattr(server, "AMBIENT_MONOLOGUE_INTERVAL", 0.0)
-
-    delivered: list[tuple[str, dict]] = []
-
-    async def _capture(tenant_id, payload):
-        delivered.append((tenant_id, payload))
-        return 1
-
-    monkeypatch.setattr(ws_hub, "deliver_local", _capture)
-    monkeypatch.setattr(ws_hub, "tenants_with_sockets", lambda: ["tenant-a"])
-    monkeypatch.setattr(server.ws_hub, "deliver_local", _capture)
-    monkeypatch.setattr(server.ws_hub, "tenants_with_sockets", lambda: ["tenant-a"])
-
-    async def one_cycle():
-        task = asyncio.create_task(server.ambient_monologue_producer())
-        await asyncio.sleep(0.05)
-        task.cancel()
-        await asyncio.gather(task, return_exceptions=True)
-
-    asyncio.run(one_cycle())
-
-    assert mind.calls >= 1, "the producer generated nothing at all"
-    # One tenant, however many sockets it has: one generation per cycle.
-    assert mind.calls == len(delivered), (
-        "generations and deliveries must be 1:1 — a per-socket fan-out has returned"
-    )
-    assert all(tenant == "tenant-a" for tenant, _ in delivered)
-
-
-def test_nothing_is_generated_when_nobody_is_watching(monkeypatch):
-    """A replica with no sockets must make no LLM calls at all.
-
-    The old per-socket loop got this free (no socket, no loop). The shared
-    producer has to check, or an idle replica burns tokens forever.
-    """
-    import server
-
-    mind = _CountingMind()
-    monkeypatch.setattr(server, "mind_service", mind)
-    monkeypatch.setattr(server, "AMBIENT_MONOLOGUE_INTERVAL", 0.0)
-    monkeypatch.setattr(server.ws_hub, "tenants_with_sockets", lambda: [])
-
-    async def spin():
-        task = asyncio.create_task(server.ambient_monologue_producer())
-        await asyncio.sleep(0.05)
-        task.cancel()
-        await asyncio.gather(task, return_exceptions=True)
-
-    asyncio.run(spin())
-    assert mind.calls == 0, "an idle replica is still generating ambient thoughts"
-
-
-def test_the_monologue_interval_is_no_longer_six_seconds():
-    """INVERTED at P2: 6s → 20s, and env-tunable.
-
-    The fix both shares the loop *and* lengthens the interval; if only one of
-    those had landed, this catches the omission.
-    """
-    import server
-
-    assert server.AMBIENT_MONOLOGUE_INTERVAL >= 20.0, (
-        f"interval regressed to {server.AMBIENT_MONOLOGUE_INTERVAL}s"
-    )
     source = (BACKEND / "server.py").read_text(encoding="utf-8")
-    assert "ORACLE_MONOLOGUE_INTERVAL" in source, "the interval is no longer tunable"
 
-
-def test_a_thought_is_delivered_as_one_frame(monkeypatch):
-    """INVERTED at P2. Was ~80 frames per thought per socket (start/stream/end).
-
-    The text is not typed live by a human; the client animates it locally.
-    """
-    import server
-
-    mind = _CountingMind()
-    monkeypatch.setattr(server, "mind_service", mind)
-    monkeypatch.setattr(server, "AMBIENT_MONOLOGUE_INTERVAL", 0.0)
-    monkeypatch.setattr(server.ws_hub, "tenants_with_sockets", lambda: ["tenant-a"])
-
-    frames: list[dict] = []
-
-    async def _capture(_tenant_id, payload):
-        frames.append(payload)
-        return 1
-
-    monkeypatch.setattr(server.ws_hub, "deliver_local", _capture)
-
-    async def one_cycle():
-        task = asyncio.create_task(server.ambient_monologue_producer())
-        await asyncio.sleep(0.05)
-        task.cancel()
-        await asyncio.gather(task, return_exceptions=True)
-
-    asyncio.run(one_cycle())
-
-    assert frames, "no frame was delivered"
-    first = frames[0]
-    assert first["mode"] == "full", f"expected one full frame, got mode={first['mode']!r}"
-    assert first["token"] == "Thinking about Dover", "the full text must arrive assembled"
-    assert first["type"] == "AGENT_THOUGHT"
+    assert "ambient_monologue_producer" not in source
+    assert "AMBIENT_MONOLOGUE_INTERVAL" not in source
+    assert "ORACLE_MONOLOGUE_INTERVAL" not in source
+    assert "AGENT_THOUGHT" not in source, (
+        "the frame is gone; nothing on the client listens for it any more"
+    )
+    assert "stream_monologue" not in source, (
+        "server.py must not reach the monologue generator; mind_service keeps "
+        "it for generate_command_draft's sake, which is a request path, not a timer"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -394,30 +300,6 @@ def test_the_last_release_stops_the_engine_after_the_linger(monkeypatch):
     assert engine.stopped is True, "the engine outlived its last viewer"
     assert tenant_engines.engine_count() == 0
     tenant_engines._entries.clear()
-
-
-# ---------------------------------------------------------------------------
-# The arithmetic, restated for the new shape
-# ---------------------------------------------------------------------------
-
-@pytest.mark.parametrize(
-    "tenants,sockets_each,expected_calls_per_minute",
-    [(1, 1, 3), (1, 50, 3), (5, 10, 15)],
-)
-def test_ambient_calls_scale_with_tenants_not_sockets(
-    tenants, sockets_each, expected_calls_per_minute
-):
-    """The point of P2, stated as arithmetic.
-
-    calls/min = tenants × (60 / interval). `sockets_each` is deliberately in the
-    signature and unused in the formula — that independence IS the fix. The old
-    shape was sockets × (60 / 6), i.e. 500/min for one tenant of 50 agents.
-    """
-    import server
-
-    interval = server.AMBIENT_MONOLOGUE_INTERVAL
-    assert tenants * (60 / interval) == expected_calls_per_minute
-    assert sockets_each  # present to document what no longer matters
 
 
 def test_the_replica_has_a_connection_ceiling():

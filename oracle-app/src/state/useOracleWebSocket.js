@@ -175,33 +175,6 @@ export function useOracleWebSocket() {
           });
           break;
 
-        case 'AGENT_THOUGHT':
-          if (msg.mode === 'full') {
-            // The shared ambient producer sends the whole thought as one frame
-            // (one generation per tenant, delivered to every socket) instead of
-            // ~80 token frames per socket. Reuse the existing start/end actions
-            // so the speech bubble renders identically either way.
-            dispatch({
-              type: ACTIONS.WALKER_THOUGHT_START,
-              payload: { agent: msg.agent, token: msg.token },
-            });
-            dispatch({ type: ACTIONS.WALKER_THOUGHT_END });
-          } else if (msg.mode === 'start') {
-            // Older token-streaming servers; keep understanding them.
-            dispatch({
-              type: ACTIONS.WALKER_THOUGHT_START,
-              payload: { agent: msg.agent, token: msg.token },
-            });
-          } else if (msg.mode === 'stream') {
-            dispatch({
-              type: ACTIONS.WALKER_THOUGHT_TOKEN,
-              payload: { token: msg.token },
-            });
-          } else if (msg.mode === 'end') {
-            dispatch({ type: ACTIONS.WALKER_THOUGHT_END });
-          }
-          break;
-
         case 'SESSION_RESTORED': {
           const maoPct =
             typeof msg.mao_threshold === 'number' ? msg.mao_threshold : 0.70;

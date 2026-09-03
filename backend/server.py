@@ -143,11 +143,6 @@ async def lifespan(app: FastAPI):
     # AWS observability broadcaster is opt-in: it polls Cost Explorer (billed
     # per call) and the infra APIs. Off unless AWS_OBSERVABILITY_ENABLED is set;
     # even when enabled, the loop only calls AWS while a client is connected.
-    # One ambient monologue producer for the whole replica. Previously every
-    # socket ran its own loop at one LLM call per 6s; this is one call per
-    # tenant-with-viewers per interval.
-    monologue_task = asyncio.create_task(ambient_monologue_producer())
-
     metrics_task = None
     if os.environ.get("AWS_OBSERVABILITY_ENABLED", "").lower() in {"1", "true", "yes"}:
         from aws_observability import broadcast_metrics
@@ -160,11 +155,6 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
-        monologue_task.cancel()
-        try:
-            await monologue_task
-        except asyncio.CancelledError:
-            pass
         # Stop every tenant engine, including any still inside its linger window.
         await tenant_engines.shutdown_all()
         if metrics_task is not None:
@@ -522,55 +512,6 @@ mind_service = MindService()
 configure_command_mind_service(mind_service)
 
 
-AMBIENT_MONOLOGUE_INTERVAL = float(os.getenv("ORACLE_MONOLOGUE_INTERVAL", "20"))
-_AGENT_CYCLE = ("SCOUT", "ANALYST", "CLOSER", "LEGAL")
-
-
-async def ambient_monologue_producer():
-    """Generate one ambient thought per tenant per interval, for the whole replica.
-
-    This replaces a per-socket loop that ran one LLM call every 6 seconds for
-    every connected client. Fifty agents in one brokerage produced ~500 calls a
-    minute to show them fifty copies of the same ambient flavour text — on a
-    deployment where no replica runs a local model, so each call was a failing
-    health probe followed by a hosted request.
-
-    Now: one call per tenant per interval, delivered to all of that tenant's
-    sockets. Fifty agents in one tenant cost 3 calls/minute rather than 500.
-
-    Delivery is local-only. Every replica runs this loop, so publishing across
-    replicas would deliver each other's thoughts on top of its own.
-    """
-    idx = 0
-    while True:
-        await asyncio.sleep(AMBIENT_MONOLOGUE_INTERVAL)
-        tenants = ws_hub.tenants_with_sockets()
-        if not tenants:
-            continue  # nobody watching; generate nothing
-
-        agent_id = _AGENT_CYCLE[idx % len(_AGENT_CYCLE)]
-        idx += 1
-
-        for tenant_id in tenants:
-            try:
-                tokens = [token async for token in mind_service.stream_monologue(agent_id)]
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:  # noqa: BLE001 — ambient copy is never critical
-                logger.debug("Ambient monologue generation failed: %s", exc)
-                continue
-            if not tokens:
-                continue
-
-            # One frame, not one per token. The old loop sent ~80 frames per
-            # thought per socket; the text is not typed live by a human and the
-            # client can animate it locally if it wants to.
-            await ws_hub.deliver_local(tenant_id, {
-                "type": "AGENT_THOUGHT",
-                "agent": agent_id,
-                "mode": "full",
-                "token": "".join(tokens),
-            })
 
 
 async def restore_session(websocket: WebSocket, user_id: str, tenant_id: str):

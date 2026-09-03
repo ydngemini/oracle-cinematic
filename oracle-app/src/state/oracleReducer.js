@@ -19,9 +19,6 @@ export const initialState = {
   cacheWarm: [],
   isAiAppraisalMode: true,
   manualComps: [],
-  walkerThought: '',
-  walkerAgent: 'SCOUT',
-  walkerStreaming: false,
   memorySync: false,
   maoThreshold: 0.70,
   profileSummary: '',
@@ -52,9 +49,6 @@ export const ACTIONS = {
   SET_CACHE_WARM: 'SET_CACHE_WARM',
   TOGGLE_APPRAISAL_MODE: 'TOGGLE_APPRAISAL_MODE',
   SET_MANUAL_COMPS: 'SET_MANUAL_COMPS',
-  WALKER_THOUGHT_START: 'WALKER_THOUGHT_START',
-  WALKER_THOUGHT_TOKEN: 'WALKER_THOUGHT_TOKEN',
-  WALKER_THOUGHT_END: 'WALKER_THOUGHT_END',
   SESSION_RESTORED: 'SESSION_RESTORED',
   FEED_EVENT: 'FEED_EVENT',
   PROFILE_SAVED: 'PROFILE_SAVED',
@@ -250,22 +244,6 @@ export function oracleReducer(state, action) {
     case ACTIONS.SET_MANUAL_COMPS:
       return { ...state, manualComps: action.payload };
 
-    case ACTIONS.WALKER_THOUGHT_START:
-      return {
-        ...state,
-        walkerAgent: action.payload.agent,
-        walkerThought: action.payload.token,
-        walkerStreaming: true,
-      };
-
-    case ACTIONS.WALKER_THOUGHT_TOKEN:
-      return {
-        ...state,
-        walkerThought: state.walkerThought + action.payload.token,
-      };
-
-    case ACTIONS.WALKER_THOUGHT_END:
-      return { ...state, walkerStreaming: false };
 
     case ACTIONS.SESSION_RESTORED:
       return {

@@ -40,7 +40,6 @@ import { StateSelector } from './StateSelector';
 import { NeohBrandMark } from './NeohBrandMark';
 import { NeohFooter } from './NeohFooter';
 import { AssistantProvider } from './AssistantContext';
-import { AssistantShell } from './AssistantShell';
 import { BorderBeam } from './motion/BorderBeam';
 import { AdaptiveViewTransition } from './motion/AdaptiveViewTransition';
 import { ProductTour } from './ProductTour';
@@ -66,16 +65,6 @@ const EntitySheet = lazy(() =>
 const NeohSurface = lazy(() =>
   import('../neoh/NeohSurface').then((m) => ({ default: m.NeohSurface })));
 
-/** The old assistant panel stays reachable at ?legacy=assistant until it is
- *  retired, for attachments and the record picker the surface does not carry
- *  yet. Read once: the query string is not something the shell watches. */
-function legacyAssistantRequested() {
-  try {
-    return new URLSearchParams(window.location.search).get('legacy') === 'assistant';
-  } catch {
-    return false;
-  }
-}
 const PersonalAITab = lazy(loadPersonalAITab);
 const MyProfileTab = lazy(loadMyProfileTab);
 const AdminOpsTab = lazy(loadAdminOpsTab);
@@ -340,7 +329,6 @@ export function CrmShell() {
   // choice is stamped on <html> and persisted, and index.html re-stamps it
   // before paint on the next load so dark never flashes white.
   const [theme, setTheme] = useState(readTheme);
-  const [legacyAssistant] = useState(legacyAssistantRequested);
   const toggleTheme = useCallback(() => {
     setTheme((current) => {
       const next = nextTheme(current);
@@ -574,13 +562,9 @@ export function CrmShell() {
         )}
       </AnimatePresence>
       <ErrorBoundary label="Personal AI">
-        {legacyAssistant ? (
-          <AssistantShell />
-        ) : (
-          <Suspense fallback={null}>
-            <NeohSurface entityOpen={Boolean(route.entity)} onOpenEntity={openEntity} />
-          </Suspense>
-        )}
+        <Suspense fallback={null}>
+          <NeohSurface entityOpen={Boolean(route.entity)} onOpenEntity={openEntity} />
+        </Suspense>
       </ErrorBoundary>
       <ProductTour
         open={tourOpen}
