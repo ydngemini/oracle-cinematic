@@ -78,7 +78,7 @@ function InlineEdit({ value, placeholder, onCommit, className, ariaLabel }) {
  * controls stage / score / assignee / identity (all PATCH /clients/{id}),
  * and the sub-tabs own their own data + graceful states. Keyboard-dismissable.
  */
-export default function ClientDetailDrawer({ card, onClose, onClientChanged }) {
+export default function ClientDetailDrawer({ card, onClose, onClientChanged, read = null }) {
   const clientId = card?.id;
   const [detail, setDetail] = useState(card);   // seed with the row we already have
   const [loadErr, setLoadErr] = useState(null);
@@ -306,6 +306,9 @@ export default function ClientDetailDrawer({ card, onClose, onClientChanged }) {
             </div>
             <button type="button" className={styles.closeBtn} onClick={onClose} aria-label="Close">{GLYPHS.close}</button>
           </div>
+
+          {/* Neoh's read, when the sheet that opened this drawer has one. */}
+          {read}
 
           <div className={styles.automationBar} aria-live="polite">
             <span className={styles.automationIdentity}>

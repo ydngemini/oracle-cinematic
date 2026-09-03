@@ -58,6 +58,8 @@ const NeohHome = lazy(() =>
 const OurAITab = lazy(loadOurAITab);
 const UniversalWorkspace = lazy(() =>
   import('../neoh/UniversalWorkspace').then((m) => ({ default: m.UniversalWorkspace })));
+const EntitySheet = lazy(() =>
+  import('../neoh/EntitySheet').then((m) => ({ default: m.EntitySheet })));
 const PersonalAITab = lazy(loadPersonalAITab);
 const MyProfileTab = lazy(loadMyProfileTab);
 const AdminOpsTab = lazy(loadAdminOpsTab);
@@ -275,7 +277,21 @@ export function CrmShell() {
   const openEntity = useCallback((address) => {
     const next = parse(address, '', { fallbackView: route.view });
     go({ view: route.view, params: route.params, entity: next.entity }, false);
-    if (next.entity) window.history.pushState({}, '', address);
+    // The marker lets closeEntity use Back — so closing the sheet and pressing
+    // Back are the same thing, and the view beneath is never re-entered.
+    if (next.entity) window.history.pushState({ entity: true }, '', address);
+  }, [go, route.view, route.params]);
+
+  // Close the sheet the way it was opened. Pushed from inside the app → Back,
+  // which the popstate handler turns into "same view, no entity". Arrived at
+  // directly (a bookmark, a link from a text) → there is nothing behind it in
+  // this tab's history, so replace the address with the view beneath.
+  const closeEntity = useCallback(() => {
+    if (window.history.state?.entity) {
+      window.history.back();
+      return;
+    }
+    go({ view: route.view, params: route.params, entity: null }, true);
   }, [go, route.view, route.params]);
 
   const navigateSales = useCallback((path, replace = false) => {
@@ -429,6 +445,13 @@ export function CrmShell() {
                   </AdaptiveViewTransition>
                 </Suspense>
               </ErrorBoundary>
+              {route.entity && (
+                <ErrorBoundary label="record sheet">
+                  <Suspense fallback={null}>
+                    <EntitySheet entity={route.entity} onClose={closeEntity} />
+                  </Suspense>
+                </ErrorBoundary>
+              )}
             </div>
             <NeohFooter />
           </div>
