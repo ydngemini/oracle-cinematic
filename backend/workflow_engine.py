@@ -109,6 +109,12 @@ class WorkflowEngine:
         }
 
     async def start(self):
+        """Seed the graph, spawn the loops, and RETURN.
+
+        This must not await the loops. `tenant_engines.acquire` awaits this
+        inside its lock, and the /ws handler awaits acquire before it starts
+        reading the socket — see wait() for what awaiting here used to cost.
+        """
         self._running = True
         self._stats["start_time"] = time.time()
 
@@ -133,21 +139,14 @@ class WorkflowEngine:
 
         await self._emit_status("WORKFLOW ENGINE — all agents online")
 
-        await asyncio.gather(*[
-            t for t in (
-                self._harvest_task,
-                self._analysis_task,
-                self._predictive_task,
-                self._scout_task,
-            )
-            if t is not None
-        ])
+        # A loop that dies must say so. Nothing awaits these tasks any more, so
+        # without this an exception inside one is only ever surfaced by the
+        # interpreter's "task exception was never retrieved" at collection.
+        for task in self._background_tasks():
+            task.add_done_callback(self._log_loop_exit)
 
-    async def stop(self):
-        self._running = False
-        self.harvester.stop()
-
-        tasks_to_cancel = [
+    def _background_tasks(self) -> list:
+        return [
             t for t in (
                 self._harvest_task,
                 self._analysis_task,
@@ -156,6 +155,35 @@ class WorkflowEngine:
             )
             if t is not None
         ]
+
+    @staticmethod
+    def _log_loop_exit(task) -> None:
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None:
+            logger.error("Workflow engine loop failed: %s", exc, exc_info=exc)
+
+    async def wait(self):
+        """Block until the engine's loops finish.
+
+        `start()` deliberately returns as soon as the loops are running: it is
+        awaited by `tenant_engines.acquire`, which is awaited in turn by the
+        /ws handler BEFORE that handler starts reading from the socket. While
+        start() awaited its own loops, acquire never returned, the receive loop
+        never began, and every inbound frame on every socket — AI chat, deal
+        pipeline, comps, PONG — was silently ignored for the life of the
+        process. Only a standalone runner should call this.
+        """
+        tasks = self._background_tasks()
+        if tasks:
+            await asyncio.gather(*tasks)
+
+    async def stop(self):
+        self._running = False
+        self.harvester.stop()
+
+        tasks_to_cancel = self._background_tasks()
 
         for t in tasks_to_cancel:
             t.cancel()

@@ -65,6 +65,26 @@ from data_integrations.cache import IntegrationCacheUnavailable
 
 logger = logging.getLogger("oracle.server")
 
+
+def _configure_logging() -> None:
+    """Give the application's own loggers somewhere to go.
+
+    uvicorn configures only its own loggers; the root logger was never
+    configured, so every `logger.info` in this codebase — including the
+    private chat path — was dropped for the whole life of the service. The
+    first silent stall in that path was undiagnosable for exactly this
+    reason. basicConfig is a no-op when the root already has handlers, so a
+    deployment that configures logging itself is left alone.
+    """
+    level = os.getenv("ORACLE_LOG_LEVEL", "INFO").upper()
+    logging.basicConfig(level=level, format="%(levelname)s %(name)s: %(message)s")
+    for noisy in ("httpx", "httpcore", "litellm", "LiteLLM", "watchfiles", "asyncio",
+                  "urllib3", "botocore", "boto3", "openai", "hpack", "h11"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
+
+
+_configure_logging()
+
 # Module-level start time for uptime reporting.
 _START_TIME: float = time.monotonic()
 
