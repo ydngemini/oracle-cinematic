@@ -1,0 +1,182 @@
+/* ─── Neoh surface ─────────────────────────────────────────────────────────
+   One element, docked above the deck, that changes shape. The radius is the
+   only thing that says "interactive" here; no border, no glow. */
+
+.surface {
+  position: fixed;
+  z-index: var(--z-overlay);
+  /* Centred with auto margins, not a transform: framer's layout animation
+     writes `transform` inline, and a translateX(-50%) here would be
+     overwritten mid-morph, leaving the bar hanging off the right edge. */
+  left: 0;
+  right: 0;
+  margin-inline: auto;
+  bottom: calc(var(--deck-height) + var(--safe-bottom) + 12px);
+  display: flex;
+  flex-direction: column;
+  width: max-content;
+  max-width: min(100% - 2 * var(--space-4), 44rem);
+  border-radius: var(--radius-2xl);
+  overflow: hidden;
+  outline: none;
+}
+
+.surface[data-state="input"],
+.surface[data-state="thinking"],
+.surface[data-state="result"] {
+  width: min(100% - 2 * var(--space-4), 44rem);
+}
+
+.surface[data-state="result"] {
+  max-height: min(70dvh, 40rem);
+}
+
+.surface[data-state="yielded"] {
+  opacity: 0.55;
+  pointer-events: none;
+}
+
+/* ── Rest: the pill ──────────────────────────────────────────────────── */
+
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-height: 3rem;
+  padding: 0 var(--space-4) 0 var(--space-3);
+  border: none;
+  background: transparent;
+  color: var(--oracle-text-heading);
+  font: 500 var(--text-md) / 1 var(--font-sans);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.pill:focus-visible { outline: 2px solid var(--oracle-accent); outline-offset: -2px; }
+
+.label { display: inline-block; }
+
+.kbd {
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
+  background: var(--oracle-surface-sunken);
+  color: var(--oracle-text-ghost);
+  font: 500 var(--text-xs) / 1 var(--font-mono);
+}
+
+/* The mark: a small gold disc that breathes while Neoh works. */
+.mark {
+  width: 10px;
+  height: 10px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: var(--oracle-accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--oracle-accent) 18%, transparent);
+}
+.mark[data-busy="true"] { animation: breathe 1.4s ease-in-out infinite; }
+
+@keyframes breathe {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(0.72); opacity: 0.55; }
+}
+
+/* ── Open: bar and panel ─────────────────────────────────────────────── */
+
+.open {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.bar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-2) var(--space-2) var(--space-4);
+  min-height: 3.25rem;
+}
+
+.input {
+  flex: 1;
+  min-width: 0;
+  max-height: 8rem;
+  padding: var(--space-2) 0;
+  border: none;
+  background: transparent;
+  color: var(--oracle-text);
+  font: 500 var(--text-md) / 1.4 var(--font-sans);
+  resize: none;
+  outline: none;
+  field-sizing: content;
+}
+.input::placeholder { color: var(--oracle-text-ghost); }
+
+.record {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  max-width: 12rem;
+  padding: 4px 6px 4px 10px;
+  border-radius: var(--radius-pill);
+  background: var(--oracle-surface-sunken);
+  color: var(--oracle-text);
+  font: 500 var(--text-sm) / 1 var(--font-sans);
+  white-space: nowrap;
+}
+.record > span { overflow: hidden; text-overflow: ellipsis; }
+
+.recordClear {
+  display: inline-flex;
+  padding: 2px;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--oracle-text-ghost);
+  cursor: pointer;
+}
+.recordClear:hover { color: var(--oracle-text); }
+
+.iconBtn,
+.send {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.25rem;
+  height: 2.25rem;
+  flex-shrink: 0;
+  border: none;
+  border-radius: 50%;
+  cursor: pointer;
+}
+.iconBtn { background: transparent; color: var(--oracle-text-dim); }
+.iconBtn:hover { background: var(--oracle-surface-sunken); color: var(--oracle-text); }
+.send { background: var(--oracle-accent); color: #1a1200; }
+.send:disabled { background: var(--oracle-surface-sunken); color: var(--oracle-text-ghost); cursor: default; }
+.iconBtn:focus-visible, .send:focus-visible { outline: 2px solid var(--oracle-accent); outline-offset: 2px; }
+
+.messages {
+  flex: 1;
+  min-height: 0;
+  max-height: min(56dvh, 32rem);
+  overflow-y: auto;
+  padding: var(--space-4) var(--space-4) var(--space-2);
+  border-bottom: 1px solid var(--oracle-border-subtle);
+}
+
+.notice {
+  margin: 0;
+  padding: 0 var(--space-4) var(--space-3);
+  color: var(--oracle-text-dim);
+  font-size: var(--text-sm);
+}
+
+@media (max-width: 719px) {
+  .surface { max-width: calc(100% - 2 * var(--space-3)); }
+  .surface[data-state="input"],
+  .surface[data-state="thinking"],
+  .surface[data-state="result"] { width: calc(100% - 2 * var(--space-3)); }
+  .kbd { display: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mark[data-busy="true"] { animation: none; opacity: 0.7; }
+}
