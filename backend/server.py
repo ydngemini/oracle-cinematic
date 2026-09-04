@@ -325,6 +325,7 @@ from models_api import router as models_router  # noqa: E402
 from portfolio_api import router as portfolio_router  # noqa: E402
 from sales_api import router as sales_router  # noqa: E402
 from lead_routing_api import public_router as lead_intake_router, router as lead_routing_router  # noqa: E402
+from missions_api import router as missions_router  # noqa: E402
 from sites_api import router as sites_router  # noqa: E402
 from spatial_intelligence_api import router as spatial_intelligence_router  # noqa: E402
 # Imported for its register_handler() side effect only — speed_to_lead exposes no
@@ -350,6 +351,7 @@ app.include_router(portfolio_router)
 app.include_router(sales_router)
 app.include_router(lead_routing_router)
 app.include_router(lead_intake_router)
+app.include_router(missions_router)
 app.include_router(sites_router)
 app.include_router(spatial_intelligence_router)
 

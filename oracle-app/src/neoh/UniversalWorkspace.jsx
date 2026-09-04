@@ -36,10 +36,12 @@ const CommsTab = lazy(() => import('../components/CommsTab'));
 const DealsTab = lazy(() => import('../components/DealsTab'));
 const PropertiesTab = lazy(() => import('../components/PropertiesTab'));
 const OurAITab = lazy(() => import('../components/OurAITab'));
+const MissionBuilder = lazy(() =>
+  import('./MissionBuilder').then((m) => ({ default: m.MissionBuilder })));
 const IntelligenceFeed = lazy(() =>
   import('../components/IntelligenceFeed').then((m) => ({ default: m.IntelligenceFeed })));
 
-const AI_WORKSPACES = new Set(['ai', 'sales', 'social', 'homeowners', 'automations', 'sites', 'missions']);
+const AI_WORKSPACES = new Set(['ai', 'sales', 'social', 'homeowners', 'automations', 'sites']);
 
 /** Typing pauses this long before a request goes out. */
 const DEBOUNCE_MS = 220;
@@ -190,6 +192,7 @@ export function UniversalWorkspace({
   else if (type === 'deals') view = <DealsTab onNavigate={onNavigate} />;
   else if (type === 'properties') view = <PropertiesTab onNavigate={onNavigate} />;
   else if (type === 'opportunities') view = <IntelligenceFeed />;
+  else if (type === 'missions') view = <MissionBuilder onOpenEntity={onOpenEntity} />;
   else if (AI_WORKSPACES.has(type)) {
     view = (
       <OurAITab
