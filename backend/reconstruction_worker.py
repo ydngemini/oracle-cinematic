@@ -22,13 +22,15 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 import logging
 import os
 import shutil
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from datetime import datetime, timezone
+from typing import Any, Optional
 from uuid import UUID, uuid4
 
 import ws_hub
@@ -80,6 +82,99 @@ async def _set_status(ctx: TenantContext, job_id: str, status: str, **fields) ->
         await conn.execute(
             f"UPDATE reconstruction_jobs SET {', '.join(sets)} WHERE id = $1", *vals
         )
+
+
+class QualityGateFailure(RuntimeError):
+    """The capture cannot support a reconstruction.
+
+    Separate from ProviderError because the two need opposite responses: this
+    means "capture more of the house", a ProviderError means "the deployment is
+    broken". They were both `status='failed'` with a string, which is why the
+    first real run could not have told us which had happened.
+    """
+
+
+def _image_dimensions(images: list[Path]) -> Optional[dict[str, Any]]:
+    """Pixel dimensions across the capture, from the headers only.
+
+    Never opens image CONTENT — Pillow reads the header for .size, which is
+    what tells us a capture is 640x480 thumbnails before a GPU is rented.
+    Returns None when Pillow is unavailable rather than guessing.
+    """
+    try:
+        from PIL import Image
+    except Exception:  # noqa: BLE001 — an optional signal, not a requirement
+        return None
+    sizes: list[tuple[int, int]] = []
+    for path in images[:60]:   # a sample is enough to characterise a capture
+        try:
+            with Image.open(path) as img:
+                sizes.append(img.size)
+        except Exception:  # noqa: BLE001 — one unreadable file is a data point
+            continue
+    if not sizes:
+        return None
+    widths = sorted(w for w, _ in sizes)
+    heights = sorted(h for _, h in sizes)
+    return {
+        "sampled": len(sizes),
+        "min_width": widths[0], "max_width": widths[-1],
+        "min_height": heights[0], "max_height": heights[-1],
+        "median_width": widths[len(widths) // 2],
+        "median_height": heights[len(heights) // 2],
+    }
+
+
+def _provider_metrics(provider: Any, work: Path) -> dict[str, Any]:
+    """Registration metrics, IF the provider actually reported any.
+
+    Deliberately reads only what the toolchain wrote down. COLMAP emits a
+    cameras file; a provider that emits nothing gets an empty dict rather than
+    an invented registration ratio — a fabricated quality number is worse than
+    a missing one, because it would be trusted.
+    """
+    out: dict[str, Any] = {}
+    reported = getattr(provider, "last_metrics", None)
+    if isinstance(reported, dict):
+        out.update({k: v for k, v in reported.items() if v is not None})
+    for name in ("cameras.json", "cameras.txt", "transforms.json"):
+        candidate = work / name
+        if candidate.exists():
+            out["camera_file"] = name
+            out["camera_file_bytes"] = candidate.stat().st_size
+            break
+    return out
+
+
+async def _record_stage(
+    ctx: TenantContext, job_id: str, stage: str, **metrics: Any
+) -> None:
+    """Merge one stage's measurements into the job's diagnostics.
+
+    Written per stage rather than once at the end, so a job that dies mid-run
+    still says how far it got. The pipeline has six places it can fail —
+    capture, frame extraction, camera registration, training, delivery
+    conversion, storage — and they were previously indistinguishable from one
+    `error` string.
+
+    Never raises: diagnostics that break a run would be worse than no
+    diagnostics. Never records image bytes or file contents; counts, sizes,
+    durations, tool names and exit statuses only.
+    """
+    payload = {k: v for k, v in metrics.items() if v is not None}
+    payload["at"] = datetime.now(timezone.utc).isoformat()
+    try:
+        async with tenant_tx(ctx) as conn:
+            await conn.execute(
+                """UPDATE reconstruction_jobs
+                      SET diagnostics = diagnostics || jsonb_build_object($2::text, $3::jsonb),
+                          updated_at = now()
+                    WHERE id = $1::uuid""",
+                UUID(job_id), stage, json.dumps(payload, default=str),
+            )
+    except Exception:  # noqa: BLE001 — never break a run to record a metric
+        logger.exception("reconstruction %s: recording stage %s failed", job_id, stage)
+    logger.info("reconstruction %s stage=%s %s", job_id, stage, payload)
 
 
 # A walk-through video is the natural way to capture a house with a phone, and
@@ -645,8 +740,62 @@ async def _process(job: ReconstructionJob) -> None:
         with tempfile.TemporaryDirectory(prefix="recon_") as tmp:
             work = Path(tmp)
             images, counts = await _gather_source_images(job, work / "images")
+            # ── capture ──────────────────────────────────────────────────
+            await _record_stage(
+                job.ctx, job.job_id, "capture",
+                photos=counts.get("photos"), videos=counts.get("videos"),
+                extracted_frames=counts.get("frames"),
+                images_submitted=len(images),
+                dimensions=_image_dimensions(images),
+            )
+            if not images:
+                # A capture with nothing in it is not an outage. Marked as a
+                # quality gate so "recapture" and "fix the deployment" stay
+                # distinguishable in the job row.
+                await _record_stage(
+                    job.ctx, job.job_id, "quality_gate",
+                    gate="no_usable_images", detail=(
+                        "No photos or extractable video frames are attached to "
+                        "this property."
+                    ),
+                )
+                raise QualityGateFailure(
+                    "This property has no usable capture media yet.")
+
+            # ── reconstruction ───────────────────────────────────────────
+            started = time.monotonic()
             raw = await provider.reconstruct(images, work)            # .ply/.spz/.sog/.splat
+            await _record_stage(
+                job.ctx, job.job_id, "reconstruction",
+                provider=provider.name,
+                seconds=round(time.monotonic() - started, 1),
+                images_submitted=len(images),
+                raw_format=raw.suffix.lower(),
+                raw_bytes=raw.stat().st_size if raw.exists() else 0,
+                **_provider_metrics(provider, work),
+            )
+
+            # ── delivery conversion ──────────────────────────────────────
+            converting = time.monotonic()
             splat = await _convert_to_delivery(raw, work, media_id)   # .sog (or legacy .splat)
+            delivery_bytes = splat.stat().st_size if splat.exists() else 0
+            await _record_stage(
+                job.ctx, job.job_id, "delivery",
+                source_format=raw.suffix.lower(),
+                source_bytes=raw.stat().st_size if raw.exists() else 0,
+                final_format=splat.suffix.lower(),
+                final_bytes=delivery_bytes,
+                converted=raw.suffix.lower() != splat.suffix.lower(),
+                seconds=round(time.monotonic() - converting, 1),
+            )
+            if not delivery_bytes:
+                # Training finishing is not the same as having something a
+                # browser can open. This is the gate the whole phase exists for.
+                raise ProviderError(
+                    f"the delivery asset {splat.name} is empty — training "
+                    f"finished but produced nothing renderable"
+                )
+
             url, s3_key = await _store_splat(
                 splat, media_id,
                 provider=provider.name,
@@ -658,8 +807,29 @@ async def _process(job: ReconstructionJob) -> None:
                 provenance=getattr(provider, "produces", "captured"),
                 generator=provider.name,
             )
+            await _record_stage(
+                job.ctx, job.job_id, "storage",
+                storage_key=s3_key, media_id=media_id,
+                delivery_bytes=delivery_bytes,
+            )
             await _derive_floorplan(job, splat, provider.name)
+    except QualityGateFailure as exc:
+        # The capture cannot support a reconstruction. Distinct from an outage
+        # because the response is "capture more", not "page someone".
+        await _close_capture_session(
+            job, session_id, status="failed", failure_reason=str(exc)[:2000]
+        )
+        await _set_status(
+            job.ctx, job.job_id, "failed_quality_gate",
+            error=str(exc)[:2000], quality_gate="capture",
+        )
+        logger.warning("Reconstruction %s refused at the quality gate: %s", job.job_id, exc)
+        return
     except Exception as exc:
+        await _record_stage(
+            job.ctx, job.job_id, "failure",
+            stage_error=type(exc).__name__, detail=str(exc)[:1000],
+        )
         await _close_capture_session(
             job, session_id, status="failed", failure_reason=str(exc)[:2000]
         )

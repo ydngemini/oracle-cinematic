@@ -51,8 +51,18 @@ ENV ORACLE_RDS_CA_BUNDLE=/etc/ssl/certs/rds-global-bundle.pem
 # over this, so this layer is only meaningful in a production image build.
 COPY . .
 
-# Non-root runtime user — the app never needs to write outside /app.
+# Non-root runtime user. It writes to /app and to the media root below.
 RUN useradd -r -u 1001 oracle && chown -R oracle:oracle /app
+
+# Durable media storage for captured photos and finished reconstructions.
+# Created HERE, owned by the runtime user, because a named volume mounted over
+# an empty path inherits that path's ownership from the image — without this the
+# volume arrives root-owned, object_storage.is_configured() answers False, and a
+# finished reconstruction fails at the last step with "Object storage is not
+# configured". Deliberately outside /app: captured homeowner media must never
+# land inside the git working tree that compose bind-mounts there.
+RUN mkdir -p /var/neoh-media && chown -R oracle:oracle /var/neoh-media
+
 USER oracle
 
 EXPOSE 8000
