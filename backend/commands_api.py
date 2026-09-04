@@ -1709,20 +1709,23 @@ async def edit_command(
     return {"command": _command_dict(updated), "approval": approval}
 
 
-@router.post("/{command_id}/approve")
-async def approve_command(
-    command_id: str,
-    body: ApprovalDecision,
-    ctx: TenantContext = Depends(require_context),
-):
-    require_feature(Feature.AUTOMATION)
-    row = await _get_command(ctx, command_id)
-    if not row:
-        raise HTTPException(status_code=404, detail="Command not found.")
-    if row["state"] != "awaiting_approval":
-        raise HTTPException(status_code=409, detail=f"Command is {row['state']}.")
+async def release_command(
+    ctx: TenantContext, row: Any, *, reason: str = "",
+) -> dict[str, Any]:
+    """Approve a staged command and put it on the queue.
+
+    Extracted from approve_command's body, unchanged, so that a mission
+    releasing its own approval and a person clicking Approve take the SAME
+    path: one decision record, one job, one state transition. The alternative
+    — a second release path for missions — is how two systems end up
+    disagreeing about what was authorised, and how a send escapes the audit
+    trail the first path writes.
+
+    `row` is a command_executions row already checked to be awaiting approval.
+    """
+    command_id = str(row["id"])
     approval = await decide_approval(
-        ctx, str(row["approval_id"]), decision="approved", reason=body.reason
+        ctx, str(row["approval_id"]), decision="approved", reason=reason
     )
     stored_draft = _decode(row["draft"])
     execution = _execution_payload(
@@ -1756,6 +1759,21 @@ async def approve_command(
             job["id"],
         )
     return {"command": _command_dict(updated), "approval": approval, "job": job}
+
+
+@router.post("/{command_id}/approve")
+async def approve_command(
+    command_id: str,
+    body: ApprovalDecision,
+    ctx: TenantContext = Depends(require_context),
+):
+    require_feature(Feature.AUTOMATION)
+    row = await _get_command(ctx, command_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Command not found.")
+    if row["state"] != "awaiting_approval":
+        raise HTTPException(status_code=409, detail=f"Command is {row['state']}.")
+    return await release_command(ctx, row, reason=body.reason)
 
 
 @router.post("/{command_id}/reject")

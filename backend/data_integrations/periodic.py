@@ -707,6 +707,18 @@ async def _client_ai_catchup_task() -> dict:
     )
 
 
+async def _mission_tick_task() -> dict:
+    """Advance every running mission by one step.
+
+    Default OFF. Missions pursue an outcome across many contacts unattended,
+    so the scheduler does not start doing that because a deploy happened —
+    the same posture as the parcel harvest and speed-to-lead.
+    """
+    from missions.executor import sweep_all_tenants
+
+    return await sweep_all_tenants()
+
+
 async def _outcome_attribution_task() -> dict:
     """Bind recorded outcomes to the decisions that earned them.
 
@@ -870,6 +882,19 @@ def build_default_scheduler() -> PeriodicScheduler:
         ),
         run=_outcome_attribution_task,
         enabled=os.getenv("ORACLE_OUTCOME_ATTRIBUTION_ENABLED", "1") == "1",
+    ))
+    # Ten minutes, and OFF unless explicitly enabled. Two independent switches
+    # have to be thrown before a mission acts: this one, and Feature.MISSIONS,
+    # which the executor checks on every tick. That redundancy is deliberate —
+    # the credential check is NOT a third switch, because a machine with no
+    # credential rows can still have Twilio in its environment.
+    sched.register(PeriodicTask(
+        name="mission_tick",
+        interval_s=max(
+            60.0, float(os.getenv("ORACLE_MISSION_TICK_INTERVAL_MIN", "10")) * 60,
+        ),
+        run=_mission_tick_task,
+        enabled=os.getenv("ORACLE_MISSIONS_ENABLED", "0") == "1",
     ))
     return sched
 

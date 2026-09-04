@@ -33,6 +33,13 @@ class Feature(str, Enum):
     # call site (see speed_to_lead._enabled) — it is the only feature here that
     # initiates contact with a consumer without an agent asking it to.
     SPEED_TO_LEAD = "speed_to_lead"
+    # Pursues a stated outcome across many contacts, unattended. Defaults OFF
+    # at every call site for the same reason as SPEED_TO_LEAD, and for one
+    # more: "no credentials, therefore harmless" turned out to be false —
+    # a machine with zero provider_credentials rows can still carry Twilio in
+    # its environment, and the local stack does. This flag is the off switch;
+    # the absence of a credential is not.
+    MISSIONS = "missions"
 
 
 _FEATURE_ENV = {
@@ -46,6 +53,7 @@ _FEATURE_ENV = {
     Feature.AI_CHAT: "ORACLE_FEATURE_AI_CHAT",
     Feature.SALES_AI: "ORACLE_FEATURE_SALES_AI",
     Feature.POWER_DIALER: "ORACLE_FEATURE_POWER_DIALER",
+    Feature.MISSIONS: "ORACLE_FEATURE_MISSIONS",
     Feature.SMART_PLANS: "ORACLE_FEATURE_SMART_PLANS",
     Feature.SPEED_TO_LEAD: "ORACLE_FEATURE_SPEED_TO_LEAD",
 }

@@ -332,6 +332,9 @@ from spatial_intelligence_api import router as spatial_intelligence_router  # no
 # means an unrelated refactor of that import could silently unregister the
 # handler and leave every queued first-response job stuck as an unknown type.
 import speed_to_lead  # noqa: E402,F401
+# Same reason: registers the `mission:tick` handler. Importing it does NOT
+# start anything — Feature.MISSIONS defaults off and the executor checks it.
+import missions.executor  # noqa: E402,F401
 
 app.include_router(commands_router)
 app.include_router(contracts_router)

@@ -237,14 +237,22 @@ async def _ask(gateway, prompt: str) -> MissionPlan:
     last_error: Optional[str] = None
 
     for attempt in (1, 2):
-        raw = await gateway.complete(
-            attempt_prompt,
-            task="analysis",
-            system=SYSTEM,
-            response_format=PLAN_SCHEMA,
-            max_tokens=2048,
-            temperature=0.2,
-        )
+        try:
+            raw = await gateway.complete(
+                attempt_prompt,
+                task="analysis",
+                system=SYSTEM,
+                response_format=PLAN_SCHEMA,
+                max_tokens=2048,
+                temperature=0.2,
+            )
+        except Exception as exc:  # noqa: BLE001 — including LLMUnavailable
+            # A model that cannot be reached, or that refuses because no
+            # provider honours structured output, IS "no plan could be
+            # obtained". Found by running a tick on a stack with no litellm
+            # installed: the exception escaped propose_plan's contract, past
+            # the executor's `except PlanUnavailable`, and killed the tick.
+            raise PlanUnavailable(f"the planner could not be reached: {exc}") from exc
         try:
             return MissionPlan.model_validate_json(raw)
         except (ValidationError, ValueError) as exc:
