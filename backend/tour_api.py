@@ -560,11 +560,21 @@ async def reconstruction_job_status(
     """Poll a reconstruction job (RLS-scoped)."""
     async with tenant_tx(ctx) as conn:
         row = await conn.fetchrow(
-            "SELECT id, status, provider, progress, media_id, error FROM reconstruction_jobs WHERE id = $1",
+            """SELECT id, status, provider, progress, media_id, error,
+                      diagnostics, quality_gate
+                 FROM reconstruction_jobs WHERE id = $1""",
             job_id,
         )
     if row is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Job not found.")
+    import json as _json
+
+    diagnostics = row["diagnostics"]
+    if isinstance(diagnostics, str):
+        try:
+            diagnostics = _json.loads(diagnostics)
+        except ValueError:
+            diagnostics = {}
     return {
         "job_id": str(row["id"]),
         "status": row["status"],
@@ -572,4 +582,11 @@ async def reconstruction_job_status(
         "progress": row["progress"],
         "media_id": str(row["media_id"]) if row["media_id"] else None,
         "error": row["error"],
+        # Per-stage measurements. Without these a caller polling a failed job
+        # learns only that it failed — which of the six stages broke, and what
+        # it measured before breaking, is the whole point of recording them.
+        # Counts, sizes, durations and tool names only; never capture content.
+        "diagnostics": diagnostics or {},
+        # Set when a gate refused the capture rather than the run breaking.
+        "quality_gate": row["quality_gate"],
     }
