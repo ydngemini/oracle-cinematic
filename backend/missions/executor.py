@@ -117,6 +117,18 @@ async def _plan(ctx: TenantContext, mission: dict[str, Any]) -> int:
                 launched + timedelta(days=int(step["day_offset"])),
                 costs.unit_cost_cents(step["channel"]),
             )
+            # The planner's one-line intent is what the drafter writes FROM, so
+            # it has to survive the plan being written. It is kept on the
+            # candidate's evidence rather than in a new column: it belongs to
+            # the reasoning about that person, and the schema already has a
+            # place for that.
+            await conn.execute(
+                """UPDATE mission_candidates
+                      SET evidence = evidence || jsonb_build_object('intent', $2::text),
+                          updated_at = now()
+                    WHERE id = $1::uuid""",
+                step["candidate_id"], step["intent"],
+            )
 
     await _journal(ctx, mission["id"], "planned", {
         "steps": len(steps),
@@ -220,12 +232,37 @@ async def _stage(
     """
     from commands_api import stage_command
 
+    from . import drafter
+
+    contact_row = await _candidate_context(ctx, action)
+    try:
+        draft = await drafter.draft_message(
+            ctx,
+            channel=action["channel"],
+            recipient_name=contact_row.get("name") or "",
+            objective=mission.get("objective_text") or "",
+            intent=contact_row.get("intent") or "reach out",
+            agent_name=ctx.agent_id,
+        )
+    except drafter.DraftUnavailable as exc:
+        # No placeholder body, ever. A message the system could not write is an
+        # action it must not take.
+        return None, str(exc)
+
+    target = _target_for(contact_row, action["channel"])
+    phone_problem = target.pop("_phone_problem", None)
+    if phone_problem:
+        return None, phone_problem
+
     try:
         command = await stage_command(
             ctx,
             command_type=_command_type(action["channel"]),
-            target=await _target_for(ctx, action),
-            draft={},
+            target=target,
+            draft=(
+                {"body": draft.body} if action["channel"] == "sms"
+                else {"subject": draft.subject, "body": draft.body}
+            ),
             context={
                 "mission_id": str(mission["id"]),
                 "objective": mission.get("objective_text"),
@@ -370,48 +407,98 @@ def _json(value: Any) -> str:
     return json.dumps(value, default=str)
 
 
-async def _contact_for(
+async def _candidate_context(
     ctx: TenantContext, action: dict[str, Any],
-) -> tuple[Optional[str], Optional[str]]:
-    """The address this action would reach, and the state whose rules apply."""
+) -> dict[str, Any]:
+    """Everything one action needs about its person, in one query.
+
+    This used to be three functions issuing three near-identical queries per
+    action — contact, target, and the drafting context — which is three round
+    trips to build one message.
+    """
     from db.connection import tenant_tx
 
     if not action.get("candidate_id"):
-        return None, None
+        return {}
     async with tenant_tx(ctx) as conn:
         row = await conn.fetchrow(
-            """SELECT c.subject_type, c.subject_id, cl.email, cl.phone
+            """SELECT c.subject_type, c.subject_id, c.evidence,
+                      cl.full_name, cl.email, cl.phone,
+                      -- Quiet hours and consent rules are per state, and the
+                      -- state lives on the linked PROPERTY, not on the person:
+                      -- `clients` has no state column. Same resolution
+                      -- ai_tools_gated._client_target uses, so a mission and
+                      -- the AI tool surface cannot disagree about which rules
+                      -- apply to the same client.
+                      (SELECT l.state FROM leads l
+                        WHERE l.seller_client_id = cl.id AND l.state IS NOT NULL
+                        ORDER BY l.updated_at DESC LIMIT 1) AS state_code
                  FROM mission_candidates c
                  LEFT JOIN clients cl ON cl.id::text = c.subject_id
                 WHERE c.id = $1::uuid""",
             action["candidate_id"],
         )
     if row is None:
-        return None, None
-    contact = row["email"] if action["channel"] == "email" else row["phone"]
-    # state_code is None, and that is a real limitation rather than an
-    # oversight: `clients` carries no state column at all, so the
-    # state-specific half of the outreach rules (call windows, per-state
-    # disclosure) cannot be applied to a client. crm.py's email path already
-    # passes None for the same reason. Everything that does not depend on the
-    # state still applies — consent, suppression, frequency, and the federal
-    # rules that make AI voice the strictest channel.
-    return contact, None
-
-
-async def _target_for(ctx: TenantContext, action: dict[str, Any]) -> dict[str, Any]:
-    from db.connection import tenant_tx
-
-    async with tenant_tx(ctx) as conn:
-        row = await conn.fetchrow(
-            "SELECT subject_type, subject_id FROM mission_candidates WHERE id = $1::uuid",
-            action.get("candidate_id"),
-        )
-    if row is None:
         return {}
+    evidence = row["evidence"]
+    if isinstance(evidence, str):
+        import json as _json
+        try:
+            evidence = _json.loads(evidence)
+        except ValueError:
+            evidence = {}
+    return {
+        "subject_type": row["subject_type"],
+        "subject_id": row["subject_id"],
+        "name": row["full_name"],
+        "email": (row["email"] or "").strip(),
+        "phone": (row["phone"] or "").strip(),
+        # None for a client with no linked property. Honest rather than
+        # guessed: inventing a state applies the wrong quiet hours to a real
+        # person, and stage_command refuses an SMS without one — which
+        # surfaces as a blocked_reason naming the gap.
+        "state_code": (row["state_code"] or "").upper() or None,
+        "intent": (evidence or {}).get("intent") or "",
+    }
+
+
+async def _contact_for(
+    ctx: TenantContext, action: dict[str, Any],
+) -> tuple[Optional[str], Optional[str]]:
+    """The address this action would reach, and the state whose rules apply."""
+    context = await _candidate_context(ctx, action)
+    if not context:
+        return None, None
+    contact = context["email"] if action["channel"] == "email" else context["phone"]
+    return contact or None, context["state_code"]
+
+
+def _target_for(context: dict[str, Any], channel: str) -> dict[str, Any]:
+    """The command target. `stage_command` validates this whole shape."""
+    from ai_tools_gated import _to_e164
+
     key = {"client": "client_id", "lead": "lead_id", "contact": "contact_id"}.get(
-        row["subject_type"], "client_id")
-    return {key: row["subject_id"]}
+        context.get("subject_type"), "client_id")
+    target: dict[str, Any] = {key: context.get("subject_id")}
+    if channel == "email":
+        target["email"] = context.get("email") or ""
+    else:
+        # `clients.phone` is free text and the command layer requires E.164.
+        # Reusing the AI tool surface's normaliser rather than writing a second
+        # one: two rules for the same conversion is how one path starts dialling
+        # a number the other would have refused. It returns (None, reason) when
+        # the number is too ambiguous to guess, and an empty phone is refused by
+        # stage_command with a message that names the problem.
+        normalised, reason = _to_e164(context.get("phone"))
+        target["phone"] = normalised or ""
+        # Carried, not dropped: "SMS target requires an E.164 phone number" is
+        # true but useless, while "the client record has no phone number" names
+        # the row to fix. stage_command sees only the empty string, so the
+        # reason has to travel out of band to reach blocked_reason.
+        if reason:
+            target["_phone_problem"] = reason
+        target["state_code"] = context.get("state_code") or ""
+    return target
 
 
 def _command_type(channel: str):
