@@ -111,3 +111,18 @@
   color: rgba(255, 255, 255, 0.92);
   white-space: nowrap;
 }
+
+/* Shown while a JWT-protected splat is being fetched. A deliberate state
+   rather than a black canvas: the engine must not mount before its bytes
+   exist, and an empty viewport with no explanation reads as a failure. */
+.preparing {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-modal);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--oracle-bg-deep, #0b0b0d);
+  color: var(--oracle-text-dim, #b9b9c0);
+  font: 500 var(--text-md) / 1.4 var(--font-sans);
+}

@@ -1,5 +1,6 @@
 import { Suspense, lazy, useMemo, useState } from 'react';
 
+import useProtectedMedia from '../state/useProtectedMedia';
 import styles from './TourViewer.module.css';
 
 /**
@@ -34,6 +35,19 @@ import styles from './TourViewer.module.css';
  * read `.sog` (its package ships no SOG loader) and says so rather than
  * failing blank.
  *
+ * **Protected media is resolved HERE, once, for every renderer.** The
+ * reconstruction worker stores a finished splat behind `/api/media/{id}`, which
+ * requires the Neoh JWT. PlayCanvas's internal asset request does not carry our
+ * Authorization header, so handing it that URL produced a 401 and a black
+ * canvas — the splat had rendered for nobody since the media route was
+ * protected. `useProtectedMedia` fetches the bytes with the app's own client
+ * and yields a `blob:` URL, and the ORIGINAL filename travels beside it because
+ * a blob URL has no extension for PlayCanvas to infer a parser from.
+ *
+ * Doing it at this level rather than inside each viewer is deliberate: two
+ * renderers independently deciding how to authenticate is how one of them ends
+ * up not doing it.
+ *
  * Every renderer is lazy — an engine that is never opened stays out of the
  * bundle graph for the session.
  *
@@ -58,11 +72,36 @@ export function TourViewer({
   splatUrl, panoScenes, disclosure, address, title, floors, onClose,
   isThisProperty = true, tourpoints,
 }) {
-  // PropertyTourViewer re-initialises its whole engine when `assets` changes
-  // identity, so this must be stable across re-renders.
-  const assets = useMemo(
+  // One item in, one out. `useProtectedMedia` fetches /api/media/* with the
+  // JWT and returns a blob: URL; anything external passes through untouched.
+  // It revokes every URL it made on replacement and unmount.
+  const protectedItems = useMemo(
     () => (splatUrl ? [{ id: 'property-splat', url: splatUrl }] : []),
     [splatUrl],
+  );
+  const [resolvedSplat] = useProtectedMedia(protectedItems);
+  const splatBytesUrl = resolvedSplat?.display_url || '';
+
+  // True while the bytes are still being fetched. Mounting the engine now would
+  // show a black canvas with no explanation, so the viewer says what it is
+  // doing instead.
+  const splatPreparing = Boolean(splatUrl) && !splatBytesUrl;
+
+  // PropertyTourViewer re-initialises its whole engine when `assets` changes
+  // identity, so this must be stable across re-renders — and must not become a
+  // non-empty array until the bytes exist.
+  const assets = useMemo(
+    () => (splatBytesUrl
+      ? [{
+        id: 'property-splat',
+        url: splatBytesUrl,
+        // The format hint. `splatUrl` is the original `/api/media/{id}` or CDN
+        // path; the loader reads its extension because `splatBytesUrl` may be
+        // a blob: URL that has none.
+        filename: splatUrl,
+      }]
+      : []),
+    [splatBytesUrl, splatUrl],
   );
 
   // Memoised so `modes` can depend on the scenes themselves rather than just
@@ -204,6 +243,14 @@ export function TourViewer({
         focusSceneId={stop === null ? null : route[stop]?.scene_id ?? null}
       />
     );
+  } else if (splatPreparing) {
+    // Deliberate state, not a spinner over an empty engine: the bytes are
+    // being fetched with the JWT and there is nothing to draw yet.
+    viewer = (
+      <div className={styles.preparing} role="status">
+        <p>Preparing 3D tour…</p>
+      </div>
+    );
   } else if (ENGINE === 'playcanvas') {
     viewer = (
       <PropertyTourViewer
@@ -219,7 +266,7 @@ export function TourViewer({
   } else {
     viewer = (
       <WalkableSplatViewer
-        splatUrl={splatUrl}
+        splatUrl={splatBytesUrl}
         disclosure={shownDisclosure}
         address={address}
         title={shownTitle}

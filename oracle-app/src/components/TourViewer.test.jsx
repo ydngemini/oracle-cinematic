@@ -15,8 +15,10 @@
  * mode on screen, so switching modes changes what the viewer claims.
  */
 
+import { readFileSync } from 'node:fs';
+
 import { cleanup, render, screen, fireEvent } from '@testing-library/react';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // vitest.config.js does not set `globals: true`, so Testing Library never
 // registers its automatic cleanup — without this, renders accumulate.
@@ -31,11 +33,46 @@ vi.mock('./PanoViewer', () => ({
   ),
 }));
 vi.mock('./PropertyTourViewer', () => ({
-  default: ({ title, disclosure }) => (
-    <div data-testid="splat" data-title={title} data-disclosure={disclosure} />
+  // `assets` is reported because the regression below is entirely about what
+  // this component is handed: a protected URL PlayCanvas cannot authenticate.
+  default: ({ title, disclosure, assets }) => (
+    <div
+      data-testid="splat" data-title={title} data-disclosure={disclosure}
+      data-asset-url={assets?.[0]?.url ?? ''}
+      data-asset-filename={assets?.[0]?.filename ?? ''}
+      data-asset-count={assets?.length ?? 0}
+    />
   ),
 }));
-vi.mock('./WalkableSplatViewer', () => ({ default: () => <div data-testid="gsplat" /> }));
+vi.mock('./WalkableSplatViewer', () => ({
+  default: ({ splatUrl }) => <div data-testid="gsplat" data-splat-url={splatUrl ?? ''} />,
+}));
+
+// useProtectedMedia fetches through this. Resolves immediately by default so
+// the ordinary tests see the viewer mount; `holdBlob` keeps it pending for the
+// one test that is specifically about the waiting state.
+const blobCalls = [];
+let holdBlob = false;
+let releaseBlob = () => {};
+vi.mock('../state/useCrmApi', async (importOriginal) => ({
+  ...(await importOriginal()),
+  crmGetBlob: (path) => {
+    blobCalls.push(path);
+    if (!holdBlob) return Promise.resolve(new Blob(['bytes']));
+    return new Promise((resolve) => {
+      releaseBlob = () => resolve(new Blob(['bytes']));
+    });
+  },
+}));
+
+// jsdom implements neither, and useProtectedMedia depends on both.
+beforeEach(() => {
+  blobCalls.length = 0;
+  holdBlob = false;
+  let n = 0;
+  URL.createObjectURL = vi.fn(() => `blob:https://neoh.test/${(n += 1)}`);
+  URL.revokeObjectURL = vi.fn();
+});
 
 const { TourViewer } = await import('./TourViewer');
 
@@ -192,5 +229,102 @@ describe('guided route', () => {
     // would walk someone into a room that is not there.
     render(<TourViewer panoScenes={[scenes[0]]} tourpoints={route} title="1 Test St" />);
     expect(screen.queryByRole('navigation', { name: /guided tour/i })).toBeNull();
+  });
+});
+
+describe('a protected splat never reaches PlayCanvas as a URL it cannot authenticate', () => {
+  /**
+   * The regression. The reconstruction worker stores a finished splat behind
+   * `/api/media/{id}`, which requires the Neoh JWT. TourViewer handed that URL
+   * straight to PlayCanvas, whose internal asset request carries no
+   * Authorization header — so every real reconstruction 401'd and the viewer
+   * showed a black canvas. The bytes are now fetched with the app's own
+   * authenticated client and passed as a blob: URL.
+   */
+  const PROTECTED = '/api/media/8d1e2f3a-1111-2222-3333-444455556666.sog';
+
+  it('fetches the media itself instead of passing the protected URL through', async () => {
+    renderTour({ splatUrl: PROTECTED });
+    const viewer = await screen.findByTestId('splat');
+
+    expect(blobCalls).toContain(PROTECTED);
+    const handed = viewer.getAttribute('data-asset-url');
+    expect(handed).not.toBe(PROTECTED);
+    expect(handed).not.toMatch(/^\/api\/media\//);
+    expect(handed).toMatch(/^blob:/);
+  });
+
+  it('sends the original filename alongside, because a blob URL has no extension', async () => {
+    // Without this PlayCanvas infers the parser from `blob:...`, finds no
+    // extension, and loads a Gaussian splat as a generic model.
+    renderTour({ splatUrl: PROTECTED });
+    const viewer = await screen.findByTestId('splat');
+    expect(viewer.getAttribute('data-asset-filename')).toBe(PROTECTED);
+  });
+
+  it('waits, visibly, rather than mounting the engine on an empty URL', async () => {
+    holdBlob = true;
+    renderTour({ splatUrl: PROTECTED });
+
+    expect(screen.queryByTestId('splat')).toBeNull();
+    expect(screen.getByText(/Preparing 3D tour/i)).toBeTruthy();
+
+    releaseBlob();
+    const viewer = await screen.findByTestId('splat');
+    expect(viewer.getAttribute('data-asset-count')).toBe('1');
+    expect(screen.queryByText(/Preparing 3D tour/i)).toBeNull();
+  });
+
+  it('revokes the object URL when the viewer unmounts', async () => {
+    const { unmount } = renderTour({ splatUrl: PROTECTED });
+    await screen.findByTestId('splat');
+    expect(URL.createObjectURL).toHaveBeenCalled();
+
+    unmount();
+    expect(URL.revokeObjectURL).toHaveBeenCalled();
+  });
+
+  it('leaves an external CDN splat alone — nothing to authenticate', async () => {
+    const cdn = 'https://cdn.example/recon/job-7/model.sog';
+    renderTour({ splatUrl: cdn });
+    const viewer = await screen.findByTestId('splat');
+
+    expect(blobCalls).toHaveLength(0);
+    expect(viewer.getAttribute('data-asset-url')).toBe(cdn);
+  });
+
+  it('carries a legacy .splat through the same path', async () => {
+    const legacy = '/api/media/0000aaaa-1111-2222-3333-444455556666.splat';
+    renderTour({ splatUrl: legacy });
+    const viewer = await screen.findByTestId('splat');
+
+    expect(viewer.getAttribute('data-asset-url')).toMatch(/^blob:/);
+    // The hint keeps the extension the loader maps to gsplat.
+    expect(viewer.getAttribute('data-asset-filename')).toBe(legacy);
+  });
+
+  it('gives the gsplat fallback the resolved bytes too, not the protected URL', () => {
+    // The fallback is chosen by VITE_TOUR_ENGINE, read once at module load, so
+    // it cannot be switched per test. The claim that matters is structural and
+    // is checked structurally: ONE resolution above both renderers. Two
+    // viewers independently deciding how to authenticate is how one of them
+    // ends up not doing it.
+    const source = readFileSync('src/components/TourViewer.jsx', 'utf8');
+    expect(source).toMatch(/<WalkableSplatViewer[\s\S]*?splatUrl=\{splatBytesUrl\}/);
+    expect(source).not.toMatch(/<WalkableSplatViewer[\s\S]*?splatUrl=\{splatUrl\}/);
+    // And exactly one call site resolves protected media.
+    expect(source.match(/useProtectedMedia\(/g)).toHaveLength(1);
+  });
+
+  it('still switches between 360 and 3D when the property has both', async () => {
+    renderTour({ splatUrl: PROTECTED, panoScenes: SCENES });
+    await screen.findByTestId('splat');
+
+    fireEvent.click(screen.getByRole('button', { name: /360/i }));
+    expect(await screen.findByTestId('pano')).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: /Full 3D/i }));
+    const back = await screen.findByTestId('splat');
+    expect(back.getAttribute('data-asset-url')).toMatch(/^blob:/);
   });
 });

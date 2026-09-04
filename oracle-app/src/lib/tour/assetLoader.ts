@@ -24,7 +24,18 @@ export class UnsupportedTourAssetError extends Error {
 export interface TourAssetSpec {
   /** Stable id — also the PlayCanvas asset name. */
   id: string;
+  /** Where the BYTES come from. May be a `blob:` URL. */
   url: string;
+  /**
+   * What the bytes ARE, when `url` cannot say.
+   *
+   * Splats delivered from `/api/media/{id}` are fetched with the Neoh JWT and
+   * handed to PlayCanvas as a `blob:` URL, and a blob URL has no extension —
+   * so format has to travel separately or every protected splat is parsed as
+   * the wrong type. Set this to the original filename (`model.sog`) or the
+   * original URL.
+   */
+  filename?: string;
   kind?: TourAssetKind;
   /** Optional label for the floor/level selector. */
   floor?: { id: string; name: string; index: number };
@@ -107,7 +118,6 @@ export function loadTourAsset(
 ): Promise<LoadedTourAsset> {
   const { signal } = options;
   const url = resolveAssetUrl(spec.url);
-  const kind = spec.kind ?? inferAssetKind(url);
 
   return new Promise<LoadedTourAsset>((resolve, reject) => {
     if (signal?.aborted) {
@@ -115,7 +125,28 @@ export function loadTourAsset(
       return;
     }
 
-    const asset = new pc.Asset(spec.id, kind, { url });
+    // Inside the executor so an unsupported format REJECTS rather than
+    // throwing synchronously out of a function typed Promise<T>. The plural
+    // loader awaits this and was therefore safe, but a direct caller using
+    // .catch() would have taken an uncaught error — and this path became far
+    // more reachable once a PLY could arrive as a filename hint behind a
+    // blob: URL that hides the extension.
+    let kind: TourAssetKind;
+    try {
+      // `spec.filename` first: a blob: URL carries no extension, so inferring
+      // from the byte URL alone would silently mis-type every protected splat.
+      kind = spec.kind ?? inferAssetKind(spec.filename || url);
+    } catch (err) {
+      reject(err);
+      return;
+    }
+
+    // `filename` is part of PlayCanvas's file descriptor, not decoration: the
+    // engine picks its parser from it when the URL cannot say. Without it a
+    // blob: URL reaches the generic loader and the splat never renders.
+    const file: { url: string; filename?: string } = { url };
+    if (spec.filename) file.filename = spec.filename;
+    const asset = new pc.Asset(spec.id, kind, file);
 
     let settled = false;
     const cleanup = () => {
