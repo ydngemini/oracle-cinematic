@@ -86,6 +86,30 @@ async def resolve_tour(
     return build_tour(rows, scene_rows, plan_row, lead_id=lead_id, listing_id=listing_id)
 
 
+def _delivery_format(row) -> Optional[str]:
+    """The stored file's extension, lowercased, e.g. `.sog`.
+
+    Returned to the browser as a format hint because `/api/media/{id}` is
+    deliberately extensionless — the id is the whole path, and a viewer that
+    guesses from it guesses wrong.
+
+    Takes the row, not the key, because a caller that assembled its own rows
+    (every test, and the agent tool surface) will not have selected `s3_key`.
+    A missing key means "unknown format", which the viewer already handles by
+    falling back to inference — not a crash that takes the whole tour down.
+    """
+    try:
+        s3_key = row["s3_key"]
+    except (KeyError, IndexError, TypeError):
+        return None
+    if not s3_key:
+        return None
+    _, dot, ext = str(s3_key).rpartition(".")
+    if not dot or not ext.isalnum() or len(ext) > 10:
+        return None
+    return f".{ext.lower()}"
+
+
 async def fetch_tour_rows(conn, lead_id, listing_id):
     """The three reads behind a tour, on a caller-supplied connection.
 
@@ -95,7 +119,7 @@ async def fetch_tour_rows(conn, lead_id, listing_id):
     """
     rows = await conn.fetch(
         """
-        SELECT id, kind, url, sort_order,
+        SELECT id, kind, url, sort_order, s3_key,
                COALESCE(provenance, 'captured') AS provenance
           FROM property_media
          WHERE (($1::uuid IS NOT NULL AND lead_id = $1)
@@ -207,6 +231,11 @@ def build_tour(rows, scene_rows, plan_row, *, lead_id=None, listing_id=None) -> 
         assets.append({
             "kind": "splat",
             "url": row["url"],
+            # `/api/media/{id}` carries no extension on purpose, so a viewer
+            # cannot tell a .sog from a .splat by looking at it — PlayCanvas
+            # answered "No parser found for resource" and the tour stayed
+            # black. The server is the only party that knows, so it says.
+            "format": _delivery_format(row),
             "provenance": row["provenance"],
             "is_this_property": captured,
             "walkable": True,
@@ -299,6 +328,13 @@ def build_tour(rows, scene_rows, plan_row, *, lead_id=None, listing_id=None) -> 
         },
         # Falls back to the demo asset so the viewer still has something to
         # open; `is_this_property` is what tells the UI how to label it.
+        # Same reason as `format` on the asset above: the viewer needs the
+        # delivery format, and the URL cannot carry it.
+        "splat_format": (
+            _delivery_format(splats[0]) if has_splat
+            else _delivery_format(demo_splats[0]) if has_demo_splat
+            else None
+        ),
         "splat_url": (
             splats[0]["url"] if has_splat
             else demo_splats[0]["url"] if has_demo_splat

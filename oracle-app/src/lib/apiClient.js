@@ -232,7 +232,16 @@ export async function fetchBlob(path, options = {}) {
       throw new ApiError(detail, res.status, false);
     }
 
-    return res.blob();
+    // Materialise the bytes ourselves rather than calling res.blob().
+    // Chrome's own response-to-Blob path fails outright on a large body here —
+    // a 13 MB Gaussian-splat capture threw "TypeError: Failed to fetch" while
+    // reading the very same response as a stream or an ArrayBuffer returned
+    // all 13,262,546 bytes. A 3D tour is the one thing in this product that is
+    // routinely that big, and it simply would not open.
+    const buffer = await res.arrayBuffer();
+    return new Blob([buffer], {
+      type: res.headers.get('content-type') || 'application/octet-stream',
+    });
   } catch (err) {
     clearTimeout(timeoutId);
 

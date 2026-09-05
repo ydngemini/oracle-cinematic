@@ -63,6 +63,120 @@ export interface PropertyTourViewerProps {
 
 type Status = 'idle' | 'loading' | 'ready' | 'error' | 'unsupported';
 
+/** Fraction of splats trimmed from each end of each axis when framing. */
+const FRAMING_TRIM = 0.02;
+/** Enough samples for a stable percentile without sorting a million floats. */
+const FRAMING_SAMPLE = 60_000;
+
+/**
+ * The box around where the splats actually ARE, not their absolute extremes.
+ *
+ * A real capture always has strays: background reconstructed through a window,
+ * a handful of floaters behind the camera, points flung out by a bad match.
+ * Framing on min/max lets a few of those set the scale, and the room they
+ * surround becomes a speck in the middle of an empty view — which reads as a
+ * broken reconstruction rather than a mis-aimed camera. Trimming a couple of
+ * percent off each axis frames the part someone actually captured.
+ */
+function coreBounds(pc: typeof pcNS, centers: Float32Array): pcNS.BoundingBox | null {
+  const count = Math.floor(centers.length / 3);
+  if (count === 0) return null;
+  const step = Math.max(1, Math.floor(count / FRAMING_SAMPLE));
+  const xs: number[] = []; const ys: number[] = []; const zs: number[] = [];
+  for (let i = 0; i < count; i += step) {
+    const x = centers[i * 3]; const y = centers[i * 3 + 1]; const z = centers[i * 3 + 2];
+    if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) continue;
+    xs.push(x); ys.push(y); zs.push(z);
+  }
+  if (xs.length === 0) return null;
+  const range = (values: number[]): [number, number] => {
+    values.sort((a, b) => a - b);
+    const lo = Math.floor(values.length * FRAMING_TRIM);
+    const hi = Math.max(lo, Math.ceil(values.length * (1 - FRAMING_TRIM)) - 1);
+    return [values[lo], values[hi]];
+  };
+  const [minX, maxX] = range(xs);
+  const [minY, maxY] = range(ys);
+  const [minZ, maxZ] = range(zs);
+  if (!(minX <= maxX)) return null;
+  const box = new pc.BoundingBox();
+  box.setMinMax(new pc.Vec3(minX, minY, minZ), new pc.Vec3(maxX, maxY, maxZ));
+  return box;
+}
+
+/**
+ * The bounding box of one loaded tour asset.
+ *
+ * A gsplat's bounds cannot be read from `gsplat.instance`: the component
+ * defaults to PlayCanvas's *unified* renderer, which never creates a
+ * GSplatInstance at all, so that field is null by design and the engine's
+ * non-unified path is documented as being removed. Reading it was why a
+ * perfectly good 923k-splat capture rendered to a black canvas — the camera
+ * was never aimed at anything.
+ *
+ * The splat centers are the honest source: they are the actual positions the
+ * renderer draws, independent of which rendering path the engine chooses.
+ */
+function boundsOf(pc: typeof pcNS, item: { entity: pcNS.Entity; asset?: pcNS.Asset }): pcNS.BoundingBox | null {
+  const resource = item.asset?.resource as any;
+  const centers: Float32Array | undefined =
+    resource?.hasCenters === false ? undefined : resource?.centers;
+  if (centers && centers.length >= 3) {
+    const box = coreBounds(pc, centers);
+    if (box) return box;
+  }
+  // Meshes, and the legacy non-unified splat path, still report their own.
+  const gsplat = (item.entity as any).gsplat;
+  const render = (item.entity as any).render;
+  return gsplat?.instance?.meshInstance?.aabb ?? render?.meshInstances?.[0]?.aabb ?? null;
+}
+
+/**
+ * Wait for the loaded entities to report a bounding box.
+ *
+ * `gsplat.instance.meshInstance` does not exist the moment the asset finishes
+ * loading; the engine creates it on a subsequent frame. Poll animation frames
+ * until it appears, with a deadline so a genuinely boundless asset fails
+ * visibly instead of hanging.
+ */
+async function waitForLoadedBounds(
+  pc: typeof pcNS,
+  loaded: Array<{ entity: pcNS.Entity }>,
+  signal: AbortSignal,
+  maxWaitMs = 10_000,
+): Promise<pcNS.BoundingBox | null> {
+  const read = (): pcNS.BoundingBox | null => {
+    const aabb = new pc.BoundingBox();
+    let initialised = false;
+    for (const item of loaded) {
+      const box = boundsOf(pc, item);
+      if (!box) continue;
+      if (!initialised) { aabb.copy(box); initialised = true; }
+      else aabb.add(box);
+    }
+    return initialised ? aabb : null;
+  };
+
+  const immediate = read();
+  if (immediate) return immediate;
+
+  // requestAnimationFrame, not the engine's own 'update' event: that event
+  // never fired here and the wait hung forever, which is a worse failure than
+  // the black screen it was meant to fix. rAF ticks regardless of what the
+  // engine is doing, and the deadline guarantees this settles either way.
+  return new Promise((resolve) => {
+    const deadline = performance.now() + maxWaitMs;
+    const tick = () => {
+      if (signal.aborted) { resolve(null); return; }
+      const found = read();
+      if (found) { resolve(found); return; }
+      if (performance.now() >= deadline) { resolve(null); return; }
+      window.requestAnimationFrame(tick);
+    };
+    window.requestAnimationFrame(tick);
+  });
+}
+
 export default function PropertyTourViewer({
   assets,
   floors = [],
@@ -176,24 +290,45 @@ export default function PropertyTourViewer({
         }
         loadedRef.current = loaded;
 
-        // Frame whatever actually loaded.
-        const aabb = new pc.BoundingBox();
-        let initialised = false;
-        for (const item of loaded) {
-          const gsplat = (item.entity as any).gsplat;
-          const render = (item.entity as any).render;
-          const box: pcNS.BoundingBox | undefined =
-            gsplat?.instance?.meshInstance?.aabb ?? render?.meshInstances?.[0]?.aabb;
-          if (!box) continue;
-          if (!initialised) { aabb.copy(box); initialised = true; }
-          else aabb.add(box);
+        // Frame whatever actually loaded — but its bounds do not exist yet.
+        // A gsplat's meshInstance is built by the engine a frame or two AFTER
+        // its asset resolves, so reading the box here returned undefined, the
+        // framing was skipped, and the camera stayed at its default pose
+        // looking at nothing. That renders as a black canvas, or from far
+        // enough away as a sprinkle of dots — which reads as a broken splat
+        // rather than as a camera that was never aimed.
+        const aabb = await waitForLoadedBounds(pc, loaded, abort.signal);
+        if (disposed || abort.signal.aborted) return;
+        if (!aabb) {
+          // Say WHICH part is missing. "No bounds" has several causes — no
+          // component, an asset that never produced a resource, an instance
+          // the engine never built — and they need different fixes.
+          // eslint-disable-next-line no-console
+          console.warn('[neoh-tour] no bounds', loaded.map((item) => {
+            const g = (item.entity as any).gsplat;
+            return {
+              id: item.spec.id,
+              kind: item.spec.kind ?? null,
+              filename: item.spec.filename ?? null,
+              hasGsplatComponent: !!g,
+              assetLoaded: !!item.asset?.loaded,
+              assetType: item.asset?.type ?? null,
+              resource: item.asset?.resource ? item.asset.resource.constructor?.name : null,
+              hasInstance: !!g?.instance,
+              hasMeshInstance: !!g?.instance?.meshInstance,
+            };
+          }));
+          // Never report ready with an unaimed camera: black is indis-
+          // tinguishable from a failed reconstruction, and this one is real.
+          setStatus('error');
+          setError('The 3D capture loaded but never reported its bounds, so the camera could not be aimed at it.');
+          return;
         }
-        if (initialised) {
-          frameBounds(cameraStateRef.current, {
-            min: [aabb.getMin().x, aabb.getMin().y, aabb.getMin().z],
-            max: [aabb.getMax().x, aabb.getMax().y, aabb.getMax().z],
-          });
-        }
+        frameBounds(cameraStateRef.current, {
+          min: [aabb.getMin().x, aabb.getMin().y, aabb.getMin().z],
+          max: [aabb.getMax().x, aabb.getMax().y, aabb.getMax().z],
+        });
+
 
         setStatus('ready');
       } catch (err) {

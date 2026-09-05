@@ -69,7 +69,7 @@ const ENGINE = (import.meta.env.VITE_TOUR_ENGINE || 'playcanvas').toLowerCase();
 const DEMO_PREFIX = 'This is a generated demo space, not a capture of this property.';
 
 export function TourViewer({
-  splatUrl, panoScenes, disclosure, address, title, floors, onClose,
+  splatUrl, splatFormat, panoScenes, disclosure, address, title, floors, onClose,
   isThisProperty = true, tourpoints,
 }) {
   // One item in, one out. `useProtectedMedia` fetches /api/media/* with the
@@ -98,13 +98,25 @@ export function TourViewer({
       ? [{
         id: 'property-splat',
         url: splatBytesUrl,
-        // The format hint. `splatUrl` is the original `/api/media/{id}` or CDN
-        // path; the loader reads its extension because `splatBytesUrl` may be
-        // a blob: URL that has none.
-        filename: splatUrl,
+        // The format hint. Prefer what the server said the file is:
+        // `/api/media/{id}` has no extension at all, so inferring from it gave
+        // PlayCanvas nothing to match and it refused the asset with "No parser
+        // found for resource". Fall back to the URL for CDN paths that do
+        // carry one.
+        filename: splatFormat ? `capture${splatFormat}` : splatUrl,
+        // State the kind outright when the server has told us the delivery
+        // format is a splat. Inference is a fallback, not the contract: a
+        // blob: URL has no extension and `/api/media/{id}` never had one, so
+        // leaving PlayCanvas to guess is what produced "No parser found for
+        // resource". Deliberately NOT hardcoded for every format — an unknown
+        // or .ply format falls through to inferAssetKind, which still refuses
+        // PLY as a delivery format.
+        ...(splatFormat === '.sog' || splatFormat === '.splat'
+          ? { kind: 'gsplat' }
+          : {}),
       }]
       : []),
-    [splatBytesUrl, splatUrl],
+    [splatBytesUrl, splatUrl, splatFormat],
   );
 
   // Memoised so `modes` can depend on the scenes themselves rather than just

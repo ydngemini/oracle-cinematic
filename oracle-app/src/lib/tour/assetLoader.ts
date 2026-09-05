@@ -160,6 +160,9 @@ export function loadTourAsset(
       settled = true;
       cleanup();
       // Unload frees the GPU-side resource if the download already finished.
+      // The entity is attached before the load starts, so an abort has to take
+      // it back out or the scene keeps an empty splat entity forever.
+      try { attached?.destroy(); } catch { /* app already destroyed */ }
       try { app.assets.remove(asset); asset.unload(); } catch { /* app already destroyed */ }
       reject(new DOMException('aborted', 'AbortError'));
     };
@@ -170,10 +173,10 @@ export function loadTourAsset(
       cleanup();
 
       try {
-        const entity = new pc.Entity(spec.id);
+        const entity = attached ?? new pc.Entity(spec.id);
 
         if (kind === 'gsplat') {
-          entity.addComponent('gsplat', { asset });
+          // Already attached before the load began — see below.
         } else if (kind === 'container') {
           // A GLB container instantiates its own hierarchy; use it directly so
           // animations and materials come along.
@@ -183,7 +186,7 @@ export function loadTourAsset(
           entity.addComponent('render', { asset });
         }
 
-        app.root.addChild(entity);
+        if (!attached) app.root.addChild(entity);
         resolve({ spec, asset, entity });
       } catch (err) {
         reject(err instanceof Error ? err : new Error(String(err)));
@@ -194,6 +197,7 @@ export function loadTourAsset(
       if (settled) return;
       settled = true;
       cleanup();
+      try { attached?.destroy(); } catch { /* app already destroyed */ }
       reject(new Error(`Failed to load ${spec.id}: ${err}`));
     };
 
@@ -202,6 +206,21 @@ export function loadTourAsset(
     signal?.addEventListener('abort', onAbort, { once: true });
 
     app.assets.add(asset);
+
+    // A gsplat component must exist BEFORE its asset finishes loading.
+    // The component watches the asset through an AssetReference and builds its
+    // instance when that reference reports a load; attaching afterwards means
+    // the event has already gone by, so the component sits there holding a
+    // perfectly good GSplatSogResource with `instance === null` and nothing
+    // ever renders. That is a silent failure — the asset says loaded, the
+    // component says it has an asset, and the scene stays black.
+    let attached: pcNS.Entity | null = null;
+    if (kind === 'gsplat') {
+      attached = new pc.Entity(spec.id);
+      attached.addComponent('gsplat', { asset });
+      app.root.addChild(attached);
+    }
+
     app.assets.load(asset);
   });
 }
