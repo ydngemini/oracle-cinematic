@@ -29,6 +29,7 @@ import json
 import logging
 import mimetypes
 import os
+import tarfile
 import re
 import shutil
 import struct
@@ -84,6 +85,13 @@ def _validate_capture_images(images: list[Path], *, minimum: int = 1) -> None:
         size = path.stat().st_size
         if size <= 0 or size > MAX_CAPTURE_IMAGE_BYTES:
             raise ProviderError("capture contains an empty or oversized image")
+
+
+def _pack_images(images: list[Path], archive: Path) -> None:
+    """Tar the capture under its staged names, uncompressed (JPEGs don't shrink)."""
+    with tarfile.open(archive, "w") as tar:
+        for index, path in enumerate(images):
+            tar.add(str(path), arcname=_staged_image_name(index, path), recursive=False)
 
 
 def _staged_image_name(index: int, path: Path) -> str:
@@ -2097,14 +2105,22 @@ class PodProvider(ReconstructionProvider):
         )
 
         async def _upload() -> None:
+            # One archive, one transfer. A per-file SFTP put pays a round trip
+            # per file, and /workspace on a pod is usually a network volume
+            # that is slow for many small writes: 280 photos took over 1800s
+            # that way and the job died before the GPU did anything. Packing
+            # happens off the event loop; unpacking happens on the pod.
+            archive = work_dir / "images.tar"
+            await asyncio.to_thread(_pack_images, images, archive)
             await conn.run("mkdir -p /workspace/images", check=True)
             async with conn.start_sftp_client() as sftp:
-                for index, path in enumerate(images):
-                    await sftp.put(
-                        str(path), f"/workspace/images/{_staged_image_name(index, path)}"
-                    )
+                await sftp.put(str(archive), "/workspace/images.tar")
                 async with sftp.open("/workspace/run.sh", "w") as handle:
                     await handle.write(script)
+            await conn.run(
+                "tar -xf /workspace/images.tar -C /workspace/images && rm /workspace/images.tar",
+                check=True,
+            )
 
         async with conn:
             staging = min(upload_budget, _left("the capture was uploaded"))

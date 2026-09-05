@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import getpass
+import http.cookiejar
 import json
 import mimetypes
 import sys
@@ -32,6 +33,15 @@ MAX_IMAGES = 300                 # MAX_CAPTURE_IMAGES in the provider
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp", ".heic", ".HEIC"}
 
 
+# One opener with a cookie jar for the whole run. The API uses double-submit
+# CSRF: /auth/csrf sets a `csrf_token` cookie AND returns the value, and every
+# mutating request must echo it in X-CSRF-Token. A bearer token alone is
+# refused — correctly, since that is what protects a logged-in browser.
+_JAR = http.cookiejar.CookieJar()
+_OPENER = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(_JAR))
+_CSRF = ""
+
+
 def _request(url: str, *, token: str = "", data: bytes = b"", method: str = "GET",
              content_type: str = "", timeout: int = 300) -> dict:
     req = urllib.request.Request(url, data=data or None, method=method)
@@ -39,19 +49,40 @@ def _request(url: str, *, token: str = "", data: bytes = b"", method: str = "GET
         req.add_header("Authorization", f"Bearer {token}")
     if content_type:
         req.add_header("Content-Type", content_type)
+    if _CSRF and method not in ("GET", "HEAD"):
+        req.add_header("X-CSRF-Token", _CSRF)
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with _OPENER.open(req, timeout=timeout) as resp:
             body = resp.read().decode() or "{}"
             return json.loads(body) if body.strip().startswith(("{", "[")) else {"raw": body}
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode()[:600]
         raise SystemExit(f"\n  HTTP {exc.code} on {method} {url}\n  {detail}\n") from exc
+    except urllib.error.URLError as exc:
+        # A rejected request with a large body shows up as a reset rather than a
+        # status, because the server answers and closes while the client is
+        # still sending. Say so, or it reads as a network fault.
+        raise SystemExit(
+            f"\n  connection reset on {method} {url}\n"
+            f"  ({exc.reason}) — with a large body this usually means the request "
+            f"was REJECTED (auth/CSRF/size) before the body finished sending.\n"
+        ) from exc
 
 
-def login(base: str, email: str, password: str) -> str:
+def fetch_csrf(base: str) -> str:
+    """Prime the CSRF cookie and return its token."""
+    global _CSRF
+    out = _request(f"{base}/auth/csrf")
+    _CSRF = out.get("csrf_token", "")
+    if not _CSRF:
+        raise SystemExit("/auth/csrf returned no token")
+    return _CSRF
+
+
+def login(base: str, agent_id: str, passphrase: str) -> str:
     out = _request(
         f"{base}/auth/login", method="POST",
-        data=json.dumps({"email": email, "password": password}).encode(),
+        data=json.dumps({"agent_id": agent_id, "passphrase": passphrase}).encode(),
         content_type="application/json",
     )
     token = out.get("token")
@@ -126,10 +157,13 @@ def poll(base: str, token: str, job_id: str, every: int = 20) -> dict:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--photos", required=True, help="directory of capture photos")
+    ap.add_argument("--photos", default="", help="directory of capture photos")
     ap.add_argument("--lead", required=True, help="lead uuid to attach the capture to")
-    ap.add_argument("--base", default="http://localhost:8000")
+    ap.add_argument("--base", default="http://127.0.0.1:8000")
     ap.add_argument("--email", default="")
+    ap.add_argument("--token", default="",
+                    help="an existing bearer token, instead of logging in "
+                         "(for automation; never printed or logged)")
     ap.add_argument("--skip-upload", action="store_true",
                     help="photos are already attached; just start the job")
     args = ap.parse_args()
@@ -151,8 +185,15 @@ def main() -> None:
     if oversize:
         raise SystemExit(f"over the 12 MB per-file limit: {', '.join(oversize[:5])}")
 
-    email = args.email or input("Neoh email: ").strip()
-    token = login(args.base, email, getpass.getpass("Password: "))
+    fetch_csrf(args.base)
+    print("  csrf primed")
+
+    if args.token:
+        token = args.token
+        print("  using the supplied token")
+    else:
+        email = args.email or input("Neoh agent id (email): ").strip()
+        token = login(args.base, email, getpass.getpass("Passphrase: "))
 
     if not args.skip_upload:
         print(f"\nuploading to lead {args.lead}")

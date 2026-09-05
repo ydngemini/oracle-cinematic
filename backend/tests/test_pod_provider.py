@@ -27,6 +27,7 @@ from reconstruction_providers import (
     PodProvider,
     ProviderError,
     _pod_age_seconds,
+    _staged_image_name,
     _subsample_capture,
 )
 
@@ -868,3 +869,79 @@ def test_an_unknown_matcher_is_refused(pod_env, monkeypatch):
     monkeypatch.setenv("RECON_POD_MATCHER", "telepathy")
     with pytest.raises(ProviderError, match="RECON_POD_MATCHER"):
         PodProvider._settings()
+
+
+def test_capture_goes_to_the_pod_as_one_archive(tmp_path, monkeypatch):
+    """280 per-file SFTP puts took >1800s on a real pod and the job died before
+    the GPU did anything. The capture must cross as ONE file, under its staged
+    names, and be unpacked on the pod — so the count of puts is the contract."""
+    import sys
+    import tarfile
+    import types
+
+    puts: list[tuple[str, str]] = []
+    runs: list[str] = []
+
+    class _Handle:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def write(self, _data):
+            return None
+
+    class _Sftp:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def put(self, local, remote):
+            puts.append((local, remote))
+
+        def open(self, *a, **k):
+            return _Handle()
+
+    class _Conn:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def run(self, cmd, **k):
+            runs.append(cmd)
+            return types.SimpleNamespace(exit_status=0, stdout="", stderr="")
+
+        def start_sftp_client(self):
+            return _Sftp()
+
+    async def _connect(*a, **k):
+        return _Conn()
+
+    monkeypatch.setitem(sys.modules, "asyncssh", types.SimpleNamespace(connect=_connect))
+    monkeypatch.setenv("RUNPOD_API_KEY", "test-key")
+
+    # Stop after staging: the pipeline itself is not under test here.
+    async def _stop(*a, **k):
+        raise ProviderError("stop after staging")
+
+    provider = PodProvider()
+    monkeypatch.setattr(provider, "_run_watching", _stop)
+
+    images = _images(tmp_path, 5)
+    with pytest.raises(ProviderError, match="stop after staging"):
+        asyncio.run(provider._run_on_pod(
+            PodProvider._settings(), "1.2.3.4", 22, object(), 0.74, images, tmp_path,
+        ))
+
+    assert len(puts) == 1, f"expected one archive transfer, got {len(puts)} puts"
+    local, remote = puts[0]
+    assert remote == "/workspace/images.tar"
+    with tarfile.open(local) as tar:
+        names = sorted(tar.getnames())
+    assert names == sorted(_staged_image_name(i, p) for i, p in enumerate(images))
+    assert any(cmd.startswith("tar -xf /workspace/images.tar -C /workspace/images") for cmd in runs), runs
