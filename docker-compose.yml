@@ -158,10 +158,14 @@ services:
     depends_on:
       - backend
     environment:
-      VITE_WS_URL: ${VITE_WS_URL:-ws://localhost:8000/ws}
+      # Empty by default: the app talks to its own origin and Vite proxies
+      # /api, /auth and /ws to the backend over the compose network. An
+      # absolute localhost:8000 only reaches the backend when its port is
+      # published on a host-reachable address, which is not true under DinD.
+      VITE_WS_URL: ${VITE_WS_URL:-}
       # Vite only reads .env files from the app root (oracle-app/), not the
       # repo root — forward the dev-only flags it needs from the compose env.
-      VITE_API_BASE: ${VITE_API_BASE:-http://localhost:8000}
+      VITE_API_BASE: ${VITE_API_BASE:-}
       VITE_BILLING_BYPASS: ${VITE_BILLING_BYPASS:-false}
       # Google Maps Platform key for the photoreal 3D property tour (Map3DElement).
       # NOTE: VITE_* values are inlined into browser-visible client code, so this is
