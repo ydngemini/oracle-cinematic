@@ -126,3 +126,11 @@
   color: var(--oracle-text-dim, #b9b9c0);
   font: 500 var(--text-md) / 1.4 var(--font-sans);
 }
+
+/* Secondary line under the preparing/failed message. */
+.preparingNote {
+  margin-top: var(--space-2);
+  max-width: 34ch;
+  font-size: var(--text-sm);
+  opacity: 0.75;
+}

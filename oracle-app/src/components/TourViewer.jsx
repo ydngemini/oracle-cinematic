@@ -79,13 +79,16 @@ export function TourViewer({
     () => (splatUrl ? [{ id: 'property-splat', url: splatUrl }] : []),
     [splatUrl],
   );
-  const [resolvedSplat] = useProtectedMedia(protectedItems);
+  // Ahead of the photo grid behind it: someone who opened the tour is waiting
+  // on this one file, not on thumbnails.
+  const [resolvedSplat] = useProtectedMedia(protectedItems, { priority: 10 });
   const splatBytesUrl = resolvedSplat?.display_url || '';
+  const splatError = resolvedSplat?.error || null;
 
   // True while the bytes are still being fetched. Mounting the engine now would
   // show a black canvas with no explanation, so the viewer says what it is
   // doing instead.
-  const splatPreparing = Boolean(splatUrl) && !splatBytesUrl;
+  const splatPreparing = Boolean(splatUrl) && !splatBytesUrl && !splatError;
 
   // PropertyTourViewer re-initialises its whole engine when `assets` changes
   // identity, so this must be stable across re-renders — and must not become a
@@ -242,6 +245,19 @@ export function TourViewer({
         onClose={onClose}
         focusSceneId={stop === null ? null : route[stop]?.scene_id ?? null}
       />
+    );
+  } else if (splatError) {
+    // The capture exists and the server served it; the browser could not take
+    // delivery. Saying so beats waiting forever on a message that implies
+    // progress.
+    viewer = (
+      <div className={styles.preparing} role="alert">
+        <p>This 3D tour could not be loaded.</p>
+        <p className={styles.preparingNote}>
+          The capture is on the server, but the file did not finish downloading
+          in this browser. Reloading usually fixes it.
+        </p>
+      </div>
     );
   } else if (splatPreparing) {
     // Deliberate state, not a spinner over an empty engine: the bytes are

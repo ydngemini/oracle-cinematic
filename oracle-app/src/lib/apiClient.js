@@ -1,6 +1,10 @@
 const configuredApiBase = import.meta.env.VITE_API_BASE || '';
-const API_BASE = configuredApiBase.replace(/\/+$/, '')
-  || (import.meta.env.DEV ? 'http://localhost:8000' : '');
+// Same origin by default, in dev too: Vite proxies /api, /auth and /ws to the
+// backend. The old dev fallback to an absolute http://localhost:8000 assumed
+// the backend's port was reachable from the browser's host, which under
+// Docker-in-Docker it is not — and because it was a fallback, setting
+// VITE_API_BASE empty did not disable it.
+const API_BASE = configuredApiBase.replace(/\/+$/, '');
 
 const DEFAULT_TIMEOUT = 30000;
 const MAX_RETRIES = 3;
