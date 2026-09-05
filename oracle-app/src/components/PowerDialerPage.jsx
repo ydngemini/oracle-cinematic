@@ -13,6 +13,7 @@ import {
   ShieldCheck,
 } from 'lucide-react';
 import { crmGet, crmPost } from '../state/useCrmApi';
+import { setCallPresence } from '../neoh/callPresence';
 // Live voice telemetry — the running transcript, listening state and
 // negotiation signal for a call in progress. It was exported from the component
 // barrel but rendered nowhere, so /api/voice/telemetry had no consumer and a
@@ -210,6 +211,34 @@ export default function PowerDialerPage() {
   }, [script, selected]);
 
   const activeCall = ['connecting', 'ringing', 'connected'].includes(callState);
+
+  // Tell the rest of the app who we are talking to, so their object goes
+  // into call mode now rather than after the next fetch. A call that was never
+  // connected leaves no "just spoke" trace; only a connected one does.
+  const wasConnected = useRef(false);
+  const startedAt = useRef(null);
+  useEffect(() => {
+    if (activeCall && selected) {
+      if (!startedAt.current) startedAt.current = new Date().toISOString();
+      if (callState === 'connected') wasConnected.current = true;
+      setCallPresence({
+        contactId: selected.id,
+        clientId: selected.legacy_client_id || undefined,
+        state: callState,
+        startedAt: startedAt.current,
+      });
+      return;
+    }
+    if (startedAt.current) {
+      const ended = wasConnected.current ? new Date().toISOString() : undefined;
+      startedAt.current = null;
+      wasConnected.current = false;
+      setCallPresence(ended && selected
+        ? { contactId: selected.id, clientId: selected.legacy_client_id || undefined, state: 'idle', endedAt: ended }
+        : null);
+    }
+  }, [activeCall, callState, selected]);
+  useEffect(() => () => setCallPresence(null), []);
 
   return (
     <div className={styles.page}>

@@ -26,6 +26,7 @@ import autonomy
 import belief_store
 import command_center
 import intent_states
+import living_state
 import neoh_intents
 from db.connection import tenant_tx
 from platform_policy import Feature, require_feature
@@ -156,9 +157,22 @@ async def client_intent(client_id: str, ctx: TenantContext = Depends(require_con
     """Declared vs observed vs latent intent for one client."""
     require_feature(Feature.PREDICTIVE_INTELLIGENCE)
     try:
-        return await intent_states.read_intent(ctx, client_id)
+        out = await intent_states.read_intent(ctx, client_id)
     except LookupError as exc:
         raise HTTPException(404, str(exc)) from exc
+    # The person's living state rides along so the sheet needs one fetch.
+    out["living"] = (await living_state.living_for(ctx, [client_id])).get(client_id)
+    return out
+
+
+@router.get("/living")
+async def living(
+    client_ids: str = Query(..., description="comma-separated client ids, max 100"),
+    ctx: TenantContext = Depends(require_context),
+) -> dict[str, Any]:
+    """Living state for a list of people — one call per screen, not per card."""
+    ids = [c.strip() for c in client_ids.split(",") if c.strip()][:100]
+    return {"living": await living_state.living_for(ctx, ids)}
 
 
 # ---------------------------------------------------------------------------

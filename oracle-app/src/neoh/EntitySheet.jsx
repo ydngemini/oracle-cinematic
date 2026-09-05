@@ -4,6 +4,9 @@ import { useAssistantRecord } from '../components/AssistantContext';
 import { crmGet } from '../state/useCrmApi';
 import { dealRead, entityTitle, humanState, personRead } from './entityModel';
 import { NeohRead } from './NeohRead';
+import { LivingStrip } from './LivingObject';
+import { composeLiving } from './livingModel';
+import { useCallPresence } from './callPresence';
 import styles from './EntitySheet.module.css';
 
 /**
@@ -70,12 +73,20 @@ function Fallback() {
 function PersonSheet({ id, onClose }) {
   const intent = useFetched(`/api/clients/${id}/intent`);
   const read = personRead(intent.data);
+  // The server derives the state; the browser adds only its own softphone.
+  const presence = useCallPresence({ clientId: id });
+  const living = composeLiving(intent.data?.living, presence);
   return (
     <Suspense fallback={<Fallback />}>
       <ClientDetailDrawer
         card={{ id }}
         onClose={onClose}
-        read={<NeohRead read={read} loading={intent.loading} error={intent.error} />}
+        read={(
+          <>
+            {living && <LivingStrip living={living} />}
+            <NeohRead read={read} loading={intent.loading} error={intent.error} />
+          </>
+        )}
       />
     </Suspense>
   );

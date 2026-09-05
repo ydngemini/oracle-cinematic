@@ -1,6 +1,7 @@
 import { lazy } from 'react';
 
 import { ConfidenceMeter } from '../components/IntelligenceFeed';
+import { LivingStrip } from './LivingObject';
 import styles from './registry.module.css';
 
 /**
@@ -122,7 +123,7 @@ export function Comparison({ title, options, onOpen }) {
 }
 
 export function EntityCard({ kind, name, address, subtitle, detail, read, confidence, status,
-                      openCount, totalCount, href, onOpen }) {
+                      openCount, totalCount, href, onOpen, living = null }) {
   const title = name || address || 'Record';
   const sub = subtitle || detail
     || (status && [status.replace(/_/g, ' '), openCount != null ? `${openCount} of ${totalCount} open` : null]
@@ -134,8 +135,10 @@ export function EntityCard({ kind, name, address, subtitle, detail, read, confid
       onClick={() => href && onOpen?.(href)}
       disabled={!href}
       data-kind={kind}
+      data-living={living?.state || undefined}
     >
       <span className={styles.entityTitle}>{title}</span>
+      {living && <LivingStrip living={living} compact />}
       {sub && <span className={styles.entitySub}>{sub}</span>}
       {read && <span className={styles.entityRead}>{read}</span>}
       {typeof confidence === 'number' && <ConfidenceMeter value={confidence} />}
