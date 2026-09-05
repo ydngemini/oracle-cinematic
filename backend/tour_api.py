@@ -83,7 +83,49 @@ async def resolve_tour(
     async with tenant_tx(ctx) as conn:
         rows, scene_rows, plan_row = await fetch_tour_rows(conn, lead_id, listing_id)
 
-    return build_tour(rows, scene_rows, plan_row, lead_id=lead_id, listing_id=listing_id)
+    tour = build_tour(rows, scene_rows, plan_row, lead_id=lead_id, listing_id=listing_id)
+    tour["splat_scene"] = await _scene_manifest_for(rows, tour.get("splat_url"))
+    return tour
+
+
+async def _scene_manifest_for(rows, splat_url: Optional[str]) -> Optional[dict]:
+    """The canonical frame recorded beside the splat the tour will open.
+
+    Which way is up and where to start are decided once, by the worker, and
+    stored as a sidecar under the artifact's own key — the same answer the
+    floor plan reads. Served here so the viewer opens at a real captured
+    viewpoint instead of wherever the solver's frame happened to leave it.
+
+    Best-effort: a capture from before this existed has no manifest, and the
+    viewer then frames the dense bounds, which is what it did before.
+    """
+    if not splat_url:
+        return None
+    key = next((r["s3_key"] for r in rows
+                if r["kind"] == "splat" and r["url"] == splat_url and _has_key(r)), None)
+    if not key:
+        return None
+    import asyncio
+    import json as _json
+
+    import object_storage
+    import scene_manifest
+
+    try:
+        raw = await asyncio.to_thread(object_storage.get_bytes, key + scene_manifest.SUFFIX)
+        payload = _json.loads(raw)
+    except Exception:  # noqa: BLE001 — absent or unreadable: frame bounds instead
+        return None
+    if not isinstance(payload, dict) or payload.get("version") != scene_manifest.SCHEMA_VERSION:
+        return None
+    return payload
+
+
+def _has_key(row) -> bool:
+    try:
+        return bool(row["s3_key"])
+    except (KeyError, IndexError, TypeError):
+        return False
 
 
 def _delivery_format(row) -> Optional[str]:

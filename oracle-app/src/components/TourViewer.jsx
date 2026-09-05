@@ -69,7 +69,7 @@ const ENGINE = (import.meta.env.VITE_TOUR_ENGINE || 'playcanvas').toLowerCase();
 const DEMO_PREFIX = 'This is a generated demo space, not a capture of this property.';
 
 export function TourViewer({
-  splatUrl, splatFormat, panoScenes, disclosure, address, title, floors, onClose,
+  splatUrl, splatFormat, splatScene, panoScenes, disclosure, address, title, floors, onClose,
   isThisProperty = true, tourpoints,
 }) {
   // One item in, one out. `useProtectedMedia` fetches /api/media/* with the
@@ -283,6 +283,7 @@ export function TourViewer({
     viewer = (
       <PropertyTourViewer
         assets={assets}
+        scene={splatScene || null}
         floors={floors || []}
         address={address}
         title={shownTitle}

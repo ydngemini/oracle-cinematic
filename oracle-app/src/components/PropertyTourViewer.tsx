@@ -31,6 +31,7 @@ import {
   goToFloor,
   stepCamera,
   type CameraMode,
+  type CameraState,
 } from '../lib/tour/cameraModes';
 import styles from './PropertyTourViewer.module.css';
 
@@ -58,10 +59,72 @@ export interface PropertyTourViewerProps {
   /** Per-listing disclosure text from the tour resolver. Falls back to the
    *  generic AI disclosure — the specific honest badge must win when present. */
   disclosure?: string | null;
+  /** scene.json from the resolver: canonical up + where to open. Optional —
+   *  a capture from before it existed frames its dense bounds instead. */
+  scene?: SceneManifest | null;
   onClose?: () => void;
 }
 
+/** The subset of scene.json the viewer reads. Written by backend/scene_manifest.py. */
+export interface SceneManifest {
+  version: number;
+  /** Row-major 4x4; canonical = M * source. */
+  canonicalTransform?: number[];
+  denseBounds?: { min: [number, number, number]; max: [number, number, number] };
+  floorHeight?: number | null;
+  entryCamera?: {
+    position: [number, number, number];
+    target: [number, number, number];
+    fov?: number;
+  } | null;
+}
+
 type Status = 'idle' | 'loading' | 'ready' | 'error' | 'unsupported';
+
+/**
+ * Apply scene.json's canonical transform to a loaded entity.
+ *
+ * The manifest stores a row-major 4x4 with canonical = M * source; PlayCanvas
+ * reads column-major, hence the transpose. Set as the entity's LOCAL transform,
+ * so anything parented later inherits the same frame.
+ */
+function applyCanonicalTransform(pc: typeof pcNS, entity: pcNS.Entity, rowMajor: number[]): void {
+  const colMajor: number[] = new Array(16);
+  for (let r = 0; r < 4; r += 1) for (let c = 0; c < 4; c += 1) colMajor[c * 4 + r] = rowMajor[r * 4 + c];
+  const mat = new pc.Mat4();
+  mat.set(colMajor);
+  const position = new pc.Vec3();
+  const rotation = new pc.Quat();
+  const scale = new pc.Vec3();
+  mat.getTranslation(position);
+  mat.getScale(scale);
+  rotation.setFromMat4(mat);
+  entity.setLocalPosition(position);
+  entity.setLocalRotation(rotation);
+  entity.setLocalScale(scale);
+}
+
+/**
+ * Point the camera from `position` at `target`, in both modes' terms.
+ *
+ * Walk mode holds the eye; orbit mode holds the pivot and a distance. Yaw and
+ * pitch follow stepCamera's convention: forward is
+ * (sin yaw * cos pitch, sin pitch, cos yaw * cos pitch).
+ */
+function openAt(state: CameraState, entry: NonNullable<SceneManifest['entryCamera']>): void {
+  const dx = entry.target[0] - entry.position[0];
+  const dy = entry.target[1] - entry.position[1];
+  const dz = entry.target[2] - entry.position[2];
+  const len = Math.hypot(dx, dy, dz) || 1;
+  state.yaw = Math.atan2(dx, dz);
+  state.pitch = Math.asin(Math.max(-1, Math.min(1, dy / len)));
+  if (state.mode === 'walk') {
+    state.position = [entry.position[0], entry.position[1], entry.position[2]];
+  } else {
+    state.position = [entry.target[0], entry.target[1], entry.target[2]];
+    state.distance = len;
+  }
+}
 
 /** Fraction of splats trimmed from each end of each axis when framing. */
 const FRAMING_TRIM = 0.02;
@@ -160,10 +223,10 @@ async function waitForLoadedBounds(
   const immediate = read();
   if (immediate) return immediate;
 
-  // requestAnimationFrame, not the engine's own 'update' event: that event
-  // never fired here and the wait hung forever, which is a worse failure than
-  // the black screen it was meant to fix. rAF ticks regardless of what the
-  // engine is doing, and the deadline guarantees this settles either way.
+  // Poll animation frames, and always settle. The deadline is the point: a
+  // frame callback does not run at all while the tab is hidden, so waiting on
+  // one without a bound can hang forever — which is a worse failure than the
+  // black screen this was meant to fix.
   return new Promise((resolve) => {
     const deadline = performance.now() + maxWaitMs;
     const tick = () => {
@@ -186,6 +249,7 @@ export default function PropertyTourViewer({
   aiGenerated = true,
   disclosure,
   onClose,
+  scene = null,
 }: PropertyTourViewerProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
@@ -297,38 +361,69 @@ export default function PropertyTourViewer({
         // looking at nothing. That renders as a black canvas, or from far
         // enough away as a sprinkle of dots — which reads as a broken splat
         // rather than as a camera that was never aimed.
-        const aabb = await waitForLoadedBounds(pc, loaded, abort.signal);
-        if (disposed || abort.signal.aborted) return;
-        if (!aabb) {
-          // Say WHICH part is missing. "No bounds" has several causes — no
-          // component, an asset that never produced a resource, an instance
-          // the engine never built — and they need different fixes.
-          // eslint-disable-next-line no-console
-          console.warn('[neoh-tour] no bounds', loaded.map((item) => {
-            const g = (item.entity as any).gsplat;
-            return {
-              id: item.spec.id,
-              kind: item.spec.kind ?? null,
-              filename: item.spec.filename ?? null,
-              hasGsplatComponent: !!g,
-              assetLoaded: !!item.asset?.loaded,
-              assetType: item.asset?.type ?? null,
-              resource: item.asset?.resource ? item.asset.resource.constructor?.name : null,
-              hasInstance: !!g?.instance,
-              hasMeshInstance: !!g?.instance?.meshInstance,
-            };
-          }));
-          // Never report ready with an unaimed camera: black is indis-
-          // tinguishable from a failed reconstruction, and this one is real.
-          setStatus('error');
-          setError('The 3D capture loaded but never reported its bounds, so the camera could not be aimed at it.');
-          return;
+        // Stand the capture up. The solver's frame is arbitrary; scene.json
+        // holds the one transform every consumer applies, so the viewer,
+        // the floor plan and anything structural later agree on which way
+        // is up. Applied to the entity, not the bytes.
+        if (scene?.canonicalTransform?.length === 16) {
+          for (const item of loaded) applyCanonicalTransform(pc, item.entity, scene.canonicalTransform);
         }
-        frameBounds(cameraStateRef.current, {
-          min: [aabb.getMin().x, aabb.getMin().y, aabb.getMin().z],
-          max: [aabb.getMax().x, aabb.getMax().y, aabb.getMax().z],
-        });
 
+        if (scene?.entryCamera) {
+          // A real registered viewpoint, chosen for standing inside the space
+          // with room in front. Deterministic: the same capture opens the same
+          // way every time.
+          //
+          // NOTE the shape of this branch: it sets state and falls THROUGH to
+          // the frame loop below. Returning early here skipped the loop that
+          // applies camera state to the camera entity, so the camera stayed at
+          // the origin and the canvas was black — the exact failure this
+          // viewpoint exists to fix.
+          openAt(cameraStateRef.current, scene.entryCamera);
+          if (scene.denseBounds) cameraStateRef.current.bounds = scene.denseBounds;
+          if (typeof scene.floorHeight === 'number') cameraStateRef.current.floorY = scene.floorHeight;
+          if (scene.entryCamera.fov && cameraRef.current?.camera) {
+            cameraRef.current.camera.fov = scene.entryCamera.fov;
+          }
+        } else if (scene?.denseBounds) {
+          // Canonical, but no viewpoint worth opening at: frame what was
+          // captured rather than its absolute extremes.
+          frameBounds(cameraStateRef.current, scene.denseBounds);
+        } else {
+          const aabb = await waitForLoadedBounds(pc, loaded, abort.signal);
+          if (disposed || abort.signal.aborted) return;
+          if (!aabb) {
+            // Say WHICH part is missing. "No bounds" has several causes — no
+            // component, an asset that never produced a resource, an instance
+            // the engine never built — and they need different fixes.
+            // eslint-disable-next-line no-console
+            console.warn('[neoh-tour] no bounds', loaded.map((item) => {
+              const g = (item.entity as any).gsplat;
+              return {
+                id: item.spec.id,
+                kind: item.spec.kind ?? null,
+                filename: item.spec.filename ?? null,
+                hasGsplatComponent: !!g,
+                assetLoaded: !!item.asset?.loaded,
+                assetType: item.asset?.type ?? null,
+                resource: item.asset?.resource ? item.asset.resource.constructor?.name : null,
+                hasInstance: !!g?.instance,
+                hasMeshInstance: !!g?.instance?.meshInstance,
+              };
+            }));
+            // Never report ready with an unaimed camera: black is indis-
+            // tinguishable from a failed reconstruction, and this one is real.
+            setStatus('error');
+            setError('The 3D capture loaded but never reported its bounds, so the camera could not be aimed at it.');
+            return;
+          }
+          frameBounds(cameraStateRef.current, {
+            min: [aabb.getMin().x, aabb.getMin().y, aabb.getMin().z],
+            max: [aabb.getMax().x, aabb.getMax().y, aabb.getMax().z],
+          });
+
+
+        }
 
         setStatus('ready');
       } catch (err) {

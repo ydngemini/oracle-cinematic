@@ -401,6 +401,41 @@ async def _convert_to_delivery(src: Path, work_dir: Path, media_id: str) -> Path
     return out
 
 
+async def _canonicalise(job: ReconstructionJob, splat: Path) -> None:
+    """Write scene.json beside the splat: canonical up, and where to open.
+
+    Structure-from-motion picks an arbitrary frame, so without this the viewer
+    opened at whatever pose fell out of the solver — inside a wall as often as
+    in the room. Computed once here and persisted, because the tour, the floor
+    plan and anything structural later must agree on which way is up; if each
+    derived its own, they would disagree silently.
+
+    Best-effort. The reconstruction is the deliverable; a capture that cannot
+    be canonicalised still ships, and the viewer falls back to framing the
+    dense bounds — which is what it did before this existed.
+    """
+    import capture_sidecars
+    import scene_manifest
+
+    points = capture_sidecars.geometry_for(splat)
+    if points is None:
+        logger.info("No point cloud beside %s; the viewer will frame bounds instead.", splat.name)
+        return
+    manifest = await asyncio.to_thread(scene_manifest.build_for_artifact, splat, points)
+    if not manifest:
+        return
+    written = await asyncio.to_thread(scene_manifest.write, splat, manifest)
+    if written:
+        entry = manifest.get("entryCamera")
+        await _record_stage(
+            job.ctx, job.job_id, "canonical",
+            world_up_source=manifest.get("worldUpSource"),
+            world_up_confidence=manifest.get("worldUpConfidence"),
+            entry_camera_index=entry.get("index") if entry else None,
+            entry_camera_source=manifest.get("entryCameraSource"),
+        )
+
+
 async def _store_splat(
     src_splat: Path, media_id: str, *, provider: str, address: str, tenant_id: str,
     generated: bool = True, extra_manifest: Optional[dict] = None,
@@ -465,11 +500,17 @@ async def _store_splat(
     # back to inferring up from geometry, which is what it did before.
     import capture_sidecars
 
+    import scene_manifest
+
     for locate, suffix, mime in (
         (capture_sidecars.sidecar_for, capture_sidecars.CAMERA_SIDECAR_SUFFIX,
          "application/json"),
         (capture_sidecars.points_sidecar_for, capture_sidecars.POINTS_SIDECAR_SUFFIX,
          "application/octet-stream"),
+        # The canonical frame: which way is up, and where to open. Written by
+        # the worker before storage so the viewer, the floor plan and anything
+        # structural later all read the same answer.
+        (scene_manifest.manifest_for, scene_manifest.SUFFIX, "application/json"),
     ):
         companion = locate(src_splat)
         if not companion.is_file():
@@ -799,6 +840,7 @@ async def _process(job: ReconstructionJob) -> None:
                     f"finished but produced nothing renderable"
                 )
 
+            await _canonicalise(job, splat)
             url, s3_key = await _store_splat(
                 splat, media_id,
                 provider=provider.name,
