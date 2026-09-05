@@ -36,7 +36,7 @@ from uuid import UUID, uuid4
 import ws_hub
 import media_storage
 from db.connection import tenant_tx
-from tenancy import TenantContext
+from tenancy import Role, TenantContext
 from reconstruction_providers import (
     CONVERTIBLE_SUFFIXES,
     DELIVERY_SUFFIX,
@@ -51,6 +51,9 @@ logger = logging.getLogger("oracle.reconstruction.worker")
 
 QUEUE_MAX = int(os.environ.get("RECON_QUEUE_MAX", "20"))
 WORKER_COUNT = int(os.environ.get("RECON_WORKER_COUNT", "1"))
+# Stamped once at import: rows untouched since before this process started
+# cannot belong to it, because the queue that fed them did not survive.
+_PROCESS_STARTED_AT = datetime.now(timezone.utc)
 
 
 @dataclass(frozen=True)
@@ -938,8 +941,64 @@ async def _reaper_loop() -> None:
         await asyncio.sleep(REAP_INTERVAL_SECONDS)
 
 
+async def fail_orphaned_jobs() -> None:
+    """Fail jobs no process can still be working on.
+
+    The queue is in-memory, so a restart loses every queued job and abandons
+    every running one — but their rows still say `queued` and `running`. Nothing
+    ever moves them: the caller polls a status that will never change again, and
+    the reason it stopped is invisible. Two real captures were lost that way
+    before anything said so.
+
+    This is the reaper's argument applied to rows instead of pods: the most
+    likely orphan is the one left by the restart that just happened. Only rows
+    untouched since before this process started are failed, so a job this
+    process is actively running is never harmed.
+
+    ASSUMPTION: one backend works a given tenant's reconstructions. That is
+    already true of the in-memory queue and of the pod reaper, which terminates
+    by name prefix regardless of which process created the pod. If this ever
+    runs multi-replica, both need a lease instead.
+    """
+    platform_ctx = TenantContext(
+        agent_id="reconstruction-orphan-sweep",
+        tenant_id=os.getenv("ORACLE_PLATFORM_TENANT_ID", "00000000-0000-0000-0000-000000000000"),
+        role=Role.PLATFORM_ADMIN,
+    )
+    reason = (
+        "Abandoned: the backend restarted while this job was in flight, and the "
+        "queue does not survive a restart. Any GPU pod was released by the "
+        "leaked-pod sweep. Nothing was produced — run the capture again."
+    )
+    try:
+        async with tenant_tx(platform_ctx) as conn:
+            rows = await conn.fetch(
+                """
+                UPDATE reconstruction_jobs
+                   SET status = 'failed', error = $1, updated_at = now()
+                 WHERE status IN ('queued', 'running')
+                   AND updated_at < $2
+             RETURNING id::text
+                """,
+                reason,
+                _PROCESS_STARTED_AT,
+            )
+        if rows:
+            logger.warning(
+                "Failed %d reconstruction job(s) orphaned by a restart: %s",
+                len(rows), ", ".join(r["id"] for r in rows),
+            )
+    except Exception:  # noqa: BLE001
+        # A sweep that cannot run must not stop the service from accepting
+        # captures — the same rule the leaked-pod sweep follows.
+        logger.exception("Orphaned-job sweep failed; jobs may still read as running")
+
+
 async def start_reconstruction_workers() -> None:
     """Called from server lifespan startup."""
+    # Before accepting anything new, tell the truth about what the last process
+    # left behind.
+    await fail_orphaned_jobs()
     for i in range(WORKER_COUNT):
         _workers.append(asyncio.create_task(_worker_loop(i)))
     # Tracked in the same list so shutdown cancels it with everything else —
