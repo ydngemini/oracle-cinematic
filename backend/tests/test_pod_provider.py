@@ -945,3 +945,46 @@ def test_capture_goes_to_the_pod_as_one_archive(tmp_path, monkeypatch):
         names = sorted(tar.getnames())
     assert names == sorted(_staged_image_name(i, p) for i, p in enumerate(images))
     assert any(cmd.startswith("tar -xf /workspace/images.tar -C /workspace/images") for cmd in runs), runs
+
+
+def test_phase_timings_are_parsed_and_a_bad_line_does_not_lose_the_rest(tmp_path):
+    """One total cannot answer "would a faster GPU help".
+
+    Training is GPU-bound, COLMAP's mapper is not, and the bootstrap is apt and
+    pip — which a bigger card only makes more expensive per second. The split
+    is what makes that answerable, so it is parsed defensively: a timing must
+    never be the reason a finished reconstruction is lost.
+    """
+    from reconstruction_providers import _read_phases
+
+    path = tmp_path / "phases.jsonl"
+    path.write_text(
+        '{"phase":"bootstrap_colmap","seconds":120}\n'
+        '\n'
+        'not json at all\n'
+        '{"phase":"colmap_mapping","seconds":300}\n'
+        '{"phase":"training","seconds":2400}\n'
+        '{"phase":"gpu","name":"NVIDIA RTX A6000, 49140 MiB"}\n'
+    )
+    phases = _read_phases(path)
+    assert phases["bootstrap_colmap"] == 120
+    assert phases["colmap_mapping"] == 300
+    assert phases["training"] == 2400
+    assert phases["gpu"].startswith("NVIDIA RTX A6000")
+
+
+def test_missing_timings_are_not_an_error(tmp_path):
+    from reconstruction_providers import _read_phases
+
+    assert _read_phases(tmp_path / "absent.jsonl") == {}
+
+
+def test_the_pipeline_times_every_phase_it_announces():
+    """Each stage that costs real money is measured, not just announced."""
+    from reconstruction_providers import POD_PIPELINE
+
+    for name in ("bootstrap_colmap", "bootstrap_gsplat", "colmap_features",
+                 "colmap_matching", "colmap_mapping", "training", "conversion"):
+        assert f'phase "{name}"' in POD_PIPELINE, name
+    # And the file the provider fetches is the one the pipeline writes.
+    assert "/workspace/phases.jsonl" in POD_PIPELINE
