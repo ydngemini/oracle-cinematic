@@ -119,6 +119,20 @@ describe('a tour with no capture', () => {
   });
 });
 
+describe('a tour embedded in an expanding property sheet', () => {
+  it('keeps the renderer and its controls inside the supplied sheet', async () => {
+    const { container } = renderTour({ embedded: true, panoScenes: SCENES, splatUrl: 'https://cdn.example/tour.sog' });
+    const viewer = await screen.findByTestId('splat');
+    expect(container.contains(viewer)).toBe(true);
+    expect(container.contains(screen.getByRole('navigation', { name: 'Tour views' }))).toBe(true);
+  });
+
+  it('preserves the body portal for existing standalone callers', async () => {
+    const { container } = renderTour({ panoScenes: SCENES });
+    expect(container.contains(await screen.findByTestId('pano'))).toBe(false);
+  });
+});
+
 describe('the claim follows the asset on screen', () => {
   it('opens real 360s ahead of a generated capture', async () => {
     renderTour({ splatUrl: '/api/media/demo.sog', panoScenes: SCENES, isThisProperty: false });

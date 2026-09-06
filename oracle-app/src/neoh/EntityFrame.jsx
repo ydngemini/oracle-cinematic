@@ -1,7 +1,9 @@
-import { useEffect, useRef } from 'react';
+import { motion } from 'framer-motion';
+import { useEffect, useEffectEvent, useRef } from 'react';
 
 import { LivingStrip } from './LivingObject';
 import { NeohRead } from './NeohRead';
+import { useMotionPolicy } from './motion';
 import styles from './EntitySheet.module.css';
 
 /**
@@ -29,27 +31,46 @@ import styles from './EntitySheet.module.css';
  */
 export function EntityFrame({
   kind, title, subline, living, read, readLoading, readError,
-  facts, actions, onClose, children,
+  facts, actions, onClose, children, immersive = null,
 }) {
   const sheetRef = useSheetChrome(onClose);
+  const policy = useMotionPolicy();
+  const expanded = immersive !== null;
+  const closeRef = useRef(null);
+  const tourOpener = useRef(null);
+
+  useEffect(() => {
+    if (expanded) {
+      tourOpener.current = document.activeElement;
+      closeRef.current?.focus({ preventScroll: true });
+    } else if (tourOpener.current) {
+      const target = sheetRef.current?.contains(tourOpener.current) ? tourOpener.current : closeRef.current;
+      target?.focus({ preventScroll: true });
+      tourOpener.current = null;
+    }
+  }, [expanded, sheetRef]);
 
   return (
-    <div className={styles.layer}>
+    <motion.div className={styles.layer} layoutRoot>
       <button
         type="button"
         className={styles.scrim}
-        aria-label={`Close ${kind}`}
+        aria-label={expanded ? 'Back to property' : `Close ${kind}`}
+        aria-hidden={expanded || undefined}
         onClick={onClose}
+        tabIndex={-1}
       />
-      <section
-        className={styles.sheet}
+      <motion.section
+        className={`${styles.sheet} ${expanded ? styles.sheetExpanded : ''}`}
+        layout={policy.layout}
+        transition={policy.transition}
         role="dialog"
         aria-modal="true"
         aria-label={`${kind} — ${title || 'record'}`}
         ref={sheetRef}
         tabIndex={-1}
       >
-        <header className={styles.head}>
+        <motion.header className={styles.head} layout={policy.layout ? 'position' : false}>
           <div className={styles.headText}>
             <span className={styles.kicker}>{kind}</span>
             {/* Not every kind supplies a title here: the client drawer's own
@@ -64,59 +85,99 @@ export function EntityFrame({
             )}
             {living && <LivingStrip living={living} />}
           </div>
-          <button type="button" className={styles.close} onClick={onClose} aria-label="Close">×</button>
-        </header>
+          <button
+            ref={closeRef}
+            type="button"
+            className={expanded ? styles.back : styles.close}
+            onClick={onClose}
+            aria-label={expanded ? 'Back to property' : 'Close'}
+          >
+            {expanded ? '← Back to property' : '×'}
+          </button>
+        </motion.header>
 
-        <NeohRead read={read} loading={readLoading} error={readError} />
+        <div className={styles.content}>
+          <div className={`${styles.details} ${expanded ? styles.detailsHidden : ''}`} inert={expanded} aria-hidden={expanded || undefined}>
+            <NeohRead read={read} loading={readLoading} error={readError} />
 
-        {facts?.length > 0 && (
-          <dl className={styles.facts}>
-            {facts.map((fact) => (
-              <div key={fact.label}>
-                <dt>{fact.label}</dt>
-                <dd>{fact.value ?? '—'}</dd>
+            {facts?.length > 0 && (
+              <dl className={styles.facts}>
+                {facts.map((fact) => (
+                  <div key={fact.label}>
+                    <dt>{fact.label}</dt>
+                    <dd>{fact.value ?? '—'}</dd>
+                  </div>
+                ))}
+              </dl>
+            )}
+
+            {actions?.length > 0 && (
+              <div className={styles.actions}>
+                {actions.map((action) => (
+                  <button
+                    key={action.label}
+                    type="button"
+                    className={action.primary ? styles.actionPrimary : styles.action}
+                    onClick={action.onClick}
+                    disabled={action.disabled}
+                  >
+                    {action.label}
+                  </button>
+                ))}
               </div>
-            ))}
-          </dl>
-        )}
+            )}
 
-        {actions?.length > 0 && (
-          <div className={styles.actions}>
-            {actions.map((action) => (
-              <button
-                key={action.label}
-                type="button"
-                className={action.primary ? styles.actionPrimary : styles.action}
-                onClick={action.onClick}
-                disabled={action.disabled}
-              >
-                {action.label}
-              </button>
-            ))}
+            <div className={styles.body}>{children}</div>
           </div>
-        )}
-
-        <div className={styles.body}>{children}</div>
-      </section>
-    </div>
+          {expanded && <div className={styles.immersive}>{immersive}</div>}
+        </div>
+      </motion.section>
+    </motion.div>
   );
 }
 
 /** Escape closes; focus lands in the sheet on open and returns on close. */
 function useSheetChrome(onClose) {
   const sheetRef = useRef(null);
+  const close = useEffectEvent(() => onClose?.());
   useEffect(() => {
     const opener = document.activeElement;
-    const frame = window.requestAnimationFrame(() => sheetRef.current?.focus());
+    const frame = window.requestAnimationFrame(() => {
+      if (!sheetRef.current?.contains(document.activeElement)) sheetRef.current?.focus({ preventScroll: true });
+    });
     const onKey = (event) => {
-      if (event.key === 'Escape') { event.stopPropagation(); onClose?.(); }
+      if (event.defaultPrevented) return;
+      const activeDialog = document.activeElement?.closest('[role="dialog"]');
+      if (activeDialog && activeDialog !== sheetRef.current) return;
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        event.stopPropagation();
+        if (!event.repeat) close();
+      }
+      if (event.key !== 'Tab') return;
+      const sheet = sheetRef.current;
+      const controls = Array.from(sheet?.querySelectorAll(
+        'button:not(:disabled), a[href], input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])',
+      ) || []).filter((control) => !control.closest('[inert]') && control.getClientRects().length > 0);
+      const first = controls[0];
+      const last = controls[controls.length - 1];
+      if (!first) {
+        event.preventDefault();
+        sheet?.focus({ preventScroll: true });
+      } else if (event.shiftKey && (document.activeElement === first || document.activeElement === sheet)) {
+        event.preventDefault();
+        last.focus();
+      } else if (!sheet?.contains(document.activeElement) || (!event.shiftKey && document.activeElement === last)) {
+        event.preventDefault();
+        first.focus();
+      }
     };
     document.addEventListener('keydown', onKey);
     return () => {
       window.cancelAnimationFrame(frame);
       document.removeEventListener('keydown', onKey);
-      if (opener && typeof opener.focus === 'function') opener.focus();
+      if (opener && typeof opener.focus === 'function') opener.focus({ preventScroll: true });
     };
-  }, [onClose]);
+  }, []);
   return sheetRef;
 }

@@ -126,7 +126,7 @@ export function parse(pathname, search = '', { fallbackView = VIEWS.home } = {})
       return {
         view: fallbackView,
         params: paramsToObject(params),
-        entity: { kind, id },
+        entity: { kind, id, ...(kind === 'property' && params.get('tour') === '3d' ? { tour: true } : {}) },
       };
     }
   }
@@ -178,8 +178,8 @@ export function href(view, params = {}) {
 }
 
 /** Address of an entity sheet. */
-export function entityHref(kind, id) {
+export function entityHref(kind, id, { tour = false } = {}) {
   const prefix = ENTITY_PREFIXES[kind];
   if (!prefix || !id) return VIEW_PATHS.home;
-  return `${prefix}${encodeURIComponent(String(id))}`;
+  return `${prefix}${encodeURIComponent(String(id))}${kind === 'property' && tour ? '?tour=3d' : ''}`;
 }

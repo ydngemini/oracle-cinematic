@@ -109,7 +109,7 @@ function interactionSummary(entry) {
   return p.summary || p.note || entry.interaction_type.replace(/_/g, ' ');
 }
 
-export function DossierPanel({ leadId, onClose, embedded = false }) {
+export function DossierPanel({ leadId, onClose, embedded = false, onOpenTour }) {
   const [dossier, setDossier] = useState(null);
   const { tour } = useTour({ leadId });
   const [tourOpen, setTourOpen] = useState(false);
@@ -318,11 +318,11 @@ export function DossierPanel({ leadId, onClose, embedded = false }) {
             </Suspense>
           </section>
 
-          {/* A reconstruction could be produced, stored and resolved, and this
-              sheet still showed no way to look at it — the capture existed and
-              the viewer existed, with nothing between them. When there is
-              nothing to walk, say why: an empty space is indistinguishable
-              from a missing feature. */}
+          {/* Standalone (in Work's property view) the dossier owns its own
+              tour entry; embedded in the entity frame the frame's "Explore in
+              3D" action and the sheet-expanding morph own it, so a second
+              button here would be the duplication item 5 removed. */}
+          {!embedded && (
           <section className={styles.section} aria-label="3D tour">
             <h3 className={styles.kicker}>3D Tour</h3>
             {tourOffer(tour).kind === 'walkable' ? (
@@ -330,7 +330,7 @@ export function DossierPanel({ leadId, onClose, embedded = false }) {
                 <button
                   type="button"
                   className={styles.floorplanBtn}
-                  onClick={() => setTourOpen(true)}
+                  onClick={onOpenTour || (() => setTourOpen(true))}
                 >
                   {tourOffer(tour).label}
                 </button>
@@ -344,8 +344,9 @@ export function DossierPanel({ leadId, onClose, embedded = false }) {
               <p className={styles.emptyNote}>{tourOffer(tour).reason}</p>
             )}
           </section>
+          )}
 
-          {tourOpen && tourOffer(tour).kind === 'walkable' ? (
+          {!embedded && tourOpen && tourOffer(tour).kind === 'walkable' ? (
             <Suspense fallback={null}>
               <TourViewer
                 splatUrl={tour.splat_url}

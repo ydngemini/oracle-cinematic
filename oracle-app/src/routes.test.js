@@ -94,6 +94,20 @@ describe('parse', () => {
     expect(parse('/p').entity).toBeNull();
   });
 
+  it('round-trips a property tour without changing the underlying view', () => {
+    const url = new URL(entityHref('property', 'a/b', { tour: true }), 'https://neoh.test');
+    const route = parse(url.pathname, url.search, { fallbackView: VIEWS.work });
+    expect(route.entity).toEqual({ kind: 'property', id: 'a/b', tour: true });
+    expect(route.view).toBe(VIEWS.work);
+    expect(parse(url.pathname).entity).toEqual({ kind: 'property', id: 'a/b' });
+  });
+
+  it('only opens the tour state for a property and a recognised mode', () => {
+    expect(parse('/p/person', '?tour=3d').entity).toEqual({ kind: 'person', id: 'person' });
+    expect(parse('/property/home', '?tour=anything').entity).toEqual({ kind: 'property', id: 'home' });
+    expect(entityHref('deal', 'deal', { tour: true })).toBe('/deal/deal');
+  });
+
   it('lands an unknown path on Home rather than throwing', () => {
     expect(parse('/no/such/thing')).toEqual({ view: VIEWS.home, params: {}, entity: null });
   });

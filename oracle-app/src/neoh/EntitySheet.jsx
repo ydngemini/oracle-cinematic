@@ -1,6 +1,7 @@
 import { Suspense, lazy, useCallback, useEffect, useState } from 'react';
 
 import { useAssistantRecord } from '../components/AssistantContext';
+import { ErrorBoundary } from '../components/ErrorBoundary';
 import { crmGet } from '../state/useCrmApi';
 import { dealRead, entityTitle, humanState, personRead } from './entityModel';
 import { NeohRead } from './NeohRead';
@@ -29,21 +30,19 @@ const ClientDetailDrawer = lazy(() => import('../components/ClientDetailDrawer')
 const DossierPanel = lazy(() =>
   import('../components/DossierPanel').then((m) => ({ default: m.DossierPanel })));
 const DealRoomPanel = lazy(() => import('../components/DealRoomPanel'));
+const TourViewer = lazy(() => import('../components/TourViewer'));
 
 function useFetched(path) {
   const [state, setState] = useState({ data: null, error: null, loading: true });
   useEffect(() => {
     let live = true;
-    const frame = window.requestAnimationFrame(() => {
-      if (live) setState({ data: null, error: null, loading: true });
-    });
     crmGet(path).then(
-      (data) => { if (live) setState({ data, error: null, loading: false }); },
-      (error) => { if (live) setState({ data: null, error, loading: false }); },
+      (data) => { if (live) setState({ path, data, error: null, loading: false }); },
+      (error) => { if (live) setState({ path, data: null, error, loading: false }); },
     );
-    return () => { live = false; window.cancelAnimationFrame(frame); };
+    return () => { live = false; };
   }, [path]);
-  return state;
+  return state.path === path ? state : { data: null, error: null, loading: true };
 }
 
 function Fallback() {
@@ -76,16 +75,55 @@ function PersonSheet({ id, onClose }) {
 
 /* ── Property ───────────────────────────────────────────────────────────── */
 
-function PropertySheet({ id, onClose }) {
+function PropertySheet({ id, onClose, tourOpen, onOpenTour }) {
   // The address, from the same read the dossier below performs. A property
   // sheet whose header does not say which property it is was the gap this
   // frame exists to close.
-  const dossier = useFetched(`/api/leads/${id}/dossier`);
+  const dossier = useFetched(`/api/leads/${encodeURIComponent(id)}/dossier`);
   const record = dossier.data;
   const address = record?.payload?.address || record?.parcel_id || 'Property';
   useAssistantRecord('property', id, address, record?.dossier_status || '');
-  const tour = useFetched(`/api/crm/property-tour?lead_id=${id}`);
+  const tour = useFetched(`/api/crm/property-tour?lead_id=${encodeURIComponent(id)}`);
   const walkable = Boolean(tour.data?.splat_url);
+  const scenes = tour.data?.pano_scenes;
+  const hasScenes = Array.isArray(scenes) && scenes.length > 0;
+  const canExplore = walkable || hasScenes;
+  const demo = walkable && tour.data?.is_this_property === false;
+  const tourLabel = tour.loading ? 'Checking for a tour…'
+    : tour.error ? 'Tour status unavailable'
+      : walkable ? (demo ? 'Preview demo 3D space' : 'Explore in 3D')
+        : hasScenes ? (scenes.length > 1 ? 'Explore 360° tour' : 'View 360° scene')
+          : '3D tour not captured yet';
+
+  const tourContent = tour.loading ? (
+    <div className={styles.tourStatus} role="status">Loading tour…</div>
+  ) : tour.error ? (
+    <div className={styles.tourStatus} role="alert">The tour could not be loaded. Return to the property and try again later.</div>
+  ) : !canExplore ? (
+    <div className={styles.tourStatus} role="status">This property has no 3D capture or 360° scenes yet.</div>
+  ) : (
+    <ErrorBoundary
+      label="property tour"
+      fallback={() => <div className={styles.tourStatus} role="alert">The tour could not be opened. You can still return to the property.</div>}
+    >
+      <Suspense fallback={<div className={styles.tourStatus} role="status">Preparing tour…</div>}>
+        <TourViewer
+          embedded
+          splatUrl={tour.data.splat_url}
+          splatFormat={tour.data.splat_format}
+          splatScene={tour.data.splat_scene}
+          panoScenes={scenes}
+          disclosure={tour.data.disclosure}
+          floors={tour.data.floors}
+          tourpoints={tour.data.tourpoints}
+          isThisProperty={tour.data.is_this_property !== false}
+          address={address}
+          title={address}
+          onClose={onClose}
+        />
+      </Suspense>
+    </ErrorBoundary>
+  );
 
   return (
     <EntityFrame
@@ -97,23 +135,24 @@ function PropertySheet({ id, onClose }) {
         record?.dossier_status && humanState(record.dossier_status),
       ]}
       onClose={onClose}
+      immersive={tourOpen ? tourContent : null}
       read={null}
       facts={[
         { label: 'Photos', value: tour.data?.photo_count ?? null },
         { label: '360 scenes', value: tour.data?.pano_scene_count ?? null },
-        { label: '3D tour', value: walkable ? 'Yes' : 'Not yet' },
+        { label: '3D tour', value: tour.loading || tour.error ? null : walkable ? (demo ? 'Demo space' : 'Yes') : 'Not yet' },
       ]}
       actions={[
         {
-          label: walkable ? 'Explore in 3D' : '3D tour not captured yet',
-          primary: walkable,
-          disabled: !walkable,
-          onClick: () => window.dispatchEvent(new CustomEvent('neoh:open-tour', { detail: { leadId: id } })),
+          label: tourLabel,
+          primary: canExplore,
+          disabled: !canExplore || tour.loading || Boolean(tour.error),
+          onClick: onOpenTour,
         },
       ]}
     >
       <Suspense fallback={<Fallback />}>
-        <DossierPanel leadId={id} onClose={onClose} embedded />
+        <DossierPanel leadId={id} onClose={onClose} onOpenTour={onOpenTour} embedded />
       </Suspense>
     </EntityFrame>
   );
@@ -168,11 +207,11 @@ function DealSheet({ id, onClose }) {
 
 /* ── Dispatch ───────────────────────────────────────────────────────────── */
 
-export function EntitySheet({ entity, onClose }) {
+export function EntitySheet({ entity, onClose, onOpenTour }) {
   const close = useCallback(() => onClose?.(), [onClose]);
   if (!entity?.kind || !entity?.id) return null;
   if (entity.kind === 'person') return <PersonSheet id={entity.id} onClose={close} />;
-  if (entity.kind === 'property') return <PropertySheet id={entity.id} onClose={close} />;
+  if (entity.kind === 'property') return <PropertySheet key={entity.id} id={entity.id} tourOpen={entity.tour} onClose={close} onOpenTour={onOpenTour} />;
   if (entity.kind === 'deal') return <DealSheet id={entity.id} onClose={close} />;
   return null;
 }
