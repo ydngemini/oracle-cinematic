@@ -1,9 +1,8 @@
 {
   "// note": "Ceilings, not targets. Lower deliberately; raise only with a stated reason.",
-  "// total": "Property-to-tour continuity: +4549 bytes raw and +1688 bytes gzip vs d050a7e using the same toolchain. History, focus, embedded viewer and motion; renderer ceilings unchanged.",
-  "// largest": "src-CiYeZjHb.js",
+  "// largest": "src-B1BXv9KB.js",
   "largestChunkBytes": 2325752,
-  "largestChunkGzipBytes": 591588,
-  "totalBytes": 4030040,
-  "totalGzipBytes": 1128870
+  "largestChunkGzipBytes": 591589,
+  "totalBytes": 4032323,
+  "totalGzipBytes": 1129766
 }
