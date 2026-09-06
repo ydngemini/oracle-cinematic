@@ -19,17 +19,19 @@ import hashlib
 import logging
 import os
 import secrets
+import asyncio
 import json
 from datetime import datetime, timedelta, timezone
 from typing import Any, Literal, Optional
 from uuid import UUID
 
 import jwt
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException, Response
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from auth import ALGORITHM, SECRET_KEY
 from db.connection import get_pool, tenant_tx
+from approval_service import decide_approval
 from tenancy import Role, TenantContext, require_context
 
 log = logging.getLogger("oracle.client_portal")
@@ -52,6 +54,11 @@ class PortalAssetScope(BaseModel):
     model_config = ConfigDict(extra="forbid")
     summary: bool = True
     media: bool = False
+    #: The walkable 3D capture. Deliberately its own switch rather than riding
+    #: on `media`: sharing a photo of the kitchen and letting someone walk
+    #: through the whole house are different decisions, and an agent must be
+    #: able to make the first without making the second.
+    tour: bool = False
     milestones: bool = False
     title_summary: bool = False
     zoning_summary: bool = False
@@ -277,6 +284,21 @@ async def open_portal_session(token: str):
         asset_scope=scope,
         watermark_text=row["watermark_text"] or "CONFIDENTIAL — REVOCABLE DOSSIER",
     )
+
+
+def _portal_media_url(url: Optional[str]) -> Optional[str]:
+    """Rewrite an agent media URL to the portal's own read route.
+
+    `/api/media/{id}` requires an agent JWT, so handing that path to a
+    homeowner gives them a link that 401s. The dossier was already doing this
+    for photos: the URLs were listed and none of them could be opened.
+    """
+    if not url:
+        return None
+    marker = "/api/media/"
+    if not url.startswith(marker):
+        return url
+    return f"/api/portal/media/{url[len(marker):]}"
 
 
 def _portal_session_claims(authorization: Optional[str]) -> dict:
@@ -510,6 +532,143 @@ async def record_activity(
         return {"recorded": False}
 
 
+class TourLinkDecision(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    decision: Literal["approved", "rejected"]
+    reason: str
+
+
+@router.post("/links/approvals/{approval_id}", response_model=Optional[PortalLinkResponse])
+async def decide_tour_link(
+    approval_id: UUID,
+    body: TourLinkDecision,
+    ctx: TenantContext = Depends(require_context),
+):
+    """Decide a requested tour link, and mint it only if approved.
+
+    The AI can ask for a client link but cannot create one: a portal link is a
+    passwordless grant to walk through somebody's home, and a tool that could
+    mint it would make its own approval decorative. This is the path a human
+    decision travels, and the only place `portal.tour_link` becomes a URL.
+
+    The link is built from the approval's immutable `draft_payload`, not from
+    anything the caller sends here, so the scope and lifetime that were shown
+    to the approver are the ones granted.
+    """
+    async with tenant_tx(ctx) as conn:
+        row = await conn.fetchrow(
+            "SELECT * FROM action_approvals WHERE id=$1::uuid", str(approval_id)
+        )
+    if row is None or row["action_type"] != "portal.tour_link":
+        raise HTTPException(status_code=404, detail="Tour link request not found.")
+
+    try:
+        approval = await decide_approval(
+            ctx, str(approval_id), decision=body.decision, reason=body.reason,
+        )
+    except (LookupError, ValueError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    if body.decision != "approved":
+        return None
+
+    draft = approval["draft_payload"]
+    if isinstance(draft, str):
+        draft = json.loads(draft)
+    scope = draft.get("asset_scope") or {}
+    return await create_portal_link(
+        PortalLinkRequest(
+            lead_id=UUID(str(draft["lead_id"])),
+            expiry_days=int(draft.get("expiry_days") or 14),
+            issued_to_label=draft.get("issued_to_label") or None,
+            asset_scope=PortalAssetScope(**{
+                k: bool(v) for k, v in scope.items()
+                if k in PortalAssetScope.model_fields
+            }),
+        ),
+        ctx,
+    )
+
+
+@router.get("/media/{media_id}")
+async def read_scoped_media(
+    media_id: UUID,
+    authorization: Optional[str] = Header(default=None),
+):
+    """Serve one media file to a live portal session.
+
+    `/api/media/{id}` requires an agent JWT, so before this existed the dossier
+    listed photo and tour URLs that the homeowner it was sent to could not
+    open. This is the read that makes a shared link actually work.
+
+    Four things are checked, and all of them matter:
+
+    * the session is a portal session, and its signature is valid;
+    * the portal row is still live — not revoked, not expired. Revocation has
+      to reach the bytes, or "revoke" means only "hide the index";
+    * the media row belongs to THIS portal's lead. Without that check a valid
+      link to one property would read every file in the tenant by id;
+    * the scope granted it. A photo needs `media`; the capture needs `tour`,
+      because showing someone a picture of the kitchen and letting them walk
+      the whole house are different decisions.
+    """
+    claims = _portal_session_claims(authorization)
+    ctx = TenantContext(
+        agent_id=f"portal:{claims['portal_id']}",
+        tenant_id=str(claims["tenant_id"]),
+        role=Role.AGENT,
+    )
+    async with tenant_tx(ctx) as conn:
+        portal = await conn.fetchrow(
+            """
+            SELECT asset_scope FROM client_portals
+             WHERE id=$1::uuid AND lead_id=$2::uuid
+               AND revoked_at IS NULL AND access_expires_at > now()
+            """,
+            claims["portal_id"], claims["lead_id"],
+        )
+        if portal is None:
+            raise HTTPException(status_code=404, detail="Link invalid or expired.")
+
+        row = await conn.fetchrow(
+            "SELECT kind, s3_key, media_content_type FROM property_media "
+            " WHERE id=$1::uuid AND lead_id=$2::uuid",
+            media_id, claims["lead_id"],
+        )
+        if row is None:
+            # Same answer whether it belongs to another property or does not
+            # exist: a portal session must not be able to probe for ids.
+            raise HTTPException(status_code=404, detail="Not found.")
+
+        scope = portal["asset_scope"]
+        if isinstance(scope, str):
+            scope = json.loads(scope)
+        scope = scope or {}
+        needed = "tour" if row["kind"] == "splat" else "media"
+        if not scope.get(needed):
+            raise HTTPException(status_code=403, detail="This link does not include that.")
+
+        if not row["s3_key"]:
+            raise HTTPException(status_code=404, detail="Not found.")
+
+    import object_storage
+
+    try:
+        content = await asyncio.to_thread(object_storage.get_bytes, row["s3_key"])
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail="Media could not be read.") from exc
+
+    return Response(
+        content=bytes(content),
+        media_type=row["media_content_type"] or "application/octet-stream",
+        headers={
+            "Cache-Control": "private, max-age=300",
+            "Content-Disposition": "inline",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
 @router.get("/dossier")
 async def read_scoped_dossier(authorization: Optional[str] = Header(default=None)):
     """Return only the fields granted by a still-live, revocable portal row."""
@@ -590,14 +749,44 @@ async def read_scoped_dossier(authorization: Optional[str] = Header(default=None
                 """,
                 claims["lead_id"],
             )
+            # Rewritten to the portal's own read. These were served as
+            # `/api/media/{id}`, which needs an agent JWT — so every photo in
+            # every dossier ever sent was a broken image to the person it was
+            # sent to.
             assets["media"] = [
                 {
                     **dict(row),
                     "id": str(row["id"]),
+                    "url": _portal_media_url(row["url"]),
                     "created_at": row["created_at"].isoformat(),
                 }
                 for row in rows
+                # The capture is offered through `tour`, with its disclosure
+                # attached; a raw splat in the photo strip is not a photo.
+                if row["kind"] != "splat"
             ]
+        if scope.get("tour"):
+            # The same resolver the agent's own tour uses, so the client is
+            # never shown a tier the property does not have — and the same
+            # honest disclosure travels with it.
+            import tour_api
+
+            rows_t, scene_rows, plan_row = await tour_api.fetch_tour_rows(
+                conn, claims["lead_id"], None,
+            )
+            tour = tour_api.build_tour(rows_t, scene_rows, plan_row, lead_id=claims["lead_id"])
+            splat_url = tour.get("splat_url")
+            assets["tour"] = {
+                "splat_url": _portal_media_url(splat_url),
+                "splat_format": tour.get("splat_format"),
+                "splat_scene": await tour_api._scene_manifest_for(rows_t, splat_url),
+                "pano_scenes": tour.get("pano_scenes"),
+                "tiers": tour.get("tiers"),
+                "disclosure": tour.get("disclosure"),
+                "is_this_property": tour.get("is_this_property"),
+                "floors": tour.get("floors"),
+            }
+
         if scope.get("milestones"):
             rows = await conn.fetch(
                 """

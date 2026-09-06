@@ -1,5 +1,8 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import styles from './SecureDossierPage.module.css';
+// Lazy: PlayCanvas is the heaviest thing this page can load, and a dossier
+// without a tour must never pay for it.
+const TourViewer = lazy(() => import('./TourViewer'));
 
 /**
  * SecureDossierPage — the page a HOMEOWNER lands on from a portal link.
@@ -37,6 +40,65 @@ import styles from './SecureDossierPage.module.css';
 
 const API_BASE = import.meta.env.VITE_API_BASE
   || (import.meta.env.DEV ? 'http://localhost:8000' : '');
+
+/**
+ * Portal media, fetched with the session token and handed back as blob URLs.
+ *
+ * `<img src>` cannot carry an Authorization header, and portal media needs
+ * one — so the photos in every dossier ever sent rendered as broken images to
+ * the person they were sent to. Fetching the bytes and pointing the tag at a
+ * blob is the only way an authenticated image reaches an img tag.
+ *
+ * Every URL created is revoked on replacement and unmount: a dossier left open
+ * on a phone should not hold a gallery of full-size photographs in memory
+ * forever.
+ */
+function usePortalMedia(items, sessionRef) {
+  const [resolved, setResolved] = useState({});
+
+  const key = (items || []).map((i) => i.url).join('|');
+  useEffect(() => {
+    const session = sessionRef.current;
+    if (!key || !session) return undefined;
+    let live = true;
+    const created = [];
+    const controller = new AbortController();
+
+    Promise.all((items || []).map(async (item) => {
+      if (!item?.url) return null;
+      try {
+        const res = await fetch(`${API_BASE}${item.url}`, {
+          headers: { Authorization: `Bearer ${session}` },
+          signal: controller.signal,
+        });
+        if (!res.ok) return null;
+        // Built from an ArrayBuffer rather than res.blob(): Chrome's own
+        // response-to-Blob path fails on a large body, and a 3D capture is
+        // routinely 13-31 MB.
+        const buffer = await res.arrayBuffer();
+        const url = URL.createObjectURL(
+          new Blob([buffer], { type: res.headers.get('content-type') || 'application/octet-stream' }),
+        );
+        created.push(url);
+        return [item.url, url];
+      } catch {
+        return null;   // a missing photo is not a reason to lose the dossier
+      }
+    })).then((pairs) => {
+      if (!live) { created.forEach((u) => URL.revokeObjectURL(u)); return; }
+      setResolved(Object.fromEntries(pairs.filter(Boolean)));
+    });
+
+    return () => {
+      live = false;
+      controller.abort();
+      created.forEach((u) => URL.revokeObjectURL(u));
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key]);
+
+  return resolved;
+}
 
 function tokenFromPath() {
   // /vault/secure-access/:token
@@ -125,6 +187,19 @@ export default function SecureDossierPage() {
     })();
     return () => { cancelled = true; };
   }, [token, emit]);
+  // Above the early returns: hooks must run in the same order on every
+  // render, and `checking` and `invalid` both return before this point.
+  const assets = dossier?.assets || {};
+  const summary = assets.summary;
+  const tour = assets.tour;
+  const protectedItems = useMemo(() => {
+    const list = (Array.isArray(assets.media) ? assets.media : []).map((m) => ({ url: m.url }));
+    if (tour?.splat_url) list.push({ url: tour.splat_url });
+    return list;
+  }, [assets.media, tour]);
+  const blobs = usePortalMedia(protectedItems, sessionRef);
+  const [tourOpen, setTourOpen] = useState(false);
+
 
   if (state === 'checking') {
     return (
@@ -150,8 +225,6 @@ export default function SecureDossierPage() {
     );
   }
 
-  const assets = dossier?.assets || {};
-  const summary = assets.summary;
 
   return (
     <main className={styles.shell}>
@@ -200,18 +273,63 @@ export default function SecureDossierPage() {
         </Section>
       )}
 
+      {tour?.splat_url && (
+        <Section title="3D tour">
+          <p className={styles.readonly}>
+            Walk through the property in your browser. Nothing is downloaded.
+          </p>
+          <button
+            type="button"
+            className={styles.inlineLink}
+            disabled={!blobs[tour.splat_url]}
+            onClick={() => {
+              setTourOpen(true);
+              emit('link_click', { asset: 'tour' });
+            }}
+          >
+            {blobs[tour.splat_url] ? 'Step inside' : 'Preparing the tour…'}
+          </button>
+          {tour.is_this_property === false && (
+            <p className={styles.readonly}>
+              This walkable space is a stand-in, not a capture of this address.
+            </p>
+          )}
+        </Section>
+      )}
+
+      {tourOpen && tour?.splat_url && blobs[tour.splat_url] && (
+        <Suspense fallback={null}>
+          <TourViewer
+            splatUrl={blobs[tour.splat_url]}
+            splatFormat={tour.splat_format}
+            splatScene={tour.splat_scene}
+            panoScenes={tour.pano_scenes}
+            disclosure={tour.disclosure}
+            floors={tour.floors}
+            address={summary?.address || ''}
+            title={summary?.address || 'Property tour'}
+            isThisProperty={tour.is_this_property !== false}
+            onClose={() => setTourOpen(false)}
+          />
+        </Suspense>
+      )}
+
       {Array.isArray(assets.media) && assets.media.length > 0 && (
         <Section title="Photos">
           <ul className={styles.media}>
             {assets.media.map((item) => (
               <li key={item.id}>
                 <a
-                  href={item.url}
+                  href={blobs[item.url] || undefined}
                   target="_blank"
                   rel="noreferrer"
                   onClick={() => emit('link_click', { asset: item.kind, asset_id: item.id })}
                 >
-                  <img src={item.url} alt={item.caption || 'Property photo'} loading="lazy" />
+                  <img
+                    src={blobs[item.url] || ''}
+                    alt={item.caption || 'Property photo'}
+                    loading="lazy"
+                  />
                   {item.caption && <span className={styles.caption}>{item.caption}</span>}
                 </a>
               </li>

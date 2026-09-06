@@ -41,6 +41,7 @@ TOOLS_HANDLED = frozenset({
     "draft_contract",
     "schedule_event",
     "publish_to_marketplace",
+    "share_property_tour",
 })
 
 _E164_RE = re.compile(r"^\+[1-9]\d{7,14}$")
@@ -730,6 +731,97 @@ async def _request_listing_video(conn, ctx, *, tool_input, user_id) -> dict:
 # Dispatch
 # ---------------------------------------------------------------------------
 
+async def _share_property_tour(conn, ctx, *, tool_input, user_id) -> dict:
+    """Ask to mint a client link for a property's 3D tour. Mints nothing.
+
+    A portal link is a durable, passwordless grant to somebody's home: anyone
+    holding the URL can walk through the property until it expires or is
+    revoked. That is a decision about privacy, not a formatting step, so this
+    stages an approval and returns. The link is created on the path a human
+    decision triggers — the same rule every gated tool follows, because a tool
+    that could act would make its own approval decorative.
+
+    Shareability is checked BEFORE staging. Asking someone to approve a tour
+    link for a property with no tour spends their attention on a decision that
+    cannot have an effect, and the resolver already knows the answer.
+    """
+    from approval_service import create_approval
+    from platform_policy import ActionRisk
+    from tour_api import build_tour, fetch_tour_rows
+
+    anchor, error = await _property_anchor(conn, ctx, tool_input)
+    if error:
+        return error
+    if anchor["target_type"] != "lead":
+        return _err(
+            "A client link is minted against a lead, and this is a "
+            f"{anchor['target_type']}. Nothing was requested."
+        )
+
+    rows, scene_rows, plan_row = await fetch_tour_rows(conn, anchor["id"], None)
+    tour = build_tour(rows, scene_rows, plan_row, lead_id=anchor["id"])
+    tiers = tour.get("tiers") or {}
+    if not (tiers.get("splat") or tiers.get("pano")):
+        return _err(
+            "This property has no walkable tour to share yet — only photos or "
+            "an exterior view. Capture or reconstruct one first. Nothing was "
+            "requested."
+        )
+
+    # A stand-in space must never be sent to a client as their own home.
+    if tour.get("is_this_property") is False:
+        return _err(
+            "The only walkable space on this property is a stand-in, not a "
+            "capture of this address, so it must not be sent to a client as "
+            "their tour. Nothing was requested."
+        )
+
+    days = tool_input.get("expiry_days")
+    try:
+        days = int(days) if days is not None else 14
+    except (TypeError, ValueError):
+        return _err("expiry_days must be a whole number of days.")
+    if not 1 <= days <= 90:
+        return _err("A client link may last between 1 and 90 days.")
+
+    label = (tool_input.get("issued_to_label") or "").strip()[:120]
+
+    approval = await create_approval(
+        ctx,
+        action_type="portal.tour_link",
+        # OUTREACH, not INTERNAL_EDIT: the artefact leaves the brokerage.
+        # Anyone holding the URL can walk through a private home until it
+        # expires, which is the same class of decision as sending a message to
+        # someone outside — and it is in APPROVAL_REQUIRED for that reason.
+        risk=ActionRisk.OUTREACH,
+        target_type="lead",
+        target_id=anchor["id"],
+        draft_payload={
+            "lead_id": anchor["id"],
+            "expiry_days": days,
+            "issued_to_label": label,
+            # Exactly what the link would grant. Recorded so the approver sees
+            # the scope, and so it cannot widen between request and mint.
+            "asset_scope": {"summary": True, "media": True, "tour": True},
+            "requested_by": user_id,
+        },
+    )
+    return {
+        "ok": True,
+        "action_type": "share_property_tour",
+        "approval_id": str(approval.get("id") or ""),
+        "target_id": anchor["id"],
+        "link_created": False,
+        "expiry_days": days,
+        "detail": (
+            f"A client tour link was requested for {days} days and is awaiting "
+            "approval. No link exists yet and nothing has been sent. Approving "
+            "it mints a revocable, expiring URL that shows the summary, photos "
+            "and the 3D tour."
+        ),
+    }
+
+
 async def execute(conn, ctx: TenantContext, tool_name: str, tool_input: dict, *,
                   user_id: str, message_id: str, context_type: Optional[str],
                   context_id: Optional[str]) -> dict:
@@ -741,6 +833,11 @@ async def execute(conn, ctx: TenantContext, tool_name: str, tool_input: dict, *,
 
     if tool_name == "request_property_reconstruction":
         return await _request_property_reconstruction(
+            conn, ctx, tool_input=tool_input, user_id=user_id
+        )
+
+    if tool_name == "share_property_tour":
+        return await _share_property_tour(
             conn, ctx, tool_input=tool_input, user_id=user_id
         )
 
