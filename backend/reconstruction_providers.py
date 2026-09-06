@@ -1610,16 +1610,21 @@ fi
 
 
 def _subsample_capture(images: list[Path], target: int) -> list[Path]:
-    """Evenly thin a capture to `target` frames, keeping coverage.
+    """Thin a capture to `target` frames: sharpest per contiguous run.
 
-    Evenly spaced rather than truncated: a walk-through video sampled at 2fps
-    produces frames in spatial order, so taking the first N would reconstruct
-    one room in detail and leave the rest of the house unsolved.
+    Spaced rather than truncated, because a walk-through produces frames in
+    spatial order and taking the first N would reconstruct one room in detail
+    and leave the rest of the house unsolved.
+
+    Within each run the sharpest frame wins. Even spacing keeps coverage but is
+    blind to whether the frame it lands on was taken mid-turn: a motion-blurred
+    frame is worse than no frame, because COLMAP still finds features in it,
+    matches them badly, and pulls the pose solution toward a wrong answer. See
+    frame_selection for the measure and why buckets rather than a global rank.
     """
-    if target <= 0 or len(images) <= target:
-        return list(images)
-    step = len(images) / target
-    return [images[min(len(images) - 1, int(i * step))] for i in range(target)]
+    from frame_selection import select_sharpest
+
+    return select_sharpest(images, target)
 
 
 def _read_phases(path: Path) -> dict[str, Any]:
