@@ -517,6 +517,25 @@ async def _new_listings_task() -> dict:
     return await RESOListingsAggregator().sync_once()
 
 
+async def _bridge_listings_task() -> dict:
+    """Bridge Interactive's own JSON REST listings feed — a separate protocol
+    from RESO/OData, so it gets its own task and its own durable cursor. See
+    bridge_listings_feed.py's module docstring for why this is not folded into
+    _new_listings_task."""
+    try:
+        from data_integrations.bridge_listings_feed import BridgeListingsFeed
+    except Exception as exc:  # noqa: BLE001
+        return {"skipped": f"bridge_listings_feed import failed: {exc}"}
+    if not BridgeListingsFeed.is_configured():
+        return {
+            "skipped": (
+                "no Bridge feed configured "
+                "(set ORACLE_BRIDGE_ENABLED/ORACLE_BRIDGE_DATASET/ORACLE_BRIDGE_ACCESS_TOKEN)"
+            )
+        }
+    return await BridgeListingsFeed().sync_once()
+
+
 async def _distress_scrape_task() -> dict:
     """Fast-moving ACTIVE SCRAPE: keyless Socrata code-violation feeds (NYC HPD,
     Chicago) → distress leads, idempotent via leads UNIQUE(tenant_id,parcel_id).
@@ -821,6 +840,11 @@ def build_default_scheduler() -> PeriodicScheduler:
         name="new_listings",
         interval_s=listings_interval_h * 3600,   # fast-moving — hourly by default
         run=_new_listings_task,
+    ))
+    sched.register(PeriodicTask(
+        name="bridge_listings",
+        interval_s=listings_interval_h * 3600,
+        run=_bridge_listings_task,
     ))
     sched.register(PeriodicTask(
         name="coverage_snapshot",
