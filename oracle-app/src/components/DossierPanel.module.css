@@ -769,3 +769,24 @@
   line-height: 1.55;
   color: rgba(242, 242, 242, 0.3);
 }
+
+/* Embedded in the entity frame: a section of someone else's sheet, not a
+   panel of its own. It keeps its contents and gives up its position, its
+   width, its glass and its own scroll — the frame owns all of those, and two
+   nested scroll areas is how a sheet ends up with content nobody can reach. */
+.embedded {
+  position: static;
+  width: 100%;
+  max-width: none;
+  height: auto;
+  z-index: auto;
+  background: transparent;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  border: 0;
+  box-shadow: none;
+  overflow: visible;
+}
+
+.embedded::before,
+.embedded::after { content: none; }

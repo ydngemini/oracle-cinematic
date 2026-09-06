@@ -1,9 +1,10 @@
-import { Suspense, lazy, useCallback, useEffect, useRef, useState } from 'react';
+import { Suspense, lazy, useCallback, useEffect, useState } from 'react';
 
 import { useAssistantRecord } from '../components/AssistantContext';
 import { crmGet } from '../state/useCrmApi';
 import { dealRead, entityTitle, humanState, personRead } from './entityModel';
 import { NeohRead } from './NeohRead';
+import { EntityFrame } from './EntityFrame';
 import { LivingStrip } from './LivingObject';
 import { composeLiving } from './livingModel';
 import { useCallPresence } from './callPresence';
@@ -28,25 +29,6 @@ const ClientDetailDrawer = lazy(() => import('../components/ClientDetailDrawer')
 const DossierPanel = lazy(() =>
   import('../components/DossierPanel').then((m) => ({ default: m.DossierPanel })));
 const DealRoomPanel = lazy(() => import('../components/DealRoomPanel'));
-
-/** Escape closes; focus lands in the sheet on open and returns on close. */
-function useSheetChrome(onClose) {
-  const sheetRef = useRef(null);
-  useEffect(() => {
-    const opener = document.activeElement;
-    const frame = window.requestAnimationFrame(() => sheetRef.current?.focus());
-    const onKey = (event) => {
-      if (event.key === 'Escape') { event.stopPropagation(); onClose?.(); }
-    };
-    document.addEventListener('keydown', onKey);
-    return () => {
-      window.cancelAnimationFrame(frame);
-      document.removeEventListener('keydown', onKey);
-      if (opener && typeof opener.focus === 'function') opener.focus();
-    };
-  }, [onClose]);
-  return sheetRef;
-}
 
 function useFetched(path) {
   const [state, setState] = useState({ data: null, error: null, loading: true });
@@ -95,15 +77,45 @@ function PersonSheet({ id, onClose }) {
 /* ── Property ───────────────────────────────────────────────────────────── */
 
 function PropertySheet({ id, onClose }) {
-  const sheetRef = useSheetChrome(onClose);
-  useAssistantRecord('property', id, 'Property', '');
+  // The address, from the same read the dossier below performs. A property
+  // sheet whose header does not say which property it is was the gap this
+  // frame exists to close.
+  const dossier = useFetched(`/api/leads/${id}/dossier`);
+  const record = dossier.data;
+  const address = record?.payload?.address || record?.parcel_id || 'Property';
+  useAssistantRecord('property', id, address, record?.dossier_status || '');
+  const tour = useFetched(`/api/crm/property-tour?lead_id=${id}`);
+  const walkable = Boolean(tour.data?.splat_url);
+
   return (
-    <div className={styles.layer} ref={sheetRef} tabIndex={-1}>
-      <button type="button" className={styles.scrim} aria-label="Close property" onClick={onClose} />
+    <EntityFrame
+      kind="Property"
+      title={address}
+      subline={[
+        record?.payload?.city,
+        record?.state,
+        record?.dossier_status && humanState(record.dossier_status),
+      ]}
+      onClose={onClose}
+      read={null}
+      facts={[
+        { label: 'Photos', value: tour.data?.photo_count ?? null },
+        { label: '360 scenes', value: tour.data?.pano_scene_count ?? null },
+        { label: '3D tour', value: walkable ? 'Yes' : 'Not yet' },
+      ]}
+      actions={[
+        {
+          label: walkable ? 'Explore in 3D' : '3D tour not captured yet',
+          primary: walkable,
+          disabled: !walkable,
+          onClick: () => window.dispatchEvent(new CustomEvent('neoh:open-tour', { detail: { leadId: id } })),
+        },
+      ]}
+    >
       <Suspense fallback={<Fallback />}>
-        <DossierPanel leadId={id} onClose={onClose} />
+        <DossierPanel leadId={id} onClose={onClose} embedded />
       </Suspense>
-    </div>
+    </EntityFrame>
   );
 }
 
@@ -116,49 +128,41 @@ function money(value) {
 }
 
 function DealSheet({ id, onClose }) {
-  const sheetRef = useSheetChrome(onClose);
   const detail = useFetched(`/api/portfolio/transactions/${id}`);
   const transaction = detail.data?.transaction || null;
   const title = entityTitle('deal', transaction);
   useAssistantRecord('transaction', id, title, transaction?.status || '');
   const read = detail.data ? dealRead(transaction, detail.data.milestones) : null;
   const price = money(transaction?.purchase_price ?? transaction?.list_price);
+  const milestones = detail.data?.milestones || [];
+  const done = milestones.filter((m) => m.completed_at || m.status === 'completed').length;
 
   return (
-    <div className={styles.layer}>
-      <button type="button" className={styles.scrim} aria-label="Close deal" onClick={onClose} />
-      <section
-        className={styles.sheet}
-        role="dialog"
-        aria-modal="true"
-        aria-label={`Deal — ${title}`}
-        ref={sheetRef}
-        tabIndex={-1}
-      >
-        <header className={styles.head}>
-          <div className={styles.headText}>
-            <span className={styles.kicker}>Deal</span>
-            <h1 className={styles.title}>{title}</h1>
-            <span className={styles.subline}>
-              {transaction?.status && <span>{humanState(transaction.status)}</span>}
-              {price && <span>{price}</span>}
-              {transaction?.closing_date && <span>closes {new Date(transaction.closing_date).toLocaleDateString()}</span>}
-            </span>
-          </div>
-          <button type="button" className={styles.close} onClick={onClose} aria-label="Close">×</button>
-        </header>
-        <NeohRead read={read} loading={detail.loading} error={detail.error} />
-        <div className={styles.body}>
-          {detail.error && !detail.data ? (
-            <p className={styles.error}>This deal could not be loaded. It may have been removed, or belong to another workspace.</p>
-          ) : (
-            <Suspense fallback={<Fallback />}>
-              <DealRoomPanel transactionId={id} />
-            </Suspense>
-          )}
-        </div>
-      </section>
-    </div>
+    <EntityFrame
+      kind="Deal"
+      title={title}
+      subline={[
+        transaction?.status && humanState(transaction.status),
+        price,
+        transaction?.closing_date && `closes ${new Date(transaction.closing_date).toLocaleDateString()}`,
+      ]}
+      read={read}
+      readLoading={detail.loading}
+      readError={detail.error}
+      facts={[
+        { label: 'Milestones', value: milestones.length ? `${done} of ${milestones.length}` : null },
+        { label: 'Price', value: price },
+      ]}
+      onClose={onClose}
+    >
+      {detail.error && !detail.data ? (
+        <p className={styles.error}>This deal could not be loaded. It may have been removed, or belong to another workspace.</p>
+      ) : (
+        <Suspense fallback={<Fallback />}>
+          <DealRoomPanel transactionId={id} />
+        </Suspense>
+      )}
+    </EntityFrame>
   );
 }
 

@@ -109,7 +109,7 @@ function interactionSummary(entry) {
   return p.summary || p.note || entry.interaction_type.replace(/_/g, ' ');
 }
 
-export function DossierPanel({ leadId, onClose }) {
+export function DossierPanel({ leadId, onClose, embedded = false }) {
   const [dossier, setDossier] = useState(null);
   const { tour } = useTour({ leadId });
   const [tourOpen, setTourOpen] = useState(false);
@@ -225,6 +225,11 @@ export function DossierPanel({ leadId, onClose }) {
   }
 
   const address = dossier?.payload?.address || dossier?.parcel_id || '…';
+  // Embedded, it is a section of someone else's dialog, not a dialog.
+  const Shell = embedded ? 'div' : 'aside';
+  const shellProps = embedded
+    ? {}
+    : { role: 'dialog', 'aria-modal': 'false', 'aria-label': `Asset dossier — ${address}` };
   const mkt = dossier?.marketing_payload;
   const property = dossier?.payload || {};
   const provenance = property.provenance || {};
@@ -233,7 +238,12 @@ export function DossierPanel({ leadId, onClose }) {
     && Number.isFinite(Number(property.longitude));
 
   return (
-    <aside className={styles.drawer} role="dialog" aria-modal="false" aria-label={`Asset dossier — ${address}`}>
+    <Shell className={embedded ? `${styles.drawer} ${styles.embedded}` : styles.drawer} {...shellProps}>
+      {/* The frame above now says what this is, what state it is in and what
+          Neoh makes of it. Repeating a title, a status stamp and a close
+          button inside it is the "new shell, then an old application appears"
+          seam this was meant to remove. */}
+      {!embedded && (
       <header className={styles.head}>
         <div className={styles.headText}>
           <span className={styles.fileNo}>FILE № {dossier?.parcel_id || leadId.slice(0, 8)}</span>
@@ -252,6 +262,7 @@ export function DossierPanel({ leadId, onClose }) {
           ✕
         </button>
       </header>
+      )}
 
       {error && <p className={styles.error}>{error}</p>}
       {!dossier && !error && <p className={styles.loading}>DECRYPTING FILE…</p>}
@@ -626,6 +637,6 @@ export function DossierPanel({ leadId, onClose }) {
           />
         </Suspense>
       )}
-    </aside>
+    </Shell>
   );
 }

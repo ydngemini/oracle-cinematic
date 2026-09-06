@@ -162,3 +162,69 @@
   .head, .body { padding-inline: var(--space-4); }
   .read { margin-inline: var(--space-4); }
 }
+
+/* ── Shared entity grammar ───────────────────────────────────────────────
+   The few numbers that describe a record, and the few things you can do to
+   it. Identical for a person, a property and a deal, so what someone learns
+   on one carries to the next. */
+
+.facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-5);
+  margin: 0;
+  padding: var(--space-4) var(--space-6) 0;
+}
+
+.facts > div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.facts dt {
+  font-size: var(--text-xs);
+  color: var(--oracle-text-dim);
+}
+
+.facts dd {
+  margin: 0;
+  font: 600 var(--text-lg) / 1.1 var(--font-display, var(--font-sans));
+  color: var(--oracle-text-heading);
+  font-variant-numeric: tabular-nums;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  padding: var(--space-4) var(--space-6) 0;
+}
+
+.action,
+.actionPrimary {
+  min-height: 40px;
+  padding: 0 var(--space-4);
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--oracle-border-subtle);
+  background: transparent;
+  color: var(--oracle-text);
+  font-size: var(--text-sm);
+  font-weight: 500;
+}
+
+.actionPrimary {
+  border-color: var(--oracle-accent);
+  color: var(--oracle-accent-ink);
+}
+
+.action:hover:not(:disabled),
+.actionPrimary:hover:not(:disabled) { background: var(--oracle-surface-sunken); }
+.action:disabled,
+.actionPrimary:disabled { opacity: 0.45; cursor: default; }
+.action:focus-visible,
+.actionPrimary:focus-visible { outline: 2px solid var(--oracle-accent); outline-offset: 2px; }
+
+@media (max-width: 719px) {
+  .facts, .actions { padding-inline: var(--space-4); }
+}
