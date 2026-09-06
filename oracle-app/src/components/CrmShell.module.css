@@ -24,54 +24,22 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  background: var(--oracle-gloss), var(--oracle-glass);
-  backdrop-filter: var(--oracle-backdrop);
-  -webkit-backdrop-filter: var(--oracle-backdrop);
-  border-bottom: 1px solid var(--oracle-glass-edge);
-  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.24);
+  /* Nothing at rest. The shell earned its presence with glass, a filament
+     glint, corner reticles and a 28px shadow — all of it competing with the
+     content for attention, permanently. A header that is always extraordinary
+     leaves nothing for the moments that should be. */
+  background: transparent;
+  border-bottom: 1px solid transparent;
+  transition:
+    background var(--duration-base) var(--ease-out),
+    border-color var(--duration-base) var(--ease-out);
 }
 
-/* Hairline filament glint along the header's bottom edge */
-.header::after {
-  content: '';
-  position: absolute;
-  left: var(--space-4);
-  right: var(--space-4);
-  bottom: -1px;
-  height: 1px;
-  background: var(--filament-faint);
-  opacity: 0.5;
-}
-
-.headerReticles {
-  position: absolute;
-  inset: 0;
-  z-index: 2;
-  overflow: hidden;
-  pointer-events: none;
-}
-
-.headerReticles::before,
-.headerReticles::after {
-  content: '';
-  position: absolute;
-  width: 9px;
-  height: 9px;
-  opacity: 0.52;
-}
-
-.headerReticles::before {
-  top: 8px;
-  left: 8px;
-  border-top: 1px solid var(--oracle-amber-dim);
-  border-left: 1px solid var(--oracle-amber-dim);
-}
-
-.headerReticles::after {
-  right: 8px;
-  bottom: 8px;
-  border-right: 1px solid var(--oracle-amber-dim);
-  border-bottom: 1px solid var(--oracle-amber-dim);
+/* It appears only when something has scrolled beneath it — the one moment a
+   separating line is carrying information rather than decorating. */
+.headerScrolled {
+  background: var(--oracle-surface);
+  border-bottom-color: var(--oracle-border-subtle);
 }
 
 .headerTools {
@@ -128,7 +96,11 @@
     calc(var(--crm-header-h) + var(--safe-top) + var(--space-4))
     var(--space-4)
     calc(var(--deck-height) + var(--safe-bottom) + var(--space-4));
-  background: linear-gradient(180deg, rgba(8, 8, 8, 0.06), rgba(8, 8, 8, 0.20) 68%, rgba(8, 8, 8, 0.28));
+  /* No wash. A dark gradient reaching 28% black was laid over every screen,
+     so the paper underneath was never actually paper and large type sat on a
+     grey that got heavier the further down anyone read. The atmosphere layer
+     already provides the ground. */
+  background: transparent;
   animation: view-in var(--duration-slow) var(--ease-spring);
 }
 

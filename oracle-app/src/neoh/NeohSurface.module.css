@@ -19,6 +19,16 @@
   border-radius: var(--radius-2xl);
   overflow: hidden;
   outline: none;
+
+  /* Neoh's own material, not the shell's.
+     It wore `hud-glass-panel` — the same glass, gold hairline and blur the
+     header and deck wore — which is exactly backwards. The shell is meant to
+     disappear; this is the one object that should feel unusual. An opaque
+     surface with a real shadow reads as a thing sitting above the page, and
+     it is the only thing on screen allowed to. */
+  background: var(--oracle-surface-raised);
+  border: 1px solid var(--oracle-border-subtle);
+  box-shadow: var(--shadow-float);
 }
 
 .surface[data-state="input"],

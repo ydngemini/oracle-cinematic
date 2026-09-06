@@ -377,16 +377,28 @@ export function CrmShell() {
   const activeProfileView = profileViews.find((view) => view.id === profileView) ?? profileViews[0];
   const ProfileComponent = activeProfileView.Component;
 
+  // The header is transparent until content passes under it. Passive, and
+  // compared before setting, so a scroll does not re-render on every frame.
+  const [scrolled, setScrolled] = useState(false);
+  useEffect(() => {
+    const onScroll = () => {
+      const past = window.scrollY > 4;
+      setScrolled((was) => (was === past ? was : past));
+    };
+    onScroll();
+    window.addEventListener('scroll', onScroll, { passive: true });
+    return () => window.removeEventListener('scroll', onScroll);
+  }, []);
+
   return (
     <StateProvider>
     <AssistantProvider>
     <LayoutGroup id="neoh">
     <div className={styles.shellContainer}>
       <header
-        className={`${styles.header} hud-glass-panel`}
+        className={`${styles.header}${scrolled ? ` ${styles.headerScrolled}` : ''}`}
         style={{ viewTransitionName: 'crm-header' }}
       >
-        <span className={styles.headerReticles} aria-hidden="true" />
         <NeohBrandMark />
         <div className={styles.headerTools}>
           <StateSelector />
