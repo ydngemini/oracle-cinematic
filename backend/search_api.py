@@ -384,6 +384,94 @@ async def search(ctx: TenantContext, q: str, kinds: list[str], limit: int) -> di
     return {"query": q, "results": results, "counts": counts, "degraded": degraded}
 
 
+# ---------------------------------------------------------------------------
+# Recent — what Work opens on before anyone types.
+#
+# The default view was the People CRM tab: a full legacy list, so Work read as
+# a wrapper around six old applications. Recent is the interleaved trail of
+# what the agent last touched, in the same hit shape the search legs produce,
+# so opening one is opening an entity sheet — not switching to a tab.
+# ---------------------------------------------------------------------------
+
+async def _recent_rows(ctx: TenantContext, limit: int) -> list[dict[str, Any]]:
+    """The most recently updated people and deals, interleaved.
+
+    Only people and deals. `leads` is the public-records firehose — millions
+    of rows, no index on `updated_at` — so an unfiltered recency scan times
+    out, and a lead nobody has a client or deal against is not something an
+    agent "last touched". A property that matters reaches this list through
+    its deal. Conversations are the comms rollup, a per-tenant aggregate
+    rather than a cheap scan, and a thread is not an object someone resumes
+    from a list.
+    """
+    async with tenant_tx(ctx) as conn:
+        await _budget(conn)
+        people = await conn.fetch(
+            """
+            SELECT id, full_name, email, client_type, stage, updated_at
+              FROM clients
+             WHERE archived_at IS NULL AND full_name IS NOT NULL
+             ORDER BY updated_at DESC
+             LIMIT $1
+            """,
+            limit,
+        )
+        deals = await conn.fetch(
+            """
+            SELECT t.id, t.property_address, t.status, t.updated_at,
+                   c.full_name AS client_name
+              FROM transactions t
+              LEFT JOIN clients c ON c.id = t.client_id
+             ORDER BY t.updated_at DESC
+             LIMIT $1
+            """,
+            limit,
+        )
+
+    rows: list[tuple[Any, dict[str, Any]]] = []
+    for r in people:
+        rows.append((r["updated_at"], _hit(
+            "people", r["id"], r["full_name"],
+            " · ".join(p for p in (r["client_type"], r["stage"], r["email"]) if p) or None,
+            f"/p/{r['id']}", 0.0,
+        )))
+    for r in deals:
+        rows.append((r["updated_at"], _hit(
+            "deals", r["id"], r["property_address"] or r["client_name"] or "Untitled deal",
+            " · ".join(p for p in (r["status"], r["client_name"]) if p) or None,
+            f"/deal/{r['id']}", 0.0,
+        )))
+    def _ts(val: Any) -> float:
+        if val is None:
+            return float("-inf")
+        if hasattr(val, "timestamp"):
+            try:
+                return float(val.timestamp())
+            except Exception:
+                return 0.0
+        if isinstance(val, (int, float)):
+            return float(val)
+        return 0.0
+
+    # Most recent first; null/invalid updated_at sorts last.
+    rows.sort(key=lambda pair: _ts(pair[0]), reverse=True)
+    return [hit for _, hit in rows[:limit]]
+
+
+@router.get("/recent")
+async def recent_endpoint(
+    limit: int = Query(8, ge=1, le=MAX_PER_KIND),
+    ctx: TenantContext = Depends(require_context),
+):
+    """The last few entities this agent touched, newest first."""
+    try:
+        results = await _recent_rows(ctx, limit)
+    except Exception:  # noqa: BLE001 - a home screen must still open
+        logger.warning("recent leg failed", exc_info=True)
+        return {"results": [], "degraded": True}
+    return {"results": results, "degraded": False}
+
+
 @router.get("")
 async def search_endpoint(
     q: str = Query("", max_length=200),

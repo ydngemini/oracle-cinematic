@@ -103,6 +103,46 @@ function Results({ query, response, loading, selectedKind, onOpen }) {
   );
 }
 
+function Recent({ onOpen }) {
+  const [state, setState] = useState({ rows: null, degraded: false });
+
+  useEffect(() => {
+    let live = true;
+    crmGet('/api/search/recent?limit=8').then(
+      (data) => { if (live) setState({ rows: data.results || [], degraded: Boolean(data.degraded) }); },
+      () => { if (live) setState({ rows: [], degraded: true }); },
+    );
+    return () => { live = false; };
+  }, []);
+
+  if (state.rows === null) return <Fallback />;
+  if (state.rows.length === 0) {
+    return (
+      <p className={styles.recentEmpty}>
+        {state.degraded
+          ? 'Recent activity is unavailable right now.'
+          : 'Nothing touched yet. Pick a kind above, or search.'}
+      </p>
+    );
+  }
+
+  return (
+    <section className={styles.recent} aria-label="Recent">
+      <h2 className={styles.recentHead}>Recent</h2>
+      <ul className={styles.hits}>
+        {state.rows.map((hit) => (
+          <li key={`${hit.kind}-${hit.id}`}>
+            <button type="button" className={styles.hit} onClick={() => onOpen(hit)}>
+              <span className={styles.hitLabel}>{hit.label}</span>
+              {hit.sublabel && <span className={styles.hitSub}>{hit.sublabel}</span>}
+            </button>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
 export function UniversalWorkspace({
   type,
   query = '',
@@ -191,6 +231,7 @@ export function UniversalWorkspace({
   if (type === 'conversations') view = <CommsTab onNavigate={onNavigate} />;
   else if (type === 'deals') view = <DealsTab onNavigate={onNavigate} />;
   else if (type === 'properties') view = <PropertiesTab onNavigate={onNavigate} />;
+  else if (type === 'people') view = <PeopleTab onNavigate={onNavigate} />;
   else if (type === 'opportunities') view = <IntelligenceFeed />;
   else if (type === 'missions') view = <MissionBuilder onOpenEntity={onOpenEntity} />;
   else if (AI_WORKSPACES.has(type)) {
@@ -202,7 +243,7 @@ export function UniversalWorkspace({
         initialWorkspace={type === 'ai' ? undefined : type}
       />
     );
-  } else view = <PeopleTab onNavigate={onNavigate} />;
+  } else view = <Recent onOpen={open} />;
 
   return (
     <div className={styles.work} data-work-type={type}>
@@ -226,6 +267,17 @@ export function UniversalWorkspace({
           )}
         </label>
         <div className={styles.chips} role="tablist" aria-label="Kind">
+          {!searching && (
+            <button
+              type="button"
+              role="tab"
+              aria-selected={type === 'recent' || !type}
+              className={`${styles.chip} ${(type === 'recent' || !type) ? styles.chipActive : ''}`}
+              onClick={() => onNavigate?.('recent', { q: draft })}
+            >
+              Recent
+            </button>
+          )}
           {SEARCH_KINDS.map((kind) => (
             <button
               key={kind.id}
@@ -233,7 +285,7 @@ export function UniversalWorkspace({
               role="tab"
               aria-selected={type === kind.id}
               className={`${styles.chip} ${type === kind.id ? styles.chipActive : ''}`}
-              onClick={() => onNavigate?.(kind.id, { q: draft })}
+              onClick={() => onNavigate?.(type === kind.id ? 'recent' : kind.id, { q: draft })}
             >
               {kind.label}
               {searching && response?.counts?.[kind.id] > 0 && (
