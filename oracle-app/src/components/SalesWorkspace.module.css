@@ -15,7 +15,7 @@
   box-shadow: var(--shadow-e2);
 }
 .salesHero > div { align-self: center; }
-.salesHero span { color: var(--oracle-amber-dim); font: 650 0.625rem/1.2 var(--font-display); letter-spacing: var(--tracking-widest); text-transform: uppercase; }
+.salesHero span { color: var(--oracle-accent-ink); font: 650 0.625rem/1.2 var(--font-display); letter-spacing: var(--tracking-widest); text-transform: uppercase; }
 .salesHero h2 { margin-top: var(--space-2); color: var(--oracle-text-heading); font: 320 clamp(2.4rem, 6vw, 4.8rem)/0.95 var(--font-display); letter-spacing: var(--tracking-tight); }
 .salesHero p { max-width: 50rem; margin-top: var(--space-3); color: var(--oracle-text-dim); font-size: var(--text-sm); line-height: var(--leading-relaxed); }
 
@@ -39,7 +39,7 @@
   text-transform: uppercase;
 }
 .backButton svg, .primaryButton svg, .secondaryButton svg, .dangerButton svg, .iconButton svg { width: 16px; height: 16px; }
-.backButton:hover, .secondaryButton:hover, .iconButton:hover { color: var(--oracle-amber); border-color: var(--oracle-amber-dim); }
+.backButton:hover, .secondaryButton:hover, .iconButton:hover { color: var(--oracle-accent-ink); border-color: var(--oracle-amber-dim); }
 .primaryButton { color: #080808; border-color: var(--oracle-amber); background: var(--oracle-amber); }
 .primaryButton:hover { filter: brightness(1.06); }
 .dangerButton { color: var(--oracle-red); border-color: var(--oracle-red-dim); }
@@ -59,7 +59,7 @@
 }
 .salesNav button { min-height: 52px; display: inline-flex; align-items: center; justify-content: center; gap: var(--space-2); border-radius: var(--radius-sm); color: var(--oracle-text-ghost); font: 650 0.625rem/1 var(--font-display); letter-spacing: var(--tracking-wide); text-transform: uppercase; }
 .salesNav button:hover { color: var(--oracle-text); background: var(--oracle-glass-hover); }
-.salesNav button[aria-current='page'] { color: var(--oracle-amber); background: var(--oracle-amber-ghost); box-shadow: inset 0 -2px var(--oracle-amber); }
+.salesNav button[aria-current='page'] { color: var(--oracle-accent-ink); background: var(--oracle-amber-ghost); box-shadow: inset 0 -2px var(--oracle-amber); }
 .salesNav button:focus-visible { outline: none; box-shadow: var(--ring-focus); }
 .salesNav svg { width: 16px; height: 16px; }
 
@@ -82,7 +82,7 @@
   line-height: 1.55;
 }
 .notice svg, .success svg, .error svg { width: 18px; height: 18px; flex: 0 0 auto; }
-.notice svg { color: var(--oracle-amber); }
+.notice svg { color: var(--oracle-accent-ink); }
 .success { color: var(--oracle-green); border-color: var(--oracle-green-dim); }
 .error { color: var(--oracle-red); border-color: var(--oracle-red-dim); }
 
@@ -154,7 +154,7 @@
 
 .badge { display: inline-flex; align-items: center; gap: 5px; border: 1px solid var(--oracle-border-bright); border-radius: var(--radius-pill); padding: 4px 8px; color: var(--oracle-text-ghost); font: 650 0.53125rem/1 var(--font-display); letter-spacing: var(--tracking-wide); text-transform: uppercase; }
 .badge[data-tone='good'] { color: var(--oracle-green); border-color: var(--oracle-green-dim); }
-.badge[data-tone='warn'] { color: var(--oracle-amber); border-color: var(--oracle-amber-dim); }
+.badge[data-tone='warn'] { color: var(--oracle-accent-ink); border-color: var(--oracle-amber-dim); }
 .badge[data-tone='bad'] { color: var(--oracle-red); border-color: var(--oracle-red-dim); }
 
 .buttonRow { display: flex; flex-wrap: wrap; gap: var(--space-2); }
@@ -163,7 +163,7 @@
 .actionGrid button:hover { border-color: var(--oracle-amber-dim); background: var(--oracle-amber-ghost); }
 .actionGrid button:focus-visible { outline: none; box-shadow: var(--ring-focus); }
 .actionGrid button:disabled { opacity: 0.45; }
-.actionGrid svg { width: 18px; height: 18px; color: var(--oracle-amber); }
+.actionGrid svg { width: 18px; height: 18px; color: var(--oracle-accent-ink); }
 .actionGrid strong { display: block; font-size: var(--text-xs); }
 .actionGrid small { display: block; margin-top: 3px; color: var(--oracle-text-ghost); font-size: 0.625rem; }
 
@@ -173,7 +173,7 @@
 .stepHeader strong { color: var(--oracle-text); font-size: var(--text-sm); }
 .stepControls { display: flex; gap: var(--space-1); }
 .stepControls button { width: 36px; height: 36px; display: grid; place-items: center; border: 1px solid var(--oracle-border-bright); border-radius: var(--radius-sm); color: var(--oracle-text-dim); }
-.stepControls button:hover { color: var(--oracle-amber); }
+.stepControls button:hover { color: var(--oracle-accent-ink); }
 .stepControls button:focus-visible { outline: none; box-shadow: var(--ring-focus); }
 .stepControls svg { width: 15px; height: 15px; }
 
@@ -191,12 +191,12 @@
 .callControls { min-height: 52px; display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: var(--space-3); padding: var(--space-5); border: 1px solid var(--oracle-border-subtle); border-radius: var(--radius-md); background: rgba(8, 8, 8, 0.24); }
 
 .selectionSummary { display: flex; align-items: baseline; gap: var(--space-2); color: var(--oracle-text-dim); font-size: var(--text-xs); }
-.selectionSummary strong { color: var(--oracle-amber); font: 350 1.6rem/1 var(--font-display); }
+.selectionSummary strong { color: var(--oracle-accent-ink); font: 350 1.6rem/1 var(--font-display); }
 .contactSelector { max-height: 22rem; overflow: auto; border-block: 1px solid var(--oracle-border-subtle); scrollbar-width: thin; }
 
 .scheduleList { display: grid; gap: var(--space-2); margin: 0; padding: 0; list-style: none; }
 .scheduleList li { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: var(--space-2); }
-.scheduleList svg { width: 15px; height: 15px; color: var(--oracle-amber); }
+.scheduleList svg { width: 15px; height: 15px; color: var(--oracle-accent-ink); }
 .scheduleList strong, .scheduleList small { display: block; }
 .scheduleList strong { color: var(--oracle-text); font-size: var(--text-xs); }
 .scheduleList small { margin-top: 2px; color: var(--oracle-text-ghost); font-size: 0.625rem; }
@@ -208,14 +208,14 @@
 .dataTable tbody tr:hover { background: var(--oracle-glass-hover); }
 .tableActions { display: flex; gap: var(--space-1); }
 .tableActions button { width: 36px; height: 36px; display: grid; place-items: center; border: 1px solid var(--oracle-border-bright); border-radius: var(--radius-sm); color: var(--oracle-text-dim); }
-.tableActions button:hover { color: var(--oracle-amber); border-color: var(--oracle-amber-dim); }
+.tableActions button:hover { color: var(--oracle-accent-ink); border-color: var(--oracle-amber-dim); }
 .tableActions button:focus-visible { outline: none; box-shadow: var(--ring-focus); }
 .tableActions button:disabled { opacity: 0.4; }
 .tableActions svg { width: 15px; height: 15px; }
 
 .providerGrid { min-width: 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-4); align-items: start; }
 .providerIcon { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: var(--space-3); padding: var(--space-3); border: 1px solid var(--oracle-border-subtle); border-radius: var(--radius-md); }
-.providerIcon > svg { width: 22px; height: 22px; color: var(--oracle-amber); }
+.providerIcon > svg { width: 22px; height: 22px; color: var(--oracle-accent-ink); }
 .providerIcon strong, .providerIcon small { display: block; }
 .providerIcon strong { color: var(--oracle-text); font-size: var(--text-xs); }
 .providerIcon small { margin-top: 3px; color: var(--oracle-text-ghost); font-size: 0.625rem; line-height: 1.45; }
@@ -230,7 +230,7 @@
 .consentRow small { margin-top: 4px; color: var(--oracle-text-ghost); font-size: 0.625rem; line-height: 1.45; }
 .endpointGrid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-3); }
 .endpointGrid > div { min-width: 0; display: grid; grid-template-columns: auto minmax(0, 1fr); gap: var(--space-3); padding: var(--space-3); border: 1px solid var(--oracle-border-subtle); border-radius: var(--radius-md); }
-.endpointGrid svg { width: 17px; height: 17px; color: var(--oracle-amber); }
+.endpointGrid svg { width: 17px; height: 17px; color: var(--oracle-accent-ink); }
 .endpointGrid strong, .endpointGrid code { display: block; }
 .endpointGrid strong { color: var(--oracle-text); font-size: var(--text-xs); }
 .endpointGrid code { overflow: hidden; margin-top: 4px; color: var(--oracle-text-ghost); font: 0.625rem/1.5 var(--font-mono); overflow-wrap: anywhere; }

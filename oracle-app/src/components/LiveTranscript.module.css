@@ -315,7 +315,7 @@
   font-size: 0.48rem;
   letter-spacing: 0.38em;
   text-transform: uppercase;
-  color: rgba(255, 188, 31, 0.65);
+  color: var(--oracle-accent-ink);
   font-weight: 600;
   line-height: 1;
 

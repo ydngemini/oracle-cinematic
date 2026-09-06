@@ -317,6 +317,7 @@ TOOLS = {
     "draft_contract":       _tool("draft_contract", "Draft a contract for the selected deal from an approved template and queue it for attorney review. Every term is read from the transaction; nothing is executed, signed, or binding, and the document text is not returned.", {"deal_id": _text("deal_id", "The selected pipeline lead"), "template_key": _text("template_key", "e.g. seller-purchase-standard")}, ["deal_id", "template_key"]),
     "schedule_event":       _tool("schedule_event", "Draft a calendar entry with the selected client and queue it for approval. Nothing is written to a calendar by this tool.", {"client_id": _text("client_id", "The selected client"), "summary": _text("summary"), "start": _text("start", "ISO-8601 with UTC offset"), "end": _text("end", "ISO-8601 with UTC offset"), "description": _text("description", "Optional agenda")}, ["client_id", "summary", "start", "end"]),
     "publish_to_marketplace": _tool("publish_to_marketplace", "Create a draft marketplace listing from a signed contract and queue it for approval. The listing stays invisible to buyers and limited to this workspace until a human approves and widens it.", {"contract_id": _text("contract_id", "A signed assignment or seller-purchase contract"), "asking_price": _text("asking_price", "Optional")}, ["contract_id"]),
+    "share_property_tour": _tool("share_property_tour", "Request a client link that lets someone walk a property's 3D tour in their browser. The link is revocable and expires. This only REQUESTS it — a human approves before any link exists, and nothing is sent.", {"lead_id": _text("lead_id", "The property to share"), "expiry_days": _text("expiry_days", "How many days the link stays live, 1-90. Default 14"), "issued_to_label": _text("issued_to_label", "Who it is for, shown on the watermark")}, []),
     "draft_sms":            _tool("draft_sms", "Draft a text message to the selected client and stage it for human approval. Nothing is sent by this tool; the number comes from the client record.", {"client_id": _text("client_id", "The selected client"), "body": _text("body", "Message text, 1-1600 characters")}, ["client_id", "body"]),
 
     # ── Listings & Property (15) ──
@@ -729,6 +730,10 @@ async def _foundry_generate(
     await record_inference(ctx, response, idempotency_key=f"chat:{assistant_id}:foundry:0")
     actions: list[dict] = applied if applied is not None else []
 
+    # Monotonic across the WHOLE turn, not per round: the ledger's identity is
+    # (assistant_id, call_index), so a per-round counter would make round 2's
+    # first call collide with round 1's and replay the wrong receipt.
+    call_index = 0
     for round_index in range(2):
         tool_calls = [item for item in response.output if item.type == "function_call"]
         if not tool_calls:
@@ -744,8 +749,9 @@ async def _foundry_generate(
                 arguments = {}
             receipt = await execute_safe_tool(
                 ctx, ctx.agent_id, assistant_id, call.name, arguments,
-                context_type, context_id,
+                context_type, context_id, call_index,
             )
+            call_index += 1
             if _is_record_change(call.name, receipt):
                 actions.append(receipt)
             tool_outputs.append({
@@ -903,6 +909,9 @@ async def _local_fallback(
             )
         return await _local_chat(payload, url=url, api_key=api_key, timeout=timeout)
 
+    # See the Foundry loop: the ledger keys on (assistant_id, call_index), so
+    # this counts every tool call in the turn, across rounds.
+    call_index = 0
     for _ in range(_LOCAL_TOOL_ROUNDS):
         try:
             data = await _round()
@@ -955,10 +964,11 @@ async def _local_fallback(
             else:
                 receipt = await execute_safe_tool(
                     ctx, ctx.agent_id, assistant_id, name, arguments,
-                    context_type, context_id,
+                    context_type, context_id, call_index,
                 )
                 if _is_record_change(name, receipt):
                     actions.append(receipt)
+            call_index += 1
             messages.append(
                 {
                     "role": "tool",

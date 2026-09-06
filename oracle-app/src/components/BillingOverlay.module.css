@@ -194,7 +194,7 @@
   font-weight: 500;
   letter-spacing: 0.36em;
   text-transform: uppercase;
-  color: rgba(255, 188, 31, 0.6);
+  color: var(--oracle-accent-ink);
 }
 
 .heading {
@@ -252,7 +252,7 @@
   font-family: 'PP Neue Montreal', 'Inter', system-ui, sans-serif;
   font-size: 1.4rem;
   font-weight: 300;
-  color: rgba(255, 188, 31, 0.5);
+  color: var(--oracle-accent-ink);
   align-self: flex-start;
   margin-top: 0.55rem;
   line-height: 1;
@@ -421,7 +421,7 @@
   border: 1px solid rgba(255, 188, 31, 0.35);
   border-radius: 2px;
   background: rgba(255, 188, 31, 0.09);
-  color: rgba(255, 188, 31, 0.96);
+  color: var(--oracle-accent-ink);
   cursor: pointer;
   font-family: 'PP Neue Montreal', 'Inter', system-ui, sans-serif;
   font-size: 0.65rem;
@@ -437,7 +437,7 @@
 .retryBtn:hover {
   background: rgba(255, 188, 31, 0.15);
   border-color: rgba(255, 188, 31, 0.55);
-  color: rgba(255, 188, 31, 1);
+  color: var(--oracle-accent-ink);
 }
 
 /* ── CTA button ──────────────────────────────────────────────── */
@@ -454,7 +454,7 @@
   border-radius: 2px;
   border: 1px solid rgba(255, 188, 31, 0.3);
   background: rgba(255, 188, 31, 0.07);
-  color: rgba(255, 188, 31, 0.92);
+  color: var(--oracle-accent-ink);
 
   cursor: pointer;
   position: relative;
@@ -512,7 +512,7 @@
 .cta:hover:not(:disabled) {
   background:   rgba(255, 188, 31, 0.13);
   border-color: rgba(255, 188, 31, 0.5);
-  color:        rgba(255, 188, 31, 1);
+  color:        var(--oracle-accent-ink);
   transform:    translateY(-2px);
   box-shadow:
     0 8px 24px rgba(0, 0, 0, 0.35),
@@ -579,7 +579,7 @@
 
 .portalBtn:hover {
   border-color: rgba(255, 188, 31, 0.3);
-  color: rgba(255, 188, 31, 0.8);
+  color: var(--oracle-accent-ink);
 }
 
 .portalBtn:disabled {

@@ -1,6 +1,9 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { BriefcaseBusiness, RefreshCw, Search, UserRound, UsersRound } from 'lucide-react';
 import { crmGet } from '../state/useCrmApi';
+import { LivingStrip } from '../neoh/LivingObject';
+import { composeLiving } from '../neoh/livingModel';
+import { useCallPresence } from '../neoh/callPresence';
 // POST /api/crm/contacts had no caller: People could list the contact book and
 // never add to it, so every person had to arrive via import or an agent tool.
 import ContactIntakePanel from './ContactIntakePanel';
@@ -27,7 +30,43 @@ function dataStateLabel(contact) {
   return contact.data_state === 'sealed' ? 'Secured' : 'Migrating';
 }
 
+const EMPTY_LIVING = Object.freeze({ key: '', living: Object.freeze({}) });
+
+/**
+ * Living state for a whole list in ONE request. The card should say what is
+ * happening with this person before the row's words do; asking per row would
+ * be a query per card, which is why the API takes a list.
+ */
+function useLivingForContacts(contacts) {
+  const [answer, setAnswer] = useState(EMPTY_LIVING);
+  const key = useMemo(() => Array.from(new Set(
+    (contacts || []).map((c) => c.legacy_client_id).filter(Boolean),
+  )).sort().join(','), [contacts]);
+  useEffect(() => {
+    if (!key) return undefined;
+    let live = true;
+    crmGet(`/api/living?client_ids=${encodeURIComponent(key)}`).then(
+      (payload) => { if (live) setAnswer({ key, living: payload?.living || {} }); },
+      // A person still reads fine without it; the row just says less.
+      () => { if (live) setAnswer({ key, living: {} }); },
+    );
+    return () => { live = false; };
+  }, [key]);
+  // Stamped with the key it answered, so a reply that arrives after the list
+  // changed is ignored rather than shown against the wrong people.
+  return answer.key === key ? answer.living : EMPTY_LIVING.living;
+}
+
+/** One row's living line, with this tab's own call overlaid. */
+function ContactLiving({ living, clientId, contactId }) {
+  const presence = useCallPresence({ clientId, contactId });
+  const composed = composeLiving(living, presence);
+  if (!composed) return null;
+  return <LivingStrip living={composed} compact />;
+}
+
 function ContactList({ contacts, error, loading, refreshing, updatedAt, onRetry, onOpenOpportunities, openId, onOpen, onChanged }) {
+  const living = useLivingForContacts(contacts);
   const [query, setQuery] = useState('');
   const visible = useMemo(() => {
     const needle = query.trim().toLowerCase();
@@ -96,6 +135,11 @@ function ContactList({ contacts, error, loading, refreshing, updatedAt, onRetry,
               <span className={styles.avatar} aria-hidden="true"><UserRound /></span>
               <div className={styles.identity}>
                 <strong>{contactLabel(contact)}</strong>
+                <ContactLiving
+                  living={living[contact.legacy_client_id]}
+                  clientId={contact.legacy_client_id}
+                  contactId={contact.id}
+                />
                 <small>{contact.email || 'Email not provided'}{contact.phone ? ` · ${contact.phone}` : ''}</small>
               </div>
               <div className={styles.contactMeta}>

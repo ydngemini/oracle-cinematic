@@ -69,6 +69,12 @@ class Provider:
     api_key: str = ""
     api_base: str = ""
     extra: dict = field(default_factory=dict)
+    #: Whether this tier honours `response_format`. Declared per provider
+    #: rather than probed, because the failure is silent: litellm runs with
+    #: drop_params=True, so a provider that does not support the parameter has
+    #: it removed and answers with prose. A planner that asked for JSON and
+    #: received a paragraph does not fail — it mis-parses.
+    supports_response_format: bool = False
 
     def kwargs(self) -> dict:
         out: dict[str, Any] = {"model": self.model, **self.extra}
@@ -85,6 +91,8 @@ def _fireworks(model: str) -> Optional[Provider]:
         return None
     return Provider(
         name="fireworks",
+        # Fireworks implements OpenAI-style JSON mode and schema constraint.
+        supports_response_format=True,
         model=f"fireworks_ai/{model}",
         api_key=key,
         api_base=_env("ORACLE_FIREWORKS_API_BASE") or "https://api.fireworks.ai/inference/v1",
@@ -98,6 +106,9 @@ def _bedrock(model: str) -> Optional[Provider]:
         return None
     return Provider(
         name="bedrock",
+        # Left False deliberately: litellm's bedrock path does not carry
+        # response_format across every model family, and a partial answer here
+        # is the silent-downgrade failure this flag exists to prevent.
         model=f"bedrock/{model}",
         extra={"aws_region_name": _env("BEDROCK_REGION", "us-east-1")},
     )
@@ -127,6 +138,8 @@ def _foundry(model: str) -> Optional[Provider]:
         return None
     return Provider(
         name="foundry",
+        # Azure OpenAI honours response_format on the api-versions we pin.
+        supports_response_format=True,
         model=f"azure/{model}",
         api_key=key,
         api_base=base,
@@ -140,6 +153,8 @@ def _local(model: str) -> Optional[Provider]:
         return None
     return Provider(
         name="local",
+        # The llama.cpp OpenAI shim accepts the parameter and does not enforce
+        # the schema. Accepting-but-not-enforcing is worse than refusing.
         model=f"openai/{model}",
         api_key="not-needed",
         api_base=base,
@@ -354,6 +369,7 @@ async def complete(
     max_tokens: int = 2048,
     temperature: float = 0.2,
     timeout: float = 120.0,
+    response_format: Optional[dict] = None,
 ) -> str:
     """Text in, text out, falling through configured providers in order.
 
@@ -361,6 +377,14 @@ async def complete(
     is a duplicate paragraph. `timeout` bounds the whole call, fallbacks
     included: a voice reply with an 8-second budget would rather answer from a
     worse model than answer late.
+
+    `response_format` changes that calculus. When it is set, providers that do
+    not honour it are SKIPPED rather than fallen through to, and if none remain
+    the call raises. litellm runs with drop_params=True, so the alternative is
+    not an error — it is the parameter being quietly removed and prose coming
+    back where JSON was required. A planner that receives a paragraph does not
+    fail; it mis-parses, and a silent format downgrade inside something that
+    plans actions is worse than no answer at all.
     """
     providers = providers_for(task)
     if not providers:
@@ -369,6 +393,16 @@ async def complete(
             f"or ORACLE_AI_BEDROCK_FALLBACK=1, or point ORACLE_LOCAL_LLM_URL at a "
             f"local server."
         )
+    if response_format is not None:
+        capable = [p for p in providers if p.supports_response_format]
+        if not capable:
+            raise LLMUnavailable(
+                f"{task!r} requires structured output, and none of the configured "
+                f"providers ({', '.join(p.name for p in providers)}) honour "
+                f"response_format. Refusing rather than returning prose that "
+                f"would parse as a plan."
+            )
+        providers = capable
     messages = ([{"role": "system", "content": system}] if system else []) + [
         {"role": "user", "content": prompt}
     ]
@@ -394,6 +428,9 @@ async def complete(
                     max_tokens=max_tokens,
                     temperature=temperature,
                     timeout=remaining,
+                    # Passed ONLY when asked for: litellm treats a present-but-None
+                    # value differently from an absent one on some providers.
+                    **({"response_format": response_format} if response_format else {}),
                 ),
                 timeout=remaining,
             )

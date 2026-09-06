@@ -330,7 +330,22 @@ def _raise_pgcrypto_error(caller: str, exc: Exception) -> None:
     material or plaintext fragments in their message strings.
     """
     msg = str(exc).lower()
-    if "pgp_sym_encrypt" in msg or "pgp_sym_decrypt" in msg or "function" in msg:
+    # SQLSTATE first, because the two failures below are indistinguishable by
+    # message text and mean opposite things. "permission denied for function
+    # pgp_sym_encrypt" contains the word "function", so the missing-extension
+    # branch used to claim pgcrypto was not installed while it was installed and
+    # working — the role simply could not execute it. That message sent readers
+    # to migration 0006, which had run, and the real cause (0003 revoking
+    # EXECUTE from PUBLIC on extension functions, with nothing granting it back
+    # until 0091) went unfound.
+    sqlstate = getattr(exc, "sqlstate", None)
+    if sqlstate == "42501":  # insufficient_privilege
+        raise CryptoError(
+            f"{caller}: the database role may not execute pgcrypto's pgp_sym_* "
+            "functions. pgcrypto IS installed — this is a GRANT, not a missing "
+            "extension. Apply migration 0091."
+        ) from exc
+    if sqlstate == "42883" or "pgp_sym_encrypt" in msg or "pgp_sym_decrypt" in msg:
         raise CryptoError(
             f"{caller}: pgcrypto is not installed or pgp_sym_* functions are "
             "unavailable. Ensure migration 0006 has been applied and pgcrypto "

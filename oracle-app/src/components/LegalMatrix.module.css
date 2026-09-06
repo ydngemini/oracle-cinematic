@@ -41,7 +41,7 @@
   font-weight: 300;
   letter-spacing: 0.22em;
   text-transform: uppercase;
-  color: rgba(255, 188, 31, 0.60);
+  color: var(--oracle-accent-ink);
   margin-bottom: 6px;
 }
 
@@ -90,7 +90,7 @@
   font-weight: 300;
   letter-spacing: 0.20em;
   text-transform: uppercase;
-  color: rgba(255, 188, 31, 0.60);
+  color: var(--oracle-accent-ink);
 }
 
 /* ─── Contract fields grid ───────────────────────────────────── */
@@ -198,20 +198,20 @@
   font-weight: 400;
   letter-spacing: 0.10em;
   text-transform: uppercase;
-  color: rgba(255, 188, 31, 0.60);
+  color: var(--oracle-accent-ink);
 }
 
 .chevron {
   font-size: 14px;
   font-weight: 200;
-  color: rgba(255, 188, 31, 0.45);
+  color: var(--oracle-accent-ink);
   line-height: 1;
   transition: color 0.2s ease;
   user-select: none;
 }
 
 .chevron[data-open='true'] {
-  color: rgba(255, 188, 31, 0.70);
+  color: var(--oracle-accent-ink);
 }
 
 .disclosureItems {
@@ -268,5 +268,5 @@
   font-weight: 400;
   letter-spacing: 0.18em;
   text-transform: uppercase;
-  color: rgba(255, 188, 31, 0.50);
+  color: var(--oracle-accent-ink);
 }

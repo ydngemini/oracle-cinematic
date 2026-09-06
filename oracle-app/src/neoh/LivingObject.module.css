@@ -1,0 +1,55 @@
+/* LivingStrip — flat at rest, awake only when something is happening. */
+
+.strip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  font-size: var(--text-sm);
+  line-height: 1.3;
+  color: var(--oracle-text-dim);
+}
+.compact { font-size: var(--text-xs); }
+
+.dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: currentColor;
+  opacity: 0.55;
+}
+
+.label { font-weight: 600; color: inherit; }
+.line { color: var(--oracle-text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* dormant: recedes. The one state where less ink is the point. */
+.strip[data-tone="dim"] { color: var(--oracle-text-dim); opacity: 0.7; }
+.strip[data-tone="dim"] .dot { opacity: 0.3; }
+
+/* quiet: nothing to say loudly. */
+.strip[data-tone="neutral"] { color: var(--oracle-text-dim); }
+
+/* engaged: the accent wakes up, once. */
+.strip[data-tone="live"] { color: var(--oracle-accent-ink); }
+.strip[data-tone="live"] .dot { opacity: 1; }
+
+/* under contract: a deal is a different object. */
+.strip[data-tone="deal"] { color: var(--oracle-text-heading); }
+.strip[data-tone="deal"] .dot { background: var(--oracle-accent); opacity: 1; }
+
+/* closed: done, and quietly proud. */
+.strip[data-tone="done"] { color: var(--oracle-text-heading); }
+
+/* a call: the only state that moves. */
+.strip[data-tone="call"] { color: var(--oracle-green); }
+.strip[data-tone="call"] .dot { opacity: 1; animation: living-pulse 1.6s ease-in-out infinite; }
+
+@keyframes living-pulse {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(1.5); opacity: 0.55; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .strip[data-tone="call"] .dot { animation: none; }
+}

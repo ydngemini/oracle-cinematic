@@ -40,7 +40,7 @@
   font-weight: 600;
   letter-spacing: var(--tracking-widest);
   text-transform: uppercase;
-  color: var(--oracle-amber);
+  color: var(--oracle-accent-ink);
   padding: var(--space-1) var(--space-2);
   border: 1px solid var(--oracle-amber);
   border-radius: var(--radius-pill);
@@ -74,7 +74,7 @@
   cursor: pointer;
 }
 .closeBtn svg { width: 18px; height: 18px; }
-.closeBtn:hover { border-color: var(--oracle-amber); color: var(--oracle-amber); }
+.closeBtn:hover { border-color: var(--oracle-amber); color: var(--oracle-accent-ink); }
 
 /* ── centered states ─────────────────────────────────────────────────────── */
 .center {
@@ -109,7 +109,7 @@
   font-size: var(--text-sm);
   cursor: pointer;
 }
-.ghostBtn:hover { border-color: var(--oracle-amber); color: var(--oracle-amber); }
+.ghostBtn:hover { border-color: var(--oracle-amber); color: var(--oracle-accent-ink); }
 
 /* ── walk hint ───────────────────────────────────────────────────────────── */
 .hint {

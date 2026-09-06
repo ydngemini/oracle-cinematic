@@ -150,7 +150,7 @@
 }
 
 .automationIdentity { display: inline-flex; align-items: center; gap: var(--space-2); color: var(--oracle-text); white-space: nowrap; }
-.automationState { color: var(--oracle-amber); text-transform: uppercase; letter-spacing: var(--tracking-wider); }
+.automationState { color: var(--oracle-accent-ink); text-transform: uppercase; letter-spacing: var(--tracking-wider); }
 .automationTime { flex: 1; min-width: 0; color: var(--oracle-text-ghost); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .automationDot { width: 7px; height: 7px; flex: 0 0 auto; border-radius: 50%; background: var(--oracle-green); box-shadow: 0 0 0 3px color-mix(in srgb, var(--oracle-green) 14%, transparent); }
 .automationDot[data-status='queued'], .automationDot[data-status='running'] { background: var(--oracle-amber); box-shadow: 0 0 0 3px var(--oracle-amber-ghost); }
@@ -172,7 +172,7 @@
   letter-spacing: var(--tracking-wide);
   text-transform: uppercase;
 }
-.automationAction:hover:not(:disabled), .modeRow button:hover:not(:disabled), .cellLabelRow button:hover:not(:disabled) { color: var(--oracle-amber); border-color: var(--oracle-amber-dim); }
+.automationAction:hover:not(:disabled), .modeRow button:hover:not(:disabled), .cellLabelRow button:hover:not(:disabled) { color: var(--oracle-accent-ink); border-color: var(--oracle-amber-dim); }
 .automationAction:disabled, .modeRow button:disabled, .cellLabelRow button:disabled { opacity: .45; cursor: default; }
 
 .modeRow,
@@ -231,7 +231,7 @@
 
 .stageKey:hover { color: var(--oracle-text-dim); }
 .stageKey[aria-pressed='true'] {
-  color: var(--oracle-amber);
+  color: var(--oracle-accent-ink);
   background: var(--oracle-amber-ghost);
   box-shadow: inset 0 0 0 1px var(--oracle-amber-dim);
 }
@@ -286,7 +286,7 @@
   color: var(--oracle-text-dim);
   background: var(--oracle-glass);
 }
-.stepBtn:hover { color: var(--oracle-amber); border-color: var(--oracle-amber-dim); }
+.stepBtn:hover { color: var(--oracle-accent-ink); border-color: var(--oracle-amber-dim); }
 .stepBtn:disabled { opacity: 0.4; cursor: default; }
 .stepBtn svg { width: 14px; height: 14px; }
 
@@ -379,7 +379,7 @@
 
 .subKey:hover { color: var(--oracle-text-dim); }
 .subKey[aria-selected='true'] {
-  color: var(--oracle-amber);
+  color: var(--oracle-accent-ink);
   background: var(--oracle-amber-ghost);
   box-shadow: inset 0 0 0 1px var(--oracle-amber-dim);
 }
@@ -544,7 +544,7 @@
 
 .briefHeader { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-3); }
 .briefHeader h3 { margin-top: var(--space-1); font-size: var(--text-base); font-weight: 550; color: var(--oracle-text-heading); }
-.briefMode { flex: 0 0 auto; padding: var(--space-1) var(--space-2); border: 1px solid var(--oracle-amber-dim); border-radius: var(--radius-sm); font-family: var(--font-display); font-size: .5625rem; letter-spacing: var(--tracking-widest); text-transform: uppercase; color: var(--oracle-amber); }
+.briefMode { flex: 0 0 auto; padding: var(--space-1) var(--space-2); border: 1px solid var(--oracle-amber-dim); border-radius: var(--radius-sm); font-family: var(--font-display); font-size: .5625rem; letter-spacing: var(--tracking-widest); text-transform: uppercase; color: var(--oracle-accent-ink); }
 .briefSummary { font-size: var(--text-sm); line-height: var(--leading-relaxed); color: var(--oracle-text-dim); }
 .briefColumns { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-3); }
 .briefBlock { display: flex; flex-direction: column; gap: var(--space-2); }
@@ -587,7 +587,7 @@
   border-top-color: var(--oracle-border-bright);
 }
 
-.houseItem svg { width: 16px; height: 16px; color: var(--oracle-amber-dim); flex-shrink: 0; }
+.houseItem svg { width: 16px; height: 16px; color: var(--oracle-accent-ink); flex-shrink: 0; }
 .houseItem[data-kind='lead'] { border-style: dashed; }
 .houseItem[data-kind='lead'] svg { color: var(--oracle-text-ghost); }
 
@@ -665,7 +665,7 @@
 }
 .pickRow:hover:not(:disabled) { background: var(--oracle-glass-hover); border-color: var(--oracle-blue-dim); }
 .pickRow:disabled { opacity: 0.45; cursor: default; }
-.pickRow svg { width: 14px; height: 14px; color: var(--oracle-amber-dim); flex-shrink: 0; }
+.pickRow svg { width: 14px; height: 14px; color: var(--oracle-accent-ink); flex-shrink: 0; }
 
 .pickAddr { flex: 1; min-width: 0; font-size: var(--text-sm); color: var(--oracle-text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .pickMeta { flex-shrink: 0; font-family: var(--font-display); font-size: var(--text-xs); letter-spacing: var(--tracking-wider); text-transform: uppercase; color: var(--oracle-text-ghost); }
@@ -680,7 +680,7 @@
 .createdLink { display: flex; flex-direction: column; gap: var(--space-2); padding: var(--space-4); border: 1px solid var(--oracle-green-dim); border-radius: var(--radius-lg); background: color-mix(in srgb, var(--oracle-green) 5%, transparent); }
 .createdLink p { font-size: var(--text-xs); color: var(--oracle-text-dim); }
 .createdLink input { width: 100%; min-height: 44px; padding: var(--space-2) var(--space-3); border: 1px solid var(--oracle-border-bright); border-radius: var(--radius-md); background: rgba(0,0,0,.3); font-family: var(--font-display); font-size: var(--text-xs); color: var(--oracle-text); }
-.createdLink button, .portalLinks button { min-height: 44px; padding: 0 var(--space-3); border: 1px solid var(--oracle-amber-dim); border-radius: var(--radius-md); font-family: var(--font-display); font-size: var(--text-xs); text-transform: uppercase; color: var(--oracle-amber); }
+.createdLink button, .portalLinks button { min-height: 44px; padding: 0 var(--space-3); border: 1px solid var(--oracle-amber-dim); border-radius: var(--radius-md); font-family: var(--font-display); font-size: var(--text-xs); text-transform: uppercase; color: var(--oracle-accent-ink); }
 .portalLinks { list-style: none; overflow: hidden; border: 1px solid var(--oracle-border); border-radius: var(--radius-md); }
 .portalLinks li { min-height: 64px; display: flex; align-items: center; gap: var(--space-3); padding: var(--space-3); }
 .portalLinks li + li { border-top: 1px solid var(--oracle-border-subtle); }
@@ -715,7 +715,7 @@
 }
 .errorTick { flex-shrink: 0; width: 6px; height: 6px; border-radius: 1px; transform: rotate(45deg); background: var(--oracle-red-dim); }
 .errorText { flex: 1; font-size: var(--text-xs); color: var(--oracle-text-dim); }
-.retrySm { flex-shrink: 0; min-height: 36px; padding: 0 var(--space-3); display: inline-flex; align-items: center; font-family: var(--font-display); font-size: var(--text-xs); font-weight: 600; letter-spacing: var(--tracking-widest); text-transform: uppercase; color: var(--oracle-amber); border: 1px solid var(--oracle-amber-dim); border-radius: var(--radius-md); background: var(--oracle-amber-ghost); }
+.retrySm { flex-shrink: 0; min-height: 36px; padding: 0 var(--space-3); display: inline-flex; align-items: center; font-family: var(--font-display); font-size: var(--text-xs); font-weight: 600; letter-spacing: var(--tracking-widest); text-transform: uppercase; color: var(--oracle-accent-ink); border: 1px solid var(--oracle-amber-dim); border-radius: var(--radius-md); background: var(--oracle-amber-ghost); }
 
 .err { font-size: var(--text-sm); color: var(--oracle-red); }
 
@@ -726,4 +726,42 @@
 
 @media (prefers-reduced-motion: reduce) {
   .sheet, .scrim { animation: none; }
+}
+
+/* ── Recent showings (ShowingLogger) ────────────────────────────────────
+   A list with one live outcome control per row. Until PATCH /showings/{id}
+   existed a showing was write-once, so this is the first place a showing's
+   result can be corrected after the buyer has reacted. */
+.plainList {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: var(--space-2) 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.showingRow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.showingAddress {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-sm);
+  color: var(--oracle-text);
+}
+
+.showingWhen {
+  color: var(--oracle-text-ghost);
+  font-size: var(--text-xs);
+}
+
+@media (max-width: 719px) {
+  .showingRow { grid-template-columns: 1fr; }
 }

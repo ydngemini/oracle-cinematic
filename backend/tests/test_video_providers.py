@@ -424,3 +424,102 @@ class TestSixtySecondReel:
         import video_studio
 
         assert video_studio.DAILY_QUOTA_SECONDS >= 60
+
+
+# ── ElevenLabs video ────────────────────────────────────────────────────────
+#
+# Added because ElevenLabs aggregates other labs' video models, so the same key
+# already held for text-to-speech reaches Veo 3.1 — WITHOUT a GCP project,
+# billing account or ADC, which is exactly the wall VeoProvider is stuck behind.
+#
+# The trap it has to avoid is this codebase's recurring one: a free-tier key
+# authenticates perfectly against every voice endpoint and only fails when a
+# video job is submitted, so an unusable configuration reports as a generation
+# failure. available() therefore checks the PLAN, not just the key.
+
+def test_elevenlabs_is_registered_under_both_names():
+    assert vp._PROVIDERS["elevenlabs"] is vp.ElevenLabsVideoProvider
+    assert vp._PROVIDERS["11labs"] is vp.ElevenLabsVideoProvider
+
+
+def test_elevenlabs_accepts_oracles_default_clip_length():
+    """4/6/8 — and 8 is ORACLE_VIDEO_CLIP_SECONDS' own default.
+
+    Kling accepts only 5 or 10, which is why selecting it required overriding
+    that default. Selecting ElevenLabs does not, and a regression here would
+    quietly reintroduce the override.
+    """
+    p = vp.ElevenLabsVideoProvider()
+    assert p.allowed_seconds == (4, 6, 8)
+    p.check_seconds(8)
+    with pytest.raises(vp.VideoProviderError) as got:
+        p.check_seconds(10)
+    assert "4, 6, 8" in str(got.value)
+
+
+def test_a_free_tier_key_is_refused_before_a_job_is_submitted(monkeypatch):
+    """The whole point of checking the plan rather than the key.
+
+    A free key passes /user/subscription, passes every TTS call, and then fails
+    only once a video job is posted — spending the user's quota and reading as a
+    bad generation. This must fail closed, and say what to do.
+    """
+    monkeypatch.setenv("ELEVENLABS_API_KEY", "sk_free_key")
+    p = vp.ElevenLabsVideoProvider()
+    monkeypatch.setattr(p, "_tier", lambda: "free")
+    ok, why = p.available()
+    assert ok is False
+    assert "paid plan" in why and "free" in why
+    assert "fal-kling" in why, "the refusal must name the working alternative"
+
+
+def test_a_paid_tier_key_is_accepted(monkeypatch):
+    monkeypatch.setenv("ELEVENLABS_API_KEY", "sk_paid_key")
+    p = vp.ElevenLabsVideoProvider()
+    for tier in ("starter", "creator", "pro", "scale", "business", "enterprise"):
+        monkeypatch.setattr(p, "_tier", lambda t=tier: t)
+        ok, why = p.available()
+        assert ok is True, f"{tier} should be allowed, got {why}"
+
+
+def test_an_unreadable_tier_is_not_reported_as_unavailable(monkeypatch):
+    """A network blip must not be indistinguishable from a free plan.
+
+    Saying "you need to upgrade" when the truth is "we could not ask" sends the
+    operator to a billing page over a transient failure.
+    """
+    monkeypatch.setenv("ELEVENLABS_API_KEY", "sk_x")
+    p = vp.ElevenLabsVideoProvider()
+    monkeypatch.setattr(p, "_tier", lambda: None)
+    ok, why = p.available()
+    assert ok is False
+    assert "could not read" in why
+    assert "upgrade" not in why.lower()
+
+
+def test_missing_key_is_named_precisely(monkeypatch):
+    monkeypatch.delenv("ELEVENLABS_API_KEY", raising=False)
+    ok, why = vp.ElevenLabsVideoProvider().available()
+    assert ok is False and "ELEVENLABS_API_KEY" in why
+
+
+def test_submit_translates_an_auth_rejection_into_the_real_cause(monkeypatch):
+    """401 on video with a key that works for TTS means the PLAN, not the key.
+
+    Reporting "invalid key" would send someone to rotate a credential that is
+    perfectly good.
+    """
+    monkeypatch.setenv("ELEVENLABS_API_KEY", "sk_x")
+    p = vp.ElevenLabsVideoProvider()
+
+    class _Resp:
+        status_code = 403
+        def json(self): return {}
+        def raise_for_status(self): raise AssertionError("should not reach raise_for_status")
+
+    import requests
+    monkeypatch.setattr(requests, "post", lambda *a, **k: _Resp())
+    with pytest.raises(vp.VideoProviderError) as got:
+        p._submit(prompt="x", size="1280x720", seconds=8, image_bytes=None)
+    assert "paid plan" in str(got.value)
+    assert "text-to-speech" in str(got.value)

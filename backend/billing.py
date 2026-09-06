@@ -90,10 +90,12 @@ stripe.api_key = STRIPE_SECRET_KEY
 # hatch ORACLE_ALLOW_LIVE_STRIPE=1 lets an operator exercise the live key locally on
 # purpose. Mirrors config.validate_or_die()'s fail-fast philosophy.
 _IS_LIVE_STRIPE = STRIPE_SECRET_KEY.startswith("sk_live_")
-if _IS_LIVE_STRIPE and config.IS_DEV and not _truthy(os.getenv("ORACLE_ALLOW_LIVE_STRIPE", "")):
+# `not config.IS_PROD`, never `config.IS_DEV`: the guard must catch every
+# environment that is not explicitly production, including the unset default.
+if _IS_LIVE_STRIPE and not config.IS_PROD and not _truthy(os.getenv("ORACLE_ALLOW_LIVE_STRIPE", "")):
     raise RuntimeError(
         "Refusing to start: a LIVE Stripe key (sk_live_*) is configured while "
-        "ORACLE_ENV is dev/unset — live keys charge real cards. Use a sk_test_* key "
+        "ORACLE_ENV is not production — live keys charge real cards. Use a sk_test_* key "
         "for development, set ORACLE_ENV=production for a real deployment, or set "
         "ORACLE_ALLOW_LIVE_STRIPE=1 to override this interlock deliberately."
     )

@@ -44,6 +44,14 @@ CSRF_EXEMPT_PATHS = {
     # capability. There is no ambient session credential for an attacker to
     # ride, which is the only thing CSRF defends against.
     "/api/public/property-upload/",
+    # Portal telemetry, same reasoning as property-upload above. The homeowner's
+    # session is a bearer JWT handed back in a response body and replayed in the
+    # Authorization header; no cookie is set, so there is no ambient credential
+    # for a third-party page to ride — which is the only thing CSRF defends
+    # against. Listed as the exact path, NOT "/portal/", because /portal/links
+    # is an agent-authenticated route that mints capability tokens and must keep
+    # its protection.
+    "/portal/activity",
     "/billing/webhook",
 }
 

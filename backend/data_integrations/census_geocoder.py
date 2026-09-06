@@ -24,6 +24,7 @@ from __future__ import annotations
 import asyncio
 import csv
 import io
+import re
 import urllib.parse
 import urllib.request
 import uuid
@@ -46,6 +47,124 @@ _TTL_GEOCODE = 90 * 86_400
 
 # Census enforces 10k rows/batch.
 _MAX_BATCH = 10_000
+
+
+# ZIP+4 arrives three ways in this corpus: "98203-6505", the bare "05072", and
+# — from the WY harvester — an unhyphenated "827188362". A \b anchor silently
+# rejects that last form, because there is no word boundary inside a digit run.
+# It then fell through to the state test, which also failed, and the entire
+# "WY, 827188362" tail was swallowed into the city field. Measured: 29 of 200
+# sampled rows parsed wrong, all of them this shape. A negative lookbehind
+# anchors on "not preceded by a digit" instead, which is what was meant.
+# Only the leading five are kept either way — Census scores worse with the +4.
+# ZIP+4 arrives three ways in this corpus: "98203-6505", the bare "05072", and
+# — from the WY harvester — an unhyphenated "827188362". A \b anchor silently
+# rejects that last form, because there is no word boundary inside a digit run,
+# so the whole "WY, 827188362" tail was swallowed into the city field (29 of 200
+# sampled rows). A negative lookbehind anchors on "not preceded by a digit",
+# which is what was meant. Only the leading five are kept: measured 15 matches
+# on 5-digit versus 6 on the full ZIP+4, same rows.
+_ZIP_RE = re.compile(r"(?<!\d)(\d{5})(?:-?\d{4})?\s*$")
+
+# Matched against the real set rather than r"[A-Za-z]{2}$". A bare two-letter
+# pattern happily reads the "St" in "10 Downing St" as a state and eats it,
+# which costs the street. Territories are included because the harvesters cover
+# them and a missing code degrades exactly like a wrong one.
+_STATE_CODES = frozenset("""
+AL AK AZ AR CA CO CT DE DC FL GA HI ID IL IN IA KS KY LA ME MD MA MI MN MS MO
+MT NE NV NH NJ NM NY NC ND OH OK OR PA RI SC SD TN TX UT VT VA WA WV WI WY
+AS GU MP PR VI
+""".split())
+
+# A secondary-address designator: the one thing after a comma that genuinely
+# belongs to the street. Everything else between the street and the locality is,
+# in this corpus, the city repeated into the address column — measured over
+# 20,000 ungeocoded rows: 564 have a comma in `address`, 462 of them (82%) are a
+# duplicated city, and only 12 (2%) are a unit. So extras are DROPPED by default
+# and kept only when they match this.
+_UNIT_RE = re.compile(
+    r"^(?:#|(?:UNIT|APT|APARTMENT|STE|SUITE|BLDG|BUILDING|LOT|TRLR|TRAILER"
+    r"|FL|FLOOR|RM|ROOM|SPC|SPACE|BSMT|PH)\b)",
+    re.IGNORECASE,
+)
+
+
+def _split_oneline(address: str) -> tuple[str, str, str, str]:
+    """Recover (street, city, state, zip) from a comma-joined one-line address.
+
+    The Census batch endpoint scores on separated columns, so a one-line string
+    has to be taken apart before the split passes can use it. Callers that hold
+    the components join them in this order
+    (backfill_property_coordinates._one_line), which makes the recovery exact
+    for them; the free-text API caller gets a best effort.
+
+    Parsed from the RIGHT, because that is the only end whose shape is known.
+    An earlier version read positionally — street = first chunk, city =
+    everything between — which broke on both ends of real data:
+
+      "123 MAIN ST, UNIT 4, EVERETT, WA, 98203"
+          gave city "UNIT 4, EVERETT", a locality no gazetteer contains
+      "1000 ROUTE 9, HOWELL, NJ, 07731 1234"
+          gave state "" and city "HOWELL, NJ, 07731 1234"
+
+    Taking the LAST remaining chunk as the locality and letting the street
+    absorb everything before it fixes both: a unit is part of the address, and
+    it is the address column that harvesters put commas in. Nothing is guessed
+    — a fragment becomes the state or the ZIP only if it really is one, and an
+    unparseable tail after a recognised state is dropped rather than promoted
+    to a city.
+    """
+    raw = str(address or "").strip()
+    if not raw:
+        return "", "", "", ""
+
+    chunks = [c.strip() for c in raw.split(",") if c.strip()]
+    if not chunks:
+        return "", "", "", ""
+
+    postal = state = ""
+
+    # 1. ZIP. Trailing only, and it may share its chunk with the state
+    #    ("DC 20500") or stand alone.
+    m = _ZIP_RE.search(chunks[-1])
+    if m:
+        postal = m.group(1)
+        remainder = chunks[-1][: m.start()].strip(" ,")
+        if remainder:
+            chunks[-1] = remainder
+        else:
+            chunks.pop()
+
+    # 2. State. Normally the last chunk. If that chunk is unparseable junk —
+    #    a malformed ZIP the pattern above refused — look one further left and
+    #    discard the junk, rather than letting it become the city.
+    if chunks:
+        if chunks[-1].upper() in _STATE_CODES:
+            state = chunks.pop().upper()
+        elif len(chunks) >= 2 and chunks[-2].upper() in _STATE_CODES:
+            state = chunks[-2].upper()
+            del chunks[-2:]
+
+    # 3. What is left: the FIRST chunk is the street, the LAST is the locality,
+    #    and anything between them is kept only if it is a unit designator.
+    #
+    #    Both halves of that are measured, not assumed. Taking every leading
+    #    chunk as street corrupts the 82% of comma-bearing rows whose address
+    #    column already repeats the city ("189 N WOODRUN WAY, SARATOGA SPRINGS,
+    #    UT" as the address of a row whose city is "Saratoga Springs") — that
+    #    reading dropped the residue match rate from 26% to 0%. Taking only
+    #    chunks[0] loses the 2% that carry a real unit. Keeping the first chunk
+    #    plus recognised units, and discarding the rest, serves both.
+    if not chunks:
+        return "", "", state, postal
+    if len(chunks) == 1:
+        return chunks[0], "", state, postal
+
+    street_parts = [chunks[0]]
+    for chunk in chunks[1:-1]:
+        if _UNIT_RE.match(chunk):
+            street_parts.append(chunk)
+    return ", ".join(street_parts), chunks[-1], state, postal
 
 
 def _empty(address: str) -> dict:
@@ -143,13 +262,73 @@ class CensusGeocoder(DataSource):
         if len(rows) > _MAX_BATCH:
             raise ValueError(f"Census batch limit is {_MAX_BATCH} addresses (got {len(rows)}).")
 
-        # CSV the geocoder expects: id,oneline-address (no header). Split the
-        # one-line address into the street column; the geocoder tolerates the
-        # full address in 'street' with empty city/state/zip columns.
+        # Three shapes, tried in order, each running only on what the previous
+        # one missed. Measured on 150 rows from each population:
+        #
+        #                            clean addresses      never-geocoded residue
+        #   1. whole address in `street`   150/150 (100%)        0/150   (0%)
+        #   2. street + city + state       136/150  (91%)       23/150  (15%)
+        #   3. street + state + ZIP5       142/150  (95%)       23/150  (15%)
+        #   ------------------------------------------------------------------
+        #   cascade (1 -> 2 -> 3)          150/150 (100%)       39/150  (26%)
+        #
+        # Shape 1 first is not arbitrary and an earlier revision of this code got
+        # it backwards. The one-line form is the BEST shape for an address the
+        # geocoder can resolve — it matched every clean row, where both split
+        # forms lost 5-9%. It only looks broken if you sample rows where
+        # latitude IS NULL, because those are precisely the rows it already
+        # failed on; measured against them in isolation it scores 0, which is a
+        # tautology, not a defect. The ~90% live rate recorded in
+        # backfill_property_coordinates is real.
+        #
+        # Shapes 2 and 3 exist for the residue, where the stored city or ZIP is
+        # the thing blocking the match: a locality this corpus records as
+        # "South Harbor Twp" or "Rural" is not in the Census gazetteer and vetoes
+        # a match street+state alone would make, and the ZIP is unreliable enough
+        # to do the same (see the 12,322 multi-state ZIPs in the public-records
+        # defect log). They are almost disjoint — 23 and 23, union 39 — so both
+        # are worth running.
+        #
+        # Cost is bounded by usefulness: on a healthy batch shape 1 matches
+        # nearly everything and the retries carry only the leftovers.
+        parts = [_split_oneline(a) for a in rows]
+
+        results = await self._batch_pass(rows, parts, shape="oneline")
+        for shape in ("city", "zip"):
+            retry = [i for i, r in enumerate(results) if not r.get("matched")]
+            if not retry:
+                break
+            recovered = await self._batch_pass(
+                [rows[i] for i in retry], [parts[i] for i in retry], shape=shape,
+            )
+            for slot, rec in zip(retry, recovered):
+                if rec.get("matched"):
+                    results[slot] = rec
+        return results
+
+    async def _batch_pass(
+        self,
+        rows: list[str],
+        parts: list[tuple[str, str, str, str]],
+        *,
+        shape: str,
+    ) -> list[dict]:
+        """One POST in a single column shape. Degrades to unmatched, never raises.
+
+        `shape` is named rather than boolean because each form makes two
+        independent decisions — whether to split at all, and which of city/ZIP
+        to trust — and a flag called `use_zip` hid the fact that it also drops
+        the city, which is the half that actually does the work.
+        """
         buf = io.StringIO()
         w = csv.writer(buf)
-        for i, addr in enumerate(rows):
-            w.writerow([i, addr, "", "", ""])
+        for i, (street, city, state, postal) in enumerate(parts):
+            if shape == "oneline":
+                w.writerow([i, rows[i], "", "", ""])
+            elif shape == "city":
+                w.writerow([i, street, city, state, ""])
+            else:  # "zip" — city dropped on purpose; see geocode_batch
+                w.writerow([i, street, "", state, postal])
         csv_bytes = buf.getvalue().encode("utf-8")
 
         try:
@@ -163,7 +342,11 @@ class CensusGeocoder(DataSource):
 
             payload = await self._cache.get_or_fetch(
                 "geocode",
-                {"provider": "census_batch", "addresses": rows},
+                # The shape is part of the cache identity, and it is load-bearing:
+                # when a pass matches nothing the next pass receives a byte-
+                # identical `rows` list, so without `shape` in the key it would
+                # replay the previous pass's CSV from cache and silently no-op.
+                {"provider": "census_batch", "addresses": rows, "shape": shape},
                 fetch_batch,
                 ttl=self._cache_ttl(),
             )
@@ -232,7 +415,19 @@ class CensusGeocoder(DataSource):
                 rid = int(cols[0])
             except (ValueError, IndexError):
                 continue
-            input_addr = cols[1] if len(cols) > 1 else ""
+            # The CALLER's string, never Census's echo of it (cols[1]).
+            #
+            # cols[1] echoes the columns we sent, so now that the passes send
+            # split columns it reads back as "1216 CASCADE DR, EVERETT, WA," on
+            # the city pass and "1216 CASCADE DR, , WA, 98203" on the ZIP pass —
+            # neither of which is what POST /geocode/batch was handed. A client
+            # joining results to its request by input_address would silently
+            # lose every row, and rows missing from the CSV already fall through
+            # to _empty(inputs[i]) below, so the response would not even be
+            # internally consistent.
+            input_addr = inputs[rid] if 0 <= rid < len(inputs) else (
+                cols[1] if len(cols) > 1 else ""
+            )
             status = cols[2] if len(cols) > 2 else "No_Match"
             if status != "Match" or len(cols) < 12:
                 rec = _empty(input_addr)

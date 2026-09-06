@@ -1,0 +1,205 @@
+/* ─── Generative UI primitives ─────────────────────────────────────────────
+   One accent, opaque surfaces, shadows instead of borders. Every primitive
+   has to sit inside the Neoh surface without redecorating it. */
+
+.block { display: block; }
+.block + .block { margin-top: var(--space-4); }
+
+/* ── Metric ───────────────────────────────────────────────────────────── */
+
+.metric { display: flex; flex-direction: column; gap: var(--space-1); }
+
+.metricLabel {
+  font: 600 var(--text-xs) / 1 var(--font-mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--oracle-text-ghost);
+}
+
+.metricValue {
+  font: 600 var(--text-2xl) / 1.1 var(--font-display, var(--font-sans));
+  color: var(--oracle-text-heading);
+  font-variant-numeric: tabular-nums;
+}
+
+.metricCaveat {
+  font-size: var(--text-sm);
+  line-height: 1.5;
+  color: var(--oracle-text-dim);
+}
+
+.stillLearning { color: var(--oracle-accent-ink); font-style: normal; font-weight: 600; }
+
+/* ── Call queue ───────────────────────────────────────────────────────── */
+
+.queue {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border-radius: var(--radius-md);
+  background: var(--oracle-surface);
+  box-shadow: var(--shadow-e0);
+  overflow: hidden;
+}
+
+.queueItem {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border-top: 1px solid var(--oracle-border-subtle);
+}
+.queue > .queueItem:first-child { border-top: none; }
+
+.rank {
+  flex-shrink: 0;
+  width: 1.5rem;
+  font: 600 var(--text-sm) / 1.5 var(--font-mono);
+  color: var(--oracle-accent-ink);
+  font-variant-numeric: tabular-nums;
+}
+
+.queueBody { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+
+.queueName {
+  align-self: flex-start;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--oracle-text-heading);
+  font: 600 var(--text-md) / 1.3 var(--font-sans);
+  text-align: left;
+  cursor: pointer;
+}
+.queueName:disabled { cursor: default; }
+.queueName:not(:disabled):hover { color: var(--oracle-accent-ink); }
+
+.queueWhy { font-size: var(--text-sm); color: var(--oracle-text-dim); line-height: 1.45; }
+
+.queueMeta {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin-top: 2px;
+  font-size: var(--text-xs);
+  color: var(--oracle-text-ghost);
+}
+
+.queueAction {
+  flex-shrink: 0;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--oracle-accent);
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--oracle-accent-ink);
+  font: 600 var(--text-sm) / 1 var(--font-sans);
+  cursor: pointer;
+}
+.queueAction:hover { background: var(--oracle-accent); color: #1a1200; }
+.queueAction:focus-visible { outline: 2px solid var(--oracle-accent); outline-offset: 2px; }
+
+/* ── Comparison ───────────────────────────────────────────────────────── */
+
+.comparison { display: flex; flex-direction: column; gap: var(--space-2); }
+
+.comparisonTitle {
+  margin: 0;
+  font: 600 var(--text-xs) / 1 var(--font-mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--oracle-text-ghost);
+}
+
+.options { display: flex; flex-direction: column; gap: var(--space-2); margin: 0; padding: 0; list-style: none; }
+
+.option {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  padding: var(--space-3) var(--space-4);
+  border: none;
+  border-radius: var(--radius-md);
+  background: var(--oracle-surface);
+  box-shadow: var(--shadow-e0);
+  text-align: left;
+  cursor: pointer;
+}
+.option:disabled { cursor: default; }
+.option:not(:disabled):hover { background: var(--oracle-surface-sunken); }
+.option:focus-visible { outline: 2px solid var(--oracle-accent); outline-offset: 2px; }
+
+.optionLabel { font: 500 var(--text-md) / 1.3 var(--font-sans); color: var(--oracle-text-heading); }
+.optionDetail { font-size: var(--text-sm); color: var(--oracle-text-dim); }
+
+/* ── Entity card ──────────────────────────────────────────────────────── */
+
+.entity {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  width: 100%;
+  padding: var(--space-4);
+  border: none;
+  border-radius: var(--radius-md);
+  background: var(--oracle-surface);
+  box-shadow: var(--shadow-e0);
+  text-align: left;
+  cursor: pointer;
+}
+.entity:disabled { cursor: default; }
+.entity:not(:disabled):hover { background: var(--oracle-surface-sunken); }
+.entity:focus-visible { outline: 2px solid var(--oracle-accent); outline-offset: 2px; }
+
+.entityTitle {
+  font: 600 var(--text-lg) / 1.2 var(--font-display, var(--font-sans));
+  text-transform: none;
+  color: var(--oracle-text-heading);
+}
+.entitySub { font-size: var(--text-sm); color: var(--oracle-text-dim); }
+.entityRead { margin-top: var(--space-1); font-size: var(--text-md); line-height: 1.45; color: var(--oracle-text); }
+
+/* ── Timeline ─────────────────────────────────────────────────────────── */
+
+.timeline { display: flex; flex-direction: column; gap: var(--space-2); margin: 0; padding: 0; list-style: none; }
+
+.timelineItem {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding-left: var(--space-4);
+  position: relative;
+  font-size: var(--text-sm);
+}
+.timelineItem::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0.45em;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--oracle-border);
+}
+.timelineItem[data-done="true"]::before { background: var(--oracle-accent); }
+
+.timelineLabel { color: var(--oracle-text); }
+.timelineAt { flex-shrink: 0; color: var(--oracle-text-ghost); font-variant-numeric: tabular-nums; }
+
+/* ── Evidence ─────────────────────────────────────────────────────────── */
+
+.evidence {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: 0;
+  padding: var(--space-3) var(--space-4);
+  list-style: none;
+  border-radius: var(--radius-md);
+  background: var(--oracle-surface-sunken);
+}
+.evidenceLabel { display: block; font-size: var(--text-md); color: var(--oracle-text); }
+.evidenceDetail { display: block; font-size: var(--text-sm); color: var(--oracle-text-dim); }

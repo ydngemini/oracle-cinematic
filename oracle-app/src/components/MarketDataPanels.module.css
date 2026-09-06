@@ -25,7 +25,7 @@
   border: 1px solid var(--oracle-amber-dim);
   border-radius: var(--radius-sm);
   font: 600 var(--text-xs) / 1 var(--font-mono);
-  color: var(--oracle-amber);
+  color: var(--oracle-accent-ink);
 }
 
 /* Stats grid */

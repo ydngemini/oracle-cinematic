@@ -102,6 +102,22 @@ services:
       # scratch space for reconstruction providers that stage files on disk.
       # Finished splats go to object storage and are served by /api/media/{id}.
       ORACLE_SPLAT_DIR: /app/.splatdata
+      # Durable media storage. Without this `object_storage.is_configured()` is
+      # False on a laptop (the default /mnt/neoh exists only on a deployed
+      # replica), and a finished reconstruction has nowhere to live — the job
+      # fails at the very last step with "Object storage is not configured".
+      #
+      # It is a NAMED VOLUME, not a bind mount into ./backend, deliberately:
+      # captured homeowner photos and finished reconstructions must never land
+      # inside the git working tree.
+      ORACLE_MEDIA_ROOT: /var/neoh-media
+      # Which reconstruction actually runs. Unset means 'stub', which
+      # synthesises a checkerboard room and captures nothing — fine as a default
+      # for a laptop that has no GPU credentials, and exactly wrong once you are
+      # trying to reconstruct a real house, because the job SUCCEEDS and stores a
+      # demo. `runpod_pod` rents a GPU VM per job and returns .sog directly.
+      # Serverless RunPod is a dead path for this account; pods work.
+      RECONSTRUCTION_PROVIDER: ${RECONSTRUCTION_PROVIDER:-stub}
     # Linux Docker doesn't resolve host.docker.internal by default — map it to
     # the host gateway so the container can reach host-run services (the local
     # llama.cpp LLM on :8090) via LLAMA_SERVER_URL above.
@@ -118,6 +134,8 @@ services:
       # The backend suite validates the isolated RunPod worker entrypoint too.
       # Keep it read-only; the application never writes into infrastructure code.
       - ./infra/reconstruction-runpod:/infra/reconstruction-runpod:ro
+      # Captured media and finished splats. Outside the repo on purpose.
+      - neoh_media:/var/neoh-media
     ports:
       - "${ORACLE_BIND_HOST:-127.0.0.1}:8000:8000"
     command: >
@@ -140,10 +158,14 @@ services:
     depends_on:
       - backend
     environment:
-      VITE_WS_URL: ${VITE_WS_URL:-ws://localhost:8000/ws}
+      # Empty by default: the app talks to its own origin and Vite proxies
+      # /api, /auth and /ws to the backend over the compose network. An
+      # absolute localhost:8000 only reaches the backend when its port is
+      # published on a host-reachable address, which is not true under DinD.
+      VITE_WS_URL: ${VITE_WS_URL:-}
       # Vite only reads .env files from the app root (oracle-app/), not the
       # repo root — forward the dev-only flags it needs from the compose env.
-      VITE_API_BASE: ${VITE_API_BASE:-http://localhost:8000}
+      VITE_API_BASE: ${VITE_API_BASE:-}
       VITE_BILLING_BYPASS: ${VITE_BILLING_BYPASS:-false}
       # Google Maps Platform key for the photoreal 3D property tour (Map3DElement).
       # NOTE: VITE_* values are inlined into browser-visible client code, so this is
@@ -165,3 +187,4 @@ services:
 volumes:
   pg_data:    # PostgreSQL data — survives `docker compose down`
   npm_cache:  # node_modules cache — avoids full reinstall on container restart
+  neoh_media: # captured photos + finished .sog — never inside the git tree

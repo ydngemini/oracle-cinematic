@@ -8,19 +8,29 @@ import {
   useRef,
   useState,
 } from 'react';
-import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
+import { AnimatePresence, LayoutGroup, motion, useReducedMotion } from 'framer-motion';
 import {
   Bot,
-  BriefcaseBusiness,
-  Building2,
-  CalendarCheck2,
   CircleHelp,
-  MessageSquare,
+  House,
+  Radar,
+  Search,
   ShieldAlert,
   UserRound,
-  Users,
   X,
+  Moon,
+  SunMedium,
 } from 'lucide-react';
+import {
+  DEFAULT_WORK_TYPE,
+  SALES_ROUTES,
+  VIEWS,
+  VIEW_PATHS,
+  href,
+  parse,
+  redirectFor,
+  resolveLegacyId,
+} from '../routes';
 import { BillingOverlay } from './BillingOverlay';
 import { OnboardingGate } from './OnboardingGate';
 import { ErrorBoundary } from './ErrorBoundary';
@@ -30,99 +40,82 @@ import { StateSelector } from './StateSelector';
 import { NeohBrandMark } from './NeohBrandMark';
 import { NeohFooter } from './NeohFooter';
 import { AssistantProvider } from './AssistantContext';
-import { AssistantShell } from './AssistantShell';
 import { BorderBeam } from './motion/BorderBeam';
 import { AdaptiveViewTransition } from './motion/AdaptiveViewTransition';
 import { ProductTour } from './ProductTour';
+import { applyTheme, nextTheme, readTheme, resolveTheme, writeTheme } from '../theme';
 import styles from './CrmShell.module.css';
 
 // Each tab is its own chunk — a field agent on LTE only pays for the tab
 // they open. (Same code-split rationale the HUD used for its 3D canvas.)
-const loadTodayTab = () => import('./TodayTab');
+const loadNeohHome = () => import('../neoh/NeohHome');
 const loadPeopleTab = () => import('./PeopleTab');
-const loadCommsTab = () => import('./CommsTab');
-const loadDealsTab = () => import('./DealsTab');
 const loadOurAITab = () => import('./OurAITab');
-const loadPropertiesTab = () => import('./PropertiesTab');
 const loadPersonalAITab = () => import('./PersonalAITab');
 const loadMyProfileTab = () => import('./MyProfileTab');
 const loadAdminOpsTab = () => import('./AdminOpsTab');
 
-const TodayTab = lazy(loadTodayTab);
-const PeopleTab = lazy(loadPeopleTab);
-const CommsTab = lazy(loadCommsTab);
-const DealsTab = lazy(loadDealsTab);
+const NeohHome = lazy(() =>
+  import('../neoh/NeohHome').then((m) => ({ default: m.NeohHome })));
 const OurAITab = lazy(loadOurAITab);
-const PropertiesTab = lazy(loadPropertiesTab);
+const UniversalWorkspace = lazy(() =>
+  import('../neoh/UniversalWorkspace').then((m) => ({ default: m.UniversalWorkspace })));
+const EntitySheet = lazy(() =>
+  import('../neoh/EntitySheet').then((m) => ({ default: m.EntitySheet })));
+const NeohSurface = lazy(() =>
+  import('../neoh/NeohSurface').then((m) => ({ default: m.NeohSurface })));
+
 const PersonalAITab = lazy(loadPersonalAITab);
 const MyProfileTab = lazy(loadMyProfileTab);
 const AdminOpsTab = lazy(loadAdminOpsTab);
 
+// Three destinations. The six old tabs are not gone — People, Inbox, Deals
+// and Property View are Work views chosen by ?type, and Our AI's workspaces
+// live there too until they are re-homed — but they are no longer places the
+// agent has to know about to find anything. Home says what matters, Work
+// holds everything, Neoh is the conversation. `preload` warms the chunk each
+// view renders first.
 const TABS = [
-  { id: 'today', label: 'Today', Icon: CalendarCheck2, Component: TodayTab, preload: loadTodayTab },
-  { id: 'people', label: 'People', Icon: Users, Component: PeopleTab, preload: loadPeopleTab },
-  { id: 'inbox', label: 'Inbox', Icon: MessageSquare, Component: CommsTab, preload: loadCommsTab },
-  { id: 'deals', label: 'Deals', Icon: BriefcaseBusiness, Component: DealsTab, preload: loadDealsTab },
-  { id: 'property-view', label: 'Property View', Icon: Building2, Component: PropertiesTab, preload: loadPropertiesTab },
-  { id: 'studio', label: 'Our AI', Icon: Bot, Component: OurAITab, preload: loadOurAITab },
+  { id: VIEWS.home, label: 'Home', Icon: House, preload: loadNeohHome },
+  { id: VIEWS.work, label: 'Work', Icon: Search, preload: loadPeopleTab },
+  { id: VIEWS.neoh, label: 'Neoh', Icon: Radar, preload: loadOurAITab },
 ];
 
 const TAB_KEY = 'oracle_crm_tab';
-const TAB_PATHS = {
-  today: '/today',
-  people: '/people',
-  inbox: '/inbox',
-  deals: '/deals',
-  // Distinct from the unauthenticated /property-upload/:token client page
-  // routed in App.jsx — different prefix, no collision.
-  'property-view': '/property-view',
-  studio: '/our-ai',
-};
-const SALES_PATHS = new Set([
-  '/our-ai/sales',
-  '/our-ai/sales/agent',
-  '/our-ai/sales/dialer',
-  '/our-ai/sales/plans',
-  '/our-ai/sales/providers',
-  '/our-ai/sales/routing',
-]);
-const LEGACY_TAB_IDS = {
-  portfolio: 'today',
-  // The houses/marketplace surface lives under Property View, not People —
-  // People is the contact book and has no lead browser or property workspace.
-  houses: 'property-view',
-  clients: 'people',
-  pipeline: 'deals',
-  marketplace: 'property-view',
-  house: 'property-view',
-  'house-profile': 'property-view',
-  comms: 'inbox',
-  ai: 'studio',
-  'personal-ai': 'studio',
-  docs: 'deals',
-  contracts: 'deals',
-  ops: 'today',
-  profile: 'today',
-};
 
-function savedTabId() {
-  const stored = sessionStorage.getItem(TAB_KEY) || 'today';
-  const resolved = LEGACY_TAB_IDS[stored] || stored;
-  if (resolved !== stored) sessionStorage.setItem(TAB_KEY, resolved);
+/** The view a session left off on. Old ids stored by the six-tab shell are
+ *  resolved through the same alias table that always handled renames. */
+function savedRoute() {
+  const stored = sessionStorage.getItem(TAB_KEY) || '';
+  const resolved = resolveLegacyId(stored);
+  if (resolved.view !== stored) sessionStorage.setItem(TAB_KEY, resolved.view);
   return resolved;
 }
 
-function routeForPath(pathname = window.location.pathname, { restoreSaved = false } = {}) {
-  const path = pathname.length > 1 ? pathname.replace(/\/+$/, '') : pathname;
-  if (SALES_PATHS.has(path)) return { tab: 'studio', salesRoute: path };
-  const entry = Object.entries(TAB_PATHS).find(([, value]) => value === path);
-  if (entry) return { tab: entry[0], salesRoute: null };
-  // On first mount an unrecognised path — including the bare '/' the app is
-  // usually entered at — resumes the tab the session left off on. On popstate
-  // it must not: `select` has already overwritten sessionStorage with the tab
-  // being navigated away from, so resuming it would leave the view unchanged
-  // while the address bar went back, and Back would look broken.
-  return { tab: restoreSaved ? savedTabId() : 'today', salesRoute: null };
+function workParams(type, sales = null, q = '') {
+  return { type: type || DEFAULT_WORK_TYPE, sales: sales || null, q: q || '' };
+}
+
+/**
+ * The route on first mount. An old address is rewritten with replaceState so
+ * a stale bookmark does not leave a dead URL in the back stack; the bare '/'
+ * the app is usually entered at resumes the saved view — but ONLY on first
+ * mount. On popstate it must not: `select` has already overwritten
+ * sessionStorage with the view being navigated away from, so resuming it
+ * would leave the screen unchanged while the address bar went back, and Back
+ * would look broken. That is why popstate parses the address and nothing else.
+ */
+function initialRoute() {
+  const redirect = redirectFor(window.location.pathname);
+  if (redirect) window.history.replaceState({}, '', redirect);
+  const url = new URL(redirect || (window.location.pathname + window.location.search), window.location.origin);
+  const parsed = parse(url.pathname, url.search, { fallbackView: VIEWS.home });
+  if (url.pathname === VIEW_PATHS.home && !parsed.entity) {
+    const saved = savedRoute();
+    if (saved.view === VIEWS.work) return { view: VIEWS.work, params: workParams(saved.type), entity: null };
+    if (saved.view === VIEWS.neoh) return { view: VIEWS.neoh, params: {}, entity: null };
+  }
+  return parsed;
 }
 
 function ViewFallback() {
@@ -238,50 +231,113 @@ export function CrmShell() {
   );
   const tabs = TABS;
 
-  const [active, setActive] = useState(() => routeForPath(undefined, { restoreSaved: true }).tab);
-  const [salesRoute, setSalesRoute] = useState(
-    () => routeForPath(undefined, { restoreSaved: true }).salesRoute,
-  );
+  // `route.view`/`route.params` are ALWAYS the view beneath — when an entity
+  // sheet is open they describe what it is open over, not the sheet. That is
+  // what lets /p/:id opened from Work leave Work mounted beneath, and lets
+  // Back close the sheet without a remount. Kept in state via functional
+  // updates rather than a ref, so nothing is written during render.
+  const [route, setRoute] = useState(initialRoute);
 
-  // `replace` is used by the guided walkthrough: it drives navigation on every
-  // step, and pushing an entry per step would bury the page the user entered
-  // from under ~16 history entries, so Back stops being an escape hatch.
-  const select = useCallback((id, replace = false) => {
-    const path = TAB_PATHS[id] || TAB_PATHS.today;
+  const go = useCallback((next, replace = false) => {
+    const address = next.entity
+      ? window.location.pathname + window.location.search
+      : href(next.view, next.params);
     startTransition(() => {
-      setActive(id);
-      setSalesRoute(null);
-      sessionStorage.setItem(TAB_KEY, id);
-      if (window.location.pathname !== path) {
-        window.history[replace ? 'replaceState' : 'pushState']({}, '', path);
+      setRoute((prev) => (next.entity
+        ? { view: prev.view, params: prev.params, entity: next.entity }
+        : next));
+      if (!next.entity) sessionStorage.setItem(TAB_KEY, next.view);
+      const current = window.location.pathname + window.location.search;
+      if (current !== address) {
+        window.history[replace ? 'replaceState' : 'pushState']({}, '', address);
       }
     });
   }, []);
+
+  // Accepts a view id OR any of the old tab ids: every existing
+  // onNavigate('deals') in the tab components keeps working through the alias
+  // table, and the guided walkthrough's per-step navigation still uses
+  // `replace` so it does not bury the entry page under sixteen history rows.
+  const select = useCallback((id, replaceOrExtra = false, extra = {}) => {
+    // Tab components call select(id) and the tour calls select(id, true);
+    // the Work chips call select(kind, { q }) to switch kind and keep the
+    // query. One signature serves all three.
+    const replace = replaceOrExtra === true;
+    const opts = replaceOrExtra && typeof replaceOrExtra === 'object' ? replaceOrExtra : extra;
+    const resolved = resolveLegacyId(id);
+    if (resolved.view === VIEWS.work) {
+      go({ view: VIEWS.work, params: workParams(resolved.type, null, opts.q), entity: null }, replace);
+    } else {
+      go({ view: resolved.view, params: {}, entity: null }, replace);
+    }
+  }, [go]);
+
+  // Typing replaces the current entry rather than pushing one per keystroke.
+  const setQuery = useCallback((q) => {
+    go({ view: VIEWS.work, params: workParams(route.params?.type, route.params?.sales, q), entity: null }, true);
+  }, [go, route.params]);
+
+  // An entity address over whatever is beneath. The sheet that renders it
+  // arrives in the next commit; the route plumbing is already here.
+  const openEntity = useCallback((address) => {
+    const next = parse(address, '', { fallbackView: route.view });
+    go({ view: route.view, params: route.params, entity: next.entity }, false);
+    // The marker lets closeEntity use Back — so closing the sheet and pressing
+    // Back are the same thing, and the view beneath is never re-entered.
+    if (next.entity) window.history.pushState({ entity: true }, '', address);
+  }, [go, route.view, route.params]);
+
+  // Close the sheet the way it was opened. Pushed from inside the app → Back,
+  // which the popstate handler turns into "same view, no entity". Arrived at
+  // directly (a bookmark, a link from a text) → there is nothing behind it in
+  // this tab's history, so replace the address with the view beneath.
+  const closeEntity = useCallback(() => {
+    if (window.history.state?.entity) {
+      window.history.back();
+      return;
+    }
+    go({ view: route.view, params: route.params, entity: null }, true);
+  }, [go, route.view, route.params]);
 
   const navigateSales = useCallback((path, replace = false) => {
-    if (path !== '/our-ai' && !SALES_PATHS.has(path)) return;
-    startTransition(() => {
-      setActive('studio');
-      setSalesRoute(path === '/our-ai' ? null : path);
-      sessionStorage.setItem(TAB_KEY, 'studio');
-      if (window.location.pathname !== path) {
-        window.history[replace ? 'replaceState' : 'pushState']({}, '', path);
-      }
-    });
-  }, []);
+    if (path === '/our-ai') {
+      go({ view: VIEWS.work, params: workParams('ai'), entity: null }, replace);
+      return;
+    }
+    if (!SALES_ROUTES.has(path)) return;
+    go({ view: VIEWS.work, params: workParams('sales', path), entity: null }, replace);
+  }, [go]);
 
   useEffect(() => {
     const onPopState = () => {
-      const next = routeForPath();
+      const next = parse(window.location.pathname, window.location.search, {
+        fallbackView: VIEWS.home,
+      });
       startTransition(() => {
-        setActive(next.tab);
-        setSalesRoute(next.salesRoute);
-        sessionStorage.setItem(TAB_KEY, next.tab);
+        // An entity address on Back/Forward keeps whatever view was beneath.
+        setRoute((prev) => (next.entity
+          ? { view: prev.view, params: prev.params, entity: next.entity }
+          : next));
+        if (!next.entity) sessionStorage.setItem(TAB_KEY, next.view);
       });
     };
     window.addEventListener('popstate', onPopState);
     return () => window.removeEventListener('popstate', onPopState);
   }, []);
+
+  // Light by default; the toggle is the one place a person changes it. The
+  // choice is stamped on <html> and persisted, and index.html re-stamps it
+  // before paint on the next load so dark never flashes white.
+  const [theme, setTheme] = useState(readTheme);
+  const toggleTheme = useCallback(() => {
+    setTheme((current) => {
+      const next = nextTheme(current);
+      writeTheme(next);
+      applyTheme(next);
+      return next;
+    });
+  }, []);
+  const showingDark = resolveTheme(theme) === 'dark';
 
   const openProfile = useCallback(() => {
     startTransition(() => setProfileOpen(true));
@@ -306,10 +362,8 @@ export function CrmShell() {
     window.requestAnimationFrame(() => tourButtonRef.current?.focus({ preventScroll: true }));
   }, []);
 
-  // Older sessions may still point to a tab removed from the deck.
-  // Fall back cleanly to Today until the user selects their next destination.
-  const tab = tabs.find((t) => t.id === active) ?? tabs[0];
-  const { Component } = tab;
+  const tab = tabs.find((t) => t.id === route.view) ?? tabs[0];
+  const viewKey = `${route.view}:${route.params?.type || ''}`;
   const profileViews = isPlatformAdmin
     ? [
         { id: 'settings', label: 'Settings', Icon: UserRound, Component: MyProfileTab, preload: loadMyProfileTab },
@@ -326,6 +380,7 @@ export function CrmShell() {
   return (
     <StateProvider>
     <AssistantProvider>
+    <LayoutGroup id="neoh">
     <div className={styles.shellContainer}>
       <header
         className={`${styles.header} hud-glass-panel`}
@@ -335,6 +390,16 @@ export function CrmShell() {
         <NeohBrandMark />
         <div className={styles.headerTools}>
           <StateSelector />
+          <button
+            type="button"
+            className={styles.profileButton}
+            onClick={toggleTheme}
+            aria-label={showingDark ? 'Switch to light' : 'Switch to dark'}
+            aria-pressed={showingDark}
+            title={showingDark ? 'Light' : 'Dark'}
+          >
+            {showingDark ? <SunMedium aria-hidden="true" /> : <Moon aria-hidden="true" />}
+          </button>
           <button
             ref={tourButtonRef}
             type="button"
@@ -361,7 +426,7 @@ export function CrmShell() {
       </header>
 
       <AdaptiveViewTransition
-        key={tab.id}
+        key={viewKey}
         enter="fade-in"
         exit="fade-out"
         default="none"
@@ -385,14 +450,38 @@ export function CrmShell() {
                   )}
                 >
                   <AdaptiveViewTransition enter="slide-up" default="none">
-                    <Component
-                      onNavigate={select}
-                      salesRoute={salesRoute}
-                      onSalesNavigate={navigateSales}
-                    />
+                    {route.view === VIEWS.work ? (
+                      <UniversalWorkspace
+                        type={route.params.type}
+                        query={route.params.q || ''}
+                        salesRoute={route.params.sales}
+                        onNavigate={select}
+                        onSalesNavigate={navigateSales}
+                        onQueryChange={setQuery}
+                        onOpenEntity={openEntity}
+                      />
+                    ) : route.view === VIEWS.neoh ? (
+                      // The full-screen conversation lands in U7. Until then
+                      // Neoh is the AI workspace it has always been.
+                      <OurAITab
+                        onNavigate={select}
+                        salesRoute={null}
+                        onSalesNavigate={navigateSales}
+                        initialWorkspace="cowork"
+                      />
+                    ) : (
+                      <NeohHome onNavigate={select} />
+                    )}
                   </AdaptiveViewTransition>
                 </Suspense>
               </ErrorBoundary>
+              {route.entity && (
+                <ErrorBoundary label="record sheet">
+                  <Suspense fallback={null}>
+                    <EntitySheet entity={route.entity} onClose={closeEntity} />
+                  </Suspense>
+                </ErrorBoundary>
+              )}
             </div>
             <NeohFooter />
           </div>
@@ -473,7 +562,9 @@ export function CrmShell() {
         )}
       </AnimatePresence>
       <ErrorBoundary label="Personal AI">
-        <AssistantShell />
+        <Suspense fallback={null}>
+          <NeohSurface entityOpen={Boolean(route.entity)} onOpenEntity={openEntity} />
+        </Suspense>
       </ErrorBoundary>
       <ProductTour
         open={tourOpen}
@@ -487,6 +578,7 @@ export function CrmShell() {
       <BillingOverlay />
       <OnboardingGate />
     </div>
+    </LayoutGroup>
     </AssistantProvider>
     </StateProvider>
   );

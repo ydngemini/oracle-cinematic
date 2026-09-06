@@ -19,12 +19,12 @@
 .licenses legend, .aiSettings legend { padding: 0 var(--space-1); }
 .licenseRow { display: grid; grid-template-columns: 62px 1fr; gap: var(--space-2); padding-bottom: var(--space-3); border-bottom: 1px solid var(--oracle-border-subtle); }
 .licenseRow button { min-height: 36px; color: var(--oracle-red); }
-.add { align-self: flex-start; color: var(--oracle-amber); border-color: var(--oracle-amber-dim); }
+.add { align-self: flex-start; color: var(--oracle-accent-ink); border-color: var(--oracle-amber-dim); }
 .aiSettings > label:not(.tone) { min-height: 40px; flex-direction: row; align-items: center; }
 .aiSettings > label:not(.tone) input { flex: 0 0 18px; width: 18px; min-height: 18px; accent-color: var(--oracle-amber); }
 .aiSettings > label:not(.tone) span { font-family: var(--font-sans); font-size: var(--text-xs); letter-spacing: 0; text-transform: none; color: var(--oracle-text-dim); }
 .aiSettings p { font-size: var(--text-xs); color: var(--oracle-text-ghost); }
-.primary { color: var(--oracle-amber); border-color: var(--oracle-amber-dim); background: var(--oracle-amber-ghost); }
+.primary { color: var(--oracle-accent-ink); border-color: var(--oracle-amber-dim); background: var(--oracle-amber-ghost); }
 .primary:disabled { cursor: wait; opacity: .5; }
 .error, .notice { padding: var(--space-2) var(--space-3); border-left: 2px solid var(--oracle-red-dim); font-size: var(--text-xs); color: var(--oracle-text-dim); }
 .notice { border-color: var(--oracle-green-dim); }

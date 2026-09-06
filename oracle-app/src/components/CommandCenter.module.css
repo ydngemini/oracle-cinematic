@@ -1,0 +1,446 @@
+/* ─── Command Center — the state of the business ──────────────────────────
+   Reads top-down as one column, not a widget grid. A grid asks the agent to
+   choose where to look; this answers it. Vertical rhythm carries the
+   hierarchy — diff, then money, then attention, then time, then blind spots.
+
+   Restrained on purpose: no gradients on content, no decorative glow, no
+   colour used as the sole carrier of meaning. Every state that matters is
+   also stated in words, because an agent glancing at this on a phone in a
+   car park should get the same information as one reading it at a desk.
+   ──────────────────────────────────────────────────────────────────────── */
+
+.shell {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+  padding: var(--space-5);
+  max-width: 64rem;
+  margin-inline: auto;
+}
+
+/* ── Header ───────────────────────────────────────────────────────────── */
+
+.header { display: flex; flex-direction: column; gap: var(--space-3); }
+
+.title {
+  margin: 0;
+  font: 600 var(--text-2xl) / 1.15 var(--font-display, var(--font-sans));
+  letter-spacing: -0.02em;
+  color: var(--oracle-text-heading);
+}
+
+.subtitle {
+  margin: 0;
+  color: var(--oracle-text-dim);
+  font-size: var(--text-sm);
+}
+
+/* The diff. Numbers lead because they are the news; labels follow small. */
+.ribbon {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3) var(--space-6);
+  margin: var(--space-2) 0 0;
+  padding: var(--space-4);
+  list-style: none;
+  border-radius: var(--radius-md);
+  background: var(--oracle-glass);
+  border: 1px solid var(--oracle-border-subtle);
+}
+
+.ribbonItem { display: flex; flex-direction: column; gap: 2px; }
+
+.ribbonValue {
+  font: 600 var(--text-xl) / 1 var(--font-mono);
+  color: var(--oracle-accent-ink);
+  font-variant-numeric: tabular-nums;
+}
+
+.ribbonLabel {
+  font-size: var(--text-xs);
+  color: var(--oracle-text-dim);
+  letter-spacing: 0.02em;
+}
+
+/* Used for every "nothing here" state. Reads as a sentence, never as blank
+   space — a calm morning and a broken feed must not look alike. */
+.quiet {
+  margin: 0;
+  padding: var(--space-4);
+  border-radius: var(--radius-md);
+  border: 1px dashed var(--oracle-border-subtle);
+  color: var(--oracle-text-dim);
+  font-size: var(--text-sm);
+  line-height: var(--leading-relaxed, 1.6);
+}
+
+/* ── Portfolio ────────────────────────────────────────────────────────── */
+
+.portfolio {
+  padding: var(--space-5);
+  border-radius: var(--radius-lg);
+  background: var(--oracle-glass);
+  border: 1px solid var(--oracle-border);
+}
+
+.portfolioHeading {
+  margin: 0 0 var(--space-2);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--oracle-text-dim);
+}
+
+.portfolioValue {
+  margin: 0;
+  font: 600 var(--text-3xl, 2rem) / 1 var(--font-mono);
+  color: var(--oracle-accent-ink);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
+}
+
+/* The caveat sits directly under the number, in the same block. Moving it to
+   a footnote or a tooltip would make the figure read as a forecast, which it
+   is not — nothing here is fitted to this brokerage's own closed deals. */
+.portfolioCaveat {
+  margin: var(--space-3) 0 0;
+  font-size: var(--text-xs);
+  line-height: 1.55;
+  color: var(--oracle-text-dim);
+  max-width: 46ch;
+}
+
+.portfolioMeta {
+  margin: var(--space-2) 0 0;
+  font-size: var(--text-xs);
+  color: var(--oracle-text-ghost);
+}
+
+/* ── Section furniture ────────────────────────────────────────────────── */
+
+.sectionHeading {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin: 0 0 var(--space-2);
+  font-size: var(--text-base);
+  font-weight: 600;
+  color: var(--oracle-text-heading);
+}
+
+.count {
+  font: 600 var(--text-xs) / 1 var(--font-mono);
+  padding: 3px 7px;
+  border-radius: var(--radius-sm);
+  background: var(--oracle-amber-ghost);
+  color: var(--oracle-accent-ink);
+  font-variant-numeric: tabular-nums;
+}
+
+.sectionNote {
+  margin: 0 0 var(--space-3);
+  font-size: var(--text-xs);
+  color: var(--oracle-text-dim);
+  max-width: 60ch;
+}
+
+.attention { display: flex; flex-direction: column; }
+
+.cards {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* Economics sit under the card they value, not inside it: the opportunity is
+   a finding, the money is a model on top of it, and the seam should show. */
+.economics {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-2) var(--space-3);
+  margin: calc(var(--space-2) * -1) 0 0;
+  padding: var(--space-2) var(--space-4) var(--space-3);
+  border-radius: 0 0 var(--radius-md) var(--radius-md);
+  border: 1px solid var(--oracle-border-subtle);
+  border-top: none;
+  background: var(--oracle-backdrop, transparent);
+}
+
+.economicsValue {
+  font: 600 var(--text-sm) / 1 var(--font-mono);
+  color: var(--oracle-green);
+  font-variant-numeric: tabular-nums;
+}
+
+.economicsBasis {
+  font-size: var(--text-xs);
+  color: var(--oracle-text-ghost);
+  line-height: 1.5;
+}
+
+/* ── Horizon ──────────────────────────────────────────────────────────── */
+
+.horizon { display: flex; flex-direction: column; }
+
+.horizonList {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  counter-reset: none;
+}
+
+.horizonBucket {
+  padding: var(--space-3) var(--space-4);
+  border-left: 2px solid var(--oracle-border-subtle);
+}
+
+/* Only buckets with contents get the accent rail. The empty ones stay
+   visible — "nothing this week" is information — but stop competing. */
+.horizonBucket:has(.horizonItems) { border-left-color: var(--oracle-gold); }
+
+.horizonHead {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.horizonIcon { color: var(--oracle-text-dim); flex-shrink: 0; }
+
+.horizonLabel {
+  margin: 0;
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--oracle-text);
+}
+
+.horizonCount {
+  margin-left: auto;
+  font: var(--text-xs) / 1 var(--font-mono);
+  color: var(--oracle-text-ghost);
+  font-variant-numeric: tabular-nums;
+}
+
+.horizonItems {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin: var(--space-2) 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.horizonItem {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-2);
+  font-size: var(--text-sm);
+}
+
+.horizonSubject { color: var(--oracle-text); font-weight: 500; }
+.horizonHeadline { color: var(--oracle-text-dim); }
+
+/* ── Blind spot ───────────────────────────────────────────────────────── */
+
+/* Deliberately styled as information, not as an error. These are true facts
+   about coverage; rendering them in red would train the agent to dismiss
+   them, and they are the most important thing on the screen when present. */
+.blindspot {
+  padding: var(--space-4);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--oracle-border-subtle);
+  background: var(--oracle-glass);
+}
+
+.blindspotHead {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--oracle-blue);
+  margin-bottom: var(--space-2);
+}
+
+.blindspotHeading {
+  margin: 0;
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--oracle-text-heading);
+}
+
+.blindspotList {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: 0;
+  padding-left: var(--space-4);
+  font-size: var(--text-sm);
+  line-height: 1.55;
+  color: var(--oracle-text-dim);
+}
+
+.blindspotList strong {
+  color: var(--oracle-text);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Loading & error ──────────────────────────────────────────────────── */
+
+.skeletonTitle,
+.skeletonRibbon,
+.skeletonCard {
+  border-radius: var(--radius-md);
+  background: var(--oracle-glass);
+  animation: pulse 1.6s ease-in-out infinite;
+}
+
+.skeletonTitle { height: 2.25rem; width: 14rem; }
+.skeletonRibbon { height: 4.5rem; }
+.skeletonCard { height: 8rem; }
+
+@keyframes pulse {
+  0%, 100% { opacity: 0.5; }
+  50% { opacity: 0.85; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .skeletonTitle, .skeletonRibbon, .skeletonCard { animation: none; opacity: 0.6; }
+}
+
+.error {
+  margin: 0;
+  padding: var(--space-4);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--oracle-red-dim);
+  color: var(--oracle-text);
+  font-size: var(--text-sm);
+  line-height: 1.55;
+}
+
+/* ── Mobile ───────────────────────────────────────────────────────────── */
+
+@media (max-width: 719px) {
+  .shell { padding: var(--space-4) var(--space-3); gap: var(--space-5); }
+  .title { font-size: var(--text-xl); }
+  .portfolioValue { font-size: var(--text-2xl); }
+  .ribbon { gap: var(--space-3) var(--space-4); padding: var(--space-3); }
+  .ribbonValue { font-size: var(--text-lg); }
+  /* Basis text is the first thing to go on a small screen — the number and
+     its caveat still carry the meaning. */
+  .economicsBasis { flex-basis: 100%; }
+}
+
+/* ── Agent Twin ───────────────────────────────────────────────────────── */
+
+.twin {
+  padding: var(--space-4);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--oracle-border-subtle);
+  background: var(--oracle-glass);
+}
+
+.twinHead {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--oracle-accent-ink);
+  margin-bottom: var(--space-3);
+}
+.twinHead .sectionHeading { margin: 0; }
+
+/* The learning state is a first-class thing to render, not a placeholder.
+   Saying "I have watched you six times and that is not enough" is what makes
+   the opinion trustworthy when it eventually arrives. */
+.twinLearning {
+  margin: 0;
+  font-size: var(--text-sm);
+  line-height: 1.6;
+  color: var(--oracle-text);
+}
+
+.twinMeta {
+  margin: var(--space-2) 0 0;
+  font-size: var(--text-xs);
+  color: var(--oracle-text-ghost);
+}
+
+.twinKinds {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.twinKind { display: flex; flex-direction: column; gap: 2px; }
+
+.twinKindName {
+  font-size: var(--text-sm);
+  font-weight: 500;
+  color: var(--oracle-text);
+  text-transform: capitalize;
+}
+
+/* Carries the interval, never a bare percentage. */
+.twinKindNote {
+  font-size: var(--text-xs);
+  line-height: 1.5;
+  color: var(--oracle-text-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+.twinThreshold {
+  margin: var(--space-3) 0 0;
+  padding: var(--space-3);
+  border-left: 2px solid var(--oracle-gold);
+  font-size: var(--text-sm);
+  line-height: 1.55;
+  color: var(--oracle-text);
+}
+
+.twinReasons { margin-top: var(--space-4); }
+
+.twinReasonsTitle {
+  margin: 0 0 var(--space-2);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--oracle-text-ghost);
+}
+
+/* Verbatim and italic — these are the agent's own words, and paraphrasing
+   them into a category is what throws away the only valuable part. */
+.twinReasons ul {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: var(--text-sm);
+  font-style: italic;
+  color: var(--oracle-text);
+}
+
+.twinReasonCount {
+  margin-left: var(--space-2);
+  font: var(--text-xs) / 1 var(--font-mono);
+  font-style: normal;
+  color: var(--oracle-text-ghost);
+}
+
+.twinCaveat {
+  margin: var(--space-4) 0 0;
+  font-size: var(--text-xs);
+  line-height: 1.55;
+  color: var(--oracle-text-dim);
+  max-width: 60ch;
+}

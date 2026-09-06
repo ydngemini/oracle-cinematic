@@ -1,0 +1,250 @@
+/* ─── Home ────────────────────────────────────────────────────────────────
+   One dominant thing per screen. Large type, negative space, no borders
+   except the ones that separate items, no glass — opaque surfaces only.
+   The first item is set larger than the rest; the rest are set larger than
+   anything on the Work feed. ──────────────────────────────────────────── */
+
+.shell {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-8);
+  padding: var(--space-8) var(--space-6) var(--space-12);
+  max-width: 44rem;
+  margin-inline: auto;
+}
+
+/* ── Header ───────────────────────────────────────────────────────────── */
+
+.header { display: flex; flex-direction: column; gap: var(--space-2); }
+
+.greeting {
+  margin: 0;
+  font-size: var(--text-md);
+  color: var(--oracle-text-dim);
+}
+
+.summary {
+  margin: 0;
+  font: 600 var(--text-3xl) / 1.15 var(--font-display, var(--font-sans));
+  letter-spacing: -0.02em;
+  /* Global display headings are uppercase; a sentence is not a label. */
+  text-transform: none;
+  color: var(--oracle-text-heading);
+}
+
+.summaryHandled { color: var(--oracle-text-dim); font-weight: 500; }
+
+/* ── Items ────────────────────────────────────────────────────────────── */
+
+.items {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-8);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.item {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding-top: var(--space-6);
+  border-top: 1px solid var(--oracle-border-subtle);
+}
+
+.item:first-child { border-top: none; padding-top: 0; }
+
+.itemHead {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-3);
+}
+
+.kind {
+  font: 600 var(--text-xs) / 1 var(--font-mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--oracle-accent-ink);
+}
+
+.deadline {
+  font: var(--text-xs) / 1 var(--font-mono);
+  color: var(--oracle-text-ghost);
+}
+
+.subject {
+  margin: 0;
+  font: 600 var(--text-2xl) / 1.15 var(--font-display, var(--font-sans));
+  letter-spacing: -0.02em;
+  /* A person's name is not shouted. */
+  text-transform: none;
+  color: var(--oracle-text-heading);
+}
+
+/* Exactly one element on the screen is set at this size. */
+.itemLead .subject { font-size: var(--text-4xl); }
+
+.headline {
+  margin: 0;
+  font-size: var(--text-lg);
+  line-height: 1.4;
+  color: var(--oracle-text);
+}
+
+.itemLead .headline { font-size: var(--text-xl); }
+
+.action {
+  margin: var(--space-1) 0 0;
+  font-size: var(--text-md);
+  color: var(--oracle-text-dim);
+}
+
+/* Progressive disclosure: the case for the item sits behind one tap. */
+.why {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  margin-top: var(--space-2);
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--oracle-text-dim);
+  font: 500 var(--text-sm) / 1 var(--font-sans);
+  cursor: pointer;
+}
+.why:hover { color: var(--oracle-text); }
+.why:focus-visible { outline: 2px solid var(--oracle-accent); outline-offset: 3px; border-radius: var(--radius-sm); }
+
+.whyOpen { transform: rotate(180deg); }
+
+.evidence {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  margin-top: var(--space-2);
+  padding: var(--space-4);
+  border-radius: var(--radius-md);
+  background: var(--oracle-surface-sunken);
+}
+
+.reason {
+  margin: 0;
+  font-size: var(--text-sm);
+  line-height: 1.55;
+  color: var(--oracle-text);
+}
+
+/* Pre-appointment: everything but the lead collapses to one line. */
+.itemCollapsed {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-3);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--oracle-border-subtle);
+  font-size: var(--text-sm);
+}
+.subjectSmall { font-weight: 600; color: var(--oracle-text); }
+.headlineSmall { color: var(--oracle-text-dim); }
+
+.more {
+  align-self: flex-start;
+  padding: var(--space-2) 0;
+  border: none;
+  background: none;
+  color: var(--oracle-accent-ink);
+  font: 500 var(--text-md) / 1 var(--font-sans);
+  cursor: pointer;
+}
+.more:hover { text-decoration: underline; }
+.more:focus-visible { outline: 2px solid var(--oracle-accent); outline-offset: 3px; border-radius: var(--radius-sm); }
+
+/* ── Quiet / blind / metric ───────────────────────────────────────────── */
+
+.quiet {
+  margin: 0;
+  font-size: var(--text-md);
+  line-height: 1.6;
+  color: var(--oracle-text-dim);
+}
+
+.handled { display: flex; flex-direction: column; gap: var(--space-2); }
+
+.handledToggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  align-self: flex-start;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--oracle-text-dim);
+  font: 500 var(--text-md) / 1 var(--font-sans);
+  cursor: pointer;
+}
+.handledToggle:focus-visible { outline: 2px solid var(--oracle-accent); outline-offset: 3px; border-radius: var(--radius-sm); }
+
+.handledList {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: var(--text-sm);
+  color: var(--oracle-text-dim);
+}
+.handledList li { display: flex; gap: var(--space-3); }
+.handledCount { min-width: 2ch; font: 600 var(--text-sm) / 1.5 var(--font-mono); color: var(--oracle-text); }
+
+.metric {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin: 0;
+}
+.metricValue {
+  font: 600 var(--text-xl) / 1 var(--font-mono);
+  color: var(--oracle-text);
+  font-variant-numeric: tabular-nums;
+}
+/* Same block as the number, never a footnote. */
+.metricCaveat { font-size: var(--text-xs); line-height: 1.5; color: var(--oracle-text-ghost); max-width: 46ch; }
+
+.blind {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  margin: 0;
+  font-size: var(--text-sm);
+  line-height: 1.55;
+  color: var(--oracle-text-dim);
+}
+
+/* ── Loading / error ──────────────────────────────────────────────────── */
+
+.skeletonLine, .skeletonItem {
+  border-radius: var(--radius-md);
+  background: var(--oracle-surface-sunken);
+  animation: pulse 1.6s ease-in-out infinite;
+}
+.skeletonLine { height: 2.5rem; width: 60%; }
+.skeletonItem { height: 9rem; }
+
+@keyframes pulse { 0%, 100% { opacity: 0.55; } 50% { opacity: 0.9; } }
+@media (prefers-reduced-motion: reduce) { .skeletonLine, .skeletonItem { animation: none; } }
+
+.error {
+  margin: 0;
+  font-size: var(--text-md);
+  line-height: 1.55;
+  color: var(--oracle-text);
+}
+
+@media (max-width: 719px) {
+  .shell { padding: var(--space-6) var(--space-4) var(--space-10); gap: var(--space-6); }
+  .summary { font-size: var(--text-2xl); }
+  .itemLead .subject { font-size: var(--text-3xl); }
+  .subject { font-size: var(--text-xl); }
+}

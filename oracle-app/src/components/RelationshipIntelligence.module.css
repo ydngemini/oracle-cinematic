@@ -1,0 +1,423 @@
+/* ─── Relationship Intelligence ───────────────────────────────────────────
+   Three ideas, laid out in reading order rather than in columns: what
+   disagrees, what the readings are, and what is remembered.
+
+   Columns were the obvious layout and the wrong one. On a phone they collapse
+   to an arbitrary vertical order anyway, and agents open this on phones. A
+   single column that already reads correctly at 320px needs no reflow.
+   ──────────────────────────────────────────────────────────────────────── */
+
+.shell {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+  padding: var(--space-5);
+  max-width: 58rem;
+  margin-inline: auto;
+}
+
+.header { display: flex; flex-direction: column; gap: var(--space-1); }
+
+.name {
+  margin: 0;
+  font: 600 var(--text-xl) / 1.2 var(--font-display, var(--font-sans));
+  letter-spacing: -0.015em;
+  color: var(--oracle-text-heading);
+}
+
+.journey {
+  margin: 0;
+  font-size: var(--text-xs);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--oracle-text-dim);
+}
+
+.notice {
+  margin: 0;
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--oracle-green-dim);
+  color: var(--oracle-text);
+  font-size: var(--text-sm);
+}
+
+/* ── Disputes ─────────────────────────────────────────────────────────── */
+
+.disputes {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* Bordered rather than filled, and blue rather than red: a contradiction is
+   a thing to resolve, not a fault to apologise for. Red here would read as an
+   error in the software instead of a question about the client. */
+.dispute {
+  padding: var(--space-4);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--oracle-blue-dim);
+  background: var(--oracle-glass);
+}
+
+.disputeHead {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--oracle-blue);
+  margin-bottom: var(--space-2);
+}
+
+.disputeTitle {
+  margin: 0;
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--oracle-text-heading);
+}
+
+.disputeQuestion {
+  margin: 0;
+  font-size: var(--text-sm);
+  line-height: 1.6;
+  color: var(--oracle-text);
+}
+
+/* ── Readings ─────────────────────────────────────────────────────────── */
+
+.readings {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr));
+  gap: var(--space-3);
+}
+
+.reading {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-4);
+  border-radius: var(--radius-md);
+  background: var(--oracle-glass);
+  border: 1px solid var(--oracle-border-subtle);
+}
+
+.readingTitle {
+  margin: 0;
+  font-size: var(--text-xs);
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--oracle-text-dim);
+}
+
+.readingScore {
+  margin: 0;
+  font: 600 var(--text-2xl) / 1 var(--font-mono);
+  color: var(--oracle-accent-ink);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Words, not a number, and never a zero. "Not observed" and "0%" are the
+   difference between instrumenting a portal and writing someone off. */
+.readingState {
+  margin: 0;
+  font: 600 var(--text-base) / 1.2 var(--font-sans);
+}
+
+.stateBlind { color: var(--oracle-blue); }
+.stateWeak { color: var(--oracle-silver); }
+
+.readingBasis {
+  margin: var(--space-1) 0 0;
+  font-size: var(--text-xs);
+  line-height: 1.55;
+  color: var(--oracle-text-dim);
+}
+
+.signalList {
+  margin: var(--space-2) 0 0;
+  padding-left: var(--space-4);
+  font-size: var(--text-xs);
+  color: var(--oracle-text-ghost);
+}
+
+/* ── Section furniture ────────────────────────────────────────────────── */
+
+.sectionHeading {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin: 0 0 var(--space-3);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--oracle-text-heading);
+}
+
+.empty {
+  margin: 0;
+  padding: var(--space-4);
+  border-radius: var(--radius-md);
+  border: 1px dashed var(--oracle-border-subtle);
+  font-size: var(--text-sm);
+  line-height: 1.55;
+  color: var(--oracle-text-dim);
+}
+
+/* ── State distribution ───────────────────────────────────────────────── */
+
+.stateList {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.stateRow {
+  display: grid;
+  grid-template-columns: minmax(7rem, 11rem) 1fr auto;
+  align-items: center;
+  gap: var(--space-3);
+  font-size: var(--text-sm);
+}
+
+.stateName { color: var(--oracle-text); text-transform: capitalize; }
+
+.stateBar {
+  height: 6px;
+  border-radius: 3px;
+  background: var(--oracle-border-subtle);
+  overflow: hidden;
+}
+
+.stateFill {
+  display: block;
+  height: 100%;
+  border-radius: 3px;
+  background: var(--oracle-gold);
+}
+
+.statePct {
+  font: var(--text-xs) / 1 var(--font-mono);
+  color: var(--oracle-text-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Levers ───────────────────────────────────────────────────────────── */
+
+.leverList {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.lever {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-left: var(--space-3);
+  border-left: 2px solid var(--oracle-gold);
+}
+
+.leverAction { font-size: var(--text-sm); font-weight: 600; color: var(--oracle-text); }
+.leverWhy { font-size: var(--text-xs); line-height: 1.55; color: var(--oracle-text-dim); }
+
+/* ── Memory chips ─────────────────────────────────────────────────────── */
+
+.memoryBody {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: var(--space-4);
+}
+
+@media (min-width: 900px) {
+  .memoryBody { grid-template-columns: 1fr minmax(18rem, 22rem); align-items: start; }
+}
+
+.predicates { display: flex; flex-direction: column; gap: var(--space-3); }
+
+.predicate { display: flex; flex-direction: column; gap: var(--space-2); }
+
+.predicateLabel {
+  font-size: var(--text-xs);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--oracle-text-ghost);
+}
+
+.chips { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--oracle-border-subtle);
+  background: var(--oracle-glass);
+  color: var(--oracle-text);
+  font: 500 var(--text-sm) / 1 var(--font-sans);
+  cursor: pointer;
+  transition: border-color 120ms ease, background 120ms ease;
+}
+
+.chip:hover { background: var(--oracle-glass-hover); }
+
+/* A visible focus ring is non-negotiable here: this control is the entire
+   trust affordance, and it has to be reachable by keyboard. */
+.chip:focus-visible {
+  outline: 2px solid var(--oracle-gold);
+  outline-offset: 2px;
+}
+
+.chipSelected {
+  border-color: var(--oracle-gold);
+  background: var(--oracle-glass-active);
+}
+
+/* Pinned is signalled by an icon as well as a border colour — colour alone
+   fails anyone who cannot separate gold from grey. */
+.chipPinned { border-color: var(--oracle-green-dim); }
+.chipPin { color: var(--oracle-green); flex-shrink: 0; }
+
+.chipConfidence {
+  font: var(--text-xs) / 1 var(--font-mono);
+  color: var(--oracle-text-ghost);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Provenance ───────────────────────────────────────────────────────── */
+
+.provenance {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--oracle-border);
+  background: var(--oracle-glass);
+}
+
+.provenanceTitle {
+  margin: 0;
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--oracle-text-heading);
+}
+
+.provenanceGrid {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  margin: 0;
+}
+
+.provenanceGrid dt {
+  font-size: var(--text-xs);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--oracle-text-ghost);
+  margin-bottom: 2px;
+}
+
+.provenanceGrid dd {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--oracle-text);
+  text-transform: capitalize;
+}
+
+.provenanceHint {
+  display: block;
+  margin-top: 2px;
+  font-size: var(--text-xs);
+  line-height: 1.45;
+  color: var(--oracle-text-dim);
+  text-transform: none;
+}
+
+.quote {
+  margin: 0;
+  padding: var(--space-3);
+  border-left: 2px solid var(--oracle-gold);
+  background: var(--oracle-backdrop, transparent);
+  font-size: var(--text-sm);
+  font-style: italic;
+  line-height: 1.55;
+  color: var(--oracle-text);
+}
+
+.decay {
+  margin: 0;
+  font-size: var(--text-xs);
+  line-height: 1.55;
+  color: var(--oracle-text-dim);
+}
+
+.actions { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+
+.action {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--oracle-border);
+  background: transparent;
+  color: var(--oracle-text);
+  font: 500 var(--text-xs) / 1 var(--font-sans);
+  cursor: pointer;
+}
+
+.action:hover:not(:disabled) { background: var(--oracle-glass-hover); }
+.action:focus-visible { outline: 2px solid var(--oracle-gold); outline-offset: 2px; }
+.action:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.actionDestructive { border-color: var(--oracle-red-dim); color: var(--oracle-red); }
+
+.actionsNote {
+  margin: 0;
+  font-size: var(--text-xs);
+  line-height: 1.5;
+  color: var(--oracle-text-ghost);
+}
+
+/* ── Loading & error ──────────────────────────────────────────────────── */
+
+.skeleton {
+  height: 6rem;
+  border-radius: var(--radius-md);
+  background: var(--oracle-glass);
+  animation: pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 0.5; }
+  50% { opacity: 0.85; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .skeleton { animation: none; opacity: 0.6; }
+}
+
+.error {
+  margin: 0;
+  padding: var(--space-4);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--oracle-red-dim);
+  font-size: var(--text-sm);
+  color: var(--oracle-text);
+}
+
+@media (max-width: 719px) {
+  .shell { padding: var(--space-4) var(--space-3); }
+  /* The label wrapping above the bar beats a 4rem-wide truncated column. */
+  .stateRow { grid-template-columns: 1fr auto; }
+  .stateName { grid-column: 1 / -1; }
+}

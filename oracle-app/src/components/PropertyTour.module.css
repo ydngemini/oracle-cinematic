@@ -50,7 +50,7 @@
   font-weight: 600;
   letter-spacing: var(--tracking-widest);
   text-transform: uppercase;
-  color: var(--oracle-amber-dim);
+  color: var(--oracle-accent-ink);
   padding: var(--space-1) var(--space-2);
   border: 1px solid var(--oracle-amber-ghost);
   border-radius: var(--radius-pill);
@@ -76,7 +76,7 @@
 }
 
 .tierBadge[data-walkable] {
-  color: var(--oracle-amber);
+  color: var(--oracle-accent-ink);
   border-color: var(--oracle-amber);
   background: var(--oracle-amber-ghost);
 }
@@ -144,7 +144,7 @@
   animation: hint-in var(--duration-base) var(--ease-out) both, hint-out var(--duration-slow) var(--ease-out) 5s both;
 }
 
-.hintGlyph { display: grid; place-items: center; width: 16px; height: 16px; flex: none; color: var(--oracle-amber); }
+.hintGlyph { display: grid; place-items: center; width: 16px; height: 16px; flex: none; color: var(--oracle-accent-ink); }
 .hintGlyph svg { width: 16px; height: 16px; }
 
 @keyframes hint-in { from { opacity: 0; transform: translate(-50%, -6px); } to { opacity: 1; transform: translate(-50%, 0); } }
@@ -252,7 +252,7 @@
   transition: background var(--duration-fast) var(--ease-out), color var(--duration-fast) var(--ease-out);
 }
 
-.iconCtrl:hover { background: var(--oracle-amber-ghost); color: var(--oracle-amber); }
+.iconCtrl:hover { background: var(--oracle-amber-ghost); color: var(--oracle-accent-ink); }
 .iconCtrl:active { transform: translateY(1px); }
 .iconCtrl:focus-visible { outline: 2px solid var(--oracle-amber-dim); outline-offset: 2px; }
 .iconCtrl svg { width: 18px; height: 18px; }
@@ -280,7 +280,7 @@
 
 .ctrlBtn:hover {
   background: var(--oracle-amber-ghost);
-  color: var(--oracle-amber);
+  color: var(--oracle-accent-ink);
   box-shadow: var(--shadow-amber);
 }
 
@@ -484,7 +484,7 @@
   -webkit-backdrop-filter: var(--oracle-backdrop-light);
 }
 
-.lbClose:hover { background: var(--oracle-glass-hover); color: var(--oracle-amber); }
+.lbClose:hover { background: var(--oracle-glass-hover); color: var(--oracle-accent-ink); }
 .lbClose svg { width: 18px; height: 18px; }
 
 .lbNav {
@@ -503,7 +503,7 @@
   -webkit-backdrop-filter: var(--oracle-backdrop-light);
 }
 
-.lbNav:hover { background: var(--oracle-glass-hover); color: var(--oracle-amber); }
+.lbNav:hover { background: var(--oracle-glass-hover); color: var(--oracle-accent-ink); }
 .lbNav svg { width: 20px; height: 20px; }
 .lbPrev { left: var(--space-3); }
 .lbNext { right: var(--space-3); }

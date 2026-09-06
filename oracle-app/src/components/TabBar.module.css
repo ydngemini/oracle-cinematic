@@ -8,7 +8,7 @@
   z-index: var(--z-hud);
   height: calc(var(--deck-height) + var(--safe-bottom));
   padding-bottom: var(--safe-bottom);
-  background: var(--oracle-glass);
+  background: var(--oracle-gloss), var(--oracle-glass);
   backdrop-filter: var(--oracle-backdrop);
   -webkit-backdrop-filter: var(--oracle-backdrop);
   border-top: 1px solid var(--oracle-glass-edge);
@@ -114,7 +114,7 @@
 
 .key:focus-visible {
   outline: none;
-  color: var(--oracle-amber);
+  color: var(--oracle-accent-ink);
 }
 
 .key:focus-visible .glyph {
@@ -124,7 +124,7 @@
 }
 
 .keyActive {
-  color: var(--oracle-amber);
+  color: var(--oracle-accent-ink);
 }
 
 .keyActive::before {

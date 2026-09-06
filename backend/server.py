@@ -65,6 +65,26 @@ from data_integrations.cache import IntegrationCacheUnavailable
 
 logger = logging.getLogger("oracle.server")
 
+
+def _configure_logging() -> None:
+    """Give the application's own loggers somewhere to go.
+
+    uvicorn configures only its own loggers; the root logger was never
+    configured, so every `logger.info` in this codebase — including the
+    private chat path — was dropped for the whole life of the service. The
+    first silent stall in that path was undiagnosable for exactly this
+    reason. basicConfig is a no-op when the root already has handlers, so a
+    deployment that configures logging itself is left alone.
+    """
+    level = os.getenv("ORACLE_LOG_LEVEL", "INFO").upper()
+    logging.basicConfig(level=level, format="%(levelname)s %(name)s: %(message)s")
+    for noisy in ("httpx", "httpcore", "litellm", "LiteLLM", "watchfiles", "asyncio",
+                  "urllib3", "botocore", "boto3", "openai", "hpack", "h11"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
+
+
+_configure_logging()
+
 # Module-level start time for uptime reporting.
 _START_TIME: float = time.monotonic()
 
@@ -123,11 +143,6 @@ async def lifespan(app: FastAPI):
     # AWS observability broadcaster is opt-in: it polls Cost Explorer (billed
     # per call) and the infra APIs. Off unless AWS_OBSERVABILITY_ENABLED is set;
     # even when enabled, the loop only calls AWS while a client is connected.
-    # One ambient monologue producer for the whole replica. Previously every
-    # socket ran its own loop at one LLM call per 6s; this is one call per
-    # tenant-with-viewers per interval.
-    monologue_task = asyncio.create_task(ambient_monologue_producer())
-
     metrics_task = None
     if os.environ.get("AWS_OBSERVABILITY_ENABLED", "").lower() in {"1", "true", "yes"}:
         from aws_observability import broadcast_metrics
@@ -140,11 +155,6 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
-        monologue_task.cancel()
-        try:
-            await monologue_task
-        except asyncio.CancelledError:
-            pass
         # Stop every tenant engine, including any still inside its linger window.
         await tenant_engines.shutdown_all()
         if metrics_task is not None:
@@ -307,11 +317,15 @@ from contracts_api import router as contracts_router  # noqa: E402
 from govinfo_mcp import router as govinfo_mcp_router  # noqa: E402 — official GPO federal-source bridge
 from harvests_api import router as harvests_router  # noqa: E402
 from intelligence_api import router as intelligence_router  # noqa: E402
+from opportunity_api import router as opportunity_router  # noqa: E402
+from intelligence_os_api import router as intelligence_os_router  # noqa: E402
+from search_api import router as search_router  # noqa: E402
 from marketplace_api import router as marketplace_router  # noqa: E402
 from models_api import router as models_router  # noqa: E402
 from portfolio_api import router as portfolio_router  # noqa: E402
 from sales_api import router as sales_router  # noqa: E402
 from lead_routing_api import public_router as lead_intake_router, router as lead_routing_router  # noqa: E402
+from missions_api import router as missions_router  # noqa: E402
 from sites_api import router as sites_router  # noqa: E402
 from spatial_intelligence_api import router as spatial_intelligence_router  # noqa: E402
 # Imported for its register_handler() side effect only — speed_to_lead exposes no
@@ -319,18 +333,25 @@ from spatial_intelligence_api import router as spatial_intelligence_router  # no
 # means an unrelated refactor of that import could silently unregister the
 # handler and leave every queued first-response job stuck as an unknown type.
 import speed_to_lead  # noqa: E402,F401
+# Same reason: registers the `mission:tick` handler. Importing it does NOT
+# start anything — Feature.MISSIONS defaults off and the executor checks it.
+import missions.executor  # noqa: E402,F401
 
 app.include_router(commands_router)
 app.include_router(contracts_router)
 app.include_router(govinfo_mcp_router)
 app.include_router(harvests_router)
 app.include_router(intelligence_router)
+app.include_router(opportunity_router)
+app.include_router(intelligence_os_router)
+app.include_router(search_router)
 app.include_router(marketplace_router)
 app.include_router(models_router)
 app.include_router(portfolio_router)
 app.include_router(sales_router)
 app.include_router(lead_routing_router)
 app.include_router(lead_intake_router)
+app.include_router(missions_router)
 app.include_router(sites_router)
 app.include_router(spatial_intelligence_router)
 
@@ -496,55 +517,6 @@ mind_service = MindService()
 configure_command_mind_service(mind_service)
 
 
-AMBIENT_MONOLOGUE_INTERVAL = float(os.getenv("ORACLE_MONOLOGUE_INTERVAL", "20"))
-_AGENT_CYCLE = ("SCOUT", "ANALYST", "CLOSER", "LEGAL")
-
-
-async def ambient_monologue_producer():
-    """Generate one ambient thought per tenant per interval, for the whole replica.
-
-    This replaces a per-socket loop that ran one LLM call every 6 seconds for
-    every connected client. Fifty agents in one brokerage produced ~500 calls a
-    minute to show them fifty copies of the same ambient flavour text — on a
-    deployment where no replica runs a local model, so each call was a failing
-    health probe followed by a hosted request.
-
-    Now: one call per tenant per interval, delivered to all of that tenant's
-    sockets. Fifty agents in one tenant cost 3 calls/minute rather than 500.
-
-    Delivery is local-only. Every replica runs this loop, so publishing across
-    replicas would deliver each other's thoughts on top of its own.
-    """
-    idx = 0
-    while True:
-        await asyncio.sleep(AMBIENT_MONOLOGUE_INTERVAL)
-        tenants = ws_hub.tenants_with_sockets()
-        if not tenants:
-            continue  # nobody watching; generate nothing
-
-        agent_id = _AGENT_CYCLE[idx % len(_AGENT_CYCLE)]
-        idx += 1
-
-        for tenant_id in tenants:
-            try:
-                tokens = [token async for token in mind_service.stream_monologue(agent_id)]
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:  # noqa: BLE001 — ambient copy is never critical
-                logger.debug("Ambient monologue generation failed: %s", exc)
-                continue
-            if not tokens:
-                continue
-
-            # One frame, not one per token. The old loop sent ~80 frames per
-            # thought per socket; the text is not typed live by a human and the
-            # client can animate it locally if it wants to.
-            await ws_hub.deliver_local(tenant_id, {
-                "type": "AGENT_THOUGHT",
-                "agent": agent_id,
-                "mode": "full",
-                "token": "".join(tokens),
-            })
 
 
 async def restore_session(websocket: WebSocket, user_id: str, tenant_id: str):
@@ -651,6 +623,12 @@ def _resolve_websocket_identity(websocket: WebSocket) -> tuple[TenantContext, bo
     return TenantContext(agent_id=user_id, tenant_id=tenant_id, role=Role.AGENT), False
 
 
+#: Ceiling for a FILTERED pipeline count. The UI shows "N shown" as a chip, so
+#: an exact figure past this adds nothing a user acts on, while an uncapped
+#: count over 8.47M rows is what took the frame past command_timeout.
+_PIPELINE_COUNT_CAP = 1000
+
+
 async def push_deal_pipeline(
     websocket: WebSocket, ctx: TenantContext, request: dict | None = None
 ):
@@ -696,7 +674,7 @@ async def push_deal_pipeline(
                     CASE WHEN payload->'provenance'->>'record_refreshed_at' ~
                         '^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?(Z|[+-]\\d{2}:\\d{2})$'
                          THEN (payload->'provenance'->>'record_refreshed_at')::timestamptz END,
-                    updated_at) < now()-interval '45 days))
+                    updated_at) < now()-interval '45 days'))
           AND ($5='all' OR
                ($5='hot' AND motivation_score>=70) OR
                ($5='contract' AND contract_expires_at IS NOT NULL AND contract_expires_at>now()) OR
@@ -729,7 +707,42 @@ async def push_deal_pipeline(
 
     try:
         async with tenant_tx(ctx) as conn:
-            total = await conn.fetchval("SELECT count(*) FROM leads " + where, *filter_args)
+            # `SELECT count(*) FROM leads` is the trap this repo already
+            # documents: 8.47M rows for a single tenant, measured well past the
+            # pool's 30s command_timeout, so the whole DEAL_PIPELINE frame died
+            # and the pipeline never rendered. (It never got that far before —
+            # an unterminated interval literal above made the SQL invalid — so
+            # fixing the syntax only exposed the next failure underneath.)
+            #
+            # Two cases, because they are genuinely different questions:
+            #
+            #   No filters beyond state → lead_pipeline_counts, the
+            #   trigger-maintained rollup from 0038 that ai_tools_read already
+            #   treats as the authority. Exact and instant.
+            #
+            #   Any other filter → the exact answer is unaffordable and not
+            #   worth an outage. Count through a capped subquery so the work is
+            #   bounded by the cap rather than by the table, and report the cap
+            #   as a floor. Saying "1000+" is honest; timing out is not.
+            unfiltered = all(
+                options[key] in (None, "", "all")
+                for key in ("scope", "detail", "freshness", "priority", "query", "map_confidence")
+            )
+            if unfiltered:
+                total = await conn.fetchval(
+                    "SELECT coalesce(sum(row_count), 0)::bigint FROM lead_pipeline_counts "
+                    " WHERE tenant_id = $1::uuid AND ($2::text IS NULL OR state = $2)",
+                    ctx.tenant_id, options["state"],
+                )
+                payload["total_is_exact"] = True
+            else:
+                total = await conn.fetchval(
+                    "SELECT count(*) FROM (SELECT 1 FROM leads " + where
+                    + f" LIMIT {_PIPELINE_COUNT_CAP + 1}) capped",
+                    *filter_args,
+                )
+                payload["total_is_exact"] = total <= _PIPELINE_COUNT_CAP
+                total = min(total, _PIPELINE_COUNT_CAP)
             rows = await conn.fetch(
                 "SELECT id, parcel_id, state, motivation_score, underwriting, payload, updated_at, "
                 "       dossier_status, contract_expires_at, " + MLS_OVERLAY_SELECT + " FROM leads "

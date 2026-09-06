@@ -182,7 +182,7 @@
   font-size: 0.6rem;
   letter-spacing: 0.42em;
   text-transform: uppercase;
-  color: rgba(255, 188, 31, 0.8);
+  color: var(--oracle-accent-ink);
   font-weight: 500;
   /* Subtle amber shimmer on initial load */
   background: linear-gradient(
@@ -254,7 +254,7 @@
 }
 
 .field:focus-within .label {
-  color: rgba(255, 188, 31, 0.78);
+  color: var(--oracle-accent-ink);
 }
 
 /* ── Input ───────────────────────────────────────────────────── */
@@ -337,7 +337,7 @@
   letter-spacing: 0.4em;
   text-transform: uppercase;
   font-weight: 500;
-  color: rgba(255, 188, 31, 0.84);
+  color: var(--oracle-accent-ink);
 
   background: rgba(255, 188, 31, 0.08);
   border: 1px solid rgba(255, 188, 31, 0.28);

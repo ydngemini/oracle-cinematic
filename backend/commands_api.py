@@ -1709,20 +1709,23 @@ async def edit_command(
     return {"command": _command_dict(updated), "approval": approval}
 
 
-@router.post("/{command_id}/approve")
-async def approve_command(
-    command_id: str,
-    body: ApprovalDecision,
-    ctx: TenantContext = Depends(require_context),
-):
-    require_feature(Feature.AUTOMATION)
-    row = await _get_command(ctx, command_id)
-    if not row:
-        raise HTTPException(status_code=404, detail="Command not found.")
-    if row["state"] != "awaiting_approval":
-        raise HTTPException(status_code=409, detail=f"Command is {row['state']}.")
+async def release_command(
+    ctx: TenantContext, row: Any, *, reason: str = "",
+) -> dict[str, Any]:
+    """Approve a staged command and put it on the queue.
+
+    Extracted from approve_command's body, unchanged, so that a mission
+    releasing its own approval and a person clicking Approve take the SAME
+    path: one decision record, one job, one state transition. The alternative
+    — a second release path for missions — is how two systems end up
+    disagreeing about what was authorised, and how a send escapes the audit
+    trail the first path writes.
+
+    `row` is a command_executions row already checked to be awaiting approval.
+    """
+    command_id = str(row["id"])
     approval = await decide_approval(
-        ctx, str(row["approval_id"]), decision="approved", reason=body.reason
+        ctx, str(row["approval_id"]), decision="approved", reason=reason
     )
     stored_draft = _decode(row["draft"])
     execution = _execution_payload(
@@ -1756,6 +1759,21 @@ async def approve_command(
             job["id"],
         )
     return {"command": _command_dict(updated), "approval": approval, "job": job}
+
+
+@router.post("/{command_id}/approve")
+async def approve_command(
+    command_id: str,
+    body: ApprovalDecision,
+    ctx: TenantContext = Depends(require_context),
+):
+    require_feature(Feature.AUTOMATION)
+    row = await _get_command(ctx, command_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Command not found.")
+    if row["state"] != "awaiting_approval":
+        raise HTTPException(status_code=409, detail=f"Command is {row['state']}.")
+    return await release_command(ctx, row, reason=body.reason)
 
 
 @router.post("/{command_id}/reject")
@@ -2064,6 +2082,137 @@ async def _update_call_session_async(call_connection_id: str, status: str) -> No
             call_connection_id,
             status,
         )
+
+
+#: What an approved send looks like in interaction_logs. CALENDAR is absent on
+#: purpose: a calendar event is not a touch on a thread, it is an appointment,
+#: and it is recorded as an outcome below rather than as an interaction.
+_SEND_INTERACTION_TYPE: dict[str, str] = {
+    "EMAIL": "email",
+    "SMS": "sms",
+    "CALL": "call_transcript",
+}
+
+
+def _event_start(draft: dict[str, Any]) -> Optional[datetime]:
+    """The scheduled start of a calendar draft, or None if it cannot be read."""
+    event = draft.get("event") if isinstance(draft, dict) else None
+    start = event.get("start") if isinstance(event, dict) else None
+    raw = start.get("dateTime") if isinstance(start, dict) else start
+    if not isinstance(raw, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+async def _record_send_bookkeeping(
+    ctx: TenantContext,
+    *,
+    command_id: str,
+    command_type: CommandType,
+    target: dict[str, Any],
+    draft: dict[str, Any],
+    provider_result: Any,
+) -> None:
+    """Make an approved send visible to the layers that reason about it.
+
+    Three writes, each in its own SAVEPOINT, none able to fail the caller:
+
+    1. An interaction_logs row. Until now an approved message that a provider
+       accepted left NO row here — crm.send_message writes one for manual
+       sends, but this worker never did. So a thread could hold a client's
+       reply and no send for it to be a reply TO, and intent_states saw the
+       brokerage's outreach as silence. chk_interaction_anchor needs a client
+       or lead; a command that targets only a contact_id writes nothing and
+       says so, because inventing an anchor would be worse than the gap.
+    2. lead_response_events.disposition → 'sent'. Allowed since 0067, never
+       once written, because nothing that sent could find the row.
+    3. For a calendar command, an appointment_booked outcome — an actual
+       future appointment with a provider reference behind it, which is what
+       the vision means by "booked" and what `showings` (a past-tense record)
+       cannot represent.
+    """
+    import outcome_memory
+
+    client_id = target.get("client_id") or None
+    lead_id = target.get("lead_id") or None
+    reference = getattr(provider_result, "reference", None)
+    interaction_type = _SEND_INTERACTION_TYPE.get(command_type.value)
+
+    try:
+        async with tenant_tx(ctx) as conn:
+            if interaction_type and (client_id or lead_id):
+                try:
+                    async with conn.transaction():
+                        await conn.execute(
+                            """
+                            INSERT INTO interaction_logs
+                                (tenant_id, client_id, lead_id, actor_role, interaction_type,
+                                 direction, subject, external_message_id, payload, thread_id)
+                            SELECT $1::uuid, $2::uuid, $3::uuid, 'agent', $4,
+                                   'outbound', $5, $6, $7::jsonb,
+                                   COALESCE(
+                                       (SELECT thread_id FROM interaction_logs
+                                         WHERE ($2::uuid IS NOT NULL AND client_id = $2::uuid
+                                                OR $2::uuid IS NULL AND lead_id = $3::uuid)
+                                           AND interaction_type = $4
+                                           AND thread_id IS NOT NULL
+                                         ORDER BY created_at DESC LIMIT 1),
+                                       gen_random_uuid())
+                            -- interaction_logs has no dedupe key. A retried
+                            -- worker that reaches this block twice must not
+                            -- write two sends for one provider reference.
+                            WHERE $6::text IS NULL OR NOT EXISTS (
+                                SELECT 1 FROM interaction_logs
+                                 WHERE external_message_id = $6 AND direction = 'outbound')
+                            """,
+                            ctx.tenant_id, client_id, lead_id, interaction_type,
+                            (draft.get("subject") if isinstance(draft, dict) else None),
+                            reference,
+                            json.dumps({
+                                "command_id": command_id,
+                                "provider": getattr(provider_result, "provider", None),
+                            }),
+                        )
+                except Exception:  # noqa: BLE001 — best-effort by contract
+                    logger.warning("send interaction not recorded for %s", command_id, exc_info=True)
+            elif interaction_type:
+                logger.warning(
+                    "command %s reached a contact with no client or lead anchor; "
+                    "no interaction row written (chk_interaction_anchor)", command_id,
+                )
+
+            try:
+                async with conn.transaction():
+                    await conn.execute(
+                        """
+                        UPDATE lead_response_events
+                           SET disposition = 'sent', updated_at = now()
+                         WHERE command_id = $1::uuid AND disposition = 'staged'
+                        """,
+                        command_id,
+                    )
+            except Exception:  # noqa: BLE001
+                logger.warning("lead_response 'sent' not recorded for %s", command_id, exc_info=True)
+
+            if command_type is CommandType.CALENDAR and (client_id or lead_id):
+                await outcome_memory.record_outcome(
+                    ctx,
+                    outcome_kind="appointment_booked",
+                    subject_type="client" if client_id else "lead",
+                    subject_id=str(client_id or lead_id),
+                    client_id=str(client_id) if client_id else None,
+                    source_table="command_executions",
+                    source_id=command_id,
+                    occurred_at=_event_start(draft) or datetime.now(timezone.utc),
+                    detail={"provider_reference": reference},
+                    conn=conn,
+                )
+    except Exception:  # noqa: BLE001 — the send already happened; log and move on
+        logger.warning("send bookkeeping skipped for %s", command_id, exc_info=True)
 
 
 async def _execute_command_job(payload: dict[str, Any], reporter) -> dict[str, Any]:
@@ -2416,6 +2565,19 @@ async def _execute_command_job(payload: dict[str, Any], reporter) -> dict[str, A
     if not recorded:
         # The provider may have accepted the action; never retry it blindly.
         raise RuntimeError("provider acknowledgement could not be persisted; manual reconciliation required")
+    # The acknowledgement above is the one write that must not be lost. What
+    # follows is bookkeeping that makes the send visible to the intelligence
+    # layer, and it is deliberately OUTSIDE the retry loop and best-effort: a
+    # failure here is logged, never raised, and can neither re-run the
+    # acknowledgement nor turn a delivered message into a failed job.
+    await _record_send_bookkeeping(
+        ctx,
+        command_id=command_id,
+        command_type=command_type,
+        target=target,
+        draft=draft,
+        provider_result=provider_result,
+    )
     await ledger.record(
         category=AuditCategory.AI_PHONE_CALL
         if command_type is CommandType.CALL

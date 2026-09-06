@@ -12,6 +12,9 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+import outcome_memory
+from billing_usage import record_usage
+
 from db.connection import tenant_tx
 from tenancy import TenantContext, require_context
 
@@ -255,6 +258,35 @@ class TransactionUpdate(BaseModel):
 class TransactionClose(BaseModel):
     model_config = ConfigDict(extra="forbid")
     version: int = Field(ge=1)
+
+
+#: Mirrors transactions_lost_reason_chk (0098). A closed list because the
+#: evaluator has to COUNT loss causes; free text is kept alongside as the
+#: agent's own words, the same (code, verbatim) pair agent_decisions uses.
+LOST_REASON_CODES: tuple[str, ...] = (
+    "price", "financing", "inspection", "competing_offer",
+    "client_withdrew", "listing_expired", "other",
+)
+
+#: The states a deal can die from. A closed deal is not lost; a cancelled one
+#: was never a deal. Kept as data so the rule is testable without a database.
+LOSABLE_STATES: frozenset[str] = frozenset({"active", "under_contract"})
+
+
+class TransactionLose(BaseModel):
+    """A deal that died, with why.
+
+    'cancelled' already existed and carries nothing — no timestamp, no reason,
+    no value — so a lost deal was indistinguishable from an abandoned draft
+    and Outcome Memory had no negative signal to learn from.
+    """
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    version: int = Field(ge=1)
+    reason_code: Literal[
+        "price", "financing", "inspection", "competing_offer",
+        "client_withdrew", "listing_expired", "other",
+    ]
+    reason: Optional[str] = Field(default=None, max_length=500)
 
 
 class OfferCreate(BaseModel):
@@ -1005,7 +1037,117 @@ async def close_transaction(
             lead_stage="closed",
             listing_stage="sold",
         )
+        # The close is the one write that must commit. Both receipts below run
+        # in their own SAVEPOINT and never raise, so a bookkeeping failure
+        # cannot undo a closing. outcome_value is the raw purchase price —
+        # expected_value applies the commission rate, not this table.
+        await outcome_memory.record_outcome(
+            ctx,
+            outcome_kind="transaction_closed",
+            subject_type="transaction",
+            subject_id=str(transaction["id"]),
+            client_id=str(transaction["client_id"]) if transaction["client_id"] else None,
+            source_table="transactions",
+            source_id=str(transaction["id"]),
+            occurred_at=transaction["closed_at"],
+            outcome_value=(
+                float(transaction["purchase_price"])
+                if transaction["purchase_price"] is not None else None
+            ),
+            conn=conn,
+        )
+        # Allowed by 0067's CHECK and never once emitted before this line.
+        await record_usage(
+            ctx,
+            metric="transaction_closed",
+            quantity=1,
+            idempotency_key=f"transaction_closed:{transaction['id']}",
+            occurred_at=transaction["closed_at"],
+            conn=conn,
+        )
     return {"transaction": _row(transaction)}
+
+
+@router.post("/transactions/{transaction_id}/lose")
+async def lose_transaction(
+    transaction_id: UUID,
+    body: TransactionLose,
+    ctx: TenantContext = Depends(require_context),
+):
+    """A deal that died is a fact, not a cancelled row.
+
+    Same optimistic-version discipline as close. Only a live deal can be lost
+    — a closed one is not, and a cancelled one was never a deal.
+
+    Deliberately does NOT cascade stages. _move_related_stages is typed for
+    under_contract|closed only; deciding that a lost deal moves clients.stage
+    to 'lost' and leads.dossier_status to 'dead' is a separate call about
+    what those columns mean, and guessing it here would rewrite two other
+    tables' semantics as a side effect of recording one fact.
+    """
+    async with tenant_tx(ctx) as conn:
+        current = await conn.fetchrow(
+            """
+            SELECT * FROM transactions
+             WHERE id=$1 AND tenant_id=$2::uuid
+             FOR UPDATE
+            """,
+            transaction_id,
+            ctx.tenant_id,
+        )
+        if not current:
+            raise HTTPException(status_code=404, detail="Transaction not found.")
+        if current["version"] != body.version:
+            raise _version_conflict("transaction", current["version"])
+        if not lose_transition_allowed(current["status"]):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "code": "invalid_transaction_transition",
+                    "from": current["status"],
+                    "to": "lost",
+                },
+            )
+        transaction = await conn.fetchrow(
+            """
+            UPDATE transactions
+               SET status='lost', lost_at=now(),
+                   lost_reason_code=$5, lost_reason=$6,
+                   updated_by=$4, version=version+1, updated_at=now()
+             WHERE id=$1 AND tenant_id=$2::uuid AND version=$3
+            RETURNING *
+            """,
+            transaction_id,
+            ctx.tenant_id,
+            body.version,
+            ctx.agent_id,
+            body.reason_code,
+            body.reason,
+        )
+        if not transaction:
+            raise _version_conflict("transaction", current["version"])
+        await outcome_memory.record_outcome(
+            ctx,
+            outcome_kind="transaction_lost",
+            subject_type="transaction",
+            subject_id=str(transaction["id"]),
+            client_id=str(transaction["client_id"]) if transaction["client_id"] else None,
+            source_table="transactions",
+            source_id=str(transaction["id"]),
+            occurred_at=transaction["lost_at"],
+            outcome_value=(
+                float(transaction["purchase_price"])
+                if transaction["purchase_price"] is not None else None
+            ),
+            detail={"reason_code": body.reason_code},
+            conn=conn,
+        )
+    return {"transaction": _row(transaction)}
+
+
+def lose_transition_allowed(current_status: Optional[str]) -> bool:
+    """Whether a deal in this state can be recorded as lost."""
+    return current_status in LOSABLE_STATES
 
 
 @router.get("/transactions/{transaction_id}/offers")

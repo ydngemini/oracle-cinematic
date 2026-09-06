@@ -1,0 +1,36 @@
+-- 0088 — grant app_current_agent() so the private AI chat surface works at all
+--
+-- Found while building the 0087 execution ledger, but this is NOT a bug in 0087.
+-- It is the same omission as 0085, three years wider.
+--
+-- 0003's hardening revokes PUBLIC, so a function needs an explicit grant to be
+-- callable by the app role. 0008 duly granted app_current_tenant,
+-- app_current_role, app_is_platform_admin and app_has_listing_grant.
+-- app_current_agent was left owner-only:
+--
+--     app_current_agent      postgres=X/postgres
+--     app_current_role       postgres=X/postgres,oracle_app=X/postgres
+--     app_current_tenant     postgres=X/postgres,oracle_app=X/postgres
+--     app_is_platform_admin  postgres=X/postgres,oracle_app=X/postgres
+--
+-- FIVE tables' RLS policies call it — ai_chat_messages, ai_chat_actions,
+-- ai_record_attachments, ai_chat_message_attachments and the new
+-- ai_tool_operations — all in the form:
+--
+--     app_is_platform_admin() OR (tenant_id = app_current_tenant()
+--                                 AND user_id = app_current_agent())
+--
+-- Measured as oracle_app_login with app.role='agent':
+--     SELECT count(*) FROM ai_chat_actions;
+--     ERROR: permission denied for function app_current_agent
+--
+-- It hides because of the OR. When app_is_platform_admin() returns true the
+-- planner can satisfy the policy without ever evaluating the second operand, so
+-- every platform-admin path works. A normal broker gets false, the second
+-- operand is evaluated, and their own AI chat history raises. Postgres gives no
+-- ordering guarantee for OR operands either, so which sessions break is not even
+-- stable — the worst shape a permissions bug can have.
+--
+-- Idempotent. Re-granting an existing privilege is a no-op.
+
+GRANT EXECUTE ON FUNCTION app_current_agent() TO oracle_app;

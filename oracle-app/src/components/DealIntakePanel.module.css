@@ -13,7 +13,7 @@
 
 .head { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-3); }
 .head h3, .panel h3 { margin: var(--space-1) 0 0; font-family: var(--font-display); font-size: var(--text-lg); color: var(--oracle-text-heading); }
-.kicker { font-family: var(--font-display); font-size: .5625rem; letter-spacing: var(--tracking-widest); text-transform: uppercase; color: var(--oracle-amber-dim); }
+.kicker { font-family: var(--font-display); font-size: .5625rem; letter-spacing: var(--tracking-widest); text-transform: uppercase; color: var(--oracle-accent-ink); }
 .context, .panel > p { margin: 0; font-size: var(--text-xs); line-height: var(--leading-relaxed); color: var(--oracle-text-dim); }
 .close { width: 44px; height: 44px; display: grid; place-items: center; border: 1px solid var(--oracle-border); border-radius: var(--radius-md); color: var(--oracle-text-dim); font-size: 1.3rem; }
 .form { display: flex; flex-direction: column; gap: var(--space-3); }
@@ -31,7 +31,7 @@
 .error { border: 1px solid var(--oracle-red-dim); color: var(--oracle-red); }
 .actions { display: flex; justify-content: flex-end; gap: var(--space-2); }
 .primary, .secondary { min-height: 44px; padding: 0 var(--space-4); border-radius: var(--radius-md); font-family: var(--font-display); font-size: var(--text-xs); letter-spacing: var(--tracking-wide); text-transform: uppercase; }
-.primary { border: 1px solid var(--oracle-amber-dim); background: var(--oracle-amber-ghost); color: var(--oracle-amber); }
+.primary { border: 1px solid var(--oracle-amber-dim); background: var(--oracle-amber-ghost); color: var(--oracle-accent-ink); }
 .secondary { border: 1px solid var(--oracle-border); color: var(--oracle-text-dim); }
 .primary:disabled { opacity: .45; cursor: not-allowed; }
 @media (max-width: 360px) { .columns { grid-template-columns: 1fr; } }

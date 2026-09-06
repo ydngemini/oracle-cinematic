@@ -83,7 +83,73 @@ async def resolve_tour(
     async with tenant_tx(ctx) as conn:
         rows, scene_rows, plan_row = await fetch_tour_rows(conn, lead_id, listing_id)
 
-    return build_tour(rows, scene_rows, plan_row, lead_id=lead_id, listing_id=listing_id)
+    tour = build_tour(rows, scene_rows, plan_row, lead_id=lead_id, listing_id=listing_id)
+    tour["splat_scene"] = await _scene_manifest_for(rows, tour.get("splat_url"))
+    return tour
+
+
+async def _scene_manifest_for(rows, splat_url: Optional[str]) -> Optional[dict]:
+    """The canonical frame recorded beside the splat the tour will open.
+
+    Which way is up and where to start are decided once, by the worker, and
+    stored as a sidecar under the artifact's own key — the same answer the
+    floor plan reads. Served here so the viewer opens at a real captured
+    viewpoint instead of wherever the solver's frame happened to leave it.
+
+    Best-effort: a capture from before this existed has no manifest, and the
+    viewer then frames the dense bounds, which is what it did before.
+    """
+    if not splat_url:
+        return None
+    key = next((r["s3_key"] for r in rows
+                if r["kind"] == "splat" and r["url"] == splat_url and _has_key(r)), None)
+    if not key:
+        return None
+    import asyncio
+    import json as _json
+
+    import object_storage
+    import scene_manifest
+
+    try:
+        raw = await asyncio.to_thread(object_storage.get_bytes, key + scene_manifest.SUFFIX)
+        payload = _json.loads(raw)
+    except Exception:  # noqa: BLE001 — absent or unreadable: frame bounds instead
+        return None
+    if not isinstance(payload, dict) or payload.get("version") != scene_manifest.SCHEMA_VERSION:
+        return None
+    return payload
+
+
+def _has_key(row) -> bool:
+    try:
+        return bool(row["s3_key"])
+    except (KeyError, IndexError, TypeError):
+        return False
+
+
+def _delivery_format(row) -> Optional[str]:
+    """The stored file's extension, lowercased, e.g. `.sog`.
+
+    Returned to the browser as a format hint because `/api/media/{id}` is
+    deliberately extensionless — the id is the whole path, and a viewer that
+    guesses from it guesses wrong.
+
+    Takes the row, not the key, because a caller that assembled its own rows
+    (every test, and the agent tool surface) will not have selected `s3_key`.
+    A missing key means "unknown format", which the viewer already handles by
+    falling back to inference — not a crash that takes the whole tour down.
+    """
+    try:
+        s3_key = row["s3_key"]
+    except (KeyError, IndexError, TypeError):
+        return None
+    if not s3_key:
+        return None
+    _, dot, ext = str(s3_key).rpartition(".")
+    if not dot or not ext.isalnum() or len(ext) > 10:
+        return None
+    return f".{ext.lower()}"
 
 
 async def fetch_tour_rows(conn, lead_id, listing_id):
@@ -95,7 +161,7 @@ async def fetch_tour_rows(conn, lead_id, listing_id):
     """
     rows = await conn.fetch(
         """
-        SELECT id, kind, url, sort_order,
+        SELECT id, kind, url, sort_order, s3_key,
                COALESCE(provenance, 'captured') AS provenance
           FROM property_media
          WHERE (($1::uuid IS NOT NULL AND lead_id = $1)
@@ -207,6 +273,11 @@ def build_tour(rows, scene_rows, plan_row, *, lead_id=None, listing_id=None) -> 
         assets.append({
             "kind": "splat",
             "url": row["url"],
+            # `/api/media/{id}` carries no extension on purpose, so a viewer
+            # cannot tell a .sog from a .splat by looking at it — PlayCanvas
+            # answered "No parser found for resource" and the tour stayed
+            # black. The server is the only party that knows, so it says.
+            "format": _delivery_format(row),
             "provenance": row["provenance"],
             "is_this_property": captured,
             "walkable": True,
@@ -299,6 +370,13 @@ def build_tour(rows, scene_rows, plan_row, *, lead_id=None, listing_id=None) -> 
         },
         # Falls back to the demo asset so the viewer still has something to
         # open; `is_this_property` is what tells the UI how to label it.
+        # Same reason as `format` on the asset above: the viewer needs the
+        # delivery format, and the URL cannot carry it.
+        "splat_format": (
+            _delivery_format(splats[0]) if has_splat
+            else _delivery_format(demo_splats[0]) if has_demo_splat
+            else None
+        ),
         "splat_url": (
             splats[0]["url"] if has_splat
             else demo_splats[0]["url"] if has_demo_splat
@@ -560,11 +638,21 @@ async def reconstruction_job_status(
     """Poll a reconstruction job (RLS-scoped)."""
     async with tenant_tx(ctx) as conn:
         row = await conn.fetchrow(
-            "SELECT id, status, provider, progress, media_id, error FROM reconstruction_jobs WHERE id = $1",
+            """SELECT id, status, provider, progress, media_id, error,
+                      diagnostics, quality_gate
+                 FROM reconstruction_jobs WHERE id = $1""",
             job_id,
         )
     if row is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Job not found.")
+    import json as _json
+
+    diagnostics = row["diagnostics"]
+    if isinstance(diagnostics, str):
+        try:
+            diagnostics = _json.loads(diagnostics)
+        except ValueError:
+            diagnostics = {}
     return {
         "job_id": str(row["id"]),
         "status": row["status"],
@@ -572,4 +660,11 @@ async def reconstruction_job_status(
         "progress": row["progress"],
         "media_id": str(row["media_id"]) if row["media_id"] else None,
         "error": row["error"],
+        # Per-stage measurements. Without these a caller polling a failed job
+        # learns only that it failed — which of the six stages broke, and what
+        # it measured before breaking, is the whole point of recording them.
+        # Counts, sizes, durations and tool names only; never capture content.
+        "diagnostics": diagnostics or {},
+        # Set when a gate refused the capture rather than the run breaking.
+        "quality_gate": row["quality_gate"],
     }

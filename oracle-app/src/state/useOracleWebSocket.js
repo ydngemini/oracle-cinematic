@@ -4,7 +4,9 @@ import { getUserId, getTenantId } from './identity';
 
 // In prod the SPA is served over https on the same host as the API, and the ALB
 // routes /ws to the backend — so derive wss://<host>/ws from the page origin.
-// VITE_WS_URL overrides explicitly; fall back to localhost only for http dev.
+// VITE_WS_URL overrides explicitly; otherwise ALWAYS derive from the page —
+// in dev too, where Vite proxies /ws. A hardcoded localhost:8000 assumes the
+// backend port is reachable from the browser's host, which under DinD it is not.
 // (Hardcoding ws://localhost in the bundle made the live feed dead in prod:
 // mixed-content blocked on an https page.)
 const configuredWsUrl = import.meta.env.VITE_WS_URL || '';
@@ -12,13 +14,9 @@ const WS_URL =
   (configuredWsUrl
     ? `${configuredWsUrl.replace(/\/+$/, '')}${new URL(configuredWsUrl).pathname === '/' ? '/ws' : ''}`
     : '') ||
-  (typeof window !== 'undefined' && window.location.protocol === 'https:'
-    ? `wss://${window.location.host}/ws`
-    : import.meta.env.DEV
-      ? 'ws://localhost:8000/ws'
-      : typeof window !== 'undefined'
-        ? `ws://${window.location.host}/ws`
-        : '');
+  (typeof window !== 'undefined'
+    ? `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}/ws`
+    : '');
 const BASE_DELAY = 2000;
 
 // Identity for tokenless local development only. Production tenant/user values
@@ -173,33 +171,6 @@ export function useOracleWebSocket() {
             type: ACTIONS.SET_MANUAL_COMPS,
             payload: msg.comps || [],
           });
-          break;
-
-        case 'AGENT_THOUGHT':
-          if (msg.mode === 'full') {
-            // The shared ambient producer sends the whole thought as one frame
-            // (one generation per tenant, delivered to every socket) instead of
-            // ~80 token frames per socket. Reuse the existing start/end actions
-            // so the speech bubble renders identically either way.
-            dispatch({
-              type: ACTIONS.WALKER_THOUGHT_START,
-              payload: { agent: msg.agent, token: msg.token },
-            });
-            dispatch({ type: ACTIONS.WALKER_THOUGHT_END });
-          } else if (msg.mode === 'start') {
-            // Older token-streaming servers; keep understanding them.
-            dispatch({
-              type: ACTIONS.WALKER_THOUGHT_START,
-              payload: { agent: msg.agent, token: msg.token },
-            });
-          } else if (msg.mode === 'stream') {
-            dispatch({
-              type: ACTIONS.WALKER_THOUGHT_TOKEN,
-              payload: { token: msg.token },
-            });
-          } else if (msg.mode === 'end') {
-            dispatch({ type: ACTIONS.WALKER_THOUGHT_END });
-          }
           break;
 
         case 'SESSION_RESTORED': {

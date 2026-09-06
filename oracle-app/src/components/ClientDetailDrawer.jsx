@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import { crmGet, crmPost, crmPatch, crmDelete } from '../state/useCrmApi';
 import {
   GLYPHS, STAGES, stageLabel, normStage, normalizeType, clampScore,
@@ -17,10 +17,19 @@ import ShowingLogger from './ShowingLogger';
 import ClientNotes from './ClientNotes';
 import StateDocumentChecklist from './StateDocumentChecklist';
 import { useAssistantRecord } from './AssistantContext';
+// Lazy: the relationship view pulls two endpoints and its own stylesheet, and
+// most drawer opens never leave Overview.
+const RelationshipIntelligence = lazy(() =>
+  import('./RelationshipIntelligence').then((m) => ({ default: m.RelationshipIntelligence })));
+
 import styles from './ClientDetailDrawer.module.css';
 
 const SUBTABS = [
   { id: 'overview', label: 'Overview' },
+  // Second, immediately after the facts: what Neoh believes about this person
+  // and why. Buried any deeper it becomes a feature nobody finds, and the
+  // provenance it exposes is the whole trust argument for the AI layer.
+  { id: 'intelligence', label: 'Intelligence' },
   { id: 'timeline', label: 'Timeline' },
   { id: 'tasks', label: 'Tasks' },
   { id: 'notes', label: 'Notes' },
@@ -69,7 +78,7 @@ function InlineEdit({ value, placeholder, onCommit, className, ariaLabel }) {
  * controls stage / score / assignee / identity (all PATCH /clients/{id}),
  * and the sub-tabs own their own data + graceful states. Keyboard-dismissable.
  */
-export default function ClientDetailDrawer({ card, onClose, onClientChanged }) {
+export default function ClientDetailDrawer({ card, onClose, onClientChanged, read = null }) {
   const clientId = card?.id;
   const [detail, setDetail] = useState(card);   // seed with the row we already have
   const [loadErr, setLoadErr] = useState(null);
@@ -298,6 +307,9 @@ export default function ClientDetailDrawer({ card, onClose, onClientChanged }) {
             <button type="button" className={styles.closeBtn} onClick={onClose} aria-label="Close">{GLYPHS.close}</button>
           </div>
 
+          {/* Neoh's read, when the sheet that opened this drawer has one. */}
+          {read}
+
           <div className={styles.automationBar} aria-live="polite">
             <span className={styles.automationIdentity}>
               <span className={styles.automationDot} data-status={automationStatus} aria-hidden="true" />
@@ -406,6 +418,11 @@ export default function ClientDetailDrawer({ card, onClose, onClientChanged }) {
               clientId={clientId}
               onTagsChanged={reloadDetail}
             />
+          )}
+          {tab === 'intelligence' && (
+            <Suspense fallback={null}>
+              <RelationshipIntelligence clientId={clientId} />
+            </Suspense>
           )}
           {tab === 'timeline' && <ClientTimeline clientId={clientId} reloadKey={tlKey} />}
           {tab === 'tasks' && <ClientTaskList clientId={clientId} onChange={bumpTimeline} />}

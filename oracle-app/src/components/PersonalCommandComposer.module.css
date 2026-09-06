@@ -1,7 +1,7 @@
 .wrap { display: flex; flex-direction: column; gap: var(--space-3); }
 .commandBox { position: relative; overflow: hidden; padding: var(--space-4); border: 1px solid var(--oracle-glass-edge); border-radius: var(--radius-lg); background: var(--oracle-glass); backdrop-filter: var(--oracle-backdrop-light); -webkit-backdrop-filter: var(--oracle-backdrop-light); box-shadow: var(--shadow-e1); }
 .heading { display: flex; align-items: center; gap: var(--space-3); }
-.botMark { width: 42px; height: 42px; flex: 0 0 42px; display: grid; place-items: center; border: 1px solid var(--oracle-amber-dim); border-radius: var(--radius-md); color: var(--oracle-amber); background: var(--oracle-amber-ghost); }
+.botMark { width: 42px; height: 42px; flex: 0 0 42px; display: grid; place-items: center; border: 1px solid var(--oracle-amber-dim); border-radius: var(--radius-md); color: var(--oracle-accent-ink); background: var(--oracle-amber-ghost); }
 .botMark svg { width: 21px; height: 21px; }
 .heading h2 { font-size: var(--text-md); }
 .heading p { margin-top: var(--space-1); color: var(--oracle-text-dim); font-size: var(--text-xs); }
@@ -11,7 +11,7 @@
 .compact .inputLabel textarea { min-height: 76px; }
 .commandActions { margin-top: var(--space-3); display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); }
 .commandActions > span { color: var(--oracle-text-ghost); font: .625rem/1 var(--font-mono); }
-.commandActions button, .authorize, .cancel { min-height: 44px; padding: 0 var(--space-4); display: inline-flex; align-items: center; justify-content: center; gap: var(--space-2); border: 1px solid var(--oracle-amber-dim); border-radius: var(--radius-md); background: var(--oracle-amber-ghost); color: var(--oracle-amber); font: 600 var(--text-xs)/1 var(--font-mono); letter-spacing: var(--tracking-wide); text-transform: uppercase; }
+.commandActions button, .authorize, .cancel { min-height: 44px; padding: 0 var(--space-4); display: inline-flex; align-items: center; justify-content: center; gap: var(--space-2); border: 1px solid var(--oracle-amber-dim); border-radius: var(--radius-md); background: var(--oracle-amber-ghost); color: var(--oracle-accent-ink); font: 600 var(--text-xs)/1 var(--font-mono); letter-spacing: var(--tracking-wide); text-transform: uppercase; }
 .commandActions button svg, .authorize svg { width: 17px; height: 17px; }
 .commandActions button:disabled, .authorize:disabled { opacity: .42; cursor: not-allowed; }
 .error, .warning { margin-top: var(--space-3); padding: var(--space-2) var(--space-3); border-left: 2px solid var(--oracle-red); background: rgba(220, 80, 80,.08); color: #efb1b1; font-size: var(--text-xs); }
@@ -20,7 +20,7 @@
 .modal { position: relative; width: min(100%, 620px); max-height: calc(100dvh - var(--safe-top) - var(--safe-bottom) - 2rem); overflow-y: auto; padding: var(--space-4); border: 1px solid var(--oracle-glass-edge); border-radius: var(--radius-xl); background: var(--oracle-glass); backdrop-filter: var(--oracle-backdrop); -webkit-backdrop-filter: var(--oracle-backdrop); box-shadow: var(--shadow-float); -webkit-overflow-scrolling: touch; }
 .modal > header { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-3); }
 .modal h2 { margin-top: var(--space-2); font-size: var(--text-xl); }
-.intentBadge { display: inline-flex; padding: 3px 8px; border: 1px solid var(--oracle-amber-dim); border-radius: var(--radius-pill); color: var(--oracle-amber); font: 600 .625rem/1 var(--font-mono); letter-spacing: var(--tracking-wider); }
+.intentBadge { display: inline-flex; padding: 3px 8px; border: 1px solid var(--oracle-amber-dim); border-radius: var(--radius-pill); color: var(--oracle-accent-ink); font: 600 .625rem/1 var(--font-mono); letter-spacing: var(--tracking-wider); }
 .close { width: 44px; height: 44px; display: grid; place-items: center; border: 1px solid var(--oracle-border-bright); background: var(--oracle-glass); }
 .close svg { width: 19px; height: 19px; }
 .target { margin-top: var(--space-4); display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: var(--space-2); }

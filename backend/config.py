@@ -29,8 +29,32 @@ log = logging.getLogger("oracle.config")
 # Environment
 # ---------------------------------------------------------------------------
 _DEV_VALUES = {"dev", "development", "local"}
+_PROD_VALUES = {"prod", "production"}
 ORACLE_ENV: str = os.environ.get("ORACLE_ENV", "").lower()
+
+# "Is this a developer's machine?" — relaxes secret validation, and elsewhere
+# mounts the chaos router and loosens auth. Deliberately narrow: a value must
+# opt IN to being development.
 IS_DEV: bool = ORACLE_ENV in _DEV_VALUES
+
+# "Is this production?" — and it is NOT `not IS_DEV`.
+#
+# Those two answers are different questions with a gap between them, and the gap
+# is every other value: "", "test", "staging", "ci". Using `not IS_DEV` to mean
+# "production" put all of them on the production side of a safety interlock.
+# Measured before this existed, the live-Stripe guard in billing.py fired only
+# for ORACLE_ENV=dev|development|local, so:
+#
+#     ORACLE_ENV unset      -> live sk_live_* key SILENTLY ACCEPTED
+#     ORACLE_ENV=test       -> live sk_live_* key SILENTLY ACCEPTED
+#     ORACLE_ENV=staging    -> live sk_live_* key SILENTLY ACCEPTED
+#
+# with unset being the default. The guard's own message claimed it covered
+# "dev/unset". It never covered unset.
+#
+# Anything that must be denied outside production asks THIS, so an unrecognised
+# or absent value fails safe instead of inheriting production's privileges.
+IS_PROD: bool = ORACLE_ENV in _PROD_VALUES
 
 
 def flag(name: str, default: bool = False) -> bool:

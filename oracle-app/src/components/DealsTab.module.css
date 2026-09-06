@@ -17,7 +17,7 @@
 .hero > div { max-width: 39rem; }
 
 .kicker {
-  color: var(--oracle-amber);
+  color: var(--oracle-accent-ink);
   font: 650 0.625rem/1.2 var(--font-display);
   letter-spacing: var(--tracking-widest);
   text-transform: uppercase;
@@ -66,7 +66,7 @@
 
 .switcher button svg { width: 16px; height: 16px; }
 .switcher button:hover { color: var(--oracle-text); }
-.switcher button[aria-pressed='true'] { border-color: var(--oracle-amber-dim); color: var(--oracle-amber); background: var(--oracle-amber-ghost); }
+.switcher button[aria-pressed='true'] { border-color: var(--oracle-amber-dim); color: var(--oracle-accent-ink); background: var(--oracle-amber-ghost); }
 .switcher button:focus-visible { outline: none; box-shadow: var(--ring-focus); }
 
 .workspace { min-width: 0; }

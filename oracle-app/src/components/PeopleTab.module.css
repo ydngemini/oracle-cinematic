@@ -1,19 +1,19 @@
 .wrap { width: min(100%, 68rem); display: grid; gap: var(--space-5); padding: clamp(var(--space-3), 3vw, var(--space-8)) 0; }
 .hero { min-height: 8rem; display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-8); }
 .hero > div { max-width: 39rem; }
-.kicker { color: var(--oracle-amber); font: 650 0.625rem/1.2 var(--font-display); letter-spacing: var(--tracking-widest); text-transform: uppercase; }
+.kicker { color: var(--oracle-accent-ink); font: 650 0.625rem/1.2 var(--font-display); letter-spacing: var(--tracking-widest); text-transform: uppercase; }
 .hero h1 { margin-top: var(--space-3); font-size: clamp(2.5rem, 8vw, 5rem); font-weight: 300; line-height: 0.9; }
 .hero p { max-width: 36rem; margin-top: var(--space-4); color: var(--oracle-text-dim); font-size: var(--text-sm); line-height: var(--leading-relaxed); }
 .refresh { width: 44px; height: 44px; flex: 0 0 44px; display: grid; place-items: center; border: 1px solid var(--oracle-glass-edge); border-radius: var(--radius-sm); color: var(--oracle-text-dim); background: var(--oracle-glass); }
 .refresh svg { width: 17px; height: 17px; }
-.refresh:hover { color: var(--oracle-amber); border-color: var(--oracle-amber-dim); }
+.refresh:hover { color: var(--oracle-accent-ink); border-color: var(--oracle-amber-dim); }
 .refresh:focus-visible { outline: none; box-shadow: var(--ring-focus); }
 
 .switcher { width: fit-content; display: inline-flex; gap: var(--space-1); padding: var(--space-1); border: 1px solid var(--oracle-glass-edge); border-radius: var(--radius-sm); background: var(--oracle-glass); backdrop-filter: var(--oracle-backdrop-light); -webkit-backdrop-filter: var(--oracle-backdrop-light); }
 .switcher button { position: relative; min-height: 44px; display: inline-flex; align-items: center; gap: var(--space-2); padding: 0 var(--space-3); border: 1px solid transparent; border-radius: 4px; color: var(--oracle-text-dim); background: transparent; font: 650 0.625rem/1 var(--font-display); letter-spacing: var(--tracking-wider); text-transform: uppercase; }
 .switcher button svg { width: 16px; height: 16px; }
 .switcher button small { min-width: 1.25rem; color: inherit; font: 600 0.5625rem/1 var(--font-mono); text-align: right; }
-.switcher button[aria-pressed='true'] { border-color: var(--oracle-amber-dim); color: var(--oracle-amber); background: var(--oracle-amber-ghost); }
+.switcher button[aria-pressed='true'] { border-color: var(--oracle-amber-dim); color: var(--oracle-accent-ink); background: var(--oracle-amber-ghost); }
 .switcher button[data-source='error']::after { position: absolute; top: 6px; right: 6px; width: 6px; height: 6px; border-radius: 50%; content: ''; background: var(--oracle-red); }
 .switcher button:focus-visible { outline: none; box-shadow: var(--ring-focus); }
 
@@ -31,7 +31,7 @@
 .contacts { margin: 0; padding: 0; list-style: none; border-top: 1px solid var(--oracle-border-subtle); }
 .contacts li { min-height: 74px; display: grid; grid-template-columns: auto minmax(0, 1fr) minmax(8rem, 0.35fr) auto auto; align-items: center; gap: var(--space-3); padding: var(--space-3) var(--space-5); border-top: 1px solid var(--oracle-border-subtle); }
 .contacts li:first-child { border-top: 0; }
-.avatar { width: 36px; height: 36px; display: grid; place-items: center; border: 1px solid var(--oracle-amber-dim); border-radius: 50%; color: var(--oracle-amber); }
+.avatar { width: 36px; height: 36px; display: grid; place-items: center; border: 1px solid var(--oracle-amber-dim); border-radius: 50%; color: var(--oracle-accent-ink); }
 .avatar svg { width: 17px; height: 17px; }
 .identity, .contactMeta { min-width: 0; display: grid; gap: 3px; }
 .identity strong, .identity small, .contactMeta span, .contactMeta small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -39,17 +39,17 @@
 .identity small, .contactMeta small { color: var(--oracle-text-dim); font-size: var(--text-xs); }
 .contactMeta span { color: var(--oracle-text); font: 650 0.5625rem/1 var(--font-display); letter-spacing: var(--tracking-wider); text-transform: uppercase; }
 .security { padding: 3px 7px; color: var(--oracle-green); background: rgba(100, 210, 140, 0.1); font: 650 0.5625rem/1 var(--font-display); letter-spacing: var(--tracking-wide); text-transform: uppercase; }
-.security[data-state='pending_encryption'] { color: var(--oracle-amber); background: var(--oracle-amber-ghost); }
-.contacts li > button { min-height: 44px; padding: 0 var(--space-2); color: var(--oracle-amber); font: 650 0.625rem/1 var(--font-display); letter-spacing: var(--tracking-wide); text-transform: uppercase; }
+.security[data-state='pending_encryption'] { color: var(--oracle-accent-ink); background: var(--oracle-amber-ghost); }
+.contacts li > button { min-height: 44px; padding: 0 var(--space-2); color: var(--oracle-accent-ink); font: 650 0.625rem/1 var(--font-display); letter-spacing: var(--tracking-wide); text-transform: uppercase; }
 .contacts li > button:focus-visible { outline: none; box-shadow: var(--ring-focus); }
 
 .errorState, .empty { min-height: 132px; display: grid; align-content: center; gap: var(--space-3); padding: var(--space-5); border-top: 1px solid var(--oracle-border-subtle); }
 .errorState strong, .empty strong { color: var(--oracle-text); font-size: var(--text-sm); }
 .errorState p, .empty p { color: var(--oracle-text-dim); font-size: var(--text-xs); }
 .errorState > div { display: flex; flex-wrap: wrap; gap: var(--space-2); }
-.errorState button, .empty button { min-height: 44px; padding: 0 var(--space-3); color: var(--oracle-amber); border: 1px solid var(--oracle-amber-dim); border-radius: var(--radius-sm); font: 650 0.625rem/1 var(--font-display); letter-spacing: var(--tracking-wide); text-transform: uppercase; }
+.errorState button, .empty button { min-height: 44px; padding: 0 var(--space-3); color: var(--oracle-accent-ink); border: 1px solid var(--oracle-amber-dim); border-radius: var(--radius-sm); font: 650 0.625rem/1 var(--font-display); letter-spacing: var(--tracking-wide); text-transform: uppercase; }
 .empty { grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; align-content: normal; }
-.empty > svg { width: 32px; height: 32px; color: var(--oracle-amber); stroke-width: 1.3; }
+.empty > svg { width: 32px; height: 32px; color: var(--oracle-accent-ink); stroke-width: 1.3; }
 
 .skeleton { display: grid; padding-inline: var(--space-5); border-top: 1px solid var(--oracle-border-subtle); }
 .skeleton span { height: 74px; border-top: 1px solid var(--oracle-border-subtle); background-image: linear-gradient(100deg, transparent 28%, var(--oracle-shimmer) 50%, transparent 72%); background-size: 220% 100%; animation: oracle-sheen 1.5s var(--ease-in-out) infinite; }

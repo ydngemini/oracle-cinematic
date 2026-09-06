@@ -257,17 +257,29 @@ async def _reject(websocket: WebSocket, request_id: Optional[str], code: str, me
 async def handle_chat_websocket(
     ctx: TenantContext, websocket: WebSocket, raw_message: dict,
 ) -> None:
-    """Validate, persist, enqueue, and ACK one versioned chat frame."""
+    """Validate, persist, enqueue, and ACK one versioned chat frame.
+
+    Every stage logs at INFO. This path logged nothing for its whole life,
+    and the first time a frame went in and nothing came out there was no way
+    to tell admission from persistence from enqueue — the socket's receive
+    loop is sequential, so one silent stall here also stops every later
+    frame on that connection.
+    """
+    request_id = raw_message.get("request_id")
+    logger.info("ai_chat frame received tenant=%s request_id=%s", ctx.tenant_id, request_id)
     if not _enabled():
-        await _reject(websocket, raw_message.get("request_id"), "FEATURE_DISABLED", "Assistant is unavailable")
+        logger.info("ai_chat rejected request_id=%s code=FEATURE_DISABLED", request_id)
+        await _reject(websocket, request_id, "FEATURE_DISABLED", "Assistant is unavailable")
         return
     try:
         frame = ChatSendFrame.model_validate(raw_message)
     except ValidationError:
-        await _reject(websocket, raw_message.get("request_id"), "INVALID_MESSAGE", "Check the message and selected files")
+        logger.info("ai_chat rejected request_id=%s code=INVALID_MESSAGE", request_id)
+        await _reject(websocket, request_id, "INVALID_MESSAGE", "Check the message and selected files")
         return
 
     context = frame.context.model_dump(mode="json") if frame.context else None
+    logger.info("ai_chat persisting request_id=%s context=%s", frame.request_id, context and context.get("type"))
     try:
         created = await create_chat_request(
             ctx, request_id=str(frame.request_id), content=frame.content,
@@ -282,6 +294,10 @@ async def handle_chat_websocket(
         "message_id": created["assistant_id"], "user_message_id": created.get("user_id"),
         "duplicate": created["duplicate"], "status": created.get("status", "pending"),
     }
+    logger.info(
+        "ai_chat accepted request_id=%s assistant_id=%s duplicate=%s",
+        frame.request_id, created.get("assistant_id"), created["duplicate"],
+    )
     await ws_hub.broadcast_user(ctx.tenant_id, ctx.agent_id, accepted)
     if created["duplicate"]:
         return

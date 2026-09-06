@@ -1,5 +1,7 @@
 import { Suspense, lazy, useMemo, useState } from 'react';
+import { createPortal } from 'react-dom';
 
+import useProtectedMedia from '../state/useProtectedMedia';
 import styles from './TourViewer.module.css';
 
 /**
@@ -34,6 +36,19 @@ import styles from './TourViewer.module.css';
  * read `.sog` (its package ships no SOG loader) and says so rather than
  * failing blank.
  *
+ * **Protected media is resolved HERE, once, for every renderer.** The
+ * reconstruction worker stores a finished splat behind `/api/media/{id}`, which
+ * requires the Neoh JWT. PlayCanvas's internal asset request does not carry our
+ * Authorization header, so handing it that URL produced a 401 and a black
+ * canvas — the splat had rendered for nobody since the media route was
+ * protected. `useProtectedMedia` fetches the bytes with the app's own client
+ * and yields a `blob:` URL, and the ORIGINAL filename travels beside it because
+ * a blob URL has no extension for PlayCanvas to infer a parser from.
+ *
+ * Doing it at this level rather than inside each viewer is deliberate: two
+ * renderers independently deciding how to authenticate is how one of them ends
+ * up not doing it.
+ *
  * Every renderer is lazy — an engine that is never opened stays out of the
  * bundle graph for the session.
  *
@@ -55,14 +70,54 @@ const ENGINE = (import.meta.env.VITE_TOUR_ENGINE || 'playcanvas').toLowerCase();
 const DEMO_PREFIX = 'This is a generated demo space, not a capture of this property.';
 
 export function TourViewer({
-  splatUrl, panoScenes, disclosure, address, title, floors, onClose,
+  splatUrl, splatFormat, splatScene, panoScenes, disclosure, address, title, floors, onClose,
   isThisProperty = true, tourpoints,
 }) {
-  // PropertyTourViewer re-initialises its whole engine when `assets` changes
-  // identity, so this must be stable across re-renders.
-  const assets = useMemo(
+  // One item in, one out. `useProtectedMedia` fetches /api/media/* with the
+  // JWT and returns a blob: URL; anything external passes through untouched.
+  // It revokes every URL it made on replacement and unmount.
+  const protectedItems = useMemo(
     () => (splatUrl ? [{ id: 'property-splat', url: splatUrl }] : []),
     [splatUrl],
+  );
+  // Ahead of the photo grid behind it: someone who opened the tour is waiting
+  // on this one file, not on thumbnails.
+  const [resolvedSplat] = useProtectedMedia(protectedItems, { priority: 10 });
+  const splatBytesUrl = resolvedSplat?.display_url || '';
+  const splatError = resolvedSplat?.error || null;
+
+  // True while the bytes are still being fetched. Mounting the engine now would
+  // show a black canvas with no explanation, so the viewer says what it is
+  // doing instead.
+  const splatPreparing = Boolean(splatUrl) && !splatBytesUrl && !splatError;
+
+  // PropertyTourViewer re-initialises its whole engine when `assets` changes
+  // identity, so this must be stable across re-renders — and must not become a
+  // non-empty array until the bytes exist.
+  const assets = useMemo(
+    () => (splatBytesUrl
+      ? [{
+        id: 'property-splat',
+        url: splatBytesUrl,
+        // The format hint. Prefer what the server said the file is:
+        // `/api/media/{id}` has no extension at all, so inferring from it gave
+        // PlayCanvas nothing to match and it refused the asset with "No parser
+        // found for resource". Fall back to the URL for CDN paths that do
+        // carry one.
+        filename: splatFormat ? `capture${splatFormat}` : splatUrl,
+        // State the kind outright when the server has told us the delivery
+        // format is a splat. Inference is a fallback, not the contract: a
+        // blob: URL has no extension and `/api/media/{id}` never had one, so
+        // leaving PlayCanvas to guess is what produced "No parser found for
+        // resource". Deliberately NOT hardcoded for every format — an unknown
+        // or .ply format falls through to inferAssetKind, which still refuses
+        // PLY as a delivery format.
+        ...(splatFormat === '.sog' || splatFormat === '.splat'
+          ? { kind: 'gsplat' }
+          : {}),
+      }]
+      : []),
+    [splatBytesUrl, splatUrl, splatFormat],
   );
 
   // Memoised so `modes` can depend on the scenes themselves rather than just
@@ -204,10 +259,32 @@ export function TourViewer({
         focusSceneId={stop === null ? null : route[stop]?.scene_id ?? null}
       />
     );
+  } else if (splatError) {
+    // The capture exists and the server served it; the browser could not take
+    // delivery. Saying so beats waiting forever on a message that implies
+    // progress.
+    viewer = (
+      <div className={styles.preparing} role="alert">
+        <p>This 3D tour could not be loaded.</p>
+        <p className={styles.preparingNote}>
+          The capture is on the server, but the file did not finish downloading
+          in this browser. Reloading usually fixes it.
+        </p>
+      </div>
+    );
+  } else if (splatPreparing) {
+    // Deliberate state, not a spinner over an empty engine: the bytes are
+    // being fetched with the JWT and there is nothing to draw yet.
+    viewer = (
+      <div className={styles.preparing} role="status">
+        <p>Preparing 3D tour…</p>
+      </div>
+    );
   } else if (ENGINE === 'playcanvas') {
     viewer = (
       <PropertyTourViewer
         assets={assets}
+        scene={splatScene || null}
         floors={floors || []}
         address={address}
         title={shownTitle}
@@ -219,7 +296,7 @@ export function TourViewer({
   } else {
     viewer = (
       <WalkableSplatViewer
-        splatUrl={splatUrl}
+        splatUrl={splatBytesUrl}
         disclosure={shownDisclosure}
         address={address}
         title={shownTitle}
@@ -228,12 +305,21 @@ export function TourViewer({
     );
   }
 
-  return (
+  // Rendered into the document body, not where it was mounted.
+  //
+  // The viewer is `position: fixed; inset: 0` and should fill the window, but
+  // the property drawer that opens it sets `backdrop-filter`, and any of
+  // filter, transform or backdrop-filter on an ancestor makes that ancestor
+  // the containing block for fixed descendants. The tour was therefore pinned
+  // inside a 440px drawer — the capture rendered correctly into a sliver.
+  // A portal is the fix that does not require the drawer to give up its glass.
+  return createPortal(
     <>
       <Suspense fallback={null}>{viewer}</Suspense>
       {guided}
       {switcher}
-    </>
+    </>,
+    document.body,
   );
 }
 

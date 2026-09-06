@@ -707,6 +707,35 @@ async def _client_ai_catchup_task() -> dict:
     )
 
 
+async def _mission_tick_task() -> dict:
+    """Advance every running mission by one step.
+
+    Default OFF. Missions pursue an outcome across many contacts unattended,
+    so the scheduler does not start doing that because a deploy happened —
+    the same posture as the parcel harvest and speed-to-lead.
+    """
+    from missions.executor import sweep_all_tenants
+
+    return await sweep_all_tenants()
+
+
+async def _outcome_attribution_task() -> dict:
+    """Bind recorded outcomes to the decisions that earned them.
+
+    ``outcome_memory.record_outcome`` writes facts at the moment they happen;
+    this is the other clock, where a reply from Tuesday finds the text from
+    last week. Rows that match nothing are marked examined too — that is the
+    base rate, and skipping them would leave every rate without a denominator.
+    """
+    from outcome_memory import sweep_all_tenants
+
+    return await sweep_all_tenants(
+        per_tenant_limit=max(
+            1, min(1000, int(os.getenv("ORACLE_OUTCOME_ATTRIBUTION_BATCH", "200")))
+        ),
+    )
+
+
 async def _usage_meter_drain_task() -> dict:
     """Push locally-recorded usage to Stripe's meter.
 
@@ -839,6 +868,33 @@ def build_default_scheduler() -> PeriodicScheduler:
         ),
         run=_usage_meter_drain_task,
         enabled=os.getenv("ORACLE_USAGE_DRAIN_ENABLED", "1") == "1",
+    ))
+    # Fifteen minutes by default. Attribution is deferred rather than inline
+    # because the reply→decision window is fourteen days and a synchronous
+    # join on every inbound message is the wrong cost; a quarter-hour of lag on
+    # a fact that took days to arrive is invisible. The sweep is idempotent —
+    # every write is guarded by IS NULL — so overlap between replicas is safe.
+    sched.register(PeriodicTask(
+        name="outcome_attribution",
+        interval_s=max(
+            60.0,
+            float(os.getenv("ORACLE_OUTCOME_ATTRIBUTION_INTERVAL_MIN", "15")) * 60,
+        ),
+        run=_outcome_attribution_task,
+        enabled=os.getenv("ORACLE_OUTCOME_ATTRIBUTION_ENABLED", "1") == "1",
+    ))
+    # Ten minutes, and OFF unless explicitly enabled. Two independent switches
+    # have to be thrown before a mission acts: this one, and Feature.MISSIONS,
+    # which the executor checks on every tick. That redundancy is deliberate —
+    # the credential check is NOT a third switch, because a machine with no
+    # credential rows can still have Twilio in its environment.
+    sched.register(PeriodicTask(
+        name="mission_tick",
+        interval_s=max(
+            60.0, float(os.getenv("ORACLE_MISSION_TICK_INTERVAL_MIN", "10")) * 60,
+        ),
+        run=_mission_tick_task,
+        enabled=os.getenv("ORACLE_MISSIONS_ENABLED", "0") == "1",
     ))
     return sched
 

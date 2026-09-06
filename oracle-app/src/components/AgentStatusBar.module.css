@@ -2,7 +2,7 @@
 .phases { position: relative; z-index: 1; width: 100%; display: flex; align-items: center; overflow-x: auto; }
 .phase, .memory { min-height: 34px; padding: 0 var(--space-3); display: inline-flex; align-items: center; color: var(--oracle-text-ghost); font: 600 .5625rem/1 var(--font-mono); letter-spacing: var(--tracking-wide); white-space: nowrap; }
 .phase + .phase, .memory { border-left: 1px solid var(--oracle-border-subtle); }
-.phase[data-active='true'] { color: var(--oracle-amber); background: var(--oracle-amber-ghost); }
+.phase[data-active='true'] { color: var(--oracle-accent-ink); background: var(--oracle-amber-ghost); }
 .memory[data-active='true'] { color: var(--oracle-green); }
 .commandBar { padding: var(--space-2) var(--space-3); gap: var(--space-3); border-color: rgba(255, 188, 31, 0.32); }
 .commandCopy { position: relative; z-index: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }

@@ -378,6 +378,207 @@ async def _reconcile(conn, files: list[str]) -> int:
     return 3 if partial else 0
 
 
+# ── Concurrent index pre-build ───────────────────────────────────────────────
+#
+# CREATE INDEX takes a ShareLock, which blocks every INSERT/UPDATE/DELETE on the
+# table for the whole build. On an empty database that is instant and nobody
+# notices. Applying the same migration to a populated production table is a
+# different event: an expression index over 8.6M rows takes minutes, the app
+# pool's command_timeout is 30s (db/connection.py), and every write that lands
+# in that window dies as a bare TimeoutError() — the exact symptom migration
+# 0086 exists to eliminate.
+#
+# CREATE INDEX CONCURRENTLY does not take that lock, but it cannot run inside a
+# transaction, and this runner deliberately wraps each migration in one so the
+# migration and its ledger row commit together. Rather than weaken that, this
+# pre-pass builds the indexes BEFORE the transactional apply reaches them.
+#
+# The trick is that it needs no cooperation from the migration: every CREATE
+# INDEX here is written `IF NOT EXISTS`, so once the index exists the real
+# migration's statement is a no-op that takes no lock at all. The migration file
+# is never edited and its checksum never moves.
+#
+# Run it before a production apply:
+#     python run_migrations.py --prebuild-indexes
+#     python run_migrations.py
+#
+# It is safe to re-run, safe to skip, and safe to interrupt — a cancelled
+# CONCURRENTLY build leaves an INVALID index, which this reports rather than
+# leaving for the planner to silently ignore.
+
+_CREATE_INDEX_RE = re.compile(
+    r"CREATE\s+(?:UNIQUE\s+)?INDEX\s+(?:CONCURRENTLY\s+)?(?:IF\s+NOT\s+EXISTS\s+)?"
+    r"(?P<name>[A-Za-z_][A-Za-z0-9_$]*)\s+ON\s",
+    re.IGNORECASE,
+)
+
+
+def _concurrent_index_statements(sql: str) -> list[tuple[str, str]]:
+    """(index_name, CONCURRENTLY-rewritten statement) for each CREATE INDEX.
+
+    Only plain CREATE INDEX is returned. A statement already marked
+    CONCURRENTLY is passed through; anything else in the file — tables, grants,
+    policies, DML — is ignored here and left to the transactional apply, which
+    is where it belongs.
+    """
+    # Comments are stripped BEFORE splitting, not after. A migration comment is
+    # prose and prose contains semicolons — 0086's own header has one, which
+    # split the file mid-sentence and hid the CREATE INDEX that followed behind
+    # a fragment that no longer started with CREATE.
+    code_only = "\n".join(
+        line for line in sql.splitlines()
+        if line.strip() and not line.lstrip().startswith("--")
+    )
+
+    out: list[tuple[str, str]] = []
+    for statement in code_only.split(";"):
+        stripped = statement.strip()
+        if not stripped:
+            continue
+        match = _CREATE_INDEX_RE.search(stripped)
+        # .search would also match a CREATE INDEX mentioned inside some other
+        # statement's body; require it to be what the statement actually is.
+        if not match or not stripped.upper().startswith("CREATE"):
+            continue
+        if re.search(r"\bCONCURRENTLY\b", stripped, re.IGNORECASE):
+            rewritten = stripped
+        else:
+            rewritten = re.sub(
+                r"^(CREATE\s+(?:UNIQUE\s+)?INDEX)(\s+)",
+                r"\1 CONCURRENTLY\2", stripped, count=1, flags=re.IGNORECASE,
+            )
+        # Without this the pre-pass is not re-runnable: a second run would fail
+        # on an index the first one built.
+        if not re.search(r"\bIF\s+NOT\s+EXISTS\b", rewritten, re.IGNORECASE):
+            rewritten = re.sub(
+                r"^(CREATE\s+(?:UNIQUE\s+)?INDEX\s+CONCURRENTLY)(\s+)",
+                r"\1 IF NOT EXISTS\2", rewritten, count=1, flags=re.IGNORECASE,
+            )
+        out.append((match.group("name"), rewritten))
+    return out
+
+
+async def _prebuild_indexes(conn, files: list[str]) -> int:
+    """Build every pending migration's indexes CONCURRENTLY, outside a transaction.
+
+    Deliberately does NOT record anything in schema_migrations: this changes no
+    schema the ledger tracks beyond an index the migration was going to create
+    anyway, and claiming a migration is applied when only its indexes exist
+    would be a lie the reconcile probe would have to unpick later.
+    """
+    recorded = {
+        row["filename"]
+        for row in await conn.fetch("SELECT filename FROM schema_migrations")
+    }
+    built = skipped = 0
+    invalid: list[str] = []
+
+    for migration_path in files:
+        name = os.path.basename(migration_path)
+        if name in recorded:
+            continue
+        with open(migration_path, encoding="utf-8") as handle:
+            statements = _concurrent_index_statements(handle.read())
+        for index_name, statement in statements:
+            exists = await conn.fetchval(
+                "SELECT indisvalid FROM pg_index i "
+                " JOIN pg_class c ON c.oid = i.indexrelid WHERE c.relname = $1",
+                index_name,
+            )
+            if exists is True:
+                print(f"-- {name}: {index_name} already valid, skip", flush=True)
+                skipped += 1
+                continue
+            if exists is False:
+                # A previous CONCURRENTLY build was interrupted. Postgres keeps
+                # the failed index and the planner ignores it forever, so it has
+                # to be dropped before a rebuild can succeed.
+                print(f"!! {name}: {index_name} exists but is INVALID; dropping",
+                      flush=True)
+                await conn.execute(f"DROP INDEX CONCURRENTLY IF EXISTS {index_name}")
+            print(f">> {name}: building {index_name} concurrently…", flush=True)
+            await conn.execute(statement)
+            still_invalid = await conn.fetchval(
+                "SELECT NOT indisvalid FROM pg_index i "
+                " JOIN pg_class c ON c.oid = i.indexrelid WHERE c.relname = $1",
+                index_name,
+            )
+            if still_invalid:
+                invalid.append(index_name)
+            built += 1
+
+    print(f"prebuild: {built} built, {skipped} already present", flush=True)
+    if invalid:
+        print(
+            f"!! these indexes finished INVALID and the planner will ignore them: "
+            f"{', '.join(invalid)}. Drop each with DROP INDEX CONCURRENTLY and "
+            f"re-run before applying migrations.",
+            flush=True,
+        )
+        return 5
+    return 0
+
+
+
+async def _seed_missing_statistics(conn) -> int:
+    """ANALYZE tables the planner has no statistics for.
+
+    Autovacuum decides what to work on from n_live_tup, so a freshly loaded
+    table whose statistics still say "0 rows" never crosses the scale-factor
+    threshold, is never analyzed, and its statistics stay at 0. That state
+    sustains itself indefinitely — autovacuum being "on" does not rescue it.
+
+    Measured on the dev database before this existed: `leads` reported 0 live
+    tuples against 8,497,050 real ones, `public_property_records` reported 4,941
+    against 8,636,097, and last_vacuum/last_autovacuum were NULL on every large
+    table. The planner then chose against every index on the biggest tables in
+    the system: get_team_pipeline (0093) kept a 13.3s sequential scan even with
+    a purpose-built covering index present, and the pool's 30s command_timeout
+    turned that into an AI tool that simply failed for the broker.
+
+    Only tables with NO statistics at all are touched, so this is expensive
+    exactly once — after the initial load — and a no-op on every later deploy.
+    Failure is logged and swallowed: statistics are a performance property, and
+    refusing to finish a schema migration over them would be the worse trade.
+    """
+    try:
+        rows = await conn.fetch(
+            """
+            SELECT c.relname
+              FROM pg_stat_user_tables s
+              JOIN pg_class c ON c.oid = s.relid
+             WHERE s.last_analyze IS NULL
+               AND s.last_autoanalyze IS NULL
+               AND c.reltuples <= 0
+            """
+        )
+    except Exception:  # noqa: BLE001 - see docstring
+        logger_print("!! could not read planner statistics; skipping ANALYZE")
+        return 0
+
+    if not rows:
+        return 0
+    names = [r["relname"] for r in rows]
+    print(
+        f">> seeding planner statistics for {len(names)} table(s) with none: "
+        f"{', '.join(names[:6])}{'…' if len(names) > 6 else ''}",
+        flush=True,
+    )
+    seeded = 0
+    for name in names:
+        try:
+            await conn.execute(f'ANALYZE "{name}"')
+            seeded += 1
+        except Exception as exc:  # noqa: BLE001
+            print(f"   ANALYZE {name} failed ({exc}); continuing", flush=True)
+    print(f">> statistics seeded for {seeded} table(s)", flush=True)
+    return seeded
+
+
+def logger_print(message: str) -> None:
+    print(message, flush=True)
+
+
 def _strip_outer_transaction(sql: str) -> str:
     """Remove a migration's standalone BEGIN/COMMIT wrapper, if present.
 
@@ -411,10 +612,29 @@ def _strip_outer_transaction(sql: str) -> str:
 
 async def _run_migrations(conn, files: list[str]) -> int:
     """Apply migration files while holding the database-wide advisory lock."""
+    # Bound how long any single statement will WAIT for a table lock.
+    #
+    # PostgreSQL lock requests queue FIFO, so a migration waiting on a ShareLock
+    # does not merely wait — every INSERT/UPDATE that arrives afterwards queues
+    # behind it, even though those writers do not conflict with each other. One
+    # long-running reader can therefore turn a migration into a full write
+    # outage on that table, while the migration itself still holds the advisory
+    # lock and blocks any other deploy.
+    #
+    # Failing fast is the better outcome: the operator retries in a quieter
+    # moment, having changed nothing. Overridable because a maintenance window
+    # legitimately wants to wait.
+    lock_timeout = os.environ.get("ORACLE_MIGRATION_LOCK_TIMEOUT", "5s")
     lock_acquired = False
     try:
         await conn.execute(_LOCK_SQL, _MIGRATION_LOCK_KEY)
         lock_acquired = True
+        # Set AFTER the advisory lock, never before. lock_timeout applies to any
+        # lock wait, advisory ones included, so setting it first would make a
+        # deploy abandon the queue behind another deploy that is legitimately
+        # mid-migration. Serialising deploys is the advisory lock's whole job;
+        # only the table locks that DDL takes need bounding.
+        await conn.execute(f"SET lock_timeout = {_sql_literal(lock_timeout)}")
 
         if not files:
             print(f"!! no migrations found in {MIGRATIONS_DIR}", flush=True)
@@ -468,10 +688,27 @@ async def _run_migrations(conn, files: list[str]) -> int:
                 # duplicate-object error: later statements may still be missing.
                 code = getattr(exc, "sqlstate", None)
                 print(f"!! {name} FAILED ({code}): {exc}", flush=True)
+                if code == "55P03":  # lock_not_available
+                    print(
+                        "   Nothing was applied. This migration wanted a table "
+                        "lock that a live transaction was holding, and waiting "
+                        "for it would have queued every writer behind it.\n"
+                        "   If the file creates indexes, build them without a "
+                        "lock first:  python run_migrations.py "
+                        "--prebuild-indexes\n"
+                        "   Otherwise retry when the table is quiet, or raise "
+                        "ORACLE_MIGRATION_LOCK_TIMEOUT (currently "
+                        f"{lock_timeout}) for a maintenance window.",
+                        flush=True,
+                    )
                 raise
 
             print(f">> applied {name}", flush=True)
             processed += 1
+
+        # After the schema is current and before traffic. Only touches tables
+        # that have no statistics at all, so it is expensive once and free after.
+        await _seed_missing_statistics(conn)
 
         app_password = os.environ.get("ORACLE_DB_APP_PASSWORD", "")
         if app_password:
@@ -512,6 +749,8 @@ async def main() -> int:
         files = sorted(glob.glob(os.path.join(MIGRATIONS_DIR, "*.sql")))
         if "--reconcile" in sys.argv:
             return await _reconcile(conn, files)
+        if "--prebuild-indexes" in sys.argv:
+            return await _prebuild_indexes(conn, files)
         return await _run_migrations(conn, files)
     finally:
         await conn.close()

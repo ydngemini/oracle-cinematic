@@ -192,6 +192,10 @@ TOOL_RISK: dict[str, ActionRisk] = {
     # Publication is a disposition decision with money behind it, which is why
     # marketplace_api already classifies it FINANCIAL.
     "publish_to_marketplace": ActionRisk.FINANCIAL,
+    # A revocable, expiring grant to walk through a private home, handed to
+    # someone outside the brokerage. Approval-gated for the same reason a
+    # message to a client is.
+    "share_property_tour": ActionRisk.OUTREACH,
 
     # Both of these spend real money per call — a pod reconstruction rents a GPU
     # (~$0.25-0.35), a video bills a generation provider. FINANCIAL is what puts

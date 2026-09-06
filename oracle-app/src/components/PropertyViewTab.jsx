@@ -613,6 +613,8 @@ export default function PropertyViewTab() {
             <Suspense fallback={null}>
               <TourViewer
                 splatUrl={tour.splat_url}
+                splatFormat={tour.splat_format}
+                splatScene={tour.splat_scene}
                 panoScenes={tour.pano_scenes}
                 disclosure={tour.disclosure}
                 floors={tour.floors}

@@ -1,0 +1,188 @@
+/* ─── Missions ─────────────────────────────────────────────────────────────
+   One column, generous space, and the consent sentences given room to be
+   read rather than squeezed into a tooltip. */
+
+.work {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+  padding: var(--space-5);
+  max-width: 48rem;
+  width: 100%;
+  margin-inline: auto;
+}
+
+.head { display: flex; flex-direction: column; gap: var(--space-2); }
+
+.title {
+  margin: 0;
+  font: 600 var(--text-4xl) / 1.05 var(--font-display, var(--font-sans));
+  letter-spacing: -0.02em;
+  text-transform: none;
+  color: var(--oracle-text-heading);
+}
+
+.blurb { margin: 0; font-size: var(--text-md); line-height: 1.5; color: var(--oracle-text-dim); max-width: 34rem; }
+
+.sectionTitle {
+  margin: 0 0 var(--space-3);
+  font: 600 var(--text-xs) / 1 var(--font-mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--oracle-text-ghost);
+}
+
+/* ── Builder ──────────────────────────────────────────────────────────── */
+
+.builder,
+.simulation,
+.launcher,
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  padding: var(--space-5);
+  border-radius: var(--radius-2xl);
+  background: var(--oracle-surface);
+  box-shadow: var(--shadow-e1);
+}
+
+.field { display: flex; flex-direction: column; gap: var(--space-1); min-width: 0; flex: 1; }
+
+.label {
+  font: 600 var(--text-xs) / 1 var(--font-mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--oracle-text-ghost);
+}
+
+.input, .select, .textarea {
+  padding: var(--space-3);
+  border: none;
+  border-radius: var(--radius-md);
+  background: var(--oracle-surface-sunken);
+  color: var(--oracle-text);
+  font: 500 var(--text-md) / 1.4 var(--font-sans);
+  outline: none;
+}
+.textarea { resize: vertical; min-height: 3.5rem; }
+.input:focus-visible, .select:focus-visible, .textarea:focus-visible {
+  outline: 2px solid var(--oracle-accent);
+  outline-offset: 1px;
+}
+
+.row { display: flex; flex-wrap: wrap; gap: var(--space-3); }
+
+.fieldset { border: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--space-2); }
+
+.hint { margin: 0; font-size: var(--text-sm); line-height: 1.5; color: var(--oracle-text-dim); }
+
+.chips { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-pill);
+  background: var(--oracle-surface-sunken);
+  font-size: var(--text-sm);
+  cursor: pointer;
+}
+
+/* The consent block. Deliberately roomy: this is the sentence that gets
+   stored, and it should not look like fine print. */
+.consent {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-4);
+  border-radius: var(--radius-md);
+  background: var(--oracle-surface-sunken);
+  cursor: pointer;
+}
+
+.consentTop { display: flex; align-items: center; gap: var(--space-3); font-size: var(--text-md); }
+.consentText { font-size: var(--text-sm); line-height: 1.55; color: var(--oracle-text); }
+
+.caveat {
+  margin: 0;
+  padding-left: var(--space-3);
+  border-left: 2px solid var(--oracle-accent);
+  font-size: var(--text-sm);
+  line-height: 1.55;
+  color: var(--oracle-text-dim);
+}
+
+.notice {
+  margin: 0;
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-md);
+  background: var(--oracle-surface-sunken);
+  color: var(--oracle-text);
+  font-size: var(--text-sm);
+  line-height: 1.5;
+}
+
+.primary, .secondary {
+  align-self: flex-start;
+  padding: var(--space-3) var(--space-5);
+  border: none;
+  border-radius: var(--radius-pill);
+  font: 600 var(--text-md) / 1 var(--font-sans);
+  cursor: pointer;
+}
+.primary { background: var(--oracle-accent); color: #1a1200; }
+.primary:disabled { background: var(--oracle-surface-sunken); color: var(--oracle-text-ghost); cursor: default; }
+.secondary { background: var(--oracle-surface-sunken); color: var(--oracle-text); }
+.secondary:hover { background: var(--oracle-surface-raised); }
+.primary:focus-visible, .secondary:focus-visible { outline: 2px solid var(--oracle-accent); outline-offset: 2px; }
+
+/* ── Simulation ───────────────────────────────────────────────────────── */
+
+.stats { display: flex; flex-wrap: wrap; gap: var(--space-6); margin: 0; }
+.stats div { display: flex; flex-direction: column; gap: 2px; }
+.stats dt {
+  font: 600 var(--text-xs) / 1 var(--font-mono);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--oracle-text-ghost);
+}
+.stats dd {
+  margin: 0;
+  font: 600 var(--text-2xl) / 1 var(--font-display, var(--font-sans));
+  color: var(--oracle-text-heading);
+  font-variant-numeric: tabular-nums;
+}
+
+.range { margin: 0; font-size: var(--text-lg); color: var(--oracle-text); }
+
+/* ── Launcher and list ────────────────────────────────────────────────── */
+
+.status { margin: 0; font-size: var(--text-md); color: var(--oracle-text-heading); }
+.actions { display: flex; flex-wrap: wrap; gap: var(--space-3); }
+
+.items { display: flex; flex-direction: column; gap: var(--space-2); margin: 0; padding: 0; list-style: none; }
+
+.item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  padding: var(--space-3) var(--space-4);
+  border: none;
+  border-radius: var(--radius-md);
+  background: var(--oracle-surface-sunken);
+  text-align: left;
+  cursor: pointer;
+}
+.item:hover { background: var(--oracle-surface-raised); }
+.item:focus-visible { outline: 2px solid var(--oracle-accent); outline-offset: 2px; }
+
+.itemName { font: 500 var(--text-md) / 1.3 var(--font-sans); color: var(--oracle-text-heading); }
+.itemStatus { font-size: var(--text-sm); color: var(--oracle-text-dim); }
+
+@media (max-width: 719px) {
+  .work { padding: var(--space-3); }
+  .row { flex-direction: column; }
+}

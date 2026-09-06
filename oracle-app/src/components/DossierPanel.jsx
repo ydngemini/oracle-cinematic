@@ -1,5 +1,7 @@
 import { Suspense, lazy, useEffect, useRef, useState } from 'react';
 import { crmGet, crmPut, crmPost } from '../state/useCrmApi';
+import { useTour } from '../state/useTour';
+import { tourOffer } from '../lib/tour/tourOffer';
 import styles from './DossierPanel.module.css';
 
 // The 3D floor-plan editor is a separate chunk (and a separate origin behind
@@ -26,6 +28,9 @@ const PublicRecordsDiligence = lazy(() => import('./PublicRecordsDiligence'));
 // Photo attach/remove. The GET half was wired, so the product could display a
 // filmstrip it had no way to add to and no way to correct.
 const PropertyMediaUploader = lazy(() => import('./PropertyMediaUploader'));
+// Lazy: PlayCanvas is the heaviest thing the app can load, and most visits to a
+// dossier never open a tour.
+const TourViewer = lazy(() => import('./TourViewer'));
 
 function money(v) {
   const n = Number(v);
@@ -106,6 +111,8 @@ function interactionSummary(entry) {
 
 export function DossierPanel({ leadId, onClose }) {
   const [dossier, setDossier] = useState(null);
+  const { tour } = useTour({ leadId });
+  const [tourOpen, setTourOpen] = useState(false);
   const [error, setError] = useState('');
   const [copied, setCopied] = useState('');
   const [now, setNow] = useState(() => Date.now());
@@ -299,6 +306,52 @@ export function DossierPanel({ leadId, onClose }) {
               <PropertyMediaUploader leadId={leadId} />
             </Suspense>
           </section>
+
+          {/* A reconstruction could be produced, stored and resolved, and this
+              sheet still showed no way to look at it — the capture existed and
+              the viewer existed, with nothing between them. When there is
+              nothing to walk, say why: an empty space is indistinguishable
+              from a missing feature. */}
+          <section className={styles.section} aria-label="3D tour">
+            <h3 className={styles.kicker}>3D Tour</h3>
+            {tourOffer(tour).kind === 'walkable' ? (
+              <>
+                <button
+                  type="button"
+                  className={styles.floorplanBtn}
+                  onClick={() => setTourOpen(true)}
+                >
+                  {tourOffer(tour).label}
+                </button>
+                {tourOffer(tour).isDemo ? (
+                  <p className={styles.emptyNote}>
+                    This walkable space is a stand-in, not a capture of this address.
+                  </p>
+                ) : null}
+              </>
+            ) : (
+              <p className={styles.emptyNote}>{tourOffer(tour).reason}</p>
+            )}
+          </section>
+
+          {tourOpen && tourOffer(tour).kind === 'walkable' ? (
+            <Suspense fallback={null}>
+              <TourViewer
+                splatUrl={tour.splat_url}
+                splatFormat={tour.splat_format}
+                splatScene={tour.splat_scene}
+                panoScenes={tour.pano_scenes}
+                disclosure={tour.disclosure}
+                floors={tour.floors}
+                address={address}
+                title={address}
+                // The caveat has to survive into the viewer: once someone is
+                // walking around, the button that carried it is off screen.
+                isThisProperty={tour.is_this_property !== false}
+                onClose={() => setTourOpen(false)}
+              />
+            </Suspense>
+          ) : null}
 
           <Suspense fallback={null}>
             <PropertyIntelligencePanel

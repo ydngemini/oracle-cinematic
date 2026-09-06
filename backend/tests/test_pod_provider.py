@@ -27,6 +27,7 @@ from reconstruction_providers import (
     PodProvider,
     ProviderError,
     _pod_age_seconds,
+    _staged_image_name,
     _subsample_capture,
 )
 
@@ -868,3 +869,122 @@ def test_an_unknown_matcher_is_refused(pod_env, monkeypatch):
     monkeypatch.setenv("RECON_POD_MATCHER", "telepathy")
     with pytest.raises(ProviderError, match="RECON_POD_MATCHER"):
         PodProvider._settings()
+
+
+def test_capture_goes_to_the_pod_as_one_archive(tmp_path, monkeypatch):
+    """280 per-file SFTP puts took >1800s on a real pod and the job died before
+    the GPU did anything. The capture must cross as ONE file, under its staged
+    names, and be unpacked on the pod — so the count of puts is the contract."""
+    import sys
+    import tarfile
+    import types
+
+    puts: list[tuple[str, str]] = []
+    runs: list[str] = []
+
+    class _Handle:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def write(self, _data):
+            return None
+
+    class _Sftp:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def put(self, local, remote):
+            puts.append((local, remote))
+
+        def open(self, *a, **k):
+            return _Handle()
+
+    class _Conn:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def run(self, cmd, **k):
+            runs.append(cmd)
+            return types.SimpleNamespace(exit_status=0, stdout="", stderr="")
+
+        def start_sftp_client(self):
+            return _Sftp()
+
+    async def _connect(*a, **k):
+        return _Conn()
+
+    monkeypatch.setitem(sys.modules, "asyncssh", types.SimpleNamespace(connect=_connect))
+    monkeypatch.setenv("RUNPOD_API_KEY", "test-key")
+
+    # Stop after staging: the pipeline itself is not under test here.
+    async def _stop(*a, **k):
+        raise ProviderError("stop after staging")
+
+    provider = PodProvider()
+    monkeypatch.setattr(provider, "_run_watching", _stop)
+
+    images = _images(tmp_path, 5)
+    with pytest.raises(ProviderError, match="stop after staging"):
+        asyncio.run(provider._run_on_pod(
+            PodProvider._settings(), "1.2.3.4", 22, object(), 0.74, images, tmp_path,
+        ))
+
+    assert len(puts) == 1, f"expected one archive transfer, got {len(puts)} puts"
+    local, remote = puts[0]
+    assert remote == "/workspace/images.tar"
+    with tarfile.open(local) as tar:
+        names = sorted(tar.getnames())
+    assert names == sorted(_staged_image_name(i, p) for i, p in enumerate(images))
+    assert any(cmd.startswith("tar -xf /workspace/images.tar -C /workspace/images") for cmd in runs), runs
+
+
+def test_phase_timings_are_parsed_and_a_bad_line_does_not_lose_the_rest(tmp_path):
+    """One total cannot answer "would a faster GPU help".
+
+    Training is GPU-bound, COLMAP's mapper is not, and the bootstrap is apt and
+    pip — which a bigger card only makes more expensive per second. The split
+    is what makes that answerable, so it is parsed defensively: a timing must
+    never be the reason a finished reconstruction is lost.
+    """
+    from reconstruction_providers import _read_phases
+
+    path = tmp_path / "phases.jsonl"
+    path.write_text(
+        '{"phase":"bootstrap_colmap","seconds":120}\n'
+        '\n'
+        'not json at all\n'
+        '{"phase":"colmap_mapping","seconds":300}\n'
+        '{"phase":"training","seconds":2400}\n'
+        '{"phase":"gpu","name":"NVIDIA RTX A6000, 49140 MiB"}\n'
+    )
+    phases = _read_phases(path)
+    assert phases["bootstrap_colmap"] == 120
+    assert phases["colmap_mapping"] == 300
+    assert phases["training"] == 2400
+    assert phases["gpu"].startswith("NVIDIA RTX A6000")
+
+
+def test_missing_timings_are_not_an_error(tmp_path):
+    from reconstruction_providers import _read_phases
+
+    assert _read_phases(tmp_path / "absent.jsonl") == {}
+
+
+def test_the_pipeline_times_every_phase_it_announces():
+    """Each stage that costs real money is measured, not just announced."""
+    from reconstruction_providers import POD_PIPELINE
+
+    for name in ("bootstrap_colmap", "bootstrap_gsplat", "colmap_features",
+                 "colmap_matching", "colmap_mapping", "training", "conversion"):
+        assert f'phase "{name}"' in POD_PIPELINE, name
+    # And the file the provider fetches is the one the pipeline writes.
+    assert "/workspace/phases.jsonl" in POD_PIPELINE

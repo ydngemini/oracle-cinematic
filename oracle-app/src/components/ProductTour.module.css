@@ -13,7 +13,7 @@
 }
 .tour:focus { outline: none; box-shadow: 0 1.5rem 5rem rgba(0, 0, 0, 0.62), var(--ring-focus); }
 .header { min-height: 3.5rem; display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); padding: 0 var(--space-4); border-bottom: 1px solid var(--oracle-border-subtle); }
-.header > span { display: inline-flex; align-items: center; gap: var(--space-2); color: var(--oracle-amber); font: 650 0.625rem/1 var(--font-display); letter-spacing: var(--tracking-widest); text-transform: uppercase; }
+.header > span { display: inline-flex; align-items: center; gap: var(--space-2); color: var(--oracle-accent-ink); font: 650 0.625rem/1 var(--font-display); letter-spacing: var(--tracking-widest); text-transform: uppercase; }
 .header svg { width: 16px; height: 16px; }
 .header button { width: 40px; height: 40px; display: grid; place-items: center; border-radius: var(--radius-sm); color: var(--oracle-text-ghost); }
 .header button:hover { color: var(--oracle-text); background: var(--oracle-glass-hover); }
@@ -21,11 +21,11 @@
 .progress { height: 3px; background: rgba(255, 255, 255, 0.08); }
 .progress span { display: block; height: 100%; background: var(--oracle-amber); transition: width 180ms ease; }
 .body { display: grid; gap: var(--space-3); padding: var(--space-5); }
-.eyebrow { color: var(--oracle-amber-dim); font: 650 0.5625rem/1.2 var(--font-display); letter-spacing: var(--tracking-wider); text-transform: uppercase; }
+.eyebrow { color: var(--oracle-accent-ink); font: 650 0.5625rem/1.2 var(--font-display); letter-spacing: var(--tracking-wider); text-transform: uppercase; }
 .body h2 { color: var(--oracle-text-heading); font: 380 1.6rem/1.08 var(--font-display); }
 .body > p { color: var(--oracle-text-dim); font-size: var(--text-xs); line-height: 1.65; }
 .verify { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: var(--space-3); padding: var(--space-3); border: 1px solid var(--oracle-border-bright); border-radius: var(--radius-md); background: var(--oracle-amber-ghost); }
-.verify svg { width: 18px; height: 18px; color: var(--oracle-amber); }
+.verify svg { width: 18px; height: 18px; color: var(--oracle-accent-ink); }
 .verify span { color: var(--oracle-text-dim); font-size: 0.6875rem; line-height: 1.55; }
 .verify strong { display: block; margin-bottom: 3px; color: var(--oracle-text); font-size: var(--text-xs); }
 .footer { display: flex; justify-content: space-between; gap: var(--space-3); padding: var(--space-4); border-top: 1px solid var(--oracle-border-subtle); }

@@ -26,7 +26,7 @@
   font-weight: 600;
   letter-spacing: var(--tracking-widest);
   text-transform: uppercase;
-  color: var(--oracle-amber-dim);
+  color: var(--oracle-accent-ink);
 }
 
 .refreshBtn {
@@ -44,7 +44,7 @@
 
 .refreshBtn:hover {
   background: var(--oracle-glass-hover);
-  color: var(--oracle-amber);
+  color: var(--oracle-accent-ink);
   border-color: var(--oracle-amber-dim);
 }
 
@@ -212,7 +212,7 @@
     background: var(--oracle-glass-hover);
   }
   .totalCell:hover .totalValue {
-    color: var(--oracle-amber);
+    color: var(--oracle-accent-ink);
     text-shadow: 0 0 16px var(--oracle-amber-glow);
   }
 }
@@ -257,7 +257,7 @@
   font-weight: 600;
   letter-spacing: var(--tracking-widest);
   text-transform: uppercase;
-  color: var(--oracle-amber-dim);
+  color: var(--oracle-accent-ink);
 }
 
 .liveTick {
@@ -338,7 +338,7 @@
   font-weight: 600;
   letter-spacing: var(--tracking-wider);
   text-transform: uppercase;
-  color: var(--oracle-amber);
+  color: var(--oracle-accent-ink);
 }
 
 .feedMetric {
@@ -435,7 +435,7 @@
   text-transform: uppercase;
   padding: var(--space-1) var(--space-2);
   border-radius: var(--radius-pill);
-  color: var(--oracle-amber);
+  color: var(--oracle-accent-ink);
   border: 1px solid var(--oracle-amber-dim);
   background: var(--oracle-amber-ghost);
 }
@@ -479,13 +479,13 @@
 }
 
 .countChip[data-status='queued'] {
-  color: var(--oracle-amber);
+  color: var(--oracle-accent-ink);
   border-color: var(--oracle-amber-dim);
   background: var(--oracle-amber-ghost);
 }
 
 .countChip[data-status='queued'] .chipNum {
-  color: var(--oracle-amber);
+  color: var(--oracle-accent-ink);
 }
 
 .countChip[data-status='sent'] {
@@ -597,7 +597,7 @@
 }
 
 .roleChip[data-role='admin'] {
-  color: var(--oracle-amber);
+  color: var(--oracle-accent-ink);
   border-color: var(--oracle-amber-dim);
   background: var(--oracle-amber-ghost);
 }
@@ -639,7 +639,7 @@
 }
 
 .statusChip[data-status='queued'] {
-  color: var(--oracle-amber);
+  color: var(--oracle-accent-ink);
   border-color: var(--oracle-amber-dim);
 }
 
@@ -681,7 +681,7 @@
 }
 
 .actGlyph[data-dir='outbound'] {
-  color: var(--oracle-amber-dim);
+  color: var(--oracle-accent-ink);
 }
 
 .actGlyph[data-dir='audit'] {
@@ -757,7 +757,7 @@
   font-weight: 600;
   letter-spacing: var(--tracking-widest);
   text-transform: uppercase;
-  color: var(--oracle-amber);
+  color: var(--oracle-accent-ink);
   border: 1px solid var(--oracle-amber-dim);
   border-radius: var(--radius-md);
   background: var(--oracle-amber-ghost);

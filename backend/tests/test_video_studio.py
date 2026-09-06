@@ -205,6 +205,12 @@ def test_download_returns_video_bytes(monkeypatch):
 
 
 def test_generate_clip_end_to_end(monkeypatch):
+    # Pinned, not inherited. These stub studio._sora_* so they are Sora tests,
+    # but they used to rely on ORACLE_VIDEO_PROVIDER being unset for the default
+    # to select Sora — so setting a real provider in a developer's .env failed
+    # them with a clip-length error from a provider they never meant to exercise.
+    monkeypatch.setenv("ORACLE_VIDEO_PROVIDER", "sora")
+
     monkeypatch.setenv("ORACLE_AZURE_OPENAI_ENDPOINT", "https://neoh.openai.azure.com")
     monkeypatch.setattr(studio, "AZURE_OPENAI_ENDPOINT", "https://neoh.openai.azure.com")
     monkeypatch.setattr(studio, "_sora_headers", lambda: {"api-key": "k"})
@@ -226,6 +232,12 @@ def test_generate_clip_end_to_end(monkeypatch):
 
 
 def test_generate_clip_propagates_provider_failure(monkeypatch):
+    # Pinned, not inherited. These stub studio._sora_* so they are Sora tests,
+    # but they used to rely on ORACLE_VIDEO_PROVIDER being unset for the default
+    # to select Sora — so setting a real provider in a developer's .env failed
+    # them with a clip-length error from a provider they never meant to exercise.
+    monkeypatch.setenv("ORACLE_VIDEO_PROVIDER", "sora")
+
     monkeypatch.setenv("ORACLE_AZURE_OPENAI_ENDPOINT", "https://neoh.openai.azure.com")
     monkeypatch.setattr(studio, "AZURE_OPENAI_ENDPOINT", "https://neoh.openai.azure.com")
     monkeypatch.setattr(studio, "_sora_submit", lambda **kw: "videos/j1")

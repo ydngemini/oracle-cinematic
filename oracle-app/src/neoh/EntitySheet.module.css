@@ -1,0 +1,164 @@
+/* ─── Entity sheet ─────────────────────────────────────────────────────────
+   Opaque surface, one accent, no border where a shadow will do. The person
+   body is the client drawer's own chrome; these rules cover the property
+   scrim and the deal sheet, plus Neoh's read which appears on all three. */
+
+.layer {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-modal);
+  display: flex;
+  justify-content: flex-end;
+  outline: none;
+}
+
+.scrim {
+  position: absolute;
+  inset: 0;
+  border: none;
+  background: var(--oracle-scrim, rgba(0, 0, 0, 0.35));
+  cursor: pointer;
+}
+
+.sheet {
+  position: relative;
+  width: min(100%, 600px);
+  height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  background: var(--oracle-surface);
+  box-shadow: var(--shadow-e3);
+  outline: none;
+}
+
+.head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-4);
+  padding: calc(var(--space-6) + var(--safe-top, 0px)) var(--space-6) var(--space-4);
+}
+
+.headText { display: flex; flex-direction: column; gap: var(--space-1); min-width: 0; }
+
+.kicker {
+  font: 600 var(--text-xs) / 1 var(--font-mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--oracle-text-ghost);
+}
+
+.title {
+  margin: 0;
+  font: 600 var(--text-2xl) / 1.15 var(--font-display, var(--font-sans));
+  letter-spacing: -0.01em;
+  text-transform: none;
+  color: var(--oracle-text-heading);
+  overflow-wrap: anywhere;
+}
+
+.subline {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  font-size: var(--text-sm);
+  color: var(--oracle-text-dim);
+}
+
+.close {
+  flex-shrink: 0;
+  width: 2.25rem;
+  height: 2.25rem;
+  border: none;
+  border-radius: var(--radius-pill);
+  background: var(--oracle-surface-sunken);
+  color: var(--oracle-text);
+  font-size: var(--text-lg);
+  cursor: pointer;
+}
+.close:hover { background: var(--oracle-surface-raised); }
+.close:focus-visible { outline: 2px solid var(--oracle-accent); outline-offset: 2px; }
+
+.body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--space-4) var(--space-6) calc(var(--space-8) + var(--safe-bottom, 0px));
+}
+
+.error { margin: 0; color: var(--oracle-text-dim); }
+
+/* ── Neoh's read ──────────────────────────────────────────────────────── */
+
+.read {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: 0 var(--space-6);
+  padding: var(--space-4);
+  border-radius: var(--radius-lg);
+  background: var(--oracle-surface-sunken);
+}
+
+.readKicker {
+  display: block;
+  font: 600 var(--text-xs) / 1 var(--font-mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--oracle-accent-ink);
+}
+
+.readSentence {
+  margin: 0;
+  font: 500 var(--text-lg) / 1.35 var(--font-sans);
+  color: var(--oracle-text-heading);
+}
+
+.readForming { color: var(--oracle-text-dim); font-weight: 400; }
+
+.readMeta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-4);
+  font-size: var(--text-sm);
+  color: var(--oracle-text-dim);
+  font-variant-numeric: tabular-nums;
+}
+.readMeta > span { display: inline-flex; align-items: center; gap: var(--space-2); }
+
+.meter {
+  display: inline-block;
+  width: 4rem;
+  height: 4px;
+  border-radius: var(--radius-pill);
+  background: var(--oracle-border-subtle);
+  overflow: hidden;
+}
+.meterFill { display: block; height: 100%; background: var(--oracle-accent); }
+
+.readQuestion {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin: var(--space-1) 0 0;
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--oracle-border-subtle);
+  font-size: var(--text-md);
+  color: var(--oracle-text);
+}
+
+.readGhost { color: var(--oracle-text-ghost); font-size: var(--text-sm); }
+
+.fallback {
+  height: 6rem;
+  margin: var(--space-4) var(--space-6);
+  border-radius: var(--radius-md);
+  background: var(--oracle-surface-sunken);
+}
+
+@media (max-width: 719px) {
+  .sheet { width: 100%; }
+  .head, .body { padding-inline: var(--space-4); }
+  .read { margin-inline: var(--space-4); }
+}

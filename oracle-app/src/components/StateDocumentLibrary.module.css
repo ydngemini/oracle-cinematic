@@ -1,6 +1,6 @@
 .library { display: flex; flex-direction: column; gap: var(--space-3); padding: var(--space-4); border: 1px solid var(--oracle-border); border-radius: var(--radius-lg); background: var(--oracle-glass); }
 .header { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-3); }
-.kicker, .type { font-family: var(--font-display); font-size: .5625rem; font-weight: 700; letter-spacing: var(--tracking-wider); text-transform: uppercase; color: var(--oracle-amber-dim); }
+.kicker, .type { font-family: var(--font-display); font-size: .5625rem; font-weight: 700; letter-spacing: var(--tracking-wider); text-transform: uppercase; color: var(--oracle-accent-ink); }
 .header h2 { margin-top: var(--space-1); font-family: var(--font-display); font-size: var(--text-sm); letter-spacing: var(--tracking-wider); text-transform: uppercase; color: var(--oracle-text); }
 .header p { max-width: 44rem; margin-top: var(--space-2); font-size: var(--text-xs); line-height: var(--leading-relaxed); color: var(--oracle-text-dim); }
 .count { flex: 0 0 auto; padding: 2px 8px; border: 1px solid var(--oracle-border); border-radius: var(--radius-pill); font-family: var(--font-display); font-size: .5625rem; letter-spacing: var(--tracking-wide); text-transform: uppercase; color: var(--oracle-text-ghost); white-space: nowrap; }
@@ -26,7 +26,7 @@
 .citations strong { color: var(--oracle-text-dim); }
 .selectionFooter { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); padding-top: var(--space-2); border-top: 1px solid var(--oracle-border-subtle); }
 .selectionFooter p { font-size: var(--text-xs); line-height: var(--leading-relaxed); color: var(--oracle-text-ghost); }
-.selectionFooter a, .regulator { flex: 0 0 auto; min-height: 36px; display: inline-flex; align-items: center; padding: 0 var(--space-3); border: 1px solid var(--oracle-amber-dim); border-radius: var(--radius-sm); color: var(--oracle-amber); font-family: var(--font-display); font-size: .5625rem; font-weight: 700; letter-spacing: var(--tracking-wider); text-transform: uppercase; }
+.selectionFooter a, .regulator { flex: 0 0 auto; min-height: 36px; display: inline-flex; align-items: center; padding: 0 var(--space-3); border: 1px solid var(--oracle-amber-dim); border-radius: var(--radius-sm); color: var(--oracle-accent-ink); font-family: var(--font-display); font-size: .5625rem; font-weight: 700; letter-spacing: var(--tracking-wider); text-transform: uppercase; }
 .selectionFooter a:hover, .regulator:hover { background: var(--oracle-amber-ghost); }
 .selectionFooter > span { flex: 0 0 auto; font-family: var(--font-display); font-size: .5625rem; letter-spacing: var(--tracking-wide); text-transform: uppercase; color: var(--oracle-text-ghost); }
 .regulator { align-self: flex-start; }

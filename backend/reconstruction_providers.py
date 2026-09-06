@@ -29,6 +29,7 @@ import json
 import logging
 import mimetypes
 import os
+import tarfile
 import re
 import shutil
 import struct
@@ -84,6 +85,13 @@ def _validate_capture_images(images: list[Path], *, minimum: int = 1) -> None:
         size = path.stat().st_size
         if size <= 0 or size > MAX_CAPTURE_IMAGE_BYTES:
             raise ProviderError("capture contains an empty or oversized image")
+
+
+def _pack_images(images: list[Path], archive: Path) -> None:
+    """Tar the capture under its staged names, uncompressed (JPEGs don't shrink)."""
+    with tarfile.open(archive, "w") as tar:
+        for index, path in enumerate(images):
+            tar.add(str(path), arcname=_staged_image_name(index, path), recursive=False)
 
 
 def _staged_image_name(index: int, path: Path) -> str:
@@ -1270,6 +1278,26 @@ cd /workspace
 # "Pod pipeline failed (exit 1): -1) ... Setting up libxaw7", which says
 # nothing about what broke.
 say() { echo ">>> $*" >&2; }
+
+# Phase timings, written where the provider can fetch them.
+#
+# A whole run reports one number — "3569 seconds" — which cannot answer the
+# only question worth asking about cost: would a faster GPU help? Training is
+# GPU-bound and would; COLMAP's mapper is CPU-bound and would not; and the
+# bootstrap below is apt and pip, which a bigger card only makes more expensive
+# per second. Without the split, that is a guess.
+_PHASE_NAME=""
+_PHASE_START=0
+: > /workspace/phases.jsonl
+phase() {                        # $1 = name; closes the previous phase
+  local now; now=$(date +%s)
+  if [ -n "$_PHASE_NAME" ]; then
+    printf '{"phase":"%s","seconds":%s}\n' "$_PHASE_NAME" "$((now - _PHASE_START))" \
+      >> /workspace/phases.jsonl
+  fi
+  _PHASE_NAME="$1"; _PHASE_START="$now"
+  [ -n "$1" ] && say "$1"
+}
 quietly() {                      # $1 = label, rest = command
   local label="$1"; shift
   if ! "$@" >>/workspace/install.log 2>&1; then
@@ -1280,7 +1308,7 @@ quietly() {                      # $1 = label, rest = command
 }
 
 if ! command -v colmap >/dev/null || ! command -v xvfb-run >/dev/null; then
-  say "installing colmap + xvfb"
+  phase "bootstrap_colmap"
   quietly "apt-get update" apt-get -qq update
   # libvulkan1 + a software ICD are NOT optional extras. splat-transform writes
   # .sog through WebGPU, which needs a Vulkan loader; without it the conversion
@@ -1394,7 +1422,7 @@ say "colmap $(colmap -h 2>&1 | head -1 || true); $(ls images | wc -l) images; DI
 # PyPI's package of that name exposes a different API entirely. Then the whole
 # import graph is exercised on a throwaway process, so a missing package costs
 # three minutes instead of twenty-seven.
-say "installing gsplat __GSPLAT__ and the trainer's dependencies"
+phase "bootstrap_gsplat"
 python -c "import gsplat" 2>/dev/null || quietly "pip install gsplat" pip install -q "gsplat==__GSPLAT__"
 if [ ! -d gs ]; then
   quietly "git clone gsplat" git clone --depth 1 --branch "v$(python -c 'import gsplat;print(gsplat.__version__.split("+")[0])')" \
@@ -1409,18 +1437,18 @@ say "checking the trainer imports"
   exit 6
 }
 
-say "feature extraction"
+phase "colmap_features"
 colmap feature_extractor  --database_path db.db --image_path images \
                              --ImageReader.single_camera 1 --SiftExtraction.use_gpu 1
-say "__MATCHER__ matching"
+phase "colmap_matching"
 __MATCH_CMD__
 mkdir -p sparse
-say "mapping"
+phase "colmap_mapping"
 colmap mapper             --database_path db.db --image_path images --output_path sparse
 test -d sparse/0 || { echo "!! COLMAP registered no cameras" >&2; exit 3; }
 colmap model_analyzer     --path sparse/0
 
-say "training __STEPS__ steps"
+phase "training"
 # --save-ply is REQUIRED, and its absence is not visible until the very end.
 #
 # `save_ply` defaults to False and `--save-steps` controls .pt CHECKPOINTS, not
@@ -1433,6 +1461,8 @@ cd gs/examples && python simple_trainer.py default \
     --max-steps __STEPS__ --save-steps __STEPS__ \
     --save-ply --ply-steps __STEPS__ --disable-viewer
 cd /workspace
+
+phase "conversion"
 
 PLY=$(find /workspace/out -name '*.ply' | head -1)
 test -n "$PLY" || { echo "!! training produced no .ply" >&2; exit 4; }
@@ -1558,6 +1588,11 @@ echo ">> fetched $n source images"
 bash /workspace/pipeline.sh
 
 # x-ms-blob-type is required by Azure and ignored by S3, so one PUT covers both.
+phase ""   # close the final phase
+# Which card actually ran this, so a timing is comparable against another run.
+nvidia-smi --query-gpu=name,memory.total --format=csv,noheader 2>/dev/null \
+  | head -1 | sed 's/^/{"phase":"gpu","name":"/; s/$/"}/' >> /workspace/phases.jsonl || true
+
 curl -fsS -X PUT -T /workspace/model.sog      -H "x-ms-blob-type: BlockBlob"      -H "Content-Type: application/octet-stream"      "$NEOH_OUTPUT_URL"
 echo ">> uploaded"
 
@@ -1575,16 +1610,55 @@ fi
 
 
 def _subsample_capture(images: list[Path], target: int) -> list[Path]:
-    """Evenly thin a capture to `target` frames, keeping coverage.
+    """Thin a capture to `target` frames: sharpest per contiguous run.
 
-    Evenly spaced rather than truncated: a walk-through video sampled at 2fps
-    produces frames in spatial order, so taking the first N would reconstruct
-    one room in detail and leave the rest of the house unsolved.
+    Spaced rather than truncated, because a walk-through produces frames in
+    spatial order and taking the first N would reconstruct one room in detail
+    and leave the rest of the house unsolved.
+
+    Within each run the sharpest frame wins. Even spacing keeps coverage but is
+    blind to whether the frame it lands on was taken mid-turn: a motion-blurred
+    frame is worse than no frame, because COLMAP still finds features in it,
+    matches them badly, and pulls the pose solution toward a wrong answer. See
+    frame_selection for the measure and why buckets rather than a global rank.
     """
-    if target <= 0 or len(images) <= target:
-        return list(images)
-    step = len(images) / target
-    return [images[min(len(images) - 1, int(i * step))] for i in range(target)]
+    from frame_selection import select_sharpest
+
+    return select_sharpest(images, target)
+
+
+def _read_phases(path: Path) -> dict[str, Any]:
+    """Per-phase seconds from the pod, as {phase: seconds} plus the GPU name.
+
+    One total cannot say whether a faster card would help: training is
+    GPU-bound, COLMAP's mapper is not, and the bootstrap is apt and pip, which
+    a bigger card only makes more expensive per second.
+    """
+    phases: dict[str, Any] = {}
+    try:
+        lines = path.read_text().splitlines()
+    except OSError:
+        return phases
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        # Per line, not around the loop: a single malformed record must cost
+        # its own timing and nothing else. Wrapping the whole loop threw away
+        # every phase after the bad one, which is the shape of failure that
+        # makes a diagnostic untrustworthy.
+        try:
+            entry = json.loads(line)
+        except ValueError:
+            continue
+        name = entry.get("phase")
+        if not name:
+            continue
+        if name == "gpu":
+            phases["gpu"] = entry.get("name")
+        else:
+            phases[name] = entry.get("seconds")
+    return phases
 
 
 def _adopt_camera_poses(artifact: Path, downloaded: Path) -> None:
@@ -2097,14 +2171,22 @@ class PodProvider(ReconstructionProvider):
         )
 
         async def _upload() -> None:
+            # One archive, one transfer. A per-file SFTP put pays a round trip
+            # per file, and /workspace on a pod is usually a network volume
+            # that is slow for many small writes: 280 photos took over 1800s
+            # that way and the job died before the GPU did anything. Packing
+            # happens off the event loop; unpacking happens on the pod.
+            archive = work_dir / "images.tar"
+            await asyncio.to_thread(_pack_images, images, archive)
             await conn.run("mkdir -p /workspace/images", check=True)
             async with conn.start_sftp_client() as sftp:
-                for index, path in enumerate(images):
-                    await sftp.put(
-                        str(path), f"/workspace/images/{_staged_image_name(index, path)}"
-                    )
+                await sftp.put(str(archive), "/workspace/images.tar")
                 async with sftp.open("/workspace/run.sh", "w") as handle:
                     await handle.write(script)
+            await conn.run(
+                "tar -xf /workspace/images.tar -C /workspace/images && rm /workspace/images.tar",
+                check=True,
+            )
 
         async with conn:
             staging = min(upload_budget, _left("the capture was uploaded"))
@@ -2136,6 +2218,16 @@ class PodProvider(ReconstructionProvider):
                 # Best-effort, and it must stay that way: a reconstruction that
                 # computed is not failed because an accelerator's sidecar is
                 # missing. Older pods do not write one at all.
+                try:
+                    timings = work_dir / "phases.jsonl"
+                    await sftp.get("/workspace/phases.jsonl", str(timings))
+                except Exception:  # noqa: BLE001
+                    log.info("Pod returned no phase timings")
+                else:
+                    phases = _read_phases(timings)
+                    if phases:
+                        existing = getattr(self, "last_metrics", None)
+                        self.last_metrics = {**(existing or {}), "phases": phases}
                 try:
                     poses = work_dir / "cameras.json"
                     await sftp.get("/workspace/cameras.json", str(poses))

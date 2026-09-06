@@ -1,6 +1,10 @@
 const configuredApiBase = import.meta.env.VITE_API_BASE || '';
-const API_BASE = configuredApiBase.replace(/\/+$/, '')
-  || (import.meta.env.DEV ? 'http://localhost:8000' : '');
+// Same origin by default, in dev too: Vite proxies /api, /auth and /ws to the
+// backend. The old dev fallback to an absolute http://localhost:8000 assumed
+// the backend's port was reachable from the browser's host, which under
+// Docker-in-Docker it is not — and because it was a fallback, setting
+// VITE_API_BASE empty did not disable it.
+const API_BASE = configuredApiBase.replace(/\/+$/, '');
 
 const DEFAULT_TIMEOUT = 30000;
 const MAX_RETRIES = 3;
@@ -228,7 +232,16 @@ export async function fetchBlob(path, options = {}) {
       throw new ApiError(detail, res.status, false);
     }
 
-    return res.blob();
+    // Materialise the bytes ourselves rather than calling res.blob().
+    // Chrome's own response-to-Blob path fails outright on a large body here —
+    // a 13 MB Gaussian-splat capture threw "TypeError: Failed to fetch" while
+    // reading the very same response as a stream or an ArrayBuffer returned
+    // all 13,262,546 bytes. A 3D tour is the one thing in this product that is
+    // routinely that big, and it simply would not open.
+    const buffer = await res.arrayBuffer();
+    return new Blob([buffer], {
+      type: res.headers.get('content-type') || 'application/octet-stream',
+    });
   } catch (err) {
     clearTimeout(timeoutId);
 

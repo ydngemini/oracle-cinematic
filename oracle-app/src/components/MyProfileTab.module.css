@@ -24,7 +24,7 @@
   font-weight: 600;
   letter-spacing: var(--tracking-widest);
   text-transform: uppercase;
-  color: var(--oracle-amber-dim);
+  color: var(--oracle-accent-ink);
 }
 
 .sectionTabs {
@@ -49,7 +49,7 @@
 }
 
 .sectionTab[aria-selected='true'] {
-  color: var(--oracle-amber);
+  color: var(--oracle-accent-ink);
   background: var(--oracle-amber-ghost);
   box-shadow: inset 0 0 0 1px var(--oracle-amber-dim);
 }
@@ -103,7 +103,7 @@
   font-size: var(--text-lg);
   font-weight: 600;
   letter-spacing: var(--tracking-wide);
-  color: var(--oracle-amber);
+  color: var(--oracle-accent-ink);
   text-shadow: 0 0 18px var(--oracle-amber-glow);
 }
 
@@ -241,7 +241,7 @@
   font-weight: 600;
   letter-spacing: var(--tracking-wider);
   text-transform: uppercase;
-  color: var(--oracle-amber);
+  color: var(--oracle-accent-ink);
   transition:
     box-shadow var(--duration-base) var(--ease-out),
     opacity var(--duration-fast) var(--ease-out);
@@ -265,7 +265,7 @@
 .saveBtnSaved,
 .saveBtnSaved:disabled {
   opacity: 1;
-  color: var(--oracle-amber);
+  color: var(--oracle-accent-ink);
   border-color: var(--oracle-amber-dim);
   animation: savedFade 2.4s var(--ease-out) both;
 }
@@ -322,7 +322,7 @@
   font-weight: 600;
   letter-spacing: var(--tracking-widest);
   text-transform: uppercase;
-  color: var(--oracle-amber-dim);
+  color: var(--oracle-accent-ink);
 }
 
 .personaRow {
@@ -342,7 +342,7 @@
   font-weight: 600;
   font-variant-numeric: tabular-nums;
   letter-spacing: var(--tracking-snug);
-  color: var(--oracle-amber);
+  color: var(--oracle-accent-ink);
   text-shadow: 0 0 18px var(--oracle-amber-glow);
 }
 
@@ -500,7 +500,7 @@
   font-weight: 600;
   letter-spacing: var(--tracking-wider);
   text-transform: uppercase;
-  color: var(--oracle-amber);
+  color: var(--oracle-accent-ink);
 }
 
 .retryBtn:hover {

@@ -28,6 +28,8 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import csv
+import io
 import os
 import sys
 import urllib.error
@@ -79,6 +81,35 @@ def _preflight(timeout: float = 20.0) -> str | None:
         return None if exc.code < 500 else f"the geocoder answered HTTP {exc.code}"
     except Exception as exc:  # noqa: BLE001 - any transport failure is the same answer here
         return f"{type(exc).__name__}: {exc}"
+
+
+# An address the Census geocoder is known to resolve, used to tell a dead service
+# apart from an unmatchable page. Deliberately famous and deliberately fixed:
+# its only job is to answer "is the batch endpoint returning matches right now".
+_CANARY_ADDRESS = "1600 Pennsylvania Ave NW, Washington, DC, 20500"
+
+
+async def _batch_endpoint_is_answering(geocoder) -> bool:
+    """Does the BATCH endpoint resolve a known-good address right now?
+
+    Posted directly rather than through geocode_batch, because that path is
+    cached: a cached hit would report the service healthy during an outage,
+    which is the one moment this needs to be believed.
+
+    _preflight() is not a substitute. It probes /geocoder/benchmarks, a different
+    endpoint that stays up while the batch endpoint is failing — good enough to
+    catch "this host cannot reach Census at all", useless for "the batch endpoint
+    stopped returning matches".
+    """
+    buf = io.StringIO()
+    csv.writer(buf).writerow([0, _CANARY_ADDRESS, "", "", ""])
+    try:
+        text = await geocoder._post_batch(buf.getvalue().encode("utf-8"))
+    except Exception as exc:  # noqa: BLE001 - any transport failure means "no"
+        print(f"  canary POST failed ({type(exc).__name__}): treating as an outage",
+              flush=True)
+        return False
+    return '"Match"' in text and "No_Match" not in text
 
 
 async def _claim(conn, *, after_id: str | None, state: str | None, limit: int) -> list[Any]:
@@ -164,14 +195,28 @@ async def run(
 
         addresses = [_one_line(r) for r in rows]
 
-        # Retry the SAME page rather than advancing past it. geocode_batch
-        # degrades a transport failure into "every row unmatched", and Census is
-        # intermittent — so an outage would otherwise walk the cursor through all
-        # 8.2M rows asking nothing, marking them seen, and reporting 0% as though
-        # the addresses were unmatchable. Real data matches ~90%, so a full batch
-        # resolving nothing is far more likely to be the endpoint than the data.
+        # A zero-match page is ambiguous: either the service is down — in which
+        # case advancing would walk the cursor through millions of rows asking
+        # nothing and marking them seen — or these particular addresses simply
+        # cannot be resolved. Both used to be answered by retrying with backoff
+        # and then inferring an outage, on the reasoning that real data matches
+        # ~90%.
+        #
+        # That premise has expired. It described the corpus as a whole; what is
+        # LEFT is the residue after every easily-matched row was geocoded out of
+        # this queue. Measured: 92-100% for rows already done, 0-26% for the
+        # residue. A zero page is now an ORDINARY result, so inferring an outage
+        # from one stopped the job at the first hard patch — permanently, since
+        # the cursor never advanced past it. That is what turned 17 runs
+        # `partial` while the service was healthy throughout.
+        #
+        # So ask the service, and ask it FIRST. The canary is one address and
+        # about half a second; the retry ladder is 90. When a zero page is the
+        # common case, paying the ladder before asking the question costs ~17
+        # days of sleeping across the 8.2M rows still queued, to learn something
+        # one request answers immediately. Retry only once the canary says there
+        # is something worth waiting for.
         matched: list[tuple[str, float, float]] = []
-        results: list[dict] = []
         for attempt in range(1, _BATCH_ATTEMPTS + 1):
             results = await geocoder.geocode_batch(addresses)
             matched = [
@@ -183,24 +228,36 @@ async def run(
             ]
             if matched or len(rows) < _OUTAGE_MIN_BATCH:
                 break
+
+            if await _batch_endpoint_is_answering(geocoder):
+                print(
+                    f"  batch {batches + 1}: 0 of {len(rows)} resolved, and a "
+                    f"known-good address matched — these addresses are "
+                    f"unmatchable, not an outage. Advancing.",
+                    flush=True,
+                )
+                break
+
             if attempt < _BATCH_ATTEMPTS:
                 backoff = _BATCH_BACKOFF_SECONDS * attempt
                 print(
-                    f"  batch {batches + 1}: 0 of {len(rows)} resolved — "
-                    f"retrying the same page in {backoff}s ({attempt}/{_BATCH_ATTEMPTS - 1})",
+                    f"  batch {batches + 1}: 0 of {len(rows)} resolved and a "
+                    f"known-good address failed too — retrying the same page in "
+                    f"{backoff}s ({attempt}/{_BATCH_ATTEMPTS - 1})",
                     flush=True,
                 )
                 await asyncio.sleep(backoff)
+            else:
+                print(
+                    f"!! {len(rows)} consecutive addresses resolved to nothing and "
+                    f"a known-good address also failed after {_BATCH_ATTEMPTS} "
+                    f"attempts. The geocoder is not answering; stopping so the "
+                    f"remaining rows stay queued. Re-run to resume from here.",
+                    file=sys.stderr,
+                )
+                stopped_on_outage = True
 
-        if not matched and len(rows) >= _OUTAGE_MIN_BATCH:
-            print(
-                f"!! {len(rows)} consecutive addresses resolved to nothing after "
-                f"{_BATCH_ATTEMPTS} attempts. Treating this as a geocoder outage "
-                f"rather than unmatchable data, and stopping so the remaining rows "
-                f"stay queued. Re-run to resume from here.",
-                file=sys.stderr,
-            )
-            stopped_on_outage = True
+        if stopped_on_outage:
             break
 
         cursor = str(rows[-1]["id"])

@@ -11,7 +11,6 @@ export { LivePulse } from './LivePulse';
 // their engines stay out of the initial CRM chunk.
 export { LoginVault } from './LoginVault';
 export { BillingOverlay } from './BillingOverlay';
-export { WalkerBubble } from './WalkerBubble';
 export { SubscriptionBadge } from './SubscriptionBadge';
 export { ErrorBoundary } from './ErrorBoundary';
 export { OnboardingGate } from './OnboardingGate';

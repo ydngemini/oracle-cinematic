@@ -24,7 +24,18 @@ export class UnsupportedTourAssetError extends Error {
 export interface TourAssetSpec {
   /** Stable id — also the PlayCanvas asset name. */
   id: string;
+  /** Where the BYTES come from. May be a `blob:` URL. */
   url: string;
+  /**
+   * What the bytes ARE, when `url` cannot say.
+   *
+   * Splats delivered from `/api/media/{id}` are fetched with the Neoh JWT and
+   * handed to PlayCanvas as a `blob:` URL, and a blob URL has no extension —
+   * so format has to travel separately or every protected splat is parsed as
+   * the wrong type. Set this to the original filename (`model.sog`) or the
+   * original URL.
+   */
+  filename?: string;
   kind?: TourAssetKind;
   /** Optional label for the floor/level selector. */
   floor?: { id: string; name: string; index: number };
@@ -107,7 +118,6 @@ export function loadTourAsset(
 ): Promise<LoadedTourAsset> {
   const { signal } = options;
   const url = resolveAssetUrl(spec.url);
-  const kind = spec.kind ?? inferAssetKind(url);
 
   return new Promise<LoadedTourAsset>((resolve, reject) => {
     if (signal?.aborted) {
@@ -115,7 +125,28 @@ export function loadTourAsset(
       return;
     }
 
-    const asset = new pc.Asset(spec.id, kind, { url });
+    // Inside the executor so an unsupported format REJECTS rather than
+    // throwing synchronously out of a function typed Promise<T>. The plural
+    // loader awaits this and was therefore safe, but a direct caller using
+    // .catch() would have taken an uncaught error — and this path became far
+    // more reachable once a PLY could arrive as a filename hint behind a
+    // blob: URL that hides the extension.
+    let kind: TourAssetKind;
+    try {
+      // `spec.filename` first: a blob: URL carries no extension, so inferring
+      // from the byte URL alone would silently mis-type every protected splat.
+      kind = spec.kind ?? inferAssetKind(spec.filename || url);
+    } catch (err) {
+      reject(err);
+      return;
+    }
+
+    // `filename` is part of PlayCanvas's file descriptor, not decoration: the
+    // engine picks its parser from it when the URL cannot say. Without it a
+    // blob: URL reaches the generic loader and the splat never renders.
+    const file: { url: string; filename?: string } = { url };
+    if (spec.filename) file.filename = spec.filename;
+    const asset = new pc.Asset(spec.id, kind, file);
 
     let settled = false;
     const cleanup = () => {
@@ -129,6 +160,9 @@ export function loadTourAsset(
       settled = true;
       cleanup();
       // Unload frees the GPU-side resource if the download already finished.
+      // The entity is attached before the load starts, so an abort has to take
+      // it back out or the scene keeps an empty splat entity forever.
+      try { attached?.destroy(); } catch { /* app already destroyed */ }
       try { app.assets.remove(asset); asset.unload(); } catch { /* app already destroyed */ }
       reject(new DOMException('aborted', 'AbortError'));
     };
@@ -139,10 +173,10 @@ export function loadTourAsset(
       cleanup();
 
       try {
-        const entity = new pc.Entity(spec.id);
+        const entity = attached ?? new pc.Entity(spec.id);
 
         if (kind === 'gsplat') {
-          entity.addComponent('gsplat', { asset });
+          // Already attached before the load began — see below.
         } else if (kind === 'container') {
           // A GLB container instantiates its own hierarchy; use it directly so
           // animations and materials come along.
@@ -152,7 +186,7 @@ export function loadTourAsset(
           entity.addComponent('render', { asset });
         }
 
-        app.root.addChild(entity);
+        if (!attached) app.root.addChild(entity);
         resolve({ spec, asset, entity });
       } catch (err) {
         reject(err instanceof Error ? err : new Error(String(err)));
@@ -163,6 +197,7 @@ export function loadTourAsset(
       if (settled) return;
       settled = true;
       cleanup();
+      try { attached?.destroy(); } catch { /* app already destroyed */ }
       reject(new Error(`Failed to load ${spec.id}: ${err}`));
     };
 
@@ -171,6 +206,21 @@ export function loadTourAsset(
     signal?.addEventListener('abort', onAbort, { once: true });
 
     app.assets.add(asset);
+
+    // A gsplat component must exist BEFORE its asset finishes loading.
+    // The component watches the asset through an AssetReference and builds its
+    // instance when that reference reports a load; attaching afterwards means
+    // the event has already gone by, so the component sits there holding a
+    // perfectly good GSplatSogResource with `instance === null` and nothing
+    // ever renders. That is a silent failure — the asset says loaded, the
+    // component says it has an asset, and the scene stays black.
+    let attached: pcNS.Entity | null = null;
+    if (kind === 'gsplat') {
+      attached = new pc.Entity(spec.id);
+      attached.addComponent('gsplat', { asset });
+      app.root.addChild(attached);
+    }
+
     app.assets.load(asset);
   });
 }
