@@ -1,4 +1,5 @@
 import { Suspense, lazy, useMemo, useState } from 'react';
+import { createPortal } from 'react-dom';
 
 import useProtectedMedia from '../state/useProtectedMedia';
 import styles from './TourViewer.module.css';
@@ -304,12 +305,21 @@ export function TourViewer({
     );
   }
 
-  return (
+  // Rendered into the document body, not where it was mounted.
+  //
+  // The viewer is `position: fixed; inset: 0` and should fill the window, but
+  // the property drawer that opens it sets `backdrop-filter`, and any of
+  // filter, transform or backdrop-filter on an ancestor makes that ancestor
+  // the containing block for fixed descendants. The tour was therefore pinned
+  // inside a 440px drawer — the capture rendered correctly into a sliver.
+  // A portal is the fix that does not require the drawer to give up its glass.
+  return createPortal(
     <>
       <Suspense fallback={null}>{viewer}</Suspense>
       {guided}
       {switcher}
-    </>
+    </>,
+    document.body,
   );
 }
 
