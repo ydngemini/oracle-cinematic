@@ -87,6 +87,46 @@ def test_a_loaded_county_dataset_still_reports_a_genuine_miss(monkeypatch):
     assert "08031" in str(excinfo.value.detail)
 
 
+def test_mls_regions_reports_configured_feeds_when_the_catalogue_is_empty(monkeypatch):
+    """`mls_boards` (the coverage catalogue) can be empty on a deployment that
+    still has feeds wired. The browse UI reads this list to decide whether to
+    say "no board coverage is configured" — so a configured, syncing feed must
+    show up here rather than the endpoint 404-ing."""
+    async def catalogue_empty_but_feed_configured(_ctx, query, *_a):
+        if "FROM mls_boards" in query:
+            return []
+        if "FROM mls_sync_status" in query:
+            return [{
+                "mls_id": "bridge_dev",
+                "mls_name": "Bridge Developer Dataset",
+                "feed_type": "Bridge_API_v2",
+                "listings_synced": 0,
+            }]
+        return []
+
+    _patch_reads(monkeypatch, mls, catalogue_empty_but_feed_configured)
+
+    regions = asyncio.run(mls.list_mls_regions(state_code=None, ctx=CTX))
+
+    assert [r.mls_id for r in regions] == ["bridge_dev"]
+    assert regions[0].feed_type == "Bridge_API_v2"
+
+
+def test_mls_regions_still_says_dataset_not_loaded_when_nothing_is_configured(monkeypatch):
+    """Neither a catalogue nor a configured feed — that is a deployment fact,
+    not an answer about any state's board coverage."""
+    async def nothing_anywhere(*_a, **_k):
+        return []
+
+    _patch_reads(monkeypatch, mls, nothing_anywhere)
+
+    with pytest.raises(mls.HTTPException) as excinfo:
+        asyncio.run(mls.list_mls_regions(state_code=None, ctx=CTX))
+
+    assert excinfo.value.status_code == 404
+    assert excinfo.value.detail["code"] == DATASET_NOT_LOADED
+
+
 def test_unloaded_advertising_rules_do_not_read_as_no_rules_apply(monkeypatch):
     """The most dangerous empty list in the module — it is a compliance surface."""
     async def no_rows(*_a, **_k):

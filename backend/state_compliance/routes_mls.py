@@ -69,7 +69,15 @@ async def list_mls_regions(
     state_code: Optional[str] = Query(default=None, description="Filter by state"),
     ctx: TenantContext = Depends(require_context),
 ) -> list[MLSRegion]:
-    """Return all known MLS boards.  Optionally filter by state code."""
+    """Return all known MLS boards.  Optionally filter by state code.
+
+    ``mls_boards`` is the curated coverage catalogue (which board covers which
+    states/counties). It can be empty on a deployment that has feeds wired but
+    no catalogue loaded — so when it is, fall back to ``mls_sync_status``,
+    which lists the feeds actually configured and syncing. That keeps the
+    board-coverage strip in the browse UI honest: a configured feed that has
+    pulled nothing yet is not the same as "no board coverage at all".
+    """
     query = "SELECT * FROM mls_boards"
     args: list[Any] = []
     if state_code:
@@ -79,22 +87,47 @@ async def list_mls_regions(
     query += " ORDER BY mls_name"
 
     rows = await _fetch(ctx, query, *args)
-    if not rows:
-        # An empty registry is not "this state has no MLS boards".
+    if rows:
+        return [
+            MLSRegion(
+                mls_id=str(r.get("id", uuid.uuid4())),
+                mls_name=r["mls_name"],
+                states=r.get("states") or [],
+                counties=r.get("counties") or [],
+                member_count=r.get("member_count"),
+                listing_count=r.get("listing_count"),
+                feed_type=r.get("feed_type", "RESO_Web_API"),
+                data_sharing=r.get("data_sharing", "IDX_only"),
+                website=r.get("website"),
+            )
+            for r in rows
+        ]
+
+    # No catalogue — report the configured feeds instead. A state filter can't
+    # be honoured here (sync status carries no coverage geography), so it
+    # returns every configured feed.
+    feeds = await _fetch(
+        ctx,
+        "SELECT mls_id, mls_name, feed_type, listings_synced "
+        "FROM mls_sync_status ORDER BY mls_name, mls_id",
+    )
+    if not feeds:
+        # Nothing catalogued and nothing configured — the dataset was never
+        # loaded, which is a different answer from "this state has no boards".
         await _require_dataset_loaded(ctx, "mls_boards")
     return [
         MLSRegion(
-            mls_id=str(r.get("id", uuid.uuid4())),
-            mls_name=r["mls_name"],
-            states=r.get("states") or [],
-            counties=r.get("counties") or [],
-            member_count=r.get("member_count"),
-            listing_count=r.get("listing_count"),
-            feed_type=r.get("feed_type", "RESO_Web_API"),
-            data_sharing=r.get("data_sharing", "IDX_only"),
-            website=r.get("website"),
+            mls_id=f["mls_id"],
+            mls_name=f.get("mls_name") or f["mls_id"],
+            states=[],
+            counties=[],
+            member_count=None,
+            listing_count=f.get("listings_synced"),
+            feed_type=f.get("feed_type") or "RESO_Web_API",
+            data_sharing="IDX_only",
+            website=None,
         )
-        for r in rows
+        for f in feeds
     ]
 
 
