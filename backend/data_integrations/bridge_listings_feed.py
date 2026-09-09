@@ -26,30 +26,36 @@ protocol, and it does not:
 
     ORACLE_BRIDGE_ENABLED=true
     ORACLE_BRIDGE_BASE_URL=https://api.bridgedataoutput.com/api/v2
-    ORACLE_BRIDGE_DATASET=test                 # or test_sd / test_sf — the only
-                                                # datasets this application is
-                                                # currently authorized for; a
-                                                # real board needs its own
-                                                # separate Bridge approval even
-                                                # with a valid platform token
-                                                # (confirmed via live 401s on
-                                                # fmls/miamire/har/mlspin/...)
+    ORACLE_BRIDGE_DATASET=actris_ref           # test / test_sd / test_sf are
+                                                # Bridge's synthetic developer
+                                                # datasets; any other slug is a
+                                                # board this application was
+                                                # approved for and is tagged
+                                                # licensed_property_listing.
     ORACLE_BRIDGE_ACCESS_TOKEN=<server token>  # backend-only; never ships to a browser
-    ORACLE_BRIDGE_MLS_ID=bridge_dev
-    ORACLE_BRIDGE_MLS_NAME=Bridge Developer Dataset
+    ORACLE_BRIDGE_MLS_ID=actris
+    ORACLE_BRIDGE_MLS_NAME=ACTRIS / Unlock MLS
     ORACLE_BRIDGE_LOOKBACK_HOURS=1
     ORACLE_BRIDGE_PAGE=500
     ORACLE_BRIDGE_MAX_PAGES=200
+    ORACLE_BRIDGE_BACKFILL_MAX_PAGES=4000      # first-run full keyset walk ceiling
     ORACLE_INGEST_TENANT_ID=<uuid>             # shared with the RESO feed
+
+The first sync for a feed (no ``mls_sync_status`` row) runs a one-time full
+walk of the whole dataset by keyset pagination — Bridge caps ``offset`` at
+10000, and a *reference* dataset has every ``ModificationTimestamp`` frozen, so
+a plain delta would import nothing. Subsequent runs are normal deltas.
 
 The ``test``/``test_sd``/``test_sf`` datasets are Bridge's own synthetic
 developer data — not a real board, not real inventory. Every record this
 module writes is tagged
 ``features.provenance.classification = "developer_listing_dataset"`` so it
 can never be mistaken, downstream, for licensed MLS data
-(``licensed_property_listing``, what `listings_feed.py` writes). Swapping in a
-real, licensed Bridge dataset later means changing only the provenance
-classification and the dataset/token config — not this module's shape.
+(``licensed_property_listing``, what `listings_feed.py` writes). Any dataset
+outside ``_DEV_DATASETS`` is treated as a real, licensed Bridge feed (e.g.
+``actris_ref``) and its records carry ``licensed_property_listing`` provenance
+automatically — swapping one in means only the dataset/token config, not this
+module's shape.
 
 Only documented Bridge endpoints are called. This module never scrapes MLS
 member sites, consumer portals, or attempts to bypass provider access
@@ -66,11 +72,29 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 from .base import DataIntegrationError, DataSource, RateLimiter, RetryConfig
-from .mls_sink import reject_reason, upsert_mls_records_and_status
+from .mls_sink import (
+    record_sync_status,
+    reject_reason,
+    upsert_mls_records,
+    upsert_mls_records_and_status,
+)
 
 logger = logging.getLogger("oracle.di.bridge_listings")
 
 _CURSOR_OVERLAP_MIN = 2
+
+# Bridge's own synthetic developer datasets — not a real board, not real
+# inventory. Anything else is a licensed MLS feed the application was approved
+# for (e.g. `actris_ref`), and its records must carry licensed provenance so
+# they are never mistaken downstream for developer data.
+_DEV_DATASETS = frozenset({"test", "test_sd", "test_sf"})
+
+
+def _provenance_for_dataset(dataset: str) -> tuple[str, str]:
+    """(source_kind, classification) for a Bridge dataset."""
+    if dataset.strip().lower() in _DEV_DATASETS:
+        return "developer_listing_dataset", "developer_listing_dataset"
+    return "licensed_mls", "licensed_property_listing"
 
 
 def _bounded_int(value: Any, default: int, minimum: int, maximum: int) -> int:
@@ -139,6 +163,10 @@ class BridgeFeedConfig:
     page_size: int = 500
     lookback_hours: float = 1.0
     max_pages: int = 200
+    # First-run full backfill walks the whole dataset by keyset pagination;
+    # 52k rows at 200/page is ~264 pages, so this ceiling is much higher than
+    # the per-delta one.
+    backfill_max_pages: int = 4000
 
 
 def _bridge_config_from_env() -> tuple[Optional[BridgeFeedConfig], Optional[str]]:
@@ -162,6 +190,9 @@ def _bridge_config_from_env() -> tuple[Optional[BridgeFeedConfig], Optional[str]
         page_size=_bounded_int(os.getenv("ORACLE_BRIDGE_PAGE"), 200, 1, 200),
         lookback_hours=_bounded_float(os.getenv("ORACLE_BRIDGE_LOOKBACK_HOURS"), 1.0, 0.05, 168.0),
         max_pages=_bounded_int(os.getenv("ORACLE_BRIDGE_MAX_PAGES"), 200, 1, 2000),
+        backfill_max_pages=_bounded_int(
+            os.getenv("ORACLE_BRIDGE_BACKFILL_MAX_PAGES"), 4000, 1, 100_000
+        ),
     ), None
 
 
@@ -184,11 +215,13 @@ class BridgeListingsFeed(DataSource):
         self.base_url = config.base_url
         self.token = config.access_token
         self.dataset = config.dataset
+        self._source_kind, self._classification = _provenance_for_dataset(config.dataset)
         self.mls_id = config.mls_id
         self.mls_name = config.mls_name
         self.page = config.page_size
         self.lookback_h = config.lookback_hours
         self.max_pages = config.max_pages
+        self.backfill_max_pages = config.backfill_max_pages
 
     def _cache_ttl(self) -> int:
         return 5 * 60
@@ -215,15 +248,40 @@ class BridgeListingsFeed(DataSource):
         )
 
     # -- Bridge fetch ------------------------------------------------------ #
-    async def fetch(self, *, since: str, offset: int = 0) -> Optional[dict]:
+    async def fetch(
+        self,
+        *,
+        since: Optional[str] = None,
+        offset: int = 0,
+        after_key: Optional[str] = None,
+    ) -> Optional[dict]:
+        """One Bridge `/listings` page.
+
+        Delta mode (the default): ``ModificationTimestamp.gte=since`` sorted by
+        ModificationTimestamp, walked with ``offset``.
+
+        Keyset mode (``after_key`` not None): sorted by ``ListingKey`` and
+        walked with ``ListingKey.gt`` instead of ``offset``. Bridge caps
+        ``offset`` at 10000 (offset+limit must stay under its result window),
+        so a full backfill of a >10k dataset can only be done by keyset. Pass
+        ``after_key=""`` for the first keyset page. ``since`` is omitted here
+        unless given, so a backfill sees every record regardless of its
+        (possibly frozen) ModificationTimestamp.
+        """
         params = {
             "access_token": self.token,
             "limit": str(self.page),
-            "offset": str(offset),
-            "ModificationTimestamp.gte": since,
-            "sortBy": "ModificationTimestamp",
             "order": "asc",
         }
+        if after_key is not None:
+            params["sortBy"] = "ListingKey"
+            if after_key:
+                params["ListingKey.gt"] = after_key
+        else:
+            params["sortBy"] = "ModificationTimestamp"
+            params["offset"] = str(offset)
+        if since is not None:
+            params["ModificationTimestamp.gte"] = since
         url = f"{self.base_url}/{self.dataset}/listings?{urllib.parse.urlencode(params)}"
         payload = await self._get_json(url, headers={"Accept": "application/json"}, timeout=30)
         if not isinstance(payload, dict) or not isinstance(payload.get("bundle", []), list):
@@ -276,7 +334,7 @@ class BridgeListingsFeed(DataSource):
             "description": str(g("PublicRemarks") or "").strip() or None,
             "photos": photos,
             "features": {
-                "source_kind": "developer_listing_dataset",
+                "source_kind": self._source_kind,
                 "mls_id": self.mls_id,
                 "listing_key": listing_key,
                 "originating_system_key": str(g("OriginatingSystemKey") or "").strip(),
@@ -285,7 +343,7 @@ class BridgeListingsFeed(DataSource):
                 "source_modified_at": str(modified or "").strip() or None,
                 "matchable": bool(parcel_number or (address and g("PostalCode"))),
                 "provenance": {
-                    "classification": "developer_listing_dataset",
+                    "classification": self._classification,
                     "provider": "Bridge Interactive",
                     "provider_id": self.mls_id,
                     "standard": "Bridge API v2",
@@ -297,6 +355,126 @@ class BridgeListingsFeed(DataSource):
     @staticmethod
     def _reject_reason(rec: dict[str, Any]) -> Optional[str]:
         return reject_reason(rec)
+
+    async def _backfill_once(self, ctx: Any, tenant_tx: Any) -> dict:
+        """One-time full walk of the whole dataset by keyset pagination.
+
+        Runs on the first sync for this feed (no `mls_sync_status` row). Bridge
+        caps `offset` at 10000, so a dataset larger than that can only be walked
+        by sorting on `ListingKey` and advancing `ListingKey.gt` page to page.
+        No `ModificationTimestamp` filter is applied, so records with a frozen
+        or absent modification timestamp (as in a RESO *reference* dataset) are
+        still ingested. Records are flushed to the DB every few pages so a large
+        dataset never has to sit fully in memory, and the durable cursor is only
+        advanced to "now" (handing subsequent runs back to the delta path) once
+        the walk actually reaches the end.
+        """
+        _FLUSH_EVERY_PAGES = 10
+
+        after_key = ""  # "" → first keyset page
+        pages = 0
+        total_upserted = 0
+        received = 0
+        rejected: dict[str, int] = {}
+        buffer: list[dict[str, Any]] = []
+        exhausted = False
+
+        async def flush() -> None:
+            nonlocal buffer, total_upserted
+            if not buffer:
+                return
+            async with tenant_tx(ctx) as conn:
+                total_upserted += await upsert_mls_records(conn, buffer)
+            buffer = []
+
+        while pages < self.backfill_max_pages:
+            payload = await self.fetch(after_key=after_key)
+            pages += 1
+            batch = (payload or {}).get("bundle") or []
+            if not batch:
+                exhausted = True
+                break
+
+            last_key: Optional[str] = None
+            for raw in batch:
+                received += 1
+                if not isinstance(raw, dict):
+                    rejected["invalid_record"] = rejected.get("invalid_record", 0) + 1
+                    continue
+                key = str(raw.get("ListingKey") or "").strip()
+                if key:
+                    last_key = key
+                rec = self.normalize(raw)
+                reason = self._reject_reason(rec)
+                if reason:
+                    rejected[reason] = rejected.get(reason, 0) + 1
+                    continue
+                buffer.append(rec)
+
+            if pages % _FLUSH_EVERY_PAGES == 0:
+                await flush()
+
+            if len(batch) < self.page:
+                exhausted = True
+                break
+            if last_key is None or last_key == after_key:
+                # No key to advance past on a full page — stop rather than
+                # refetch the same page forever.
+                logger.warning(
+                    "Bridge backfill %s: page %d has no advanceable ListingKey; "
+                    "stopping walk early", self.mls_id, pages
+                )
+                break
+            after_key = last_key
+
+        await flush()
+
+        if not exhausted:
+            logger.warning(
+                "Bridge backfill %s stopped after %d pages (max %d) — "
+                "%d rows written; delete the mls_sync_status row to resume",
+                self.mls_id, pages, self.backfill_max_pages, total_upserted,
+            )
+
+        state = "succeeded" if exhausted else "partial"
+        # Advance to "now" only on a completed walk; otherwise keep the cursor
+        # in the past so the next run's delta re-checks recent records (a
+        # partial walk still leaves a status row, so it will not re-backfill).
+        cursor = (
+            datetime.now(timezone.utc)
+            if exhausted
+            else datetime.now(timezone.utc) - timedelta(hours=self.lookback_h)
+        )
+        async with tenant_tx(ctx) as conn:
+            await record_sync_status(
+                conn,
+                mls_id=self.mls_id,
+                mls_name=self.mls_name,
+                feed_type="Bridge_API_v2",
+                last_sync_at=cursor,
+                listings_synced=total_upserted,
+                sync_lag_minutes=0,
+                notes={
+                    "state": state,
+                    "mode": "backfill",
+                    "pages": pages,
+                    "rejected": rejected,
+                    "dataset": self.dataset,
+                },
+            )
+
+        self._metrics["normalized"] += total_upserted
+        return {
+            "mls_id": self.mls_id,
+            "mls_name": self.mls_name,
+            "state": state,
+            "mode": "backfill",
+            "pages": pages,
+            "received": received,
+            "upserted": total_upserted,
+            "rejected": rejected,
+            "cursor_advanced": True,
+        }
 
     async def sync_once(self) -> dict:
         """Pull the delta since the stored cursor, upsert, advance the cursor.
@@ -319,6 +497,15 @@ class BridgeListingsFeed(DataSource):
             row = await conn.fetchrow(
                 "SELECT last_sync_at FROM mls_sync_status WHERE mls_id = $1", self.mls_id
             )
+
+        # First run for this feed — no status row means nothing has ever been
+        # pulled. A plain delta would only ever see records modified in the last
+        # `lookback_hours`, which for a static/reference dataset (every
+        # ModificationTimestamp frozen) is zero. Walk the whole dataset once by
+        # keyset pagination, then let subsequent runs do normal deltas.
+        if row is None:
+            return await self._backfill_once(ctx, tenant_tx)
+
         since_dt = (row and row["last_sync_at"]) or fallback
         if since_dt.tzinfo is None:
             since_dt = since_dt.replace(tzinfo=timezone.utc)

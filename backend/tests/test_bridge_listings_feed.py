@@ -53,6 +53,7 @@ class FakeConnection:
 def test_env_config_requires_enabled_dataset_and_token(monkeypatch):
     for name in (
         "ORACLE_BRIDGE_ENABLED", "ORACLE_BRIDGE_DATASET", "ORACLE_BRIDGE_ACCESS_TOKEN",
+        "ORACLE_BRIDGE_MLS_ID", "ORACLE_BRIDGE_MLS_NAME",
     ):
         monkeypatch.delenv(name, raising=False)
 
@@ -102,6 +103,25 @@ def test_normalize_maps_bridge_record_to_canonical_shape_with_developer_provenan
         "provider_id": "bridge_dev",
         "standard": "Bridge API v2",
     }
+    assert reject_reason(rec) is None
+
+
+def test_licensed_dataset_gets_licensed_provenance():
+    """A dataset outside test/test_sd/test_sf (e.g. actris_ref) is a real
+    licensed feed and its records must not be tagged developer data."""
+    feed = BridgeListingsFeed(
+        _config(dataset="actris_ref", mls_id="actris", mls_name="ACTRIS / Unlock MLS")
+    )
+    rec = feed.normalize(
+        {
+            "ListingKey": "ACTRIS-1", "UnparsedAddress": "1 Congress Ave",
+            "City": "Austin", "StateOrProvince": "TX", "PostalCode": "78701",
+            "ListPrice": 750000, "StandardStatus": "Active",
+            "ModificationTimestamp": "2020-11-08T16:33:56.437Z",
+        }
+    )
+    assert rec["features"]["source_kind"] == "licensed_mls"
+    assert rec["features"]["provenance"]["classification"] == "licensed_property_listing"
     assert reject_reason(rec) is None
 
 
@@ -170,6 +190,94 @@ def test_sync_follows_offset_paging_and_advances_only_after_exhaustion(monkeypat
     status_writes = [e for e in conn.executions if "INSERT INTO mls_sync_status" in e[0]]
     assert len(status_writes) == 1
     assert status_writes[0][1][2] == "Bridge_API_v2"  # feed_type positional arg
+
+
+def test_first_run_backfills_whole_dataset_by_keyset(monkeypatch):
+    """No mls_sync_status row → walk every record by ListingKey.gt, ignoring
+    ModificationTimestamp (a reference dataset has it frozen), and only hand
+    back to the delta path once the walk is exhausted."""
+    config = _config(
+        dataset="actris_ref", mls_id="actris", mls_name="ACTRIS / Unlock MLS",
+        page_size=2, backfill_max_pages=10,
+    )
+    feed = BridgeListingsFeed(config)
+    monkeypatch.setenv("ORACLE_INGEST_TENANT_ID", "00000000-0000-0000-0000-000000000000")
+
+    def _row(key):
+        return {
+            "ListingKey": key, "UnparsedAddress": f"{key} Congress Ave",
+            "StateOrProvince": "TX", "PostalCode": "78701",
+            "ModificationTimestamp": "2020-11-08T16:33:56.437Z",
+        }
+
+    pages = [
+        {"success": True, "bundle": [_row("aaa"), _row("bbb")]},
+        {"success": True, "bundle": [_row("ccc"), _row("ddd")]},
+        {"success": True, "bundle": [_row("eee")]},  # short page → exhausted
+    ]
+    calls: list[dict] = []
+
+    async def fake_fetch(**kwargs):
+        calls.append(kwargs)
+        return pages[len(calls) - 1]
+
+    feed.fetch = fake_fetch
+    conn = FakeConnection(since=None)
+
+    @asynccontextmanager
+    async def fake_tenant_tx(_ctx):
+        yield conn
+
+    import db.connection
+
+    monkeypatch.setattr(db.connection, "tenant_tx", fake_tenant_tx)
+    result = asyncio.run(feed.sync_once())
+
+    assert result["mode"] == "backfill"
+    assert result["state"] == "succeeded"
+    assert result["upserted"] == 5
+    assert [c.get("after_key") for c in calls] == ["", "bbb", "ddd"]
+    upserts = [e for e in conn.executions if "INSERT INTO oracle_mls_listings" in e[0]]
+    assert len(upserts) == 5
+    status_writes = [e for e in conn.executions if "INSERT INTO mls_sync_status" in e[0]]
+    assert len(status_writes) == 1
+    assert status_writes[0][1][2] == "Bridge_API_v2"
+
+
+def test_backfill_stops_at_page_ceiling_without_infinite_loop(monkeypatch):
+    config = _config(
+        dataset="actris_ref", mls_id="actris", page_size=1, backfill_max_pages=3,
+    )
+    feed = BridgeListingsFeed(config)
+    monkeypatch.setenv("ORACLE_INGEST_TENANT_ID", "00000000-0000-0000-0000-000000000000")
+
+    n = {"i": 0}
+
+    async def fake_fetch(**kwargs):
+        n["i"] += 1
+        return {
+            "success": True,
+            "bundle": [{
+                "ListingKey": f"k{n['i']}", "UnparsedAddress": "x",
+                "StateOrProvince": "TX", "PostalCode": "78701",
+            }],
+        }
+
+    feed.fetch = fake_fetch
+    conn = FakeConnection(since=None)
+
+    @asynccontextmanager
+    async def fake_tenant_tx(_ctx):
+        yield conn
+
+    import db.connection
+
+    monkeypatch.setattr(db.connection, "tenant_tx", fake_tenant_tx)
+    result = asyncio.run(feed.sync_once())
+
+    assert n["i"] == 3  # stopped at the ceiling, did not loop forever
+    assert result["state"] == "partial"
+    assert result["pages"] == 3
 
 
 def test_is_configured_reflects_env(monkeypatch):
