@@ -188,9 +188,18 @@ def _num(v: Any) -> Optional[float]:
         return None
 
 
+_INT32_MIN, _INT32_MAX = -(2**31), 2**31 - 1
+
+
 def _int(v: Any) -> Optional[int]:
+    """Parse to int, dropping values outside PostgreSQL int4 range — the target
+    columns are int4, and an out-of-range lot_sqft (acreage-field bleed) should
+    land as NULL rather than raise mid-upsert."""
     f = _num(v)
-    return int(f) if f is not None else None
+    if f is None:
+        return None
+    i = int(f)
+    return i if _INT32_MIN <= i <= _INT32_MAX else None
 
 
 def _date(v: Any) -> Optional[Any]:

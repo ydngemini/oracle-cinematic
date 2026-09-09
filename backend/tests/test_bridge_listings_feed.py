@@ -192,6 +192,22 @@ def test_sync_follows_offset_paging_and_advances_only_after_exhaustion(monkeypat
     assert status_writes[0][1][2] == "Bridge_API_v2"  # feed_type positional arg
 
 
+def test_out_of_int32_range_lot_size_becomes_null_not_a_crash():
+    """A real ACTRIS ranch listing carried LotSizeSquareFeet=2_371_842_000,
+    which overflows PostgreSQL int4 and aborted a 50k-row backfill mid-upsert.
+    Oversized ints must normalize to None."""
+    feed = BridgeListingsFeed(_config(dataset="actris_ref", mls_id="actris"))
+    rec = feed.normalize({
+        "ListingKey": "RANCH-1", "UnparsedAddress": "1 Big Sky Rd",
+        "StateOrProvince": "TX", "PostalCode": "78701",
+        "LotSizeSquareFeet": 2_371_842_000, "LivingArea": 3000,
+        "StandardStatus": "Active",
+    })
+    assert rec["lot_sqft"] is None
+    assert rec["sqft"] == 3000
+    assert reject_reason(rec) is None
+
+
 def test_first_run_backfills_whole_dataset_by_keyset(monkeypatch):
     """No mls_sync_status row → walk every record by ListingKey.gt, ignoring
     ModificationTimestamp (a reference dataset has it frozen), and only hand
