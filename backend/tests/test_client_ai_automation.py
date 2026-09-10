@@ -6,10 +6,16 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
+import asyncio
+
+import client_ai_automation
 from client_ai_automation import (
     ModelSignals,
+    _assert_client_beliefs,
     _automatic_stage,
+    _request_model_signals,
     _score,
+    _signals_response_format,
     automation_state_json,
     normalize_phone,
     normalize_preferences,
@@ -95,6 +101,82 @@ def test_missing_state_is_explicitly_queued_not_fabricated():
     assert state["stage_mode"] == "auto"
     assert state["evidence"] == []
     assert state["property_candidates"] == []
+
+
+def test_signal_extraction_runs_through_the_llm_gateway_not_azure(monkeypatch):
+    """The extractor was a direct Azure Foundry SDK call. It must now go through
+    the shared gateway (Foundry -> Fireworks -> local), and it must demand the
+    JSON schema so a prose-only provider is skipped rather than mis-parsed."""
+    seen: dict = {}
+
+    async def fake_complete(prompt, *, task, system, response_format, max_tokens, timeout):
+        seen.update(
+            prompt=prompt, task=task, response_format=response_format, timeout=timeout
+        )
+        return '{"summary":"x","explicit_intent":"buyer","timeline_days":30,' \
+               '"actionable_response":true,"budget_max":450000,"target_zips":["78701"],' \
+               '"next_action":null,"evidence_refs":["note:1"]}'
+
+    fake_gateway = type("g", (), {"complete": staticmethod(fake_complete)})
+    monkeypatch.setitem(__import__("sys").modules, "llm_gateway", fake_gateway)
+
+    facts = [{"id": "note:1", "text": "Wants to buy in 78701 under 450k in a month."}]
+    signals, model_id = asyncio.run(_request_model_signals(facts, timeout=10))
+
+    assert model_id == "llm-gateway"
+    assert signals.budget_max == 450000
+    assert seen["response_format"]["type"] == "json_schema"
+    assert seen["response_format"]["json_schema"]["strict"] is True
+
+
+def test_signal_extraction_rejects_evidence_outside_the_supplied_facts(monkeypatch):
+    async def fake_complete(prompt, **kw):
+        return '{"summary":"x","explicit_intent":"unknown","timeline_days":null,' \
+               '"actionable_response":false,"budget_max":null,"target_zips":[],' \
+               '"next_action":null,"evidence_refs":["note:99"]}'
+
+    monkeypatch.setitem(
+        __import__("sys").modules, "llm_gateway",
+        type("g", (), {"complete": staticmethod(fake_complete)}),
+    )
+    with pytest.raises(ValueError, match="evidence outside"):
+        asyncio.run(_request_model_signals([{"id": "note:1", "text": "hi"}], timeout=10))
+
+
+def test_response_format_carries_the_signals_schema():
+    rf = _signals_response_format()
+    assert rf["json_schema"]["name"] == "client_crm_signals"
+    assert "budget_max" in rf["json_schema"]["schema"]["properties"]
+
+
+def test_beliefs_are_asserted_only_from_evidence_cited_signals(monkeypatch):
+    import belief_store
+
+    asserted: list[dict] = []
+
+    async def fake_assert(ctx, **kw):
+        asserted.append(kw)
+        return {}
+
+    fake_bs = type("bs", (), {
+        "assert_belief": staticmethod(fake_assert),
+        "BeliefSource": belief_store.BeliefSource,
+    })
+    monkeypatch.setitem(__import__("sys").modules, "belief_store", fake_bs)
+
+    signals = ModelSignals.model_validate({
+        "summary": "Buyer, 450k, 78701, 30 days",
+        "explicit_intent": "buyer", "budget_max": 450000, "timeline_days": 30,
+        "target_zips": ["78701", "78702"], "evidence_refs": ["note:1"],
+    })
+    asyncio.run(_assert_client_beliefs(object(), "c-1", signals))
+
+    preds = {a["predicate"]: a for a in asserted}
+    assert preds["max_budget"]["value"] == 450000
+    assert preds["timeline"]["value"] == 30
+    assert {a["value"] for a in asserted if a["predicate"] == "prefers_area"} == {"78701", "78702"}
+    assert all(a["source"].kind == "model" for a in asserted)  # CHECK-enum safe
+    assert all(0.0 < a["confidence"] < 1.0 for a in asserted)
 
 
 def test_migration_backfills_through_force_rls_with_internal_only_jobs():
