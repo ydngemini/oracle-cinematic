@@ -755,6 +755,21 @@ async def _outcome_attribution_task() -> dict:
     )
 
 
+async def _chat_decision_sweep_task() -> dict:
+    """Capture the human verdict on chat-tool actions once their undo window
+    closes: applied-and-kept is an acceptance, undone is a rejection. Deferred
+    for the same reason attribution is — the signal is the *absence* of an undo
+    over a fixed window, which cannot be known at apply time.
+    """
+    from decision_traces import sweep_settled_chat_actions
+
+    return await sweep_settled_chat_actions(
+        per_tenant_limit=max(
+            1, min(2000, int(os.getenv("ORACLE_CHAT_DECISION_SWEEP_BATCH", "500")))
+        ),
+    )
+
+
 async def _usage_meter_drain_task() -> dict:
     """Push locally-recorded usage to Stripe's meter.
 
@@ -912,6 +927,18 @@ def build_default_scheduler() -> PeriodicScheduler:
     # which the executor checks on every tick. That redundancy is deliberate —
     # the credential check is NOT a third switch, because a machine with no
     # credential rows can still have Twilio in its environment.
+    # Hourly. The undo window is 24h (migration 0036), so an action only
+    # becomes decidable a day after it is applied; a quarter-hour cadence would
+    # just re-scan the same not-yet-settled rows. Idempotent — record_decision
+    # upserts on (tenant, source_table, source_id) — so replica overlap is safe.
+    sched.register(PeriodicTask(
+        name="chat_decision_sweep",
+        interval_s=max(
+            300.0, float(os.getenv("ORACLE_CHAT_DECISION_SWEEP_INTERVAL_MIN", "60")) * 60,
+        ),
+        run=_chat_decision_sweep_task,
+        enabled=os.getenv("ORACLE_CHAT_DECISION_SWEEP_ENABLED", "1") == "1",
+    ))
     sched.register(PeriodicTask(
         name="mission_tick",
         interval_s=max(

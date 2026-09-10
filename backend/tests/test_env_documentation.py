@@ -93,7 +93,7 @@ _INTERNAL: frozenset[str] = frozenset(
     # made in code; the credentials that reach it ARE documented.
     | {
         "ORACLE_AI_CHAT_MODEL", "ORACLE_AI_FIREWORKS_FALLBACK",
-        "ORACLE_CLIENT_AI_MODEL", "ORACLE_CLIENT_AI_MODEL_ENABLED",
+        "ORACLE_CLIENT_AI_MODEL_ENABLED",
         "ORACLE_FAL_VIDEO_MODEL", "ORACLE_FIREWORKS_FAST_MODEL",
         "ORACLE_FIREWORKS_MODEL", "ORACLE_FIREWORKS_URL", "ORACLE_LLM_GATEWAY",
         "ORACLE_LOCAL_LLM_DISABLE_THINKING", "CRM_DRAFT_LLM", "LLAMA_SERVER_URL",
@@ -114,7 +114,6 @@ _INTERNAL: frozenset[str] = frozenset(
     # Set by the platform, never by an operator: a provider SDK reads them, or
     # a startup probe writes them for later code to read back.
     | {
-        "ORACLE_ACS_CREDENTIALS_VALIDATED", "ORACLE_SES_CREDENTIALS_VALIDATED",
         "ORACLE_TWILIO_CREDENTIALS_VALIDATED", "AWS_OBSERVABILITY_ENABLED",
         "ORACLE_ASSIGNOR_NAME", "ORACLE_AUTORENEW_DISCLOSURE",
     }
