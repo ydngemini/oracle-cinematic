@@ -305,6 +305,34 @@ def test_the_bedrock_seam_uses_the_gateway_when_it_can(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# Local llama.cpp
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize(
+    "configured, expected",
+    [
+        ("http://127.0.0.1:8090/v1", "http://127.0.0.1:8090/v1"),
+        # ai_chat_agent shares this var and wants the raw endpoint; litellm wants
+        # the /v1 root and appends the path itself.
+        ("http://host.docker.internal:8090/v1/chat/completions",
+         "http://host.docker.internal:8090/v1"),
+        ("http://127.0.0.1:8090/v1/completions/", "http://127.0.0.1:8090/v1"),
+    ],
+)
+def test_local_provider_normalises_a_shared_chat_completions_url(monkeypatch, configured, expected):
+    monkeypatch.setenv("ORACLE_LOCAL_LLM_URL", configured)
+    provider = llm_gateway._local("local-llama")
+
+    assert provider is not None
+    assert provider.api_base == expected
+
+
+def test_local_provider_is_the_last_rung_and_can_be_disabled(monkeypatch):
+    monkeypatch.setenv("ORACLE_AI_LOCAL_FALLBACK", "0")
+    assert llm_gateway._local("local-llama") is None
+
+
+# ---------------------------------------------------------------------------
 # Azure AI Foundry
 # ---------------------------------------------------------------------------
 

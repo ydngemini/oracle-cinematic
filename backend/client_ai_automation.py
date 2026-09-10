@@ -378,25 +378,51 @@ async def _request_model_signals(
     silently fell back to regex rules for the entire time Azure was unreachable.
     The gateway walks its own ladder (Foundry → Fireworks → local llama.cpp),
     so extraction now runs against whatever inference is actually available —
-    including a fully offline box. Providers that cannot honour the JSON schema
-    are skipped rather than allowed to return prose.
+    including a fully offline box.
+
+    Two passes: first insisting on ``response_format`` (only Foundry/Fireworks
+    honour it, and they enforce the schema), then, if no schema-capable provider
+    answered, a plain pass that a local llama.cpp can serve. The plain pass is
+    still safe — ``ModelSignals.model_validate_json`` rejects anything that is
+    not the exact schema, so a prose reply becomes the deterministic fallback,
+    never a malformed "extraction".
     """
     import llm_gateway
 
     prompt = json.dumps({"facts": facts}, separators=(",", ":"))
-    text = await llm_gateway.complete(
-        prompt,
-        task="analysis",
-        system=_SIGNAL_EXTRACTION_SYSTEM,
-        response_format=_signals_response_format(),
-        max_tokens=700,
-        timeout=timeout,
-    )
-    signals = ModelSignals.model_validate_json(text or "{}")
+    half = max(4.0, timeout / 2)
+    try:
+        text = await llm_gateway.complete(
+            prompt,
+            task="analysis",
+            system=_SIGNAL_EXTRACTION_SYSTEM,
+            response_format=_signals_response_format(),
+            max_tokens=700,
+            timeout=half,
+        )
+    except llm_gateway.LLMUnavailable:
+        text = await llm_gateway.complete(
+            prompt,
+            task="analysis",
+            system=_SIGNAL_EXTRACTION_SYSTEM
+            + " Respond with a single JSON object and nothing else.",
+            max_tokens=900,
+            timeout=half,
+        )
+    signals = ModelSignals.model_validate_json(_json_object(text))
     allowed_refs = {fact["id"] for fact in facts}
     if any(reference not in allowed_refs for reference in signals.evidence_refs):
         raise ValueError("model cited evidence outside the supplied CRM facts")
     return signals, "llm-gateway"
+
+
+def _json_object(text: Optional[str]) -> str:
+    """The outermost JSON object in a model reply. A local model without schema
+    enforcement often wraps the object in prose or a ```json fence."""
+    if not text:
+        return "{}"
+    start, end = text.find("{"), text.rfind("}")
+    return text[start : end + 1] if start != -1 and end > start else "{}"
 
 
 async def _extract_signals(facts: list[dict[str, str]]) -> tuple[ModelSignals, str, Optional[str]]:
