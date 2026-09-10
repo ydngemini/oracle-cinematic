@@ -1,8 +1,9 @@
-"""Durable object storage across the three backends.
+"""Durable object storage across the four backends.
 
 Video upload used to hard-require RECON_S3_BUCKET, so it returned 503 forever on
 an Azure deployment. These cover the Azure Files backend that replaces it (the
-one that actually runs in production), the traversal guard on its keys, and the
+one that actually runs in production), the `local` directory backend that lets
+the stack run with no cloud account, the traversal guard on their keys, and the
 boto3-shaped adapter the contract vault is injected with.
 """
 
@@ -85,6 +86,49 @@ def test_is_configured_reports_whether_a_write_could_succeed(monkeypatch, env, e
 def test_a_real_writable_mount_is_configured(monkeypatch, tmp_path):
     """The positive azure-files case: a root that exists and accepts writes."""
     assert _reload(monkeypatch, ORACLE_MEDIA_ROOT=tmp_path).is_configured() is True
+
+
+# --- the local directory backend ---------------------------------------------
+
+def test_local_backend_defaults_to_a_relative_dir_no_cloud(monkeypatch):
+    mod = _reload(monkeypatch, ORACLE_STORAGE_BACKEND="local")
+
+    assert mod.BACKEND == "local"
+    assert str(mod.MEDIA_ROOT) == "var/media"  # ./var/media, Path-normalised
+
+
+def test_local_backend_creates_its_root_and_is_configured(monkeypatch, tmp_path):
+    mod = _reload(
+        monkeypatch,
+        ORACLE_STORAGE_BACKEND="local",
+        ORACLE_MEDIA_ROOT=tmp_path / "media",
+    )
+    assert mod.is_configured() is True
+    assert (tmp_path / "media").is_dir()
+
+
+def test_local_backend_round_trips_and_serves_through_the_app(monkeypatch, tmp_path):
+    mod = _reload(
+        monkeypatch,
+        ORACLE_STORAGE_BACKEND="local",
+        ORACLE_MEDIA_ROOT=tmp_path,
+    )
+    mod.put_bytes("property-media/t/pic", b"jpeg-bytes", "image/jpeg")
+
+    assert (tmp_path / "property-media/t/pic").read_bytes() == b"jpeg-bytes"
+    assert mod.get_bytes("property-media/t/pic") == b"jpeg-bytes"
+    # A local directory has no public URL — bytes go through the media endpoint.
+    assert mod.signed_url("property-media/t/pic") is None
+    assert mod.presigned_put_url("property-media/t/pic") is None
+
+
+@pytest.mark.parametrize("key", ["../escape", "a/../../escape", "/etc/passwd"])
+def test_local_backend_keys_cannot_escape_the_root(monkeypatch, tmp_path, key):
+    mod = _reload(
+        monkeypatch, ORACLE_STORAGE_BACKEND="local", ORACLE_MEDIA_ROOT=tmp_path
+    )
+    with pytest.raises(mod.StorageError, match="escapes"):
+        mod.put_bytes(key, b"x")
 
 
 # --- the azure files backend --------------------------------------------------

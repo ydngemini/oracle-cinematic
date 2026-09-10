@@ -1,10 +1,20 @@
 """Durable object storage, independent of which cloud is underneath.
 
-Three backends, chosen by ORACLE_STORAGE_BACKEND:
+Four backends, chosen by ORACLE_STORAGE_BACKEND:
 
+  local                  A plain directory on this host, ORACLE_MEDIA_ROOT
+                         (default ./var/media under the working dir). No SDK, no
+                         credentials, no cloud account — the backend that lets
+                         the whole stack run offline. Same on-disk write-then-
+                         rename semantics as azure-files; bytes are served
+                         through the app's own authenticated media endpoint
+                         (signed_url returns None) since a local dir has no URL.
   azure-files (default)  Write through the shared Azure Files mount described in
                          infra/azure/README.md. Every backend replica sees the
                          same path, so this needs no SDK and no credentials.
+                         Mechanically identical to `local` — the difference is
+                         only the default root and the operational expectation
+                         that the path is a shared mount.
   azure-blob             Azure Blob Storage, with SAS links for expiring reads.
                          Prefers a user-delegation SAS signed by the managed
                          identity; falls back to an account key only if the
@@ -29,9 +39,16 @@ logger = logging.getLogger("oracle.object_storage")
 
 BACKEND = os.getenv("ORACLE_STORAGE_BACKEND", "azure-files").strip().lower()
 
-# azure-files: the shared mount. Matches the /mnt/neoh mount point the Container
-# Apps deployment attaches to every replica.
-MEDIA_ROOT = Path(os.getenv("ORACLE_MEDIA_ROOT", "/mnt/neoh"))
+# `local` and `azure-files` are both a directory on disk with identical write
+# semantics — the only difference is the default root and the operational
+# meaning of the path (a local dir vs. a shared mount).
+_FILESYSTEM_BACKENDS = ("local", "azure-files")
+
+# azure-files defaults to /mnt/neoh — the Container Apps mount point, which does
+# not exist on a laptop. `local` defaults to ./var/media under the working dir
+# so a bare checkout can write media with no configuration at all.
+_DEFAULT_ROOT = "./var/media" if BACKEND == "local" else "/mnt/neoh"
+MEDIA_ROOT = Path(os.getenv("ORACLE_MEDIA_ROOT", _DEFAULT_ROOT))
 
 # azure-blob
 BLOB_CONTAINER = os.getenv("ORACLE_BLOB_CONTAINER", "neoh-media")
@@ -42,7 +59,7 @@ BLOB_CONNECTION_STRING = os.getenv("AZURE_STORAGE_CONNECTION_STRING", "")
 S3_BUCKET = os.getenv("RECON_S3_BUCKET", "")
 S3_REGION = os.getenv("AWS_REGION", "us-east-1")
 
-_VALID_BACKENDS = ("azure-files", "azure-blob", "s3")
+_VALID_BACKENDS = ("local", "azure-files", "azure-blob", "s3")
 
 
 class StorageError(RuntimeError):
@@ -78,7 +95,7 @@ def is_configured() -> bool:
         backend = _check_backend()
     except StorageError:
         return False
-    if backend == "azure-files":
+    if backend in _FILESYSTEM_BACKENDS:
         return _mount_is_writable()
     if backend == "azure-blob":
         return bool(BLOB_CONNECTION_STRING or BLOB_ACCOUNT_URL)
@@ -141,7 +158,7 @@ def put_bytes(key: str, data: bytes, content_type: str = "application/octet-stre
     """Store `data` at `key`. Returns the key, so call sites can persist it."""
     backend = _check_backend()
 
-    if backend == "azure-files":
+    if backend in _FILESYSTEM_BACKENDS:
         destination = _safe_destination(key)
         destination.parent.mkdir(parents=True, exist_ok=True)
         # Write-then-rename: a reader on another replica never observes a
@@ -173,7 +190,7 @@ def put_file(key: str, path: str | os.PathLike[str], content_type: str) -> str:
     """Store a file already on disk. Streams rather than reading it into memory."""
     backend = _check_backend()
 
-    if backend == "azure-files":
+    if backend in _FILESYSTEM_BACKENDS:
         destination = _safe_destination(key)
         destination.parent.mkdir(parents=True, exist_ok=True)
         staging = destination.with_suffix(destination.suffix + ".partial")
@@ -203,7 +220,7 @@ def put_file(key: str, path: str | os.PathLike[str], content_type: str) -> str:
 def get_bytes(key: str) -> bytes:
     backend = _check_backend()
 
-    if backend == "azure-files":
+    if backend in _FILESYSTEM_BACKENDS:
         return _safe_destination(key).read_bytes()
     if backend == "azure-blob":
         return _blob_client(key).download_blob().readall()
@@ -227,7 +244,7 @@ def signed_url(key: str, expires_seconds: int = 3600) -> Optional[str]:
     authenticated media endpoint rather than handed out as a link."""
     backend = _check_backend()
 
-    if backend == "azure-files":
+    if backend in _FILESYSTEM_BACKENDS:
         return None
 
     if backend == "azure-blob":
@@ -254,7 +271,7 @@ def presigned_put_url(key: str, expires_seconds: int = 3600) -> Optional[str]:
     """
     backend = _check_backend()
 
-    if backend == "azure-files":
+    if backend in _FILESYSTEM_BACKENDS:
         return None
 
     if backend == "azure-blob":
