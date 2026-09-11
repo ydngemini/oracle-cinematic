@@ -187,3 +187,59 @@ def test_migration_backfills_through_force_rls_with_internal_only_jobs():
     assert "'crm:client_reconcile'" in sql
     assert "'internal_edit'" in sql
     assert "REVOKE DELETE, TRUNCATE" in sql
+
+
+def test_property_candidates_bounded_degrades_instead_of_failing(monkeypatch):
+    """A public_property_records lookup that blows its statement_timeout must
+    return [] rather than let a bare TimeoutError() take down the whole
+    reconcile — that TimeoutError() used to dead-letter the client entirely."""
+    from contextlib import asynccontextmanager
+
+    class _TimeoutConn:
+        def __init__(self):
+            self.executed = []
+
+        @asynccontextmanager
+        async def transaction(self):
+            yield self
+
+        async def execute(self, sql, *args):
+            self.executed.append(sql)
+
+        async def fetch(self, *a, **kw):
+            raise TimeoutError()
+
+    conn = _TimeoutConn()
+    result = asyncio.run(
+        client_ai_automation._property_candidates_bounded(conn, "Long Enough Name", [], 0)
+    )
+
+    assert result == []
+    assert any("statement_timeout" in q for q in conn.executed)
+
+
+def test_property_candidates_bounded_returns_real_matches(monkeypatch):
+    from contextlib import asynccontextmanager
+
+    row = {
+        "id": "aaaaaaaa-0000-4000-8000-000000000000", "parcel_id": "P1",
+        "address": "1 Main St", "city": "Dover", "state": "DE", "zip_code": "19901",
+        "owner_name": "Jane Doe", "source_name": "county", "record_refreshed_at": NOW,
+    }
+
+    class _Conn:
+        @asynccontextmanager
+        async def transaction(self):
+            yield self
+
+        async def execute(self, sql, *args):
+            pass
+
+        async def fetch(self, *a, **kw):
+            return [row]
+
+    result = asyncio.run(
+        client_ai_automation._property_candidates_bounded(_Conn(), "Jane Doe", [], 0)
+    )
+    assert len(result) == 1
+    assert result[0]["owner_name"] == "Jane Doe"

@@ -659,6 +659,34 @@ async def _property_candidates(
     ]
 
 
+async def _property_candidates_bounded(
+    conn: Any, full_name: str, target_zips: list[str], linked_count: int,
+) -> list[dict[str, Any]]:
+    """`_property_candidates`, but a slow plan can never fail the reconcile.
+
+    `public_property_records` is 9.6M+ rows, and its RLS policy — a pure
+    session-role check, identical for every row — is enough to make the
+    planner discard the matching expression index and fall back to a seq
+    scan under `force_generic_plan` or a bad row estimate (confirmed via
+    EXPLAIN; the index is used with `row_security=off` and nowhere else).
+    That is a planner defect this module cannot fix from here, so it is
+    contained instead: a short `statement_timeout` inside its own savepoint
+    means a slow plan costs a few seconds and an honest empty result, never
+    the `command_timeout=30` TimeoutError() that used to take the whole
+    client_ai_state row down with it.
+    """
+    timeout_ms = max(500, min(15_000, int(os.getenv("ORACLE_PROPERTY_CANDIDATES_TIMEOUT_MS", "3000"))))
+    try:
+        async with conn.transaction():
+            await conn.execute(f"SET LOCAL statement_timeout = {timeout_ms}")
+            return await _property_candidates(conn, full_name, target_zips, linked_count)
+    except Exception:  # noqa: BLE001 - a slow lookup must degrade, not fail reconciliation
+        logger.warning(
+            "property-candidate lookup skipped (slow plan or error) for %r", full_name
+        )
+        return []
+
+
 async def reconcile_client(
     ctx: TenantContext,
     client_id: str,
@@ -832,7 +860,7 @@ async def reconcile_client(
         score_mode = fresh_state["score_mode"]
         stage_mode = fresh_state["stage_mode"]
 
-        candidates = await _property_candidates(
+        candidates = await _property_candidates_bounded(
             conn, client["full_name"], list(preferences.get("target_zips") or []), len(properties),
         )
         if candidates:
