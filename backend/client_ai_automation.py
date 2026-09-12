@@ -629,12 +629,21 @@ async def _property_candidates(
     normalized_name = re.sub(r"[^a-z0-9]", "", str(full_name or "").lower())
     if linked_count or len(normalized_name) < 5:
         return []
+    # Filters on the generated column (migration 0102), not the inline
+    # regexp_replace/lower expression the equivalent index used to carry. That
+    # expression is not leakproof, and this table is FORCE ROW LEVEL SECURITY
+    # (0050): under RLS the planner will not combine a non-leakproof user qual
+    # with the security qual, so it silently discarded any index built on it
+    # and seq-scanned all 9M+ rows instead — the actual cause of the
+    # TimeoutError() this function used to produce. `owner_name_normalized = $1`
+    # compares with texteq, which IS leakproof, so the matching plain btree
+    # index (idx_public_property_owner_lookup) is used as expected.
     rows = await conn.fetch(
         """
         SELECT id,parcel_id,address,city,state,zip_code,owner_name,source_name,
                record_refreshed_at,verification_required
           FROM public_property_records
-         WHERE regexp_replace(lower(COALESCE(owner_name,'')),'[^a-z0-9]','','g')=$1
+         WHERE owner_name_normalized=$1
            AND (cardinality($2::text[])=0 OR zip_code=ANY($2::text[]))
          ORDER BY record_refreshed_at DESC LIMIT 5
         """,
@@ -664,16 +673,15 @@ async def _property_candidates_bounded(
 ) -> list[dict[str, Any]]:
     """`_property_candidates`, but a slow plan can never fail the reconcile.
 
-    `public_property_records` is 9.6M+ rows, and its RLS policy — a pure
-    session-role check, identical for every row — is enough to make the
-    planner discard the matching expression index and fall back to a seq
-    scan under `force_generic_plan` or a bad row estimate (confirmed via
-    EXPLAIN; the index is used with `row_security=off` and nowhere else).
-    That is a planner defect this module cannot fix from here, so it is
-    contained instead: a short `statement_timeout` inside its own savepoint
-    means a slow plan costs a few seconds and an honest empty result, never
-    the `command_timeout=30` TimeoutError() that used to take the whole
-    client_ai_state row down with it.
+    Migration 0102 fixed the actual cause of the seq scan (a non-leakproof
+    expression index that FORCE ROW LEVEL SECURITY made the planner refuse to
+    use — see that file). This wrapper is defense-in-depth, kept even after the
+    real fix: `public_property_records` is 9.6M+ rows and a future index,
+    query, or RLS-policy change could reintroduce the same class of slow plan.
+    A short `statement_timeout` inside its own savepoint means that costs a
+    few seconds and an honest empty result, never the `command_timeout=30`
+    bare `TimeoutError()` that used to take the whole client_ai_state row
+    down with it.
     """
     timeout_ms = max(500, min(15_000, int(os.getenv("ORACLE_PROPERTY_CANDIDATES_TIMEOUT_MS", "3000"))))
     try:
