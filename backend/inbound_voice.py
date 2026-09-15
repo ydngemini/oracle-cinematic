@@ -14,6 +14,7 @@ import os
 import re
 import uuid
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any, Mapping, Optional, Sequence
 
 from crypto import CryptoError, decrypt_pii, derive_tenant_key, encrypt_pii
@@ -57,7 +58,15 @@ _ROUTE_COLUMNS = (
     "forwarding_source_e164,sip_domain,voice_caller_id_e164,"
     "voice_caller_id_verified,sms_sender_e164,sms_sender_type,"
     "agent_forward_e164,forward_on_request,forward_when_ai_unavailable,"
-    "forward_timeout_seconds,active"
+    "forward_timeout_seconds,active,"
+    # 0104 — business-number connect state. Never written by
+    # upsert_telephony_route (below); only the narrow _set_route_columns
+    # helper and the provisioning/verification flows may change these.
+    "provider,outbound_verification_status,outbound_verification_sid,"
+    "outbound_verification_requested_at,outbound_verification_last_tested_at,"
+    "outbound_verification_failure_reason,inbound_forwarding_status,"
+    "inbound_forwarding_provider_sid,inbound_forwarding_last_tested_at,"
+    "inbound_forwarding_failure_reason"
 )
 
 
@@ -1024,6 +1033,255 @@ async def list_telephony_routes(ctx: TenantContext) -> list[dict[str, Any]]:
                 ctx.agent_id,
             )
     return [dict(row) for row in rows]
+
+
+# ── Business-number connect (V1 "use my existing business number") ─────────
+#
+# One real-world number, two existing columns. The agent enters the number
+# they already advertise; it becomes BOTH forwarding_source_e164 (the carrier
+# forwards it into the hidden inbound_did) and voice_caller_id_e164 (what
+# Neoh asks Twilio to present on an AI-placed outbound call, once verified).
+# No new "public_business_number" column — see 0104's header for why.
+#
+# Two invariants everything below protects:
+#   1. voice_caller_id_verified can only ever be set true by
+#      check_business_number_verification, which asks Twilio directly. Never
+#      by upsert_telephony_route (its column list below is unchanged from
+#      before this feature), never by a client request body.
+#   2. inbound_forwarding_provider_sid, once set, is never overwritten by a
+#      fresh purchase — connect_business_number reuses it unconditionally.
+
+
+async def get_telephony_route(ctx: TenantContext) -> Optional[dict[str, Any]]:
+    """This agent's own route row, or None. Unlike list_telephony_routes (which
+    a broker_owner can use to see every agent's route), this always resolves
+    to exactly the calling identity's own row — the only shape
+    connect_business_number and get_verified_caller_id need."""
+    async with tenant_tx(ctx) as conn:
+        row = await conn.fetchrow(
+            f"""
+            SELECT {_ROUTE_COLUMNS},created_at,updated_at
+              FROM telephony_routes
+             WHERE tenant_id=$1::uuid AND agent_id=$2
+             LIMIT 1
+            """,
+            ctx.tenant_id,
+            ctx.agent_id,
+        )
+    return dict(row) if row is not None else None
+
+
+async def _set_route_columns(
+    ctx: TenantContext, columns: Mapping[str, Any]
+) -> Optional[dict[str, Any]]:
+    """Targeted UPDATE for exactly the given columns on this agent's route.
+
+    Deliberately separate from upsert_telephony_route's fixed column list —
+    that function is the one a plain route edit (telephony_api.configure_route)
+    reaches, and it must never be able to touch verification/forwarding state.
+    Only the provisioning/verification flows in this module call this.
+    """
+    if not columns:
+        return await get_telephony_route(ctx)
+    set_clause = ",".join(f"{name}=${i + 3}" for i, name in enumerate(columns))
+    async with tenant_tx(ctx) as conn:
+        row = await conn.fetchrow(
+            f"""
+            UPDATE telephony_routes
+               SET {set_clause}, updated_at=now()
+             WHERE tenant_id=$1::uuid AND agent_id=$2
+             RETURNING {_ROUTE_COLUMNS},created_at,updated_at
+            """,
+            ctx.tenant_id,
+            ctx.agent_id,
+            *columns.values(),
+        )
+    return dict(row) if row is not None else None
+
+
+async def get_verified_caller_id(ctx: TenantContext) -> Optional[str]:
+    """The agent's Twilio-verified outbound caller ID, or None.
+
+    The one function an AI-placed outbound call may trust for caller ID
+    (commands_api.py's CommandType.CALL handler calls this). Returns a number
+    only when outbound_verification_status is exactly 'verified' — never for
+    'pending', 'failed', or a route with no business number connected. An
+    unverified number is never "close enough"; the caller falls back to
+    whatever ordinary Twilio from_number it already had.
+    """
+    route = await get_telephony_route(ctx)
+    if not route:
+        return None
+    if (
+        route.get("outbound_verification_status") == "verified"
+        and route.get("voice_caller_id_verified")
+        and route.get("voice_caller_id_e164")
+    ):
+        return str(route["voice_caller_id_e164"])
+    return None
+
+
+async def connect_business_number(
+    ctx: TenantContext,
+    public_business_number: str,
+    *,
+    twilio_account_sid: str,
+    credentials: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Idempotent entry point for 'use my existing business number'.
+
+    Safe to call repeatedly with the same number: a route that already has a
+    hidden forwarding number on file (inbound_forwarding_provider_sid) is
+    reused rather than re-purchased, and a business number that is already
+    verified is not re-submitted to Twilio's verification queue. Calling it
+    again with a DIFFERENT number re-arms verification for the new number
+    (the old verified state cannot carry over — that would be exactly the
+    caller-ID spoofing this exists to prevent) but still reuses the same
+    hidden inbound number, since that infrastructure has nothing to do with
+    which business number is currently connected to it.
+    """
+    from command_providers import (
+        ProviderConfigurationError,
+        ProviderRequestError,
+        configure_twilio_number_webhook,
+        provision_twilio_forwarding_number,
+        start_twilio_caller_id_verification,
+    )
+
+    number = normalize_e164(public_business_number)
+    existing = await get_telephony_route(ctx)
+
+    # --- inbound half: reuse or provision the hidden forwarding number -----
+    if existing and existing.get("inbound_forwarding_provider_sid") and existing.get("inbound_did"):
+        inbound_did = str(existing["inbound_did"])
+        forwarding_sid = str(existing["inbound_forwarding_provider_sid"])
+        forwarding_status = str(existing.get("inbound_forwarding_status") or "active")
+        newly_provisioned = False
+    else:
+        purchase = await provision_twilio_forwarding_number(credentials=credentials)
+        inbound_did = str(purchase.detail["phone_number"])
+        forwarding_sid = purchase.reference
+        forwarding_status = "pending"
+        newly_provisioned = True
+
+    route = await upsert_telephony_route(
+        ctx,
+        {
+            "inbound_did": inbound_did,
+            "twilio_account_sid": twilio_account_sid,
+            "intake_mode": (existing or {}).get("intake_mode", "auto"),
+            "forwarding_mode": "carrier_conditional",
+            "forwarding_source_e164": number,
+            "sip_domain": (existing or {}).get("sip_domain"),
+            "voice_caller_id_e164": number,
+            # Never trust true forward from anywhere but existing DB state,
+            # and only when the number has not changed — this is the
+            # anti-spoofing invariant, enforced here too since
+            # upsert_telephony_route is the shared primitive.
+            "voice_caller_id_verified": bool(
+                existing
+                and existing.get("voice_caller_id_verified")
+                and existing.get("voice_caller_id_e164") == number
+            ),
+            "sms_sender_e164": (existing or {}).get("sms_sender_e164"),
+            "sms_sender_type": (existing or {}).get("sms_sender_type"),
+            "active": True,
+            "agent_forward_e164": (existing or {}).get("agent_forward_e164"),
+            "forward_on_request": bool((existing or {}).get("forward_on_request", False)),
+            "forward_when_ai_unavailable": bool(
+                (existing or {}).get("forward_when_ai_unavailable", False)
+            ),
+            "forward_timeout_seconds": int((existing or {}).get("forward_timeout_seconds", 25) or 25),
+        },
+    )
+
+    updates: dict[str, Any] = {
+        "provider": "twilio",
+        "inbound_forwarding_provider_sid": forwarding_sid,
+        "inbound_forwarding_status": forwarding_status,
+    }
+
+    # Bind the purchased number's webhook to this route's endpoint_key, now
+    # that upsert_telephony_route has minted (or preserved) one. Only needed
+    # the first time — a reused number already points at this same route.
+    if newly_provisioned:
+        base = os.getenv("ORACLE_PUBLIC_BASE_URL", "").rstrip("/")
+        if not base:
+            updates["inbound_forwarding_status"] = "failed"
+            updates["inbound_forwarding_failure_reason"] = (
+                "ORACLE_PUBLIC_BASE_URL is not set — cannot wire the inbound webhook"
+            )
+        else:
+            endpoint_key = str(route["endpoint_key"])
+            voice_url = f"{base}/api/telephony/webhooks/twilio/inbound/{endpoint_key}"
+            status_url = f"{base}/api/telephony/webhooks/twilio/status/{endpoint_key}"
+            try:
+                await configure_twilio_number_webhook(
+                    forwarding_sid,
+                    voice_url=voice_url,
+                    status_callback_url=status_url,
+                    credentials=credentials,
+                )
+                updates["inbound_forwarding_status"] = "active"
+                updates["inbound_forwarding_last_tested_at"] = datetime.now(timezone.utc)
+                updates["inbound_forwarding_failure_reason"] = None
+            except (ProviderConfigurationError, ProviderRequestError) as exc:
+                updates["inbound_forwarding_status"] = "failed"
+                updates["inbound_forwarding_failure_reason"] = str(exc)[:500]
+
+    # --- outbound half: (re)start caller-ID verification if needed ---------
+    already_verified_this_number = bool(
+        existing
+        and existing.get("voice_caller_id_verified")
+        and existing.get("voice_caller_id_e164") == number
+    )
+    if not already_verified_this_number:
+        try:
+            verification = await start_twilio_caller_id_verification(
+                number, credentials=credentials
+            )
+            updates["outbound_verification_status"] = "pending"
+            updates["outbound_verification_sid"] = verification.reference
+            updates["outbound_verification_requested_at"] = datetime.now(timezone.utc)
+            updates["outbound_verification_failure_reason"] = None
+        except (ProviderConfigurationError, ProviderRequestError) as exc:
+            updates["outbound_verification_status"] = "failed"
+            updates["outbound_verification_failure_reason"] = str(exc)[:500]
+
+    final = await _set_route_columns(ctx, updates)
+    return final or route
+
+
+async def check_business_number_verification(
+    ctx: TenantContext, *, credentials: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Poll Twilio for whether the connected business number is now a
+    verified Outgoing Caller ID. Retry-safe: calling this before the agent
+    has finished Twilio's own verification call just reports 'pending' again,
+    and calling it after 'verified' is already recorded is a no-op read.
+    """
+    from command_providers import check_twilio_caller_id_verified
+
+    route = await get_telephony_route(ctx)
+    if route is None or not route.get("voice_caller_id_e164"):
+        raise InboundVoiceError("No business number is connected to verify")
+
+    number = str(route["voice_caller_id_e164"])
+    now = datetime.now(timezone.utc)
+    if route.get("outbound_verification_status") == "verified":
+        return await _set_route_columns(
+            ctx, {"outbound_verification_last_tested_at": now}
+        ) or route
+
+    verified = await check_twilio_caller_id_verified(number, credentials=credentials)
+    updates: dict[str, Any] = {
+        "outbound_verification_last_tested_at": now,
+        "voice_caller_id_verified": verified,
+        "outbound_verification_status": "verified" if verified else "pending",
+    }
+    if verified:
+        updates["outbound_verification_failure_reason"] = None
+    return await _set_route_columns(ctx, updates) or route
 
 
 async def list_inbound_calls(

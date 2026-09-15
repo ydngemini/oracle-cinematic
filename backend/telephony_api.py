@@ -18,8 +18,11 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from inbound_voice import (
     InboundVoiceError,
+    check_business_number_verification,
+    connect_business_number,
     finalize_inbound_voice_call,
     get_inbound_call,
+    get_telephony_route,
     list_inbound_calls,
     list_telephony_routes,
     normalize_e164,
@@ -36,7 +39,7 @@ from contacts_api import _CONTACT_SELECT, _contact_json
 from db.connection import tenant_tx
 from outreach_compliance import Channel, VoiceMode, guard_outreach
 from platform_policy import Feature, require_feature
-from tenancy import Role, TenantContext, require_context
+from tenancy import Role, TenantContext, require_context, require_role
 from twilio_call_handler import (
     TwilioCallStateUnavailable,
     cleanup_twilio_call,
@@ -160,6 +163,22 @@ class AgentCallPrepare(BaseModel):
     @classmethod
     def validate_contact_id(cls, value: str) -> str:
         return str(uuid.UUID(value))
+
+
+class BusinessNumberConnect(BaseModel):
+    """V1 'use my existing business number' input — deliberately just the one
+    number. Everything else (Twilio account, hidden forwarding number,
+    verification) is resolved server-side; this is not the general-purpose
+    TelephonyRouteUpsert."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    public_business_number: str
+
+    @field_validator("public_business_number")
+    @classmethod
+    def validate_number(cls, value: str) -> str:
+        return normalize_e164(value)
 
 
 def _public_base_url(request: Request) -> str:
@@ -423,8 +442,23 @@ async def configure_route(
     request: Request,
     ctx: TenantContext = Depends(require_context),
 ) -> dict[str, Any]:
+    values = body.model_dump()
+    # voice_caller_id_verified is never trusted from a client request body —
+    # that was a caller-ID spoofing hole (the field existed on this model
+    # with no server-side check behind it at all). The only way this bit may
+    # become true is the business-number verification flow below
+    # (POST /business-number/verify), which asks Twilio directly. A plain
+    # route edit can only ever carry the existing DB truth forward, and only
+    # when the caller ID has not changed underneath it — swapping the number
+    # always resets to unverified.
+    existing = await get_telephony_route(ctx)
+    values["voice_caller_id_verified"] = bool(
+        existing
+        and existing.get("voice_caller_id_verified")
+        and existing.get("voice_caller_id_e164") == values.get("voice_caller_id_e164")
+    )
     try:
-        row = await upsert_telephony_route(ctx, body.model_dump())
+        row = await upsert_telephony_route(ctx, values)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except Exception as exc:
@@ -434,6 +468,68 @@ async def configure_route(
                 detail="That inbound number is already assigned to an active Neoh route.",
             ) from exc
         raise
+    return _route_json(row, request)
+
+
+@router.put("/business-number")
+async def put_business_number(
+    body: BusinessNumberConnect,
+    request: Request,
+    ctx: TenantContext = Depends(require_context),
+) -> dict[str, Any]:
+    """V1 'use my existing business number': connect (or reconnect) the one
+    number an agent already advertises. Idempotent — safe to call again with
+    the same number (reuses the hidden forwarding number and does not
+    re-request verification), and safe to retry after a Twilio failure
+    (inbound_forwarding_status / outbound_verification_status report 'failed'
+    with a reason rather than raising, so the caller can just try again).
+
+    Provisions real Twilio infrastructure (a purchased phone number, a
+    verification request) — restricted to broker_owner for the same reason
+    provider credential changes are (sales_api.configure_provider).
+    """
+    require_role(ctx, Role.BROKER_OWNER)
+    credentials = await _twilio_credentials(ctx)
+    account_sid = credentials.get("account_sid") or ""
+    if not account_sid:
+        raise HTTPException(
+            status_code=503,
+            detail="Twilio is not configured for this tenant yet — connect a Twilio "
+            "provider credential first.",
+        )
+    try:
+        row = await connect_business_number(
+            ctx,
+            body.public_business_number,
+            twilio_account_sid=account_sid,
+            credentials=credentials,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:
+        if getattr(exc, "sqlstate", None) == "23505":
+            raise HTTPException(
+                status_code=409,
+                detail="That inbound number is already assigned to an active Neoh route.",
+            ) from exc
+        raise
+    return _route_json(row, request)
+
+
+@router.post("/business-number/verify")
+async def verify_business_number(
+    request: Request,
+    ctx: TenantContext = Depends(require_context),
+) -> dict[str, Any]:
+    """Re-check Twilio for whether the connected business number is now a
+    verified Outgoing Caller ID. Retry-safe: call this as many times as
+    needed while the agent completes Twilio's own verification call."""
+    require_role(ctx, Role.BROKER_OWNER)
+    credentials = await _twilio_credentials(ctx)
+    try:
+        row = await check_business_number_verification(ctx, credentials=credentials)
+    except InboundVoiceError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     return _route_json(row, request)
 
 

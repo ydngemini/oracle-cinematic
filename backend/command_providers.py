@@ -571,6 +571,201 @@ async def abort_twilio_call(
         logger.exception("Failed to terminate unmanaged Twilio call: sid=%s", call_sid)
 
 
+# ── Business-number connect: outbound caller-ID verification ────────────────
+#
+# Twilio's real verification mechanism for "may this account call FROM a
+# number it does not own via porting" is Outgoing Caller ID verification:
+# Twilio places a call to the number and speaks (or accepts via the API) a
+# validation code; the number only becomes a verified Outgoing Caller ID once
+# that round-trip completes on Twilio's side. Neither function below can
+# itself decide a number is verified — start_ only begins that process, and
+# check_ only ever reports what Twilio's own account state says right now.
+# That split is deliberate: it is what makes "never treat an unverified
+# number as authorized" enforceable by code rather than by convention.
+
+async def start_twilio_caller_id_verification(
+    phone_number: str,
+    *,
+    credentials: Optional[Mapping[str, Any]] = None,
+    friendly_name: Optional[str] = None,
+) -> ProviderResult:
+    """Begin Twilio's Outgoing Caller ID verification for phone_number.
+
+    Returns a pending ProviderResult carrying Twilio's ValidationRequest SID
+    (the idempotency key a caller should store and avoid re-requesting
+    against) and, when Twilio returns one immediately, the spoken validation
+    code. This call never marks a number verified — see
+    check_twilio_caller_id_verified for the only function that may.
+    """
+    credentials = dict(credentials or {})
+    account_sid = str(credentials.get("account_sid") or os.getenv("TWILIO_ACCOUNT_SID", "")).strip()
+    auth_token = str(credentials.get("auth_token") or os.getenv("TWILIO_AUTH_TOKEN", "")).strip()
+    api_key = str(credentials.get("api_key") or os.getenv("TWILIO_API_KEY", "")).strip()
+    api_secret = str(credentials.get("api_secret") or os.getenv("TWILIO_API_SECRET", "")).strip()
+
+    cred_error = _twilio_credential_error(account_sid, auth_token, api_key, api_secret)
+    if cred_error:
+        raise ProviderConfigurationError(cred_error)
+    phone_number = str(phone_number or "").strip()
+    if not phone_number.startswith("+"):
+        raise ProviderRequestError("phone number must be E.164")
+
+    def _start() -> tuple[str, Optional[str]]:
+        from twilio.base.exceptions import TwilioRestException
+
+        client = _twilio_client(account_sid, auth_token, api_key, api_secret)
+        try:
+            validation = client.validation_requests.create(
+                phone_number=phone_number,
+                friendly_name=friendly_name or phone_number,
+            )
+        except TwilioRestException as exc:
+            raise ProviderRejectedError(
+                f"Twilio rejected the caller-ID verification request (code {exc.code or 'unknown'})."
+            ) from exc
+        code = getattr(validation, "validation_code", None)
+        return str(validation.sid or ""), (str(code) if code else None)
+
+    sid, validation_code = await asyncio.wait_for(asyncio.to_thread(_start), timeout=25.0)
+    if not sid:
+        raise ProviderRequestError("Twilio did not return a validation request SID")
+    return ProviderResult(
+        "twilio_caller_id",
+        sid,
+        "pending",
+        {"phone_number": phone_number, "validation_code": validation_code},
+    )
+
+
+async def check_twilio_caller_id_verified(
+    phone_number: str,
+    *,
+    credentials: Optional[Mapping[str, Any]] = None,
+) -> bool:
+    """The only source of truth for "is phone_number verified" — asks Twilio's
+    account state directly rather than trusting anything a caller supplies.
+    """
+    credentials = dict(credentials or {})
+    account_sid = str(credentials.get("account_sid") or os.getenv("TWILIO_ACCOUNT_SID", "")).strip()
+    auth_token = str(credentials.get("auth_token") or os.getenv("TWILIO_AUTH_TOKEN", "")).strip()
+    api_key = str(credentials.get("api_key") or os.getenv("TWILIO_API_KEY", "")).strip()
+    api_secret = str(credentials.get("api_secret") or os.getenv("TWILIO_API_SECRET", "")).strip()
+
+    cred_error = _twilio_credential_error(account_sid, auth_token, api_key, api_secret)
+    if cred_error:
+        raise ProviderConfigurationError(cred_error)
+    phone_number = str(phone_number or "").strip()
+    if not phone_number.startswith("+"):
+        raise ProviderRequestError("phone number must be E.164")
+
+    def _check() -> bool:
+        client = _twilio_client(account_sid, auth_token, api_key, api_secret)
+        matches = client.outgoing_caller_ids.list(phone_number=phone_number, limit=1)
+        return bool(matches)
+
+    return await asyncio.wait_for(asyncio.to_thread(_check), timeout=15.0)
+
+
+# ── Business-number connect: hidden inbound forwarding number ───────────────
+
+async def provision_twilio_forwarding_number(
+    *,
+    credentials: Optional[Mapping[str, Any]] = None,
+    area_code: Optional[str] = None,
+) -> ProviderResult:
+    """Buy one Twilio local number to serve as an agent's hidden inbound
+    forwarding DID — infrastructure only, never advertised to a client.
+
+    Purchases exactly one number per call; this function has no way to know
+    whether an agent already has one, so it must never be called
+    speculatively. inbound_voice.connect_business_number is the only caller,
+    and it only reaches this after checking
+    telephony_routes.inbound_forwarding_provider_sid is empty.
+    """
+    credentials = dict(credentials or {})
+    account_sid = str(credentials.get("account_sid") or os.getenv("TWILIO_ACCOUNT_SID", "")).strip()
+    auth_token = str(credentials.get("auth_token") or os.getenv("TWILIO_AUTH_TOKEN", "")).strip()
+    api_key = str(credentials.get("api_key") or os.getenv("TWILIO_API_KEY", "")).strip()
+    api_secret = str(credentials.get("api_secret") or os.getenv("TWILIO_API_SECRET", "")).strip()
+
+    cred_error = _twilio_credential_error(account_sid, auth_token, api_key, api_secret)
+    if cred_error:
+        raise ProviderConfigurationError(cred_error)
+
+    def _provision() -> tuple[str, str]:
+        from twilio.base.exceptions import TwilioRestException
+
+        client = _twilio_client(account_sid, auth_token, api_key, api_secret)
+        search_kwargs: dict[str, Any] = {"voice_enabled": True, "limit": 1}
+        if area_code:
+            search_kwargs["area_code"] = int(area_code)
+        try:
+            available = client.available_phone_numbers("US").local.list(**search_kwargs)
+            if not available:
+                raise ProviderRejectedError(
+                    "Twilio has no available local numbers matching the request"
+                )
+            candidate = available[0].phone_number
+            purchased = client.incoming_phone_numbers.create(
+                phone_number=candidate,
+                friendly_name=f"neoh-forwarding-{candidate}",
+            )
+        except TwilioRestException as exc:
+            raise ProviderRejectedError(
+                f"Twilio rejected the number purchase (code {exc.code or 'unknown'})."
+            ) from exc
+        return str(purchased.sid or ""), str(purchased.phone_number or "")
+
+    sid, phone_number = await asyncio.wait_for(asyncio.to_thread(_provision), timeout=30.0)
+    if not sid or not phone_number:
+        raise ProviderRequestError("Twilio did not return a phone number and SID")
+    return ProviderResult("twilio_number", sid, "purchased", {"phone_number": phone_number})
+
+
+async def configure_twilio_number_webhook(
+    phone_number_sid: str,
+    *,
+    voice_url: str,
+    status_callback_url: Optional[str] = None,
+    credentials: Optional[Mapping[str, Any]] = None,
+) -> None:
+    """Point a purchased Twilio number's Voice webhook at this route's signed
+    inbound endpoint. Split from provision_twilio_forwarding_number because
+    the route (and its endpoint_key) does not exist in the database until
+    after the number is purchased and upserted — this runs as the follow-up
+    step once both exist.
+    """
+    credentials = dict(credentials or {})
+    account_sid = str(credentials.get("account_sid") or os.getenv("TWILIO_ACCOUNT_SID", "")).strip()
+    auth_token = str(credentials.get("auth_token") or os.getenv("TWILIO_AUTH_TOKEN", "")).strip()
+    api_key = str(credentials.get("api_key") or os.getenv("TWILIO_API_KEY", "")).strip()
+    api_secret = str(credentials.get("api_secret") or os.getenv("TWILIO_API_SECRET", "")).strip()
+
+    cred_error = _twilio_credential_error(account_sid, auth_token, api_key, api_secret)
+    if cred_error:
+        raise ProviderConfigurationError(cred_error)
+    if not voice_url:
+        raise ProviderRequestError("voice_url is required to wire an inbound number")
+
+    def _update() -> None:
+        from twilio.base.exceptions import TwilioRestException
+
+        client = _twilio_client(account_sid, auth_token, api_key, api_secret)
+        try:
+            client.incoming_phone_numbers(phone_number_sid).update(
+                voice_url=voice_url,
+                voice_method="POST",
+                status_callback=status_callback_url,
+                status_callback_method="POST",
+            )
+        except TwilioRestException as exc:
+            raise ProviderRejectedError(
+                f"Twilio rejected the webhook update (code {exc.code or 'unknown'})."
+            ) from exc
+
+    await asyncio.wait_for(asyncio.to_thread(_update), timeout=15.0)
+
+
 def _extract_call_reference(payload: Any) -> str:
     if not isinstance(payload, Mapping):
         return ""

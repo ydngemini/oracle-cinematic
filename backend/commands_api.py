@@ -2384,6 +2384,24 @@ async def _execute_command_job(payload: dict[str, Any], reporter) -> dict[str, A
                     twilio_credentials = json.loads(twilio_raw)
                 except (TypeError, ValueError):
                     pass
+            # Neoh places the call, but the client must see the agent's own
+            # verified business number — that is the entire point of the
+            # "use my existing business number" flow
+            # (telephony_routes.voice_caller_id_e164). get_verified_caller_id
+            # returns a number only when Twilio has actually confirmed it
+            # (outbound_verification_status == 'verified'); anything else —
+            # no route connected, pending, failed — falls straight through to
+            # whichever from_number the stored/env Twilio credential already
+            # carries, exactly as before this feature existed. A caller ID is
+            # never fabricated and never "close enough".
+            from inbound_voice import get_verified_caller_id
+
+            verified_caller_id = await get_verified_caller_id(ctx)
+            if verified_caller_id:
+                twilio_credentials = {
+                    **(twilio_credentials or {}),
+                    "from_number": verified_caller_id,
+                }
             try:
                 from twilio_call_handler import (
                     ensure_twilio_call_state_available,
