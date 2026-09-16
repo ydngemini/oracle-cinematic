@@ -1252,6 +1252,40 @@ async def connect_business_number(
     return final or route
 
 
+async def mark_inbound_forwarding_ready(route: Mapping[str, Any]) -> None:
+    """Flip inbound_forwarding_status to 'active' the first time a real,
+    signature-verified inbound call actually arrives at this route's hidden
+    DID — proof the agent's carrier-forwarding setup genuinely works.
+
+    Called from twilio_inbound_webhook only AFTER resolve_inbound_route has
+    matched the signed endpoint_key+inbound_did+AccountSid to exactly this
+    route AND the Twilio signature has been validated, so this can never be
+    triggered by an unauthenticated or misrouted request. A no-op once the
+    route is already 'active' (the common case, so no extra write happens on
+    every subsequent call) and never downgrades 'failed' -> nothing worse —
+    it only ever moves a route toward 'active'.
+    """
+    if str(route.get("inbound_forwarding_status") or "") == "active":
+        return
+    tenant_id = str(route.get("tenant_id") or "")
+    agent_id = str(route.get("agent_id") or "")
+    try:
+        uuid.UUID(tenant_id)
+    except (TypeError, ValueError, AttributeError):
+        return
+    if not agent_id:
+        return
+    ctx = _tenant_context(tenant_id, agent_id)
+    await _set_route_columns(
+        ctx,
+        {
+            "inbound_forwarding_status": "active",
+            "inbound_forwarding_last_tested_at": datetime.now(timezone.utc),
+            "inbound_forwarding_failure_reason": None,
+        },
+    )
+
+
 async def check_business_number_verification(
     ctx: TenantContext, *, credentials: Mapping[str, Any]
 ) -> dict[str, Any]:

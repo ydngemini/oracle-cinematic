@@ -25,6 +25,7 @@ from inbound_voice import (
     get_telephony_route,
     list_inbound_calls,
     list_telephony_routes,
+    mark_inbound_forwarding_ready,
     normalize_e164,
     prepare_inbound_call,
     record_forward_attempt,
@@ -906,6 +907,13 @@ async def twilio_inbound_webhook(endpoint_key: str, request: Request) -> Respons
         suffix,
         tokens=await _route_twilio_tokens(route),
     )
+    # Reaching here proves real inbound PSTN forwarding into the hidden DID —
+    # the signature is validated and the route was matched purely from
+    # Twilio-signed To/AccountSid/endpoint_key, so this is not client-fakeable.
+    try:
+        await mark_inbound_forwarding_ready(route)
+    except Exception:
+        logger.exception("Unable to record inbound forwarding as ready: sid=%s", call_sid)
 
     agent_forward = str(route.get("agent_forward_e164") or "")
     forward_on_request = bool(agent_forward and route.get("forward_on_request"))
