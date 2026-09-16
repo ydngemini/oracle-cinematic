@@ -1106,8 +1106,9 @@ async def get_verified_caller_id(ctx: TenantContext) -> Optional[str]:
     (commands_api.py's CommandType.CALL handler calls this). Returns a number
     only when outbound_verification_status is exactly 'verified' — never for
     'pending', 'failed', or a route with no business number connected. An
-    unverified number is never "close enough"; the caller falls back to
-    whatever ordinary Twilio from_number it already had.
+    unverified number is never "close enough"; commands_api.py's CALL branch
+    fails the command closed (no call placed, no fallback caller ID) when
+    this returns None.
     """
     route = await get_telephony_route(ctx)
     if not route:
