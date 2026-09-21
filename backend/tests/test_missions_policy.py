@@ -265,3 +265,14 @@ class TestShape:
         source = inspect.getsource(policy)
         for forbidden in ("stage_command", "release_command", "enqueue_job", "send("):
             assert forbidden not in source, f"policy must only decide, found {forbidden}"
+
+    def test_email_readiness_checks_the_provider_that_is_actually_stored(self):
+        """'gmail'/'microsoft'/'sendgrid' never existed as a
+        provider_credentials.provider value in this codebase — email is
+        SMTP-only. Checking those names made every mission report email
+        un-ready regardless of a real, validated SMTP credential, found live
+        against production data 2026-09-21."""
+        assert policy.CHANNEL_PROVIDERS["email"] == ("smtp",)
+        for dead in ("gmail", "microsoft", "sendgrid"):
+            assert dead not in policy.CHANNEL_PROVIDERS["email"]
+            assert not any(dead.upper() in name for name in policy.CHANNEL_ENV["email"])

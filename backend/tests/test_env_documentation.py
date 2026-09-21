@@ -117,6 +117,13 @@ _INTERNAL: frozenset[str] = frozenset(
         "ORACLE_TWILIO_CREDENTIALS_VALIDATED", "AWS_OBSERVABILITY_ENABLED",
         "ORACLE_ASSIGNOR_NAME", "ORACLE_AUTORENEW_DISCLOSURE",
     }
+    # A one-off argument to an operator-run script (scripts/), passed on the
+    # command line for that single invocation — not deployment configuration
+    # a running service reads, so it belongs beside the script's own --help,
+    # not in an env template nobody would think to check there.
+    | {
+        "ORACLE_OWNER_AGENT_ID",
+    }
 )
 
 

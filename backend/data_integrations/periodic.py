@@ -738,6 +738,18 @@ async def _mission_tick_task() -> dict:
     return await sweep_all_tenants()
 
 
+async def _mission_digest_task() -> dict:
+    """Email a summary of every tenant's mission activity since the last run.
+
+    Default OFF, and separately from mission_tick's own flag: an operator can
+    run missions unattended without also wanting an inbox full of digests, and
+    vice versa during a dry run.
+    """
+    from missions.digest import send_digest
+
+    return await send_digest()
+
+
 async def _outcome_attribution_task() -> dict:
     """Bind recorded outcomes to the decisions that earned them.
 
@@ -946,6 +958,14 @@ def build_default_scheduler() -> PeriodicScheduler:
         ),
         run=_mission_tick_task,
         enabled=os.getenv("ORACLE_MISSIONS_ENABLED", "0") == "1",
+    ))
+    sched.register(PeriodicTask(
+        name="mission_digest",
+        interval_s=max(
+            3600.0, float(os.getenv("ORACLE_MISSION_DIGEST_INTERVAL_MIN", "1440")) * 60,
+        ),
+        run=_mission_digest_task,
+        enabled=os.getenv("ORACLE_MISSION_DIGEST_ENABLED", "0") == "1",
     ))
     return sched
 

@@ -53,14 +53,20 @@ CHANNEL_CATEGORY = {"email": "emails", "sms": "texts", "voice": "calls", "task":
 #: when a live credential exists for any of them, or the environment carries
 #: the equivalent configuration.
 CHANNEL_PROVIDERS = {
-    "email": ("gmail", "microsoft", "sendgrid"),
+    # 'gmail'/'microsoft'/'sendgrid' never existed as a provider_credentials
+    # value in this codebase — email is SMTP-only (commands_api.py's
+    # _resolve_email_provider defaults to, and now only supports, 'smtp';
+    # Google OAuth is calendar-only and never sends mail). Left checking
+    # names nothing is ever stored under, this made every mission report
+    # email un-ready regardless of a real, validated SMTP credential.
+    "email": ("smtp",),
     "sms": ("twilio",),
     "voice": ("twilio",),
     "task": (),   # a task is internal; it needs nobody's permission to exist
 }
 
 CHANNEL_ENV = {
-    "email": ("ORACLE_SMTP_HOST", "SENDGRID_API_KEY"),
+    "email": ("ORACLE_SMTP_HOST",),
     "sms": ("TWILIO_ACCOUNT_SID",),
     "voice": ("TWILIO_ACCOUNT_SID",),
     "task": (),
