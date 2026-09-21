@@ -23,11 +23,12 @@ at each call site.
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any, Mapping, Optional
 
 from automation_jobs import canonical_json, payload_hash
 from db.connection import tenant_tx
-from tenancy import TenantContext
+from tenancy import Role, TenantContext
 
 logger = logging.getLogger(__name__)
 
@@ -85,6 +86,7 @@ async def record_decision(
     final: Optional[Mapping[str, Any]] = None,
     decision_latency_ms: Optional[int] = None,
     consent_version: Optional[str] = None,
+    agent_id: Optional[str] = None,
 ) -> Optional[str]:
     """Record one decided proposal. Returns the trace id, or None on failure.
 
@@ -138,7 +140,7 @@ async def record_decision(
                 RETURNING id
                 """,
                 ctx.tenant_id,
-                ctx.agent_id,
+                agent_id or ctx.agent_id,
                 surface,
                 action_type[:120],
                 risk_class,
@@ -210,6 +212,119 @@ async def attach_outcome(
             "outcome attach failed for %s/%s", source_table, source_id
         )
         return False
+
+
+async def _settled_chat_actions_for_tenant(
+    ctx: TenantContext, *, limit: int
+) -> dict[str, int]:
+    """Record one trace per chat action whose undo window has closed.
+
+    A chat tool applies its change immediately and the only human verdict is
+    the Undo button, so the signal arrives on a delay: an action still inside
+    its 24h undo window is undecided. Once the window closes, `status='applied'`
+    is an acceptance and `status='undone'` is a rejection. `status='conflict'`
+    is neither — the record moved under the undo — so it is left alone.
+
+    Idempotent: `record_decision` upserts on (tenant, source_table, source_id)
+    and does nothing on a repeat, so re-running this is free.
+    """
+    async with tenant_tx(ctx) as conn:
+        rows = await conn.fetch(
+            """
+            SELECT a.id, a.user_id, a.action_type, a.record_type, a.record_id,
+                   a.status, a.undone_at, a.undo_expires_at
+              FROM ai_chat_actions a
+             WHERE a.status IN ('applied', 'undone')
+               AND a.undo_expires_at < now()
+               AND NOT EXISTS (
+                   SELECT 1 FROM ai_decision_traces t
+                    WHERE t.tenant_id = a.tenant_id
+                      AND t.source_table = 'ai_chat_actions'
+                      AND t.source_id = a.id
+               )
+             ORDER BY a.undo_expires_at ASC
+             LIMIT $1
+            """,
+            max(1, min(2000, limit)),
+        )
+
+    counts = {"examined": 0, "accepted": 0, "rejected": 0}
+    for row in rows:
+        counts["examined"] += 1
+        decision = "rejected" if row["status"] == "undone" else "accepted"
+        trace_id = await record_decision(
+            ctx,
+            agent_id=str(row["user_id"] or ctx.agent_id),
+            surface=SURFACE_CHAT_ACTION,
+            action_type=str(row["action_type"] or "chat_tool"),
+            source_table="ai_chat_actions",
+            source_id=str(row["id"]),
+            proposal={
+                "tool": row["action_type"],
+                "record_type": row["record_type"],
+                "record_id": str(row["record_id"]),
+            },
+            decision=decision,
+            decided_at=row["undone_at"] or row["undo_expires_at"],
+        )
+        if trace_id is not None:
+            counts[decision] += 1
+    return counts
+
+
+async def sweep_settled_chat_actions(
+    *, tenant_limit: int = 500, per_tenant_limit: int = 500
+) -> dict[str, Any]:
+    """Scheduler entry point: capture chat-action verdicts across every tenant.
+
+    Same posture as outcome_memory.sweep_all_tenants — one cross-tenant read to
+    find who has settled-but-uncaptured actions, then a fresh single-tenant
+    context per tenant so the writes never run as an admin.
+    """
+    platform_ctx = TenantContext(
+        agent_id="chat-decision-sweep",
+        tenant_id=os.getenv("ORACLE_PLATFORM_TENANT_ID", "00000000-0000-0000-0000-000000000000"),
+        role=Role.PLATFORM_ADMIN,
+    )
+    async with tenant_tx(platform_ctx) as conn:
+        rows = await conn.fetch(
+            """
+            SELECT a.tenant_id, count(*)::int AS pending
+              FROM ai_chat_actions a
+             WHERE a.status IN ('applied', 'undone')
+               AND a.undo_expires_at < now()
+               AND NOT EXISTS (
+                   SELECT 1 FROM ai_decision_traces t
+                    WHERE t.tenant_id = a.tenant_id
+                      AND t.source_table = 'ai_chat_actions'
+                      AND t.source_id = a.id
+               )
+             GROUP BY a.tenant_id
+             ORDER BY min(a.undo_expires_at) ASC
+             LIMIT $1
+            """,
+            max(1, min(5000, int(tenant_limit))),
+        )
+
+    totals = {"tenants": 0, "examined": 0, "accepted": 0, "rejected": 0, "failed": 0}
+    for row in rows:
+        tenant_ctx = TenantContext(
+            agent_id="chat-decision-sweep",
+            tenant_id=str(row["tenant_id"]),
+            role=Role.BROKER_OWNER,
+        )
+        try:
+            result = await _settled_chat_actions_for_tenant(
+                tenant_ctx, limit=per_tenant_limit
+            )
+        except Exception:  # noqa: BLE001 — one tenant must not stall the rest
+            logger.exception("chat-decision sweep failed for tenant %s", row["tenant_id"])
+            totals["failed"] += 1
+            continue
+        totals["tenants"] += 1
+        for key in ("examined", "accepted", "rejected"):
+            totals[key] += result[key]
+    return totals
 
 
 async def revoke_traces_for_agent(ctx: TenantContext, agent_id: str) -> int:

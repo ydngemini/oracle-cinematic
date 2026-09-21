@@ -7,7 +7,20 @@
   overflow: hidden;
   border: 1px solid var(--oracle-amber-dim);
   border-radius: var(--radius-xl);
-  color: var(--oracle-text);
+  /* Tour is intentionally a dark HUD even in light mode so it stands out
+     over the paper. Force dark-theme tokens inside this subtree so text does
+     not go black-on-black when the page is in light. */
+  color: #f2f2f2;
+  --oracle-text: #f2f2f2;
+  --oracle-text-heading: #f2f2f2;
+  --oracle-text-dim: rgba(242, 242, 242, 0.76);
+  --oracle-text-ghost: rgba(171, 171, 171, 0.88);
+  --oracle-border: rgba(242, 242, 242, 0.08);
+  --oracle-border-bright: rgba(242, 242, 242, 0.16);
+  --oracle-border-subtle: rgba(242, 242, 242, 0.055);
+  --oracle-accent-ink: #ffd36b;
+  --oracle-amber-ghost: rgba(255, 188, 31, 0.16);
+  --oracle-glass-hover: rgba(242, 242, 242, 0.06);
   background: linear-gradient(150deg, rgba(34, 31, 23, 0.98), rgba(8, 8, 8, 0.98));
   box-shadow: 0 1.5rem 5rem rgba(0, 0, 0, 0.62), var(--shadow-e2);
 }
@@ -18,6 +31,9 @@
 .header button { width: 40px; height: 40px; display: grid; place-items: center; border-radius: var(--radius-sm); color: var(--oracle-text-ghost); }
 .header button:hover { color: var(--oracle-text); background: var(--oracle-glass-hover); }
 .header button:focus-visible, .footer button:focus-visible { outline: none; box-shadow: var(--ring-focus); }
+.headerActions { display: inline-flex; align-items: center; gap: var(--space-1); }
+.skip { width: auto !important; min-width: 3.5rem; padding: 0 var(--space-3) !important; color: var(--oracle-text-dim) !important; font: 650 0.625rem/1 var(--font-display) !important; letter-spacing: var(--tracking-wide); text-transform: uppercase; }
+.skip:hover { color: var(--oracle-text) !important; }
 .progress { height: 3px; background: rgba(255, 255, 255, 0.08); }
 .progress span { display: block; height: 100%; background: var(--oracle-amber); transition: width 180ms ease; }
 .body { display: grid; gap: var(--space-3); padding: var(--space-5); }
@@ -28,36 +44,100 @@
 .verify svg { width: 18px; height: 18px; color: var(--oracle-accent-ink); }
 .verify span { color: var(--oracle-text-dim); font-size: 0.6875rem; line-height: 1.55; }
 .verify strong { display: block; margin-bottom: 3px; color: var(--oracle-text); font-size: var(--text-xs); }
-.footer { display: flex; justify-content: space-between; gap: var(--space-3); padding: var(--space-4); border-top: 1px solid var(--oracle-border-subtle); }
+.footer { display: flex; justify-content: space-between; align-items: center; gap: var(--space-3); padding: var(--space-4); border-top: 1px solid var(--oracle-border-subtle); }
 .footer button { min-height: 44px; display: inline-flex; align-items: center; justify-content: center; gap: var(--space-2); border-radius: var(--radius-sm); padding: 0 var(--space-4); font: 650 0.625rem/1 var(--font-display); letter-spacing: var(--tracking-wide); text-transform: uppercase; }
 .footer svg { width: 15px; height: 15px; }
+.footerLeft { display: inline-flex; align-items: center; gap: var(--space-2); }
 .previous { color: var(--oracle-text-dim); border: 1px solid var(--oracle-border-bright); }
 .previous:hover { color: var(--oracle-text); background: var(--oracle-glass-hover); }
 .previous:disabled { opacity: 0.35; }
+.exit { color: var(--oracle-text-dim); border: 1px solid transparent; background: transparent; }
+.exit:hover { color: var(--oracle-text); background: var(--oracle-glass-hover); }
 .next { color: #080808; border: 1px solid var(--oracle-amber); background: var(--oracle-amber); }
 .next:hover { filter: brightness(1.06); }
+
+/* ── Floating forward/back stepper ─────────────────────────────────────── */
+/* Travels with the walkthrough: fixed at the left/right mid-viewport edges so
+   it is always reachable however the panel anchors. Two guarantees it never
+   blocks anything:
+     1. The container is `pointer-events: none` — only the two round buttons
+        are interactive, the full-width band ignores every click.
+     2. z-index sits ABOVE the scrim (900) but BELOW the tour panel (950/1200),
+        so if the panel ever anchors over an edge the panel wins and the arrow
+        hides behind it instead of covering the panel's own controls. */
+.stepper {
+  position: fixed;
+  inset-inline: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 940;            /* above scrim (900), below panel (950/1200) */
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 max(var(--space-3), env(safe-area-inset-left)) 0 max(var(--space-3), env(safe-area-inset-right));
+  pointer-events: none;
+}
+
+.stepBtn {
+  pointer-events: auto;
+  width: 48px;
+  height: 48px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--oracle-amber-dim);
+  border-radius: 50%;
+  background: var(--oracle-surface-raised);
+  color: var(--oracle-accent-ink);
+  box-shadow: var(--shadow-float);
+  cursor: pointer;
+}
+.stepBtn svg { width: 22px; height: 22px; }
+.stepBtn:hover { color: var(--oracle-accent-ink); border-color: var(--oracle-amber); background: var(--oracle-surface); }
+.stepBtn:focus-visible { outline: none; box-shadow: var(--ring-focus); }
+.stepBtn:disabled { opacity: 0.32; cursor: not-allowed; box-shadow: var(--shadow-e1); }
+
+/* On a dark scrim the light-theme `--oracle-surface-raised` is #fff and would
+   glare; a token set scoped to the stepper keeps it right in both themes
+   without depending on where panels forced dark tokens. */
+:root[data-theme='light'] .stepBtn {
+  background: #141416;
+  color: #ffd36b;
+  border-color: rgba(255, 188, 31, 0.5);
+}
+:root[data-theme='light'] .stepBtn:hover { background: #1a1a1e; }
 
 @media (max-width: 540px) {
   .tour { right: var(--space-2); bottom: calc(4.9rem + env(safe-area-inset-bottom)); width: calc(100vw - (var(--space-2) * 2)); }
   .body { padding: var(--space-4); }
+  .stepper { padding-inline: var(--space-1); }
+  .stepBtn { width: 40px; height: 40px; }
+  .stepBtn svg { width: 18px; height: 18px; }
 }
 @media (prefers-reduced-motion: reduce) { .progress span { transition: none; } }
 
 /* ── Spotlight (guided walkthrough highlighting) ───────────────────────────── */
 /* Four scrim panels leave a real hole over the target instead of an SVG mask,
-   so the highlighted control stays clickable — the walkthrough is non-modal
-   and the user is meant to press the thing being pointed at. */
+    so the highlighted control stays clickable — the walkthrough is non-modal
+    and the user is meant to press the thing being pointed at. The scrim
+    itself is now clickable to exit (hole remains interactive). */
 .spotlightLayer {
   position: fixed;
   inset: 0;
   z-index: 900;          /* under the tour panel, over the app */
-  pointer-events: none;  /* never intercepts clicks, including the cut-out */
+  pointer-events: none;
 }
 
 .scrim {
   position: fixed;
+  -webkit-appearance: none;
+  appearance: none;
+  border: 0;
+  padding: 0;
+  margin: 0;
   background: rgba(6, 7, 10, 0.62);
   transition: opacity 160ms ease;
+  cursor: pointer;
+  pointer-events: auto;
 }
 
 .halo {

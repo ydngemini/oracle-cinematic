@@ -103,13 +103,16 @@ def _listing_json(r: dict) -> dict:
         "mls_number": r.get("mls_number") or "",
         "address": r.get("address") or "",
         "city": r.get("city") or "",
-        "state": r.get("state_code") or "",
-        "zip": r.get("zip_code") or "",
+        # Key names mirror the oracle_mls_listings columns so the browse UI
+        # (MlsSearch.jsx) reads list_price/state_code/zip_code directly — a
+        # rename here silently blanks price and location in every result row.
+        "state_code": r.get("state_code") or "",
+        "zip_code": r.get("zip_code") or "",
         "county": r.get("county") or "",
         "latitude": _num(r.get("latitude")),
         "longitude": _num(r.get("longitude")),
-        "price": _num(r.get("list_price")),
-        "orig_price": _num(r.get("orig_list_price")),
+        "list_price": _num(r.get("list_price")),
+        "orig_list_price": _num(r.get("orig_list_price")),
         "status": r.get("status") or "active",
         "property_type": r.get("property_type") or "",
         "beds": r.get("beds"),
@@ -167,10 +170,10 @@ async def _buyer_matches(conn: Any, listing: dict[str, Any]) -> list[dict[str, A
         """
     )
     facts = {
-        "state": listing.get("state"),
+        "state": listing.get("state_code"),
         "county": listing.get("county"),
         "property_type": listing.get("property_type"),
-        "asking_price": listing.get("price"),
+        "asking_price": listing.get("list_price"),
         "beds": listing.get("beds"),
         "sqft": listing.get("sqft"),
     }

@@ -246,6 +246,19 @@ def validate_or_die() -> None:
     else:
         log.info("ACS telephony config is present — phone calls are operational.")
 
+    # ORACLE_EMAIL_PROVIDER used to accept 'acs' and 'ses'; both senders were
+    # removed in favour of SMTP-only. A deployment upgraded from that era and
+    # still carrying the old value would otherwise only discover it on the
+    # first approved email send, as a ProviderConfigurationError deep in the
+    # command worker.
+    email_provider = os.environ.get("ORACLE_EMAIL_PROVIDER", "smtp").strip().lower()
+    if email_provider not in ("smtp",):
+        log.warning(
+            "ORACLE_EMAIL_PROVIDER=%r is not supported; only 'smtp' is "
+            "available. Every approved email will fail until this is fixed.",
+            email_provider,
+        )
+
     if IS_DEV:
         log.warning(
             "ORACLE_ENV=%r — DEV mode; production secret validation relaxed.",
@@ -281,6 +294,11 @@ def validate_or_die() -> None:
     if twilio_qwen_enabled:
         required.extend(_TWILIO_REALTIME_SETTINGS)
     missing = [f"{name} ({why})" for name, why in required if not os.environ.get(name)]
+    if email_provider not in ("smtp",):
+        missing.append(
+            f"ORACLE_EMAIL_PROVIDER={email_provider!r} is unsupported "
+            "(only 'smtp' is available; unset it or set it to 'smtp')"
+        )
     if (
         (acs_qwen_enabled or twilio_qwen_enabled)
         and not os.environ.get("DASHSCOPE_WORKSPACE_ID")
@@ -369,7 +387,7 @@ ENV_VARS: dict[str, tuple[str, ...]] = {
         "ORACLE_GEOCODE_STATE",              # optional two-letter code to restrict a pass
     ),
     "commands": (
-        "ORACLE_PUBLIC_BASE_URL", "ORACLE_SES_FROM_EMAIL",
+        "ORACLE_PUBLIC_BASE_URL", "ORACLE_EMAIL_PROVIDER",
         "GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "GOOGLE_OAUTH_REDIRECT_URI",
         "ACS_CONNECTION_STRING", "ACS_FROM_NUMBER",
         "TWILIO_ACCOUNT_SID", "TWILIO_API_KEY", "TWILIO_API_SECRET",

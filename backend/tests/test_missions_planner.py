@@ -47,7 +47,10 @@ class _Gateway:
 
     async def complete(self, prompt, **kwargs):
         self.calls.append({"prompt": prompt, **kwargs})
-        return self.answers.pop(0)
+        answer = self.answers.pop(0)
+        if isinstance(answer, BaseException):
+            raise answer
+        return answer
 
 
 def _plan(**overrides):
@@ -138,6 +141,27 @@ class TestFailure:
         """There is no fallback plan. A made-up sequence of who to phone is
         worse than nothing, because nothing is obviously nothing."""
         gateway = _Gateway("garbage", "still garbage")
+        with pytest.raises(planner.PlanUnavailable):
+            _run(gateway)
+        assert len(gateway.calls) == 2
+
+    def test_a_gateway_exception_is_retried_with_the_same_prompt(self):
+        """A reasoning-model provider that raises on one call and answers on
+        an identical retry is common enough (empty-content token-budget
+        variance) that giving up on the first exception wastes a mission's
+        whole planning step over a coin flip."""
+        gateway = _Gateway(RuntimeError("fireworks: empty content"), _plan(steps=[
+            {"candidate": 0, "channel": "sms", "day_offset": 0, "intent": "ok"},
+        ]))
+        steps, _dropped, _ = _run(gateway)
+        assert len(steps) == 1
+        assert len(gateway.calls) == 2
+        # Retried with the SAME prompt — an exception carries no correction to
+        # show the model, unlike an unusable-JSON retry.
+        assert gateway.calls[0]["prompt"] == gateway.calls[1]["prompt"]
+
+    def test_two_gateway_exceptions_raise_rather_than_fabricate(self):
+        gateway = _Gateway(RuntimeError("down"), RuntimeError("still down"))
         with pytest.raises(planner.PlanUnavailable):
             _run(gateway)
         assert len(gateway.calls) == 2

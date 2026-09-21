@@ -78,7 +78,7 @@ _INTERNAL: frozenset[str] = frozenset(
         "ORACLE_CLIENT_AI_TIMEOUT_SECONDS", "ORACLE_DB_HEALTH_CHECK_INTERVAL",
         "ORACLE_ENGINE_LINGER_SECONDS", "ORACLE_JOB_POLL_SECONDS",
         "ORACLE_JOB_WORKERS", "ORACLE_LOCAL_LLM_TIMEOUT",
-        "ORACLE_MARKET_DATA_TIMEOUT_SECONDS",
+        "ORACLE_MARKET_DATA_TIMEOUT_SECONDS", "ORACLE_PROPERTY_CANDIDATES_TIMEOUT_MS",
         "ORACLE_SCHED_TICK_SECONDS", "ORACLE_VIDEO_DOWNLOAD_TIMEOUT_SECONDS",
         "ORACLE_VIDEO_JOB_LEASE_SECONDS", "ORACLE_VIDEO_JOB_TIMEOUT_SECONDS",
         "ORACLE_VIDEO_POLL_SECONDS", "ORACLE_VIDEO_POLL_TIMEOUT_SECONDS",
@@ -93,7 +93,7 @@ _INTERNAL: frozenset[str] = frozenset(
     # made in code; the credentials that reach it ARE documented.
     | {
         "ORACLE_AI_CHAT_MODEL", "ORACLE_AI_FIREWORKS_FALLBACK",
-        "ORACLE_CLIENT_AI_MODEL", "ORACLE_CLIENT_AI_MODEL_ENABLED",
+        "ORACLE_CLIENT_AI_MODEL_ENABLED",
         "ORACLE_FAL_VIDEO_MODEL", "ORACLE_FIREWORKS_FAST_MODEL",
         "ORACLE_FIREWORKS_MODEL", "ORACLE_FIREWORKS_URL", "ORACLE_LLM_GATEWAY",
         "ORACLE_LOCAL_LLM_DISABLE_THINKING", "CRM_DRAFT_LLM", "LLAMA_SERVER_URL",
@@ -114,9 +114,15 @@ _INTERNAL: frozenset[str] = frozenset(
     # Set by the platform, never by an operator: a provider SDK reads them, or
     # a startup probe writes them for later code to read back.
     | {
-        "ORACLE_ACS_CREDENTIALS_VALIDATED", "ORACLE_SES_CREDENTIALS_VALIDATED",
         "ORACLE_TWILIO_CREDENTIALS_VALIDATED", "AWS_OBSERVABILITY_ENABLED",
         "ORACLE_ASSIGNOR_NAME", "ORACLE_AUTORENEW_DISCLOSURE",
+    }
+    # A one-off argument to an operator-run script (scripts/), passed on the
+    # command line for that single invocation — not deployment configuration
+    # a running service reads, so it belongs beside the script's own --help,
+    # not in an env template nobody would think to check there.
+    | {
+        "ORACLE_OWNER_AGENT_ID",
     }
 )
 

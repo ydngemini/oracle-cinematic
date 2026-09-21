@@ -38,11 +38,18 @@
 
      All of it is very low alpha on purpose. It should register as depth, not
      as a gradient anyone notices. */
+  /* Paper, with the faintest warmth left in it.
+     Two coloured blooms and a darkening wash were laid across the whole
+     viewport so the header and deck had something to blur. Neither blurs any
+     more, and what remained was a permanent grey-gold cast over every screen —
+     the shell being interesting underneath content that is trying to be the
+     interesting thing. The blooms are kept at roughly a third, enough that a
+     large surface is not clinically flat and enough for the few panels still
+     made of glass to have something to sample. */
   --oracle-bg-atmosphere:
-    radial-gradient(115% 85% at 78%  8%, rgba(255, 188, 31, 0.055) 0%, rgba(255, 188, 31, 0.018) 38%, transparent 70%),
-    radial-gradient( 95% 75% at 12% 92%, rgba( 96, 126, 158, 0.050) 0%, rgba( 96, 126, 158, 0.015) 42%, transparent 72%),
-    radial-gradient(140% 120% at 50%  0%, rgba( 23,  23,  26, 0.020) 0%, transparent 55%),
-    linear-gradient(178deg, #fdfcfa 0%, #f8f6f2 46%, #f4f2ee 100%);
+    radial-gradient(115% 85% at 78%  8%, rgba(255, 188, 31, 0.020) 0%, rgba(255, 188, 31, 0.006) 38%, transparent 70%),
+    radial-gradient( 95% 75% at 12% 92%, rgba( 96, 126, 158, 0.018) 0%, rgba( 96, 126, 158, 0.005) 42%, transparent 72%),
+    linear-gradient(178deg, #fefdfc 0%, #fbfaf8 52%, #f8f7f4 100%);
 
   /* The working plane is a warm white tint over the atmosphere gradient,
      lifted toward gold rather than neutral silver. The old value was a flat 171-grey, which
@@ -836,14 +843,17 @@ a:focus-visible {
   border-radius: var(--radius-pill);
 }
 
+/* Neutral. An amber thumb drew a lit vertical rule down the right edge of
+   every scrollable surface — the single most persistent piece of HUD left,
+   and the accent spent on the one control nobody is looking at. */
 ::-webkit-scrollbar-thumb {
-  background:    var(--oracle-amber-dim);
+  background:    var(--oracle-border-strong, rgba(23, 23, 26, 0.18));
   border-radius: var(--radius-pill);
   transition:    background var(--duration-fast) var(--ease-out);
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: var(--oracle-amber);
+  background: rgba(23, 23, 26, 0.30);
 }
 
 ::-webkit-scrollbar-corner {
@@ -853,7 +863,7 @@ a:focus-visible {
 /* Firefox */
 * {
   scrollbar-width: thin;
-  scrollbar-color: var(--oracle-amber-dim) transparent;
+  scrollbar-color: rgba(23, 23, 26, 0.18) transparent;
 }
 
 

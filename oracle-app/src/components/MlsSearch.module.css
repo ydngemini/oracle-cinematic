@@ -1,5 +1,6 @@
-/* MlsSearch — retail MLS browse. Same dark-glass idiom as ListingsInventory,
-   which it sits beside in the Property workspace. */
+/* MlsSearch — retail MLS browse. Sits beside ListingsInventory in the Property
+   workspace; both read from theme tokens so they repaint in light and dark
+   rather than assuming the old dark cockpit. */
 
 .wrap { display: grid; gap: var(--space-4); }
 
@@ -9,12 +10,12 @@
   justify-content: space-between;
   gap: var(--space-4);
 }
-.head h2 { margin: 0; font-size: 1.05rem; }
+.head h2 { margin: 0; font-size: var(--text-lg); color: var(--oracle-text-heading); }
 .head p {
   margin: 4px 0 0;
   max-width: 62ch;
-  color: rgba(242, 242, 242, 0.55);
-  font-size: 0.82rem;
+  color: var(--oracle-text-ghost);
+  font-size: var(--text-sm);
   line-height: 1.5;
 }
 .head button {
@@ -22,10 +23,10 @@
   place-content: center;
   width: 34px;
   height: 34px;
-  border: 1px solid rgba(242, 242, 242, 0.12);
-  border-radius: 8px;
-  background: rgba(171, 171, 171, 0.05);
-  color: inherit;
+  border: 1px solid var(--oracle-border);
+  border-radius: var(--radius-sm);
+  background: var(--oracle-surface-raised);
+  color: var(--oracle-text-dim);
   cursor: pointer;
 }
 .head button svg { width: 15px; height: 15px; }
@@ -37,57 +38,61 @@
   align-items: flex-end;
   gap: var(--space-3);
   padding: var(--space-3);
-  border: 1px solid rgba(242, 242, 242, 0.1);
-  border-radius: 12px;
-  background: rgba(171, 171, 171, 0.04);
+  border: 1px solid var(--oracle-border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--oracle-surface-sunken);
 }
 .filters label { display: grid; gap: 4px; }
 .filters label span {
-  font-size: 0.66rem;
-  letter-spacing: 0.08em;
+  font-size: var(--text-xs);
+  letter-spacing: var(--tracking-wide);
   text-transform: uppercase;
-  color: rgba(242, 242, 242, 0.45);
+  color: var(--oracle-text-ghost);
 }
 .filters input {
   width: 8.5rem;
   padding: 7px 9px;
-  border: 1px solid rgba(242, 242, 242, 0.14);
-  border-radius: 8px;
-  background: rgba(12, 12, 12, 0.45);
-  color: inherit;
+  border: 1px solid var(--oracle-border);
+  border-radius: var(--radius-sm);
+  background: var(--oracle-surface);
+  color: var(--oracle-text);
   font: inherit;
-  font-size: 0.85rem;
+  font-size: var(--text-sm);
+}
+.filters input:focus-visible {
+  outline: none;
+  border-color: var(--oracle-amber-dim);
 }
 .filters > button {
   display: inline-flex;
   align-items: center;
   gap: 6px;
   padding: 8px 14px;
-  border: 1px solid rgba(242, 242, 242, 0.16);
-  border-radius: 8px;
-  background: rgba(242, 242, 242, 0.08);
-  color: inherit;
+  border: 1px solid var(--oracle-border-bright);
+  border-radius: var(--radius-sm);
+  background: var(--oracle-surface-raised);
+  color: var(--oracle-text);
   font: inherit;
-  font-size: 0.85rem;
+  font-size: var(--text-sm);
   cursor: pointer;
 }
 .filters > button svg { width: 14px; height: 14px; }
 .filters > button:disabled { opacity: 0.5; cursor: default; }
 
-.muted { margin: 0; color: rgba(242, 242, 242, 0.5); font-size: 0.78rem; line-height: 1.5; }
-.error { margin: 0; color: #f0838a; font-size: 0.82rem; }
+.muted { margin: 0; color: var(--oracle-text-ghost); font-size: var(--text-sm); line-height: 1.5; }
+.error { margin: 0; color: var(--oracle-red); font-size: var(--text-sm); }
 
 .empty {
   display: grid;
   place-items: center;
   gap: 8px;
   padding: var(--space-5);
-  border: 1px dashed rgba(242, 242, 242, 0.12);
-  border-radius: 12px;
-  color: rgba(242, 242, 242, 0.4);
+  border: 1px dashed var(--oracle-border);
+  border-radius: var(--radius-md);
+  color: var(--oracle-text-ghost);
 }
 .empty svg { width: 22px; height: 22px; }
-.empty p { margin: 0; font-size: 0.85rem; }
+.empty p { margin: 0; font-size: var(--text-sm); }
 
 .list { display: grid; gap: var(--space-2); margin: 0; padding: 0; list-style: none; }
 .list li {
@@ -96,22 +101,22 @@
   align-items: center;
   gap: var(--space-3);
   padding: var(--space-3);
-  border: 1px solid rgba(242, 242, 242, 0.1);
-  border-radius: 10px;
-  background: rgba(171, 171, 171, 0.04);
+  border: 1px solid var(--oracle-border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--oracle-surface-raised);
 }
 .list li > div { min-width: 0; display: grid; gap: 2px; }
-.list li strong { font-size: 0.9rem; }
-.list li small { color: rgba(242, 242, 242, 0.5); font-size: 0.75rem; }
-.list li > span { font-variant-numeric: tabular-nums; font-size: 0.9rem; }
+.list li strong { font-size: var(--text-base); color: var(--oracle-text-heading); }
+.list li small { color: var(--oracle-text-ghost); font-size: var(--text-xs); }
+.list li > span { font-variant-numeric: tabular-nums; font-size: var(--text-base); color: var(--oracle-text); }
 .list li > button {
   padding: 6px 12px;
-  border: 1px solid rgba(242, 242, 242, 0.14);
-  border-radius: 8px;
+  border: 1px solid var(--oracle-border);
+  border-radius: var(--radius-sm);
   background: transparent;
-  color: inherit;
+  color: var(--oracle-text-dim);
   font: inherit;
-  font-size: 0.78rem;
+  font-size: var(--text-xs);
   cursor: pointer;
 }
 
@@ -122,17 +127,18 @@
   gap: var(--space-2);
   margin-top: var(--space-2);
   padding: var(--space-3);
-  border-top: 1px solid rgba(242, 242, 242, 0.1);
+  border-top: 1px solid var(--oracle-border-subtle);
 }
 .detailHead { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); }
+.detailHead strong { color: var(--oracle-text-heading); }
 .detailHead button {
   padding: 4px 10px;
-  border: 1px solid rgba(242, 242, 242, 0.14);
-  border-radius: 6px;
+  border: 1px solid var(--oracle-border);
+  border-radius: var(--radius-sm);
   background: transparent;
-  color: inherit;
+  color: var(--oracle-text-dim);
   font: inherit;
-  font-size: 0.72rem;
+  font-size: var(--text-xs);
   cursor: pointer;
 }
 .detailGrid {
@@ -143,22 +149,22 @@
 }
 .detailGrid div { display: grid; gap: 2px; }
 .detailGrid dt {
-  font-size: 0.64rem;
-  letter-spacing: 0.08em;
+  font-size: var(--text-xs);
+  letter-spacing: var(--tracking-wide);
   text-transform: uppercase;
-  color: rgba(242, 242, 242, 0.42);
+  color: var(--oracle-text-ghost);
 }
-.detailGrid dd { margin: 0; font-size: 0.85rem; font-variant-numeric: tabular-nums; }
+.detailGrid dd { margin: 0; font-size: var(--text-sm); color: var(--oracle-text); font-variant-numeric: tabular-nums; }
 
 .more {
   justify-self: start;
   padding: 8px 16px;
-  border: 1px solid rgba(242, 242, 242, 0.14);
-  border-radius: 8px;
-  background: transparent;
-  color: inherit;
+  border: 1px solid var(--oracle-border-bright);
+  border-radius: var(--radius-sm);
+  background: var(--oracle-surface-raised);
+  color: var(--oracle-text);
   font: inherit;
-  font-size: 0.82rem;
+  font-size: var(--text-sm);
   cursor: pointer;
 }
 .more:disabled { opacity: 0.5; cursor: default; }

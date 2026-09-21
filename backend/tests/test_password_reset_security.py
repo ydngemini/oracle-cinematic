@@ -253,6 +253,17 @@ def test_forgot_is_always_202_without_account_enumeration(monkeypatch):
     assert known == unknown == unavailable == auth._FORGOT_RESPONSE
 
 
+def test_send_reset_email_never_raises_on_an_unsupported_provider(monkeypatch, caplog):
+    # ORACLE_EMAIL_PROVIDER used to accept 'acs'/'ses'; both senders were
+    # removed. A deployment still carrying that value must degrade to the
+    # same silent-log, no-raise, no-enumeration behaviour as any other
+    # provider failure — never surface as a 500 on /auth/forgot.
+    monkeypatch.setenv("ORACLE_EMAIL_PROVIDER", "acs")
+    with caplog.at_level("WARNING"):
+        auth._send_reset_email("broker@example.test", "https://app.example/reset?token=x")
+    assert any("ORACLE_EMAIL_PROVIDER='acs' is not supported" in r.message for r in caplog.records)
+
+
 _BACKEND_DIR = Path(__file__).resolve().parents[1]
 
 

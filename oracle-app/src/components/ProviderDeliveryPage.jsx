@@ -2,7 +2,6 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   CalendarDays,
   CheckCircle2,
-  Cloud,
   KeyRound,
   Mail,
   MessageSquareText,
@@ -17,14 +16,13 @@ import {
 import { crmDelete, crmGet, crmPost, crmPut } from '../state/useCrmApi';
 import styles from './SalesWorkspace.module.css';
 
+const EMPTY_SMTP = {
+  account_label: 'default', host: '', port: '', username: '', password: '',
+  from_email: '', from_name: '',
+};
 const EMPTY_TWILIO = {
   account_label: 'default', account_sid: '', auth_token: '', api_key: '', api_secret: '',
   from_number: '', twiml_app_sid: '', sms_sender: '', sms_sender_type: '',
-};
-const EMPTY_ACS = { account_label: 'default', connection_string: '', from_number: '', sms_sender: '' };
-const EMPTY_SES = {
-  account_label: 'default', from_email: '', region: 'us-east-2',
-  aws_access_key_id: '', aws_secret_access_key: '', aws_session_token: '',
 };
 const EMPTY_ROUTE = {
   inbound_did: '', twilio_account_sid: '', intake_mode: 'auto', forwarding_mode: 'none',
@@ -56,9 +54,8 @@ export default function ProviderDeliveryPage() {
   const [providers, setProviders] = useState([]);
   const [channels, setChannels] = useState({});
   const [route, setRoute] = useState(null);
+  const [smtp, setSmtp] = useState(EMPTY_SMTP);
   const [twilio, setTwilio] = useState(EMPTY_TWILIO);
-  const [acs, setAcs] = useState(EMPTY_ACS);
-  const [ses, setSes] = useState(EMPTY_SES);
   const [routeForm, setRouteForm] = useState(EMPTY_ROUTE);
   const [loading, setLoading] = useState(true);
   const [working, setWorking] = useState('');
@@ -220,7 +217,7 @@ export default function ProviderDeliveryPage() {
       {message ? <div className={styles.success} role="status"><CheckCircle2 aria-hidden="true" /> {message}</div> : null}
 
       <div className={styles.metricGrid}>
-        <div className={styles.metricCard}><span>Email</span><strong>{channels.email ? 'Ready' : 'Setup'}</strong><small>Google or SES</small></div>
+        <div className={styles.metricCard}><span>Email</span><strong>{channels.email ? 'Ready' : 'Setup'}</strong><small>SMTP or Google</small></div>
         <div className={styles.metricCard}><span>SMS</span><strong>{channels.sms ? 'Ready' : 'Setup'}</strong><small>registered sender</small></div>
         <div className={styles.metricCard}><span>AI voice</span><strong>{channels.ai_call ? 'Ready' : 'Setup'}</strong><small>approval delivery route</small></div>
         <div className={styles.metricCard}><span>Agent voice</span><strong>{channels.agent_call ? 'Ready' : 'Setup'}</strong><small>browser + verified caller ID</small></div>
@@ -234,6 +231,24 @@ export default function ProviderDeliveryPage() {
             <button type="button" className={styles.primaryButton} onClick={connectGoogle} disabled={Boolean(working)}><PlugZap aria-hidden="true" /> {byName.google?.configured ? 'Reconnect Google' : 'Connect Google'}</button>
             {byName.google?.configured ? <button type="button" className={styles.dangerButton} onClick={() => disconnect('google')} disabled={Boolean(working)}><Trash2 aria-hidden="true" /> Disconnect</button> : null}
           </div>
+        </article>
+
+        <article className={styles.panel}>
+          <header className={styles.panelHeader}><div><h4>Your email (SMTP)</h4><p>NEOH sends outreach through your own mail server and address</p></div><ProviderState provider={byName.smtp || { provider: 'smtp' }} /></header>
+          <form className={styles.panelBody} onSubmit={(event) => { event.preventDefault(); void configure('smtp', smtp, () => setSmtp(EMPTY_SMTP)); }} autoComplete="off">
+            <div className={styles.providerIcon}><Mail aria-hidden="true" /><span><strong>Bring your own mail server</strong><small>Broker owners set the brokerage default; agents may connect their own to send and receive replies from their own inbox.</small></span></div>
+            <div className={styles.fieldGrid}>
+              <div className={styles.field}><label htmlFor="smtp-host">SMTP host</label><input id="smtp-host" value={smtp.host} onChange={(event) => setSmtp((current) => ({ ...current, host: event.target.value }))} placeholder="smtp.gmail.com" required /></div>
+              <div className={styles.field}><label htmlFor="smtp-port">Port</label><input id="smtp-port" type="number" min={1} max={65535} value={smtp.port} onChange={(event) => setSmtp((current) => ({ ...current, port: event.target.value }))} placeholder="587" /></div>
+              <div className={styles.field}><label htmlFor="smtp-username">Username</label><input id="smtp-username" value={smtp.username} onChange={(event) => setSmtp((current) => ({ ...current, username: event.target.value }))} autoComplete="off" /></div>
+              <div className={styles.field}><label htmlFor="smtp-password">Password</label><input id="smtp-password" type="password" value={smtp.password} onChange={(event) => setSmtp((current) => ({ ...current, password: event.target.value }))} autoComplete="new-password" /></div>
+              <div className={styles.field}><label htmlFor="smtp-from-email">From email</label><input id="smtp-from-email" type="email" value={smtp.from_email} onChange={(event) => setSmtp((current) => ({ ...current, from_email: event.target.value }))} placeholder="you@yourbrokerage.com" required /></div>
+              <div className={styles.field}><label htmlFor="smtp-from-name">From name (optional)</label><input id="smtp-from-name" value={smtp.from_name} onChange={(event) => setSmtp((current) => ({ ...current, from_name: event.target.value }))} placeholder="Jane Doe" /></div>
+            </div>
+            <button type="submit" className={styles.primaryButton} disabled={Boolean(working)}><Save aria-hidden="true" /> Encrypt and save</button>
+            {providerActions('smtp')}
+            {byName.smtp?.validation_error ? <p className={styles.inlineError}>{byName.smtp.validation_error}</p> : null}
+          </form>
         </article>
 
         <article className={styles.panel}>
@@ -256,39 +271,6 @@ export default function ProviderDeliveryPage() {
           </form>
         </article>
 
-        <article className={styles.panel}>
-          <header className={styles.panelHeader}><div><h4>Azure Communication Services</h4><p>Alternative voice and SMS</p></div><ProviderState provider={byName.acs || { provider: 'acs' }} /></header>
-          <form className={styles.panelBody} onSubmit={(event) => { event.preventDefault(); void configure('acs', acs, () => setAcs(EMPTY_ACS)); }} autoComplete="off">
-            <div className={styles.field}><label htmlFor="acs-account-label">Account label</label><input id="acs-account-label" value={acs.account_label} onChange={(event) => setAcs((current) => ({ ...current, account_label: event.target.value }))} required /></div>
-            <div className={styles.field}><label htmlFor="acs-connection">Connection string</label><input id="acs-connection" type="password" value={acs.connection_string} onChange={(event) => setAcs((current) => ({ ...current, connection_string: event.target.value }))} autoComplete="new-password" placeholder="endpoint=https://…;accesskey=…" required /></div>
-            <div className={styles.fieldGrid}>
-              <div className={styles.field}><label htmlFor="acs-from">Voice caller ID (optional)</label><input id="acs-from" type="tel" value={acs.from_number} onChange={(event) => setAcs((current) => ({ ...current, from_number: event.target.value }))} placeholder="+15551234567" /></div>
-              <div className={styles.field}><label htmlFor="acs-sms">SMS sender (optional)</label><input id="acs-sms" type="tel" value={acs.sms_sender} onChange={(event) => setAcs((current) => ({ ...current, sms_sender: event.target.value }))} placeholder="+15551234567" /></div>
-            </div>
-            <button type="submit" className={styles.primaryButton} disabled={Boolean(working)}><Cloud aria-hidden="true" /> Encrypt and save</button>
-            {providerActions('acs')}
-            {byName.acs?.validation_error ? <p className={styles.inlineError}>{byName.acs.validation_error}</p> : null}
-          </form>
-        </article>
-
-        <article className={styles.panel}>
-          <header className={styles.panelHeader}><div><h4>Amazon SES</h4><p>Tenant sender email</p></div><ProviderState provider={byName.ses || { provider: 'ses' }} /></header>
-          <form className={styles.panelBody} onSubmit={(event) => { event.preventDefault(); void configure('ses', ses, () => setSes(EMPTY_SES)); }} autoComplete="off">
-            <div className={styles.field}><label htmlFor="ses-account-label">Account label</label><input id="ses-account-label" value={ses.account_label} onChange={(event) => setSes((current) => ({ ...current, account_label: event.target.value }))} required /></div>
-            <div className={styles.fieldGrid}>
-              <div className={styles.field}><label htmlFor="ses-from">Verified from email</label><input id="ses-from" type="email" value={ses.from_email} onChange={(event) => setSes((current) => ({ ...current, from_email: event.target.value }))} required /></div>
-              <div className={styles.field}><label htmlFor="ses-region">AWS region</label><input id="ses-region" value={ses.region} onChange={(event) => setSes((current) => ({ ...current, region: event.target.value }))} required /></div>
-            </div>
-            <div className={styles.fieldGrid}>
-              <div className={styles.field}><label htmlFor="ses-access-key">AWS access key ID (optional)</label><input id="ses-access-key" type="password" value={ses.aws_access_key_id} onChange={(event) => setSes((current) => ({ ...current, aws_access_key_id: event.target.value }))} autoComplete="new-password" /><small>Leave all AWS key fields blank to use the platform’s workload identity.</small></div>
-              <div className={styles.field}><label htmlFor="ses-secret-key">AWS secret access key</label><input id="ses-secret-key" type="password" value={ses.aws_secret_access_key} onChange={(event) => setSes((current) => ({ ...current, aws_secret_access_key: event.target.value }))} autoComplete="new-password" /></div>
-            </div>
-            <div className={styles.field}><label htmlFor="ses-session-token">AWS session token (optional)</label><input id="ses-session-token" type="password" value={ses.aws_session_token} onChange={(event) => setSes((current) => ({ ...current, aws_session_token: event.target.value }))} autoComplete="new-password" /></div>
-            <button type="submit" className={styles.primaryButton} disabled={Boolean(working)}><Mail aria-hidden="true" /> Encrypt and save</button>
-            {providerActions('ses')}
-            {byName.ses?.validation_error ? <p className={styles.inlineError}>{byName.ses.validation_error}</p> : null}
-          </form>
-        </article>
       </section>
 
       <section className={styles.panel} aria-labelledby="provider-route-title">

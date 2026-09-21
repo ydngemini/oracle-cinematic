@@ -45,12 +45,8 @@ from command_providers import (
     ProviderRejectedError,
     abort_twilio_call,
     create_google_calendar_event,
-    place_acs_call,
     place_custom_http_call,
     place_twilio_call,
-    send_acs_email,
-    send_acs_sms,
-    send_ses_email,
     send_smtp_email,
     send_twilio_sms,
 )
@@ -339,7 +335,29 @@ class GoogleOAuthStart(BaseModel):
         return value
 
 
-_COMMAND_PROVIDERS = {"google", "smtp", "acs", "ses", "twilio"}
+_COMMAND_PROVIDERS = {"google", "smtp", "twilio"}
+# Providers an agent may self-manage, scoped to their own account_label.
+# store/disable here and validate in sales_api.py all share this list so a
+# new self-service provider is added once, not independently at each site.
+_AGENT_SELF_SERVICE_PROVIDERS = {"google", "smtp"}
+
+
+def _require_own_credential_or_broker(
+    ctx: TenantContext, provider: str, account_label: str, *, action: str
+) -> None:
+    if ctx.role is Role.AGENT:
+        if provider not in _AGENT_SELF_SERVICE_PROVIDERS or account_label != ctx.agent_id:
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    f"Agents may {action} only their own Google OAuth credential or "
+                    "their own SMTP mail identity."
+                ),
+            )
+    else:
+        require_role(ctx, Role.BROKER_OWNER)
+
+
 _GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 _GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
 # Calendar only. Mail never leaves through a Google account, so requesting
@@ -517,8 +535,6 @@ def _provider_key(tenant_id: str) -> str:
 # under, so both move together when a new provider is added.
 _EMAIL_SENDERS = {
     "smtp": (send_smtp_email, "smtp"),
-    "acs": (send_acs_email, "acs"),
-    "ses": (send_ses_email, "ses"),
 }
 
 
@@ -543,20 +559,36 @@ async def _load_provider_credential(
     provider: str,
     *,
     account_label: Optional[str] = None,
+    exact: bool = False,
 ) -> Any:
-    """Decrypt a tenant credential only inside the executing worker."""
+    """Decrypt a tenant credential only inside the executing worker.
+
+    Preference order: the caller's own labelled row, then 'default', then
+    whichever active row is newest — so a broker who saved a credential under
+    a custom label (the account_label field on PUT /providers/{provider} is
+    free text) is still found even when the caller asked for a specific
+    agent's row that doesn't exist. Pass `exact=True` (validate/disable: the
+    caller named one specific row) to require that exact account_label match
+    rather than silently falling back to someone else's credential.
+    """
     async with tenant_tx(ctx) as conn:
         row = await conn.fetchrow(
             """
             SELECT token_ciphertext,expires_at FROM provider_credentials
              WHERE tenant_id=$1::uuid AND provider=$2 AND disabled_at IS NULL
-               AND ($3::text IS NULL OR account_label IN ($3,'default'))
-             ORDER BY CASE WHEN account_label=$3 THEN 0 ELSE 1 END, updated_at DESC
+               AND ($4 IS FALSE OR account_label=$3)
+             ORDER BY CASE
+                        WHEN $3::text IS NOT NULL AND account_label=$3 THEN 0
+                        WHEN account_label='default' THEN 1
+                        ELSE 2
+                      END,
+                      updated_at DESC
              LIMIT 1
             """,
             ctx.tenant_id,
             provider,
             account_label,
+            exact,
         )
         if row is None:
             return None
@@ -1552,14 +1584,7 @@ async def store_provider_credential(
     provider = provider.lower()
     if provider not in _COMMAND_PROVIDERS:
         raise HTTPException(status_code=422, detail="Unsupported command provider.")
-    if ctx.role is Role.AGENT:
-        if provider != "google" or body.account_label != ctx.agent_id:
-            raise HTTPException(
-                status_code=403,
-                detail="Agents may manage only their own Google OAuth credential.",
-            )
-    else:
-        require_role(ctx, Role.BROKER_OWNER)
+    _require_own_credential_or_broker(ctx, provider, body.account_label, action="manage")
     key = _provider_key(ctx.tenant_id)
     async with tenant_tx(ctx) as conn:
         encrypted = await encrypt_pii(conn, body.token, key)
@@ -1611,14 +1636,7 @@ async def disable_provider_credential(
 ):
     require_feature(Feature.AUTOMATION)
     provider = provider.lower()
-    if ctx.role is Role.AGENT:
-        if provider != "google" or account_label != ctx.agent_id:
-            raise HTTPException(
-                status_code=403,
-                detail="Agents may disable only their own Google OAuth credential.",
-            )
-    else:
-        require_role(ctx, Role.BROKER_OWNER)
+    _require_own_credential_or_broker(ctx, provider, account_label, action="disable")
     async with tenant_tx(ctx) as conn:
         row = await conn.fetchrow(
             """
@@ -2305,7 +2323,22 @@ async def _execute_command_job(payload: dict[str, Any], reporter) -> dict[str, A
             # leaves through a server the operator controls rather than any
             # third party's API.
             sender, credential_key = _resolve_email_provider()
-            raw = await _load_provider_credential(ctx, credential_key)
+            # ctx.agent_id is "command-worker" — the job runner, not the human
+            # who drafted this. Their own SMTP identity and Reply-To only
+            # resolve against the agent who actually wrote the draft.
+            drafting_ctx = TenantContext(
+                agent_id=str(command["created_by"] or "command-worker"),
+                tenant_id=tenant_id,
+                role=Role.PLATFORM_ADMIN,
+            )
+            # An agent's own SMTP identity (account_label=agent_id) wins over
+            # the tenant-wide "default" one falls back to inside the query.
+            raw, identity = await asyncio.gather(
+                _load_provider_credential(
+                    drafting_ctx, credential_key, account_label=drafting_ctx.agent_id
+                ),
+                load_agent_identity(drafting_ctx),
+            )
             credentials = None
             if raw:
                 malformed = (
@@ -2317,8 +2350,9 @@ async def _execute_command_job(payload: dict[str, Any], reporter) -> dict[str, A
                     raise ProviderConfigurationError(malformed) from exc
                 if not isinstance(credentials, dict):
                     raise ProviderConfigurationError(malformed)
+            reply_to = str(identity.get("public_email") or "").strip() or None
             provider_result = await sender(
-                {**draft, "target": target}, credentials=credentials
+                {**draft, "target": target}, credentials=credentials, reply_to=reply_to
             )
         elif command_type is CommandType.SMS:
             decision = await guard_outreach(
@@ -2345,27 +2379,9 @@ async def _execute_command_job(payload: dict[str, Any], reporter) -> dict[str, A
                         "Encrypted Twilio credential must be a JSON object"
                     )
             submission_started = True
-            try:
-                provider_result = await send_twilio_sms(
-                    {**draft, "target": target}, credentials=twilio_credentials
-                )
-            except ProviderConfigurationError:
-                acs_raw = await _load_provider_credential(ctx, "acs")
-                acs_credentials = None
-                if acs_raw:
-                    try:
-                        acs_credentials = json.loads(acs_raw)
-                    except (TypeError, ValueError) as exc:
-                        raise ProviderConfigurationError(
-                            "Encrypted ACS credential must be a JSON object"
-                        ) from exc
-                    if not isinstance(acs_credentials, dict):
-                        raise ProviderConfigurationError(
-                            "Encrypted ACS credential must be a JSON object"
-                        )
-                provider_result = await send_acs_sms(
-                    {**draft, "target": target}, credentials=acs_credentials
-                )
+            provider_result = await send_twilio_sms(
+                {**draft, "target": target}, credentials=twilio_credentials
+            )
         elif command_type is CommandType.CALL:
             decision = await guard_outreach(
                 ctx,
@@ -2412,55 +2428,14 @@ async def _execute_command_job(payload: dict[str, Any], reporter) -> dict[str, A
                     )
                     raise
             except ProviderConfigurationError:
-                provider_result = None
-                try:
-                    if os.getenv("ORACLE_CUSTOM_CALL_API_URL", "").strip():
-                        provider_result = await place_custom_http_call(
-                            {**draft, "target": target}
-                        )
-                except ProviderConfigurationError:
-                    provider_result = None
-                if provider_result is None:
-                    acs_raw = await _load_provider_credential(ctx, "acs")
-                    acs_credentials = None
-                    if acs_raw:
-                        try:
-                            acs_credentials = json.loads(acs_raw)
-                        except (TypeError, ValueError) as exc:
-                            raise ProviderConfigurationError(
-                                "Encrypted ACS credential must be a JSON object"
-                            ) from exc
-                        if not isinstance(acs_credentials, dict):
-                            raise ProviderConfigurationError(
-                                "Encrypted ACS credential must be a JSON object"
-                            )
-                    from acs_call_handler import (
-                        abort_unmanaged_call,
-                        ensure_call_state_available,
-                        initialize_call_state,
-                    )
-
-                    # A call without durable callback state is unmanaged. Verify
-                    # Redis before dialing, then disconnect if the post-dial
-                    # state write still loses a race with an outage.
-                    await ensure_call_state_available()
-                    provider_result = await place_acs_call(
-                        {**draft, "target": target}, credentials=acs_credentials
-                    )
-                    try:
-                        await initialize_call_state(
-                            provider_result.reference,
-                            str(target.get("phone") or ""),
-                            tenant_id=ctx.tenant_id,
-                            credentials=acs_credentials,
-                        )
-                    except Exception:
-                        await abort_unmanaged_call(
-                            provider_result.reference,
-                            tenant_id=ctx.tenant_id,
-                            credentials=acs_credentials,
-                        )
-                        raise
+                if not os.getenv("ORACLE_CUSTOM_CALL_API_URL", "").strip():
+                    raise
+                # A custom call URL is configured as the fallback; let its own
+                # ProviderConfigurationError (if any) propagate instead of
+                # Twilio's, since it is the error that actually applies.
+                provider_result = await place_custom_http_call(
+                    {**draft, "target": target}
+                )
         else:
             await reporter.progress(45, "creating approved calendar event")
             event_draft = dict(draft)

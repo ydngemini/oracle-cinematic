@@ -322,3 +322,67 @@ def test_the_recorded_decision_is_the_row_status_not_the_request(monkeypatch):
     assert 'decision=approval["status"]' in source, (
         "the trace must record the persisted status, not the requested decision"
     )
+
+
+# ---------------------------------------------------------------------------
+# Chat-action verdict sweep
+# ---------------------------------------------------------------------------
+
+class _SweepConn:
+    """Serves the sweep's two SELECT shapes, then records each INSERT."""
+
+    def __init__(self, actions):
+        self._actions = actions
+        self.inserts: list[tuple] = []
+
+    async def fetch(self, query, *args):
+        if "GROUP BY a.tenant_id" in query:
+            return [{"tenant_id": TENANT_ID, "pending": len(self._actions)}]
+        return list(self._actions)
+
+    async def fetchrow(self, query, *args):
+        self.inserts.append(args)
+        return {"id": args[7]}  # source_id position
+
+
+def _sweep_action(status, aid):
+    return {
+        "id": aid, "user_id": "agent-7", "action_type": "update_client_field",
+        "record_type": "client", "record_id": SOURCE_ID, "status": status,
+        "undone_at": datetime.now(timezone.utc) if status == "undone" else None,
+        "undo_expires_at": datetime.now(timezone.utc) - timedelta(hours=1),
+    }
+
+
+def test_settled_chat_actions_become_accept_and_reject_traces(monkeypatch):
+    conn = _SweepConn([
+        _sweep_action("applied", "33333333-3333-4333-8333-333333333331"),
+        _sweep_action("undone", "33333333-3333-4333-8333-333333333332"),
+    ])
+    _patch(monkeypatch, conn)
+
+    totals = asyncio.run(dt.sweep_settled_chat_actions())
+
+    assert totals == {
+        "tenants": 1, "examined": 2, "accepted": 1, "rejected": 1, "failed": 0,
+    }
+    order = [
+        "tenant_id", "agent_id", "surface", "action_type", "risk_class",
+        "model_version", "source_table", "source_id",
+        "proposal", "proposal_sha256", "final", "final_sha256",
+        "signal", "decided_at", "decision_latency_ms", "consent_version",
+    ]
+    signals = {row[order.index("signal")] for row in conn.inserts}
+    assert signals == {"accepted_unchanged", "rejected"}
+    # The verdict is filed under the user who made the decision, not the sweeper.
+    assert all(row[order.index("agent_id")] == "agent-7" for row in conn.inserts)
+    assert all(row[order.index("surface")] == "chat_action" for row in conn.inserts)
+
+
+def test_a_conflicted_chat_action_is_not_swept(monkeypatch):
+    """status='conflict' means the record moved under the undo — no clean
+    verdict, so the sweep query must only select applied/undone rows."""
+    import inspect
+
+    for fn in (dt.sweep_settled_chat_actions, dt._settled_chat_actions_for_tenant):
+        assert "a.status IN ('applied', 'undone')" in inspect.getsource(fn)

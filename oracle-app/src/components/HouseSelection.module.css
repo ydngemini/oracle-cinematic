@@ -146,7 +146,7 @@
   align-items: center;
   gap: var(--space-2);
   padding: 0 var(--space-3);
-  background: rgba(8, 8, 8, 0.90);
+  background: var(--oracle-surface-sunken);
   border: 1px solid var(--oracle-glass-edge);
   border-radius: var(--radius-sm);
 }
@@ -182,7 +182,7 @@
   height: 46px;
   padding: 0 var(--space-3);
   color: var(--oracle-text-heading);
-  background: rgba(8, 8, 8, 0.90);
+  background: var(--oracle-surface-sunken);
   border: 1px solid var(--oracle-glass-edge);
   border-radius: var(--radius-sm);
 }
@@ -207,7 +207,7 @@
 
 .searchButton,
 .primaryButton {
-  color: #080808;
+  color: #0f0f12;
   background: var(--oracle-amber-bright);
   border-color: var(--oracle-amber-bright);
 }
@@ -306,18 +306,18 @@
   padding: var(--space-4);
   text-align: left;
   color: var(--oracle-text);
-  background: rgba(8, 8, 8, 0.88);
+  background: var(--oracle-surface);
   border: 0;
   border-left: 2px solid transparent;
   border-radius: 0;
 }
 
 .recordCard:hover {
-  background: rgba(8, 8, 8, 0.95);
+  background: var(--oracle-surface-raised);
 }
 
 .recordCard[data-selected] {
-  background: rgba(8, 8, 8, 0.97);
+  background: var(--oracle-surface-raised);
   border-left-color: var(--oracle-amber);
 }
 
@@ -369,7 +369,7 @@
 .recordMeta small {
   overflow: hidden;
   color: var(--oracle-text-ghost);
-  font-size: 0.64rem;
+  font-size: var(--text-xs);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -382,8 +382,8 @@
 .skeleton {
   min-height: 92px;
   background:
-    linear-gradient(90deg, transparent, rgba(242, 242, 242, 0.045), transparent),
-    rgba(8, 8, 8, 0.88);
+    linear-gradient(90deg, transparent, var(--oracle-shimmer), transparent),
+    var(--oracle-surface);
   background-size: 220% 100%;
   animation: skeleton 1.8s linear infinite;
 }
@@ -398,7 +398,7 @@
   align-items: flex-start;
   justify-content: center;
   gap: var(--space-2);
-  background: rgba(8, 8, 8, 0.90);
+  background: var(--oracle-surface);
   border: 1px solid var(--oracle-glass-edge);
 }
 
@@ -446,7 +446,7 @@
   padding: var(--space-6);
   display: grid;
   gap: var(--space-4);
-  background: rgba(8, 8, 8, 0.91);
+  background: var(--oracle-surface);
   border-top: 1px solid var(--oracle-amber-dim);
   border-bottom: 1px solid var(--oracle-glass-edge);
 }
@@ -464,7 +464,7 @@
 
 .fieldError,
 .addressWarning {
-  color: #f4aaa2;
+  color: var(--oracle-red);
   font-size: var(--text-sm);
 }
 
@@ -474,7 +474,7 @@
   top: 0;
   min-height: 570px;
   padding: var(--space-6);
-  background: linear-gradient(145deg, rgba(8, 8, 8, 0.94), rgba(8, 8, 8, 0.94));
+  background: var(--oracle-surface);
   border: 1px solid var(--oracle-glass-edge);
 }
 
@@ -614,7 +614,7 @@
   margin-top: var(--space-3);
   color: var(--oracle-text-dim);
   font: 500 var(--text-xs)/1.55 var(--font-mono);
-  letter-spacing: 0.03em;
+  letter-spacing: var(--tracking-wide);
 }
 
 .provenance {
@@ -656,7 +656,7 @@
   color: var(--oracle-green);
   font-size: var(--text-sm);
   border-left: 2px solid var(--oracle-green);
-  background: rgba(100, 210, 140, 0.07);
+  background: var(--oracle-green-dim);
 }
 
 .workspaceActions {
@@ -675,7 +675,7 @@
   position: fixed;
   inset: 0;
   z-index: var(--z-modal);
-  background: rgba(8, 8, 8, 0.88);
+  background: rgba(0, 0, 0, 0.55);
 }
 
 .dialogLayer {
@@ -690,9 +690,9 @@
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  background: rgba(12, 12, 12, 0.96);
+  background: var(--oracle-surface-raised);
   border: 1px solid var(--oracle-glass-edge);
-  box-shadow: 0 28px 90px rgba(0, 0, 0, 0.68);
+  box-shadow: var(--shadow-float);
 }
 
 .dialogHead {
@@ -742,16 +742,16 @@
   align-items: center;
   gap: var(--space-3);
   color: var(--oracle-text);
-  background: rgba(8, 8, 8, 0.95);
+  background: var(--oracle-surface);
   cursor: pointer;
 }
 
 .clientOption:hover {
-  background: rgba(8, 8, 8, 0.98);
+  background: var(--oracle-surface-raised);
 }
 
 .clientOption:has(input:checked) {
-  background: rgba(8, 8, 8, 0.98);
+  background: var(--oracle-surface-raised);
   box-shadow: inset 2px 0 var(--oracle-amber);
 }
 
@@ -811,14 +811,14 @@
   place-items: center;
   padding: var(--space-5);
   color: var(--oracle-text-dim);
-  background: rgba(8, 8, 8, 0.95);
+  background: var(--oracle-surface);
   text-align: center;
 }
 
 .dialogError {
   padding: var(--space-3);
-  color: #f4aaa2;
-  background: rgba(220, 80, 80, 0.08);
+  color: var(--oracle-red);
+  background: var(--oracle-red-dim);
   border-left: 2px solid var(--oracle-red);
 }
 
@@ -1025,6 +1025,6 @@
   .searchField > div,
   .stateField select,
   .manualForm input {
-    border-color: rgba(242, 242, 242, 0.46);
+    border-color: var(--oracle-border-bright);
   }
 }

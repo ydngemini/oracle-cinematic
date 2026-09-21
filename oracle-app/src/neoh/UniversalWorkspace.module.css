@@ -203,3 +203,34 @@
   .chips { overflow-x: auto; flex-wrap: nowrap; padding-bottom: 2px; }
   .chip { flex-shrink: 0; }
 }
+
+/* ── Recent — the trail Work opens on ───────────────────────────────────── */
+ 
+.recent {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  max-width: 44rem;
+  width: 100%;
+  margin-inline: auto;
+  padding: var(--space-4) var(--space-5) var(--space-10);
+}
+
+.recentHead {
+  margin: 0;
+  padding: 0 var(--space-1);
+  font: 600 var(--text-xs) / 1 var(--font-mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--oracle-text-ghost);
+}
+
+.recentEmpty {
+  max-width: 44rem;
+  width: 100%;
+  margin-inline: auto;
+  padding: var(--space-8) var(--space-5);
+  color: var(--oracle-text-dim);
+  font-size: var(--text-md);
+  text-align: center;
+}

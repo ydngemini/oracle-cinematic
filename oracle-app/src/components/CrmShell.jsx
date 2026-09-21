@@ -26,6 +26,7 @@ import {
   SALES_ROUTES,
   VIEWS,
   VIEW_PATHS,
+  entityHref,
   href,
   parse,
   redirectFor,
@@ -292,12 +293,31 @@ export function CrmShell() {
   // directly (a bookmark, a link from a text) → there is nothing behind it in
   // this tab's history, so replace the address with the view beneath.
   const closeEntity = useCallback(() => {
+    if (route.entity?.tour) {
+      if (window.history.state?.propertyTour === route.entity.id) {
+        window.history.back();
+        return;
+      }
+      const address = new URL(window.location.href);
+      address.searchParams.delete('tour');
+      window.history.replaceState(window.history.state, '', address);
+      setRoute((prev) => ({ ...prev, entity: { kind: 'property', id: prev.entity.id } }));
+      return;
+    }
     if (window.history.state?.entity) {
       window.history.back();
       return;
     }
     go({ view: route.view, params: route.params, entity: null }, true);
-  }, [go, route.view, route.params]);
+  }, [go, route.view, route.params, route.entity]);
+
+  const openPropertyTour = useCallback(() => {
+    if (route.entity?.kind !== 'property' || route.entity.tour) return;
+    const id = route.entity.id;
+    if (window.history.state?.propertyTour === id) return;
+    window.history.pushState({ propertyTour: id }, '', entityHref('property', id, { tour: true }));
+    setRoute((prev) => ({ ...prev, entity: { ...prev.entity, tour: true } }));
+  }, [route.entity]);
 
   const navigateSales = useCallback((path, replace = false) => {
     if (path === '/our-ai') {
@@ -377,16 +397,28 @@ export function CrmShell() {
   const activeProfileView = profileViews.find((view) => view.id === profileView) ?? profileViews[0];
   const ProfileComponent = activeProfileView.Component;
 
+  // The header is transparent until content passes under it. Passive, and
+  // compared before setting, so a scroll does not re-render on every frame.
+  const [scrolled, setScrolled] = useState(false);
+  useEffect(() => {
+    const onScroll = () => {
+      const past = window.scrollY > 4;
+      setScrolled((was) => (was === past ? was : past));
+    };
+    onScroll();
+    window.addEventListener('scroll', onScroll, { passive: true });
+    return () => window.removeEventListener('scroll', onScroll);
+  }, []);
+
   return (
     <StateProvider>
     <AssistantProvider>
     <LayoutGroup id="neoh">
     <div className={styles.shellContainer}>
       <header
-        className={`${styles.header} hud-glass-panel`}
+        className={`${styles.header}${scrolled ? ` ${styles.headerScrolled}` : ''}`}
         style={{ viewTransitionName: 'crm-header' }}
       >
-        <span className={styles.headerReticles} aria-hidden="true" />
         <NeohBrandMark />
         <div className={styles.headerTools}>
           <StateSelector />
@@ -478,7 +510,7 @@ export function CrmShell() {
               {route.entity && (
                 <ErrorBoundary label="record sheet">
                   <Suspense fallback={null}>
-                    <EntitySheet entity={route.entity} onClose={closeEntity} />
+                    <EntitySheet entity={route.entity} onClose={closeEntity} onOpenTour={openPropertyTour} />
                   </Suspense>
                 </ErrorBoundary>
               )}

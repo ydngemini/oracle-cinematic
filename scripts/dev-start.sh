@@ -141,6 +141,18 @@ docker compose exec -T backend \
   | while IFS= read -r line; do printf '  %s\n' "$line"; done
 green "Memory Core seeded."
 
+# ── Resume the owner_name_normalized backfill (migration 0102/0103) ─────────
+# A plain foreground process, so it dies whenever the backend container stops
+# or restarts. Idempotent and resumable (WHERE owner_name_normalized IS NULL),
+# so relaunching it here every start is exactly correct rather than a hack:
+# it just picks back up where the last run left off. Detached (docker compose
+# exec -d) so it does not hold up this script, and only starts real work if
+# _has_pending finds any — a fully-backfilled table costs one cheap query.
+bold "Resuming owner_name_normalized backfill (if any work remains)..."
+docker compose exec -d -T backend \
+  sh -c "python backfill_owner_name_normalized.py --batch 1000 --pause 0.5 --timeout 20 >> /tmp/owner_backfill.log 2>&1"
+green "Backfill resumed in the background (progress: docker compose exec backend tail -f /tmp/owner_backfill.log)."
+
 # ── Print service URLs ────────────────────────────────────────────────────────
 echo
 bold "═══════════════════════════════════════════"

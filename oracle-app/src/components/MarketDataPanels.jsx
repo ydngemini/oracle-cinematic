@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { crmGet } from '../state/useCrmApi';
 import { useStateCtx } from '../state/StateContext';
 import styles from './MarketDataPanels.module.css';
@@ -16,18 +16,12 @@ const GLYPHS = {
       <path d="M10 17h7v-7" />
     </svg>
   ),
-  flood: (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="M3 17c2-2 4-2 6 0s4 2 6 0 4-2 6 0" />
-      <path d="M3 12c2-2 4-2 6 0s4 2 6 0 4-2 6 0" />
-      <path d="M12 3v6" />
-    </svg>
-  ),
 };
 
 const fmtPrice = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 });
 const fmtPct = new Intl.NumberFormat('en-US', { style: 'percent', minimumFractionDigits: 1, maximumFractionDigits: 1 });
 const fmtInt = new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 });
+const fmtRatio = new Intl.NumberFormat('en-US', { minimumFractionDigits: 1, maximumFractionDigits: 1 });
 
 function TrendArrow({ value }) {
   if (value == null || value === 0) return null;
@@ -40,60 +34,41 @@ function TrendArrow({ value }) {
   );
 }
 
-/**
- * Tax and demographic detail for one county.
- *
- * /api/market/county/{fips} had no caller, so the overview could name a county
- * and rank it by price while the tax rate an investor actually underwrites on
- * stayed unreachable. Opens under the row it belongs to.
- */
-function CountyDetail({ fips }) {
-  const [detail, setDetail] = useState(null);
-  const [error, setError] = useState('');
-
-  useEffect(() => {
-    let active = true;
-    crmGet(`/api/market/county/${encodeURIComponent(fips)}`).then(
-      (payload) => { if (active) setDetail(payload || null); },
-      (reason) => {
-        if (!active) return;
-        // 404 here means this county has no row yet — a coverage fact, not a
-        // failure, and worth saying differently from a broken request.
-        setError(reason?.status === 404
-          ? 'No county-level record has been ingested for this FIPS.'
-          : reason?.message || 'County detail could not be read.');
-      },
-    );
-    return () => { active = false; };
-  }, [fips]);
-
-  if (error) return <td colSpan={4}>{error}</td>;
-  if (!detail) return <td colSpan={4}>Loading…</td>;
-
-  const pct = (value) => (value == null ? '—' : `${Number(value).toFixed(2)}%`);
-  return (
-    <td colSpan={4}>
-      Effective tax {pct(detail.effective_tax_rate_pct)} ·
-      {' '}median annual tax {detail.median_annual_tax != null ? fmtPrice.format(detail.median_annual_tax) : '—'} ·
-      {' '}ownership {pct(detail.homeownership_rate_pct)} ·
-      {' '}{detail.households != null ? `${fmtInt.format(detail.households)} households` : 'households unknown'}
-      {detail.as_of_date ? ` · as of ${detail.as_of_date}` : ''}
-    </td>
-  );
+function num(value) {
+  // Number(null) and Number('') are both 0 — treat absent as absent, not zero,
+  // so a deliberately-NULL column shows a dash rather than "$0".
+  if (value == null || value === '') return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
 }
 
+/**
+ * State-level market overview.
+ *
+ * Reads `GET /api/market/{state}/overview`, whose response is the flat
+ * `StateMarketOverview` shape from `backend/state_compliance/routes_market.py`:
+ * median list/sale price, days on market, months of supply, active listings,
+ * closed sales, price/sqft, plus `as_of_date` / `is_stale` / `data_vintage_days`
+ * so the numbers can be shown with their vintage rather than as if current.
+ *
+ * `state_market_stats` is refreshed from the scheduled Redfin sync
+ * (`state_market_projection`). The publisher lag is ~3 months, so a freshly
+ * projected row is still ~80 days old — inside the stale threshold, but the
+ * banner names the vintage regardless. Several YoY / ratio columns are
+ * deliberately NULL on a projected row (the harvested source answers a
+ * different question); those tiles fall back to a dash rather than a zero.
+ */
 export function MarketDataPanels() {
   const { primaryState } = useStateCtx();
   const [data, setData] = useState(null);
-  const [openFips, setOpenFips] = useState('');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
-  const fetch_ = useCallback(() => {
+  const load = useCallback(() => {
     if (!primaryState) return;
     crmGet(`/api/market/${primaryState}/overview`).then(
       (res) => { setData(res); setLoading(false); setError(null); },
-      (err) => { setError(err); setLoading(false); }
+      (err) => { setError(err); setLoading(false); },
     );
   }, [primaryState]);
 
@@ -103,7 +78,7 @@ export function MarketDataPanels() {
   const [prevMdKey, setPrevMdKey] = useState(mdKey);
   if (mdKey !== prevMdKey) { setPrevMdKey(mdKey); setLoading(Boolean(primaryState)); setError(null); }
 
-  useEffect(() => { fetch_(); }, [fetch_]);
+  useEffect(() => { load(); }, [load]);
 
   if (!primaryState) {
     return (
@@ -115,8 +90,15 @@ export function MarketDataPanels() {
     );
   }
 
-  const overview = data?.overview || {};
-  const counties = data?.top_counties || [];
+  const medianPrice = num(data?.median_sale_price) ?? num(data?.median_list_price);
+  const priceLabel = data?.median_sale_price != null ? 'Median Sale Price' : 'Median List Price';
+  const dom = num(data?.median_days_on_market);
+  const supply = num(data?.months_of_supply);
+  const active = num(data?.active_listings);
+  const sold30 = num(data?.closed_sales_last_30d);
+  const perSqft = num(data?.avg_price_per_sqft);
+  const priceYoy = num(data?.yoy_price_change_pct);
+  const vintageDays = num(data?.data_vintage_days);
 
   return (
     <section className={styles.wrap} aria-label="Market data">
@@ -133,81 +115,61 @@ export function MarketDataPanels() {
       ) : error ? (
         <div className={styles.errorBox} role="alert">
           <span className={styles.errorText}>
-            {error.status === 404 ? 'Market service not deployed.' : error.message}
+            {error.status === 404
+              ? `No market data has been loaded for ${primaryState}.`
+              : (error.message || 'Market data could not be read.')}
           </span>
-          <button type="button" className={styles.retryBtn} onClick={fetch_}>Retry</button>
+          <button type="button" className={styles.retryBtn} onClick={load}>Retry</button>
         </div>
       ) : (
         <>
           <div className={styles.statsGrid}>
             <div className={styles.stat}>
-              <span className={styles.statLabel}>Median Price</span>
+              <span className={styles.statLabel}>{priceLabel}</span>
               <span className={styles.statValue}>
-                {overview.median_price != null ? fmtPrice.format(overview.median_price) : '—'}
+                {medianPrice != null ? fmtPrice.format(medianPrice) : '—'}
               </span>
-              <TrendArrow value={overview.median_price_yoy} />
+              <TrendArrow value={priceYoy} />
             </div>
             <div className={styles.stat}>
               <span className={styles.statLabel}>Days on Market</span>
               <span className={styles.statValue}>
-                {overview.median_dom != null ? fmtInt.format(overview.median_dom) : '—'}
+                {dom != null ? fmtInt.format(dom) : '—'}
               </span>
-              <TrendArrow value={overview.dom_yoy} />
             </div>
             <div className={styles.stat}>
               <span className={styles.statLabel}>Active Inventory</span>
               <span className={styles.statValue}>
-                {overview.active_listings != null ? fmtInt.format(overview.active_listings) : '—'}
+                {active != null ? fmtInt.format(active) : '—'}
               </span>
-              <TrendArrow value={overview.inventory_yoy} />
+            </div>
+            <div className={styles.stat}>
+              <span className={styles.statLabel}>Months of Supply</span>
+              <span className={styles.statValue}>
+                {supply != null ? fmtRatio.format(supply) : '—'}
+              </span>
             </div>
             <div className={styles.stat}>
               <span className={styles.statLabel}>Sold Last 30d</span>
               <span className={styles.statValue}>
-                {overview.sold_30d != null ? fmtInt.format(overview.sold_30d) : '—'}
+                {sold30 != null ? fmtInt.format(sold30) : '—'}
+              </span>
+            </div>
+            <div className={styles.stat}>
+              <span className={styles.statLabel}>Price / sq ft</span>
+              <span className={styles.statValue}>
+                {perSqft != null ? fmtPrice.format(perSqft) : '—'}
               </span>
             </div>
           </div>
 
-          {counties.length > 0 && (
-            <div className={styles.tableWrap}>
-              <table className={styles.table}>
-                <thead>
-                  <tr>
-                    <th>County</th>
-                    <th>Median</th>
-                    <th>Vol</th>
-                    <th>DOM</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {counties.slice(0, 8).map((c) => (
-                    <Fragment key={c.fips_code || c.county_name}>
-                      <tr>
-                        <td className={styles.countyName}>
-                          {c.fips_code ? (
-                            <button
-                              type="button"
-                              onClick={() => setOpenFips((current) => (current === c.fips_code ? '' : c.fips_code))}
-                              aria-expanded={openFips === c.fips_code}
-                            >
-                              {c.county_name}
-                            </button>
-                          ) : c.county_name}
-                        </td>
-                        <td>{c.median_price != null ? fmtPrice.format(c.median_price) : '—'}</td>
-                        <td>{c.volume != null ? fmtInt.format(c.volume) : '—'}</td>
-                        <td>{c.median_dom != null ? fmtInt.format(c.median_dom) : '—'}</td>
-                      </tr>
-                      {openFips === c.fips_code ? (
-                        <tr><CountyDetail fips={c.fips_code} /></tr>
-                      ) : null}
-                    </Fragment>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
+          {data?.as_of_date ? (
+            <p className={styles.emptyText}>
+              Reflects the {data.as_of_date} reporting period
+              {vintageDays != null ? ` · ~${vintageDays} days old` : ''}
+              {data.is_stale ? ' · verify before pricing against these figures' : ''}
+            </p>
+          ) : null}
         </>
       )}
     </section>

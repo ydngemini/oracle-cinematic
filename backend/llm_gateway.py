@@ -148,9 +148,17 @@ def _foundry(model: str) -> Optional[Provider]:
 
 
 def _local(model: str) -> Optional[Provider]:
-    base = _env("ORACLE_LOCAL_LLM_URL") or "http://127.0.0.1:8090/v1"
     if not _flag("ORACLE_AI_LOCAL_FALLBACK", default=True):
         return None
+    # ORACLE_LOCAL_LLM_URL is shared with ai_chat_agent, which POSTs the raw
+    # `/v1/chat/completions` endpoint. litellm's openai/ provider wants the
+    # `/v1` root and appends the path itself, so normalise either form here
+    # rather than making the operator keep two URLs that must not drift.
+    base = (_env("ORACLE_LOCAL_LLM_URL") or "http://127.0.0.1:8090/v1").rstrip("/")
+    for suffix in ("/chat/completions", "/completions"):
+        if base.endswith(suffix):
+            base = base[: -len(suffix)]
+            break
     return Provider(
         name="local",
         # The llama.cpp OpenAI shim accepts the parameter and does not enforce
