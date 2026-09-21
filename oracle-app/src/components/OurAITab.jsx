@@ -556,7 +556,7 @@ export default function OurAITab({
     },
     {
       name: 'Channel providers',
-      detail: 'Google, ACS, SES, and Twilio credentials are tenant-scoped, encrypted, revocable, and never exposed in the UI.',
+      detail: 'Google, SMTP, and Twilio credentials are tenant-scoped, encrypted, revocable, and never exposed in the UI.',
       status: sourceState('providers', data.connectedProviders.length > 0),
       Icon: PlugZap,
     },

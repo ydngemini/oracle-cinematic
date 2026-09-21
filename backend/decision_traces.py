@@ -252,13 +252,9 @@ async def _settled_chat_actions_for_tenant(
     for row in rows:
         counts["examined"] += 1
         decision = "rejected" if row["status"] == "undone" else "accepted"
-        actor_ctx = TenantContext(
-            agent_id=str(row["user_id"] or ctx.agent_id),
-            tenant_id=ctx.tenant_id,
-            role=ctx.role,
-        )
         trace_id = await record_decision(
-            actor_ctx,
+            ctx,
+            agent_id=str(row["user_id"] or ctx.agent_id),
             surface=SURFACE_CHAT_ACTION,
             action_type=str(row["action_type"] or "chat_tool"),
             source_table="ai_chat_actions",

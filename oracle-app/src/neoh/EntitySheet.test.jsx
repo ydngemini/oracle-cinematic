@@ -28,7 +28,7 @@ vi.mock('../components/TourViewer', () => ({
 
 const capture = {
   splat_url: '/api/media/capture', splat_format: '.sog', splat_scene: { version: 1 },
-  pano_scenes: [{ scene_id: 'kitchen' }], tourpoints: [{ scene_id: 'kitchen' }],
+  pano_scenes: [{ scene_id: 'kitchen' }], pano_scene_count: 1, tourpoints: [{ scene_id: 'kitchen' }],
   is_this_property: true,
 };
 
@@ -61,7 +61,7 @@ describe('property to tour continuity', () => {
   it('opens the real viewer contract and returns to the same editable dossier and focus', async () => {
     const onDismiss = vi.fn();
     render(<Harness onDismiss={onDismiss} />);
-    const opener = await screen.findByRole('button', { name: 'Explore in 3D' });
+    const opener = await screen.findByRole('button', { name: 'Step inside · walk the 3D space' });
     const note = await screen.findByRole('textbox', { name: 'Dossier note' });
     fireEvent.change(note, { target: { value: 'Unsaved work' } });
     opener.focus();
@@ -112,21 +112,23 @@ describe('property to tour continuity', () => {
   it('does not offer an absent capture', async () => {
     crmGet.mockResolvedValue({ pano_scenes: [] });
     render(<Harness />);
-    expect((await screen.findByRole('button', { name: '3D tour not captured yet' })).disabled).toBe(true);
+    expect((await screen.findByRole('button', { name: 'No 3D tour yet. Upload photos, then start a capture to build one.' })).disabled).toBe(true);
     expect(screen.queryByTestId('tour')).toBeNull();
   });
 
   it('keeps demo provenance in both the offer and the viewer', async () => {
-    crmGet.mockResolvedValue({ ...capture, is_this_property: false });
+    // No real pano_scenes alongside the splat — otherwise the walk counts as
+    // this property, per tourOffer.ts's own demo-vs-real-panos rule.
+    crmGet.mockResolvedValue({ ...capture, pano_scenes: [], pano_scene_count: 0, tourpoints: [], is_this_property: false });
     render(<Harness />);
-    fireEvent.click(await screen.findByRole('button', { name: 'Preview demo 3D space' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Preview a demo 3D space (not this home)' }));
     expect((await screen.findByTestId('tour')).dataset.real).toBe('false');
   });
 
   it('can enter on 360 scenes without a splat', async () => {
-    crmGet.mockResolvedValue({ pano_scenes: [{ scene_id: 'front' }, { scene_id: 'back' }] });
+    crmGet.mockResolvedValue({ pano_scenes: [{ scene_id: 'front' }, { scene_id: 'back' }], pano_scene_count: 2 });
     render(<Harness />);
-    fireEvent.click(await screen.findByRole('button', { name: 'Explore 360° tour' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Step inside · walk the 360° tour' }));
     expect((await screen.findByTestId('tour')).dataset.panos).toBe('2');
   });
 

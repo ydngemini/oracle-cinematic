@@ -38,6 +38,7 @@ export function EntityFrame({
   const expanded = immersive !== null;
   const closeRef = useRef(null);
   const tourOpener = useRef(null);
+  const backLabel = `Back to ${String(kind || 'record').toLowerCase()}`;
 
   useEffect(() => {
     if (expanded) {
@@ -55,7 +56,7 @@ export function EntityFrame({
       <button
         type="button"
         className={styles.scrim}
-        aria-label={expanded ? 'Back to property' : `Close ${kind}`}
+        aria-label={expanded ? backLabel : `Close ${kind}`}
         aria-hidden={expanded || undefined}
         onClick={onClose}
         tabIndex={-1}
@@ -90,9 +91,9 @@ export function EntityFrame({
             type="button"
             className={expanded ? styles.back : styles.close}
             onClick={onClose}
-            aria-label={expanded ? 'Back to property' : 'Close'}
+            aria-label={expanded ? backLabel : 'Close'}
           >
-            {expanded ? '← Back to property' : '×'}
+            {expanded ? `← ${backLabel}` : '×'}
           </button>
         </motion.header>
 

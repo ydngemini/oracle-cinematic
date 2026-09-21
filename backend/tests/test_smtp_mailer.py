@@ -50,6 +50,9 @@ class FakeSMTP:
         self.sent: list = []
         type(self).instances.append(self)
 
+    def close(self):
+        pass
+
     def __enter__(self):
         return self
 

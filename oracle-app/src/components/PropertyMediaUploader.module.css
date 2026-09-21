@@ -10,11 +10,11 @@
   justify-content: space-between;
   gap: var(--space-3);
 }
-.head strong { font-size: 0.82rem; }
-.head span { color: rgba(242, 242, 242, 0.45); font-size: 0.72rem; }
+.head strong { font-size: var(--text-base); }
+.head span { color: var(--oracle-text-dim); font-size: var(--text-sm); }
 
-.error { margin: 0; color: #f0838a; font-size: 0.78rem; }
-.empty { margin: 0; color: rgba(242, 242, 242, 0.4); font-size: 0.75rem; }
+.error { margin: 0; color: var(--oracle-red); font-size: var(--text-sm); }
+.empty { margin: 0; color: var(--oracle-text-ghost); font-size: var(--text-sm); }
 
 /* The native file input is replaced by its own label — the default control
    cannot be styled and reads as a foreign element inside a dark panel. */
@@ -24,16 +24,16 @@
   gap: 6px;
   justify-self: start;
   padding: 6px 12px;
-  border: 1px dashed rgba(242, 242, 242, 0.22);
+  border: 1px dashed var(--oracle-border-bright);
   border-radius: 8px;
-  color: rgba(242, 242, 242, 0.75);
-  font-size: 0.76rem;
+  color: var(--oracle-text);
+  font-size: var(--text-sm);
   cursor: pointer;
 }
-.picker:hover { border-color: rgba(242, 242, 242, 0.4); }
+.picker:hover { border-color: var(--oracle-border-bright); }
 .picker input { display: none; }
 .picker:focus-within {
-  outline: 2px solid rgba(242, 242, 242, 0.5);
+  outline: 2px solid var(--oracle-border-bright);
   outline-offset: 2px;
 }
 
@@ -50,9 +50,9 @@
   width: 84px;
   height: 64px;
   overflow: hidden;
-  border: 1px solid rgba(242, 242, 242, 0.12);
+  border: 1px solid var(--oracle-border);
   border-radius: 6px;
-  background: rgba(12, 12, 12, 0.5);
+  background: var(--oracle-surface-sunken);
 }
 .strip img { width: 100%; height: 100%; object-fit: cover; display: block; }
 
@@ -64,9 +64,9 @@
   height: 100%;
   background: linear-gradient(
     100deg,
-    rgba(242, 242, 242, 0.04) 30%,
-    rgba(242, 242, 242, 0.09) 50%,
-    rgba(242, 242, 242, 0.04) 70%
+    transparent 30%,
+    var(--oracle-shimmer) 50%,
+    transparent 70%
   );
   background-size: 200% 100%;
   animation: shimmer 1.4s linear infinite;
@@ -89,11 +89,11 @@
   place-content: center;
   border: none;
   border-radius: 4px;
-  background: rgba(12, 12, 12, 0.78);
-  color: rgba(242, 242, 242, 0.8);
-  font-size: 12px;
+  background: var(--oracle-surface-raised);
+  color: var(--oracle-text);
+  font-size: var(--text-sm);
   line-height: 1;
   cursor: pointer;
 }
-.strip li button:hover { background: rgba(176, 32, 42, 0.85); color: #fff; }
+.strip li button:hover { background: var(--oracle-red); color: #fff; }
 .strip li button:disabled { opacity: 0.4; cursor: default; }

@@ -9,6 +9,7 @@ import { EntityFrame } from './EntityFrame';
 import { LivingStrip } from './LivingObject';
 import { composeLiving } from './livingModel';
 import { useCallPresence } from './callPresence';
+import { tourOffer } from '../lib/tour/tourOffer';
 import styles from './EntitySheet.module.css';
 
 /**
@@ -84,23 +85,20 @@ function PropertySheet({ id, onClose, tourOpen, onOpenTour }) {
   const address = record?.payload?.address || record?.parcel_id || 'Property';
   useAssistantRecord('property', id, address, record?.dossier_status || '');
   const tour = useFetched(`/api/crm/property-tour?lead_id=${encodeURIComponent(id)}`);
-  const walkable = Boolean(tour.data?.splat_url);
   const scenes = tour.data?.pano_scenes;
-  const hasScenes = Array.isArray(scenes) && scenes.length > 0;
-  const canExplore = walkable || hasScenes;
-  const demo = walkable && tour.data?.is_this_property === false;
+  const offer = tourOffer(tour.data);
+  const canExplore = offer.kind === 'walkable';
   const tourLabel = tour.loading ? 'Checking for a tour…'
     : tour.error ? 'Tour status unavailable'
-      : walkable ? (demo ? 'Preview demo 3D space' : 'Explore in 3D')
-        : hasScenes ? (scenes.length > 1 ? 'Explore 360° tour' : 'View 360° scene')
-          : '3D tour not captured yet';
+      : offer.kind === 'walkable' ? offer.label
+        : offer.reason;
 
   const tourContent = tour.loading ? (
     <div className={styles.tourStatus} role="status">Loading tour…</div>
   ) : tour.error ? (
     <div className={styles.tourStatus} role="alert">The tour could not be loaded. Return to the property and try again later.</div>
-  ) : !canExplore ? (
-    <div className={styles.tourStatus} role="status">This property has no 3D capture or 360° scenes yet.</div>
+  ) : offer.kind !== 'walkable' ? (
+    <div className={styles.tourStatus} role="status">{offer.reason}</div>
   ) : (
     <ErrorBoundary
       label="property tour"
@@ -140,7 +138,7 @@ function PropertySheet({ id, onClose, tourOpen, onOpenTour }) {
       facts={[
         { label: 'Photos', value: tour.data?.photo_count ?? null },
         { label: '360 scenes', value: tour.data?.pano_scene_count ?? null },
-        { label: '3D tour', value: tour.loading || tour.error ? null : walkable ? (demo ? 'Demo space' : 'Yes') : 'Not yet' },
+        { label: '3D tour', value: tour.loading || tour.error ? null : offer.kind === 'walkable' ? (offer.isDemo ? 'Demo space' : 'Yes') : 'Not yet' },
       ]}
       actions={[
         {

@@ -247,7 +247,7 @@ export function UniversalWorkspace({
 
   return (
     <div className={styles.work} data-work-type={type}>
-      <div className={styles.bar}>
+      <div className={styles.bar} data-tour-anchor="work-search">
         <label className={styles.box}>
           <Search aria-hidden="true" size={18} className={styles.boxIcon} />
           <input
@@ -272,6 +272,7 @@ export function UniversalWorkspace({
               type="button"
               role="tab"
               aria-selected={type === 'recent' || !type}
+              data-tour-anchor="work-chip-recent"
               className={`${styles.chip} ${(type === 'recent' || !type) ? styles.chipActive : ''}`}
               onClick={() => onNavigate?.('recent', { q: draft })}
             >
@@ -284,6 +285,7 @@ export function UniversalWorkspace({
               type="button"
               role="tab"
               aria-selected={type === kind.id}
+              data-tour-anchor={`work-chip-${kind.id}`}
               className={`${styles.chip} ${type === kind.id ? styles.chipActive : ''}`}
               onClick={() => onNavigate?.(type === kind.id ? 'recent' : kind.id, { q: draft })}
             >

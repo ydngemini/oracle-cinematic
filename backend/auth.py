@@ -226,13 +226,10 @@ async def _lookup_user(agent_id: str):
 
 
 def _reset_email_sender() -> str:
-    """Verified sender identity for platform mail. Each provider's own sender
-    variable wins; ORACLE_SES_SENDER is still honoured so an existing SES
-    deployment keeps working."""
+    """Verified sender identity for platform mail. Reset mail goes out over
+    SMTP, so the SMTP sender variable is the only one consulted."""
     return (
         os.environ.get("ORACLE_SMTP_FROM_EMAIL")
-        or os.environ.get("ORACLE_ACS_FROM_EMAIL")
-        or os.environ.get("ORACLE_SES_SENDER")
         # ydnhft.com is the mail-sending domain (it carries the Google Workspace
         # tenant, MX and DKIM). The product domain is neohrs.com — DMARC aligns
         # on the From: domain, so the two being different is fine.
@@ -251,40 +248,8 @@ def _send_via_smtp(to_email: str, subject: str, html: str, text: str) -> None:
     smtp_mailer.send(recipient=to_email, subject=subject, text=text, html=html)
 
 
-def _send_via_acs(to_email: str, subject: str, html: str, text: str) -> None:
-    from azure.communication.email import EmailClient
-
-    connection_string = os.environ.get("ACS_CONNECTION_STRING", "").strip()
-    if not connection_string:
-        raise RuntimeError("ACS_CONNECTION_STRING is not configured")
-    client = EmailClient.from_connection_string(connection_string)
-    client.begin_send(
-        {
-            "senderAddress": _reset_email_sender(),
-            "recipients": {"to": [{"address": to_email}]},
-            "content": {"subject": subject, "plainText": text, "html": html},
-        }
-    )
-
-
-def _send_via_ses(to_email: str, subject: str, html: str, text: str) -> None:
-    import boto3
-
-    region = os.environ.get("AWS_REGION", "us-east-1")
-    boto3.client("sesv2", region_name=region).send_email(
-        FromEmailAddress=_reset_email_sender(),
-        Destination={"ToAddresses": [to_email]},
-        Content={"Simple": {
-            "Subject": {"Data": subject},
-            "Body": {"Html": {"Data": html}, "Text": {"Data": text}},
-        }},
-    )
-
-
 _RESET_EMAIL_SENDERS = {
     "smtp": _send_via_smtp,
-    "acs": _send_via_acs,
-    "ses": _send_via_ses,
 }
 
 

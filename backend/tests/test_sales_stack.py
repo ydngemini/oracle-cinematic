@@ -105,26 +105,6 @@ def test_provider_setup_is_structured_and_twilio_browser_call_ready():
         ProviderSetupInput.model_validate({"account_label": "x", "raw_secret_blob": "no"})
 
 
-def test_ses_provider_requires_complete_optional_tenant_key_pair():
-    with pytest.raises(ValidationError, match="configured together"):
-        ProviderSetupInput(
-            account_label="team",
-            from_email="broker@example.test",
-            aws_access_key_id="A" * 20,
-        )
-    body = ProviderSetupInput(
-        account_label="team",
-        from_email="broker@example.test",
-        region="us-east-2",
-        aws_access_key_id="A" * 20,
-        aws_secret_access_key="s" * 40,
-        aws_session_token="t" * 32,
-    )
-    payload = _provider_payload("ses", body)
-    assert payload["aws_access_key_id"] == "A" * 20
-    assert payload["aws_session_token"] == "t" * 32
-
-
 def test_sales_migration_forces_rls_and_keeps_revisions_immutable_and_destinations_out():
     migration = (
         Path(__file__).parents[1] / "db" / "migrations" / "0058_sales_ai_stack.sql"

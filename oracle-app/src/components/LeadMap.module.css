@@ -3,9 +3,9 @@
   flex: 1;
   min-height: 320px;
   overflow: hidden;
-  border: 1px solid rgba(242, 242, 242, 0.08);
+  border: 1px solid var(--oracle-border);
   border-radius: 3px;
-  background: rgba(8, 8, 8, 0.72);
+  background: var(--oracle-surface-sunken);
 }
 
 .canvas {
@@ -20,11 +20,11 @@
   place-items: center;
   padding: 2rem;
   margin: 0;
-  color: rgba(242, 242, 242, 0.72);
-  font-size: 0.72rem;
-  letter-spacing: 0.04em;
+  color: var(--oracle-text);
+  font-size: var(--text-sm);
+  letter-spacing: var(--tracking-wide);
   text-align: center;
-  background: rgba(8, 8, 8, 0.52);
+  background: var(--oracle-surface-sunken);
   pointer-events: none;
 }
 
@@ -33,7 +33,7 @@
   display: block;
   width: 11px;
   height: 11px;
-  border: 1px solid rgba(242, 242, 242, 0.92);
+  border: 1px solid var(--oracle-border-bright);
   border-radius: 50%;
   background: rgba(171, 171, 171, 0.94);
   box-shadow: 0 1px 5px rgba(0, 0, 0, 0.55);
@@ -44,7 +44,7 @@
 .marker:hover,
 .marker:focus-visible {
   transform: scale(1.38);
-  box-shadow: 0 0 0 4px rgba(242, 242, 242, 0.35), 0 1px 5px rgba(0, 0, 0, 0.55);
+  box-shadow: 0 0 0 4px var(--oracle-border-bright), 0 1px 5px rgba(0, 0, 0, 0.55);
 }
 
 .marker[data-tier='hot'] { background: #e07869; }
@@ -55,10 +55,10 @@
 }
 
 .marker[data-selected='true'] {
-  background: #f2f2f2;
-  border-color: #f2f2f2;
+  background: var(--oracle-text-heading);
+  border-color: var(--oracle-text-heading);
   transform: scale(1.52);
-  box-shadow: 0 0 0 4px rgba(242, 242, 242, 0.52), 0 1px 5px rgba(0, 0, 0, 0.55);
+  box-shadow: 0 0 0 4px var(--oracle-border-bright), 0 1px 5px rgba(0, 0, 0, 0.55);
 }
 
 .legend {
@@ -69,12 +69,12 @@
   gap: 0.36rem;
   align-items: center;
   padding: 0.4rem 0.52rem;
-  border: 1px solid rgba(242, 242, 242, 0.14);
+  border: 1px solid var(--oracle-border);
   border-radius: 2px;
-  background: rgba(8, 8, 8, 0.86);
-  color: rgba(242, 242, 242, 0.8);
-  font-size: 0.55rem;
-  letter-spacing: 0.04em;
+  background: var(--oracle-surface-raised);
+  color: var(--oracle-text);
+  font-size: var(--text-xs);
+  letter-spacing: var(--tracking-wide);
   pointer-events: none;
 }
 
@@ -93,7 +93,7 @@
   width: 7px;
   height: 7px;
   margin-left: 0.3rem;
-  border: 1px solid rgba(242, 242, 242, 0.85);
+  border: 1px solid var(--oracle-border-bright);
   border-radius: 50%;
 }
 

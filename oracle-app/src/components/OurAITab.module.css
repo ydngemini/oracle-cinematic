@@ -27,9 +27,7 @@
 .hero p { max-width: 48rem; margin-top: var(--space-5); color: var(--oracle-text-dim); font-size: clamp(var(--text-base), 1.6vw, var(--text-md)); line-height: var(--leading-relaxed); }
 
 .heroActions { display: flex; gap: var(--space-2); }
-.ask,
-.refresh,
-.sourceNotice button {
+.ask {
   min-height: 44px;
   display: inline-flex;
   align-items: center;
@@ -38,13 +36,33 @@
   border: 1px solid var(--oracle-amber-dim);
   border-radius: var(--radius-sm);
   padding: 0 var(--space-4);
-  color: var(--oracle-surface);
+  /* Amber CTA must keep dark ink in BOTH themes. var(--oracle-surface) is
+     #141416 in dark (readable) but #ffffff in light, so white-on-amber
+     fails AA and looks washed-out. Hardcoded #0f0f12 matches every other
+     amber primary (StudioTab, SalesWorkspace, HouseSelection) and holds
+     12:1 on #ffbc1f. */
+  color: #0f0f12;
   background: var(--oracle-amber);
   font: 650 var(--text-xs)/1 var(--font-display);
   letter-spacing: var(--tracking-wider);
   text-transform: uppercase;
 }
-.refresh { width: 44px; padding: 0; color: var(--oracle-text-dim); border-color: var(--oracle-glass-edge); background: var(--oracle-glass); }
+.refresh {
+  min-height: 44px;
+  width: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  border: 1px solid var(--oracle-glass-edge);
+  border-radius: var(--radius-sm);
+  padding: 0;
+  color: var(--oracle-text-dim);
+  background: var(--oracle-glass);
+  font: 650 var(--text-xs)/1 var(--font-display);
+  letter-spacing: var(--tracking-wider);
+  text-transform: uppercase;
+}
 .ask svg, .refresh svg { width: 16px; height: 16px; }
 .ask:hover { filter: brightness(1.06); }
 .refresh:hover { color: var(--oracle-accent-ink); border-color: var(--oracle-amber-dim); }
@@ -84,7 +102,17 @@
 .sourceNotice > svg { width: 20px; height: 20px; color: var(--oracle-accent-ink); }
 .sourceNotice strong { color: var(--oracle-text); font-size: var(--text-sm); }
 .sourceNotice p { margin-top: 2px; color: var(--oracle-text-dim); font-size: var(--text-xs); line-height: 1.5; }
-.sourceNotice button { min-height: 36px; color: var(--oracle-accent-ink); border-color: var(--oracle-border-bright); background: var(--oracle-surface-sunken); }
+.sourceNotice button {
+  min-height: 36px;
+  padding: 0 var(--space-3);
+  border: 1px solid var(--oracle-border-bright);
+  border-radius: var(--radius-sm);
+  color: var(--oracle-accent-ink);
+  background: var(--oracle-surface-sunken);
+  font: 650 var(--text-xs)/1 var(--font-display);
+  letter-spacing: var(--tracking-wider);
+  text-transform: uppercase;
+}
 
 .workspaceNav {
   position: sticky;

@@ -56,10 +56,15 @@
   flex: 0 0 44px;
   display: grid;
   place-items: center;
-  border: 1px solid var(--oracle-glass-edge);
+  /* Glass white 80% on white paper (light) or on white header when scrolled
+     is invisible; the icon then reads as a black dot floating without a
+     button — "blacked out". Opaque surface + subtle border + e1 shadow gives
+     a real button on paper in light and on dark shell in dark. */
+  border: 1px solid var(--oracle-border);
   border-radius: var(--radius-md);
   color: var(--oracle-text-dim);
-  background: var(--oracle-glass);
+  background: var(--oracle-surface);
+  box-shadow: var(--shadow-e1);
 }
 
 .profileButton:hover,
@@ -199,7 +204,7 @@
 
 .profileNav button:hover {
   color: var(--oracle-text);
-  background: rgba(171, 171, 171, 0.08);
+  background: var(--oracle-surface-sunken);
 }
 
 .profileNav button[aria-pressed='true'] {
@@ -235,7 +240,7 @@
 @media (prefers-reduced-transparency: reduce) {
   .header,
   .profileSheet {
-    background: rgba(12, 12, 12, 0.96);
+    background: var(--oracle-glass-solid);
     backdrop-filter: none;
     -webkit-backdrop-filter: none;
   }

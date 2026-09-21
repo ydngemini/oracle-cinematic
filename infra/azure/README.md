@@ -40,7 +40,7 @@ imports are all lazy — an Azure-only deployment never loads `boto3`.
 | DB trust anchor | `ORACLE_DB_CA_BUNDLE` | unset — system trust store verifies Flexible Server | RDS global bundle |
 | DB TLS floor | `ORACLE_DB_TLS_MIN` | `1.2` (Flexible Server may negotiate either) | `1.3` |
 | Migration secret | `ORACLE_KEY_VAULT_URI` + `ORACLE_DB_ADMIN_SECRET` | Key Vault via managed identity | `DB_MASTER_SECRET_ARN` |
-| Transactional email | `ORACLE_EMAIL_PROVIDER` | `smtp` — an operator-named server, see `docs/email-dns-setup.md` (`acs` still available) | `ses` |
+| Transactional email | `ORACLE_EMAIL_PROVIDER` | `smtp` (only supported value) — an operator-named server, see `docs/email-dns-setup.md` | `smtp` |
 | Object storage | `ORACLE_STORAGE_BACKEND` | `azure-files` on `/mnt/neoh` | `s3` |
 | Splat output | `ORACLE_SPLAT_STORAGE` | `fs`, with `ORACLE_SPLAT_DIR=/mnt/neoh/splats` | `s3` |
 | Assistant inference | `ORACLE_AI_CHAT_PROVIDER` | `azure-foundry` | `bedrock` |
