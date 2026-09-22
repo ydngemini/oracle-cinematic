@@ -6,6 +6,8 @@ import { useAssistant } from '../components/AssistantContext';
 import { crmPost } from '../state/useCrmApi';
 import { AssistantMessages } from '../components/AssistantMessages';
 import { useMotionPolicy } from './motion';
+import { NeohAvatar } from './NeohAvatar';
+import { useNeohAvatarState } from './useNeohAvatarState';
 import { inputPlaceholder, isBusy, restLabel, surfaceState } from './surfaceModel';
 import { useGlobalShortcuts } from './useGlobalShortcuts';
 import { useNeohChannel } from './useNeohChannel';
@@ -30,7 +32,9 @@ import styles from './NeohSurface.module.css';
 const MAX_DRAFT = 8_000;
 
 export function NeohSurface({ entityOpen = false, onOpenEntity }) {
-  const { open, setOpen, record, clearRecord, commandRequest, clearCommandRequest } = useAssistant();
+  const {
+    open, setOpen, record, clearRecord, commandRequest, clearCommandRequest, commandStatus,
+  } = useAssistant();
   const channel = useNeohChannel({ open });
   const policy = useMotionPolicy();
   const [draft, setDraft] = useState('');
@@ -45,6 +49,16 @@ export function NeohSurface({ entityOpen = false, onOpenEntity }) {
   const busy = asking || isBusy(channel.messages);
   const state = surfaceState({ open, entityOpen, messages: channel.messages, showResult });
   const expanded = state === 'input' || state === 'thinking' || state === 'result';
+
+  // The face, derived from the same facts the shape is. Nothing here sets an
+  // avatar state by hand; there is one source and it is what is true.
+  const avatar = useNeohAvatarState({
+    connection: channel.connection,
+    messages: channel.messages,
+    asking,
+    commandStatus,
+    failed: Boolean(channel.notice) && channel.connection !== 'online',
+  });
 
   const focusInput = useCallback(() => {
     setOpen(true);
@@ -158,7 +172,14 @@ export function NeohSurface({ entityOpen = false, onOpenEntity }) {
             exit={{ opacity: 0 }}
             transition={transition}
           >
-            <span className={styles.mark} aria-hidden="true" data-busy={busy} />
+            <motion.span layoutId="neoh-avatar" layout={policy.layout} transition={transition} className={styles.markSlot}>
+              <NeohAvatar
+                state={avatar.state}
+                audioLevel={avatar.audioLevel}
+                actionType={avatar.actionType}
+                attentionLevel={avatar.attentionLevel}
+              />
+            </motion.span>
             <motion.span layoutId="neoh-label" layout={policy.layout} className={styles.label} transition={transition}>
               {label}
             </motion.span>
@@ -188,7 +209,16 @@ export function NeohSurface({ entityOpen = false, onOpenEntity }) {
             )}
 
             <div className={styles.bar}>
-              <span className={styles.mark} aria-hidden="true" data-busy={busy} />
+              {/* Same layoutId as the pill's: one object changing shape, not
+                  an avatar destroyed and rebuilt between states. */}
+              <motion.span layoutId="neoh-avatar" layout={policy.layout} transition={transition} className={styles.markSlot}>
+                <NeohAvatar
+                  state={avatar.state}
+                  audioLevel={avatar.audioLevel}
+                  actionType={avatar.actionType}
+                  attentionLevel={avatar.attentionLevel}
+                />
+              </motion.span>
               {record && (
                 <span className={styles.record}>
                   <motion.span layoutId="neoh-label" layout={policy.layout} transition={transition}>

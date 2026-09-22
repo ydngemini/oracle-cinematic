@@ -73,20 +73,15 @@
   font: 500 var(--text-xs) / 1 var(--font-mono);
 }
 
-/* The mark: a small gold disc that breathes while Neoh works. */
-.mark {
-  width: 10px;
-  height: 10px;
+/* The mark slot: where Neoh's face sits, in the pill and in the bar.
+   It is the same node in both (one layoutId), so the character travels with
+   the surface instead of being replaced when the shape changes. Icon scale,
+   deliberately — the pill must not grow to accommodate a mascot. */
+.markSlot {
+  display: inline-flex;
   flex-shrink: 0;
-  border-radius: 50%;
-  background: var(--oracle-accent);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--oracle-accent) 18%, transparent);
-}
-.mark[data-busy="true"] { animation: breathe 1.4s ease-in-out infinite; }
-
-@keyframes breathe {
-  0%, 100% { transform: scale(1); opacity: 1; }
-  50% { transform: scale(0.72); opacity: 0.55; }
+  align-items: center;
+  line-height: 0;
 }
 
 /* ── Open: bar and panel ─────────────────────────────────────────────── */
@@ -187,9 +182,9 @@
   .kbd { display: none; }
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .mark[data-busy="true"] { animation: none; opacity: 0.7; }
-}
+/* Reduced motion for the face itself lives in NeohAvatar.module.css, which
+   keeps every state legible through expression and accent rather than
+   hiding it. Nothing left to suppress here. */
 
 /* ── A rendered answer ────────────────────────────────────────────────── */
 

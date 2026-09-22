@@ -1,0 +1,192 @@
+/**
+ * NeohAvatar — Neoh's face at icon scale.
+ *
+ * Colour comes from the product tokens, not from a separate mascot palette,
+ * so the character sits inside the interface in both themes instead of
+ * floating on top of it. The one identity colour the character keeps is its
+ * cyan eye light — that is what makes it Neoh rather than a status dot.
+ */
+
+.avatar {
+  --neoh-cyan: #35c8f5;
+  --neoh-cyan-soft: color-mix(in srgb, var(--neoh-cyan) 55%, transparent);
+  --neoh-shell: #f4f5f7;
+  --neoh-shell-edge: color-mix(in srgb, var(--neoh-cyan) 42%, transparent);
+  --neoh-visor: #1b2030;
+
+  position: relative;
+  display: inline-flex;
+  flex-shrink: 0;
+  width: var(--neoh-avatar-size, 20px);
+  height: var(--neoh-avatar-size, 20px);
+  line-height: 0;
+}
+
+@media (prefers-color-scheme: dark) {
+  .avatar {
+    --neoh-shell: #d7dae0;
+    --neoh-visor: #10131d;
+  }
+}
+
+.svg { width: 100%; height: 100%; overflow: visible; }
+
+/* ── Body ─────────────────────────────────────────────────────────────── */
+
+.roof {
+  fill: var(--neoh-shell);
+  stroke: var(--neoh-shell-edge);
+  stroke-width: 1.1;
+}
+
+.face { fill: var(--neoh-visor); }
+
+/* Side lights. These are what amplitude drives — never the eyes, because a
+   light that tracks speech reads as a voice and eyes that do read as a mouth. */
+.earLeft,
+.earRight {
+  fill: var(--neoh-cyan);
+  opacity: calc(0.42 + var(--neoh-level, 0) * 0.58);
+  transform-box: fill-box;
+  transform-origin: center;
+  transform: scaleY(calc(0.78 + var(--neoh-level, 0) * 0.34));
+  transition: opacity 90ms linear, transform 90ms linear;
+}
+
+/* ── Eyes ─────────────────────────────────────────────────────────────── */
+
+.eye {
+  fill: var(--neoh-cyan);
+  filter: drop-shadow(0 0 1.6px var(--neoh-cyan-soft));
+}
+
+.eyeArc {
+  fill: none;
+  stroke: var(--neoh-cyan);
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  filter: drop-shadow(0 0 1.6px var(--neoh-cyan-soft));
+}
+
+.eyes { transition: transform 240ms cubic-bezier(0.2, 0.7, 0.2, 1); }
+
+/* ── Idle: a blink, and nothing else ──────────────────────────────────── */
+
+.avatar[data-state="idle"] .eyes { animation: neoh-blink 7.2s ease-in-out infinite; }
+
+@keyframes neoh-blink {
+  0%, 92%, 100% { transform: scaleY(1); }
+  94%, 96% { transform: scaleY(0.12); }
+}
+
+/* ── Thinking: the roofline light travels; the face holds still ───────── */
+
+.avatar[data-state="thinking"] .roof {
+  animation: neoh-trace 2.1s ease-in-out infinite;
+}
+.avatar[data-state="thinking"] .earLeft { animation: neoh-alt-a 2.1s ease-in-out infinite; }
+.avatar[data-state="thinking"] .earRight { animation: neoh-alt-b 2.1s ease-in-out infinite; }
+
+@keyframes neoh-trace {
+  0%, 100% { stroke: var(--neoh-shell-edge); }
+  50% { stroke: var(--neoh-cyan); }
+}
+@keyframes neoh-alt-a {
+  0%, 100% { opacity: 0.30; }
+  50% { opacity: 0.85; }
+}
+@keyframes neoh-alt-b {
+  0%, 100% { opacity: 0.85; }
+  50% { opacity: 0.30; }
+}
+
+/* ── Listening: attentive, amplitude-reactive (handled by --neoh-level) ── */
+
+.avatar[data-state="listening"] .roof { stroke: var(--neoh-cyan); }
+
+/* ── Speaking: the ring carries the cadence ───────────────────────────── */
+
+.avatar[data-state="speaking"] .roof { stroke: var(--neoh-cyan); }
+.avatar[data-state="speaking"] .face {
+  filter: drop-shadow(0 0 calc(1px + var(--neoh-level, 0) * 3px) var(--neoh-cyan-soft));
+}
+
+/* ── Acting: steady, with a contextual glyph ──────────────────────────── */
+
+.glyph {
+  position: absolute;
+  right: -25%;
+  bottom: -18%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 58%;
+  height: 58%;
+  border-radius: 50%;
+  color: var(--oracle-bg-deep);
+  background: var(--neoh-cyan);
+  box-shadow: 0 0 0 1.5px var(--oracle-bg-deep);
+}
+
+/* ── Success: brief warm pulse, then back to work ─────────────────────── */
+
+.avatar[data-state="success"] .roof { stroke: var(--oracle-green); }
+.avatar[data-state="success"] .eyeArc { stroke: var(--neoh-cyan); }
+
+/* ── Needs attention: warmer, awake. "I need you", not "disaster". ────── */
+
+.avatar[data-state="needs_attention"] {
+  --neoh-cyan: var(--oracle-accent);
+}
+.avatar[data-state="needs_attention"] .roof {
+  stroke: var(--oracle-accent);
+  animation: neoh-attend 2.6s ease-in-out infinite;
+}
+@keyframes neoh-attend {
+  0%, 100% { stroke-width: 1.1; }
+  50% { stroke-width: 1.9; }
+}
+
+/* ── Error: subdued, restrained. Never the only error indicator. ──────── */
+
+.avatar[data-state="error"] {
+  --neoh-cyan: var(--oracle-red);
+}
+.avatar[data-state="error"] .roof { stroke: var(--oracle-red); }
+
+/* ── Disconnected: the light goes down, nothing pretends to work ──────── */
+
+.avatar[data-state="disconnected"] { opacity: 0.55; }
+.avatar[data-state="disconnected"] .eye,
+.avatar[data-state="disconnected"] .earLeft,
+.avatar[data-state="disconnected"] .earRight { filter: none; opacity: 0.45; }
+
+/* ── Still: reduced motion, or a hidden tab ───────────────────────────── */
+
+.avatar[data-state] { will-change: auto; }
+
+.avatar[data-still="true"] .eyes,
+.avatar[data-still="true"] .roof,
+.avatar[data-still="true"] .earLeft,
+.avatar[data-still="true"] .earRight {
+  animation: none !important;
+  transition: none !important;
+}
+
+/* Reduced motion keeps every state legible through expression and colour —
+   the eyes still change shape, the accent still shifts. It never hides Neoh,
+   because the state it is reporting is still true. */
+@media (prefers-reduced-motion: reduce) {
+  .avatar .eyes,
+  .avatar .roof,
+  .avatar .earLeft,
+  .avatar .earRight {
+    animation: none !important;
+    transition: none !important;
+  }
+}
+
+/* ── Variants: head ships; bust/full are reserved for later scenes ────── */
+
+.avatar[data-variant="bust"],
+.avatar[data-variant="full"] { aspect-ratio: 1; }
