@@ -63,6 +63,7 @@ export interface PropertyTourViewerProps {
    *  a capture from before it existed frames its dense bounds instead. */
   scene?: SceneManifest | null;
   onClose?: () => void;
+  embedded?: boolean;
 }
 
 /** The subset of scene.json the viewer reads. Written by backend/scene_manifest.py. */
@@ -250,6 +251,7 @@ export default function PropertyTourViewer({
   disclosure,
   onClose,
   scene = null,
+  embedded = false,
 }: PropertyTourViewerProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
@@ -605,10 +607,10 @@ export default function PropertyTourViewer({
   }, []);
 
   return (
-    <div className={styles.overlay} role="dialog" aria-modal="true" aria-label={title || 'Property tour'}>
+    <div className={styles.overlay} role={embedded ? undefined : 'dialog'} aria-modal={embedded ? undefined : true} aria-label={title || 'Property tour'}>
       <canvas ref={canvasRef} className={styles.canvas} />
 
-      <header className={styles.header}>
+      {!embedded && <header className={styles.header}>
         <div className={styles.titleBlock}>
           {title ? <h2 className={styles.title}>{title}</h2> : null}
           {address ? <p className={styles.address}>{address}</p> : null}
@@ -616,7 +618,7 @@ export default function PropertyTourViewer({
         {onClose ? (
           <button type="button" className={styles.close} onClick={onClose} aria-label="Close tour">×</button>
         ) : null}
-      </header>
+      </header>}
 
       {status === 'loading' ? (
         <div className={styles.loading}>

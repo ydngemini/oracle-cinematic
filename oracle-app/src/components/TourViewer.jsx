@@ -71,7 +71,7 @@ const DEMO_PREFIX = 'This is a generated demo space, not a capture of this prope
 
 export function TourViewer({
   splatUrl, splatFormat, splatScene, panoScenes, disclosure, address, title, floors, onClose,
-  isThisProperty = true, tourpoints,
+  isThisProperty = true, tourpoints, embedded = false,
 }) {
   // One item in, one out. `useProtectedMedia` fetches /api/media/* with the
   // JWT and returns a blob: URL; anything external passes through untouched.
@@ -251,6 +251,7 @@ export function TourViewer({
   if (activeId === 'pano') {
     viewer = (
       <PanoViewer
+        embedded={embedded}
         scenes={scenes}
         disclosure={shownDisclosure}
         address={address}
@@ -283,6 +284,7 @@ export function TourViewer({
   } else if (ENGINE === 'playcanvas') {
     viewer = (
       <PropertyTourViewer
+        embedded={embedded}
         assets={assets}
         scene={splatScene || null}
         floors={floors || []}
@@ -296,6 +298,7 @@ export function TourViewer({
   } else {
     viewer = (
       <WalkableSplatViewer
+        embedded={embedded}
         splatUrl={splatBytesUrl}
         disclosure={shownDisclosure}
         address={address}
@@ -305,6 +308,16 @@ export function TourViewer({
     );
   }
 
+  const content = (
+    <>
+      <Suspense fallback={<div className={styles.preparing} role="status">Preparing tour…</div>}>{viewer}</Suspense>
+      {guided}
+      {switcher}
+    </>
+  );
+
+  if (embedded) return <div className={styles.embedded}>{content}</div>;
+
   // Rendered into the document body, not where it was mounted.
   //
   // The viewer is `position: fixed; inset: 0` and should fill the window, but
@@ -313,14 +326,7 @@ export function TourViewer({
   // the containing block for fixed descendants. The tour was therefore pinned
   // inside a 440px drawer — the capture rendered correctly into a sliver.
   // A portal is the fix that does not require the drawer to give up its glass.
-  return createPortal(
-    <>
-      <Suspense fallback={null}>{viewer}</Suspense>
-      {guided}
-      {switcher}
-    </>,
-    document.body,
-  );
+  return createPortal(content, document.body);
 }
 
 export default TourViewer;

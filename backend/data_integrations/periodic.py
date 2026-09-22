@@ -517,6 +517,25 @@ async def _new_listings_task() -> dict:
     return await RESOListingsAggregator().sync_once()
 
 
+async def _bridge_listings_task() -> dict:
+    """Bridge Interactive's own JSON REST listings feed — a separate protocol
+    from RESO/OData, so it gets its own task and its own durable cursor. See
+    bridge_listings_feed.py's module docstring for why this is not folded into
+    _new_listings_task."""
+    try:
+        from data_integrations.bridge_listings_feed import BridgeListingsFeed
+    except Exception as exc:  # noqa: BLE001
+        return {"skipped": f"bridge_listings_feed import failed: {exc}"}
+    if not BridgeListingsFeed.is_configured():
+        return {
+            "skipped": (
+                "no Bridge feed configured "
+                "(set ORACLE_BRIDGE_ENABLED/ORACLE_BRIDGE_DATASET/ORACLE_BRIDGE_ACCESS_TOKEN)"
+            )
+        }
+    return await BridgeListingsFeed().sync_once()
+
+
 async def _distress_scrape_task() -> dict:
     """Fast-moving ACTIVE SCRAPE: keyless Socrata code-violation feeds (NYC HPD,
     Chicago) → distress leads, idempotent via leads UNIQUE(tenant_id,parcel_id).
@@ -719,6 +738,18 @@ async def _mission_tick_task() -> dict:
     return await sweep_all_tenants()
 
 
+async def _mission_digest_task() -> dict:
+    """Email a summary of every tenant's mission activity since the last run.
+
+    Default OFF, and separately from mission_tick's own flag: an operator can
+    run missions unattended without also wanting an inbox full of digests, and
+    vice versa during a dry run.
+    """
+    from missions.digest import send_digest
+
+    return await send_digest()
+
+
 async def _outcome_attribution_task() -> dict:
     """Bind recorded outcomes to the decisions that earned them.
 
@@ -732,6 +763,21 @@ async def _outcome_attribution_task() -> dict:
     return await sweep_all_tenants(
         per_tenant_limit=max(
             1, min(1000, int(os.getenv("ORACLE_OUTCOME_ATTRIBUTION_BATCH", "200")))
+        ),
+    )
+
+
+async def _chat_decision_sweep_task() -> dict:
+    """Capture the human verdict on chat-tool actions once their undo window
+    closes: applied-and-kept is an acceptance, undone is a rejection. Deferred
+    for the same reason attribution is — the signal is the *absence* of an undo
+    over a fixed window, which cannot be known at apply time.
+    """
+    from decision_traces import sweep_settled_chat_actions
+
+    return await sweep_settled_chat_actions(
+        per_tenant_limit=max(
+            1, min(2000, int(os.getenv("ORACLE_CHAT_DECISION_SWEEP_BATCH", "500")))
         ),
     )
 
@@ -823,6 +869,11 @@ def build_default_scheduler() -> PeriodicScheduler:
         run=_new_listings_task,
     ))
     sched.register(PeriodicTask(
+        name="bridge_listings",
+        interval_s=listings_interval_h * 3600,
+        run=_bridge_listings_task,
+    ))
+    sched.register(PeriodicTask(
         name="coverage_snapshot",
         interval_s=TICK_SECONDS,   # every heartbeat
         run=_coverage_snapshot_task,
@@ -888,6 +939,18 @@ def build_default_scheduler() -> PeriodicScheduler:
     # which the executor checks on every tick. That redundancy is deliberate —
     # the credential check is NOT a third switch, because a machine with no
     # credential rows can still have Twilio in its environment.
+    # Hourly. The undo window is 24h (migration 0036), so an action only
+    # becomes decidable a day after it is applied; a quarter-hour cadence would
+    # just re-scan the same not-yet-settled rows. Idempotent — record_decision
+    # upserts on (tenant, source_table, source_id) — so replica overlap is safe.
+    sched.register(PeriodicTask(
+        name="chat_decision_sweep",
+        interval_s=max(
+            300.0, float(os.getenv("ORACLE_CHAT_DECISION_SWEEP_INTERVAL_MIN", "60")) * 60,
+        ),
+        run=_chat_decision_sweep_task,
+        enabled=os.getenv("ORACLE_CHAT_DECISION_SWEEP_ENABLED", "1") == "1",
+    ))
     sched.register(PeriodicTask(
         name="mission_tick",
         interval_s=max(
@@ -895,6 +958,23 @@ def build_default_scheduler() -> PeriodicScheduler:
         ),
         run=_mission_tick_task,
         enabled=os.getenv("ORACLE_MISSIONS_ENABLED", "0") == "1",
+    ))
+    sched.register(PeriodicTask(
+        name="mission_digest",
+        # This is a POLL interval, not the send cadence — missions/digest.py's
+        # send_digest() has its own tiered cadence (15 min for the first hour
+        # after launch, 2 hours steady-state by default) and decides
+        # send-or-skip against a durable last-sent marker, so it survives a
+        # process restart. The scheduler only needs to check often enough to
+        # not miss the tightest tier; 5 minutes gives three chances per
+        # 15-minute window. A check that decides to skip only reads two
+        # small aggregates (missions.launched_at, mission_events.kind) —
+        # see _cadence_state()/is_due() — never the per-tenant report.
+        interval_s=max(
+            60.0, float(os.getenv("ORACLE_MISSION_DIGEST_CHECK_INTERVAL_MIN", "5")) * 60,
+        ),
+        run=_mission_digest_task,
+        enabled=os.getenv("ORACLE_MISSION_DIGEST_ENABLED", "0") == "1",
     ))
     return sched
 

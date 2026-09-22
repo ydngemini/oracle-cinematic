@@ -146,11 +146,29 @@ def test_every_sql_leg_sets_a_statement_budget():
     A leg that cannot answer in two seconds must degrade, not stall the box."""
     import inspect
 
-    for fn in (sa._people, sa._properties, sa._deals, sa._records):
+    for fn in (sa._people, sa._properties, sa._deals, sa._records, sa._recent_rows):
         assert "await _budget(conn)" in inspect.getsource(fn), fn.__name__
     assert 0 < sa.LEG_TIMEOUT_MS <= 5000
     assert "SET LOCAL statement_timeout" in inspect.getsource(sa._budget), \
         "SET LOCAL, so the cap cannot leak into the next borrower of the pooled connection"
+
+
+def test_recent_endpoint_degrades_gracefully(monkeypatch):
+    async def boom(ctx, limit):
+        raise RuntimeError("database down")
+
+    monkeypatch.setattr(sa, "_recent_rows", boom)
+    res = _run(sa.recent_endpoint(limit=8, ctx=CTX))
+    assert res == {"results": [], "degraded": True}
+
+
+def test_recent_endpoint_returns_results(monkeypatch):
+    async def ok(ctx, limit):
+        return [sa._hit("people", "p1", "Sarah Chen", "Buyer", "/p/p1", 0.0)]
+
+    monkeypatch.setattr(sa, "_recent_rows", ok)
+    res = _run(sa.recent_endpoint(limit=8, ctx=CTX))
+    assert res == {"results": [{"kind": "people", "id": "p1", "label": "Sarah Chen", "sublabel": "Buyer", "href": "/p/p1", "score": 0.0}], "degraded": False}
 
 
 def test_the_big_corpus_is_not_sorted_before_limit():

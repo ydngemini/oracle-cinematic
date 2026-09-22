@@ -48,8 +48,13 @@ function HomeItem({ opportunity, rank, lead, showDecisions, onDecided }) {
   const [open, setOpen] = useState(false);
   return (
     <li className={`${styles.item} ${lead ? styles.itemLead : ''}`}>
+      {/* The person leads. `kind` was the detector's own name —
+          "next best action", "lead reactivation" — printed above the name of
+          a real human being, in caps. That is the system describing its
+          internal categories to someone who came to find out about Sarah.
+          The headline already says what happened; the machine's word for why
+          it noticed is not the first thing anyone needs. */}
       <div className={styles.itemHead}>
-        <span className={styles.kind}>{humanize(opportunity.kind)}</span>
         {opportunity.deadline && (
           <time className={styles.deadline} dateTime={opportunity.deadline}>
             {new Date(opportunity.deadline).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}

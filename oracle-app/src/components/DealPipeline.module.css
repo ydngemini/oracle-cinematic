@@ -7,7 +7,7 @@
   padding: var(--space-5);
   border: 1px solid var(--oracle-glass-edge);
   border-radius: var(--radius-md);
-  background: rgba(8, 8, 8, 0.82);
+  background: var(--oracle-surface);
   box-shadow: var(--shadow-e2);
   contain: layout paint style;
 }
@@ -60,7 +60,7 @@
   height: 7px;
   border-radius: var(--radius-pill);
   background: var(--oracle-green);
-  box-shadow: 0 0 0 3px rgba(100, 210, 140, 0.11);
+  box-shadow: 0 0 0 3px var(--oracle-green-dim);
 }
 
 .headerActions {
@@ -114,7 +114,7 @@
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   border-block: 1px solid var(--oracle-border-bright);
-  background: rgba(242, 242, 242, 0.015);
+  background: var(--oracle-surface-sunken);
 }
 
 .metrics > div {
@@ -143,7 +143,7 @@
 }
 
 .metrics > div[data-alert='true'] dd {
-  color: #efb29f;
+  color: var(--oracle-red);
 }
 
 .toolbar {
@@ -161,7 +161,7 @@
   padding: 0 var(--space-3);
   border: 1px solid var(--oracle-glass-edge);
   border-radius: var(--radius-sm);
-  background: rgba(242, 242, 242, 0.025);
+  background: var(--oracle-surface-sunken);
 }
 
 .searchField:focus-within,
@@ -212,14 +212,14 @@
   border-radius: var(--radius-sm);
   outline: 0;
   color: var(--oracle-text);
-  background: #080808;
+  background: var(--oracle-surface-sunken);
   font: 500 var(--text-sm)/1 var(--font-sans);
 }
 
 .agentFilters {
   border: 1px solid var(--oracle-border-bright);
   border-radius: var(--radius-sm);
-  background: rgba(242, 242, 242, 0.015);
+  background: var(--oracle-surface-sunken);
 }
 
 .agentFilters summary {
@@ -243,7 +243,7 @@
   padding: 3px;
   border: 1px solid var(--oracle-glass-edge);
   border-radius: var(--radius-sm);
-  background: rgba(242, 242, 242, 0.02);
+  background: var(--oracle-surface-sunken);
 }
 
 .viewToggle button {
@@ -361,7 +361,7 @@
   height: 24px;
   border: 1px solid var(--oracle-glass-edge);
   border-radius: var(--radius-sm);
-  background: rgba(8, 8, 8, 0.88);
+  background: var(--oracle-surface-raised);
   cursor: pointer;
 }
 
@@ -382,7 +382,7 @@
   border: 1px solid var(--oracle-border-bright);
   border-radius: var(--radius-sm);
   color: inherit;
-  background: rgba(242, 242, 242, 0.018);
+  background: var(--oracle-surface-raised);
   box-shadow: var(--shadow-e1);
   text-align: left;
   cursor: pointer;
@@ -395,8 +395,8 @@
 }
 
 .leadCard:hover {
-  border-color: rgba(242, 242, 242, 0.25);
-  background: rgba(8, 8, 8, 0.32);
+  border-color: var(--oracle-border-bright);
+  background: var(--oracle-surface-raised);
   transform: translateY(-1px);
 }
 
@@ -407,7 +407,7 @@
 
 .leadCard[data-selected='true'] {
   border-color: var(--oracle-amber-dim);
-  background: rgba(255, 188, 31, 0.075);
+  background: var(--oracle-amber-ghost);
 }
 
 .leadTop,
@@ -442,15 +442,15 @@
 }
 
 .scoreBadge[data-tier='hot'] {
-  color: #efb29f;
-  border-color: rgba(220, 80, 80, 0.28);
-  background: rgba(220, 80, 80, 0.11);
+  color: var(--oracle-red);
+  border-color: var(--oracle-red-dim);
+  background: var(--oracle-red-dim);
 }
 
 .scoreBadge[data-tier='warm'] {
-  color: #ffbc1f;
-  border-color: rgba(255, 188, 31, 0.25);
-  background: rgba(255, 188, 31, 0.09);
+  color: var(--oracle-accent-ink);
+  border-color: var(--oracle-amber-dim);
+  background: var(--oracle-amber-ghost);
 }
 
 .scoreBadge[data-tier='cool'] {
@@ -465,7 +465,7 @@
   padding: 3px 6px;
   border: 1px solid transparent;
   border-radius: 4px;
-  font: 650 0.5625rem/1 var(--font-mono);
+  font: 650 var(--text-xs)/1 var(--font-mono);
   letter-spacing: var(--tracking-wide);
   font-variant-numeric: tabular-nums;
 }
@@ -476,13 +476,13 @@
 }
 
 .ownerChip[data-type='corporate'] {
-  color: #f2f2f2;
-  background: rgba(171, 171, 171, 0.09);
+  color: var(--oracle-text-heading);
+  background: var(--oracle-surface-sunken);
 }
 
 .ownerChip[data-type='trust'] {
-  color: #f2f2f2;
-  background: rgba(171, 171, 171, 0.1);
+  color: var(--oracle-text-heading);
+  background: var(--oracle-surface-sunken);
 }
 
 .ownerName {
@@ -521,7 +521,7 @@
   border: 1px solid var(--oracle-glass-edge);
   border-radius: 3px;
   color: var(--oracle-text-ghost);
-  font: 600 0.5625rem/1 var(--font-mono);
+  font: 600 var(--text-xs)/1 var(--font-mono);
   letter-spacing: var(--tracking-wide);
   text-transform: uppercase;
 }
@@ -548,7 +548,7 @@
 .verifyLine {
   overflow: hidden;
   color: var(--oracle-text-ghost);
-  font: 500 0.625rem/1.2 var(--font-sans);
+  font: 500 var(--text-xs)/1.2 var(--font-sans);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -560,19 +560,19 @@
 .flag,
 .moreFlags {
   padding: 3px 6px;
-  border: 1px solid rgba(220, 80, 80, 0.16);
+  border: 1px solid var(--oracle-red-dim);
   border-radius: 4px;
-  color: #d8a99d;
-  background: rgba(220, 80, 80, 0.055);
-  font: 600 0.5rem/1 var(--font-mono);
+  color: var(--oracle-red);
+  background: var(--oracle-red-dim);
+  font: 600 var(--text-xs)/1 var(--font-mono);
   letter-spacing: var(--tracking-wide);
   text-transform: uppercase;
 }
 
 .flag[data-flag='absentee'] {
-  color: #ffbc1f;
-  border-color: rgba(255, 188, 31, 0.2);
-  background: rgba(255, 188, 31, 0.06);
+  color: var(--oracle-accent-ink);
+  border-color: var(--oracle-amber-dim);
+  background: var(--oracle-amber-ghost);
 }
 
 .moreFlags {
@@ -582,21 +582,21 @@
 }
 
 .countdownChip[data-zone='calm'] {
-  color: #ababab;
-  border-color: rgba(171, 171, 171, 0.24);
-  background: rgba(171, 171, 171, 0.08);
+  color: var(--oracle-text-dim);
+  border-color: var(--oracle-border-bright);
+  background: var(--oracle-surface-sunken);
 }
 
 .countdownChip[data-zone='warn'] {
-  color: #ffbc1f;
-  border-color: rgba(255, 188, 31, 0.3);
-  background: rgba(255, 188, 31, 0.09);
+  color: var(--oracle-accent-ink);
+  border-color: var(--oracle-amber-dim);
+  background: var(--oracle-amber-ghost);
 }
 
 .countdownChip[data-zone='danger'] {
-  color: #efb29f;
-  border-color: rgba(220, 80, 80, 0.32);
-  background: rgba(220, 80, 80, 0.1);
+  color: var(--oracle-red);
+  border-color: var(--oracle-red-dim);
+  background: var(--oracle-red-dim);
 }
 
 .loadMore {
@@ -643,7 +643,7 @@
   border: 1px solid var(--oracle-glass-edge);
   border-radius: var(--radius-sm);
   color: var(--oracle-text-ghost);
-  background: rgba(242, 242, 242, 0.015);
+  background: var(--oracle-surface-sunken);
   font: 600 var(--text-xs)/1 var(--font-mono);
   letter-spacing: var(--tracking-wide);
 }
@@ -680,7 +680,7 @@
   padding: var(--space-2) var(--space-2) var(--space-2) var(--space-4);
   border: 1px solid var(--oracle-glass-edge);
   border-radius: var(--radius-pill);
-  background: rgba(8, 8, 8, 0.94);
+  background: var(--oracle-surface-raised);
   box-shadow: var(--shadow-float);
   opacity: 0;
   pointer-events: none;

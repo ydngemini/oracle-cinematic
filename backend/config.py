@@ -65,6 +65,28 @@ def flag(name: str, default: bool = False) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
+# What this process is for. "all" (default) is a single container running
+# everything — the shape docker-compose and a one-Droplet deployment use, and
+# the only shape that existed before this variable did: every existing
+# deployment keeps its current behaviour with it unset.
+#
+# "web"/"worker" split matters only when the API scales horizontally (e.g.
+# DigitalOcean App Platform's web component). voice_intel.py and
+# reconstruction_worker.py hold their job queues in an in-process
+# asyncio.Queue with no cross-replica coordination — a job submitted to one
+# web replica is invisible to another. The periodic scheduler and durable job
+# queue (automation_jobs.py) ARE already replica-safe (idempotency-keyed
+# enqueue, `FOR UPDATE SKIP LOCKED` claim), but there is no reason to run
+# background work on every horizontally-scaled web replica either, so "web"
+# excludes all of it and "worker" runs it on a single pinned instance instead.
+PROCESS_ROLE: str = (os.environ.get("ORACLE_PROCESS_ROLE") or "all").strip().lower()
+if PROCESS_ROLE not in ("all", "web", "worker"):
+    PROCESS_ROLE = "all"
+
+#: True on every role except a horizontally-scaled web replica.
+RUNS_BACKGROUND_WORK: bool = PROCESS_ROLE != "web"
+
+
 # Resolve stable JWT scope values before ``auth`` is imported. Managed
 # deployments already provide one of the public application origins, so they do
 # not need duplicate secrets merely to mint and validate this service's tokens.
@@ -246,6 +268,19 @@ def validate_or_die() -> None:
     else:
         log.info("ACS telephony config is present — phone calls are operational.")
 
+    # ORACLE_EMAIL_PROVIDER used to accept 'acs' and 'ses'; both senders were
+    # removed in favour of SMTP-only. A deployment upgraded from that era and
+    # still carrying the old value would otherwise only discover it on the
+    # first approved email send, as a ProviderConfigurationError deep in the
+    # command worker.
+    email_provider = os.environ.get("ORACLE_EMAIL_PROVIDER", "smtp").strip().lower()
+    if email_provider not in ("smtp",):
+        log.warning(
+            "ORACLE_EMAIL_PROVIDER=%r is not supported; only 'smtp' is "
+            "available. Every approved email will fail until this is fixed.",
+            email_provider,
+        )
+
     if IS_DEV:
         log.warning(
             "ORACLE_ENV=%r — DEV mode; production secret validation relaxed.",
@@ -281,6 +316,11 @@ def validate_or_die() -> None:
     if twilio_qwen_enabled:
         required.extend(_TWILIO_REALTIME_SETTINGS)
     missing = [f"{name} ({why})" for name, why in required if not os.environ.get(name)]
+    if email_provider not in ("smtp",):
+        missing.append(
+            f"ORACLE_EMAIL_PROVIDER={email_provider!r} is unsupported "
+            "(only 'smtp' is available; unset it or set it to 'smtp')"
+        )
     if (
         (acs_qwen_enabled or twilio_qwen_enabled)
         and not os.environ.get("DASHSCOPE_WORKSPACE_ID")
@@ -369,7 +409,7 @@ ENV_VARS: dict[str, tuple[str, ...]] = {
         "ORACLE_GEOCODE_STATE",              # optional two-letter code to restrict a pass
     ),
     "commands": (
-        "ORACLE_PUBLIC_BASE_URL", "ORACLE_SES_FROM_EMAIL",
+        "ORACLE_PUBLIC_BASE_URL", "ORACLE_EMAIL_PROVIDER",
         "GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "GOOGLE_OAUTH_REDIRECT_URI",
         "ACS_CONNECTION_STRING", "ACS_FROM_NUMBER",
         "TWILIO_ACCOUNT_SID", "TWILIO_API_KEY", "TWILIO_API_SECRET",

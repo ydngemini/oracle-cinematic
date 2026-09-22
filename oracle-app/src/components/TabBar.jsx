@@ -1,31 +1,17 @@
-import { useEffect, useRef, useState } from 'react';
-import { useOracleState } from '../state';
+import { useRef } from 'react';
 import styles from './TabBar.module.css';
 
 /**
- * The Deck — compact etched-glass keys under a live amber filament.
- * The filament segment slides to the active key; when the real WS feed
- * (state.liveFeed) delivers a new event, the whole filament flashes once.
+ * Three destinations at the thumb line.
+ *
+ * This was an instrument rail: a live amber filament slid to the active key
+ * and the whole track flashed on every WebSocket event. It was the most
+ * animated thing on screen, permanently, underneath whatever the person was
+ * actually reading — and a feed arriving is not news the navigation should
+ * deliver. Active state is now full-strength ink and one small dot.
  */
 export function TabBar({ tabs, active, onSelect }) {
-  const state = useOracleState();
-  const feedLen = state.liveFeed?.length ?? 0;
-
-  // Flash the filament on genuine feed activity only — never simulated.
-  const [flash, setFlash] = useState(false);
-  const prevLen = useRef(feedLen);
   const keyRefs = useRef(new Map());
-  useEffect(() => {
-    if (feedLen > prevLen.current) {
-      setFlash(true);
-      const t = setTimeout(() => setFlash(false), 900);
-      prevLen.current = feedLen;
-      return () => clearTimeout(t);
-    }
-    prevLen.current = feedLen;
-  }, [feedLen]);
-
-  const activeIndex = Math.max(0, tabs.findIndex((t) => t.id === active));
 
   const moveFocus = (index) => {
     const normalized = (index + tabs.length) % tabs.length;
@@ -55,12 +41,6 @@ export function TabBar({ tabs, active, onSelect }) {
       aria-label="Neoh CRM"
       style={{ viewTransitionName: 'crm-deck' }}
     >
-      <div className={`${styles.filamentTrack} ${flash ? styles.filamentFlash : ''}`}>
-        <div
-          className={styles.filament}
-          style={{ transform: `translateX(${activeIndex * 100}%)`, width: `${100 / tabs.length}%` }}
-        />
-      </div>
       <div
         className={styles.keys}
         role="tablist"

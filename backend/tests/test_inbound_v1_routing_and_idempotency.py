@@ -1,5 +1,5 @@
 """V1 inbound call path ("use my existing business number") — the two-number
-model from migration 0104 under test.
+model from migration 0106 under test.
 
 Three properties matter enough to be worth their own file:
 

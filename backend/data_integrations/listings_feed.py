@@ -48,6 +48,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 from .base import DataIntegrationError, DataSource, RateLimiter, RetryConfig
+from .mls_sink import reject_reason, upsert_mls_records_and_status
 
 _RESO_URL = "ORACLE_RESO_URL"
 _RESO_TOKEN = "ORACLE_RESO_TOKEN"
@@ -187,16 +188,30 @@ def _num(v: Any) -> Optional[float]:
         return None
 
 
+_INT32_MIN, _INT32_MAX = -(2**31), 2**31 - 1
+
+
 def _int(v: Any) -> Optional[int]:
+    """Parse to int, dropping values outside PostgreSQL int4 range — the target
+    columns are int4, and an out-of-range lot_sqft (acreage-field bleed) should
+    land as NULL rather than raise mid-upsert."""
     f = _num(v)
-    return int(f) if f is not None else None
+    if f is None:
+        return None
+    i = int(f)
+    return i if _INT32_MIN <= i <= _INT32_MAX else None
 
 
-def _date(v: Any) -> Optional[str]:
-    """RESO dates are ISO; keep just the date part for a SQL date column."""
+def _date(v: Any) -> Optional[Any]:
+    """RESO dates are ISO strings; oracle_mls_listings.list_date/close_date are
+    typed `date` columns, so this must hand asyncpg a real date object, not a
+    string — asyncpg's date codec rejects strings outright."""
     if not v:
         return None
-    return str(v)[:10]
+    try:
+        return datetime.strptime(str(v)[:10], "%Y-%m-%d").date()
+    except ValueError:
+        return None
 
 
 # Pull the delta cursor back this many minutes from the max ModificationTimestamp
@@ -393,43 +408,7 @@ class RESOListingsFeed(DataSource):
 
     @staticmethod
     def _reject_reason(rec: dict[str, Any]) -> Optional[str]:
-        if not rec.get("mls_number"):
-            return "missing_listing_key"
-        state = str(rec.get("state_code") or "")
-        if len(state) != 2 or not state.isalpha():
-            return "invalid_state"
-        latitude, longitude = rec.get("latitude"), rec.get("longitude")
-        if latitude is not None and not -90 <= latitude <= 90:
-            return "invalid_latitude"
-        if longitude is not None and not -180 <= longitude <= 180:
-            return "invalid_longitude"
-        return None
-
-    _UPSERT = """
-        INSERT INTO oracle_mls_listings (
-            mls_id, mls_number, address, city, state_code, zip_code, county,
-            latitude, longitude, list_price, orig_list_price, status, property_type,
-            beds, baths_full, baths_half, sqft, lot_sqft, year_built, hoa_monthly,
-            days_on_market, list_date, close_date, close_price, description,
-            photos, features, last_updated
-        ) VALUES (
-            $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,
-            $21,$22,$23,$24,$25,$26,$27::jsonb,now()
-        )
-        ON CONFLICT (mls_id, mls_number) DO UPDATE SET
-            address=EXCLUDED.address, city=EXCLUDED.city, state_code=EXCLUDED.state_code,
-            zip_code=EXCLUDED.zip_code, county=EXCLUDED.county,
-            latitude=EXCLUDED.latitude, longitude=EXCLUDED.longitude,
-            list_price=EXCLUDED.list_price, orig_list_price=EXCLUDED.orig_list_price,
-            status=EXCLUDED.status, property_type=EXCLUDED.property_type,
-            beds=EXCLUDED.beds, baths_full=EXCLUDED.baths_full, baths_half=EXCLUDED.baths_half,
-            sqft=EXCLUDED.sqft, lot_sqft=EXCLUDED.lot_sqft, year_built=EXCLUDED.year_built,
-            hoa_monthly=EXCLUDED.hoa_monthly, days_on_market=EXCLUDED.days_on_market,
-            list_date=EXCLUDED.list_date, close_date=EXCLUDED.close_date,
-            close_price=EXCLUDED.close_price, description=EXCLUDED.description,
-            photos=EXCLUDED.photos, features=EXCLUDED.features,
-            last_updated=now()
-    """
+        return reject_reason(rec)
 
     async def sync_once(self) -> dict:
         """Pull the delta since the stored cursor, upsert, advance the cursor."""
@@ -497,50 +476,28 @@ class RESOListingsFeed(DataSource):
             skip += self.page
             next_url = None
 
-        upserted = 0
+        # Cursor = newest record seen minus a small overlap; clamp so it never
+        # moves backwards. A capped/incomplete traversal does not advance the
+        # cursor; the next run safely retries the same idempotent window.
+        cursor = since_dt
+        if exhausted and max_modified is not None:
+            candidate = max_modified - timedelta(minutes=_CURSOR_OVERLAP_MIN)
+            cursor = candidate if candidate > since_dt else since_dt
+
         async with tenant_tx(ctx) as conn:
-            for rec in records:
-                await conn.execute(
-                    self._UPSERT,
-                    rec["mls_id"], rec["mls_number"], rec["address"], rec["city"],
-                    rec["state_code"], rec["zip_code"], rec["county"], rec["latitude"],
-                    rec["longitude"], rec["list_price"], rec["orig_list_price"], rec["status"],
-                    rec["property_type"], rec["beds"], rec["baths_full"], rec["baths_half"],
-                    rec["sqft"], rec["lot_sqft"], rec["year_built"], rec["hoa_monthly"],
-                    rec["days_on_market"], rec["list_date"], rec["close_date"],
-                    rec["close_price"], rec["description"], rec["photos"],
-                    json.dumps(rec["features"], separators=(",", ":")),
-                )
-                upserted += 1
-
-            # Cursor = newest record seen minus a small overlap; clamp so it never
-            # moves backwards. A capped/incomplete traversal does not advance the
-            # cursor; the next run safely retries the same idempotent window.
-            cursor = since_dt
-            if exhausted and max_modified is not None:
-                candidate = max_modified - timedelta(minutes=_CURSOR_OVERLAP_MIN)
-                cursor = candidate if candidate > since_dt else since_dt
-
-            await conn.execute(
-                """
-                INSERT INTO mls_sync_status
-                    (mls_id, mls_name, feed_type, last_sync_at, listings_synced,
-                     sync_lag_minutes, notes, updated_at)
-                VALUES ($1, $2, 'RESO_Web_API', $4, $3, 0, $5, now())
-                ON CONFLICT (mls_id) DO UPDATE SET
-                    mls_name = EXCLUDED.mls_name,
-                    last_sync_at = EXCLUDED.last_sync_at,
-                    listings_synced = mls_sync_status.listings_synced + EXCLUDED.listings_synced,
-                    sync_lag_minutes = EXCLUDED.sync_lag_minutes,
-                    notes = EXCLUDED.notes,
-                    updated_at = now()
-                """,
-                self.mls_id, self.mls_name, upserted, cursor,
-                json.dumps({
+            upserted = await upsert_mls_records_and_status(
+                conn,
+                records=records,
+                mls_id=self.mls_id,
+                mls_name=self.mls_name,
+                feed_type="RESO_Web_API",
+                last_sync_at=cursor,
+                sync_lag_minutes=0,
+                notes={
                     "state": "succeeded" if exhausted else "partial",
                     "pages": pages,
                     "rejected": rejected,
-                }, separators=(",", ":")),
+                },
             )
 
         self._metrics["normalized"] += upserted

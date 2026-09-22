@@ -109,7 +109,7 @@ function interactionSummary(entry) {
   return p.summary || p.note || entry.interaction_type.replace(/_/g, ' ');
 }
 
-export function DossierPanel({ leadId, onClose }) {
+export function DossierPanel({ leadId, onClose, embedded = false, onOpenTour }) {
   const [dossier, setDossier] = useState(null);
   const { tour } = useTour({ leadId });
   const [tourOpen, setTourOpen] = useState(false);
@@ -225,6 +225,11 @@ export function DossierPanel({ leadId, onClose }) {
   }
 
   const address = dossier?.payload?.address || dossier?.parcel_id || '…';
+  // Embedded, it is a section of someone else's dialog, not a dialog.
+  const Shell = embedded ? 'div' : 'aside';
+  const shellProps = embedded
+    ? {}
+    : { role: 'dialog', 'aria-modal': 'false', 'aria-label': `Asset dossier — ${address}` };
   const mkt = dossier?.marketing_payload;
   const property = dossier?.payload || {};
   const provenance = property.provenance || {};
@@ -233,7 +238,12 @@ export function DossierPanel({ leadId, onClose }) {
     && Number.isFinite(Number(property.longitude));
 
   return (
-    <aside className={styles.drawer} role="dialog" aria-modal="false" aria-label={`Asset dossier — ${address}`}>
+    <Shell className={embedded ? `${styles.drawer} ${styles.embedded}` : styles.drawer} {...shellProps}>
+      {/* The frame above now says what this is, what state it is in and what
+          Neoh makes of it. Repeating a title, a status stamp and a close
+          button inside it is the "new shell, then an old application appears"
+          seam this was meant to remove. */}
+      {!embedded && (
       <header className={styles.head}>
         <div className={styles.headText}>
           <span className={styles.fileNo}>FILE № {dossier?.parcel_id || leadId.slice(0, 8)}</span>
@@ -252,6 +262,7 @@ export function DossierPanel({ leadId, onClose }) {
           ✕
         </button>
       </header>
+      )}
 
       {error && <p className={styles.error}>{error}</p>}
       {!dossier && !error && <p className={styles.loading}>DECRYPTING FILE…</p>}
@@ -307,11 +318,11 @@ export function DossierPanel({ leadId, onClose }) {
             </Suspense>
           </section>
 
-          {/* A reconstruction could be produced, stored and resolved, and this
-              sheet still showed no way to look at it — the capture existed and
-              the viewer existed, with nothing between them. When there is
-              nothing to walk, say why: an empty space is indistinguishable
-              from a missing feature. */}
+          {/* Standalone (in Work's property view) the dossier owns its own
+              tour entry; embedded in the entity frame the frame's "Explore in
+              3D" action and the sheet-expanding morph own it, so a second
+              button here would be the duplication item 5 removed. */}
+          {!embedded && (
           <section className={styles.section} aria-label="3D tour">
             <h3 className={styles.kicker}>3D Tour</h3>
             {tourOffer(tour).kind === 'walkable' ? (
@@ -319,7 +330,7 @@ export function DossierPanel({ leadId, onClose }) {
                 <button
                   type="button"
                   className={styles.floorplanBtn}
-                  onClick={() => setTourOpen(true)}
+                  onClick={onOpenTour || (() => setTourOpen(true))}
                 >
                   {tourOffer(tour).label}
                 </button>
@@ -333,8 +344,9 @@ export function DossierPanel({ leadId, onClose }) {
               <p className={styles.emptyNote}>{tourOffer(tour).reason}</p>
             )}
           </section>
+          )}
 
-          {tourOpen && tourOffer(tour).kind === 'walkable' ? (
+          {!embedded && tourOpen && tourOffer(tour).kind === 'walkable' ? (
             <Suspense fallback={null}>
               <TourViewer
                 splatUrl={tour.splat_url}
@@ -626,6 +638,6 @@ export function DossierPanel({ leadId, onClose }) {
           />
         </Suspense>
       )}
-    </aside>
+    </Shell>
   );
 }

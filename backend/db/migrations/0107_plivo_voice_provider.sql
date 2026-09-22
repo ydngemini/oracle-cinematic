@@ -1,11 +1,11 @@
--- 0105 — Plivo as a second voice carrier, generic call/account identity.
+-- 0107 — Plivo as a second voice carrier, generic call/account identity.
 --
 -- Neoh is adding Plivo as the PRIMARY telephony rail while keeping Twilio as
 -- a legacy/fallback provider (see backend/voice_provider.py). This migration
--- only widens what 0055/0064/0104 already built — it does not introduce a
+-- only widens what 0055/0064/0106 already built — it does not introduce a
 -- second telephony schema:
 --
---   * telephony_routes.provider (0104) already exists but its CHECK only
+--   * telephony_routes.provider (0106) already exists but its CHECK only
 --     allowed 'twilio'. Widened to 'plivo'.
 --   * telephony_routes.twilio_account_sid was NOT NULL with a Twilio-only
 --     format CHECK — every non-Twilio route would violate it. A new generic
@@ -16,7 +16,7 @@
 --     rows rather than dropped.
 --   * outbound_verification_status/sid/requested_at/last_tested_at/
 --     failure_reason and inbound_forwarding_status/provider_sid/
---     last_tested_at/failure_reason (0104) were already provider-neutral
+--     last_tested_at/failure_reason (0106) were already provider-neutral
 --     names — no rename needed. Plivo-specific additions are
 --     outbound_verification_channel (Plivo verification is channel-choice
 --     SMS/call; Twilio's Outgoing Caller ID flow has no channel to choose)
@@ -50,7 +50,7 @@ ALTER TABLE telephony_routes
     ADD COLUMN IF NOT EXISTS outbound_verification_locked_until timestamptz;
 
 -- Backfill: every existing row is a Twilio row (provider defaults to
--- 'twilio' since 0104), so its account identity already lives in
+-- 'twilio' since 0106), so its account identity already lives in
 -- twilio_account_sid.
 UPDATE telephony_routes
    SET provider_account_id = twilio_account_sid

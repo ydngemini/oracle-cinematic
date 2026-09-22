@@ -1,4 +1,11 @@
-/* The Deck — a seamless silver-glass instrument rail at the thumb line. */
+/* Three destinations at the thumb line. Quiet: the navigation is not the
+   thing anyone came to look at.
+
+   This was an instrument rail — glass, a 38px shadow, a live amber filament
+   across the top edge and a radial glow that bloomed behind the active key.
+   All of it moving, permanently, under the content it was meant to support.
+   The animation in this product belongs to the content transforming, not to
+   the floor beneath a thumb. */
 
 .deck {
   position: fixed;
@@ -8,57 +15,13 @@
   z-index: var(--z-hud);
   height: calc(var(--deck-height) + var(--safe-bottom));
   padding-bottom: var(--safe-bottom);
-  background: var(--oracle-gloss), var(--oracle-glass);
-  backdrop-filter: var(--oracle-backdrop);
-  -webkit-backdrop-filter: var(--oracle-backdrop);
-  border-top: 1px solid var(--oracle-glass-edge);
-  box-shadow: 0 -14px 38px rgba(0, 0, 0, 0.24), inset 0 1px 0 rgba(242, 242, 242, 0.08);
+  background: var(--oracle-surface);
+  border-top: 1px solid var(--oracle-border-subtle);
 }
 
-@media (prefers-reduced-transparency: reduce) {
-  .deck {
-    background: rgba(12, 12, 12, 0.96);
-    backdrop-filter: none;
-    -webkit-backdrop-filter: none;
-  }
-}
-
-@media (max-width: 719px) and (prefers-reduced-transparency: no-preference) {
-  .deck {
-    background: #080808;
-    backdrop-filter: none;
-    -webkit-backdrop-filter: none;
-  }
-}
-
-/* ── Filament — the live amber line across the top edge ─────────────────── */
-.filamentTrack {
-  position: absolute;
-  top: -1px;
-  left: 0;
-  right: 0;
-  height: 2px;
-  background: rgba(242, 242, 242, 0.03);
-  overflow: hidden;
-}
-
-.filament {
-  height: 100%;
-  background: var(--filament);
-  box-shadow: 0 0 14px var(--oracle-amber-dim), 0 0 4px var(--oracle-amber-bright);
-  transition: transform var(--duration-slow) var(--ease-spring);
-  will-change: transform;
-}
-
-/* Real WS activity: the whole track breathes once. */
-.filamentFlash {
-  animation: filamentSurge 900ms var(--ease-out);
-}
-
-@keyframes filamentSurge {
-  0%   { background: rgba(242, 242, 242, 0.03); }
-  18%  { background: var(--filament-faint); }
-  100% { background: rgba(242, 242, 242, 0.03); }
+:global(html[data-keyboard-open='true']) .deck {
+  visibility: hidden;
+  pointer-events: none;
 }
 
 /* ── Keys ────────────────────────────────────────────────────────────────── */
@@ -74,66 +37,42 @@
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 3px;
-  color: var(--oracle-text-ghost);
+  gap: 4px;
+  color: var(--oracle-text-dim);
   border-radius: 0;
   -webkit-user-select: none;
   user-select: none;
-  transition:
-    color var(--duration-base) var(--ease-out),
-    transform var(--duration-fast) var(--ease-out);
-}
-
-/* Soft amber glow pad that blooms in behind the active key's glyph */
-.key::before {
-  content: '';
-  position: absolute;
-  top: 7px;
-  left: 50%;
-  width: 44px;
-  height: 44px;
-  border-radius: var(--radius-pill);
-  background: radial-gradient(circle, var(--oracle-amber-glow) 0%, transparent 70%);
-  opacity: 0;
-  transform: translateX(-50%) scale(0.6);
-  transition:
-    opacity var(--duration-base) var(--ease-out),
-    transform var(--duration-slow) var(--ease-spring);
-  pointer-events: none;
-}
-
-.key:active {
-  transform: translateY(1px);
+  transition: color var(--duration-base) var(--ease-out);
 }
 
 @media (hover: hover) {
-  .key:hover {
-    color: var(--oracle-text-dim);
-  }
+  .key:hover { color: var(--oracle-text); }
 }
 
 .key:focus-visible {
   outline: none;
-  color: var(--oracle-accent-ink);
+  color: var(--oracle-text-heading);
 }
 
 .key:focus-visible .glyph {
-  outline: 2px solid var(--oracle-amber);
+  outline: 2px solid var(--oracle-accent);
   outline-offset: 4px;
   border-radius: var(--radius-sm);
 }
 
+/* Active is full-strength ink and one small dot. That is the whole state. */
 .keyActive {
-  color: var(--oracle-accent-ink);
+  color: var(--oracle-text-heading);
 }
 
-.keyActive::before {
-  opacity: 1;
-  transform: translateX(-50%) scale(1);
-}
-
-.keyActive .glyph {
-  transform: scale(1.08) translateY(-1px);
+.keyActive::after {
+  content: '';
+  position: absolute;
+  bottom: 8px;
+  width: 3px;
+  height: 3px;
+  border-radius: 999px;
+  background: var(--oracle-accent);
 }
 
 .glyph {
@@ -148,22 +87,79 @@
 }
 
 .label {
-  font-family: var(--font-display);
-  font-size: 0.5625rem; /* 9px — caps label under the glyph, instrument style */
+  /* Sentence case at a readable size. 9px uppercase with widest tracking is
+     an instrument panel's grammar, not a place anyone reads a word. */
+  font-size: var(--text-xs);
   font-weight: 500;
-  letter-spacing: var(--tracking-widest);
-  text-transform: uppercase;
+  letter-spacing: normal;
+  text-transform: none;
 }
 
-:global(html[data-keyboard-open='true']) .deck {
-  visibility: hidden;
-  pointer-events: none;
+/* ── Keys ────────────────────────────────────────────────────────────────── */
+.keys {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  height: var(--deck-height);
+}
+
+.key {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  color: var(--oracle-text-dim);
+  border-radius: 0;
+  -webkit-user-select: none;
+  user-select: none;
+  transition: color var(--duration-base) var(--ease-out);
+}
+
+@media (hover: hover) {
+  .key:hover { color: var(--oracle-text); }
+}
+
+.key:focus-visible {
+  outline: none;
+  color: var(--oracle-text-heading);
+}
+
+.key:focus-visible .glyph {
+  outline: 2px solid var(--oracle-accent);
+  outline-offset: 4px;
+  border-radius: var(--radius-sm);
+}
+
+/* Active is full-strength ink and one small dot. That is the whole state. */
+.keyActive {
+  color: var(--oracle-text-heading);
+}
+
+.keyActive::after {
+  content: '';
+  position: absolute;
+  bottom: 8px;
+  width: 3px;
+  height: 3px;
+  border-radius: 999px;
+  background: var(--oracle-accent);
+}
+
+.glyph {
+  width: 22px;
+  height: 22px;
+  transition: transform var(--duration-slow) var(--ease-spring);
+}
+
+.glyph svg {
+  width: 100%;
+  height: 100%;
 }
 
 @media (max-width: 359px) {
   .label {
-    font-size: 0.5rem;
-    letter-spacing: var(--tracking-wider);
+    font-size: 0.6875rem;
   }
 
   .glyph {

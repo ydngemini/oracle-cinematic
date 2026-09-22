@@ -1,8 +1,9 @@
-"""Durable object storage across the three backends.
+"""Durable object storage across the four backends.
 
 Video upload used to hard-require RECON_S3_BUCKET, so it returned 503 forever on
 an Azure deployment. These cover the Azure Files backend that replaces it (the
-one that actually runs in production), the traversal guard on its keys, and the
+one that actually runs in production), the `local` directory backend that lets
+the stack run with no cloud account, the traversal guard on their keys, and the
 boto3-shaped adapter the contract vault is injected with.
 """
 
@@ -23,6 +24,12 @@ def _reload(monkeypatch, **env):
         "ORACLE_BLOB_CONTAINER",
         "AZURE_STORAGE_CONNECTION_STRING",
         "RECON_S3_BUCKET",
+        "ORACLE_S3_BUCKET",
+        "ORACLE_S3_REGION",
+        "ORACLE_S3_ENDPOINT_URL",
+        "ORACLE_S3_ACCESS_KEY_ID",
+        "ORACLE_S3_SECRET_ACCESS_KEY",
+        "AWS_REGION",
     ):
         monkeypatch.delenv(key, raising=False)
     for key, value in env.items():
@@ -85,6 +92,126 @@ def test_is_configured_reports_whether_a_write_could_succeed(monkeypatch, env, e
 def test_a_real_writable_mount_is_configured(monkeypatch, tmp_path):
     """The positive azure-files case: a root that exists and accepts writes."""
     assert _reload(monkeypatch, ORACLE_MEDIA_ROOT=tmp_path).is_configured() is True
+
+
+# --- s3-compatible: AWS S3 or DigitalOcean Spaces ----------------------------
+
+def test_s3_client_targets_real_aws_by_default(monkeypatch):
+    """No endpoint override, no explicit keys: boto3's own default AWS
+    endpoint and credential chain apply, unchanged from before Spaces support
+    existed — an existing AWS deployment needs no new configuration."""
+    mod = _reload(monkeypatch, ORACLE_STORAGE_BACKEND="s3", RECON_S3_BUCKET="b")
+    assert mod.S3_ENDPOINT_URL is None
+    assert mod.S3_ACCESS_KEY_ID is None
+    assert mod.S3_SECRET_ACCESS_KEY is None
+
+    calls = []
+
+    class _FakeBoto3:
+        @staticmethod
+        def client(service, **kwargs):
+            calls.append((service, kwargs))
+            return object()
+
+    import sys
+    monkeypatch.setitem(sys.modules, "boto3", _FakeBoto3)
+    mod._s3_client()
+
+    # No forced addressing_style against real AWS S3 — boto3's own default
+    # applies, exactly as it did before Spaces support existed.
+    assert calls[0][1]["config"] is None
+
+
+def test_s3_client_points_at_a_spaces_endpoint_when_configured(monkeypatch):
+    mod = _reload(
+        monkeypatch,
+        ORACLE_STORAGE_BACKEND="s3",
+        ORACLE_S3_BUCKET="neoh-media",
+        ORACLE_S3_REGION="nyc3",
+        ORACLE_S3_ENDPOINT_URL="https://nyc3.digitaloceanspaces.com",
+        ORACLE_S3_ACCESS_KEY_ID="spaces-key",
+        ORACLE_S3_SECRET_ACCESS_KEY="spaces-secret",
+    )
+    assert mod.S3_BUCKET == "neoh-media"
+    assert mod.is_configured() is True
+
+    calls = []
+
+    class _FakeBoto3:
+        @staticmethod
+        def client(service, **kwargs):
+            calls.append((service, kwargs))
+            return object()
+
+    import sys
+    monkeypatch.setitem(sys.modules, "boto3", _FakeBoto3)
+
+    mod._s3_client()
+
+    assert len(calls) == 1
+    service, kwargs = calls[0]
+    config = kwargs.pop("config")
+    assert service == "s3"
+    assert kwargs == {
+        "region_name": "nyc3",
+        "endpoint_url": "https://nyc3.digitaloceanspaces.com",
+        "aws_access_key_id": "spaces-key",
+        "aws_secret_access_key": "spaces-secret",
+    }
+    # DigitalOcean's own documented requirement for Spaces: virtual-hosted-
+    # style addressing (bucket.endpoint/key), not path-style.
+    assert config.s3["addressing_style"] == "virtual"
+
+
+def test_a_bare_recon_s3_bucket_still_works_unaided(monkeypatch):
+    """ORACLE_S3_BUCKET is preferred but RECON_S3_BUCKET (the pre-existing
+    recon-pipeline var) still selects the bucket on its own — no forced
+    rename for an existing deployment."""
+    mod = _reload(monkeypatch, ORACLE_STORAGE_BACKEND="s3", RECON_S3_BUCKET="recon-only")
+    assert mod.S3_BUCKET == "recon-only"
+
+
+# --- the local directory backend ---------------------------------------------
+
+def test_local_backend_defaults_to_a_relative_dir_no_cloud(monkeypatch):
+    mod = _reload(monkeypatch, ORACLE_STORAGE_BACKEND="local")
+
+    assert mod.BACKEND == "local"
+    assert str(mod.MEDIA_ROOT) == "var/media"  # ./var/media, Path-normalised
+
+
+def test_local_backend_creates_its_root_and_is_configured(monkeypatch, tmp_path):
+    mod = _reload(
+        monkeypatch,
+        ORACLE_STORAGE_BACKEND="local",
+        ORACLE_MEDIA_ROOT=tmp_path / "media",
+    )
+    assert mod.is_configured() is True
+    assert (tmp_path / "media").is_dir()
+
+
+def test_local_backend_round_trips_and_serves_through_the_app(monkeypatch, tmp_path):
+    mod = _reload(
+        monkeypatch,
+        ORACLE_STORAGE_BACKEND="local",
+        ORACLE_MEDIA_ROOT=tmp_path,
+    )
+    mod.put_bytes("property-media/t/pic", b"jpeg-bytes", "image/jpeg")
+
+    assert (tmp_path / "property-media/t/pic").read_bytes() == b"jpeg-bytes"
+    assert mod.get_bytes("property-media/t/pic") == b"jpeg-bytes"
+    # A local directory has no public URL — bytes go through the media endpoint.
+    assert mod.signed_url("property-media/t/pic") is None
+    assert mod.presigned_put_url("property-media/t/pic") is None
+
+
+@pytest.mark.parametrize("key", ["../escape", "a/../../escape", "/etc/passwd"])
+def test_local_backend_keys_cannot_escape_the_root(monkeypatch, tmp_path, key):
+    mod = _reload(
+        monkeypatch, ORACLE_STORAGE_BACKEND="local", ORACLE_MEDIA_ROOT=tmp_path
+    )
+    with pytest.raises(mod.StorageError, match="escapes"):
+        mod.put_bytes(key, b"x")
 
 
 # --- the azure files backend --------------------------------------------------

@@ -23,12 +23,12 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from automation_jobs import enqueue_job, register_handler
-from command_providers import ProviderConfigurationError
 from commands_api import (
     CommandCreate,
     CommandType,
     ProviderCredentialInput,
     _load_provider_credential,
+    _require_own_credential_or_broker,
     create_command,
     disable_provider_credential,
     store_provider_credential,
@@ -46,6 +46,7 @@ _E164_RE = re.compile(r"^\+[1-9][0-9]{7,14}$")
 _ACCOUNT_SID_RE = re.compile(r"^AC[0-9A-Fa-f]{32}$")
 _API_KEY_RE = re.compile(r"^SK[0-9A-Fa-f]{32}$")
 _TWIML_APP_RE = re.compile(r"^AP[0-9A-Fa-f]{32}$")
+_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 _PREVIEW_TTL_SECONDS = 15 * 60
 
 
@@ -248,27 +249,27 @@ class ProviderSetupInput(BaseModel):
     sms_sender_type: Optional[
         Literal["twilio_registered", "ported", "toll_free_verified"]
     ] = None
-    connection_string: Optional[str] = Field(default=None, min_length=8, max_length=8_000)
+    host: Optional[str] = Field(default=None, max_length=255)
+    port: Optional[int] = Field(default=None, ge=1, le=65535)
+    username: Optional[str] = Field(default=None, max_length=254)
+    password: Optional[str] = Field(default=None, min_length=1, max_length=2_000)
     from_email: Optional[str] = Field(default=None, max_length=254)
-    region: Optional[str] = Field(default=None, max_length=40)
-    aws_access_key_id: Optional[str] = Field(default=None, min_length=16, max_length=128)
-    aws_secret_access_key: Optional[str] = Field(default=None, min_length=16, max_length=256)
-    aws_session_token: Optional[str] = Field(default=None, min_length=16, max_length=4_096)
-
-    @model_validator(mode="after")
-    def validate_aws_credential_pair(self) -> "ProviderSetupInput":
-        if bool(self.aws_access_key_id) != bool(self.aws_secret_access_key):
-            raise ValueError(
-                "aws_access_key_id and aws_secret_access_key must be configured together"
-            )
-        if self.aws_session_token and not self.aws_access_key_id:
-            raise ValueError("aws_session_token requires an AWS access key pair")
-        return self
+    from_name: Optional[str] = Field(default=None, max_length=160)
 
 
 def _provider_payload(provider: str, body: ProviderSetupInput) -> dict[str, Any]:
     raw = body.model_dump(exclude_none=True)
     raw.pop("account_label", None)
+    if provider == "smtp":
+        if not str(raw.get("host") or "").strip():
+            raise HTTPException(status_code=422, detail="SMTP host is required.")
+        if not _EMAIL_RE.fullmatch(str(raw.get("from_email") or "")):
+            raise HTTPException(status_code=422, detail="SMTP from_email is invalid.")
+        if raw.get("username") and not raw.get("password"):
+            raise HTTPException(
+                status_code=422, detail="SMTP password is required when a username is set."
+            )
+        return raw
     if provider == "twilio":
         if not _ACCOUNT_SID_RE.fullmatch(str(raw.get("account_sid") or "")):
             raise HTTPException(status_code=422, detail="Twilio account_sid is invalid.")
@@ -284,22 +285,10 @@ def _provider_payload(provider: str, body: ProviderSetupInput) -> dict[str, Any]
             raise HTTPException(status_code=422, detail="SMS sender and registered sender type are required together.")
         if raw.get("sms_sender") and not _E164_RE.fullmatch(str(raw["sms_sender"])):
             raise HTTPException(status_code=422, detail="Twilio SMS sender must be E.164.")
-    elif provider == "acs":
-        if not raw.get("connection_string") or "endpoint=https://" not in str(raw["connection_string"]).lower():
-            raise HTTPException(status_code=422, detail="ACS connection_string is invalid.")
-        if raw.get("from_number") and not _E164_RE.fullmatch(str(raw["from_number"])):
-            raise HTTPException(status_code=422, detail="ACS voice from_number must be E.164.")
-        if raw.get("sms_sender") and not _E164_RE.fullmatch(str(raw["sms_sender"])):
-            raise HTTPException(status_code=422, detail="ACS SMS sender must be E.164.")
-    elif provider == "ses":
-        email = str(raw.get("from_email") or "")
-        if not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", email):
-            raise HTTPException(status_code=422, detail="SES from_email is invalid.")
-        raw["region"] = str(raw.get("region") or "us-east-2")
     else:
         raise HTTPException(
             status_code=422,
-            detail="Google is a calendar-only connection; use SMTP, ACS or SES for email.",
+            detail="Google is a calendar-only connection; SMTP is the platform email sender.",
         )
     return raw
 
@@ -315,7 +304,7 @@ async def _provider_snapshot(ctx: TenantContext) -> dict[str, Any]:
              WHERE provider=ANY($1::text[])
              ORDER BY provider,updated_at DESC
             """,
-            ["google", "smtp", "twilio", "acs", "ses"],
+            ["google", "smtp", "twilio"],
         )
         route = await conn.fetchrow(
             """
@@ -331,10 +320,28 @@ async def _provider_snapshot(ctx: TenantContext) -> dict[str, Any]:
             """,
             ctx.agent_id,
         )
-    providers: dict[str, dict[str, Any]] = {}
+    # Which row a provider resolves to depends on who is asking. An agent's
+    # self-managed row (account_label=agent_id) must never surface to anyone
+    # else, and a caller who isn't that agent should see the tenant-wide
+    # 'default' row — never whichever row happens to be newest, or the
+    # broker's Providers page shows (and can Validate/Disconnect) an agent's
+    # private credential, and an agent can never see their own.
+    own_label = ctx.agent_id if ctx.role is Role.AGENT else "default"
+    # rows is already ORDER BY provider, updated_at DESC, so the first row
+    # seen per (provider, label) is the newest one for that label.
+    own_rows: dict[str, Any] = {}
+    default_rows: dict[str, Any] = {}
     for row in rows:
         provider = str(row["provider"])
-        if provider in providers:
+        label = row["account_label"]
+        if label == own_label and provider not in own_rows:
+            own_rows[provider] = row
+        elif label == "default" and provider not in default_rows:
+            default_rows[provider] = row
+    providers: dict[str, dict[str, Any]] = {}
+    for provider in ("google", "smtp", "twilio"):
+        row = own_rows.get(provider) or default_rows.get(provider)
+        if row is None:
             continue
         expired = bool(row["expires_at"] and row["expires_at"] <= now)
         disabled = bool(row["disabled_at"])
@@ -355,7 +362,7 @@ async def _provider_snapshot(ctx: TenantContext) -> dict[str, Any]:
             "capabilities": _json(row["validated_capabilities"], {}),
             "credential_exposed": False,
         }
-    for provider in ("google", "smtp", "twilio", "acs", "ses"):
+    for provider in ("google", "smtp", "twilio"):
         providers.setdefault(
             provider,
             {
@@ -374,31 +381,14 @@ async def _provider_snapshot(ctx: TenantContext) -> dict[str, Any]:
         and (os.getenv("TWILIO_AUTH_TOKEN") or (os.getenv("TWILIO_API_KEY") and os.getenv("TWILIO_API_SECRET")))
         and os.getenv("ORACLE_TWILIO_CREDENTIALS_VALIDATED", "").lower() in {"1", "true", "yes", "on"}
     )
-    env_ses = bool(
-        os.getenv("ORACLE_SES_FROM_EMAIL")
-        and os.getenv("ORACLE_SES_CREDENTIALS_VALIDATED", "").lower() in {"1", "true", "yes", "on"}
-    )
-    env_acs = bool(
-        os.getenv("ACS_CONNECTION_STRING")
-        and os.getenv("ORACLE_ACS_CREDENTIALS_VALIDATED", "").lower() in {"1", "true", "yes", "on"}
-    )
     twilio_capabilities = providers["twilio"].get("capabilities") or {}
-    acs_capabilities = providers["acs"].get("capabilities") or {}
-    ses_capabilities = providers["ses"].get("capabilities") or {}
     smtp_capabilities = providers["smtp"].get("capabilities") or {}
     # Platform-level senders count as an email channel even with no tenant
     # credential — they are what sends when a tenant has configured nothing.
     env_smtp = bool(os.getenv("ORACLE_SMTP_FROM_EMAIL") or os.getenv("ORACLE_SMTP_USERNAME"))
-    env_acs_email = bool(
-        os.getenv("ACS_CONNECTION_STRING") and os.getenv("ORACLE_ACS_FROM_EMAIL")
-    )
     twilio_voice = providers["twilio"]["configured"] and bool(twilio_capabilities.get("voice"))
     twilio_sms = providers["twilio"]["configured"] and bool(twilio_capabilities.get("sms"))
     twilio_agent = providers["twilio"]["configured"] and bool(twilio_capabilities.get("agent_call"))
-    acs_voice = providers["acs"]["configured"] and bool(acs_capabilities.get("voice"))
-    acs_sms = providers["acs"]["configured"] and bool(acs_capabilities.get("sms"))
-    acs_email = providers["acs"]["configured"] and bool(acs_capabilities.get("email"))
-    ses_email = providers["ses"]["configured"] and bool(ses_capabilities.get("email"))
     smtp_email = providers["smtp"]["configured"] and bool(smtp_capabilities.get("email"))
     return {
         "providers": providers,
@@ -406,16 +396,14 @@ async def _provider_snapshot(ctx: TenantContext) -> dict[str, Any]:
         "channels": {
             # A connected Google account no longer implies email works — that
             # grant is calendar-only now, so only real senders count here.
-            "email": (smtp_email or env_smtp or acs_email or env_acs_email or ses_email or env_ses),
+            "email": (smtp_email or env_smtp),
             "sms": (
                 (twilio_sms or env_twilio)
                 and bool(route_data.get("sms_sender_e164") and route_data.get("sms_sender_type"))
-            ) or acs_sms or env_acs,
+            ),
             "ai_call": (
                 twilio_voice
                 or env_twilio
-                or acs_voice
-                or env_acs
             ),
             "agent_call": (
                 (twilio_agent or (env_twilio and bool(os.getenv("TWILIO_TWIML_APP_SID"))))
@@ -1261,15 +1249,19 @@ async def providers(ctx: TenantContext = Depends(require_context)) -> dict[str, 
 
 @router.put("/providers/{provider}")
 async def configure_provider(provider: str, body: ProviderSetupInput, ctx: TenantContext = Depends(require_context)) -> dict[str, Any]:
-    require_role(ctx, Role.BROKER_OWNER)
     provider = provider.lower()
+    # Brokers set the tenant-wide "default" sender for any provider. Agents
+    # may only bring their own SMTP mail identity (own reply-to, own inbox) —
+    # store_provider_credential enforces that role split; this just pins the
+    # account_label an agent can't be trusted to type correctly.
+    account_label = ctx.agent_id if ctx.role is Role.AGENT else body.account_label
     payload = _provider_payload(provider, body)
     stored = await store_provider_credential(
         provider,
         ProviderCredentialInput(
-            account_label=body.account_label,
+            account_label=account_label,
             token=_canonical(payload),
-            scopes=["email"] if provider == "ses" else ["voice", "sms"] if provider in {"twilio", "acs"} else [],
+            scopes=["voice", "sms"] if provider == "twilio" else [],
         ),
         ctx,
     )
@@ -1278,11 +1270,15 @@ async def configure_provider(provider: str, body: ProviderSetupInput, ctx: Tenan
 
 @router.post("/providers/{provider}/{account_label}/validate")
 async def validate_provider(provider: str, account_label: str, ctx: TenantContext = Depends(require_context)) -> dict[str, Any]:
-    require_role(ctx, Role.BROKER_OWNER)
     provider = provider.lower()
-    if provider not in {"twilio", "acs", "ses"}:
+    _require_own_credential_or_broker(ctx, provider, account_label, action="validate")
+    if provider not in {"twilio", "smtp"}:
         raise HTTPException(status_code=422, detail="Google health is managed by OAuth refresh.")
-    raw = await _load_provider_credential(ctx, provider, account_label)
+    # exact=True: the caller named this specific row. Falling back to the
+    # tenant default here would validate credentials that were never entered
+    # (and, for an agent's own label, authenticate with the broker's mail
+    # password under an identity check that reads as "this is your row").
+    raw = await _load_provider_credential(ctx, provider, account_label=account_label, exact=True)
     if not raw:
         raise HTTPException(status_code=404, detail="Active provider credential not found.")
     try:
@@ -1324,66 +1320,11 @@ async def validate_provider(provider: str, account_label: str, ctx: TenantContex
             # authenticate, then quit without sending. A tenant pasting an app
             # password should find out here, not on their first outreach.
             def _check_smtp() -> None:
-                import smtplib
-                import ssl as _ssl
-
                 settings = smtp_mailer.resolve_settings(credentials)
-                context = _ssl.create_default_context()
-                if settings["port"] == smtp_mailer.IMPLICIT_TLS_PORT:
-                    client = smtplib.SMTP_SSL(
-                        settings["host"], settings["port"], timeout=10.0, context=context
-                    )
-                else:
-                    client = smtplib.SMTP(settings["host"], settings["port"], timeout=10.0)
-                with client:
-                    if settings["port"] != smtp_mailer.IMPLICIT_TLS_PORT:
-                        client.ehlo()
-                        if not client.has_extn("starttls"):
-                            raise smtp_mailer.SmtpConfigurationError(
-                                "server does not offer STARTTLS"
-                            )
-                        client.starttls(context=context)
-                        client.ehlo()
-                    if settings["username"]:
-                        client.login(settings["username"], settings["password"])
+                with smtp_mailer.connect(settings, timeout=10.0):
+                    pass
 
             await asyncio.wait_for(asyncio.to_thread(_check_smtp), timeout=20.0)
-            capabilities = {"email": True}
-        elif provider == "acs":
-            if "endpoint=https://" not in str(credentials.get("connection_string") or "").lower():
-                raise ProviderConfigurationError("ACS endpoint is invalid")
-            # One ACS resource backs voice, SMS and email; each capability is
-            # gated on the sender identity that channel actually requires.
-            from_email = str(credentials.get("from_email") or "").strip()
-            if from_email and "@" not in from_email:
-                raise ProviderConfigurationError("ACS sender email is invalid")
-            capabilities = {
-                "voice": bool(credentials.get("from_number")),
-                "sms": bool(credentials.get("sms_sender")),
-                "email": bool(from_email),
-            }
-        else:
-            import boto3
-            from botocore.config import Config
-
-            def _check_ses() -> None:
-                client_options: dict[str, Any] = {
-                    "region_name": credentials.get("region") or "us-east-2",
-                    "config": Config(
-                        connect_timeout=5,
-                        read_timeout=10,
-                        retries={"max_attempts": 1},
-                    ),
-                }
-                if credentials.get("aws_access_key_id"):
-                    client_options["aws_access_key_id"] = credentials["aws_access_key_id"]
-                    client_options["aws_secret_access_key"] = credentials["aws_secret_access_key"]
-                    if credentials.get("aws_session_token"):
-                        client_options["aws_session_token"] = credentials["aws_session_token"]
-                client = boto3.client("sesv2", **client_options)
-                client.get_account()
-
-            await asyncio.wait_for(asyncio.to_thread(_check_ses), timeout=15.0)
             capabilities = {"email": True}
     except Exception as exc:
         error = (str(exc).strip() or exc.__class__.__name__)[:500]

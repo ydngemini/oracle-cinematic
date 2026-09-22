@@ -25,7 +25,7 @@ const DISCLOSURE_FALLBACK =
 
 const MOVE_KEYS = ['w', 'a', 's', 'd', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright'];
 
-export default function WalkableSplatViewer({ splatUrl, disclosure, address, title, onClose }) {
+export default function WalkableSplatViewer({ splatUrl, disclosure, address, title, onClose, embedded = false }) {
   const canvasRef = useRef(null);
   const ctrlRef = useRef(null); // live controller state (mutated in the rAF loop)
   const [status, setStatus] = useState('loading'); // loading | ready | error | nowebgl
@@ -191,7 +191,7 @@ export default function WalkableSplatViewer({ splatUrl, disclosure, address, tit
   const endJoy = (e) => { e.stopPropagation(); const S = ctrlRef.current; if (S) S.joy = { x: 0, y: 0 }; };
 
   return (
-    <div className={styles.overlay} role="dialog" aria-modal="true" aria-label={`Walk inside ${title || address || 'property'}`}>
+    <div className={styles.overlay} role={embedded ? undefined : 'dialog'} aria-modal={embedded ? undefined : true} aria-label={`Walk inside ${title || address || 'property'}`}>
       <canvas ref={canvasRef} className={styles.canvas} />
 
       {unsupportedFormat && (
@@ -223,7 +223,7 @@ export default function WalkableSplatViewer({ splatUrl, disclosure, address, tit
         </div>
       )}
 
-      <header className={styles.bar}>
+      {!embedded && <header className={styles.bar}>
         <span className={styles.kicker}>Neoh · Walk Inside</span>
         <span className={styles.addr} title={address}>{title || address}</span>
         <button type="button" className={styles.closeBtn} onClick={onClose} aria-label="Exit walkthrough">
@@ -231,7 +231,7 @@ export default function WalkableSplatViewer({ splatUrl, disclosure, address, tit
             <path d="M6 6l12 12M18 6 6 18" />
           </svg>
         </button>
-      </header>
+      </header>}
 
       {status === 'ready' && hintVisible && (
         <div className={styles.hint} role="status">Drag to look · W A S D to move · joystick on touch</div>

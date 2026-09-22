@@ -230,19 +230,26 @@ async def _stage(
     Both are recorded on the action as blocked_reason rather than hidden, so a
     mission that cannot act says which piece is missing.
     """
+    from agent_profile import load_agent_identity
     from commands_api import stage_command
 
     from . import drafter
 
     contact_row = await _candidate_context(ctx, action)
     try:
+        # A drafted message signs off as the agent, not their login id — a
+        # lead reading "From: ava@neohrs.com" over "From: Ava" is reading a
+        # system, and the whole point of a mission is that it acts like the
+        # person whose licence it operates under.
+        identity = await load_agent_identity(ctx)
+        agent_name = str(identity.get("name") or "").strip() or ctx.agent_id
         draft = await drafter.draft_message(
             ctx,
             channel=action["channel"],
             recipient_name=contact_row.get("name") or "",
             objective=mission.get("objective_text") or "",
             intent=contact_row.get("intent") or "reach out",
-            agent_name=ctx.agent_id,
+            agent_name=agent_name,
         )
     except drafter.DraftUnavailable as exc:
         # No placeholder body, ever. A message the system could not write is an
@@ -552,7 +559,7 @@ async def sweep_all_tenants(*, tenant_limit: int = 200) -> dict[str, Any]:
         # asking which tenants have work, exactly as the attribution sweep
         # does. Every tick below runs in that tenant's own context.
         rows = await conn.fetch(
-            """SELECT id, tenant_id FROM missions
+            """SELECT id, tenant_id, created_by FROM missions
                 WHERE status IN ('shadow', 'active')
                 ORDER BY updated_at
                 LIMIT $1""",
@@ -561,8 +568,15 @@ async def sweep_all_tenants(*, tenant_limit: int = 200) -> dict[str, Any]:
 
     results: dict[str, Any] = {"missions": 0, "errors": 0}
     for row in rows:
+        # The mission's own agent, not a fixed service account — this is who
+        # a draft signs off as (see _stage's load_agent_identity(ctx)) and who
+        # its actions are attributed to in the audit trail. A generic
+        # "mission-tick" identity here is the same bug the command worker had
+        # for per-agent email: the thing meant to act AS someone acted as no
+        # one instead.
         ctx = TenantContext(
-            agent_id="mission-tick", tenant_id=str(row["tenant_id"]), role=Role.AGENT,
+            agent_id=str(row["created_by"] or "mission-tick"),
+            tenant_id=str(row["tenant_id"]), role=Role.AGENT,
         )
         try:
             await tick(ctx, str(row["id"]))

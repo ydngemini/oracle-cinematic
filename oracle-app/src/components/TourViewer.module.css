@@ -2,6 +2,18 @@
    glassmorphism so the tour reads as one surface regardless of which renderer
    is drawing. Pure CSS Modules — no UI library. */
 
+.embedded {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  transform: translateZ(0);
+  isolation: isolate;
+  overflow: hidden;
+}
+
+.embedded .route { position: fixed; z-index: 1300; max-width: calc(100% - 2rem); }
+.embedded .routeLabel { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+
 .switcher {
   position: fixed;
   z-index: 1300; /* above either viewer overlay (1200) */

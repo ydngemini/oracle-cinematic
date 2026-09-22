@@ -63,7 +63,7 @@ _ROUTE_COLUMNS = (
     "voice_caller_id_verified,sms_sender_e164,sms_sender_type,"
     "agent_forward_e164,forward_on_request,forward_when_ai_unavailable,"
     "forward_timeout_seconds,active,"
-    # 0104 — business-number connect state. Never written by
+    # 0106 — business-number connect state. Never written by
     # upsert_telephony_route (below); only the narrow _set_route_columns
     # helper and the provisioning/verification flows may change these.
     "provider,outbound_verification_status,outbound_verification_sid,"
@@ -71,7 +71,7 @@ _ROUTE_COLUMNS = (
     "outbound_verification_failure_reason,inbound_forwarding_status,"
     "inbound_forwarding_provider_sid,inbound_forwarding_last_tested_at,"
     "inbound_forwarding_failure_reason,"
-    # 0105 — generic provider identity + Plivo OTP verification state.
+    # 0107 — generic provider identity + Plivo OTP verification state.
     "provider_account_id,provider_app_id,outbound_verification_channel,"
     "outbound_verification_attempt_count,outbound_verification_locked_until"
 )
@@ -223,7 +223,7 @@ async def resolve_inbound_route(
     was not actually assigned to. Twilio call sites keep passing this
     positionally without ``provider`` — the default preserves their exact
     prior behavior, since every legacy row's provider_account_id was
-    backfilled from twilio_account_sid (migration 0105).
+    backfilled from twilio_account_sid (migration 0107).
 
     ``provider_account_id`` may be ``None`` for a provider whose inbound
     webhook does not reliably carry an account-identity field (Plivo's
@@ -1160,7 +1160,7 @@ async def list_telephony_routes(ctx: TenantContext) -> list[dict[str, Any]]:
 # they already advertise; it becomes BOTH forwarding_source_e164 (the carrier
 # forwards it into the hidden inbound_did) and voice_caller_id_e164 (what
 # Neoh asks Twilio to present on an AI-placed outbound call, once verified).
-# No new "public_business_number" column — see 0104's header for why.
+# No new "public_business_number" column — see 0106's header for why.
 #
 # Two invariants everything below protects:
 #   1. voice_caller_id_verified can only ever be set true by
@@ -1438,7 +1438,7 @@ async def check_business_number_verification(
     return await _set_route_columns(ctx, updates) or route
 
 
-# ── Business-number connect: provider-neutral entry point (0105) ───────────
+# ── Business-number connect: provider-neutral entry point (0107) ───────────
 #
 # connect_business_number (above) stays exactly as it was — Twilio-only,
 # still exercised directly by test_business_number_connect.py. This is the

@@ -46,6 +46,16 @@ MAX_STEPS = 60
 
 CHANNELS = ("email", "sms", "voice", "task")
 
+#: A reasoning model spends part of this budget thinking before it emits the
+#: structured answer, and a multi-candidate sequencing task with a full JSON
+#: schema reasons more than a single short draft does. 2048 was sized to the
+#: schema, not to what the model actually spends reasoning about several
+#: candidates at once — live against Fireworks, this task returned empty
+#: content ("" with finish_reason='length') noticeably more than a coin flip
+#: at 2048. Raised, not lowered, on a failure: emitting nothing is always the
+#: budget running out before content, never content being too large to fit.
+PLAN_TOKEN_BUDGET = 4096
+
 
 class PlanUnavailable(RuntimeError):
     """No plan could be obtained. The mission stays in draft."""
@@ -227,11 +237,19 @@ def _describe(candidate: dict[str, Any]) -> str:
 
 
 async def _ask(gateway, prompt: str) -> MissionPlan:
-    """Ask once; on an unusable answer ask again with the error; then give up.
+    """Ask once; on an unusable answer OR an unreachable gateway, ask again;
+    then give up.
 
-    The second attempt exists because a schema violation is often a near miss
-    the model can correct when shown it. Two failures is a signal, not noise,
-    and inventing a plan at that point would be the worst possible response.
+    The second attempt exists for two different reasons that both land here.
+    A schema violation is often a near miss the model can correct when shown
+    it. A gateway exception — found live running a tick against a real
+    reasoning-model provider: a call that raised "returned empty content" on
+    one attempt returned a valid plan on an immediate retry with the identical
+    prompt, three times in a row — is frequently just that provider's own
+    token-budget variance on one call, not a real outage; giving up on the
+    first one throws away a mission's whole planning step over a coin flip.
+    Two failures, of either kind, is still the signal that stops retrying:
+    inventing a plan at that point would be the worst possible response.
     """
     attempt_prompt = prompt
     last_error: Optional[str] = None
@@ -243,16 +261,15 @@ async def _ask(gateway, prompt: str) -> MissionPlan:
                 task="analysis",
                 system=SYSTEM,
                 response_format=PLAN_SCHEMA,
-                max_tokens=2048,
+                max_tokens=PLAN_TOKEN_BUDGET,
                 temperature=0.2,
             )
         except Exception as exc:  # noqa: BLE001 — including LLMUnavailable
-            # A model that cannot be reached, or that refuses because no
-            # provider honours structured output, IS "no plan could be
-            # obtained". Found by running a tick on a stack with no litellm
-            # installed: the exception escaped propose_plan's contract, past
-            # the executor's `except PlanUnavailable`, and killed the tick.
-            raise PlanUnavailable(f"the planner could not be reached: {exc}") from exc
+            last_error = str(exc)[:500]
+            logger.warning("mission planner: attempt %d gateway failure: %s", attempt, last_error)
+            if attempt == 2:
+                raise PlanUnavailable(f"the planner could not be reached: {last_error}") from exc
+            continue
         try:
             return MissionPlan.model_validate_json(raw)
         except (ValidationError, ValueError) as exc:

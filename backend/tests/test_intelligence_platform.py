@@ -8,11 +8,8 @@ from pydantic import ValidationError
 from data_integrations.cache import canonical_request_hash
 from data_integrations.periodic import build_default_scheduler
 from command_providers import (
-    ProviderConfigurationError,
     ProviderRequestError,
     create_google_calendar_event,
-    place_acs_call,
-    send_ses_email,
 )
 from graph_engine import PropertyGraph
 from intelligence_engine import (
@@ -314,35 +311,7 @@ def test_feature_flags_are_independent_and_disabled_features_do_not_advertise(mo
     assert scheduler._tasks["platform_source_health"].enabled is True
 
 
-def test_acs_call_provider_fails_closed_on_missing_config():
-    with pytest.raises(ProviderConfigurationError):
-        asyncio.run(
-            place_acs_call(
-                {"target": {"phone": "+15555550101"}},
-            )
-        )
-
-
 def test_provider_adapters_fail_closed_before_any_network_call(monkeypatch):
-    monkeypatch.delenv("ORACLE_SES_FROM_EMAIL", raising=False)
-    with pytest.raises(ProviderConfigurationError):
-        asyncio.run(
-            send_ses_email(
-                {"target": {"email": "seller@example.test"}, "subject": "Terms", "body": "Body"}
-            )
-        )
-
-    with pytest.raises(ProviderConfigurationError):
-        asyncio.run(
-            place_acs_call(
-                {"target": {"phone": "555-0100"}},
-                credentials={
-                    "connection_string": "endpoint=https://mock.acs.azure.com/;accesskey=mock",
-                    "from_number": "+15555550101",
-                },
-            )
-        )
-
     with pytest.raises(ProviderRequestError):
         asyncio.run(
             create_google_calendar_event(

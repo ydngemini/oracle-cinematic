@@ -26,10 +26,13 @@ export const VIEW_PATHS = Object.freeze({ home: '/', work: '/work', neoh: '/neoh
 /** Work views. The first four are searchable kinds; the rest are the old
  *  Our-AI workspaces and Deals/Property sub-views, reachable by ?type. */
 export const WORK_TYPES = Object.freeze([
-  'people', 'properties', 'deals', 'conversations',
+  'recent', 'people', 'properties', 'deals', 'conversations',
   'opportunities', 'ai', 'sales', 'social', 'homeowners', 'automations', 'sites', 'missions',
 ]);
-export const DEFAULT_WORK_TYPE = 'people';
+// Work opens on the trail of what was last touched, not on the People CRM
+// tab. A chip switches to a kind's full view; nothing empty-handed lands in
+// a legacy list first.
+export const DEFAULT_WORK_TYPE = 'recent';
 
 const ENTITY_PREFIXES = Object.freeze({ person: '/p/', property: '/property/', deal: '/deal/' });
 
@@ -126,7 +129,7 @@ export function parse(pathname, search = '', { fallbackView = VIEWS.home } = {})
       return {
         view: fallbackView,
         params: paramsToObject(params),
-        entity: { kind, id },
+        entity: { kind, id, ...(kind === 'property' && params.get('tour') === '3d' ? { tour: true } : {}) },
       };
     }
   }
@@ -178,8 +181,8 @@ export function href(view, params = {}) {
 }
 
 /** Address of an entity sheet. */
-export function entityHref(kind, id) {
+export function entityHref(kind, id, { tour = false } = {}) {
   const prefix = ENTITY_PREFIXES[kind];
   if (!prefix || !id) return VIEW_PATHS.home;
-  return `${prefix}${encodeURIComponent(String(id))}`;
+  return `${prefix}${encodeURIComponent(String(id))}${kind === 'property' && tour ? '?tour=3d' : ''}`;
 }

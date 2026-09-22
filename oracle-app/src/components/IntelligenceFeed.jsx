@@ -57,12 +57,11 @@ export function EvidenceList({ items }) {
   return (
     <dl className={styles.evidence}>
       {items.map((item, i) => (
-        <div className={styles.evidenceRow} key={`${item.source}-${i}`}>
+        <div className={styles.evidenceRow} key={`${item.source || item.label}-${i}`}>
           <dt className={styles.evidenceLabel}>{item.label}</dt>
           <dd className={styles.evidenceValue}>
             {item.value}
-            {' '}
-            <span className={styles.evidenceSource}>({item.source})</span>
+            {item.as_of ? <span className={styles.evidenceSource}>as of {item.as_of}</span> : null}
           </dd>
         </div>
       ))}

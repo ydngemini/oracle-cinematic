@@ -1,12 +1,15 @@
-import { Suspense, lazy, useCallback, useEffect, useRef, useState } from 'react';
+import { Suspense, lazy, useCallback, useEffect, useState } from 'react';
 
 import { useAssistantRecord } from '../components/AssistantContext';
+import { ErrorBoundary } from '../components/ErrorBoundary';
 import { crmGet } from '../state/useCrmApi';
 import { dealRead, entityTitle, humanState, personRead } from './entityModel';
 import { NeohRead } from './NeohRead';
+import { EntityFrame } from './EntityFrame';
 import { LivingStrip } from './LivingObject';
 import { composeLiving } from './livingModel';
 import { useCallPresence } from './callPresence';
+import { tourOffer } from '../lib/tour/tourOffer';
 import styles from './EntitySheet.module.css';
 
 /**
@@ -28,40 +31,19 @@ const ClientDetailDrawer = lazy(() => import('../components/ClientDetailDrawer')
 const DossierPanel = lazy(() =>
   import('../components/DossierPanel').then((m) => ({ default: m.DossierPanel })));
 const DealRoomPanel = lazy(() => import('../components/DealRoomPanel'));
-
-/** Escape closes; focus lands in the sheet on open and returns on close. */
-function useSheetChrome(onClose) {
-  const sheetRef = useRef(null);
-  useEffect(() => {
-    const opener = document.activeElement;
-    const frame = window.requestAnimationFrame(() => sheetRef.current?.focus());
-    const onKey = (event) => {
-      if (event.key === 'Escape') { event.stopPropagation(); onClose?.(); }
-    };
-    document.addEventListener('keydown', onKey);
-    return () => {
-      window.cancelAnimationFrame(frame);
-      document.removeEventListener('keydown', onKey);
-      if (opener && typeof opener.focus === 'function') opener.focus();
-    };
-  }, [onClose]);
-  return sheetRef;
-}
+const TourViewer = lazy(() => import('../components/TourViewer'));
 
 function useFetched(path) {
   const [state, setState] = useState({ data: null, error: null, loading: true });
   useEffect(() => {
     let live = true;
-    const frame = window.requestAnimationFrame(() => {
-      if (live) setState({ data: null, error: null, loading: true });
-    });
     crmGet(path).then(
-      (data) => { if (live) setState({ data, error: null, loading: false }); },
-      (error) => { if (live) setState({ data: null, error, loading: false }); },
+      (data) => { if (live) setState({ path, data, error: null, loading: false }); },
+      (error) => { if (live) setState({ path, data: null, error, loading: false }); },
     );
-    return () => { live = false; window.cancelAnimationFrame(frame); };
+    return () => { live = false; };
   }, [path]);
-  return state;
+  return state.path === path ? state : { data: null, error: null, loading: true };
 }
 
 function Fallback() {
@@ -94,16 +76,83 @@ function PersonSheet({ id, onClose }) {
 
 /* ── Property ───────────────────────────────────────────────────────────── */
 
-function PropertySheet({ id, onClose }) {
-  const sheetRef = useSheetChrome(onClose);
-  useAssistantRecord('property', id, 'Property', '');
-  return (
-    <div className={styles.layer} ref={sheetRef} tabIndex={-1}>
-      <button type="button" className={styles.scrim} aria-label="Close property" onClick={onClose} />
-      <Suspense fallback={<Fallback />}>
-        <DossierPanel leadId={id} onClose={onClose} />
+function PropertySheet({ id, onClose, tourOpen, onOpenTour }) {
+  // The address, from the same read the dossier below performs. A property
+  // sheet whose header does not say which property it is was the gap this
+  // frame exists to close.
+  const dossier = useFetched(`/api/leads/${encodeURIComponent(id)}/dossier`);
+  const record = dossier.data;
+  const address = record?.payload?.address || record?.parcel_id || 'Property';
+  useAssistantRecord('property', id, address, record?.dossier_status || '');
+  const tour = useFetched(`/api/crm/property-tour?lead_id=${encodeURIComponent(id)}`);
+  const scenes = tour.data?.pano_scenes;
+  const offer = tourOffer(tour.data);
+  const canExplore = offer.kind === 'walkable';
+  const tourLabel = tour.loading ? 'Checking for a tour…'
+    : tour.error ? 'Tour status unavailable'
+      : offer.kind === 'walkable' ? offer.label
+        : offer.reason;
+
+  const tourContent = tour.loading ? (
+    <div className={styles.tourStatus} role="status">Loading tour…</div>
+  ) : tour.error ? (
+    <div className={styles.tourStatus} role="alert">The tour could not be loaded. Return to the property and try again later.</div>
+  ) : offer.kind !== 'walkable' ? (
+    <div className={styles.tourStatus} role="status">{offer.reason}</div>
+  ) : (
+    <ErrorBoundary
+      label="property tour"
+      fallback={() => <div className={styles.tourStatus} role="alert">The tour could not be opened. You can still return to the property.</div>}
+    >
+      <Suspense fallback={<div className={styles.tourStatus} role="status">Preparing tour…</div>}>
+        <TourViewer
+          embedded
+          splatUrl={tour.data.splat_url}
+          splatFormat={tour.data.splat_format}
+          splatScene={tour.data.splat_scene}
+          panoScenes={scenes}
+          disclosure={tour.data.disclosure}
+          floors={tour.data.floors}
+          tourpoints={tour.data.tourpoints}
+          isThisProperty={tour.data.is_this_property !== false}
+          address={address}
+          title={address}
+          onClose={onClose}
+        />
       </Suspense>
-    </div>
+    </ErrorBoundary>
+  );
+
+  return (
+    <EntityFrame
+      kind="Property"
+      title={address}
+      subline={[
+        record?.payload?.city,
+        record?.state,
+        record?.dossier_status && humanState(record.dossier_status),
+      ]}
+      onClose={onClose}
+      immersive={tourOpen ? tourContent : null}
+      read={null}
+      facts={[
+        { label: 'Photos', value: tour.data?.photo_count ?? null },
+        { label: '360 scenes', value: tour.data?.pano_scene_count ?? null },
+        { label: '3D tour', value: tour.loading || tour.error ? null : offer.kind === 'walkable' ? (offer.isDemo ? 'Demo space' : 'Yes') : 'Not yet' },
+      ]}
+      actions={[
+        {
+          label: tourLabel,
+          primary: canExplore,
+          disabled: !canExplore || tour.loading || Boolean(tour.error),
+          onClick: onOpenTour,
+        },
+      ]}
+    >
+      <Suspense fallback={<Fallback />}>
+        <DossierPanel leadId={id} onClose={onClose} onOpenTour={onOpenTour} embedded />
+      </Suspense>
+    </EntityFrame>
   );
 }
 
@@ -116,59 +165,51 @@ function money(value) {
 }
 
 function DealSheet({ id, onClose }) {
-  const sheetRef = useSheetChrome(onClose);
   const detail = useFetched(`/api/portfolio/transactions/${id}`);
   const transaction = detail.data?.transaction || null;
   const title = entityTitle('deal', transaction);
   useAssistantRecord('transaction', id, title, transaction?.status || '');
   const read = detail.data ? dealRead(transaction, detail.data.milestones) : null;
   const price = money(transaction?.purchase_price ?? transaction?.list_price);
+  const milestones = detail.data?.milestones || [];
+  const done = milestones.filter((m) => m.completed_at || m.status === 'completed').length;
 
   return (
-    <div className={styles.layer}>
-      <button type="button" className={styles.scrim} aria-label="Close deal" onClick={onClose} />
-      <section
-        className={styles.sheet}
-        role="dialog"
-        aria-modal="true"
-        aria-label={`Deal — ${title}`}
-        ref={sheetRef}
-        tabIndex={-1}
-      >
-        <header className={styles.head}>
-          <div className={styles.headText}>
-            <span className={styles.kicker}>Deal</span>
-            <h1 className={styles.title}>{title}</h1>
-            <span className={styles.subline}>
-              {transaction?.status && <span>{humanState(transaction.status)}</span>}
-              {price && <span>{price}</span>}
-              {transaction?.closing_date && <span>closes {new Date(transaction.closing_date).toLocaleDateString()}</span>}
-            </span>
-          </div>
-          <button type="button" className={styles.close} onClick={onClose} aria-label="Close">×</button>
-        </header>
-        <NeohRead read={read} loading={detail.loading} error={detail.error} />
-        <div className={styles.body}>
-          {detail.error && !detail.data ? (
-            <p className={styles.error}>This deal could not be loaded. It may have been removed, or belong to another workspace.</p>
-          ) : (
-            <Suspense fallback={<Fallback />}>
-              <DealRoomPanel transactionId={id} />
-            </Suspense>
-          )}
-        </div>
-      </section>
-    </div>
+    <EntityFrame
+      kind="Deal"
+      title={title}
+      subline={[
+        transaction?.status && humanState(transaction.status),
+        price,
+        transaction?.closing_date && `closes ${new Date(transaction.closing_date).toLocaleDateString()}`,
+      ]}
+      read={read}
+      readLoading={detail.loading}
+      readError={detail.error}
+      facts={[
+        { label: 'Milestones', value: milestones.length ? `${done} of ${milestones.length}` : null },
+        { label: 'Price', value: price },
+      ]}
+      onClose={onClose}
+    >
+      {detail.error && !detail.data ? (
+        <p className={styles.error}>This deal could not be loaded. It may have been removed, or belong to another workspace.</p>
+      ) : (
+        <Suspense fallback={<Fallback />}>
+          <DealRoomPanel transactionId={id} />
+        </Suspense>
+      )}
+    </EntityFrame>
   );
 }
 
 /* ── Dispatch ───────────────────────────────────────────────────────────── */
 
-export function EntitySheet({ entity, onClose }) {
+export function EntitySheet({ entity, onClose, onOpenTour }) {
   const close = useCallback(() => onClose?.(), [onClose]);
   if (!entity?.kind || !entity?.id) return null;
   if (entity.kind === 'person') return <PersonSheet id={entity.id} onClose={close} />;
-  if (entity.kind === 'property') return <PropertySheet id={entity.id} onClose={close} />;
+  if (entity.kind === 'property') return <PropertySheet key={entity.id} id={entity.id} tourOpen={entity.tour} onClose={close} onOpenTour={onOpenTour} />;
   if (entity.kind === 'deal') return <DealSheet id={entity.id} onClose={close} />;
   return null;
 }

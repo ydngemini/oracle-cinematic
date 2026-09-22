@@ -1,16 +1,29 @@
 """Durable object storage, independent of which cloud is underneath.
 
-Three backends, chosen by ORACLE_STORAGE_BACKEND:
+Four backends, chosen by ORACLE_STORAGE_BACKEND:
 
+  local                  A plain directory on this host, ORACLE_MEDIA_ROOT
+                         (default ./var/media under the working dir). No SDK, no
+                         credentials, no cloud account — the backend that lets
+                         the whole stack run offline. Same on-disk write-then-
+                         rename semantics as azure-files; bytes are served
+                         through the app's own authenticated media endpoint
+                         (signed_url returns None) since a local dir has no URL.
   azure-files (default)  Write through the shared Azure Files mount described in
                          infra/azure/README.md. Every backend replica sees the
                          same path, so this needs no SDK and no credentials.
+                         Mechanically identical to `local` — the difference is
+                         only the default root and the operational expectation
+                         that the path is a shared mount.
   azure-blob             Azure Blob Storage, with SAS links for expiring reads.
                          Prefers a user-delegation SAS signed by the managed
                          identity; falls back to an account key only if the
                          connection string carries one.
-  s3                     The legacy AWS path, kept so an existing deployment can
-                         be migrated without a flag day.
+  s3                     Any S3-compatible object store: AWS S3, or DigitalOcean
+                         Spaces (Spaces speaks the S3 API — set
+                         ORACLE_S3_ENDPOINT_URL to its regional endpoint, e.g.
+                         https://nyc3.digitaloceanspaces.com, and it's the
+                         same code path, not a separate backend).
 
 Callers work in opaque keys ("property-view/<tenant>/<random>"). Only
 signed_url() cares where the bytes physically live.
@@ -29,20 +42,59 @@ logger = logging.getLogger("oracle.object_storage")
 
 BACKEND = os.getenv("ORACLE_STORAGE_BACKEND", "azure-files").strip().lower()
 
-# azure-files: the shared mount. Matches the /mnt/neoh mount point the Container
-# Apps deployment attaches to every replica.
-MEDIA_ROOT = Path(os.getenv("ORACLE_MEDIA_ROOT", "/mnt/neoh"))
+# `local` and `azure-files` are both a directory on disk with identical write
+# semantics — the only difference is the default root and the operational
+# meaning of the path (a local dir vs. a shared mount).
+_FILESYSTEM_BACKENDS = ("local", "azure-files")
+
+# azure-files defaults to /mnt/neoh — the Container Apps mount point, which does
+# not exist on a laptop. `local` defaults to ./var/media under the working dir
+# so a bare checkout can write media with no configuration at all.
+_DEFAULT_ROOT = "./var/media" if BACKEND == "local" else "/mnt/neoh"
+MEDIA_ROOT = Path(os.getenv("ORACLE_MEDIA_ROOT", _DEFAULT_ROOT))
 
 # azure-blob
 BLOB_CONTAINER = os.getenv("ORACLE_BLOB_CONTAINER", "neoh-media")
 BLOB_ACCOUNT_URL = os.getenv("ORACLE_BLOB_ACCOUNT_URL", "")
 BLOB_CONNECTION_STRING = os.getenv("AZURE_STORAGE_CONNECTION_STRING", "")
 
-# s3 (legacy)
-S3_BUCKET = os.getenv("RECON_S3_BUCKET", "")
-S3_REGION = os.getenv("AWS_REGION", "us-east-1")
+# s3 (AWS S3, or any S3-compatible store such as DigitalOcean Spaces)
+S3_BUCKET = os.getenv("ORACLE_S3_BUCKET") or os.getenv("RECON_S3_BUCKET", "")
+S3_REGION = os.getenv("ORACLE_S3_REGION") or os.getenv("AWS_REGION", "us-east-1")
+# Unset (None) on real AWS S3 — boto3's default endpoint already resolves the
+# bucket's region correctly. Spaces (and any other S3-compatible store) has no
+# such default, so it must be given explicitly, e.g.
+# https://nyc3.digitaloceanspaces.com.
+S3_ENDPOINT_URL = os.getenv("ORACLE_S3_ENDPOINT_URL") or None
+# Explicit keys for a store with no IAM-role/instance-metadata credential
+# chain (Spaces has none). Falls back to boto3's normal credential
+# resolution — including AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY — when unset,
+# so an existing AWS S3 deployment using IAM roles needs no change.
+S3_ACCESS_KEY_ID = os.getenv("ORACLE_S3_ACCESS_KEY_ID") or None
+S3_SECRET_ACCESS_KEY = os.getenv("ORACLE_S3_SECRET_ACCESS_KEY") or None
 
-_VALID_BACKENDS = ("azure-files", "azure-blob", "s3")
+
+def _s3_client():
+    import boto3  # lazy — only the s3 backend needs the AWS SDK
+
+    # Virtual-hosted-style addressing (bucket.endpoint/key, not
+    # endpoint/bucket/key) is DigitalOcean's own documented requirement for
+    # Spaces (docs/products/spaces/reference/s3-sdk-examples/) — only forced
+    # when a custom endpoint is actually configured, so a real AWS S3
+    # deployment keeps boto3's own default behaviour unchanged.
+    from botocore.client import Config
+
+    return boto3.client(
+        "s3",
+        region_name=S3_REGION,
+        endpoint_url=S3_ENDPOINT_URL,
+        aws_access_key_id=S3_ACCESS_KEY_ID,
+        aws_secret_access_key=S3_SECRET_ACCESS_KEY,
+        config=Config(s3={"addressing_style": "virtual"}) if S3_ENDPOINT_URL else None,
+    )
+
+
+_VALID_BACKENDS = ("local", "azure-files", "azure-blob", "s3")
 
 
 class StorageError(RuntimeError):
@@ -78,7 +130,7 @@ def is_configured() -> bool:
         backend = _check_backend()
     except StorageError:
         return False
-    if backend == "azure-files":
+    if backend in _FILESYSTEM_BACKENDS:
         return _mount_is_writable()
     if backend == "azure-blob":
         return bool(BLOB_CONNECTION_STRING or BLOB_ACCOUNT_URL)
@@ -141,7 +193,7 @@ def put_bytes(key: str, data: bytes, content_type: str = "application/octet-stre
     """Store `data` at `key`. Returns the key, so call sites can persist it."""
     backend = _check_backend()
 
-    if backend == "azure-files":
+    if backend in _FILESYSTEM_BACKENDS:
         destination = _safe_destination(key)
         destination.parent.mkdir(parents=True, exist_ok=True)
         # Write-then-rename: a reader on another replica never observes a
@@ -159,11 +211,9 @@ def put_bytes(key: str, data: bytes, content_type: str = "application/octet-stre
         )
         return key
 
-    import boto3  # lazy — only the legacy path needs the AWS SDK
-
     if not S3_BUCKET:
-        raise StorageError("ORACLE_STORAGE_BACKEND=s3 but RECON_S3_BUCKET is unset")
-    boto3.client("s3", region_name=S3_REGION).put_object(
+        raise StorageError("ORACLE_STORAGE_BACKEND=s3 but ORACLE_S3_BUCKET (or RECON_S3_BUCKET) is unset")
+    _s3_client().put_object(
         Bucket=S3_BUCKET, Key=key, Body=data, ContentType=content_type
     )
     return key
@@ -173,7 +223,7 @@ def put_file(key: str, path: str | os.PathLike[str], content_type: str) -> str:
     """Store a file already on disk. Streams rather than reading it into memory."""
     backend = _check_backend()
 
-    if backend == "azure-files":
+    if backend in _FILESYSTEM_BACKENDS:
         destination = _safe_destination(key)
         destination.parent.mkdir(parents=True, exist_ok=True)
         staging = destination.with_suffix(destination.suffix + ".partial")
@@ -190,11 +240,9 @@ def put_file(key: str, path: str | os.PathLike[str], content_type: str) -> str:
             )
         return key
 
-    import boto3
-
     if not S3_BUCKET:
-        raise StorageError("ORACLE_STORAGE_BACKEND=s3 but RECON_S3_BUCKET is unset")
-    boto3.client("s3", region_name=S3_REGION).upload_file(
+        raise StorageError("ORACLE_STORAGE_BACKEND=s3 but ORACLE_S3_BUCKET (or RECON_S3_BUCKET) is unset")
+    _s3_client().upload_file(
         str(path), S3_BUCKET, key, ExtraArgs={"ContentType": content_type}
     )
     return key
@@ -203,18 +251,12 @@ def put_file(key: str, path: str | os.PathLike[str], content_type: str) -> str:
 def get_bytes(key: str) -> bytes:
     backend = _check_backend()
 
-    if backend == "azure-files":
+    if backend in _FILESYSTEM_BACKENDS:
         return _safe_destination(key).read_bytes()
     if backend == "azure-blob":
         return _blob_client(key).download_blob().readall()
 
-    import boto3
-
-    return (
-        boto3.client("s3", region_name=S3_REGION)
-        .get_object(Bucket=S3_BUCKET, Key=key)["Body"]
-        .read()
-    )
+    return _s3_client().get_object(Bucket=S3_BUCKET, Key=key)["Body"].read()
 
 
 # --- expiring reads -----------------------------------------------------------
@@ -227,15 +269,13 @@ def signed_url(key: str, expires_seconds: int = 3600) -> Optional[str]:
     authenticated media endpoint rather than handed out as a link."""
     backend = _check_backend()
 
-    if backend == "azure-files":
+    if backend in _FILESYSTEM_BACKENDS:
         return None
 
     if backend == "azure-blob":
         return _blob_sas_url(key, expires_seconds)
 
-    import boto3
-
-    return boto3.client("s3", region_name=S3_REGION).generate_presigned_url(
+    return _s3_client().generate_presigned_url(
         "get_object", Params={"Bucket": S3_BUCKET, "Key": key}, ExpiresIn=expires_seconds
     )
 
@@ -254,15 +294,13 @@ def presigned_put_url(key: str, expires_seconds: int = 3600) -> Optional[str]:
     """
     backend = _check_backend()
 
-    if backend == "azure-files":
+    if backend in _FILESYSTEM_BACKENDS:
         return None
 
     if backend == "azure-blob":
         return _blob_sas_url(key, expires_seconds, write=True)
 
-    import boto3
-
-    return boto3.client("s3", region_name=S3_REGION).generate_presigned_url(
+    return _s3_client().generate_presigned_url(
         "put_object", Params={"Bucket": S3_BUCKET, "Key": key}, ExpiresIn=expires_seconds
     )
 

@@ -75,79 +75,21 @@ def _http_json(
         raise ProviderRequestError("provider request timed out or was unavailable") from exc
 
 
-async def send_ses_email(
-    draft: Mapping[str, Any],
-    *,
-    credentials: Optional[Mapping[str, Any]] = None,
-) -> ProviderResult:
-    credentials = dict(credentials or {})
-    sender = str(credentials.get("from_email") or os.getenv("ORACLE_SES_FROM_EMAIL", ""))
-    recipient = str((draft.get("target") or {}).get("email") or "").strip()
-    subject = str(draft.get("subject") or "").strip()
-    body_text = str(draft.get("body") or "").strip()
-    if not sender:
-        raise ProviderConfigurationError("ORACLE_SES_FROM_EMAIL is not configured")
-    if not recipient or "@" not in recipient:
-        raise ProviderRequestError("approved email target is invalid")
-    if not subject or not body_text:
-        raise ProviderRequestError("approved email subject and body are required")
-
-    def _send() -> dict[str, Any]:
-        import boto3
-        from botocore.config import Config
-
-        client_options: dict[str, Any] = {
-            "region_name": str(
-                credentials.get("region") or os.getenv("AWS_REGION", "us-east-2")
-            ),
-            "config": Config(
-                connect_timeout=8,
-                read_timeout=15,
-                retries={"max_attempts": 2, "mode": "standard"},
-            ),
-        }
-        access_key = str(credentials.get("aws_access_key_id") or "").strip()
-        secret_key = str(credentials.get("aws_secret_access_key") or "").strip()
-        if bool(access_key) != bool(secret_key):
-            raise ProviderConfigurationError(
-                "SES access key id and secret access key must be configured together"
-            )
-        if access_key:
-            client_options["aws_access_key_id"] = access_key
-            client_options["aws_secret_access_key"] = secret_key
-            session_token = str(credentials.get("aws_session_token") or "").strip()
-            if session_token:
-                client_options["aws_session_token"] = session_token
-        client = boto3.client("sesv2", **client_options)
-        return client.send_email(
-            FromEmailAddress=sender,
-            Destination={"ToAddresses": [recipient]},
-            Content={
-                "Simple": {
-                    "Subject": {"Data": subject, "Charset": "UTF-8"},
-                    "Body": {"Text": {"Data": body_text, "Charset": "UTF-8"}},
-                }
-            },
-        )
-
-    response = await asyncio.wait_for(asyncio.to_thread(_send), timeout=25.0)
-    reference = str(response.get("MessageId") or "")
-    if not reference:
-        raise ProviderRequestError("SES did not return a message id")
-    return ProviderResult("ses", reference, "submitted", {"recipient": recipient})
-
-
 async def send_smtp_email(
     draft: Mapping[str, Any],
     *,
     credentials: Optional[Mapping[str, Any]] = None,
+    reply_to: Optional[str] = None,
 ) -> ProviderResult:
     """Send one previously-approved email over SMTP.
 
     This is the bring-your-own-mail-server path: `credentials` comes from the
     tenant's encrypted provider vault, so a brokerage can send through their own
     server (or their own Google account) without the platform holding it. With
-    no tenant credential it falls back to the platform SMTP environment."""
+    no tenant credential it falls back to the platform SMTP environment.
+    `reply_to` is the drafting agent's own address (user_profiles.public_email)
+    — the send still goes out through the one platform/tenant relay, but
+    replies land with the agent who worked the lead, not the relay mailbox."""
     credentials = dict(credentials or {})
     recipient = str((draft.get("target") or {}).get("email") or "").strip()
     subject = str(draft.get("subject") or "").strip()
@@ -165,6 +107,7 @@ async def send_smtp_email(
                 recipient=recipient,
                 subject=subject,
                 text=body_text,
+                reply_to=reply_to,
                 credentials=credentials,
             )
         except smtp_mailer.SmtpConfigurationError as exc:
@@ -176,59 +119,6 @@ async def send_smtp_email(
     if not reference:
         raise ProviderRequestError("SMTP did not return a message id")
     return ProviderResult("smtp", reference, "submitted", {"recipient": recipient})
-
-
-async def send_acs_email(
-    draft: Mapping[str, Any],
-    *,
-    credentials: Optional[Mapping[str, Any]] = None,
-) -> ProviderResult:
-    """Send one previously-approved email through Azure Communication Services.
-
-    The ACS counterpart to send_ses_email — same validation, same approved-draft
-    contract, so the caller does not care which cloud is behind it."""
-    credentials = dict(credentials or {})
-    connection_string = str(
-        credentials.get("connection_string") or os.getenv("ACS_CONNECTION_STRING", "")
-    ).strip()
-    sender = str(
-        credentials.get("from_email") or os.getenv("ORACLE_ACS_FROM_EMAIL", "")
-    ).strip()
-    recipient = str((draft.get("target") or {}).get("email") or "").strip()
-    subject = str(draft.get("subject") or "").strip()
-    body_text = str(draft.get("body") or "").strip()
-    if not connection_string:
-        raise ProviderConfigurationError("ACS connection string is not configured")
-    if not sender:
-        raise ProviderConfigurationError("ORACLE_ACS_FROM_EMAIL is not configured")
-    if not recipient or "@" not in recipient:
-        raise ProviderRequestError("approved email target is invalid")
-    if not subject or not body_text:
-        raise ProviderRequestError("approved email subject and body are required")
-
-    def _send() -> str:
-        from azure.communication.email import EmailClient
-
-        client = EmailClient.from_connection_string(connection_string)
-        poller = client.begin_send(
-            {
-                "senderAddress": sender,
-                "recipients": {"to": [{"address": recipient}]},
-                "content": {"subject": subject, "plainText": body_text},
-            }
-        )
-        result = poller.result() or {}
-        status = str(result.get("status") or "")
-        # ACS reports a terminal per-message status; anything but Succeeded means
-        # the message was accepted by the SDK but rejected downstream.
-        if status and status.lower() not in ("succeeded", "running", "notstarted"):
-            raise ProviderRejectedError(f"ACS email status {status}"[:500])
-        return str(result.get("id") or "")
-
-    reference = await asyncio.wait_for(asyncio.to_thread(_send), timeout=25.0)
-    if not reference:
-        raise ProviderRequestError("ACS did not return a message id")
-    return ProviderResult("acs_email", reference, "submitted", {"recipient": recipient})
 
 
 def _twilio_credential_error(
@@ -327,107 +217,6 @@ async def send_twilio_sms(
     if not reference:
         raise ProviderRequestError("Twilio did not return a message SID")
     return ProviderResult("twilio_sms", reference, "queued", {"to": recipient})
-
-
-async def send_acs_sms(
-    draft: Mapping[str, Any],
-    *,
-    credentials: Optional[Mapping[str, Any]] = None,
-) -> ProviderResult:
-    """Send one previously-approved SMS through Azure Communication Services."""
-    credentials = dict(credentials or {})
-    connection_string = str(
-        credentials.get("connection_string") or os.getenv("ACS_CONNECTION_STRING", "")
-    ).strip()
-    sender = str(
-        credentials.get("sms_sender")
-        or credentials.get("sms_sender_e164")
-        or os.getenv("ACS_SMS_FROM_NUMBER", "")
-    ).strip()
-    recipient = str((draft.get("target") or {}).get("phone") or "").strip()
-    body = str(draft.get("body") or "").strip()
-    if not connection_string:
-        raise ProviderConfigurationError("ACS connection string is not configured")
-    if not sender:
-        raise ProviderConfigurationError("ACS SMS sender is not configured")
-    if not recipient.startswith("+"):
-        raise ProviderRequestError("approved SMS target must be E.164")
-    if not body or len(body) > 1_600:
-        raise ProviderRequestError("approved SMS body must contain 1-1600 characters")
-
-    def _send() -> str:
-        from azure.communication.sms import SmsClient
-
-        client = SmsClient.from_connection_string(connection_string)
-        results = client.send(
-            from_=sender,
-            to=[recipient],
-            message=body,
-            enable_delivery_report=True,
-        )
-        result = next(iter(results), None)
-        if result is None:
-            return ""
-        successful = bool(getattr(result, "successful", False))
-        if not successful:
-            error_message = str(getattr(result, "error_message", "ACS rejected the SMS"))
-            raise ProviderRejectedError(error_message[:500])
-        return str(getattr(result, "message_id", "") or "")
-
-    reference = await asyncio.wait_for(asyncio.to_thread(_send), timeout=25.0)
-    if not reference:
-        raise ProviderRequestError("ACS did not return a message id")
-    return ProviderResult("acs_sms", reference, "queued", {"to": recipient})
-
-
-async def place_acs_call(
-    draft: Mapping[str, Any],
-    *,
-    credentials: Optional[Mapping[str, Any]] = None,
-) -> ProviderResult:
-    credentials = dict(credentials or {})
-    connection_string = str(
-        credentials.get("connection_string") or os.getenv("ACS_CONNECTION_STRING", "")
-    )
-    from_number = str(
-        credentials.get("from_number") or os.getenv("ACS_FROM_NUMBER", "")
-    )
-    callback_url = _authenticated_callback_url(
-        "/api/commands/webhooks/acs", "ORACLE_ACS_WEBHOOK_SECRET"
-    )
-    to_number = str((draft.get("target") or {}).get("phone") or "").strip()
-
-    if not connection_string:
-        raise ProviderConfigurationError("ACS connection string is not configured")
-    if not from_number:
-        raise ProviderConfigurationError("ACS from-number is not configured")
-    if not to_number.startswith("+"):
-        raise ProviderRequestError("approved call target must be E.164")
-
-    def _call() -> str:
-        from azure.communication.callautomation import (
-            CallAutomationClient,
-            CallInvite,
-            PhoneNumberIdentifier,
-        )
-        from acs_call_handler import build_qwen_media_streaming_options
-
-        client = CallAutomationClient.from_connection_string(connection_string)
-        call_invite = CallInvite(
-            target=PhoneNumberIdentifier(to_number),
-            source_caller_id_number=PhoneNumberIdentifier(from_number),
-        )
-        result = client.create_call(
-            call_invite,
-            callback_url,
-            media_streaming=build_qwen_media_streaming_options(),
-        )
-        return result.call_connection_id or ""
-
-    reference = await asyncio.wait_for(asyncio.to_thread(_call), timeout=25.0)
-    if not reference:
-        raise ProviderRequestError("ACS did not return a call connection ID")
-    return ProviderResult("acs", reference, "queued", {})
 
 
 async def create_google_calendar_event(

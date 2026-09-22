@@ -134,7 +134,7 @@ function compile(gl, type, source) {
 }
 
 export default function PanoViewer({
-  scenes = [], disclosure, address, title, onClose, focusSceneId = null,
+  scenes = [], disclosure, address, title, onClose, focusSceneId = null, embedded = false,
 }) {
   const canvasRef = useRef(null);
   const stateRef = useRef({ yaw: 0, pitch: 0, drag: false, lastX: 0, lastY: 0 });
@@ -370,8 +370,8 @@ export default function PanoViewer({
   const total = scenes.length;
 
   return (
-    <div className={styles.overlay} role="dialog" aria-modal="true" aria-label={`360 tour of ${address || title || 'this property'}`}>
-      <div className={styles.bar}>
+    <div className={styles.overlay} role={embedded ? undefined : 'dialog'} aria-modal={embedded ? undefined : true} aria-label={`360 tour of ${address || title || 'this property'}`}>
+      {!embedded && <div className={styles.bar}>
         <div>
           <span className={styles.kicker}>360° walkthrough</span>
           {address ? <span className={styles.addr}>{address}</span> : null}
@@ -379,7 +379,7 @@ export default function PanoViewer({
         <button type="button" className={styles.closeBtn} onClick={onClose} aria-label="Close 360 tour">
           Close
         </button>
-      </div>
+      </div>}
 
       {status === 'nowebgl' ? (
         <div className={styles.center}>

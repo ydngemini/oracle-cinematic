@@ -5,13 +5,12 @@ third-party email API in the path and no default host — `ORACLE_SMTP_HOST` mus
 be set explicitly, because guessing a provider is how a deployment ends up
 silently routing mail through someone else's service.
 
-Three independent paths exist:
+Two independent paths exist, both over SMTP — ACS and SES support were removed:
 
 | Path | What it sends | Configured by |
 |---|---|---|
 | **Platform SMTP** | password reset, approved outbound mail | `ORACLE_SMTP_*` below |
 | **Tenant BYO SMTP** | a brokerage's own outbound mail | the encrypted `smtp` provider vault, per tenant |
-| **ACS / SES** | alternatives to the above | `ORACLE_EMAIL_PROVIDER=acs\|ses` |
 
 ## App configuration
 

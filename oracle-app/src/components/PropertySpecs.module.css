@@ -93,12 +93,7 @@
   overflow: hidden;
 
   /* Layered depth shadows */
-  box-shadow:
-    0 1px 0 rgba(242, 242, 242, 0.03) inset,
-    0 -1px 0 rgba(0, 0, 0, 0.6) inset,
-    0 24px 80px rgba(0, 0, 0, 0.5),
-    0 4px 16px rgba(0, 0, 0, 0.35),
-    0 1px 3px rgba(0, 0, 0, 0.6);
+  box-shadow: var(--shadow-e2);
 
   animation: panelFadeIn 0.7s cubic-bezier(0.16, 1, 0.3, 1) both;
 
@@ -109,7 +104,7 @@
     transparent 70%
   );
   background-image: var(--panel-vignette);
-  background-color: rgba(171, 171, 171, 0.20);
+  background-color: var(--oracle-surface);
 }
 
 /* Subtle horizontal scan line that traverses the panel once on mount */
@@ -142,7 +137,7 @@
     90deg,
     transparent,
     rgba(255, 188, 31, 0.35) 40%,
-    rgba(242, 242, 242, 0.15) 50%,
+    var(--oracle-shimmer) 50%,
     rgba(255, 188, 31, 0.35) 60%,
     transparent
   );
@@ -161,8 +156,8 @@
 }
 
 .kicker {
-  font-size: 0.52rem;
-  letter-spacing: 0.38em;
+  font-size: var(--text-xs);
+  letter-spacing: var(--tracking-widest);
   text-transform: uppercase;
   color: var(--oracle-accent-ink);
   font-weight: 600;
@@ -187,7 +182,7 @@
   font-size: 1.25rem;
   font-weight: 300;
   letter-spacing: -0.015em;
-  color: rgba(242, 242, 242, 0.92);
+  color: var(--oracle-text-heading);
   margin: 0;
   line-height: 1.3;
   transition: color 0.5s cubic-bezier(0.16, 1, 0.3, 1);
@@ -199,16 +194,14 @@
   display: grid;
   grid-template-columns: repeat(3, 1fr);
   gap: 1px;
-  background: rgba(242, 242, 242, 0.03);
+  background: var(--oracle-surface-sunken);
   border-radius: 2px;
   overflow: hidden;
   position: relative;
   z-index: 3;
 
   /* Ambient glow frame */
-  box-shadow:
-    0 0 0 1px rgba(242, 242, 242, 0.02),
-    0 4px 24px rgba(0, 0, 0, 0.3);
+  box-shadow: var(--shadow-e1);
 }
 
 .heroCard {
@@ -217,7 +210,7 @@
   align-items: center;
   justify-content: center;
   padding: 1.8rem 0.8rem 1.6rem;
-  background: rgba(8, 8, 8, 0.9);
+  background: var(--oracle-surface-raised);
   gap: 0.35rem;
   position: relative;
   overflow: hidden;
@@ -249,7 +242,7 @@
 }
 
 .heroCard:hover {
-  background: rgba(8, 8, 8, 0.95);
+  background: var(--oracle-surface-raised);
 }
 
 .heroCard:hover::before {
@@ -267,7 +260,7 @@
   background: linear-gradient(
     90deg,
     transparent,
-    rgba(242, 242, 242, 0.025),
+    var(--oracle-shimmer),
     transparent
   );
   transition: left 0.6s cubic-bezier(0.16, 1, 0.3, 1);
@@ -285,8 +278,8 @@
 }
 
 .cardLabel {
-  font-size: 0.5rem;
-  letter-spacing: 0.32em;
+  font-size: var(--text-xs);
+  letter-spacing: var(--tracking-widest);
   text-transform: uppercase;
   color: var(--oracle-accent-ink);
   font-weight: 600;
@@ -300,7 +293,7 @@
 .cardValue {
   font-size: 1.65rem;
   font-weight: 200;
-  color: rgba(242, 242, 242, 0.95);
+  color: var(--oracle-text-heading);
   letter-spacing: -0.025em;
   line-height: 1;
   transition: color 0.3s ease;
@@ -313,14 +306,14 @@
 }
 
 .heroCard:hover .cardValue {
-  color: rgba(242, 242, 242, 1);
+  color: var(--oracle-text-heading);
 }
 
 .cardUnit {
-  font-size: 0.52rem;
-  letter-spacing: 0.22em;
+  font-size: var(--text-xs);
+  letter-spacing: var(--tracking-widest);
   text-transform: uppercase;
-  color: rgba(171, 171, 171, 0.25);
+  color: var(--oracle-text-ghost);
   margin-top: 0.2rem;
   transition: color 0.3s ease;
 }
@@ -336,8 +329,8 @@
   align-items: baseline;
   gap: 2rem;
   padding: 1.1rem 0;
-  border-top: 1px solid rgba(242, 242, 242, 0.04);
-  border-bottom: 1px solid rgba(242, 242, 242, 0.04);
+  border-top: 1px solid var(--oracle-border-subtle);
+  border-bottom: 1px solid var(--oracle-border-subtle);
   position: relative;
   z-index: 3;
 }
@@ -351,7 +344,7 @@
   width: 2px;
   height: 50%;
   transform: translateY(-50%);
-  background: rgba(255, 188, 31, 0.2);
+  background: var(--oracle-amber-ghost);
   border-radius: 0 1px 1px 0;
 }
 
@@ -362,10 +355,10 @@
 }
 
 .detailLabel {
-  font-size: 0.48rem;
-  letter-spacing: 0.28em;
+  font-size: var(--text-xs);
+  letter-spacing: var(--tracking-widest);
   text-transform: uppercase;
-  color: rgba(171, 171, 171, 0.32);
+  color: var(--oracle-text-ghost);
   transition: color 0.3s ease;
 }
 
@@ -374,14 +367,14 @@
 }
 
 .detailValue {
-  font-size: 0.82rem;
-  color: rgba(242, 242, 242, 0.82);
+  font-size: var(--text-base);
+  color: var(--oracle-text);
   font-weight: 400;
   transition: color 0.3s ease;
 }
 
 .detailItem:hover .detailValue {
-  color: rgba(242, 242, 242, 0.95);
+  color: var(--oracle-text-heading);
 }
 
 /* ----- Status bar ----- */
@@ -395,22 +388,22 @@
 }
 
 .statusLabel {
-  font-size: 0.48rem;
-  letter-spacing: 0.24em;
+  font-size: var(--text-xs);
+  letter-spacing: var(--tracking-widest);
   text-transform: uppercase;
-  color: rgba(171, 171, 171, 0.28);
+  color: var(--oracle-text-ghost);
 }
 
 .statusBadge {
   position: relative;
-  font-size: 0.52rem;
-  letter-spacing: 0.18em;
+  font-size: var(--text-xs);
+  letter-spacing: var(--tracking-widest);
   text-transform: uppercase;
   padding: 0.32rem 0.9rem;
   border-radius: 1px;
-  background: rgba(242, 242, 242, 0.025);
-  border: 1px solid rgba(242, 242, 242, 0.07);
-  color: rgba(171, 171, 171, 0.45);
+  background: var(--oracle-surface-sunken);
+  border: 1px solid var(--oracle-border-subtle);
+  color: var(--oracle-text-dim);
   overflow: hidden;
   transition:
     background 0.6s cubic-bezier(0.16, 1, 0.3, 1),
@@ -435,8 +428,8 @@
 }
 
 .statusBadge[data-active="true"] {
-  background: rgba(255, 188, 31, 0.08);
-  border-color: rgba(255, 188, 31, 0.32);
+  background: var(--oracle-amber-ghost);
+  border-color: var(--oracle-amber-dim);
   color: var(--oracle-accent-ink);
   box-shadow:
     0 0 12px rgba(255, 188, 31, 0.08),
@@ -475,24 +468,24 @@
 }
 
 .modeLabel {
-  font-size: 0.48rem;
-  letter-spacing: 0.28em;
+  font-size: var(--text-xs);
+  letter-spacing: var(--tracking-widest);
   text-transform: uppercase;
-  color: rgba(171, 171, 171, 0.28);
+  color: var(--oracle-text-ghost);
   font-weight: 600;
   transition: color 0.45s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 .modeLabel[data-active="true"] {
-  color: rgba(242, 242, 242, 0.92);
+  color: var(--oracle-text-heading);
 }
 
 .toggleTrack {
   position: relative;
   width: 3.2rem;
   height: 1.45rem;
-  background: rgba(242, 242, 242, 0.03);
-  border: 1px solid rgba(242, 242, 242, 0.1);
+  background: var(--oracle-surface-sunken);
+  border: 1px solid var(--oracle-border);
   border-radius: 0;
   transition:
     border-color 0.45s cubic-bezier(0.16, 1, 0.3, 1),
@@ -503,13 +496,13 @@
 
 /* Inert background pulse while on AI mode */
 .toggleTrack[data-mode="ai"] {
-  border-color: rgba(255, 188, 31, 0.42);
+  border-color: var(--oracle-amber-dim);
   animation: borderGlow 2.8s ease-in-out infinite;
 }
 
 .toggleTrack[data-mode="manual"] {
-  border-color: rgba(171, 171, 171, 0.42);
-  background: rgba(171, 171, 171, 0.03);
+  border-color: var(--oracle-border-bright);
+  background: var(--oracle-surface-sunken);
   animation: none;
 }
 
@@ -552,7 +545,7 @@
   flex-direction: column;
   gap: 0.85rem;
   padding-top: 1.3rem;
-  border-top: 1px solid rgba(171, 171, 171, 0.1);
+  border-top: 1px solid var(--oracle-border);
   position: relative;
   z-index: 3;
 }
@@ -573,18 +566,18 @@
 }
 
 .compsSectionTitle {
-  font-size: 0.49rem;
-  letter-spacing: 0.32em;
+  font-size: var(--text-xs);
+  letter-spacing: var(--tracking-widest);
   text-transform: uppercase;
-  color: rgba(171, 171, 171, 0.6);
+  color: var(--oracle-text-dim);
   font-weight: 600;
   animation: tealScanPulse 2.4s ease-in-out infinite;
 }
 
 .compsLoading {
-  font-size: 0.6rem;
-  letter-spacing: 0.16em;
-  color: rgba(171, 171, 171, 0.28);
+  font-size: var(--text-xs);
+  letter-spacing: var(--tracking-wider);
+  color: var(--oracle-text-ghost);
   font-style: italic;
 }
 
@@ -593,9 +586,9 @@
   flex-direction: column;
   gap: 0.55rem;
   padding: 1rem 1rem 1rem 1.2rem;
-  background: rgba(8, 8, 8, 0.85);
-  border: 1px solid rgba(171, 171, 171, 0.07);
-  border-left: 2px solid rgba(171, 171, 171, 0.35);
+  background: var(--oracle-surface-raised);
+  border: 1px solid var(--oracle-border-subtle);
+  border-left: 2px solid var(--oracle-border-bright);
   position: relative;
   overflow: hidden;
 
@@ -608,12 +601,10 @@
 }
 
 .compCard:hover {
-  background: rgba(8, 8, 8, 0.92);
-  border-color: rgba(171, 171, 171, 0.14);
-  border-left-color: rgba(171, 171, 171, 0.55);
-  box-shadow:
-    0 4px 20px rgba(0, 0, 0, 0.3),
-    inset 0 0 24px rgba(171, 171, 171, 0.02);
+  background: var(--oracle-surface-raised);
+  border-color: var(--oracle-border);
+  border-left-color: var(--oracle-border-bright);
+  box-shadow: var(--shadow-e2);
 }
 
 /* Inner top highlight */
@@ -632,15 +623,15 @@
 }
 
 .compAddress {
-  font-size: 0.7rem;
-  color: rgba(242, 242, 242, 0.82);
+  font-size: var(--text-xs);
+  color: var(--oracle-text);
   font-weight: 400;
   letter-spacing: 0.01em;
   transition: color 0.3s ease;
 }
 
 .compCard:hover .compAddress {
-  color: rgba(242, 242, 242, 0.95);
+  color: var(--oracle-text-heading);
 }
 
 .compRow {
@@ -655,26 +646,26 @@
 }
 
 .compStatLabel {
-  font-size: 0.44rem;
-  letter-spacing: 0.22em;
+  font-size: var(--text-xs);
+  letter-spacing: var(--tracking-widest);
   text-transform: uppercase;
-  color: rgba(171, 171, 171, 0.32);
+  color: var(--oracle-text-ghost);
   transition: color 0.3s ease;
 }
 
 .compCard:hover .compStatLabel {
-  color: rgba(171, 171, 171, 0.45);
+  color: var(--oracle-text-dim);
 }
 
 .compStatValue {
-  font-size: 0.72rem;
-  color: rgba(242, 242, 242, 0.82);
+  font-size: var(--text-sm);
+  color: var(--oracle-text);
   font-weight: 500;
   transition: color 0.3s ease;
 }
 
 .compCard:hover .compStatValue {
-  color: rgba(242, 242, 242, 0.92);
+  color: var(--oracle-text-heading);
 }
 
 /* ----- Reduced motion ----- */
