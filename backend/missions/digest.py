@@ -15,6 +15,7 @@ channel for client data to leave the system through.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 from datetime import datetime, timedelta, timezone
@@ -24,6 +25,18 @@ from tenancy import Role, TenantContext
 
 logger = logging.getLogger("oracle.missions.digest")
 
+#: Tiered cadence, anchored to the first mission's launch: frequent right
+#: after launch when an operator is actively watching a new agent, then
+#: throttled once the shape of its behaviour is established. The scheduler
+#: itself only needs to poll often enough to catch the 15-minute tier (see
+#: data_integrations/periodic.py's mission_digest registration) — the actual
+#: send-or-skip decision lives here, in _is_due(), so it survives a process
+#: restart via the durable 'digest_sent' marker in mission_events rather than
+#: the scheduler's in-memory next_due.
+FIRST_HOUR_MINUTES = int(os.getenv("ORACLE_MISSION_DIGEST_FIRST_HOUR_MINUTES") or 60)
+FIRST_HOUR_CADENCE_MINUTES = int(os.getenv("ORACLE_MISSION_DIGEST_FIRST_HOUR_CADENCE_MIN") or 15)
+STEADY_CADENCE_MINUTES = int(os.getenv("ORACLE_MISSION_DIGEST_STEADY_CADENCE_MIN") or 120)
+
 
 def enabled() -> bool:
     return os.getenv("ORACLE_MISSION_DIGEST_ENABLED", "0") == "1"
@@ -32,6 +45,30 @@ def enabled() -> bool:
 def _recipient() -> Optional[str]:
     value = os.environ.get("ORACLE_MISSION_DIGEST_EMAIL", "").strip()
     return value or None
+
+
+def _cadence_minutes(anchor_at: datetime, now: datetime) -> int:
+    """Which tier applies right now, measured from the anchor."""
+    elapsed_minutes = (now - anchor_at).total_seconds() / 60.0
+    if elapsed_minutes <= FIRST_HOUR_MINUTES:
+        return FIRST_HOUR_CADENCE_MINUTES
+    return STEADY_CADENCE_MINUTES
+
+
+def is_due(anchor_at: datetime, last_sent_at: Optional[datetime], now: datetime) -> bool:
+    """Whether enough time has passed under the tier that applies right now.
+
+    Never sent yet: due immediately (there is nothing to throttle against).
+    Otherwise: due once the gap since the last send reaches whichever tier
+    `now` currently falls in — evaluated fresh each check, so a digest that
+    was last sent inside the first hour but is now being checked an hour
+    later correctly waits the full 2-hour steady cadence, not the 15-minute
+    one it was sent under.
+    """
+    if last_sent_at is None:
+        return True
+    cadence = timedelta(minutes=_cadence_minutes(anchor_at, now))
+    return now - last_sent_at >= cadence
 
 
 async def _tenant_report(ctx: TenantContext, *, since: datetime) -> dict[str, Any]:
@@ -158,12 +195,38 @@ def _format_report(
     return "\n".join(lines), "".join(html_parts)
 
 
+async def _cadence_state(conn) -> tuple[Optional[datetime], Optional[datetime], Optional[str]]:
+    """(anchor_at, last_sent_at, anchor_mission_id) across every tenant.
+
+    anchor_at is the earliest launch of any mission ever — the clock the
+    tiered cadence counts from. last_sent_at is the most recent 'digest_sent'
+    journal entry, however long ago. Both cross-tenant on purpose: there is
+    one recipient and one cadence policy, not one per tenant. The caller's
+    connection is already on the platform-admin context, so RLS lets this
+    through as a business read, not a leaked platform-admin bypass.
+    """
+    anchor = await conn.fetchrow(
+        """SELECT id, launched_at FROM missions
+            WHERE launched_at IS NOT NULL
+            ORDER BY launched_at ASC LIMIT 1""",
+    )
+    if anchor is None:
+        return None, None, None
+    last_sent = await conn.fetchval(
+        "SELECT max(occurred_at) FROM mission_events WHERE kind = 'digest_sent'",
+    )
+    return anchor["launched_at"], last_sent, str(anchor["id"])
+
+
 async def send_digest() -> dict[str, Any]:
-    """Scheduler entry point: one email covering every tenant's mission activity
-    since the last digest window. Registered as a periodic task in
-    data_integrations/periodic.py, gated OFF by ORACLE_MISSION_DIGEST_ENABLED
-    and requiring ORACLE_MISSION_DIGEST_EMAIL — both unset by default, the same
-    posture as every other background sweep in this codebase."""
+    """Scheduler entry point: one email covering every tenant's mission
+    activity since the last digest actually sent. Registered as a periodic
+    task in data_integrations/periodic.py, gated OFF by
+    ORACLE_MISSION_DIGEST_ENABLED and requiring ORACLE_MISSION_DIGEST_EMAIL —
+    both unset by default, the same posture as every other background sweep
+    in this codebase. The scheduler polls far more often than any digest tier
+    (see periodic.py) so this function itself decides send-or-skip via
+    is_due(), against the durable anchor/last-sent state in _cadence_state()."""
     import asyncio
 
     from db.connection import tenant_tx
@@ -177,15 +240,22 @@ async def send_digest() -> dict[str, Any]:
     if not recipient:
         return {"skipped": "ORACLE_MISSION_DIGEST_EMAIL is not set"}
 
-    interval_min = max(60, int(os.getenv("ORACLE_MISSION_DIGEST_INTERVAL_MIN", "1440")))
-    until = datetime.now(timezone.utc)
-    since = until - timedelta(minutes=interval_min)
-
+    now = datetime.now(timezone.utc)
     platform_ctx = TenantContext(
         agent_id="mission-digest",
         tenant_id=os.getenv("ORACLE_PLATFORM_TENANT_ID", "00000000-0000-0000-0000-000000000000"),
         role=Role.PLATFORM_ADMIN,
     )
+    async with tenant_tx(platform_ctx) as conn:
+        anchor_at, last_sent_at, anchor_mission_id = await _cadence_state(conn)
+
+    if anchor_at is None:
+        return {"skipped": "no mission has ever launched"}
+    if not is_due(anchor_at, last_sent_at, now):
+        cadence = _cadence_minutes(anchor_at, now)
+        return {"skipped": "not due yet", "cadence_minutes": cadence, "last_sent_at": last_sent_at}
+
+    since = last_sent_at or anchor_at
     async with tenant_tx(platform_ctx) as conn:
         # Business scope, deliberately cross-tenant: finding who has a mission
         # worth reporting on. Every read below runs in that tenant's own
@@ -206,7 +276,7 @@ async def send_digest() -> dict[str, Any]:
             continue
         reports.append((str(row["tenant_id"]), report))
 
-    text, html = _format_report(reports, since=since, until=until)
+    text, html = _format_report(reports, since=since, until=now)
 
     import smtp_mailer
 
@@ -224,5 +294,14 @@ async def send_digest() -> dict[str, Any]:
     except smtp_mailer.SmtpSendError as exc:
         logger.warning("mission digest email failed to send: %s", exc)
         return {"sent": False, "reason": str(exc), "tenants": len(reports)}
+
+    async with tenant_tx(platform_ctx) as conn:
+        await conn.execute(
+            """INSERT INTO mission_events (tenant_id, mission_id, kind, detail)
+               SELECT tenant_id, id, 'digest_sent', $2::jsonb
+                 FROM missions WHERE id = $1::uuid""",
+            anchor_mission_id,
+            json.dumps({"recipient": recipient, "tenants": len(reports)}),
+        )
 
     return {"sent": True, "message_id": message_id, "tenants": len(reports)}

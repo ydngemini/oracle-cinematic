@@ -961,8 +961,17 @@ def build_default_scheduler() -> PeriodicScheduler:
     ))
     sched.register(PeriodicTask(
         name="mission_digest",
+        # This is a POLL interval, not the send cadence — missions/digest.py's
+        # send_digest() has its own tiered cadence (15 min for the first hour
+        # after launch, 2 hours steady-state by default) and decides
+        # send-or-skip against a durable last-sent marker, so it survives a
+        # process restart. The scheduler only needs to check often enough to
+        # not miss the tightest tier; 5 minutes gives three chances per
+        # 15-minute window. A check that decides to skip only reads two
+        # small aggregates (missions.launched_at, mission_events.kind) —
+        # see _cadence_state()/is_due() — never the per-tenant report.
         interval_s=max(
-            3600.0, float(os.getenv("ORACLE_MISSION_DIGEST_INTERVAL_MIN", "1440")) * 60,
+            60.0, float(os.getenv("ORACLE_MISSION_DIGEST_CHECK_INTERVAL_MIN", "5")) * 60,
         ),
         run=_mission_digest_task,
         enabled=os.getenv("ORACLE_MISSION_DIGEST_ENABLED", "0") == "1",
