@@ -649,3 +649,235 @@ class TwilioQwenRealtimeBridge(QwenOmniRealtimeBridge):
                 f"qwen-response-{self._mark_sequence}",
             )
         )
+
+
+def plivo_play_audio_frame(stream_id: str, audio_b64: str) -> dict[str, Any]:
+    # Plivo's default AudioStream playback contentType is linear 16-bit PCM
+    # (audio/x-l16), not mu-law — unlike the inbound leg, which negotiates
+    # mu-law via the <Stream contentType=...> attribute the caller side sets.
+    # See PlivoQwenRealtimeBridge._send_provider_audio for the corresponding
+    # (lack of) mu-law encoding step.
+    return {
+        "event": "playAudio",
+        "streamId": stream_id,
+        "media": {
+            "contentType": "audio/x-l16",
+            "sampleRate": _TWILIO_SAMPLE_RATE,
+            "payload": audio_b64,
+        },
+    }
+
+
+def plivo_clear_audio_frame(stream_id: str) -> dict[str, Any]:
+    return {"event": "clearAudio", "streamId": stream_id}
+
+
+def plivo_checkpoint_frame(stream_id: str, name: str) -> dict[str, Any]:
+    return {"event": "checkpoint", "streamId": stream_id, "name": name}
+
+
+class PlivoQwenRealtimeBridge(QwenOmniRealtimeBridge):
+    """One Qwen session bound to one authenticated Plivo bidirectional Stream.
+
+    Mirrors TwilioQwenRealtimeBridge's shape and every CRM/compliance/
+    transcript/hand-off behavior exactly — only the wire-format adapter
+    differs, per the migration brief's "Plivo WebSocket -> Plivo media
+    adapter -> generic Neoh realtime voice session -> Qwen" layering. Plivo's
+    inbound leg is 8 kHz mono G.711 mu-law (negotiated via the PlivoXML
+    <Stream contentType="audio/x-mulaw;rate=8000"> that
+    voice_provider.PlivoVoiceProvider.speak_and_stream_markup emits); its
+    outbound leg is 8 kHz mono LINEAR PCM (Plivo's playAudio default), so —
+    unlike Twilio — no mu-law re-encoding is needed on the way out.
+    """
+
+    def __init__(
+        self,
+        plivo_websocket: WebSocket,
+        call_uuid: str,
+        start_event: dict[str, Any],
+        settings: Optional[QwenRealtimeSettings] = None,
+    ) -> None:
+        super().__init__(plivo_websocket, call_uuid, settings=settings)
+        start = start_event.get("start")
+        if not isinstance(start, dict):
+            raise QwenRealtimeError("Plivo start event is missing")
+        stream_id = str(start.get("streamId") or start_event.get("streamId") or "")
+        media_format = start.get("mediaFormat")
+        if not stream_id:
+            raise QwenRealtimeError("Plivo stream id is missing")
+        if not isinstance(media_format, dict):
+            raise QwenRealtimeError("Plivo media format is missing")
+        if (
+            str(media_format.get("encoding") or "").lower() != "audio/x-mulaw"
+            or int(media_format.get("sampleRate") or 0) != _TWILIO_SAMPLE_RATE
+        ):
+            raise QwenRealtimeError("Plivo media must be 8 kHz mono G.711 mu-law")
+        self.stream_id = stream_id
+        self._input_resample_state: Any = None
+        self._checkpoint_sequence = 0
+        self._call_state: dict[str, Any] = {}
+        self._transcript: list[dict[str, str]] = []
+        self._handoff_started = False
+
+    async def run(self) -> None:
+        from inbound_voice import finalize_inbound_voice_call, mark_inbound_streaming
+        from plivo_call_handler import load_plivo_call_state
+
+        state = await load_plivo_call_state(self.call_connection_id)
+        self._call_state = state if isinstance(state, dict) else {}
+        if self._call_state.get("direction") == "inbound":
+            await mark_inbound_streaming(self.call_connection_id)
+        try:
+            await super().run()
+        except QwenHandoffRequested:
+            logger.info(
+                "Qwen session ended for live agent hand-off: uuid=%s",
+                self.call_connection_id,
+            )
+        finally:
+            if self._call_state.get("direction") == "inbound":
+                try:
+                    await finalize_inbound_voice_call(
+                        self.call_connection_id,
+                        self._transcript,
+                        self._call_state,
+                    )
+                except Exception:
+                    logger.exception(
+                        "Inbound transcript handoff failed: uuid=%s",
+                        self.call_connection_id,
+                    )
+
+    def _session_instructions(self) -> str:
+        if self._call_state.get("direction") != "inbound":
+            return super()._session_instructions()
+        from inbound_voice import build_inbound_intake_instructions
+
+        return build_inbound_intake_instructions(self._call_state)
+
+    async def _on_transcript_completed(self, role: str, transcript: str) -> None:
+        if transcript:
+            self._transcript.append({"role": role, "text": transcript[:4_000]})
+        if role == "caller" and await self._maybe_hand_off():
+            raise QwenHandoffRequested("caller asked for a human agent")
+        await super()._on_transcript_completed(role, transcript)
+
+    async def _maybe_hand_off(self) -> bool:
+        if self._handoff_started:
+            return False
+        if not self._call_state.get("forward_available"):
+            return False
+        if self._call_state.get("direction") != "inbound":
+            return False
+
+        from inbound_voice import requested_human_handoff
+
+        if not requested_human_handoff(self._transcript):
+            return False
+
+        self._handoff_started = True
+        try:
+            await self._redirect_to_agent()
+        except Exception:
+            logger.exception(
+                "Live agent hand-off failed; continuing with AI: uuid=%s",
+                self.call_connection_id,
+            )
+            self._handoff_started = False
+            return False
+        logger.info("Live agent hand-off started: uuid=%s", self.call_connection_id)
+        return True
+
+    async def _redirect_to_agent(self) -> None:
+        from telephony_api import plivo_transfer_webhook_url
+        from voice_provider import get_voice_provider
+
+        url = await plivo_transfer_webhook_url(
+            self.call_connection_id, reason="caller_request"
+        )
+        if not url:
+            raise QwenRealtimeError("No transfer URL is available for this call")
+        await get_voice_provider("plivo").transfer_call(
+            self.call_connection_id, redirect_url=url
+        )
+
+    async def _acs_to_qwen(self) -> None:
+        while True:
+            message = await self.acs_websocket.receive_text()
+            try:
+                event = json.loads(message)
+            except (TypeError, ValueError):
+                logger.warning(
+                    "Ignoring malformed Plivo media packet: uuid=%s",
+                    self.call_connection_id,
+                )
+                continue
+            if not isinstance(event, dict):
+                continue
+            event_type = str(event.get("event") or "")
+            if event_type == "stop":
+                return
+            if event_type != "media" or event.get("streamId") != self.stream_id:
+                continue
+            media = event.get("media")
+            audio_b64 = media.get("payload") if isinstance(media, dict) else None
+            if not isinstance(audio_b64, str) or not audio_b64:
+                continue
+            try:
+                mulaw_8k = base64.b64decode(audio_b64, validate=True)
+            except (TypeError, ValueError):
+                logger.warning(
+                    "Ignoring invalid Plivo audio payload: uuid=%s",
+                    self.call_connection_id,
+                )
+                continue
+            if not mulaw_8k or len(mulaw_8k) > _MAX_PROVIDER_AUDIO_BYTES:
+                continue
+            pcm_8k = audioop.ulaw2lin(mulaw_8k, _SAMPLE_WIDTH)
+            pcm_16k, self._input_resample_state = audioop.ratecv(
+                pcm_8k,
+                _SAMPLE_WIDTH,
+                _CHANNELS,
+                _TWILIO_SAMPLE_RATE,
+                _INPUT_SAMPLE_RATE,
+                self._input_resample_state,
+            )
+            if pcm_16k:
+                await self._send_qwen(
+                    {
+                        "type": "input_audio_buffer.append",
+                        "audio": base64.b64encode(pcm_16k).decode("ascii"),
+                    }
+                )
+
+    async def _send_provider_audio(self, pcm_24k: bytes) -> None:
+        # No mu-law encoding here — Plivo's playAudio default contentType is
+        # linear PCM (see plivo_play_audio_frame), unlike the inbound leg.
+        pcm_8k, self._resample_state = audioop.ratecv(
+            pcm_24k,
+            _SAMPLE_WIDTH,
+            _CHANNELS,
+            _OUTPUT_SAMPLE_RATE,
+            _TWILIO_SAMPLE_RATE,
+            self._resample_state,
+        )
+        if not pcm_8k:
+            return
+        await self.acs_websocket.send_json(
+            plivo_play_audio_frame(
+                self.stream_id,
+                base64.b64encode(pcm_8k).decode("ascii"),
+            )
+        )
+
+    async def _clear_provider_audio(self) -> None:
+        await self.acs_websocket.send_json(plivo_clear_audio_frame(self.stream_id))
+
+    async def _mark_response_complete(self) -> None:
+        self._checkpoint_sequence += 1
+        await self.acs_websocket.send_json(
+            plivo_checkpoint_frame(
+                self.stream_id,
+                f"qwen-response-{self._checkpoint_sequence}",
+            )
+        )

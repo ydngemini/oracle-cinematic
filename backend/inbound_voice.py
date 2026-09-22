@@ -14,7 +14,7 @@ import os
 import re
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Mapping, Optional, Sequence
 
 from crypto import CryptoError, decrypt_pii, derive_tenant_key, encrypt_pii
@@ -35,6 +35,10 @@ INTAKE_ROUTING_QUESTION = "Are you calling about buying a home or selling a prop
 _E164_RE = re.compile(r"^\+[1-9]\d{7,14}$")
 _ACCOUNT_SID_RE = re.compile(r"^AC[0-9a-fA-F]{32}$")
 _CALL_SID_RE = re.compile(r"^CA[0-9a-fA-F]{32}$")
+_PLIVO_CALL_UUID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
+_SUPPORTED_PROVIDERS = frozenset({"twilio", "plivo"})
+_MAX_VERIFICATION_ATTEMPTS = 5
+_VERIFICATION_LOCKOUT_SECONDS = 900
 _TERMINAL_CALL_STATUSES = {
     "completed",
     "busy",
@@ -66,8 +70,30 @@ _ROUTE_COLUMNS = (
     "outbound_verification_requested_at,outbound_verification_last_tested_at,"
     "outbound_verification_failure_reason,inbound_forwarding_status,"
     "inbound_forwarding_provider_sid,inbound_forwarding_last_tested_at,"
-    "inbound_forwarding_failure_reason"
+    "inbound_forwarding_failure_reason,"
+    # 0105 — generic provider identity + Plivo OTP verification state.
+    "provider_account_id,provider_app_id,outbound_verification_channel,"
+    "outbound_verification_attempt_count,outbound_verification_locked_until"
 )
+
+
+def _validate_provider_call_id(call_id: str, provider: str) -> None:
+    if provider == "twilio":
+        if not _CALL_SID_RE.fullmatch(call_id or ""):
+            raise ValueError("Twilio call SID is invalid")
+    elif provider == "plivo":
+        if not _PLIVO_CALL_UUID_RE.fullmatch(call_id or ""):
+            raise ValueError("Plivo call UUID is invalid")
+    else:
+        raise ValueError("provider must be twilio or plivo")
+
+
+def _looks_like_call_id(call_id: str) -> bool:
+    """Accepts either provider's call-id shape — used by gates that only
+    need to know "is this a plausible call identifier", not which provider
+    it belongs to (the DB row itself is the source of truth for that)."""
+    value = call_id or ""
+    return bool(_CALL_SID_RE.fullmatch(value) or _PLIVO_CALL_UUID_RE.fullmatch(value))
 
 
 class InboundVoiceError(RuntimeError):
@@ -185,32 +211,75 @@ def build_inbound_intake_instructions(state: Mapping[str, Any]) -> str:
 async def resolve_inbound_route(
     endpoint_key: str,
     inbound_did: str,
-    account_sid: str,
+    provider_account_id: Optional[str],
+    *,
+    provider: str = "twilio",
 ) -> Optional[dict[str, Any]]:
-    """Resolve the signed webhook to one route before any tenant work occurs."""
+    """Resolve the signed webhook to one route before any tenant work occurs.
+
+    ``provider_account_id`` is the Twilio Account SID or Plivo Auth ID that
+    signed the inbound request; matching on it (plus ``provider``) rather
+    than a bare inbound_did means a DID can never resolve to a route it
+    was not actually assigned to. Twilio call sites keep passing this
+    positionally without ``provider`` — the default preserves their exact
+    prior behavior, since every legacy row's provider_account_id was
+    backfilled from twilio_account_sid (migration 0105).
+
+    ``provider_account_id`` may be ``None`` for a provider whose inbound
+    webhook does not reliably carry an account-identity field (Plivo's
+    documented callback fields are CallUUID/CallStatus/Direction/From/To/
+    Event — no confirmed account id). In that case the match is
+    endpoint_key + inbound_did + provider only; the endpoint_key is an
+    unguessable per-route UUID, and the caller (telephony_api's Plivo
+    webhook) cryptographically confirms the result belongs to the right
+    tenant immediately afterward via that tenant's own Plivo auth token
+    (X-Plivo-Signature-V2), the same "resolve broadly, confirm with a
+    per-tenant secret" pattern Twilio's AccountSid match uses.
+    """
     try:
         endpoint_uuid = str(uuid.UUID(endpoint_key))
         normalized_did = normalize_e164(inbound_did)
     except (TypeError, ValueError, AttributeError):
         return None
-    if not _ACCOUNT_SID_RE.fullmatch(account_sid or ""):
+    if provider not in _SUPPORTED_PROVIDERS:
         return None
+    if provider == "twilio":
+        if not provider_account_id or not _ACCOUNT_SID_RE.fullmatch(provider_account_id):
+            return None
 
     async with tenant_tx(_platform_context()) as conn:
-        row = await conn.fetchrow(
-            f"""
-            SELECT {_ROUTE_COLUMNS}
-              FROM telephony_routes
-             WHERE endpoint_key=$1::uuid
-               AND inbound_did=$2
-               AND twilio_account_sid=$3
-               AND active
-             LIMIT 1
-            """,
-            endpoint_uuid,
-            normalized_did,
-            account_sid,
-        )
+        if provider_account_id:
+            row = await conn.fetchrow(
+                f"""
+                SELECT {_ROUTE_COLUMNS}
+                  FROM telephony_routes
+                 WHERE endpoint_key=$1::uuid
+                   AND inbound_did=$2
+                   AND provider_account_id=$3
+                   AND provider=$4
+                   AND active
+                 LIMIT 1
+                """,
+                endpoint_uuid,
+                normalized_did,
+                provider_account_id,
+                provider,
+            )
+        else:
+            row = await conn.fetchrow(
+                f"""
+                SELECT {_ROUTE_COLUMNS}
+                  FROM telephony_routes
+                 WHERE endpoint_key=$1::uuid
+                   AND inbound_did=$2
+                   AND provider=$3
+                   AND active
+                 LIMIT 1
+                """,
+                endpoint_uuid,
+                normalized_did,
+                provider,
+            )
     return dict(row) if row is not None else None
 
 
@@ -280,10 +349,10 @@ async def prepare_inbound_call(
     *,
     call_sid: str,
     caller_phone: str,
+    provider: str = "twilio",
 ) -> InboundCallBinding:
-    """Create or recover the encrypted call row for a signed Twilio retry."""
-    if not _CALL_SID_RE.fullmatch(call_sid or ""):
-        raise ValueError("Twilio call SID is invalid")
+    """Create or recover the encrypted call row for a signed provider retry."""
+    _validate_provider_call_id(call_sid, provider)
     normalized_phone = normalize_e164(caller_phone)
     tenant_id = str(route.get("tenant_id") or "")
     agent_id = str(route.get("agent_id") or "")
@@ -317,10 +386,10 @@ async def prepare_inbound_call(
             INSERT INTO inbound_voice_calls (
                 tenant_id,route_id,contact_id,client_id,provider_call_sid,
                 intake_mode,caller_phone_lookup_hash,caller_phone_ciphertext,
-                handoff_status,disclosure_version,disclosed_at
+                handoff_status,disclosure_version,disclosed_at,provider
             ) VALUES (
                 $1::uuid,$2::uuid,$3::uuid,$4::uuid,$5,$6,$7,$8,
-                $9,$10,now()
+                $9,$10,now(),$11
             )
             ON CONFLICT (provider_call_sid) DO NOTHING
             RETURNING id,tenant_id,route_id,contact_id,client_id,intake_mode
@@ -335,6 +404,7 @@ async def prepare_inbound_call(
             encrypted_phone,
             "matched" if contact_id or client_id else "unqualified",
             _DISCLOSURE_VERSION,
+            provider,
         )
         if row is None:
             row = await conn.fetchrow(
@@ -514,7 +584,7 @@ async def resolve_forward_target(
     number is never held in the cache alongside the call, and so toggling the
     route off takes effect on the very next call.
     """
-    if not _CALL_SID_RE.fullmatch(call_sid or ""):
+    if not _looks_like_call_id(call_sid):
         return None
     gate = {
         "caller_request": "r.forward_on_request",
@@ -559,7 +629,7 @@ async def record_forward_attempt(
     outcome: str = "requested",
 ) -> None:
     """Stamp the hand-off on the call record. Never raises into the call path."""
-    if not _CALL_SID_RE.fullmatch(call_sid or ""):
+    if not _looks_like_call_id(call_sid):
         return
     if reason not in {"caller_request", "ai_unavailable", "turn_limit"}:
         return
@@ -611,7 +681,7 @@ def _resolve_mode_and_answers(
 
 
 async def mark_inbound_streaming(call_sid: str) -> None:
-    if not _CALL_SID_RE.fullmatch(call_sid or ""):
+    if not _looks_like_call_id(call_sid):
         return
     async with tenant_tx(_platform_context()) as conn:
         await conn.execute(
@@ -631,7 +701,7 @@ async def finalize_inbound_voice_call(
     state: Optional[Mapping[str, Any]] = None,
 ) -> None:
     """Encrypt transcript/answers and create one callback or compliance task."""
-    if not _CALL_SID_RE.fullmatch(call_sid or ""):
+    if not _looks_like_call_id(call_sid):
         return
     state = state or {}
     if state.get("direction") != "inbound":
@@ -845,7 +915,7 @@ async def finalize_inbound_voice_call(
 
 
 async def update_inbound_call_status(call_sid: str, call_status: str) -> None:
-    if not _CALL_SID_RE.fullmatch(call_sid or ""):
+    if not _looks_like_call_id(call_sid):
         return
     normalized = str(call_status or "").strip().lower()
     if normalized not in _TERMINAL_CALL_STATUSES | {"ringing", "in-progress"}:
@@ -869,15 +939,17 @@ async def update_inbound_call_status(call_sid: str, call_status: str) -> None:
 async def inbound_call_matches_endpoint(
     endpoint_key: str,
     call_sid: str,
-    account_sid: str,
+    provider_account_id: str,
+    *,
+    provider: str = "twilio",
 ) -> bool:
     try:
         endpoint_uuid = str(uuid.UUID(endpoint_key))
     except (TypeError, ValueError, AttributeError):
         return False
-    if not _CALL_SID_RE.fullmatch(call_sid or ""):
+    if not _looks_like_call_id(call_sid):
         return False
-    if not _ACCOUNT_SID_RE.fullmatch(account_sid or ""):
+    if not str(provider_account_id or "").strip():
         return False
     async with tenant_tx(_platform_context()) as conn:
         return bool(
@@ -889,12 +961,14 @@ async def inbound_call_matches_endpoint(
                       JOIN telephony_routes r ON r.id=c.route_id
                      WHERE c.provider_call_sid=$1
                        AND r.endpoint_key=$2::uuid
-                       AND r.twilio_account_sid=$3
+                       AND r.provider_account_id=$3
+                       AND r.provider=$4
                 )
                 """,
                 call_sid,
                 endpoint_uuid,
-                account_sid,
+                provider_account_id,
+                provider,
             )
         )
 
@@ -902,41 +976,69 @@ async def inbound_call_matches_endpoint(
 async def resolve_inbound_call_route(
     endpoint_key: str,
     call_sid: str,
-    account_sid: str,
+    provider_account_id: Optional[str],
+    *,
+    provider: str = "twilio",
 ) -> Optional[dict[str, Any]]:
     """Resolve a status callback to its tenant route before signature validation.
 
-    Twilio signs callbacks with the auth token belonging to the account that
-    owns the call.  Looking up the already-bound call lets the public webhook
-    select that tenant's encrypted credential without trusting caller supplied
-    tenant or agent identifiers.
+    A provider signs callbacks with the credential belonging to the account
+    that owns the call. Looking up the already-bound call lets the public
+    webhook select that tenant's encrypted credential without trusting
+    caller supplied tenant or agent identifiers. ``provider`` defaults to
+    "twilio" so existing call sites are unaffected.
+
+    ``provider_account_id`` may be ``None`` (see resolve_inbound_route's
+    docstring) — the call id itself is already globally UNIQUE and
+    effectively unguessable, and the endpoint_key match plus the subsequent
+    per-tenant signature check together confirm tenant ownership without it.
     """
     try:
         endpoint_uuid = str(uuid.UUID(endpoint_key))
     except (TypeError, ValueError, AttributeError):
         return None
-    if not _CALL_SID_RE.fullmatch(call_sid or ""):
-        return None
-    if not _ACCOUNT_SID_RE.fullmatch(account_sid or ""):
+    if not _looks_like_call_id(call_sid):
         return None
     async with tenant_tx(_platform_context()) as conn:
+        if provider_account_id:
+            row = await conn.fetchrow(
+                """
+                SELECT r.id,r.tenant_id,r.agent_id,r.endpoint_key,r.inbound_did,
+                       r.twilio_account_sid,r.provider_account_id,r.provider,
+                       r.intake_mode,r.active
+                  FROM inbound_voice_calls c
+                  JOIN telephony_routes r ON r.id=c.route_id
+                 WHERE c.provider_call_sid=$1
+                   AND r.endpoint_key=$2::uuid
+                   AND r.provider_account_id=$3
+                   AND r.provider=$4
+                   AND r.active
+                 LIMIT 1
+                """,
+                call_sid,
+                endpoint_uuid,
+                provider_account_id,
+                provider,
+            )
+            return dict(row) if row is not None else None
         row = await conn.fetchrow(
             """
             SELECT r.id,r.tenant_id,r.agent_id,r.endpoint_key,r.inbound_did,
-                   r.twilio_account_sid,r.intake_mode,r.active
+                   r.twilio_account_sid,r.provider_account_id,r.provider,
+                   r.intake_mode,r.active
               FROM inbound_voice_calls c
               JOIN telephony_routes r ON r.id=c.route_id
              WHERE c.provider_call_sid=$1
                AND r.endpoint_key=$2::uuid
-               AND r.twilio_account_sid=$3
+               AND r.provider=$3
                AND r.active
              LIMIT 1
             """,
             call_sid,
             endpoint_uuid,
-            account_sid,
+            provider,
         )
-    return dict(row) if row is not None else None
+        return dict(row) if row is not None else None
 
 
 async def upsert_telephony_route(
@@ -944,9 +1046,21 @@ async def upsert_telephony_route(
     values: Mapping[str, Any],
 ) -> dict[str, Any]:
     inbound_did = normalize_e164(values.get("inbound_did"))
-    account_sid = str(values.get("twilio_account_sid") or "")
-    if not _ACCOUNT_SID_RE.fullmatch(account_sid):
-        raise ValueError("twilio_account_sid is invalid")
+    provider = str(values.get("provider") or "twilio")
+    if provider not in _SUPPORTED_PROVIDERS:
+        raise ValueError("provider must be twilio or plivo")
+    if provider == "twilio":
+        account_sid: Optional[str] = str(values.get("twilio_account_sid") or "")
+        if not _ACCOUNT_SID_RE.fullmatch(account_sid):
+            raise ValueError("twilio_account_sid is invalid")
+        provider_account_id = account_sid
+    else:
+        account_sid = None
+        provider_account_id = str(
+            values.get("provider_account_id") or values.get("twilio_account_sid") or ""
+        )
+        if not (5 <= len(provider_account_id) <= 64):
+            raise ValueError("provider_account_id is invalid")
 
     agent_forward = values.get("agent_forward_e164")
     agent_forward = normalize_e164(agent_forward) if agent_forward else None
@@ -969,9 +1083,10 @@ async def upsert_telephony_route(
                 voice_caller_id_e164,voice_caller_id_verified,
                 sms_sender_e164,sms_sender_type,active,
                 agent_forward_e164,forward_on_request,
-                forward_when_ai_unavailable,forward_timeout_seconds
+                forward_when_ai_unavailable,forward_timeout_seconds,
+                provider,provider_account_id
             ) VALUES (
-                $1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17
+                $1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19
             )
             ON CONFLICT (tenant_id,agent_id) DO UPDATE SET
                 inbound_did=EXCLUDED.inbound_did,
@@ -988,7 +1103,9 @@ async def upsert_telephony_route(
                 agent_forward_e164=EXCLUDED.agent_forward_e164,
                 forward_on_request=EXCLUDED.forward_on_request,
                 forward_when_ai_unavailable=EXCLUDED.forward_when_ai_unavailable,
-                forward_timeout_seconds=EXCLUDED.forward_timeout_seconds
+                forward_timeout_seconds=EXCLUDED.forward_timeout_seconds,
+                provider=EXCLUDED.provider,
+                provider_account_id=EXCLUDED.provider_account_id
             RETURNING {_ROUTE_COLUMNS},created_at,updated_at
             """,
             ctx.tenant_id,
@@ -1008,6 +1125,8 @@ async def upsert_telephony_route(
             forward_on_request,
             forward_when_unavailable,
             int(values.get("forward_timeout_seconds", 25) or 25),
+            provider,
+            provider_account_id,
         )
     return dict(row)
 
@@ -1316,6 +1435,206 @@ async def check_business_number_verification(
     }
     if verified:
         updates["outbound_verification_failure_reason"] = None
+    return await _set_route_columns(ctx, updates) or route
+
+
+# ── Business-number connect: provider-neutral entry point (0105) ───────────
+#
+# connect_business_number (above) stays exactly as it was — Twilio-only,
+# still exercised directly by test_business_number_connect.py. This is the
+# entry point telephony_api.put_business_number calls: it dispatches to
+# connect_business_number for provider="twilio" (delegating, not
+# duplicating) and implements the Plivo path using voice_provider.
+
+
+async def connect_business_number_generic(
+    ctx: TenantContext,
+    public_business_number: str,
+    *,
+    provider: str,
+    provider_account_id: str,
+    credentials: Mapping[str, Any],
+) -> dict[str, Any]:
+    if provider not in _SUPPORTED_PROVIDERS:
+        raise ValueError("provider must be twilio or plivo")
+    if provider == "twilio":
+        return await connect_business_number(
+            ctx,
+            public_business_number,
+            twilio_account_sid=provider_account_id,
+            credentials=credentials,
+        )
+
+    from command_providers import ProviderConfigurationError, ProviderRequestError
+    from voice_provider import get_voice_provider
+
+    adapter = get_voice_provider(provider)
+    number = normalize_e164(public_business_number)
+    existing = await get_telephony_route(ctx)
+    same_provider_existing = existing if (existing or {}).get("provider") == provider else None
+
+    if (
+        same_provider_existing
+        and same_provider_existing.get("inbound_forwarding_provider_sid")
+        and same_provider_existing.get("inbound_did")
+    ):
+        inbound_did = str(same_provider_existing["inbound_did"])
+        forwarding_sid = str(same_provider_existing["inbound_forwarding_provider_sid"])
+        forwarding_status = str(
+            same_provider_existing.get("inbound_forwarding_status") or "active"
+        )
+        newly_provisioned = False
+    else:
+        purchase = await adapter.provision_forwarding_number(credentials=credentials)
+        inbound_did = str(purchase.detail["phone_number"])
+        forwarding_sid = purchase.reference
+        forwarding_status = "pending"
+        newly_provisioned = True
+
+    route = await upsert_telephony_route(
+        ctx,
+        {
+            "inbound_did": inbound_did,
+            "provider": provider,
+            "provider_account_id": provider_account_id,
+            "intake_mode": (existing or {}).get("intake_mode", "auto"),
+            "forwarding_mode": "carrier_conditional",
+            "forwarding_source_e164": number,
+            "sip_domain": (existing or {}).get("sip_domain"),
+            "voice_caller_id_e164": number,
+            "voice_caller_id_verified": bool(
+                same_provider_existing
+                and same_provider_existing.get("voice_caller_id_verified")
+                and same_provider_existing.get("voice_caller_id_e164") == number
+            ),
+            "sms_sender_e164": (existing or {}).get("sms_sender_e164"),
+            "sms_sender_type": (existing or {}).get("sms_sender_type"),
+            "active": True,
+            "agent_forward_e164": (existing or {}).get("agent_forward_e164"),
+            "forward_on_request": bool((existing or {}).get("forward_on_request", False)),
+            "forward_when_ai_unavailable": bool(
+                (existing or {}).get("forward_when_ai_unavailable", False)
+            ),
+            "forward_timeout_seconds": int(
+                (existing or {}).get("forward_timeout_seconds", 25) or 25
+            ),
+        },
+    )
+
+    updates: dict[str, Any] = {
+        "provider": provider,
+        "provider_account_id": provider_account_id,
+        "inbound_forwarding_provider_sid": forwarding_sid,
+        "inbound_forwarding_status": forwarding_status,
+    }
+
+    if newly_provisioned:
+        base = os.getenv("ORACLE_PUBLIC_BASE_URL", "").rstrip("/")
+        if not base:
+            updates["inbound_forwarding_status"] = "failed"
+            updates["inbound_forwarding_failure_reason"] = (
+                "ORACLE_PUBLIC_BASE_URL is not set — cannot wire the inbound webhook"
+            )
+        else:
+            endpoint_key = str(route["endpoint_key"])
+            voice_url = f"{base}/api/telephony/webhooks/{provider}/inbound/{endpoint_key}"
+            status_url = f"{base}/api/telephony/webhooks/{provider}/status/{endpoint_key}"
+            try:
+                await adapter.configure_number_webhook(
+                    forwarding_sid,
+                    voice_url=voice_url,
+                    status_callback_url=status_url,
+                    credentials=credentials,
+                )
+                updates["inbound_forwarding_status"] = "active"
+                updates["inbound_forwarding_last_tested_at"] = datetime.now(timezone.utc)
+                updates["inbound_forwarding_failure_reason"] = None
+            except (ProviderConfigurationError, ProviderRequestError) as exc:
+                updates["inbound_forwarding_status"] = "failed"
+                updates["inbound_forwarding_failure_reason"] = str(exc)[:500]
+
+    already_verified_this_number = bool(
+        same_provider_existing
+        and same_provider_existing.get("voice_caller_id_verified")
+        and same_provider_existing.get("voice_caller_id_e164") == number
+    )
+    if not already_verified_this_number:
+        try:
+            verification = await adapter.verify_caller_id_start(
+                number, channel="sms", credentials=credentials
+            )
+            updates["outbound_verification_status"] = "pending"
+            updates["outbound_verification_sid"] = verification.reference
+            updates["outbound_verification_channel"] = "sms"
+            updates["outbound_verification_requested_at"] = datetime.now(timezone.utc)
+            updates["outbound_verification_attempt_count"] = 0
+            updates["outbound_verification_locked_until"] = None
+            updates["outbound_verification_failure_reason"] = None
+        except (ProviderConfigurationError, ProviderRequestError) as exc:
+            updates["outbound_verification_status"] = "failed"
+            updates["outbound_verification_failure_reason"] = str(exc)[:500]
+
+    final = await _set_route_columns(ctx, updates)
+    return final or route
+
+
+async def complete_business_number_verification(
+    ctx: TenantContext, otp: str, *, credentials: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Submit an agent-entered OTP to complete Plivo Verified Caller ID.
+
+    The only path (besides connect's initial ``verify_caller_id_start``) that
+    ever touches a Plivo route's verification state. Rate limited:
+    _MAX_VERIFICATION_ATTEMPTS wrong codes locks further attempts for
+    _VERIFICATION_LOCKOUT_SECONDS. The OTP itself is never stored — only a
+    monotonically increasing attempt counter and a lockout timestamp.
+    """
+    from voice_provider import get_voice_provider
+
+    route = await get_telephony_route(ctx)
+    if route is None or route.get("provider") != "plivo":
+        raise InboundVoiceError("No Plivo business number is connected to verify")
+    if route.get("outbound_verification_status") == "verified":
+        return route
+
+    now = datetime.now(timezone.utc)
+    locked_until = route.get("outbound_verification_locked_until")
+    if locked_until and locked_until > now:
+        raise InboundVoiceError(
+            "Too many incorrect codes — try again later"
+        )
+    verification_id = str(route.get("outbound_verification_sid") or "")
+    number = str(route.get("voice_caller_id_e164") or "")
+    if not verification_id or not number:
+        raise InboundVoiceError("No pending verification for this number")
+
+    adapter = get_voice_provider("plivo")
+    verified = await adapter.verify_caller_id_complete(
+        verification_id, otp, phone_number=number, credentials=credentials
+    )
+    if verified:
+        return await _set_route_columns(
+            ctx,
+            {
+                "voice_caller_id_verified": True,
+                "outbound_verification_status": "verified",
+                "outbound_verification_last_tested_at": now,
+                "outbound_verification_failure_reason": None,
+                "outbound_verification_attempt_count": 0,
+                "outbound_verification_locked_until": None,
+            },
+        ) or route
+
+    attempts = int(route.get("outbound_verification_attempt_count") or 0) + 1
+    updates: dict[str, Any] = {
+        "outbound_verification_attempt_count": attempts,
+        "outbound_verification_last_tested_at": now,
+    }
+    if attempts >= _MAX_VERIFICATION_ATTEMPTS:
+        updates["outbound_verification_locked_until"] = now + timedelta(
+            seconds=_VERIFICATION_LOCKOUT_SECONDS
+        )
+        updates["outbound_verification_failure_reason"] = "Too many incorrect codes"
     return await _set_route_columns(ctx, updates) or route
 
 

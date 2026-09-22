@@ -2388,7 +2388,7 @@ async def _execute_command_job(payload: dict[str, Any], reporter) -> dict[str, A
             # never "close enough", and never silently substituted with a
             # platform/env Twilio number: an unverified agent cannot place
             # calls under this path at all.
-            from inbound_voice import get_verified_caller_id
+            from inbound_voice import get_telephony_route, get_verified_caller_id
 
             verified_caller_id = await get_verified_caller_id(ctx)
             if not verified_caller_id:
@@ -2396,96 +2396,148 @@ async def _execute_command_job(payload: dict[str, Any], reporter) -> dict[str, A
                     "Call blocked: Connect and verify your business number "
                     "before placing calls."
                 )
-            await reporter.progress(45, "placing approved call")
-            submission_started = True
-            twilio_raw = await _load_provider_credential(ctx, "twilio")
-            twilio_credentials = None
-            if twilio_raw:
-                try:
-                    twilio_credentials = json.loads(twilio_raw)
-                except (TypeError, ValueError):
-                    pass
-            twilio_credentials = {
-                **(twilio_credentials or {}),
-                "from_number": verified_caller_id,
-            }
-            try:
-                from twilio_call_handler import (
-                    ensure_twilio_call_state_available,
-                    initialize_twilio_call_state,
+            call_route = await get_telephony_route(ctx)
+            call_provider = str((call_route or {}).get("provider") or "twilio")
+            if call_provider == "plivo":
+                # Plivo is a distinct carrier, never a silent fallback for a
+                # failed Twilio submission and vice versa — mixing providers
+                # mid-flow risks placing the same approved call twice. The
+                # route's own recorded provider decides the rail; there is no
+                # try-Plivo-then-Twilio chain here.
+                await reporter.progress(45, "placing approved call")
+                submission_started = True
+                plivo_raw = await _load_provider_credential(ctx, "plivo")
+                plivo_credentials = None
+                if plivo_raw:
+                    try:
+                        plivo_credentials = json.loads(plivo_raw)
+                    except (TypeError, ValueError):
+                        pass
+                base = os.getenv("ORACLE_PUBLIC_BASE_URL", "").rstrip("/")
+                if not base:
+                    raise ProviderConfigurationError(
+                        "ORACLE_PUBLIC_BASE_URL is not set — Plivo answer_url is unavailable"
+                    )
+                from plivo_call_handler import (
+                    ensure_plivo_call_state_available,
+                    initialize_outbound_plivo_call_state,
                 )
+                from voice_provider import get_voice_provider
 
-                await ensure_twilio_call_state_available()
-                provider_result = await place_twilio_call(
-                    {**draft, "target": target}, credentials=twilio_credentials
+                adapter = get_voice_provider("plivo")
+                await ensure_plivo_call_state_available()
+                provider_result = await adapter.place_call(
+                    to_number=str(target.get("phone") or ""),
+                    from_number=verified_caller_id,
+                    answer_url=f"{base}/api/commands/webhooks/plivo",
+                    status_callback_url=f"{base}/api/commands/webhooks/plivo/status",
+                    credentials=plivo_credentials,
                 )
-                account_sid = str(
-                    (twilio_credentials or {}).get("account_sid")
-                    or os.getenv("TWILIO_ACCOUNT_SID", "")
+                account_id = str(
+                    (plivo_credentials or {}).get("auth_id")
+                    or os.getenv("PLIVO_AUTH_ID", "")
                 )
                 try:
-                    await initialize_twilio_call_state(
+                    await initialize_outbound_plivo_call_state(
                         provider_result.reference,
                         str(target.get("phone") or ""),
                         tenant_id=ctx.tenant_id,
-                        account_sid=account_sid,
+                        account_id=account_id,
                     )
                 except Exception:
-                    await abort_twilio_call(
-                        provider_result.reference,
-                        credentials=twilio_credentials,
+                    await adapter.abort_call(
+                        provider_result.reference, credentials=plivo_credentials
                     )
                     raise
-            except ProviderConfigurationError:
-                provider_result = None
+            else:
+                twilio_raw = await _load_provider_credential(ctx, "twilio")
+                twilio_credentials = None
+                if twilio_raw:
+                    try:
+                        twilio_credentials = json.loads(twilio_raw)
+                    except (TypeError, ValueError):
+                        pass
+                twilio_credentials = {
+                    **(twilio_credentials or {}),
+                    "from_number": verified_caller_id,
+                }
                 try:
-                    if os.getenv("ORACLE_CUSTOM_CALL_API_URL", "").strip():
-                        provider_result = await place_custom_http_call(
-                            {**draft, "target": target}
-                        )
-                except ProviderConfigurationError:
-                    provider_result = None
-                if provider_result is None:
-                    acs_raw = await _load_provider_credential(ctx, "acs")
-                    acs_credentials = None
-                    if acs_raw:
-                        try:
-                            acs_credentials = json.loads(acs_raw)
-                        except (TypeError, ValueError) as exc:
-                            raise ProviderConfigurationError(
-                                "Encrypted ACS credential must be a JSON object"
-                            ) from exc
-                        if not isinstance(acs_credentials, dict):
-                            raise ProviderConfigurationError(
-                                "Encrypted ACS credential must be a JSON object"
-                            )
-                    from acs_call_handler import (
-                        abort_unmanaged_call,
-                        ensure_call_state_available,
-                        initialize_call_state,
+                    from twilio_call_handler import (
+                        ensure_twilio_call_state_available,
+                        initialize_twilio_call_state,
                     )
 
-                    # A call without durable callback state is unmanaged. Verify
-                    # Redis before dialing, then disconnect if the post-dial
-                    # state write still loses a race with an outage.
-                    await ensure_call_state_available()
-                    provider_result = await place_acs_call(
-                        {**draft, "target": target}, credentials=acs_credentials
+                    await ensure_twilio_call_state_available()
+                    provider_result = await place_twilio_call(
+                        {**draft, "target": target}, credentials=twilio_credentials
+                    )
+                    account_sid = str(
+                        (twilio_credentials or {}).get("account_sid")
+                        or os.getenv("TWILIO_ACCOUNT_SID", "")
                     )
                     try:
-                        await initialize_call_state(
+                        await initialize_twilio_call_state(
                             provider_result.reference,
                             str(target.get("phone") or ""),
                             tenant_id=ctx.tenant_id,
-                            credentials=acs_credentials,
+                            account_sid=account_sid,
                         )
                     except Exception:
-                        await abort_unmanaged_call(
+                        await abort_twilio_call(
                             provider_result.reference,
-                            tenant_id=ctx.tenant_id,
-                            credentials=acs_credentials,
+                            credentials=twilio_credentials,
                         )
                         raise
+                except ProviderConfigurationError:
+                    provider_result = None
+                    try:
+                        if os.getenv("ORACLE_CUSTOM_CALL_API_URL", "").strip():
+                            provider_result = await place_custom_http_call(
+                                {**draft, "target": target}
+                            )
+                    except ProviderConfigurationError:
+                        provider_result = None
+                    if provider_result is None:
+                        acs_raw = await _load_provider_credential(ctx, "acs")
+                        acs_credentials = None
+                        if acs_raw:
+                            try:
+                                acs_credentials = json.loads(acs_raw)
+                            except (TypeError, ValueError) as exc:
+                                raise ProviderConfigurationError(
+                                    "Encrypted ACS credential must be a JSON object"
+                                ) from exc
+                            if not isinstance(acs_credentials, dict):
+                                raise ProviderConfigurationError(
+                                    "Encrypted ACS credential must be a JSON object"
+                                )
+                        from acs_call_handler import (
+                            abort_unmanaged_call,
+                            ensure_call_state_available,
+                            initialize_call_state,
+                        )
+
+                        # A call without durable callback state is unmanaged. Verify
+                        # Redis before dialing, then disconnect if the post-dial
+                        # state write still loses a race with an outage.
+                        await ensure_call_state_available()
+                        provider_result = await place_acs_call(
+                            {**draft, "target": target}, credentials=acs_credentials
+                        )
+                        try:
+                            await initialize_call_state(
+                                provider_result.reference,
+                                str(target.get("phone") or ""),
+                                tenant_id=ctx.tenant_id,
+                                credentials=acs_credentials,
+                            )
+                        except Exception:
+                            await abort_unmanaged_call(
+                                provider_result.reference,
+                                tenant_id=ctx.tenant_id,
+                                credentials=acs_credentials,
+                            )
+                            raise
         else:
             await reporter.progress(45, "creating approved calendar event")
             event_draft = dict(draft)
@@ -2842,6 +2894,88 @@ async def twilio_qwen_media(websocket: WebSocket):
         await websocket.close(code=1011)
     except Exception:
         logger.exception("Unexpected Twilio/Qwen bridge failure: sid=%s", call_sid)
+        await websocket.close(code=1011)
+
+
+@router.websocket("/media/plivo")
+async def plivo_qwen_media(websocket: WebSocket):
+    """Authenticate and bridge Plivo's 8 kHz mu-law stream to Qwen Omni.
+
+    Plivo's PlivoXML <Stream> element carries only a bare WSS URL (no nested
+    parameters, unlike Twilio's <Stream><Parameter>), so the bridge_token
+    voice_provider.PlivoVoiceProvider.speak_and_stream_markup mints travels
+    as a query parameter on the URL itself instead of inside the start
+    frame. The socket must be accepted before the start frame (carrying
+    Plivo's call id) can be read, so full validation completes just after
+    accept rather than before it — the token is still call-id-bound and
+    single-use-short-lived, so a stolen token cannot be replayed against a
+    different call.
+    """
+    from qwen_omni_realtime import (
+        PlivoQwenRealtimeBridge,
+        QwenCallLimitReached,
+        QwenRealtimeError,
+    )
+    from plivo_call_handler import authorize_plivo_media, mark_plivo_streaming
+
+    bridge_token = websocket.query_params.get("bridge_token", "")
+    if not bridge_token:
+        await websocket.close(code=4403)
+        return
+
+    await websocket.accept()
+    start_event: Optional[dict[str, Any]] = None
+    try:
+        for _ in range(2):
+            raw_message = await asyncio.wait_for(
+                websocket.receive_text(),
+                timeout=5.0,
+            )
+            if len(raw_message) > 64 * 1024:
+                await websocket.close(code=4400)
+                return
+            event = json.loads(raw_message)
+            if isinstance(event, dict) and event.get("event") == "start":
+                start_event = event
+                break
+    except WebSocketDisconnect:
+        return
+    except (asyncio.TimeoutError, TypeError, ValueError):
+        await websocket.close(code=4400)
+        return
+
+    if start_event is None:
+        await websocket.close(code=4400)
+        return
+    start = start_event.get("start")
+    if not isinstance(start, dict):
+        await websocket.close(code=4400)
+        return
+    call_uuid = str(start.get("callId") or "")
+    if not await authorize_plivo_media(call_uuid, bridge_token):
+        await websocket.close(code=4403)
+        return
+
+    try:
+        bridge = PlivoQwenRealtimeBridge(websocket, call_uuid, start_event)
+    except QwenRealtimeError:
+        await websocket.close(code=4400)
+        return
+    await mark_plivo_streaming(call_uuid)
+    try:
+        await bridge.run()
+    except WebSocketDisconnect:
+        logger.info("Plivo media socket disconnected: uuid=%s", call_uuid)
+    except QwenCallLimitReached:
+        logger.info("Qwen realtime turn limit reached: uuid=%s", call_uuid)
+        from voice_provider import get_voice_provider
+
+        await get_voice_provider("plivo").abort_call(call_uuid)
+    except QwenRealtimeError:
+        logger.exception("Plivo/Qwen realtime bridge failed: uuid=%s", call_uuid)
+        await websocket.close(code=1011)
+    except Exception:
+        logger.exception("Unexpected Plivo/Qwen bridge failure: uuid=%s", call_uuid)
         await websocket.close(code=1011)
 
 

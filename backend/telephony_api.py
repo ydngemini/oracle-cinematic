@@ -19,7 +19,9 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from inbound_voice import (
     InboundVoiceError,
     check_business_number_verification,
+    complete_business_number_verification,
     connect_business_number,
+    connect_business_number_generic,
     finalize_inbound_voice_call,
     get_inbound_call,
     get_telephony_route,
@@ -48,6 +50,12 @@ from twilio_call_handler import (
     initialize_inbound_twilio_call_state,
     twilio_media_websocket_url,
     twilio_qwen_enabled,
+)
+from voice_provider import (
+    PROVIDER_PLIVO,
+    PROVIDER_TWILIO,
+    get_voice_provider,
+    voice_provider_name,
 )
 
 logger = logging.getLogger("oracle.telephony")
@@ -167,10 +175,11 @@ class AgentCallPrepare(BaseModel):
 
 
 class BusinessNumberConnect(BaseModel):
-    """V1 'use my existing business number' input — deliberately just the one
-    number. Everything else (Twilio account, hidden forwarding number,
+    """'use my existing business number' input — deliberately just the one
+    number. Everything else (carrier account, hidden forwarding number,
     verification) is resolved server-side; this is not the general-purpose
-    TelephonyRouteUpsert."""
+    TelephonyRouteUpsert. The carrier itself (Plivo/Twilio) is never a
+    client-supplied field — see put_business_number."""
 
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
@@ -180,6 +189,12 @@ class BusinessNumberConnect(BaseModel):
     @classmethod
     def validate_number(cls, value: str) -> str:
         return normalize_e164(value)
+
+
+class BusinessNumberVerifyOtp(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    otp: str = Field(min_length=1, max_length=12)
 
 
 def _public_base_url(request: Request) -> str:
@@ -248,6 +263,30 @@ async def transfer_webhook_url(call_sid: str, *, reason: str) -> str:
         return ""
     return (
         f"{base}/api/telephony/webhooks/twilio/inbound/"
+        f"{target['endpoint_key']}/transfer?reason={quote(reason, safe='')}"
+    )
+
+
+async def plivo_transfer_webhook_url(call_uuid: str, *, reason: str) -> str:
+    """Plivo counterpart of transfer_webhook_url — same contract, same
+    reasoning: the realtime bridge has no HTTP Request to derive a host
+    from, and the destination number is resolved server-side at transfer
+    time rather than travelling over the wire."""
+    base = os.getenv("ORACLE_PUBLIC_BASE_URL", "").strip().rstrip("/")
+    if not base:
+        logger.error(
+            "ORACLE_PUBLIC_BASE_URL is not set — live agent hand-off is unavailable"
+        )
+        return ""
+    parsed = urlsplit(base)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        logger.error("ORACLE_PUBLIC_BASE_URL is malformed — hand-off is unavailable")
+        return ""
+    target = await resolve_forward_target(call_uuid, reason=reason)
+    if target is None:
+        return ""
+    return (
+        f"{base}/api/telephony/webhooks/plivo/inbound/"
         f"{target['endpoint_key']}/transfer?reason={quote(reason, safe='')}"
     )
 
@@ -351,6 +390,89 @@ async def _route_twilio_tokens(route: dict[str, Any]) -> list[str]:
     )
 
 
+async def _plivo_credentials(ctx: TenantContext) -> dict[str, str]:
+    credentials: dict[str, Any] = {}
+    raw = await _load_provider_credential(ctx, "plivo")
+    if raw:
+        try:
+            decoded = json.loads(raw)
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=503, detail="Stored Plivo credential is invalid.") from exc
+        if not isinstance(decoded, dict):
+            raise HTTPException(status_code=503, detail="Stored Plivo credential is invalid.")
+        credentials.update(decoded)
+    for key, env_name in (
+        ("auth_id", "PLIVO_AUTH_ID"),
+        ("auth_token", "PLIVO_AUTH_TOKEN"),
+    ):
+        credentials.setdefault(key, os.getenv(env_name, ""))
+    return {key: str(value or "").strip() for key, value in credentials.items()}
+
+
+def _plivo_auth_tokens() -> list[str]:
+    current = os.getenv("PLIVO_AUTH_TOKEN", "").strip()
+    previous = os.getenv("PLIVO_AUTH_TOKEN_PREVIOUS", "").strip()
+    return list(dict.fromkeys(token for token in (current, previous) if token))
+
+
+def validate_plivo_signature(
+    request: Request,
+    form: Any,
+    suffix: str,
+    *,
+    tokens: Optional[list[str]] = None,
+) -> None:
+    """Plivo's V3 signature validation — see plivo_call_handler for the SDK
+    helper this wraps. Rejects missing/invalid signatures the same way
+    validate_twilio_signature does."""
+    from plivo_call_handler import validate_plivo_webhook_signature
+
+    signature = request.headers.get("X-Plivo-Signature-V3", "")
+    nonce = request.headers.get("X-Plivo-Signature-V3-Nonce", "")
+    if not signature or not nonce:
+        raise HTTPException(status_code=400, detail="Missing X-Plivo-Signature-V3 header.")
+    tokens = list(dict.fromkeys(token for token in (tokens or _plivo_auth_tokens()) if token))
+    if not tokens:
+        raise HTTPException(
+            status_code=503,
+            detail="Plivo webhook validation is not configured.",
+        )
+    canonical_url = _canonical_webhook_url(request, suffix)
+    if validate_plivo_webhook_signature(
+        canonical_url,
+        nonce,
+        signature,
+        tokens=tokens,
+        method="POST",
+        params=_normalize_twilio_form(form),
+    ):
+        return
+    logger.warning("Rejected invalid Plivo webhook signature path=%s", suffix)
+    raise HTTPException(status_code=400, detail="Invalid Plivo signature.")
+
+
+async def _route_plivo_tokens(route: dict[str, Any]) -> list[str]:
+    """Return signing tokens only for the tenant/account owning this route."""
+    tenant_ctx = TenantContext(
+        agent_id=str(route["agent_id"]),
+        tenant_id=str(route["tenant_id"]),
+        role=Role.AGENT,
+    )
+    credentials = await _plivo_credentials(tenant_ctx)
+    if credentials.get("auth_id") != str(route.get("provider_account_id") or ""):
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Plivo route credential does not match the configured account.",
+        )
+    return list(
+        dict.fromkeys(
+            token
+            for token in (credentials.get("auth_token", ""), *_plivo_auth_tokens())
+            if token
+        )
+    )
+
+
 async def _agent_intent_platform(intent_id: str) -> Optional[dict[str, Any]]:
     platform_ctx = TenantContext(
         agent_id="twilio-agent-webhook",
@@ -404,9 +526,10 @@ def _dial_agent(
 
 def _route_json(row: dict[str, Any], request: Request) -> dict[str, Any]:
     endpoint_key = str(row["endpoint_key"])
+    provider = str(row.get("provider") or PROVIDER_TWILIO)
     base = _public_base_url(request)
-    webhook_path = f"/api/telephony/webhooks/twilio/inbound/{endpoint_key}"
-    status_path = f"/api/telephony/webhooks/twilio/status/{endpoint_key}"
+    webhook_path = f"/api/telephony/webhooks/{provider}/inbound/{endpoint_key}"
+    status_path = f"/api/telephony/webhooks/{provider}/status/{endpoint_key}"
     return {
         **row,
         "id": str(row["id"]),
@@ -478,31 +601,52 @@ async def put_business_number(
     request: Request,
     ctx: TenantContext = Depends(require_context),
 ) -> dict[str, Any]:
-    """V1 'use my existing business number': connect (or reconnect) the one
+    """'use my existing business number': connect (or reconnect) the one
     number an agent already advertises. Idempotent — safe to call again with
     the same number (reuses the hidden forwarding number and does not
-    re-request verification), and safe to retry after a Twilio failure
+    re-request verification), and safe to retry after a carrier failure
     (inbound_forwarding_status / outbound_verification_status report 'failed'
     with a reason rather than raising, so the caller can just try again).
 
-    Provisions real Twilio infrastructure (a purchased phone number, a
+    The carrier is never a client-supplied field. A route that already has
+    one keeps it — reconnecting never silently switches an agent's live
+    carrier out from under them. A brand new route uses
+    ORACLE_VOICE_PROVIDER (Plivo by default per the carrier migration;
+    Twilio remains selectable during the transition).
+
+    Provisions real carrier infrastructure (a purchased phone number, a
     verification request) — restricted to broker_owner for the same reason
     provider credential changes are (sales_api.configure_provider).
     """
     require_role(ctx, Role.BROKER_OWNER)
-    credentials = await _twilio_credentials(ctx)
-    account_sid = credentials.get("account_sid") or ""
-    if not account_sid:
-        raise HTTPException(
-            status_code=503,
-            detail="Twilio is not configured for this tenant yet — connect a Twilio "
-            "provider credential first.",
-        )
+    existing = await get_telephony_route(ctx)
+    provider = str((existing or {}).get("provider") or voice_provider_name())
+    if provider == PROVIDER_TWILIO:
+        credentials = await _twilio_credentials(ctx)
+        provider_account_id = credentials.get("account_sid") or ""
+        if not provider_account_id:
+            raise HTTPException(
+                status_code=503,
+                detail="Twilio is not configured for this tenant yet — connect a Twilio "
+                "provider credential first.",
+            )
+    elif provider == PROVIDER_PLIVO:
+        credentials = await _plivo_credentials(ctx)
+        provider_account_id = credentials.get("auth_id") or ""
+        if not provider_account_id:
+            raise HTTPException(
+                status_code=503,
+                detail="Plivo is not configured for this tenant yet — connect a Plivo "
+                "provider credential first.",
+            )
+    else:
+        raise HTTPException(status_code=503, detail=f"Unsupported voice provider {provider!r}.")
     try:
-        row = await connect_business_number(
+        row = await connect_business_number_generic(
             ctx,
             body.public_business_number,
-            twilio_account_sid=account_sid,
+            provider=provider,
+            provider_account_id=provider_account_id,
             credentials=credentials,
         )
     except ValueError as exc:
@@ -524,11 +668,46 @@ async def verify_business_number(
 ) -> dict[str, Any]:
     """Re-check Twilio for whether the connected business number is now a
     verified Outgoing Caller ID. Retry-safe: call this as many times as
-    needed while the agent completes Twilio's own verification call."""
+    needed while the agent completes Twilio's own verification call.
+
+    Twilio-only — a Plivo route completes verification by submitting the
+    OTP the carrier sent (POST .../business-number/verify/complete), not by
+    polling, since Plivo's Verified Caller ID has no confirmed status-check
+    endpoint (see voice_provider.PlivoVoiceProvider's docstring)."""
     require_role(ctx, Role.BROKER_OWNER)
+    route = await get_telephony_route(ctx)
+    if route is not None and route.get("provider") == PROVIDER_PLIVO:
+        raise HTTPException(
+            status_code=422,
+            detail="This business number uses Plivo — submit the verification code "
+            "to /business-number/verify/complete instead.",
+        )
     credentials = await _twilio_credentials(ctx)
     try:
         row = await check_business_number_verification(ctx, credentials=credentials)
+    except InboundVoiceError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return _route_json(row, request)
+
+
+@router.post("/business-number/verify/complete")
+async def verify_business_number_complete(
+    body: BusinessNumberVerifyOtp,
+    request: Request,
+    ctx: TenantContext = Depends(require_context),
+) -> dict[str, Any]:
+    """Submit the OTP Plivo sent to complete Verified Caller ID.
+
+    Never accepts a bare "verified=true" from the client — verification
+    state comes only from Plivo's own API response inside
+    complete_business_number_verification, which also enforces attempt-count
+    rate limiting server-side."""
+    require_role(ctx, Role.BROKER_OWNER)
+    credentials = await _plivo_credentials(ctx)
+    try:
+        row = await complete_business_number_verification(
+            ctx, body.otp, credentials=credentials
+        )
     except InboundVoiceError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     return _route_json(row, request)
@@ -1118,4 +1297,353 @@ async def twilio_inbound_status(endpoint_key: str, request: Request) -> Response
             await cleanup_twilio_call(call_sid)
         except TwilioCallStateUnavailable:
             logger.warning("Distributed inbound call cleanup was unavailable: sid=%s", call_sid)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+# ── Plivo webhooks — same lifecycle as Twilio's above, generic dispatch ─────
+#
+# Every function below reuses the same tenant-safe primitives the Twilio
+# webhooks use (prepare_inbound_call, resolve_forward_target,
+# record_forward_attempt, finalize_inbound_voice_call, guard_outreach) —
+# nothing here is a second call-history or CRM path. Only the transport
+# (form field names, markup, call-state module, signature scheme) differs,
+# via voice_provider.PlivoVoiceProvider and plivo_call_handler.
+
+_PLIVO_TERMINAL_STATUSES = {
+    "completed",
+    "busy",
+    "failed",
+    "no-answer",
+    "canceled",
+    "rejected",
+    "timeout",
+}
+
+
+@router.post(
+    "/webhooks/plivo/inbound/{endpoint_key}",
+    include_in_schema=False,
+)
+async def plivo_inbound_webhook(endpoint_key: str, request: Request) -> Response:
+    """Resolve hidden DID to tenant+agent, disclose AI, then open the bridge.
+
+    See resolve_inbound_route's docstring: Plivo's callback has no confirmed
+    account-identity field, so the route is matched on endpoint_key+DID
+    alone and then cryptographically confirmed by validate_plivo_signature
+    using THAT route's own tenant credential — a request that resolves to
+    the wrong tenant's route fails signature validation instead of
+    succeeding against the wrong account.
+    """
+    from voice_provider import get_voice_provider
+
+    adapter = get_voice_provider(PROVIDER_PLIVO)
+    try:
+        uuid.UUID(endpoint_key)
+    except (TypeError, ValueError, AttributeError):
+        raise HTTPException(status_code=404, detail="Inbound route not found.")
+    suffix = f"/api/telephony/webhooks/plivo/inbound/{endpoint_key}"
+    form = await request.form()
+    call_uuid = str(form.get("CallUUID") or "")
+    caller_phone = str(form.get("From") or "")
+    inbound_did = str(form.get("To") or "")
+    route = await resolve_inbound_route(
+        endpoint_key, inbound_did, None, provider=PROVIDER_PLIVO
+    )
+    if route is None:
+        logger.warning("Inbound Plivo call did not match an active route")
+        return Response(
+            content=adapter.safe_hangup_markup("This call cannot be connected safely. Goodbye."),
+            media_type="application/xml",
+        )
+    validate_plivo_signature(request, form, suffix, tokens=await _route_plivo_tokens(route))
+
+    try:
+        await mark_inbound_forwarding_ready(route)
+    except Exception:
+        logger.exception("Unable to record inbound forwarding as ready: uuid=%s", call_uuid)
+
+    agent_forward = str(route.get("agent_forward_e164") or "")
+    forward_on_request = bool(agent_forward and route.get("forward_on_request"))
+    forward_when_unavailable = bool(
+        agent_forward and route.get("forward_when_ai_unavailable")
+    )
+    forward_caller_id = str(route.get("voice_caller_id_e164") or "") or inbound_did
+    forward_timeout = int(route.get("forward_timeout_seconds") or 25)
+
+    from plivo_call_handler import (
+        PlivoCallStateUnavailable,
+        create_plivo_bridge_token,
+        initialize_inbound_plivo_call_state,
+        plivo_media_websocket_url,
+        plivo_qwen_enabled,
+    )
+
+    try:
+        binding = await prepare_inbound_call(
+            route,
+            call_sid=call_uuid,
+            caller_phone=caller_phone,
+            provider=PROVIDER_PLIVO,
+        )
+        plivo_state = await initialize_inbound_plivo_call_state(
+            call_uuid,
+            inbound_did,
+            tenant_id=binding.tenant_id,
+            agent_id=binding.agent_id,
+            account_id=str(route.get("provider_account_id") or ""),
+            route_id=binding.route_id,
+            voice_call_id=binding.call_id,
+            intake_mode=binding.intake_mode,
+            contact_id=binding.contact_id,
+            client_id=binding.client_id,
+            forward_available=forward_on_request,
+        )
+    except (ValueError, InboundVoiceError, PlivoCallStateUnavailable):
+        logger.exception("Inbound Plivo call could not be bound safely: uuid=%s", call_uuid)
+        if call_uuid:
+            try:
+                await update_inbound_call_status(call_uuid, "failed")
+            except Exception:
+                logger.exception("Unable to mark failed inbound binding: uuid=%s", call_uuid)
+        return Response(
+            content=adapter.safe_hangup_markup("This call cannot be connected safely. Goodbye."),
+            media_type="application/xml",
+        )
+
+    from outreach_compliance import AI_VOICE_DISCLOSURE
+
+    async def _ai_unavailable() -> Response:
+        await finalize_inbound_voice_call(call_uuid, [], plivo_state)
+        if forward_when_unavailable:
+            await record_forward_attempt(
+                call_uuid, reason="ai_unavailable", outcome="requested"
+            )
+            return Response(
+                content=adapter.dial_agent_markup(
+                    agent_forward,
+                    caller_id=forward_caller_id,
+                    timeout_seconds=forward_timeout,
+                    say="Thanks for calling. Connecting you to your agent now.",
+                    action_url=_canonical_webhook_url(
+                        request,
+                        f"/api/telephony/webhooks/plivo/inbound/{endpoint_key}/handoff",
+                    ),
+                ),
+                media_type="application/xml",
+            )
+        await update_inbound_call_status(call_uuid, "failed")
+        return Response(
+            content=adapter.safe_hangup_markup(
+                AI_VOICE_DISCLOSURE
+                + " The realtime assistant is unavailable, but your agent has been notified. Goodbye."
+            ),
+            media_type="application/xml",
+        )
+
+    if not plivo_qwen_enabled(plivo_state):
+        return await _ai_unavailable()
+
+    try:
+        stream_url = plivo_media_websocket_url()
+        bridge_token = create_plivo_bridge_token(call_uuid)
+    except (ValueError, PlivoCallStateUnavailable):
+        logger.exception("Inbound Plivo media binding is unavailable: uuid=%s", call_uuid)
+        return await _ai_unavailable()
+    return Response(
+        content=adapter.speak_and_stream_markup(
+            AI_VOICE_DISCLOSURE, stream_url=stream_url, bridge_token=bridge_token
+        ),
+        media_type="application/xml",
+    )
+
+
+@router.post(
+    "/webhooks/plivo/inbound/{endpoint_key}/transfer",
+    include_in_schema=False,
+)
+async def plivo_inbound_transfer(endpoint_key: str, request: Request) -> Response:
+    """PlivoXML fetched when a live AI call is redirected to the agent."""
+    from voice_provider import get_voice_provider
+
+    adapter = get_voice_provider(PROVIDER_PLIVO)
+    suffix = f"/api/telephony/webhooks/plivo/inbound/{endpoint_key}/transfer"
+    if request.url.query:
+        suffix = f"{suffix}?{request.url.query}"
+    form = await request.form()
+    call_uuid = str(form.get("CallUUID") or "")
+    route = await resolve_inbound_call_route(
+        endpoint_key, call_uuid, None, provider=PROVIDER_PLIVO
+    )
+    if route is None:
+        raise HTTPException(status_code=404, detail="Inbound call not found.")
+    validate_plivo_signature(request, form, suffix, tokens=await _route_plivo_tokens(route))
+
+    reason = str(request.query_params.get("reason") or "caller_request")
+    target = await resolve_forward_target(call_uuid, reason=reason)
+    if target is None:
+        logger.warning("Hand-off requested with no eligible target: uuid=%s", call_uuid)
+        return Response(
+            content=adapter.safe_hangup_markup(
+                "I could not reach your agent right now, but they have your details "
+                "and will call you back. Goodbye."
+            ),
+            media_type="application/xml",
+        )
+    await record_forward_attempt(call_uuid, reason=reason, outcome="requested")
+    return Response(
+        content=adapter.dial_agent_markup(
+            target["forward_e164"],
+            caller_id=target["caller_id"],
+            timeout_seconds=target["timeout_seconds"],
+            say="Connecting you to your agent now, one moment.",
+            action_url=_canonical_webhook_url(
+                request,
+                f"/api/telephony/webhooks/plivo/inbound/{endpoint_key}/handoff",
+            ),
+        ),
+        media_type="application/xml",
+    )
+
+
+@router.post(
+    "/webhooks/plivo/inbound/{endpoint_key}/handoff",
+    include_in_schema=False,
+)
+async def plivo_inbound_handoff_result(endpoint_key: str, request: Request) -> Response:
+    """Record whether the agent actually picked up the transferred call."""
+    from voice_provider import get_voice_provider
+
+    adapter = get_voice_provider(PROVIDER_PLIVO)
+    suffix = f"/api/telephony/webhooks/plivo/inbound/{endpoint_key}/handoff"
+    form = await request.form()
+    call_uuid = str(form.get("CallUUID") or "")
+    route = await resolve_inbound_call_route(
+        endpoint_key, call_uuid, None, provider=PROVIDER_PLIVO
+    )
+    if route is None:
+        raise HTTPException(status_code=404, detail="Inbound call not found.")
+    validate_plivo_signature(request, form, suffix, tokens=await _route_plivo_tokens(route))
+
+    dial_status = str(
+        form.get("DialCallStatus") or form.get("DialStatus") or ""
+    ).strip().lower()
+    outcome = {
+        "completed": "connected",
+        "answered": "connected",
+        "no-answer": "no_answer",
+        "busy": "busy",
+        "failed": "failed",
+        "canceled": "failed",
+    }.get(dial_status, "failed")
+    await record_forward_attempt(call_uuid, reason="caller_request", outcome=outcome)
+    if outcome == "connected":
+        return Response(
+            content=adapter.hangup_after_dial_markup(), media_type="application/xml"
+        )
+    return Response(
+        content=adapter.safe_hangup_markup(
+            "Your agent is not available right now. They have your details and "
+            "will call you back. Goodbye."
+        ),
+        media_type="application/xml",
+    )
+
+
+@router.post(
+    "/webhooks/plivo/status/{endpoint_key}",
+    include_in_schema=False,
+)
+async def plivo_inbound_status(endpoint_key: str, request: Request) -> Response:
+    from plivo_call_handler import PlivoCallStateUnavailable, cleanup_plivo_call
+
+    suffix = f"/api/telephony/webhooks/plivo/status/{endpoint_key}"
+    form = await request.form()
+    call_uuid = str(form.get("CallUUID") or "")
+    call_status = str(form.get("CallStatus") or "").strip().lower()
+    route = await resolve_inbound_call_route(
+        endpoint_key, call_uuid, None, provider=PROVIDER_PLIVO
+    )
+    if route is None:
+        raise HTTPException(status_code=404, detail="Inbound call not found.")
+    validate_plivo_signature(request, form, suffix, tokens=await _route_plivo_tokens(route))
+
+    await update_inbound_call_status(call_uuid, call_status)
+    if call_status in _PLIVO_TERMINAL_STATUSES:
+        try:
+            await cleanup_plivo_call(call_uuid)
+        except PlivoCallStateUnavailable:
+            logger.warning("Distributed inbound call cleanup was unavailable: uuid=%s", call_uuid)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post("/webhooks/plivo", include_in_schema=False)
+async def plivo_outbound_answer(request: Request) -> Response:
+    """Answer URL for a Neoh AI-placed outbound Plivo call.
+
+    Counterpart of commands_api.twilio_webhook — but that endpoint lives in
+    commands_api because outbound AI calls are approved commands, not
+    inbound routes. This one stays in telephony_api's webhook family for the
+    same reason the Twilio one is duplicated in spirit: the AI voice
+    disclosure has to be spoken before the realtime stream ever opens.
+    """
+    from plivo_call_handler import (
+        PlivoCallStateUnavailable,
+        create_plivo_bridge_token,
+        load_plivo_call_state,
+        plivo_media_websocket_url,
+        plivo_qwen_enabled,
+    )
+    from outreach_compliance import AI_VOICE_DISCLOSURE
+    from voice_provider import get_voice_provider
+
+    adapter = get_voice_provider(PROVIDER_PLIVO)
+    form = await request.form()
+    call_uuid = str(form.get("CallUUID") or "")
+    state = await load_plivo_call_state(call_uuid, wait_for_initialization=True)
+    if state is None:
+        logger.error("Rejecting unmanaged Plivo call: uuid=%s", call_uuid)
+        return Response(
+            content=adapter.safe_hangup_markup("This call cannot be connected safely. Goodbye."),
+            media_type="application/xml",
+        )
+    if not plivo_qwen_enabled(state):
+        return Response(
+            content=adapter.safe_hangup_markup(
+                "The realtime assistant is unavailable. Goodbye."
+            ),
+            media_type="application/xml",
+        )
+    try:
+        stream_url = plivo_media_websocket_url()
+        bridge_token = create_plivo_bridge_token(call_uuid)
+    except (ValueError, PlivoCallStateUnavailable):
+        logger.exception("Outbound Plivo media binding is unavailable: uuid=%s", call_uuid)
+        return Response(
+            content=adapter.safe_hangup_markup(
+                "The realtime assistant is unavailable. Goodbye."
+            ),
+            media_type="application/xml",
+        )
+    return Response(
+        content=adapter.speak_and_stream_markup(
+            AI_VOICE_DISCLOSURE, stream_url=stream_url, bridge_token=bridge_token
+        ),
+        media_type="application/xml",
+    )
+
+
+@router.post("/webhooks/plivo/status", include_in_schema=False)
+async def plivo_outbound_status(request: Request) -> Response:
+    """Status callback for a Neoh AI-placed outbound Plivo call."""
+    from plivo_call_handler import PlivoCallStateUnavailable, cleanup_plivo_call
+
+    form = await request.form()
+    call_uuid = str(form.get("CallUUID") or "")
+    call_status = str(form.get("CallStatus") or "").strip().lower()
+    if call_uuid and call_status in _PLIVO_TERMINAL_STATUSES:
+        try:
+            await cleanup_plivo_call(call_uuid)
+        except PlivoCallStateUnavailable:
+            logger.warning("Distributed outbound call cleanup was unavailable: uuid=%s", call_uuid)
+    logger.info("Plivo outbound call status received: uuid=%s status=%s", call_uuid, call_status or "unknown")
     return Response(status_code=status.HTTP_204_NO_CONTENT)

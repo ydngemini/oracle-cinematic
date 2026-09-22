@@ -48,7 +48,7 @@ _INSERT_COLUMNS = (
     "forwarding_mode", "forwarding_source_e164", "sip_domain", "voice_caller_id_e164",
     "voice_caller_id_verified", "sms_sender_e164", "sms_sender_type", "active",
     "agent_forward_e164", "forward_on_request", "forward_when_ai_unavailable",
-    "forward_timeout_seconds",
+    "forward_timeout_seconds", "provider", "provider_account_id",
 )
 _SET_COL_RE = re.compile(r"(\w+)\s*=\s*\$(\d+)")
 
@@ -90,6 +90,11 @@ class FakeRouteConn:
                 "inbound_forwarding_provider_sid": None,
                 "inbound_forwarding_last_tested_at": None,
                 "inbound_forwarding_failure_reason": None,
+                "provider_account_id": None,
+                "provider_app_id": None,
+                "outbound_verification_channel": None,
+                "outbound_verification_attempt_count": 0,
+                "outbound_verification_locked_until": None,
             }
             row.update(values)
             row["updated_at"] = datetime.now(timezone.utc)

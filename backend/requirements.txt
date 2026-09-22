@@ -63,6 +63,7 @@ azure-communication-callautomation==1.6.0
 azure-communication-email==1.0.0   # Default transactional email (replaces SES)
 azure-communication-sms==1.1.0
 twilio==9.10.0
+plivo==4.62.0                      # PRIMARY voice carrier — see backend/voice_provider.py
 
 # ── Voice intelligence ─────────────────────────────────────────────────────────
 python-multipart==0.0.31       # FastAPI multipart parsing for UploadFile in voice_intel.py

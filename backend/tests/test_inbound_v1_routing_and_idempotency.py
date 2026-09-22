@@ -68,6 +68,8 @@ def _route_row(*, tenant_id, agent_id, route_id, endpoint_key, did, status="acti
         "forward_timeout_seconds": 25,
         "voice_caller_id_e164": did,
         "inbound_forwarding_status": status,
+        "provider": "twilio",
+        "provider_account_id": ACCOUNT_SID,
     }
 
 
@@ -84,12 +86,13 @@ class FakeRoutesConn:
     async def fetchrow(self, query: str, *args: Any):
         q = " ".join(query.split())
         if "FROM telephony_routes" in q and "WHERE endpoint_key=" in q:
-            endpoint_uuid, did, account_sid = args
+            endpoint_uuid, did, provider_account_id, provider = args
             for row in self.routes:
                 if (
                     str(row["endpoint_key"]) == str(endpoint_uuid)
                     and row["inbound_did"] == did
-                    and row["twilio_account_sid"] == account_sid
+                    and row["provider_account_id"] == provider_account_id
+                    and row["provider"] == provider
                     and row["active"]
                 ):
                     return dict(row)
