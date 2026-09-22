@@ -52,6 +52,7 @@ from contacts_api import router as contacts_router
 from client_enterprise import router as client_enterprise_router
 from client_ai_automation import router as client_ai_router
 from telephony_api import router as telephony_router
+from messaging_api import router as messaging_router
 from ai_chat_api import router as ai_chat_router, handle_chat_websocket
 import tenant_engines
 import ws_hub
@@ -266,6 +267,7 @@ app.include_router(contacts_router)
 app.include_router(client_enterprise_router)
 app.include_router(client_ai_router)
 app.include_router(telephony_router)
+app.include_router(messaging_router)
 app.include_router(ai_chat_router)
 app.include_router(outreach_compliance_router)
 from admin_ops import router as admin_ops_router  # noqa: E402 — late import, matches local router convention

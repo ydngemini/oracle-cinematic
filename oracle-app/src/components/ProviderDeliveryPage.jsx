@@ -64,6 +64,17 @@ export default function ProviderDeliveryPage() {
   const [message, setMessage] = useState('');
   const [bizNumberInput, setBizNumberInput] = useState('');
   const [otpInput, setOtpInput] = useState('');
+  const [messagingStatus, setMessagingStatus] = useState(null);
+  const [smsOtpInput, setSmsOtpInput] = useState('');
+
+  const loadMessaging = useCallback(async () => {
+    try {
+      const response = await crmGet('/api/messaging/business-number', { retries: 0 });
+      setMessagingStatus(response);
+    } catch {
+      setMessagingStatus(null);
+    }
+  }, []);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -107,6 +118,11 @@ export default function ProviderDeliveryPage() {
     return () => { void initial; };
   }, [load]);
 
+  useEffect(() => {
+    const initial = Promise.resolve().then(loadMessaging);
+    return () => { void initial; };
+  }, [loadMessaging]);
+
   const byName = useMemo(
     () => Object.fromEntries(providers.map((provider) => [provider.provider, provider])),
     [providers],
@@ -126,6 +142,19 @@ export default function ProviderDeliveryPage() {
   const incomingReady = route?.inbound_forwarding_status === 'active';
   const incomingFailed = route?.inbound_forwarding_status === 'failed';
   const aiAnsweringReady = bizVerified && incomingReady;
+
+  // Same carrier-agnostic rule as voice: messaging provider terminology
+  // never renders — only messagingStatus.hosted_order_status decides which
+  // step of the flow to show.
+  const smsReady = messagingStatus?.hosted_order_status === 'active';
+  const smsEligibilityChecked = Boolean(
+    messagingStatus?.eligibility_status && messagingStatus.eligibility_status !== 'unknown'
+  );
+  const smsEligible = messagingStatus?.eligibility_status === 'eligible';
+  const smsPendingVerification = messagingStatus?.hosted_order_status === 'pending_verification';
+  const smsProcessing = ['processing', 'pending_documents', 'manual_action_required'].includes(
+    messagingStatus?.hosted_order_status
+  );
 
   const configure = useCallback(async (provider, values, reset) => {
     setWorking(`configure:${provider}`); setError(''); setMessage('');
@@ -265,6 +294,63 @@ export default function ProviderDeliveryPage() {
     }
   }, [otpInput]);
 
+  const checkMessagingEligibility = useCallback(async () => {
+    setWorking('sms-eligibility'); setError(''); setMessage('');
+    try {
+      const response = await crmPost('/api/messaging/business-number/check-eligibility', {});
+      setMessagingStatus(response);
+      if (response.eligibility_status === 'eligible') {
+        setMessage('Your business number is eligible for text messages.');
+      } else {
+        setError(response.eligibility_detail || 'This number is not eligible for text messages right now.');
+      }
+    } catch (checkError) {
+      setError(errorText(checkError));
+    } finally {
+      setWorking('');
+    }
+  }, []);
+
+  const connectMessaging = useCallback(async () => {
+    setWorking('sms-connect'); setError(''); setMessage('');
+    try {
+      const response = await crmPut('/api/messaging/business-number', {});
+      setMessagingStatus(response);
+      setMessage('Text messages connecting — we sent a verification code to your business number.');
+    } catch (connectError) {
+      setError(errorText(connectError));
+    } finally {
+      setWorking('');
+    }
+  }, []);
+
+  const completeMessagingVerification = useCallback(async (event) => {
+    event.preventDefault();
+    setWorking('sms-verify'); setError(''); setMessage('');
+    try {
+      const response = await crmPost('/api/messaging/business-number/verify/complete', { code: smsOtpInput });
+      setMessagingStatus(response);
+      setSmsOtpInput('');
+      setMessage('Text messages verified — finishing setup with the carrier.');
+    } catch (verifyError) {
+      setError(errorText(verifyError));
+    } finally {
+      setWorking('');
+    }
+  }, [smsOtpInput]);
+
+  const refreshMessagingStatus = useCallback(async () => {
+    setWorking('sms-refresh'); setError(''); setMessage('');
+    try {
+      const response = await crmPost('/api/messaging/business-number/refresh', {});
+      setMessagingStatus(response);
+    } catch (refreshError) {
+      setError(errorText(refreshError));
+    } finally {
+      setWorking('');
+    }
+  }, []);
+
   const providerActions = (provider) => (
     <div className={styles.buttonRow}>
       <button type="button" className={styles.secondaryButton} onClick={() => validate(provider)} disabled={Boolean(working) || !byName[provider]?.account_label}><ShieldCheck aria-hidden="true" /> Validate</button>
@@ -402,10 +488,54 @@ export default function ProviderDeliveryPage() {
               <div className={styles.metricCard}><span>Outgoing calls</span><strong>Ready</strong></div>
               <div className={styles.metricCard}><span>Incoming calls</span><strong>{incomingReady ? 'Ready' : 'Needs forwarding setup'}</strong>{incomingFailed ? <small>{route.inbound_forwarding_failure_reason}</small> : null}</div>
               <div className={styles.metricCard}><span>AI answering</span><strong>{aiAnsweringReady ? 'Ready' : 'Not ready'}</strong></div>
+              <div className={styles.metricCard}><span>Text messages</span><strong>{smsReady ? 'Ready' : 'Setup required'}</strong></div>
             </div>
           )}
         </div>
       </section>
+
+      {bizVerified ? (
+        <section className={styles.panel} aria-labelledby="business-messaging-title">
+          <header className={styles.panelHeader}>
+            <div><h4 id="business-messaging-title">Connect text messages</h4><p>Use your existing business number: {route.voice_caller_id_e164}</p></div>
+            <ProviderState provider={{ provider: 'business-messaging', configured: smsReady, validation_status: smsReady ? 'valid' : 'unverified' }} />
+          </header>
+          <div className={styles.panelBody}>
+            {smsReady ? (
+              <p>Your business number can send and receive text messages through NEOH.</p>
+            ) : smsPendingVerification ? (
+              <>
+                <p>We sent a verification code to your business number. Enter it below.</p>
+                <form onSubmit={completeMessagingVerification} autoComplete="off">
+                  <div className={styles.field}>
+                    <label htmlFor="sms-otp">Verification code</label>
+                    <input id="sms-otp" value={smsOtpInput} onChange={(event) => setSmsOtpInput(event.target.value)} maxLength={8} required />
+                  </div>
+                  <button type="submit" className={styles.primaryButton} disabled={Boolean(working)}><ShieldCheck aria-hidden="true" /> Confirm</button>
+                </form>
+              </>
+            ) : smsProcessing ? (
+              <>
+                <p>Text messages are being set up with the carrier — this can take up to a couple of business days.</p>
+                {messagingStatus?.hosted_order_status === 'pending_documents' ? (
+                  <p className={styles.inlineError}>Additional verification documents are required. Contact support to complete this step.</p>
+                ) : null}
+                <button type="button" className={styles.secondaryButton} onClick={refreshMessagingStatus} disabled={Boolean(working)}><RefreshCw aria-hidden="true" /> Check status</button>
+              </>
+            ) : smsEligibilityChecked && !smsEligible ? (
+              <p className={styles.inlineError}>{messagingStatus?.eligibility_detail || 'This number cannot be used for text messages right now.'}</p>
+            ) : (
+              <>
+                <p>Check whether your business number can be used for text messages.</p>
+                <button type="button" className={styles.primaryButton} onClick={checkMessagingEligibility} disabled={Boolean(working)}><ShieldCheck aria-hidden="true" /> Check availability</button>
+              </>
+            )}
+            {smsEligible && !smsPendingVerification && !smsProcessing && !smsReady ? (
+              <button type="button" className={styles.primaryButton} onClick={connectMessaging} disabled={Boolean(working)}><PlugZap aria-hidden="true" /> Connect text messages</button>
+            ) : null}
+          </div>
+        </section>
+      ) : null}
 
       <section className={styles.panel} aria-labelledby="provider-route-title">
         <header className={styles.panelHeader}>

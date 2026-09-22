@@ -2364,24 +2364,77 @@ async def _execute_command_job(payload: dict[str, Any], reporter) -> dict[str, A
             )
             if not decision.allowed:
                 raise RuntimeError("SMS blocked: " + "; ".join(decision.blockers))
-            await reporter.progress(45, "submitting approved SMS")
-            twilio_raw = await _load_provider_credential(ctx, "twilio")
-            twilio_credentials = None
-            if twilio_raw:
-                try:
-                    twilio_credentials = json.loads(twilio_raw)
-                except (TypeError, ValueError) as exc:
-                    raise ProviderConfigurationError(
-                        "Encrypted Twilio credential must be a JSON object"
-                    ) from exc
-                if not isinstance(twilio_credentials, dict):
-                    raise ProviderConfigurationError(
-                        "Encrypted Twilio credential must be a JSON object"
+            from messaging_provider import messaging_provider_name
+
+            sms_provider = messaging_provider_name()
+            if sms_provider == "telnyx":
+                # Same-business-number messaging: the sender MUST be the
+                # agent's own READY hosted number, never a client-supplied
+                # from_number, and never a silent fallback to legacy Twilio
+                # SMS — retries on a fallback provider could double-send.
+                from messaging_data import get_messaging_route, get_public_business_number
+
+                messaging_route = await get_messaging_route(ctx)
+                business_number = await get_public_business_number(ctx)
+                if (
+                    messaging_route is None
+                    or messaging_route.get("hosted_order_status") != "active"
+                    or business_number is None
+                ):
+                    raise RuntimeError(
+                        "Text message blocked: connect and finish setting up "
+                        "text messages for your business number before sending."
                     )
-            submission_started = True
-            provider_result = await send_twilio_sms(
-                {**draft, "target": target}, credentials=twilio_credentials
-            )
+                telnyx_raw = await _load_provider_credential(ctx, "telnyx")
+                telnyx_credentials = None
+                if telnyx_raw:
+                    try:
+                        telnyx_credentials = json.loads(telnyx_raw)
+                    except (TypeError, ValueError):
+                        pass
+                await reporter.progress(45, "submitting approved text message")
+                submission_started = True
+                from messaging_provider import get_messaging_provider
+
+                sender_number = str(business_number["voice_caller_id_e164"])
+                adapter = get_messaging_provider("telnyx")
+                provider_result = await adapter.send_message(
+                    to=str(target["phone"]),
+                    from_=sender_number,
+                    text=str(draft.get("body") or ""),
+                    credentials=telnyx_credentials,
+                )
+                from messaging_data import record_outbound_message
+
+                await record_outbound_message(
+                    tenant_id=ctx.tenant_id,
+                    agent_id=ctx.agent_id,
+                    contact_id=str(target.get("contact_id")) if target.get("contact_id") else None,
+                    client_id=str(target.get("client_id")) if target.get("client_id") else None,
+                    provider="telnyx",
+                    provider_message_id=provider_result.reference,
+                    from_e164=sender_number,
+                    to_e164=str(target["phone"]),
+                    body=str(draft.get("body") or ""),
+                )
+            else:
+                twilio_raw = await _load_provider_credential(ctx, "twilio")
+                twilio_credentials = None
+                if twilio_raw:
+                    try:
+                        twilio_credentials = json.loads(twilio_raw)
+                    except (TypeError, ValueError) as exc:
+                        raise ProviderConfigurationError(
+                            "Encrypted Twilio credential must be a JSON object"
+                        ) from exc
+                    if not isinstance(twilio_credentials, dict):
+                        raise ProviderConfigurationError(
+                            "Encrypted Twilio credential must be a JSON object"
+                        )
+                submission_started = True
+                provider_result = await send_twilio_sms(
+                    {**draft, "target": target}, credentials=twilio_credentials
+                )
         elif command_type is CommandType.CALL:
             decision = await guard_outreach(
                 ctx,

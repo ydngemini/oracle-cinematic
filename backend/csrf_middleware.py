@@ -39,6 +39,12 @@ CSRF_EXEMPT_PATHS = {
     # call, agent-dial status callback and live-agent transfer was rejected 403
     # by this middleware before its signature check ever ran.
     "/api/telephony/webhooks/",
+    # Telnyx posts these; they authenticate by an Ed25519 signature
+    # (telnyx-signature-ed25519 / telnyx-timestamp headers) over the raw body,
+    # not by session cookie — same reasoning as the Twilio/Plivo exemptions
+    # above. Without this, every inbound SMS/MMS and delivery-status webhook
+    # is rejected 403 by this middleware before the signature check ever runs.
+    "/api/messaging/webhooks/",
     "/api/public/lead-intake/",
     # Unauthenticated client capture: the single-use link token IS the
     # capability. There is no ambient session credential for an attacker to

@@ -64,6 +64,8 @@ azure-communication-email==1.0.0   # Default transactional email (replaces SES)
 azure-communication-sms==1.1.0
 twilio==9.10.0
 plivo==4.62.0                      # PRIMARY voice carrier — see backend/voice_provider.py
+telnyx==4.180.0                    # PRIMARY messaging carrier — see backend/messaging_provider.py
+pynacl==1.6.2                      # Ed25519 webhook signature verification (used by telnyx SDK)
 
 # ── Voice intelligence ─────────────────────────────────────────────────────────
 python-multipart==0.0.31       # FastAPI multipart parsing for UploadFile in voice_intel.py
