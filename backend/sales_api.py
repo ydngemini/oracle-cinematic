@@ -313,7 +313,10 @@ async def _provider_snapshot(ctx: TenantContext) -> dict[str, Any]:
                    voice_caller_id_e164,voice_caller_id_verified,
                    sms_sender_e164,sms_sender_type,active,
                    agent_forward_e164,forward_on_request,
-                   forward_when_ai_unavailable,forward_timeout_seconds
+                   forward_when_ai_unavailable,forward_timeout_seconds,
+                   provider,outbound_verification_status,outbound_verification_channel,
+                   outbound_verification_failure_reason,outbound_verification_locked_until,
+                   inbound_forwarding_status,inbound_forwarding_failure_reason
               FROM telephony_routes
              WHERE agent_id=$1 AND active=true
              LIMIT 1

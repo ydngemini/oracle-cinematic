@@ -5,6 +5,7 @@ import {
   KeyRound,
   Mail,
   MessageSquareText,
+  Phone,
   PhoneCall,
   PlugZap,
   RefreshCw,
@@ -61,6 +62,8 @@ export default function ProviderDeliveryPage() {
   const [working, setWorking] = useState('');
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
+  const [bizNumberInput, setBizNumberInput] = useState('');
+  const [otpInput, setOtpInput] = useState('');
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -108,6 +111,21 @@ export default function ProviderDeliveryPage() {
     () => Object.fromEntries(providers.map((provider) => [provider.provider, provider])),
     [providers],
   );
+
+  // Carrier-agnostic on purpose: the agent never sees which telephony
+  // provider is behind this. `route.provider` only decides which backend
+  // verification step to call (a poll vs. an OTP submission) — it is never
+  // rendered.
+  const bizNumberOnFile = Boolean(route?.voice_caller_id_e164);
+  const bizVerified = Boolean(route?.voice_caller_id_verified);
+  const usesOtpVerification = route?.provider !== 'twilio';
+  const lockedUntil = route?.outbound_verification_locked_until
+    ? new Date(route.outbound_verification_locked_until)
+    : null;
+  const isLockedOut = Boolean(lockedUntil && lockedUntil.getTime() > Date.now());
+  const incomingReady = route?.inbound_forwarding_status === 'active';
+  const incomingFailed = route?.inbound_forwarding_status === 'failed';
+  const aiAnsweringReady = bizVerified && incomingReady;
 
   const configure = useCallback(async (provider, values, reset) => {
     setWorking(`configure:${provider}`); setError(''); setMessage('');
@@ -192,6 +210,61 @@ export default function ProviderDeliveryPage() {
     }
   }, [load, routeForm]);
 
+  const connectBusinessNumber = useCallback(async (event) => {
+    event.preventDefault();
+    setWorking('business-number'); setError(''); setMessage('');
+    try {
+      const response = await crmPut('/api/telephony/business-number', {
+        public_business_number: bizNumberInput,
+      });
+      setRoute(response);
+      setBizNumberInput('');
+      setMessage('Business number connected. Verify it to start using it for calls.');
+    } catch (connectError) {
+      setError(errorText(connectError));
+    } finally {
+      setWorking('');
+    }
+  }, [bizNumberInput]);
+
+  const checkVerification = useCallback(async () => {
+    setWorking('verify-check'); setError(''); setMessage('');
+    try {
+      const response = await crmPost('/api/telephony/business-number/verify', {});
+      setRoute(response);
+      if (response?.voice_caller_id_verified) {
+        setMessage('Your number is verified.');
+      } else {
+        setMessage('Not verified yet — complete the verification call, then check again.');
+      }
+    } catch (checkError) {
+      setError(errorText(checkError));
+    } finally {
+      setWorking('');
+    }
+  }, []);
+
+  const completeVerification = useCallback(async (event) => {
+    event.preventDefault();
+    setWorking('verify-complete'); setError(''); setMessage('');
+    try {
+      const response = await crmPost('/api/telephony/business-number/verify/complete', {
+        otp: otpInput,
+      });
+      setRoute(response);
+      setOtpInput('');
+      if (response?.voice_caller_id_verified) {
+        setMessage('Your number is verified.');
+      } else {
+        setError('That code did not verify the number — check it and try again.');
+      }
+    } catch (completeError) {
+      setError(errorText(completeError));
+    } finally {
+      setWorking('');
+    }
+  }, [otpInput]);
+
   const providerActions = (provider) => (
     <div className={styles.buttonRow}>
       <button type="button" className={styles.secondaryButton} onClick={() => validate(provider)} disabled={Boolean(working) || !byName[provider]?.account_label}><ShieldCheck aria-hidden="true" /> Validate</button>
@@ -271,6 +344,67 @@ export default function ProviderDeliveryPage() {
           </form>
         </article>
 
+      </section>
+
+      <section className={styles.panel} aria-labelledby="business-number-title">
+        <header className={styles.panelHeader}>
+          <div><h4 id="business-number-title">Connect your business number</h4><p>Clients keep calling the number you already advertise — nothing changes for them.</p></div>
+          <ProviderState provider={{ provider: 'business-number', configured: bizVerified, validation_status: bizVerified ? 'valid' : bizNumberOnFile ? 'unverified' : 'setup_required' }} />
+        </header>
+        <div className={styles.panelBody}>
+          {!bizNumberOnFile ? (
+            <form onSubmit={connectBusinessNumber} autoComplete="off">
+              <div className={styles.providerIcon}><Phone aria-hidden="true" /><span><strong>Your business number</strong><small>The number your clients already dial. We'll verify it before any calls use it.</small></span></div>
+              <div className={styles.field}>
+                <label htmlFor="biz-number">Business number</label>
+                <input id="biz-number" type="tel" value={bizNumberInput} onChange={(event) => setBizNumberInput(event.target.value)} placeholder="+15551234567" required />
+              </div>
+              <button type="submit" className={styles.primaryButton} disabled={Boolean(working)}><PlugZap aria-hidden="true" /> Connect number</button>
+            </form>
+          ) : !bizVerified ? (
+            <>
+              <p>Connected number: <strong>{route.voice_caller_id_e164}</strong></p>
+              {usesOtpVerification ? (
+                <>
+                  <p>We sent a verification code to this number. Enter it below.</p>
+                  {isLockedOut ? (
+                    <p className={styles.inlineError}>Too many incorrect codes — try again after {lockedUntil.toLocaleTimeString()}.</p>
+                  ) : null}
+                  <form onSubmit={completeVerification} autoComplete="off">
+                    <div className={styles.field}>
+                      <label htmlFor="biz-otp">Verification code</label>
+                      <input id="biz-otp" value={otpInput} onChange={(event) => setOtpInput(event.target.value)} maxLength={8} required disabled={isLockedOut} />
+                    </div>
+                    <button type="submit" className={styles.primaryButton} disabled={Boolean(working) || isLockedOut}><ShieldCheck aria-hidden="true" /> Confirm</button>
+                  </form>
+                </>
+              ) : (
+                <>
+                  <p>We're calling this number now with a verification code. Once you've completed that call, check verification.</p>
+                  <button type="button" className={styles.secondaryButton} onClick={checkVerification} disabled={Boolean(working)}><RefreshCw aria-hidden="true" /> Check verification</button>
+                </>
+              )}
+              {route?.outbound_verification_failure_reason ? <p className={styles.inlineError}>{route.outbound_verification_failure_reason}</p> : null}
+              <button type="button" className={styles.secondaryButton} onClick={() => setBizNumberInput(route.voice_caller_id_e164 || '')} disabled={Boolean(working)}>Use a different number</button>
+              {bizNumberInput ? (
+                <form onSubmit={connectBusinessNumber} autoComplete="off">
+                  <div className={styles.field}>
+                    <label htmlFor="biz-number-change">New business number</label>
+                    <input id="biz-number-change" type="tel" value={bizNumberInput} onChange={(event) => setBizNumberInput(event.target.value)} placeholder="+15551234567" required />
+                  </div>
+                  <button type="submit" className={styles.primaryButton} disabled={Boolean(working)}><PlugZap aria-hidden="true" /> Connect</button>
+                </form>
+              ) : null}
+            </>
+          ) : (
+            <div className={styles.metricGrid}>
+              <div className={styles.metricCard}><span>Your number</span><strong>{route.voice_caller_id_e164}</strong><small>Verified</small></div>
+              <div className={styles.metricCard}><span>Outgoing calls</span><strong>Ready</strong></div>
+              <div className={styles.metricCard}><span>Incoming calls</span><strong>{incomingReady ? 'Ready' : 'Needs forwarding setup'}</strong>{incomingFailed ? <small>{route.inbound_forwarding_failure_reason}</small> : null}</div>
+              <div className={styles.metricCard}><span>AI answering</span><strong>{aiAnsweringReady ? 'Ready' : 'Not ready'}</strong></div>
+            </div>
+          )}
+        </div>
       </section>
 
       <section className={styles.panel} aria-labelledby="provider-route-title">
