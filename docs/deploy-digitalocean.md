@@ -316,8 +316,22 @@ New/updated for this migration, all passing:
 Nothing in this repo can create your actual DigitalOcean resources — that
 needs your DO account and API token:
 
+0. **Do this one well before deployment day, not on it**: check the
+   account's resource limit tier (Settings → Account → Limits, or
+   `doctl account get`). A fresh/individual account defaults to a low tier
+   (e.g. Tier 1 = 3 Droplets) — App Platform components, Managed Database
+   clusters, and Spaces buckets have their own tiered ceilings too, and
+   requesting an increase goes through DO support, which is not
+   instant. Confirm the account can actually hold 1 App (3 components) + 2
+   managed database clusters + 1+ Spaces bucket before day-of. Also set up
+   spend alerts (Billing → Spend Alerts) now — they're percentage-threshold
+   email notifications, not a hard spending cap, so they only help if
+   someone's actually watching for the email.
 1. Create the DO project, Container Registry, and the three managed
-   resources (PostgreSQL, Valkey, Spaces bucket + keys).
+   resources (PostgreSQL, Valkey, Spaces bucket + keys) — confirmed
+   available together in `nyc3` (App Platform, Managed PostgreSQL, Managed
+   Valkey, and Spaces all list `nyc3` in DO's regional availability docs);
+   pick a different region only if you have a specific reason to.
 2. `doctl apps create --spec infra/digitalocean/app.yaml` once, by hand, to
    get the initial `app-id` — every deploy after that is `doctl apps
    update` (which the CI job does).
@@ -329,10 +343,10 @@ needs your DO account and API token:
 6. Decide on `ORACLE_MISSIONS_ENABLED` — left `0` in `app.yaml` on purpose;
    flip it once the Missions AI-agent feature has been reviewed for this
    tenant (see `SYPHER_VAULT/10_Active_Builds/Neoh_AI_Real_Estate_Agent.md`).
-7. Optional: a staging App Platform app + a GitHub Environment manual
-   approval gate between staging and production, if the "push to main
-   deploys straight to prod" flow above is too fast for comfort once real
-   customers are on it.
+7. Optional: a staging App Platform app + a GitHub Environment required-
+   reviewer rule on top of the manual `confirm=deploy` trigger, if
+   "an authorized person clicks Run workflow" isn't a strong enough gate
+   once real customers are on it.
 
 ## Estimated minimum infrastructure for the first 10 customers
 
