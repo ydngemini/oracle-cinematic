@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from 'react';
 import {
   CalendarDays,
   CheckCircle2,
@@ -16,6 +16,32 @@ import {
 } from 'lucide-react';
 import { crmDelete, crmGet, crmPost, crmPut } from '../state/useCrmApi';
 import styles from './SalesWorkspace.module.css';
+
+/* One shared one-second clock for every component that needs to watch a
+   deadline expire. Nothing subscribes when no lockout is on screen, so this
+   costs nothing in the common case. */
+const SECOND_LISTENERS = new Set();
+let secondTimer = 0;
+
+function subscribeToSecond(onChange) {
+  SECOND_LISTENERS.add(onChange);
+  if (!secondTimer) {
+    secondTimer = window.setInterval(() => {
+      for (const listener of SECOND_LISTENERS) listener();
+    }, 1_000);
+  }
+  return () => {
+    SECOND_LISTENERS.delete(onChange);
+    if (SECOND_LISTENERS.size === 0) {
+      window.clearInterval(secondTimer);
+      secondTimer = 0;
+    }
+  };
+}
+
+function getSecond() {
+  return Math.floor(Date.now() / 1_000);
+}
 
 const EMPTY_SMTP = {
   account_label: 'default', host: '', port: '', username: '', password: '',
@@ -66,6 +92,11 @@ export default function ProviderDeliveryPage() {
   const [otpInput, setOtpInput] = useState('');
   const [messagingStatus, setMessagingStatus] = useState(null);
   const [smsOtpInput, setSmsOtpInput] = useState('');
+  // A one-second clock, read as a snapshot. Reading Date.now() during render
+  // is impure, and ticking it with setState inside an effect is the other
+  // thing React 19 rightly complains about — this is the shape that is both
+  // pure at render and reactive, so a lockout expires on screen.
+  const nowSeconds = useSyncExternalStore(subscribeToSecond, getSecond, getSecond);
 
   const loadMessaging = useCallback(async () => {
     try {
@@ -138,7 +169,10 @@ export default function ProviderDeliveryPage() {
   const lockedUntil = route?.outbound_verification_locked_until
     ? new Date(route.outbound_verification_locked_until)
     : null;
-  const isLockedOut = Boolean(lockedUntil && lockedUntil.getTime() > Date.now());
+  // Compared against the subscribed clock, not Date.now(): the lockout then
+  // expires on screen rather than waiting for the next unrelated render, and
+  // render stays pure.
+  const isLockedOut = Boolean(lockedUntil && lockedUntil.getTime() > nowSeconds * 1_000);
   const incomingReady = route?.inbound_forwarding_status === 'active';
   const incomingFailed = route?.inbound_forwarding_status === 'failed';
   const aiAnsweringReady = bizVerified && incomingReady;
