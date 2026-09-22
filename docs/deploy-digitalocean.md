@@ -213,12 +213,19 @@ component per DO's instructions, then:
 
 ## Deployment flow
 
-`push`/merge to `main` → `.github/workflows/ci.yml`:
+`push`/merge to `main` runs tests only — `backend`/`frontend` in
+`.github/workflows/ci.yml` (existing, unchanged): pytest +
+`pip_audit --strict`, eslint + typecheck + vitest + build + bundle budget.
+**Nothing deploys automatically.** This repo stays code-only against
+DigitalOcean until you deliberately trigger it — no DO secrets need to exist
+in GitHub Actions before then, and no CI run touches DigitalOcean by
+accident.
 
-1. `backend` / `frontend` jobs (existing, unchanged) — pytest +
-   `pip_audit --strict`, eslint + typecheck + vitest + build + bundle
-   budget.
-2. `deploy` job (new), only on `main`, only after both above pass:
+To actually deploy, on deployment day: GitHub → Actions → CI → "Run
+workflow", branch `main`, type `deploy` into the `confirm` input (any other
+value, or leaving it blank, runs tests only and stops). Or from the CLI:
+`gh workflow run ci.yml --ref main -f confirm=deploy`. That runs the `deploy`
+job, after both test jobs pass:
    - Build the backend image with `--build-arg GIT_SHA/APP_VERSION/
      BUILD_TIMESTAMP` (see `backend/Dockerfile`) and the frontend image with
      its `VITE_*` build args.

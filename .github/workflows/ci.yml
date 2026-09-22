@@ -9,6 +9,11 @@ on:
     branches: ["**"]
   pull_request:
   workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type "deploy" to actually deploy to DigitalOcean (any other value, or leaving this blank, only runs tests)'
+        required: true
+        default: ""
 
 # A second push to the same branch makes the first run's answer irrelevant.
 concurrency:
@@ -122,10 +127,15 @@ jobs:
   # tests but never deploys. Every image is tagged with the commit SHA, never
   # :latest, so a rollback means redeploying a known-good SHA, not guessing
   # which :latest used to be good. See docs/deploy-digitalocean.md.
+  # Manual-only on purpose: a push to main is not "deploy now." Run via the
+  # Actions tab's "Run workflow" button (or `gh workflow run ci.yml -f
+  # confirm=deploy`), which also means DigitalOcean secrets need not exist in
+  # this repo at all until the day someone actually intends to deploy — every
+  # push before then runs tests and stops there, cleanly.
   deploy:
     name: deploy to DigitalOcean
     needs: [backend, frontend]
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.confirm == 'deploy'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     environment: production
