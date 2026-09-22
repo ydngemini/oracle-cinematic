@@ -88,18 +88,15 @@ export function NeohCorner3D({ onFailure, onReady }) {
       app.scene.ambientLight = new pc.Color(0.42, 0.47, 0.55);
 
       // ── Motion ─────────────────────────────────────────────────────────
-      // Gaze is the pointer's position, smoothed. Nothing here invents
-      // movement: with the pointer still and the tab focused, Neoh only
-      // breathes and blinks.
+      // Autonomous drift, NOT pointer tracking. An avatar whose head follows
+      // the cursor reads as surveillance rather than life, and it is the
+      // fastest way to turn a calm character into a gimmick — so Neoh looks
+      // around on his own schedule and has no idea where anyone is.
+      //
+      // Two incommensurable periods (11s and 7s) keep the path from settling
+      // into a loop the eye can learn and start predicting.
       const target = { x: 0, y: 0 };
       const current = { x: 0, y: 0 };
-
-      const onPointerMove = (event) => {
-        target.x = (event.clientX / window.innerWidth) * 2 - 1;
-        target.y = (event.clientY / window.innerHeight) * 2 - 1;
-      };
-      window.addEventListener('pointermove', onPointerMove, { passive: true });
-      cleanups.push(() => window.removeEventListener('pointermove', onPointerMove));
 
       let elapsed = 0;
       let blinkAt = BLINK_EVERY[0];
@@ -112,10 +109,12 @@ export function NeohCorner3D({ onFailure, onReady }) {
       app.on('update', (dt) => {
         elapsed += dt * 1000;
 
-        // Ease toward the pointer. The lag is the point — an instant snap
-        // reads as a jump-scare, not attention.
-        current.x += (target.x - current.x) * Math.min(1, dt * 3.4);
-        current.y += (target.y - current.y) * Math.min(1, dt * 3.4);
+        // Where he has decided to look, and the eased approach to it. The lag
+        // is the point — an instant snap reads as a twitch, not attention.
+        target.x = Math.sin(elapsed / 11_000) * 0.55 + Math.sin(elapsed / 7_000) * 0.2;
+        target.y = Math.sin(elapsed / 9_400) * 0.28;
+        current.x += (target.x - current.x) * Math.min(1, dt * 1.6);
+        current.y += (target.y - current.y) * Math.min(1, dt * 1.6);
 
         const breathe = Math.sin(elapsed / 1_450) * 0.055;
         const sway = Math.sin(elapsed / 2_900) * 2.2;

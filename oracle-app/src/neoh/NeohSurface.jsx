@@ -60,6 +60,19 @@ export function NeohSurface({ entityOpen = false, onOpenEntity }) {
     failed: Boolean(channel.notice) && channel.connection !== 'online',
   });
 
+  // Voice gives Neoh room to be expressive: when a real-time conversation is
+  // running the face in the bar grows into a bust, and shrinks back when it
+  // ends. The shared layoutId carries it, so it is one character changing
+  // size rather than two components swapping.
+  //
+  // This is wired to real state and nothing else. `listening` and `speaking`
+  // come from micActive/speaking in useNeohAvatarState, which NeohSurface
+  // does not yet have a source for — the realtime voice channel is a backend
+  // capability that has not reached this component. So the mechanism is live
+  // and correct and will simply never fire until voice is connected here.
+  // Faking a trigger to demo it would make the avatar lie about the session.
+  const voiceActive = avatar.state === 'listening' || avatar.state === 'speaking';
+
   const focusInput = useCallback(() => {
     setOpen(true);
     window.requestAnimationFrame(() => inputRef.current?.focus());
@@ -211,12 +224,20 @@ export function NeohSurface({ entityOpen = false, onOpenEntity }) {
             <div className={styles.bar}>
               {/* Same layoutId as the pill's: one object changing shape, not
                   an avatar destroyed and rebuilt between states. */}
-              <motion.span layoutId="neoh-avatar" layout={policy.layout} transition={transition} className={styles.markSlot}>
+              <motion.span
+                layoutId="neoh-avatar"
+                layout={policy.layout}
+                transition={transition}
+                className={styles.markSlot}
+                data-voice={voiceActive ? 'true' : 'false'}
+              >
                 <NeohAvatar
                   state={avatar.state}
                   audioLevel={avatar.audioLevel}
                   actionType={avatar.actionType}
                   attentionLevel={avatar.attentionLevel}
+                  variant={voiceActive ? 'bust' : 'head'}
+                  size={voiceActive ? '56px' : '20px'}
                 />
               </motion.span>
               {record && (

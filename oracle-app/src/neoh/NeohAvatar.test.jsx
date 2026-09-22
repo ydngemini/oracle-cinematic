@@ -53,9 +53,10 @@ describe('NeohAvatar', () => {
   });
 
   it('passes amplitude through as a CSS custom property while speaking', () => {
+    // The level lives on the wrapper, not the svg, so it cascades to the
+    // body parts of the bust and full variants too — not just the head.
     const { container } = render(<NeohAvatar state="speaking" audioLevel={0.6} />);
-    const svg = container.querySelector('svg');
-    expect(svg.getAttribute('style')).toContain('0.600');
+    expect(avatarNode(container).getAttribute('style')).toContain('0.600');
   });
 
   it('is hidden from screen readers — the surface already announces status', () => {
@@ -74,7 +75,7 @@ describe('NeohAvatar', () => {
       // The state is still legible — reduced motion must not hide Neoh.
       expect(node.getAttribute('data-state')).toBe('thinking');
       // Amplitude is zeroed so nothing is driven frame by frame.
-      expect(container.querySelector('svg').getAttribute('style')).toContain('0.000');
+      expect(node.getAttribute('style')).toContain('0.000');
     } finally {
       globalThis.__neohMotionPolicy = undefined;
     }

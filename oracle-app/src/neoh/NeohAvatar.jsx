@@ -1,7 +1,10 @@
-import { lazy, Suspense, useEffect, useRef, useState } from 'react';
+import { lazy, Suspense, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { Calendar, Home, MessageSquare, Phone, Save, Search, Share2, Sparkles } from 'lucide-react';
 
+import { getIdleGaze, getIdleGazeServer, subscribeIdleGaze, subscribeNothing } from './idleGaze';
 import { useMotionPolicy } from './motion';
+import { NeohCharacter } from './NeohCharacter';
+import { eyeExpression } from './eyeSystem';
 import styles from './NeohAvatar.module.css';
 
 /**
@@ -40,67 +43,22 @@ const ACTION_GLYPHS = {
   generic: Sparkles,
 };
 
-/** Eye shape per state. The face is two eyes and a light — that is enough. */
-function eyeGeometry(state) {
-  switch (state) {
-    case 'thinking':
-      // Looking up and inward — concentration, not a spinner on a face.
-      return { cx: [12.4, 19.6], cy: [13.4, 13.4], rx: 2.1, ry: 2.4, tilt: -8 };
-    case 'listening':
-      return { cx: [12, 20], cy: [14.6, 14.6], rx: 2.5, ry: 2.8, tilt: 0 };
-    case 'speaking':
-      return { cx: [12, 20], cy: [14.4, 14.4], rx: 2.4, ry: 2.5, tilt: 0 };
-    case 'success':
-      // The established "happy arc" eyes from the character sheet.
-      return { cx: [12, 20], cy: [14.6, 14.6], rx: 2.6, ry: 1.2, tilt: 0, arc: true };
-    case 'needs_attention':
-      return { cx: [12, 20], cy: [14.0, 14.0], rx: 2.7, ry: 3.0, tilt: 0 };
-    case 'error':
-      return { cx: [12, 20], cy: [15.0, 15.0], rx: 2.3, ry: 1.7, tilt: 0 };
-    case 'disconnected':
-      return { cx: [12, 20], cy: [15.0, 15.0], rx: 2.2, ry: 1.4, tilt: 0 };
-    case 'acting':
-      return { cx: [12, 20], cy: [14.2, 14.2], rx: 2.4, ry: 2.6, tilt: 0 };
-    default:
-      return { cx: [12, 20], cy: [14.6, 14.6], rx: 2.4, ry: 2.6, tilt: 0 };
-  }
+function FallbackFace({ state, variant, drift }) {
+  return <NeohCharacter variant={variant} expression={eyeExpression(state)} drift={drift} />;
 }
 
-function FallbackFace({ state, level, reduced }) {
-  const eyes = eyeGeometry(state);
-  // The accent ring is the one thing amplitude drives. Driving the eyes with
-  // audio reads as a mouth, and a mouth on this character is uncanny.
-  const ring = reduced ? 0 : Math.min(1, Math.max(0, level));
-
-  return (
-    <svg
-      viewBox="0 0 32 32"
-      className={styles.svg}
-      focusable="false"
-      aria-hidden="true"
-      style={{ '--neoh-level': ring.toFixed(3) }}
-    >
-      {/* Roof silhouette — the home cue, carried in the head outline. */}
-      <path className={styles.roof} d="M16 2.6 4.6 11.2v12.2A4.2 4.2 0 0 0 8.8 27.6h14.4a4.2 4.2 0 0 0 4.2-4.2V11.2Z" />
-      {/* Dark face panel. */}
-      <path className={styles.face} d="M16 6.4 8 12.4v9.8a2.4 2.4 0 0 0 2.4 2.4h11.2a2.4 2.4 0 0 0 2.4-2.4v-9.8Z" />
-      {/* Side lights — these are what respond to amplitude. */}
-      <rect className={styles.earLeft} x="3.2" y="13.4" width="2.2" height="6.2" rx="1.1" />
-      <rect className={styles.earRight} x="26.6" y="13.4" width="2.2" height="6.2" rx="1.1" />
-      <g className={styles.eyes} transform={`rotate(${eyes.tilt} 16 15)`}>
-        {eyes.arc ? (
-          <>
-            <path className={styles.eyeArc} d={`M${eyes.cx[0] - eyes.rx} ${eyes.cy[0] + 0.6}q${eyes.rx} -2.4 ${eyes.rx * 2} 0`} />
-            <path className={styles.eyeArc} d={`M${eyes.cx[1] - eyes.rx} ${eyes.cy[1] + 0.6}q${eyes.rx} -2.4 ${eyes.rx * 2} 0`} />
-          </>
-        ) : (
-          <>
-            <ellipse className={styles.eye} cx={eyes.cx[0]} cy={eyes.cy[0]} rx={eyes.rx} ry={eyes.ry} />
-            <ellipse className={styles.eye} cx={eyes.cx[1]} cy={eyes.cy[1]} rx={eyes.rx} ry={eyes.ry} />
-          </>
-        )}
-      </g>
-    </svg>
+/**
+ * Subscribe to the shared idle drift, but only when it would be visible.
+ *
+ * At 20px a 0.3px eye offset is invisible, and any state other than idle has
+ * something to say that drift would only blur — so those cases subscribe to
+ * nothing and are never re-rendered by the clock.
+ */
+function useIdleGaze(active) {
+  return useSyncExternalStore(
+    active ? subscribeIdleGaze : subscribeNothing,
+    active ? getIdleGaze : getIdleGazeServer,
+    getIdleGazeServer,
   );
 }
 
@@ -130,7 +88,8 @@ export function NeohAvatar({
   // hidden page take the same path: the state still renders, it just holds.
   const still = policy.reduced || hidden;
   const Glyph = state === 'acting' ? (ACTION_GLYPHS[actionType] || ACTION_GLYPHS.generic) : null;
-  const level = still ? 0 : audioLevel;
+  const level = still ? 0 : Math.min(1, Math.max(0, audioLevel));
+  const drift = useIdleGaze(variant !== 'head' && state === 'idle' && !still);
 
   return (
     <span
@@ -138,11 +97,20 @@ export function NeohAvatar({
       data-state={state}
       data-variant={variant}
       data-still={still ? 'true' : 'false'}
-      style={{ '--neoh-avatar-size': size, '--neoh-attention': String(attentionLevel || 0) }}
+      style={{
+        '--neoh-avatar-size': size,
+        // A level, not a colour — `--neoh-attention` is the attention HUE in
+        // the stylesheet, and conflating the two makes every rule ambiguous.
+        '--neoh-attention-level': String(attentionLevel || 0),
+        // Amplitude lands on a custom property, never on geometry props. The
+        // browser can then animate glow and scale off the compositor without
+        // React touching the SVG on every audio frame.
+        '--neoh-level': level.toFixed(3),
+      }}
       aria-hidden="true"
     >
       {NeohAvatarRive && !riveFailed ? (
-        <Suspense fallback={<FallbackFace state={state} level={level} reduced={still} />}>
+        <Suspense fallback={<FallbackFace state={state} variant={variant} drift={drift} />}>
           <NeohAvatarRive
             src={RIVE_SRC}
             state={state}
@@ -150,11 +118,12 @@ export function NeohAvatar({
             actionType={actionType}
             attentionLevel={attentionLevel}
             still={still}
+            variant={variant}
             onError={() => setRiveFailed(true)}
           />
         </Suspense>
       ) : (
-        <FallbackFace state={state} level={level} reduced={still} />
+        <FallbackFace state={state} variant={variant} drift={drift} />
       )}
       {Glyph ? (
         <span className={styles.glyph}>
