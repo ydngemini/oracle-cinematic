@@ -7,6 +7,7 @@ import time
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Optional
 
 from dotenv import load_dotenv
 load_dotenv(Path(__file__).resolve().parent.parent / ".env", override=False)
@@ -119,9 +120,10 @@ async def lifespan(app: FastAPI):
             await close_pool()
             raise RuntimeError("Production database initialization failed") from e
         logger.warning("DB pool init failed (%s); running without persistent memory.", e)
-    await start_voice_workers()
-    await start_reconstruction_workers()
-    await start_disposition_enforcer()
+    if config.RUNS_BACKGROUND_WORK:
+        await start_voice_workers()
+        await start_reconstruction_workers()
+        await start_disposition_enforcer()
     # Import litellm at startup rather than in front of a caller: the first
     # request in a fresh process otherwise pays seconds of import time that no
     # request deadline can cover (it happens before the timeout starts).
@@ -131,15 +133,17 @@ async def lifespan(app: FastAPI):
     except Exception as exc:  # noqa: BLE001 — warming is an optimisation, never a boot blocker
         logger.warning("llm_gateway warm-up skipped: %s", exc)
 
-    if config.ORACLE_FEATURE_VIDEO_STUDIO:
+    if config.ORACLE_FEATURE_VIDEO_STUDIO and config.RUNS_BACKGROUND_WORK:
         from video_studio import start_video_studio_workers, stop_video_studio_workers
         await start_video_studio_workers()
     from data_integrations.periodic import start_periodic_scheduler, stop_periodic_scheduler
     from automation_jobs import start_job_workers, stop_job_workers
-    # Importing periodic registers every job handler before workers can claim a
-    # pre-existing row left by an earlier deployment.
-    await start_job_workers()
-    await start_periodic_scheduler()
+    # Importing periodic registers every job handler regardless of role, so a
+    # web replica can still enqueue work (e.g. via an API route) even though it
+    # never claims or ticks any of it itself.
+    if config.RUNS_BACKGROUND_WORK:
+        await start_job_workers()
+        await start_periodic_scheduler()
     # AWS observability broadcaster is opt-in: it polls Cost Explorer (billed
     # per call) and the infra APIs. Off unless AWS_OBSERVABILITY_ENABLED is set;
     # even when enabled, the loop only calls AWS while a client is connected.
@@ -163,14 +167,15 @@ async def lifespan(app: FastAPI):
                 await metrics_task
             except asyncio.CancelledError:
                 pass
-        await stop_periodic_scheduler()
-        await stop_job_workers()
-        await stop_disposition_enforcer()
-        await stop_voice_workers()
-        await stop_reconstruction_workers()
-        if config.ORACLE_FEATURE_VIDEO_STUDIO:
-            from video_studio import stop_video_studio_workers
-            await stop_video_studio_workers()
+        if config.RUNS_BACKGROUND_WORK:
+            await stop_periodic_scheduler()
+            await stop_job_workers()
+            await stop_disposition_enforcer()
+            await stop_voice_workers()
+            await stop_reconstruction_workers()
+            if config.ORACLE_FEATURE_VIDEO_STUDIO:
+                from video_studio import stop_video_studio_workers
+                await stop_video_studio_workers()
         await drain_pending()
         await mind_service.stop()
         await ws_hub.stop()
@@ -401,6 +406,41 @@ async def health() -> JSONResponse:
     }
     status_code = 200 if db_ok else 503
     return JSONResponse(content=body, status_code=status_code)
+
+
+@app.get("/version")
+async def version() -> JSONResponse:
+    """The release this process is actually running — never :latest as the
+    answer. git_sha/app_version/built_at are baked into the image at build
+    time (see backend/Dockerfile's GIT_SHA/APP_VERSION/BUILD_TIMESTAMP
+    ARGs) — a running container cannot see its own build history otherwise.
+    migration_head is read live from the database rather than baked, since
+    migrations can be applied to a database independently of which image
+    build happens to be running against it, and a stale baked value would be
+    a worse answer than none.
+
+    Deliberately unauthenticated, like /health: a deploy/smoke-test script
+    needs to confirm the right release is live before any credentials are
+    available to it."""
+    migration_head: Optional[str] = None
+    pool = get_pool()
+    if pool is not None:
+        try:
+            async with asyncio.timeout(2.0):
+                async with pool.acquire() as conn:
+                    migration_head = await conn.fetchval(
+                        "SELECT filename FROM schema_migrations ORDER BY filename DESC LIMIT 1"
+                    )
+        except Exception:  # noqa: BLE001 — a version probe must not 500
+            logger.warning("Could not read migration head for /version", exc_info=True)
+
+    return JSONResponse(content={
+        "git_sha": os.environ.get("ORACLE_GIT_SHA", "unknown"),
+        "app_version": os.environ.get("ORACLE_APP_VERSION", "unknown"),
+        "built_at": os.environ.get("ORACLE_BUILD_TIMESTAMP", "unknown"),
+        "migration_head": migration_head,
+        "process_role": config.PROCESS_ROLE,
+    })
 
 
 # Optional routers are mounted conditionally above, so on any given deployment

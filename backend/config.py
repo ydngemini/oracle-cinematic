@@ -65,6 +65,28 @@ def flag(name: str, default: bool = False) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
+# What this process is for. "all" (default) is a single container running
+# everything — the shape docker-compose and a one-Droplet deployment use, and
+# the only shape that existed before this variable did: every existing
+# deployment keeps its current behaviour with it unset.
+#
+# "web"/"worker" split matters only when the API scales horizontally (e.g.
+# DigitalOcean App Platform's web component). voice_intel.py and
+# reconstruction_worker.py hold their job queues in an in-process
+# asyncio.Queue with no cross-replica coordination — a job submitted to one
+# web replica is invisible to another. The periodic scheduler and durable job
+# queue (automation_jobs.py) ARE already replica-safe (idempotency-keyed
+# enqueue, `FOR UPDATE SKIP LOCKED` claim), but there is no reason to run
+# background work on every horizontally-scaled web replica either, so "web"
+# excludes all of it and "worker" runs it on a single pinned instance instead.
+PROCESS_ROLE: str = (os.environ.get("ORACLE_PROCESS_ROLE") or "all").strip().lower()
+if PROCESS_ROLE not in ("all", "web", "worker"):
+    PROCESS_ROLE = "all"
+
+#: True on every role except a horizontally-scaled web replica.
+RUNS_BACKGROUND_WORK: bool = PROCESS_ROLE != "web"
+
+
 # Resolve stable JWT scope values before ``auth`` is imported. Managed
 # deployments already provide one of the public application origins, so they do
 # not need duplicate secrets merely to mint and validate this service's tokens.

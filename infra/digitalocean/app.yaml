@@ -1,0 +1,266 @@
+# DigitalOcean App Platform spec for Neoh production.
+#
+# Apply with: doctl apps create --spec infra/digitalocean/app.yaml
+# Update with: doctl apps update <app-id> --spec infra/digitalocean/app.yaml
+#
+# Component shape, chosen from the actual repository (see
+# docs/deploy-digitalocean.md for the full audit this maps to):
+#
+#   api       (service)      — the FastAPI backend. Horizontally scalable:
+#                               ORACLE_PROCESS_ROLE=web means it never starts
+#                               the periodic scheduler or any of the
+#                               replica-unsafe in-process job queues
+#                               (voice_intel.py, reconstruction_worker.py).
+#                               Cross-replica WebSocket fan-out rides Postgres
+#                               LISTEN/NOTIFY, not Redis, so this needs no
+#                               sticky sessions.
+#   worker    (worker)       — the SAME image, ORACLE_PROCESS_ROLE=worker.
+#                               Runs the periodic scheduler (MLS/Bridge sync,
+#                               mission ticks, outcome attribution, etc.), the
+#                               durable job queue, and the voice/reconstruction/
+#                               video-studio in-process workers. Pinned at
+#                               instance_count: 1 — those in-process queues
+#                               have no cross-replica coordination, so a
+#                               second worker instance would silently miss
+#                               half of whatever it's racing the first one for.
+#   web       (static_site)  — the Vite SPA. App Platform builds it from the
+#                               existing oracle-app/Dockerfile (build stage
+#                               only matters; the static-site build extracts
+#                               output_dir from the built image) and serves it
+#                               from DO's CDN — cheaper and simpler than
+#                               running nginx as a always-on service for
+#                               something that never changes per-request.
+#
+# GPU reconstruction is NOT a DigitalOcean component: it already dispatches to
+# an external GPU provider (RunPod, via RECON_POD_* / RUNPOD_* env vars) —
+# nothing here needs to change for that, and DO has no comparable GPU product
+# to move it to.
+#
+# Managed PostgreSQL and Managed Valkey are provisioned ONCE, separately (see
+# docs/deploy-digitalocean.md §Database/§Redis), never created BY this spec —
+# `production: true` + `cluster_name` below only ATTACHES an already-existing
+# cluster so its real connection info resolves into the ${name.FIELD}
+# bindable variables the components use; it does not create or manage the
+# cluster's lifecycle, so a `doctl apps update` can never destroy it. Replace
+# cluster_name with your actual DO-assigned cluster name (`doctl databases
+# list`) before applying. Spaces has no "databases" concept in an app spec —
+# it's referenced purely as secrets (ORACLE_S3_*) below.
+databases:
+  - name: neoh-postgres
+    engine: PG
+    production: true
+    cluster_name: neoh-postgres # <- replace with your real cluster name
+    db_name: oracle
+    db_user: oracle_app_login
+  - name: neoh-redis
+    engine: VALKEY
+    production: true
+    cluster_name: neoh-redis # <- replace with your real cluster name
+
+name: neoh
+region: nyc
+
+services:
+  - name: api
+    dockerfile_path: backend/Dockerfile
+    source_dir: /
+    http_port: 8000
+    instance_count: 2
+    instance_size_slug: apps-s-2vcpu-4gb
+    health_check:
+      http_path: /health
+      initial_delay_seconds: 20
+      period_seconds: 10
+      timeout_seconds: 5
+      failure_threshold: 3
+    envs:
+      - key: ORACLE_ENV
+        value: "prod"
+      - key: ORACLE_PROCESS_ROLE
+        value: "web"
+      - key: ORACLE_PUBLIC_BASE_URL
+        value: ${APP_URL}
+      # Database — DigitalOcean Managed PostgreSQL. No Azure Entra / AWS IAM
+      # token dance needed: db/connection.py's generic ORACLE_DB_PASSWORD path
+      # (TLS via ORACLE_DB_SSLMODE=require) already covers this.
+      - key: ORACLE_DB_HOST
+        value: ${neoh-postgres.HOSTNAME}
+      - key: ORACLE_DB_PORT
+        value: ${neoh-postgres.PORT}
+      - key: ORACLE_DB_NAME
+        value: ${neoh-postgres.DATABASE}
+      - key: ORACLE_DB_USER
+        value: ${neoh-postgres.USERNAME}
+      - key: ORACLE_DB_PASSWORD
+        value: ${neoh-postgres.PASSWORD}
+        type: SECRET
+      - key: ORACLE_DB_SSLMODE
+        value: "require"
+      # Redis — DigitalOcean Managed Valkey. rediss:// (TLS) is parsed natively
+      # by redis-py's from_url() in every one of the three call sites that use
+      # it (rate_limiter.py, rate_limit_middleware.py, data_integrations/cache.py)
+      # — no code change needed, just the URL scheme.
+      - key: REDIS_URL
+        value: ${neoh-redis.DATABASE_URL}
+        type: SECRET
+      # Object storage — Spaces, via the existing S3-compatible backend.
+      - key: ORACLE_STORAGE_BACKEND
+        value: "s3"
+      - key: ORACLE_S3_BUCKET
+        value: "neoh-media"
+      - key: ORACLE_S3_REGION
+        value: "nyc3"
+      - key: ORACLE_S3_ENDPOINT_URL
+        value: "https://nyc3.digitaloceanspaces.com"
+      - key: ORACLE_S3_ACCESS_KEY_ID
+        type: SECRET
+      - key: ORACLE_S3_SECRET_ACCESS_KEY
+        type: SECRET
+      # Everything below is a secret an operator must fill in — see
+      # docs/deploy-digitalocean.md §Secrets for the full list and where each
+      # one comes from. Left blank here on purpose: never commit a value.
+      - key: ORACLE_SECRET_KEY
+        type: SECRET
+      - key: ORACLE_ENCRYPTION_MASTER_KEY
+        type: SECRET
+      - key: ORACLE_ADMIN_ID
+        type: SECRET
+      - key: ORACLE_ADMIN_PASSPHRASE
+        type: SECRET
+      - key: TWILIO_ACCOUNT_SID
+        type: SECRET
+      - key: TWILIO_AUTH_TOKEN
+        type: SECRET
+      - key: STRIPE_SECRET_KEY
+        type: SECRET
+      - key: STRIPE_WEBHOOK_SECRET
+        type: SECRET
+      - key: ORACLE_BRIDGE_ACCESS_TOKEN
+        type: SECRET
+      - key: ORACLE_SMTP_HOST
+        type: SECRET
+      - key: ORACLE_SMTP_USERNAME
+        type: SECRET
+      - key: ORACLE_SMTP_PASSWORD
+        type: SECRET
+      - key: ORACLE_FIREWORKS_API_KEY
+        type: SECRET
+      # Release identity — see GET /version. CI passes these as
+      # --build-arg at image build time (.github/workflows/deploy.yml).
+      - key: ORACLE_GIT_SHA
+        value: ${_self.GIT_COMMIT_HASH}
+
+workers:
+  - name: worker
+    dockerfile_path: backend/Dockerfile
+    source_dir: /
+    instance_count: 1
+    instance_size_slug: apps-s-2vcpu-4gb
+    envs:
+      - key: ORACLE_ENV
+        value: "prod"
+      - key: ORACLE_PROCESS_ROLE
+        value: "worker"
+      - key: ORACLE_MISSIONS_ENABLED
+        value: "0" # flip to 1 once Missions is reviewed for this tenant
+      - key: ORACLE_SCHEDULER_ENABLED
+        value: "1"
+      # Same database/redis/storage/secret bindings as the api service above —
+      # doctl does not support YAML anchors in app specs, so these are
+      # repeated rather than shared. Keep both lists in sync by hand, or
+      # generate this file — see docs/deploy-digitalocean.md's note on that.
+      - key: ORACLE_DB_HOST
+        value: ${neoh-postgres.HOSTNAME}
+      - key: ORACLE_DB_PORT
+        value: ${neoh-postgres.PORT}
+      - key: ORACLE_DB_NAME
+        value: ${neoh-postgres.DATABASE}
+      - key: ORACLE_DB_USER
+        value: ${neoh-postgres.USERNAME}
+      - key: ORACLE_DB_PASSWORD
+        value: ${neoh-postgres.PASSWORD}
+        type: SECRET
+      - key: ORACLE_DB_SSLMODE
+        value: "require"
+      - key: REDIS_URL
+        value: ${neoh-redis.DATABASE_URL}
+        type: SECRET
+      - key: ORACLE_STORAGE_BACKEND
+        value: "s3"
+      - key: ORACLE_S3_BUCKET
+        value: "neoh-media"
+      - key: ORACLE_S3_REGION
+        value: "nyc3"
+      - key: ORACLE_S3_ENDPOINT_URL
+        value: "https://nyc3.digitaloceanspaces.com"
+      - key: ORACLE_S3_ACCESS_KEY_ID
+        type: SECRET
+      - key: ORACLE_S3_SECRET_ACCESS_KEY
+        type: SECRET
+      - key: ORACLE_SECRET_KEY
+        type: SECRET
+      - key: ORACLE_ENCRYPTION_MASTER_KEY
+        type: SECRET
+      - key: TWILIO_ACCOUNT_SID
+        type: SECRET
+      - key: TWILIO_AUTH_TOKEN
+        type: SECRET
+      - key: ORACLE_BRIDGE_ACCESS_TOKEN
+        type: SECRET
+      - key: ORACLE_SMTP_HOST
+        type: SECRET
+      - key: ORACLE_SMTP_USERNAME
+        type: SECRET
+      - key: ORACLE_SMTP_PASSWORD
+        type: SECRET
+      - key: ORACLE_FIREWORKS_API_KEY
+        type: SECRET
+
+static_sites:
+  - name: web
+    dockerfile_path: oracle-app/Dockerfile
+    source_dir: /
+    output_dir: /usr/share/nginx/html
+    build_command: ""
+    envs:
+      - key: VITE_API_BASE
+        value: ${api.PUBLIC_URL}
+      - key: VITE_WS_URL
+        value: ${api.PUBLIC_URL}
+      - key: VITE_GOOGLE_MAPS_KEY
+        type: SECRET
+      - key: VITE_GOOGLE_MAP_ID
+        type: SECRET
+
+# `ingress` (not the deprecated per-component `routes:`) is the current App
+# Spec way to route paths to components. Order matters: FastAPI serves
+# several top-level, non-/api-prefixed routers (auth.py's /auth, billing.py's
+# /billing — including the Stripe webhook at /billing/webhook, admin_c2.py's
+# /admin) plus /health, /version, /docs, and the two WebSocket routes
+# directly on `app` (server.py) — every one of those needs its own explicit
+# rule, or it falls through to the last `/` rule and gets served 404s by the
+# static site instead of reaching the API.
+ingress:
+  rules:
+    - component: { name: api }
+      match: { path: { prefix: /api } }
+    - component: { name: api }
+      match: { path: { prefix: /auth } }
+    - component: { name: api }
+      match: { path: { prefix: /billing } }
+    - component: { name: api }
+      match: { path: { prefix: /admin } }
+    - component: { name: api }
+      match: { path: { prefix: /ws } }
+    - component: { name: api }
+      match: { path: { prefix: /health } }
+    - component: { name: api }
+      match: { path: { prefix: /version } }
+    - component: { name: api }
+      match: { path: { prefix: /docs } }
+    - component: { name: api }
+      match: { path: { prefix: /openapi.json } }
+    - component: { name: api }
+      match: { path: { prefix: /redoc } }
+    - component: { name: web }
+      match: { path: { prefix: / } }

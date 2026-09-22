@@ -117,6 +117,12 @@ _INTERNAL: frozenset[str] = frozenset(
         "ORACLE_TWILIO_CREDENTIALS_VALIDATED", "AWS_OBSERVABILITY_ENABLED",
         "ORACLE_ASSIGNOR_NAME", "ORACLE_AUTORENEW_DISCLOSURE",
     }
+    # Baked into the image by backend/Dockerfile's GIT_SHA/APP_VERSION/
+    # BUILD_TIMESTAMP build ARGs (see GET /version) — CI supplies them at
+    # `docker build`, never an operator's .env.
+    | {
+        "ORACLE_GIT_SHA", "ORACLE_APP_VERSION", "ORACLE_BUILD_TIMESTAMP",
+    }
     # A one-off argument to an operator-run script (scripts/), passed on the
     # command line for that single invocation — not deployment configuration
     # a running service reads, so it belongs beside the script's own --help,

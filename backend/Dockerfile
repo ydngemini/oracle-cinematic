@@ -6,6 +6,18 @@ ARG PIP_DEFAULT_TIMEOUT=180
 ARG PIP_RETRIES=10
 ARG INSTALL_TEST_DEPS=false
 
+# Release identity — see GET /version (server.py). A running container has no
+# other way to know its own build history; --build-arg is the only place this
+# can come from. CI sets these to the real commit SHA, an app version, and the
+# build time; a manual local build gets honest "unknown" defaults rather than
+# a value that lies by omission.
+ARG GIT_SHA=unknown
+ARG APP_VERSION=unknown
+ARG BUILD_TIMESTAMP=unknown
+ENV ORACLE_GIT_SHA=${GIT_SHA} \
+    ORACLE_APP_VERSION=${APP_VERSION} \
+    ORACLE_BUILD_TIMESTAMP=${BUILD_TIMESTAMP}
+
 # Large binary wheels (PyAV, ONNX Runtime, Playwright dependencies) can exceed
 # pip's short default read timeout on a cold local build. Keep retries bounded
 # while allowing slow package mirrors to complete instead of failing startup.

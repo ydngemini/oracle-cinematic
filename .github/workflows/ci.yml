@@ -117,3 +117,109 @@ jobs:
       - name: Bundle budget
         working-directory: oracle-app
         run: npm run bundle:check
+
+  # Only after both test jobs pass, and only on main — a PR branch builds and
+  # tests but never deploys. Every image is tagged with the commit SHA, never
+  # :latest, so a rollback means redeploying a known-good SHA, not guessing
+  # which :latest used to be good. See docs/deploy-digitalocean.md.
+  deploy:
+    name: deploy to DigitalOcean
+    needs: [backend, frontend]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: doctl auth
+        uses: digitalocean/action-doctl@v2
+        with:
+          token: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
+
+      - name: Log in to DO Container Registry
+        run: doctl registry login --expiry-seconds 1200
+
+      - name: Build release identity
+        id: release
+        run: |
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "built_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
+      # Immutable tag: the git SHA. :latest is also pushed for convenience
+      # (so `doctl registry ... | head` reads naturally) but the app spec
+      # (infra/digitalocean/app.yaml) and every deploy step below reference
+      # the SHA tag, never :latest — see GET /version.
+      - name: Build and push backend image
+        run: |
+          docker build \
+            --build-arg GIT_SHA="${{ steps.release.outputs.sha }}" \
+            --build-arg APP_VERSION="${{ github.ref_name }}" \
+            --build-arg BUILD_TIMESTAMP="${{ steps.release.outputs.built_at }}" \
+            -t "${REGISTRY}/neoh-backend:${{ steps.release.outputs.sha }}" \
+            -t "${REGISTRY}/neoh-backend:latest" \
+            -f backend/Dockerfile .
+          docker push "${REGISTRY}/neoh-backend:${{ steps.release.outputs.sha }}"
+          docker push "${REGISTRY}/neoh-backend:latest"
+        env:
+          REGISTRY: registry.digitalocean.com/${{ secrets.DIGITALOCEAN_REGISTRY }}
+
+      - name: Build and push frontend image
+        run: |
+          docker build \
+            --build-arg VITE_API_BASE="${{ secrets.NEOH_PUBLIC_API_BASE }}" \
+            --build-arg VITE_WS_URL="${{ secrets.NEOH_PUBLIC_WS_URL }}" \
+            --build-arg VITE_GOOGLE_MAPS_KEY="${{ secrets.VITE_GOOGLE_MAPS_KEY }}" \
+            --build-arg VITE_GOOGLE_MAP_ID="${{ secrets.VITE_GOOGLE_MAP_ID }}" \
+            -t "${REGISTRY}/neoh-frontend:${{ steps.release.outputs.sha }}" \
+            -t "${REGISTRY}/neoh-frontend:latest" \
+            -f oracle-app/Dockerfile oracle-app
+          docker push "${REGISTRY}/neoh-frontend:${{ steps.release.outputs.sha }}"
+          docker push "${REGISTRY}/neoh-frontend:latest"
+        env:
+          REGISTRY: registry.digitalocean.com/${{ secrets.DIGITALOCEAN_REGISTRY }}
+
+      # Migrations before the new image serves traffic, matching
+      # infra/scripts/run-migrations.sh's AWS ordering. Runs the freshly-built
+      # SHA-tagged image directly via doctl (no App Platform component
+      # involved), so a migration failure never partially deploys a release.
+      - name: Run database migrations
+        run: |
+          doctl registry docker-config > /tmp/docker-config.json
+          docker run --rm \
+            -e ORACLE_DB_HOST="${{ secrets.ORACLE_DB_HOST }}" \
+            -e ORACLE_DB_PORT="${{ secrets.ORACLE_DB_PORT }}" \
+            -e ORACLE_DB_NAME="${{ secrets.ORACLE_DB_NAME }}" \
+            -e ORACLE_DB_ADMIN_USER="${{ secrets.ORACLE_DB_ADMIN_USER }}" \
+            -e ORACLE_DB_ADMIN_PASSWORD="${{ secrets.ORACLE_DB_ADMIN_PASSWORD }}" \
+            -e ORACLE_DB_SSL=require \
+            "${REGISTRY}/neoh-backend:${{ steps.release.outputs.sha }}" \
+            python run_migrations.py
+        env:
+          REGISTRY: registry.digitalocean.com/${{ secrets.DIGITALOCEAN_REGISTRY }}
+
+      # Updates the App Platform app in place from the spec, pinning both the
+      # api service and the worker to this exact image digest — not a moving
+      # tag — so what App Platform deploys is provably what was just built
+      # and migrated against, not whatever :latest resolves to by the time
+      # the rollout actually happens.
+      - name: Deploy to App Platform
+        run: |
+          doctl apps update "${{ secrets.DIGITALOCEAN_APP_ID }}" \
+            --spec infra/digitalocean/app.yaml \
+            --wait
+
+      - name: Smoke test
+        run: |
+          chmod +x infra/digitalocean/smoke-test.sh
+          APP_URL="${{ secrets.NEOH_PUBLIC_API_BASE }}" \
+          EXPECTED_GIT_SHA="${{ steps.release.outputs.sha }}" \
+            ./infra/digitalocean/smoke-test.sh
+
+      # Rollback is a redeploy of the previous known-good SHA — see
+      # docs/deploy-digitalocean.md §Rollback. Left manual on purpose: an
+      # automated rollback on a failed smoke test can itself deploy into an
+      # already-degraded database (e.g. a migration that half-applied), which
+      # is a worse state than a human looking at the smoke-test output first.
