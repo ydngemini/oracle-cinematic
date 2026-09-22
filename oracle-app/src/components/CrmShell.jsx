@@ -65,6 +65,10 @@ const EntitySheet = lazy(() =>
   import('../neoh/EntitySheet').then((m) => ({ default: m.EntitySheet })));
 const NeohSurface = lazy(() =>
   import('../neoh/NeohSurface').then((m) => ({ default: m.NeohSurface })));
+// The corner mascot. Lazy for the same reason as everything else at this
+// tier: it is only ever on one view, so it should only ever cost that view.
+const NeohCorner = lazy(() =>
+  import('../neoh/NeohCorner').then((m) => ({ default: m.NeohCorner })));
 
 const PersonalAITab = lazy(loadPersonalAITab);
 const MyProfileTab = lazy(loadMyProfileTab);
@@ -593,6 +597,16 @@ export function CrmShell() {
           </motion.div>
         )}
       </AnimatePresence>
+      {/* Home only, and not while a record sheet is up — the sheet takes the
+          screen and everything decorative gets out of its way. A failure here
+          must never take the app down with it, hence its own boundary. */}
+      {route.view === VIEWS.home && !route.entity && (
+        <ErrorBoundary label="Neoh corner">
+          <Suspense fallback={null}>
+            <NeohCorner />
+          </Suspense>
+        </ErrorBoundary>
+      )}
       <ErrorBoundary label="Personal AI">
         <Suspense fallback={null}>
           <NeohSurface entityOpen={Boolean(route.entity)} onOpenEntity={openEntity} />

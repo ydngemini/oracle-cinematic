@@ -1,0 +1,56 @@
+/* ─── Neoh, top-right of the home page ─────────────────────────────────────
+   Pinned outside the content column, below the header — the header's own
+   top-right is already four controls deep, and dropping a mascot on top of
+   the state picker would cost a working button to gain a decoration.
+
+   `--z-hud` puts him level with the header and under every panel, sheet and
+   overlay, so he can never sit on top of something the viewer is reading. */
+
+.corner {
+  position: fixed;
+  top: calc(var(--crm-header-h) + var(--safe-top) + 2px);
+  right: 10px;
+  z-index: var(--z-hud);
+  width: 176px;
+  height: 176px;
+  display: grid;
+  place-items: center;
+
+  /* Decoration must never eat a click meant for the page behind it. */
+  pointer-events: none;
+  user-select: none;
+}
+
+.corner canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+/* The flat mascot standing in for the renderer: same character, corner size,
+   held still. `--neoh-avatar-size` is NeohAvatar's own knob, but it declares
+   its 20px default on the very element we are trying to resize — so setting
+   the variable on this parent loses. `.flat > *` outranks that rule on
+   specificity, which is the part that makes it stick. */
+.flat {
+  display: inline-flex;
+  opacity: 0.92;
+}
+
+.flat > * {
+  --neoh-avatar-size: 96px;
+}
+
+/* Below the tablet breakpoint the header tools and the content column are
+   already competing for the top-right; there is no corner left to stand in.
+   He is decoration, so he yields rather than crowding. */
+@media (max-width: 1099px) {
+  .corner { display: none; }
+}
+
+/* A viewer who asked for less motion still gets Neoh — NeohCorner has already
+   chosen the flat face by this point, and this only guarantees stillness if
+   the preference flips after mount. */
+@media (prefers-reduced-motion: reduce) {
+  .corner, .corner * { animation: none !important; transition: none !important; }
+}
