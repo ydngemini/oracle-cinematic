@@ -138,9 +138,13 @@ export function NeohSurface({ entityOpen = false, onOpenEntity }) {
   // keyboard — same ask path, same channel, same transcript. Nothing
   // downstream can tell the difference, which is the whole point.
   const submit = async (override) => {
-    const text = (typeof override === 'string' ? override : draft).trim();
+    const spoken = typeof override === 'string';
+    const text = (spoken ? override : draft).trim();
     if (!text) return;
-    setDraft('');
+    // A spoken turn must not eat a half-typed message. The composer invites
+    // the person to "keep typing" while the microphone is open, so anything
+    // already in the field survives the utterance and stays theirs to send.
+    if (!spoken) setDraft('');
     setAsking(true);
     // The ask path is an optimisation, never a gate: if it fails, the question
     // still reaches the model, which is what would have happened without it.
@@ -154,8 +158,9 @@ export function NeohSurface({ entityOpen = false, onOpenEntity }) {
     setRendered(null);
     if (!channel.send(text, record)) {
       // The channel refused (reconnecting); put the text back rather than
-      // silently eating it.
-      setDraft(text);
+      // silently eating it — but never overwrite a draft the person is still
+      // typing with a spoken utterance they have already finished.
+      setDraft((current) => (current.trim() ? current : text));
       return;
     }
     setShowResult(true);

@@ -94,28 +94,81 @@ async def record_sync_status(
     listings_synced: int,
     sync_lag_minutes: int = 0,
     notes: Optional[dict] = None,
+    provider: str = "",
+    dataset: str = "",
+    succeeded: bool = True,
+    backfill_complete: Optional[bool] = None,
+    error: str = "",
+    error_class: Optional[str] = None,
 ) -> None:
-    """Upsert the one status row a feed maintains. `feed_type` is the provider's
-    own label ('RESO_Web_API', 'Bridge_API_v2', ...) so the dashboard can tell
-    providers apart without a second table."""
+    """Upsert the one status row a feed maintains.
+
+    This is also where a feed's LICENCE and HEALTH are written, because this is
+    the only place that knows a sync actually happened. Migration 0110 added
+    those columns and nothing populated them, so every feed sat at the
+    `developer_listing_dataset` default and `backfill_complete = false`
+    forever: entitlement never engaged, and a correctly licensed feed could
+    never reach READY without someone editing rows by hand.
+
+    Classification comes from mls_licensing, which fails closed — a dataset is
+    developer data unless an operator declared it licensed and named the
+    agreement. It is recomputed on every sync rather than written once, so
+    revoking the declaration downgrades the feed on the next run instead of
+    leaving a stale "licensed" stamp behind.
+    """
+    from mls_licensing import classify_from_env
+
+    licence = classify_from_env(dataset or mls_id)
+
     await conn.execute(
         """
         INSERT INTO mls_sync_status
             (mls_id, mls_name, feed_type, last_sync_at, listings_synced,
-             sync_lag_minutes, notes, updated_at)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, now())
+             sync_lag_minutes, notes, updated_at,
+             provider, dataset, license_classification, license_reason,
+             agreement_ref, last_attempt_at, last_success_at,
+             last_error, last_error_class, consecutive_failures,
+             backfill_complete)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, now(),
+                $8, $9, $10, $11, $12, now(),
+                CASE WHEN $13 THEN now() ELSE NULL END,
+                NULLIF($14, ''), $15,
+                CASE WHEN $13 THEN 0 ELSE 1 END,
+                COALESCE($16, false))
         ON CONFLICT (mls_id) DO UPDATE SET
             mls_name = EXCLUDED.mls_name,
             feed_type = EXCLUDED.feed_type,
-            last_sync_at = EXCLUDED.last_sync_at,
+            last_sync_at = CASE WHEN $13 THEN EXCLUDED.last_sync_at
+                                ELSE mls_sync_status.last_sync_at END,
             listings_synced = mls_sync_status.listings_synced + EXCLUDED.listings_synced,
             sync_lag_minutes = EXCLUDED.sync_lag_minutes,
             notes = EXCLUDED.notes,
+            provider = EXCLUDED.provider,
+            dataset = EXCLUDED.dataset,
+            license_classification = EXCLUDED.license_classification,
+            license_reason = EXCLUDED.license_reason,
+            agreement_ref = EXCLUDED.agreement_ref,
+            last_attempt_at = now(),
+            -- Only a success moves last_success_at. A failed run must not make
+            -- the feed look fresh, which is the whole basis of staleness.
+            last_success_at = CASE WHEN $13 THEN now()
+                                   ELSE mls_sync_status.last_success_at END,
+            last_error = CASE WHEN $13 THEN NULL ELSE NULLIF($14, '') END,
+            last_error_class = CASE WHEN $13 THEN NULL ELSE $15 END,
+            consecutive_failures = CASE WHEN $13 THEN 0
+                                        ELSE mls_sync_status.consecutive_failures + 1 END,
+            -- Backfill completion only ever moves forward: a later delta sync
+            -- passing NULL must not un-complete a finished initial walk.
+            backfill_complete = COALESCE($16, mls_sync_status.backfill_complete),
             updated_at = now()
         """,
         mls_id, mls_name, feed_type, last_sync_at, listings_synced,
         sync_lag_minutes,
         json.dumps(notes or {}, separators=(",", ":")),
+        provider or feed_type, dataset or "",
+        licence.classification, licence.reason, licence.agreement_ref,
+        bool(succeeded), error or "", error_class,
+        backfill_complete,
     )
 
 
@@ -129,8 +182,14 @@ async def upsert_mls_records_and_status(
     last_sync_at,
     sync_lag_minutes: int = 0,
     notes: Optional[dict] = None,
+    **status_kwargs: Any,
 ) -> int:
-    """Convenience wrapper: write the batch, then the status row it produced."""
+    """Convenience wrapper: write the batch, then the status row it produced.
+
+    `status_kwargs` forwards the licence/health fields (provider, dataset,
+    succeeded, backfill_complete, error, error_class) so a caller does not have
+    to choose between this wrapper and reporting its health.
+    """
     upserted = await upsert_mls_records(conn, records)
     await record_sync_status(
         conn,
@@ -138,6 +197,7 @@ async def upsert_mls_records_and_status(
         mls_name=mls_name,
         feed_type=feed_type,
         last_sync_at=last_sync_at,
+        **status_kwargs,
         listings_synced=upserted,
         sync_lag_minutes=sync_lag_minutes,
         notes=notes,

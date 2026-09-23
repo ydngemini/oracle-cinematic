@@ -324,13 +324,21 @@ async def mls_portal_listing(
 
     try:
         async with tenant_tx(ctx) as conn:
+            # Narrowed to the caller's entitled feeds, exactly as search is.
+            # Without this an unentitled tenant could fetch a licensed listing
+            # by guessing or replaying its UUID — and get its buyer matches
+            # with it, which is the CRM half of the leak.
+            from mls_health import visible_feeds
+            allowed, _feeds = await visible_feeds(conn, ctx)
             row = await conn.fetchrow(
                 """
                 SELECT * FROM oracle_mls_listings
                  WHERE id = $1::uuid AND mls_id <> ALL($2::text[])
+                   AND mls_id = ANY($3::text[])
                 """,
                 listing_id,
                 list(THIRD_PARTY_LISTING_SOURCE_IDS),
+                allowed,
             )
             listing = _listing_json(dict(row)) if row else None
             matches = await _buyer_matches(conn, listing) if listing else []

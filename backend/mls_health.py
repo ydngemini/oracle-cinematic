@@ -263,11 +263,34 @@ async def visible_feeds(conn, ctx) -> tuple[list[str], list[dict]]:
     would have emptied every existing environment on deploy, to protect data
     that needs no protection.
     """
+    # LEFT JOIN from the listings themselves, not from mls_sync_status.
+    #
+    # Selecting only feeds with a status row hid every listing whose feed had
+    # not written one yet — and Bridge writes that row only AFTER a backfill
+    # finishes, so an entire first import was invisible while it ran. Worse,
+    # the documented "delete the status row to resume a backfill" step made a
+    # feed's listings vanish from search for every tenant.
+    #
+    # A feed with no status row is unknown, and unknown is developer data
+    # until something says otherwise — which is the same fail-closed rule the
+    # licence check uses.
     rows = await conn.fetch(
-        "SELECT mls_id, mls_name, provider, license_classification, health, "
-        "       last_success_at, backfill_complete, consecutive_failures, "
-        "       last_error, last_error_class, listings_synced, stale_after_minutes "
-        "  FROM mls_sync_status"
+        """
+        SELECT d.mls_id,
+               COALESCE(s.mls_name, d.mls_id)          AS mls_name,
+               s.provider,
+               COALESCE(s.license_classification,
+                        'developer_listing_dataset')   AS license_classification,
+               s.health, s.last_success_at,
+               COALESCE(s.backfill_complete, false)    AS backfill_complete,
+               COALESCE(s.consecutive_failures, 0)     AS consecutive_failures,
+               s.last_error, s.last_error_class,
+               COALESCE(s.listings_synced, 0)          AS listings_synced,
+               COALESCE(s.stale_after_minutes, 1440)   AS stale_after_minutes
+          FROM (SELECT DISTINCT mls_id FROM oracle_mls_listings
+                 UNION SELECT mls_id FROM mls_sync_status) AS d
+          LEFT JOIN mls_sync_status s ON s.mls_id = d.mls_id
+        """
     )
     entitled = set(await entitled_feed_ids(conn, ctx))
 

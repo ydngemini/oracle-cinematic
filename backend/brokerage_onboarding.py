@@ -303,7 +303,14 @@ async def compute_setup_state(conn, ctx: TenantContext) -> dict[str, Any]:
     # reference datasets can never report READY, however green their sync is.
     try:
         from mls_health import mls_capability
-        mls_state = await mls_capability(conn, ctx)
+        # A SAVEPOINT, not a bare try/except. These queries run inside the
+        # caller's transaction, and in Postgres a failed statement poisons the
+        # whole transaction — catching the exception is not enough, the next
+        # query (billing, immediately below) would fail too and the setup
+        # screen would 500. A missing table on an un-migrated database is
+        # exactly how that happens.
+        async with conn.transaction():
+            mls_state = await mls_capability(conn, ctx)
     except Exception as exc:  # noqa: BLE001
         log.debug("MLS capability unavailable: %s", exc)
         mls_state = {"status": "NOT_STARTED", "detail": "", "feeds": []}

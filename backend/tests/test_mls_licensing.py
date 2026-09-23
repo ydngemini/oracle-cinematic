@@ -295,3 +295,134 @@ def test_fresh_licensed_coverage_says_nothing():
     note = health.coverage_note([{"licensed": True, "health": "READY"}])
     assert note["state"] == "fresh"
     assert note["message"] == ""
+
+
+# ---------------------------------------------------------------------------
+# Regressions found by review — the gates were built but never fed
+# ---------------------------------------------------------------------------
+
+def test_sync_status_writes_the_licence_it_computed(monkeypatch):
+    """Migration 0110 added license_classification and nothing wrote it, so
+    every feed sat at the developer default forever: entitlement never
+    engaged and a licensed feed could never reach READY."""
+    monkeypatch.setenv("ORACLE_MLS_LICENSED", "1")
+    monkeypatch.setenv("ORACLE_MLS_AGREEMENT_REF", "BRIGHT-2026-001")
+
+    captured = {}
+
+    class Conn:
+        async def execute(self, query, *args):
+            captured["query"] = query
+            captured["args"] = args
+
+    from data_integrations import mls_sink
+    asyncio.run(mls_sink.record_sync_status(
+        Conn(), mls_id="bright", mls_name="Bright", feed_type="Bridge_API_v2",
+        last_sync_at=NOW, listings_synced=10, dataset="brightmls",
+    ))
+    assert "license_classification" in captured["query"]
+    assert LICENSED in captured["args"]
+    assert "BRIGHT-2026-001" in captured["args"]
+
+
+def test_sync_status_refuses_to_licence_a_reference_dataset(monkeypatch):
+    monkeypatch.setenv("ORACLE_MLS_LICENSED", "1")
+    monkeypatch.setenv("ORACLE_MLS_AGREEMENT_REF", "ACTRIS-2026")
+    captured = {}
+
+    class Conn:
+        async def execute(self, query, *args):
+            captured["args"] = args
+
+    from data_integrations import mls_sink
+    asyncio.run(mls_sink.record_sync_status(
+        Conn(), mls_id="actris", mls_name="ACTRIS", feed_type="Bridge_API_v2",
+        last_sync_at=NOW, listings_synced=10, dataset="actris_ref",
+    ))
+    assert DEVELOPER in captured["args"]
+    assert LICENSED not in captured["args"]
+
+
+def test_a_failed_sync_does_not_move_last_success(monkeypatch):
+    """Staleness is measured from last success. A failed run that advanced it
+    would make a broken feed look fresh forever."""
+    captured = {}
+
+    class Conn:
+        async def execute(self, query, *args):
+            captured["query"] = query
+            captured["args"] = args
+
+    from data_integrations import mls_sink
+    asyncio.run(mls_sink.record_sync_status(
+        Conn(), mls_id="bright", mls_name="B", feed_type="x",
+        last_sync_at=NOW, listings_synced=0, dataset="brightmls",
+        succeeded=False, error="401 Unauthorized", error_class="auth",
+    ))
+    q = captured["query"]
+    assert "last_success_at = CASE WHEN $13 THEN now()" in q
+    assert "consecutive_failures + 1" in q
+    assert False in captured["args"]
+
+
+def test_a_partial_backfill_does_not_mark_itself_complete():
+    """Half a board looks exactly like a whole board to a searcher."""
+    captured = {}
+
+    class Conn:
+        async def execute(self, query, *args):
+            captured["args"] = args
+
+    from data_integrations import mls_sink
+    asyncio.run(mls_sink.record_sync_status(
+        Conn(), mls_id="bright", mls_name="B", feed_type="x",
+        last_sync_at=NOW, listings_synced=5, dataset="brightmls",
+        backfill_complete=None,
+    ))
+    assert None in captured["args"]
+
+
+class ListingsFeedConn(FeedConn):
+    """visible_feeds now unions listings with status rows."""
+    def __init__(self, entitlements=(), feeds=()):
+        super().__init__(entitlements, feeds)
+
+    async def fetch(self, query, *args):
+        self.queries.append((query, args))
+        if "mls_feed_entitlements" in query:
+            return [{"mls_id": m} for m in self._ent]
+        if "oracle_mls_listings" in query or "mls_sync_status" in query:
+            return self._feeds
+        return []
+
+
+def test_a_feed_with_listings_but_no_status_row_is_still_visible():
+    """Bridge writes its status row only AFTER a backfill finishes, so an
+    entire first import used to be invisible while it ran — and the documented
+    'delete the status row to resume' step hid a feed from every tenant."""
+    row = {
+        "mls_id": "newfeed", "mls_name": "newfeed", "provider": None,
+        "license_classification": DEVELOPER, "health": None,
+        "last_success_at": None, "backfill_complete": False,
+        "consecutive_failures": 0, "last_error": None, "last_error_class": None,
+        "listings_synced": 0, "stale_after_minutes": 1440,
+    }
+    conn = ListingsFeedConn(entitlements=[], feeds=[row])
+    allowed, described = asyncio.run(health.visible_feeds(conn, CTX_A))
+    assert "newfeed" in allowed
+    assert described[0]["licensed"] is False
+
+
+def test_an_unknown_feed_defaults_to_developer_not_licensed():
+    """Fail closed: a feed nothing has classified must not be treated as
+    licensed inventory just because its status row is missing."""
+    row = {
+        "mls_id": "mystery", "mls_name": "mystery", "provider": None,
+        "license_classification": DEVELOPER, "health": None,
+        "last_success_at": None, "backfill_complete": False,
+        "consecutive_failures": 0, "last_error": None, "last_error_class": None,
+        "listings_synced": 0, "stale_after_minutes": 1440,
+    }
+    conn = ListingsFeedConn(entitlements=[], feeds=[row])
+    _allowed, described = asyncio.run(health.visible_feeds(conn, CTX_A))
+    assert described[0]["licensed"] is False

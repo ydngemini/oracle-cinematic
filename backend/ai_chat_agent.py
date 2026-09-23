@@ -1045,7 +1045,11 @@ async def _generate(ctx: TenantContext, bundle: dict, assistant_id: str) -> tupl
             bundle["record"], default=str, ensure_ascii=False
         )[:16_000]
         system_prompt += record_block
-        runtime_context = (runtime_context + record_block).strip()
+        # NOT added to runtime_context: _foundry_inputs already appends the
+        # selected record as its own input item, so including it here sent up
+        # to ~32 KB of the same JSON twice per turn — and the
+        # runtime_context[:12_000] cut then dropped the tail of the operator
+        # memory block to make room for the duplicate.
 
     # Foundry's compact persona omits the brokerage block, so hand it over with
     # the rest of the per-turn context rather than letting that provider be the

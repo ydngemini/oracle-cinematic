@@ -471,6 +471,13 @@ class BridgeListingsFeed(DataSource):
                     "rejected": rejected,
                     "dataset": self.dataset,
                 },
+                provider="bridge",
+                dataset=self.dataset,
+                succeeded=exhausted,
+                # Only a walk that ran out of pages is a completed backfill.
+                # A partial walk must keep the feed BACKFILLING, because half
+                # a board looks exactly like a whole board to a searcher.
+                backfill_complete=True if exhausted else None,
             )
 
         self._metrics["normalized"] += total_upserted
@@ -575,6 +582,9 @@ class BridgeListingsFeed(DataSource):
                     "rejected": rejected,
                     "dataset": self.dataset,
                 },
+                provider="bridge",
+                dataset=self.dataset,
+                succeeded=exhausted,
             )
 
         self._metrics["normalized"] += upserted
