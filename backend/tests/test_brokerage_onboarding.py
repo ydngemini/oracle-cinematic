@@ -298,9 +298,9 @@ def test_setup_state_covers_every_declared_capability():
 
 
 def test_stored_progress_is_honoured_for_capabilities_with_no_live_source():
-    conn = _setup_conn(progress=[{"capability": "mls", "status": "IN_PROGRESS", "detail": {}}])
+    conn = _setup_conn(progress=[{"capability": "contact_import", "status": "IN_PROGRESS", "detail": {}}])
     state = asyncio.run(bo.compute_setup_state(conn, OWNER))
-    assert state["capabilities"]["mls"] == "IN_PROGRESS"
+    assert state["capabilities"]["contact_import"] == "IN_PROGRESS"
 
 
 def test_calls_and_texts_are_reported_separately():
@@ -423,7 +423,7 @@ def _patch_tx(monkeypatch, conn):
     lambda: bo.revoke_invitation("11111111-1111-1111-1111-111111111111", AGENT),
     lambda: bo.resend_invitation("11111111-1111-1111-1111-111111111111", AGENT),
     lambda: bo.update_profile(bo.BrokerageProfileUpdate(name="Nope"), AGENT),
-    lambda: bo.set_progress(bo.SetupProgressUpdate(capability="mls", status="READY"), AGENT),
+    lambda: bo.set_progress(bo.SetupProgressUpdate(capability="contact_import", status="READY"), AGENT),
 ])
 def test_an_ordinary_agent_cannot_administer_the_brokerage(monkeypatch, call):
     """An agent must not promote themselves, invite, or rewrite the business."""
@@ -500,7 +500,10 @@ def test_progress_cannot_forge_a_derived_capability():
     """Hand-writing "phone: READY" would make setup disagree with the call
     path, so the model only accepts the three with no live source."""
     from pydantic import ValidationError
-    for forged in ("phone", "billing", "agent_invites", "brokerage_profile", "readiness"):
+    # "mls" joined this list once feed health became its real source: an
+    # operator hand-writing "mls: READY" would tell a brokerage a reference
+    # dataset was live inventory.
+    for forged in ("phone", "billing", "mls", "agent_invites", "brokerage_profile", "readiness"):
         with pytest.raises(ValidationError):
             bo.SetupProgressUpdate(capability=forged, status="READY")
 

@@ -67,7 +67,10 @@ OPTIONAL_CAPABILITIES = frozenset({"contact_import", "email_calendar", "mls"})
 
 # Capabilities with no live source of truth; their status is whatever the
 # operator last told us.
-PROGRESS_BACKED = frozenset({"contact_import", "email_calendar", "mls"})
+# mls used to live here. It now has a real source of truth — feed health and
+# licence classification — so an operator can no longer type "mls: READY" and
+# have the setup screen agree.
+PROGRESS_BACKED = frozenset({"contact_import", "email_calendar"})
 
 Status = Literal[
     "NOT_STARTED", "NEEDS_ACTION", "IN_PROGRESS", "READY", "BLOCKED", "ERROR", "OPTIONAL"
@@ -158,7 +161,7 @@ class InviteCreate(BaseModel):
 
 class SetupProgressUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
-    capability: Literal["contact_import", "email_calendar", "mls"]
+    capability: Literal["contact_import", "email_calendar"]
     status: Literal["NOT_STARTED", "IN_PROGRESS", "READY", "BLOCKED", "ERROR", "OPTIONAL"]
     detail: dict[str, Any] = Field(default_factory=dict)
 
@@ -296,11 +299,21 @@ async def compute_setup_state(conn, ctx: TenantContext) -> dict[str, Any]:
     phone = await _phone_status(conn, ctx.tenant_id)
     messaging = await _messaging_status(conn, ctx.tenant_id)
 
+    # MLS comes from real feed health and licence classification. Developer or
+    # reference datasets can never report READY, however green their sync is.
+    try:
+        from mls_health import mls_capability
+        mls_state = await mls_capability(conn, ctx)
+    except Exception as exc:  # noqa: BLE001
+        log.debug("MLS capability unavailable: %s", exc)
+        mls_state = {"status": "NOT_STARTED", "detail": "", "feeds": []}
+
     capabilities: dict[str, Status] = {
         "brokerage_profile": await _profile_status(tenant),
         "agent_invites": invites_status,
         "phone": phone,
         "billing": await _billing_status(conn, ctx.tenant_id),
+        "mls": mls_state["status"],
     }
     for cap in PROGRESS_BACKED:
         capabilities[cap] = stored.get(cap, {}).get("status", "NOT_STARTED")
@@ -329,6 +342,9 @@ async def compute_setup_state(conn, ctx: TenantContext) -> dict[str, Any]:
         "team": team_summary,
         # Calls and texts are reported separately — see _messaging_status.
         "messaging": messaging,
+        # Why MLS is where it is, and which feeds back it. An operator should
+        # not need SQL to learn that the only connected feed is a sample set.
+        "mls": mls_state,
         "optional": sorted(OPTIONAL_CAPABILITIES),
     }
 
@@ -719,10 +735,11 @@ async def set_progress(
 ) -> dict[str, Any]:
     """Record intent for the capabilities that have no live source yet.
 
-    Only those three are accepted — the model rejects 'phone', 'billing' and
-    the rest at the schema level, because letting an operator hand-write
-    "phone: READY" would produce a setup screen that disagrees with the call
-    path.
+    Only the two without a live source are accepted — the model rejects
+    'phone', 'billing', 'mls' and the rest at the schema level, because letting
+    an operator hand-write "phone: READY" would produce a setup screen that
+    disagrees with the call path, and "mls: READY" would let a brokerage
+    believe a reference dataset was live inventory.
     """
     require_role(ctx, Role.BROKER_OWNER, Role.PLATFORM_ADMIN)
     async with tenant_tx(ctx) as conn:

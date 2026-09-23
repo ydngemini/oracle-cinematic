@@ -217,6 +217,9 @@ async def mls_portal_search(
     """Paged browse over direct, authorized MLS/RESO rows already ingested."""
     conditions: list[str] = ["mls_id <> ALL($1::text[])"]
     args: list[Any] = [list(THIRD_PARTY_LISTING_SOURCE_IDS)]
+    # Entitlement is resolved inside the transaction below and appended as a
+    # bound parameter. A browser filter may narrow the feed set; nothing it
+    # sends can widen it.
 
     def _arg(v: Any) -> str:
         args.append(v)
@@ -237,22 +240,50 @@ async def mls_portal_search(
     if property_type and property_type.strip():
         conditions.append(f"property_type ILIKE {_arg(property_type.strip())}")
 
-    where = " AND ".join(conditions)
     offset = (page - 1) * PAGE_SIZE
-
-    count_q = f"SELECT COUNT(*) AS n FROM oracle_mls_listings WHERE {where}"
-    data_q = (
-        f"SELECT * FROM oracle_mls_listings WHERE {where} "
-        f"ORDER BY last_updated DESC NULLS LAST, list_price DESC NULLS LAST, "
-        f"mls_id ASC, mls_number ASC "
-        f"LIMIT {_arg(PAGE_SIZE)} OFFSET {_arg(offset)}"
-    )
+    # The filter args are shared; LIMIT/OFFSET and the entitlement array are
+    # bound separately per query, because count and data bind different
+    # numbers of parameters and a shared $N cannot be right for both.
+    filter_args = list(args)
 
     try:
         async with tenant_tx(ctx) as conn:
-            count_row = await conn.fetchrow(count_q, *args[:-2])
+            from mls_health import coverage_note, visible_feeds
+            allowed, feeds = await visible_feeds(conn, ctx)
+            if not allowed:
+                # No usable MLS data is a different answer from no matching
+                # listings, and returning [] for both is how a brokerage
+                # concludes nothing is for sale in their market.
+                return {
+                    "listings": [], "total": 0, "page": page, "page_size": PAGE_SIZE,
+                    "has_more": False, "degraded": True,
+                    "source": "combined authorized listing cache", "sources": [],
+                    "notice": coverage_note(feeds)["message"]
+                              or "No MLS feed is connected for this brokerage.",
+                    "coverage": coverage_note(feeds),
+                    "feeds": feeds,
+                    "freshness": _freshness_summary([]),
+                }
+            count_args = filter_args + [allowed]
+            where_all = " AND ".join(
+                conditions + [f"mls_id = ANY(${len(count_args)}::text[])"])
+            count_row = await conn.fetchrow(
+                f"SELECT COUNT(*) AS n FROM oracle_mls_listings WHERE {where_all}",
+                *count_args,
+            )
             total = int(count_row["n"]) if count_row else 0
-            rows = [dict(r) for r in await conn.fetch(data_q, *args)]
+
+            data_args = filter_args + [allowed, PAGE_SIZE, offset]
+            n = len(filter_args)
+            where_data = " AND ".join(
+                conditions + [f"mls_id = ANY(${n + 1}::text[])"])
+            rows = [dict(r) for r in await conn.fetch(
+                f"SELECT * FROM oracle_mls_listings WHERE {where_data} "
+                f"ORDER BY last_updated DESC NULLS LAST, list_price DESC NULLS LAST, "
+                f"mls_id ASC, mls_number ASC "
+                f"LIMIT ${n + 2} OFFSET ${n + 3}",
+                *data_args,
+            )]
     except RuntimeError as exc:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, f"Memory Core offline ({exc})")
     except Exception as exc:  # noqa: BLE001
@@ -261,16 +292,21 @@ async def mls_portal_search(
 
     listings = [_listing_json(r) for r in rows]
     sources = sorted({item["source"] for item in listings if item.get("source")})
+    note = coverage_note(feeds)
     return {
         "listings": listings,
         "total": total,
         "page": page,
         "page_size": PAGE_SIZE,
         "has_more": offset + len(listings) < total,
-        "degraded": False,
+        # Was hardcoded False, so the response claimed health even while every
+        # feed behind it was failing.
+        "degraded": note["state"] in ("stale", "backfilling", "developer_data_only"),
         "source": "combined authorized listing cache",
         "sources": sources,
-        "notice": None,
+        "notice": note["message"] or None,
+        "coverage": note,
+        "feeds": feeds,
         "freshness": _freshness_summary(listings),
     }
 
