@@ -4,6 +4,7 @@ import { getTenantId, getUserId } from '../state/identity';
 import { LicenseStatusWidget } from './LicenseStatusWidget';
 import { HarvestControl } from './HarvestControl';
 import { BrokerageOnboardingPanel } from './BrokerageOnboardingPanel';
+import { BrokerageSetupPanel } from './BrokerageSetupPanel';
 import { toMarkets } from '../lib/targetMarkets';
 import styles from './MyProfileTab.module.css';
 
@@ -419,6 +420,13 @@ export default function MyProfileTab() {
       <>
           {/* ── State licenses — per-state compliance tracking ──────────── */}
           <LicenseStatusWidget />
+
+          {/* Business setup: profile, team invitations, and what Neoh can
+              actually do yet. Settings, not a tab — the top level stays
+              Home / Work / Neoh. BrokerageOnboardingPanel below remains the
+              individual agent's licences and AI settings; the two are
+              different questions and stay separate screens. */}
+          <BrokerageSetupPanel />
 
           <BrokerageOnboardingPanel />
 

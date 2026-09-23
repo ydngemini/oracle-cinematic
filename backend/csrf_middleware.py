@@ -33,6 +33,13 @@ CSRF_EXEMPT_PATHS = {
     "/auth/forgot",
     "/auth/reset",
     "/auth/verify",
+    # Accepting a brokerage invitation. Same reasoning as /auth/register
+    # directly above: the person has no Neoh session yet, so there is no
+    # ambient cookie for an attacker to ride — which is the only thing
+    # CSRF defends against. The invitation token in the link is the whole
+    # capability, and it is single-use. Without this the accept form 403s
+    # for every invited agent.
+    "/auth/accept-invite",
     "/api/commands/webhooks/",
     # Twilio posts these; they authenticate by X-Twilio-Signature over the full
     # URL + params, not by session cookie. Without the exemption every inbound

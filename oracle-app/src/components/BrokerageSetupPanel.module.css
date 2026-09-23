@@ -1,0 +1,172 @@
+/* Brokerage setup — calm on purpose.
+   This screen is read once a week at most and must never feel like an
+   enterprise checklist, so: no cards, no progress ring, no badges competing
+   for attention. One list, one next step. */
+
+.panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+  padding: var(--space-5) 0;
+}
+
+.header { display: flex; align-items: baseline; justify-content: space-between; }
+
+.title {
+  margin: 0;
+  font: 600 var(--text-lg) / 1.2 var(--font-sans);
+  color: var(--oracle-text-heading);
+}
+
+.subtitle {
+  margin: 0 0 var(--space-3);
+  font: 600 var(--text-md) / 1.2 var(--font-sans);
+  color: var(--oracle-text-heading);
+}
+
+.muted { color: var(--oracle-text-dim); font-weight: 400; }
+
+.error {
+  margin: 0;
+  color: var(--oracle-red);
+  font-size: var(--text-sm);
+}
+
+.notice {
+  margin: 0;
+  color: var(--oracle-text-dim);
+  font-size: var(--text-sm);
+}
+
+/* ── Identity ─────────────────────────────────────────────────────────── */
+
+.identity { display: flex; flex-direction: column; gap: 2px; align-items: flex-start; }
+
+.brokerageName {
+  margin: 0;
+  font: 600 var(--text-xl) / 1.2 var(--font-sans);
+  color: var(--oracle-text-heading);
+}
+
+.identity p { margin: 0; font-size: var(--text-sm); }
+
+/* ── Capabilities ─────────────────────────────────────────────────────── */
+
+.capabilities {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.capability {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-4);
+  padding: var(--space-3) 0;
+  border-bottom: 1px solid var(--oracle-border-subtle);
+  font-size: var(--text-sm);
+}
+.capability:last-child { border-bottom: none; }
+
+.capabilityName { color: var(--oracle-text); }
+
+.capabilityState { color: var(--oracle-text-dim); }
+
+/* Only the two states that mean "a person must act" get colour. Everything
+   else stays quiet — if every row is highlighted, none of them is. */
+.capability[data-state="NEEDS_ACTION"] .capabilityState { color: var(--oracle-accent-ink); font-weight: 600; }
+.capability[data-state="ERROR"] .capabilityState { color: var(--oracle-red); font-weight: 600; }
+.capability[data-state="READY"] .capabilityState { color: var(--oracle-green); }
+
+.optional { font-style: normal; color: var(--oracle-text-ghost); }
+
+.next {
+  margin: 0;
+  padding: var(--space-3) 0 0;
+  font-size: var(--text-sm);
+  color: var(--oracle-text);
+}
+
+/* ── Blocks, fields, roster ───────────────────────────────────────────── */
+
+.block { display: flex; flex-direction: column; gap: var(--space-3); }
+
+.field { display: flex; flex-direction: column; gap: 4px; font-size: var(--text-sm); }
+.field > span { color: var(--oracle-text-dim); }
+
+.field input,
+.field select,
+.invites {
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--oracle-border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--oracle-surface-sunken);
+  color: var(--oracle-text);
+  font: 400 var(--text-sm) / 1.4 var(--font-sans);
+}
+.invites { resize: vertical; min-height: 4.5rem; }
+
+.actions { display: flex; gap: var(--space-2); }
+
+.primary {
+  padding: var(--space-2) var(--space-4);
+  border: none;
+  border-radius: var(--radius-pill);
+  background: var(--oracle-accent);
+  color: #1a1200;
+  font: 600 var(--text-sm) / 1 var(--font-sans);
+  cursor: pointer;
+}
+.primary:disabled { background: var(--oracle-surface-sunken); color: var(--oracle-text-ghost); cursor: default; }
+
+.ghost {
+  align-self: flex-start;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--oracle-accent-ink);
+  font: 500 var(--text-sm) / 1 var(--font-sans);
+  cursor: pointer;
+}
+
+.roster { list-style: none; margin: 0; padding: 0; }
+
+.member {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  align-items: baseline;
+  gap: var(--space-3);
+  padding: var(--space-2) 0;
+  border-bottom: 1px solid var(--oracle-border-subtle);
+  font-size: var(--text-sm);
+}
+.member:last-child { border-bottom: none; }
+.member[data-pending="true"] { grid-template-columns: 1fr auto auto auto; }
+
+.memberName { color: var(--oracle-text); overflow: hidden; text-overflow: ellipsis; }
+.memberRole { color: var(--oracle-text-dim); }
+.memberState { color: var(--oracle-text-dim); }
+.memberState[data-state="active"] { color: var(--oracle-green); }
+.memberState[data-state="pending"] { color: var(--oracle-accent-ink); }
+
+.rowActions { display: inline-flex; gap: var(--space-3); }
+
+.link {
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--oracle-text-dim);
+  font: 500 var(--text-sm) / 1 var(--font-sans);
+  cursor: pointer;
+}
+.link:hover { color: var(--oracle-text); }
+.link:disabled { color: var(--oracle-text-ghost); cursor: default; }
+
+@media (max-width: 719px) {
+  .member,
+  .member[data-pending="true"] { grid-template-columns: 1fr auto; row-gap: 2px; }
+  .rowActions { grid-column: 1 / -1; }
+}

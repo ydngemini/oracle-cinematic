@@ -21,7 +21,7 @@ from uuid import UUID
 
 import jwt
 from fastapi import APIRouter, HTTPException, Header, Request, Response, status
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 
 from policy_contract import PLATFORM_POLICY_VERSION
 
@@ -967,4 +967,167 @@ def verify(
         role=payload.get("role"),
         issued_at=payload["iat"],
         expires_at=payload["exp"],
+    )
+
+
+# ---------------------------------------------------------------------------
+# Accepting a brokerage invitation
+# ---------------------------------------------------------------------------
+# These live here rather than in brokerage_onboarding.py because accepting an
+# invitation IS a signup: it needs the password hasher, the JWT issuer, the
+# session cookie and the session registry, all of which are private to this
+# module. Re-exporting them so another module could do half a signup is a
+# worse trade than two routes living next to the signup they resemble.
+
+class AcceptInviteRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    token: str = Field(min_length=16, max_length=512)
+    password: str = Field(min_length=MIN_PASSWORD_LEN, max_length=_MAX_PASSPHRASE_LEN)
+    full_name: str = Field(min_length=1, max_length=160)
+
+
+@router.get("/invitation")
+async def invitation_preview(token: str) -> dict:
+    """Render the accept screen before the invitee has any session.
+
+    Unauthenticated by necessity — the whole point is that this person has no
+    account yet. It is safe because the token IS the capability: without the
+    32-byte secret from the email there is nothing to look up, and the reply
+    names only the brokerage they are being invited to.
+    """
+    from brokerage_onboarding import hash_invitation_token
+    from db.connection import tenant_tx
+
+    token_hash = hash_invitation_token(token)
+    async with tenant_tx(_admin_ctx()) as conn:
+        row = await conn.fetchrow(
+            "SELECT tenant_name, email, invited_role, invited_by_agent_id, "
+            "       expires_at, state FROM brokerage_invitation_preview($1)",
+            token_hash,
+        )
+    if not row:
+        # Same answer for "never existed" and "malformed": a probe learns
+        # nothing from the difference.
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "This invitation link is not valid.")
+    return {
+        "brokerage": row["tenant_name"],
+        "email": row["email"],
+        "role": row["invited_role"],
+        "invited_by": row["invited_by_agent_id"],
+        "expires_at": row["expires_at"],
+        "state": row["state"],
+    }
+
+
+@router.post("/accept-invite", response_model=LoginResponse, status_code=status.HTTP_201_CREATED)
+async def accept_invite(body: AcceptInviteRequest, response: Response) -> LoginResponse:
+    """Create the invitee's account inside the inviting brokerage, and sign
+    them in — one transaction, no tenant id ever typed by a human.
+
+    The replay guard is the UPDATE inside consume_brokerage_invitation: it
+    moves consumed_at from NULL and returns a row only to the caller that won.
+    Two simultaneous accepts therefore produce one account, and the loser is
+    told the invitation was already used rather than being handed a second
+    membership.
+    """
+    from brokerage_onboarding import hash_invitation_token
+    from db.connection import tenant_tx
+    import asyncpg
+
+    token_hash = hash_invitation_token(body.token)
+    pw_hash = _hash_pw(body.password)
+
+    async with tenant_tx(_admin_ctx()) as conn:
+        preview = await conn.fetchrow(
+            "SELECT tenant_id, email, invited_role, state "
+            "  FROM brokerage_invitation_preview($1)",
+            token_hash,
+        )
+        if not preview:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "This invitation link is not valid.")
+        if preview["state"] != "pending":
+            # Distinguish the three dead states: the person deserves to know
+            # whether to ask for a new link or simply sign in.
+            detail = {
+                "accepted": "This invitation has already been used. Sign in instead.",
+                "revoked": "This invitation was withdrawn by the brokerage.",
+                "expired": "This invitation has expired. Ask for a new one.",
+            }.get(preview["state"], "This invitation link is not valid.")
+            raise HTTPException(status.HTTP_409_CONFLICT, detail)
+
+        email = preview["email"]
+        tenant_id = str(preview["tenant_id"])
+
+        # One email is one account in one tenant: users.tenant_id is NOT NULL
+        # and lower(agent_id) is globally UNIQUE (0001 + 0082). So an address
+        # that already exists cannot also join this brokerage.
+        existing = await conn.fetchrow(
+            "SELECT id, tenant_id FROM users WHERE lower(agent_id) = lower($1)", email
+        )
+        if existing:
+            if str(existing["tenant_id"]) == tenant_id:
+                raise HTTPException(
+                    status.HTTP_409_CONFLICT,
+                    "You are already a member of this brokerage. Sign in instead.",
+                )
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                "That email already belongs to a Neoh account in another brokerage. "
+                "An account can belong to one brokerage at a time — sign in with a "
+                "different address, or ask your current brokerage to release the account.",
+            )
+
+        # The user row is created BEFORE the invitation is claimed, because
+        # the table's CHECK requires consumed_at and consumed_by to be set
+        # together — there is no valid "consumed by nobody" state to write
+        # first and fill in later. If the claim then loses its race, this
+        # whole transaction rolls back and the account never existed.
+        invited_role = preview["invited_role"]
+        try:
+            user = await conn.fetchrow(
+                "INSERT INTO users (tenant_id, agent_id, role, password_hash, email, "
+                "                   full_name, policy_acceptance_required) "
+                "VALUES ($1::uuid, $2, $3, $4, $5, $6, true) RETURNING id",
+                tenant_id, email, invited_role, pw_hash, email, body.full_name,
+            )
+        except asyncpg.UniqueViolationError:
+            raise HTTPException(
+                status.HTTP_409_CONFLICT, "An account with that email already exists."
+            ) from None
+
+        claimed = await conn.fetchrow(
+            "SELECT tenant_id, email, invited_role FROM consume_brokerage_invitation($1, $2)",
+            token_hash, user["id"],
+        )
+        if not claimed:
+            # Lost the race, or it lapsed between the preview and here. The
+            # raise unwinds the INSERT above with it.
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                "This invitation has already been used. Sign in instead.",
+            )
+
+        # The roster row. 0027 reserved status 'invited' for a flow that was
+        # never built; this is that flow, and the member is active the moment
+        # they accept — a broker who sent the invitation has already approved.
+        tenant_row = await conn.fetchrow("SELECT name FROM tenants WHERE id = $1::uuid", tenant_id)
+        await conn.execute(
+            "INSERT INTO team_memberships (tenant_id, user_id, team_name, member_role, status) "
+            "VALUES ($1::uuid, $2, $3, $4, 'active') "
+            "ON CONFLICT (tenant_id, user_id) DO UPDATE SET status = 'active'",
+            tenant_id, user["id"], (tenant_row or {}).get("name") or "Team",
+            "broker" if invited_role == "broker_owner" else "agent",
+        )
+
+    token = _issue_jwt(email, tenant_id, invited_role, extra={"policy_pending": True})
+    _set_session_cookie(response, token)
+    _register_session(email)
+    log.info("Invitation accepted: agent_id=%r tenant_id=%r", email, tenant_id)
+    return LoginResponse(
+        token=_browser_token(token),
+        agent_id=email,
+        expires_in=TOKEN_TTL_SECONDS,
+        tenant_id=tenant_id,
+        role=invited_role,
+        policy_acceptance_required=True,
     )

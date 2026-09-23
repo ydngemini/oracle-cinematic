@@ -10,6 +10,9 @@ import { SitePreview } from './components/SitePreview';
 // capability, so this route deliberately renders outside the auth shell.
 const PropertyUploadPage = lazy(() => import('./components/PropertyUploadPage'));
 const SecureDossierPage = lazy(() => import('./components/SecureDossierPage'));
+// An invited agent has no account yet, so this renders outside the auth
+// shell too — the token in the link is the whole capability.
+const AcceptInvitePage = lazy(() => import('./components/AcceptInvitePage'));
 
 function useJarvisVoice() {
   const { dispatch } = useOracleDispatch();
@@ -156,6 +159,7 @@ function App() {
   // agent UI has been minting links to it, but no route consumed them — every
   // dossier link issued before this landed on the agent application instead.
   const isSecureDossierRoute = window.location.pathname.startsWith('/vault/secure-access/');
+  const isAcceptInviteRoute = window.location.pathname === '/accept-invite';
   if (isReelRoute) return <ReelExperience />;
   if (isSitePreviewRoute) return <SitePreview />;
   if (isPropertyUploadRoute) {
@@ -169,6 +173,13 @@ function App() {
     return (
       <Suspense fallback={null}>
         <SecureDossierPage />
+      </Suspense>
+    );
+  }
+  if (isAcceptInviteRoute) {
+    return (
+      <Suspense fallback={null}>
+        <AcceptInvitePage />
       </Suspense>
     );
   }

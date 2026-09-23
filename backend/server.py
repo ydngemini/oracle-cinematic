@@ -362,6 +362,9 @@ app.include_router(missions_router)
 app.include_router(sites_router)
 app.include_router(spatial_intelligence_router)
 
+from brokerage_onboarding import router as brokerage_onboarding_router  # noqa: E402 — late import, matches local router convention
+app.include_router(brokerage_onboarding_router)
+
 from apis.geocoding import geocode, reverse_geocode
 from apis.census import get_demographics_by_zip
 from apis.property_data import enrich_property, get_flood_zone
