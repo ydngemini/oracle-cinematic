@@ -205,3 +205,84 @@
   font: 500 var(--text-lg) / 1.35 var(--font-sans);
   color: var(--oracle-text-heading);
 }
+
+/* ── Microphone: a peer of the text field, not a mode switch ───────────────
+   It sits inside the composer, immediately beside send, because the
+   relationship has to be obvious at a glance: type OR speak to Neoh. A
+   floating mic button somewhere else on screen would read as a different
+   feature. */
+
+.mic {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.25rem;
+  height: 2.25rem;
+  flex-shrink: 0;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--oracle-text-dim);
+  cursor: pointer;
+}
+.mic:hover { background: var(--oracle-surface-sunken); color: var(--oracle-text); }
+.mic:focus-visible { outline: 2px solid var(--oracle-accent); outline-offset: 2px; }
+.mic:disabled { color: var(--oracle-text-ghost); cursor: default; }
+
+/* Permission prompt is open: busy, but not yet capturing. The state must not
+   claim to be listening while the browser is still asking. */
+.mic[data-speech="requesting"] { color: var(--oracle-text); opacity: 0.6; }
+
+/* Actually capturing. The one place in the composer that takes Neoh's cyan,
+   which is what ties the microphone to the character above it. */
+.mic[data-speech="listening"] {
+  background: color-mix(in srgb, #35c8f5 18%, transparent);
+  color: #1c7fa0;
+}
+.mic[data-speech="listening"]::after {
+  content: '';
+  position: absolute;
+  width: 2.25rem;
+  height: 2.25rem;
+  border-radius: 50%;
+  border: 1.5px solid color-mix(in srgb, #35c8f5 55%, transparent);
+  animation: neoh-mic-ring 1.8s ease-out infinite;
+}
+.mic { position: relative; }
+
+.mic[data-speech="error"] { color: var(--oracle-red); }
+
+@keyframes neoh-mic-ring {
+  0%   { transform: scale(0.82); opacity: 0.9; }
+  100% { transform: scale(1.25); opacity: 0; }
+}
+
+/* What Neoh is hearing, forming in place. Fixed line height so the composer
+   does not jump as words arrive. */
+.hearing {
+  margin: 0;
+  padding: 0 var(--space-4) var(--space-2);
+  min-height: 1.25rem;
+  color: var(--oracle-text-dim);
+  font: 400 var(--text-sm) / 1.25 var(--font-sans);
+  font-style: italic;
+}
+
+.noticeAction {
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--oracle-accent-ink);
+  font: 500 var(--text-sm) / 1 var(--font-sans);
+  cursor: pointer;
+}
+
+/* Larger target on touch, and the composer must clear the safe area. */
+@media (max-width: 719px) {
+  .mic { width: 2.5rem; height: 2.5rem; }
+  .mic[data-speech="listening"]::after { width: 2.5rem; height: 2.5rem; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mic[data-speech="listening"]::after { animation: none; opacity: 0.6; }
+}

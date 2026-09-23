@@ -1,5 +1,5 @@
 import { AnimatePresence, motion } from 'framer-motion';
-import { ArrowUp, History, X } from 'lucide-react';
+import { ArrowUp, History, Mic, Square, X } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { useAssistant } from '../components/AssistantContext';
@@ -11,6 +11,7 @@ import { useNeohAvatarState } from './useNeohAvatarState';
 import { inputPlaceholder, isBusy, restLabel, surfaceState } from './surfaceModel';
 import { useGlobalShortcuts } from './useGlobalShortcuts';
 import { useNeohChannel } from './useNeohChannel';
+import { useSpeechInput } from './useSpeechInput';
 import { Blocks } from './Blocks';
 import styles from './NeohSurface.module.css';
 
@@ -43,6 +44,7 @@ export function NeohSurface({ entityOpen = false, onOpenEntity }) {
   const [rendered, setRendered] = useState(null);
   const [asking, setAsking] = useState(false);
   const inputRef = useRef(null);
+  const submitRef = useRef(null);
   const pillRef = useRef(null);
   const listRef = useRef(null);
 
@@ -72,6 +74,14 @@ export function NeohSurface({ entityOpen = false, onOpenEntity }) {
   // and correct and will simply never fire until voice is connected here.
   // Faking a trigger to demo it would make the avatar lie about the session.
   const voiceActive = avatar.state === 'listening' || avatar.state === 'speaking';
+
+  // Speaking to Neoh. A finished utterance is submitted immediately rather
+  // than dropped into the field for the person to press send again — holding
+  // a button and then having to click is two interactions for one intent.
+  const speech = useSpeechInput({
+    onFinal: (text) => { void submitRef.current?.(text); },
+    disabled: busy,
+  });
 
   const focusInput = useCallback(() => {
     setOpen(true);
@@ -123,8 +133,12 @@ export function NeohSurface({ entityOpen = false, onOpenEntity }) {
     onAct: (item) => setDraft(item.action || ''),
   }), [collapse, onOpenEntity]);
 
-  const submit = async () => {
-    const text = draft.trim();
+  // `spoken` goes through here unchanged. A turn that arrived from the
+  // microphone is the same kind of turn as one that arrived from the
+  // keyboard — same ask path, same channel, same transcript. Nothing
+  // downstream can tell the difference, which is the whole point.
+  const submit = async (override) => {
+    const text = (typeof override === 'string' ? override : draft).trim();
     if (!text) return;
     setDraft('');
     setAsking(true);
@@ -146,6 +160,10 @@ export function NeohSurface({ entityOpen = false, onOpenEntity }) {
     }
     setShowResult(true);
   };
+
+  // Kept current so useSpeechInput can reach the latest submit without
+  // depending on it and tearing down a live recognition session.
+  useEffect(() => { submitRef.current = submit; });
 
   const onKeyDown = (event) => {
     if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
@@ -250,17 +268,39 @@ export function NeohSurface({ entityOpen = false, onOpenEntity }) {
                   </button>
                 </span>
               )}
+              {/* The field is never removed, never disabled and never moves —
+                  not while Neoh is working, not while the microphone is open.
+                  Typing and speaking are peers, so either is always available. */}
               <textarea
                 ref={inputRef}
                 className={styles.input}
                 value={draft}
                 rows={1}
                 maxLength={MAX_DRAFT}
-                placeholder={busy ? 'Neoh is working…' : inputPlaceholder(record)}
+                placeholder={
+                  speech.state === 'listening'
+                    ? 'Listening… or keep typing'
+                    : (busy ? 'Neoh is working…' : inputPlaceholder(record))
+                }
                 aria-label="Message Neoh"
                 onChange={(event) => setDraft(event.target.value.slice(0, MAX_DRAFT))}
                 onKeyDown={onKeyDown}
               />
+              {speech.supported && (
+                <button
+                  type="button"
+                  className={styles.mic}
+                  data-speech={speech.state}
+                  onClick={() => (speech.state === 'listening' ? speech.stop() : speech.start())}
+                  disabled={busy && speech.state !== 'listening'}
+                  aria-label={speech.state === 'listening' ? 'Stop listening' : 'Talk to Neoh'}
+                  aria-pressed={speech.state === 'listening'}
+                >
+                  {speech.state === 'listening'
+                    ? <Square aria-hidden="true" size={14} />
+                    : <Mic aria-hidden="true" size={16} />}
+                </button>
+              )}
               {channel.messages.length > 0 && state !== 'result' && (
                 <button type="button" className={styles.iconBtn} onClick={() => setShowResult(true)} aria-label="Show the conversation">
                   <History aria-hidden="true" size={16} />
@@ -279,6 +319,22 @@ export function NeohSurface({ entityOpen = false, onOpenEntity }) {
                 <X aria-hidden="true" size={16} />
               </button>
             </div>
+
+            {/* What Neoh is hearing, as it forms. It settles into the
+                conversation as an ordinary turn the moment it is final —
+                there is no separate voice transcript to reconcile. */}
+            {speech.interim && (
+              <p className={styles.hearing} aria-live="polite">{speech.interim}</p>
+            )}
+
+            {speech.error && (
+              <p className={styles.notice} role="status">
+                {speech.error}{' '}
+                <button type="button" className={styles.noticeAction} onClick={speech.clearError}>
+                  Dismiss
+                </button>
+              </p>
+            )}
 
             {(channel.notice || channel.connection !== 'online') && (
               <p className={styles.notice} role="status">

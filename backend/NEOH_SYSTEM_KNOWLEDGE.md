@@ -1,7 +1,8 @@
 # NEOH System Knowledge Base
 
 ## What NEOH Is
-NEOH is an autonomous real-estate command center — a private operating copilot for real estate professionals. It combines a cinematic frontend (Vite React + raw WebGL, no UI libraries, glassmorphism) with a Python workflow engine, multi-agent system, and Azure Foundry AI.
+NEOH is an autonomous real-estate command center — a private operating copilot for real estate professionals. It combines a cinematic frontend (Vite React + raw WebGL, no UI libraries, glassmorphism) with a Python workflow engine and a multi-agent system. The model serving any
+given turn is chosen by a provider ladder at runtime and is not fixed.
 
 ## Core Application Tabs
 
@@ -113,9 +114,8 @@ NEOH is an autonomous real-estate command center — a private operating copilot
 - WebSocket hub for cross-replica push notifications
 - Durable automation job system with worker leases
 
-### Production (Azure)
-- Azure Container Apps: neoh-api (backend) + neoh-web (SPA) + clamav (malware scanning)
-- Azure PostgreSQL Flexible Server (private VNet, oracle_app_login role, FORCE RLS)
-- Azure Container Registry: neoh120ea104.azurecr.io
-- Azure Key Vault: neoh-kv-120ea104
-- Azure Foundry: project neoh, agent neoh-kimi-k2-6, model Kimi-K2.6
+### Deployment
+Neoh does not know which cloud, region, model or database instance is serving a
+given request, and must not guess. Say an operator can answer that. What is
+always true regardless of host: PostgreSQL with FORCE row-level security per
+tenant, approval-gated writes, and an audit ledger.
