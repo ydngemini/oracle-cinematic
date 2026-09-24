@@ -1,5 +1,6 @@
 import logging
 import os
+import recovery_mode
 from datetime import datetime, timezone
 
 import stripe
@@ -155,6 +156,15 @@ async def create_checkout_session(
     body: CheckoutRequest,
     ctx: TenantContext = Depends(require_context),
 ):
+    # A restored copy must never reach Stripe: it holds the same live key as
+    # production, and the customer records it is reasoning from may be hours
+    # stale. 503 rather than the guard's own exception, because this is an HTTP
+    # surface and a 500 would read as a bug rather than a deliberate refusal.
+    if recovery_mode.is_recovery_mode():
+        raise HTTPException(
+            status_code=503,
+            detail="Billing is unavailable: this instance is running in recovery mode.",
+        )
     # IDOR guard: callers may only open a checkout for their own tenant.
     # platform_admin is allowed to act on behalf of any tenant.
     if not ctx.is_platform_admin and body.tenant_id != ctx.tenant_id:
@@ -238,6 +248,15 @@ async def create_portal_session(
     body: PortalRequest,
     ctx: TenantContext = Depends(require_context),
 ):
+    # A restored copy must never reach Stripe: it holds the same live key as
+    # production, and the customer records it is reasoning from may be hours
+    # stale. 503 rather than the guard's own exception, because this is an HTTP
+    # surface and a 500 would read as a bug rather than a deliberate refusal.
+    if recovery_mode.is_recovery_mode():
+        raise HTTPException(
+            status_code=503,
+            detail="Billing is unavailable: this instance is running in recovery mode.",
+        )
     # IDOR guard: callers may only manage their own tenant's portal.
     if not ctx.is_platform_admin and body.tenant_id != ctx.tenant_id:
         raise HTTPException(

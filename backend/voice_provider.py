@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import logging
 import os
+import recovery_mode
 from dataclasses import dataclass
 from html import escape as xml_escape
 from typing import Any, Mapping, Optional
@@ -230,6 +231,7 @@ class TwilioVoiceProvider(VoiceProvider):
         status_callback_url: Optional[str] = None,
         credentials: Optional[Mapping[str, Any]] = None,
     ) -> ProviderResult:
+        recovery_mode.guard("place_call via TwilioVoiceProvider")
         from command_providers import place_twilio_call
 
         return await place_twilio_call(
@@ -244,6 +246,7 @@ class TwilioVoiceProvider(VoiceProvider):
         channel: str = "sms",
         credentials: Optional[Mapping[str, Any]] = None,
     ) -> ProviderResult:
+        recovery_mode.guard("verify_caller_id_start via TwilioVoiceProvider")
         from command_providers import start_twilio_caller_id_verification
 
         return await start_twilio_caller_id_verification(
@@ -261,6 +264,7 @@ class TwilioVoiceProvider(VoiceProvider):
         # Twilio's Outgoing Caller ID verification is completed by Twilio
         # calling the number and reading the code back, not by an OTP the
         # agent submits to Neoh — there is nothing to submit here.
+        recovery_mode.guard("verify_caller_id_complete via TwilioVoiceProvider")
         return False
 
     async def is_caller_id_verified(
@@ -281,6 +285,7 @@ class TwilioVoiceProvider(VoiceProvider):
         credentials: Optional[Mapping[str, Any]] = None,
         area_code: Optional[str] = None,
     ) -> ProviderResult:
+        recovery_mode.guard("provision_forwarding_number via TwilioVoiceProvider")
         from command_providers import provision_twilio_forwarding_number
 
         return await provision_twilio_forwarding_number(
@@ -295,6 +300,7 @@ class TwilioVoiceProvider(VoiceProvider):
         status_callback_url: Optional[str] = None,
         credentials: Optional[Mapping[str, Any]] = None,
     ) -> None:
+        recovery_mode.guard("configure_number_webhook via TwilioVoiceProvider")
         from command_providers import configure_twilio_number_webhook
 
         await configure_twilio_number_webhook(
@@ -311,6 +317,7 @@ class TwilioVoiceProvider(VoiceProvider):
         redirect_url: str,
         credentials: Optional[Mapping[str, Any]] = None,
     ) -> None:
+        recovery_mode.guard("transfer_call via TwilioVoiceProvider")
         from twilio_call_handler import twilio_redirect_call
 
         await twilio_redirect_call(provider_call_id, redirect_url)
@@ -321,6 +328,7 @@ class TwilioVoiceProvider(VoiceProvider):
         *,
         credentials: Optional[Mapping[str, Any]] = None,
     ) -> None:
+        recovery_mode.guard("abort_call via TwilioVoiceProvider")
         from command_providers import abort_twilio_call
 
         await abort_twilio_call(provider_call_id, credentials=credentials)
@@ -422,6 +430,7 @@ class PlivoVoiceProvider(VoiceProvider):
         status_callback_url: Optional[str] = None,
         credentials: Optional[Mapping[str, Any]] = None,
     ) -> ProviderResult:
+        recovery_mode.guard("place_call via PlivoVoiceProvider")
         import asyncio
 
         from plivo.exceptions import PlivoRestError
@@ -466,6 +475,7 @@ class PlivoVoiceProvider(VoiceProvider):
         channel: str = "sms",
         credentials: Optional[Mapping[str, Any]] = None,
     ) -> ProviderResult:
+        recovery_mode.guard("verify_caller_id_start via PlivoVoiceProvider")
         import asyncio
 
         from plivo.exceptions import PlivoRestError
@@ -510,6 +520,7 @@ class PlivoVoiceProvider(VoiceProvider):
         phone_number: str,
         credentials: Optional[Mapping[str, Any]] = None,
     ) -> bool:
+        recovery_mode.guard("verify_caller_id_complete via PlivoVoiceProvider")
         import asyncio
 
         from plivo.exceptions import PlivoRestError
@@ -572,6 +583,7 @@ class PlivoVoiceProvider(VoiceProvider):
         credentials: Optional[Mapping[str, Any]] = None,
         area_code: Optional[str] = None,
     ) -> ProviderResult:
+        recovery_mode.guard("provision_forwarding_number via PlivoVoiceProvider")
         import asyncio
 
         from plivo.exceptions import PlivoRestError
@@ -614,6 +626,7 @@ class PlivoVoiceProvider(VoiceProvider):
         status_callback_url: Optional[str] = None,
         credentials: Optional[Mapping[str, Any]] = None,
     ) -> None:
+        recovery_mode.guard("configure_number_webhook via PlivoVoiceProvider")
         import asyncio
 
         from plivo.exceptions import PlivoRestError
@@ -648,6 +661,7 @@ class PlivoVoiceProvider(VoiceProvider):
         redirect_url: str,
         credentials: Optional[Mapping[str, Any]] = None,
     ) -> None:
+        recovery_mode.guard("transfer_call via PlivoVoiceProvider")
         import asyncio
 
         from plivo.exceptions import PlivoRestError
@@ -672,6 +686,7 @@ class PlivoVoiceProvider(VoiceProvider):
         *,
         credentials: Optional[Mapping[str, Any]] = None,
     ) -> None:
+        recovery_mode.guard("abort_call via PlivoVoiceProvider")
         import asyncio
 
         def _hangup() -> None:

@@ -316,7 +316,17 @@ def test_validate_webhook_rejects_missing_signature_header():
         )
 
 
-def test_validate_webhook_requires_public_key():
+def test_validate_webhook_requires_public_key(monkeypatch):
+    """No credential and no env var means refuse — not "fall through to the SDK".
+
+    The env var has to be cleared explicitly. `validate_webhook` falls back to
+    `TELNYX_PUBLIC_KEY`, and a developer machine with a real one in .env made
+    this test take the configured path instead, where the SDK complains about a
+    missing signature header. It passed alone and failed in the full suite,
+    which is the worst combination: it reads as flakiness rather than as a test
+    that never said what it depended on.
+    """
+    monkeypatch.delenv("TELNYX_PUBLIC_KEY", raising=False)
     provider = messaging_provider.TelnyxMessagingProvider()
     with pytest.raises(ProviderConfigurationError):
         provider.validate_webhook("{}", {}, credentials={"api_key": API_KEY})

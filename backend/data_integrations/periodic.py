@@ -149,6 +149,17 @@ class PeriodicScheduler:
         register_handler(f"periodic:{task.name}", handler)
 
     async def start(self) -> None:
+        # Recovery mode outranks the enable flag. A restored copy running its
+        # scheduler is the worst case in this whole file: every task here acts
+        # on the world — harvesting, syncing, emailing digests, draining usage
+        # meters — using data that may be hours stale.
+        import recovery_mode
+        if recovery_mode.is_recovery_mode():
+            logger.warning(
+                "PeriodicScheduler NOT started: %s is set. This instance is a "
+                "restored or non-production copy.", recovery_mode.ENV_VAR,
+            )
+            return
         if not SCHEDULER_ENABLED:
             logger.info("PeriodicScheduler disabled (set ORACLE_SCHEDULER_ENABLED=1 to enable).")
             return

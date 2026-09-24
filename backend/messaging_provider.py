@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import logging
 import os
+import recovery_mode
 from dataclasses import dataclass
 from typing import Any, Mapping, Optional
 
@@ -269,6 +270,7 @@ class TwilioMessagingProvider(MessagingProvider):
         media_urls: Optional[list[str]] = None,
         credentials: Optional[Mapping[str, Any]] = None,
     ) -> ProviderResult:
+        recovery_mode.guard("send_message via TwilioMessagingProvider")
         from command_providers import send_twilio_sms
 
         return await send_twilio_sms(
@@ -312,6 +314,7 @@ class TelnyxMessagingProvider(MessagingProvider):
         media_urls: Optional[list[str]] = None,
         credentials: Optional[Mapping[str, Any]] = None,
     ) -> ProviderResult:
+        recovery_mode.guard("send_message via TelnyxMessagingProvider")
         import asyncio
 
         from telnyx import APIStatusError
@@ -502,6 +505,7 @@ class TelnyxMessagingProvider(MessagingProvider):
         messaging_profile_id: Optional[str] = None,
         credentials: Optional[Mapping[str, Any]] = None,
     ) -> ProviderResult:
+        recovery_mode.guard("begin_hosted_messaging via TelnyxMessagingProvider")
         import asyncio
 
         from telnyx import APIStatusError
@@ -532,6 +536,7 @@ class TelnyxMessagingProvider(MessagingProvider):
         method: str = "sms",
         credentials: Optional[Mapping[str, Any]] = None,
     ) -> None:
+        recovery_mode.guard("start_ownership_verification via TelnyxMessagingProvider")
         import asyncio
 
         from telnyx import APIStatusError
@@ -558,6 +563,7 @@ class TelnyxMessagingProvider(MessagingProvider):
         *,
         credentials: Optional[Mapping[str, Any]] = None,
     ) -> bool:
+        recovery_mode.guard("complete_ownership_verification via TelnyxMessagingProvider")
         import asyncio
 
         from telnyx import APIStatusError
@@ -587,6 +593,7 @@ class TelnyxMessagingProvider(MessagingProvider):
         invoice_bytes: Optional[bytes] = None,
         credentials: Optional[Mapping[str, Any]] = None,
     ) -> None:
+        recovery_mode.guard("upload_hosted_documents via TelnyxMessagingProvider")
         import asyncio
 
         from telnyx import APIStatusError
@@ -641,6 +648,7 @@ class TelnyxMessagingProvider(MessagingProvider):
         *,
         credentials: Optional[Mapping[str, Any]] = None,
     ) -> None:
+        recovery_mode.guard("disconnect_hosted_number via TelnyxMessagingProvider")
         import asyncio
 
         def _delete():
@@ -659,6 +667,7 @@ class TelnyxMessagingProvider(MessagingProvider):
         webhook_url: str,
         credentials: Optional[Mapping[str, Any]] = None,
     ) -> ProviderResult:
+        recovery_mode.guard("create_messaging_profile via TelnyxMessagingProvider")
         import asyncio
 
         from telnyx import APIStatusError
@@ -686,6 +695,7 @@ class TelnyxMessagingProvider(MessagingProvider):
     async def create_brand(
         self, fields: Mapping[str, Any], *, credentials: Optional[Mapping[str, Any]] = None
     ) -> ProviderResult:
+        recovery_mode.guard("create_brand via TelnyxMessagingProvider")
         import asyncio
 
         from telnyx import APIStatusError
@@ -733,6 +743,7 @@ class TelnyxMessagingProvider(MessagingProvider):
         credentials: Optional[Mapping[str, Any]] = None,
         **fields: Any,
     ) -> ProviderResult:
+        recovery_mode.guard("submit_campaign via TelnyxMessagingProvider")
         import asyncio
 
         from telnyx import APIStatusError
@@ -773,6 +784,7 @@ class TelnyxMessagingProvider(MessagingProvider):
         *,
         credentials: Optional[Mapping[str, Any]] = None,
     ) -> ProviderResult:
+        recovery_mode.guard("assign_number_to_campaign via TelnyxMessagingProvider")
         import asyncio
 
         from telnyx import APIStatusError

@@ -299,3 +299,94 @@ def test_prebuild_preserves_a_partial_index_predicate():
     _, rewritten = runner._concurrent_index_statements(sql)[0]
     assert "WHERE" in rewritten and "firehose:%" in rewritten
     assert rewritten.upper().count("CONCURRENTLY") == 1
+
+
+# ── Drop-aware reconciliation ───────────────────────────────────────────────
+#
+# A probe cannot tell "never applied" from "applied, then superseded". 0110
+# created mls_sync_status.health; 0111 dropped it. Probing 0110 against the
+# current schema reported it PARTIAL — permanently — so it could never be
+# recorded, and the ledger head stalled at 0109 while the schema was at 0111.
+#
+# That head is what backup-postgres.sh writes into every manifest and what a
+# restore is validated against. A stalled head means a restore verifies green
+# against the wrong schema version, which is the failure that looks like success.
+
+def test_a_dropped_column_is_recognised_as_dropped():
+    from run_migrations import _dropped_objects
+
+    dropped = _dropped_objects("""
+        ALTER TABLE mls_sync_status DROP COLUMN IF EXISTS health;
+        ALTER TABLE mls_sync_status DROP COLUMN cursor_key, DROP COLUMN cursor_modified_at;
+        DROP INDEX IF EXISTS idx_mls_sync_health;
+        DROP TABLE IF EXISTS zz_abandoned_thing;
+    """)
+
+    assert ("mls_sync_status", "health") in dropped["columns"]
+    assert ("mls_sync_status", "cursor_key") in dropped["columns"]
+    assert ("mls_sync_status", "cursor_modified_at") in dropped["columns"]
+    assert "idx_mls_sync_health" in dropped["indexes"]
+    assert "zz_abandoned_thing" in dropped["tables"]
+
+
+def test_dropping_a_constraint_or_default_is_not_dropping_a_column():
+    """`DROP CONSTRAINT`, `DROP DEFAULT` and `DROP NOT NULL` all contain the
+    word DROP and remove no column. Treating them as column drops would make an
+    earlier migration's column vanish from its own probe set, and the migration
+    would then reconcile on evidence it had not actually established."""
+    from run_migrations import _dropped_objects
+
+    dropped = _dropped_objects("""
+        ALTER TABLE leads DROP CONSTRAINT leads_tenant_parcel_key;
+        ALTER TABLE leads ALTER COLUMN state DROP DEFAULT;
+        ALTER TABLE leads ALTER COLUMN state DROP NOT NULL;
+    """)
+
+    assert dropped["columns"] == set()
+
+
+def test_declarations_a_later_migration_drops_are_not_counted_as_missing():
+    from run_migrations import _without_later_drops
+
+    declared = {
+        "tables": ["mls_sync_status"],
+        "indexes": ["idx_mls_sync_health", "idx_mls_entitlements_tenant"],
+        "columns": [("mls_sync_status", "health"), ("mls_sync_status", "provider")],
+        "functions": [],
+    }
+    dropped_later = {
+        "tables": set(),
+        "indexes": {"idx_mls_sync_health"},
+        "columns": {("mls_sync_status", "health")},
+    }
+
+    trimmed = _without_later_drops(declared, dropped_later)
+
+    assert trimmed["indexes"] == ["idx_mls_entitlements_tenant"]
+    assert trimmed["columns"] == [("mls_sync_status", "provider")]
+    # Everything not dropped is still probed — this narrows the probe, it does
+    # not disable it.
+    assert trimmed["tables"] == ["mls_sync_status"]
+
+
+def test_a_pure_drop_migration_is_verified_by_absence():
+    """0111 creates nothing, so the positive probe calls it unverifiable and
+    leaves it unrecorded forever. Its postcondition is still checkable."""
+    import asyncio
+
+    from run_migrations import _drops_took_effect
+
+    class Conn:
+        def __init__(self, present):
+            self.present = present
+
+        async def fetchval(self, sql, *args):
+            return args in self.present or None
+
+    dropped = {"tables": set(), "indexes": {"idx_gone"}, "columns": {("t", "c")}}
+
+    total, still = asyncio.run(_drops_took_effect(Conn(set()), dropped))
+    assert total == 2 and still == [], "all gone → the migration took effect"
+
+    total, still = asyncio.run(_drops_took_effect(Conn({("idx_gone",)}), dropped))
+    assert still == ["index idx_gone"], "something it removes is still there"

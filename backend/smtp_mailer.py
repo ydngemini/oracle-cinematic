@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import ipaddress
 import os
+import recovery_mode
 import smtplib
 import socket
 import ssl
@@ -216,6 +217,7 @@ def send(
     Raises SmtpConfigurationError for anything the operator must fix and
     SmtpSendError for a server-side rejection, so callers can tell "not set up
     yet" apart from "set up but refused"."""
+    recovery_mode.guard(f"send email to {recipient}")
     settings = resolve_settings(credentials)
     message = build_message(
         sender=settings["sender"],

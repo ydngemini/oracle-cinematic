@@ -408,6 +408,13 @@ def test_google_oauth_pkce_exchange_refresh_and_local_return_paths(monkeypatch):
     with pytest.raises(ValidationError):
         GoogleOAuthStart(return_path="https://attacker.example/callback")
 
+    # config.public_base_url() resolves ORACLE_DOMAIN, then ORACLE_PUBLIC_BASE_URL,
+    # then ORACLE_BASE_URL. Setting only the last one asserts nothing unless the
+    # higher-precedence two are known to be unset — and on a machine whose .env
+    # carries an ngrok ORACLE_DOMAIN they are not, so this returned the tunnel
+    # URL. Clearing them is the test saying out loud which variable it is about.
+    monkeypatch.delenv("ORACLE_DOMAIN", raising=False)
+    monkeypatch.delenv("ORACLE_PUBLIC_BASE_URL", raising=False)
     monkeypatch.setenv("ORACLE_BASE_URL", "https://app.neoh.example")
     assert _oauth_return_url("/profile?tab=brokerage", "connected") == (
         "https://app.neoh.example/profile?tab=brokerage&google=connected"

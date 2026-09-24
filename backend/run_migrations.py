@@ -276,6 +276,62 @@ def _declared_objects(sql: str) -> dict[str, list]:
     }
 
 
+_DROP_INDEX_RE = re.compile(
+    r"\bDROP\s+INDEX\s+(?:CONCURRENTLY\s+)?(?:IF\s+EXISTS\s+)?([A-Za-z0-9_.\"]+)", re.I)
+_DROP_TABLE_RE = re.compile(
+    r"\bDROP\s+TABLE\s+(?:IF\s+EXISTS\s+)?([A-Za-z0-9_.\"]+)", re.I)
+_ALTER_DROP_COLUMN_RE = re.compile(
+    r"\bALTER\s+TABLE\s+(?:IF\s+EXISTS\s+)?([A-Za-z0-9_.\"]+)(.*?)(?=;)", re.I | re.S)
+_DROP_COLUMN_CLAUSE_RE = re.compile(
+    r"\bDROP\s+(?:COLUMN\s+)?(?:IF\s+EXISTS\s+)?([A-Za-z0-9_\"]+)", re.I)
+
+
+def _dropped_objects(sql: str) -> dict[str, set]:
+    """Objects a migration file explicitly REMOVES.
+
+    Needed because a probe cannot tell "never applied" from "applied, then
+    superseded". 0110 created `mls_sync_status.health`; 0111 dropped it. Probing
+    0110 against the current schema therefore reports it as PARTIAL — forever —
+    and a migration that can never be recorded keeps the ledger head behind the
+    real schema. That head is what a backup manifest records and what a restore
+    is validated against, so the consequence is a restore that verifies green
+    against the wrong schema version.
+    """
+    body = "\n".join(
+        line for line in sql.splitlines() if not line.lstrip().startswith("--")
+    )
+    def _bare(name: str) -> str:
+        return name.replace('"', "").split(".")[-1].lower()
+
+    columns: set[tuple[str, str]] = set()
+    for table, rest in _ALTER_DROP_COLUMN_RE.findall(body):
+        for clause in rest.split(","):
+            if not re.search(r"\bDROP\b", clause, re.I):
+                continue
+            # Skip DROP CONSTRAINT / DROP DEFAULT / DROP NOT NULL — only plain
+            # column drops remove a probeable column.
+            if re.search(r"\bDROP\s+(CONSTRAINT|DEFAULT|NOT\s+NULL)\b", clause, re.I):
+                continue
+            match = _DROP_COLUMN_CLAUSE_RE.search(clause)
+            if match:
+                columns.add((_bare(table), _bare(match.group(1))))
+
+    return {
+        "tables": {_bare(n) for n in _DROP_TABLE_RE.findall(body)},
+        "indexes": {_bare(n) for n in _DROP_INDEX_RE.findall(body)},
+        "columns": columns,
+    }
+
+
+def _without_later_drops(declared: dict, dropped_later: dict) -> dict:
+    """`declared` minus anything a subsequent migration removes."""
+    trimmed = dict(declared)
+    trimmed["tables"] = [t for t in declared["tables"] if t not in dropped_later["tables"]]
+    trimmed["indexes"] = [i for i in declared["indexes"] if i not in dropped_later["indexes"]]
+    trimmed["columns"] = [c for c in declared["columns"] if tuple(c) not in dropped_later["columns"]]
+    return trimmed
+
+
 async def _objects_present(conn, declared: dict) -> tuple[int, int, list[str]]:
     """(present, total, missing) for the objects a migration declares."""
     missing: list[str] = []
@@ -320,6 +376,41 @@ async def _objects_present(conn, declared: dict) -> tuple[int, int, list[str]]:
     return total - len(missing), total, missing
 
 
+async def _drops_took_effect(conn, dropped: dict) -> tuple[int, list[str]]:
+    """(total, still_present) for the objects a migration says it REMOVES.
+
+    A migration whose whole body is DROPs declares nothing to point at, so the
+    positive probe calls it unverifiable and leaves it unrecorded forever —
+    which holds the ledger head below the real schema head.
+
+    But its postcondition is perfectly checkable: the objects are gone. That is
+    weaker evidence than a creation probe, because `DROP ... IF EXISTS` against
+    something that never existed also leaves it absent, so this is recorded with
+    wording that says exactly what was and was not established.
+    """
+    still_present: list[str] = []
+    total = 0
+    for table in sorted(dropped["tables"]):
+        total += 1
+        if await conn.fetchval("SELECT to_regclass($1)", f"public.{table}"):
+            still_present.append(f"table {table}")
+    for index in sorted(dropped["indexes"]):
+        total += 1
+        if await conn.fetchval(
+            "SELECT 1 FROM pg_indexes WHERE schemaname='public' AND indexname=$1", index
+        ):
+            still_present.append(f"index {index}")
+    for table, column in sorted(dropped["columns"]):
+        total += 1
+        if await conn.fetchval(
+            "SELECT 1 FROM information_schema.columns "
+            "WHERE table_schema='public' AND table_name=$1 AND column_name=$2",
+            table, column,
+        ):
+            still_present.append(f"column {table}.{column}")
+    return total, still_present
+
+
 async def _reconcile(conn, files: list[str]) -> int:
     """Record migrations whose objects are already present, without re-running them.
 
@@ -343,15 +434,70 @@ async def _reconcile(conn, files: list[str]) -> int:
     }
     reconciled = pending = unverifiable = 0
     partial: list[str] = []
+
+    # Read every file once, so each migration can be probed against the schema
+    # as LATER migrations left it rather than as it left it itself.
+    sources = {}
     for path in files:
+        with open(path, encoding="utf-8") as handle:
+            sources[path] = handle.read()
+
+    for position, path in enumerate(files):
         name = os.path.basename(path)
         if name in recorded:
             continue
-        with open(path, encoding="utf-8") as handle:
-            sql = handle.read()
+        sql = sources[path]
         declared = _declared_objects(sql)
+
+        # Subtract what came after. A migration that created a column a later
+        # one dropped is fully applied, not half applied, and must be recordable
+        # — otherwise the ledger head stalls behind the real schema and every
+        # backup manifest taken afterwards records the wrong version.
+        dropped_later = {"tables": set(), "indexes": set(), "columns": set()}
+        for later in files[position + 1:]:
+            drops = _dropped_objects(sources[later])
+            for key in dropped_later:
+                dropped_later[key] |= drops[key]
+        superseded = (
+            len(declared["tables"]) + len(declared["indexes"]) + len(declared["columns"])
+        )
+        declared = _without_later_drops(declared, dropped_later)
+        superseded -= (
+            len(declared["tables"]) + len(declared["indexes"]) + len(declared["columns"])
+        )
+
         present, total, missing = await _objects_present(conn, declared)
         if total == 0:
+            if superseded:
+                # Everything it created has since been dropped. Its effect is
+                # real and complete; there is simply nothing left to point at.
+                await conn.execute(
+                    _RECONCILE_MIGRATION_SQL, name, _sha256(sql),
+                    f"all {superseded} declared object(s) dropped by a later migration",
+                )
+                reconciled += 1
+                print(f"== {name} reconciled (all {superseded} objects since dropped)", flush=True)
+                continue
+            # Nothing created — but it may be a pure-cleanup migration, whose
+            # effect is verifiable as an absence.
+            own_drops = _dropped_objects(sql)
+            drop_total, still_present = await _drops_took_effect(conn, own_drops)
+            if drop_total and not still_present:
+                await conn.execute(
+                    _RECONCILE_MIGRATION_SQL, name, _sha256(sql),
+                    f"creates nothing; all {drop_total} dropped object(s) confirmed absent "
+                    f"(absence is weaker evidence than presence: an IF EXISTS drop of "
+                    f"something that never existed looks identical)",
+                )
+                reconciled += 1
+                print(f"== {name} reconciled ({drop_total} dropped object(s) confirmed absent)", flush=True)
+                continue
+            if still_present:
+                partial.append(
+                    f"{name}: a DROP migration, but {len(still_present)} object(s) "
+                    f"it removes are still present: {still_present[:4]}"
+                )
+                continue
             unverifiable += 1
             print(f"?? {name} declares no probeable object; left unrecorded", flush=True)
             continue
@@ -360,6 +506,8 @@ async def _reconcile(conn, files: list[str]) -> int:
             evidence = f"all {total} unconditional objects present"
             if conditional:
                 evidence += f"; {conditional} conditional block(s) not probed"
+            if superseded:
+                evidence += f"; {superseded} object(s) dropped by a later migration"
             await conn.execute(_RECONCILE_MIGRATION_SQL, name, _sha256(sql), evidence)
             reconciled += 1
             print(f"== {name} reconciled ({total} objects present)", flush=True)
