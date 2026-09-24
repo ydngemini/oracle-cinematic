@@ -188,3 +188,42 @@ def test_results_are_capped():
             for i in range(60)]
     out = asyncio.run(buyers_for_listing(Conn(rows), LISTING, limit=25))
     assert len(out) == 25
+
+
+# ---------------------------------------------------------------------------
+# Real database types
+# ---------------------------------------------------------------------------
+
+def test_postgres_numerics_are_understood():
+    """Found by the golden E2E, invisible to every unit test above.
+
+    Postgres returns numeric columns as Decimal. _as_number handled int, float
+    and str — so against live data every budget and bedroom comparison silently
+    became "unknown", and the response claimed "listing has no price" about a
+    listing that had one. The unit tests all passed because they used ints.
+    """
+    from decimal import Decimal
+    listing = {
+        "city": "Wilmington", "zip_code": "19801",
+        "list_price": Decimal("485000"), "beds": Decimal("4"),
+        "property_type": "Single Family",
+    }
+    m = match_listing_to_buyer(
+        listing, buyer("Sarah", target_zips=["19801"], budget_max=525000, beds=3))
+    assert m.verdict == STRONG
+    assert m.matched_signals == 3
+    assert not any("no price" in u for u in m.unknowns)
+    assert not any("does not state bedrooms" in u for u in m.unknowns)
+
+
+def test_decimal_budgets_in_preferences_are_understood():
+    from decimal import Decimal
+    m = match_listing_to_buyer(LISTING, buyer("Dec", target_zips=["19801"],
+                                              budget_max=Decimal("525000")))
+    assert m.verdict == STRONG
+
+
+@pytest.mark.parametrize("value", [None, object(), [], {}, "abc"])
+def test_unconvertible_values_are_none_not_exceptions(value):
+    from buyer_matching import _as_number
+    assert _as_number(value) is None

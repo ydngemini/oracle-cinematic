@@ -69,6 +69,16 @@ def _as_list(value: Any) -> list[str]:
 
 
 def _as_number(value: Any) -> Optional[float]:
+    """Coerce whatever the database or a JSON blob hands us.
+
+    `Decimal` is the one that matters and the one that was missing. Postgres
+    returns `numeric` columns — list_price, beds — as Decimal, which is neither
+    int nor float, so this used to return None for every real listing. The
+    effect was silent and specific: budget and bedroom matching degraded to
+    "unknown" against live data while passing every unit test, because the
+    tests used Python ints. Worse, the response then told the agent "listing
+    has no price" about a listing that plainly had one.
+    """
     if isinstance(value, bool):
         return None
     if isinstance(value, (int, float)):
@@ -79,7 +89,11 @@ def _as_number(value: Any) -> Optional[float]:
             return float(cleaned) if cleaned else None
         except ValueError:
             return None
-    return None
+    # Decimal, and anything else that knows how to be a float.
+    try:
+        return float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
 
 
 @dataclass(frozen=True)
