@@ -43,7 +43,12 @@ class FakeConnection:
         self._since = since
 
     async def fetchrow(self, _query, *_args):
-        return {"last_sync_at": self._since} if self._since else None
+        # backfill_complete matters now: a feed whose initial walk never
+        # finished takes the backfill path, not the delta path. A fake
+        # status row that omits it would silently change which code path
+        # every delta test exercises.
+        return ({"last_sync_at": self._since, "backfill_complete": True}
+                if self._since else None)
 
     async def execute(self, query, *args):
         self.executions.append((query, args))
@@ -106,7 +111,7 @@ def test_normalize_maps_bridge_record_to_canonical_shape_with_developer_provenan
     assert reject_reason(rec) is None
 
 
-def test_licensed_dataset_gets_licensed_provenance():
+def test_a_reference_dataset_is_never_licensed_provenance():
     """A dataset outside test/test_sd/test_sf (e.g. actris_ref) is a real
     licensed feed and its records must not be tagged developer data."""
     feed = BridgeListingsFeed(
@@ -120,9 +125,27 @@ def test_licensed_dataset_gets_licensed_provenance():
             "ModificationTimestamp": "2020-11-08T16:33:56.437Z",
         }
     )
-    assert rec["features"]["source_kind"] == "licensed_mls"
-    assert rec["features"]["provenance"]["classification"] == "licensed_property_listing"
+    # This assertion used to read `licensed_mls`, encoding the fail-open rule
+    # as the specification. The fixture is its own counter-example: `actris_ref`
+    # is a Bridge REFERENCE dataset and the timestamp above is frozen in 2020.
+    # A reference dataset is never live inventory, whatever it is declared.
+    assert rec["features"]["source_kind"] == "developer_listing_dataset"
+    assert rec["features"]["provenance"]["classification"] == "developer_listing_dataset"
     assert reject_reason(rec) is None
+
+
+def test_a_declared_licensed_board_feed_does_get_licensed_provenance(monkeypatch):
+    """The other half: a real board, explicitly declared, with an agreement."""
+    monkeypatch.setenv("ORACLE_MLS_LICENSED", "1")
+    monkeypatch.setenv("ORACLE_MLS_AGREEMENT_REF", "BRIGHT-2026-001")
+    feed = BridgeListingsFeed(_config(dataset="brightmls", mls_id="bright", mls_name="Bright MLS"))
+    rec = feed.normalize({
+        "ListingKey": "BR-1", "UnparsedAddress": "1 Market St",
+        "City": "Wilmington", "StateOrProvince": "DE", "PostalCode": "19801",
+        "ListPrice": 485000, "StandardStatus": "Active",
+        "ModificationTimestamp": "2026-09-01T10:00:00.000Z",
+    })
+    assert rec["features"]["provenance"]["classification"] == "licensed_property_listing"
 
 
 def test_sync_follows_offset_paging_and_advances_only_after_exhaustion(monkeypatch):

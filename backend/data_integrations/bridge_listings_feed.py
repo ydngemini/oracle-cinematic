@@ -46,16 +46,16 @@ walk of the whole dataset by keyset pagination — Bridge caps ``offset`` at
 10000, and a *reference* dataset has every ``ModificationTimestamp`` frozen, so
 a plain delta would import nothing. Subsequent runs are normal deltas.
 
-The ``test``/``test_sd``/``test_sf`` datasets are Bridge's own synthetic
-developer data — not a real board, not real inventory. Every record this
-module writes is tagged
-``features.provenance.classification = "developer_listing_dataset"`` so it
-can never be mistaken, downstream, for licensed MLS data
-(``licensed_property_listing``, what `listings_feed.py` writes). Any dataset
-outside ``_DEV_DATASETS`` is treated as a real, licensed Bridge feed (e.g.
-``actris_ref``) and its records carry ``licensed_property_listing`` provenance
-automatically — swapping one in means only the dataset/token config, not this
-module's shape.
+Provenance is decided by `mls_licensing`, which FAILS CLOSED: a dataset is
+developer data unless an operator has explicitly declared it licensed and named
+the agreement, and a provider *reference* dataset (``*_ref``, ``*_sample``)
+can never be licensed however it is declared — it is frozen sample inventory.
+
+This docstring previously said the opposite: that any dataset outside a
+three-name developer list "is treated as a real, licensed Bridge feed (e.g.
+``actris_ref``)". That was the bug. ``actris_ref`` is a reference dataset whose
+every ``ModificationTimestamp`` is frozen in 2020, and 52,622 of its rows were
+stamped ``licensed_property_listing`` on the strength of its name.
 
 Only documented Bridge endpoints are called. This module never scrapes MLS
 member sites, consumer portals, or attempts to bypass provider access
@@ -83,18 +83,28 @@ logger = logging.getLogger("oracle.di.bridge_listings")
 
 _CURSOR_OVERLAP_MIN = 2
 
-# Bridge's own synthetic developer datasets — not a real board, not real
-# inventory. Anything else is a licensed MLS feed the application was approved
-# for (e.g. `actris_ref`), and its records must carry licensed provenance so
-# they are never mistaken downstream for developer data.
-_DEV_DATASETS = frozenset({"test", "test_sd", "test_sf"})
+# The developer-dataset list used to live here, alongside a rule that anything
+# NOT in it was licensed. That comment ("e.g. `actris_ref`") is a record of the
+# mistake: a per-board *reference* dataset was assumed to be licensed
+# inventory, and 52,622 rows of frozen 2020 sample data were stamped as live.
+#
+# The list and the decision now live in mls_licensing, which fails closed. It
+# is deliberately not re-declared here — two copies is how this drifted.
 
 
 def _provenance_for_dataset(dataset: str) -> tuple[str, str]:
-    """(source_kind, classification) for a Bridge dataset."""
-    if dataset.strip().lower() in _DEV_DATASETS:
-        return "developer_listing_dataset", "developer_listing_dataset"
-    return "licensed_mls", "licensed_property_listing"
+    """(source_kind, classification) for a Bridge dataset.
+
+    Delegates to mls_licensing, which fails closed. This used to be a denylist
+    of three developer names that defaulted to "licensed", so any other slug —
+    a typo, a new sample set, a per-board *reference* dataset — became real
+    licensed inventory with nobody deciding that. It is kept as a thin wrapper
+    because the provenance block it stamps into features is read by exports and
+    by prose downstream; the decision itself now lives in one place.
+    """
+    from mls_licensing import classify_from_env
+    licence = classify_from_env(dataset)
+    return licence.source_kind, licence.classification
 
 
 def _bounded_int(value: Any, default: int, minimum: int, maximum: int) -> int:
@@ -225,7 +235,8 @@ class BridgeListingsFeed(DataSource):
         self.base_url = config.base_url
         self.token = config.access_token
         self.dataset = config.dataset
-        self._source_kind, self._classification = _provenance_for_dataset(config.dataset)
+        # NOT cached: recomputed on read so revoking a declaration downgrades
+        # the very next sync instead of after a restart.
         self.mls_id = config.mls_id
         self.mls_name = config.mls_name
         self.page = config.page_size
@@ -344,7 +355,7 @@ class BridgeListingsFeed(DataSource):
             "description": str(g("PublicRemarks") or "").strip() or None,
             "photos": photos,
             "features": {
-                "source_kind": self._source_kind,
+                "source_kind": _provenance_for_dataset(self.dataset)[0],
                 "mls_id": self.mls_id,
                 "listing_key": listing_key,
                 "originating_system_key": str(g("OriginatingSystemKey") or "").strip(),
@@ -353,7 +364,7 @@ class BridgeListingsFeed(DataSource):
                 "source_modified_at": str(modified or "").strip() or None,
                 "matchable": bool(parcel_number or (address and g("PostalCode"))),
                 "provenance": {
-                    "classification": self._classification,
+                    "classification": self._license_classification(),
                     "provider": "Bridge Interactive",
                     "provider_id": self.mls_id,
                     "standard": "Bridge API v2",
@@ -365,6 +376,12 @@ class BridgeListingsFeed(DataSource):
     @staticmethod
     def _reject_reason(rec: dict[str, Any]) -> Optional[str]:
         return reject_reason(rec)
+
+    def _license_classification(self) -> str:
+        """The licence these rows are written under — fail-closed, recomputed
+        rather than cached, so revoking a declaration downgrades the next run."""
+        from mls_licensing import classify_from_env
+        return classify_from_env(self.dataset).classification
 
     async def _backfill_once(self, ctx: Any, tenant_tx: Any) -> dict:
         """One-time full walk of the whole dataset by keyset pagination.
@@ -381,7 +398,37 @@ class BridgeListingsFeed(DataSource):
         """
         _FLUSH_EVERY_PAGES = 10
 
+        # Resume, rather than restart.
+        #
+        # The walk position used to live only in this function's locals, so a
+        # worker restart, a deploy, or simply hitting backfill_max_pages threw
+        # away every page already fetched. The advice logged on that path was
+        # "delete the mls_sync_status row to resume" — which would also discard
+        # the feed's licence, health and error history, and (until this was
+        # fixed) hid the feed's listings from search entirely.
+        #
+        # 0110 added backfill_cursor_key and backfill_records for exactly this
+        # and nothing wrote them. A real board is hundreds of thousands of rows;
+        # a backfill that cannot survive a deploy is a backfill that may never
+        # finish.
         after_key = ""  # "" → first keyset page
+        resumed_from = ""
+        already_written = 0
+        async with tenant_tx(ctx) as conn:
+            prior = await conn.fetchrow(
+                "SELECT backfill_cursor_key, backfill_records, backfill_complete "
+                "  FROM mls_sync_status WHERE mls_id = $1",
+                self.mls_id,
+            )
+        prior_row = dict(prior) if prior else {}
+        if not prior_row.get("backfill_complete") and prior_row.get("backfill_cursor_key"):
+            after_key = resumed_from = str(prior_row["backfill_cursor_key"])
+            already_written = int(prior_row.get("backfill_records") or 0)
+            logger.info(
+                "Bridge backfill %s resuming after ListingKey %s (%d rows already written)",
+                self.mls_id, after_key, already_written,
+            )
+
         pages = 0
         total_upserted = 0
         received = 0
@@ -389,12 +436,29 @@ class BridgeListingsFeed(DataSource):
         buffer: list[dict[str, Any]] = []
         exhausted = False
 
-        async def flush() -> None:
+        async def flush(cursor_key: str = "") -> None:
+            """Write the batch AND the position it reached, in one transaction.
+
+            Both in the same transaction on purpose: a cursor saved without its
+            rows would skip records permanently on resume, and rows saved
+            without their cursor merely re-fetch a page. If only one can be
+            true, it must be the one that loses time rather than data.
+            """
             nonlocal buffer, total_upserted
-            if not buffer:
+            if not buffer and not cursor_key:
                 return
             async with tenant_tx(ctx) as conn:
-                total_upserted += await upsert_mls_records(conn, buffer)
+                if buffer:
+                    total_upserted += await upsert_mls_records(
+                        conn, buffer, license_classification=self._license_classification())
+                if cursor_key:
+                    await conn.execute(
+                        "UPDATE mls_sync_status "
+                        "   SET backfill_cursor_key = $2, "
+                        "       backfill_records = $3, updated_at = now() "
+                        " WHERE mls_id = $1",
+                        self.mls_id, cursor_key, already_written + total_upserted,
+                    )
             buffer = []
 
         while pages < self.backfill_max_pages:
@@ -422,7 +486,7 @@ class BridgeListingsFeed(DataSource):
                 buffer.append(rec)
 
             if pages % _FLUSH_EVERY_PAGES == 0:
-                await flush()
+                await flush(cursor_key=last_key or after_key)
 
             if len(batch) < self.page:
                 exhausted = True
@@ -437,16 +501,31 @@ class BridgeListingsFeed(DataSource):
                 break
             after_key = last_key
 
-        await flush()
+        await flush(cursor_key=after_key)
 
         if not exhausted:
             logger.warning(
-                "Bridge backfill %s stopped after %d pages (max %d) — "
-                "%d rows written; delete the mls_sync_status row to resume",
+                "Bridge backfill %s paused after %d pages (max %d) — "
+                "%d rows this run, %d total; the next run resumes from "
+                "ListingKey %s automatically",
                 self.mls_id, pages, self.backfill_max_pages, total_upserted,
+                already_written + total_upserted, after_key or "(start)",
             )
 
         state = "succeeded" if exhausted else "partial"
+        # §37: one structured line per run. Feed, mode, outcome, counts, cursor
+        # movement — enough to answer "what did this sync do?" without reading
+        # the database. Deliberately NOT logged: the access token, the
+        # authorization header, whole provider payloads, or listing remarks.
+        logger.info(
+            "mls_sync feed=%s provider=bridge mode=backfill state=%s pages=%d "
+            "received=%d accepted=%d rejected=%d upserted=%d rows_total=%d "
+            "resumed=%s cursor_advanced=%s licence=%s",
+            self.mls_id, state, pages, received,
+            received - sum(rejected.values()), sum(rejected.values()),
+            total_upserted, already_written + total_upserted,
+            bool(resumed_from), bool(after_key), self._license_classification(),
+        )
         # Advance to "now" only on a completed walk; otherwise keep the cursor
         # in the past so the next run's delta re-checks recent records (a
         # partial walk still leaves a status row, so it will not re-backfill).
@@ -470,6 +549,8 @@ class BridgeListingsFeed(DataSource):
                     "pages": pages,
                     "rejected": rejected,
                     "dataset": self.dataset,
+                    "resumed_from": resumed_from or None,
+                    "rows_total": already_written + total_upserted,
                 },
                 provider="bridge",
                 dataset=self.dataset,
@@ -512,15 +593,28 @@ class BridgeListingsFeed(DataSource):
 
         async with tenant_tx(ctx) as conn:
             row = await conn.fetchrow(
-                "SELECT last_sync_at FROM mls_sync_status WHERE mls_id = $1", self.mls_id
+                "SELECT last_sync_at, backfill_complete "
+                "  FROM mls_sync_status WHERE mls_id = $1",
+                self.mls_id,
             )
 
-        # First run for this feed — no status row means nothing has ever been
-        # pulled. A plain delta would only ever see records modified in the last
-        # `lookback_hours`, which for a static/reference dataset (every
-        # ModificationTimestamp frozen) is zero. Walk the whole dataset once by
-        # keyset pagination, then let subsequent runs do normal deltas.
-        if row is None:
+        # Backfill when nothing has ever been pulled — and ALSO when a previous
+        # backfill did not finish.
+        #
+        # This used to key on `row is None` alone, which meant a partial walk
+        # was never resumed: the partial run wrote a status row, and every
+        # later run therefore took the delta path. A delta only sees records
+        # modified within `lookback_hours`, which for a reference dataset with
+        # frozen timestamps is none of them — so a backfill interrupted at page
+        # 30 of 264 silently stayed at page 30 forever while reporting success.
+        #
+        # A plain delta would also miss the remainder on a live board: those
+        # records were modified before the lookback window and will never
+        # reappear in it.
+        # dict() first: asyncpg Records raise KeyError on a missing column, and
+        # a caller supplying a narrower row should get the safe answer (run the
+        # backfill) rather than an exception.
+        if row is None or not dict(row).get("backfill_complete"):
             return await self._backfill_once(ctx, tenant_tx)
 
         since_dt = (row and row["last_sync_at"]) or fallback

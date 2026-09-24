@@ -154,6 +154,39 @@ historical listing data has value and deletion is not reversible.
 DELETE FROM mls_feed_entitlements WHERE mls_id = 'bright';
 ```
 
+## Resuming an interrupted backfill
+
+Nothing to do — it resumes itself.
+
+A real board is hundreds of thousands of rows, so a backfill will be
+interrupted by a deploy sooner or later. The walk position is persisted to
+`mls_sync_status.backfill_cursor_key` in the same transaction as the rows it
+covers, and a feed whose `backfill_complete` is false takes the backfill path
+again rather than falling through to a delta.
+
+That last part was the real hazard: a partial walk wrote a status row, so every
+later run took the delta path, and a delta only sees records modified inside
+the lookback window. A backfill interrupted at page 30 of 264 stayed at page 30
+forever while reporting success.
+
+To check progress mid-backfill:
+
+```sql
+SELECT health, backfill_complete, backfill_cursor_key, backfill_records
+  FROM mls_sync_status WHERE mls_id = 'bright';
+```
+
+To force a full re-walk (rare — normally only after a provider reset):
+
+```sql
+UPDATE mls_sync_status
+   SET backfill_complete = false, backfill_cursor_key = NULL, backfill_records = 0
+ WHERE mls_id = 'bright';
+```
+
+Do NOT delete the status row to achieve this. That discards the feed's licence,
+health and error history.
+
 ## What is NOT built
 
 Honest list, so nobody discovers these during an incident:
@@ -161,10 +194,33 @@ Honest list, so nobody discovers these during an incident:
 - **Media/photo rights.** Provider media URLs are stored as given. No rehosting,
   no expiry handling, no redistribution-rights check. Verify the agreement
   before displaying photos to consumers.
-- **Deletion semantics.** Bridge does not expose a deletion feed on the
-  endpoints in use, so a record disappearing from a delta is NOT treated as a
-  delete. Listings go stale rather than vanish.
-- **Scheduler leader election.** Sync is not yet guarded by a distributed lock,
-  so horizontally scaled replicas could each run a backfill. Run exactly one
-  worker until that lands.
+- **Deletion semantics — deliberately absent.** Bridge does not expose a
+  deletion feed on the endpoints in use, so a record disappearing from a delta
+  means "not modified recently", not "withdrawn". Inferring a delete from
+  absence would destroy sale history the provider never asked us to remove, so
+  listings go stale rather than vanish. `test_mls_invariants.py` fails if
+  anything in the MLS path gains a `DELETE`.
+- **Metrics.** There is no metrics system in this codebase, and §38 says to use
+  the existing observability rather than invent a second one — so there is
+  nothing to emit into yet. What exists instead: one structured line per sync
+  (feed, mode, state, pages, received/accepted/rejected/upserted, cursor
+  movement, licence) and `GET /api/mls/health`, which answers which feed,
+  licensed or not, how healthy, how old, what failed and whether the initial
+  backfill finished. Wire those into a metrics backend when one lands.
 - **Change events** (price drop, back on market) and Home integration.
+
+## Scheduler duplication — already safe
+
+An earlier note here claimed replicas could each run a backfill. They cannot,
+and it is worth writing down why so nobody "fixes" it again:
+
+- enqueue is idempotent on a UNIQUE `(tenant_id, idempotency_key)` index, with
+  an interval-bucketed key — two schedulers ticking the same minute produce one
+  job;
+- claiming uses `FOR UPDATE SKIP LOCKED` plus a lease token;
+- the periodic handler heartbeats the lease every `lease/3` seconds, so a
+  six-minute backfill cannot have its lease expire and be re-claimed;
+- the DigitalOcean worker is pinned to `instance_count: 1`.
+
+`mls_feed_lock.py` adds a per-feed advisory lock on top, for the paths that do
+not go through the job queue (manual syncs, operator routes).

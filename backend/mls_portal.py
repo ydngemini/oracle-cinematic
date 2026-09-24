@@ -381,6 +381,12 @@ async def mls_portal_health(
     """Report live-feed age without making a provider request."""
     try:
         async with tenant_tx(ctx) as conn:
+            # Narrowed to entitled feeds, like search and detail. This endpoint
+            # reported every feed's listing counts to every tenant, which leaks
+            # both the existence and the size of another brokerage's licensed
+            # board.
+            from mls_health import compute_health, visible_feeds
+            allowed, feeds = await visible_feeds(conn, ctx)
             rows = await conn.fetch(
                 """
                 SELECT mls_id,COUNT(*) AS listing_count,MAX(last_updated) AS last_updated,
@@ -389,11 +395,43 @@ async def mls_portal_health(
                                          AND last_updated >= now()-interval '72 hours') AS stale_count,
                        COUNT(*) FILTER (WHERE last_updated < now()-interval '72 hours') AS expired_count
                   FROM oracle_mls_listings
-                 WHERE mls_id <> ALL($1::text[])
+                 WHERE mls_id <> ALL($1::text[]) AND mls_id = ANY($2::text[])
                  GROUP BY mls_id ORDER BY mls_id
                 """,
                 list(THIRD_PARTY_LISTING_SOURCE_IDS),
+                allowed,
             )
+            # The operator answer (§36): which feed, licensed or not, how
+            # healthy, how old, and what failed — without SSH and SQL.
+            feed_status = await conn.fetch(
+                "SELECT mls_id, mls_name, provider, dataset, license_classification, "
+                "       license_reason, agreement_ref, last_success_at, last_attempt_at, "
+                "       last_error, last_error_class, consecutive_failures, "
+                "       backfill_complete, backfill_records, listings_synced, "
+                "       stale_after_minutes FROM mls_sync_status WHERE mls_id = ANY($1::text[])",
+                allowed,
+            )
+            operator = []
+            for raw in feed_status:
+                row = dict(raw)
+                operator.append({
+                    "mls_id": row["mls_id"],
+                    "mls_name": row.get("mls_name"),
+                    "provider": row.get("provider"),
+                    "licensed": row.get("license_classification") == "licensed_property_listing",
+                    "license_reason": row.get("license_reason"),
+                    "health": compute_health(row),
+                    "last_success_at": row.get("last_success_at"),
+                    "last_attempt_at": row.get("last_attempt_at"),
+                    "consecutive_failures": row.get("consecutive_failures"),
+                    "last_error_class": row.get("last_error_class"),
+                    # The message itself can carry provider prose; the class is
+                    # what an alert should key on.
+                    "last_error": (row.get("last_error") or "")[:200] or None,
+                    "backfill_complete": row.get("backfill_complete"),
+                    "backfill_records": row.get("backfill_records"),
+                    "records": row.get("listings_synced"),
+                })
     except RuntimeError as exc:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, f"Memory Core offline ({exc})")
     except Exception as exc:  # noqa: BLE001
@@ -444,6 +482,9 @@ async def mls_portal_health(
         "status": overall,
         "checked_at": datetime.now(timezone.utc).isoformat(),
         "sources": sources,
+        # §36: the operator answer — which feed, licensed or not, how healthy,
+        # how old, what failed and whether the initial backfill finished.
+        "feeds": operator,
         "live_provider_called": False,
     }
 
