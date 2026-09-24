@@ -149,8 +149,13 @@ async def get_mls_sync_status(
 ) -> MLSSyncStatus:
     """Return feed synchronisation health for the specified MLS board.
 
-    The ``health`` field summarises: ``healthy`` (lag < 60 min, no errors),
-    ``degraded`` (lag 60–240 min or minor errors), ``offline`` (no sync > 4h).
+    ``health`` uses the shared feed vocabulary from ``mls_health`` —
+    ``not_configured``, ``configured``, ``backfilling``, ``ready``, ``stale``,
+    ``degraded``, ``error``, ``auth_error``, ``rate_limited`` — so this endpoint
+    and the feed list can never disagree about the same feed.
+
+    ``sync_lag_minutes`` is derived from the last successful sync, not read from
+    the column of that name: every sink writes that column as a literal 0.
     """
     # An unentitled tenant gets the same 404 as a nonexistent feed — asking
     # about another brokerage's board must not confirm that it exists.
@@ -168,14 +173,19 @@ async def get_mls_sync_status(
             detail=f"MLS region {mls_id!r} not found.",
         )
 
-    lag = row.get("sync_lag_minutes")
-    errors = row.get("errors_last_24h", 0)
-    if lag is None or lag > 240 or errors > 50:
-        health = "offline"
-    elif lag > 60 or errors > 5:
-        health = "degraded"
-    else:
-        health = "healthy"
+    # Health comes from mls_health.compute_health and nowhere else.
+    #
+    # This route used to derive its own from `sync_lag_minutes` and
+    # `errors_last_24h`. Both are written as a literal 0 by every sink and by
+    # nothing else, so the branch could only ever land on "healthy" — this
+    # endpoint reported a feed that had not synced in a year as healthy, which
+    # is the single worst thing a health endpoint can do. It also meant two
+    # health vocabularies in one service, disagreeing about the same feed.
+    from mls_health import compute_health, feed_age_seconds
+
+    health = compute_health(dict(row))
+    age = feed_age_seconds(dict(row))
+    lag = int(age // 60) if age is not None else None
 
     return MLSSyncStatus(
         mls_id=mls_id,
@@ -183,7 +193,7 @@ async def get_mls_sync_status(
         feed_type=row.get("feed_type", "RESO_Web_API"),
         last_sync_at=row.get("last_sync_at"),
         listings_synced=row.get("listings_synced", 0),
-        errors_last_24h=errors,
+        errors_last_24h=row.get("errors_last_24h", 0),
         sync_lag_minutes=lag,
         health=health,
         notes=row.get("notes"),

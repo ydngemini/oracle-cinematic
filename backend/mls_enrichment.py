@@ -15,6 +15,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from mls_health import visible_feed_predicate
+
 
 MLS_OVERLAY_SELECT = r"""
     (
@@ -55,6 +57,7 @@ MLS_OVERLAY_SELECT = r"""
         )
           FROM oracle_mls_listings AS m
          WHERE m.mls_id <> 'rentcast'
+           AND __VISIBLE_FEED__
            AND m.state_code = leads.state
            AND (
                 (
@@ -104,6 +107,16 @@ MLS_OVERLAY_SELECT = r"""
          LIMIT 1
     ) AS mls_overlay
 """
+
+# Bound at import, not left for callers to remember. This is a module constant
+# interpolated into other modules' queries (lead_dossier, server), so there is
+# no call site where a forgotten narrowing would be visible — an overlay that
+# quietly carried another brokerage's licensed listing onto a lead would look
+# exactly like a correct one.
+MLS_OVERLAY_SELECT = MLS_OVERLAY_SELECT.replace(
+    "__VISIBLE_FEED__", visible_feed_predicate("m")
+)
+assert "__VISIBLE_FEED__" not in MLS_OVERLAY_SELECT
 
 
 def clean_mls_overlay(value: Any) -> dict[str, Any] | None:

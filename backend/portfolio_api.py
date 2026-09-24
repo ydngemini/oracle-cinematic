@@ -17,6 +17,7 @@ from billing_usage import record_usage
 
 from db.connection import tenant_tx
 from tenancy import TenantContext, require_context
+from mls_health import visible_feed_predicate
 
 router = APIRouter(prefix="/api/portfolio", tags=["portfolio"])
 logger = logging.getLogger("oracle.portfolio")
@@ -140,7 +141,8 @@ async def _property_anchor(
                    zip_code AS postal_code, property_type, last_updated AS updated_at
               FROM oracle_mls_listings
              WHERE id=$1 AND mls_id <> 'rentcast'
-            """,
+               AND {visible}
+            """.format(visible=visible_feed_predicate("oracle_mls_listings", "mls_id")),
             property_id,
         )
 

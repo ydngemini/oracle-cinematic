@@ -225,8 +225,13 @@ class MLSSyncStatus(BaseModel):
     last_sync_at: Optional[datetime] = None
     listings_synced: int = 0
     errors_last_24h: int = 0
+    #: Minutes since the last SUCCESSFUL sync, derived at read time. The column
+    #: of the same name is written as a literal 0 by every sink and is not it.
     sync_lag_minutes: Optional[int] = None
-    health: str             # "healthy" | "degraded" | "offline"
+    #: The shared vocabulary from mls_health — ready/stale/backfilling/…
+    #: NOT healthy/degraded/offline, which was a second vocabulary for the same
+    #: question and could only ever return "healthy".
+    health: str
     notes: Optional[str] = None
 
 

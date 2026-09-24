@@ -93,6 +93,54 @@ async def feed_sync_lock(conn, mls_id: str, *, wait: bool = False):
         pass
 
 
+@asynccontextmanager
+async def feed_sync_session_lock(mls_id: str, *, on_busy: str = "skip"):
+    """Hold a feed lock across a whole sync, on a connection of its own.
+
+    The transaction-scoped form above cannot be used for a sync. A feed sync
+    deliberately does its provider I/O OUTSIDE a transaction — a slow board must
+    not hold an app connection or row locks for minutes — and a backfill commits
+    its cursor at every page so an interrupted walk resumes. Wrapping either in
+    one long transaction to hold an xact lock would undo both of those on
+    purpose-built behaviour.
+
+    So this takes a SESSION-scoped lock on a dedicated pooled connection and
+    holds it for the duration. Session locks are released when the connection
+    closes, so a crashed or restarted worker cannot strand a feed — the failure
+    mode a hand-rolled `locked_until` column would have.
+
+    Yields True when the lock was taken, False when the feed is already being
+    synced. Callers skip rather than wait: another worker is mid-walk, and the
+    right answer is to come back next tick, not to queue up behind a backfill.
+    """
+    from db.connection import get_pool
+
+    key = f"{_NAMESPACE}:{mls_id}"
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        acquired = bool(await conn.fetchval(
+            "SELECT pg_try_advisory_lock(hashtextextended($1, 0))", key
+        ))
+        if not acquired:
+            log.warning(
+                "Feed %s is already being synced on another connection; skipping this run.",
+                mls_id,
+            )
+            if on_busy == "raise":
+                raise FeedBusy(mls_id)
+            yield False
+            return
+        try:
+            yield True
+        finally:
+            # Session-scoped, so it must be released explicitly. Releasing on
+            # the same connection that took it is required — a session lock is
+            # owned by its session, not by the pool.
+            await conn.execute(
+                "SELECT pg_advisory_unlock(hashtextextended($1, 0))", key
+            )
+
+
 async def try_lock(conn, mls_id: str) -> bool:
     """Non-raising form, for callers that want to branch rather than catch."""
     _require_transaction(conn)

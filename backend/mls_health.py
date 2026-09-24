@@ -313,6 +313,35 @@ _ENTITLED_SQL = (
 )
 
 
+def visible_feed_predicate(alias: str = "m", column: str = "mls_id") -> str:
+    """The same visibility rule as `_partition`, as a SQL predicate.
+
+    Two callers cannot use the Python rule: `MLS_OVERLAY_SELECT` is a fragment
+    interpolated into other modules' queries, where adding a bind parameter
+    would renumber their positional args. Rather than let those sites hand-roll
+    the licence check — the drift this module exists to prevent — the rule is
+    written once here and imported.
+
+    It takes no parameter because it reads the tenant from `app_current_tenant()`,
+    the same anchor RLS itself uses: a caller cannot widen it by passing a
+    different tenant, because a caller cannot pass one at all.
+
+    `test_sql_visibility_matches_python_visibility` pins the two against shared
+    fixtures, so a change to one that is not made to the other fails.
+    """
+    col = f"{alias}.{column}" if alias else column
+    return f"""(
+        COALESCE(
+            (SELECT s.license_classification FROM mls_sync_status s WHERE s.mls_id = {col}),
+            '{DEVELOPER}'
+        ) <> '{LICENSED}'
+        OR EXISTS (
+            SELECT 1 FROM mls_feed_entitlements e
+             WHERE e.mls_id = {col} AND e.tenant_id = app_current_tenant()
+        )
+    )"""
+
+
 async def visible_feeds(conn, ctx) -> tuple[list[str], list[dict]]:
     """Which feeds this tenant may see, and their health.
 

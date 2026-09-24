@@ -22,6 +22,9 @@ from data_integrations.mls_sink import (
 )
 
 
+pytestmark = pytest.mark.usefixtures("granted_feed_lock")
+
+
 def _config(**overrides) -> BridgeFeedConfig:
     values = {
         "dataset": "test",

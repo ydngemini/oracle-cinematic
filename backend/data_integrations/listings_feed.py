@@ -428,6 +428,30 @@ class RESOListingsFeed(DataSource):
         return reject_reason(rec)
 
     async def sync_once(self) -> dict:
+        """Take the per-feed lock, then sync. See mls_feed_lock for why.
+
+        Two concurrent walks of one feed interleave their cursor advances, and
+        the loser's cursor can move the feed PAST records the winner never
+        wrote — records a later delta will never fetch, because the cursor says
+        they are done. The durable-job layer dedupes SCHEDULED runs, but an
+        operator `run_now` mints a fresh idempotency key every click, so two
+        clicks (or a click during a scheduled run) race with nothing else
+        stopping them.
+        """
+        from mls_feed_lock import feed_sync_session_lock
+
+        # Cheap config check BEFORE the lock: taking a pooled connection to
+        # discover the feed was never configured is work for no reason, and on
+        # a deployment with no ingest tenant it would be work on every tick.
+        if not os.getenv("ORACLE_INGEST_TENANT_ID", ""):
+            return {"skipped": "ORACLE_INGEST_TENANT_ID unset"}
+
+        async with feed_sync_session_lock(self.mls_id) as acquired:
+            if not acquired:
+                return {"skipped": "another worker is syncing this feed", "mls_id": self.mls_id}
+            return await self._sync_once_unlocked()
+
+    async def _sync_once_unlocked(self) -> dict:
         """Pull the delta since the stored cursor, upsert, advance the cursor."""
         tenant = os.getenv("ORACLE_INGEST_TENANT_ID", "")
         if not tenant:

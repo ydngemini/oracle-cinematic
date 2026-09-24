@@ -48,6 +48,7 @@ from intelligence_engine import (
 )
 from state_compliance._common import DATASET_NOT_LOADED, dataset_load_hint
 from tenancy import TenantContext
+from mls_health import visible_feed_predicate
 
 
 TOOLS_HANDLED = frozenset({
@@ -433,12 +434,15 @@ async def _search_listings(conn, ctx: TenantContext, tool_input: dict) -> dict:
         """SELECT mls_number,address,city,state_code,zip_code,list_price,status,
                   beds,baths_full,baths_half,sqft,year_built,days_on_market,list_date
              FROM oracle_mls_listings
-            WHERE (address ILIKE $1 OR city ILIKE $1 OR zip_code ILIKE $1)
+            WHERE {visible}
+              AND (address ILIKE $1 OR city ILIKE $1 OR zip_code ILIKE $1)
               AND ($2::text IS NULL OR state_code=$2)
               AND ($3::numeric IS NULL OR list_price >= $3)
               AND ($4::numeric IS NULL OR list_price <= $4)
             ORDER BY last_updated DESC NULLS LAST
-            LIMIT 25""",
+            LIMIT 25""".format(
+            visible=visible_feed_predicate("oracle_mls_listings", "mls_id")
+        ),
         pattern, state, min_price, max_price,
     )
 
@@ -1030,7 +1034,10 @@ async def _get_days_on_market(conn, ctx: TenantContext, tool_input: dict) -> dic
                   count(*) FILTER (WHERE status='Active')::int AS active,
                   count(*) FILTER (WHERE close_date IS NOT NULL)::int AS closed
              FROM oracle_mls_listings
-            WHERE zip_code=$1 AND days_on_market IS NOT NULL""",
+            WHERE {visible}
+              AND zip_code=$1 AND days_on_market IS NOT NULL""".format(
+            visible=visible_feed_predicate("oracle_mls_listings", "mls_id")
+        ),
         zip_code,
     )
     zip_level = None

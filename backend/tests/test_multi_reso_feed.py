@@ -18,6 +18,9 @@ from data_integrations.listings_feed import (
 from mls_enrichment import MLS_OVERLAY_SELECT, clean_mls_overlay
 
 
+pytestmark = pytest.mark.usefixtures("granted_feed_lock")
+
+
 def _config(mls_id: str = "board-one", **overrides) -> RESOFeedConfig:
     values = {
         "mls_id": mls_id,

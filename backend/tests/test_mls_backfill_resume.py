@@ -39,6 +39,9 @@ class FakeConn:
         return []
 
 
+pytestmark = pytest.mark.usefixtures("granted_feed_lock")
+
+
 def fake_tx(conn):
     @asynccontextmanager
     async def tx(_ctx):
