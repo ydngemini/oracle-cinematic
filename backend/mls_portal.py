@@ -358,7 +358,7 @@ async def mls_portal_listing(
                         "unknowns": m.unknowns,
                         "matched_signals": m.matched_signals,
                     }
-                    for m in await buyers_for_listing(conn, dict(row))
+                    for m in await buyers_for_listing(conn, dict(row), ctx=ctx)
                 ]
     except RuntimeError as exc:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, f"Memory Core offline ({exc})")
@@ -420,6 +420,8 @@ async def mls_portal_health(
                     "provider": row.get("provider"),
                     "licensed": row.get("license_classification") == "licensed_property_listing",
                     "license_reason": row.get("license_reason"),
+                    "agreement_ref": row.get("agreement_ref"),
+                    "dataset": row.get("dataset"),
                     "health": compute_health(row),
                     "last_success_at": row.get("last_success_at"),
                     "last_attempt_at": row.get("last_attempt_at"),

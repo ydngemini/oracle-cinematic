@@ -49,8 +49,31 @@ def _exception_detail(exc: Exception) -> str:
     return str(exc).strip() or repr(exc)
 
 
+def _json_fallback(obj: Any) -> str:
+    """Last resort for a value a handler returned that json cannot encode.
+
+    This exists because of a real outage shape, not for tidiness. A handler
+    returned a bare ``datetime`` in its result dict; the handler had already
+    SUCCEEDED and done its work, but ``complete_job`` then raised here, so the
+    lease was never cleared, the row never left ``running``, and the job was
+    re-leased and re-run until it burned all five attempts and dead-lettered —
+    on every single cycle, forever. Work that succeeds must never be recorded
+    as failed because of how its receipt was typed.
+
+    Anything with an isoformat renders as one; everything else degrades to its
+    repr, which is lossy but keeps the value readable in the stored result.
+    """
+    isoformat = getattr(obj, "isoformat", None)
+    if callable(isoformat):
+        return isoformat()
+    return repr(obj)
+
+
 def canonical_json(value: Any) -> str:
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    return json.dumps(
+        value, sort_keys=True, separators=(",", ":"), ensure_ascii=True,
+        default=_json_fallback,
+    )
 
 
 def payload_hash(payload: Mapping[str, Any]) -> str:

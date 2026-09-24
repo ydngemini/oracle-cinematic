@@ -106,10 +106,17 @@ async def list_mls_regions(
     # No catalogue — report the configured feeds instead. A state filter can't
     # be honoured here (sync status carries no coverage geography), so it
     # returns every configured feed.
+    # Narrowed to entitled feeds: this listed every configured board — name,
+    # type and listing count — to every tenant, which leaks both the existence
+    # and the size of another brokerage's licensed feed.
+    from mls_health import visible_feeds_with
+    _allowed, _ = await visible_feeds_with(lambda q, *a: _fetch(ctx, q, *a), ctx)
     feeds = await _fetch(
         ctx,
         "SELECT mls_id, mls_name, feed_type, listings_synced "
-        "FROM mls_sync_status ORDER BY mls_name, mls_id",
+        "FROM mls_sync_status WHERE mls_id = ANY($1::text[]) "
+        "ORDER BY mls_name, mls_id",
+        _allowed,
     )
     if not feeds:
         # Nothing catalogued and nothing configured — the dataset was never
@@ -145,10 +152,15 @@ async def get_mls_sync_status(
     The ``health`` field summarises: ``healthy`` (lag < 60 min, no errors),
     ``degraded`` (lag 60–240 min or minor errors), ``offline`` (no sync > 4h).
     """
+    # An unentitled tenant gets the same 404 as a nonexistent feed — asking
+    # about another brokerage's board must not confirm that it exists.
+    from mls_health import visible_feeds_with
+    _allowed, _ = await visible_feeds_with(lambda q, *a: _fetch(ctx, q, *a), ctx)
     row = await _fetchrow(
         ctx,
-        "SELECT * FROM mls_sync_status WHERE mls_id = $1",
+        "SELECT * FROM mls_sync_status WHERE mls_id = $1 AND mls_id = ANY($2::text[])",
         mls_id,
+        _allowed,
     )
     if not row:
         raise HTTPException(
@@ -193,6 +205,22 @@ async def mls_search(
     schema.  Filters include price range, beds/baths, sqft, property type,
     status, and optional radius search when ``lat``/``lng`` are provided.
     """
+    # Which feeds this caller may read at all, intersected with what they
+    # asked for. Resolved before the query is composed so the bound parameter
+    # is a server-side value, not a request one.
+    # This route runs its queries through the module-level `tenant_tx`, so the
+    # entitlement read uses the same seam — otherwise it reaches past whatever
+    # the caller (or a test) has substituted for the database.
+    from mls_health import visible_feeds
+    async with tenant_tx(ctx) as _conn:
+        _allowed, _ = await visible_feeds(_conn, ctx)
+    requested = {str(m).strip() for m in (body.mls_ids or []) if str(m).strip()}
+    effective_feeds = sorted(set(_allowed) & requested) if requested else sorted(_allowed)
+    if not effective_feeds:
+        # No usable coverage is a different answer from no matching listings.
+        return MLSSearchResponse(listings=[], total=0,
+                                 limit=body.limit, offset=body.offset)
+
     def _build(include_radius: bool) -> tuple[str, str, list[Any], list[Any]]:
         """Compose the count and page queries; returns (count_q, data_q, count_args, data_args)."""
         conditions: list[str] = ["mls_id <> 'rentcast'"]
@@ -205,8 +233,12 @@ async def mls_search(
             idx += 1
             return f"${idx}"
 
-        if body.mls_ids:
-            conditions.append(f"mls_id = ANY({_arg(body.mls_ids)})")
+        # Entitlement, resolved server-side. `body.mls_ids` arrives from the
+        # browser: it may NARROW this set and can never widen it. Without this
+        # line a caller named any feed it liked and got the whole board — and
+        # this route shares its URL prefix with /api/mls/search in mls_portal,
+        # which was narrowed, so the leak sat one HTTP verb away from the fix.
+        conditions.append(f"mls_id = ANY({_arg(effective_feeds)})")
         if body.state_codes:
             conditions.append(f"state_code = ANY({_arg(body.state_codes)})")
         if body.min_price is not None:
@@ -339,10 +371,17 @@ async def get_mls_listing(
     # asyncpg raise mid-query and surface as a misleading 503. A malformed ID
     # is a client error (422), not a backend outage.
     listing_id = _require_uuid(listing_id, "listing_id")
+    # Narrowed like every other reader. This returned the full listing for any
+    # id to any tenant; it is one character away from /api/mls/listings/{id},
+    # which was fixed, so an unentitled caller could simply use the other URL.
+    from mls_health import visible_feeds_with
+    _allowed, _ = await visible_feeds_with(lambda q, *a: _fetch(ctx, q, *a), ctx)
     row = await _fetchrow(
         ctx,
-        "SELECT * FROM oracle_mls_listings WHERE id = $1::uuid AND mls_id <> 'rentcast'",
+        "SELECT * FROM oracle_mls_listings "
+        " WHERE id = $1::uuid AND mls_id <> 'rentcast' AND mls_id = ANY($2::text[])",
         listing_id,
+        _allowed,
     )
     if not row:
         raise HTTPException(

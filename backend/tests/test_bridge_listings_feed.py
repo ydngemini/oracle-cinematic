@@ -211,8 +211,10 @@ def test_sync_follows_offset_paging_and_advances_only_after_exhaustion(monkeypat
     upserts = [e for e in conn.executions if "INSERT INTO oracle_mls_listings" in e[0]]
     assert len(upserts) == 3
     status_writes = [e for e in conn.executions if "INSERT INTO mls_sync_status" in e[0]]
+    # A delta writes one status row and takes no checkpoints — checkpointing
+    # belongs to the backfill walk, which is a different code path.
     assert len(status_writes) == 1
-    assert status_writes[0][1][2] == "Bridge_API_v2"  # feed_type positional arg
+    assert "Bridge_API_v2" in status_writes[0][1]
 
 
 def test_out_of_int32_range_lot_size_becomes_null_not_a_crash():
@@ -279,8 +281,15 @@ def test_first_run_backfills_whole_dataset_by_keyset(monkeypatch):
     upserts = [e for e in conn.executions if "INSERT INTO oracle_mls_listings" in e[0]]
     assert len(upserts) == 5
     status_writes = [e for e in conn.executions if "INSERT INTO mls_sync_status" in e[0]]
-    assert len(status_writes) == 1
-    assert status_writes[0][1][2] == "Bridge_API_v2"
+    # Two kinds of write now: checkpoints that persist the keyset cursor as the
+    # walk proceeds — so a run killed at page 30 resumes instead of restarting
+    # at page 1 — plus one final status row. Assert the shapes, not the count.
+    checkpoints = [e for e in status_writes if "backfill_cursor_key" in e[0]]
+    finals = [e for e in status_writes if "license_classification" in e[0]]
+    assert checkpoints, "the walk must persist its position as it goes"
+    assert len(finals) == 1, "exactly one final status row per run"
+    assert "Bridge_API_v2" in finals[0][1]
+    assert True in finals[0][1], "a completed walk sets backfill_complete"
 
 
 def test_backfill_stops_at_page_ceiling_without_infinite_loop(monkeypatch):

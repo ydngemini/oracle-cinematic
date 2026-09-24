@@ -353,7 +353,13 @@ def test_mls_radius_search_reports_applied_when_it_works(monkeypatch):
     result = asyncio.run(mls.mls_search(body=body, ctx=CTX))
 
     assert result.radius_applied is True
-    assert all("earth_distance" in q for q in conn.queries)
+    # The route now also issues an entitlement read before composing the
+    # search, so assert that the LISTING queries carried the radius filter
+    # rather than that every statement did.
+    listing_queries = [q for q in conn.queries
+                       if "oracle_mls_listings" in q and "mls_sync_status" not in q]
+    assert listing_queries, "the route should have queried listings"
+    assert all("earth_distance" in q for q in listing_queries)
 
 
 # ---------------------------------------------------------------------------

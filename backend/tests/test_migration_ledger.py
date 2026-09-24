@@ -136,6 +136,9 @@ def test_every_migration_on_disk_parses_without_error():
             "GRANT only — same shape as 0003; a privilege is not an object",
         "0088_grant_execute_app_current_agent.sql":
             "GRANT only — same shape as 0003; a privilege is not an object",
+        "0111_mls_drop_unfed_columns.sql":
+            "DROPs columns and an index — a removal leaves no object to probe, "
+            "and its COMMENTs are on columns that already existed",
         "0091_grant_extension_functions.sql":
             "GRANT only — restores EXECUTE 0003 revoked from pgcrypto/earthdistance",
         "0092_grant_earthdistance_extension.sql":

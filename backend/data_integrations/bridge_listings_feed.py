@@ -452,12 +452,25 @@ class BridgeListingsFeed(DataSource):
                     total_upserted += await upsert_mls_records(
                         conn, buffer, license_classification=self._license_classification())
                 if cursor_key:
+                    # UPSERT, not UPDATE.
+                    #
+                    # On the very first sync there IS no status row — that is
+                    # precisely why sync_once chose the backfill branch. An
+                    # UPDATE therefore matched zero rows, so run 1 of a 264-page
+                    # walk killed at page 30 saved nothing and run 2 started
+                    # over. Resume only began working from run 3, which on a
+                    # large board with a daily deploy means it may never finish.
                     await conn.execute(
-                        "UPDATE mls_sync_status "
-                        "   SET backfill_cursor_key = $2, "
-                        "       backfill_records = $3, updated_at = now() "
-                        " WHERE mls_id = $1",
+                        "INSERT INTO mls_sync_status "
+                        "  (mls_id, mls_name, feed_type, provider, dataset, "
+                        "   backfill_cursor_key, backfill_records, backfill_complete) "
+                        "VALUES ($1, $4, 'Bridge_API_v2', 'bridge', $5, $2, $3, false) "
+                        "ON CONFLICT (mls_id) DO UPDATE SET "
+                        "  backfill_cursor_key = EXCLUDED.backfill_cursor_key, "
+                        "  backfill_records = EXCLUDED.backfill_records, "
+                        "  updated_at = now()",
                         self.mls_id, cursor_key, already_written + total_upserted,
+                        self.mls_name, self.dataset,
                     )
             buffer = []
 

@@ -514,7 +514,13 @@ async def _new_listings_task() -> dict:
                 "(set ORACLE_RESO_FEEDS_JSON or ORACLE_RESO_URL/TOKEN/MLS_ID)"
             )
         }
-    return await RESOListingsAggregator().sync_once()
+    from mls_sync_guard import guarded_sync
+    agg = RESOListingsAggregator()
+    # A failure is written to mls_sync_status before it propagates, so the feed
+    # reports AUTH_ERROR rather than quietly going stale a day later.
+    return await guarded_sync(
+        agg.sync_once, mls_id="reso", mls_name="RESO feeds",
+        feed_type="RESO_Web_API", provider="reso", dataset="reso")
 
 
 async def _bridge_listings_task() -> dict:
@@ -533,7 +539,11 @@ async def _bridge_listings_task() -> dict:
                 "(set ORACLE_BRIDGE_ENABLED/ORACLE_BRIDGE_DATASET/ORACLE_BRIDGE_ACCESS_TOKEN)"
             )
         }
-    return await BridgeListingsFeed().sync_once()
+    from mls_sync_guard import guarded_sync
+    feed = BridgeListingsFeed()
+    return await guarded_sync(
+        feed.sync_once, mls_id=feed.mls_id, mls_name=feed.mls_name,
+        feed_type="Bridge_API_v2", provider="bridge", dataset=feed.dataset)
 
 
 async def _distress_scrape_task() -> dict:

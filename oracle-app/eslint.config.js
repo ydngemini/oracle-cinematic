@@ -19,6 +19,15 @@ export default defineConfig([
     },
   },
   {
+    // Build and tooling config runs in Node, not the browser: `process.env` in
+    // vite.config.js is correct there and only looked like an error because the
+    // block above assumes browser globals everywhere. Left unfixed it was a
+    // permanent lint error, which is worse than none — it trains you to read
+    // "1 problem" as "clean" and hides the next real one.
+    files: ['*.config.js', 'vite.config.js', 'vitest.config.js', 'scripts/**/*.js'],
+    languageOptions: { globals: globals.node },
+  },
+  {
     files: [
       'src/components/ClientShared.jsx',
       'src/components/DealPipeline.jsx',

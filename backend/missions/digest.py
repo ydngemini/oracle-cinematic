@@ -253,7 +253,13 @@ async def send_digest() -> dict[str, Any]:
         return {"skipped": "no mission has ever launched"}
     if not is_due(anchor_at, last_sent_at, now):
         cadence = _cadence_minutes(anchor_at, now)
-        return {"skipped": "not due yet", "cadence_minutes": cadence, "last_sent_at": last_sent_at}
+        return {
+            "skipped": "not due yet",
+            "cadence_minutes": cadence,
+            # isoformat, not the datetime: this dict becomes the job's jsonb
+            # result, and "not due yet" is the path taken on almost every run.
+            "last_sent_at": last_sent_at.isoformat() if last_sent_at else None,
+        }
 
     since = last_sent_at or anchor_at
     async with tenant_tx(platform_ctx) as conn:

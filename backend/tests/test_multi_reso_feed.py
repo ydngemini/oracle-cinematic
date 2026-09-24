@@ -89,7 +89,11 @@ def test_reso_normalization_preserves_provenance_and_match_keys():
     assert record["status"] == "active_under_contract"
     assert record["photos"] == ["https://cdn.example/one.jpg"]
     assert record["features"]["parcel_number"] == "ED-05-067.00-01-01.00"
-    assert record["features"]["source_kind"] == "licensed_mls"
+    # Was `licensed_mls`, hardcoded by the adapter and asserted here as if it
+    # were the specification — the same fail-open shape the Bridge path had. A
+    # RESO connection says nothing about whether the data behind it is licensed
+    # to us; that is a contract, not a protocol. Undeclared means developer.
+    assert record["features"]["source_kind"] == "developer_listing_dataset"
     assert record["features"]["provenance"]["standard"] == "RESO Web API"
 
 

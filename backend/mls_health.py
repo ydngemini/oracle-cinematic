@@ -167,7 +167,7 @@ async def mls_capability(conn, ctx) -> dict[str, Any]:
 
     rows = await conn.fetch(
         "SELECT mls_id, mls_name, provider, dataset, license_classification, "
-        "       license_reason, health, last_success_at, last_attempt_at, "
+        "       license_reason, last_success_at, last_attempt_at, "
         "       last_error, consecutive_failures, backfill_complete, "
         "       backfill_records, listings_synced, stale_after_minutes "
         "  FROM mls_sync_status WHERE mls_id = ANY($1::text[])",
@@ -244,6 +244,75 @@ def coverage_note(feeds: list[dict]) -> dict[str, Any]:
     return {"state": "fresh", "message": ""}
 
 
+async def visible_feeds_with(fetch, ctx) -> tuple[list[str], list[dict]]:
+    """`visible_feeds` over any async fetcher.
+
+    Exists because the state_compliance routers query through their own
+    `_fetch(ctx, sql, *args)` helper rather than holding a connection, and the
+    alternative — re-deriving "which feeds may this tenant see" inside that
+    module — is precisely the duplication that let the licence rule drift in
+    the first place. One implementation, two ways to call it.
+    """
+    rows = await fetch(_VISIBLE_FEEDS_SQL)
+    entitled = {r["mls_id"] for r in await fetch(_ENTITLED_SQL, ctx.tenant_id)}
+    return _partition(rows, entitled)
+
+
+def _partition(rows, entitled: set) -> tuple[list[str], list[dict]]:
+    allowed: list[str] = []
+    described: list[dict] = []
+    for raw in rows:
+        row = dict(raw)
+        licensed = row.get("license_classification") == LICENSED
+        if licensed and row["mls_id"] not in entitled:
+            continue
+        allowed.append(row["mls_id"])
+        described.append({
+            "mls_id": row["mls_id"],
+            "mls_name": row.get("mls_name") or row["mls_id"],
+            "licensed": licensed,
+            "health": compute_health(row),
+            "age_seconds": feed_age_seconds(row),
+        })
+    return allowed, described
+
+
+_VISIBLE_FEEDS_SQL = """
+    SELECT s.mls_id,
+           COALESCE(s.mls_name, s.mls_id)          AS mls_name,
+           s.provider,
+           COALESCE(s.license_classification,
+                    'developer_listing_dataset')   AS license_classification,
+           s.last_success_at,
+           COALESCE(s.backfill_complete, false)    AS backfill_complete,
+           COALESCE(s.consecutive_failures, 0)     AS consecutive_failures,
+           s.last_error, s.last_error_class,
+           COALESCE(s.listings_synced, 0)          AS listings_synced,
+           COALESCE(s.stale_after_minutes, 1440)   AS stale_after_minutes
+      FROM mls_sync_status AS s
+"""
+# mls_sync_status is the feed registry: a row appears the moment a feed is
+# configured, and the unlicensed default above applies until a sync classifies
+# it. A feed with listings but no status row is therefore not a real state —
+# and if one ever appears (a hand-loaded table), staying invisible is the safe
+# direction, because an unregistered feed has no licence classification and so
+# nothing can prove it is allowed to be served.
+# This used to union `SELECT DISTINCT mls_id FROM oracle_mls_listings`, to
+# cover feeds that had rows but no status row yet — which happened because the
+# Bridge backfill only wrote its status row after the whole walk finished, so
+# an entire first import was invisible.
+#
+# The backfill now upserts that row at its FIRST checkpoint, so the gap is
+# closed at the source. Removing the union also removes a DISTINCT over the
+# whole listings table from the hot path of every search, every detail read and
+# every health check — fine at 52k rows, a full index scan per request on a
+# real board.
+
+_ENTITLED_SQL = (
+    "SELECT mls_id FROM mls_feed_entitlements WHERE tenant_id = $1::uuid ORDER BY mls_id"
+)
+
+
 async def visible_feeds(conn, ctx) -> tuple[list[str], list[dict]]:
     """Which feeds this tenant may see, and their health.
 
@@ -274,39 +343,6 @@ async def visible_feeds(conn, ctx) -> tuple[list[str], list[dict]]:
     # A feed with no status row is unknown, and unknown is developer data
     # until something says otherwise — which is the same fail-closed rule the
     # licence check uses.
-    rows = await conn.fetch(
-        """
-        SELECT d.mls_id,
-               COALESCE(s.mls_name, d.mls_id)          AS mls_name,
-               s.provider,
-               COALESCE(s.license_classification,
-                        'developer_listing_dataset')   AS license_classification,
-               s.health, s.last_success_at,
-               COALESCE(s.backfill_complete, false)    AS backfill_complete,
-               COALESCE(s.consecutive_failures, 0)     AS consecutive_failures,
-               s.last_error, s.last_error_class,
-               COALESCE(s.listings_synced, 0)          AS listings_synced,
-               COALESCE(s.stale_after_minutes, 1440)   AS stale_after_minutes
-          FROM (SELECT DISTINCT mls_id FROM oracle_mls_listings
-                 UNION SELECT mls_id FROM mls_sync_status) AS d
-          LEFT JOIN mls_sync_status s ON s.mls_id = d.mls_id
-        """
-    )
+    rows = await conn.fetch(_VISIBLE_FEEDS_SQL)
     entitled = set(await entitled_feed_ids(conn, ctx))
-
-    allowed: list[str] = []
-    described: list[dict] = []
-    for raw in rows:
-        row = dict(raw)
-        licensed = row.get("license_classification") == LICENSED
-        if licensed and row["mls_id"] not in entitled:
-            continue
-        allowed.append(row["mls_id"])
-        described.append({
-            "mls_id": row["mls_id"],
-            "mls_name": row.get("mls_name") or row["mls_id"],
-            "licensed": licensed,
-            "health": compute_health(row),
-            "age_seconds": feed_age_seconds(row),
-        })
-    return allowed, described
+    return _partition(rows, entitled)

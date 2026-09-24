@@ -332,6 +332,17 @@ class RESOListingsFeed(DataSource):
             raise DataIntegrationError(f"RESO feed {self.mls_id} returned an invalid OData page")
         return payload
 
+    def _license(self):
+        """This feed's licence, from the one fail-closed authority.
+
+        Keyed on mls_id so each board is classified separately — a single
+        global ORACLE_MLS_LICENSED would license every configured feed at once,
+        which is wrong the moment a brokerage has one licensed board and one
+        sample feed.
+        """
+        from mls_licensing import classify_from_env
+        return classify_from_env(self.mls_id)
+
     def normalize(self, raw: dict) -> dict:
         """Map a RESO Data-Dictionary Property record to oracle_mls_listings."""
         g = raw.get
@@ -388,7 +399,13 @@ class RESOListingsFeed(DataSource):
             "description": g("PublicRemarks"),
             "photos": photos,
             "features": {
-                "source_kind": "licensed_mls",
+                # Was hardcoded "licensed_mls". A RESO connection says nothing
+                # about whether the data behind it is licensed to us — that is
+                # a contract, not a protocol — and stamping it here contradicted
+                # the mls_sync_status column, which mls_sink writes from the
+                # fail-closed authority. mls_enrichment copies this block onto
+                # tenant leads, so the lie propagated into the CRM.
+                "source_kind": self._license().source_kind,
                 "mls_id": self.mls_id,
                 "listing_key": listing_key,
                 "originating_system_key": str(g("OriginatingSystemKey") or "").strip(),
@@ -397,7 +414,7 @@ class RESOListingsFeed(DataSource):
                 "source_modified_at": str(modified or "").strip() or None,
                 "matchable": bool(parcel_number or (address and g("PostalCode"))),
                 "provenance": {
-                    "classification": "licensed_property_listing",
+                    "classification": self._license().classification,
                     "provider": self.mls_name,
                     "provider_id": self.mls_id,
                     "standard": "RESO Web API",
@@ -498,6 +515,19 @@ class RESOListingsFeed(DataSource):
                     "pages": pages,
                     "rejected": rejected,
                 },
+                provider="reso",
+                dataset=self.mls_id,
+                # A run that stopped at the page cap is NOT a success. This
+                # defaulted to True, so a truncated import advanced
+                # last_success_at and reset consecutive_failures — the feed was
+                # never stale and never degraded while importing a fraction of
+                # the board.
+                succeeded=exhausted,
+                # RESO has no separate backfill phase: one exhaustive delta walk
+                # IS the complete import. Without this a licensed RESO board
+                # stayed BACKFILLING forever and could never reach READY — the
+                # single outcome this whole layer exists to produce.
+                backfill_complete=True if exhausted else None,
             )
 
         self._metrics["normalized"] += upserted

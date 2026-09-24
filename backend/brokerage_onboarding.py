@@ -735,6 +735,78 @@ async def revoke_invitation(
         return {"invitation": _invite_row(row)}
 
 
+class MlsEntitlementGrant(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    tenant_id: str = Field(min_length=36, max_length=36)
+    mls_id: str = Field(min_length=1, max_length=120)
+    note: Optional[str] = Field(default=None, max_length=300)
+
+
+@router.get("/mls/entitlements")
+async def list_mls_entitlements(ctx: TenantContext = Depends(require_context)) -> dict[str, Any]:
+    """Which feeds this brokerage is entitled to.
+
+    A brokerage may see its own entitlements; only a platform admin may change
+    them, because an MLS licence is an agreement between a board and an
+    operator, not something a customer can self-serve.
+    """
+    async with tenant_tx(ctx) as conn:
+        rows = await conn.fetch(
+            "SELECT mls_id, granted_by, granted_at, note FROM mls_feed_entitlements "
+            " WHERE tenant_id = $1::uuid ORDER BY mls_id",
+            ctx.tenant_id,
+        )
+        return {"entitlements": [dict(r) for r in rows]}
+
+
+@router.post("/mls/entitlements", status_code=status.HTTP_201_CREATED)
+async def grant_mls_entitlement(
+    body: MlsEntitlementGrant,
+    ctx: TenantContext = Depends(require_context),
+) -> dict[str, Any]:
+    """Grant a brokerage access to a licensed feed. Platform admin only.
+
+    This route exists because without it the licensing switch is a foot-gun:
+    declaring a feed licensed reclassifies it on the next sync, at which point
+    every tenant without an entitlement row — which is all of them — loses the
+    feed from search simultaneously, with no way to grant it back short of
+    psql. An operator needs to be able to hand access out before flipping the
+    switch, and take it back without a migration.
+    """
+    require_role(ctx, Role.PLATFORM_ADMIN)
+    import uuid as _uuid
+    try:
+        _uuid.UUID(body.tenant_id)
+    except ValueError:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "tenant_id must be a UUID") from None
+
+    async with tenant_tx(ctx) as conn:
+        await conn.execute(
+            "INSERT INTO mls_feed_entitlements (tenant_id, mls_id, granted_by, note) "
+            "VALUES ($1::uuid, $2, $3, $4) "
+            "ON CONFLICT (tenant_id, mls_id) DO NOTHING",
+            body.tenant_id, body.mls_id, ctx.agent_id, body.note,
+        )
+    return {"granted": {"tenant_id": body.tenant_id, "mls_id": body.mls_id}}
+
+
+@router.delete("/mls/entitlements/{mls_id}", status_code=status.HTTP_200_OK)
+async def revoke_mls_entitlement(
+    mls_id: str,
+    tenant_id: str,
+    ctx: TenantContext = Depends(require_context),
+) -> dict[str, Any]:
+    """Withdraw access. Platform admin only, and deliberately explicit about
+    which tenant — revoking the wrong brokerage's MLS is a silent outage."""
+    require_role(ctx, Role.PLATFORM_ADMIN)
+    async with tenant_tx(ctx) as conn:
+        result = await conn.execute(
+            "DELETE FROM mls_feed_entitlements WHERE tenant_id = $1::uuid AND mls_id = $2",
+            tenant_id, mls_id,
+        )
+    return {"revoked": result.endswith("1")}
+
+
 @router.put("/setup/progress")
 async def set_progress(
     body: SetupProgressUpdate,

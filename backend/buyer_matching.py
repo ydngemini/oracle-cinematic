@@ -30,9 +30,12 @@ that grows quadratically and an answer nobody can reproduce.
 
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Optional
+
+log = logging.getLogger("oracle.buyer_matching")
 
 # Tiers. Deliberately few, and named for what an agent would say out loud.
 STRONG = "strong"
@@ -257,13 +260,28 @@ def rank_matches(matches: list[BuyerMatch], *, include_mismatches: bool = False)
     return sorted(kept, key=lambda m: (_RANK[m.verdict], -m.matched_signals, m.name))
 
 
-async def buyers_for_listing(conn, listing: dict, *, limit: int = 25) -> list[BuyerMatch]:
+async def buyers_for_listing(conn, listing: dict, *, limit: int = 25,
+                            ctx=None) -> list[BuyerMatch]:
     """Rank this brokerage's buyer contacts against one listing.
 
     One query, then pure Python. RLS on `clients` scopes it to the caller's
     tenant, so there is no tenant predicate here to drift out of step with the
     policy — 0109's lesson about duplicating half a policy by hand.
+
+    With one exception, which is the other half of that same lesson. The policy
+    is `app_is_platform_admin() OR tenant_id = app_current_tenant()`, so under
+    a platform-admin session RLS WIDENS instead of narrowing: an admin opening
+    any listing would get up to 500 contacts drawn from every brokerage, with
+    names and budgets, in an array with no tenant label. 0109 warned about
+    hiding rows from an admin; this is the mirror image, and matching a
+    listing against other people's clients is not a thing an admin should get
+    by accident. So that case returns nothing and says why.
     """
+    if ctx is not None and getattr(ctx, "is_platform_admin", False):
+        log.info("Buyer matching skipped for a platform-admin session — RLS "
+                 "would widen this query across every tenant.")
+        return []
+
     rows = await conn.fetch(
         """
         SELECT id, full_name, preferences, stage, lead_score, last_contacted_at

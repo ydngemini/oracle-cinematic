@@ -84,7 +84,12 @@ class Session:
             req.add_header("X-CSRF-Token", self.csrf)
             req.add_header("Cookie", f"csrf_token={self.csrf}")
         try:
-            with urllib.request.urlopen(req, timeout=30) as resp:
+            # Longer than the server's own slowest inline ceiling — sending an
+            # invitation waits on SMTP with a 40 s bound (see
+            # brokerage_onboarding._send_invitation_email). A client that gives
+            # up first turns a slow mail server into a phantom API failure, and
+            # on a host with no DNS that is every single run.
+            with urllib.request.urlopen(req, timeout=50) as resp:
                 raw = resp.read().decode() or "{}"
                 for header, value in resp.getheaders():
                     if header.lower() == "set-cookie" and "csrf_token=" in value:

@@ -33,11 +33,11 @@ _UPSERT = """
         -- Promoted out of the features JSONB by 0110. Provenance that lives
         -- only inside a JSON blob cannot be indexed, filtered or enforced,
         -- and these decide whether a row may be shown as licensed inventory.
-        license_classification, source_modified_at, source_status
+        license_classification, source_modified_at
     ) VALUES (
         $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,
         $21,$22,$23,$24,$25,$26,$27::jsonb,now(),
-        $28, $29, $30
+        $28, $29
     )
     ON CONFLICT (mls_id, mls_number) DO UPDATE SET
         address=EXCLUDED.address, city=EXCLUDED.city, state_code=EXCLUDED.state_code,
@@ -47,7 +47,6 @@ _UPSERT = """
         status=EXCLUDED.status, property_type=EXCLUDED.property_type,
         license_classification=EXCLUDED.license_classification,
         source_modified_at=EXCLUDED.source_modified_at,
-        source_status=EXCLUDED.source_status,
         beds=EXCLUDED.beds, baths_full=EXCLUDED.baths_full, baths_half=EXCLUDED.baths_half,
         sqft=EXCLUDED.sqft, lot_sqft=EXCLUDED.lot_sqft, year_built=EXCLUDED.year_built,
         hoa_monthly=EXCLUDED.hoa_monthly, days_on_market=EXCLUDED.days_on_market,
@@ -111,7 +110,6 @@ async def upsert_mls_records(
             json.dumps(rec["features"], separators=(",", ":")),
             license_classification,
             modified,
-            (feats.get("source_status") if isinstance(feats, dict) else None),
         )
         upserted += 1
     return upserted
@@ -173,7 +171,12 @@ async def record_sync_status(
             feed_type = EXCLUDED.feed_type,
             last_sync_at = CASE WHEN $13 THEN EXCLUDED.last_sync_at
                                 ELSE mls_sync_status.last_sync_at END,
-            listings_synced = mls_sync_status.listings_synced + EXCLUDED.listings_synced,
+            -- Was `listings_synced + EXCLUDED`, a running total of upserts.
+            -- Surfaced as "records" on the setup screen, so a feed syncing
+            -- every ten minutes would claim millions of listings for a 52k
+            -- board within a month. This is the count from the latest run;
+            -- the true inventory size is a COUNT(*) on the listings table.
+            listings_synced = EXCLUDED.listings_synced,
             sync_lag_minutes = EXCLUDED.sync_lag_minutes,
             notes = EXCLUDED.notes,
             provider = EXCLUDED.provider,
