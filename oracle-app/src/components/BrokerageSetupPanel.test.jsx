@@ -192,3 +192,63 @@ describe('BrokerageSetupPanel', () => {
     await waitFor(() => expect(api.crmGet.mock.calls.length).toBeGreaterThan(before));
   });
 });
+
+describe('BrokerageSetupPanel — MLS honesty', () => {
+  const withMls = (mls, capability) => ({
+    ...SETUP,
+    capabilities: { ...SETUP.capabilities, mls: capability },
+    mls,
+  });
+
+  it('never presents developer/reference feeds as MLS coverage', async () => {
+    api.crmGet.mockImplementation((path) => Promise.resolve(
+      path.includes('/team') ? TEAM : withMls({
+        status: 'BLOCKED',
+        detail: 'Connected feeds are developer/reference datasets…',
+        feeds: [{ mls_id: 'actris', mls_name: 'ACTRIS reference', licensed: false, health: 'READY' }],
+      }, 'BLOCKED'),
+    ));
+    render(<BrokerageSetupPanel />);
+    await screen.findByText('Lockwood Realty');
+    expect(screen.getByText(/not live inventory/)).toBeTruthy();
+    expect(screen.queryByText('ACTRIS reference')).toBeNull();
+  });
+
+  it('names a licensed feed and how fresh it is', async () => {
+    api.crmGet.mockImplementation((path) => Promise.resolve(
+      path.includes('/team') ? TEAM : withMls({
+        status: 'READY',
+        detail: 'Licensed MLS feed synced and fresh.',
+        feeds: [{ mls_id: 'bright', mls_name: 'Bright MLS', licensed: true, health: 'READY', age_seconds: 720 }],
+      }, 'READY'),
+    ));
+    render(<BrokerageSetupPanel />);
+    await screen.findByText('Lockwood Realty');
+    expect(screen.getByText(/Bright MLS · updated 12 min ago/)).toBeTruthy();
+  });
+
+  it('says nothing extra when no feed is connected', async () => {
+    api.crmGet.mockImplementation((path) => Promise.resolve(
+      path.includes('/team') ? TEAM : withMls({ status: 'NOT_STARTED', detail: '', feeds: [] }, 'NOT_STARTED'),
+    ));
+    render(<BrokerageSetupPanel />);
+    await screen.findByText('Lockwood Realty');
+    expect(screen.queryByText(/not live inventory/)).toBeNull();
+    expect(screen.queryByText(/updated/)).toBeNull();
+  });
+
+  it('prefers the licensed feed even when developer feeds sit beside it', async () => {
+    api.crmGet.mockImplementation((path) => Promise.resolve(
+      path.includes('/team') ? TEAM : withMls({
+        status: 'READY', detail: '',
+        feeds: [
+          { mls_id: 'actris', mls_name: 'ACTRIS reference', licensed: false, health: 'READY' },
+          { mls_id: 'bright', mls_name: 'Bright MLS', licensed: true, health: 'READY', age_seconds: 90000 },
+        ],
+      }, 'READY'),
+    ));
+    render(<BrokerageSetupPanel />);
+    await screen.findByText('Lockwood Realty');
+    expect(screen.getByText(/Bright MLS · updated 1d ago/)).toBeTruthy();
+  });
+});

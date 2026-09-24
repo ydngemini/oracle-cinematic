@@ -29,10 +29,15 @@ _UPSERT = """
         latitude, longitude, list_price, orig_list_price, status, property_type,
         beds, baths_full, baths_half, sqft, lot_sqft, year_built, hoa_monthly,
         days_on_market, list_date, close_date, close_price, description,
-        photos, features, last_updated
+        photos, features, last_updated,
+        -- Promoted out of the features JSONB by 0110. Provenance that lives
+        -- only inside a JSON blob cannot be indexed, filtered or enforced,
+        -- and these decide whether a row may be shown as licensed inventory.
+        license_classification, source_modified_at, source_status
     ) VALUES (
         $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,
-        $21,$22,$23,$24,$25,$26,$27::jsonb,now()
+        $21,$22,$23,$24,$25,$26,$27::jsonb,now(),
+        $28, $29, $30
     )
     ON CONFLICT (mls_id, mls_number) DO UPDATE SET
         address=EXCLUDED.address, city=EXCLUDED.city, state_code=EXCLUDED.state_code,
@@ -40,6 +45,9 @@ _UPSERT = """
         latitude=EXCLUDED.latitude, longitude=EXCLUDED.longitude,
         list_price=EXCLUDED.list_price, orig_list_price=EXCLUDED.orig_list_price,
         status=EXCLUDED.status, property_type=EXCLUDED.property_type,
+        license_classification=EXCLUDED.license_classification,
+        source_modified_at=EXCLUDED.source_modified_at,
+        source_status=EXCLUDED.source_status,
         beds=EXCLUDED.beds, baths_full=EXCLUDED.baths_full, baths_half=EXCLUDED.baths_half,
         sqft=EXCLUDED.sqft, lot_sqft=EXCLUDED.lot_sqft, year_built=EXCLUDED.year_built,
         hoa_monthly=EXCLUDED.hoa_monthly, days_on_market=EXCLUDED.days_on_market,
@@ -65,10 +73,32 @@ def reject_reason(rec: dict[str, Any]) -> Optional[str]:
     return None
 
 
-async def upsert_mls_records(conn: Any, records: list[dict[str, Any]]) -> int:
-    """Write already-normalized, already-validated records. Returns rows written."""
+async def upsert_mls_records(
+    conn: Any,
+    records: list[dict[str, Any]],
+    *,
+    license_classification: str = "developer_listing_dataset",
+) -> int:
+    """Write already-normalized, already-validated records. Returns rows written.
+
+    `license_classification` defaults to developer data because that is the
+    safe answer: a caller that has not established a licence must not be able
+    to write rows that downstream code will serve as licensed inventory.
+    """
+    from datetime import datetime as _dt
+
     upserted = 0
     for rec in records:
+        feats = rec.get("features") or {}
+        raw_modified = feats.get("source_modified_at") if isinstance(feats, dict) else None
+        modified = None
+        if isinstance(raw_modified, _dt):
+            modified = raw_modified
+        elif isinstance(raw_modified, str) and raw_modified:
+            try:
+                modified = _dt.fromisoformat(raw_modified.replace("Z", "+00:00"))
+            except ValueError:
+                modified = None
         await conn.execute(
             _UPSERT,
             rec["mls_id"], rec["mls_number"], rec["address"], rec["city"],
@@ -79,6 +109,9 @@ async def upsert_mls_records(conn: Any, records: list[dict[str, Any]]) -> int:
             rec["days_on_market"], rec["list_date"], rec["close_date"],
             rec["close_price"], rec["description"], rec["photos"],
             json.dumps(rec["features"], separators=(",", ":")),
+            license_classification,
+            modified,
+            (feats.get("source_status") if isinstance(feats, dict) else None),
         )
         upserted += 1
     return upserted
@@ -190,7 +223,10 @@ async def upsert_mls_records_and_status(
     succeeded, backfill_complete, error, error_class) so a caller does not have
     to choose between this wrapper and reporting its health.
     """
-    upserted = await upsert_mls_records(conn, records)
+    from mls_licensing import classify_from_env
+    licence = classify_from_env(status_kwargs.get("dataset") or mls_id)
+    upserted = await upsert_mls_records(
+        conn, records, license_classification=licence.classification)
     await record_sync_status(
         conn,
         mls_id=mls_id,

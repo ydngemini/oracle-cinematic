@@ -342,6 +342,24 @@ async def mls_portal_listing(
             )
             listing = _listing_json(dict(row)) if row else None
             matches = await _buyer_matches(conn, listing) if listing else []
+            # Investor buy boxes and the brokerage's own buyer contacts are
+            # different populations and are reported separately. Folding them
+            # into one list would make "who should I call about this?"
+            # ambiguous about whether the answer is a client or a wholesaler.
+            crm_buyers = []
+            if listing:
+                from buyer_matching import buyers_for_listing
+                crm_buyers = [
+                    {
+                        "client_id": m.client_id,
+                        "name": m.name,
+                        "verdict": m.verdict,
+                        "evidence": m.evidence,
+                        "unknowns": m.unknowns,
+                        "matched_signals": m.matched_signals,
+                    }
+                    for m in await buyers_for_listing(conn, dict(row))
+                ]
     except RuntimeError as exc:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, f"Memory Core offline ({exc})")
     except Exception as exc:  # noqa: BLE001
@@ -350,7 +368,10 @@ async def mls_portal_listing(
 
     if not row:
         raise HTTPException(status.HTTP_404_NOT_FOUND, f"Listing {listing_id!r} not found.")
-    return {**listing, "buyer_matches": matches}
+    # buyer_matches = investor buy boxes; buyers = this brokerage's own
+    # contacts. Separate keys because they are different populations and
+    # "who should I call about this?" has a different answer for each.
+    return {**listing, "buyer_matches": matches, "buyers": crm_buyers}
 
 
 @router.get("/health", summary="MLS source health and freshness")

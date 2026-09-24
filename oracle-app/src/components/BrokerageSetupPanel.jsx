@@ -49,16 +49,44 @@ const ORG_TYPES = [
   ['independent_agent', 'Independent agent'],
 ];
 
-function CapabilityRow({ name, state, optional }) {
+/** "Updated 12 minutes ago" — relative, because an ISO timestamp is not an answer. */
+function freshness(ageSeconds) {
+  if (ageSeconds == null) return null;
+  const mins = Math.floor(ageSeconds / 60);
+  if (mins < 1) return 'updated just now';
+  if (mins < 60) return `updated ${mins} min ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `updated ${hours}h ago`;
+  return `updated ${Math.floor(hours / 24)}d ago`;
+}
+
+function CapabilityRow({ name, state, optional, detail }) {
   return (
     <li className={styles.capability} data-state={state}>
-      <span className={styles.capabilityName}>{CAPABILITY_LABELS[name] || name}</span>
+      <span className={styles.capabilityName}>
+        {CAPABILITY_LABELS[name] || name}
+        {/* The feed's own name and age, so an operator does not have to open a
+            database to learn that the only connected feed is a sample set. */}
+        {detail ? <em className={styles.capabilityDetail}>{detail}</em> : null}
+      </span>
       <span className={styles.capabilityState}>
         {STATE_LABELS[state] || state}
         {optional && state !== 'READY' ? <em className={styles.optional}> · optional</em> : null}
       </span>
     </li>
   );
+}
+
+/** One line under "MLS" describing the feeds actually behind it. */
+function mlsDetail(mls) {
+  if (!mls || !Array.isArray(mls.feeds) || mls.feeds.length === 0) return null;
+  const licensed = mls.feeds.filter((f) => f.licensed);
+  if (licensed.length === 0) {
+    // Never let a reference dataset read as MLS coverage.
+    return `${mls.feeds.length} developer/reference feed${mls.feeds.length === 1 ? '' : 's'} — not live inventory`;
+  }
+  const lead = licensed[0];
+  return [lead.mls_name, freshness(lead.age_seconds)].filter(Boolean).join(' · ');
 }
 
 export function BrokerageSetupPanel() {
@@ -226,7 +254,13 @@ export function BrokerageSetupPanel() {
       {/* ── Capabilities ─────────────────────────────────────────────── */}
       <ul className={styles.capabilities}>
         {Object.entries(capabilities).map(([name, state]) => (
-          <CapabilityRow key={name} name={name} state={state} optional={optionalSet.has(name)} />
+          <CapabilityRow
+            key={name}
+            name={name}
+            state={state}
+            optional={optionalSet.has(name)}
+            detail={name === 'mls' ? mlsDetail(setup.mls) : null}
+          />
         ))}
       </ul>
 

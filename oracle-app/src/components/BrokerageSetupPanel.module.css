@@ -170,3 +170,12 @@
   .member[data-pending="true"] { grid-template-columns: 1fr auto; row-gap: 2px; }
   .rowActions { grid-column: 1 / -1; }
 }
+
+/* The feed behind a capability — quieter than the capability name, because it
+   is context rather than the answer. */
+.capabilityDetail {
+  display: block;
+  font-style: normal;
+  font-size: var(--text-xs);
+  color: var(--oracle-text-ghost);
+}
