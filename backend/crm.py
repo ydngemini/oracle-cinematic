@@ -706,6 +706,19 @@ async def list_clients(
         async with tenant_tx(ctx) as conn:
             rows = await conn.fetch(
                 f"""
+                -- Choose the page FIRST, then decorate only those rows. With the
+                -- laterals in the same SELECT as ORDER BY/LIMIT, Postgres runs
+                -- all five per client in the tenant and throws all but 500 away:
+                -- 20,000 x 5 subqueries, 888 ms p50 for a large brokerage at
+                -- zero load. Every filter and sort key is a clients column, so
+                -- the page does not depend on anything the laterals compute.
+                WITH page AS MATERIALIZED (
+                    SELECT c.*
+                      FROM clients c
+                     WHERE {" AND ".join(where)}
+                     ORDER BY {order_sql}
+                     LIMIT 500
+                )
                 SELECT c.id, c.full_name, c.email, c.phone, c.client_type,
                        c.stage, c.lead_score, c.assignee_id, c.company,
                        c.preferences, c.source, c.created_at, c.last_contacted_at,
@@ -716,7 +729,7 @@ async def list_clients(
                        lt.created_at       AS last_touch_at,
                        la.kind AS la_kind, la.summary AS la_summary,
                        la.created_at AS la_created_at
-                  FROM clients c
+                  FROM page c
                   LEFT JOIN LATERAL (
                         SELECT json_agg(json_build_object(
                                    'id', x.id, 'address', x.address, 'kind', x.kind,
@@ -766,9 +779,7 @@ async def list_clients(
                          ORDER BY a.created_at DESC
                          LIMIT 1
                   ) la ON true
-                 WHERE {" AND ".join(where)}
                  ORDER BY {order_sql}
-                 LIMIT 500
                 """,
                 *args,
             )

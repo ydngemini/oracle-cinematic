@@ -383,3 +383,44 @@ def test_capabilities_reports_unmounted_optional_routers_as_absent():
     # Answered from the live route table, so it cannot drift from what is mounted.
     mounted = [getattr(r, "path", "") for r in server.app.routes]
     assert not any(p.startswith("/api/video-studio") for p in mounted)
+
+
+# ---------------------------------------------------------------------------
+# POST /api/mls/search returned 500 for any matching listing
+# ---------------------------------------------------------------------------
+#
+# No JSON codec is registered on the pool, so asyncpg returns a jsonb column as
+# a STRING. The handler passed `r.get("features") or {}` into NormalizedListing,
+# whose `features` is a dict, and validation failed on every non-empty result.
+# The fakes above never included `features` at all, so `or {}` hid it — a test
+# double that does not model what the driver really returns proves nothing
+# about the driver. Found by the first load-test baseline.
+
+class _FakeConnWithDriverShapes(_FakeConn):
+    async def fetch(self, query, *_args):
+        self._guard(query)
+        return [
+            {"id": "11111111-1111-1111-1111-111111111111", "mls_id": "m1",
+             "list_price": 500000, "address": "1 Main St",
+             # exactly what asyncpg hands back for jsonb with no codec
+             "features": '{"source_kind": "listing_provider", "beds": 3}'},
+        ]
+
+
+def test_mls_search_decodes_jsonb_features_returned_as_a_string(monkeypatch):
+    conn = _FakeConnWithDriverShapes(fail_on_earthdistance=False)
+    monkeypatch.setattr(mls, "tenant_tx", _fake_tenant_tx(conn))
+
+    result = asyncio.run(mls.mls_search(body=mls.MLSSearchBody(limit=5, offset=0), ctx=CTX))
+
+    assert result.listings, "the search should return the listing, not 500"
+    assert result.listings[0].features == {"source_kind": "listing_provider", "beds": 3}
+
+
+def test_as_dict_is_total():
+    assert mls._as_dict(None) == {}
+    assert mls._as_dict({"a": 1}) == {"a": 1}
+    assert mls._as_dict('{"a": 1}') == {"a": 1}
+    assert mls._as_dict(b'{"a": 1}') == {"a": 1}
+    assert mls._as_dict("not json") == {}
+    assert mls._as_dict("[1, 2]") == {}

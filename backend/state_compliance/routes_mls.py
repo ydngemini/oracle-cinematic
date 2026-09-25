@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import re
+import json
 import uuid
 from datetime import date, datetime, timezone
 from typing import Any, Optional
@@ -59,6 +60,30 @@ from .models import (  # noqa: F401  (re-exported for route handlers)
     FormValidationResponse,
 )
 from .engine import _engine  # noqa: F401
+
+
+def _as_dict(value) -> dict:
+    """A JSONB column as a dict, whatever the driver handed back.
+
+    No JSON codec is registered on the pool (db/connection.py), so asyncpg
+    returns jsonb as a str. `r.get("features") or {}` passed that string
+    straight into NormalizedListing, whose `features` is a dict — so every
+    POST /api/mls/search that matched ANY listing, and every detail read,
+    failed validation and returned 500. Found by the first load-test
+    baseline; GET /api/mls/search (mls_portal, which the UI uses) decodes its
+    own and was never affected, which is why the golden E2E stayed green.
+    """
+    if value is None:
+        return {}
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, (str, bytes)):
+        try:
+            decoded = json.loads(value)
+        except ValueError:
+            return {}
+        return decoded if isinstance(decoded, dict) else {}
+    return {}
 
 @router.get(
     "/api/mls/regions",
@@ -352,7 +377,7 @@ async def mls_search(
             close_price=_num(r.get("close_price")),
             description=r.get("description"),
             photos=r.get("photos") or [],
-            features=r.get("features") or {},
+            features=_as_dict(r.get("features")),
             last_updated=r.get("last_updated"),
         )
         for r in rows
@@ -426,7 +451,7 @@ async def get_mls_listing(
         close_price=_num(row.get("close_price")),
         description=row.get("description"),
         photos=row.get("photos") or [],
-        features=row.get("features") or {},
+        features=_as_dict(row.get("features")),
         last_updated=row.get("last_updated"),
     )
 
