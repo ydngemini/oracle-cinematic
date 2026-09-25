@@ -289,20 +289,20 @@ def _workflow() -> dict:
     return yaml.safe_load(CI.read_text(encoding="utf-8"))
 
 
-def test_a_pull_request_can_never_reach_the_deploy_job():
-    cond = _workflow()["jobs"]["deploy"]["if"]
+def test_a_pull_request_can_never_reach_production():
+    cond = _workflow()["jobs"]["promote"]["if"]
     assert "github.event_name == 'workflow_dispatch'" in cond
 
 
 def test_deploys_are_restricted_to_main():
     """workflow_dispatch can target ANY branch. Without this, an unmerged,
     unreviewed feature branch was one "Run workflow" click from production."""
-    cond = _workflow()["jobs"]["deploy"]["if"]
+    cond = _workflow()["jobs"]["promote"]["if"]
     assert "github.ref == 'refs/heads/main'" in cond
 
 
 def test_production_deploys_are_serialized_and_never_cancelled():
-    job = _workflow()["jobs"]["deploy"]
+    job = _workflow()["jobs"]["promote"]
     conc = job.get("concurrency") or {}
     assert conc.get("group"), "the deploy job needs its own concurrency group"
     assert "${{" not in str(conc["group"]), (
@@ -331,7 +331,7 @@ def test_the_deploy_job_names_the_production_environment():
     repository setting. On 2026-09-25 the repository had ZERO environments, and
     GitHub auto-creates a missing one with no protection — so this is checked
     here and the rest is on the release checklist."""
-    assert _workflow()["jobs"]["deploy"]["environment"] == "production"
+    assert _workflow()["jobs"]["promote"]["environment"] == "production"
     checklist = (REPO / "docs" / "release-checklist.md").read_text(encoding="utf-8")
     assert "required reviewer" in checklist.lower()
 
@@ -454,3 +454,109 @@ def test_do_rollback_never_calls_doctl_across_a_destructive_migration(tmp_path):
     assert proc.returncode == 3
     assert "APPLICATION ROLLBACK UNSAFE" in proc.stdout
     assert calls == "", f"doctl was called despite an unsafe rollback: {calls}"
+
+
+# ── Build once, promote the same artifact (§8–§13, §56) ────────────────────
+
+def _steps(job):
+    return _workflow()["jobs"][job]["steps"]
+
+
+def _runs(job):
+    return "\n".join(s.get("run", "") for s in _steps(job))
+
+
+def test_production_never_builds_an_image():
+    """The whole principle. A rebuild after staging passed produces a
+    different artifact from the one staging tested."""
+    assert "docker build" not in _runs("promote")
+
+
+def test_only_the_release_job_builds():
+    wf = _workflow()
+    builders = [j for j in wf["jobs"] if "docker build" in _runs(j)]
+    assert builders == ["release"]
+
+
+def test_production_refuses_a_sha_that_never_passed_staging():
+    runs = _runs("promote")
+    assert "staging-verified-release-$PROMOTE_SHA" in runs
+    assert "never passed staging" in runs
+
+
+def test_the_staging_verified_artifact_is_uploaded_last():
+    """Its existence is the claim "this build passed staging". Uploaded any
+    earlier, a failed staging smoke test would still leave a promotable
+    manifest behind."""
+    steps = _steps("release")
+    last = steps[-1]
+    assert last.get("uses", "").startswith("actions/upload-artifact")
+    assert "staging-verified-release" in last["with"]["name"]
+    smoke = next(i for i, s in enumerate(steps) if "Smoke test" in s.get("name", ""))
+    assert smoke == len(steps) - 2
+
+
+def test_production_deploys_exactly_the_digests_staging_recorded():
+    runs = _runs("promote")
+    assert "release-manifest.json" in runs
+    assert 'm["release_id"] == os.environ["PROMOTE_SHA"]' in runs
+    assert "--backend-digest  \"${{ steps.digests.outputs.backend }}\"" in runs
+
+
+def test_migrations_run_from_the_image_by_digest_not_tag():
+    """A tag can be repointed between staging and production; a digest
+    cannot."""
+    for job in ("release", "promote"):
+        step = next(s for s in _steps(job) if s.get("name", "").startswith("Run database migrations"))
+        assert "neoh-backend@${{ steps.digests.outputs.backend }}" in step["run"]
+        assert "neoh-backend:" not in step["run"], f"{job} migrates from a mutable tag"
+
+
+def test_staging_and_production_use_separate_environments():
+    wf = _workflow()["jobs"]
+    assert wf["release"]["environment"] == "staging"
+    assert wf["promote"]["environment"] == "production"
+    assert wf["release"]["concurrency"]["group"] != wf["promote"]["concurrency"]["group"]
+
+
+@pytest.mark.parametrize("job, app", [("release", "neoh-staging"), ("promote", "neoh")])
+def test_each_job_confirms_its_target_app_before_touching_it(job, app):
+    """Environment secrets share NAMES. A production app id pasted into the
+    staging environment would deploy recovery-mode staging config over
+    production; this refuses first."""
+    runs = _runs(job)
+    assert f'[ "$name" != "{app}" ]' in runs
+    names = [s.get("name", "") for s in _steps(job)]
+    guard = names.index("Confirm the target is the staging app" if job == "release"
+                        else "Confirm the target is the production app")
+    first_deploy = next(i for i, n in enumerate(names) if n.startswith("Deploy"))
+    assert guard < first_deploy
+
+
+def test_both_environments_render_from_the_one_spec():
+    assert "render-app-spec.py --check" in _runs("release")
+    assert "render-app-spec.py --check" in _runs("promote")
+    assert "--env staging" in _runs("release")
+    assert "--env production" in _runs("promote")
+
+
+def test_the_frontend_bundle_is_environment_agnostic():
+    """One bundle serves both environments, and Vite compiles VITE_* in. Baking
+    an API URL would make production's frontend call staging's API."""
+    runs = _runs("release")
+    assert '--build-arg VITE_API_BASE=""' in runs
+    assert '--build-arg VITE_WS_URL=""' in runs
+
+
+def test_staging_is_automatic_only_once_enabled():
+    """Until STAGING_ENABLED is set, a push to main runs tests and stops —
+    rather than failing every push against staging that does not exist yet."""
+    cond = _workflow()["jobs"]["release"]["if"]
+    assert "vars.STAGING_ENABLED == 'true'" in cond
+    assert "github.ref == 'refs/heads/main'" in cond
+    assert "pull_request" not in cond
+
+
+def test_promote_can_read_the_staging_run_it_came_from():
+    perms = _workflow()["jobs"]["promote"]["permissions"]
+    assert perms.get("actions") == "read" and perms.get("contents") == "read"

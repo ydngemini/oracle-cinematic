@@ -11,8 +11,12 @@ on:
   workflow_dispatch:
     inputs:
       confirm:
-        description: 'Type "deploy" to actually deploy to DigitalOcean (any other value, or leaving this blank, only runs tests)'
+        description: 'Type "stage" to build this commit and deploy it to STAGING. Type "deploy" (with promote_sha) to promote an already-staged release to PRODUCTION. Anything else only runs tests.'
         required: true
+        default: ""
+      promote_sha:
+        description: 'For "deploy" only: the full commit SHA of a release that has ALREADY passed staging. Production never builds; it deploys what staging verified.'
+        required: false
         default: ""
 
 # A second push to the same branch makes the first run's answer irrelevant.
@@ -135,43 +139,49 @@ jobs:
         working-directory: oracle-app
         run: npm run bundle:check
 
-  # Only after both test jobs pass, and only on main — a PR branch builds and
-  # tests but never deploys. Every image is tagged with the commit SHA, never
-  # :latest, so a rollback means redeploying a known-good SHA, not guessing
-  # which :latest used to be good. See docs/deploy-digitalocean.md.
-  # Manual-only on purpose: a push to main is not "deploy now." Run via the
-  # Actions tab's "Run workflow" button (or `gh workflow run ci.yml -f
-  # confirm=deploy`), which also means DigitalOcean secrets need not exist in
-  # this repo at all until the day someone actually intends to deploy — every
-  # push before then runs tests and stops there, cleanly.
-  deploy:
-    name: deploy to DigitalOcean
+  # ═══════════════════════════════════════════════════════════════════════
+  # RELEASE: build once, deploy to STAGING, prove it there.
+  # ═══════════════════════════════════════════════════════════════════════
+  #
+  # BUILD ONCE, PROMOTE THE SAME ARTIFACT. This is the only job that runs
+  # `docker build`. It builds from a commit on main, pushes both images,
+  # resolves their digests from the registry, deploys THOSE DIGESTS to
+  # staging, and smoke-tests them there. Only if every step passes does it
+  # upload `staging-verified-release-<sha>` — so that artifact existing IS the
+  # statement "this exact build ran on staging and passed".
+  #
+  # Production (the `promote` job) never builds. It downloads that artifact
+  # and deploys the digests recorded in it. Production is therefore never the
+  # first environment an artifact runs in, and "CI tested image A, production
+  # got image B" has no path to happen.
+  #
+  # Runs on every push to main once the repository variable STAGING_ENABLED is
+  # "true" (Settings → Variables). Until staging exists it stays off, so a
+  # push to main runs tests and stops, cleanly, as before. It can also be run
+  # by hand: Run workflow → confirm: stage.
+  release:
+    name: build release → staging
     needs: [backend, frontend]
-    # Three conditions, all required:
-    #   - a deliberate manual dispatch (a push or PR can never reach this job)
-    #   - the typed confirmation
-    #   - the ref is main. workflow_dispatch can target ANY branch, so without
-    #     this an unmerged, unreviewed feature branch was one "Run workflow"
-    #     click from production.
     if: >-
-      github.event_name == 'workflow_dispatch'
-      && github.event.inputs.confirm == 'deploy'
-      && github.ref == 'refs/heads/main'
+      github.ref == 'refs/heads/main'
+      && (
+        (github.event_name == 'push' && vars.STAGING_ENABLED == 'true')
+        || (github.event_name == 'workflow_dispatch' && github.event.inputs.confirm == 'stage')
+      )
     runs-on: ubuntu-latest
-    timeout-minutes: 30
-    # Required reviewers are configured on this environment in the repository
-    # settings, not in this file — see docs/release-checklist.md. The workflow
-    # can name the gate; only the repository can make it a gate.
-    environment: production
-    # One production deploy at a time, across every ref and every trigger, and
-    # never cancelled. A second dispatch waits for the first to finish rather
-    # than interleaving its migrations with another release's rollout.
-    # (GitHub keeps one running and one pending per group; a third dispatch
-    # replaces the pending one, which is the right outcome — the newest
-    # intent wins, the running deploy is never interrupted.)
+    timeout-minutes: 45
+    # Staging secrets live on the `staging` environment and are released only
+    # to this job. They share NAMES with production's (DIGITALOCEAN_APP_ID,
+    # ORACLE_DB_HOST, …) but not values — which is what keeps staging from
+    # ever being handed a production credential.
+    environment: staging
     concurrency:
-      group: production-deploy
+      group: staging-deploy
       cancel-in-progress: false
+    outputs:
+      sha: ${{ steps.release.outputs.sha }}
+      backend_digest: ${{ steps.digests.outputs.backend }}
+      frontend_digest: ${{ steps.digests.outputs.frontend }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -183,7 +193,7 @@ jobs:
           token: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
 
       - name: Log in to DO Container Registry
-        run: doctl registry login --expiry-seconds 1200
+        run: doctl registry login --expiry-seconds 1800
 
       - name: Build release identity
         id: release
@@ -191,10 +201,24 @@ jobs:
           echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
           echo "built_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
 
-      # Immutable tag: the git SHA. :latest is also pushed for convenience
-      # (so `doctl registry ... | head` reads naturally) but the app spec
-      # (infra/digitalocean/app.yaml) and every deploy step below reference
-      # the SHA tag, never :latest — see GET /version.
+      # Refuse before building anything if this job's DIGITALOCEAN_APP_ID is
+      # not the staging app. Environment secrets share names across
+      # environments, so a production app id pasted into the staging
+      # environment would otherwise deploy staging config — recovery mode on,
+      # staging buckets — over PRODUCTION.
+      - name: Confirm the target is the staging app
+        run: |
+          set -euo pipefail
+          name="$(doctl apps get "${{ secrets.DIGITALOCEAN_APP_ID }}" --output json \
+            | python3 -c 'import json,sys; d=json.load(sys.stdin); d=d[0] if isinstance(d,list) else d; print(d["spec"]["name"])')"
+          if [ "$name" != "neoh-staging" ]; then
+            echo "::error::DIGITALOCEAN_APP_ID in the 'staging' environment points at app '$name', not 'neoh-staging'. Refusing."
+            exit 1
+          fi
+          echo "target app: $name"
+
+      # The only image builds in this workflow. Tagged with the commit SHA;
+      # `:latest` is pushed for convenience and never deployed.
       - name: Build and push backend image
         run: |
           docker build \
@@ -209,11 +233,21 @@ jobs:
         env:
           REGISTRY: registry.digitalocean.com/${{ secrets.DIGITALOCEAN_REGISTRY }}
 
+      # ENVIRONMENT-AGNOSTIC on purpose. Vite compiles VITE_* into the bundle,
+      # and this one bundle will be served by staging AND production. The API
+      # and WebSocket bases are therefore left EMPTY, which every call site
+      # resolves to the page's own origin — and both apps serve web and api
+      # from one origin through the same ingress. Filling them from a secret,
+      # as this step used to, would bake STAGING's API URL into the bundle
+      # that production then serves.
+      #
+      # The Maps key IS baked, and it is referrer-locked: it must allow BOTH
+      # the staging and production origins. See docs/release-checklist.md.
       - name: Build and push frontend image
         run: |
           docker build \
-            --build-arg VITE_API_BASE="${{ secrets.NEOH_PUBLIC_API_BASE }}" \
-            --build-arg VITE_WS_URL="${{ secrets.NEOH_PUBLIC_WS_URL }}" \
+            --build-arg VITE_API_BASE="" \
+            --build-arg VITE_WS_URL="" \
             --build-arg VITE_GOOGLE_MAPS_KEY="${{ secrets.VITE_GOOGLE_MAPS_KEY }}" \
             --build-arg VITE_GOOGLE_MAP_ID="${{ secrets.VITE_GOOGLE_MAP_ID }}" \
             -t "${REGISTRY}/neoh-frontend:${{ steps.release.outputs.sha }}" \
@@ -224,42 +258,10 @@ jobs:
         env:
           REGISTRY: registry.digitalocean.com/${{ secrets.DIGITALOCEAN_REGISTRY }}
 
-      # Capture what is live BEFORE replacing it.
-      #
-      # A rollback target is decided before an incident, not discovered during
-      # one. At the moment you need it you are already degraded, possibly at
-      # 3am, and "which digest were we on?" is not a question to start
-      # answering then. `doctl apps spec get` returns the spec of the currently
-      # deployed release, digests included.
-      #
-      # continue-on-error: a first deploy has nothing to capture, and refusing
-      # to deploy because there is no previous release would be absurd.
-      - name: Capture the rollback target
-        id: rollback_target
-        continue-on-error: true
-        run: |
-          set -uo pipefail
-          doctl apps spec get "${{ secrets.DIGITALOCEAN_APP_ID }}" --format yaml \
-            > rollback-target-spec.yaml 2>/dev/null || {
-              echo "::warning::no currently-deployed spec to capture — first deploy?"
-              exit 0
-            }
-          echo "currently deployed digests:"
-          grep -E "digest:|repository:" rollback-target-spec.yaml || true
-
-      - name: Upload the rollback target
-        if: hashFiles('rollback-target-spec.yaml') != ''
-        uses: actions/upload-artifact@v4
-        with:
-          name: rollback-target-before-${{ steps.release.outputs.sha }}
-          path: rollback-target-spec.yaml
-          retention-days: 90
-
       # The digest is the release's real identity. A tag is a mutable pointer
       # and can be moved between the decision to deploy and the pull that
       # follows it; the digest IS the content. Read back from the registry
-      # rather than assumed, because taking the builder's word for it would
-      # reintroduce exactly the gap the digest exists to close.
+      # rather than assumed.
       - name: Resolve image digests
         id: digests
         run: |
@@ -283,9 +285,6 @@ jobs:
         env:
           REGISTRY: registry.digitalocean.com/${{ secrets.DIGITALOCEAN_REGISTRY }}
 
-      # One release, one written-down identity. Staging records a digest and
-      # production asserts the same digest, which turns "promote what passed"
-      # into something checkable rather than something intended.
       - name: Build release manifest
         run: |
           chmod +x scripts/build-release-manifest.sh
@@ -296,16 +295,23 @@ jobs:
             ./scripts/build-release-manifest.sh > release-manifest.json
           cat release-manifest.json
 
-      - name: Upload release manifest
-        uses: actions/upload-artifact@v4
-        with:
-          name: release-manifest-${{ steps.release.outputs.sha }}
-          path: release-manifest.json
+      # One spec, rendered per environment — never a hand-maintained second
+      # copy that drifts. --check also proves staging and production share no
+      # app, cluster, bucket or domain, and that staging runs every backend
+      # component with ORACLE_RECOVERY_MODE=1: a staging Neoh cannot text a
+      # client, charge a card or send an email.
+      - name: Render the staging spec
+        run: |
+          set -euo pipefail
+          python3 -m pip install --quiet 'pyyaml>=6,<7'
+          python3 scripts/render-app-spec.py --check
+          python3 scripts/render-app-spec.py --env staging \
+            --backend-digest  "${{ steps.digests.outputs.backend }}" \
+            --frontend-digest "${{ steps.digests.outputs.frontend }}" \
+            > /tmp/app.staging.yaml
+          grep -n "digest:\|ORACLE_RECOVERY_MODE" /tmp/app.staging.yaml
 
-      # Refuse to migrate a database that is not the one this release expects.
-      # A migration applied to an unexpected schema is not a failed deploy, it
-      # is a corrupted database AND a failed deploy.
-      - name: Migration precheck
+      - name: Migration precheck (staging)
         run: |
           chmod +x scripts/migration-precheck.sh
           ./scripts/migration-precheck.sh release-manifest.json
@@ -317,13 +323,10 @@ jobs:
           PGPASSWORD: ${{ secrets.ORACLE_DB_ADMIN_PASSWORD }}
           ORACLE_DB_SSLMODE: require
 
-      # Migrations before the new image serves traffic, matching
-      # the order the retired AWS path used. Runs the freshly-built
-      # SHA-tagged image directly via doctl (no App Platform component
-      # involved), so a migration failure never partially deploys a release.
-      - name: Run database migrations
+      # Migrations run from the image BY DIGEST — the exact artifact — before
+      # it serves traffic.
+      - name: Run database migrations (staging)
         run: |
-          doctl registry docker-config > /tmp/docker-config.json
           docker run --rm \
             -e ORACLE_DB_HOST="${{ secrets.ORACLE_DB_HOST }}" \
             -e ORACLE_DB_PORT="${{ secrets.ORACLE_DB_PORT }}" \
@@ -331,54 +334,248 @@ jobs:
             -e ORACLE_DB_ADMIN_USER="${{ secrets.ORACLE_DB_ADMIN_USER }}" \
             -e ORACLE_DB_ADMIN_PASSWORD="${{ secrets.ORACLE_DB_ADMIN_PASSWORD }}" \
             -e ORACLE_DB_SSL=require \
-            "${REGISTRY}/neoh-backend:${{ steps.release.outputs.sha }}" \
+            "${REGISTRY}/neoh-backend@${{ steps.digests.outputs.backend }}" \
             python run_migrations.py
         env:
           REGISTRY: registry.digitalocean.com/${{ secrets.DIGITALOCEAN_REGISTRY }}
 
-      # Stamp this release's digests into the spec, then apply it.
-      #
-      # The committed spec carries placeholders, not digests: a real digest in
-      # git would pin every future deploy to one historical build. Substituting
-      # here is what makes the deployed artifact provably the one just built,
-      # tested and migrated against.
-      #
-      # This step previously applied the spec unchanged, and that spec declared
-      # `dockerfile_path` — so App Platform rebuilt from source and the images
-      # above were never deployed at all. The comment that used to sit here
-      # claimed it pinned "this exact image digest". It did not.
-      #
-      # `doctl apps update` is correct ONLY because the spec is digest-pinned:
-      # DigitalOcean documents that update reuses the existing image when the
-      # tag is unchanged, and only create-deployment always re-pulls. A changed
-      # digest is a changed spec, so update deploys it.
-      - name: Deploy to App Platform
+      # `doctl apps update` is deterministic ONLY because the spec is
+      # digest-pinned: DigitalOcean documents that update reuses the image
+      # when the tag is unchanged. A changed digest is a changed spec.
+      - name: Deploy the staging app
         run: |
-          set -euo pipefail
-          sed -e "s|__BACKEND_DIGEST__|${{ steps.digests.outputs.backend }}|g" \
-              -e "s|__FRONTEND_DIGEST__|${{ steps.digests.outputs.frontend }}|g" \
-              infra/digitalocean/app.yaml > /tmp/app.resolved.yaml
-
-          if grep -q "__.*_DIGEST__" /tmp/app.resolved.yaml; then
-            echo "::error::a digest placeholder survived substitution"
-            grep -n "__.*_DIGEST__" /tmp/app.resolved.yaml
-            exit 1
-          fi
-          grep -n "digest:" /tmp/app.resolved.yaml
-
           doctl apps update "${{ secrets.DIGITALOCEAN_APP_ID }}" \
-            --spec /tmp/app.resolved.yaml \
+            --spec /tmp/app.staging.yaml \
             --wait
 
-      - name: Smoke test
+      - name: Smoke test (staging)
         run: |
           chmod +x infra/digitalocean/smoke-test.sh
           APP_URL="${{ secrets.NEOH_PUBLIC_API_BASE }}" \
           EXPECTED_GIT_SHA="${{ steps.release.outputs.sha }}" \
             ./infra/digitalocean/smoke-test.sh
 
-      # Rollback is a redeploy of the previous known-good SHA — see
-      # docs/deploy-digitalocean.md §Rollback. Left manual on purpose: an
+      # Uploaded LAST, and only reached if everything above passed. Its
+      # existence is the claim "this build ran on staging and passed"; the
+      # promote job refuses any SHA that has one missing.
+      - name: Record the staging-verified release
+        uses: actions/upload-artifact@v4
+        with:
+          name: staging-verified-release-${{ steps.release.outputs.sha }}
+          path: release-manifest.json
+          retention-days: 90
+
+  # ═══════════════════════════════════════════════════════════════════════
+  # PROMOTE: production. Deploys digests staging already verified. No build.
+  # ═══════════════════════════════════════════════════════════════════════
+  #
+  # Run workflow on main → confirm: deploy, promote_sha: <a staged commit>.
+  #
+  # Nothing in this job builds an image. It downloads the manifest the
+  # `release` job recorded after staging passed, and deploys the digests in
+  # it. A SHA that never passed staging has no such manifest, and this job
+  # refuses it: production is never the first place an artifact runs.
+  #
+  # Gated four ways: a manual dispatch (merging never deploys), the typed
+  # confirmation, the ref is main (dispatch can target any branch), and the
+  # `production` environment's required reviewer — a repository setting, see
+  # docs/release-checklist.md.
+  promote:
+    name: promote → production
+    needs: [backend, frontend]
+    if: >-
+      github.event_name == 'workflow_dispatch'
+      && github.event.inputs.confirm == 'deploy'
+      && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: production
+    # One production deploy at a time, across every ref and every trigger,
+    # never cancelled — a second waits rather than interleaving its
+    # migrations with another release's rollout.
+    concurrency:
+      group: production-deploy
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      actions: read   # to download the staging-verified manifest from its run
+    env:
+      PROMOTE_SHA: ${{ github.event.inputs.promote_sha }}
+    steps:
+      - name: Validate the release to promote
+        run: |
+          set -euo pipefail
+          if ! printf '%s' "$PROMOTE_SHA" | grep -Eq '^[0-9a-f]{40}$'; then
+            echo "::error::promote_sha must be a full 40-character commit SHA that has already passed staging (got '$PROMOTE_SHA')."
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.promote_sha }}
+          fetch-depth: 0
+
+      # Only commits on main may reach production.
+      - name: Confirm the commit is on main
+        run: |
+          set -euo pipefail
+          git fetch --quiet origin main
+          git merge-base --is-ancestor "$PROMOTE_SHA" origin/main \
+            || { echo "::error::$PROMOTE_SHA is not on main. Refusing."; exit 1; }
+
+      # The heart of build-once. The manifest exists only if the release job
+      # got all the way through staging for this exact commit.
+      - name: Fetch the staging-verified manifest
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          found=""
+          for run in $(gh run list --workflow ci.yml --commit "$PROMOTE_SHA" \
+                        --limit 20 --json databaseId --jq '.[].databaseId'); do
+            if gh run download "$run" --name "staging-verified-release-$PROMOTE_SHA" --dir staged 2>/dev/null; then
+              found="$run"; break
+            fi
+          done
+          if [ -z "$found" ]; then
+            echo "::error::$PROMOTE_SHA has no staging-verified release. It never passed staging, so it cannot go to production. Push it to main (or Run workflow → confirm: stage) first."
+            exit 1
+          fi
+          echo "staging-verified by run $found"
+          cp staged/release-manifest.json release-manifest.json
+          cat release-manifest.json
+
+      - name: Read the digests staging verified
+        id: digests
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json, os
+          m = json.load(open("release-manifest.json"))
+          assert m["release_id"] == os.environ["PROMOTE_SHA"], "manifest is for a different release"
+          for k in ("backend_digest", "frontend_digest"):
+              assert m[k].startswith("sha256:") and len(m[k]) == 71, f"bad {k}"
+          print(f"backend={m['backend_digest']}")
+          print(f"frontend={m['frontend_digest']}")
+          PY
+
+      - name: doctl auth
+        uses: digitalocean/action-doctl@v2
+        with:
+          token: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
+
+      - name: Log in to DO Container Registry
+        run: doctl registry login --expiry-seconds 1800
+
+      # The artifact staging tested must still exist — registry garbage
+      # collection could have removed it.
+      - name: Confirm the verified images still exist
+        run: |
+          set -euo pipefail
+          docker manifest inspect "${REGISTRY}/neoh-backend@${{ steps.digests.outputs.backend }}" >/dev/null
+          docker manifest inspect "${REGISTRY}/neoh-frontend@${{ steps.digests.outputs.frontend }}" >/dev/null
+          echo "both verified images are present"
+        env:
+          REGISTRY: registry.digitalocean.com/${{ secrets.DIGITALOCEAN_REGISTRY }}
+
+      - name: Confirm the target is the production app
+        run: |
+          set -euo pipefail
+          name="$(doctl apps get "${{ secrets.DIGITALOCEAN_APP_ID }}" --output json \
+            | python3 -c 'import json,sys; d=json.load(sys.stdin); d=d[0] if isinstance(d,list) else d; print(d["spec"]["name"])')"
+          if [ "$name" != "neoh" ]; then
+            echo "::error::DIGITALOCEAN_APP_ID in the 'production' environment points at app '$name', not 'neoh'. Refusing."
+            exit 1
+          fi
+          echo "target app: $name"
+
+      # Capture what is live BEFORE replacing it. A rollback target is decided
+      # before an incident, not discovered during one.
+      - name: Capture the rollback target
+        id: rollback_target
+        continue-on-error: true
+        run: |
+          set -uo pipefail
+          doctl apps spec get "${{ secrets.DIGITALOCEAN_APP_ID }}" --format yaml \
+            > rollback-target-spec.yaml 2>/dev/null || {
+              echo "::warning::no currently-deployed spec to capture — first deploy?"
+              exit 0
+            }
+          grep -E "digest:|repository:" rollback-target-spec.yaml || true
+
+      - name: Upload the rollback target
+        if: hashFiles('rollback-target-spec.yaml') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: rollback-target-before-${{ env.PROMOTE_SHA }}
+          path: rollback-target-spec.yaml
+          retention-days: 90
+
+      - name: Render the production spec
+        run: |
+          set -euo pipefail
+          python3 -m pip install --quiet 'pyyaml>=6,<7'
+          python3 scripts/render-app-spec.py --check
+          python3 scripts/render-app-spec.py --env production \
+            --backend-digest  "${{ steps.digests.outputs.backend }}" \
+            --frontend-digest "${{ steps.digests.outputs.frontend }}" \
+            > /tmp/app.production.yaml
+          grep -n "digest:" /tmp/app.production.yaml
+
+      - name: Migration precheck (production)
+        run: |
+          chmod +x scripts/migration-precheck.sh
+          ./scripts/migration-precheck.sh release-manifest.json
+        env:
+          ORACLE_DB_HOST: ${{ secrets.ORACLE_DB_HOST }}
+          ORACLE_DB_PORT: ${{ secrets.ORACLE_DB_PORT }}
+          ORACLE_DB_NAME: ${{ secrets.ORACLE_DB_NAME }}
+          ORACLE_DB_ADMIN_USER: ${{ secrets.ORACLE_DB_ADMIN_USER }}
+          PGPASSWORD: ${{ secrets.ORACLE_DB_ADMIN_PASSWORD }}
+          ORACLE_DB_SSLMODE: require
+
+      - name: Run database migrations (production)
+        run: |
+          docker run --rm \
+            -e ORACLE_DB_HOST="${{ secrets.ORACLE_DB_HOST }}" \
+            -e ORACLE_DB_PORT="${{ secrets.ORACLE_DB_PORT }}" \
+            -e ORACLE_DB_NAME="${{ secrets.ORACLE_DB_NAME }}" \
+            -e ORACLE_DB_ADMIN_USER="${{ secrets.ORACLE_DB_ADMIN_USER }}" \
+            -e ORACLE_DB_ADMIN_PASSWORD="${{ secrets.ORACLE_DB_ADMIN_PASSWORD }}" \
+            -e ORACLE_DB_SSL=require \
+            "${REGISTRY}/neoh-backend@${{ steps.digests.outputs.backend }}" \
+            python run_migrations.py
+        env:
+          REGISTRY: registry.digitalocean.com/${{ secrets.DIGITALOCEAN_REGISTRY }}
+
+      - name: Deploy to App Platform (production)
+        run: |
+          doctl apps update "${{ secrets.DIGITALOCEAN_APP_ID }}" \
+            --spec /tmp/app.production.yaml \
+            --wait
+
+      - name: Smoke test (production)
+        run: |
+          chmod +x infra/digitalocean/smoke-test.sh
+          APP_URL="${{ secrets.NEOH_PUBLIC_API_BASE }}" \
+          EXPECTED_GIT_SHA="${{ env.PROMOTE_SHA }}" \
+            ./infra/digitalocean/smoke-test.sh
+
+      # The release record: what went out, from which staged run, rendered
+      # how, replacing what. The GitHub run plus these artifacts IS the record;
+      # no database table is needed for it.
+      - name: Record the production release
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-release-${{ env.PROMOTE_SHA }}-${{ github.run_attempt }}
+          path: |
+            release-manifest.json
+            /tmp/app.production.yaml
+          retention-days: 400
+
+      # Rollback is scripts/rollback.sh against a previous staging-verified
+      # manifest — see docs/deploy-digitalocean.md. Left manual on purpose: an
       # automated rollback on a failed smoke test can itself deploy into an
-      # already-degraded database (e.g. a migration that half-applied), which
-      # is a worse state than a human looking at the smoke-test output first.
+      # already-degraded database, which is worse than a human reading the
+      # smoke-test output first.

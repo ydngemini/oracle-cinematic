@@ -22,6 +22,14 @@ decision somebody made rather than a step that quietly did not happen.
         -F 'deployment_branch_policy[protected_branches]=false' \
         -F 'deployment_branch_policy[custom_branch_policies]=true'
       ```
+- [ ] **Create the `staging` environment too**, with staging's own secrets —
+      a separate app (`neoh-staging`), database, Valkey, Spaces bucket
+      (`neoh-media-staging`) and a **test-mode** Stripe key. The backend refuses
+      to boot with a live Stripe key under `ORACLE_ENV=staging`, and staging runs
+      in recovery mode regardless. Then set the repository variable
+      `STAGING_ENABLED=true`.
+- [ ] **Allow both origins on the Google Maps key.** It is referrer-locked and
+      compiled into the one frontend bundle both environments serve.
 - [ ] **Put the deploy secrets on that environment**, not on the repository —
       `DIGITALOCEAN_ACCESS_TOKEN`, `DIGITALOCEAN_REGISTRY`,
       `DIGITALOCEAN_APP_ID`, the `ORACLE_DB_*` admin credentials, the
@@ -55,17 +63,20 @@ decision somebody made rather than a step that quietly did not happen.
 
 ## Deploy
 
-- [ ] **Production approval** — Actions → CI → Run workflow, `confirm: deploy`.
-      There is no automatic deploy on merge, deliberately.
-- [ ] CI captures the rollback target, resolves digests, writes the release
-      manifest, and runs the migration precheck **before** touching the
-      database. If the precheck fails, stop — do not override it. It is
+- [ ] **The commit passed staging.** Merging to `main` builds it and deploys it
+      to staging automatically (once `STAGING_ENABLED=true`). Its CI run must
+      show `build release → staging` green — that run uploads the
+      `staging-verified-release-<sha>` production will deploy from.
+- [ ] **Look at staging yourself**, briefly. The smoke test proves it boots
+      and answers; it does not prove the change does what it was meant to.
+- [ ] **Promote** — Actions → CI → Run workflow on `main`, `confirm: deploy`,
+      `promote_sha: <the full SHA>`. Then approve it as the `production`
+      reviewer. Production never builds: it deploys the digests staging
+      verified, and refuses a SHA that never passed staging.
+- [ ] If the migration precheck fails, **stop — do not override it.** It is
       telling you the database is not the one this release expects.
-- [ ] Migrations run once, from the built image, before the new image serves
-      traffic.
-- [ ] The spec is applied with both digests substituted.
-- [ ] **Smoke test passes** — `GET /version` must report *this* release's
-      `git_sha`. If it reports something else, the deploy did not land.
+- [ ] **Smoke test passes** — `/version` reports *this* SHA, and a worker on
+      *this* SHA is alive. A worker still on the previous release fails it.
 
 ## After
 

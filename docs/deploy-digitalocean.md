@@ -213,48 +213,64 @@ component per DO's instructions, then:
 
 ## Deployment flow
 
-`push`/merge to `main` runs tests only — `backend`/`frontend` in
-`.github/workflows/ci.yml` (existing, unchanged): pytest +
-`pip_audit --strict`, eslint + typecheck + vitest + build + bundle budget.
-**Nothing deploys automatically.** This repo stays code-only against
-DigitalOcean until you deliberately trigger it — no DO secrets need to exist
-in GitHub Actions before then, and no CI run touches DigitalOcean by
-accident.
+**Build once. Promote the same artifact.** Two jobs in
+`.github/workflows/ci.yml`, and only the first one ever builds an image.
 
-To actually deploy, on deployment day: GitHub → Actions → CI → "Run
-workflow", branch `main`, type `deploy` into the `confirm` input (any other
-value, or leaving it blank, runs tests only and stops). Or from the CLI:
-`gh workflow run ci.yml --ref main -f confirm=deploy`. That runs the `deploy`
-job, after both test jobs pass:
-   1. Build the backend image with `--build-arg GIT_SHA/APP_VERSION/
-      BUILD_TIMESTAMP` (see `backend/Dockerfile`) and the frontend image
-      with its `VITE_*` build args.
-   2. Push both to DO Container Registry, tagged with the commit SHA
-      (`:latest` is pushed for convenience only and is never deployed).
-   3. **Capture the rollback target** — `doctl apps spec get` saves the
-      currently-deployed spec, digests included, as a 90-day artifact. A
-      rollback target is decided before an incident, not during one.
-   4. **Resolve both image digests from the registry.** A tag is a mutable
-      pointer and can be moved between the decision to deploy and the pull
-      that follows it; the digest is the content's own name. Read back, not
-      assumed.
-   5. **Build the release manifest** (`scripts/build-release-manifest.sh`)
-      — both digests, the migration head, an aggregate migration hash, the
-      run id. Uploaded as an artifact. No secrets.
-   6. **Migration precheck** (`scripts/migration-precheck.sh`) — aborts if
-      the target database is not the one this release expects: a migration
-      recorded that this release does not contain, an applied migration
-      whose file has since been edited, or a release head behind the
-      database's. A migration onto an unexpected schema is a corrupted
-      database *and* a failed deploy.
-   7. Run migrations against the SHA-tagged image (`run_migrations.py`).
-   8. **Substitute the digests into the app spec and apply it.** The
-      committed `infra/digitalocean/app.yaml` carries `__BACKEND_DIGEST__` /
-      `__FRONTEND_DIGEST__` placeholders — a real digest in git would pin
-      every future deploy to one historical build — and the deploy fails if
-      a placeholder survives substitution.
-   9. Run `infra/digitalocean/smoke-test.sh` against the live URL, asserting
-      `GET /version`'s `git_sha` matches what was just deployed.
+Every push and PR runs the `backend` and `frontend` test jobs. Merging does
+**not** deploy to production — ever.
+
+### 1. `release` — build, then prove it on staging
+
+Runs automatically on every push to `main` once the repository variable
+`STAGING_ENABLED` is `true`, or by hand: Actions → CI → Run workflow on
+`main`, `confirm: stage`. In the `staging` GitHub environment:
+
+1. **Confirms the target is the staging app** — `doctl apps get` must report
+   the name `neoh-staging`. Environment secrets share *names* across
+   environments, so a production app id pasted into staging would otherwise
+   deploy staging config over production.
+2. **Builds both images, once.** The backend gets `--build-arg GIT_SHA/
+   APP_VERSION/BUILD_TIMESTAMP`. The frontend is built **environment-
+   agnostic**: `VITE_API_BASE` and `VITE_WS_URL` are deliberately empty, so the
+   bundle calls its own origin — correct in both environments, because both
+   serve web and api from one origin. Baking an API URL would make production's
+   frontend call staging's API.
+3. Pushes both; **resolves both digests from the registry**.
+4. Writes the release manifest (`scripts/build-release-manifest.sh`).
+5. **Renders the staging spec** from the one `app.yaml`
+   (`scripts/render-app-spec.py`). `--check` proves staging and production
+   share no app, cluster, bucket or domain, and that staging runs every backend
+   component with `ORACLE_RECOVERY_MODE=1` — a staging Neoh cannot text a
+   client, charge a card, or email anyone.
+6. Migration precheck, then migrations **from the image by digest**.
+7. `doctl apps update` with the rendered spec.
+8. Smoke test — API, `/version`, **and a live worker on this release**.
+9. **Only then** uploads `staging-verified-release-<sha>`. Its existence is
+   the statement "this exact build ran on staging and passed."
+
+### 2. `promote` — production, no build
+
+Actions → CI → Run workflow on `main`, `confirm: deploy`,
+`promote_sha: <full SHA of a staged commit>`. In the `production` environment,
+after its required reviewer approves:
+
+1. Validates the SHA and confirms it is on `main`.
+2. **Downloads `staging-verified-release-<sha>`.** A SHA that never passed
+   staging has none, and the job refuses: production is never the first place
+   an artifact runs.
+3. Reads the digests staging verified, and confirms both images still exist in
+   the registry (garbage collection could have removed them).
+4. Confirms the target is the production app (`neoh`).
+5. **Captures the rollback target** — the currently-deployed spec, 90-day
+   artifact.
+6. Renders the production spec with **the same digests**.
+7. Migration precheck, migrations from the image by digest.
+8. `doctl apps update`, then the smoke test against *this* SHA.
+9. Uploads `production-release-<sha>-<attempt>` — manifest plus rendered spec,
+   kept 400 days. The GitHub run and its artifacts are the release record.
+
+One production deploy runs at a time and is never cancelled; a push to `main`
+mid-deploy cannot interrupt it.
 
 > **This flow was corrected on 2026-09-25, and the previous description of
 > it was false.** The app spec used to declare `dockerfile_path`, so App
@@ -265,17 +281,9 @@ job, after both test jobs pass:
 > including why the smoke test would have reported success anyway.
 
 Two DigitalOcean constraints shape this, both verified against current docs:
-`deploy_on_push` **cannot coexist with** `digest`, so CI drives deploys
-rather than a registry push doing it — which is the intent, since nothing
-should reach production because an image appeared somewhere. And `doctl apps
-update` does **not** re-pull when the tag is unchanged; only a changed digest
-makes it deterministic.
-
-There is intentionally no separate staging→production promotion step in
-this first pass — see "Remaining manual setup" below for adding one behind
-a second App Platform app + a manual-approval GitHub Environment. The
-release manifest is what would make that promotion checkable: staging
-records a digest, production asserts the same digest.
+`deploy_on_push` **cannot coexist with** `digest`, so CI drives deploys rather
+than a registry push doing it. And `doctl apps update` does **not** re-pull when
+the tag is unchanged; only a changed digest makes it deterministic.
 
 ## Release identity
 
@@ -412,9 +420,24 @@ needs your DO account and API token:
    available together in `nyc3` (App Platform, Managed PostgreSQL, Managed
    Valkey, and Spaces all list `nyc3` in DO's regional availability docs);
    pick a different region only if you have a specific reason to.
-2. `doctl apps create --spec infra/digitalocean/app.yaml` once, by hand, to
-   get the initial `app-id` — every deploy after that is `doctl apps
-   update` (which the CI job does).
+2. **Create both apps once, by hand.** The committed `app.yaml` carries
+   `__BACKEND_DIGEST__` / `__FRONTEND_DIGEST__` placeholders, so it cannot be
+   applied directly — `doctl apps create --spec infra/digitalocean/app.yaml`
+   will fail, deliberately. Bootstrap:
+   ```sh
+   doctl registry login
+   docker build -t registry.digitalocean.com/<reg>/neoh-backend:bootstrap -f backend/Dockerfile .
+   docker build -t registry.digitalocean.com/<reg>/neoh-frontend:bootstrap -f oracle-app/Dockerfile oracle-app
+   docker push …/neoh-backend:bootstrap && docker push …/neoh-frontend:bootstrap
+   # read each digest back:  docker inspect --format '{{index .RepoDigests 0}}' <image>
+   for env in staging production; do
+     scripts/render-app-spec.py --env $env --backend-digest sha256:… --frontend-digest sha256:… > app.$env.yaml
+     doctl apps create --spec app.$env.yaml
+   done
+   ```
+   Every deploy after that is `doctl apps update`, which CI does. Create the
+   staging database, Valkey and Spaces bucket first — the staging spec names
+   `neoh-postgres-staging`, `neoh-redis-staging` and `neoh-media-staging`.
 3. Set the GitHub Actions secrets listed in §Secrets.
 4. Attach your domain to the `api` and `web` components in the DO control
    panel; DO issues TLS automatically once DNS resolves.
@@ -423,10 +446,14 @@ needs your DO account and API token:
 6. Decide on `ORACLE_MISSIONS_ENABLED` — left `0` in `app.yaml` on purpose;
    flip it once the Missions AI-agent feature has been reviewed for this
    tenant (see `SYPHER_VAULT/10_Active_Builds/Neoh_AI_Real_Estate_Agent.md`).
-7. Optional: a staging App Platform app + a GitHub Environment required-
-   reviewer rule on top of the manual `confirm=deploy` trigger, if
-   "an authorized person clicks Run workflow" isn't a strong enough gate
-   once real customers are on it.
+7. **Staging is not optional.** Production promotes only what passed
+   staging, so until staging exists nothing can reach production. Create the
+   `staging` and `production` GitHub environments (the production one with a
+   required reviewer), put each environment's secrets on it rather than on the
+   repository, then set the repository variable `STAGING_ENABLED=true`. See
+   `docs/release-checklist.md`.
+8. **The Google Maps key must allow both origins.** It is referrer-locked and
+   compiled into the one frontend bundle that both environments serve.
 
 ## Estimated minimum infrastructure for the first 10 customers
 
