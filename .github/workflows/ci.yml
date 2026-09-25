@@ -315,6 +315,56 @@ jobs:
         env:
           REGISTRY: registry.digitalocean.com/${{ secrets.DIGITALOCEAN_REGISTRY }}
 
+      # Supply chain — before this build is allowed anywhere near staging.
+      #
+      # Scans what SHIPS: the backend image (OS packages + Python deps) and the
+      # frontend's npm lockfile (the static bundle is all production serves —
+      # DigitalOcean copies output_dir to its CDN, so the nginx and node layers
+      # of the frontend image never run there). Measured 2026-09-25: 0 fixable
+      # CRITICAL/HIGH in either. The build-stage node image carries 1 CRITICAL
+      # and 10 HIGH, which is why it is deliberately NOT what is scanned.
+      #
+      # Policy (docs/supply-chain-policy.md): a fixable CRITICAL blocks the
+      # release; HIGH is reported, not blocking. Trivy runs inside the runner —
+      # no SaaS account — and is itself pinned by digest.
+      - name: Vulnerability scan (fixable CRITICAL blocks)
+        run: |
+          set -euo pipefail
+          T="docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v $PWD:/src:ro ${TRIVY}"
+          $T image --quiet --no-progress --scanners vuln --ignore-unfixed \
+            --severity CRITICAL --exit-code 1 "${REGISTRY}/neoh-backend:${{ steps.release.outputs.sha }}"
+          $T fs --quiet --no-progress --scanners vuln --ignore-unfixed \
+            --severity CRITICAL --exit-code 1 /src/oracle-app/package-lock.json
+          echo "--- HIGH (reported, not blocking) ---"
+          $T image --quiet --no-progress --scanners vuln --ignore-unfixed \
+            --severity HIGH "${REGISTRY}/neoh-backend:${{ steps.release.outputs.sha }}" || true
+        env:
+          REGISTRY: registry.digitalocean.com/${{ secrets.DIGITALOCEAN_REGISTRY }}
+          TRIVY: aquasec/trivy:0.58.1@sha256:ab70a02200597efa04748f210f793936eb647cbcdb0ea69cc30b226d6f5a22c7
+
+      # An SBOM per release: which package, at which version, is inside the
+      # artifact that is running. Kept with the release so an incident ("are we
+      # exposed to CVE-X?") is answered by a lookup, not a rebuild.
+      - name: Generate SBOMs
+        run: |
+          set -euo pipefail
+          T="docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v $PWD:/src ${TRIVY}"
+          $T image --quiet --no-progress --format cyclonedx \
+            --output /src/sbom-backend.cdx.json "${REGISTRY}/neoh-backend:${{ steps.release.outputs.sha }}"
+          $T fs --quiet --no-progress --format cyclonedx \
+            --output /src/sbom-frontend.cdx.json /src/oracle-app/package-lock.json
+          ls -la sbom-*.cdx.json
+        env:
+          REGISTRY: registry.digitalocean.com/${{ secrets.DIGITALOCEAN_REGISTRY }}
+          TRIVY: aquasec/trivy:0.58.1@sha256:ab70a02200597efa04748f210f793936eb647cbcdb0ea69cc30b226d6f5a22c7
+
+      - name: Upload SBOMs
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-${{ steps.release.outputs.sha }}
+          path: sbom-*.cdx.json
+          retention-days: 400
+
       - name: Build release manifest
         run: |
           chmod +x scripts/build-release-manifest.sh

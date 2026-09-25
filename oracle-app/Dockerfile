@@ -7,7 +7,14 @@
 # empty base is only valid behind an ingress that actually proxies /api and /ws.
 
 # ---- build stage ----------------------------------------------------------
-FROM node:24.18.0-alpine AS build
+# Base image pinned by DIGEST (resolved 2026-09-25), with the tag kept only so
+# a human can read it. A tag like `3.12-slim` is repointed upstream whenever
+# the image is rebuilt, so every build silently picked up whatever it meant
+# that day — builds were not reproducible. Pinned, the same commit builds the
+# same base. The cost is that upstream patches no longer arrive by accident:
+# the release job's Trivy scan fails on a fixable CRITICAL, and that is the
+# signal to refresh this digest (docs/supply-chain-policy.md).
+FROM node:24.18.0-alpine@sha256:a0b9bf06e4e6193cf7a0f58816cc935ff8c2a908f81e6f1a95432d679c54fbfd AS build
 WORKDIR /app
 
 # Install deps against the lockfile first so this layer caches across source edits.
@@ -39,7 +46,7 @@ ENV VITE_MUNICIPAL_HARVESTS_ENABLED=${VITE_MUNICIPAL_HARVESTS_ENABLED}
 RUN npm run build
 
 # ---- serve stage ----------------------------------------------------------
-FROM nginx:1.30.4-alpine AS serve
+FROM nginx:1.30.4-alpine@sha256:dc5069ad14f19660b141b21236140b91656bf89bbc3e2417c70ae650cd66104c AS serve
 
 # Drop nginx's default site; install our SPA config (listens on 8080, non-root).
 RUN rm /etc/nginx/conf.d/default.conf

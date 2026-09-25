@@ -560,3 +560,38 @@ def test_staging_is_automatic_only_once_enabled():
 def test_promote_can_read_the_staging_run_it_came_from():
     perms = _workflow()["jobs"]["promote"]["permissions"]
     assert perms.get("actions") == "read" and perms.get("contents") == "read"
+
+
+# ── Supply chain (§44–§46) ─────────────────────────────────────────────────
+
+@pytest.mark.parametrize("dockerfile", ["backend/Dockerfile", "oracle-app/Dockerfile"])
+def test_every_base_image_is_pinned_by_digest(dockerfile):
+    """A tag is repointed upstream; builds from it are not reproducible."""
+    lines = [l for l in (REPO / dockerfile).read_text(encoding="utf-8").splitlines()
+             if l.startswith("FROM ")]
+    assert lines
+    for line in lines:
+        assert "@sha256:" in line, f"{dockerfile}: unpinned base image: {line}"
+
+
+def test_a_fixable_critical_blocks_the_release_before_staging():
+    steps = _steps("release")
+    names = [s.get("name", "") for s in steps]
+    scan = names.index("Vulnerability scan (fixable CRITICAL blocks)")
+    first_deploy = next(i for i, n in enumerate(names) if n.startswith("Deploy"))
+    assert scan < first_deploy
+    run = steps[scan]["run"]
+    assert "--severity CRITICAL --exit-code 1" in run and "--ignore-unfixed" in run
+    assert "neoh-backend" in run and "package-lock.json" in run
+
+
+def test_the_scanner_itself_is_pinned():
+    for s in _steps("release"):
+        trivy = (s.get("env") or {}).get("TRIVY")
+        if trivy:
+            assert "@sha256:" in trivy
+
+
+def test_every_release_keeps_an_sbom():
+    uploads = [s for s in _steps("release") if s.get("uses", "").startswith("actions/upload-artifact")]
+    assert any("sbom-" in u["with"]["name"] for u in uploads)

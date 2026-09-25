@@ -1,4 +1,11 @@
-FROM python:3.12-slim
+# Base image pinned by DIGEST (resolved 2026-09-25), with the tag kept only so
+# a human can read it. A tag like `3.12-slim` is repointed upstream whenever
+# the image is rebuilt, so every build silently picked up whatever it meant
+# that day — builds were not reproducible. Pinned, the same commit builds the
+# same base. The cost is that upstream patches no longer arrive by accident:
+# the release job's Trivy scan fails on a fixable CRITICAL, and that is the
+# signal to refresh this digest (docs/supply-chain-policy.md).
+FROM python:3.12-slim@sha256:2f17fc044b579bab302c2e8054d3a686e2cb9a83de48e70534b94cd8ebbe06a9
 
 # Build argument allows pinning a custom pip index (e.g. a private PyPI mirror).
 ARG PIP_INDEX_URL=https://pypi.org/simple
