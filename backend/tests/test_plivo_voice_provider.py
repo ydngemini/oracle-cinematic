@@ -57,8 +57,8 @@ def test_place_call_uses_verified_from_number_and_answer_url(monkeypatch):
         provider.place_call(
             to_number="+15551234567",
             from_number="+13025551234",
-            answer_url="https://neoh.example/api/commands/webhooks/plivo",
-            status_callback_url="https://neoh.example/api/commands/webhooks/plivo/status",
+            answer_url="https://neoh.example/api/telephony/webhooks/plivo",
+            status_callback_url="https://neoh.example/api/telephony/webhooks/plivo/status",
             credentials=CREDENTIALS,
         )
     )
@@ -68,7 +68,7 @@ def test_place_call_uses_verified_from_number_and_answer_url(monkeypatch):
     kwargs = fake_calls.create.call_args.kwargs
     assert kwargs["from_"] == "+13025551234"
     assert kwargs["to_"] == "+15551234567"
-    assert kwargs["answer_url"] == "https://neoh.example/api/commands/webhooks/plivo"
+    assert kwargs["answer_url"] == "https://neoh.example/api/telephony/webhooks/plivo"
 
 
 def test_place_call_rejects_non_e164_from_number():

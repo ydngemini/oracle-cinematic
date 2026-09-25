@@ -62,6 +62,18 @@ logger = logging.getLogger("oracle.telephony")
 
 router = APIRouter(prefix="/api/telephony", tags=["Telephony"])
 
+#: The URLs Neoh hands Plivo when it PLACES an outbound call. Defined here, next
+#: to the handlers, and imported by commands_api — never re-typed there.
+#:
+#: They were re-typed once. Commit 899f604 put these handlers under
+#: /api/telephony and, in the same commit, built the answer and status URLs
+#: under /api/commands, where no route exists. Every AI-placed outbound Plivo
+#: call — the primary voice carrier — asked Plivo to fetch a 404 for its call
+#: instructions. tests/test_plivo_outbound_webhooks.py resolves these against
+#: the live route table so the two can never drift apart again.
+PLIVO_OUTBOUND_ANSWER_PATH = "/api/telephony/webhooks/plivo"
+PLIVO_OUTBOUND_STATUS_PATH = "/api/telephony/webhooks/plivo/status"
+
 _ACCOUNT_SID_RE = re.compile(r"^AC[0-9a-fA-F]{32}$")
 _SIP_DOMAIN_RE = re.compile(r"^[A-Za-z0-9.-]{1,253}$")
 _TERMINAL_CALL_STATUSES = {
@@ -1576,6 +1588,32 @@ async def plivo_inbound_status(endpoint_key: str, request: Request) -> Response:
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
+async def _outbound_plivo_tokens(state: dict[str, Any]) -> list[str]:
+    """Signing tokens for an OUTBOUND Plivo call.
+
+    The inbound routes resolve tokens from the telephony route. An outbound call
+    has no route; its state records the tenant and the Plivo account that placed
+    it. The tenant's own token is accepted only when that account placed the
+    call — the same rule _route_plivo_tokens applies — plus the platform tokens.
+    With no token at all, validate_plivo_signature fails closed (503).
+    """
+    tokens: list[str] = []
+    try:
+        tenant_ctx = TenantContext(
+            agent_id="plivo-outbound-webhook",
+            tenant_id=str(state.get("tenant_id") or ""),
+            role=Role.AGENT,
+        )
+        credentials = await _plivo_credentials(tenant_ctx)
+    except Exception:  # noqa: BLE001 — fall back to platform tokens; never fail open
+        credentials = {}
+    auth_id = str(credentials.get("auth_id") or "")
+    if auth_id and auth_id == str(state.get("account_id") or ""):
+        tokens.append(str(credentials.get("auth_token") or ""))
+    tokens.extend(_plivo_auth_tokens())
+    return [token for token in dict.fromkeys(tokens) if token]
+
+
 @router.post("/webhooks/plivo", include_in_schema=False)
 async def plivo_outbound_answer(request: Request) -> Response:
     """Answer URL for a Neoh AI-placed outbound Plivo call.
@@ -1606,6 +1644,16 @@ async def plivo_outbound_answer(request: Request) -> Response:
             content=adapter.safe_hangup_markup("This call cannot be connected safely. Goodbye."),
             media_type="application/xml",
         )
+    # Before anything that matters. This handler used to check only that call
+    # state existed for the posted CallUUID, and then returned the media-stream
+    # URL AND the bridge token for that live call — so anyone presenting a live
+    # UUID (they appear in logs and provider dashboards) could obtain the
+    # credentials to the call's realtime audio. The four inbound Plivo routes
+    # always validated; these two outbound routes never did.
+    validate_plivo_signature(
+        request, form, PLIVO_OUTBOUND_ANSWER_PATH,
+        tokens=await _outbound_plivo_tokens(state),
+    )
     if not plivo_qwen_enabled(state):
         return Response(
             content=adapter.safe_hangup_markup(
@@ -1635,12 +1683,34 @@ async def plivo_outbound_answer(request: Request) -> Response:
 @router.post("/webhooks/plivo/status", include_in_schema=False)
 async def plivo_outbound_status(request: Request) -> Response:
     """Status callback for a Neoh AI-placed outbound Plivo call."""
-    from plivo_call_handler import PlivoCallStateUnavailable, cleanup_plivo_call
+    from plivo_call_handler import (
+        PlivoCallStateUnavailable,
+        cleanup_plivo_call,
+        load_plivo_call_state,
+    )
 
     form = await request.form()
     call_uuid = str(form.get("CallUUID") or "")
     call_status = str(form.get("CallStatus") or "").strip().lower()
-    if call_uuid and call_status in _PLIVO_TERMINAL_STATUSES:
+    if not call_uuid:
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+    try:
+        state = await load_plivo_call_state(call_uuid)
+    except PlivoCallStateUnavailable:
+        # Cannot tell whose call this is, so cannot verify it — and an
+        # unverified request must not act. The state carries a TTL, so a
+        # missed cleanup expires on its own.
+        logger.warning("Plivo status callback not verifiable (state unavailable): uuid=%s", call_uuid)
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+    if state is None:
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+    # This used to run cleanup_plivo_call for ANY posted UUID with a terminal
+    # status, unauthenticated — enough to tear down a live call mid-conversation.
+    validate_plivo_signature(
+        request, form, PLIVO_OUTBOUND_STATUS_PATH,
+        tokens=await _outbound_plivo_tokens(state),
+    )
+    if call_status in _PLIVO_TERMINAL_STATUSES:
         try:
             await cleanup_plivo_call(call_uuid)
         except PlivoCallStateUnavailable:

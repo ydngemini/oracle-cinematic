@@ -2491,6 +2491,10 @@ async def _execute_command_job(payload: dict[str, Any], reporter) -> dict[str, A
                     ensure_plivo_call_state_available,
                     initialize_outbound_plivo_call_state,
                 )
+                from telephony_api import (
+                    PLIVO_OUTBOUND_ANSWER_PATH,
+                    PLIVO_OUTBOUND_STATUS_PATH,
+                )
                 from voice_provider import get_voice_provider
 
                 adapter = get_voice_provider("plivo")
@@ -2498,8 +2502,11 @@ async def _execute_command_job(payload: dict[str, Any], reporter) -> dict[str, A
                 provider_result = await adapter.place_call(
                     to_number=str(target.get("phone") or ""),
                     from_number=verified_caller_id,
-                    answer_url=f"{base}/api/commands/webhooks/plivo",
-                    status_callback_url=f"{base}/api/commands/webhooks/plivo/status",
+                    # Imported, not re-typed: these URLs were once written as
+                    # /api/commands/… — a path with no route — so every
+                    # outbound Plivo call fetched a 404 for its instructions.
+                    answer_url=f"{base}{PLIVO_OUTBOUND_ANSWER_PATH}",
+                    status_callback_url=f"{base}{PLIVO_OUTBOUND_STATUS_PATH}",
                     credentials=plivo_credentials,
                 )
                 account_id = str(
