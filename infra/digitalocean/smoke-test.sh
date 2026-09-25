@@ -115,6 +115,26 @@ else
   esac
 fi
 
+echo "== 2c. Provider callback URLs are still reachable =="
+# Registered in provider dashboards; a release that moves one fails silently.
+# Each probe is unsigned and must get its EXACT expected status — an unmounted
+# POST path is answered 403 by the CSRF middleware, so "not 404" would pass a
+# missing webhook. See infra/digitalocean/callback-routes.txt.
+CALLBACKS="$(dirname "${BASH_SOURCE[0]}")/callback-routes.txt"
+if [ -f "$CALLBACKS" ]; then
+  while read -r method path want provider; do
+    case "$method" in ''|'#'*) continue ;; esac
+    got=$(curl -s -m 15 -o /dev/null -w '%{http_code}' -X "$method" "$APP_URL$path" || echo "000")
+    if [ "$got" = "$want" ]; then
+      pass "$provider callback $method $path -> $got"
+    else
+      fail "$provider callback $method $path -> $got (expected $want) — the provider's deliveries are failing"
+    fi
+  done < "$CALLBACKS"
+else
+  fail "callback-routes.txt not found next to this script"
+fi
+
 echo "== 3. API router is mounted =="
 api_code=$(curl -s -o /dev/null -w '%{http_code}' "$APP_URL/api/commands" || echo "000")
 case "$api_code" in

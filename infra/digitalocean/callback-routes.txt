@@ -1,0 +1,21 @@
+# Public URLs registered in provider dashboards. If a release moves or unmounts
+# one, the provider simply gets errors — no alert, no exception on our side —
+# and the calls, payments or messages quietly stop arriving.
+#
+# Each line: METHOD PATH EXPECTED-STATUS-FOR-AN-UNSIGNED-REQUEST PROVIDER
+#
+# The status is EXACT, not "anything but 404": an unmounted POST path is
+# answered by the CSRF middleware with 403 before routing, so "not 404" would
+# pass a missing webhook. Every probe here is unsigned and rejected (or, for the
+# Plivo answer URL with no CallUUID, answered with a hang-up), so running it
+# against production has no side effect.
+#
+# Read by infra/digitalocean/smoke-test.sh (reachable when deployed) and by
+# backend/tests/test_callback_routes.py (mounted and CSRF-exempt, in CI).
+POST /billing/webhook                                  400 stripe
+POST /api/messaging/webhooks/telnyx                    400 telnyx
+POST /api/telephony/webhooks/plivo                     200 plivo
+POST /api/telephony/webhooks/plivo/status              204 plivo
+GET  /api/commands/providers/google/oauth/callback     422 google-oauth
+POST /api/commands/webhooks/twilio                     400 twilio
+POST /api/commands/webhooks/twilio/status              400 twilio

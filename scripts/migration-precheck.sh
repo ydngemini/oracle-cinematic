@@ -74,6 +74,50 @@ else
   echo; echo "  Aborting: nothing below can be checked."; exit 1
 fi
 
+# ── 1b. This database is the environment we mean to migrate ────────────────
+#
+# The app-name guard in CI protects the App Platform app, but migrations
+# connect with ORACLE_DB_HOST from the environment's secrets, and nothing
+# checked WHICH database that is. A production host pasted into the staging
+# environment would have migrated production from a staging run.
+#
+# So each database carries an identity, set once at bootstrap:
+#
+#     COMMENT ON DATABASE <db> IS 'neoh-environment=production';
+#
+# A database-level comment needs no schema migration, and it is NOT carried by
+# pg_dump — so a database restored from backup arrives unstamped and fails this
+# check until someone deliberately re-identifies it. That is the right default
+# for a freshly restored database.
+#
+# When ORACLE_EXPECTED_ENVIRONMENT is set (CI always sets it), the stamp must
+# match exactly. Missing or ambiguous fails closed.
+
+STAMP="$("${Q[@]}" -c "SELECT coalesce(shobj_description(oid, 'pg_database'), '')
+                       FROM pg_database WHERE datname = current_database();" 2>/dev/null)"
+DB_ENV="$(printf '%s' "$STAMP" | sed -n 's/.*neoh-environment=\([a-z0-9_-]*\).*/\1/p')"
+
+if [ -n "${ORACLE_EXPECTED_ENVIRONMENT:-}" ]; then
+  if [ -z "$DB_ENV" ]; then
+    bad "this database carries no environment stamp, and this run expects
+        '$ORACLE_EXPECTED_ENVIRONMENT'. Refusing to guess which database this is.
+        If it really is $ORACLE_EXPECTED_ENVIRONMENT, stamp it once:
+          COMMENT ON DATABASE $ORACLE_DB_NAME IS 'neoh-environment=$ORACLE_EXPECTED_ENVIRONMENT';"
+    echo; echo "  Aborting before touching anything."; exit 1
+  elif [ "$DB_ENV" != "$ORACLE_EXPECTED_ENVIRONMENT" ]; then
+    bad "this is the '$DB_ENV' database, and this run is for
+        '$ORACLE_EXPECTED_ENVIRONMENT'. The environment's DB secrets point at the
+        wrong database."
+    echo; echo "  Aborting before touching anything."; exit 1
+  else
+    ok "database identifies as '$DB_ENV', as this run expects"
+  fi
+elif [ -n "$DB_ENV" ]; then
+  warn "database identifies as '$DB_ENV' (ORACLE_EXPECTED_ENVIRONMENT not set, not enforced)"
+else
+  warn "database has no environment stamp (ORACLE_EXPECTED_ENVIRONMENT not set, not enforced)"
+fi
+
 # ── 2. The ledger exists and is readable ───────────────────────────────────
 
 LEDGER_ROWS="$("${Q[@]}" -c "SELECT count(*) FROM schema_migrations;" 2>/dev/null)"
