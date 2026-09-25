@@ -63,6 +63,58 @@ else
   pass "live release: git_sha=$live_sha migration_head=$migration_head"
 fi
 
+echo "== 2b. Background worker is alive, on THIS release =="
+# The API passing says nothing about the worker, which serves no route. A
+# release whose worker crashed on boot used to pass this script while every
+# background job stopped. GET /health/workers reads the heartbeats workers
+# write every 30 s (backend/process_heartbeat.py).
+#
+# Waits, because the worker rolls over on its own schedule: it may still be
+# draining the previous release's jobs (grace_period_seconds: 300) when the API
+# is already serving. The check is for a live worker whose git_sha is THIS
+# release — a previous-release worker still running jobs against a schema the
+# new API has changed is a failed release, not a healthy one.
+WORKER_WAIT="${WORKER_WAIT_SECONDS:-420}"
+waited=0
+worker_ok=0
+worker_body="{}"
+while [ "$waited" -le "$WORKER_WAIT" ]; do
+  worker_body=$(curl -s -m 10 "$APP_URL/health/workers" || echo "{}")
+  verdict=$(printf '%s' "$worker_body" | EXPECTED="${EXPECTED_GIT_SHA:-}" python3 -c '
+import json, os, sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    print("unreadable"); raise SystemExit
+want = os.environ.get("EXPECTED", "")
+live = d.get("live_git_shas") or []
+if not d.get("healthy"):
+    print("dead")
+elif want and want not in live:
+    print("stale:" + ",".join(live))
+elif want and len(live) > 1:
+    print("mixed:" + ",".join(live))
+else:
+    print("ok")
+' 2>/dev/null || echo "unreadable")
+  case "$verdict" in
+    ok) worker_ok=1; break ;;
+  esac
+  sleep 15
+  waited=$((waited + 15))
+done
+info "$worker_body"
+if [ "$worker_ok" = "1" ]; then
+  pass "a live worker is running ${EXPECTED_GIT_SHA:-the current release}"
+else
+  case "$verdict" in
+    dead)       fail "no live worker after ${WORKER_WAIT}s — background jobs are not running" ;;
+    stale:*)    fail "live worker(s) are on ${verdict#stale:}, not ${EXPECTED_GIT_SHA} — the worker did not roll over" ;;
+    mixed:*)    fail "workers on more than one release (${verdict#mixed:}) after ${WORKER_WAIT}s — a rollout is stuck" ;;
+    *)          fail "GET /health/workers unreadable — cannot tell whether background jobs run" ;;
+  esac
+fi
+
 echo "== 3. API router is mounted =="
 api_code=$(curl -s -o /dev/null -w '%{http_code}' "$APP_URL/api/commands" || echo "000")
 case "$api_code" in

@@ -145,6 +145,10 @@ async def lifespan(app: FastAPI):
     if config.RUNS_BACKGROUND_WORK:
         await start_job_workers()
         await start_periodic_scheduler()
+        # Last, so a beat means "this worker actually got through startup",
+        # not merely "the process exists". See process_heartbeat.py.
+        from process_heartbeat import start_heartbeat
+        await start_heartbeat()
     # AWS observability broadcaster is opt-in: it polls Cost Explorer (billed
     # per call) and the infra APIs. Off unless AWS_OBSERVABILITY_ENABLED is set;
     # even when enabled, the loop only calls AWS while a client is connected.
@@ -169,6 +173,8 @@ async def lifespan(app: FastAPI):
             except asyncio.CancelledError:
                 pass
         if config.RUNS_BACKGROUND_WORK:
+            from process_heartbeat import stop_heartbeat
+            await stop_heartbeat()
             await stop_periodic_scheduler()
             await stop_job_workers()
             await stop_disposition_enforcer()
@@ -411,6 +417,43 @@ async def health() -> JSONResponse:
     }
     status_code = 200 if db_ok else 503
     return JSONResponse(content=body, status_code=status_code)
+
+
+@app.get("/health/workers")
+async def health_workers() -> JSONResponse:
+    """Is a background worker alive, and which build is it running?
+
+    The release smoke test used to check only the API. The worker serves no
+    route, so a release whose worker crashed on boot passed while every
+    background job silently stopped. This reads the heartbeats workers write
+    (process_heartbeat.py) and answers with liveness AND git SHA, so a check can
+    require that the worker rolled over to the new release rather than merely
+    that some worker, possibly the previous one, is still up.
+
+    Unauthenticated like /health and /version: a deploy check needs it before
+    any credential exists. It exposes role, SHA and ages — never hostnames.
+
+    Returns 503 when no worker is live, so a load balancer or uptime check that
+    only looks at status codes still sees the failure.
+    """
+    import process_heartbeat
+
+    pool = get_pool()
+    if pool is None:
+        return JSONResponse(status_code=503, content={
+            "healthy": False, "reason": "database unavailable",
+        })
+    try:
+        async with asyncio.timeout(2.0):
+            async with pool.acquire() as conn:
+                rows = [dict(r) for r in await conn.fetch(process_heartbeat.READ_WORKERS_SQL)]
+    except Exception:  # noqa: BLE001 — a health probe must answer, not 500
+        logger.warning("Could not read worker heartbeats", exc_info=True)
+        return JSONResponse(status_code=503, content={
+            "healthy": False, "reason": "heartbeats unreadable",
+        })
+    summary = process_heartbeat.summarize(rows)
+    return JSONResponse(status_code=200 if summary["healthy"] else 503, content=summary)
 
 
 @app.get("/version")
