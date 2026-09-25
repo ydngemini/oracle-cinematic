@@ -1,4 +1,29 @@
 #!/usr/bin/env bash
+# ── LEGACY: AWS — NOT Neoh's production deploy ─────────────────────────────
+# Neoh production runs on DigitalOcean App Platform (docs/deploy-digitalocean.md
+# since 2026-09-21). This script targets the RETIRED AWS ECS stack. Its own
+# header may still say "prod"; that was true once and is not now.
+#
+# It refuses to run unless you state you mean AWS, so nobody runs it believing
+# it deploys Neoh. Scripts that call each other inherit the variable, so the
+# legacy path still works end to end for anyone who genuinely needs it.
+if [ "${NEOH_LEGACY_AWS:-}" != "1" ]; then
+  cat >&2 <<'LEGACY_AWS'
+
+  REFUSING: this is the retired AWS deploy path, not Neoh production.
+
+  Neoh production is DigitalOcean App Platform:
+    - deploy:    GitHub Actions -> CI -> Run workflow on main, confirm=deploy
+    - rollback:  scripts/rollback.sh --to <release-manifest.json>
+    - runbook:   docs/deploy-digitalocean.md
+    - checklist: docs/release-checklist.md
+
+  If you really do mean the legacy AWS stack, re-run with NEOH_LEGACY_AWS=1.
+
+LEGACY_AWS
+  exit 64
+fi
+
 # Deliver the Fireworks API key to the deployed containers.
 #
 # Follows the pattern already used for admin-passphrase / redis-url / stripe:

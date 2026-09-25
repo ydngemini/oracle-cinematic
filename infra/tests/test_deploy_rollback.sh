@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# Exercises the LEGACY AWS deploy path deliberately, so it opts in. The
+# DigitalOcean equivalent is backend/tests/test_release_immutability.py.
+export NEOH_LEGACY_AWS=1
+
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"

@@ -1,3 +1,16 @@
+> ## ⚠ LEGACY — AWS. This is NOT how Neoh production is deployed.
+>
+> Neoh production moved to **DigitalOcean App Platform** on 2026-09-21. This
+> document describes the retired AWS ECS stack, and the scripts it names in
+> `infra/scripts/` now refuse to run unless `NEOH_LEGACY_AWS=1` is set, so that
+> nobody runs one believing it ships Neoh.
+>
+> For production use **`docs/deploy-digitalocean.md`** (runbook),
+> **`docs/release-checklist.md`** (every release), and
+> **`scripts/rollback.sh`** (rollback). Kept for reference and for anyone
+> deliberately operating the AWS account; not deleted, because the Terraform
+> state it describes may still exist.
+
 # Neoh — AWS Production Deploy Runbook
 
 Full AWS deployment matching `HARDENING.md`: Aurora PostgreSQL (Serverless v2,

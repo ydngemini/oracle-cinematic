@@ -334,3 +334,123 @@ def test_the_deploy_job_names_the_production_environment():
     assert _workflow()["jobs"]["deploy"]["environment"] == "production"
     checklist = (REPO / "docs" / "release-checklist.md").read_text(encoding="utf-8")
     assert "required reviewer" in checklist.lower()
+
+
+# ── Legacy AWS paths cannot be mistaken for production (§37, §60.12) ───────
+
+LEGACY_SCRIPTS = sorted((REPO / "infra" / "scripts").glob("*.sh"))
+
+
+def test_there_are_legacy_scripts_to_guard():
+    assert LEGACY_SCRIPTS, "infra/scripts moved? update this test"
+
+
+@pytest.mark.parametrize("script", LEGACY_SCRIPTS, ids=lambda p: p.name)
+def test_every_aws_script_refuses_to_run_without_opt_in(script):
+    """Several still describe themselves as deploying "to prod". A guard is
+    stronger than a rename: it actually stops the operator, and it does not
+    break the references a rename would."""
+    body = script.read_text(encoding="utf-8")
+    assert 'NEOH_LEGACY_AWS:-}" != "1"' in body
+    assert "exit 64" in body
+    # The guard must run BEFORE anything else does.
+    first_code = next(
+        i for i, line in enumerate(body.splitlines()[1:], 1)
+        if line.strip() and not line.lstrip().startswith("#")
+    )
+    assert "NEOH_LEGACY_AWS" in body.splitlines()[first_code], (
+        f"{script.name}: the guard must be the first executable line"
+    )
+
+
+def test_an_aws_script_actually_refuses():
+    import subprocess
+
+    env = {k: v for k, v in __import__("os").environ.items() if k != "NEOH_LEGACY_AWS"}
+    proc = subprocess.run(
+        ["bash", str(REPO / "infra" / "scripts" / "deploy-update.sh")],
+        capture_output=True, text=True, env=env, timeout=30,
+    )
+    assert proc.returncode == 64
+    assert "not Neoh production" in proc.stderr
+
+
+def test_ci_never_executes_a_legacy_script(ci):
+    body = _uncommented(ci)
+    assert "infra/scripts/" not in body
+
+
+@pytest.mark.parametrize("doc", ["docs/deploy-digitalocean.md", "docs/release-checklist.md"])
+def test_production_docs_never_send_an_operator_to_the_aws_path(doc):
+    assert "infra/scripts/" not in (REPO / doc).read_text(encoding="utf-8")
+
+
+def test_the_aws_runbook_says_it_is_legacy_before_anything_else():
+    head = (REPO / "infra" / "DEPLOY.md").read_text(encoding="utf-8")[:400]
+    assert "LEGACY" in head and "NOT" in head and "DigitalOcean" in head
+
+
+# ── The DigitalOcean rollback, executed against a mocked doctl (§38) ───────
+#
+# The only rollback test that actually RAN a script exercised the legacy AWS
+# path. This is its DigitalOcean equivalent: rollback.sh --apply for real, with
+# a fake doctl on PATH that records what it was asked to do.
+
+def _run_rollback(tmp_path, target_head: str, current_head: str):
+    import json
+    import os
+    import subprocess
+
+    calls = tmp_path / "doctl-calls.txt"
+    fake = tmp_path / "bin"
+    fake.mkdir()
+    doctl = fake / "doctl"
+    doctl.write_text(
+        "#!/usr/bin/env bash\n"
+        f'echo "$@" >> "{calls}"\n'
+        # Keep a copy of the spec it was handed, to check the digests.
+        'for a in "$@"; do case "$prev" in --spec) cp "$a" "' + str(tmp_path) + '/applied.yaml";; esac; prev="$a"; done\n'
+        "exit 0\n"
+    )
+    doctl.chmod(0o755)
+
+    target = tmp_path / "target.json"
+    target.write_text(json.dumps({
+        "release_id": "goodsha",
+        "backend_digest": "sha256:" + "a" * 64,
+        "frontend_digest": "sha256:" + "b" * 64,
+        "migration_head": target_head,
+    }))
+    current = tmp_path / "current.json"
+    current.write_text(json.dumps({"migration_head": current_head}))
+
+    env = {**os.environ, "PATH": f"{fake}:{os.environ['PATH']}",
+           "DIGITALOCEAN_APP_ID": "app-123",
+           "ORACLE_ROLLBACK_SPEC": str(tmp_path / "rollback.yaml")}
+    proc = subprocess.run(
+        ["bash", str(REPO / "scripts" / "rollback.sh"),
+         "--to", str(target), "--from", str(current), "--apply"],
+        capture_output=True, text=True, env=env, timeout=60,
+    )
+    return proc, (calls.read_text() if calls.exists() else ""), tmp_path
+
+
+def test_do_rollback_applies_the_previous_digests(tmp_path):
+    proc, calls, work = _run_rollback(
+        tmp_path, "0109_brokerage_onboarding.sql", "0110_mls_production_readiness.sql")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "apps update app-123 --spec" in calls
+    assert "--wait" in calls
+    applied = (work / "applied.yaml").read_text()
+    assert "sha256:" + "a" * 64 in applied, "api/worker not pinned to the target backend digest"
+    assert "sha256:" + "b" * 64 in applied, "web not pinned to the target frontend digest"
+    assert "__BACKEND_DIGEST__" not in applied and "__FRONTEND_DIGEST__" not in applied
+
+
+def test_do_rollback_never_calls_doctl_across_a_destructive_migration(tmp_path):
+    """0111 drops columns. --apply must not reach DigitalOcean at all."""
+    proc, calls, _ = _run_rollback(
+        tmp_path, "0109_brokerage_onboarding.sql", "0111_mls_drop_unfed_columns.sql")
+    assert proc.returncode == 3
+    assert "APPLICATION ROLLBACK UNSAFE" in proc.stdout
+    assert calls == "", f"doctl was called despite an unsafe rollback: {calls}"

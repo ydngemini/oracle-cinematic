@@ -318,7 +318,7 @@ jobs:
           ORACLE_DB_SSLMODE: require
 
       # Migrations before the new image serves traffic, matching
-      # infra/scripts/run-migrations.sh's AWS ordering. Runs the freshly-built
+      # the order the retired AWS path used. Runs the freshly-built
       # SHA-tagged image directly via doctl (no App Platform component
       # involved), so a migration failure never partially deploys a release.
       - name: Run database migrations
