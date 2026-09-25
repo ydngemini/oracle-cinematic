@@ -338,6 +338,7 @@ jobs:
           python3 scripts/render-app-spec.py --env staging \
             --backend-digest  "${{ steps.digests.outputs.backend }}" \
             --frontend-digest "${{ steps.digests.outputs.frontend }}" \
+            --domain "${{ vars.NEOH_DOMAIN }}" \
             > /tmp/app.staging.yaml
           grep -n "digest:\|ORACLE_RECOVERY_MODE" /tmp/app.staging.yaml
 
@@ -374,6 +375,21 @@ jobs:
       # `doctl apps update` is deterministic ONLY because the spec is
       # digest-pinned: DigitalOcean documents that update reuses the image
       # when the tag is unchanged. A changed digest is a changed spec.
+      # Refuse to silently destroy what someone changed in the console.
+      # `doctl apps update` replaces the whole spec; anything added through the
+      # DigitalOcean UI since the last deploy — an env var, a domain — would be
+      # removed. Names only; a value is never printed.
+      - name: Config drift against the running app (staging)
+        run: |
+          set -uo pipefail
+          if doctl apps spec get "${{ secrets.DIGITALOCEAN_APP_ID }}" --format yaml > /tmp/running.staging.yaml 2>/dev/null; then
+            python3 scripts/spec-drift.py --running /tmp/running.staging.yaml --new /tmp/app.staging.yaml
+          else
+            echo "no running spec to compare — first deploy"
+          fi
+        env:
+          ALLOW_SPEC_REMOVALS: ${{ vars.ALLOW_SPEC_REMOVALS }}
+
       - name: Deploy the staging app
         run: |
           doctl apps update "${{ secrets.DIGITALOCEAN_APP_ID }}" \
@@ -579,6 +595,7 @@ jobs:
           python3 scripts/render-app-spec.py --env production \
             --backend-digest  "${{ steps.digests.outputs.backend }}" \
             --frontend-digest "${{ steps.digests.outputs.frontend }}" \
+            --domain "${{ vars.NEOH_DOMAIN }}" \
             > /tmp/app.production.yaml
           grep -n "digest:" /tmp/app.production.yaml
 
@@ -609,6 +626,21 @@ jobs:
             python run_migrations.py
         env:
           REGISTRY: registry.digitalocean.com/${{ secrets.DIGITALOCEAN_REGISTRY }}
+
+      # Refuse to silently destroy what someone changed in the console.
+      # `doctl apps update` replaces the whole spec; anything added through the
+      # DigitalOcean UI since the last deploy — an env var, a domain — would be
+      # removed. Names only; a value is never printed.
+      - name: Config drift against the running app (production)
+        run: |
+          set -uo pipefail
+          if doctl apps spec get "${{ secrets.DIGITALOCEAN_APP_ID }}" --format yaml > /tmp/running.production.yaml 2>/dev/null; then
+            python3 scripts/spec-drift.py --running /tmp/running.production.yaml --new /tmp/app.production.yaml
+          else
+            echo "no running spec to compare — first deploy"
+          fi
+        env:
+          ALLOW_SPEC_REMOVALS: ${{ vars.ALLOW_SPEC_REMOVALS }}
 
       - name: Deploy to App Platform (production)
         run: |

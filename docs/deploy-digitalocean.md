@@ -439,8 +439,18 @@ needs your DO account and API token:
    staging database, Valkey and Spaces bucket first — the staging spec names
    `neoh-postgres-staging`, `neoh-redis-staging` and `neoh-media-staging`.
 3. Set the GitHub Actions secrets listed in §Secrets.
-4. Attach your domain to the `api` and `web` components in the DO control
-   panel; DO issues TLS automatically once DNS resolves.
+4. **Set the domain as configuration, not in the console.** Put the hostname
+   in the `NEOH_DOMAIN` variable on each GitHub environment (production:
+   your real domain; staging: its own, or leave unset). The renderer writes
+   it into the spec and DO issues TLS once DNS resolves.
+
+   **Do not attach it through the DO control panel.** `doctl apps update
+   --spec` applies the whole desired state, so a domain that exists only in
+   the console is DETACHED by the next deploy — the public URL every
+   provider calls stops resolving. The deploy's config-drift check
+   (`scripts/spec-drift.py`) now refuses a deploy that would do that, which
+   means a console-attached domain blocks every release until it is moved
+   into `NEOH_DOMAIN`.
 5. Register the live Twilio/Stripe webhook URLs in each provider's
    dashboard.
 6. Decide on `ORACLE_MISSIONS_ENABLED` — left `0` in `app.yaml` on purpose;

@@ -104,7 +104,8 @@ def _env_value(component: dict, key: str):
     return None
 
 
-def render(env: str, backend_digest: str, frontend_digest: str) -> dict:
+def render(env: str, backend_digest: str, frontend_digest: str,
+           domain: str | None = None) -> dict:
     if env not in ENVIRONMENTS:
         raise RenderError(f"unknown environment {env!r}; use {sorted(ENVIRONMENTS)}")
     for label, digest in (("backend", backend_digest), ("frontend", frontend_digest)):
@@ -124,6 +125,17 @@ def render(env: str, backend_digest: str, frontend_digest: str) -> dict:
     # never inherits one. Give staging its own domain explicitly if it needs one.
     if env != "production":
         spec.pop("domains", None)
+
+    # The domain comes from per-environment CONFIG (the NEOH_DOMAIN variable
+    # on each GitHub environment), not from a click in the DigitalOcean
+    # console. `doctl apps update --spec` applies the WHOLE desired state, so a
+    # domain attached in the console and absent from the spec is detached by
+    # the next deploy — the public URL every provider calls stops resolving.
+    # spec-drift.py refuses that; this is how it is avoided.
+    if domain:
+        if not re.fullmatch(r"(?=.{1,253}$)([a-z0-9-]+\.)+[a-z]{2,}", domain):
+            raise RenderError(f"{domain!r} is not a hostname")
+        spec["domains"] = [{"domain": domain, "type": "PRIMARY"}]
     for db in spec.get("databases") or []:
         if db.get("name") in cfg["clusters"]:
             db["cluster_name"] = cfg["clusters"][db["name"]]
@@ -208,6 +220,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--env", choices=sorted(ENVIRONMENTS))
     ap.add_argument("--backend-digest")
     ap.add_argument("--frontend-digest")
+    ap.add_argument("--domain", default="",
+                    help="this environment's public hostname (NEOH_DOMAIN); omitted = none")
     ap.add_argument("--check", action="store_true",
                     help="validate both environments and their separation; print nothing")
     args = ap.parse_args(argv)
@@ -220,7 +234,8 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if not (args.env and args.backend_digest and args.frontend_digest):
             ap.error("--env, --backend-digest and --frontend-digest are required")
-        spec = render(args.env, args.backend_digest, args.frontend_digest)
+        spec = render(args.env, args.backend_digest, args.frontend_digest,
+                      domain=args.domain or None)
     except RenderError as exc:
         print(f"\n  REFUSING TO RENDER: {exc}\n", file=sys.stderr)
         return 1
