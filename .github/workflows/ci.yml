@@ -16,9 +16,21 @@ on:
         default: ""
 
 # A second push to the same branch makes the first run's answer irrelevant.
+# Test runs cancel their superseded siblings; deploy runs are NEVER cancelled.
+#
+# This used to be a single group, `CI-<ref>`, with cancel-in-progress: true. A
+# production deploy is a run of this same workflow on main — so any push to main
+# while a deploy was in flight joined its group and CANCELLED it. The deploy job
+# runs migrations and then updates the app, so the cancellation could land
+# between the two: schema migrated, new app never deployed, the old app now
+# running against a schema newer than it was built for. That is the exact state
+# scripts/rollback.sh exists to refuse to create, produced by a CI setting.
+#
+# Dispatch runs now get their own group and are never cancelled. Pushes and PRs
+# keep cancelling stale test runs, which is what that setting was for.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name == 'workflow_dispatch' && 'dispatch' || 'ci' }}
+  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
 
 permissions:
   contents: read
@@ -135,10 +147,31 @@ jobs:
   deploy:
     name: deploy to DigitalOcean
     needs: [backend, frontend]
-    if: github.event_name == 'workflow_dispatch' && github.event.inputs.confirm == 'deploy'
+    # Three conditions, all required:
+    #   - a deliberate manual dispatch (a push or PR can never reach this job)
+    #   - the typed confirmation
+    #   - the ref is main. workflow_dispatch can target ANY branch, so without
+    #     this an unmerged, unreviewed feature branch was one "Run workflow"
+    #     click from production.
+    if: >-
+      github.event_name == 'workflow_dispatch'
+      && github.event.inputs.confirm == 'deploy'
+      && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    # Required reviewers are configured on this environment in the repository
+    # settings, not in this file — see docs/release-checklist.md. The workflow
+    # can name the gate; only the repository can make it a gate.
     environment: production
+    # One production deploy at a time, across every ref and every trigger, and
+    # never cancelled. A second dispatch waits for the first to finish rather
+    # than interleaving its migrations with another release's rollout.
+    # (GitHub keeps one running and one pending per group; a third dispatch
+    # replaces the pending one, which is the right outcome — the newest
+    # intent wins, the running deploy is never interrupted.)
+    concurrency:
+      group: production-deploy
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
         with:

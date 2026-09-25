@@ -74,6 +74,17 @@ print(json.load(open(sys.argv[1])).get(sys.argv[2],''))" "$file" "$key" 2>/dev/n
     "$file" | head -1
 }
 
+# Sorted migration filenames, one per line. A glob loop rather than
+# `ls | xargs basename`: portable to BSD/macOS (an operator may run rollback.sh
+# from a laptop), safe for any filename, and it prints NOTHING when there are no
+# matches instead of letting an unmatched glob through as a literal path.
+migration_files() {
+  local f
+  for f in "$1"/*.sql; do
+    [ -e "$f" ] && printf '%s\n' "${f##*/}"
+  done | LC_ALL=C sort
+}
+
 TARGET_SHA="$(m "$TO" release_id)"
 TARGET_BACKEND="$(m "$TO" backend_digest)"
 TARGET_FRONTEND="$(m "$TO" frontend_digest)"
@@ -102,7 +113,7 @@ head2 "Migration compatibility"
 CURRENT_HEAD=""
 [ -n "$FROM" ] && [ -f "$FROM" ] && CURRENT_HEAD="$(m "$FROM" migration_head)"
 if [ -z "$CURRENT_HEAD" ]; then
-  CURRENT_HEAD="$(ls "$REPO"/backend/db/migrations/*.sql 2>/dev/null | xargs -n1 basename | sort | tail -1)"
+  CURRENT_HEAD="$(migration_files "$REPO/backend/db/migrations" | tail -1)"
   say "current head taken from the working tree: $CURRENT_HEAD"
   say "(pass --from <current-manifest.json> to use the deployed release instead)"
 fi

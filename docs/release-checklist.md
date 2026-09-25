@@ -8,6 +8,27 @@ decision somebody made rather than a step that quietly did not happen.
 
 ---
 
+## Once, before the first production deploy
+
+- [ ] **Create the `production` environment with a required reviewer.** The
+      workflow only *names* it. On 2026-09-25 this repository had no
+      environments at all, and GitHub silently auto-creates a missing one with
+      **no protection rules** — so until this is done, the approval gate is not
+      a gate. Settings → Environments → New environment `production` →
+      Required reviewers, and restrict deployment branches to `main`. Or:
+      ```sh
+      gh api -X PUT repos/ydngemini/oracle-cinematic/environments/production \
+        -F 'reviewers[][type]=User' -F 'reviewers[][id]=<your user id>' \
+        -F 'deployment_branch_policy[protected_branches]=false' \
+        -F 'deployment_branch_policy[custom_branch_policies]=true'
+      ```
+- [ ] **Put the deploy secrets on that environment**, not on the repository —
+      `DIGITALOCEAN_ACCESS_TOKEN`, `DIGITALOCEAN_REGISTRY`,
+      `DIGITALOCEAN_APP_ID`, the `ORACLE_DB_*` admin credentials, the
+      `NEOH_PUBLIC_*` / `VITE_*` values. Environment secrets are only released
+      to a job after its reviewer approves; repository secrets are released to
+      any job that asks.
+
 ## Before
 
 - [ ] **CI green on the exact commit being deployed** — not "on main", on *this* SHA.

@@ -50,7 +50,7 @@ docker exec "$CONTAINER" sh -c 'valkey-cli ping 2>/dev/null || redis-cli ping' 2
 export REDIS_URL="redis://127.0.0.1:$PORT/0"
 
 phase "2. With Valkey up — the distributed paths are live"
-cd "$REPO/backend"
+cd "$REPO/backend" || { echo "  cannot cd to $REPO/backend"; exit 2; }
 "$PY" - <<'EOF'
 import asyncio, os, sys
 sys.path.insert(0, os.getcwd())

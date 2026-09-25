@@ -50,6 +50,17 @@ DB_PORT="${ORACLE_DB_PORT:-5432}"
 export PGSSLMODE="${ORACLE_DB_SSLMODE:-require}"
 Q=(psql -h "$ORACLE_DB_HOST" -p "$DB_PORT" -U "$ORACLE_DB_ADMIN_USER" -d "$ORACLE_DB_NAME" -tAX)
 
+# Sorted migration filenames, one per line. A glob loop rather than
+# `ls | xargs basename`: portable to BSD/macOS (an operator may run rollback.sh
+# from a laptop), safe for any filename, and it prints NOTHING when there are no
+# matches instead of letting an unmatched glob through as a literal path.
+migration_files() {
+  local f
+  for f in "$1"/*.sql; do
+    [ -e "$f" ] && printf '%s\n' "${f##*/}"
+  done | LC_ALL=C sort
+}
+
 echo
 echo "Migration precheck against $ORACLE_DB_HOST:$DB_PORT/$ORACLE_DB_NAME"
 echo
@@ -74,8 +85,8 @@ fi
 ok "ledger readable — $LEDGER_ROWS migration(s) recorded"
 
 CURRENT_HEAD="$("${Q[@]}" -c "SELECT coalesce(max(filename),'(none)') FROM schema_migrations;" 2>/dev/null)"
-RELEASE_HEAD="$(ls "$MIGRATIONS"/*.sql 2>/dev/null | xargs -n1 basename | sort | tail -1)"
-RELEASE_COUNT="$(ls "$MIGRATIONS"/*.sql 2>/dev/null | wc -l | tr -d ' ')"
+RELEASE_HEAD="$(migration_files "$MIGRATIONS" | tail -1)"
+RELEASE_COUNT="$(migration_files "$MIGRATIONS" | wc -l | tr -d ' ')"
 
 echo "        database head: $CURRENT_HEAD"
 echo "        release head:  $RELEASE_HEAD  ($RELEASE_COUNT files)"
@@ -87,7 +98,7 @@ echo "        release head:  $RELEASE_HEAD  ($RELEASE_COUNT files)"
 # outside this repository, and the next migration would stack on a state
 # nobody can reproduce.
 
-ls "$MIGRATIONS"/*.sql 2>/dev/null | xargs -n1 basename | sort > /tmp/.precheck_files.$$
+migration_files "$MIGRATIONS" > /tmp/.precheck_files.$$
 "${Q[@]}" -c "SELECT filename FROM schema_migrations ORDER BY filename;" 2>/dev/null \
   | sed '/^$/d' > /tmp/.precheck_ledger.$$
 

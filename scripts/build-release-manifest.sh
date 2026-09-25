@@ -76,6 +76,17 @@ digest_of() {
   printf '%s' "$digest"
 }
 
+# Sorted migration filenames, one per line. A glob loop rather than
+# `ls | xargs basename`: portable to BSD/macOS (an operator may run rollback.sh
+# from a laptop), safe for any filename, and it prints NOTHING when there are no
+# matches instead of letting an unmatched glob through as a literal path.
+migration_files() {
+  local f
+  for f in "$1"/*.sql; do
+    [ -e "$f" ] && printf '%s\n' "${f##*/}"
+  done | LC_ALL=C sort
+}
+
 BACKEND_DIGEST="$(digest_of "$BACKEND_TAG")"
 FRONTEND_DIGEST="$(digest_of "$FRONTEND_TAG")"
 
@@ -92,9 +103,9 @@ FRONTEND_DIGEST="$(digest_of "$FRONTEND_TAG")"
 MIGRATIONS_DIR="$REPO_ROOT/backend/db/migrations"
 [ -d "$MIGRATIONS_DIR" ] || die "no migrations directory at $MIGRATIONS_DIR"
 
-MIGRATION_HEAD="$(ls "$MIGRATIONS_DIR"/*.sql 2>/dev/null | xargs -n1 basename | sort | tail -1)"
-MIGRATION_COUNT="$(ls "$MIGRATIONS_DIR"/*.sql 2>/dev/null | wc -l | tr -d ' ')"
-MIGRATIONS_SHA256="$(ls "$MIGRATIONS_DIR"/*.sql | sort | xargs cat | sha256sum | cut -d' ' -f1)"
+MIGRATION_HEAD="$(migration_files "$MIGRATIONS_DIR" | tail -1)"
+MIGRATION_COUNT="$(migration_files "$MIGRATIONS_DIR" | wc -l | tr -d ' ')"
+MIGRATIONS_SHA256="$(migration_files "$MIGRATIONS_DIR" | while IFS= read -r f; do cat "$MIGRATIONS_DIR/$f"; done | sha256sum | cut -d' ' -f1)"
 
 [ -n "$MIGRATION_HEAD" ] || die "found no migrations to hash"
 

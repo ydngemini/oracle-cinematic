@@ -279,3 +279,58 @@ def test_the_checklist_snippet_actually_runs():
     assert any(v.classification == "destructive" for v in verdicts), (
         "0111 drops columns; the snippet must surface that"
     )
+
+
+# ── Workflow gating (Mission 6 §59) ────────────────────────────────────────
+
+def _workflow() -> dict:
+    import yaml
+
+    return yaml.safe_load(CI.read_text(encoding="utf-8"))
+
+
+def test_a_pull_request_can_never_reach_the_deploy_job():
+    cond = _workflow()["jobs"]["deploy"]["if"]
+    assert "github.event_name == 'workflow_dispatch'" in cond
+
+
+def test_deploys_are_restricted_to_main():
+    """workflow_dispatch can target ANY branch. Without this, an unmerged,
+    unreviewed feature branch was one "Run workflow" click from production."""
+    cond = _workflow()["jobs"]["deploy"]["if"]
+    assert "github.ref == 'refs/heads/main'" in cond
+
+
+def test_production_deploys_are_serialized_and_never_cancelled():
+    job = _workflow()["jobs"]["deploy"]
+    conc = job.get("concurrency") or {}
+    assert conc.get("group"), "the deploy job needs its own concurrency group"
+    assert "${{" not in str(conc["group"]), (
+        "the deploy group must be a constant so EVERY deploy shares it"
+    )
+    assert conc.get("cancel-in-progress") is False
+
+
+def test_a_push_to_main_cannot_cancel_a_deploy_in_flight():
+    """The workflow-level group used to be `CI-<ref>` with cancel-in-progress
+    true. A deploy is a run of this workflow on main, so a push to main
+    mid-deploy cancelled it — possibly between the migrations and the app
+    update, leaving the old app on a newer schema."""
+    conc = _workflow()["concurrency"]
+    assert "workflow_dispatch" in str(conc["group"]), (
+        "dispatch runs must not share a group with push runs"
+    )
+    cancel = str(conc["cancel-in-progress"])
+    assert "workflow_dispatch" in cancel and "!=" in cancel, (
+        "cancel-in-progress must be false for dispatch runs"
+    )
+
+
+def test_the_deploy_job_names_the_production_environment():
+    """Naming it is necessary, not sufficient: required reviewers are a
+    repository setting. On 2026-09-25 the repository had ZERO environments, and
+    GitHub auto-creates a missing one with no protection — so this is checked
+    here and the rest is on the release checklist."""
+    assert _workflow()["jobs"]["deploy"]["environment"] == "production"
+    checklist = (REPO / "docs" / "release-checklist.md").read_text(encoding="utf-8")
+    assert "required reviewer" in checklist.lower()
