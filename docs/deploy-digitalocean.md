@@ -226,29 +226,79 @@ workflow", branch `main`, type `deploy` into the `confirm` input (any other
 value, or leaving it blank, runs tests only and stops). Or from the CLI:
 `gh workflow run ci.yml --ref main -f confirm=deploy`. That runs the `deploy`
 job, after both test jobs pass:
-   - Build the backend image with `--build-arg GIT_SHA/APP_VERSION/
-     BUILD_TIMESTAMP` (see `backend/Dockerfile`) and the frontend image with
-     its `VITE_*` build args.
-   - Push both to DO Container Registry, tagged with the immutable commit
-     SHA (and `:latest` for convenience only — nothing deploys `:latest`).
-   - Run migrations against the SHA-tagged image (`run_migrations.py`).
-   - `doctl apps update` from `infra/digitalocean/app.yaml`, which pins
-     `api` and `worker` to that same image.
-   - Run `infra/digitalocean/smoke-test.sh` against the live URL, asserting
-     `GET /version`'s `git_sha` matches what was just deployed.
+   1. Build the backend image with `--build-arg GIT_SHA/APP_VERSION/
+      BUILD_TIMESTAMP` (see `backend/Dockerfile`) and the frontend image
+      with its `VITE_*` build args.
+   2. Push both to DO Container Registry, tagged with the commit SHA
+      (`:latest` is pushed for convenience only and is never deployed).
+   3. **Capture the rollback target** — `doctl apps spec get` saves the
+      currently-deployed spec, digests included, as a 90-day artifact. A
+      rollback target is decided before an incident, not during one.
+   4. **Resolve both image digests from the registry.** A tag is a mutable
+      pointer and can be moved between the decision to deploy and the pull
+      that follows it; the digest is the content's own name. Read back, not
+      assumed.
+   5. **Build the release manifest** (`scripts/build-release-manifest.sh`)
+      — both digests, the migration head, an aggregate migration hash, the
+      run id. Uploaded as an artifact. No secrets.
+   6. **Migration precheck** (`scripts/migration-precheck.sh`) — aborts if
+      the target database is not the one this release expects: a migration
+      recorded that this release does not contain, an applied migration
+      whose file has since been edited, or a release head behind the
+      database's. A migration onto an unexpected schema is a corrupted
+      database *and* a failed deploy.
+   7. Run migrations against the SHA-tagged image (`run_migrations.py`).
+   8. **Substitute the digests into the app spec and apply it.** The
+      committed `infra/digitalocean/app.yaml` carries `__BACKEND_DIGEST__` /
+      `__FRONTEND_DIGEST__` placeholders — a real digest in git would pin
+      every future deploy to one historical build — and the deploy fails if
+      a placeholder survives substitution.
+   9. Run `infra/digitalocean/smoke-test.sh` against the live URL, asserting
+      `GET /version`'s `git_sha` matches what was just deployed.
+
+> **This flow was corrected on 2026-09-25, and the previous description of
+> it was false.** The app spec used to declare `dockerfile_path`, so App
+> Platform built its *own* image at deploy time; the images CI pushed were
+> used once for migrations and then orphaned. This document and a CI comment
+> both claimed the spec "pins `api` and `worker` to that same image". Neither
+> was true. See `docs/release-hardening-audit.md` for the full finding,
+> including why the smoke test would have reported success anyway.
+
+Two DigitalOcean constraints shape this, both verified against current docs:
+`deploy_on_push` **cannot coexist with** `digest`, so CI drives deploys
+rather than a registry push doing it — which is the intent, since nothing
+should reach production because an image appeared somewhere. And `doctl apps
+update` does **not** re-pull when the tag is unchanged; only a changed digest
+makes it deterministic.
 
 There is intentionally no separate staging→production promotion step in
 this first pass — see "Remaining manual setup" below for adding one behind
-a second App Platform app + a manual-approval GitHub Environment.
+a second App Platform app + a manual-approval GitHub Environment. The
+release manifest is what would make that promotion checkable: staging
+records a digest, production asserts the same digest.
 
-## Release manifest
+## Release identity
 
-`GET /version` (new, `server.py`) answers with `git_sha`, `app_version`,
-`built_at` (all baked into the image at build time — a running container
-otherwise cannot see its own build history) and `migration_head` (read
-**live** from the `schema_migrations` table, not baked, since migrations can
-be applied independently of which image happens to be running). A release
-is therefore always identifiable by four facts, never by `:latest`.
+Two things, and they answer different questions.
+
+**`release-manifest.json`** (`scripts/build-release-manifest.sh`, uploaded by
+CI) is what the release *is*: `release_id`, both image digests, the tags, the
+migration head, an aggregate `migrations_sha256`, and the build run id. It is
+what makes "promote the artifact that passed staging" checkable rather than
+intended, and it is the input to `scripts/rollback.sh`.
+
+**`GET /version`** is what is *actually running right now*: `git_sha`,
+`app_version`, `built_at` — read from the image's own `ENV`, baked by
+`--build-arg` in the build that produced it — plus `migration_head`, read
+**live** from `schema_migrations` rather than baked, because migrations can be
+applied independently of which image happens to be running.
+
+> The app spec used to override `ORACLE_GIT_SHA` at runtime with
+> `${_self.GIT_COMMIT_HASH}`. That made `/version` report the commit the
+> platform *thought* it deployed rather than the build actually running —
+> and `smoke-test.sh`, which compares exactly that, would then have agreed no
+> matter which image was serving. The override is gone. An image can only
+> report what it is.
 
 ## Worker architecture recap
 
@@ -269,19 +319,49 @@ is future work, not done in this migration.
 
 ## Rollback
 
-1. Identify the last known-good SHA — either from `GET /version` on a
-   healthy deploy, or from the CI run history.
-2. Re-run the `deploy` job's later steps against that SHA (`doctl apps
-   update` accepts an explicit image digest — re-point `app.yaml`'s image
-   references, or use `doctl apps create-deployment` with the prior
-   deployment ID via `doctl apps list-deployments`).
-3. If the failed release included a migration, a plain image rollback does
-   **not** undo it — check `GET /version`'s `migration_head` before and
-   after; a forward-only migration that broke something needs its own
-   corrective migration, not a schema rollback (this codebase's migration
-   runner has no down-migrations, matching `backend/db/migrations/README.md`).
-4. Re-run `smoke-test.sh` after rollback to confirm the reverted SHA is
-   actually live.
+Use `scripts/rollback.sh`. It is dry-run by default.
+
+```sh
+# what it would do, changing nothing
+scripts/rollback.sh --to release-manifest-<good-sha>.json
+
+# actually do it
+DIGITALOCEAN_APP_ID=... scripts/rollback.sh --to release-manifest-<good-sha>.json --apply
+```
+
+It redeploys the previous **digest**. It never rebuilds old source — that
+would produce a different artifact, which is a new release with old code in
+it, not a rollback — and it never touches the database.
+
+**It refuses when rolling back would break things.** The question is whether
+the *previous* release can run against the schema the *current* one left
+behind, which is not the same as "did the migration work":
+
+| Migrations since the target | What happens |
+|---|---|
+| all additive | rolls the app back and **leaves the migrations in place**. No down-migration is attempted; this runner has none, by design. |
+| any destructive | prints `APPLICATION ROLLBACK UNSAFE`, exits 3, and names the recovery options. Redeploying the old app onto an incompatible schema turns one broken release into a broken release *and* a broken database. |
+
+`backend/migration_safety.py` makes that call — dropped or renamed columns,
+narrowed types, new `NOT NULL` without a default, dropped policies and
+functions all break a previous release. Anything it cannot classify counts as
+unsafe, because the cost is asymmetric.
+
+When it refuses, the options are a **corrective forward migration** (usually
+fastest and safest), an **emergency compatibility patch** that restores what
+was dropped so the old app can run, or a **point-in-time restore** — operator-
+run, losing every write since, and see `docs/disaster-recovery-state-map.md`
+first: DigitalOcean's PITR window is 7 days and a restore creates a *new*
+cluster that has to be repointed. None of these is automated, deliberately.
+
+Deliberately **not** used: DigitalOcean's own rollback endpoint. It *pins* the
+app, blocking every subsequent deploy until someone commits or reverts the
+rollback — a second incident waiting for the moment the fix-forward release is
+ready and will not deploy. Applying a digest-pinned spec reaches the same
+artifact and leaves the app deployable.
+
+Afterwards, re-run `smoke-test.sh` with `EXPECTED_GIT_SHA` set to the target
+release to confirm the reverted build is actually live.
 
 ## Tests
 

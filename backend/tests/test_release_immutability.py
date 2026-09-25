@@ -206,3 +206,76 @@ def test_ci_captures_the_rollback_target_before_deploying(ci):
     capture = ci.index("Capture the rollback target")
     deploy = ci.index("Deploy to App Platform")
     assert capture < deploy, "the target must be captured before it is replaced"
+
+
+# ── The documentation must describe reality ────────────────────────────────
+#
+# This whole finding survived because prose asserted something the code did
+# not do, and prose is what the next person reads instead of checking. A CI
+# comment AND the deploy runbook both claimed the app spec "pins api and
+# worker to that same image". Neither was true.
+
+RUNBOOK = REPO / "docs" / "deploy-digitalocean.md"
+CHECKLIST = REPO / "docs" / "release-checklist.md"
+
+
+@pytest.fixture(scope="module")
+def runbook() -> str:
+    return RUNBOOK.read_text(encoding="utf-8")
+
+
+def test_the_runbook_and_the_spec_agree(runbook, spec):
+    """If the runbook says the deploy pins a digest, the spec had better."""
+    if "digest" in runbook.lower():
+        assert "digest:" in _uncommented(spec), (
+            "the runbook describes digest pinning that the app spec does not do"
+        )
+
+
+def test_the_runbook_does_not_repeat_the_corrected_claim(runbook):
+    """The exact sentence that was false. It may appear only inside the
+    correction notice that quotes it."""
+    claim = 'pins\n`api` and `worker` to that same image'
+    assert claim not in runbook
+    # Any surviving mention must be part of the correction, not a fresh claim.
+    for line_no, line in enumerate(runbook.splitlines(), 1):
+        if "pins" in line and "same image" in line:
+            assert line.lstrip().startswith(">"), (
+                f"line {line_no} asserts the corrected claim outside the "
+                f"correction notice: {line.strip()}"
+            )
+
+
+def test_the_runbook_documents_the_placeholder_substitution(runbook):
+    """An operator reading app.yaml will find `__BACKEND_DIGEST__` and needs to
+    know that is deliberate, not an unfinished edit."""
+    assert "__BACKEND_DIGEST__" in runbook
+
+
+def test_the_release_checklist_exists_and_is_short(runbook):
+    """Short enough to use every time — that is the requirement, and a
+    checklist nobody finishes is a checklist nobody uses."""
+    assert CHECKLIST.exists()
+    body = CHECKLIST.read_text(encoding="utf-8")
+    boxes = body.count("- [ ]")
+    assert 10 <= boxes <= 30, f"{boxes} checkboxes is not a usable checklist"
+    assert "APPLICATION ROLLBACK UNSAFE" in body, (
+        "the checklist must tell an operator what to do when rollback is unsafe"
+    )
+
+
+def test_the_checklist_snippet_actually_runs():
+    """A runbook command that does not work is worse than no command: it is
+    discovered mid-incident. This one is executed here."""
+    import pathlib as _p
+
+    from migration_safety import classify_files
+
+    head = "0109_brokerage_onboarding.sql"
+    new = [p for p in sorted((REPO / "backend" / "db" / "migrations").glob("*.sql"))
+           if p.name > head]
+    verdicts = classify_files(new)
+    assert verdicts, "the snippet found no migrations to classify"
+    assert any(v.classification == "destructive" for v in verdicts), (
+        "0111 drops columns; the snippet must surface that"
+    )
