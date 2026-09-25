@@ -81,6 +81,8 @@ require() {
 
 DUMP_FILE="$(require dump_filename)"
 DUMP_SHA="$(require dump_sha256)"
+ROLES_FILE="$(m roles_filename)"
+ROLES_SHA="$(m roles_sha256)"
 EXTRACT_FILE="$(m authoritative_extract_filename)"
 EXTRACT_SHA="$(m authoritative_extract_sha256)"
 SCOPE="$(m scope)"
@@ -114,6 +116,16 @@ if [ -n "$EXTRACT_FILE" ]; then
   echo "  extract checksum matches"
 fi
 
+if [ -n "$ROLES_FILE" ]; then
+  ROLES_PATH="$DIR/$ROLES_FILE"
+  [ -f "$ROLES_PATH" ] || die "the manifest names the roles file $ROLES_FILE but it
+  is not next to the manifest. Restoring without it produces a database with
+  correct data, correct RLS, and no role the application can connect as."
+  [ "$(sha256sum "$ROLES_PATH" | cut -d' ' -f1)" = "$ROLES_SHA" ] \
+    || die "checksum mismatch for the roles file"
+  echo "  roles checksum matches"
+fi
+
 # ── Refuse to overwrite a populated database ───────────────────────────────
 
 EXISTING="$("${Q[@]}" -c "
@@ -144,16 +156,35 @@ echo
 echo "Restoring $DUMP_FILE (scope=$SCOPE, head=$HEAD) with $JOBS jobs ..."
 START="$(date +%s)"
 
+# NOT --no-privileges. The dump carries 350 ACL entries and the roles file has
+# already created the roles they name. Passing --no-privileges here silently
+# dropped all 566 grants: the drill got a database with every row, every
+# policy, both roles — and an application role that could read nothing. The
+# backup side had already been fixed; this side had not, which is the whole
+# reason a drill exists rather than a review.
 _pg_restore_section() {
   pg_restore \
     -h "$ORACLE_DB_HOST" -p "$DB_PORT" -U "$ORACLE_DB_USER" -d "$ORACLE_DB_NAME" \
-    --no-owner --no-privileges \
+    --no-owner \
     --section="$1" \
     ${2:+--jobs="$2"} \
     "$DUMP_PATH" 2>> "$DIR/.restore.log"
 }
 
 : > "$DIR/.restore.log"
+
+# Roles first, always. Every GRANT in the dump names a role, and a GRANT to a
+# role that does not exist is an error — 566 of them, in Neoh's case. The drill
+# found a restored database that had every row and every policy and refused the
+# application every read.
+if [ -n "$ROLES_FILE" ]; then
+  echo "  creating roles (no passwords — set them from the secret store after) ..."
+  if ! psql -h "$ORACLE_DB_HOST" -p "$DB_PORT" -U "$ORACLE_DB_USER" -d "$ORACLE_DB_NAME" \
+        -v ON_ERROR_STOP=1 -q -f "$DIR/$ROLES_FILE"; then
+    die "could not create the roles. Restoring the dump now would fail every
+  GRANT in it and leave a database the application cannot use."
+  fi
+fi
 
 if [ -n "$EXTRACT_FILE" ]; then
   # A scoped restore has to interleave, because the extract holds PARENT rows.
@@ -193,7 +224,7 @@ else
   set +e
   pg_restore \
     -h "$ORACLE_DB_HOST" -p "$DB_PORT" -U "$ORACLE_DB_USER" -d "$ORACLE_DB_NAME" \
-    --no-owner --no-privileges \
+    --no-owner \
     --jobs="$JOBS" \
     "$DUMP_PATH" 2> "$DIR/.restore.log"
   RC=$?
@@ -229,6 +260,11 @@ END="$(date +%s)"
 echo
 echo "  restore completed in $((END - START))s"
 echo
+if [ -n "$ROLES_FILE" ]; then
+  echo "  The login role has NO PASSWORD. Before pointing the application here:"
+  echo "      ALTER ROLE oracle_app_login PASSWORD '<from your secret store>';"
+  echo
+fi
 echo "  NOT DONE YET. Run:"
 echo "      scripts/verify-restore.sh $MANIFEST"
 echo "  A restore is finished when the verifier passes, not when pg_restore exits."

@@ -64,3 +64,9 @@ backend/.splatdata/*
 infra/terraform/.terraform-root-owned-old/
 infra/terraform/.terraform.lock.hcl.root-owned-old
 infra/.tf-root-owned-*/
+
+# An embedded git repository (an AWS re-platform IaC checkout) that lives in
+# this working tree. `git add -A` stages it as a gitlink, which would commit a
+# bare commit pointer that nobody else can resolve. Ignored so it stops being
+# staged by accident; make it a submodule if it should actually be tracked.
+observatory/

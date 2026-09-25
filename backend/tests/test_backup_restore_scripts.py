@@ -225,3 +225,108 @@ def test_verifier_will_not_claim_verification_without_a_decrypt_round_trip(verif
 def test_verifier_exits_nonzero_when_anything_failed(verify):
     assert "DO NOT TRUST THIS RESTORE" in verify
     assert verify.rstrip().endswith("exit 1")
+
+
+# ── Roles: the gap the DR drill found ──────────────────────────────────────
+#
+# pg_dump does not dump roles — they are cluster-level. The first restore into
+# a fresh cluster produced a database with every row, every RLS policy and all
+# 146 policies intact, and NONE of the three roles that 566 table grants point
+# at. Every existing check passed. The application could not open a connection.
+
+def test_backup_captures_roles(backup):
+    assert "roles_filename" in backup, "the manifest must name a roles file"
+    assert "pg_auth_members" in backup, "role memberships must travel too"
+    assert "rolcanlogin" in backup
+
+
+def test_backup_refuses_to_record_a_backup_with_no_roles(backup):
+    """Zero roles means every GRANT in the dump fails on restore. Better to
+    fail the backup than to produce one that restores into an unusable
+    database."""
+    assert "captured zero roles" in backup
+
+
+def test_the_roles_file_carries_no_passwords(backup):
+    """`pg_dumpall --roles-only` embeds the SCRAM verifier for every login
+    role. A backup artifact gets copied into buckets and incident channels."""
+    assert "NO PASSWORDS" in backup
+    # The comment explains why pg_dumpall is not used, so only code counts.
+    code = "\n".join(l for l in backup.splitlines() if not l.lstrip().startswith("#"))
+    assert "rolpassword" not in code
+    assert "pg_dumpall" not in code
+
+
+def test_neither_script_discards_privileges(backup, restore):
+    """The 566 grants live in the dump's ACL entries. --no-privileges on EITHER
+    side drops them all — and the drill found exactly that asymmetry, where the
+    backup had been fixed and the restore had not."""
+    for name, text in (("backup", backup), ("restore", restore)):
+        code = "\n".join(l for l in text.splitlines() if not l.lstrip().startswith("#"))
+        assert "--no-privileges" not in code, (
+            f"{name} discards privileges; the application role would hold no grants"
+        )
+
+
+def test_restore_creates_roles_before_restoring_the_dump(restore):
+    """A GRANT to a role that does not exist is an error, 566 times over."""
+    # The first `_pg_restore_section` in the file is the function DEFINITION,
+    # which necessarily precedes everything. Compare against the first CALL.
+    roles_at = restore.index("creating roles")
+    first_call = restore.index("_pg_restore_section pre-data")
+    assert roles_at < first_call
+
+
+def test_restore_refuses_when_the_roles_file_is_missing(restore):
+    assert "no role the application can connect as" in restore
+
+
+def test_verifier_checks_the_application_can_actually_use_the_database(verify):
+    for guarantee in ("roles_count", "role_table_grants", "rolpassword IS NULL"):
+        assert guarantee in verify, f"the verifier does not check {guarantee}"
+
+
+# ── The drill itself ───────────────────────────────────────────────────────
+
+DRILL = SCRIPTS / "dr-drill.sh"
+FIXTURE = SCRIPTS / "dr-drill-fixture.sql"
+
+
+def test_the_drill_exists_and_is_executable():
+    assert DRILL.exists() and DRILL.stat().st_mode & 0o111
+
+
+def test_the_drill_removes_its_volumes():
+    """`docker rm -f` leaves a container's anonymous volume behind, and the
+    postgres image declares its data directory as one — about 300 MB per run.
+    Twenty runs took the host from 2.2 GB free to 35 MB, at which point no
+    container could start and every assertion came back empty. A drill that
+    cannot be run repeatedly is not a drill."""
+    text = DRILL.read_text(encoding="utf-8")
+    assert "docker rm -f " not in text.replace("docker rm -fv ", ""), (
+        "every container removal in the drill must pass -v"
+    )
+
+
+def test_the_fixture_contacts_nobody():
+    """No real phone number, no real Stripe id, no real provider account."""
+    text = FIXTURE.read_text(encoding="utf-8")
+    import re
+
+    for number in re.findall(r"\+1\d{10}", text):
+        assert number.startswith("+1555"), (
+            f"{number} is outside the reserved fictional +1555 range"
+        )
+    for sid in re.findall(r"AC[0-9A-Fa-f]{32}", text):
+        assert "d411" in sid or set(sid[2:]) <= {"0"}, f"{sid} looks like a real SID"
+    assert "@drill.invalid" in text, "fixture emails must use a reserved TLD"
+    assert "DRILLFIXTURE" in text, "Stripe ids must be obviously synthetic"
+
+
+def test_the_drill_proves_isolation_with_the_real_application_role():
+    """An invented role with blanket SELECT proves less and misleads more: it
+    cannot execute app_current_tenant(), because 0003 revokes EXECUTE from
+    PUBLIC, so the policy errors and the failure reads as a leak."""
+    text = DRILL.read_text(encoding="utf-8")
+    assert "oracle_app_login" in text
+    assert "CREATE ROLE drill_app" not in text

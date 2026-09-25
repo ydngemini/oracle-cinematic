@@ -206,10 +206,49 @@ UNGRANTED="$("${Q[@]}" -c "
   && ok "the core functions are executable by $ORACLE_DB_USER" \
   || bad "$UNGRANTED core function(s) are not executable by $ORACLE_DB_USER"
 
-# ── 6. Nothing is half-restored ────────────────────────────────────────────
+# ── 6. The application can actually use this database ──────────────────────
+#
+# The gap the DR drill found. pg_dump does not dump roles, so a restore into a
+# fresh cluster produced correct data, correct RLS, 146 policies — and none of
+# the three roles that 566 grants point at. Every check above passed. The
+# application could not open a connection.
 
 echo
-echo "6. Completeness"
+echo "6. Application access"
+WANT_ROLES="$(m roles_count)"
+if [ -n "$WANT_ROLES" ]; then
+  GOT_ROLES="$("${Q[@]}" -c "
+    SELECT count(*)::text FROM pg_roles
+     WHERE rolname NOT LIKE 'pg\_%' AND rolname <> 'postgres';" 2>/dev/null)"
+  [ "${GOT_ROLES:-0}" -ge "${WANT_ROLES:-0}" ] \
+    && ok "$GOT_ROLES role(s) present, manifest expected $WANT_ROLES" \
+    || bad "$GOT_ROLES role(s) present, manifest expected $WANT_ROLES — the application cannot connect"
+
+  APP_GRANTS="$("${Q[@]}" -c "
+    SELECT count(*)::text FROM information_schema.role_table_grants
+     WHERE grantee LIKE 'oracle%';" 2>/dev/null)"
+  [ "${APP_GRANTS:-0}" -gt 0 ] \
+    && ok "$APP_GRANTS table grant(s) to the application role" \
+    || bad "the application role holds NO table grants — it can connect and read nothing"
+
+  # A login role with no password cannot authenticate. That is the intended
+  # state straight after a restore, but it must be said out loud rather than
+  # discovered when the app fails to start.
+  NOPW="$("${Q[@]}" -c "
+    SELECT count(*)::text FROM pg_authid
+     WHERE rolcanlogin AND rolpassword IS NULL
+       AND rolname NOT LIKE 'pg\_%' AND rolname <> 'postgres';" 2>/dev/null)"
+  if [ "${NOPW:-0}" -gt 0 ]; then
+    echo "  WARN  $NOPW login role(s) have no password, which is how the roles file"
+    echo "        restores them on purpose. Set it from the secret store before"
+    echo "        starting the application:  ALTER ROLE <role> PASSWORD '<secret>';"
+  fi
+fi
+
+# ── 7. Nothing is half-restored ────────────────────────────────────────────
+
+echo
+echo "7. Completeness"
 EMPTY_TABLES="$("${Q[@]}" -c "
   SELECT count(*)::text FROM pg_class c
     JOIN pg_namespace n ON n.oid=c.relnamespace

@@ -196,16 +196,75 @@ DUMP_NAME="neoh-${ENVIRONMENT}-${BACKUP_ID}.dump"
 DUMP_PATH="$OUT_DIR/$DUMP_NAME"
 MANIFEST_PATH="$OUT_DIR/neoh-${ENVIRONMENT}-${BACKUP_ID}.manifest.json"
 
+# ── Roles ───────────────────────────────────────────────────────────────────
+#
+# pg_dump does NOT dump roles. They are cluster-level objects, so a database
+# restored into a fresh cluster has correct data, correct RLS — and no role the
+# application can connect as. Found by the DR drill: the restored database had
+# every row and every policy, 566 table grants pointing at `oracle_app`, and
+# not one of the three roles those grants name. The application could not open
+# a connection, let alone read a table.
+#
+# Captured WITHOUT passwords, deliberately. `pg_dumpall --roles-only` embeds the
+# SCRAM verifier for every login role, which would put a credential in an
+# artifact that gets copied into buckets and incident channels. The operator
+# re-sets the login password from the secret store after restoring; the runbook
+# says so and verify-restore.sh checks for it.
+
+ROLES_NAME="neoh-${ENVIRONMENT}-${BACKUP_ID}.roles.sql"
+ROLES_PATH="$OUT_DIR/$ROLES_NAME"
+
+{
+  echo "-- Neoh role definitions for backup $BACKUP_ID"
+  echo "-- NO PASSWORDS. Set the login password from the secret store after applying:"
+  echo "--   ALTER ROLE oracle_app_login PASSWORD '<from secret store>';"
+  echo "-- Apply BEFORE restoring the dump, or every GRANT in it fails."
+} > "$ROLES_PATH"
+
+if ! "${PSQL[@]}" -c "
+    SELECT format('DO \$\$BEGIN IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname=%L) THEN CREATE ROLE %I%s; END IF; END\$\$;',
+                  r.rolname, r.rolname,
+                  CASE WHEN r.rolcanlogin   THEN ' LOGIN'      ELSE '' END ||
+                  CASE WHEN r.rolcreatedb   THEN ' CREATEDB'   ELSE '' END ||
+                  CASE WHEN r.rolcreaterole THEN ' CREATEROLE' ELSE '' END)
+      FROM pg_roles r
+     WHERE r.rolname NOT LIKE 'pg\_%' AND r.rolname <> 'postgres'
+     ORDER BY r.rolcanlogin, r.rolname;" >> "$ROLES_PATH" 2>/dev/null; then
+  die "could not read the cluster's roles. A restore without them produces a
+  database the application cannot connect to."
+fi
+
+"${PSQL[@]}" -c "
+    SELECT format('GRANT %I TO %I;', g.rolname, m.rolname)
+      FROM pg_auth_members am
+      JOIN pg_roles g ON g.oid = am.roleid
+      JOIN pg_roles m ON m.oid = am.member
+     WHERE g.rolname NOT LIKE 'pg\_%' AND m.rolname NOT LIKE 'pg\_%';" >> "$ROLES_PATH" 2>/dev/null
+
+ROLE_COUNT="$(grep -c 'CREATE ROLE' "$ROLES_PATH" || true)"
+if [ "${ROLE_COUNT:-0}" -eq 0 ]; then
+  die "captured zero roles. Every GRANT in the dump would fail on restore."
+fi
+ROLES_SHA256="$(sha256sum "$ROLES_PATH" | cut -d' ' -f1)"
+echo "  roles     $ROLE_COUNT role(s) -> $ROLES_NAME (no passwords)"
+
 # ── The dump ────────────────────────────────────────────────────────────────
 #
 # Custom format (-Fc), not plain SQL: it is compressed, and pg_restore can
 # restore it selectively and in parallel (-j), which is the difference between
 # a two-hour and a twenty-minute RTO on a large database.
 #
-# --no-owner / --no-privileges: a restore target is a different cluster with
-# different role OIDs. Migration 0003 recreates the grants, and it is the
-# authority on them — baking this cluster's ACLs into the dump would restore a
-# snapshot of permissions that the migration ledger then disagrees with.
+# --no-owner, but privileges ARE included.
+#
+# This used to pass --no-privileges, reasoning that migration 0003 is the
+# authority on grants. That reasoning was wrong in exactly one way, and the
+# drill found it: migrations do not re-run on a restore. Dropping the ACLs
+# meant dropping all 566 of them, and the restored database refused the
+# application every read. The roles file above is applied first so the GRANTs
+# in here have something to grant to.
+#
+# --no-owner stays: object ownership is cluster-specific, and the restoring
+# superuser owning them is both harmless and what a fresh cluster can express.
 
 echo "Dumping ..."
 set +e
@@ -214,7 +273,6 @@ pg_dump \
   --format=custom \
   --compress=6 \
   --no-owner \
-  --no-privileges \
   ${SCOPE_ARGS[@]+"${SCOPE_ARGS[@]}"} \
   --verbose \
   --file="$DUMP_PATH" 2> "$OUT_DIR/.dump.log"
@@ -380,6 +438,10 @@ cat > "$MANIFEST_PATH" <<JSON
   "authoritative_extract_filename": "$EXTRACT_NAME",
   "authoritative_extract_sha256": "$EXTRACT_SHA256",
   "authoritative_extract_rows": "$EXTRACT_ROWS",
+  "roles_filename": "$ROLES_NAME",
+  "roles_sha256": "$ROLES_SHA256",
+  "roles_count": "$ROLE_COUNT",
+  "roles_note": "Roles carry NO passwords. Apply the roles file BEFORE the dump, then set the login password from the secret store.",
   "ciphertext_columns": "$CIPHERTEXT_COLUMNS",
   "requires_master_key": true,
   "master_key_note": "ORACLE_ENCRYPTION_MASTER_KEY is NOT in this dump by design. Without it, oracle_decrypt() returns NULL and the restored data reads as empty rather than as encrypted. Escrow the key separately."

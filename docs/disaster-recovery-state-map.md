@@ -232,6 +232,73 @@ restore verifies *green* against the wrong schema version.
 
 ---
 
+## Validation drill — 2026-09-24
+
+`scripts/dr-drill.sh` performs the recovery rather than reviewing it:
+
+    seed → assert → back up → destroy → restore → validate → isolate → prove access
+
+Everything runs in disposable containers the script creates and destroys. It
+never touches production, uses no real customer data, and contacts nothing —
+the fixture's numbers are in the reserved `+1555` fictional range and the
+Stripe ids are literals. It runs the **real** backup/restore/verify scripts,
+because the point is to find out whether those work.
+
+**Result: 43/43, repeatable, ~25 seconds.**
+
+| | |
+|---|---|
+| Fixture | 2 brokerages, 4 users, 5 contacts, accepted + pending invitation, lead + child media row, MLS feed + entitlement, subscription, telephony/messaging routes |
+| Disaster | A's contacts deleted, subscription corrupted to `canceled`, media deleted, pending invitation deleted |
+| Backup | ~1 s, 852 KB |
+| Restore into clean cluster | 5 s |
+| Recovered | every assertion, including the object checksum and the subscription reverting `canceled` → `active` |
+| Isolation | proven as `oracle_app_login` under RLS: A sees 3, B sees 2, neither sees 5 |
+
+### ⚠ What the drill found: a restore the application could not use
+
+**`pg_dump` does not dump roles.** They are cluster-level objects. The first
+restore into a fresh cluster produced a database with every row, all 146
+policies, FORCE RLS on 134 tables — and **none of the three roles that 566
+table grants point at.** Every check that existed at the time passed. The
+application could not open a connection, let alone read a table.
+
+Three fixes, all now covered by tests:
+
+1. `backup-postgres.sh` captures role definitions and memberships, **without
+   passwords** — `pg_dumpall --roles-only` embeds the SCRAM verifier for every
+   login role, and a backup artifact gets copied into buckets and incident
+   channels. The operator sets the password from the secret store afterwards;
+   the restore says so and the verifier warns until it is done.
+2. Neither script passes `--no-privileges` any more. The original reasoning —
+   "migration 0003 is the authority on grants" — was wrong in one specific way:
+   **migrations do not re-run on a restore.** The drill then found the fix had
+   been applied to the backup side only, so the dump carried 350 ACL entries
+   and `pg_restore` discarded all of them.
+3. `restore-postgres.sh` applies roles **before** anything else, because a
+   GRANT to a role that does not exist is an error — 566 times over.
+
+Re-verified against the real 47 GB database: 4 roles, 566 grants, 19/19 checks,
+restore 13 s.
+
+### Two drill bugs worth keeping
+
+**`grep -c` prints `0` and also exits 1**, so the idiomatic `|| echo 0` appends
+a second zero and yields the two-line string `"0\n0"` — which `[` rejects, and
+the drill reported a failure whose entire message was `0`.
+
+**A drill that cannot be run repeatedly is not a drill.** `docker rm -f` leaves
+a container's anonymous volume behind, and the postgres image declares its data
+directory as one: ~300 MB stranded per run. Twenty runs took the host from
+2.2 GB free to **35 MB**, at which point no container could start and every
+assertion came back empty. Every removal now passes `-v`.
+
+**Testing isolation with an invented role proves less and misleads more.** A
+`drill_app` with blanket `SELECT` still cannot execute `app_current_tenant()`,
+because 0003 revokes EXECUTE from PUBLIC — so the policy errored and the
+failure read as a cross-tenant leak. The drill now uses `oracle_app_login`,
+which is both correct and the role that actually matters.
+
 ## Recovery mode
 
 A restored Neoh is a *complete* Neoh — same Telnyx key, same Plivo credentials,
