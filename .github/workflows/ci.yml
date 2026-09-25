@@ -191,6 +191,68 @@ jobs:
         env:
           REGISTRY: registry.digitalocean.com/${{ secrets.DIGITALOCEAN_REGISTRY }}
 
+      # The digest is the release's real identity. A tag is a mutable pointer
+      # and can be moved between the decision to deploy and the pull that
+      # follows it; the digest IS the content. Read back from the registry
+      # rather than assumed, because taking the builder's word for it would
+      # reintroduce exactly the gap the digest exists to close.
+      - name: Resolve image digests
+        id: digests
+        run: |
+          set -euo pipefail
+          backend="$(docker inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' \
+            "${REGISTRY}/neoh-backend:${{ steps.release.outputs.sha }}" \
+            | grep -F "${REGISTRY}/neoh-backend@" | head -1 | cut -d'@' -f2)"
+          frontend="$(docker inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' \
+            "${REGISTRY}/neoh-frontend:${{ steps.release.outputs.sha }}" \
+            | grep -F "${REGISTRY}/neoh-frontend@" | head -1 | cut -d'@' -f2)"
+          for d in "$backend" "$frontend"; do
+            case "$d" in
+              sha256:*) ;;
+              *) echo "::error::could not resolve a sha256 digest (got '$d')"; exit 1 ;;
+            esac
+          done
+          echo "backend=$backend"  >> "$GITHUB_OUTPUT"
+          echo "frontend=$frontend" >> "$GITHUB_OUTPUT"
+          echo "backend  $backend"
+          echo "frontend $frontend"
+        env:
+          REGISTRY: registry.digitalocean.com/${{ secrets.DIGITALOCEAN_REGISTRY }}
+
+      # One release, one written-down identity. Staging records a digest and
+      # production asserts the same digest, which turns "promote what passed"
+      # into something checkable rather than something intended.
+      - name: Build release manifest
+        run: |
+          chmod +x scripts/build-release-manifest.sh
+          REGISTRY="registry.digitalocean.com/${{ secrets.DIGITALOCEAN_REGISTRY }}" \
+          GIT_SHA="${{ steps.release.outputs.sha }}" \
+          GIT_REF="${{ github.ref_name }}" \
+          BUILT_AT="${{ steps.release.outputs.built_at }}" \
+            ./scripts/build-release-manifest.sh > release-manifest.json
+          cat release-manifest.json
+
+      - name: Upload release manifest
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-manifest-${{ steps.release.outputs.sha }}
+          path: release-manifest.json
+
+      # Refuse to migrate a database that is not the one this release expects.
+      # A migration applied to an unexpected schema is not a failed deploy, it
+      # is a corrupted database AND a failed deploy.
+      - name: Migration precheck
+        run: |
+          chmod +x scripts/migration-precheck.sh
+          ./scripts/migration-precheck.sh release-manifest.json
+        env:
+          ORACLE_DB_HOST: ${{ secrets.ORACLE_DB_HOST }}
+          ORACLE_DB_PORT: ${{ secrets.ORACLE_DB_PORT }}
+          ORACLE_DB_NAME: ${{ secrets.ORACLE_DB_NAME }}
+          ORACLE_DB_ADMIN_USER: ${{ secrets.ORACLE_DB_ADMIN_USER }}
+          PGPASSWORD: ${{ secrets.ORACLE_DB_ADMIN_PASSWORD }}
+          ORACLE_DB_SSLMODE: require
+
       # Migrations before the new image serves traffic, matching
       # infra/scripts/run-migrations.sh's AWS ordering. Runs the freshly-built
       # SHA-tagged image directly via doctl (no App Platform component
@@ -210,15 +272,38 @@ jobs:
         env:
           REGISTRY: registry.digitalocean.com/${{ secrets.DIGITALOCEAN_REGISTRY }}
 
-      # Updates the App Platform app in place from the spec, pinning both the
-      # api service and the worker to this exact image digest — not a moving
-      # tag — so what App Platform deploys is provably what was just built
-      # and migrated against, not whatever :latest resolves to by the time
-      # the rollout actually happens.
+      # Stamp this release's digests into the spec, then apply it.
+      #
+      # The committed spec carries placeholders, not digests: a real digest in
+      # git would pin every future deploy to one historical build. Substituting
+      # here is what makes the deployed artifact provably the one just built,
+      # tested and migrated against.
+      #
+      # This step previously applied the spec unchanged, and that spec declared
+      # `dockerfile_path` — so App Platform rebuilt from source and the images
+      # above were never deployed at all. The comment that used to sit here
+      # claimed it pinned "this exact image digest". It did not.
+      #
+      # `doctl apps update` is correct ONLY because the spec is digest-pinned:
+      # DigitalOcean documents that update reuses the existing image when the
+      # tag is unchanged, and only create-deployment always re-pulls. A changed
+      # digest is a changed spec, so update deploys it.
       - name: Deploy to App Platform
         run: |
+          set -euo pipefail
+          sed -e "s|__BACKEND_DIGEST__|${{ steps.digests.outputs.backend }}|g" \
+              -e "s|__FRONTEND_DIGEST__|${{ steps.digests.outputs.frontend }}|g" \
+              infra/digitalocean/app.yaml > /tmp/app.resolved.yaml
+
+          if grep -q "__.*_DIGEST__" /tmp/app.resolved.yaml; then
+            echo "::error::a digest placeholder survived substitution"
+            grep -n "__.*_DIGEST__" /tmp/app.resolved.yaml
+            exit 1
+          fi
+          grep -n "digest:" /tmp/app.resolved.yaml
+
           doctl apps update "${{ secrets.DIGITALOCEAN_APP_ID }}" \
-            --spec infra/digitalocean/app.yaml \
+            --spec /tmp/app.resolved.yaml \
             --wait
 
       - name: Smoke test

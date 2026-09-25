@@ -62,14 +62,54 @@ region: nyc
 
 services:
   - name: api
-    dockerfile_path: backend/Dockerfile
-    source_dir: /
+    # DIGEST, not dockerfile_path. This component used to declare
+    # `dockerfile_path: backend/Dockerfile`, which made App Platform build its
+    # OWN image at deploy time — so the image CI built, tested and migrated
+    # against was pushed to the registry and then orphaned. Production ran an
+    # artifact nothing had tested.
+    #
+    # `__BACKEND_DIGEST__` is substituted by the deploy job. It is deliberately
+    # left as a placeholder in the committed file: a real digest checked in here
+    # would pin every future deploy to one historical build.
+    #
+    # `digest` and `deploy_on_push` are mutually exclusive in the App Spec, so
+    # pinning means CI drives deploys itself — which is the intent. Nothing
+    # should reach production because an image appeared in a registry.
+    image:
+      registry_type: DOCR
+      repository: neoh-backend
+      digest: __BACKEND_DIGEST__
     http_port: 8000
     instance_count: 2
     instance_size_slug: apps-s-2vcpu-4gb
+    # Readiness: stops traffic. App Platform's health_check IS the readiness
+    # probe — it decides when an instance may receive requests.
     health_check:
       http_path: /health
       initial_delay_seconds: 20
+      period_seconds: 10
+      timeout_seconds: 5
+      success_threshold: 1
+      failure_threshold: 5
+    # Liveness: restarts. A separate probe because the two questions differ —
+    # "should this instance receive traffic yet" and "is this instance wedged
+    # and beyond recovery" have different right answers, and conflating them
+    # either restarts a merely-slow boot or leaves a hung process serving 502s.
+    # failure_threshold is deliberately looser than readiness: killing a
+    # container is the more expensive mistake.
+    liveness_health_check:
+      http_path: /health
+      initial_delay_seconds: 30
+      period_seconds: 10
+      timeout_seconds: 5
+      failure_threshold: 18
+    # Graceful shutdown. drain_seconds stops new requests arriving before
+    # SIGTERM is sent; grace_period_seconds is how long the process has to
+    # finish what it already accepted before SIGKILL. Without these, a deploy
+    # cuts off in-flight requests — including a Stripe webhook mid-write.
+    termination:
+      drain_seconds: 30
+      grace_period_seconds: 120
       period_seconds: 10
       timeout_seconds: 5
       failure_threshold: 3
@@ -145,17 +185,42 @@ services:
         type: SECRET
       - key: ORACLE_FIREWORKS_API_KEY
         type: SECRET
-      # Release identity — see GET /version. CI passes these as
-      # --build-arg at image build time (.github/workflows/deploy.yml).
-      - key: ORACLE_GIT_SHA
-        value: ${_self.GIT_COMMIT_HASH}
+      # Release identity is NOT set here on purpose.
+      #
+      # This used to be `ORACLE_GIT_SHA: ${_self.GIT_COMMIT_HASH}`, a RUNTIME
+      # env var that overrode whatever the image had baked in. GET /version
+      # exists to answer "which build is actually running", and that override
+      # made it answer "which commit the platform thinks it deployed" instead —
+      # a claim asserted rather than derived.
+      #
+      # The consequence was not cosmetic. smoke-test.sh compares /version's
+      # git_sha against the release SHA, and the override made them agree no
+      # matter which image was running, so the one check that would have caught
+      # App Platform rebuilding from source reported success.
+      #
+      # ORACLE_GIT_SHA / ORACLE_APP_VERSION / ORACLE_BUILD_TIMESTAMP now come
+      # only from the image's own ENV, set by --build-arg in the build that
+      # produced it (backend/Dockerfile). An image can then only ever report
+      # what it is.
 
 workers:
   - name: worker
-    dockerfile_path: backend/Dockerfile
-    source_dir: /
+    # The SAME image as api, pinned to the same digest — not merely the same
+    # tag. A worker running a different build from the API is how a schema the
+    # API expects and a job the worker runs drift apart inside one release.
+    image:
+      registry_type: DOCR
+      repository: neoh-backend
+      digest: __BACKEND_DIGEST__
     instance_count: 1
     instance_size_slug: apps-s-2vcpu-4gb
+    # A worker mid-job needs longer than a request handler. The durable-job
+    # layer heartbeats its lease, so a SIGKILL here does not lose work — the
+    # lease expires and another worker reclaims it — but finishing cleanly
+    # avoids the retry entirely.
+    termination:
+      drain_seconds: 30
+      grace_period_seconds: 300
     envs:
       - key: ORACLE_ENV
         value: "prod"
@@ -218,19 +283,30 @@ workers:
 
 static_sites:
   - name: web
-    dockerfile_path: oracle-app/Dockerfile
-    source_dir: /
+    # Same change as api and worker, plus one wrinkle specific to Vite.
+    #
+    # VITE_* values are COMPILED INTO THE BUNDLE at build time; they are not
+    # read at runtime. So while this component built from source, the envs
+    # below were baked in by App Platform's build — and CI's own build of
+    # `neoh-frontend` baked in DIFFERENT values, from GitHub secrets. The two
+    # artifacts were not just different images of the same code, they were
+    # configured differently, and whichever shipped, the other was the one
+    # that had been tested.
+    #
+    # Pinning the digest resolves it: the bundle CI built is the bundle served,
+    # with the values CI compiled into it. The envs are therefore GONE rather
+    # than kept — a build-time variable listed on a prebuilt artifact
+    # configures nothing and reads as though it does.
+    #
+    # `${api.PUBLIC_URL}` is lost with them; NEOH_PUBLIC_API_BASE in CI is the
+    # same value supplied explicitly. That is a real trade: the spec no longer
+    # derives the API origin, so a change to it requires a rebuild. For a value
+    # that is already compiled into the bundle, it always did.
+    image:
+      registry_type: DOCR
+      repository: neoh-frontend
+      digest: __FRONTEND_DIGEST__
     output_dir: /usr/share/nginx/html
-    build_command: ""
-    envs:
-      - key: VITE_API_BASE
-        value: ${api.PUBLIC_URL}
-      - key: VITE_WS_URL
-        value: ${api.PUBLIC_URL}
-      - key: VITE_GOOGLE_MAPS_KEY
-        type: SECRET
-      - key: VITE_GOOGLE_MAP_ID
-        type: SECRET
 
 # `ingress` (not the deprecated per-component `routes:`) is the current App
 # Spec way to route paths to components. Order matters: FastAPI serves
