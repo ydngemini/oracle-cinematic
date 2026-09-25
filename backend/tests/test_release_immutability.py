@@ -130,3 +130,79 @@ def test_no_comment_claims_an_immutability_the_spec_does_not_provide(ci):
             "a CI comment claims the deploy pins an exact image digest, but the "
             "app spec it applies contains no image reference at all"
         )
+
+
+# ── Rollback ───────────────────────────────────────────────────────────────
+
+ROLLBACK = REPO / "scripts" / "rollback.sh"
+
+
+@pytest.fixture(scope="module")
+def rollback() -> str:
+    return ROLLBACK.read_text(encoding="utf-8")
+
+
+def test_rollback_script_exists_and_is_executable():
+    assert ROLLBACK.exists() and ROLLBACK.stat().st_mode & 0o111
+
+
+def test_rollback_never_touches_the_database(rollback):
+    """It redeploys an artifact. Restoring a database is a different decision
+    with a different blast radius, and it belongs to a human holding the
+    disaster-recovery runbook."""
+    code = _uncommented(rollback)
+    for forbidden in ("pg_restore", "psql", "DROP ", "restore-postgres"):
+        assert forbidden not in code, f"rollback.sh references {forbidden}"
+
+
+def test_rollback_refuses_across_a_destructive_migration(rollback):
+    """The whole point. Redeploying the old app onto an incompatible schema
+    turns one broken release into a broken release AND a broken database."""
+    assert "APPLICATION ROLLBACK UNSAFE" in rollback
+    assert "rollback_is_safe" in rollback or "migration_safety" in rollback
+    assert "exit 3" in rollback, "an unsafe rollback must exit non-zero"
+
+
+def test_rollback_leaves_additive_migrations_in_place(rollback):
+    """Down-migrations are not attempted. Rolling the app back and leaving an
+    additive migration is the preferred pattern."""
+    assert "no down-migration is attempted" in rollback
+    code = _uncommented(rollback)
+    # No attempt to run a reversal: no `*_down.sql`, no `migrate down`.
+    assert "_down.sql" not in code
+    assert "migrate down" not in code.lower()
+
+
+def test_rollback_uses_a_digest_not_a_rebuild(rollback):
+    """Rebuilding old source produces a different artifact, which is not a
+    rollback — it is a new release that happens to have old code in it."""
+    assert "backend_digest" in rollback and "frontend_digest" in rollback
+    code = _uncommented(rollback)
+    assert "docker build" not in code
+
+
+def test_rollback_is_dry_run_by_default(rollback):
+    """The default has to be the safe one: an operator reaching for this is
+    under pressure and may not have read the flags."""
+    assert "--apply" in rollback
+    assert "Nothing has been changed" in rollback
+
+
+def test_rollback_avoids_the_pinning_rollback_api(rollback):
+    """DigitalOcean's rollback endpoint PINS the app, blocking every later
+    deploy until someone commits or reverts — a second incident waiting for the
+    moment the fix-forward release is ready and will not deploy."""
+    code = _uncommented(rollback)
+    # The DigitalOcean rollback ENDPOINT, not this script's own filename —
+    # `scripts/rollback.sh` in the usage text contains the substring "/rollback".
+    assert "apps/{app_id}/rollback" not in code
+    assert "/v2/apps/" not in code
+    assert "doctl apps update" in code
+
+
+def test_ci_captures_the_rollback_target_before_deploying(ci):
+    """Decided before the incident, not discovered during it."""
+    assert "Capture the rollback target" in ci
+    capture = ci.index("Capture the rollback target")
+    deploy = ci.index("Deploy to App Platform")
+    assert capture < deploy, "the target must be captured before it is replaced"

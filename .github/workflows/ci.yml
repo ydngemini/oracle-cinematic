@@ -191,6 +191,37 @@ jobs:
         env:
           REGISTRY: registry.digitalocean.com/${{ secrets.DIGITALOCEAN_REGISTRY }}
 
+      # Capture what is live BEFORE replacing it.
+      #
+      # A rollback target is decided before an incident, not discovered during
+      # one. At the moment you need it you are already degraded, possibly at
+      # 3am, and "which digest were we on?" is not a question to start
+      # answering then. `doctl apps spec get` returns the spec of the currently
+      # deployed release, digests included.
+      #
+      # continue-on-error: a first deploy has nothing to capture, and refusing
+      # to deploy because there is no previous release would be absurd.
+      - name: Capture the rollback target
+        id: rollback_target
+        continue-on-error: true
+        run: |
+          set -uo pipefail
+          doctl apps spec get "${{ secrets.DIGITALOCEAN_APP_ID }}" --format yaml \
+            > rollback-target-spec.yaml 2>/dev/null || {
+              echo "::warning::no currently-deployed spec to capture — first deploy?"
+              exit 0
+            }
+          echo "currently deployed digests:"
+          grep -E "digest:|repository:" rollback-target-spec.yaml || true
+
+      - name: Upload the rollback target
+        if: hashFiles('rollback-target-spec.yaml') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: rollback-target-before-${{ steps.release.outputs.sha }}
+          path: rollback-target-spec.yaml
+          retention-days: 90
+
       # The digest is the release's real identity. A tag is a mutable pointer
       # and can be moved between the decision to deploy and the pull that
       # follows it; the digest IS the content. Read back from the registry
