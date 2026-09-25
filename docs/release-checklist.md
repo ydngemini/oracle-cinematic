@@ -10,19 +10,21 @@ decision somebody made rather than a step that quietly did not happen.
 
 ## Once, before the first production deploy
 
-- [ ] **Create the `production` environment with a required reviewer.** The
-      workflow only *names* it. On 2026-09-25 this repository had no
-      environments at all, and GitHub silently auto-creates a missing one with
-      **no protection rules** — so until this is done, the approval gate is not
-      a gate. Settings → Environments → New environment `production` →
-      Required reviewers, and restrict deployment branches to `main`. Or:
+- [x] **`production` environment with a required reviewer — DONE 2026-09-25.**
+      Reviewer: `ydngemini`; deployments allowed from `main` only. (Until then
+      the repository had no environments at all, and GitHub silently
+      auto-creates a missing one with **no protection** — so the gate was a
+      name.) If it is ever removed, the `promote` job still requires a manual
+      dispatch on `main`, but the reviewer click is gone; recreate it with:
       ```sh
       gh api -X PUT repos/ydngemini/oracle-cinematic/environments/production \
-        -F 'reviewers[][type]=User' -F 'reviewers[][id]=<your user id>' \
-        -F 'deployment_branch_policy[protected_branches]=false' \
-        -F 'deployment_branch_policy[custom_branch_policies]=true'
+        --input - <<<'{"reviewers":[{"type":"User","id":254903090}],
+                       "deployment_branch_policy":{"protected_branches":false,"custom_branch_policies":true}}'
+      gh api -X POST repos/ydngemini/oracle-cinematic/environments/production/deployment-branch-policies \
+        -f name=main -f type=branch
       ```
-- [ ] **Create the `staging` environment too**, with staging's own secrets —
+- [ ] **Give the `staging` environment its secrets** (the environment itself
+      exists, `main` only, no reviewer — staging is automatic) —
       a separate app (`neoh-staging`), database, Valkey, Spaces bucket
       (`neoh-media-staging`) and a **test-mode** Stripe key. The backend refuses
       to boot with a live Stripe key under `ORACLE_ENV=staging`, and staging runs
