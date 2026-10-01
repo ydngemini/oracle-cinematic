@@ -2,36 +2,120 @@
   "review": "docs/security-launch-review.md",
   "date": "2026-10-01",
   "head_at_start": "0f0b851a16f73c35f176d8852ee2bb0f54fb7e63",
-  "migration_head": "0119_security_review_hardening.sql",
+  "migration_head": "0121_operator_second_factor.sql",
   "environment_tested": "local production-shaped topology (no DigitalOcean app exists)",
   "verdict": "FAIL",
   "conditions": [
-    {"id": "no_known_critical", "pass": true, "evidence": "BILL-1 fixed; test_an_empty_webhook_secret_refuses_instead_of_verifying_with_an_empty_key; live forged signatures refused"},
-    {"id": "no_unresolved_high_cross_tenant", "pass": true, "evidence": "idor_sweep 1356 requests, 0 sentinel leaks, 0 accepted foreign mutations"},
-    {"id": "no_unresolved_high", "pass": false, "evidence": "RLS-1 (defense in depth) requires a fix or explicit owned acceptance"},
-    {"id": "rls_attack_suite", "pass": true, "evidence": "tests/rls_security_review.sql PASS on a DB built from every migration and on the dev DB; CI job 'rls'"},
-    {"id": "idor_suite", "pass": true, "evidence": "performance/security/idor_sweep.py"},
-    {"id": "role_escalation_suite", "pass": true, "evidence": "session_attacks forged-role/tenant/admin refused; web_attacks admin surface 12/12; owner-invite blocked"},
-    {"id": "jwt_auth_suite", "pass": true, "evidence": "session_attacks 20/20; tests/test_auth.py; test_security_launch_review.py"},
-    {"id": "password_reset_and_invite_suites", "pass": true, "evidence": "tests/test_password_reset_security.py, test_password_change_revocation.py, test_brokerage_onboarding.py"},
-    {"id": "csrf_cors", "pass": true, "evidence": "web_attacks CORS 7/7, CSRF 3/3; test_production_cors_never_falls_back_to_localhost"},
-    {"id": "websocket_auth", "pass": true, "evidence": "web_attacks WS 6/6 (no token, bad origin, malformed token, frames, 1009 on 2 MB)"},
-    {"id": "webhook_signature_replay", "pass": true, "evidence": "Stripe forged x3 refused, replay no-op, event id once; Telnyx/Plivo/Twilio fail closed"},
-    {"id": "ssrf", "pass": true, "evidence": "SSRF-1 fixed (is_global, pinned IP); URL inventory in the review"},
-    {"id": "uploads", "pass": true, "evidence": "UPL-1/UPL-2/DOS-1 fixed; live 413s and guessed-token 404"},
-    {"id": "provider_secrets_do_not_leak", "pass": true, "evidence": "no API returns credentials; gitleaks history clean; access-log/audit redaction"},
-    {"id": "ai_tools_enforce_authorization", "pass": true, "evidence": "ai_chain_attack 9/9; offered-tool enforcement"},
-    {"id": "prompt_injection_cannot_bypass_tool_policy", "pass": true, "evidence": "ai_chain_attack chain 2 with a hijacked model"},
-    {"id": "billing_tenant_isolation", "pass": true, "evidence": "rls_security_review.sql subscriptions; BILL-4 owner-only; BILL-2 entitlement"},
-    {"id": "admin_routes_locked_down", "pass": true, "evidence": "anonymous/agent/owner refused at platform routes; gates prove the session"},
-    {"id": "security_headers_intentional", "pass": false, "evidence": "API headers set; SPA on DO static site has meta CSP only — frame-ancestors/HSTS need a header-capable edge (WEB-3)"},
-    {"id": "dependency_supply_chain_gate", "pass": true, "evidence": "pip-audit --strict, Trivy, SBOM, gitleaks, bandit baseline, SHA-pinned actions; SUP-1 lock open (MEDIUM)"},
-    {"id": "staging_dast_no_blocker", "pass": false, "evidence": "no staging app exists; OWASP ZAP not run"}
+    {
+      "id": "no_known_critical",
+      "pass": true,
+      "evidence": "BILL-1 fixed; test_an_empty_webhook_secret_refuses_instead_of_verifying_with_an_empty_key; live forged signatures refused"
+    },
+    {
+      "id": "no_unresolved_high_cross_tenant",
+      "pass": true,
+      "evidence": "idor_sweep 1356 requests, 0 sentinel leaks, 0 accepted foreign mutations"
+    },
+    {
+      "id": "no_unresolved_high",
+      "pass": true,
+      "evidence": "RLS-1 fixed (0120 role-based admin, rls_security_review.sql); residual tenant-GUC forgery under SQLi is MEDIUM"
+    },
+    {
+      "id": "rls_attack_suite",
+      "pass": true,
+      "evidence": "tests/rls_security_review.sql PASS on a DB built from every migration and on the dev DB; CI job 'rls'"
+    },
+    {
+      "id": "idor_suite",
+      "pass": true,
+      "evidence": "performance/security/idor_sweep.py"
+    },
+    {
+      "id": "role_escalation_suite",
+      "pass": true,
+      "evidence": "session_attacks forged-role/tenant/admin refused; web_attacks admin surface 12/12; owner-invite blocked"
+    },
+    {
+      "id": "jwt_auth_suite",
+      "pass": true,
+      "evidence": "session_attacks 20/20; tests/test_auth.py; test_security_launch_review.py"
+    },
+    {
+      "id": "password_reset_and_invite_suites",
+      "pass": true,
+      "evidence": "tests/test_password_reset_security.py, test_password_change_revocation.py, test_brokerage_onboarding.py"
+    },
+    {
+      "id": "csrf_cors",
+      "pass": true,
+      "evidence": "web_attacks CORS 7/7, CSRF 3/3; test_production_cors_never_falls_back_to_localhost"
+    },
+    {
+      "id": "websocket_auth",
+      "pass": true,
+      "evidence": "web_attacks WS 6/6 (no token, bad origin, malformed token, frames, 1009 on 2 MB)"
+    },
+    {
+      "id": "webhook_signature_replay",
+      "pass": true,
+      "evidence": "Stripe forged x3 refused, replay no-op, event id once; Telnyx/Plivo/Twilio fail closed"
+    },
+    {
+      "id": "ssrf",
+      "pass": true,
+      "evidence": "SSRF-1 fixed (is_global, pinned IP); URL inventory in the review"
+    },
+    {
+      "id": "uploads",
+      "pass": true,
+      "evidence": "UPL-1/UPL-2/DOS-1 fixed; live 413s and guessed-token 404"
+    },
+    {
+      "id": "provider_secrets_do_not_leak",
+      "pass": true,
+      "evidence": "no API returns credentials; gitleaks history clean; access-log/audit redaction"
+    },
+    {
+      "id": "ai_tools_enforce_authorization",
+      "pass": true,
+      "evidence": "ai_chain_attack 9/9; offered-tool enforcement"
+    },
+    {
+      "id": "prompt_injection_cannot_bypass_tool_policy",
+      "pass": true,
+      "evidence": "ai_chain_attack chain 2 with a hijacked model"
+    },
+    {
+      "id": "billing_tenant_isolation",
+      "pass": true,
+      "evidence": "rls_security_review.sql subscriptions; BILL-4 owner-only; BILL-2 entitlement"
+    },
+    {
+      "id": "admin_routes_locked_down",
+      "pass": true,
+      "evidence": "anonymous/agent/owner refused at platform routes; gates prove the session"
+    },
+    {
+      "id": "security_headers_intentional",
+      "pass": true,
+      "evidence": "API headers; SPA served by nginx service with CSP frame-ancestors/XFO/HSTS; smoke-test asserts them"
+    },
+    {
+      "id": "dependency_supply_chain_gate",
+      "pass": true,
+      "evidence": "pip-audit --strict, Trivy, SBOM, gitleaks, bandit baseline, SHA-pinned actions; SUP-1 lock open (MEDIUM)"
+    },
+    {
+      "id": "staging_dast_no_blocker",
+      "pass": false,
+      "evidence": "no staging app exists; OWASP ZAP not run"
+    }
   ],
   "external_or_manual": [
     "GitHub environment protection rules on production and staging (deployment branches = main, required reviewers)",
     "DigitalOcean Managed PostgreSQL and Valkey trusted sources",
     "Spaces bucket private",
-    "Platform-admin MFA decision"
+    "Set ORACLE_DB_PLATFORM_PASSWORD (app + CI) and ORACLE_ADMIN_OTP_EMAIL or ORACLE_ADMIN_TOTP_SECRET in production"
   ]
 }

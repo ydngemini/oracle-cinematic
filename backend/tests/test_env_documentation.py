@@ -38,6 +38,9 @@ _NAME = re.compile(r"[A-Z][A-Z0-9_]{2,}")
 # An entry here is a claim that no deployment ever needs to set it. Adding one
 # is cheap; it should still be a decision, which is why each group says why.
 _INTERNAL: frozenset[str] = frozenset(
+    # Set only by tests/conftest.py so the suite never reads the developer's
+    # real .env (live SMTP/Stripe/carrier credentials). No deployment sets it.
+    {"ORACLE_SKIP_DOTENV"} |
     # Harvester tuning. Per-source scrape pacing, selectors and portal URLs.
     # Changing these is a code-level decision about a specific state's portal,
     # not deployment configuration.

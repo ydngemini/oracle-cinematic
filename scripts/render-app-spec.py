@@ -83,8 +83,19 @@ class RenderError(ValueError):
     pass
 
 
+# The SPA runs as a service (its own nginx, so its response headers apply —
+# review WEB-3); it is not a backend and takes none of the backend envs.
+FRONTEND_COMPONENTS = frozenset({"web"})
+
+
 def _backend_components(spec: dict) -> list[dict]:
-    return list(spec.get("services") or []) + list(spec.get("workers") or [])
+    return [c for c in list(spec.get("services") or []) + list(spec.get("workers") or [])
+            if c.get("name") not in FRONTEND_COMPONENTS]
+
+
+def _frontend_components(spec: dict) -> list[dict]:
+    return [c for c in spec.get("services") or [] if c.get("name") in FRONTEND_COMPONENTS] \
+        + list(spec.get("static_sites") or [])
 
 
 def _set_env(component: dict, key: str, value: str) -> None:
@@ -151,7 +162,7 @@ def render(env: str, backend_digest: str, frontend_digest: str,
             if svc.get("name") == "api":
                 svc["instance_count"] = cfg["api_instances"]
 
-    for comp in _backend_components(spec) + list(spec.get("static_sites") or []):
+    for comp in _backend_components(spec) + _frontend_components(spec):
         image = comp.get("image") or {}
         if image.get("digest") == BACKEND_PLACEHOLDER:
             image["digest"] = backend_digest

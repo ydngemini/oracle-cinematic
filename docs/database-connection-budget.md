@@ -49,20 +49,27 @@ saturate far earlier. **Minimum for launch: the 4 GiB plan (2 vCPU / 4 GiB,
 
 ## Safe API replica count
 
+Since migration 0120 every process holds **two pools**: request contexts on
+`oracle_app_login` (`ORACLE_DB_POOL_MAX`, +1 for the ws_hub listener) and
+platform contexts on `oracle_platform_login` (`ORACLE_DB_PLATFORM_POOL_MAX`) —
+the only login row-level security treats as platform admin (security review
+RLS-1). `infra/digitalocean/app.yaml` gives the api 10 + 1 + 3 = **14** per
+replica and the worker 15 + 1 + 6 = **22**.
+
 ```
-max_api_replicas = floor( (usable − worker − migration − operator_reserve)
-                          / (ORACLE_DB_POOL_MAX + 1) )
+max_api_replicas = floor( (usable − worker − migration − operator_reserve) × 0.7
+                          / (ORACLE_DB_POOL_MAX + 1 + ORACLE_DB_PLATFORM_POOL_MAX) )
 ```
 
 Keep **30% headroom** (deploy overlap: during a rolling deploy old and new API
 instances are both connected; a stuck release holds connections too):
 
-| Plan | Usable | − worker 16 (see below) − 2 − 3 | × 0.7 | ÷ 11 per API replica | **Max API replicas** |
+| Plan | Usable | − worker 22 − 2 − 3 | × 0.7 | ÷ 14 per API replica | **Max API replicas** |
 |---|---|---|---|---|---|
-| 1 GiB | 22 | 1 | 0.7 | — | **0 — cannot run the current spec** |
-| 2 GiB | 47 | 26 | 18 | 1.6 | **1** (not HA) |
-| 4 GiB | 97 | 76 | 53 | 4.8 | **4** |
-| 8 GiB | 197 | 176 | 123 | 11.2 | **11** |
+| 1 GiB | 22 | — | — | — | **0 — cannot run the current spec** |
+| 2 GiB | 47 | 20 | 14 | 1.0 | **1** (not HA) |
+| 4 GiB | 97 | 70 | 49 | 3.5 | **3** |
+| 8 GiB | 197 | 170 | 119 | 8.5 | **8** |
 
 Worker pool: the worker now runs 8 default + 16 interactive job workers, 2
 voice workers and a reconstruction worker; `infra/digitalocean/app.yaml` gives

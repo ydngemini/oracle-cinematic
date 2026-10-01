@@ -73,7 +73,10 @@ def test_init_pool_widens_the_requested_maximum(monkeypatch):
             return _ctx()
 
     async def _fake_create_pool(**kwargs):
-        captured.update(kwargs)
+        # Only the request pool's sizing is under test; init_pool also opens
+        # the smaller platform-context pool (0120) on its own login.
+        if kwargs.get("user") != dbc.PLATFORM_DB_USER:
+            captured.update(kwargs)
         return _FakePool()
 
     import sys

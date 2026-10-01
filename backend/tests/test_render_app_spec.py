@@ -81,7 +81,7 @@ def test_both_environments_pin_the_same_digests():
         spec = r.render(env, B, F)
         digests = {c["image"]["digest"] for c in r._backend_components(spec)}
         assert digests == {B}
-        assert spec["static_sites"][0]["image"]["digest"] == F
+        assert [c["image"]["digest"] for c in r._frontend_components(spec)] == [F]
 
 
 @pytest.mark.parametrize("bad", ["latest", "sha256:abc", "", "neoh-backend:deadbeef"])

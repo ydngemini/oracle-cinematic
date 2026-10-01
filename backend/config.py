@@ -328,6 +328,17 @@ def validate_or_die() -> None:
         )
     if twilio_qwen_enabled:
         required.extend(_TWILIO_REALTIME_SETTINGS)
+    if IS_PROD and os.environ.get("ORACLE_ADMIN_ID", "").strip():
+        # The operator has cross-tenant power; in production it does not sign
+        # in on a passphrase alone (totp.py, review AUTH-12).
+        if not (os.environ.get("ORACLE_ADMIN_TOTP_SECRET", "").strip()
+                or os.environ.get("ORACLE_ADMIN_OTP_EMAIL", "").strip()):
+            required.append(("ORACLE_ADMIN_TOTP_SECRET or ORACLE_ADMIN_OTP_EMAIL",
+                             "operator second factor"))
+    if os.environ.get("ORACLE_DB_PASSWORD", "").strip():
+        # Platform contexts connect as their own login (0120); a production
+        # deploy without its secret would boot with no working workers.
+        required.append(("ORACLE_DB_PLATFORM_PASSWORD", "platform-context database login (RLS-1)"))
     if os.environ.get("STRIPE_SECRET_KEY", "").strip():
         # Billing is live, so its webhook must be able to tell Stripe from a
         # forger. An empty secret verifies an HMAC keyed with "" (review BILL-1).

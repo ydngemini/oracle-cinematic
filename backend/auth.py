@@ -134,6 +134,16 @@ if os.environ.get("ORACLE_ENABLE_DEMO_LOGINS", "").lower() in ("1", "true", "yes
 # real credentials must never appear in this file, which is in source control.
 _ADMIN_ID = os.environ.get("ORACLE_ADMIN_ID", "")
 _ADMIN_PASSPHRASE = os.environ.get("ORACLE_ADMIN_PASSPHRASE", "")
+# The operator's TOTP secret (base32). When set, the operator login requires a
+# current authenticator code; production refuses to boot with an operator and
+# no secret (config.validate_or_die, review AUTH-12).
+_ADMIN_TOTP_SECRET = "".join(os.environ.get("ORACLE_ADMIN_TOTP_SECRET", "").split())
+# Or: email the operator a one-time code at this address on each sign-in.
+# Used when no TOTP secret is set. Configuration only — never hardcoded.
+_ADMIN_OTP_EMAIL = os.environ.get("ORACLE_ADMIN_OTP_EMAIL", "").strip()
+_EMAIL_OTP_TTL_SECONDS = 600
+_EMAIL_OTP_MAX_ATTEMPTS = 5
+_EMAIL_OTP_RESEND_SECONDS = 30
 if _ADMIN_ID and _ADMIN_PASSPHRASE:
     DEMO_CREDENTIALS[_ADMIN_ID] = _ADMIN_PASSPHRASE
     DEMO_TENANCY[_ADMIN_ID] = (PLATFORM_TENANT_ID, "platform_admin")
@@ -189,6 +199,132 @@ def _is_reserved_identity(agent_id: str) -> bool:
     in audit attribution and the admin session view (review AUTH-3)."""
     wanted = (agent_id or "").strip().lower()
     return any(wanted == known.strip().lower() for known in DEMO_CREDENTIALS)
+
+
+_OTP_REQUIRED = {"code": "OTP_REQUIRED",
+                 "message": "Enter the 6-digit code from your authenticator app."}
+_OTP_INVALID = {"code": "OTP_INVALID",
+                "message": "That code is not valid or has expired. Try again."}
+
+
+def _operator_second_factor() -> Optional[str]:
+    """'totp', 'email', or None when the operator signs in on a passphrase alone
+    (refused at boot in production — config.validate_or_die)."""
+    if _ADMIN_TOTP_SECRET:
+        return "totp"
+    if _ADMIN_OTP_EMAIL:
+        return "email"
+    return None
+
+
+def _otp_hmac(challenge_id: str, code: str) -> str:
+    return hmac.new(SECRET_KEY.encode(), f"operator-otp:{challenge_id}:{code}".encode(),
+                    hashlib.sha256).hexdigest()
+
+
+def _mask_email(address: str) -> str:
+    local, _, domain = address.partition("@")
+    return (local[:1] + "***@" + domain) if domain else "your inbox"
+
+
+def _send_operator_code(address: str, code: str) -> None:
+    import smtp_mailer
+
+    smtp_mailer.send(
+        recipient=address,
+        subject=f"Your Neoh sign-in code: {code}",
+        text=(f"Your Neoh operator sign-in code is {code}.\n\n"
+              "It expires in 10 minutes and works once. If you did not just sign in, "
+              "someone has the operator passphrase — rotate ORACLE_ADMIN_PASSPHRASE now."),
+    )
+
+
+async def _require_operator_email_otp(agent_id: str, otp: Optional[str]) -> None:
+    """Emailed one-time code: sent after the passphrase matches, valid 10
+    minutes, single use, five attempts, stored only as an HMAC (0121)."""
+    from db.connection import tenant_tx
+
+    account = agent_id.strip().lower()
+    if not otp:
+        code = f"{secrets.randbelow(10 ** 6):06d}"
+        async with tenant_tx(_admin_ctx()) as conn:
+            recent = await conn.fetchval(
+                "SELECT 1 FROM operator_otp_challenges WHERE account = $1 AND consumed_at IS NULL "
+                "AND created_at > now() - make_interval(secs => $2)",
+                account, _EMAIL_OTP_RESEND_SECONDS,
+            )
+            if not recent:
+                # A new code retires every earlier one.
+                await conn.execute(
+                    "UPDATE operator_otp_challenges SET consumed_at = now() "
+                    "WHERE account = $1 AND consumed_at IS NULL", account,
+                )
+                challenge_id = await conn.fetchval(
+                    "INSERT INTO operator_otp_challenges (account, code_hmac, expires_at) "
+                    "VALUES ($1, '', now() + make_interval(secs => $2)) RETURNING id::text",
+                    account, _EMAIL_OTP_TTL_SECONDS,
+                )
+                await conn.execute(
+                    "UPDATE operator_otp_challenges SET code_hmac = $2 WHERE id = $1::uuid",
+                    challenge_id, _otp_hmac(challenge_id, code),
+                )
+        if not recent:
+            try:
+                await asyncio.to_thread(_send_operator_code, _ADMIN_OTP_EMAIL, code)
+            except Exception as exc:  # noqa: BLE001 — never reveal mail-server detail at login
+                log.error("Operator sign-in code could not be emailed: %s", type(exc).__name__)
+                raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE,
+                                    "The sign-in code could not be sent. Try again shortly.") from None
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, {
+            "code": "OTP_REQUIRED",
+            "message": f"We emailed a 6-digit sign-in code to {_mask_email(_ADMIN_OTP_EMAIL)}.",
+        })
+
+    candidate = "".join(otp.split())
+    async with tenant_tx(_admin_ctx()) as conn:
+        row = await conn.fetchrow(
+            "SELECT id::text AS id, code_hmac, attempts FROM operator_otp_challenges "
+            "WHERE account = $1 AND consumed_at IS NULL AND expires_at > now() "
+            "ORDER BY created_at DESC LIMIT 1 FOR UPDATE",
+            account,
+        )
+        if row is None:
+            raise HTTPException(status.HTTP_401_UNAUTHORIZED, _OTP_INVALID)
+        if not (len(candidate) == 6 and candidate.isdigit()
+                and hmac.compare_digest(row["code_hmac"], _otp_hmac(row["id"], candidate))):
+            attempts = row["attempts"] + 1
+            await conn.execute(
+                "UPDATE operator_otp_challenges SET attempts = $2, "
+                "consumed_at = CASE WHEN $2 >= $3 THEN now() ELSE NULL END WHERE id = $1::uuid",
+                row["id"], attempts, _EMAIL_OTP_MAX_ATTEMPTS,
+            )
+            raise HTTPException(status.HTTP_401_UNAUTHORIZED, _OTP_INVALID)
+        await conn.execute(
+            "UPDATE operator_otp_challenges SET consumed_at = now() WHERE id = $1::uuid", row["id"])
+
+
+async def _require_operator_otp(agent_id: str, otp: Optional[str]) -> None:
+    """Second factor for the operator account. Called only after its passphrase
+    matched, so the OTP prompt never confirms anything to a passphrase guesser.
+    A code is accepted once: its time step is recorded (0121) before the
+    session is issued, and a replay on any replica hits the primary key."""
+    import totp
+
+    if not otp:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, _OTP_REQUIRED)
+    step = totp.verify(_ADMIN_TOTP_SECRET, otp)
+    if step is None:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, _OTP_INVALID)
+    from db.connection import tenant_tx
+
+    async with tenant_tx(_admin_ctx()) as conn:
+        fresh = await conn.fetchval(
+            "INSERT INTO operator_totp_uses (account, step) VALUES ($1, $2) "
+            "ON CONFLICT DO NOTHING RETURNING step",
+            agent_id.strip().lower(), step,
+        )
+    if fresh is None:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, _OTP_INVALID)
 
 
 def _slugify(text: str) -> str:
@@ -466,6 +602,8 @@ def _apply_rl_headers(response: Response, limit: int, remaining: int, reset: int
 class LoginRequest(BaseModel):
     agent_id: str
     passphrase: str
+    # The operator's second factor (totp.py); ignored for every other account.
+    otp: Optional[str] = Field(default=None, max_length=12)
 
 
 class RegisterRequest(BaseModel):
@@ -692,6 +830,12 @@ async def login(body: LoginRequest, response: Response, request: Request = None)
     session_epoch = 0
     if credentials_ok:
         tenant_id, role = DEMO_TENANCY.get(body.agent_id, (body.agent_id, "agent"))
+        if body.agent_id == _ADMIN_ID:
+            factor = _operator_second_factor()
+            if factor == "totp":
+                await _require_operator_otp(body.agent_id, body.otp)
+            elif factor == "email":
+                await _require_operator_email_otp(body.agent_id, body.otp)
     else:
         row = await _lookup_user(body.agent_id)
         # Always pay for one scrypt, account or not: skipping it for unknown

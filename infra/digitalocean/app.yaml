@@ -146,6 +146,14 @@ services:
         type: SECRET
       - key: ORACLE_DB_SSLMODE
         value: "require"
+      # Platform contexts (workers, webhooks, sign-in, the operator) connect as
+      # oracle_platform_login — the only login RLS treats as platform admin
+      # (migration 0120, review RLS-1). Its own secret: set the same value as
+      # the CI environment secret the migration step uses to create the role.
+      - key: ORACLE_DB_PLATFORM_PASSWORD
+        type: SECRET
+      - key: ORACLE_DB_PLATFORM_POOL_MAX
+        value: "3"
       # Redis — DigitalOcean Managed Valkey. rediss:// (TLS) is parsed natively
       # by redis-py's from_url() in every one of the three call sites that use
       # it (rate_limiter.py, rate_limit_middleware.py, data_integrations/cache.py)
@@ -176,6 +184,14 @@ services:
       - key: ORACLE_ADMIN_ID
         type: SECRET
       - key: ORACLE_ADMIN_PASSPHRASE
+        type: SECRET
+      # Operator second factor (base32 TOTP secret). Production refuses to boot
+      # with an operator and no secret. Generate: scripts/generate-operator-totp.py
+      - key: ORACLE_ADMIN_TOTP_SECRET
+        type: SECRET
+      # …or email a one-time code to this address on each operator sign-in
+      # (used when no TOTP secret is set). One of the two is required in prod.
+      - key: ORACLE_ADMIN_OTP_EMAIL
         type: SECRET
       - key: TWILIO_ACCOUNT_SID
         type: SECRET
@@ -212,6 +228,44 @@ services:
       # only from the image's own ENV, set by --build-arg in the build that
       # produced it (backend/Dockerfile). An image can then only ever report
       # what it is.
+
+  - name: web
+    # The SPA runs as the frontend image's own nginx (port 8080), not as a
+    # static site. App Platform static sites cannot set response headers, so
+    # oracle-app/nginx.conf's CSP frame-ancestors, X-Frame-Options, HSTS,
+    # nosniff and Permissions-Policy never reached the browser and the
+    # authenticated app could be framed (security review WEB-3).
+    #
+    # Same change as api and worker, plus one wrinkle specific to Vite.
+    #
+    # VITE_* values are COMPILED INTO THE BUNDLE at build time; they are not
+    # read at runtime. So while this component built from source, the envs
+    # below were baked in by App Platform's build — and CI's own build of
+    # `neoh-frontend` baked in DIFFERENT values, from GitHub secrets. The two
+    # artifacts were not just different images of the same code, they were
+    # configured differently, and whichever shipped, the other was the one
+    # that had been tested.
+    #
+    # Pinning the digest resolves it: the bundle CI built is the bundle served,
+    # with the values CI compiled into it. The envs are therefore GONE rather
+    # than kept — a build-time variable listed on a prebuilt artifact
+    # configures nothing and reads as though it does.
+    #
+    # `${api.PUBLIC_URL}` is lost with them; NEOH_PUBLIC_API_BASE in CI is the
+    # same value supplied explicitly. That is a real trade: the spec no longer
+    # derives the API origin, so a change to it requires a rebuild. For a value
+    # that is already compiled into the bundle, it always did.
+    image:
+      registry_type: DOCR
+      repository: neoh-frontend
+      digest: __FRONTEND_DIGEST__
+    http_port: 8080
+    instance_count: 2
+    instance_size_slug: apps-s-1vcpu-0.5gb
+    health_check:
+      http_path: /healthz
+      initial_delay_seconds: 5
+      period_seconds: 10
 
 workers:
   - name: worker
@@ -276,6 +330,14 @@ workers:
         type: SECRET
       - key: ORACLE_DB_SSLMODE
         value: "require"
+      # Platform contexts (workers, webhooks, sign-in, the operator) connect as
+      # oracle_platform_login — the only login RLS treats as platform admin
+      # (migration 0120, review RLS-1). Its own secret: set the same value as
+      # the CI environment secret the migration step uses to create the role.
+      - key: ORACLE_DB_PLATFORM_PASSWORD
+        type: SECRET
+      - key: ORACLE_DB_PLATFORM_POOL_MAX
+        value: "6"
       - key: REDIS_URL
         value: ${neoh-redis.DATABASE_URL}
         type: SECRET
@@ -309,33 +371,6 @@ workers:
         type: SECRET
       - key: ORACLE_FIREWORKS_API_KEY
         type: SECRET
-
-static_sites:
-  - name: web
-    # Same change as api and worker, plus one wrinkle specific to Vite.
-    #
-    # VITE_* values are COMPILED INTO THE BUNDLE at build time; they are not
-    # read at runtime. So while this component built from source, the envs
-    # below were baked in by App Platform's build — and CI's own build of
-    # `neoh-frontend` baked in DIFFERENT values, from GitHub secrets. The two
-    # artifacts were not just different images of the same code, they were
-    # configured differently, and whichever shipped, the other was the one
-    # that had been tested.
-    #
-    # Pinning the digest resolves it: the bundle CI built is the bundle served,
-    # with the values CI compiled into it. The envs are therefore GONE rather
-    # than kept — a build-time variable listed on a prebuilt artifact
-    # configures nothing and reads as though it does.
-    #
-    # `${api.PUBLIC_URL}` is lost with them; NEOH_PUBLIC_API_BASE in CI is the
-    # same value supplied explicitly. That is a real trade: the spec no longer
-    # derives the API origin, so a change to it requires a rebuild. For a value
-    # that is already compiled into the bundle, it always did.
-    image:
-      registry_type: DOCR
-      repository: neoh-frontend
-      digest: __FRONTEND_DIGEST__
-    output_dir: /usr/share/nginx/html
 
 # `ingress` (not the deprecated per-component `routes:`) is the current App
 # Spec way to route paths to components. Order matters: FastAPI serves

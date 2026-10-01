@@ -142,7 +142,9 @@ async def _global_chain_conn():
     no rows (no GUC set) and the head read / verify / admin feed all come back
     empty. SET LOCAL resets at transaction end, so no identity leaks onto the
     pooled socket."""
-    pool = _dbc.get_pool()
+    # The platform pool: since 0120 the platform_admin GUC grants admin only
+    # on a login in platform_admin_role, which request connections are not.
+    pool = _dbc.get_platform_pool()
     if pool is None:
         raise RuntimeError("DB pool not initialized — audit chain requires an active pool")
     async with pool.acquire() as conn:

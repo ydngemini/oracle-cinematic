@@ -132,7 +132,16 @@ HEALTH_CHECK_INTERVAL_SECONDS = float(
 _connection_last_verified: dict[int, float] = {}
 _VERIFICATION_CACHE_MAX = 64
 
-_pool = None  # asyncpg.Pool, lazily created
+_pool = None  # asyncpg.Pool, lazily created — request contexts (oracle_app_login)
+# Platform contexts (role PLATFORM_ADMIN: workers, webhooks, pre-auth lookups,
+# the operator) run on a separate login that is a member of
+# platform_admin_role. Since 0120 that membership — not the app.current_role
+# GUC, which any connection can set for itself — is what makes RLS treat a
+# context as platform admin (review RLS-1).
+_platform_pool = None
+PLATFORM_DB_USER = os.getenv("ORACLE_DB_PLATFORM_USER", "oracle_platform_login")
+_ENV_PLATFORM_POOL_MIN = int(os.getenv("ORACLE_DB_PLATFORM_POOL_MIN", "1"))
+_ENV_PLATFORM_POOL_MAX = int(os.getenv("ORACLE_DB_PLATFORM_POOL_MAX", "4"))
 
 
 _TLS_FLOOR = {"1.2": ssl.TLSVersion.TLSv1_2, "1.3": ssl.TLSVersion.TLSv1_3}
@@ -274,6 +283,13 @@ def pool_stats() -> dict:
     }
 
 
+def get_platform_pool():
+    """The pool for platform contexts; falls back to the request pool only
+    outside production when no platform login is configured (admin power is
+    then simply absent, never borrowed)."""
+    return _platform_pool or _pool
+
+
 def get_pool():
     """Return the current pool instance, or None if not initialised."""
     return _pool
@@ -390,11 +406,82 @@ async def init_pool(min_size: int = _ENV_POOL_MIN, max_size: int = _ENV_POOL_MAX
         stats.get("idle", 0),
     )
     await _assert_rls_is_enforced(_pool)
+    await _init_platform_pool(asyncpg)
     return _pool
 
 
+def _platform_password() -> str:
+    explicit = os.getenv("ORACLE_DB_PLATFORM_PASSWORD", "")
+    if explicit:
+        return explicit
+    # Development / load-test topologies share the app password (the migration
+    # runner sets it that way when no platform secret is given). Production
+    # requires its own secret (config.validate_or_die).
+    return "" if os.getenv("ORACLE_ENV", "").lower() in ("prod", "production") else DB_PASSWORD
+
+
+async def _init_platform_pool(asyncpg) -> None:
+    global _platform_pool
+    if _platform_pool is not None:
+        return
+    try:
+        if DB_PASSWORD:
+            password = _platform_password()
+            if not password:
+                raise RuntimeError("ORACLE_DB_PLATFORM_PASSWORD is not set")
+            _platform_pool = await asyncpg.create_pool(
+                host=DB_HOST or "localhost",
+                port=DB_PORT,
+                database=DB_NAME,
+                user=PLATFORM_DB_USER,
+                password=password,
+                ssl=_build_ssl_context() if DB_SSLMODE not in ("", "disable") else False,
+                min_size=_ENV_PLATFORM_POOL_MIN,
+                max_size=_ENV_PLATFORM_POOL_MAX,
+                command_timeout=30,
+                setup=_health_check_connection,
+            )
+        else:
+            _platform_pool = await asyncpg.create_pool(
+                host=DB_HOST,
+                port=DB_PORT,
+                database=DB_NAME,
+                user=PLATFORM_DB_USER,
+                password=_passwordless_credential(),
+                ssl=_build_ssl_context(),
+                min_size=_ENV_PLATFORM_POOL_MIN,
+                max_size=_ENV_PLATFORM_POOL_MAX,
+                command_timeout=30,
+                setup=_health_check_connection,
+            )
+    except Exception as exc:  # noqa: BLE001
+        if os.getenv("ORACLE_ENV", "").lower() in ("prod", "production"):
+            raise RuntimeError(
+                f"Refusing to start: the platform-context pool ({PLATFORM_DB_USER}) "
+                f"could not connect: {type(exc).__name__}. Workers, webhooks and "
+                "sign-in all run platform contexts."
+            ) from exc
+        logger.error(
+            "Platform-context pool (%s) unavailable (%s): platform contexts will run "
+            "WITHOUT admin power on the request pool. Run the migrations (0120) "
+            "and set ORACLE_DB_PLATFORM_PASSWORD.", PLATFORM_DB_USER, type(exc).__name__,
+        )
+        _platform_pool = None
+        return
+    await _assert_rls_is_enforced(_platform_pool)
+    logger.info("Platform-context pool ready — user=%s max=%d", PLATFORM_DB_USER,
+                _platform_pool.get_max_size())
+
+
 async def close_pool():
-    global _pool
+    global _pool, _platform_pool
+    if _platform_pool is not None:
+        try:
+            await _platform_pool.close()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Error while closing platform pool: %s", exc)
+        finally:
+            _platform_pool = None
     if _pool is not None:
         logger.info("Closing DB pool (size=%d idle=%d).", _pool.get_size(), _pool.get_idle_size())
         try:
@@ -426,7 +513,10 @@ async def tenant_tx(ctx: TenantContext):
     if _pool is None:
         raise RuntimeError("DB pool not initialized — call init_pool() at startup.")
 
-    async with _pool.acquire() as conn:
+    # The pool is chosen from the verified context, before any SQL runs: a
+    # request context can never reach the login that RLS treats as admin.
+    pool = (_platform_pool or _pool) if ctx.is_platform_admin else _pool
+    async with pool.acquire() as conn:
         async with conn.transaction():
             await apply_rls_context(conn, ctx)
             yield conn

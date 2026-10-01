@@ -377,6 +377,7 @@ def test_the_model_cannot_rewrite_where_outreach_goes(monkeypatch):
         yield object()
 
     monkeypatch.setattr(ai_chat_store, "tenant_tx", tx)
+    monkeypatch.setenv("ORACLE_ENCRYPTION_MASTER_KEY", "k" * 40)  # synthetic, >= 32 chars
     client_id = str(uuid.uuid4())
     ctx = TenantContext("agent@x.test", TENANT, Role.AGENT)
     receipt = asyncio.run(ai_chat_store._execute_safe_tool(
@@ -484,3 +485,117 @@ def test_audit_attribution_reads_the_session_cookie():
 
     src = inspect.getsource(audit_middleware.AuditMiddleware.dispatch)
     assert 'request.cookies.get("oracle_session"' in src and "redact_path(path)" in src
+
+
+# ── AUTH-12: operator second factor ──────────────────────────────────────────
+
+def test_totp_matches_the_rfc_4226_vectors_and_refuses_wrong_codes():
+    import base64
+
+    import totp
+
+    secret = base64.b32encode(b"12345678901234567890").decode()
+    vectors = ["755224", "287082", "359152", "969429", "338314", "254676", "287922", "162583", "399871", "520489"]
+    assert [totp.code_at(secret, i) for i in range(10)] == vectors
+    now = 1_800_000_000
+    good = totp.code_at(secret, int(now // 30))
+    assert totp.verify(secret, good, now=now) == int(now // 30)
+    assert totp.verify(secret, good, now=now + 300) is None      # long expired
+    assert totp.verify(secret, "12345", now=now) is None          # wrong length
+
+
+class _OtpStore:
+    """Models operator_otp_challenges for the queries auth.py issues."""
+
+    def __init__(self):
+        self.rows: list[dict] = []
+
+    async def fetchval(self, query, *args):
+        if "SELECT 1 FROM operator_otp_challenges" in query:
+            return None
+        if "INSERT INTO operator_otp_challenges" in query:
+            row = {"id": str(uuid.uuid4()), "account": args[0], "code_hmac": "", "attempts": 0,
+                   "consumed": False}
+            self.rows.append(row)
+            return row["id"]
+        raise AssertionError(query)
+
+    async def fetchrow(self, query, *args):
+        live = [r for r in self.rows if r["account"] == args[0] and not r["consumed"]]
+        return live[-1] if live else None
+
+    async def execute(self, query, *args):
+        if "SET code_hmac" in query:
+            next(r for r in self.rows if r["id"] == args[0])["code_hmac"] = args[1]
+        elif "SET attempts" in query:
+            r = next(r for r in self.rows if r["id"] == args[0])
+            r["attempts"] = args[1]
+            r["consumed"] = args[1] >= args[2]
+        elif "SET consumed_at = now() WHERE id" in query:
+            next(r for r in self.rows if r["id"] == args[0])["consumed"] = True
+        elif "SET consumed_at = now()" in query:
+            for r in self.rows:
+                r["consumed"] = True
+        return "OK"
+
+
+def _email_otp_env(monkeypatch):
+    import db.connection
+
+    store = _OtpStore()
+
+    @asynccontextmanager
+    async def tx(_ctx):
+        yield store
+
+    sent = []
+    monkeypatch.setattr(db.connection, "tenant_tx", tx)
+    monkeypatch.setattr(auth, "_ADMIN_OTP_EMAIL", "owner@example.test")
+    monkeypatch.setattr(auth, "_ADMIN_TOTP_SECRET", "")
+    monkeypatch.setattr(auth, "_send_operator_code", lambda to, code: sent.append((to, code)))
+    return store, sent
+
+
+def test_the_operator_code_is_emailed_and_works_exactly_once(monkeypatch):
+    store, sent = _email_otp_env(monkeypatch)
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(auth._require_operator_email_otp("ops@x.test", None))
+    assert exc.value.status_code == 401 and exc.value.detail["code"] == "OTP_REQUIRED"
+    assert "o***@example.test" in exc.value.detail["message"]
+    (to, code), = sent
+    assert to == "owner@example.test" and len(code) == 6
+    assert code not in json.dumps(store.rows)                      # stored only as an HMAC
+    asyncio.run(auth._require_operator_email_otp("ops@x.test", code))
+    with pytest.raises(HTTPException):                             # replay
+        asyncio.run(auth._require_operator_email_otp("ops@x.test", code))
+
+
+def test_five_wrong_codes_retire_the_challenge(monkeypatch):
+    store, sent = _email_otp_env(monkeypatch)
+    with pytest.raises(HTTPException):
+        asyncio.run(auth._require_operator_email_otp("ops@x.test", None))
+    (_, code), = sent
+    wrong = "000000" if code != "000000" else "111111"
+    for _ in range(5):
+        with pytest.raises(HTTPException):
+            asyncio.run(auth._require_operator_email_otp("ops@x.test", wrong))
+    with pytest.raises(HTTPException):                             # even the right code now
+        asyncio.run(auth._require_operator_email_otp("ops@x.test", code))
+
+
+def test_production_requires_an_operator_second_factor(monkeypatch):
+    import config
+
+    src = inspect.getsource(config.validate_or_die)
+    assert "ORACLE_ADMIN_TOTP_SECRET or ORACLE_ADMIN_OTP_EMAIL" in src
+    assert "IS_PROD and os.environ.get(\"ORACLE_ADMIN_ID\"" in src
+
+
+# ── RLS-1: platform contexts use their own login ──────────────────────────────
+
+def test_platform_contexts_are_routed_to_the_platform_login():
+    import db.connection
+
+    src = inspect.getsource(db.connection.tenant_tx)
+    assert "_platform_pool or _pool) if ctx.is_platform_admin else _pool" in src
+    assert db.connection.PLATFORM_DB_USER == "oracle_platform_login"

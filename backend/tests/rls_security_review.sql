@@ -51,6 +51,12 @@ BEGIN
     RAISE EXCEPTION 'oracle_app can create temporary tables (definer shadowing)';
   END IF;
 
+  -- RLS-1: request logins hold no platform-admin membership (0120).
+  IF pg_has_role('oracle_app_login', 'platform_admin_role', 'MEMBER')
+     OR pg_has_role('oracle_app', 'platform_admin_role', 'MEMBER') THEN
+    RAISE EXCEPTION 'request login is a member of platform_admin_role';
+  END IF;
+
   -- Processed Stripe events cannot be rewritten or erased by the app.
   IF has_table_privilege('oracle_app', 'stripe_webhook_events', 'UPDATE')
      OR has_table_privilege('oracle_app', 'stripe_webhook_events', 'DELETE') THEN
@@ -171,6 +177,55 @@ BEGIN
     ('aaaaaaaa-2222-0000-0000-0000000005ec','bbbbbbbb-2222-0000-0000-0000000005ec');
   IF n <> 0 THEN RAISE EXCEPTION 'unset context read % client rows', n; END IF;
 END $$;
+
+-- ── RLS-1 (0120): the admin GUC alone grants nothing ─────────────────────────
+-- SESSION AUTHORIZATION, not SET ROLE: admin power keys on session_user, which
+-- only a superuser can change — exactly what a request connection cannot do.
+RESET ROLE;
+SET LOCAL SESSION AUTHORIZATION oracle_app_login;
+SELECT set_config('app.current_tenant','aaaaaaaa-0000-0000-0000-0000000005ec',true),
+       set_config('app.current_role','platform_admin',true),
+       set_config('app.current_agent','injected',true);
+DO $$
+DECLARE n integer;
+BEGIN
+  IF app_is_platform_admin() THEN
+    RAISE EXCEPTION 'request login became platform admin by setting a GUC';
+  END IF;
+  SELECT count(*) INTO n FROM clients WHERE tenant_id = 'bbbbbbbb-0000-0000-0000-0000000005ec';
+  IF n <> 0 THEN RAISE EXCEPTION 'forged admin GUC read B''s clients on the request login'; END IF;
+  SELECT count(*) INTO n FROM subscriptions WHERE tenant_id = 'bbbbbbbb-0000-0000-0000-0000000005ec';
+  IF n <> 0 THEN RAISE EXCEPTION 'forged admin GUC read B''s billing on the request login'; END IF;
+  BEGIN
+    SET LOCAL ROLE platform_admin_role;
+    RAISE EXCEPTION 'request login could SET ROLE platform_admin_role';
+  EXCEPTION WHEN insufficient_privilege THEN NULL; END;
+END $$;
+
+-- The platform login, with the same GUC, IS platform admin.
+RESET SESSION AUTHORIZATION;
+SET LOCAL SESSION AUTHORIZATION oracle_platform_login;
+SELECT set_config('app.current_tenant','00000000-0000-0000-0000-000000000000',true),
+       set_config('app.current_role','platform_admin',true);
+DO $$
+DECLARE n integer;
+BEGIN
+  IF NOT app_is_platform_admin() THEN
+    RAISE EXCEPTION 'platform login is not platform admin';
+  END IF;
+  SELECT count(*) INTO n FROM clients WHERE id = 'bbbbbbbb-2222-0000-0000-0000000005ec';
+  IF n <> 1 THEN RAISE EXCEPTION 'platform login cannot see across tenants'; END IF;
+END $$;
+-- …and without the admin GUC it is an ordinary tenant context.
+SELECT set_config('app.current_tenant','aaaaaaaa-0000-0000-0000-0000000005ec',true),
+       set_config('app.current_role','broker_owner',true);
+DO $$
+DECLARE n integer;
+BEGIN
+  SELECT count(*) INTO n FROM clients WHERE id = 'bbbbbbbb-2222-0000-0000-0000000005ec';
+  IF n <> 0 THEN RAISE EXCEPTION 'platform login in a tenant context saw another tenant'; END IF;
+END $$;
+RESET SESSION AUTHORIZATION;
 
 \echo 'rls_security_review: PASS'
 ROLLBACK;

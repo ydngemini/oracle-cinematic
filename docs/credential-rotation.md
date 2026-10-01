@@ -24,6 +24,8 @@ Do every rotation on **staging first**.
 | MLS provider tokens | provider-dependent | sync pauses |
 | AI provider key (Fireworks) | yes (issue new, revoke old) | none |
 | `ORACLE_ADMIN_PASSPHRASE` | no | operator signs in again |
+| `ORACLE_DB_PLATFORM_PASSWORD` | no | brief worker/sign-in errors during the swap |
+| `ORACLE_ADMIN_TOTP_SECRET` / `ORACLE_ADMIN_OTP_EMAIL` | no | operator re-enrols the authenticator / codes go to the new address |
 
 ## ORACLE_SECRET_KEY (JWT signing)
 
@@ -85,6 +87,12 @@ to whoever also holds the database; rotation limits future exposure only.
 - **Admin (`doadmin` / migration user):** rotate in the DO console, then update
   the `ORACLE_DB_ADMIN_PASSWORD` GitHub environment secret (staging and production).
 
+- **Platform login (`oracle_platform_login`, migration 0120):** set the new
+  `ORACLE_DB_PLATFORM_PASSWORD` in the CI environment secrets AND on the app,
+  then run a deploy — the migration step sets the role's password before the
+  new app starts. Platform contexts (workers, webhooks, sign-in) fail until the
+  two agree, so do it in a quiet window.
+
 ## Spaces keys
 
 Create a second key pair in DO, set `ORACLE_S3_ACCESS_KEY_ID` / `ORACLE_S3_SECRET_ACCESS_KEY`, redeploy,
@@ -139,3 +147,12 @@ staging, revoke the old. MLS tokens never reach the browser.
 Set a new value (≥ 10 characters; use a long random one) and redeploy; also
 rotate `ORACLE_SECRET_KEY` if the old passphrase may have been used by someone
 else, since that is what ends their existing session.
+
+## Operator second factor
+
+- **TOTP:** `python3 scripts/generate-operator-totp.py <operator email>` on a
+  trusted machine, store the secret as `ORACLE_ADMIN_TOTP_SECRET`, enrol the
+  printed `otpauth://` URI in the authenticator app, redeploy. Rotate it if the
+  phone is lost or the secret may have been seen.
+- **Emailed codes:** change `ORACLE_ADMIN_OTP_EMAIL` and redeploy. The mailbox
+  is the second factor: protect it with its own strong 2FA.

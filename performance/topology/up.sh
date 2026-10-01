@@ -65,6 +65,7 @@ ORACLE_ENV=loadtest
 ORACLE_RECOVERY_MODE=1
 ORACLE_CORS_ORIGINS=http://localhost:5173
 ORACLE_BILLING_ENFORCED=0
+ORACLE_DB_PLATFORM_PASSWORD=$(sed -n 's/^ORACLE_DB_PASSWORD=//p' "$ENVF" | head -1)
 ORACLE_GIT_SHA=$SHA
 ENV
 # Per-run overrides for capacity experiments, e.g.

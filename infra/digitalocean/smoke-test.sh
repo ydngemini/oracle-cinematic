@@ -161,6 +161,30 @@ else
   info "aws CLI not installed — skipping Spaces bucket check"
 fi
 
+# 6. Security headers (security launch review, items 46/47/126). The SPA must
+#    refuse framing and pin HTTPS; the API must send its own policy; and
+#    production must not publish its API map.
+spa_headers=$(curl -s -D - -o /dev/null "$APP_URL/" | tr -d '\r' | tr 'A-Z' 'a-z')
+api_headers=$(curl -s -D - -o /dev/null "$APP_URL/health" | tr -d '\r' | tr 'A-Z' 'a-z')
+for want in "content-security-policy:.*frame-ancestors 'none'" "x-frame-options: deny" \
+            "strict-transport-security: max-age=" "x-content-type-options: nosniff"; do
+  if printf '%s' "$spa_headers" | grep -q -- "$want"; then
+    pass "SPA sends ${want%%:*}"
+  else
+    fail "SPA is missing '${want}' — is web running as the nginx service (not a static site)?"
+  fi
+  if printf '%s' "$api_headers" | grep -q -- "$want"; then
+    pass "API sends ${want%%:*}"
+  else
+    fail "API is missing '${want}'"
+  fi
+done
+docs_code=$(curl -s -o /dev/null -w '%{http_code}' "$APP_URL/openapi.json" || echo "000")
+case "$docs_code" in
+  200) fail "GET /openapi.json -> 200: the API map is public (ORACLE_ENV must be prod)" ;;
+  *)   pass "API schema not published (/openapi.json -> $docs_code)" ;;
+esac
+
 echo
 if [ "$FAIL" = "0" ]; then
   echo "All checks passed."

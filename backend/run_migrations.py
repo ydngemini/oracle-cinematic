@@ -864,6 +864,23 @@ async def _run_migrations(conn, files: list[str]) -> int:
                 "ALTER ROLE oracle_app_login PASSWORD " + _sql_literal(app_password)
             )
             print(">> configured oracle_app_login credential", flush=True)
+        # The platform-context login (0120). Its own secret in production: the
+        # point of the split is that a leaked request credential is not an
+        # admin credential. Without one, it shares the app password so a dev box
+        # keeps working — loudly.
+        platform_password = os.environ.get("ORACLE_DB_PLATFORM_PASSWORD", "") or app_password
+        if platform_password:
+            if not os.environ.get("ORACLE_DB_PLATFORM_PASSWORD"):
+                print("!! ORACLE_DB_PLATFORM_PASSWORD unset — oracle_platform_login shares the "
+                      "app login's password. Set its own secret in production.", flush=True)
+            exists = await conn.fetchval(
+                "SELECT 1 FROM pg_roles WHERE rolname = 'oracle_platform_login'"
+            )
+            if exists:
+                await conn.execute(
+                    "ALTER ROLE oracle_platform_login PASSWORD " + _sql_literal(platform_password)
+                )
+                print(">> configured oracle_platform_login credential", flush=True)
         if drifted:
             print(
                 f"!! {len(drifted)} recorded migration(s) differ from the files on "

@@ -1,9 +1,9 @@
 # Neoh security launch review — 2026-10-01
 
-**Verdict: FAIL.** No exploitable path to another brokerage's data or to
-platform admin was found or remains. But the gate's own conditions are not met:
-no DigitalOcean staging exists to run DAST against, one HIGH
-defense-in-depth finding needs either a fix or explicit acceptance, and three
+**Verdict: FAIL — on two conditions only.** No exploitable path to another
+brokerage's data or to platform admin was found or remains, every CRITICAL and
+HIGH finding is fixed (RLS-1 and operator MFA were closed in a follow-up the
+same day), but no DigitalOcean staging exists to run DAST against, and three
 controls depend on settings outside the repository. See *Launch gate* and
 *Blockers before real brokerage data*.
 
@@ -11,7 +11,7 @@ controls depend on settings outside the repository. See *Launch gate* and
 |---|---|
 | Repository | `ydngemini/oracle-cinematic` |
 | HEAD at start | `0f0b851a16f73c35f176d8852ee2bb0f54fb7e63` (= origin/main) |
-| Migration head | `0116_mls_search_order_index.sql` at start → `0119_security_review_hardening.sql` |
+| Migration head | `0116_mls_search_order_index.sql` at start → `0121_operator_second_factor.sql` |
 | Environment attacked | local production-shaped topology (`performance/topology/`: 2 API replicas + worker + nginx + Valkey + provider mock, PostgreSQL 16, `ORACLE_ENV=loadtest`, recovery mode on). **No DigitalOcean app exists** (`doctl apps list` is empty), so nothing on DO, production or third-party infrastructure was touched. |
 | Standards applied | OWASP Top 10:2025, ASVS 5.0.0, API Security Top 10 (2023), WSTG 4.2, Top 10 for LLM Applications 2025; CWE per finding |
 | Companion documents | `security-threat-model.md`, `security-incident-response.md`, `credential-rotation.md`, `security-pentest-brief.md`, `security-launch-gate.json` |
@@ -115,18 +115,26 @@ live: empty-key, missing and wrong-key signatures all refused (400).
 | BILL-2 | Subscription status enforced only in the frontend; an unpaid self-signup could buy numbers on the platform carrier account, register 10DLC, release outreach, queue GPU | **Fixed** (`require_active_subscription` on 12 spend/contact routes) | `test_spend_and_outreach_routes_require_a_live_subscription` |
 | OUT-1 | Recovery mode missed the direct egress functions (Twilio SMS/calls, Google Calendar, custom calls, number provisioning) and usage metering; blocked jobs retried after recovery | **Fixed** (guard on 9 egress functions + metering; blocked jobs dead-lettered) | `test_recovery_mode_blocks_every_direct_provider_egress[9]` |
 | HOOK-1 | Any tenant could mark another brokerage's number as its verified caller ID (shared platform Twilio account; no uniqueness) | **Fixed** (0119 unique verified caller ID; HOOK-2 removes the agent path) | `rls_security_review.sql` (index), live route takeover refused |
-| RLS-1 | Defense in depth: platform-admin rights are a session GUC, so any SQL running as the app role could `set_config` itself into any tenant or admin | **Accepted?** — see below | — |
+| RLS-1 | Platform-admin rights were a session GUC: any SQL running as the app role could `set_config` itself into platform admin | **Fixed** (0120: admin requires a login in `platform_admin_role`; platform contexts run on their own `oracle_platform_login` pool) — residual below | `rls_security_review.sql` (forged admin GUC on the request login sees nothing; cannot `SET ROLE`); live suites unchanged |
 
-**RLS-1 — needs an explicit launch decision.** This is not exploitable through
-the application: the GUCs are set only by `apply_rls_context` from a verified
-session, every query uses bound parameters, and the review (code reading +
-Bandit) found no SQL injection. The fix — admin work over a separate database
-role tested with `pg_has_role`, or HMAC-signed context — rewrites the
-predicate of 123 policies and is too large to do safely inside this pass.
-Compensating controls in place: app role is neither superuser, BYPASSRLS nor
-owner; no TEMP; definer functions pin `pg_temp`; schema_migrations read-only;
-SAST gate in CI. Recommendation: accept for launch with an owner and a date
-(next security milestone), or block launch on it.
+**RLS-1 — fixed, with one residual.** `app_is_platform_admin()` now requires
+the admin GUC **and** `pg_has_role(session_user, 'platform_admin_role')`. Only
+`oracle_platform_login` holds that membership (revoked from `oracle_app`), and
+`db/connection.tenant_tx` routes platform contexts to that login's pool from
+the verified context. `session_user` cannot be changed without superuser, so
+injected SQL on a request connection can no longer become platform admin, nor
+pass the admin gates inside SECURITY DEFINER functions (which check
+`session_user`, not the definer). No policy text changed — every policy
+already called the function.
+
+*Residual (MEDIUM, defense in depth):* injected SQL on a request connection
+can still set `app.current_tenant` to another tenant. Closing that needs a
+context the connection cannot forge — an HMAC-signed context verified once per
+query, which requires rewriting the tenant predicate of the 123 policies into a
+hoisted `= ANY((SELECT app_visible_tenants()))` form. That is the same rewrite
+as the unshipped RLS index fix, so do both together. Bounded today by: no SQL
+injection found (code review + Bandit gate), bound parameters everywhere, app
+role neither superuser, BYPASSRLS nor owner, no TEMP.
 
 ### Medium
 
@@ -139,7 +147,7 @@ SAST gate in CI. Recommendation: accept for launch with an owner and a date
 | AUTH-7 | Open WebSockets never re-validated expiry or revocation | Fixed — close at `exp`, re-check every 5 min, check before accept |
 | AUTH-8 | An owner could invite a second owner (sock puppet defeats two-person rule) | Fixed — owner invites only by platform admin |
 | AUTH-9 | Google OAuth `state` not bound to the starting browser (victim's Google tokens into attacker's tenant) | Fixed — HMAC binding cookie |
-| AUTH-12 | No MFA anywhere, incl. the static operator login | **Open** — see *MFA* |
+| AUTH-12 | No MFA anywhere, incl. the static operator login | **Fixed for the operator** — emailed one-time code (`ORACLE_ADMIN_OTP_EMAIL`) or TOTP; production refuses to boot with neither; codes single-use (0121). Broker-owner MFA open — see *MFA* |
 | AI-1 | The model could rewrite the selected client's email/phone and then stage outreach to it | Fixed — contact fields not model-writable (live chain 2) |
 | AI-2 | `publish_to_marketplace` silently re-priced/re-scoped a LIVE publication | Fixed — upsert only rewrites drafts; 409 otherwise |
 | AI-3 | Record data in the system prompt with no data boundary on the main providers | Fixed — fenced, labelled untrusted, `<` escaped |
@@ -156,7 +164,7 @@ SAST gate in CI. Recommendation: accept for launch with an owner and a date
 | RLS-8 | Client email/phone and SMS bodies stored in plaintext (`encrypted_contact` populated in 0 rows) | **Open** — breach blast radius, see *Breach assumption* |
 | DOS-1 | Image decoders had no pixel limit (140 KB PNG → 865 MB RSS) | Fixed — 50 MP ceiling for Pillow and OpenCV |
 | WEB-2 | `/docs`, `/redoc`, `/openapi.json` public in production | Fixed |
-| WEB-3 | The SPA on the DO static site ships no response headers (nginx.conf never applies) | Partly fixed — build-time `<meta>` CSP with hashed inline script; **frame-ancestors, HSTS, XFO for the SPA remain External** |
+| WEB-3 | The SPA on the DO static site ships no response headers (nginx.conf never applies) | **Fixed** — `web` now runs as the frontend image's nginx service (CSP incl. `frame-ancestors 'none'`, XFO, HSTS, nosniff); build-time `<meta>` CSP as a second layer; inline theme script moved to a file; smoke test asserts the headers after every deploy |
 | WEB-5 | WebSocket `OBSERVE` wrote unbounded caller-keyed text into a global cross-tenant store; no frame limit or rate | Fixed — removed; 1 MiB frames; 10 frames/s per socket |
 | AUD-1 | The audit middleware attributed only Bearer tokens; production browsers use the cookie → every browser mutation unattributed | Fixed |
 | SUP-1 | Python dependencies not locked/hashed | **Open** — plan below |
@@ -164,7 +172,11 @@ SAST gate in CI. Recommendation: accept for launch with an owner and a date
 
 ### Low / informational (abbreviated)
 
-Fixed: AUTH-10 (invite links returned outside real dev), AUTH-13 (change-password
+Fixed: TEST-1 (MEDIUM, found during the review — the backend test suite loaded
+the developer's real `.env` through `server.py`, so a test that created an
+invitation sent a REAL email through the developer's SMTP account, and the live
+Stripe key and carrier credentials were in scope of every test; the suite now
+never reads `.env` and any real SMTP connection from a test fails), AUTH-10 (invite links returned outside real dev), AUTH-13 (change-password
 guessing), AI-4 (memory replay labelled as history), AI-5 (unoffered tools
 executable), SSRF-1 (tenant SMTP host: `is_global`, fail closed, IP pinned),
 UPL-3 (PDF magic), DOS-2 (MLS offset/list bounds, LIKE escaping), INFO-2
@@ -190,8 +202,9 @@ caches writable by the app role).
 
 | Suite | Result |
 |---|---|
-| Backend (`pytest tests compliance_engine/tests`) | **2,745 passed, 0 failed** (after fixes; 58 new in `test_security_launch_review.py`) |
-| Frontend (`vitest run`) | **458 passed, 0 failed**; production build OK |
+| Backend (`pytest tests compliance_engine/tests`) | **2,750 passed, 0 failed** (63 in `test_security_launch_review.py`) |
+| Frontend (`vitest run`) | **460 passed, 0 failed**; production build OK; served by nginx with both CSPs, headless Chrome: app renders, 0 CSP violations |
+| `operator_mfa.py` (live, TOTP mode) | **5/5** — passphrase alone refused, wrong/replayed codes refused, current code signs in |
 | RLS on real PostgreSQL built from all migrations: `rls_security_review.sql`, `rls_brokerage.sql`, `platform_rls_test.sql` | **PASS, PASS, PASS** (also on the live dev DB) |
 | `idor_sweep.py` (1,356 requests, A agent + A owner × B's IDs) | **0** responses containing B's sentinel; **0** mutations accepted (403 ×78, 404 ×525, 409 ×16; 422 ×259 inconclusive) |
 | `session_attacks.py` | **20/20** |
@@ -244,15 +257,21 @@ return deliberate 502/504 when the upstream is unreachable.
   not other tenants, not platform admin (cannot assign it), not raw provider
   secrets.
 - **Platform admin:** reads and changes across tenants through admin routes;
-  audited; no raw secrets returned. Protected by one static passphrase without
-  MFA — the largest single remaining account risk.
+  audited; no raw secrets returned. Passphrase plus an emailed or TOTP code;
+  the database grants admin only on the platform login, never by session flag.
 
 ## MFA
 
-Not supported for anyone. Recommendation: TOTP for the platform-admin login
-before real brokerage data (it is one static credential with cross-tenant
-power); for broker owners within the first month after launch; agents
-optional. This review deliberately did not build MFA.
+- **Platform operator: done.** After the passphrase matches, a 6-digit code is
+  emailed to `ORACLE_ADMIN_OTP_EMAIL` (valid 10 minutes, single use, 5 attempts,
+  stored only as an HMAC), or — if `ORACLE_ADMIN_TOTP_SECRET` is set — taken from
+  an authenticator app (`scripts/generate-operator-totp.py`). Production refuses
+  to boot with an operator and neither. An emailed code is only as strong as
+  that mailbox: it must have strong 2FA itself. TOTP is the stronger option.
+  In recovery mode no mail leaves, so a restored copy needs TOTP for operator
+  sign-in.
+- **Broker owners: not built.** Recommended within the first month after launch.
+- **Agents:** optional.
 
 ## Load after hardening (item 153)
 
@@ -284,8 +303,7 @@ re-measure on staging.
 in the mission's gate is met **except**:
 
 1. **Staging DAST** — no staging app exists; nothing was run on DigitalOcean.
-2. **RLS-1** — HIGH, needs a fix or an explicit, owned acceptance.
-3. **External controls unverified** — GitHub environment protection rules
+2. **External controls unverified** — GitHub environment protection rules
    (branches = main, required reviewers) on `production` and `staging`; DO
    database/Valkey trusted sources; Spaces bucket private.
 
@@ -294,14 +312,12 @@ in the mission's gate is met **except**:
 1. Create the DO staging app (Mission 6 spec), run ZAP baseline + an
    authenticated active scan (rate-bounded, test tenant only) and the four
    `performance/security/` scripts against it; fix anything launch-blocking.
-2. Decide RLS-1: accept with an owner and date, or implement role-based admin.
-3. Verify and screenshot the GitHub environment protection rules and DO trusted
+2. Verify and screenshot the GitHub environment protection rules and DO trusted
    sources; confirm the Spaces bucket is private.
-4. Platform-admin MFA (or, at minimum, move the operator into `users` so it
-   can be suspended and its sessions ended like any account).
-5. Serve the SPA with real response headers (nginx service component, or DO
-   edge headers if available) so `frame-ancestors` and HSTS apply.
-6. Rotate the local development Stripe key away from LIVE mode.
+3. Set the new production secrets: `ORACLE_DB_PLATFORM_PASSWORD` (App Platform
+   AND the CI environments, before the first deploy that runs 0120) and
+   `ORACLE_ADMIN_OTP_EMAIL` or `ORACLE_ADMIN_TOTP_SECRET`.
+4. Rotate the local development Stripe key away from LIVE mode.
 
 ## Recommended next production-readiness task
 

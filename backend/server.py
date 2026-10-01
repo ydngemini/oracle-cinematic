@@ -11,7 +11,11 @@ from typing import Optional
 
 import asyncpg
 from dotenv import load_dotenv
-load_dotenv(Path(__file__).resolve().parent.parent / ".env", override=False)
+# The test suite sets ORACLE_SKIP_DOTENV: the developer's .env holds REAL
+# credentials (SMTP, a live Stripe key, carriers), and loading it under pytest
+# let a test send a real invitation email through the developer's mailbox.
+if not os.environ.get("ORACLE_SKIP_DOTENV"):
+    load_dotenv(Path(__file__).resolve().parent.parent / ".env", override=False)
 
 # Pixel ceilings for every image decoder, before any decoder is imported.
 import image_safety  # noqa: E402,F401

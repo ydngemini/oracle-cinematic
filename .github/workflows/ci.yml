@@ -214,6 +214,7 @@ jobs:
       ORACLE_DB_ADMIN_USER: postgres
       ORACLE_DB_ADMIN_PASSWORD: postgres
       ORACLE_DB_APP_PASSWORD: ci-app-password
+      ORACLE_DB_PLATFORM_PASSWORD: ci-platform-password
       ORACLE_MIGRATIONS_DIR: db/migrations
       PGPASSWORD: postgres
     steps:
@@ -265,7 +266,7 @@ jobs:
       - name: Required secrets are present
         run: |
           missing=""
-          for n in DIGITALOCEAN_ACCESS_TOKEN DIGITALOCEAN_REGISTRY DIGITALOCEAN_APP_ID ORACLE_DB_HOST ORACLE_DB_PORT ORACLE_DB_NAME ORACLE_DB_ADMIN_USER ORACLE_DB_ADMIN_PASSWORD NEOH_PUBLIC_API_BASE; do
+          for n in DIGITALOCEAN_ACCESS_TOKEN DIGITALOCEAN_REGISTRY DIGITALOCEAN_APP_ID ORACLE_DB_HOST ORACLE_DB_PORT ORACLE_DB_NAME ORACLE_DB_ADMIN_USER ORACLE_DB_ADMIN_PASSWORD ORACLE_DB_PLATFORM_PASSWORD NEOH_PUBLIC_API_BASE; do
             [ -n "${!n}" ] || missing="$missing $n"
           done
           for n in VITE_GOOGLE_MAPS_KEY VITE_GOOGLE_MAP_ID; do
@@ -285,6 +286,7 @@ jobs:
           ORACLE_DB_NAME: ${{ secrets.ORACLE_DB_NAME }}
           ORACLE_DB_ADMIN_USER: ${{ secrets.ORACLE_DB_ADMIN_USER }}
           ORACLE_DB_ADMIN_PASSWORD: ${{ secrets.ORACLE_DB_ADMIN_PASSWORD }}
+          ORACLE_DB_PLATFORM_PASSWORD: ${{ secrets.ORACLE_DB_PLATFORM_PASSWORD }}
           NEOH_PUBLIC_API_BASE: ${{ secrets.NEOH_PUBLIC_API_BASE }}
           VITE_GOOGLE_MAPS_KEY: ${{ secrets.VITE_GOOGLE_MAPS_KEY }}
           VITE_GOOGLE_MAP_ID: ${{ secrets.VITE_GOOGLE_MAP_ID }}
@@ -492,6 +494,7 @@ jobs:
             -e ORACLE_DB_NAME \
             -e ORACLE_DB_ADMIN_USER \
             -e ORACLE_DB_ADMIN_PASSWORD \
+            -e ORACLE_DB_PLATFORM_PASSWORD \
             -e ORACLE_DB_SSL=require \
             "${REGISTRY}/neoh-backend@${{ steps.digests.outputs.backend }}" \
             python run_migrations.py
@@ -582,7 +585,7 @@ jobs:
       - name: Required secrets are present
         run: |
           missing=""
-          for n in DIGITALOCEAN_ACCESS_TOKEN DIGITALOCEAN_REGISTRY DIGITALOCEAN_APP_ID ORACLE_DB_HOST ORACLE_DB_PORT ORACLE_DB_NAME ORACLE_DB_ADMIN_USER ORACLE_DB_ADMIN_PASSWORD NEOH_PUBLIC_API_BASE; do
+          for n in DIGITALOCEAN_ACCESS_TOKEN DIGITALOCEAN_REGISTRY DIGITALOCEAN_APP_ID ORACLE_DB_HOST ORACLE_DB_PORT ORACLE_DB_NAME ORACLE_DB_ADMIN_USER ORACLE_DB_ADMIN_PASSWORD ORACLE_DB_PLATFORM_PASSWORD NEOH_PUBLIC_API_BASE; do
             [ -n "${!n}" ] || missing="$missing $n"
           done
           for n in ; do
@@ -602,6 +605,7 @@ jobs:
           ORACLE_DB_NAME: ${{ secrets.ORACLE_DB_NAME }}
           ORACLE_DB_ADMIN_USER: ${{ secrets.ORACLE_DB_ADMIN_USER }}
           ORACLE_DB_ADMIN_PASSWORD: ${{ secrets.ORACLE_DB_ADMIN_PASSWORD }}
+          ORACLE_DB_PLATFORM_PASSWORD: ${{ secrets.ORACLE_DB_PLATFORM_PASSWORD }}
           NEOH_PUBLIC_API_BASE: ${{ secrets.NEOH_PUBLIC_API_BASE }}
 
       - name: Validate the release to promote
@@ -747,6 +751,7 @@ jobs:
             -e ORACLE_DB_NAME \
             -e ORACLE_DB_ADMIN_USER \
             -e ORACLE_DB_ADMIN_PASSWORD \
+            -e ORACLE_DB_PLATFORM_PASSWORD \
             -e ORACLE_DB_SSL=require \
             "${REGISTRY}/neoh-backend@${{ steps.digests.outputs.backend }}" \
             python run_migrations.py

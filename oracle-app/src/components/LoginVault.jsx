@@ -25,6 +25,10 @@ export function LoginVault({ onAuthenticated }) {
 
   const [agentId, setAgentId] = useState('');
   const [passphrase, setPassphrase] = useState('');
+  // The operator account's second factor: shown only after the server answers
+  // OTP_REQUIRED for a correct passphrase.
+  const [otp, setOtp] = useState('');
+  const [otpRequired, setOtpRequired] = useState(false);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [fullName, setFullName] = useState('');
@@ -60,7 +64,8 @@ export function LoginVault({ onAuthenticated }) {
     setError(''); setNotice(''); setLoading(true);
     try {
       if (mode === 'login') {
-        const body = await apiPost('/auth/login', { agent_id: agentId, passphrase }, { retries: 0 });
+        const payload = otpRequired && otp ? { agent_id: agentId, passphrase, otp } : { agent_id: agentId, passphrase };
+        const body = await apiPost('/auth/login', payload, { retries: 0 });
         finishAuth(body);
       } else if (mode === 'signup') {
         const body = await apiPost('/auth/register', { email, password, full_name: fullName, company }, { retries: 0 });
@@ -75,7 +80,12 @@ export function LoginVault({ onAuthenticated }) {
       }
     } catch (err) {
       setLoading(false);
-      if (err instanceof ApiError) {
+      if (err instanceof ApiError && (err.code === 'OTP_REQUIRED' || err.code === 'OTP_INVALID')) {
+        setOtpRequired(true);
+        setOtp('');
+        setError(err.code === 'OTP_INVALID' ? err.message : '');
+        setNotice(err.code === 'OTP_REQUIRED' ? err.message : '');
+      } else if (err instanceof ApiError) {
         setError(formatError(err));
       } else {
         setError('Network error — backend unreachable.');
@@ -83,9 +93,22 @@ export function LoginVault({ onAuthenticated }) {
     }
   }
 
+  // Emailed codes expire and retire after five wrong tries; signing in again
+  // without a code asks the server for a fresh one.
+  const resendCode = async () => {
+    setError(''); setNotice(''); setOtp(''); setLoading(true);
+    try {
+      finishAuth(await apiPost('/auth/login', { agent_id: agentId, passphrase }, { retries: 0 }));
+    } catch (err) {
+      setLoading(false);
+      if (err instanceof ApiError && err.code === 'OTP_REQUIRED') setNotice(err.message);
+      else setError(err instanceof ApiError ? formatError(err) : 'Network error — backend unreachable.');
+    }
+  };
+
   const busy = loading || fading;
   const disabled = busy
-    || (mode === 'login' && (!agentId || !passphrase))
+    || (mode === 'login' && (!agentId || !passphrase || (otpRequired && otp.length !== 6)))
     || (mode === 'signup' && (!email || password.length < 10))
     || (mode === 'forgot' && !email)
     || (mode === 'reset' && password.length < 10);
@@ -116,6 +139,8 @@ export function LoginVault({ onAuthenticated }) {
             <>
               {field('agent-id', 'Email or Agent ID', agentId, setAgentId, 'text', 'username', 'you@brokerage.com')}
               {field('passphrase', 'Passphrase', passphrase, setPassphrase, 'password', 'current-password', '••••••••')}
+              {otpRequired && field('otp', 'Sign-in code', otp, (v) => setOtp(v.replace(/\D/g, '').slice(0, 6)), 'text', 'one-time-code', '123456')}
+              {otpRequired && <button type="button" style={linkStyle} onClick={resendCode} disabled={busy}>Send a new code</button>}
             </>
           )}
           {mode === 'signup' && (

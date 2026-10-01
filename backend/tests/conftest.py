@@ -16,6 +16,10 @@ import sys
 
 import pytest
 
+# Never read the developer's real .env (server.py honours this). It holds live
+# SMTP, Stripe and carrier credentials; with it loaded, a test that created an
+# invitation really emailed it (bounce from x@y.test, 2026-10-01).
+os.environ["ORACLE_SKIP_DOTENV"] = "1"
 os.environ.setdefault("ORACLE_ENV", "dev")
 os.environ.setdefault("ORACLE_SECRET_KEY", "test-only-secret-key-with-at-least-32-bytes")
 
@@ -49,3 +53,22 @@ def granted_feed_lock(monkeypatch):
         yield True
 
     monkeypatch.setattr(mls_feed_lock, "feed_sync_session_lock", _granted)
+
+
+class _NoNetworkSMTP:
+    """Any test that reaches a real SMTP connection is a bug: it would send mail."""
+
+    def __init__(self, *args, **kwargs):
+        raise AssertionError(
+            "a test tried to open a real SMTP connection — mock smtp_mailer.send"
+        )
+
+
+@pytest.fixture(autouse=True)
+def _no_real_email(monkeypatch):
+    import smtplib
+
+    monkeypatch.setattr(smtplib, "SMTP", _NoNetworkSMTP)
+    monkeypatch.setattr(smtplib, "SMTP_SSL", _NoNetworkSMTP)
+    for key in ("ORACLE_SMTP_HOST", "ORACLE_SMTP_USERNAME", "ORACLE_SMTP_PASSWORD"):
+        monkeypatch.delenv(key, raising=False)
