@@ -13,7 +13,7 @@ asyncpg==0.31.0                # Async PostgreSQL driver; tenant_tx + RLS GUC se
 redis==5.2.1                   # Distributed rate limits + durable ACS callback state
 
 # ── Auth / security ────────────────────────────────────────────────────────────
-PyJWT==2.13.0                  # JWT encode/decode in auth.py (>= 2.x returns str)
+PyJWT==2.15.1                  # JWT encode/decode in auth.py (>= 2.x returns str)
 cryptography==50.0.0           # Authenticated encryption for Redis ACS call state
 
 # ── LLM gateway ───────────────────────────────────────────────────────────────
