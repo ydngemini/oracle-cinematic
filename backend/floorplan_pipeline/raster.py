@@ -423,7 +423,13 @@ def extract_from_floorplan_image(
     cv2, np = _require_cv()
 
     buffer = np.frombuffer(image_bytes, dtype=np.uint8)
-    image = cv2.imdecode(buffer, cv2.IMREAD_COLOR)
+    try:
+        image = cv2.imdecode(buffer, cv2.IMREAD_COLOR)
+    except cv2.error:
+        # Over OPENCV_IO_MAX_IMAGE_PIXELS (image_safety.py): a decompression
+        # bomb, or a plan scanned at an absurd resolution. Refuse it as
+        # undecodable rather than allocate gigabytes for it.
+        image = None
     if image is None:
         raise DegenerateGeometry("Could not decode the uploaded image.")
 

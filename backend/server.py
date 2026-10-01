@@ -9,11 +9,15 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
 
+import asyncpg
 from dotenv import load_dotenv
 load_dotenv(Path(__file__).resolve().parent.parent / ".env", override=False)
 
+# Pixel ceilings for every image decoder, before any decoder is imported.
+import image_safety  # noqa: E402,F401
+
 import config
-from fastapi import Depends, FastAPI, Request, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from starlette.websockets import WebSocketState
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -26,7 +30,7 @@ from billing import router as billing_router
 from billing_usage import router as billing_usage_router
 from audit_ledger import router as audit_router, ledger, AuditCategory
 from audit_middleware import AuditMiddleware, audit_action, audit_now, drain_pending
-from tenancy import require_context, TenantContext
+from tenancy import require_context, TenantContext, verify_session_current
 from admin_c2 import router as admin_c2_router
 from rate_limit_middleware import (
     RateLimitMiddleware,
@@ -84,6 +88,11 @@ def _configure_logging() -> None:
     for noisy in ("httpx", "httpcore", "litellm", "LiteLLM", "watchfiles", "asyncio",
                   "urllib3", "botocore", "boto3", "openai", "hpack", "h11"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
+    # Capability links and webhook secrets travel in URLs; the access log must
+    # not keep them (log_redaction.py).
+    from log_redaction import install_access_log_redaction
+
+    install_access_log_redaction()
 
 
 _configure_logging()
@@ -94,6 +103,11 @@ _START_TIME: float = time.monotonic()
 # Idle WebSocket timeout — connections that send nothing for this long are
 # considered stale and will be closed.  Configurable via env.
 _WS_IDLE_TIMEOUT: float = float(os.getenv("ORACLE_WS_IDLE_TIMEOUT", "300"))  # seconds
+# How often an open socket re-proves its account is still live (0117), and the
+# per-socket frame budget (sustained rate, burst).
+_WS_SESSION_RECHECK_SECONDS: float = float(os.getenv("ORACLE_WS_SESSION_RECHECK_SECONDS", "300"))
+_WS_FRAMES_PER_SECOND: float = float(os.getenv("ORACLE_WS_FRAMES_PER_SECOND", "10"))
+_WS_FRAME_BURST: int = int(os.getenv("ORACLE_WS_FRAME_BURST", "40"))
 
 
 @asynccontextmanager
@@ -192,7 +206,17 @@ async def lifespan(app: FastAPI):
         await close_pool()
 
 
-app = FastAPI(lifespan=lifespan)
+# Interactive docs and the schema are a map of every route — admin, webhooks,
+# AI tools and their request models. Production does not publish them
+# (review WEB-2); every other environment keeps them for development and for
+# the API fuzzing / DAST tooling, which reads /openapi.json.
+_PUBLISH_API_DOCS = not config.IS_PROD
+app = FastAPI(
+    lifespan=lifespan,
+    docs_url="/docs" if _PUBLISH_API_DOCS else None,
+    redoc_url="/redoc" if _PUBLISH_API_DOCS else None,
+    openapi_url="/openapi.json" if _PUBLISH_API_DOCS else None,
+)
 
 
 @app.exception_handler(IntegrationCacheUnavailable)
@@ -207,6 +231,20 @@ async def _integration_cache_dependency_error(
             "code": "INTEGRATION_CACHE_UNAVAILABLE",
         },
     )
+
+@app.exception_handler(asyncpg.exceptions.InvalidAuthorizationSpecificationError)
+async def _session_no_longer_valid(request: Request, exc: Exception):
+    # Raised by app_begin_session (0117) when a token's account was deactivated,
+    # demoted, moved, or had its sessions ended by a password change or reset.
+    response = JSONResponse(
+        status_code=401,
+        content={"detail": "Your session has ended. Sign in again."},
+    )
+    from auth import _clear_session_cookie
+
+    _clear_session_cookie(response)
+    return response
+
 
 _ALLOWED_ORIGINS = get_allowed_origins()
 
@@ -238,6 +276,14 @@ async def _security_headers(request: Request, call_next):
     for key, value in _SECURITY_HEADERS.items():
         response.headers.setdefault(key, value)
     return response
+
+
+# Bound request bodies before anything parses them — FastAPI reads a body
+# before resolving auth (body_limit_middleware.py). Inside CORS so a 413 still
+# reaches the browser as a readable response.
+from body_limit_middleware import BodyLimitMiddleware
+
+app.add_middleware(BodyLimitMiddleware)
 
 
 # Starlette runs the most recently-added middleware outermost. Register CORS
@@ -1083,6 +1129,14 @@ async def websocket_endpoint(websocket: WebSocket):
         await websocket.close(code=4401)
         return
     ctx, used_subprotocol = identity
+    # The token's signature and expiry were checked; whether its account is
+    # still live is a database fact (0117). Check before accepting, so a
+    # revoked session cannot even attach to the tenant's broadcast group.
+    try:
+        await verify_session_current(ctx)
+    except HTTPException:
+        await websocket.close(code=4401)
+        return
 
     # Refuse past the replica's ceiling rather than degrading for everyone
     # already on it. 1013 "Try Again Later" is the code clients are expected to
@@ -1156,10 +1210,30 @@ async def websocket_endpoint(websocket: WebSocket):
     _last_seen: dict[str, float] = {"t": time.monotonic()}
 
     async def idle_watchdog():
-        """Ping every 60 s; close if the client has been idle > _WS_IDLE_TIMEOUT."""
+        """Ping every 60 s; close if the client has been idle > _WS_IDLE_TIMEOUT,
+        once the token has expired, or once the account's session has ended.
+
+        Authentication at the handshake is not enough for a socket that can
+        stay open for days: it used to outlive both its token's expiry and any
+        revocation, still receiving the tenant's pushes (AUTH-7)."""
         ping_interval = min(60.0, _WS_IDLE_TIMEOUT / 2)
+        last_session_check = time.monotonic()
         while True:
             await asyncio.sleep(ping_interval)
+            if ctx.expires_at is not None and time.time() >= ctx.expires_at:
+                logger.info("Session token expired — closing WebSocket for %s", client_label)
+                await websocket.close(code=4401)
+                return
+            if time.monotonic() - last_session_check >= _WS_SESSION_RECHECK_SECONDS:
+                last_session_check = time.monotonic()
+                try:
+                    await verify_session_current(ctx)
+                except HTTPException:
+                    logger.info("Session ended — closing WebSocket for %s", client_label)
+                    await websocket.close(code=4401)
+                    return
+                except Exception as exc:  # noqa: BLE001 — a DB blip must not drop live sockets
+                    logger.warning("WebSocket session re-check failed for %s: %s", client_label, exc)
             idle_for = time.monotonic() - _last_seen["t"]
             if idle_for >= _WS_IDLE_TIMEOUT:
                 logger.warning(
@@ -1173,6 +1247,23 @@ async def websocket_endpoint(websocket: WebSocket):
                 await websocket.send_text(json.dumps({"type": "PING"}))
             except Exception:  # noqa: BLE001 — client already gone
                 return
+
+    # Per-socket frame budget. The HTTP limiter never sees frames, and each
+    # REQUEST_DEAL_PIPELINE is a database query; a client sending them in a
+    # tight loop could otherwise drive one replica's pool by itself (WEB-5).
+    _bucket = {"tokens": float(_WS_FRAME_BURST), "t": time.monotonic()}
+
+    def _frame_allowed() -> bool:
+        now = time.monotonic()
+        _bucket["tokens"] = min(
+            float(_WS_FRAME_BURST),
+            _bucket["tokens"] + (now - _bucket["t"]) * _WS_FRAMES_PER_SECOND,
+        )
+        _bucket["t"] = now
+        if _bucket["tokens"] < 1.0:
+            return False
+        _bucket["tokens"] -= 1.0
+        return True
 
     async def listen_for_client_messages():
         while True:
@@ -1197,10 +1288,17 @@ async def websocket_endpoint(websocket: WebSocket):
 
             _last_seen["t"] = time.monotonic()
 
+            if not _frame_allowed():
+                continue
             try:
                 msg = json.loads(raw)
             except json.JSONDecodeError:
-                logger.warning("Malformed JSON from %s — ignored (%.120s)", client_label, raw)
+                # Length only: a frame can carry anything the client typed.
+                logger.warning("Malformed JSON from %s — ignored (%d chars)", client_label, len(raw))
+                continue
+            if not isinstance(msg, dict):
+                # `[]` or `"x"` used to raise on msg.get() and tear the socket down.
+                logger.warning("Non-object frame from %s — ignored", client_label)
                 continue
 
             msg_type = msg.get("type")
@@ -1220,12 +1318,9 @@ async def websocket_endpoint(websocket: WebSocket):
                         })
                 elif msg_type == "REQUEST_DEAL_PIPELINE":
                     await push_deal_pipeline(websocket, ctx, msg)
-                elif msg_type == "OBSERVE":
-                    mind_service.observe(
-                        msg.get("agent", "SCOUT"),
-                        msg.get("content", ""),
-                        msg.get("importance", 0.5),
-                    )
+                # OBSERVE is gone from the client protocol: no client sends it,
+                # and it wrote unbounded, caller-keyed text into the
+                # process-global (cross-tenant) MindService (WEB-5).
                 elif msg_type == "PONG":
                     pass  # client acknowledged our PING; _last_seen already updated
                 else:

@@ -43,6 +43,13 @@ CFG = {
     "rt_latency_ms": int(os.getenv("MOCK_RT_LATENCY_MS", "600")),
     "rt_reply_ms": int(os.getenv("MOCK_RT_REPLY_MS", "1200")),
     "utterance_ms": int(os.getenv("MOCK_RT_UTTERANCE_MS", "2000")),
+    # Security testing: a FULLY HIJACKED model. When set to a list of
+    # {"name", "arguments"} tool calls, the first round of every chat turn
+    # answers with exactly those calls ("{record_id}" is replaced with the
+    # selected record's id from the prompt's <record> fence), as a model taken
+    # over by injected record text would. The tool layer must refuse what the
+    # signed-in user could not do. performance/security/ai_chain_attack.py.
+    "llm_hijack_tools": None,
 }
 STATS: dict = {}
 
@@ -94,7 +101,30 @@ async def chat(request: Request):
             _count(int(fail))
             return JSONResponse({"error": {"message": f"mock {fail}", "type": "mock"}}, status_code=int(fail))
         _count(200)
-        last = next((m.get("content") for m in reversed(body.get("messages") or [])
+        messages = body.get("messages") or []
+        hijack = CFG.get("llm_hijack_tools")
+        if hijack and body.get("tools") and not any(m.get("role") == "tool" for m in messages):
+            import json as _json
+            import re as _re
+
+            prompt = " ".join(str(m.get("content") or "") for m in messages if m.get("role") == "system")
+            found = _re.search(r'<record>\{.*?"id":\s*"([0-9a-f-]{36})"', prompt)
+            record_id = found.group(1) if found else ""
+            STATS.setdefault("hijack_rounds", 0)
+            STATS["hijack_rounds"] += 1
+            calls = [{
+                "id": f"call_{i}", "type": "function",
+                "function": {"name": c["name"],
+                             "arguments": _json.dumps(c.get("arguments") or {}).replace("{record_id}", record_id)},
+            } for i, c in enumerate(hijack)]
+            return {
+                "id": f"mock-{STATS['llm_requests']}", "object": "chat.completion", "created": int(time.time()),
+                "model": body.get("model") or "perf-mock",
+                "choices": [{"index": 0, "finish_reason": "tool_calls",
+                             "message": {"role": "assistant", "content": None, "tool_calls": calls}}],
+                "usage": {"prompt_tokens": 400, "completion_tokens": 60, "total_tokens": 460},
+            }
+        last = next((m.get("content") for m in reversed(messages)
                      if m.get("role") == "user"), "") or ""
         text = ("Here is what I found for your request. This is a load-test reply from the "
                 f"provider mock, so no model was called. You asked about: {str(last)[:80]}")

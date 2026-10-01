@@ -6,6 +6,7 @@ import { NetworkProvider } from './context/NetworkContext';
 import { apiGet, apiPost } from './lib/apiClient';
 import { ReelExperience } from './components/ReelExperience';
 import { SitePreview } from './components/SitePreview';
+import { clearPrivateCaches } from './lib/clearPrivateCaches.js';
 // Unauthenticated client capture page — the token in the URL is the whole
 // capability, so this route deliberately renders outside the auth shell.
 const PropertyUploadPage = lazy(() => import('./components/PropertyUploadPage'));
@@ -121,6 +122,7 @@ function NeohApp() {
   useEffect(() => {
     const expireSession = () => {
       sessionStorage.removeItem('oracle_role');
+      clearPrivateCaches();
       setAuthed(false);
     };
     window.addEventListener('auth:expired', expireSession);
@@ -130,6 +132,7 @@ function NeohApp() {
   const signOut = useCallback(async () => {
     try { await apiPost('/auth/logout', {}, { retries: 0 }); } catch { /* expire locally regardless */ }
     sessionStorage.removeItem('oracle_role');
+    await clearPrivateCaches();
     setAuthed(false);
   }, []);
 

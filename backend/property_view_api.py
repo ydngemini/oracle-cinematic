@@ -33,7 +33,8 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile, status
+from starlette.datastructures import UploadFile as StarletteUploadFile
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 import media_storage
@@ -1046,18 +1047,55 @@ async def describe_upload_link(token: str):
     }
 
 
-@router.post("/public/property-upload/{token}", status_code=status.HTTP_201_CREATED)
-async def client_upload(
-    token: str,
-    surface: str = Form(default="exterior"),
-    file: UploadFile = File(...),
-):
+# Concurrent public uploads one replica will buffer. The read below holds the
+# whole file in memory (up to MAX_VIDEO_BYTES); unbounded, about eight
+# simultaneous 512 MB posts exhausted a 4 GB instance. Excess callers wait.
+_PUBLIC_UPLOAD_SLOTS = asyncio.Semaphore(int(os.getenv("ORACLE_PUBLIC_UPLOAD_CONCURRENCY", "2")))
+
+
+@router.post(
+    "/public/property-upload/{token}",
+    status_code=status.HTTP_201_CREATED,
+    openapi_extra={"requestBody": {"content": {"multipart/form-data": {"schema": {
+        "type": "object", "required": ["file"],
+        "properties": {"surface": {"type": "string", "default": "exterior"},
+                       "file": {"type": "string", "format": "binary"}},
+    }}}}},
+)
+async def client_upload(token: str, request: Request):
     """Accept one media file from an unauthenticated client link.
+
+    The capability is checked BEFORE the body is read. Declaring the file as a
+    File(...) parameter made FastAPI parse — and spool to disk — the entire
+    multipart body before this function ran, so anyone could push hundreds of
+    megabytes at a guessed token (review UPL-2). The body is parsed here, by
+    hand, only for a live link, and only within a per-replica concurrency cap.
 
     NOTE: video persistence requires object storage (migration 0066 forbids video
     in media_blobs). Where no storage backend is configured this returns 503 for
     video rather than silently downgrading to a bytea write.
     """
+    precheck_ctx = TenantContext(
+        agent_id="property-view-public",
+        tenant_id="00000000-0000-0000-0000-000000000000",
+        role=Role.PLATFORM_ADMIN,
+    )
+    async with tenant_tx(precheck_ctx) as conn:
+        await _resolve_link(conn, token)  # 404/429 before a byte is read
+
+    async with _PUBLIC_UPLOAD_SLOTS:
+        form = await request.form(max_files=1, max_fields=2)
+        surface = str(form.get("surface") or "exterior")
+        file = form.get("file")
+        if not isinstance(file, StarletteUploadFile):
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "A file is required.")
+        try:
+            return await _accept_client_upload(token, surface, file)
+        finally:
+            await form.close()
+
+
+async def _accept_client_upload(token: str, surface: str, file) -> dict:
     if surface not in _VALID_SURFACES:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Unknown surface.")
 

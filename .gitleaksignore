@@ -1,0 +1,8 @@
+# Reviewed false positives (security launch review, 2026-10-01).
+# Test fixtures, Azure revision names and hostnames — no credential.
+# A NEW finding fails CI; add a line here only after reviewing it.
+899f604f8bafbb98f745ca2e016b8c0bb5a62acd:backend/tests/test_plivo_qwen_realtime.py:generic-api-key:154
+6b95da8f1b000953e1dbd211162d4e6f1692691e:backend/tests/test_config_weak_secrets.py:generic-api-key:46
+ba967f98d8ff90142bf81245ff278aa71525273f:backend/NEOH_AZURE_DEPLOYMENT.md:generic-api-key:90
+ba967f98d8ff90142bf81245ff278aa71525273f:backend/NEOH_AZURE_DEPLOYMENT.md:generic-api-key:92
+ba967f98d8ff90142bf81245ff278aa71525273f:backend/ai_chat_agent.py:generic-api-key:531

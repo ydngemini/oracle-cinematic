@@ -44,7 +44,8 @@ async def main() -> int:
         conn = await asyncpg.connect(dsn)
         try:
             rows = {r["agent_id"]: r for r in await conn.fetch(
-                "SELECT agent_id, tenant_id::text AS tenant_id, role FROM users WHERE agent_id = ANY($1)",
+                "SELECT agent_id, tenant_id::text AS tenant_id, role, id::text AS id, session_epoch "
+                "FROM users WHERE agent_id = ANY($1)",
                 [u["agent_id"] for u in users])}
         finally:
             await conn.close()
@@ -67,7 +68,10 @@ async def main() -> int:
             "shape": u["shape"],
             "sentinel": u["sentinel"],
             "role": row["role"],
-            "token": _issue_jwt(u["agent_id"], row["tenant_id"], row["role"]),
+            # Bound to the account row and its epoch exactly as login binds
+            # them (0117), so the load runs the production session check.
+            "token": _issue_jwt(u["agent_id"], row["tenant_id"], row["role"],
+                                user_id=row.get("id"), session_epoch=int(row.get("session_epoch") or 0)),
         })
     (OUT / "sessions.json").write_text(json.dumps({"sessions": sessions}))
     (OUT / "sessions.json").chmod(0o644)

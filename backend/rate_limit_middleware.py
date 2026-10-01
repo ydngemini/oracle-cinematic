@@ -172,10 +172,27 @@ async def close_redis() -> None:
         _redis_client = None
 
 
+def _rate_identity(address: ipaddress.IPv4Address | ipaddress.IPv6Address) -> str:
+    """One bucket per network a client actually controls (review WEB-8).
+
+    ``::ffff:198.51.100.7`` is the IPv4 client 198.51.100.7, so it shares that
+    bucket. An IPv6 end site is routinely handed a whole /64, so per-address
+    buckets gave a single client 2**64 of them on the anonymous login, reset
+    and lead-intake limits; the /64 is the identity."""
+    if isinstance(address, ipaddress.IPv6Address):
+        if address.ipv4_mapped is not None:
+            return str(address.ipv4_mapped)
+        return str(ipaddress.ip_network(f"{address}/64", strict=False))
+    return str(address)
+
+
 def _get_client_ip(request: Request) -> str:
     remote = request.client.host if request.client else "unknown"
     if not _trust_proxy_headers():
-        return remote
+        try:
+            return _rate_identity(ipaddress.ip_address(remote))
+        except ValueError:
+            return remote
     forwarded = request.headers.get("X-Forwarded-For", "")[:1_024]
     # Managed ingresses append hops on the right. Walk that chain from the
     # trusted edge inward and ignore private/internal proxy addresses.
@@ -187,9 +204,14 @@ def _get_client_ip(request: Request) -> str:
             address = ipaddress.ip_address(candidate)
         except ValueError:
             continue
+        if address.version == 6 and address.ipv4_mapped is not None:
+            address = address.ipv4_mapped
         if not _is_internal_ip(address):
-            return str(address)
-    return remote
+            return _rate_identity(address)
+    try:
+        return _rate_identity(ipaddress.ip_address(remote))
+    except ValueError:
+        return remote
 
 
 def _get_limit_for_path(path: str) -> int:

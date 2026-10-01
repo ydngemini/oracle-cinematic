@@ -166,6 +166,19 @@ async function evictOldEntries(storeName, maxEntries, maxBytes = Infinity) {
 self.addEventListener('message', async (event) => {
   const { type, payload } = event.data || {};
 
+  // Sign-out: forget everything cached for the previous session (WEB-10).
+  if (type === 'CLEAR_PRIVATE_CACHE') {
+    try {
+      const db = await openDB();
+      db.close();
+    } catch { /* nothing open */ }
+    await new Promise((resolve) => {
+      const req = indexedDB.deleteDatabase(IDB_NAME);
+      req.onsuccess = req.onerror = req.onblocked = () => resolve();
+    });
+    return;
+  }
+
   if (type === 'PREDICTIVE_CACHE') {
     const properties = payload?.properties || [];
 

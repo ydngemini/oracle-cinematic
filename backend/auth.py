@@ -8,6 +8,7 @@ dev/development/local), where an ephemeral per-process key is generated so local
 runs work without a static secret in source.
 """
 
+import asyncio
 import base64
 import hashlib
 import hmac
@@ -20,7 +21,7 @@ from typing import Optional
 from uuid import UUID
 
 import jwt
-from fastapi import APIRouter, HTTPException, Header, Request, Response, status
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Header, Request, Response, status
 from pydantic import BaseModel, ConfigDict, Field
 
 from policy_contract import PLATFORM_POLICY_VERSION
@@ -58,6 +59,10 @@ else:
 
 ALGORITHM = "HS256"
 TOKEN_TTL_SECONDS = 86_400  # 24 hours
+# A session renews itself (GET /auth/policy-acceptance re-mints), but never past
+# this long after the password was last typed. Renewal used to be unbounded, so
+# a copied cookie lived forever as long as something kept touching it.
+MAX_SESSION_AGE_SECONDS = 7 * 86_400
 
 # Issuer / audience are mandatory outside development. A partial pair is always
 # rejected: validating only one side creates an easy configuration-dependent
@@ -172,6 +177,20 @@ def _verify_pw(password: str, stored: Optional[str]) -> bool:
         return False
 
 
+# Verified against when no account matches, so an unknown address costs the
+# same scrypt as a wrong password (AUTH-4). Random per process; never matches.
+_DUMMY_PASSWORD_HASH = _hash_pw(secrets.token_urlsafe(24))
+
+
+def _is_reserved_identity(agent_id: str) -> bool:
+    """The operator/demo identities live in the environment, not in `users`, so
+    nothing stopped a self-serve signup from creating a DB account with the
+    same agent_id — and its token's subject then equalled the platform admin's
+    in audit attribution and the admin session view (review AUTH-3)."""
+    wanted = (agent_id or "").strip().lower()
+    return any(wanted == known.strip().lower() for known in DEMO_CREDENTIALS)
+
+
 def _slugify(text: str) -> str:
     base = "".join(c if c.isalnum() else "-" for c in (text or "").lower()).strip("-")[:40] or "tenant"
     return "%s-%s" % (base, secrets.token_hex(3))
@@ -182,7 +201,25 @@ def _hash_reset_jti(jti: str) -> str:
     return hashlib.sha256(jti.encode("utf-8")).hexdigest()
 
 
-def _issue_jwt(sub: str, tenant_id: str, role: str, *, ttl: int = TOKEN_TTL_SECONDS, extra: Optional[dict] = None) -> str:
+def _issue_jwt(
+    sub: str,
+    tenant_id: str,
+    role: str,
+    *,
+    ttl: int = TOKEN_TTL_SECONDS,
+    extra: Optional[dict] = None,
+    user_id: Optional[str] = None,
+    session_epoch: int = 0,
+    auth_time: Optional[float] = None,
+) -> str:
+    """Sign a session (or purpose) token.
+
+    `user_id` and `session_epoch` bind the token to one users row and its
+    current epoch (migration 0117): tenancy re-checks both on every tenant
+    transaction, so bumping the epoch ends the session. Environment identities
+    (operator/demo) have no row and pass neither. `auth_time` is when the
+    password was last proven; renewals carry it forward, capped by
+    MAX_SESSION_AGE_SECONDS."""
     now = time.time()
     payload: dict = {
         "sub": sub,
@@ -191,7 +228,11 @@ def _issue_jwt(sub: str, tenant_id: str, role: str, *, ttl: int = TOKEN_TTL_SECO
         "policy_version": PLATFORM_POLICY_VERSION,
         "iat": now,
         "exp": now + ttl,
+        "auth_time": int(auth_time if auth_time is not None else now),
+        "sep": int(session_epoch),
     }
+    if user_id:
+        payload["uid"] = str(user_id)
     if extra:
         payload.update(extra)
     if _JWT_ISSUER:
@@ -215,7 +256,7 @@ async def _lookup_user(agent_id: str):
     async with tenant_tx(_admin_ctx()) as conn:
         return await conn.fetchrow(
             "SELECT users.id, users.agent_id, users.tenant_id, users.role, users.password_hash, "
-            "users.policy_acceptance_required, "
+            "users.policy_acceptance_required, users.session_epoch, "
             "EXISTS (SELECT 1 FROM user_policy_acceptances AS acceptance "
             "WHERE acceptance.user_id = users.id AND acceptance.policy_version = $2) "
             "AS has_current_policy_acceptance "
@@ -364,16 +405,36 @@ _RL_WINDOW_SECONDS = 60
 _RL_MAX_ATTEMPTS = 10  # per window per account (login attempts)
 
 
-async def _check_rate_limit(agent_id: str) -> tuple[int, int, int]:
+# Account-wide ceiling across every client network (review AUTH-6).
+_RL_ACCOUNT_CEILING = 5 * _RL_MAX_ATTEMPTS
+
+
+async def _check_rate_limit(agent_id: str, client: Optional[str] = None) -> tuple[int, int, int]:
     """Enforce and return (limit, remaining, reset_epoch) for the given account.
 
-    Raises HTTP 429 if the window is exhausted.
+    With `client` (the caller's network, as the request limiter derives it):
+    _RL_MAX_ATTEMPTS per (account, network) plus a looser account-wide
+    ceiling. Keyed on the account alone, anyone anywhere could hold a chosen
+    account — the published operator address included — at 429 with ten
+    requests a minute (review AUTH-6). Distinct accounts behind one office NAT
+    never share a bucket either way.
+
+    Raises HTTP 429 if a window is exhausted.
     """
     from rate_limit_middleware import _check_rate_limit_redis
 
     account = hashlib.sha256(agent_id.strip().lower().encode("utf-8", errors="replace")).hexdigest()
-    allowed, count = await _check_rate_limit_redis(
-        f"login-account:{account}", "/auth/login:account", _RL_MAX_ATTEMPTS)
+    if client:
+        network = hashlib.sha256(client.encode("utf-8", errors="replace")).hexdigest()[:32]
+        allowed, count = await _check_rate_limit_redis(
+            f"login-account-net:{account}:{network}", "/auth/login:account-net", _RL_MAX_ATTEMPTS)
+        if allowed:
+            ceiling_ok, _ = await _check_rate_limit_redis(
+                f"login-account:{account}", "/auth/login:account", _RL_ACCOUNT_CEILING)
+            allowed = ceiling_ok
+    else:
+        allowed, count = await _check_rate_limit_redis(
+            f"login-account:{account}", "/auth/login:account", _RL_MAX_ATTEMPTS)
     reset_epoch = int(time.time() // _RL_WINDOW_SECONDS + 1) * _RL_WINDOW_SECONDS
     if not allowed:
         log.warning("Login rate limit exceeded for one account (%d attempts/%ds).",
@@ -522,7 +583,7 @@ def _set_session_cookie(response: Response, token: str) -> None:
         value=token,
         httponly=True,
         secure=not config.IS_DEV,
-        samesite="lax" if config.IS_DEV else "none",
+        samesite=config.session_cookie_samesite(),
         max_age=TOKEN_TTL_SECONDS,
         path="/",
     )
@@ -534,7 +595,7 @@ def _clear_session_cookie(response: Response) -> None:
     response.delete_cookie(
         "oracle_session",
         path="/",
-        samesite="lax" if config.IS_DEV else "none",
+        samesite=config.session_cookie_samesite(),
         secure=not config.IS_DEV,
     )
 
@@ -563,7 +624,7 @@ def logout(response: Response) -> Response:
 
     response.status_code = status.HTTP_204_NO_CONTENT
     cookie_secure = not config.IS_DEV
-    cookie_samesite = "lax" if config.IS_DEV else "none"
+    cookie_samesite = config.session_cookie_samesite()
     _clear_session_cookie(response)
     response.delete_cookie(
         "csrf_token", path="/", samesite=cookie_samesite, secure=cookie_secure
@@ -595,7 +656,7 @@ def session_status(request: Request, response: Response) -> SessionStatusRespons
 
 
 @router.post("/login", response_model=LoginResponse)
-async def login(body: LoginRequest, response: Response) -> LoginResponse:
+async def login(body: LoginRequest, response: Response, request: Request = None) -> LoginResponse:
     """
     Validate agent credentials and return a signed JWT.
 
@@ -610,8 +671,11 @@ async def login(body: LoginRequest, response: Response) -> LoginResponse:
             detail="Invalid agent credentials.",
         )
 
-    # --- Rate limit check (per agent_id) -------------------------------------
-    limit, remaining, reset = await _check_rate_limit(body.agent_id)
+    # --- Rate limit check (per account and client network) --------------------
+    from rate_limit_middleware import _get_client_ip
+
+    client = _get_client_ip(request) if isinstance(request, Request) else None
+    limit, remaining, reset = await _check_rate_limit(body.agent_id, client)
     # The operator/demo dict is an exact-match lookup, so what was typed already
     # IS the canonical spelling there; only the DB path needs correcting.
     agent_identity = body.agent_id
@@ -624,11 +688,20 @@ async def login(body: LoginRequest, response: Response) -> LoginResponse:
         expected.encode(), body.passphrase.encode()
     )
     policy_acceptance_required = False
+    session_user_id: Optional[str] = None
+    session_epoch = 0
     if credentials_ok:
         tenant_id, role = DEMO_TENANCY.get(body.agent_id, (body.agent_id, "agent"))
     else:
         row = await _lookup_user(body.agent_id)
-        if row and _verify_pw(body.passphrase, row["password_hash"]):
+        # Always pay for one scrypt, account or not: skipping it for unknown
+        # addresses made "no such account" answer ~200x faster than "wrong
+        # password", which enumerates accounts by timing alone (AUTH-4).
+        password_ok = _verify_pw(
+            body.passphrase,
+            row["password_hash"] if row and row["password_hash"] else _DUMMY_PASSWORD_HASH,
+        )
+        if row and row["password_hash"] and password_ok:
             credentials_ok = True
             # Identity is the row's agent_id, not what was typed. _lookup_user
             # matches on lower(agent_id), so "Me@x.com" and "me@x.com" are one
@@ -639,6 +712,8 @@ async def login(body: LoginRequest, response: Response) -> LoginResponse:
             # `existing["requested_by"] == ctx.agent_id` is False.
             agent_identity = str(row["agent_id"])
             tenant_id, role = str(row["tenant_id"]), row["role"]
+            session_user_id = str(row["id"])
+            session_epoch = int(row["session_epoch"] or 0)
             policy_acceptance_required = (
                 bool(row["policy_acceptance_required"])
                 or not bool(row["has_current_policy_acceptance"])
@@ -659,6 +734,8 @@ async def login(body: LoginRequest, response: Response) -> LoginResponse:
         tenant_id,
         role,
         extra={"policy_pending": True} if policy_acceptance_required else None,
+        user_id=session_user_id,
+        session_epoch=session_epoch,
     )
 
     _register_session(agent_identity)
@@ -695,6 +772,9 @@ async def register(body: RegisterRequest, response: Response) -> LoginResponse:
     from db.connection import tenant_tx
     import asyncpg
 
+    if _is_reserved_identity(email):
+        # The same answer as an existing account: a reserved address is taken.
+        raise HTTPException(status.HTTP_409_CONFLICT, "An account with that email already exists.")
     pw_hash = _hash_pw(body.password)
     company = (body.company or "").strip()
     try:
@@ -705,9 +785,9 @@ async def register(body: RegisterRequest, response: Response) -> LoginResponse:
                 "INSERT INTO tenants (slug, name) VALUES ($1, $2) RETURNING id",
                 _slugify(company or email.split("@")[0]), company or email,
             )
-            await conn.execute(
+            new_user = await conn.fetchrow(
                 "INSERT INTO users (tenant_id, agent_id, role, password_hash, email, full_name, company, policy_acceptance_required) "
-                "VALUES ($1, $2, 'broker_owner', $3, $4, $5, $6, true)",
+                "VALUES ($1, $2, 'broker_owner', $3, $4, $5, $6, true) RETURNING id",
                 trow["id"], email, pw_hash, email, body.full_name.strip(), company,
             )
     except asyncpg.UniqueViolationError:
@@ -720,7 +800,10 @@ async def register(body: RegisterRequest, response: Response) -> LoginResponse:
             status.HTTP_409_CONFLICT, "An account with that email already exists."
         ) from None
     tenant_id = str(trow["id"])
-    token = _issue_jwt(email, tenant_id, "broker_owner", extra={"policy_pending": True})
+    token = _issue_jwt(
+        email, tenant_id, "broker_owner", extra={"policy_pending": True},
+        user_id=str(new_user["id"]) if new_user else None,
+    )
     _set_session_cookie(response, token)
     _register_session(email)
     log.info("New signup: agent_id=%r tenant_id=%r", email, tenant_id)
@@ -735,10 +818,24 @@ async def register(body: RegisterRequest, response: Response) -> LoginResponse:
 
 
 @router.post("/forgot", status_code=status.HTTP_202_ACCEPTED)
-async def forgot_password(body: ForgotRequest):
+async def forgot_password(body: ForgotRequest, background_tasks: BackgroundTasks = None):
     """Email a time-limited reset link. Always 202 (never reveals whether the email
-    has an account). Only a SHA-256 digest of the random JWT ID is persisted."""
+    has an account). Only a SHA-256 digest of the random JWT ID is persisted.
+
+    The lookup, token write and mail all happen AFTER the response is sent. Done
+    inline, an existing account took a DB insert plus a synchronous SMTP
+    exchange to answer while an unknown one answered at once — the uniform body
+    was defeated by the clock, and each reset froze this worker's event loop
+    for the whole SMTP conversation (review AUTH-5)."""
     email = body.email.strip().lower()
+    if background_tasks is not None:
+        background_tasks.add_task(_issue_password_reset, email)
+    else:  # called directly (tests, scripts): same work, inline
+        await _issue_password_reset(email)
+    return dict(_FORGOT_RESPONSE)
+
+
+async def _issue_password_reset(email: str) -> None:
     try:
         row = await _lookup_user(email) if 0 < len(email) <= _MAX_AGENT_ID_LEN else None
         if row:
@@ -771,11 +868,9 @@ async def forgot_password(body: ForgotRequest):
             import config as _config
 
             base = _config.public_base_url()
-            _send_reset_email(email, f"{base}/?reset={token}")
+            await asyncio.to_thread(_send_reset_email, email, f"{base}/?reset={token}")
     except Exception:  # noqa: BLE001 - forgot must never disclose account or infrastructure state
         log.exception("Password reset request could not be completed.")
-
-    return dict(_FORGOT_RESPONSE)
 
 
 @router.post("/reset", response_model=LoginResponse)
@@ -825,13 +920,14 @@ async def reset_password(body: ResetRequest, response: Response) -> LoginRespons
             "RETURNING reset_token.user_id, reset_token.tenant_id"
             ") "
             "UPDATE users AS account "
-            "SET password_hash = $4, updated_at = now() "
+            "SET password_hash = $4, updated_at = now(), "
+            "    session_epoch = account.session_epoch + 1 "
             "FROM consumed_reset "
             "WHERE account.id = consumed_reset.user_id "
             "AND account.tenant_id = consumed_reset.tenant_id "
             "AND account.is_active "
             "RETURNING account.id, account.agent_id, account.tenant_id, account.role, "
-            "account.policy_acceptance_required, "
+            "account.policy_acceptance_required, account.session_epoch, "
             "EXISTS (SELECT 1 FROM user_policy_acceptances AS acceptance "
             "WHERE acceptance.user_id = account.id AND acceptance.policy_version = $5) "
             "AS has_current_policy_acceptance",
@@ -863,11 +959,16 @@ async def reset_password(body: ResetRequest, response: Response) -> LoginRespons
         bool(row["policy_acceptance_required"])
         or not bool(row["has_current_policy_acceptance"])
     )
+    # The reset bumped session_epoch: every session the account had before —
+    # including one an attacker may hold — ended with it. This is the only
+    # live session now.
     token = _issue_jwt(
         current_agent_id,
         tenant_id,
         role,
         extra={"policy_pending": True} if policy_acceptance_required else None,
+        user_id=str(row["id"]),
+        session_epoch=int(row["session_epoch"]),
     )
     _register_session(current_agent_id)
     _set_session_cookie(response, token)
@@ -886,6 +987,7 @@ async def reset_password(body: ResetRequest, response: Response) -> LoginRespons
 async def change_password(
     body: ChangePasswordRequest,
     request: Request,
+    response: Response,
     authorization: Optional[str] = Header(default=None),
 ):
     """Logged-in self-service password change (current → new). DB users only — the
@@ -899,21 +1001,40 @@ async def change_password(
     if not authorization or not authorization.lower().startswith("bearer "):
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Authentication required.")
     claims = decode_token(authorization.split(" ", 1)[1])  # validates sig+exp → 401
+    if claims.get("purpose"):
+        # A reset or portal token is not a login; it must not change a password.
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Authentication required.")
     agent_id = claims.get("sub", "")
+    # Guessing the current password from a stolen session was bounded only by
+    # the generic per-IP /auth/ bucket; the login account limit applies (AUTH-13).
+    await _check_rate_limit(agent_id)
     if not (MIN_PASSWORD_LEN <= len(body.new_password) <= _MAX_PASSPHRASE_LEN):
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, f"New password must be at least {MIN_PASSWORD_LEN} characters.")
     row = await _lookup_user(agent_id)
     if not row or not row["password_hash"]:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "This account's password is managed by your administrator, not self-service.")
+    # The token must still be this account's live session — the same check
+    # tenancy applies to every tenant transaction (0117).
+    if (
+        str(row["tenant_id"]) != str(claims.get("tenant_id"))
+        or row["role"] != claims.get("role")
+        or int(row["session_epoch"] or 0) != int(claims.get("sep", 0) or 0)
+        or (claims.get("uid") and str(claims.get("uid")) != str(row["id"]))
+    ):
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Your session has ended. Sign in again.")
     if not _verify_pw(body.current_password, row["password_hash"]):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Current password is incorrect.")
 
     from db.connection import tenant_tx
     new_hash = _hash_pw(body.new_password)
     async with tenant_tx(_admin_ctx()) as conn:
-        await conn.execute(
-            "UPDATE users SET password_hash = $2, updated_at = now() WHERE lower(agent_id) = lower($1)",
-            agent_id, new_hash,
+        # Bumping session_epoch ends every other session this account has —
+        # someone changes a password because they think it is compromised.
+        updated = await conn.fetchrow(
+            "UPDATE users SET password_hash = $1, updated_at = now(), "
+            "session_epoch = session_epoch + 1 "
+            "WHERE id = $2 RETURNING id, agent_id, tenant_id, role, session_epoch",
+            new_hash, row["id"],
         )
         # Kill any outstanding reset link in the same transaction. Changing a
         # password is what someone does when they think their account is at
@@ -935,7 +1056,13 @@ async def change_password(
         "Password changed (self-service) for agent_id=%r; outstanding reset links revoked (%s)",
         agent_id, revoked,
     )
-    return {"status": "ok", "detail": "Password updated."}
+    # This device stays signed in on the new epoch; every other session ended.
+    if updated:
+        _set_session_cookie(response, _issue_jwt(
+            str(updated["agent_id"]), str(updated["tenant_id"]), str(updated["role"]),
+            user_id=str(updated["id"]), session_epoch=int(updated["session_epoch"]),
+        ))
+    return {"status": "ok", "detail": "Password updated. Other sessions were signed out."}
 
 
 @router.post("/verify", response_model=VerifyResponse)
@@ -1059,6 +1186,10 @@ async def accept_invite(body: AcceptInviteRequest, response: Response) -> LoginR
             raise HTTPException(status.HTTP_409_CONFLICT, detail)
 
         email = preview["email"]
+        if _is_reserved_identity(email):
+            raise HTTPException(
+                status.HTTP_409_CONFLICT, "An account with that email already exists."
+            )
         tenant_id = str(preview["tenant_id"])
 
         # One email is one account in one tenant: users.tenant_id is NOT NULL
@@ -1122,7 +1253,10 @@ async def accept_invite(body: AcceptInviteRequest, response: Response) -> LoginR
             "broker" if invited_role == "broker_owner" else "agent",
         )
 
-    token = _issue_jwt(email, tenant_id, invited_role, extra={"policy_pending": True})
+    token = _issue_jwt(
+        email, tenant_id, invited_role, extra={"policy_pending": True},
+        user_id=str(user["id"]),
+    )
     _set_session_cookie(response, token)
     _register_session(email)
     log.info("Invitation accepted: agent_id=%r tenant_id=%r", email, tenant_id)

@@ -17,6 +17,8 @@ import urllib.request
 from dataclasses import asdict, dataclass
 from typing import Any, Mapping, Optional
 
+import recovery_mode
+
 logger = logging.getLogger("oracle.command_providers")
 
 
@@ -90,6 +92,7 @@ async def send_smtp_email(
     `reply_to` is the drafting agent's own address (user_profiles.public_email)
     — the send still goes out through the one platform/tenant relay, but
     replies land with the agent who worked the lead, not the relay mailbox."""
+    recovery_mode.guard("send an approved email")
     credentials = dict(credentials or {})
     recipient = str((draft.get("target") or {}).get("email") or "").strip()
     subject = str(draft.get("subject") or "").strip()
@@ -165,6 +168,7 @@ async def send_twilio_sms(
     credentials: Optional[Mapping[str, Any]] = None,
 ) -> ProviderResult:
     """Send one previously-approved SMS with a registered Twilio sender."""
+    recovery_mode.guard("send an SMS")
     credentials = dict(credentials or {})
     account_sid = str(
         credentials.get("account_sid") or os.getenv("TWILIO_ACCOUNT_SID", "")
@@ -224,6 +228,7 @@ async def create_google_calendar_event(
     *,
     access_token: Optional[str] = None,
 ) -> ProviderResult:
+    recovery_mode.guard("create a Google Calendar event (which emails attendees)")
     token = access_token or os.getenv("GOOGLE_CALENDAR_ACCESS_TOKEN", "")
     if not token:
         raise ProviderConfigurationError("Google Calendar OAuth credential is not configured")
@@ -260,6 +265,7 @@ async def place_twilio_call(
     *,
     credentials: Optional[Mapping[str, Any]] = None,
 ) -> ProviderResult:
+    recovery_mode.guard("place a phone call")
     credentials = dict(credentials or {})
     account_sid = str(credentials.get("account_sid") or os.getenv("TWILIO_ACCOUNT_SID", ""))
     api_key = str(credentials.get("api_key") or os.getenv("TWILIO_API_KEY", ""))
@@ -334,6 +340,7 @@ async def abort_twilio_call(
     credentials: Optional[Mapping[str, Any]] = None,
 ) -> None:
     """Best-effort termination when durable Twilio state cannot be established."""
+    recovery_mode.guard("change a live phone call")
     credentials = dict(credentials or {})
     account_sid = str(
         credentials.get("account_sid") or os.getenv("TWILIO_ACCOUNT_SID", "")
@@ -386,6 +393,7 @@ async def start_twilio_caller_id_verification(
     code. This call never marks a number verified — see
     check_twilio_caller_id_verified for the only function that may.
     """
+    recovery_mode.guard("start a caller-ID verification call")
     credentials = dict(credentials or {})
     account_sid = str(credentials.get("account_sid") or os.getenv("TWILIO_ACCOUNT_SID", "")).strip()
     auth_token = str(credentials.get("auth_token") or os.getenv("TWILIO_AUTH_TOKEN", "")).strip()
@@ -471,6 +479,7 @@ async def provision_twilio_forwarding_number(
     and it only reaches this after checking
     telephony_routes.inbound_forwarding_provider_sid is empty.
     """
+    recovery_mode.guard("buy a phone number")
     credentials = dict(credentials or {})
     account_sid = str(credentials.get("account_sid") or os.getenv("TWILIO_ACCOUNT_SID", "")).strip()
     auth_token = str(credentials.get("auth_token") or os.getenv("TWILIO_AUTH_TOKEN", "")).strip()
@@ -524,6 +533,7 @@ async def configure_twilio_number_webhook(
     after the number is purchased and upserted — this runs as the follow-up
     step once both exist.
     """
+    recovery_mode.guard("reconfigure a phone number")
     credentials = dict(credentials or {})
     account_sid = str(credentials.get("account_sid") or os.getenv("TWILIO_ACCOUNT_SID", "")).strip()
     auth_token = str(credentials.get("auth_token") or os.getenv("TWILIO_AUTH_TOKEN", "")).strip()
@@ -581,6 +591,7 @@ async def place_custom_http_call(
     }
     Provider response should return JSON with one of: call_id / id / sid / reference.
     """
+    recovery_mode.guard("place a phone call")
     credentials = dict(credentials or {})
     api_url = str(
         credentials.get("api_url") or os.getenv("ORACLE_CUSTOM_CALL_API_URL", "")

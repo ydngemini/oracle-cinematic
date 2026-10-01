@@ -11,6 +11,8 @@ from automation_jobs import canonical_json, payload_hash
 from db.connection import tenant_tx
 from decision_traces import SURFACE_APPROVAL, record_decision
 from platform_policy import ActionRisk, validate_approval_reason
+from fastapi import HTTPException
+
 from tenancy import Role, TenantContext, require_role
 
 
@@ -93,6 +95,37 @@ def _same_agent(left: Optional[str], right: Optional[str]) -> bool:
     return (left or "").strip().lower() == (right or "").strip().lower()
 
 
+# Approvals whose effect belongs to the brokerage rather than to the agent who
+# asked: money (GPU, video, training), legal documents, and publishing under the
+# brokerage's name. An agent may request them; only a broker owner decides.
+_OWNER_DECIDES_RISKS = frozenset({ActionRisk.FINANCIAL.value, ActionRisk.LEGAL_DOCUMENT.value})
+_OWNER_DECIDES_ACTIONS = frozenset({"studio.site.publish", "marketplace:publish"})
+
+
+def _require_decider(ctx: TenantContext, existing: Mapping[str, Any]) -> None:
+    """Who may decide a pending approval (review TEN-1/TEN-2/AI-6/OUT-4).
+
+    Approvals were tenant-wide: any agent could release another agent's queued
+    email, SMS or call, approve a GPU training run, or approve their own site
+    publish through an unrelated route. Now: the requester decides their own
+    request, a broker owner decides anyone's, and the brokerage-level classes
+    above need a broker owner whoever asked.
+    """
+    privileged = ctx.is_platform_admin or ctx.is_broker_owner
+    if (
+        existing["risk_class"] in _OWNER_DECIDES_RISKS
+        or existing["action_type"] in _OWNER_DECIDES_ACTIONS
+    ):
+        if not privileged:
+            raise HTTPException(status_code=403, detail="A broker owner must decide this approval.")
+        return
+    if not privileged and not _same_agent(existing["requested_by"], ctx.agent_id):
+        raise HTTPException(
+            status_code=403,
+            detail="Only the person who requested this, or a broker owner, can decide it.",
+        )
+
+
 async def decide_approval(
     ctx: TenantContext,
     approval_id: str,
@@ -100,6 +133,7 @@ async def decide_approval(
     decision: str,
     reason: str,
     edited_payload: Optional[Mapping[str, Any]] = None,
+    expected_action_type: Optional[str] = None,
 ) -> dict[str, Any]:
     """Decide a pending approval, optionally recording what the human changed.
 
@@ -120,6 +154,13 @@ async def decide_approval(
         )
         if existing is None:
             raise LookupError("approval not found")
+        # A route that decides one kind of approval decides only that kind:
+        # the bidding-message route used to approve ANY approval id it was
+        # given, including a site publish the caller had requested themselves.
+        if expected_action_type is not None and existing["action_type"] != expected_action_type:
+            raise LookupError("approval not found")
+        if existing["risk_class"] != ActionRisk.ROLE_OVERRIDE.value:
+            _require_decider(ctx, existing)
         if existing["risk_class"] == ActionRisk.ROLE_OVERRIDE.value:
             require_role(ctx, Role.BROKER_OWNER)
             # Case-folded deliberately. agent_id is matched with lower() at
@@ -206,6 +247,17 @@ async def list_approvals(
     limit: int = 100,
 ) -> list[dict[str, Any]]:
     limit = max(1, min(200, limit))
+    if not (ctx.is_platform_admin or ctx.is_broker_owner):
+        # An agent sees their own requests. The full list carries every
+        # draft_payload in the brokerage — role-override targets, onboarding
+        # licence data, other agents' drafts (review TEN-2).
+        async with tenant_tx(ctx) as conn:
+            rows = await conn.fetch(
+                "SELECT * FROM action_approvals WHERE lower(requested_by) = lower($1) "
+                "AND ($2::text IS NULL OR status = $2) ORDER BY requested_at DESC LIMIT $3",
+                ctx.agent_id, status_filter, limit,
+            )
+        return [approval_dict(row) for row in rows]
     async with tenant_tx(ctx) as conn:
         if status_filter:
             rows = await conn.fetch(

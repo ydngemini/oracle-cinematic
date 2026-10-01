@@ -46,7 +46,7 @@ def _clean(value: Any) -> str:
     return str(value or "").strip()
 
 
-def _reject_internal_host(host: str) -> None:
+def _reject_internal_host(host: str) -> str:
     """Refuse a tenant-supplied SMTP host that resolves inside the network.
 
     The host field on a stored SMTP credential is free text an agent or
@@ -57,27 +57,31 @@ def _reject_internal_host(host: str) -> None:
     response distinguishes open from closed ports on hosts the caller has no
     business reaching, including the cloud metadata address.
     """
+    # Returns the vetted address, and the connection is made to THAT address
+    # (connect() pins it): resolving once here and again inside smtplib left a
+    # DNS-rebinding window between the check and the connect (review SSRF-1).
+    # The test is `is_global`, which also excludes shared/CGNAT space
+    # (100.64/10) that the old private/loopback/link-local list let through, and
+    # an unresolvable name is refused rather than waved on.
     try:
-        infos = socket.getaddrinfo(host, None)
-    except socket.gaierror:
-        # Not this function's problem: an unresolvable host has nothing to
-        # connect to, so it carries no internal-network risk. The connect
-        # attempt itself will raise a clear DNS error.
-        return
+        infos = socket.getaddrinfo(host, None, proto=socket.IPPROTO_TCP)
+    except socket.gaierror as exc:
+        raise SmtpConfigurationError(f"SMTP host {host!r} does not resolve") from exc
+    vetted: Optional[str] = None
     for info in infos:
-        addr = info[4][0]
-        ip = ipaddress.ip_address(addr)
-        if (
-            ip.is_private
-            or ip.is_loopback
-            or ip.is_link_local
-            or ip.is_reserved
-            or ip.is_multicast
-        ):
+        ip = ipaddress.ip_address(info[4][0].split("%", 1)[0])
+        mapped = getattr(ip, "ipv4_mapped", None)
+        if mapped is not None:
+            ip = mapped
+        if not ip.is_global or ip.is_multicast:
             raise SmtpConfigurationError(
                 f"SMTP host {host!r} resolves to a non-public address; "
                 "a tenant mail server must be reachable on the public internet"
             )
+        vetted = vetted or str(ip)
+    if vetted is None:
+        raise SmtpConfigurationError(f"SMTP host {host!r} does not resolve")
+    return vetted
 
 
 def resolve_settings(credentials: Optional[Mapping[str, Any]] = None) -> dict:
@@ -109,8 +113,7 @@ def resolve_settings(credentials: Optional[Mapping[str, Any]] = None) -> dict:
         raise SmtpConfigurationError("ORACLE_SMTP_HOST is not configured")
     # The operator's own ORACLE_SMTP_HOST is trusted; only a host an agent or
     # broker typed into the SMTP credential form is checked.
-    if tenant_host:
-        _reject_internal_host(tenant_host)
+    pinned_ip = _reject_internal_host(tenant_host) if tenant_host else None
     if not sender or "@" not in sender:
         raise SmtpConfigurationError("ORACLE_SMTP_FROM_EMAIL is not configured")
     # Anonymous relays exist, but a blank password with a username set is far
@@ -120,6 +123,7 @@ def resolve_settings(credentials: Optional[Mapping[str, Any]] = None) -> dict:
 
     return {
         "host": host,
+        "pinned_ip": pinned_ip,
         "port": port,
         "username": username,
         "password": password,
@@ -168,6 +172,27 @@ def build_message(
     return message
 
 
+class _PinnedSMTP(smtplib.SMTP):
+    """TCP to the vetted IP; EHLO/STARTTLS/certificate checks still use the
+    hostname (smtplib keeps it in self._host and passes it as server_hostname)."""
+
+    def __init__(self, *args, pinned_ip: str, **kwargs):
+        self._pinned_ip = pinned_ip
+        super().__init__(*args, **kwargs)
+
+    def _get_socket(self, host, port, timeout):
+        return super()._get_socket(self._pinned_ip, port, timeout)
+
+
+class _PinnedSMTP_SSL(smtplib.SMTP_SSL):
+    def __init__(self, *args, pinned_ip: str, **kwargs):
+        self._pinned_ip = pinned_ip
+        super().__init__(*args, **kwargs)
+
+    def _get_socket(self, host, port, timeout):
+        return super()._get_socket(self._pinned_ip, port, timeout)
+
+
 def connect(settings: Mapping[str, Any], *, timeout: float = DEFAULT_TIMEOUT) -> smtplib.SMTP:
     """Open, secure and authenticate one session; the caller closes it.
 
@@ -178,12 +203,20 @@ def connect(settings: Mapping[str, Any], *, timeout: float = DEFAULT_TIMEOUT) ->
     context.check_hostname = True
     context.verify_mode = ssl.CERT_REQUIRED
 
+    pinned = settings.get("pinned_ip")
     if settings["port"] == IMPLICIT_TLS_PORT:
-        client = smtplib.SMTP_SSL(
-            settings["host"], settings["port"], timeout=timeout, context=context
+        client = (
+            _PinnedSMTP_SSL(settings["host"], settings["port"], timeout=timeout,
+                            context=context, pinned_ip=pinned)
+            if pinned else
+            smtplib.SMTP_SSL(settings["host"], settings["port"], timeout=timeout, context=context)
         )
     else:
-        client = smtplib.SMTP(settings["host"], settings["port"], timeout=timeout)
+        client = (
+            _PinnedSMTP(settings["host"], settings["port"], timeout=timeout, pinned_ip=pinned)
+            if pinned else
+            smtplib.SMTP(settings["host"], settings["port"], timeout=timeout)
+        )
     try:
         if settings["port"] != IMPLICIT_TLS_PORT:
             client.ehlo()

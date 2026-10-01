@@ -17,12 +17,26 @@ import asyncio
 from contextlib import asynccontextmanager
 
 import pytest
-from fastapi import HTTPException
+from fastapi import HTTPException, Response
 
 import auth
 
 AGENT = "agent@tenant.test"
 USER_ID = "22222222-2222-2222-2222-222222222222"
+TENANT_ID = "11111111-1111-1111-1111-111111111111"
+CLAIMS = {"sub": AGENT, "tenant_id": TENANT_ID, "role": "agent", "uid": USER_ID, "sep": 0}
+USER_ROW = {
+    "id": USER_ID, "agent_id": AGENT, "tenant_id": TENANT_ID, "role": "agent",
+    "password_hash": "old-hash", "session_epoch": 0,
+}
+
+
+@pytest.fixture(autouse=True)
+def _no_rate_limit(monkeypatch):
+    async def _ok(_agent_id):
+        return (10, 9, 0)
+
+    monkeypatch.setattr(auth, "_check_rate_limit", _ok)
 
 
 class _Conn:
@@ -53,12 +67,12 @@ def _fake_tx(conn):
 def test_changing_a_password_revokes_outstanding_reset_links(monkeypatch):
     conn = _Conn()
     monkeypatch.setattr("db.connection.tenant_tx", _fake_tx(conn), raising=False)
-    monkeypatch.setattr(auth, "decode_token", lambda _t: {"sub": AGENT})
+    monkeypatch.setattr(auth, "decode_token", lambda _t: dict(CLAIMS))
     monkeypatch.setattr(auth, "_verify_pw", lambda _p, _h: True)
     monkeypatch.setattr(auth, "_hash_pw", lambda _p: "new-hash")
 
     async def _user(_agent_id):
-        return {"id": USER_ID, "password_hash": "old-hash"}
+        return dict(USER_ROW)
 
     monkeypatch.setattr(auth, "_lookup_user", _user)
 
@@ -69,7 +83,7 @@ def test_changing_a_password_revokes_outstanding_reset_links(monkeypatch):
         current_password="old-password-1", new_password="new-password-12"
     )
     result = asyncio.run(
-        auth.change_password(body, _Req(), authorization="Bearer token")
+        auth.change_password(body, _Req(), Response(), authorization="Bearer token")
     )
 
     assert result["status"] == "ok"
@@ -95,12 +109,12 @@ def test_the_password_write_and_the_revocation_share_one_transaction(monkeypatch
         yield conn
 
     monkeypatch.setattr("db.connection.tenant_tx", tx, raising=False)
-    monkeypatch.setattr(auth, "decode_token", lambda _t: {"sub": AGENT})
+    monkeypatch.setattr(auth, "decode_token", lambda _t: dict(CLAIMS))
     monkeypatch.setattr(auth, "_verify_pw", lambda _p, _h: True)
     monkeypatch.setattr(auth, "_hash_pw", lambda _p: "new-hash")
 
     async def _user(_agent_id):
-        return {"id": USER_ID, "password_hash": "old-hash"}
+        return dict(USER_ROW)
 
     monkeypatch.setattr(auth, "_lookup_user", _user)
 
@@ -113,6 +127,7 @@ def test_the_password_write_and_the_revocation_share_one_transaction(monkeypatch
                 current_password="old-password-1", new_password="new-password-12"
             ),
             _Req(),
+            Response(),
             authorization="Bearer token",
         )
     )
@@ -125,11 +140,11 @@ def test_the_password_write_and_the_revocation_share_one_transaction(monkeypatch
 def test_a_wrong_current_password_changes_nothing(monkeypatch):
     conn = _Conn()
     monkeypatch.setattr("db.connection.tenant_tx", _fake_tx(conn), raising=False)
-    monkeypatch.setattr(auth, "decode_token", lambda _t: {"sub": AGENT})
+    monkeypatch.setattr(auth, "decode_token", lambda _t: dict(CLAIMS))
     monkeypatch.setattr(auth, "_verify_pw", lambda _p, _h: False)
 
     async def _user(_agent_id):
-        return {"id": USER_ID, "password_hash": "old-hash"}
+        return dict(USER_ROW)
 
     monkeypatch.setattr(auth, "_lookup_user", _user)
 
@@ -143,6 +158,7 @@ def test_a_wrong_current_password_changes_nothing(monkeypatch):
                     current_password="wrong-password", new_password="new-password-12"
                 ),
                 _Req(),
+                Response(),
                 authorization="Bearer token",
             )
         )

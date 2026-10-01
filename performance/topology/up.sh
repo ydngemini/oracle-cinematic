@@ -63,6 +63,8 @@ fi
 cat >> "$ENVF" <<ENV
 ORACLE_ENV=loadtest
 ORACLE_RECOVERY_MODE=1
+ORACLE_CORS_ORIGINS=http://localhost:5173
+ORACLE_BILLING_ENFORCED=0
 ORACLE_GIT_SHA=$SHA
 ENV
 # Per-run overrides for capacity experiments, e.g.
@@ -86,7 +88,7 @@ start() {
     -v oracle_perf_media:/var/neoh-media \
     --memory 900m \
     "$IMAGE" \
-    uvicorn server:app --host 0.0.0.0 --port 8000 --timeout-graceful-shutdown 30 \
+    uvicorn server:app --host 0.0.0.0 --port 8000 --timeout-graceful-shutdown 30 --ws-max-size 1048576 \
       --workers "$( [ "$role" = web ] && echo "${PERF_WEB_PROCESSES:-1}" || echo 1 )" >/dev/null
   echo "started $name ($role)"
 }

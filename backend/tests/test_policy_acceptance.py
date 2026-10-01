@@ -173,12 +173,12 @@ class _RegistrationConn:
         return None
 
     async def fetchrow(self, query, *_args):
+        if "INSERT INTO users" in query:
+            # RETURNING id: the new account's id is signed into its first token.
+            self.user_insert = query
+            return {"id": "33333333-3333-3333-3333-333333333333"}
         assert "INSERT INTO tenants" in query
         return {"id": TENANT_ID}
-
-    async def execute(self, query, *_args):
-        self.user_insert = query
-        return "INSERT 0 1"
 
 
 def test_registration_marks_the_new_account_policy_pending(monkeypatch):

@@ -20,6 +20,7 @@ from collections.abc import Awaitable, Callable, Mapping
 from datetime import datetime, timezone
 from typing import Any, Optional
 
+import recovery_mode
 from platform_policy import ActionRisk, requires_approval
 from tenancy import Role, TenantContext
 
@@ -406,10 +407,11 @@ async def fail_job(
     exc: Exception,
     *,
     error_code: str = "JOB_HANDLER_ERROR",
+    terminal: bool = False,
 ) -> None:
     attempt = int(job.get("attempt_count") or 1)
     max_attempts = int(job.get("max_attempts") or 1)
-    terminal = attempt >= max_attempts
+    terminal = terminal or attempt >= max_attempts
     retry_seconds = min(3_600, 5 * (2 ** max(0, attempt - 1)))
     error_detail = _exception_detail(exc)
     await _lease_update(
@@ -602,6 +604,12 @@ class DurableJobWorkers:
                     result = await handler(dict(job.get("payload") or {}), reporter)
                 except asyncio.CancelledError:
                     raise
+                except recovery_mode.RecoveryModeBlocked as exc:
+                    # Dead-letter, never retry: a retry would make the refused
+                    # call or send the moment recovery mode is lifted — the same
+                    # customer contact, one restart later (review OUT-1).
+                    await fail_job(job, worker_id, exc, error_code="RECOVERY_MODE_BLOCKED",
+                                   terminal=True)
                 except Exception as exc:  # noqa: BLE001 - persisted retry path
                     await fail_job(job, worker_id, exc)
                 else:

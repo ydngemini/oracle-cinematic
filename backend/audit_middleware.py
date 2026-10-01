@@ -383,11 +383,21 @@ class AuditMiddleware(BaseHTTPMiddleware):
         # forged token attributes nothing (entry still records, unattributed).
         tenant_id = user_id = None
         auth_header = request.headers.get("authorization", "")
-        if auth_header.startswith("Bearer "):
+        # Production browsers authenticate with the HttpOnly session cookie and
+        # send no Authorization header, so reading only the header left every
+        # browser-made mutation in the ledger with no tenant and no actor.
+        raw_token = (
+            auth_header.removeprefix("Bearer ").strip()
+            if auth_header.startswith("Bearer ")
+            else request.cookies.get("oracle_session", "")
+        )
+        if raw_token:
             try:
                 from auth import decode_token
 
-                claims = decode_token(auth_header.removeprefix("Bearer ").strip())
+                claims = decode_token(raw_token)
+                if claims.get("purpose"):
+                    raise ValueError("purpose token")  # reset/portal tokens attribute nothing
                 tenant_id = claims.get("tenant_id")
                 user_id = claims.get("sub")
             except Exception as exc:  # noqa: BLE001 — invalid/expired token
@@ -398,6 +408,11 @@ class AuditMiddleware(BaseHTTPMiddleware):
                 # trace of why, so debug rather than silence.
                 log.debug("audit attribution skipped; token unreadable: %s", exc)
 
+        # Capability links carry their bearer secret in the path; the append-only
+        # ledger must not become a store of live links (log_redaction.py).
+        from log_redaction import redact_path
+
+        path = redact_path(path)
         meta = {
             "method": request.method,
             "path": path,

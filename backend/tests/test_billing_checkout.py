@@ -32,7 +32,7 @@ class _Session:
 
 TENANT_ID = "11111111-1111-1111-1111-111111111111"
 OTHER_TENANT = "22222222-2222-2222-2222-222222222222"
-CTX = TenantContext(agent_id="agent@tenant.test", tenant_id=TENANT_ID, role=Role.AGENT)
+CTX = TenantContext(agent_id="owner@tenant.test", tenant_id=TENANT_ID, role=Role.BROKER_OWNER)  # BILL-4: checkout and portal are owner-only
 
 
 def _request(tenant_id=TENANT_ID):

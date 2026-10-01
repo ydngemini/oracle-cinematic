@@ -70,7 +70,8 @@ def _safe_asset_url(value: Optional[str]) -> Optional[str]:
     if value is None:
         return None
     cleaned = value.strip()
-    if cleaned.startswith("/") and not cleaned.startswith("//"):
+    # Browsers read "/\\host" as protocol-relative, the same as "//host" (INFO-2).
+    if cleaned.startswith("/") and not cleaned.startswith(("//", "/\\")) and "\\" not in cleaned:
         return cleaned
     parsed = urlparse(cleaned)
     if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:

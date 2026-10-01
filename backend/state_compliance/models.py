@@ -236,21 +236,23 @@ class MLSSyncStatus(BaseModel):
 
 
 class MLSSearchBody(BaseModel):
-    mls_ids: list[str] = Field(default_factory=list)
-    state_codes: list[str] = Field(default_factory=list)
+    # Bounded (review DOS-2): unbounded lists and an offset past int8 range
+    # turned malformed input into a 500 and deep offsets into full scans.
+    mls_ids: list[str] = Field(default_factory=list, max_length=20)
+    state_codes: list[str] = Field(default_factory=list, max_length=60)
     min_price: Optional[float] = None
     max_price: Optional[float] = None
     min_beds: Optional[int] = None
     min_baths: Optional[float] = None
     min_sqft: Optional[int] = None
     max_sqft: Optional[int] = None
-    property_types: list[str] = Field(default_factory=list)
+    property_types: list[str] = Field(default_factory=list, max_length=20)
     status: str = "active"  # "active" | "pending" | "sold"
     lat: Optional[float] = None
     lng: Optional[float] = None
     radius_miles: Optional[float] = None
     limit: int = Field(default=25, ge=1, le=200)
-    offset: int = Field(default=0, ge=0)
+    offset: int = Field(default=0, ge=0, le=10_000)
 
 
 class NormalizedListing(BaseModel):

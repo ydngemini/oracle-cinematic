@@ -7,6 +7,7 @@ import { BrokerageOnboardingPanel } from './BrokerageOnboardingPanel';
 import { BrokerageSetupPanel } from './BrokerageSetupPanel';
 import { toMarkets } from '../lib/targetMarkets';
 import styles from './MyProfileTab.module.css';
+import { clearPrivateCaches } from '../lib/clearPrivateCaches.js';
 
 // Inline stroke glyphs — same idiom as TabBar GLYPHS, zero icon deps.
 const GLYPHS = {
@@ -153,6 +154,7 @@ export default function MyProfileTab() {
   const signOut = async () => {
     try { await crmPost('/auth/logout', {}); } catch { /* reload still clears UI state */ }
     sessionStorage.removeItem('oracle_role');
+    await clearPrivateCaches();
     window.location.reload();
   };
 

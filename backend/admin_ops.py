@@ -48,7 +48,7 @@ from approval_service import create_approval, decide_approval
 from audit_ledger import AuditCategory, ledger
 from db.connection import tenant_tx
 from platform_policy import ActionRisk, validate_approval_reason
-from tenancy import Role, TenantContext, require_context, require_role
+from tenancy import Role, TenantContext, require_context, require_role, verify_session_current
 
 logger = logging.getLogger("oracle.admin_ops")
 
@@ -61,7 +61,7 @@ _STARTED = time.time()  # process start (module import) for uptime reporting
 # Gate — platform_admin or 403. Mounted as the dependency on every route.
 # ---------------------------------------------------------------------------
 
-def require_platform_admin(
+async def require_platform_admin(
     ctx: TenantContext = Depends(require_context),
 ) -> TenantContext:
     if not ctx.is_platform_admin:
@@ -70,6 +70,9 @@ def require_platform_admin(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Platform admin only.",
         )
+    # The role is a token claim; several of these routes answer from memory
+    # and never open a tenant transaction, so prove the account still holds it.
+    await verify_session_current(ctx)
     return ctx
 
 
@@ -146,7 +149,7 @@ def _ambient_llm_calls_last_minute() -> Optional[int]:
     return counter() if callable(counter) else None
 
 
-def require_broker_owner_or_admin(
+async def require_broker_owner_or_admin(
     ctx: TenantContext = Depends(require_context),
 ) -> TenantContext:
     """Broker owners and platform admins.
@@ -164,6 +167,7 @@ def require_broker_owner_or_admin(
     `require_role` already treats platform_admin as permitted everywhere.
     """
     require_role(ctx, Role.BROKER_OWNER)
+    await verify_session_current(ctx)
     return ctx
 
 
@@ -602,7 +606,7 @@ async def execute_role_change(
     async with tenant_tx(ctx) as conn:
         target = await conn.fetchrow(
             """
-            UPDATE users SET role=$3
+            UPDATE users SET role=$3, session_epoch = session_epoch + 1
              WHERE id=$1::uuid AND role=$2 AND role <> 'platform_admin'
             RETURNING id,agent_id,role
             """,

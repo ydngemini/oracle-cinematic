@@ -192,6 +192,12 @@ async def drain_usage_to_stripe(ctx: TenantContext, *, limit: int = 200) -> dict
     """
     if not metering_configured():
         return {"state": "unconfigured", "reported": 0}
+    import recovery_mode
+
+    if recovery_mode.is_recovery_mode():
+        # A restored copy must not report usage to the live Stripe meter: that
+        # bills the customer a second time for usage already metered (OUT-1).
+        return {"state": "recovery_mode", "reported": 0}
 
     customer_id = await _stripe_customer_for(ctx)
     if not customer_id:

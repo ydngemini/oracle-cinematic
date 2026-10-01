@@ -139,8 +139,16 @@ async def policy_acceptance_status(
         user = await _current_user(conn, ctx)
         security_acceptance = await _security_acceptance_row(conn, ctx)
         if not user:
-            # Environment-managed/demo identities are not self-serve accounts.
-            token = _issue_jwt(ctx.agent_id, ctx.tenant_id, ctx.role.value)
+            # Only an environment-managed identity (operator/demo) legitimately
+            # has no users row. Anything else is a deleted, deactivated or
+            # moved account, and re-minting for it turned a dead session into a
+            # fresh 24-hour one with the policy gate removed (AUTH-2).
+            if ctx.verify_session:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Your session has ended. Sign in again.",
+                )
+            token = _issue_jwt(ctx.agent_id, ctx.tenant_id, ctx.role.value, auth_time=ctx.auth_time)
             _set_session_cookie(response, token)
             return PolicyAcceptanceStatus(
                 required=False,
@@ -155,7 +163,14 @@ async def policy_acceptance_status(
             )
         acceptance = await _acceptance_row(conn, user["id"])
         required = bool(user["policy_acceptance_required"]) or acceptance is None
-        token = None if required else _issue_jwt(ctx.agent_id, ctx.tenant_id, ctx.role.value)
+        # A renewal, never a new login: same account binding and epoch (tenant_tx
+        # above already proved both current), and the original auth_time so the
+        # session still ends MAX_SESSION_AGE_SECONDS after the password was typed.
+        token = None if required else _issue_jwt(
+            ctx.agent_id, ctx.tenant_id, ctx.role.value,
+            user_id=ctx.user_id or str(user["id"]), session_epoch=ctx.session_epoch,
+            auth_time=ctx.auth_time,
+        )
         if token:
             _set_session_cookie(response, token)
         return PolicyAcceptanceStatus(
@@ -217,7 +232,11 @@ async def accept_policy(
             ctx.tenant_id,
         )
 
-    token = _issue_jwt(ctx.agent_id, ctx.tenant_id, ctx.role.value)
+    token = _issue_jwt(
+        ctx.agent_id, ctx.tenant_id, ctx.role.value,
+        user_id=ctx.user_id or str(user["id"]), session_epoch=ctx.session_epoch,
+        auth_time=ctx.auth_time,
+    )
     _set_session_cookie(response, token)
     return PolicyAcceptanceResult(
         accepted=True,

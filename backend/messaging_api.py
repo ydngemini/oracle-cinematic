@@ -29,6 +29,7 @@ from messaging_data import (
     refresh_hosted_order_status,
 )
 from tenancy import Role, TenantContext, require_context, require_role
+from billing import require_active_subscription
 
 logger = logging.getLogger("oracle.messaging")
 
@@ -143,7 +144,7 @@ async def check_business_number_eligibility(
     return _route_json(route, await get_public_business_number(ctx))
 
 
-@router.put("/business-number")
+@router.put("/business-number", dependencies=[Depends(require_active_subscription)])
 async def put_business_number_messaging(
     ctx: TenantContext = Depends(require_context),
 ) -> dict[str, Any]:
@@ -219,6 +220,10 @@ async def upload_hosted_document(
         raise HTTPException(status_code=413, detail="Document exceeds the 5 MB limit.")
     if not data:
         raise HTTPException(status_code=422, detail="Uploaded document is empty.")
+    if not data.startswith(b"%PDF-"):
+        # The declared type is whatever the browser (or a script) said; the
+        # bytes are forwarded to Telnyx as a carrier document (review UPL-3).
+        raise HTTPException(status_code=422, detail="Documents must be a PDF.")
 
     import asyncio
 
@@ -297,7 +302,7 @@ async def get_business_registration(ctx: TenantContext = Depends(require_context
     }
 
 
-@router.put("/business/registration/brand")
+@router.put("/business/registration/brand", dependencies=[Depends(require_active_subscription)])
 async def register_brand(
     body: BrandRegister,
     ctx: TenantContext = Depends(require_context),
@@ -365,7 +370,7 @@ async def register_brand(
     return {"brand_id": str(row["id"]), "provider_brand_id": result.reference, "status": row["status"]}
 
 
-@router.put("/business/registration/campaign")
+@router.put("/business/registration/campaign", dependencies=[Depends(require_active_subscription)])
 async def register_campaign(
     body: CampaignRegister,
     ctx: TenantContext = Depends(require_context),
@@ -414,7 +419,7 @@ async def register_campaign(
     return {"campaign_id": str(row["id"]), "provider_campaign_id": result.reference, "status": row["status"]}
 
 
-@router.post("/business/registration/campaign/assign-number")
+@router.post("/business/registration/campaign/assign-number", dependencies=[Depends(require_active_subscription)])
 async def assign_campaign_number(ctx: TenantContext = Depends(require_context)) -> dict[str, Any]:
     require_role(ctx, Role.BROKER_OWNER)
     from db.connection import tenant_tx
@@ -532,8 +537,16 @@ async def telnyx_webhook(request: Request) -> Response:
                     reason="stop_keyword",
                     source_text=normalized.text[:200],
                 )
-            except Exception:
-                logger.exception("Failed to record SMS opt-out suppression")
+            except Exception as exc:
+                # A STOP that is not recorded is a consent violation waiting to
+                # happen: nothing else reads sms_messages.opted_out. Answer 503
+                # so Telnyx redelivers; the message insert above is idempotent
+                # on the provider id and this suppression runs again (HOOK-4).
+                logger.exception("Failed to record SMS opt-out suppression; asking Telnyx to retry")
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="Opt-out not recorded yet; retry.",
+                ) from exc
         return Response(status_code=status.HTTP_204_NO_CONTENT)
 
     if event_type in ("message.sent", "message.finalized"):

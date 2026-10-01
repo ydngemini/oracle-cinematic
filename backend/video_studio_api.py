@@ -30,6 +30,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from audit_ledger import AuditCategory, ledger
 from db.connection import tenant_tx
 from tenancy import TenantContext, require_context
+from billing import require_active_subscription
 
 import video_providers
 import video_studio as studio
@@ -130,7 +131,7 @@ async def _verify_images_owned(ctx: TenantContext, image_ids: list[uuid.UUID]) -
         )
 
 
-@router.post("/jobs", status_code=status.HTTP_202_ACCEPTED)
+@router.post("/jobs", status_code=status.HTTP_202_ACCEPTED, dependencies=[Depends(require_active_subscription)])
 async def create_video_job(
     body: VideoJobCreate,
     ctx: TenantContext = Depends(require_context),

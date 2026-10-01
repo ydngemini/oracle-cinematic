@@ -113,11 +113,18 @@ def test_sender_falls_back_to_the_login_address(configured):
     assert smtp_mailer.resolve_settings()["sender"] == "no-reply@neohrs.com"
 
 
-def test_tenant_credentials_override_the_platform_environment(configured):
+def test_tenant_credentials_override_the_platform_environment(configured, monkeypatch):
+    # A tenant host must resolve (to a public address) — an unresolvable one is
+    # now refused, and the vetted address is pinned for the connection.
+    monkeypatch.setattr(
+        smtp_mailer.socket, "getaddrinfo",
+        lambda *_a, **_k: [(2, 1, 6, "", ("93.184.216.34", 0))],
+    )
     settings = smtp_mailer.resolve_settings(
         {"host": "mail.brokerage.example", "port": "2525", "from_email": "team@brokerage.example"}
     )
 
+    assert settings["pinned_ip"] == "93.184.216.34"
     assert settings["host"] == "mail.brokerage.example"
     assert settings["port"] == 2525
     assert settings["sender"] == "team@brokerage.example"

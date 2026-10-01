@@ -99,5 +99,8 @@ EXPOSE 8000
 # 30s is longer than any legitimate drain and shorter than the ALB
 # deregistration delay, so a task that will not stop is killed before the load
 # balancer stops sending it traffic.
+# --ws-max-size: uvicorn's default accepts 16 MiB WebSocket frames; the largest
+# legitimate frame (an 8,000-character chat message) is under 32 KB. 1 MiB keeps
+# one socket from parking 16 MiB per frame in a replica's memory (review WEB-5).
 CMD ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "8000", \
-     "--timeout-graceful-shutdown", "30"]
+     "--timeout-graceful-shutdown", "30", "--ws-max-size", "1048576"]

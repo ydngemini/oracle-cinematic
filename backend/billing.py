@@ -3,6 +3,7 @@ import logging
 import os
 import recovery_mode
 from datetime import datetime, timezone
+from typing import Optional
 
 import stripe
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -11,7 +12,7 @@ from pydantic import BaseModel
 
 import config
 from db.connection import get_pool, tenant_tx
-from tenancy import Role, TenantContext, require_context
+from tenancy import Role, TenantContext, require_context, require_role
 
 logger = logging.getLogger("oracle.billing")
 
@@ -106,6 +107,51 @@ if _IS_LIVE_STRIPE:
 elif STRIPE_SECRET_KEY:
     logger.info("Stripe test mode (sk_test_*) — no real charges.")
 
+_ENTITLED_STATUSES = ("active", "trialing", "past_due")
+
+
+def billing_enforced() -> bool:
+    """Server-side entitlement is on everywhere but development unless an
+    operator turns it off explicitly (the load-test topology does)."""
+    raw = os.getenv("ORACLE_BILLING_ENFORCED")
+    if raw is None or not raw.strip():
+        return not config.IS_DEV
+    return raw.strip().lower() not in ("0", "false", "no", "off")
+
+
+async def require_active_subscription(
+    ctx: TenantContext = Depends(require_context),
+) -> TenantContext:
+    """Refuse platform spend and customer contact for a tenant that is not paying.
+
+    /billing/status only ever backed the front-end gate, and self-serve signup
+    creates a broker_owner with no payment — so an unpaid or cancelled tenant
+    could buy phone numbers on the platform carrier account, register 10DLC
+    brands, release outbound sends and queue GPU work (review BILL-2). Applied
+    to exactly those routes; reading and editing your own CRM is not gated.
+    """
+    if ctx.is_platform_admin or not billing_enforced():
+        return ctx
+    async with tenant_tx(ctx) as conn:
+        status_value = await conn.fetchval(
+            "SELECT status FROM subscriptions WHERE tenant_id = $1 "
+            "ORDER BY created_at DESC LIMIT 1",
+            ctx.tenant_id,
+        )
+    if status_value not in _ENTITLED_STATUSES:
+        raise HTTPException(
+            status_code=402,
+            detail="An active Neoh subscription is required for this action.",
+        )
+    return ctx
+
+
+def _webhook_secret_configured() -> bool:
+    """A real Stripe endpoint secret: non-empty and in Stripe's whsec_ format."""
+    secret = (STRIPE_WEBHOOK_SECRET or "").strip()
+    return secret.startswith("whsec_") and len(secret) >= 16
+
+
 # Startup guard — catch misconfiguration before the first real request hits.
 if not STRIPE_SECRET_KEY:
     logger.warning(
@@ -114,8 +160,8 @@ if not STRIPE_SECRET_KEY:
     )
 if not STRIPE_WEBHOOK_SECRET:
     logger.warning(
-        "STRIPE_WEBHOOK_SECRET not set — all incoming webhooks will be rejected "
-        "with SignatureVerificationError. Set this variable before going live."
+        "STRIPE_WEBHOOK_SECRET not set — the webhook answers 503 to every "
+        "delivery until it is. Set this variable before going live."
     )
 if _price_misconfigured():
     logger.warning(
@@ -157,6 +203,10 @@ async def create_checkout_session(
     body: CheckoutRequest,
     ctx: TenantContext = Depends(require_context),
 ):
+    # The brokerage's subscription, card and invoices are the owner's to
+    # manage. Any agent could open the Stripe portal and cancel the whole
+    # brokerage's plan (review BILL-4/TEN-3). Authorization before anything else.
+    require_role(ctx, Role.BROKER_OWNER)
     # A restored copy must never reach Stripe: it holds the same live key as
     # production, and the customer records it is reasoning from may be hours
     # stale. 503 rather than the guard's own exception, because this is an HTTP
@@ -249,6 +299,10 @@ async def create_portal_session(
     body: PortalRequest,
     ctx: TenantContext = Depends(require_context),
 ):
+    # The brokerage's subscription, card and invoices are the owner's to
+    # manage. Any agent could open the Stripe portal and cancel the whole
+    # brokerage's plan (review BILL-4/TEN-3). Authorization before anything else.
+    require_role(ctx, Role.BROKER_OWNER)
     # A restored copy must never reach Stripe: it holds the same live key as
     # production, and the customer records it is reasoning from may be hours
     # stale. 503 rather than the guard's own exception, because this is an HTTP
@@ -358,6 +412,14 @@ async def subscription_status(
 # ---------------------------------------------------------------------------
 @router.post("/webhook")
 async def stripe_webhook(request: Request):
+    # An empty signing secret is not "rejects everything": stripe-python
+    # verifies an HMAC keyed with "" like any other, so anyone could forge a
+    # checkout.session.completed and activate (or cancel) any brokerage's
+    # subscription (review BILL-1). Refuse before verifying anything.
+    if not _webhook_secret_configured():
+        logger.error("[billing] webhook refused: STRIPE_WEBHOOK_SECRET is not configured")
+        raise HTTPException(status_code=503, detail="Billing webhooks are not configured")
+
     payload = await request.body()
     sig_header = request.headers.get("stripe-signature", "")
 
@@ -387,20 +449,31 @@ async def stripe_webhook(request: Request):
         # silently dropping the event when the DB is transiently unavailable.
         raise HTTPException(status_code=503, detail="DB unavailable — retry later")
 
-    if event_type == "checkout.session.completed":
-        await _handle_checkout_completed(pool, obj)
-
-    elif event_type == "invoice.paid":
-        await _handle_invoice_paid(pool, obj)
-
-    elif event_type == "customer.subscription.updated":
-        await _handle_subscription_updated(pool, obj)
-
-    elif event_type == "customer.subscription.deleted":
-        await _handle_subscription_deleted(pool, obj)
-
-    else:
+    handler = {
+        "checkout.session.completed": _handle_checkout_completed,
+        "invoice.paid": _handle_invoice_paid,
+        "customer.subscription.updated": _handle_subscription_updated,
+        "customer.subscription.deleted": _handle_subscription_deleted,
+    }.get(event_type)
+    if handler is None:
         logger.debug("[billing] unhandled event: %s", event_type)
+        return JSONResponse(content={"received": True})
+
+    event_id = str(verified.get("id") or "")
+    event_created = int(verified.get("created") or 0)
+    # The event id and its effect commit together (0118): a failed delivery
+    # leaves no row, so Stripe's retry runs; a processed one makes every
+    # replay — and every concurrent duplicate — a no-op.
+    async with tenant_tx(_SYSTEM_CTX) as conn:
+        first = await conn.fetchval(
+            "INSERT INTO stripe_webhook_events (event_id, event_type, event_created) "
+            "VALUES ($1, $2, $3) ON CONFLICT (event_id) DO NOTHING RETURNING event_id",
+            event_id, event_type, event_created,
+        )
+        if first is None:
+            logger.info("[billing] duplicate event ignored: %s %s", event_type, event_id)
+            return JSONResponse(content={"received": True, "duplicate": True})
+        await handler(conn, obj, event_created)
 
     return JSONResponse(content={"received": True})
 
@@ -408,7 +481,7 @@ async def stripe_webhook(request: Request):
 # ---------------------------------------------------------------------------
 # Webhook event handlers
 # ---------------------------------------------------------------------------
-async def _handle_checkout_completed(pool, session):
+async def _handle_checkout_completed(conn, session, event_created: int = 0):
     tenant_id = session.get("metadata", {}).get("tenant_id")
     subscription_id = session.get("subscription")
     customer_id = session.get("customer")
@@ -417,20 +490,39 @@ async def _handle_checkout_completed(pool, session):
         logger.warning("[billing] checkout.completed missing tenant_id or subscription")
         return
 
-    async with tenant_tx(_SYSTEM_CTX) as conn:
-        await conn.execute(
-            """INSERT INTO subscriptions (tenant_id, stripe_customer_id, stripe_subscription_id, status)
-               VALUES ($1, $2, $3, 'active')
-               ON CONFLICT (stripe_subscription_id) DO UPDATE
-               SET status = 'active', stripe_customer_id = $2, updated_at = now()""",
-            tenant_id, customer_id, subscription_id,
-        )
+    # A completed checkout is not a payment: delayed methods (ACH, bank
+    # debit) complete with payment_status 'unpaid' and settle — or fail — later.
+    # Only a paid (or free) session grants access; invoice.paid does the rest.
+    payment_status = session.get("payment_status")
+    status = "active" if payment_status in (None, "paid", "no_payment_required") else "incomplete"
 
-    logger.info("[billing] checkout completed — tenant=%s sub=%s", tenant_id, subscription_id)
+    await conn.execute(
+        """INSERT INTO subscriptions (tenant_id, stripe_customer_id, stripe_subscription_id,
+                                      status, last_event_created)
+           VALUES ($1, $2, $3, $4, $5)
+           ON CONFLICT (stripe_subscription_id) DO UPDATE
+           SET status = EXCLUDED.status, stripe_customer_id = EXCLUDED.stripe_customer_id,
+               last_event_created = EXCLUDED.last_event_created, updated_at = now()
+           WHERE subscriptions.last_event_created <= EXCLUDED.last_event_created
+             AND subscriptions.tenant_id = EXCLUDED.tenant_id""",
+        tenant_id, customer_id, subscription_id, status, event_created,
+    )
+
+    logger.info("[billing] checkout completed — tenant=%s sub=%s status=%s", tenant_id, subscription_id, status)
 
 
-async def _handle_invoice_paid(pool, invoice):
-    subscription_id = invoice.get("subscription")
+def _invoice_subscription_id(invoice) -> Optional[str]:
+    """API 2025-03-31.basil moved the field under parent.subscription_details."""
+    direct = invoice.get("subscription")
+    if direct:
+        return direct if isinstance(direct, str) else direct.get("id")
+    details = ((invoice.get("parent") or {}).get("subscription_details") or {})
+    nested = details.get("subscription")
+    return nested if isinstance(nested, str) or nested is None else nested.get("id")
+
+
+async def _handle_invoice_paid(conn, invoice, event_created: int = 0):
+    subscription_id = _invoice_subscription_id(invoice)
     if not subscription_id:
         return
 
@@ -443,40 +535,48 @@ async def _handle_invoice_paid(pool, invoice):
         logger.warning("[billing] invoice.paid has no period_end — sub=%s", subscription_id)
     period_end_dt = datetime.fromtimestamp(period_end, tz=timezone.utc) if period_end else None
 
-    async with tenant_tx(_SYSTEM_CTX) as conn:
-        await conn.execute(
-            """UPDATE subscriptions SET status = 'active', current_period_end = $2, updated_at = now()
-               WHERE stripe_subscription_id = $1""",
-            subscription_id, period_end_dt,
-        )
+    # Not if a newer event (a cancellation, say) has already been applied.
+    await conn.execute(
+        """UPDATE subscriptions SET status = 'active', current_period_end = $2,
+                  last_event_created = $3, updated_at = now()
+           WHERE stripe_subscription_id = $1 AND last_event_created <= $3""",
+        subscription_id, period_end_dt, event_created,
+    )
 
     logger.info("[billing] invoice.paid — sub=%s period_end=%s", subscription_id, period_end_dt)
 
 
-async def _handle_subscription_updated(pool, subscription):
+async def _handle_subscription_updated(conn, subscription, event_created: int = 0):
     sub_id = subscription.get("id")
     status = subscription.get("status", "unknown")
     period_end = subscription.get("current_period_end")
+    if period_end is None:
+        # 2025-03-31.basil moved the period onto each subscription item.
+        items = ((subscription.get("items") or {}).get("data") or [])
+        ends = [i.get("current_period_end") for i in items if i.get("current_period_end")]
+        period_end = max(ends) if ends else None
     period_end_dt = datetime.fromtimestamp(period_end, tz=timezone.utc) if period_end else None
 
-    async with tenant_tx(_SYSTEM_CTX) as conn:
-        await conn.execute(
-            """UPDATE subscriptions SET status = $2, current_period_end = $3, updated_at = now()
-               WHERE stripe_subscription_id = $1""",
-            sub_id, status, period_end_dt,
-        )
+    await conn.execute(
+        """UPDATE subscriptions SET status = $2, current_period_end = $3,
+                  last_event_created = $4, updated_at = now()
+           WHERE stripe_subscription_id = $1 AND last_event_created <= $4""",
+        sub_id, status, period_end_dt, event_created,
+    )
 
     logger.info("[billing] subscription.updated — sub=%s status=%s", sub_id, status)
 
 
-async def _handle_subscription_deleted(pool, subscription):
+async def _handle_subscription_deleted(conn, subscription, event_created: int = 0):
     sub_id = subscription.get("id")
 
-    async with tenant_tx(_SYSTEM_CTX) as conn:
-        await conn.execute(
-            """UPDATE subscriptions SET status = 'canceled', updated_at = now()
-               WHERE stripe_subscription_id = $1""",
-            sub_id,
-        )
+    # Deletion is terminal, so it applies even over a "newer" event; it still
+    # records its time so nothing older can resurrect the row afterwards.
+    await conn.execute(
+        """UPDATE subscriptions SET status = 'canceled', updated_at = now(),
+                  last_event_created = GREATEST(last_event_created, $2)
+           WHERE stripe_subscription_id = $1""",
+        sub_id, event_created,
+    )
 
     logger.info("[billing] subscription.deleted — sub=%s", sub_id)

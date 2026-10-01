@@ -527,6 +527,10 @@ def test_prod_never_captures_even_without_a_mail_server(monkeypatch):
     """An invitation nobody receives is not an invitation; in prod a missing
     mail server must fail loudly rather than quietly hand the link back."""
     monkeypatch.setenv("ORACLE_ENV", "prod")
+    # config.IS_DEV is the one definition of development (computed at import);
+    # staging or an unset ORACLE_ENV must not capture either (review AUTH-10).
+    import config
+    monkeypatch.setattr(config, "IS_DEV", False)
     import smtp_mailer
     monkeypatch.setattr(smtp_mailer, "is_configured", lambda *a, **k: False)
     assert bo._dev_capture_enabled() is False

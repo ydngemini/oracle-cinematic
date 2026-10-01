@@ -2303,8 +2303,11 @@ async def record_signature(
             """
             UPDATE contract_documents
                SET metadata=metadata || jsonb_build_object(
-                   'signature_reference',$2,'signature_recorded_by',$3,
-                   'signature_reason',$4,'signature_recorded_at',now(),
+                   -- Typed: jsonb_build_object's arguments are "any", so untyped
+                   -- parameters made this UPDATE fail (500) on every call —
+                   -- found by the security review's schema-driven API fuzz.
+                   'signature_reference',$2::text,'signature_recorded_by',$3::text,
+                   'signature_reason',$4::text,'signature_recorded_at',now(),
                    'signature_verification_status','unverified',
                    'execution_status','not_verified'
                )

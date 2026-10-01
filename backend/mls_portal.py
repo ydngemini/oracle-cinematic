@@ -907,7 +907,9 @@ async def mls_pipeline_search(
     if q and q.strip():
         query_text = " ".join(q.split())
         normalized_query = re.sub(r"[^a-z0-9]", "", query_text.lower())
-        contains_arg = _arg(f"%{query_text}%")
+        # LIKE metacharacters in the user's text are literal (review DOS-2).
+        escaped = query_text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        contains_arg = _arg(f"%{escaped}%")
         exact_arg = _arg(normalized_query)
         conditions.append(
             f"(search_document ILIKE {contains_arg} "

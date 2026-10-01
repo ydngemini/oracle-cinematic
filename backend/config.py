@@ -136,6 +136,19 @@ if JWT_AUDIENCE:
 # and freezing it at import would silently change that (and break any caller
 # that sets the variable after import, which the OAuth tests legitimately do).
 # Module-level consumers simply call it once at import, as they always did.
+def session_cookie_samesite() -> str:
+    """SameSite for the session and CSRF cookies.
+
+    Production serves the SPA and the API from one origin (App Platform
+    ingress), so "lax" costs nothing and stops the browser attaching the session
+    to cross-site subresource and POST requests at all — CSRF stops depending on
+    the token check alone (review WEB-6). "none" (Secure only) remains for a
+    deployment that genuinely splits the frontend and API across sites.
+    """
+    value = (os.getenv("ORACLE_SESSION_COOKIE_SAMESITE") or "lax").strip().lower()
+    return value if value in ("lax", "strict", "none") else "lax"
+
+
 def public_base_url() -> str:
     """The public origin every outbound link is built from."""
     resolved = _first_setting(
@@ -315,6 +328,10 @@ def validate_or_die() -> None:
         )
     if twilio_qwen_enabled:
         required.extend(_TWILIO_REALTIME_SETTINGS)
+    if os.environ.get("STRIPE_SECRET_KEY", "").strip():
+        # Billing is live, so its webhook must be able to tell Stripe from a
+        # forger. An empty secret verifies an HMAC keyed with "" (review BILL-1).
+        required.append(("STRIPE_WEBHOOK_SECRET", "Stripe webhook signature verification"))
     missing = [f"{name} ({why})" for name, why in required if not os.environ.get(name)]
     if email_provider not in ("smtp",):
         missing.append(

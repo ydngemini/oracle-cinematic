@@ -45,11 +45,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
 
       # Matches backend/Dockerfile (python:3.12-slim) so a green run here means
       # the same interpreter the image ships.
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
         with:
           python-version: "3.12"
           cache: pip
@@ -88,10 +88,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
 
       # Matches the node image in docker-compose.yml.
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
         with:
           node-version: "24"
           cache: npm
@@ -159,9 +159,85 @@ jobs:
   # "true" (Settings → Variables). Until staging exists it stays off, so a
   # push to main runs tests and stops, cleanly, as before. It can also be run
   # by hand: Run workflow → confirm: stage.
+  security:
+    name: security scans
+    # Secret scan over the full history and SAST over the backend — both gate
+    # every release (security launch review, 2026-10-01). No secrets are
+    # available to this job; it runs on fork PRs safely.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+        with:
+          fetch-depth: 0
+      # gitleaks by digest. --redact: a match is reported by file, line and
+      # fingerprint, never by value, so a real leak is not re-leaked into the
+      # CI log. Reviewed false positives live in .gitleaksignore.
+      - name: Secret scan (full history)
+        run: |
+          docker run --rm -v "$PWD":/repo \
+            ghcr.io/gitleaks/gitleaks@sha256:cdbb7c955abce02001a9f6c9f602fb195b7fadc1e812065883f695d1eeaba854 \
+            git /repo --redact --no-banner --exit-code 1
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+        with:
+          python-version: "3.12"
+      # Bandit against the reviewed baseline: a NEW medium+ finding fails the
+      # build; the 31 triaged ones (docs/security-launch-review.md) do not.
+      - name: SAST (bandit, new findings only)
+        working-directory: backend
+        run: |
+          pip install --quiet "bandit==1.8.6"
+          bandit -q -r . -x ./tests,./venv,./ml_forge,./node_modules,./scripts \
+            --severity-level medium --confidence-level medium \
+            -b .bandit-baseline.json
+
+  rls:
+    name: database security (real PostgreSQL)
+    # The Python suite runs on fakes; tenant isolation, session revocation,
+    # privileges and SECURITY DEFINER safety are the database's properties and
+    # are proved here against PostgreSQL built from every migration.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: oracle
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres -d oracle"
+          --health-interval 2s --health-timeout 5s --health-retries 30
+    env:
+      ORACLE_DB_HOST: localhost
+      ORACLE_DB_SSL: disable
+      ORACLE_DB_ADMIN_USER: postgres
+      ORACLE_DB_ADMIN_PASSWORD: postgres
+      ORACLE_DB_APP_PASSWORD: ci-app-password
+      ORACLE_MIGRATIONS_DIR: db/migrations
+      PGPASSWORD: postgres
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+        with:
+          python-version: "3.12"
+      - name: Apply every migration
+        working-directory: backend
+        run: |
+          pip install --quiet "asyncpg==0.31.0"
+          python run_migrations.py
+      - name: RLS, revocation and privilege proofs
+        working-directory: backend
+        run: |
+          for f in tests/rls_security_review.sql tests/rls_brokerage.sql tests/platform_rls_test.sql; do
+            echo "::group::$f"
+            psql -h localhost -U postgres -d oracle -v ON_ERROR_STOP=1 -q -f "$f"
+            echo "::endgroup::"
+          done
+
   release:
     name: build release → staging
-    needs: [backend, frontend]
+    needs: [backend, frontend, security, rls]
     if: >-
       github.ref == 'refs/heads/main'
       && (
@@ -213,12 +289,12 @@ jobs:
           VITE_GOOGLE_MAPS_KEY: ${{ secrets.VITE_GOOGLE_MAPS_KEY }}
           VITE_GOOGLE_MAP_ID: ${{ secrets.VITE_GOOGLE_MAP_ID }}
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
         with:
           fetch-depth: 0
 
       - name: doctl auth
-        uses: digitalocean/action-doctl@v2
+        uses: digitalocean/action-doctl@3cb3953159719656269e044e0e24ca16dd2a690f  # v2
         with:
           token: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
 
@@ -239,7 +315,7 @@ jobs:
       - name: Confirm the target is the staging app
         run: |
           set -euo pipefail
-          name="$(doctl apps get "${{ secrets.DIGITALOCEAN_APP_ID }}" --output json \
+          name="$(doctl apps get "${DIGITALOCEAN_APP_ID}" --output json \
             | python3 -c 'import json,sys; d=json.load(sys.stdin); d=d[0] if isinstance(d,list) else d; print(d["spec"]["name"])')"
           if [ "$name" != "neoh-staging" ]; then
             echo "::error::DIGITALOCEAN_APP_ID in the 'staging' environment points at app '$name', not 'neoh-staging'. Refusing."
@@ -278,8 +354,8 @@ jobs:
           docker build \
             --build-arg VITE_API_BASE="" \
             --build-arg VITE_WS_URL="" \
-            --build-arg VITE_GOOGLE_MAPS_KEY="${{ secrets.VITE_GOOGLE_MAPS_KEY }}" \
-            --build-arg VITE_GOOGLE_MAP_ID="${{ secrets.VITE_GOOGLE_MAP_ID }}" \
+            --build-arg VITE_GOOGLE_MAPS_KEY="${VITE_GOOGLE_MAPS_KEY}" \
+            --build-arg VITE_GOOGLE_MAP_ID="${VITE_GOOGLE_MAP_ID}" \
             -t "${REGISTRY}/neoh-frontend:${{ steps.release.outputs.sha }}" \
             -t "${REGISTRY}/neoh-frontend:latest" \
             -f oracle-app/Dockerfile oracle-app
@@ -359,7 +435,7 @@ jobs:
           TRIVY: aquasec/trivy:0.58.1@sha256:ab70a02200597efa04748f210f793936eb647cbcdb0ea69cc30b226d6f5a22c7
 
       - name: Upload SBOMs
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
         with:
           name: sbom-${{ steps.release.outputs.sha }}
           path: sbom-*.cdx.json
@@ -368,7 +444,7 @@ jobs:
       - name: Build release manifest
         run: |
           chmod +x scripts/build-release-manifest.sh
-          REGISTRY="registry.digitalocean.com/${{ secrets.DIGITALOCEAN_REGISTRY }}" \
+          REGISTRY="registry.digitalocean.com/${DIGITALOCEAN_REGISTRY}" \
           GIT_SHA="${{ steps.release.outputs.sha }}" \
           GIT_REF="${{ github.ref_name }}" \
           BUILT_AT="${{ steps.release.outputs.built_at }}" \
@@ -411,11 +487,11 @@ jobs:
       - name: Run database migrations (staging)
         run: |
           docker run --rm \
-            -e ORACLE_DB_HOST="${{ secrets.ORACLE_DB_HOST }}" \
-            -e ORACLE_DB_PORT="${{ secrets.ORACLE_DB_PORT }}" \
-            -e ORACLE_DB_NAME="${{ secrets.ORACLE_DB_NAME }}" \
-            -e ORACLE_DB_ADMIN_USER="${{ secrets.ORACLE_DB_ADMIN_USER }}" \
-            -e ORACLE_DB_ADMIN_PASSWORD="${{ secrets.ORACLE_DB_ADMIN_PASSWORD }}" \
+            -e ORACLE_DB_HOST \
+            -e ORACLE_DB_PORT \
+            -e ORACLE_DB_NAME \
+            -e ORACLE_DB_ADMIN_USER \
+            -e ORACLE_DB_ADMIN_PASSWORD \
             -e ORACLE_DB_SSL=require \
             "${REGISTRY}/neoh-backend@${{ steps.digests.outputs.backend }}" \
             python run_migrations.py
@@ -432,7 +508,7 @@ jobs:
       - name: Config drift against the running app (staging)
         run: |
           set -uo pipefail
-          if doctl apps spec get "${{ secrets.DIGITALOCEAN_APP_ID }}" --format yaml > /tmp/running.staging.yaml 2>/dev/null; then
+          if doctl apps spec get "${DIGITALOCEAN_APP_ID}" --format yaml > /tmp/running.staging.yaml 2>/dev/null; then
             python3 scripts/spec-drift.py --running /tmp/running.staging.yaml --new /tmp/app.staging.yaml
           else
             echo "no running spec to compare — first deploy"
@@ -442,14 +518,14 @@ jobs:
 
       - name: Deploy the staging app
         run: |
-          doctl apps update "${{ secrets.DIGITALOCEAN_APP_ID }}" \
+          doctl apps update "${DIGITALOCEAN_APP_ID}" \
             --spec /tmp/app.staging.yaml \
             --wait
 
       - name: Smoke test (staging)
         run: |
           chmod +x infra/digitalocean/smoke-test.sh
-          APP_URL="${{ secrets.NEOH_PUBLIC_API_BASE }}" \
+          APP_URL="${NEOH_PUBLIC_API_BASE}" \
           EXPECTED_GIT_SHA="${{ steps.release.outputs.sha }}" \
             ./infra/digitalocean/smoke-test.sh
 
@@ -457,7 +533,7 @@ jobs:
       # existence is the claim "this build ran on staging and passed"; the
       # promote job refuses any SHA that has one missing.
       - name: Record the staging-verified release
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
         with:
           name: staging-verified-release-${{ steps.release.outputs.sha }}
           path: release-manifest.json
@@ -480,7 +556,7 @@ jobs:
   # docs/release-checklist.md.
   promote:
     name: promote → production
-    needs: [backend, frontend]
+    needs: [backend, frontend, security, rls]
     if: >-
       github.event_name == 'workflow_dispatch'
       && github.event.inputs.confirm == 'deploy'
@@ -536,7 +612,7 @@ jobs:
             exit 1
           fi
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
         with:
           ref: ${{ github.event.inputs.promote_sha }}
           fetch-depth: 0
@@ -586,7 +662,7 @@ jobs:
           PY
 
       - name: doctl auth
-        uses: digitalocean/action-doctl@v2
+        uses: digitalocean/action-doctl@3cb3953159719656269e044e0e24ca16dd2a690f  # v2
         with:
           token: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
 
@@ -607,7 +683,7 @@ jobs:
       - name: Confirm the target is the production app
         run: |
           set -euo pipefail
-          name="$(doctl apps get "${{ secrets.DIGITALOCEAN_APP_ID }}" --output json \
+          name="$(doctl apps get "${DIGITALOCEAN_APP_ID}" --output json \
             | python3 -c 'import json,sys; d=json.load(sys.stdin); d=d[0] if isinstance(d,list) else d; print(d["spec"]["name"])')"
           if [ "$name" != "neoh" ]; then
             echo "::error::DIGITALOCEAN_APP_ID in the 'production' environment points at app '$name', not 'neoh'. Refusing."
@@ -622,7 +698,7 @@ jobs:
         continue-on-error: true
         run: |
           set -uo pipefail
-          doctl apps spec get "${{ secrets.DIGITALOCEAN_APP_ID }}" --format yaml \
+          doctl apps spec get "${DIGITALOCEAN_APP_ID}" --format yaml \
             > rollback-target-spec.yaml 2>/dev/null || {
               echo "::warning::no currently-deployed spec to capture — first deploy?"
               exit 0
@@ -631,7 +707,7 @@ jobs:
 
       - name: Upload the rollback target
         if: hashFiles('rollback-target-spec.yaml') != ''
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
         with:
           name: rollback-target-before-${{ env.PROMOTE_SHA }}
           path: rollback-target-spec.yaml
@@ -666,11 +742,11 @@ jobs:
       - name: Run database migrations (production)
         run: |
           docker run --rm \
-            -e ORACLE_DB_HOST="${{ secrets.ORACLE_DB_HOST }}" \
-            -e ORACLE_DB_PORT="${{ secrets.ORACLE_DB_PORT }}" \
-            -e ORACLE_DB_NAME="${{ secrets.ORACLE_DB_NAME }}" \
-            -e ORACLE_DB_ADMIN_USER="${{ secrets.ORACLE_DB_ADMIN_USER }}" \
-            -e ORACLE_DB_ADMIN_PASSWORD="${{ secrets.ORACLE_DB_ADMIN_PASSWORD }}" \
+            -e ORACLE_DB_HOST \
+            -e ORACLE_DB_PORT \
+            -e ORACLE_DB_NAME \
+            -e ORACLE_DB_ADMIN_USER \
+            -e ORACLE_DB_ADMIN_PASSWORD \
             -e ORACLE_DB_SSL=require \
             "${REGISTRY}/neoh-backend@${{ steps.digests.outputs.backend }}" \
             python run_migrations.py
@@ -684,7 +760,7 @@ jobs:
       - name: Config drift against the running app (production)
         run: |
           set -uo pipefail
-          if doctl apps spec get "${{ secrets.DIGITALOCEAN_APP_ID }}" --format yaml > /tmp/running.production.yaml 2>/dev/null; then
+          if doctl apps spec get "${DIGITALOCEAN_APP_ID}" --format yaml > /tmp/running.production.yaml 2>/dev/null; then
             python3 scripts/spec-drift.py --running /tmp/running.production.yaml --new /tmp/app.production.yaml
           else
             echo "no running spec to compare — first deploy"
@@ -694,14 +770,14 @@ jobs:
 
       - name: Deploy to App Platform (production)
         run: |
-          doctl apps update "${{ secrets.DIGITALOCEAN_APP_ID }}" \
+          doctl apps update "${DIGITALOCEAN_APP_ID}" \
             --spec /tmp/app.production.yaml \
             --wait
 
       - name: Smoke test (production)
         run: |
           chmod +x infra/digitalocean/smoke-test.sh
-          APP_URL="${{ secrets.NEOH_PUBLIC_API_BASE }}" \
+          APP_URL="${NEOH_PUBLIC_API_BASE}" \
           EXPECTED_GIT_SHA="${{ env.PROMOTE_SHA }}" \
             ./infra/digitalocean/smoke-test.sh
 
@@ -710,7 +786,7 @@ jobs:
       # no database table is needed for it.
       - name: Record the production release
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
         with:
           name: production-release-${{ env.PROMOTE_SHA }}-${{ github.run_attempt }}
           path: |

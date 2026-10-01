@@ -125,6 +125,11 @@ services:
         value: "500"
       - key: ORACLE_PUBLIC_BASE_URL
         value: ${APP_URL}
+      # The exact browser origin allowed credentialed CORS and /ws. Unset, the
+      # API used to fall back to localhost dev origins in production (review
+      # WEB-1); it now refuses to boot without a trusted https origin.
+      - key: ORACLE_CORS_ORIGINS
+        value: ${APP_URL}
       # Database — DigitalOcean Managed PostgreSQL. No Azure Entra / AWS IAM
       # token dance needed: db/connection.py's generic ORACLE_DB_PASSWORD path
       # (TLS via ORACLE_DB_SSLMODE=require) already covers this.
@@ -336,7 +341,7 @@ static_sites:
 # Spec way to route paths to components. Order matters: FastAPI serves
 # several top-level, non-/api-prefixed routers (auth.py's /auth, billing.py's
 # /billing — including the Stripe webhook at /billing/webhook, admin_c2.py's
-# /admin) plus /health, /version, /docs, and the two WebSocket routes
+# /admin, client_portal.py's /portal) plus /health, /version, and the two WebSocket routes
 # directly on `app` (server.py) — every one of those needs its own explicit
 # rule, or it falls through to the last `/` rule and gets served 404s by the
 # static site instead of reaching the API.
@@ -356,11 +361,12 @@ ingress:
       match: { path: { prefix: /health } }
     - component: { name: api }
       match: { path: { prefix: /version } }
+    # The client portal API (client_portal.py, prefix /portal). Without this
+    # rule /portal/session/{token} fell through to the static site, so every
+    # client secure-access link 404'd. The SPA page itself is /vault/....
     - component: { name: api }
-      match: { path: { prefix: /docs } }
-    - component: { name: api }
-      match: { path: { prefix: /openapi.json } }
-    - component: { name: api }
-      match: { path: { prefix: /redoc } }
+      match: { path: { prefix: /portal } }
+    # /docs, /redoc and /openapi.json are deliberately NOT routed: production
+    # does not publish the API map (server.py _PUBLISH_API_DOCS, review WEB-2).
     - component: { name: web }
       match: { path: { prefix: / } }

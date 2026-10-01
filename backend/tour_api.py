@@ -26,6 +26,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from db.connection import tenant_tx
 from tenancy import TenantContext, require_context
+from billing import require_active_subscription
 from reconstruction_providers import SPATIAL_AI_DISCLOSURE, get_provider
 from reconstruction_worker import QUEUE_MAX as RECON_QUEUE_MAX, ReconstructionJob, enqueue
 
@@ -582,7 +583,7 @@ def _floors_from_plan(document) -> list[dict]:
 # Long jobs run in the reconstruction worker pool (reconstruction_worker.py);
 # this is the 202-accept-then-poll surface.
 # ---------------------------------------------------------------------------
-@router.post("/crm/reconstruction-jobs", status_code=status.HTTP_202_ACCEPTED)
+@router.post("/crm/reconstruction-jobs", status_code=status.HTTP_202_ACCEPTED, dependencies=[Depends(require_active_subscription)])
 async def enqueue_reconstruction(
     lead_id: Optional[UUID] = Query(default=None),
     listing_id: Optional[UUID] = Query(default=None),

@@ -20,6 +20,7 @@ from model_training import runpod_train
 from ml_forge.edge_forge.train_lora import redact_pii
 from platform_policy import ActionRisk, Feature, require_feature
 from tenancy import Role, TenantContext, require_context, require_role
+from billing import require_active_subscription
 
 router = APIRouter(prefix="/api/models", tags=["models"])
 
@@ -475,7 +476,7 @@ async def create_training_run(
     return {"training_run": _row(row), "approval": approval}
 
 
-@router.post("/training/{run_id}/approve")
+@router.post("/training/{run_id}/approve", dependencies=[Depends(require_active_subscription)])
 async def approve_training_run(
     run_id: UUID,
     body: Decision,

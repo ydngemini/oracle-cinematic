@@ -1279,9 +1279,18 @@ async def _execute_safe_tool(
                 return {"ok": False, "error": "I can only edit the selected client."}
             fields = model.model_dump(exclude={"client_id"}, exclude_none=True)
             table, id_field = "clients", str(model.client_id)
+            if "email" in fields or "phone" in fields:
+                # Where outreach goes is not the model's to change. Gated
+                # outreach reads its recipient from this row, so a model steered
+                # by injected record text could rewrite the address and then
+                # stage an approval to it in the same turn (review AI-1).
+                return {"ok": False, "error": (
+                    "I can't change a client's email or phone — those decide where "
+                    "messages go. Update them in the client record."
+                )}
             # Assignment remains a human decision and source is immutable unless
             # a user edits it through the CRM's explicit source field.
-            permitted = ("full_name","email","phone","client_type","stage","lead_score","company")
+            permitted = ("full_name","client_type","stage","lead_score","company")
         elif tool_name == "update_listing":
             model = SafeListingUpdate.model_validate(tool_input)
             if context_type != "listing" or str(model.listing_id) != context_id:
@@ -1801,6 +1810,13 @@ async def execute_safe_tool(
     connection. That is strictly more than an absent row can say, because absence
     cannot distinguish "never started" from "started and died".
     """
+    # The offered list is the authorization boundary for the model, not a hint:
+    # a name the model was never shown for this context (it can still emit
+    # one) used to dispatch anyway (review AI-5).
+    from ai_chat_agent import offered_tool_names
+
+    if tool_name not in offered_tool_names(context_type):
+        return {"ok": False, "error": f"{tool_name} is not available for this conversation."}
     ledgered = call_index is not None and tool_name not in _READ_ONLY_TOOLS
     arguments_hash = (
         _canonical_arguments_hash(tool_name, tool_input) if ledgered else ""

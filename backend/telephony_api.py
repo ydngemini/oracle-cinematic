@@ -43,6 +43,7 @@ from db.connection import tenant_tx
 from outreach_compliance import Channel, VoiceMode, guard_outreach
 from platform_policy import Feature, require_feature
 from tenancy import Role, TenantContext, require_context, require_role
+from billing import require_active_subscription
 from twilio_call_handler import (
     TwilioCallStateUnavailable,
     cleanup_twilio_call,
@@ -588,6 +589,28 @@ async def configure_route(
     # when the caller ID has not changed underneath it — swapping the number
     # always resets to unverified.
     existing = await get_telephony_route(ctx)
+    # Which number, carrier account, caller ID and SMS sender a route uses is a
+    # brokerage decision, not an agent preference: any agent could re-point
+    # their route at another number (claiming a DID first, or a caller ID), and
+    # the edit silently switched a live Plivo route to Twilio (review HOOK-2/
+    # TEN-8). Agents keep self-service of their own hand-off preferences.
+    identity_fields = ("inbound_did", "twilio_account_sid", "voice_caller_id_e164", "sms_sender_e164")
+    changes_identity = existing is None or any(
+        str(values.get(f) or "") != str(existing.get(f) or "") for f in identity_fields
+    )
+    if changes_identity and not (ctx.is_broker_owner or ctx.is_platform_admin):
+        raise HTTPException(
+            status_code=403,
+            detail="Only a broker owner can connect or change a route's numbers.",
+        )
+    if existing is not None:
+        # This endpoint never changes the carrier; provider moves go through
+        # the business-number flow, which proves the number on that carrier.
+        values["provider"] = existing.get("provider") or "twilio"
+        values["provider_account_id"] = existing.get("provider_account_id")
+    # A sender's registration status is established by the provider flows,
+    # never asserted in a request body.
+    values["sms_sender_type"] = existing.get("sms_sender_type") if existing else None
     values["voice_caller_id_verified"] = bool(
         existing
         and existing.get("voice_caller_id_verified")
@@ -607,7 +630,7 @@ async def configure_route(
     return _route_json(row, request)
 
 
-@router.put("/business-number")
+@router.put("/business-number", dependencies=[Depends(require_active_subscription)])
 async def put_business_number(
     body: BusinessNumberConnect,
     request: Request,
@@ -673,7 +696,7 @@ async def put_business_number(
     return _route_json(row, request)
 
 
-@router.post("/business-number/verify")
+@router.post("/business-number/verify", dependencies=[Depends(require_active_subscription)])
 async def verify_business_number(
     request: Request,
     ctx: TenantContext = Depends(require_context),
@@ -807,7 +830,7 @@ async def agent_voice_token(
     }
 
 
-@router.post("/agent/calls/prepare", status_code=status.HTTP_201_CREATED)
+@router.post("/agent/calls/prepare", status_code=status.HTTP_201_CREATED, dependencies=[Depends(require_active_subscription)])
 async def prepare_agent_call(
     body: AgentCallPrepare,
     ctx: TenantContext = Depends(require_context),

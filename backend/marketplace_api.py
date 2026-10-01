@@ -245,6 +245,10 @@ async def create_publication_from_contract(
                    asking_price=EXCLUDED.asking_price,
                    visibility=EXCLUDED.visibility,
                    updated_at=now()
+             -- Only a draft is rewritten. A live publication re-priced or
+             -- re-scoped here bypassed its approval entirely — the AI tool
+             -- could change what buyers see with no human click (review AI-2).
+             WHERE marketplace_publications.state = 'draft'
             RETURNING *
             """,
             ctx.tenant_id,
@@ -256,6 +260,11 @@ async def create_publication_from_contract(
             asking_price,
             ctx.agent_id,
         )
+        if row is None:
+            raise HTTPException(
+                status_code=409,
+                detail="This lead's publication is already live. Withdraw it before changing its terms.",
+            )
     publication = _row(row)
     approval_payload = {
         "publication_id": publication["id"],
@@ -514,9 +523,15 @@ async def approve_bidding_message(
     body: Decision,
     ctx: TenantContext = Depends(require_context),
 ):
-    approval = await decide_approval(
-        ctx, str(approval_id), decision="approved", reason=body.reason
-    )
+    try:
+        approval = await decide_approval(
+            ctx, str(approval_id), decision="approved", reason=body.reason,
+            expected_action_type="marketplace:bidding_message",
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail="Bidding message approval not found.") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     return {
         "approval": approval,
         "approved_draft": approval["draft_payload"],

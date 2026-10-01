@@ -81,7 +81,7 @@ def issue_csrf_cookie(response: Response) -> str:
         value=token,
         httponly=False,
         secure=not config.IS_DEV,
-        samesite="lax" if config.IS_DEV else "none",
+        samesite=config.session_cookie_samesite(),
         path="/",
     )
     return token
@@ -125,8 +125,15 @@ class CSRFMiddleware(BaseHTTPMiddleware):
         self.enabled = enabled
 
     def _is_exempt(self, path: str) -> bool:
+        # A family ending in "/" (webhooks, public capability links) covers its
+        # sub-paths; every other entry names exactly one route. Prefix-matching
+        # them all meant a future /auth/login-as or /auth/verify-email would
+        # have been exempt without anyone deciding so (review WEB-7).
         for exempt in CSRF_EXEMPT_PATHS:
-            if path.startswith(exempt):
+            if exempt.endswith("/"):
+                if path.startswith(exempt):
+                    return True
+            elif path == exempt or path == exempt + "/":
                 return True
         return False
 

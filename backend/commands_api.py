@@ -61,6 +61,7 @@ from platform_policy import (
     require_feature,
 )
 from tenancy import Role, TenantContext, require_context, require_role
+from billing import require_active_subscription
 
 if TYPE_CHECKING:
     from agent_mind import MindService
@@ -577,6 +578,15 @@ async def _load_provider_credential(
             SELECT token_ciphertext,expires_at FROM provider_credentials
              WHERE tenant_id=$1::uuid AND provider=$2 AND disabled_at IS NULL
                AND ($4 IS FALSE OR account_label=$3)
+               -- Fall back across shared labels (a broker's free-text one
+               -- included), but never onto a row labelled with ANOTHER user's
+               -- identity: that is a colleague's own mailbox or Google account
+               -- (review OUT-3: agent B's approved email went out through agent
+               -- A's personal SMTP login). Agents' rows are labelled agent_id.
+               AND ($3::text IS NULL OR account_label = $3 OR NOT EXISTS (
+                     SELECT 1 FROM users u
+                      WHERE u.tenant_id = provider_credentials.tenant_id
+                        AND lower(u.agent_id) = lower(provider_credentials.account_label)))
              ORDER BY CASE
                         WHEN $3::text IS NOT NULL AND account_label=$3 THEN 0
                         WHEN account_label='default' THEN 1
@@ -1130,7 +1140,7 @@ async def parse_personal_command(
     }
 
 
-@router.post("/execute")
+@router.post("/execute", dependencies=[Depends(require_active_subscription)])
 async def execute_personal_command(
     body: CommandExecuteRequest,
     ctx: TenantContext = Depends(require_context),
@@ -1401,9 +1411,22 @@ async def provider_status(ctx: TenantContext = Depends(require_context)):
     }
 
 
+_OAUTH_BINDING_COOKIE = "neoh_oauth_binding"
+_OAUTH_BINDING_PATH = "/api/commands/providers/google/oauth"
+
+
+def _oauth_browser_binding(state_hash: str) -> str:
+    """HMAC of the state under the app secret: proof that the browser finishing
+    the flow is the one that started it (review AUTH-9)."""
+    from auth import SECRET_KEY
+
+    return hmac.new(SECRET_KEY.encode(), f"google-oauth:{state_hash}".encode(), hashlib.sha256).hexdigest()
+
+
 @router.post("/providers/google/oauth/start")
 async def start_google_oauth(
     body: GoogleOAuthStart,
+    response: Response,
     ctx: TenantContext = Depends(require_context),
 ):
     """Create a tenant-bound, single-use Google OAuth + PKCE authorization."""
@@ -1447,6 +1470,21 @@ async def start_google_oauth(
         "code_challenge": challenge,
         "code_challenge_method": "S256",
     }
+    # Bind the flow to this browser. The state alone was the whole credential,
+    # so a user in one brokerage could start a flow and send the genuine Google
+    # consent URL to someone else; their consent stored THEIR Google tokens in
+    # the starter's tenant. SameSite=Lax still rides Google's top-level redirect.
+    import config as _config
+
+    response.set_cookie(
+        _OAUTH_BINDING_COOKIE,
+        _oauth_browser_binding(state_hash),
+        max_age=int(_OAUTH_STATE_TTL.total_seconds()),
+        httponly=True,
+        secure=not _config.IS_DEV,
+        samesite="lax",
+        path=_OAUTH_BINDING_PATH,
+    )
     return {
         "provider": "google",
         "authorization_url": f"{_GOOGLE_AUTH_URL}?{urllib.parse.urlencode(params)}",
@@ -1456,12 +1494,20 @@ async def start_google_oauth(
 
 @router.get("/providers/google/oauth/callback", include_in_schema=False)
 async def finish_google_oauth(
+    request: Request,
     state_token: str = Query(alias="state", min_length=20, max_length=200),
     code: Optional[str] = Query(default=None, min_length=1, max_length=4_000),
     provider_error: Optional[str] = Query(default=None, alias="error", max_length=200),
 ):
-    """Consume a Google callback without a browser JWT; the random state is the credential."""
+    """Consume a Google callback without a browser JWT. The random state proves
+    the flow; the binding cookie proves this browser started it."""
     state_hash = hashlib.sha256(state_token.encode("utf-8")).hexdigest()
+    binding = request.cookies.get(_OAUTH_BINDING_COOKIE, "")
+    if not binding or not hmac.compare_digest(binding, _oauth_browser_binding(state_hash)):
+        raise HTTPException(
+            status_code=400,
+            detail="Finish connecting Google in the same browser you started from.",
+        )
     platform_ctx = TenantContext(
         agent_id="google-oauth-callback",
         tenant_id=os.getenv(
@@ -1779,7 +1825,7 @@ async def release_command(
     return {"command": _command_dict(updated), "approval": approval, "job": job}
 
 
-@router.post("/{command_id}/approve")
+@router.post("/{command_id}/approve", dependencies=[Depends(require_active_subscription)])
 async def approve_command(
     command_id: str,
     body: ApprovalDecision,

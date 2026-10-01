@@ -18,7 +18,8 @@ all isolation (the IT-admin god-mode override).
 
 import logging
 import re
-from dataclasses import dataclass
+import time
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional
 
@@ -80,6 +81,19 @@ class TenantContext:
     agent_id: str
     tenant_id: str
     role: Role
+    # Set only for an identity decoded from a session token. When true, every
+    # tenant transaction re-checks the account (0117 app_begin_session): still
+    # active, same tenant and role, same session epoch. Server-built contexts
+    # (jobs, webhooks, pre-auth lookups) leave it false. Excluded from equality
+    # so a decoded context still equals one built by hand for the same identity.
+    verify_session: bool = field(default=False, compare=False)
+    user_id: Optional[str] = field(default=None, compare=False)
+    session_epoch: int = field(default=0, compare=False)
+    # When the password was last proven; renewals carry it forward and stop
+    # at auth.MAX_SESSION_AGE_SECONDS.
+    auth_time: Optional[int] = field(default=None, compare=False)
+    # Token expiry (epoch seconds). Long-lived sockets close when it passes.
+    expires_at: Optional[float] = field(default=None, compare=False)
 
     @property
     def is_platform_admin(self) -> bool:
@@ -153,14 +167,27 @@ def require_role(ctx: TenantContext, *allowed: Role) -> None:
 async def apply_rls_context(conn, ctx: TenantContext) -> None:
     """SET LOCAL the session context on an asyncpg/psycopg connection so the
     schema.sql RLS policies evaluate against this request's identity."""
-    await conn.execute(
-        "SELECT set_config('app.current_tenant', $1, true),"
-        "       set_config('app.current_role',   $2, true),"
-        "       set_config('app.current_agent',  $3, true)",
-        ctx.tenant_id,
-        ctx.role.value,
-        ctx.agent_id,
-    )
+    if ctx.verify_session:
+        # Same three GUCs, plus the account check that makes revocation real:
+        # a token issued before a password change, reset, demotion or removal
+        # fails here (SQLSTATE 28000 → 401) on its next tenant transaction.
+        await conn.execute(
+            "SELECT app_begin_session($1, $2, $3, true, $4::uuid, $5)",
+            ctx.tenant_id,
+            ctx.role.value,
+            ctx.agent_id,
+            ctx.user_id,
+            ctx.session_epoch,
+        )
+    else:
+        await conn.execute(
+            "SELECT set_config('app.current_tenant', $1, true),"
+            "       set_config('app.current_role',   $2, true),"
+            "       set_config('app.current_agent',  $3, true)",
+            ctx.tenant_id,
+            ctx.role.value,
+            ctx.agent_id,
+        )
     log.debug(
         "RLS context applied: tenant_id=%r role=%r agent_id=%r.",
         ctx.tenant_id,
@@ -250,7 +277,34 @@ def _context_from_authorization(
             detail="Invalid token.",
         )
 
-    ctx = TenantContext(agent_id=agent_id, tenant_id=tenant_id, role=role)
+    user_id = payload.get("uid")
+    if user_id is not None and (not isinstance(user_id, str) or not _UUID_RE.match(user_id)):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token.")
+    epoch = payload.get("sep", 0)
+    if not isinstance(epoch, int) or isinstance(epoch, bool) or not 0 <= epoch < 2**31:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token.")
+
+    from auth import MAX_SESSION_AGE_SECONDS
+
+    auth_time = payload.get("auth_time", payload.get("iat"))
+    if not isinstance(auth_time, (int, float)) or isinstance(auth_time, bool):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token.")
+    if time.time() - auth_time > MAX_SESSION_AGE_SECONDS:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Your session has ended. Sign in again.",
+        )
+
+    ctx = TenantContext(
+        agent_id=agent_id,
+        tenant_id=tenant_id,
+        role=role,
+        verify_session=not _is_environment_identity(agent_id, tenant_id, role),
+        user_id=user_id,
+        session_epoch=epoch,
+        auth_time=int(auth_time),
+        expires_at=float(payload["exp"]) if isinstance(payload.get("exp"), (int, float)) else None,
+    )
     log.debug(
         "Tenant context established: agent_id=%r tenant_id=%r role=%r.",
         ctx.agent_id,
@@ -258,6 +312,16 @@ def _context_from_authorization(
         ctx.role.value,
     )
     return ctx
+
+
+def _is_environment_identity(agent_id: str, tenant_id: str, role: Role) -> bool:
+    """The operator/demo identities configured by environment (auth.DEMO_TENANCY)
+    have no users row to check; every other subject must have one. Exact match
+    on all three — an account that merely shares the operator's address in some
+    other tenant or role is an ordinary account and is checked."""
+    from auth import DEMO_TENANCY  # lazy: auth imports nothing from tenancy
+
+    return DEMO_TENANCY.get(agent_id) == (tenant_id, role.value)
 
 
 def _request_authorization(request: Request, authorization: Optional[str]) -> Optional[str]:
@@ -282,6 +346,30 @@ def require_context(
         allow_policy_pending=False,
         allow_stale_policy=False,
     )
+
+
+async def verify_session_current(ctx: TenantContext) -> None:
+    """Prove a decoded session is still live right now (0117), without waiting
+    for the handler's first tenant transaction.
+
+    Every tenant transaction already runs this check, so ordinary data routes
+    need nothing extra. Privileged gates call it because some of their routes
+    answer from process memory and never open a transaction — a demoted or
+    deactivated admin's token would otherwise still read them for its last day.
+    """
+    if not ctx.verify_session:
+        return
+    import asyncpg
+    from db.connection import tenant_tx  # lazy: db.connection imports tenancy
+
+    try:
+        async with tenant_tx(ctx):
+            pass
+    except asyncpg.exceptions.InvalidAuthorizationSpecificationError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Your session has ended. Sign in again.",
+        ) from None
 
 
 def require_policy_context(

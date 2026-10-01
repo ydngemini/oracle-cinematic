@@ -39,6 +39,7 @@ class _PasswordResetStore:
             "policy_acceptance_required": policy_required,
             "has_current_policy_acceptance": True,
             "is_active": True,
+            "session_epoch": 0,
         }
         self.reset_tokens: dict[str, dict] = {}
         self.password_updates = 0
@@ -73,6 +74,8 @@ class _PasswordResetStore:
 
             record["consumed_at"] = now
             self.user["password_hash"] = password_hash
+            # The reset ends every earlier session (0117).
+            self.user["session_epoch"] += 1
             self.password_updates += 1
             return dict(self.user)
 

@@ -260,7 +260,10 @@ def test_contract_tool_fails_closed_until_controlled_workflow_exists(monkeypatch
         None,
     ))
     assert receipt["ok"] is False
-    assert "attorney review" in receipt["error"]
+    # It is never offered to the model, so the executor refuses it before its
+    # own attorney-review refusal is reached (review AI-5). Either is closed.
+    assert ("attorney review" in receipt["error"]
+            or "not available for this conversation" in receipt["error"])
 
 
 def test_agent_tool_config_only_advertises_durable_execution_paths():

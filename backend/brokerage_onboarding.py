@@ -34,6 +34,7 @@ import os
 import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Any, Literal, Optional
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -393,8 +394,14 @@ def _dev_capture_enabled() -> bool:
     can complete the flow; in prod, a missing mail server is an error, because
     an invitation nobody receives is not an invitation.
     """
+    import config
     from smtp_mailer import is_configured
-    if (os.getenv("ORACLE_ENV") or "dev").lower() in ("prod", "production"):
+
+    # Only a real development environment. Treating an unset or staging
+    # ORACLE_ENV as "dev" handed raw invitation tokens back in the API response
+    # (and to the WARNING log) on staging-like deploys, letting a broker accept
+    # an invitation for an address they do not own (review AUTH-10).
+    if not config.IS_DEV:
         return False
     try:
         return not is_configured()
@@ -645,6 +652,16 @@ async def post_invitations(
     """Invite one agent or twenty-five. The role comes from this authenticated
     owner, never from the invitee."""
     require_role(ctx, Role.BROKER_OWNER, Role.PLATFORM_ADMIN)
+    if body.role == "broker_owner" and not ctx.is_platform_admin:
+        # An owner inviting an address they control as a second broker_owner
+        # gets a sock puppet that satisfies the "different broker approves"
+        # rule of the two-person role change (review AUTH-8). Invite as an
+        # agent and promote through that flow instead.
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "Invite them as an agent, then promote them with a role change "
+            "approved by another broker.",
+        )
 
     async with tenant_tx(ctx) as conn:
         result = await create_invitations(conn, ctx, [str(e) for e in body.emails], body.role)
@@ -733,6 +750,103 @@ async def revoke_invitation(
                 "No live invitation with that id.",
             )
         return {"invitation": _invite_row(row)}
+
+
+class MemberStatusChange(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    reason: str = Field(min_length=3, max_length=500)
+
+
+async def _record_member_change(ctx: TenantContext, action: str, row, reason: str) -> None:
+    from audit_ledger import AuditCategory, ledger
+
+    try:
+        await ledger.record(
+            AuditCategory.USER_STATE_CHANGE,
+            action,
+            tenant_id=ctx.tenant_id,
+            user_id=ctx.agent_id,
+            target_id=str(row["id"]),
+            metadata={"target_agent_id": row["agent_id"], "target_role": row["role"], "reason": reason},
+        )
+    except Exception:  # noqa: BLE001 — the state change already committed; never undo it over logging
+        log.exception("audit record for %s failed", action)
+
+
+@router.post("/team/{user_id}/suspend")
+async def suspend_member(
+    user_id: UUID,
+    body: MemberStatusChange,
+    ctx: TenantContext = Depends(require_context),
+) -> dict[str, Any]:
+    """Take an agent's access away now — the offboarding the platform never had.
+
+    There was no way to remove anyone: nothing ever set users.is_active false,
+    so a departed agent kept their login, and every token they held stayed
+    good for its full lifetime (review OFF-1/AUTH-1). Suspension deactivates the
+    account and bumps its session epoch in one statement, so every open
+    session and socket ends on its next request (0117). Their CRM records stay
+    with the brokerage.
+
+    A broker owner may suspend agents. Suspending another broker owner takes a
+    platform admin: otherwise one owner could lock a co-owner out of their own
+    brokerage, or a sock-puppet owner could take one over.
+    """
+    require_role(ctx, Role.BROKER_OWNER, Role.PLATFORM_ADMIN)
+    async with tenant_tx(ctx) as conn:
+        row = await conn.fetchrow(
+            "UPDATE users SET is_active = false, session_epoch = session_epoch + 1, "
+            "       updated_at = now() "
+            " WHERE id = $1 AND tenant_id = $2::uuid AND is_active "
+            "   AND role <> 'platform_admin' "
+            "   AND ($4 OR role = 'agent') "
+            "   AND lower(agent_id) <> lower($3) "
+            "RETURNING id, agent_id, role",
+            user_id, ctx.tenant_id, ctx.agent_id, ctx.is_platform_admin,
+        )
+        if not row:
+            raise HTTPException(
+                status.HTTP_404_NOT_FOUND,
+                "No active team member you can suspend has that id.",
+            )
+        await conn.execute(
+            "UPDATE team_memberships SET status = 'suspended' "
+            " WHERE tenant_id = $1::uuid AND user_id = $2",
+            ctx.tenant_id, user_id,
+        )
+    await _record_member_change(ctx, "team.member.suspended", row, body.reason)
+    return {"id": str(row["id"]), "agent_id": row["agent_id"], "status": "suspended"}
+
+
+@router.post("/team/{user_id}/reinstate")
+async def reinstate_member(
+    user_id: UUID,
+    body: MemberStatusChange,
+    ctx: TenantContext = Depends(require_context),
+) -> dict[str, Any]:
+    """Give a suspended member their account back. They sign in again: the
+    sessions that suspension ended stay ended."""
+    require_role(ctx, Role.BROKER_OWNER, Role.PLATFORM_ADMIN)
+    async with tenant_tx(ctx) as conn:
+        row = await conn.fetchrow(
+            "UPDATE users SET is_active = true, updated_at = now() "
+            " WHERE id = $1 AND tenant_id = $2::uuid AND NOT is_active "
+            "   AND role <> 'platform_admin' AND ($3 OR role = 'agent') "
+            "RETURNING id, agent_id, role",
+            user_id, ctx.tenant_id, ctx.is_platform_admin,
+        )
+        if not row:
+            raise HTTPException(
+                status.HTTP_404_NOT_FOUND,
+                "No suspended team member you can reinstate has that id.",
+            )
+        await conn.execute(
+            "UPDATE team_memberships SET status = 'active' "
+            " WHERE tenant_id = $1::uuid AND user_id = $2 AND status = 'suspended'",
+            ctx.tenant_id, user_id,
+        )
+    await _record_member_change(ctx, "team.member.reinstated", row, body.reason)
+    return {"id": str(row["id"]), "agent_id": row["agent_id"], "status": "active"}
 
 
 class MlsEntitlementGrant(BaseModel):
