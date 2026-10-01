@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useCallback, useRef } from 'react';
 import { useOracleDispatch, ACTIONS } from './OracleContext';
 import { getUserId, getTenantId } from './identity';
+import { jitteredBackoff } from '../lib/backoff.js';
 
 // In prod the SPA is served over https on the same host as the API, and the ALB
 // routes /ws to the backend — so derive wss://<host>/ws from the page origin.
@@ -33,7 +34,6 @@ function buildWsUrl() {
   }
 }
 const MAX_DELAY = 60000;
-const MAX_RETRIES = 8;
 
 export function useOracleWebSocket() {
   const { dispatch, wsRef } = useOracleDispatch();
@@ -354,12 +354,11 @@ export function useOracleWebSocket() {
       wsRef.current = null;
       dispatch({ type: ACTIONS.AI_CHAT_CONNECTION, payload: 'offline' });
       if (!mountedRef.current) return;
-      if (retryCount.current >= MAX_RETRIES) return;
 
-      const delay = Math.min(
-        BASE_DELAY * Math.pow(2, retryCount.current),
-        MAX_DELAY
-      );
+      // Jittered, and never gives up: a tab left open through a long outage
+      // must come back on its own. It used to stop for good after 8 tries
+      // (~3.5 min), and every client retried in lockstep (lib/backoff.js).
+      const delay = jitteredBackoff(retryCount.current, { base: BASE_DELAY, max: MAX_DELAY });
 
       retryTimer.current = setTimeout(() => {
         retryCount.current += 1;

@@ -139,9 +139,20 @@ async def fetch_real_records(tenant_id: str, user_id: str, limit: int) -> list[d
                 "SELECT id,parcel_id,state,motivation_score,underwriting,payload, "
                 "       address,asking_price,beds,baths,sqft,updated_at "
                 "FROM leads "
-                "ORDER BY motivation_score DESC NULLS LAST, created_at DESC, id "
+                # tenant_id = $2 and no NULLS LAST, so idx_leads_pipeline_tenant_rank
+                # (tenant_id, motivation_score DESC, created_at DESC, id) serves
+                # the ORDER BY … LIMIT directly. Before, the RLS OR plus a NULLS
+                # LAST the index cannot supply (the column is NOT NULL, so it
+                # changed nothing) scanned and sorted all ~10M leads, hit the
+                # 30 s command_timeout on EVERY tenant engine start — under
+                # tenant_engines' global lock, stalling every brokerage's new
+                # sockets for 30 s at a time (Mission 8). The context is an
+                # AGENT of exactly this tenant, so this is what RLS already
+                # allows; it narrows nothing.
+                "WHERE tenant_id = $2::uuid "
+                "ORDER BY motivation_score DESC, created_at DESC, id "
                 "LIMIT $1",
-                limit,
+                limit, tenant_id,
             )
         return [record_from_lead_row(r) for r in rows]
     except Exception as e:  # noqa: BLE001 — lead source is best-effort

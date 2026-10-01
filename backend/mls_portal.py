@@ -39,6 +39,9 @@ LISTING_FRESH_SECONDS = 24 * 3600
 LISTING_EXPIRED_SECONDS = 72 * 3600
 
 PAGE_SIZE = 24
+# Beyond this the search reports "10,000+" (total_is_exact=false) rather than
+# counting every matching listing on every request.
+_SEARCH_COUNT_CAP = 10_000
 THIRD_PARTY_LISTING_SOURCE_IDS = frozenset({"rentcast"})
 PUBLIC_PROPERTY_COVERAGE = data_coverage_summary()["property"]
 
@@ -255,7 +258,7 @@ async def mls_portal_search(
                 # listings, and returning [] for both is how a brokerage
                 # concludes nothing is for sale in their market.
                 return {
-                    "listings": [], "total": 0, "page": page, "page_size": PAGE_SIZE,
+                    "listings": [], "total": 0, "total_is_exact": True, "page": page, "page_size": PAGE_SIZE,
                     "has_more": False, "degraded": True,
                     "source": "combined authorized listing cache", "sources": [],
                     "notice": coverage_note(feeds)["message"]
@@ -267,11 +270,18 @@ async def mls_portal_search(
             count_args = filter_args + [allowed]
             where_all = " AND ".join(
                 conditions + [f"mls_id = ANY(${len(count_args)}::text[])"])
+            # Capped: an exact COUNT(*) over a whole state's feed was a
+            # parallel seq scan on EVERY search — with the page query, what
+            # pushed page-1 p95 to 2.2 s at 25 agents (Mission 8). Past the
+            # cap the answer is "10,000+", which is what a person can use.
             count_row = await conn.fetchrow(
-                f"SELECT COUNT(*) AS n FROM oracle_mls_listings WHERE {where_all}",
+                f"SELECT COUNT(*) AS n FROM (SELECT 1 FROM oracle_mls_listings WHERE {where_all} "
+                f"LIMIT {_SEARCH_COUNT_CAP + 1}) capped",
                 *count_args,
             )
             total = int(count_row["n"]) if count_row else 0
+            total_is_exact = total <= _SEARCH_COUNT_CAP
+            total = min(total, _SEARCH_COUNT_CAP)
 
             data_args = filter_args + [allowed, PAGE_SIZE, offset]
             n = len(filter_args)
@@ -279,7 +289,10 @@ async def mls_portal_search(
                 conditions + [f"mls_id = ANY(${n + 1}::text[])"])
             rows = [dict(r) for r in await conn.fetch(
                 f"SELECT * FROM oracle_mls_listings WHERE {where_data} "
-                f"ORDER BY last_updated DESC NULLS LAST, list_price DESC NULLS LAST, "
+                # Matches idx_oml_search_order (0116). No NULLS LAST: every
+                # column is NOT NULL, and the clause stopped the index from
+                # supplying the order, forcing a sort of the whole feed.
+                f"ORDER BY last_updated DESC, list_price DESC, "
                 f"mls_id ASC, mls_number ASC "
                 f"LIMIT ${n + 2} OFFSET ${n + 3}",
                 *data_args,
@@ -296,6 +309,7 @@ async def mls_portal_search(
     return {
         "listings": listings,
         "total": total,
+        "total_is_exact": total_is_exact,
         "page": page,
         "page_size": PAGE_SIZE,
         "has_more": offset + len(listings) < total,

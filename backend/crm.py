@@ -675,7 +675,11 @@ async def list_clients(
 
     # Dynamic WHERE — every fragment references a model/whitelist-derived column
     # with a positional placeholder, so this assembly is injection-safe.
-    where = ["c.archived_at IS NULL"]
+    # tenant_id = ANY(app_visible_tenants()) restates the RLS policy as an
+    # INDEXABLE condition (migration 0113). Without it the policy's OR forced a
+    # scan of every tenant's clients on each request. It is ANDed with RLS, so
+    # it cannot widen visibility, and a platform admin still sees all tenants.
+    where = ["c.archived_at IS NULL", "c.tenant_id = ANY (app_visible_tenants())"]
     args: list = []
     if type != "all":
         args.append(type)

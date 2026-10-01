@@ -1,3 +1,4 @@
+import { jitteredBackoff, retryAfterMs } from './backoff.js';
 const configuredApiBase = import.meta.env.VITE_API_BASE || '';
 // Same origin by default, in dev too: Vite proxies /api, /auth and /ws to the
 // backend. The old dev fallback to an absolute http://localhost:8000 assumed
@@ -9,6 +10,8 @@ const API_BASE = configuredApiBase.replace(/\/+$/, '');
 const DEFAULT_TIMEOUT = 30000;
 const MAX_RETRIES = 3;
 const RETRYABLE_STATUS_CODES = new Set([408, 429]);
+// Longest server-requested wait worth sleeping through inside one request.
+const MAX_RETRY_AFTER_MS = 10000;
 
 export class ApiError extends Error {
   constructor(detail, status, isNetworkError = false) {
@@ -156,7 +159,12 @@ export async function fetchWithRetry(path, options = {}) {
         }
 
         if (isRetryable(error) && attempt < allowedRetries) {
-          const backoff = Math.min(1000 * Math.pow(2, attempt), 30000);
+          // A 429 says when to come back. Retrying sooner cannot succeed and
+          // counts against the same window again; a wait longer than a user
+          // will sit through is surfaced instead of slept on.
+          const serverWait = res.status === 429 ? retryAfterMs(res.headers.get('retry-after')) : null;
+          if (serverWait != null && serverWait > MAX_RETRY_AFTER_MS) throw error;
+          const backoff = serverWait ?? jitteredBackoff(attempt, { base: 1000, max: 30000 });
           await delay(backoff);
           lastError = error;
           attempt += 1;
@@ -192,7 +200,7 @@ export async function fetchWithRetry(path, options = {}) {
       );
 
       if (isRetryable(networkError) && attempt < allowedRetries) {
-        const backoff = Math.min(1000 * Math.pow(2, attempt), 30000);
+        const backoff = jitteredBackoff(attempt, { base: 1000, max: 30000 });
         await delay(backoff);
         lastError = networkError;
         attempt += 1;

@@ -118,6 +118,11 @@ services:
         value: "prod"
       - key: ORACLE_PROCESS_ROLE
         value: "web"
+      # Per-replica WebSocket ceiling. The code default (120) would refuse the
+      # 241st open tab across two replicas; 500 per replica was MEASURED to
+      # hold (first frame p95 9 ms, <5% CPU, flat memory — docs/capacity-plan.md).
+      - key: ORACLE_WS_MAX_CONNECTIONS
+        value: "500"
       - key: ORACLE_PUBLIC_BASE_URL
         value: ${APP_URL}
       # Database — DigitalOcean Managed PostgreSQL. No Azure Entra / AWS IAM
@@ -226,6 +231,25 @@ workers:
         value: "prod"
       - key: ORACLE_PROCESS_ROLE
         value: "worker"
+      # Durable job pools (automation_jobs.py). Interactive = Neoh chat replies,
+      # on their own queue so a long MLS/harvest job never holds a person's
+      # turn; this is also the ceiling on concurrent chat model calls. Each
+      # turn holds a slot ~3.5 s, so slots ÷ 3.5 s = turns/s. Measured at 50
+      # concurrent conversations (2.5-4 s mock model): 8 slots → 2.25 turns/s,
+      # first-token p95 13.6 s (FAIL); 16 → 3.55 turns/s, p95 4.7 s, +4 DB
+      # connections (docs/capacity-plan.md). A slower real model needs more.
+      # Default-queue jobs are mostly I/O-bound (a model call per client
+      # reconcile, provider syncs), so slots are cheap. At 4, three agents
+      # editing clients continuously saturated it with crm:client_reconcile
+      # (~2.8 s each) and lower-priority jobs waited ~200 s (Mission 8).
+      - key: ORACLE_JOB_WORKERS
+        value: "8"
+      - key: ORACLE_INTERACTIVE_JOB_WORKERS
+        value: "16"
+      # 8 + 16 job workers + voice + reconstruction share this pool. Counted in
+      # docs/database-connection-budget.md — recompute before raising.
+      - key: ORACLE_DB_POOL_MAX
+        value: "15"
       - key: ORACLE_MISSIONS_ENABLED
         value: "0" # flip to 1 once Missions is reviewed for this tenant
       - key: ORACLE_SCHEDULER_ENABLED

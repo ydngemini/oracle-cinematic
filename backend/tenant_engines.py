@@ -33,13 +33,15 @@ ENGINE_LINGER_SECONDS = float(os.getenv("ORACLE_ENGINE_LINGER_SECONDS", "30"))
 
 
 class _Entry:
-    __slots__ = ("engine", "refcount", "shutdown_handle", "started")
+    __slots__ = ("engine", "refcount", "shutdown_handle", "started", "start_lock")
 
     def __init__(self, engine: Any):
         self.engine = engine
         self.refcount = 0
         self.shutdown_handle: Optional[asyncio.Task] = None
         self.started = False
+        # Per tenant: one brokerage's engine start must not hold up another's.
+        self.start_lock = asyncio.Lock()
 
 
 _entries: dict[str, _Entry] = {}
@@ -74,16 +76,22 @@ async def acquire(
 
         entry.refcount += 1
 
+    # Started OUTSIDE the global lock, under the tenant's own. start() does DB
+    # work (seeding the graph); awaited under the global lock, one slow start —
+    # measured at a 30 s query timeout — stopped every brokerage's new sockets
+    # from being read until it finished (Mission 8). The refcount taken above
+    # keeps a linger shutdown from racing the start.
+    async with entry.start_lock:
         if not entry.started:
             entry.started = True
             # start() runs the engine's own background loops; it is awaited
-            # inside the lock so a second caller cannot observe a half-started
-            # engine.
+            # inside the tenant lock so a second caller for the same tenant
+            # cannot observe a half-started engine.
             await entry.engine.start()
             logger.info(
                 "Tenant engine started — tenant=%s refcount=%d", tenant_id, entry.refcount
             )
-        return entry.engine
+    return entry.engine
 
 
 async def release(tenant_id: str) -> None:

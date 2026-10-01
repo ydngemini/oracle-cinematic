@@ -27,7 +27,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from db.connection import tenant_tx
 from tenancy import TenantContext, require_context
 from reconstruction_providers import SPATIAL_AI_DISCLOSURE, get_provider
-from reconstruction_worker import ReconstructionJob, enqueue
+from reconstruction_worker import QUEUE_MAX as RECON_QUEUE_MAX, ReconstructionJob, enqueue
 
 log = logging.getLogger("oracle.tour_api")
 
@@ -606,6 +606,18 @@ async def enqueue_reconstruction(
             raise HTTPException(status.HTTP_404_NOT_FOUND, "Lead not found.")
         if listing_id is not None and not await conn.fetchval("SELECT 1 FROM listings WHERE id = $1", listing_id):
             raise HTTPException(status.HTTP_404_NOT_FOUND, "Listing not found.")
+        # Backpressure: a bounded backlog per brokerage, counted from the rows
+        # that ARE the queue (RLS scopes the count to this tenant). One
+        # brokerage cannot bury every other one's captures behind its own.
+        backlog = await conn.fetchval(
+            "SELECT count(*) FROM reconstruction_jobs WHERE status = 'queued'"
+        )
+        if backlog >= RECON_QUEUE_MAX:
+            raise HTTPException(
+                status.HTTP_503_SERVICE_UNAVAILABLE,
+                "Reconstruction queue is full — try again shortly.",
+                headers={"Retry-After": "60"},
+            )
         row = await conn.fetchrow(
             """
             INSERT INTO reconstruction_jobs (tenant_id, lead_id, listing_id, status, created_by)
@@ -615,18 +627,13 @@ async def enqueue_reconstruction(
             ctx.tenant_id, lead_id, listing_id, ctx.agent_id,
         )
     job_id = str(row["id"])
-    try:
-        enqueue(ReconstructionJob(
-            ctx=ctx, job_id=job_id,
-            lead_id=str(lead_id) if lead_id else None,
-            listing_id=str(listing_id) if listing_id else None,
-        ))
-    except asyncio.QueueFull:
-        async with tenant_tx(ctx) as conn:
-            await conn.execute(
-                "UPDATE reconstruction_jobs SET status='failed', error='queue full' WHERE id=$1", row["id"]
-            )
-        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Reconstruction queue is full — try again shortly.")
+    # The committed row is the job. This only wakes a worker sharing this
+    # process (single-process dev); the worker service claims it regardless.
+    enqueue(ReconstructionJob(
+        ctx=ctx, job_id=job_id,
+        lead_id=str(lead_id) if lead_id else None,
+        listing_id=str(listing_id) if listing_id else None,
+    ))
     return {"job_id": job_id, "status": "queued"}
 
 

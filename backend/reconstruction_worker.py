@@ -3,9 +3,17 @@ walkable Gaussian splat, then records it so the tour resolver flips the property
 to tier 3.
 
 Long jobs (20-60 min) must NOT live on a request/websocket (those get cancelled
-on disconnect + hit the 300s idle watchdog). So this mirrors voice_intel.py:
-an in-process asyncio.Queue + fixed worker pool started/stopped in the server
-lifespan; callers POST → 202 → poll a reconstruction_jobs row.
+on disconnect + hit the 300s idle watchdog). Callers POST → 202 → poll a
+reconstruction_jobs row; a fixed worker pool started in the WORKER process's
+lifespan claims `queued` rows with FOR UPDATE SKIP LOCKED.
+
+The row IS the queue. It used to be an in-process asyncio.Queue, which only
+worked while one process both accepted and ran jobs: in production the POST
+lands on an API replica (ORACLE_PROCESS_ROLE=web), which starts no consumer,
+so every capture sat in that replica's memory forever while its row read
+"queued" (Mission 8 capacity audit). enqueue() now only wakes a local worker
+early when the producer and consumer share a process; correctness never
+depends on it.
 
 Pipeline (provider-agnostic; see reconstruction_providers.py):
   gather source photos → provider.reconstruct() → .ply/.spz/.sog/.splat
@@ -51,6 +59,10 @@ logger = logging.getLogger("oracle.reconstruction.worker")
 
 QUEUE_MAX = int(os.environ.get("RECON_QUEUE_MAX", "20"))
 WORKER_COUNT = int(os.environ.get("RECON_WORKER_COUNT", "1"))
+# How often an idle worker looks for a queued row. A capture takes 15-60 min,
+# so a few seconds of pickup latency is noise; the claim is one indexed query
+# (idx_recon_jobs_active).
+POLL_SECONDS = max(0.5, float(os.environ.get("RECON_POLL_SECONDS", "5") or 5))
 # Stamped once at import: rows untouched since before this process started
 # cannot belong to it, because the queue that fed them did not survive.
 _PROCESS_STARTED_AT = datetime.now(timezone.utc)
@@ -66,13 +78,63 @@ class ReconstructionJob:
     listing_id: Optional[str]
 
 
-_queue: "asyncio.Queue[ReconstructionJob]" = asyncio.Queue(maxsize=QUEUE_MAX)
 _workers: list[asyncio.Task] = []
+_wake = asyncio.Event()
 
 
 def enqueue(job: ReconstructionJob) -> None:
-    """Non-blocking; raises asyncio.QueueFull when saturated (caller → 503)."""
-    _queue.put_nowait(job)
+    """Wake a worker in THIS process, if there is one. The job is already
+    durable — its `queued` row — so this is a latency hint, never delivery.
+    Admission control (QUEUE_MAX) is the caller's count of queued rows."""
+    _wake.set()
+
+
+def _platform_ctx(agent_id: str) -> TenantContext:
+    return TenantContext(
+        agent_id=agent_id,
+        tenant_id=os.getenv("ORACLE_PLATFORM_TENANT_ID", "00000000-0000-0000-0000-000000000000"),
+        role=Role.PLATFORM_ADMIN,
+    )
+
+
+async def _claim_next() -> Optional[ReconstructionJob]:
+    """Atomically move the oldest queued row to `running` and return it.
+
+    SKIP LOCKED makes concurrent claimers — more worker tasks, or a second
+    worker process — take different rows instead of the same one. The job runs
+    as the person who submitted it: their tenant and their current role, read
+    back from `users`, so the worker never holds more than they did.
+    """
+    async with tenant_tx(_platform_ctx("reconstruction-claim")) as conn:
+        row = await conn.fetchrow(
+            """
+            UPDATE reconstruction_jobs j
+               SET status = 'running', updated_at = now()
+             WHERE j.id = (SELECT id FROM reconstruction_jobs
+                            WHERE status = 'queued'
+                            ORDER BY created_at
+                            FOR UPDATE SKIP LOCKED
+                            LIMIT 1)
+         RETURNING j.id::text AS id, j.tenant_id::text AS tenant_id,
+                   j.lead_id::text AS lead_id, j.listing_id::text AS listing_id,
+                   j.created_by
+            """
+        )
+        if row is None:
+            return None
+        role_value = await conn.fetchval(
+            "SELECT role FROM users WHERE tenant_id = $1::uuid AND lower(agent_id) = lower($2) LIMIT 1",
+            row["tenant_id"], row["created_by"] or "",
+        )
+    try:
+        role = Role(role_value) if role_value else Role.AGENT
+    except ValueError:
+        role = Role.AGENT
+    return ReconstructionJob(
+        ctx=TenantContext(agent_id=row["created_by"] or "reconstruction-worker",
+                          tenant_id=row["tenant_id"], role=role),
+        job_id=row["id"], lead_id=row["lead_id"], listing_id=row["listing_id"],
+    )
 
 
 async def _set_status(ctx: TenantContext, job_id: str, status: str, **fields) -> None:
@@ -900,7 +962,20 @@ async def _process(job: ReconstructionJob) -> None:
 async def _worker_loop(worker_id: int) -> None:
     logger.info("Reconstruction worker %d online.", worker_id)
     while True:
-        job = await _queue.get()
+        try:
+            job = await _claim_next()
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 — a DB blip must not kill the worker
+            logger.exception("Reconstruction claim failed; retrying")
+            job = None
+        if job is None:
+            _wake.clear()
+            try:
+                await asyncio.wait_for(_wake.wait(), timeout=POLL_SECONDS)
+            except asyncio.TimeoutError:
+                pass
+            continue
         try:
             await _process(job)
         except asyncio.CancelledError:
@@ -911,8 +986,6 @@ async def _worker_loop(worker_id: int) -> None:
                 await _set_status(job.ctx, job.job_id, "failed", error=str(e)[:500])
             except Exception:  # noqa: BLE001
                 logger.debug("could not mark job %s failed", job.job_id)
-        finally:
-            _queue.task_done()
 
 
 #: How often to sweep for leaked GPU pods.
@@ -986,31 +1059,27 @@ async def _reaper_loop() -> None:
 async def fail_orphaned_jobs() -> None:
     """Fail jobs no process can still be working on.
 
-    The queue is in-memory, so a restart loses every queued job and abandons
-    every running one — but their rows still say `queued` and `running`. Nothing
-    ever moves them: the caller polls a status that will never change again, and
-    the reason it stopped is invisible. Two real captures were lost that way
-    before anything said so.
+    A restart abandons every RUNNING job — its row still says `running`, and
+    nothing would ever move it: the caller polls a status that will never
+    change again. Two real captures were lost that way before anything said so.
+    QUEUED rows are left alone: the row is the queue now, so a queued job
+    survives a restart and is simply claimed by the next worker.
 
     This is the reaper's argument applied to rows instead of pods: the most
     likely orphan is the one left by the restart that just happened. Only rows
     untouched since before this process started are failed, so a job this
     process is actively running is never harmed.
 
-    ASSUMPTION: one backend works a given tenant's reconstructions. That is
-    already true of the in-memory queue and of the pod reaper, which terminates
-    by name prefix regardless of which process created the pod. If this ever
-    runs multi-replica, both need a lease instead.
+    ASSUMPTION: ONE worker process runs reconstructions (the App Platform
+    worker is pinned to instance_count: 1). The claim is already safe for more,
+    but this sweep and the pod reaper are not: each would treat another live
+    worker's running job as orphaned. A second worker needs a lease here first.
     """
-    platform_ctx = TenantContext(
-        agent_id="reconstruction-orphan-sweep",
-        tenant_id=os.getenv("ORACLE_PLATFORM_TENANT_ID", "00000000-0000-0000-0000-000000000000"),
-        role=Role.PLATFORM_ADMIN,
-    )
+    platform_ctx = _platform_ctx("reconstruction-orphan-sweep")
     reason = (
-        "Abandoned: the backend restarted while this job was in flight, and the "
-        "queue does not survive a restart. Any GPU pod was released by the "
-        "leaked-pod sweep. Nothing was produced — run the capture again."
+        "Abandoned: the worker restarted while this job was running. Any GPU "
+        "pod was released by the leaked-pod sweep. Nothing was produced — run "
+        "the capture again."
     )
     try:
         async with tenant_tx(platform_ctx) as conn:
@@ -1018,7 +1087,7 @@ async def fail_orphaned_jobs() -> None:
                 """
                 UPDATE reconstruction_jobs
                    SET status = 'failed', error = $1, updated_at = now()
-                 WHERE status IN ('queued', 'running')
+                 WHERE status = 'running'
                    AND updated_at < $2
              RETURNING id::text
                 """,

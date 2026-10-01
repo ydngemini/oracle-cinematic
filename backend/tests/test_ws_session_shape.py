@@ -154,9 +154,14 @@ def test_the_seed_query_uses_the_pipeline_rank_index():
     assert sql, "no seed query literal found in real_leads.py"
     assert "ORDER BY random()" not in sql, "the full-scan seed query is back"
     assert "motivation_score DESC" in sql
-    assert "NULLS LAST" in sql, (
-        "without NULLS LAST a null motivation sorts first in a DESC ordering"
-    )
+    # NO `NULLS LAST`: motivation_score is NOT NULL (0001_init_tenancy.sql), so
+    # it changed no result — but the index is DESC (NULLS FIRST), and the
+    # mismatch stopped the planner using it for the ORDER BY. With the RLS OR
+    # that meant scanning and sorting ~10M leads: a 30 s timeout on every
+    # tenant engine start (Mission 8).
+    assert "NULLS LAST" not in sql
+    # The explicit tenant condition makes the index's leading column usable.
+    assert "WHERE tenant_id = $2::uuid" in sql
 
 
 # ---------------------------------------------------------------------------
@@ -356,3 +361,34 @@ def test_ambient_traffic_is_now_measured_rather_than_unknown():
 
     llm_gateway.counter.record("analysis", "test", ok=True)
     assert admin_ops._ambient_llm_calls_last_minute() == before + 1
+
+
+def test_one_tenants_engine_start_does_not_block_another_tenant():
+    # A slow start (a 30 s query timeout, measured) used to hold the global
+    # lock and stall every brokerage's new sockets (Mission 8).
+    import asyncio
+    import tenant_engines
+
+    class Slow:
+        async def start(self):
+            await asyncio.sleep(0.5)
+
+        async def stop(self):
+            pass
+
+    class Fast(Slow):
+        async def start(self):
+            pass
+
+    async def run():
+        tenant_engines._entries.clear()
+        slow = asyncio.create_task(tenant_engines.acquire("t-slow", factory=Slow))
+        await asyncio.sleep(0.05)
+        t0 = asyncio.get_running_loop().time()
+        await tenant_engines.acquire("t-fast", factory=Fast)
+        waited = asyncio.get_running_loop().time() - t0
+        await slow
+        tenant_engines._entries.clear()
+        return waited
+
+    assert asyncio.run(run()) < 0.2

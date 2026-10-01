@@ -1,10 +1,12 @@
 """A restart must not leave a job claiming to be running forever.
 
-The work queue lives in memory, so a backend restart abandons every running
-job and drops every queued one — but their rows still read `queued` and
-`running`. Nothing else ever moves them, so the caller polls a status that will
+A worker restart abandons every running job — but its row still reads
+`running`. Nothing else ever moves it, so the caller polls a status that will
 never change and the reason it stopped is invisible. Two real captures were
 lost that way before anything said so.
+
+QUEUED rows must survive: the row is the queue (see
+test_reconstruction_durable_queue.py), and the next worker claims them.
 """
 
 from __future__ import annotations
@@ -62,7 +64,8 @@ def test_it_fails_only_jobs_older_than_this_process(monkeypatch):
     assert len(conn.calls) == 1
     sql, args = conn.calls[0]
     assert "status = 'failed'" in sql
-    assert "status IN ('queued', 'running')" in sql
+    assert "status = 'running'" in sql
+    assert "queued" not in sql  # a queued job is waiting, not orphaned
     # The cutoff is this process's start: a job THIS process is running has a
     # newer updated_at and must survive the sweep.
     assert "updated_at < $2" in sql

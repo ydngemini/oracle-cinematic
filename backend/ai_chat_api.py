@@ -37,7 +37,7 @@ from ai_chat_store import (
     undo_action,
     update_assistant,
 )
-from automation_jobs import enqueue_job
+from automation_jobs import INTERACTIVE_QUEUE, enqueue_job
 from platform_policy import ActionRisk, Feature, feature_enabled
 from tenancy import TenantContext, require_context
 
@@ -310,6 +310,9 @@ async def handle_chat_websocket(
             },
             idempotency_key=f"ai-chat:{ctx.agent_id}:{frame.request_id}",
             created_by=ctx.agent_id, priority=20, max_attempts=3,
+            # A person is waiting: the interactive pool, never behind an MLS
+            # backfill on the shared queue (automation_jobs.INTERACTIVE_QUEUE).
+            queue_name=INTERACTIVE_QUEUE,
             risk=ActionRisk.INTERNAL_EDIT,
         )
     except Exception as exc:  # noqa: BLE001

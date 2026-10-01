@@ -14,6 +14,7 @@ load_dotenv(Path(__file__).resolve().parent.parent / ".env", override=False)
 
 import config
 from fastapi import Depends, FastAPI, Request, WebSocket, WebSocketDisconnect
+from starlette.websockets import WebSocketState
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from cors_config import get_allowed_origins
@@ -349,6 +350,9 @@ import speed_to_lead  # noqa: E402,F401
 # Same reason: registers the `mission:tick` handler. Importing it does NOT
 # start anything — Feature.MISSIONS defaults off and the executor checks it.
 import missions.executor  # noqa: E402,F401
+# Registers `loadtest:noop` ONLY when ORACLE_ENV=loadtest (a no-op otherwise):
+# the side-effect-free job the queue capacity test needs (performance/).
+import loadtest_jobs  # noqa: E402,F401
 
 app.include_router(commands_router)
 app.include_router(contracts_router)
@@ -488,6 +492,10 @@ async def version() -> JSONResponse:
         "built_at": os.environ.get("ORACLE_BUILD_TIMESTAMP", "unknown"),
         "migration_head": migration_head,
         "process_role": config.PROCESS_ROLE,
+        # Which environment this process believes it is. The load-test harness
+        # refuses any target that does not answer "staging" or "loadtest" here —
+        # a check against what the SERVER says, not what the operator typed.
+        "environment": config.ORACLE_ENV or "unset",
     })
 
 
@@ -744,8 +752,16 @@ async def push_deal_pipeline(
         "filters": {key: value for key, value in options.items() if key != "cursor"},
         "market_coverage": {},
     }
+    # tenant_id = ANY(app_visible_tenants()) restates the RLS policy as an
+    # INDEXABLE condition (migration 0113). Without it the policy's OR made the
+    # planner walk the global motivation-score index across all ~10M leads and
+    # filter each through RLS: 1.2 s for a 250-lead tenant, 20 s+ under
+    # concurrency — and this runs on EVERY WebSocket connect (Mission 8: the
+    # first server frame took a median 14 s at 100 sockets). With it: 1.7 ms.
+    # ANDed with RLS, so it only narrows; a platform admin still sees all.
     where = """
-        WHERE ($1::text IS NULL OR state=$1)
+        WHERE tenant_id = ANY (app_visible_tenants())
+          AND ($1::text IS NULL OR state=$1)
           AND ($2='all' OR
                ($2='statewide' AND payload->'provenance'->>'coverage_scope'='statewide' AND state<>'VA') OR
                ($2='county' AND payload->'provenance'->>'coverage_scope' LIKE 'county:%') OR
@@ -1164,6 +1180,17 @@ async def websocket_endpoint(websocket: WebSocket):
                 raw = await websocket.receive_text()
             except WebSocketDisconnect:
                 raise  # bubble up to the gather handler
+            except RuntimeError as exc:
+                # A send to a departed client (PING, a broadcast) makes
+                # Starlette mark the socket closed; the next receive then
+                # raises RuntimeError("...accept first") rather than
+                # WebSocketDisconnect. It IS a disconnect — logging it as a
+                # session error put a traceback on most ordinary disconnects
+                # (162 in one 250-socket run, Mission 8).
+                if websocket.application_state != WebSocketState.CONNECTED:
+                    raise WebSocketDisconnect(code=1006) from exc
+                logger.warning("WebSocket receive error for %s: %s", client_label, exc)
+                raise
             except Exception as exc:
                 logger.warning("WebSocket receive error for %s: %s", client_label, exc)
                 raise

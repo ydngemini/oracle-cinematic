@@ -18,6 +18,18 @@ from typing import Any
 from mls_health import visible_feed_predicate
 
 
+# The WHERE clause is written to match idx_oml_match_parcel and
+# idx_oml_match_address_zip EXACTLY — the COALESCE inside the parcel expression
+# and the bare `address <> ''` / `zip_code <> ''` partial-index predicates.
+# `COALESCE(m.address,'') <> ''` means the same thing, but the planner cannot
+# prove the partial predicate from it, and a parcel expression without the
+# COALESCE is a different expression: with either mismatch every lead on a
+# pipeline page seq-scanned all listings in its state — 2.7 s per lead, 140 s
+# per 51-lead page on the ACTRIS (TX) feed, on EVERY WebSocket connect
+# (Mission 8). `state_code` is char(2) and leads.state is text: comparing them
+# unadorned casts the COLUMN, which drops the index's leading column — so the
+# lead side is cast to bpchar instead. tests/test_mls_overlay_indexable.py pins
+# the correspondence. 140 s → 5 ms per page, measured.
 MLS_OVERLAY_SELECT = r"""
     (
         SELECT jsonb_build_object(
@@ -58,11 +70,11 @@ MLS_OVERLAY_SELECT = r"""
           FROM oracle_mls_listings AS m
          WHERE m.mls_id <> 'rentcast'
            AND __VISIBLE_FEED__
-           AND m.state_code = leads.state
+           AND m.state_code = leads.state::bpchar
            AND (
                 (
                     COALESCE(m.features->>'parcel_number','') <> ''
-                    AND regexp_replace(lower(m.features->>'parcel_number'),
+                    AND regexp_replace(lower(COALESCE(m.features->>'parcel_number','')),
                                        '[^a-z0-9]', '', 'g')
                         = regexp_replace(lower(leads.parcel_id),
                                          '[^a-z0-9]', '', 'g')
@@ -75,7 +87,7 @@ MLS_OVERLAY_SELECT = r"""
                                                  '[^a-z0-9]', '', 'g')
                         )
                         OR (
-                            COALESCE(m.address,'') <> ''
+                            m.address <> ''
                             AND COALESCE(leads.payload->>'address','') <> ''
                             AND regexp_replace(lower(m.address), '[^a-z0-9]', '', 'g')
                                 = regexp_replace(lower(leads.payload->>'address'),
@@ -85,9 +97,9 @@ MLS_OVERLAY_SELECT = r"""
                     )
                 )
                 OR (
-                    COALESCE(m.address,'') <> ''
+                    m.address <> ''
                     AND COALESCE(leads.payload->>'address','') <> ''
-                    AND COALESCE(m.zip_code,'') <> ''
+                    AND m.zip_code <> ''
                     AND regexp_replace(lower(m.address), '[^a-z0-9]', '', 'g')
                         = regexp_replace(lower(leads.payload->>'address'),
                                          '[^a-z0-9]', '', 'g')

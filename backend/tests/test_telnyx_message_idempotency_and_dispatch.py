@@ -165,3 +165,27 @@ def test_sms_branch_sender_is_the_verified_business_number_not_client_supplied()
     telnyx_block = branch[telnyx_idx:else_idx]
     assert 'from_=sender_number' in telnyx_block
     assert 'business_number["voice_caller_id_e164"]' in telnyx_block
+
+
+def test_webhook_verification_does_not_need_the_api_key(monkeypatch):
+    """Ed25519 verification is local. Requiring TELNYX_API_KEY made every
+    inbound SMS a 400 'invalid signature' whenever the key was missing or
+    rotating (Mission 8 webhook load test)."""
+    import base64
+    import json
+    import time
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    from messaging_provider import TelnyxMessagingProvider
+
+    monkeypatch.delenv("TELNYX_API_KEY", raising=False)
+    key = Ed25519PrivateKey.generate()
+    pub = base64.b64encode(key.public_key().public_bytes(
+        serialization.Encoding.Raw, serialization.PublicFormat.Raw)).decode()
+    body = json.dumps({"data": {"event_type": "message.received", "id": "e1",
+                                "payload": {"id": "m1", "text": "hi"}}})
+    ts = str(int(time.time()))
+    sig = base64.b64encode(key.sign(f"{ts}|{body}".encode())).decode()
+    event = TelnyxMessagingProvider().validate_webhook(
+        body, {"telnyx-signature-ed25519": sig, "telnyx-timestamp": ts}, credentials={"public_key": pub})
+    assert event.data.event_type == "message.received"

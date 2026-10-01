@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 import recovery_mode
@@ -367,8 +368,17 @@ async def stripe_webhook(request: Request):
     except stripe.error.SignatureVerificationError:
         raise HTTPException(status_code=400, detail="Invalid webhook signature")
 
-    event_type = event["type"]
-    obj = event["data"]["object"]
+    # construct_event is the signature check. The handlers then read the SAME
+    # verified bytes as plain JSON: since stripe-python 15, StripeObject is no
+    # longer a dict, so every handler's `.get(...)` raised KeyError('get') —
+    # each checkout.session.completed returned 500, Stripe retried, and the
+    # subscription never activated (found by the Mission 8 webhook load test;
+    # unit tests passed plain dicts, so they could not see it).
+    verified = json.loads(payload)
+    event_type = verified["type"]
+    obj = verified["data"]["object"]
+    if event_type != event["type"]:  # the parsed and verified views must agree
+        raise HTTPException(status_code=400, detail="Invalid webhook payload")
 
     pool = get_pool()
     if not pool:

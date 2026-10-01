@@ -39,7 +39,7 @@ from audit_ledger import AuditCategory, ledger
 from db.connection import tenant_tx
 from intelligence_engine import IntelligenceInputError, negotiation_guidance
 from ml_forge.bedrock_client import invoke_bedrock_model, PRIMARY_MODEL, SECONDARY_MODEL
-from tenancy import TenantContext, require_context
+from tenancy import Role, TenantContext, require_context
 import ws_hub
 
 logger = logging.getLogger("oracle.voice_intel")
@@ -222,15 +222,24 @@ async def _broadcast_voice(ctx: TenantContext, session_id: str, frame: dict[str,
 
 @dataclass(frozen=True)
 class VoiceJob:
-    """One staged walkthrough. Carries the live TenantContext — the queue is
-    in-process, so no serialization round-trip and no identity reconstruction."""
+    """One claimed walkthrough: its submitter's context and the audio,
+    written back to a local temp file for faster-whisper."""
     ctx: TenantContext
     lead_id: str
     staged_path: Path
     original_filename: str
+    job_id: str = ""
 
 
-_queue: asyncio.Queue = asyncio.Queue(maxsize=QUEUE_MAX)
+# The queue is the voice_walkthrough_jobs table (migration 0114). It used to be
+# an in-process asyncio.Queue fed by a file on the receiving process's disk —
+# which in production is an API replica with no consumer, while the worker is
+# a different container that cannot see that disk. Every walkthrough was
+# accepted and never processed (Mission 8 capacity audit).
+POLL_SECONDS = max(0.5, float(os.getenv("ORACLE_VOICE_POLL_SECONDS", "3") or 3))
+MAX_ATTEMPTS = 3
+_PROCESS_STARTED_AT = None  # set when the worker pool starts
+_wake = asyncio.Event()
 _workers: list[asyncio.Task] = []
 
 # faster-whisper model is loaded once and shared; its transcribe() is not
@@ -284,38 +293,50 @@ async def log_walkthrough(
             "transcription engine not installed on this node (pip install faster-whisper)",
         )
 
-    # uuid-only filename — the client's filename never touches the path.
+    # uuid-only filename — the client's filename never touches the path. The
+    # upload is streamed to disk first so the size cap holds without buffering
+    # an oversized body; only an accepted file is read into the job row.
     STAGING_DIR.mkdir(parents=True, exist_ok=True)
     staged = STAGING_DIR / f"walkthrough_{uuid.uuid4().hex}{suffix}"
     try:
         size = await asyncio.to_thread(_stage_upload, audio_file.file, staged)
+        audio = await asyncio.to_thread(staged.read_bytes)
     except ValueError:
-        staged.unlink(missing_ok=True)
         raise HTTPException(
             status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
             f"audio exceeds {MAX_AUDIO_BYTES // (1024 * 1024)} MiB cap",
         )
-
-    job = VoiceJob(
-        ctx=ctx,
-        lead_id=lead_id,
-        staged_path=staged,
-        original_filename=audio_file.filename or staged.name,
-    )
-    try:
-        _queue.put_nowait(job)
-    except asyncio.QueueFull:
+    finally:
         staged.unlink(missing_ok=True)
-        raise HTTPException(
-            status.HTTP_503_SERVICE_UNAVAILABLE,
-            "voice processing queue is full — retry shortly",
+
+    async with tenant_tx(ctx) as conn:
+        # Backpressure per brokerage, counted from the rows that are the queue.
+        backlog = await conn.fetchval(
+            "SELECT count(*) FROM voice_walkthrough_jobs WHERE status = 'queued'"
         )
+        if backlog >= QUEUE_MAX:
+            raise HTTPException(
+                status.HTTP_503_SERVICE_UNAVAILABLE,
+                "voice processing queue is full — retry shortly",
+                headers={"Retry-After": "30"},
+            )
+        job_id = await conn.fetchval(
+            """
+            INSERT INTO voice_walkthrough_jobs
+                (tenant_id, lead_id, created_by, original_filename, suffix, audio, audio_bytes)
+            VALUES ($1, $2::uuid, $3, $4, $5, $6, $7)
+            RETURNING id::text
+            """,
+            ctx.tenant_id, lead_id, ctx.agent_id,
+            (audio_file.filename or staged.name)[:255], suffix, audio, size,
+        )
+    _wake.set()  # a worker in this process (single-process dev) starts at once
 
     logger.info(
-        "Walkthrough staged: lead=%s tenant=%s %d bytes (%s)",
-        lead_id, ctx.tenant_id, size, suffix,
+        "Walkthrough queued: job=%s lead=%s tenant=%s %d bytes (%s)",
+        job_id, lead_id, ctx.tenant_id, size, suffix,
     )
-    return {"status": "queued", "bytes": size}
+    return {"status": "queued", "bytes": size, "job_id": job_id}
 
 
 @router.post("/session", status_code=status.HTTP_201_CREATED)
@@ -776,24 +797,129 @@ async def _process(job: VoiceJob) -> None:
         job.staged_path.unlink(missing_ok=True)
 
 
+def _platform_ctx(agent_id: str) -> TenantContext:
+    return TenantContext(
+        agent_id=agent_id,
+        tenant_id=os.getenv("ORACLE_PLATFORM_TENANT_ID", "00000000-0000-0000-0000-000000000000"),
+        role=Role.PLATFORM_ADMIN,
+    )
+
+
+async def _claim_next() -> Optional[VoiceJob]:
+    """Atomically move the oldest queued walkthrough to `running`, write its
+    audio to a temp file, and return the job. SKIP LOCKED keeps concurrent
+    claimers on different rows. The job runs as its submitter, at their
+    current role — never more than they held."""
+    async with tenant_tx(_platform_ctx("voice-walkthrough-claim")) as conn:
+        row = await conn.fetchrow(
+            """
+            UPDATE voice_walkthrough_jobs j
+               SET status = 'running', attempts = j.attempts + 1, updated_at = now()
+             WHERE j.id = (SELECT id FROM voice_walkthrough_jobs
+                            WHERE status = 'queued'
+                            ORDER BY created_at
+                            FOR UPDATE SKIP LOCKED
+                            LIMIT 1)
+         RETURNING j.id::text AS id, j.tenant_id::text AS tenant_id, j.lead_id::text AS lead_id,
+                   j.created_by, j.original_filename, j.suffix, j.audio
+            """
+        )
+        if row is None:
+            return None
+        role_value = await conn.fetchval(
+            "SELECT role FROM users WHERE tenant_id = $1::uuid AND lower(agent_id) = lower($2) LIMIT 1",
+            row["tenant_id"], row["created_by"],
+        )
+    try:
+        role = Role(role_value) if role_value else Role.AGENT
+    except ValueError:
+        role = Role.AGENT
+    STAGING_DIR.mkdir(parents=True, exist_ok=True)
+    staged = STAGING_DIR / f"walkthrough_{row['id']}{row['suffix']}"
+    await asyncio.to_thread(staged.write_bytes, bytes(row["audio"] or b""))
+    return VoiceJob(
+        ctx=TenantContext(agent_id=row["created_by"], tenant_id=row["tenant_id"], role=role),
+        lead_id=row["lead_id"], staged_path=staged,
+        original_filename=row["original_filename"], job_id=row["id"],
+    )
+
+
+async def _finish(job_id: str, status_value: str, error: Optional[str] = None) -> None:
+    """Terminal state, and the audio is released (the table CHECK insists)."""
+    async with tenant_tx(_platform_ctx("voice-walkthrough-finish")) as conn:
+        await conn.execute(
+            """
+            UPDATE voice_walkthrough_jobs
+               SET status = $2, error = $3, audio = NULL, updated_at = now()
+             WHERE id = $1::uuid
+            """,
+            job_id, status_value, error,
+        )
+
+
+async def recover_interrupted_jobs() -> None:
+    """A restart interrupts every RUNNING walkthrough. Unlike a GPU job, the
+    audio is still in its row, so it is simply queued again — up to
+    MAX_ATTEMPTS, after which it fails with a reason instead of looping.
+
+    ASSUMPTION: one worker process (App Platform pins instance_count: 1).
+    The claim is safe for more; this sweep would need a lease first."""
+    async with tenant_tx(_platform_ctx("voice-walkthrough-recovery")) as conn:
+        await conn.execute(
+            """
+            UPDATE voice_walkthrough_jobs
+               SET status = CASE WHEN attempts >= $2 THEN 'failed' ELSE 'queued' END,
+                   error  = CASE WHEN attempts >= $2
+                                 THEN 'interrupted by a worker restart too many times' END,
+                   audio  = CASE WHEN attempts >= $2 THEN NULL ELSE audio END,
+                   updated_at = now()
+             WHERE status = 'running' AND updated_at < $1
+            """,
+            _PROCESS_STARTED_AT, MAX_ATTEMPTS,
+        )
+
+
 async def _worker_loop(worker_id: int) -> None:
     logger.info("Voice worker %d online.", worker_id)
     while True:
-        job = await _queue.get()
         try:
-            await _process(job)
+            job = await _claim_next()
         except asyncio.CancelledError:
             raise
-        except Exception:  # noqa: BLE001 — one bad job must not kill the worker
+        except Exception:  # noqa: BLE001 — a DB blip must not kill the worker
+            logger.exception("Voice claim failed; retrying")
+            job = None
+        if job is None:
+            _wake.clear()
+            try:
+                await asyncio.wait_for(_wake.wait(), timeout=POLL_SECONDS)
+            except asyncio.TimeoutError:
+                pass
+            continue
+        try:
+            await _process(job)
+            await _finish(job.job_id, "succeeded")
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 — one bad job must not kill the worker
             logger.exception(
                 "Voice job failed: lead=%s tenant=%s", job.lead_id, job.ctx.tenant_id
             )
-        finally:
-            _queue.task_done()
+            try:
+                await _finish(job.job_id, "failed", str(exc)[:500])
+            except Exception:  # noqa: BLE001
+                logger.debug("could not mark voice job %s failed", job.job_id)
 
 
 async def start_voice_workers() -> None:
-    """Called from server lifespan startup."""
+    """Called from server lifespan startup (worker role only)."""
+    global _PROCESS_STARTED_AT
+    from datetime import datetime, timezone
+    _PROCESS_STARTED_AT = datetime.now(timezone.utc)
+    try:
+        await recover_interrupted_jobs()
+    except Exception:  # noqa: BLE001 — never block startup on a sweep
+        logger.exception("Voice walkthrough recovery sweep failed")
     for i in range(WORKER_COUNT):
         _workers.append(asyncio.create_task(_worker_loop(i)))
 

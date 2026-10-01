@@ -70,3 +70,6 @@ infra/.tf-root-owned-*/
 # bare commit pointer that nobody else can resolve. Ignored so it stops being
 # staged by accident; make it a submodule if it should actually be tracked.
 observatory/
+
+# Load-test output: synthetic credentials and run results. Never committed.
+performance/out/

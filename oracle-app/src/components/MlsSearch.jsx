@@ -158,7 +158,7 @@ export default function MlsSearch() {
 
       {result ? (
         <p className={styles.muted}>
-          {result.total ?? listings.length} matching · page {result.page ?? 1}
+          {result.total ?? listings.length}{result.total_is_exact === false ? '+' : ''} matching · page {result.page ?? 1}
           {result.source ? ` · ${result.source}` : ''}
           {result.degraded ? ' · DEGRADED' : ''}
         </p>

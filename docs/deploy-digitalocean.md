@@ -472,13 +472,13 @@ own pricing page before budgeting:
 
 | Resource | Tier | Approx. monthly |
 |---|---|---|
-| `api` service | 2× `apps-s-2vcpu-4gb` | ~$50 |
-| `worker` | 1× `apps-s-2vcpu-4gb` | ~$25 |
+| `api` service | 2× `apps-s-2vcpu-4gb` ($50 each, DO pricing verified 2026-09-25) | ~$100 |
+| `worker` | 1× `apps-s-2vcpu-4gb` | ~$50 |
 | `web` static site | Free tier (App Platform static sites are free up to a bandwidth ceiling) | $0 |
-| Managed PostgreSQL | smallest production tier (1 vCPU / 1GB, with daily backups) | ~$15 |
+| Managed PostgreSQL | **2 vCPU / 4 GiB** (97 connections) — NOT the 1 GiB tier: its 22 connections are fewer than the spec's pools can open (docs/database-connection-budget.md), and load tests saturate database CPU first (docs/capacity-plan.md) | ~$60 |
 | Managed Valkey | smallest tier | ~$15 |
 | Spaces | 250GB + CDN | $5 |
-| **Total** | | **~$110/month** |
+| **Total** | | **~$230/month** |
 
 Twilio, Stripe, Bridge/RESO, Fireworks, and RunPod GPU usage are all
 usage-billed separately and not included — they scale with actual customer

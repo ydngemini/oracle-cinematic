@@ -38,7 +38,7 @@ BACKEND = pathlib.Path(__file__).resolve().parent.parent
 @pytest.mark.parametrize(
     "path,expected_bucket,expected_limit",
     [
-        ("/auth/login", "/auth/login", 10),
+        ("/auth/login", "/auth/login", 60),
         ("/auth/register", "/auth/register", 5),
         ("/auth/session", "/auth/", 120),
         ("/api/ai/chat", "/api/ai/chat", 20),
@@ -302,4 +302,65 @@ def test_login_stays_per_ip_even_with_a_session(monkeypatch):
     identity, bucket, limit = _dispatch(monkeypatch, "/auth/login", principal="principal:aaa")
     assert identity == "203.0.113.7"
     assert bucket == "/auth/login"
-    assert limit == 10
+    assert limit == 60
+
+
+def test_login_attempts_are_also_limited_per_account_across_replicas(monkeypatch):
+    """The per-account limit runs on the SHARED limiter (not a per-process dict),
+    keyed by a hash of the account — so N replicas do not allow N× the guesses,
+    and no identifier is written to Valkey (Mission 8)."""
+    import asyncio
+    import auth
+    import rate_limit_middleware as rlm
+
+    seen = []
+
+    async def fake(identity, bucket, limit):
+        seen.append((identity, bucket, limit))
+        return (len(seen) <= limit, len(seen))
+
+    monkeypatch.setattr(rlm, "_check_rate_limit_redis", fake)
+    for _ in range(auth._RL_MAX_ATTEMPTS):
+        asyncio.run(auth._check_rate_limit("Agent@Broker.test"))
+    with pytest.raises(auth.HTTPException) as exc:
+        asyncio.run(auth._check_rate_limit("agent@broker.test "))
+    assert exc.value.status_code == 429
+    identity, bucket, limit = seen[0]
+    assert identity.startswith("login-account:") and "broker" not in identity
+    assert len({i for i, _, _ in seen}) == 1  # case/space variants share one account
+    assert (bucket, limit) == ("/auth/login:account", 10)
+
+
+def test_a_failing_valkey_is_skipped_for_the_breaker_window(monkeypatch):
+    """One failure, then straight to PostgreSQL — not a failed round trip on
+    every request (Valkey loss nearly stalled the API, Mission 8)."""
+    import asyncio
+    import rate_limit_middleware as rlm
+
+    calls = {"valkey": 0, "pg": 0}
+
+    class Dead:
+        async def eval(self, *a, **k):
+            calls["valkey"] += 1
+            raise ConnectionError("refused")
+
+    async def pg(*a):
+        calls["pg"] += 1
+        return True, 1
+
+    monkeypatch.setattr(rlm, "_redis_client", Dead())
+    monkeypatch.setattr(rlm, "_redis_retry_at", 0.0)
+    monkeypatch.setattr(rlm, "_check_rate_limit_postgres", pg)
+    for _ in range(50):
+        asyncio.run(rlm._check_rate_limit_redis("1.2.3.4", "/api/", 100))
+    assert calls == {"valkey": 1, "pg": 50}
+
+
+@pytest.mark.parametrize("path", ["/api/messaging/webhooks/telnyx", "/api/telephony/webhooks/plivo/status/x",
+                                  "/billing/webhook"])
+def test_signed_provider_webhooks_are_not_held_to_the_anonymous_limit(path):
+    """Providers deliver from a few shared IPs and RETRY a 429 — the anonymous
+    100/min refused 95% of a 60/s burst (Mission 8)."""
+    import rate_limit_middleware as rlm
+    assert rlm._get_bucket_for_path(path) in rlm.WEBHOOK_PATH_PREFIXES
+    assert rlm._get_limit_for_path(path) >= 3000

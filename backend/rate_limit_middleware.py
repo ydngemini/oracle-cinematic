@@ -11,6 +11,7 @@ import hashlib
 import ipaddress
 import logging
 import os
+import uuid
 import time
 from collections import defaultdict
 from typing import Callable
@@ -21,19 +22,32 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 logger = logging.getLogger("oracle.rate_limit")
 
+# Signed provider callbacks (Telnyx, Plivo, Stripe). They arrive from a few
+# shared provider egress addresses, so the anonymous per-IP allowance (100/min)
+# refused every delivery past the hundredth in a minute — and a refused webhook
+# is RETRIED by the provider, so throttling multiplied the load (Mission 8
+# burst test: 95% of 2,850 signed deliveries at 60/s got 429). Each handler
+# verifies its signature before doing any work; this ceiling only bounds a
+# single source hammering the verifier.
+WEBHOOK_PATH_PREFIXES = ("/api/messaging/webhooks/", "/api/telephony/webhooks/", "/billing/webhook")
+
 # Rate limit configuration (requests per minute per network identity).  The
 # general API limit is intentionally conservative for anonymous callers.  A
 # signed-in CRM session receives its own tenant/user bucket below so a normal
 # workspace boot (and React's parallel data loaders) cannot exhaust a shared
 # office-NAT allowance.
 RATE_LIMITS = {
-    "/auth/login": 10,
+    # Per source IP. A brokerage signs in from ONE office address: at 10/min,
+    # 15 of 25 agents arriving together were locked out (Mission 8). Guessing
+    # a single account is bounded separately, per account, in auth.py.
+    "/auth/login": int(os.getenv("ORACLE_LOGIN_IP_RATE_LIMIT", "60")),
     "/auth/register": 5,
     "/auth/forgot": 3,
     "/auth/reset": 3,
     "/auth/": 120,
     "/api/ai/chat": 20,
     "/api/public/lead-intake/": 30,
+    **{prefix: int(os.getenv("ORACLE_WEBHOOK_RATE_LIMIT", "6000")) for prefix in WEBHOOK_PATH_PREFIXES},
     "/api/crm/tour": 5,
     # AI tour generation. Previously enforced by a module-level list in
     # server.py, which made the ceiling process-global: every tenant on a
@@ -128,7 +142,13 @@ async def _init_redis():
         return
     try:
         import redis.asyncio as aioredis
-        _redis_client = aioredis.from_url(redis_url, encoding="utf-8", decode_responses=True)
+        # Short timeouts: every API request consults this client. With none, a
+        # Valkey that stopped answering held each request until the OS gave up
+        # — throughput fell from ~240 to 2 requests per 20 s (Mission 8).
+        _redis_client = aioredis.from_url(
+            redis_url, encoding="utf-8", decode_responses=True,
+            socket_connect_timeout=0.5, socket_timeout=1.0,
+        )
         await _redis_client.ping()
         logger.info("Rate limiter connected to Redis")
         return _redis_client
@@ -239,30 +259,63 @@ async def _check_rate_limit_memory(ip: str, endpoint: str, limit: int) -> tuple[
         return True, current_count + 1
 
 
+# KEYS[1] window key; ARGV: now, window_start, limit, member, ttl.
+# Returns {allowed (1/0), count after this request}.
+_SLIDING_WINDOW_LUA = """
+redis.call('ZREMRANGEBYSCORE', KEYS[1], 0, ARGV[2])
+local count = redis.call('ZCARD', KEYS[1])
+if count >= tonumber(ARGV[3]) then
+  return {0, count}
+end
+redis.call('ZADD', KEYS[1], ARGV[1], ARGV[4])
+redis.call('EXPIRE', KEYS[1], ARGV[5])
+return {1, count + 1}
+"""
+
+
+# Circuit breaker. After a Valkey failure the limiter goes straight to the
+# PostgreSQL window for this long, instead of paying a failed round trip (and
+# its timeout) on every request; then it tries Valkey again. It also brings a
+# process that booted while Valkey was down back onto Valkey — before, a
+# failed startup ping meant PostgreSQL until the next restart.
+_BREAKER_SECONDS = 10.0
+_redis_retry_at = 0.0
+
+
+def _trip_breaker(exc: Exception) -> None:
+    global _redis_retry_at
+    if time.monotonic() >= _redis_retry_at:
+        logger.warning("Valkey unavailable (%s); rate limits use PostgreSQL for %.0fs",
+                       exc, _BREAKER_SECONDS)
+    _redis_retry_at = time.monotonic() + _BREAKER_SECONDS
+
+
 async def _check_rate_limit_redis(ip: str, endpoint: str, limit: int) -> tuple[bool, int]:
-    if _redis_client is None:
+    if time.monotonic() < _redis_retry_at:
         return await _check_rate_limit_postgres(ip, endpoint, limit)
+    if _redis_client is None:
+        if not os.environ.get("REDIS_URL", "").strip():
+            return await _check_rate_limit_postgres(ip, endpoint, limit)
+        if await _init_redis() is None:
+            _trip_breaker(RuntimeError("reconnect failed"))
+            return await _check_rate_limit_postgres(ip, endpoint, limit)
 
     key = f"rate:{endpoint}:{ip}"
     try:
-        pipe = _redis_client.pipeline()
         now = time.time()
-        window_start = now - WINDOW_SECONDS
-
-        pipe.zremrangebyscore(key, 0, window_start)
-        pipe.zcard(key)
-        pipe.zadd(key, {str(now): now})
-        pipe.expire(key, WINDOW_SECONDS + 1)
-
-        results = await pipe.execute()
-        current_count = results[1]
-
-        if current_count >= limit:
-            return False, current_count
-
-        return True, current_count + 1
+        # Atomic check-then-add. The old pipeline ZADDed every request,
+        # REJECTED ones included, so a client that kept retrying stayed pinned
+        # at the limit indefinitely (600 allowed in 130 s at 25 req/s, Mission
+        # 8) — unlike the PostgreSQL fallback, which counts only admissions.
+        # The member is unique per request: `str(now)` collided across
+        # replicas in the same microsecond and undercounted.
+        allowed, count = await _redis_client.eval(
+            _SLIDING_WINDOW_LUA, 1, key, now, now - WINDOW_SECONDS, limit,
+            f"{now}:{uuid.uuid4().hex[:8]}", WINDOW_SECONDS + 1,
+        )
+        return bool(allowed), int(count)
     except Exception as e:
-        logger.error("Redis rate limit failed: %s", e)
+        _trip_breaker(e)
         return await _check_rate_limit_postgres(ip, endpoint, limit)
 
 

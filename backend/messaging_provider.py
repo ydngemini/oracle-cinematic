@@ -17,6 +17,7 @@ client with resource objects, e.g. `client.messages.send(...)`).
 from __future__ import annotations
 
 import logging
+import functools
 import os
 import recovery_mode
 from dataclasses import dataclass
@@ -279,6 +280,17 @@ class TwilioMessagingProvider(MessagingProvider):
         )
 
 
+@functools.lru_cache(maxsize=8)
+def _verification_client(api_key: str, public_key: str):
+    """One Telnyx client per key pair, reused. Building one costs ~11 ms of
+    blocking CPU (it sets up an HTTP client and TLS context) and the webhook
+    path built one per delivery — about a third of a core at 30 webhooks/s,
+    and the source of multi-second tails in the Mission 8 burst test."""
+    import telnyx
+
+    return telnyx.Telnyx(api_key=api_key, public_key=public_key)
+
+
 class TelnyxMessagingProvider(MessagingProvider):
     """New: SMS/MMS send, Hosted Messaging, and 10DLC via the real Telnyx SDK.
 
@@ -363,7 +375,16 @@ class TelnyxMessagingProvider(MessagingProvider):
         ).strip()
         if not public_key:
             raise ProviderConfigurationError("TELNYX_PUBLIC_KEY is not configured")
-        client = self._client(credentials, public_key=public_key)
+        # Verification is local (Ed25519 over the body) and never calls the
+        # Telnyx API, so it must not need the API key. It did: with the key
+        # missing or mid-rotation, every inbound SMS was rejected as an
+        # "invalid signature" (400 — which Telnyx retries). Found by the
+        # Mission 8 webhook load test.
+        try:
+            api_key = self._api_key(credentials)
+        except ProviderConfigurationError:
+            api_key = "unused-for-webhook-verification"
+        client = _verification_client(api_key, public_key)
         try:
             return client.webhooks.unwrap(raw_body, headers=dict(headers))
         except ValueError as exc:

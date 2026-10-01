@@ -13,6 +13,7 @@ import hashlib
 import json
 import logging
 import os
+import random
 import socket
 import uuid
 from collections.abc import Awaitable, Callable, Mapping
@@ -33,7 +34,20 @@ _PLATFORM_TENANT_ID = os.getenv(
 )
 _LEASE_SECONDS = max(30, int(os.getenv("ORACLE_JOB_LEASE_SECONDS", "120")))
 _POLL_SECONDS = max(0.25, float(os.getenv("ORACLE_JOB_POLL_SECONDS", "2")))
-_WORKER_COUNT = max(1, min(16, int(os.getenv("ORACLE_JOB_WORKERS", "2"))))
+_WORKER_COUNT = max(1, min(16, int(os.getenv("ORACLE_JOB_WORKERS", "4"))))
+
+# Interactive work — a person is waiting on it (Neoh's chat replies) — has its
+# own queue and its own workers. Measured (Mission 8): on the shared queue with
+# 2 workers, 10 concurrent conversations never had more than 2 model calls in
+# flight, 42 of ~100 turns timed out at 90 s, and any long periodic job (an MLS
+# backfill, a harvest) took a slot for its whole run. The interactive pool size
+# is also the global ceiling on concurrent model calls from chat (§28): 1,000
+# queued turns wait in the table; they never become 1,000 provider requests.
+INTERACTIVE_QUEUE = "interactive"
+_INTERACTIVE_WORKER_COUNT = max(0, min(32, int(os.getenv("ORACLE_INTERACTIVE_JOB_WORKERS", "16"))))
+# A waiting person notices a 2 s poll; eight workers polling at 1 s with random
+# phase pick a new turn up in ~125 ms on average, for ~8 cheap claims/s idle.
+_INTERACTIVE_POLL_SECONDS = max(0.25, float(os.getenv("ORACLE_INTERACTIVE_JOB_POLL_SECONDS", "1")))
 
 
 class JobLeaseLost(RuntimeError):
@@ -528,9 +542,11 @@ def registered_handlers() -> tuple[str, ...]:
 
 
 class DurableJobWorkers:
-    def __init__(self, worker_count: int = _WORKER_COUNT):
+    def __init__(self, worker_count: int = _WORKER_COUNT,
+                 interactive_count: int = _INTERACTIVE_WORKER_COUNT):
         host = socket.gethostname()
         self.worker_ids = [f"{host}:{os.getpid()}:{index}" for index in range(worker_count)]
+        self.interactive_ids = [f"{host}:{os.getpid()}:i{index}" for index in range(interactive_count)]
         self._tasks: list[asyncio.Task] = []
         self._running = False
 
@@ -541,8 +557,15 @@ class DurableJobWorkers:
         self._tasks = [
             asyncio.create_task(self._loop(worker_id), name=f"durable-job-{index}")
             for index, worker_id in enumerate(self.worker_ids)
+        ] + [
+            asyncio.create_task(
+                self._loop(worker_id, INTERACTIVE_QUEUE, _INTERACTIVE_POLL_SECONDS),
+                name=f"durable-job-interactive-{index}",
+            )
+            for index, worker_id in enumerate(self.interactive_ids)
         ]
-        logger.info("Durable job workers started: %d", len(self._tasks))
+        logger.info("Durable job workers started: %d default, %d interactive",
+                    len(self.worker_ids), len(self.interactive_ids))
 
     async def stop(self) -> None:
         self._running = False
@@ -552,12 +575,16 @@ class DurableJobWorkers:
             await asyncio.gather(*self._tasks, return_exceptions=True)
         self._tasks.clear()
 
-    async def _loop(self, worker_id: str) -> None:
+    async def _loop(self, worker_id: str, queue_name: str = "default",
+                    poll_seconds: float = _POLL_SECONDS) -> None:
+        # Random phase, so a pool of pollers spreads its claims over the
+        # interval instead of arriving together.
+        await asyncio.sleep(random.uniform(0, poll_seconds))
         while self._running:
             try:
-                job = await claim_next_job(worker_id)
+                job = await claim_next_job(worker_id, queue_name=queue_name)
                 if job is None:
-                    await asyncio.sleep(_POLL_SECONDS)
+                    await asyncio.sleep(poll_seconds)
                     continue
                 handler = _HANDLERS.get(str(job["job_type"]))
                 if handler is None:

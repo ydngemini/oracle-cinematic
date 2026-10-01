@@ -279,10 +279,18 @@ def _send_reset_email(to_email: str, link: str) -> None:
 # ---------------------------------------------------------------------------
 # In-memory session registry
 # Maps agent_id → {issued_at}  (token is NOT stored — no secret in memory)
-# Capped at MAX_SESSIONS concurrent entries.
+# Bounded at MAX_SESSIONS entries by evicting the oldest.
+#
+# This registry is an observability aid only — the admin ops "who is signed
+# in" view reads it; no request is authorized by it. It used to REJECT a login
+# (503) once it held 100 agents, which made it a hard platform capacity limit:
+# it is per process, so two API replicas refused the ~101st–200th distinct
+# agent to sign in within a token lifetime, whatever the database and CPU
+# could carry (Mission 8 capacity audit). Being full is now a memory bound,
+# not an outage: the oldest entry makes room.
 # ---------------------------------------------------------------------------
 
-MAX_SESSIONS = 100
+MAX_SESSIONS = int(os.getenv("ORACLE_SESSION_REGISTRY_MAX", "10000"))
 
 _session_registry: dict[str, dict] = {}
 
@@ -303,16 +311,13 @@ def _prune_expired_sessions() -> None:
 
 def _register_session(agent_id: str) -> None:
     _prune_expired_sessions()
-    if len(_session_registry) >= MAX_SESSIONS:
-        log.warning(
-            "Session registry at capacity (%d entries) — rejecting login for agent_id=%r.",
-            MAX_SESSIONS,
-            agent_id,
-        )
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Session registry at capacity. Try again shortly.",
-        )
+    # Re-registering moves an agent to the newest position (dicts keep
+    # insertion order), so eviction below always drops the stalest sign-in.
+    _session_registry.pop(agent_id, None)
+    while len(_session_registry) >= max(1, MAX_SESSIONS):
+        oldest = next(iter(_session_registry))
+        del _session_registry[oldest]
+        log.info("Session registry full (%d) — evicted the oldest entry.", MAX_SESSIONS)
     _session_registry[agent_id] = {
         "issued_at": time.time(),
         "agent_id": agent_id,
@@ -341,40 +346,38 @@ def active_sessions() -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
-# Rate-limit state — per-agent_id sliding window (login endpoint only).
-# Intentionally lightweight: a proper Redis-backed limiter belongs in the
-# reverse proxy layer; this is a last-resort backend guard.
+# Login rate limit — per ACCOUNT, shared across replicas.
+#
+# Two limits guard /auth/login, and they answer different attacks:
+#   * per source IP (rate_limit_middleware, ORACLE_LOGIN_IP_RATE_LIMIT/min):
+#     one address guessing across many accounts;
+#   * per account (here, 10/min): many addresses guessing one account.
+# The per-account limit used to be an in-process dict: per replica (so N
+# replicas allowed N× the attempts), and unbounded — every distinct agent_id
+# ever tried stayed in memory. It now uses the same Valkey → PostgreSQL window
+# as every other limit, keyed by a hash so no identifier reaches Valkey.
+# (Mission 8: with the per-IP limit at 10/min as the only shared limit, 15 of
+# 25 agents signing in from one office network were locked out.)
 # ---------------------------------------------------------------------------
 
 _RL_WINDOW_SECONDS = 60
-_RL_MAX_ATTEMPTS = 10  # per window per agent_id (login attempts)
-
-_rl_attempts: dict[str, list[float]] = {}  # agent_id → list of attempt timestamps
+_RL_MAX_ATTEMPTS = 10  # per window per account (login attempts)
 
 
-def _check_rate_limit(agent_id: str) -> tuple[int, int, int]:
-    """Enforce and return (limit, remaining, reset_epoch) for the given agent.
+async def _check_rate_limit(agent_id: str) -> tuple[int, int, int]:
+    """Enforce and return (limit, remaining, reset_epoch) for the given account.
 
     Raises HTTP 429 if the window is exhausted.
     """
-    now = time.time()
-    window_start = now - _RL_WINDOW_SECONDS
-    attempts = _rl_attempts.get(agent_id, [])
-    # Slide the window — drop timestamps older than window_start
-    attempts = [t for t in attempts if t > window_start]
-    attempts.append(now)
-    _rl_attempts[agent_id] = attempts
+    from rate_limit_middleware import _check_rate_limit_redis
 
-    remaining = max(0, _RL_MAX_ATTEMPTS - len(attempts))
-    reset_epoch = int(window_start + _RL_WINDOW_SECONDS)
-
-    if len(attempts) > _RL_MAX_ATTEMPTS:
-        log.warning(
-            "Rate limit exceeded for agent_id=%r (%d attempts in %ds window).",
-            agent_id,
-            len(attempts),
-            _RL_WINDOW_SECONDS,
-        )
+    account = hashlib.sha256(agent_id.strip().lower().encode("utf-8", errors="replace")).hexdigest()
+    allowed, count = await _check_rate_limit_redis(
+        f"login-account:{account}", "/auth/login:account", _RL_MAX_ATTEMPTS)
+    reset_epoch = int(time.time() // _RL_WINDOW_SECONDS + 1) * _RL_WINDOW_SECONDS
+    if not allowed:
+        log.warning("Login rate limit exceeded for one account (%d attempts/%ds).",
+                    count, _RL_WINDOW_SECONDS)
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             detail="Too many login attempts. Try again later.",
@@ -385,7 +388,7 @@ def _check_rate_limit(agent_id: str) -> tuple[int, int, int]:
                 "Retry-After": str(_RL_WINDOW_SECONDS),
             },
         )
-    return _RL_MAX_ATTEMPTS, remaining, reset_epoch
+    return _RL_MAX_ATTEMPTS, max(0, _RL_MAX_ATTEMPTS - count), reset_epoch
 
 
 def _apply_rl_headers(response: Response, limit: int, remaining: int, reset: int) -> None:
@@ -608,7 +611,7 @@ async def login(body: LoginRequest, response: Response) -> LoginResponse:
         )
 
     # --- Rate limit check (per agent_id) -------------------------------------
-    limit, remaining, reset = _check_rate_limit(body.agent_id)
+    limit, remaining, reset = await _check_rate_limit(body.agent_id)
     # The operator/demo dict is an exact-match lookup, so what was typed already
     # IS the canonical spelling there; only the DB path needs correcting.
     agent_identity = body.agent_id
