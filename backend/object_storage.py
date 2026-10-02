@@ -259,6 +259,88 @@ def get_bytes(key: str) -> bytes:
     return _s3_client().get_object(Bucket=S3_BUCKET, Key=key)["Body"].read()
 
 
+# --- deletion -----------------------------------------------------------------
+# Until the privacy lifecycle (privacy_lifecycle.py) nothing ever deleted an
+# object: deleting a media row left its bytes behind for good. These are the
+# only deletion primitives; callers record what they removed in erasure_ledger.
+
+def delete_object(key: str) -> bool:
+    """Delete one object. True if something was removed; a missing key is not
+    an error (erasure is idempotent and may be resumed after a crash)."""
+    backend = _check_backend()
+
+    if backend in _FILESYSTEM_BACKENDS:
+        path = _safe_destination(key)
+        try:
+            path.unlink()
+            return True
+        except FileNotFoundError:
+            return False
+
+    if backend == "azure-blob":
+        from azure.core.exceptions import ResourceNotFoundError
+
+        try:
+            _blob_client(key).delete_blob(delete_snapshots="include")
+            return True
+        except ResourceNotFoundError:
+            return False
+
+    if not S3_BUCKET:
+        raise StorageError("ORACLE_STORAGE_BACKEND=s3 but ORACLE_S3_BUCKET (or RECON_S3_BUCKET) is unset")
+    client = _s3_client()
+    try:
+        client.head_object(Bucket=S3_BUCKET, Key=key)
+    except Exception:  # noqa: BLE001 - absent (404) or unreadable: nothing to delete
+        return False
+    client.delete_object(Bucket=S3_BUCKET, Key=key)
+    return True
+
+
+def list_prefix(prefix: str, limit: int = 100_000) -> list[str]:
+    """Keys under `prefix`. An empty prefix is refused — it would be the whole store."""
+    if not prefix.strip("/"):
+        raise StorageError("refusing to list an empty prefix")
+    backend = _check_backend()
+
+    if backend in _FILESYSTEM_BACKENDS:
+        base = _safe_destination(prefix)
+        root = MEDIA_ROOT.resolve()
+        if base.is_file():
+            return [prefix]
+        if not base.is_dir():
+            return []
+        keys = [str(p.relative_to(root)) for p in base.rglob("*") if p.is_file()]
+        return sorted(keys)[:limit]
+
+    if backend == "azure-blob":
+        return [b.name for _, b in zip(range(limit), _blob_service()
+                .get_container_client(BLOB_CONTAINER).list_blobs(name_starts_with=prefix))]
+
+    if not S3_BUCKET:
+        raise StorageError("ORACLE_STORAGE_BACKEND=s3 but ORACLE_S3_BUCKET (or RECON_S3_BUCKET) is unset")
+    keys: list[str] = []
+    paginator = _s3_client().get_paginator("list_objects_v2")
+    for page in paginator.paginate(Bucket=S3_BUCKET, Prefix=prefix):
+        keys.extend(item["Key"] for item in page.get("Contents", []))
+        if len(keys) >= limit:
+            break
+    return keys[:limit]
+
+
+def delete_prefix(prefix: str) -> int:
+    """Delete every object under a tenant-scoped prefix. Returns the count."""
+    removed = 0
+    for key in list_prefix(prefix):
+        if delete_object(key):
+            removed += 1
+    if _check_backend() in _FILESYSTEM_BACKENDS:
+        base = _safe_destination(prefix)
+        if base.is_dir():
+            shutil.rmtree(base, ignore_errors=True)
+    return removed
+
+
 # --- expiring reads -----------------------------------------------------------
 
 def signed_url(key: str, expires_seconds: int = 3600) -> Optional[str]:

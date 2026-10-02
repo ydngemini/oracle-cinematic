@@ -8,5 +8,5 @@
     var t = localStorage.getItem('neoh.theme');
     if (t === 'dark' || t === 'light') document.documentElement.setAttribute('data-theme', t);
     else if (t !== 'system') document.documentElement.setAttribute('data-theme', 'light');
-  } catch (e) { document.documentElement.setAttribute('data-theme', 'light'); }
+  } catch { document.documentElement.setAttribute('data-theme', 'light'); }
 })();

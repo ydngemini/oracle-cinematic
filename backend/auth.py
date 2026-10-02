@@ -1127,6 +1127,21 @@ async def reset_password(body: ResetRequest, response: Response) -> LoginRespons
     )
 
 
+async def confirm_password(ctx, password: str) -> None:
+    """Fresh proof of the password for one irreversible action — export of a
+    whole brokerage, closure, offboarding. A stolen session token alone must
+    not be enough to take or destroy every record. Counts against the same
+    per-account guess limit as login (AUTH-13)."""
+    if not password or len(password) > _MAX_PASSPHRASE_LEN:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Confirm your password to continue.")
+    await _check_rate_limit(ctx.agent_id)
+    row = await _lookup_user(ctx.agent_id)
+    if not row or not row["password_hash"] or str(row["tenant_id"]) != str(ctx.tenant_id):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Confirm your password to continue.")
+    if not _verify_pw(password, row["password_hash"]):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Password is incorrect.")
+
+
 @router.post("/change-password")
 async def change_password(
     body: ChangePasswordRequest,

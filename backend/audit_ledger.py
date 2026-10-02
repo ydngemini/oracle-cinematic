@@ -317,11 +317,17 @@ class AuditLedger:
                     ORDER  BY seq ASC
                     """
                 )
+                # Rows past their retention are expired as a prefix of the
+                # chain (0122 privacy_expire_audit); the hash of the last one
+                # removed is the anchor the first remaining row links to.
+                anchor = await conn.fetchval(
+                    "SELECT anchor_hash FROM audit_chain_checkpoints ORDER BY id DESC LIMIT 1"
+                )
         except Exception as exc:  # noqa: BLE001
             logger.warning("audit: verify_chain PG query failed (%s); falling back to SQLite", exc)
             return self._sqlite_verify_chain()
 
-        expected_prev = "0" * 64
+        expected_prev = anchor or "0" * 64
         for row in rows:
             meta_json = json.dumps(
                 json.loads(row["metadata"]),

@@ -403,6 +403,11 @@ import missions.executor  # noqa: E402,F401
 # Registers `loadtest:noop` ONLY when ORACLE_ENV=loadtest (a no-op otherwise):
 # the side-effect-free job the queue capacity test needs (performance/).
 import loadtest_jobs  # noqa: E402,F401
+# Registers `privacy:erase` / `privacy:export` (customer-data lifecycle).
+import privacy_lifecycle  # noqa: E402
+import privacy_export  # noqa: E402
+privacy_lifecycle.register()
+privacy_export.register()
 
 app.include_router(commands_router)
 app.include_router(contracts_router)
@@ -424,6 +429,9 @@ app.include_router(spatial_intelligence_router)
 
 from brokerage_onboarding import router as brokerage_onboarding_router  # noqa: E402 — late import, matches local router convention
 app.include_router(brokerage_onboarding_router)
+from privacy_api import admin_router as privacy_admin_router, router as privacy_router  # noqa: E402
+app.include_router(privacy_router)
+app.include_router(privacy_admin_router)
 
 from apis.geocoding import geocode, reverse_geocode
 from apis.census import get_demographics_by_zip

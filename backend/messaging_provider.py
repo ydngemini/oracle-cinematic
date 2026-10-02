@@ -668,18 +668,38 @@ class TelnyxMessagingProvider(MessagingProvider):
         phone_number: str,
         *,
         credentials: Optional[Mapping[str, Any]] = None,
-    ) -> None:
+    ) -> str:
         recovery_mode.guard("disconnect_hosted_number via TelnyxMessagingProvider")
         import asyncio
 
-        def _delete():
+        import telnyx
+
+        # DELETE /messaging_hosted_numbers/{id} takes the hosted number's own
+        # id, which only the order knows. This used to pass the E.164 number,
+        # failed on every call, and swallowed the error — so a "disconnected"
+        # number stayed hosted at Telnyx. Errors now propagate: the caller has
+        # to know whether the number is really released.
+        def _delete() -> str:
             client = self._client(credentials)
             try:
-                client.messaging_hosted_numbers.delete(phone_number)
-            except Exception:
-                logger.exception("Failed to disconnect hosted number: %s", phone_number)
+                order = client.messaging_hosted_number_orders.retrieve(order_id)
+            except telnyx.NotFoundError:
+                return "already_released"
+            data = getattr(order, "data", None)
+            hosted = [
+                n for n in (getattr(data, "phone_numbers", None) or [])
+                if getattr(n, "phone_number", None) == phone_number and getattr(n, "id", None)
+            ]
+            if not hosted:
+                return "already_released"
+            for number in hosted:
+                try:
+                    client.messaging_hosted_numbers.delete(str(number.id))
+                except telnyx.NotFoundError:
+                    continue
+            return "released"
 
-        await asyncio.wait_for(asyncio.to_thread(_delete), timeout=20.0)
+        return await asyncio.wait_for(asyncio.to_thread(_delete), timeout=20.0)
 
     async def create_messaging_profile(
         self,

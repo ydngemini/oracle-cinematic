@@ -214,6 +214,52 @@ export async function fetchWithRetry(path, options = {}) {
   throw lastError;
 }
 
+/**
+ * POST a JSON body and save what comes back: either a short-lived signed URL
+ * (`{url}`, object-storage backends) or the file itself. Used where a download
+ * must carry a re-entered password, which a plain GET link cannot.
+ */
+export async function postForDownload(path, body, filename, options = {}) {
+  const { token, timeout = 120000 } = options;
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeout);
+  try {
+    const res = await fetch(`${API_BASE}${path}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...authHeaders(token),
+        'X-CSRF-Token': await getCsrfToken(),
+      },
+      body: JSON.stringify(body),
+      credentials: 'include',
+      cache: 'no-store',
+      signal: controller.signal,
+    });
+    if (!res.ok) {
+      throw new ApiError(await parseErrorResponse(res), res.status, false);
+    }
+    const link = window.document.createElement('a');
+    link.style.display = 'none';
+    link.rel = 'noopener';
+    if ((res.headers.get('content-type') || '').includes('application/json')) {
+      const data = await res.json();
+      if (!data?.url) throw new ApiError('Download unavailable', 503, false);
+      link.href = data.url;
+    } else {
+      const buffer = await res.arrayBuffer();
+      link.href = URL.createObjectURL(new Blob([buffer], { type: 'application/zip' }));
+      link.download = filename;
+    }
+    window.document.body.append(link);
+    link.click();
+    link.remove();
+    if (link.href.startsWith('blob:')) setTimeout(() => URL.revokeObjectURL(link.href), 0);
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
 export async function fetchBlob(path, options = {}) {
   const { token, timeout = DEFAULT_TIMEOUT, signal } = options;
   const url = `${API_BASE}${path}`;

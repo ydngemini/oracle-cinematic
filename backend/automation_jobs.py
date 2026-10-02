@@ -242,6 +242,11 @@ async def claim_next_job(worker_id: str, *, queue_name: str = "default") -> Opti
                       state IN ('queued','failed')
                       OR (state IN ('leased','running') AND lease_expires_at < now())
                   )
+                  -- A closing, suspended or erased brokerage does no work —
+                  -- except the privacy jobs that close it down (0122).
+                  AND (job_type LIKE 'privacy:%' OR NOT EXISTS (
+                      SELECT 1 FROM tenants t
+                       WHERE t.id = automation_jobs.tenant_id AND t.lifecycle_state <> 'active'))
                 ORDER BY priority ASC, scheduled_at ASC, created_at ASC
                 FOR UPDATE SKIP LOCKED
                 LIMIT 1

@@ -251,4 +251,29 @@ describe('BrokerageSetupPanel — MLS honesty', () => {
     await screen.findByText('Lockwood Realty');
     expect(screen.getByText(/Bright MLS · updated 1d ago/)).toBeTruthy();
   });
+
+  it('gives an owner Suspend and Offboard on agents only — never on their own row', async () => {
+    sessionStorage.setItem('oracle_role', 'broker_owner');
+    localStorage.setItem('oracle_user_id', 'nat@lockwood.test');
+    const team = { ...TEAM, members: [...TEAM.members, {
+      id: 'u2', agent_id: 'sam@lockwood.test', email: 'sam@lockwood.test', full_name: 'Sam',
+      role: 'agent', status: 'active', membership_status: 'active' }] };
+    api.crmGet.mockImplementation((path) => Promise.resolve(path.includes('/team') ? team : SETUP));
+    render(<BrokerageSetupPanel />);
+    await screen.findByText('Sam');
+    expect(screen.getAllByRole('button', { name: 'Offboard…' })).toHaveLength(1);
+    expect(screen.getAllByRole('button', { name: 'Suspend' })).toHaveLength(1);
+    fireEvent.click(screen.getByRole('button', { name: 'Offboard…' }));
+    expect(await screen.findByRole('group', { name: /Offboard Sam/ })).toBeTruthy();
+    sessionStorage.clear();
+    localStorage.clear();
+  });
+
+  it('shows agents no member actions', async () => {
+    sessionStorage.setItem('oracle_role', 'agent');
+    render(<BrokerageSetupPanel />);
+    await screen.findByText('Lockwood Realty');
+    expect(screen.queryByRole('button', { name: 'Offboard…' })).toBeNull();
+    sessionStorage.clear();
+  });
 });

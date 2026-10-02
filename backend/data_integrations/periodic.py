@@ -637,6 +637,34 @@ async def _market_research_task() -> dict:
     return result
 
 
+async def _privacy_lifecycle_task() -> dict:
+    """Start erasure for brokerages whose closure grace period has ended, and
+    delete export archives past their expiry (privacy_lifecycle.py)."""
+    import json as _json
+
+    from db.connection import tenant_tx
+    from privacy_export import expire_exports
+    from privacy_lifecycle import _platform_ctx, start_due_erasures
+    from retention_policy import RetentionCategory as R
+    from retention_policy import policy_for
+
+    started = await start_due_erasures()
+    expired = await expire_exports()
+    days = {c: policy_for(c).retention_days for c in (
+        R.CAPABILITY_TOKEN, R.OPERATIONAL, R.CONSENT_SUPPRESSION, R.PRIVACY_RECORD, R.AUDIT_SECURITY)}
+    async with tenant_tx(_platform_ctx("retention-sweep")) as conn:
+        swept = await conn.fetchval(
+            "SELECT privacy_retention_sweep($1,$2,$3,$4)",
+            days[R.CAPABILITY_TOKEN], days[R.OPERATIONAL],
+            days[R.CONSENT_SUPPRESSION], days[R.PRIVACY_RECORD])
+        audit_days = days[R.AUDIT_SECURITY]
+        audit_expired = (await conn.fetchval("SELECT privacy_expire_audit($1)", max(365, audit_days))
+                         if audit_days is not None else 0)
+    return {"erasures_started": len(started), "exports_expired": expired,
+            "swept": _json.loads(swept) if isinstance(swept, str) else swept,
+            "audit_rows_expired": audit_expired}
+
+
 async def _retention_cleanup_task() -> dict:
     """Redact expired raw evidence/transcripts and evict stale cache rows.
 
@@ -654,11 +682,18 @@ async def _retention_cleanup_task() -> dict:
         tenant_id=tenant_id,
         role=Role.PLATFORM_ADMIN,
     )
-    raw_days = max(1, min(3650, int(os.getenv("ORACLE_RAW_SOURCE_RETENTION_DAYS", "730"))))
-    transcript_days = max(
-        1,
-        min(3650, int(os.getenv("ORACLE_CALL_TRANSCRIPT_RETENTION_DAYS", "365"))),
-    )
+    # Durations come from the one retention policy (retention_policy.py). A
+    # category kept "for the life of the account" (None) maps to the purge
+    # function's ceiling of 3650 days: the brokerage's own records are not
+    # expired on Neoh's schedule (TREC/MD broker record rules).
+    from retention_policy import RetentionCategory, policy_for
+
+    def _bounded(category: RetentionCategory) -> int:
+        days = policy_for(category).retention_days
+        return 3650 if days is None else max(1, min(3650, days))
+
+    raw_days = _bounded(RetentionCategory.PUBLIC_DATA)
+    transcript_days = _bounded(RetentionCategory.CALL_TRANSCRIPT)
     async with tenant_tx(ctx) as conn:
         result = await conn.fetchval(
             "SELECT purge_expired_platform_data($1, $2)",
@@ -912,6 +947,11 @@ def build_default_scheduler() -> PeriodicScheduler:
         name="platform_retention_cleanup",
         interval_s=24 * 3600,
         run=_retention_cleanup_task,
+    ))
+    sched.register(PeriodicTask(
+        name="privacy_lifecycle",
+        interval_s=3600,
+        run=_privacy_lifecycle_task,
     ))
     sched.register(PeriodicTask(
         name="platform_source_health",

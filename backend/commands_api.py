@@ -361,6 +361,7 @@ def _require_own_credential_or_broker(
 
 _GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 _GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
+_GOOGLE_REVOKE_URL = "https://oauth2.googleapis.com/revoke"
 # Calendar only. Mail never leaves through a Google account, so requesting
 # gmail.send would be an unused grant over an agent's whole mailbox.
 _GOOGLE_SCOPES = (
@@ -456,6 +457,32 @@ async def _refresh_google_oauth_token(
     if not isinstance(data, dict) or not str(data.get("access_token") or ""):
         raise GoogleOAuthError("Google OAuth refresh did not include an access token.")
     return data
+
+
+async def revoke_google_token(token: str) -> str:
+    """Revoke a Google OAuth grant at Google (offboarding, erasure).
+
+    Revoking the refresh token ends the whole grant, so a copy of an access
+    token taken earlier stops refreshing too. Google answers 400 invalid_token
+    for a grant that is already gone — that is success for an idempotent
+    revoke. Returns "revoked" or "already_invalid".
+    """
+    import recovery_mode
+
+    recovery_mode.guard("revoke a Google account connection")
+    timeout = aiohttp.ClientTimeout(total=15, connect=5, sock_read=10)
+    try:
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.post(_GOOGLE_REVOKE_URL, data={"token": token}) as response:
+                if 200 <= response.status < 300:
+                    return "revoked"
+                data = await response.json(content_type=None)
+                if response.status == 400 and isinstance(data, dict) and data.get("error") == "invalid_token":
+                    return "already_invalid"
+                reason = str((data or {}).get("error") if isinstance(data, dict) else "revoke_failed")[:120]
+                raise GoogleOAuthError(f"Google refused the revoke: {reason}")
+    except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+        raise GoogleOAuthError("Google OAuth revoke service was unavailable.") from exc
 
 
 def _oauth_return_url(return_path: str, outcome: str) -> str:

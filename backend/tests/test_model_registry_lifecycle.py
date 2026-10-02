@@ -275,7 +275,9 @@ def test_no_inference_path_reads_the_model_registry_yet():
     readers = sorted(
         path.name
         for path in backend.glob("*.py")
-        if "model_registry" in path.read_text(encoding="utf-8")
+        # privacy_data_map names every table to classify it; it reads none.
+        if path.name != "privacy_data_map.py"
+        and "model_registry" in path.read_text(encoding="utf-8")
     )
 
     assert readers == ["models_api.py"], (

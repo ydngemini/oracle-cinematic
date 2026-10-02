@@ -130,14 +130,32 @@ async def require_active_subscription(
     brands, release outbound sends and queue GPU work (review BILL-2). Applied
     to exactly those routes; reading and editing your own CRM is not gated.
     """
-    if ctx.is_platform_admin or not billing_enforced():
+    if ctx.is_platform_admin:
         return ctx
+    from db import connection as _dbc
+
+    if _dbc.get_pool() is None:
+        # No database (unit tests, degraded boot): nothing to read either gate from.
+        if not billing_enforced():
+            return ctx
+        raise HTTPException(status_code=503, detail="Billing status is unavailable.")
     async with tenant_tx(ctx) as conn:
-        status_value = await conn.fetchval(
-            "SELECT status FROM subscriptions WHERE tenant_id = $1 "
-            "ORDER BY created_at DESC LIMIT 1",
+        row = await conn.fetchrow(
+            "SELECT (SELECT status FROM subscriptions WHERE tenant_id = $1 "
+            "        ORDER BY created_at DESC LIMIT 1) AS status, "
+            "       (SELECT lifecycle_state FROM tenants WHERE id = $1) AS lifecycle",
             ctx.tenant_id,
         )
+    # A brokerage that is closing (or suspended) spends nothing and contacts
+    # nobody, paid or not — enforced even where billing enforcement is off.
+    if row is not None and row["lifecycle"] not in (None, "active"):
+        raise HTTPException(
+            status_code=423,
+            detail="This brokerage is closing; outbound actions are disabled.",
+        )
+    if not billing_enforced():
+        return ctx
+    status_value = row["status"] if row is not None else None
     if status_value not in _ENTITLED_STATUSES:
         raise HTTPException(
             status_code=402,

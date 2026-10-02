@@ -38,6 +38,11 @@ NARROWING_MARKERS = (
 #: Modules that touch the table without narrowing, each with the reason it is
 #: correct. A bare filename is not enough — the reason is the review.
 EXEMPT: dict[str, str] = {
+    "privacy_data_map.py":
+        "Names the table to classify it for retention; never queries it.",
+    "privacy_lifecycle.py":
+        "Licence-termination purge: a platform-admin operation that counts and "
+        "deletes a whole feed's rows; it serves nothing to any tenant.",
     "data_integrations/mls_sink.py":
         "Ingest. Writes rows and assigns their licence; narrowing a write to "
         "what the writer may READ would be nonsense.",

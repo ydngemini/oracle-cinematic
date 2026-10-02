@@ -769,7 +769,15 @@ async def receive_lead(
             phone_hash,
         )
         duplicate = contact is not None
+        owner_active = False
         if contact is not None and contact["assigned_agent_id"]:
+            # A returning lead goes back to the agent who owns it — unless that
+            # agent has been suspended or offboarded; then it is routed afresh
+            # rather than handed to someone who can no longer act on it.
+            owner_active = bool(await conn.fetchval(
+                "SELECT 1 FROM users WHERE tenant_id=$1::uuid AND lower(agent_id)=lower($2) AND is_active",
+                tenant_id, str(contact["assigned_agent_id"])))
+        if owner_active:
             assigned_agent_id = str(contact["assigned_agent_id"])
             route_reason = "existing_contact_owner"
         else:
@@ -824,7 +832,7 @@ async def receive_lead(
                 client["id"],
                 contact["id"],
             )
-        elif assigned_agent_id and not contact["assigned_agent_id"]:
+        elif assigned_agent_id and (not contact["assigned_agent_id"] or not owner_active):
             await conn.execute(
                 "UPDATE agent_contacts SET assigned_agent_id=$2 WHERE id=$1::uuid",
                 contact["id"],

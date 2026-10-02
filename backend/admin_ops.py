@@ -557,6 +557,10 @@ async def request_role_change(
         raise HTTPException(status_code=409, detail="A broker cannot change their own role.")
     if target["role"] == "platform_admin":
         raise HTTPException(status_code=403, detail="Platform-admin roles are protected.")
+    if not target["is_active"]:
+        # A suspended account promoted to owner would come back with the keys
+        # to the brokerage the moment anyone reinstated it.
+        raise HTTPException(status_code=409, detail="Reinstate the account before changing its role.")
     if target["role"] == body.new_role:
         raise HTTPException(status_code=409, detail="User already has that role.")
     draft = {
@@ -607,8 +611,8 @@ async def execute_role_change(
         target = await conn.fetchrow(
             """
             UPDATE users SET role=$3, session_epoch = session_epoch + 1
-             WHERE id=$1::uuid AND role=$2 AND role <> 'platform_admin'
-            RETURNING id,agent_id,role
+             WHERE id=$1::uuid AND role=$2 AND role <> 'platform_admin' AND is_active
+            RETURNING id,agent_id,role,tenant_id
             """,
             draft["user_id"],
             draft["prior_role"],
@@ -617,8 +621,20 @@ async def execute_role_change(
         if target is None:
             raise HTTPException(
                 status_code=409,
-                detail="User role changed after the approval was requested; no override applied.",
+                detail="User role or status changed after the approval was requested; no override applied.",
             )
+        if draft["prior_role"] == "broker_owner":
+            # Never leave a brokerage without an owner: nobody could approve,
+            # export, offboard or close it. Checked after the update, in the
+            # same transaction, so two concurrent demotions cannot both pass.
+            owners = await conn.fetchval(
+                "SELECT count(*) FROM users WHERE tenant_id=$1 AND role='broker_owner' AND is_active",
+                target["tenant_id"])
+            if not owners:
+                raise HTTPException(
+                    status_code=409,
+                    detail="That is the brokerage's last active owner. Promote another owner first.",
+                )
         event = await conn.fetchrow(
             """
             INSERT INTO protected_override_events (

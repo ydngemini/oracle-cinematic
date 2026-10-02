@@ -1,6 +1,7 @@
 import {
   fetchWithRetry,
   fetchBlob,
+  postForDownload,
   uploadFile,
 } from '../lib/apiClient';
 
@@ -45,4 +46,8 @@ export async function crmDownload(path, filename, options) {
 
 export async function crmUpload(path, formData, options) {
   return uploadFile(path, formData, options);
+}
+
+export async function crmPostDownload(path, body, filename, options) {
+  return postForDownload(path, body, filename, options);
 }

@@ -1,0 +1,120 @@
+/* Account & data — plain and unhurried. The only colour on this screen is the
+   one button that cannot be undone. */
+
+.panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  padding: var(--space-5) 0;
+}
+
+.label {
+  font: 600 var(--text-xs) / 1 var(--font-sans);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--oracle-text-dim);
+}
+
+.block {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--oracle-border, rgba(255, 255, 255, 0.08));
+}
+
+.heading {
+  margin: 0;
+  font: 600 var(--text-md) / 1.2 var(--font-sans);
+  color: var(--oracle-text-heading);
+}
+
+.text, .dim { margin: 0; font-size: var(--text-sm); line-height: 1.5; }
+.text { color: var(--oracle-text); }
+.dim { color: var(--oracle-text-dim); }
+
+.field { display: flex; flex-direction: column; gap: var(--space-1); max-width: 28rem; }
+.micro { font-size: var(--text-xs); color: var(--oracle-text-dim); }
+
+.input {
+  min-height: 40px;
+  padding: 0 var(--space-3);
+  border: 1px solid var(--oracle-border, rgba(255, 255, 255, 0.12));
+  border-radius: 8px;
+  background: transparent;
+  color: var(--oracle-text);
+  font: inherit;
+}
+
+.actions { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+
+.button, .ghost, .danger {
+  min-height: 40px;
+  padding: 0 var(--space-4);
+  border-radius: 8px;
+  font: 500 var(--text-sm) / 1 var(--font-sans);
+  cursor: pointer;
+}
+
+.button {
+  border: 1px solid var(--oracle-border, rgba(255, 255, 255, 0.16));
+  background: transparent;
+  color: var(--oracle-text-heading);
+}
+
+.ghost { border: 0; background: transparent; color: var(--oracle-text-dim); }
+
+.danger {
+  border: 1px solid var(--oracle-red-dim);
+  background: transparent;
+  color: var(--oracle-red);
+}
+
+.button:disabled, .danger:disabled { opacity: 0.45; cursor: not-allowed; }
+
+.link {
+  align-self: flex-start;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--oracle-text-dim);
+  font: inherit;
+  font-size: var(--text-sm);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+
+.policy {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 2px;
+  font-size: var(--text-sm);
+}
+
+.policy li { display: flex; justify-content: space-between; gap: var(--space-3); text-transform: capitalize; }
+
+.consequences {
+  margin: 0;
+  padding-left: 1.1rem;
+  font-size: var(--text-sm);
+  line-height: 1.6;
+  color: var(--oracle-text);
+}
+
+.banner {
+  padding: var(--space-3);
+  border-left: 2px solid var(--oracle-red-dim);
+  font-size: var(--text-sm);
+  line-height: 1.5;
+  color: var(--oracle-text);
+}
+
+.error { margin: 0; color: var(--oracle-red); font-size: var(--text-sm); }
+.notice { margin: 0; color: var(--oracle-text-dim); font-size: var(--text-sm); }
+
+@media (max-width: 480px) {
+  .actions > * { flex: 1 1 100%; }
+}

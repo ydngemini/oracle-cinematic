@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { Suspense, lazy, useCallback, useEffect, useRef, useState } from 'react';
 import { crmGet, crmPost, crmPut } from '../state/useCrmApi';
 import { getTenantId, getUserId } from '../state/identity';
 import { LicenseStatusWidget } from './LicenseStatusWidget';
@@ -8,6 +8,9 @@ import { BrokerageSetupPanel } from './BrokerageSetupPanel';
 import { toMarkets } from '../lib/targetMarkets';
 import styles from './MyProfileTab.module.css';
 import { clearPrivateCaches } from '../lib/clearPrivateCaches.js';
+
+// Owner-only and opened rarely: kept out of the main bundle.
+const AccountDataPanel = lazy(() => import('./AccountDataPanel'));
 
 // Inline stroke glyphs — same idiom as TabBar GLYPHS, zero icon deps.
 const GLYPHS = {
@@ -481,6 +484,11 @@ export default function MyProfileTab() {
           </div>
         </form>
           </section>
+
+          {/* ── Account & data — export, retention, closure (owners) ──────── */}
+          {sessionStorage.getItem('oracle_role') === 'broker_owner' && (
+            <Suspense fallback={null}><AccountDataPanel /></Suspense>
+          )}
 
           {/* ── Session — local identity, renders even when the API is dark ── */}
           <section className={styles.panel} aria-label="Session">

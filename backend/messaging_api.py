@@ -470,6 +470,33 @@ async def assign_campaign_number(ctx: TenantContext = Depends(require_context)) 
 # ── Telnyx webhooks (signed, tenant-safe, idempotent) ───────────────────────
 
 
+
+async def _record_orphan_opt_out(normalized) -> None:
+    from messaging_data import resolve_opt_out_owners_by_number
+    from outreach_compliance import ConsentLedger
+    from tenancy import Role as _Role
+    from tenancy import TenantContext as _TenantContext
+
+    owners = await resolve_opt_out_owners_by_number(normalized.to_e164)
+    if not owners:
+        logger.warning("STOP to a number no tenant has held; nothing to suppress")
+        return
+    try:
+        for owner in owners:
+            await ConsentLedger.suppress(
+                _TenantContext(agent_id=str(owner["agent_id"]), tenant_id=str(owner["tenant_id"]), role=_Role.AGENT),
+                contact=normalized.from_e164,
+                channel="*",
+                reason="stop_keyword",
+                source_text=normalized.text[:200],
+            )
+    except Exception as exc:
+        logger.exception("Failed to record SMS opt-out on an inactive route; asking Telnyx to retry")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Opt-out not recorded yet; retry.",
+        ) from exc
+
 @router.post("/webhooks/telnyx", include_in_schema=False)
 async def telnyx_webhook(request: Request) -> Response:
     """Single inbound endpoint for both message events and hosted-order
@@ -504,10 +531,15 @@ async def telnyx_webhook(request: Request) -> Response:
         if normalized is None:
             return Response(status_code=status.HTTP_204_NO_CONTENT)
         route = await resolve_messaging_route_by_number(normalized.to_e164)
+        opted_out = is_stop_keyword(normalized.text)
         if route is None:
+            if opted_out:
+                # No active route (disconnected, suspended, offboarded) — the
+                # message is not logged, but the opt-out must still be kept.
+                await _record_orphan_opt_out(normalized)
+                return Response(status_code=status.HTTP_204_NO_CONTENT)
             logger.warning("Inbound Telnyx message did not match an active route")
             return Response(status_code=status.HTTP_204_NO_CONTENT)
-        opted_out = is_stop_keyword(normalized.text)
         await record_inbound_message(
             tenant_id=str(route["tenant_id"]),
             agent_id=str(route["agent_id"]),

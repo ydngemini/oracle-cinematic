@@ -520,6 +520,50 @@ async def provision_twilio_forwarding_number(
     return ProviderResult("twilio_number", sid, "purchased", {"phone_number": phone_number})
 
 
+async def release_twilio_number(
+    phone_number_sid: str,
+    *,
+    credentials: Optional[Mapping[str, Any]] = None,
+) -> ProviderResult:
+    """Release a purchased forwarding number back to Twilio, ending its billing.
+
+    The counterpart of provision_twilio_forwarding_number, used by agent
+    offboarding and brokerage erasure (privacy_lifecycle.py). Only numbers
+    Neoh bought are ever released: the SID comes from
+    telephony_routes.inbound_forwarding_provider_sid, never from an agent's
+    own advertised business number. A number Twilio no longer knows (404) is
+    already released, so the call is idempotent.
+    """
+    recovery_mode.guard("release a phone number")
+    credentials = dict(credentials or {})
+    account_sid = str(credentials.get("account_sid") or os.getenv("TWILIO_ACCOUNT_SID", "")).strip()
+    auth_token = str(credentials.get("auth_token") or os.getenv("TWILIO_AUTH_TOKEN", "")).strip()
+    api_key = str(credentials.get("api_key") or os.getenv("TWILIO_API_KEY", "")).strip()
+    api_secret = str(credentials.get("api_secret") or os.getenv("TWILIO_API_SECRET", "")).strip()
+    if not phone_number_sid or not phone_number_sid.startswith("PN"):
+        raise ProviderRequestError("not a Twilio phone-number SID")
+    cred_error = _twilio_credential_error(account_sid, auth_token, api_key, api_secret)
+    if cred_error:
+        raise ProviderConfigurationError(cred_error)
+
+    def _release() -> str:
+        from twilio.base.exceptions import TwilioRestException
+
+        client = _twilio_client(account_sid, auth_token, api_key, api_secret)
+        try:
+            client.incoming_phone_numbers(phone_number_sid).delete()
+        except TwilioRestException as exc:
+            if exc.status == 404:
+                return "already_released"
+            raise ProviderRejectedError(
+                f"Twilio rejected the number release (code {exc.code or 'unknown'})."
+            ) from exc
+        return "released"
+
+    status = await asyncio.wait_for(asyncio.to_thread(_release), timeout=30.0)
+    return ProviderResult("twilio_number", phone_number_sid, status, {})
+
+
 async def configure_twilio_number_webhook(
     phone_number_sid: str,
     *,

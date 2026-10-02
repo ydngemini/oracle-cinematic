@@ -230,11 +230,22 @@ jobs:
       - name: RLS, revocation and privilege proofs
         working-directory: backend
         run: |
-          for f in tests/rls_security_review.sql tests/rls_brokerage.sql tests/platform_rls_test.sql; do
+          for f in tests/rls_security_review.sql tests/rls_brokerage.sql tests/platform_rls_test.sql tests/privacy_lifecycle.sql; do
             echo "::group::$f"
             psql -h localhost -U postgres -d oracle -v ON_ERROR_STOP=1 -q -f "$f"
             echo "::endgroup::"
           done
+      - name: Customer-data lifecycle, end to end (real PostgreSQL)
+        working-directory: backend
+        env:
+          ORACLE_LIVE_DB_ADMIN_DSN: postgresql://postgres:postgres@localhost:5432/oracle
+          ORACLE_DB_NAME: oracle
+          ORACLE_DB_PASSWORD: ci-app-password
+          ORACLE_DB_SSLMODE: disable
+          ORACLE_ENV: dev
+        run: |
+          pip install --quiet -r requirements.txt -r requirements-test.txt
+          python -m pytest -q -p no:cacheprovider tests/test_privacy_lifecycle_live.py
 
   release:
     name: build release → staging

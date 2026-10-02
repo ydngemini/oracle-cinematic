@@ -156,6 +156,15 @@ class VoiceProvider:
     ) -> ProviderResult:
         raise NotImplementedError
 
+    async def release_forwarding_number(
+        self,
+        provider_number_sid: str,
+        *,
+        credentials: Optional[Mapping[str, Any]] = None,
+    ) -> ProviderResult:
+        """Give back a number provision_forwarding_number bought. Idempotent."""
+        raise NotImplementedError
+
     async def configure_number_webhook(
         self,
         provider_number_sid: str,
@@ -291,6 +300,17 @@ class TwilioVoiceProvider(VoiceProvider):
         return await provision_twilio_forwarding_number(
             credentials=credentials, area_code=area_code
         )
+
+    async def release_forwarding_number(
+        self,
+        provider_number_sid: str,
+        *,
+        credentials: Optional[Mapping[str, Any]] = None,
+    ) -> ProviderResult:
+        recovery_mode.guard("release_forwarding_number via TwilioVoiceProvider")
+        from command_providers import release_twilio_number
+
+        return await release_twilio_number(provider_number_sid, credentials=credentials)
 
     async def configure_number_webhook(
         self,
@@ -617,6 +637,35 @@ class PlivoVoiceProvider(VoiceProvider):
         return ProviderResult(
             "plivo_number", phone_number, "purchased", {"phone_number": phone_number}
         )
+
+    async def release_forwarding_number(
+        self,
+        provider_number_sid: str,
+        *,
+        credentials: Optional[Mapping[str, Any]] = None,
+    ) -> ProviderResult:
+        """Unrent a Plivo number. Plivo references numbers by the number itself."""
+        recovery_mode.guard("release_forwarding_number via PlivoVoiceProvider")
+        import asyncio
+
+        from plivo.exceptions import PlivoRestError, ResourceNotFoundError
+
+        number = provider_number_sid.lstrip("+")
+        if not number.isdigit():
+            raise ProviderRequestError("not a Plivo number")
+
+        def _release() -> str:
+            client = self._client(credentials)
+            try:
+                client.numbers.delete(number)
+            except ResourceNotFoundError:
+                return "already_released"
+            except PlivoRestError as exc:
+                raise ProviderRequestError(f"Plivo rejected the number release: {exc}") from exc
+            return "released"
+
+        status = await asyncio.wait_for(asyncio.to_thread(_release), timeout=30.0)
+        return ProviderResult("plivo_number", provider_number_sid, status, {})
 
     async def configure_number_webhook(
         self,

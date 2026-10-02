@@ -1,7 +1,10 @@
-import { useCallback, useEffect, useState } from 'react';
+import { Suspense, lazy, useCallback, useEffect, useState } from 'react';
 
 import { crmDelete, crmGet, crmPatch, crmPost } from '../state/useCrmApi';
 import styles from './BrokerageSetupPanel.module.css';
+import { getUserId } from '../state/identity';
+
+const OffboardMemberForm = lazy(() => import('./OffboardMemberForm'));
 
 /**
  * Set up Neoh for your business.
@@ -97,6 +100,7 @@ export function BrokerageSetupPanel() {
   const [busy, setBusy] = useState(false);
   const [inviteText, setInviteText] = useState('');
   const [editingProfile, setEditingProfile] = useState(false);
+  const [offboarding, setOffboarding] = useState(null);
   const [profileForm, setProfileForm] = useState({ name: '', org_type: 'brokerage', primary_state: '', website: '' });
 
   // Not an async function, deliberately: React 19's lint rejects setState
@@ -119,6 +123,9 @@ export function BrokerageSetupPanel() {
   ), []);
 
   useEffect(() => { load(); }, [load]);
+
+  const isOwner = sessionStorage.getItem('oracle_role') === 'broker_owner';
+  const me = (getUserId() || '').toLowerCase();
 
   // One address per line or comma-separated — people paste both.
   const parseEmails = (raw) =>
@@ -288,6 +295,30 @@ export function BrokerageSetupPanel() {
               <span className={styles.memberName}>{m.full_name || m.email}</span>
               <span className={styles.memberRole}>{m.role === 'broker_owner' ? 'Owner' : 'Agent'}</span>
               <span className={styles.memberState} data-state={m.status}>{m.status === 'active' ? 'Active' : 'Suspended'}</span>
+              {isOwner && m.role === 'agent' && (m.agent_id || '').toLowerCase() !== me && (
+                <span className={styles.rowActions}>
+                  {m.status === 'active' ? (
+                    <button
+                      type="button" className={styles.link} disabled={busy}
+                      onClick={() => act(() => crmPost(`/api/brokerage/team/${m.id}/suspend`,
+                        { reason: 'Suspended by an owner from Settings' }), 'Suspended. Their sign-in and unsent work are stopped.')}
+                    >
+                      Suspend
+                    </button>
+                  ) : (
+                    <button
+                      type="button" className={styles.link} disabled={busy}
+                      onClick={() => act(() => crmPost(`/api/brokerage/team/${m.id}/reinstate`,
+                        { reason: 'Reinstated by an owner from Settings' }), 'Reinstated.')}
+                    >
+                      Reinstate
+                    </button>
+                  )}
+                  <button type="button" className={styles.link} disabled={busy} onClick={() => setOffboarding(m)}>
+                    Offboard…
+                  </button>
+                </span>
+              )}
             </li>
           ))}
           {(team?.pending_invitations || []).map((inv) => (
@@ -312,6 +343,16 @@ export function BrokerageSetupPanel() {
             </li>
           ))}
         </ul>
+        {offboarding && (
+          <Suspense fallback={null}>
+          <OffboardMemberForm
+            member={offboarding}
+            members={team?.members || []}
+            onCancel={() => setOffboarding(null)}
+            onDone={() => { setOffboarding(null); setNotice('Offboarded. Their open work has moved and their access is gone.'); load(); }}
+          />
+          </Suspense>
+        )}
 
         <label className={styles.field}>
           <span>Invite your team</span>

@@ -460,13 +460,25 @@ ENV_VARS: dict[str, tuple[str, ...]] = {
         "ORACLE_FEATURE_AUTOMATION", "ORACLE_FEATURE_MUNICIPAL_HARVESTS",
         "ORACLE_FEATURE_PREDICTIVE_INTELLIGENCE", "ORACLE_FEATURE_MARKETPLACE",
         "ORACLE_FEATURE_LOCAL_MODELS", "ORACLE_FEATURE_SPATIAL_TOURS",
-        "ORACLE_FEATURE_CONTRACTS", "ORACLE_FEATURE_AI_CHAT", "ORACLE_RAW_SOURCE_RETENTION_DAYS",
-        "ORACLE_CALL_AUDIO_RETENTION_DAYS", "ORACLE_CALL_TRANSCRIPT_RETENTION_DAYS",
+        "ORACLE_FEATURE_CONTRACTS", "ORACLE_FEATURE_AI_CHAT",
         "ORACLE_FEATURE_VIDEO_STUDIO",  # Enables the Video Marketing Studio tab
         # feature_enabled() defaults these to TRUE when unset, so they must stay
         # visible to the config audit. POWER_DIALER gates outbound autodialing.
         "ORACLE_FEATURE_POWER_DIALER", "ORACLE_FEATURE_SALES_AI",
         "ORACLE_FEATURE_SMART_PLANS",
+    ),
+    # Customer-data lifecycle. retention_policy.py reads these through a
+    # helper (the name is a variable there), so the AST scan cannot see them
+    # and this catalogue is the only thing keeping them documented.
+    "privacy": (
+        "ORACLE_RAW_SOURCE_RETENTION_DAYS", "ORACLE_CALL_AUDIO_RETENTION_DAYS",
+        "ORACLE_CALL_TRANSCRIPT_RETENTION_DAYS", "ORACLE_MESSAGE_BODY_RETENTION_DAYS",
+        "ORACLE_AI_CHAT_RETENTION_DAYS", "ORACLE_CONSENT_EVIDENCE_RETENTION_DAYS",
+        "ORACLE_BILLING_RECORD_RETENTION_DAYS", "ORACLE_AUDIT_RETENTION_DAYS",
+        "ORACLE_EXPIRED_TOKEN_RETENTION_DAYS", "ORACLE_EXPORT_RETENTION_DAYS",
+        "ORACLE_FINISHED_JOB_RETENTION_DAYS", "ORACLE_PRIVACY_RECORD_RETENTION_DAYS",
+        "ORACLE_CLOSURE_GRACE_DAYS", "ORACLE_CANCELED_ACCOUNT_ERASURE_DAYS",
+        "ORACLE_EXPORT_MAX_MEDIA_BYTES",
     ),
     "video_studio": (
         "ORACLE_VIDEO_PROVIDER",         # sora | veo (default: sora)

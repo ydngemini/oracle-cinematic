@@ -14,6 +14,7 @@ Same invariants as the voice side:
 
 from __future__ import annotations
 
+import logging
 import re
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -21,6 +22,8 @@ from typing import Any, Mapping, Optional, Sequence
 
 from db.connection import tenant_tx
 from tenancy import Role, TenantContext
+
+logger = logging.getLogger("oracle.messaging_data")
 
 _E164_RE = re.compile(r"^\+[1-9]\d{7,14}$")
 _MAX_VERIFICATION_ATTEMPTS = 5
@@ -333,24 +336,29 @@ async def disconnect_messaging(ctx: TenantContext, *, credentials: Mapping[str, 
     if route is None:
         raise MessagingDataError("No text-message connection to disconnect")
     business_number = await get_public_business_number(ctx)
+    provider_status = "not_hosted"
     if business_number is not None and route.get("hosted_order_id"):
         adapter = get_messaging_provider(str(route["provider"]))
         try:
-            await adapter.disconnect_hosted_number(
+            provider_status = await adapter.disconnect_hosted_number(
                 str(route["hosted_order_id"]),
                 str(business_number["voice_caller_id_e164"]),
                 credentials=credentials,
-            )
-        except Exception:
-            pass  # best-effort — Neoh-side disconnect still proceeds
-    return await _set_route_columns(
+            ) or "released"
+        except Exception as exc:  # noqa: BLE001 - recorded, not hidden
+            # Neoh stops routing either way, but the route must not claim the
+            # provider let go of the number when it did not.
+            logger.warning("hosted number release failed: %s", type(exc).__name__)
+            provider_status = "release_failed"
+    updated = await _set_route_columns(
         ctx,
         {
             "active": False,
-            "hosted_order_status": "disconnected",
+            "hosted_order_status": "disconnected" if provider_status != "release_failed" else "manual_action_required",
             "disconnected_at": datetime.now(timezone.utc),
         },
     ) or route
+    return {**updated, "provider_release": provider_status}
 
 
 # ── Inbound routing: never trust a caller-supplied tenant/agent ────────────
@@ -385,6 +393,33 @@ async def resolve_messaging_route_by_number(to_e164: str) -> Optional[dict[str, 
             to_normalized,
         )
     return dict(row) if row is not None else None
+
+
+async def resolve_opt_out_owners_by_number(to_e164: str) -> list[dict[str, Any]]:
+    """Every tenant/agent that has held this business number, active or not.
+
+    Used only for a STOP sent to a number with no active route: a disconnected,
+    suspended or offboarded agent's number. Dropping that STOP (the old
+    behaviour) meant the person stayed contactable the moment the number was
+    reconnected or reassigned. An opt-out is recorded for each holder — over-
+    suppressing is the safe direction. Erased tenants are excluded (nothing of
+    theirs is contactable any more).
+    """
+    to_normalized = str(to_e164 or "").strip()
+    if not _E164_RE.fullmatch(to_normalized):
+        return []
+    async with tenant_tx(_platform_context()) as conn:
+        rows = await conn.fetch(
+            """
+            SELECT DISTINCT t.tenant_id, t.agent_id
+              FROM telephony_routes t
+              JOIN tenants tn ON tn.id = t.tenant_id
+             WHERE (t.voice_caller_id_e164 = $1 OR t.sms_sender_e164 = $1)
+               AND tn.lifecycle_state <> 'erased'
+            """,
+            to_normalized,
+        )
+    return [dict(r) for r in rows]
 
 
 # ── Message log + CRM timeline ──────────────────────────────────────────────

@@ -144,15 +144,46 @@ Restore the token, run a sync, confirm `health` returns to `READY`.
 Update the secret in DigitalOcean, redeploy the worker, run one sync, confirm
 `last_success_at` advances. The durable cursor is unaffected by rotation.
 
-## R. Disable a feed
+## R. Disable a feed (licence still in force)
 
 Remove the entitlement rows first (customers stop seeing it immediately), then
-unset the provider credentials. Do **not** delete `oracle_mls_listings` rows:
-historical listing data has value and deletion is not reversible.
+unset the provider credentials. While the licence is in force, do **not**
+delete `oracle_mls_listings` rows: historical listing data has value and
+deletion is not reversible.
 
 ```sql
 DELETE FROM mls_feed_entitlements WHERE mls_id = 'bright';
 ```
+
+## R2. Licence terminated — purge the feed  [OPERATOR — irreversible]
+
+A terminated licence is different: the agreement requires the licensed data
+to be removed (Unlock MLS §29(b)/§35(b); check each board's agreement for its
+own purge clause and deadline). Order matters — a feed whose credentials are
+still set refills itself on the next sync.
+
+1. Revoke every entitlement (§R). The purge refuses while any remain.
+2. Unset the feed's credentials (`ORACLE_RESO_*` / `ORACLE_BRIDGE_*`) and
+   `ORACLE_MLS_LICENSED`, and redeploy so no sync can run.
+3. Preview, then purge (platform admin; the confirmation must repeat the id):
+
+   ```
+   POST /api/admin/privacy/mls-feeds/actris/purge
+   {"confirm_mls_id": "actris", "reason": "Unlock MLS licence terminated 2026-…", "preview": true}
+   ```
+   Then the same with `"preview": false`.
+4. The result reports `deleted` and `kept_referenced_by_transactions`: a
+   listing a brokerage's own transaction points at is kept, because that is
+   the brokerage's transaction record. Send that count to counsel with the
+   board's agreement; do not delete those by hand.
+5. The run is recorded as a `privacy_operations` row (`kind='mls_purge'`) with
+   per-batch `erasure_ledger` rows — the evidence for the board's audit.
+   `mls_sync_status` keeps its row (the licence history) with the backfill
+   cursor cleared and `license_reason` saying when and why it was purged.
+
+Backups: the purged rows remain in the 7-day managed database backups and
+expire with them; a restore inside that window must be followed by re-running
+step 3.
 
 ## Resuming an interrupted backfill
 

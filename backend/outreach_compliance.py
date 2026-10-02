@@ -36,6 +36,7 @@ Legal basis (audit observation IDs in parens):
 from __future__ import annotations
 
 import logging
+import os
 import re
 import uuid
 from contextlib import asynccontextmanager
@@ -337,13 +338,26 @@ def evaluate(
     )
 
 
+def _tombstone_hash(tenant_id: str, normalized: str) -> Optional[str]:
+    """The keyed hash erasure stores for an opt-out it had to delete. None
+    when no master key is configured (then no tombstone can exist either)."""
+    if not os.getenv("ORACLE_ENCRYPTION_MASTER_KEY"):
+        return None
+    try:
+        from privacy_lifecycle import contact_hmac
+
+        return contact_hmac(tenant_id, normalized)
+    except Exception:  # noqa: BLE001 - never let the hash block the check itself
+        return None
+
+
 # ── Persistence layer ────────────────────────────────────────────────────────
 class ConsentLedger:
     """Async accessor for the 0015 consent / suppression / attempt tables. All
     queries run through tenant_tx so RLS scopes rows to the caller's tenant."""
 
     @staticmethod
-    async def gather_state(conn, contact: str, channel: Channel):
+    async def gather_state(conn, contact: str, channel: Channel, tombstone: Optional[str] = None):
         """One round-trip on a caller-supplied connection returning every fact
         guard_outreach needs: suppression, channel consent, BIPA voiceprint
         consent, and the 24h voice-attempt count. Replaces what used to be four
@@ -351,9 +365,13 @@ class ConsentLedger:
         return await conn.fetchrow(
             """
             SELECT
-                EXISTS(SELECT 1 FROM outreach_suppression
+                (EXISTS(SELECT 1 FROM outreach_suppression
                         WHERE contact = $1 AND channel IN ($2, '*')
-                          AND lifted_at IS NULL)                        AS suppressed,
+                          AND lifted_at IS NULL)
+                 -- An erased person's opt-out survives only as a keyed hash
+                 -- (0122 suppression_tombstones); it still blocks.
+                 OR ($3::text IS NOT NULL AND EXISTS(SELECT 1 FROM suppression_tombstones
+                        WHERE contact_hmac = $3 AND channel IN ($2, '*')))) AS suppressed,
                 EXISTS(SELECT 1 FROM outreach_consent
                         WHERE contact = $1 AND channel = $2
                           AND consent_type IN ('express_written', 'express_oral', 'prior_business')
@@ -371,7 +389,7 @@ class ConsentLedger:
                         WHERE contact = $1 AND channel = 'voice' AND allowed = true
                           AND attempted_at > now() - interval '24 hours') AS recent_voice
             """,
-            contact, channel.value,
+            contact, channel.value, tombstone,
         )
 
     @staticmethod
@@ -464,7 +482,7 @@ async def guard_outreach(
     is_voice = channel is Channel.VOICE
 
     async with _conn_or_tx(ctx, conn) as c:
-        row = await ConsentLedger.gather_state(c, norm, channel)
+        row = await ConsentLedger.gather_state(c, norm, channel, _tombstone_hash(ctx.tenant_id, norm))
 
     decision = evaluate(
         channel=channel, contact=norm, state_code=state_code, now_utc=now_utc,

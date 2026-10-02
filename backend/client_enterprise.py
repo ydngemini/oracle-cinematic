@@ -374,6 +374,17 @@ async def bulk_clients(
     updated_ids: list[str] = []
     try:
         async with tenant_tx(ctx) as conn:
+            if action == "assign" and assign_val is not None:
+                # Assign only to an active member of this brokerage, written as
+                # their canonical agent_id: a free-text value let a client be
+                # "owned" by someone who had left, or by nobody real at all.
+                canonical = await conn.fetchval(
+                    "SELECT agent_id FROM users WHERE tenant_id = $1::uuid "
+                    "AND lower(agent_id) = lower($2) AND is_active",
+                    ctx.tenant_id, assign_val)
+                if canonical is None:
+                    raise HTTPException(422, "Assign to an active member of this brokerage.")
+                assign_val = canonical
             for cid in body.ids:
                 # RLS makes a missing / cross-tenant id invisible — skip it.
                 if await conn.fetchval("SELECT 1 FROM clients WHERE id = $1", cid) is None:

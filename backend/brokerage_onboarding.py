@@ -809,13 +809,41 @@ async def suspend_member(
                 status.HTTP_404_NOT_FOUND,
                 "No active team member you can suspend has that id.",
             )
+        if row["role"] == "broker_owner":
+            remaining = await conn.fetchval(
+                "SELECT count(*) FROM users WHERE tenant_id = $1::uuid AND role = 'broker_owner' "
+                "AND is_active", ctx.tenant_id)
+            if not remaining:
+                raise HTTPException(
+                    status.HTTP_409_CONFLICT,
+                    "That is the brokerage's last active owner. Promote another owner first.",
+                )
         await conn.execute(
             "UPDATE team_memberships SET status = 'suspended' "
             " WHERE tenant_id = $1::uuid AND user_id = $2",
             ctx.tenant_id, user_id,
         )
+        # Locking the login was not enough: their queued emails/texts still
+        # went out through their identity once approved, and their phone line
+        # still forwarded the brokerage's callers to their personal phone.
+        from privacy_lifecycle import cancel_pending_side_effects
+
+        cancelled = await cancel_pending_side_effects(
+            conn, tenant_id=ctx.tenant_id, reason=f"author suspended: {body.reason}"[:500],
+            actor=ctx.agent_id, agent_id=row["agent_id"])
+        await conn.execute(
+            "UPDATE telephony_routes SET agent_forward_e164 = NULL, forward_on_request = false, "
+            "forward_when_ai_unavailable = false, updated_at = now() "
+            "WHERE tenant_id = $1::uuid AND lower(agent_id) = lower($2)",
+            ctx.tenant_id, row["agent_id"])
+        await conn.execute(
+            "INSERT INTO agent_routing_state (tenant_id, agent_id, accepting_leads, capacity) "
+            "VALUES ($1::uuid, $2, false, 0) ON CONFLICT (tenant_id, agent_id) "
+            "DO UPDATE SET accepting_leads = false, capacity = 0",
+            ctx.tenant_id, row["agent_id"])
     await _record_member_change(ctx, "team.member.suspended", row, body.reason)
-    return {"id": str(row["id"]), "agent_id": row["agent_id"], "status": "suspended"}
+    return {"id": str(row["id"]), "agent_id": row["agent_id"], "status": "suspended",
+            "cancelled": {k: v for k, v in cancelled.items() if v}}
 
 
 @router.post("/team/{user_id}/reinstate")

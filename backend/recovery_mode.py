@@ -75,6 +75,7 @@ MUST_BE_GUARDED: frozenset[str] = frozenset({
     # PRODUCTION number it still shares.
     "abort_call",
     "provision_forwarding_number",
+    "release_forwarding_number",
     "configure_number_webhook",
     "begin_hosted_messaging",
     "disconnect_hosted_number",

@@ -42,6 +42,15 @@ class Feature(str, Enum):
     MISSIONS = "missions"
 
 
+
+def _retention_days(category: str):
+    from retention_policy import RetentionCategory, policy_for
+
+    return policy_for(RetentionCategory(category)).retention_days
+
+
+from retention_policy import POLICY_VERSION as _RETENTION_POLICY_VERSION  # noqa: E402
+
 _FEATURE_ENV = {
     Feature.AUTOMATION: "ORACLE_FEATURE_AUTOMATION",
     Feature.MUNICIPAL_HARVESTS: "ORACLE_FEATURE_MUNICIPAL_HARVESTS",
@@ -303,15 +312,13 @@ PUBLIC_PROPERTY_DATA_POLICY = {
         "tax estimates",
         "offers, outreach, calls, calendar writes, and bidding messages",
     ],
+    # One source of truth for every retention period: retention_policy.py.
     "retention": {
-        "raw_public_source_records_days": int(
-            os.getenv("ORACLE_RAW_SOURCE_RETENTION_DAYS", "730")
-        ),
-        "call_audio_days": int(os.getenv("ORACLE_CALL_AUDIO_RETENTION_DAYS", "30")),
-        "call_transcripts_days": int(
-            os.getenv("ORACLE_CALL_TRANSCRIPT_RETENTION_DAYS", "365")
-        ),
+        "raw_public_source_records_days": _retention_days("public_data"),
+        "call_audio_days": _retention_days("call_audio"),
+        "call_transcripts_days": _retention_days("call_transcript"),
         "audit_events": "immutable",
+        "policy_version": _RETENTION_POLICY_VERSION,
     },
 }
 
