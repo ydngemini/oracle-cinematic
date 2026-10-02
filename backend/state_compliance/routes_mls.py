@@ -253,7 +253,7 @@ async def mls_search(
     effective_feeds = sorted(set(_allowed) & requested) if requested else sorted(_allowed)
     if not effective_feeds:
         # No usable coverage is a different answer from no matching listings.
-        return MLSSearchResponse(listings=[], total=0,
+        return MLSSearchResponse(listings=[], total_count=0,
                                  limit=body.limit, offset=body.offset)
 
     def _build(include_radius: bool) -> tuple[str, str, list[Any], list[Any]]:

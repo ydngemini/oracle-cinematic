@@ -592,22 +592,39 @@ async def record_outbound_message(
             )
 
 
-async def record_delivery_update(*, provider: str, provider_message_id: str, status: str, error_reason: Optional[str]) -> None:
-    """Idempotent status update — applies to whichever row already exists;
-    a duplicate/out-of-order webhook just re-applies the same values."""
+_STATUS_RANK_SQL = "CASE {col} WHEN 'queued' THEN 0 WHEN 'sent' THEN 1 ELSE 2 END"
+
+
+async def record_delivery_update(*, provider: str, provider_message_id: str, status: str,
+                                 error_reason: Optional[str]) -> bool:
+    """Monotonic status update. Returns False only when no such message row
+    exists yet (the receipt beat our own insert) so the webhook can ask the
+    provider to redeliver.
+
+    Delivery receipts arrive late, twice and out of order. A late
+    `message.sent` used to downgrade `delivered`; now status only moves
+    forward (queued → sent → delivered/failed) and a terminal state is final.
+    """
     async with tenant_tx(_platform_context()) as conn:
-        await conn.execute(
-            """
+        result = await conn.execute(
+            f"""
             UPDATE sms_messages
                SET status=$3,
                    provider_status=$3,
-                   error_reason=$4,
+                   error_reason=COALESCE($4, error_reason),
                    delivered_at=CASE WHEN $3='delivered' THEN COALESCE(delivered_at,now()) ELSE delivered_at END,
                    failed_at=CASE WHEN $3 IN ('failed','undelivered') THEN COALESCE(failed_at,now()) ELSE failed_at END
              WHERE provider=$1 AND provider_message_id=$2
+               AND {_STATUS_RANK_SQL.format(col='$3')} > {_STATUS_RANK_SQL.format(col='status')}
             """,
             provider,
             provider_message_id,
             status,
             error_reason,
         )
+        if str(result).endswith(" 0"):
+            exists = await conn.fetchval(
+                "SELECT 1 FROM sms_messages WHERE provider=$1 AND provider_message_id=$2",
+                provider, provider_message_id)
+            return bool(exists)
+        return True

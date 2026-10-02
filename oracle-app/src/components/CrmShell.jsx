@@ -33,6 +33,7 @@ import {
   resolveLegacyId,
 } from '../routes';
 import { BillingOverlay } from './BillingOverlay';
+import { ServiceStatusBanner } from './ServiceStatusBanner';
 import { OnboardingGate } from './OnboardingGate';
 import { ErrorBoundary } from './ErrorBoundary';
 import { TabBar } from './TabBar';
@@ -460,6 +461,7 @@ export function CrmShell() {
           </button>
         </div>
       </header>
+      <ServiceStatusBanner />
 
       <AdaptiveViewTransition
         key={viewKey}

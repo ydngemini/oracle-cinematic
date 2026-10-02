@@ -34,6 +34,7 @@ import asyncio
 import json
 import logging
 import os
+import socket
 import time
 from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass, field
@@ -43,6 +44,28 @@ logger = logging.getLogger("oracle.di.periodic")
 
 TICK_SECONDS = int(os.getenv("ORACLE_SCHED_TICK_SECONDS", "3600"))
 SCHEDULER_ENABLED = os.getenv("ORACLE_SCHEDULER_ENABLED", "0") == "1"
+
+
+async def _scheduler_beat(tick_s: float) -> None:
+    """Record that the scheduler loop itself is alive. The process heartbeat
+    proved only that the process was up: a crashed scheduler loop on a live
+    worker passed /health/workers while no periodic work ran."""
+    try:
+        import process_heartbeat
+        from db.connection import get_pool
+
+        pool = get_pool()
+        if pool is None:
+            return
+        async with pool.acquire(timeout=5) as conn:
+            await conn.execute(
+                "INSERT INTO process_heartbeats (process_id, role, git_sha, hostname, started_at, detail) "
+                "VALUES ($1, 'scheduler', $2, $3, now(), $4::jsonb) ON CONFLICT (process_id) DO UPDATE "
+                "SET last_seen_at = now(), git_sha = EXCLUDED.git_sha, detail = EXCLUDED.detail",
+                f"{process_heartbeat.PROCESS_ID}:scheduler", process_heartbeat.git_sha(),
+                socket.gethostname(), json.dumps({"tick_seconds": int(tick_s)}))
+    except Exception as exc:  # noqa: BLE001 - visibility only; never sink the loop
+        logger.warning("[periodic] scheduler heartbeat failed: %s", type(exc).__name__)
 
 
 @dataclass
@@ -197,6 +220,7 @@ class PeriodicScheduler:
             due = [t for t in self._tasks.values() if t.is_due(now)]
             for task in due:
                 await self._run_task(task)
+            await _scheduler_beat(self.tick_s)
             try:
                 await asyncio.sleep(self.tick_s)
             except asyncio.CancelledError:
@@ -243,7 +267,13 @@ class PeriodicScheduler:
         finally:
             now = time.monotonic()
             task.last_run_wall = time.time()
-            task.schedule_next(now)
+            if task.last_status.startswith("error"):
+                # Enqueue failed (database down?): due again on the next tick,
+                # not a whole interval later — a 24 h task used to be skipped
+                # for a day by one failed enqueue.
+                task.next_due = now
+            else:
+                task.schedule_next(now)
             logger.info("[periodic] '%s' -> %s in %.1fs (next in %.0fmin)",
                         task.name, task.last_status, now - t0, task.interval_s / 60)
 
@@ -637,6 +667,13 @@ async def _market_research_task() -> dict:
     return result
 
 
+async def _provider_reconciliation_task() -> dict:
+    """Resolve ambiguous side effects and stuck states (reconciliation.py)."""
+    from reconciliation import run_sweep
+
+    return await run_sweep()
+
+
 async def _privacy_lifecycle_task() -> dict:
     """Start erasure for brokerages whose closure grace period has ended, and
     delete export archives past their expiry (privacy_lifecycle.py)."""
@@ -951,6 +988,11 @@ def build_default_scheduler() -> PeriodicScheduler:
         name="platform_retention_cleanup",
         interval_s=24 * 3600,
         run=_retention_cleanup_task,
+    ))
+    sched.register(PeriodicTask(
+        name="provider_reconciliation",
+        interval_s=900,
+        run=_provider_reconciliation_task,
     ))
     sched.register(PeriodicTask(
         name="privacy_lifecycle",

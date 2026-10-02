@@ -22,6 +22,7 @@ SECS=$(python3 -c "d='$DURATION';print(int(d[:-1])*(60 if d.endswith('m') else 1
 END=$(( $(date +%s) + SECS ))
 R="$P/performance/out/results"
 STAMP=$(date -u +%Y%m%dT%H%M%SZ)
+START=$(date +%s)
 
 # voice: back-to-back 60 s calls, VOICE_CALLS at a time, until the end
 ( while [ "$(date +%s)" -lt "$END" ]; do
@@ -55,5 +56,5 @@ echo "voice:"; cat "$R/$LABEL-voice-$STAMP.jsonl"
 echo "mls:"; tail -1 "$R/$LABEL-mls-$STAMP.json" || true
 docker exec oracle-sypher-docker docker exec oracle-db-1 psql -U postgres -d oracle -Atc "
   SELECT 'jobs', state, count(*), round(avg(extract(epoch from completed_at - created_at))::numeric,1) AS avg_s
-    FROM automation_jobs WHERE created_by='perf-first10' GROUP BY state"
+    FROM automation_jobs WHERE created_by='perf-first10' AND created_at >= to_timestamp($START) GROUP BY state"
 exit $rc

@@ -62,7 +62,10 @@ class RetryConfig:
 
     def backoff(self, attempt: int, hint: Optional[float] = None) -> float:
         if hint is not None:
-            return hint + random.uniform(0, self.jitter)
+            # Honour Retry-After, but never sleep longer than max_backoff: a
+            # "Retry-After: 86400" used to park a worker (and its lease, its
+            # advisory lock and a DB connection) for a day.
+            return min(max(0.0, hint), self.max_backoff) + random.uniform(0, self.jitter)
         raw = self.base_backoff * (2 ** (attempt - 1))
         return min(raw, self.max_backoff) + random.uniform(0, self.jitter)
 
@@ -76,12 +79,25 @@ def _is_transient(exc: Exception) -> bool:
 
 
 def _parse_retry_after(value: Any) -> Optional[float]:
+    """Seconds, or an HTTP-date (RFC 9110 allows both)."""
     if value is None:
         return None
     try:
         return float(value)
     except (ValueError, TypeError):
+        pass
+    try:
+        from email.utils import parsedate_to_datetime
+        from datetime import datetime, timezone
+
+        when = parsedate_to_datetime(str(value))
+        return max(0.0, (when - datetime.now(timezone.utc)).total_seconds())
+    except (TypeError, ValueError, IndexError):
         return None
+
+
+# A provider bug must not exhaust Neoh's memory: bodies above this are refused.
+MAX_RESPONSE_BYTES = 25 * 1024 * 1024
 
 
 class DataSource(ABC):
@@ -167,9 +183,15 @@ class DataSource(ABC):
             def _blocking():
                 try:
                     with urllib.request.urlopen(req, timeout=timeout) as resp:
-                        return resp.read()
+                        body = resp.read(MAX_RESPONSE_BYTES + 1)
+                        if len(body) > MAX_RESPONSE_BYTES:
+                            raise DataIntegrationError(
+                                f"{self.source_name} response exceeded {MAX_RESPONSE_BYTES} bytes")
+                        return body
                 except urllib.error.HTTPError as e:
-                    if e.code in (429, 503):
+                    # GETs are safe to retry: 500/502/504 are as transient as
+                    # 503 (they used to fail the whole sync at once).
+                    if e.code in (429, 500, 502, 503, 504):
                         ra = _parse_retry_after(
                             e.headers.get("Retry-After") if e.headers else None
                         )
@@ -189,7 +211,7 @@ class DataSource(ABC):
             except Exception as exc:
                 attempt += 1
                 retryable = isinstance(exc, RetryableError) or _is_transient(exc)
-                if not retryable or attempt > self._retry.max_attempts:
+                if not retryable or attempt >= self._retry.max_attempts:
                     self._metrics["errors"] += 1
                     self._log.error(
                         "%s failed permanently (attempt %d): %s", label, attempt, exc

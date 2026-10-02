@@ -288,6 +288,14 @@ def test_email_still_uses_compliance_gate_and_durable_outbox(monkeypatch):
 
     monkeypatch.setattr(crm, "tenant_tx", _fake_tenant_tx(conn))
     monkeypatch.setattr(crm, "enforce_outreach", allow_email)
+    import email_outbox
+
+    enqueued = []
+
+    async def fake_enqueue(ctx, outbox_id):
+        enqueued.append(outbox_id)
+
+    monkeypatch.setattr(email_outbox, "enqueue_delivery", fake_enqueue)
 
     result = asyncio.run(
         crm.send_message(
@@ -301,7 +309,10 @@ def test_email_still_uses_compliance_gate_and_durable_outbox(monkeypatch):
     assert result["queued_email_id"] == OUTBOX_ID
     assert result["delivery_status"] == "queued"
     assert any("INSERT INTO email_outbox" in query for query, _args in conn.fetchrow_calls)
-    assert any("UPDATE clients SET last_contacted_at" in query for query, _args in conn.execute_calls)
+    # A queued email is not contact: last_contacted_at moves only once the
+    # mail server accepts it (email_outbox.deliver), and delivery is enqueued.
+    assert not any("UPDATE clients SET last_contacted_at" in query for query, _args in conn.execute_calls)
+    assert enqueued == [OUTBOX_ID]
 
 
 def test_thread_rollup_includes_tenant_scoped_clients_without_history(monkeypatch):

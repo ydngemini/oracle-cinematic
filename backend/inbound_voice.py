@@ -1272,17 +1272,25 @@ async def connect_business_number(
     existing = await get_telephony_route(ctx)
 
     # --- inbound half: reuse or provision the hidden forwarding number -----
+    purchase_id = None
     if existing and existing.get("inbound_forwarding_provider_sid") and existing.get("inbound_did"):
         inbound_did = str(existing["inbound_did"])
         forwarding_sid = str(existing["inbound_forwarding_provider_sid"])
         forwarding_status = str(existing.get("inbound_forwarding_status") or "active")
         newly_provisioned = False
     else:
-        purchase = await provision_twilio_forwarding_number(credentials=credentials)
-        inbound_did = str(purchase.detail["phone_number"])
-        forwarding_sid = purchase.reference
+        import provider_purchases
+
+        if existing and existing.get("provider") not in (None, "twilio") and existing.get("inbound_forwarding_provider_sid"):
+            await provider_purchases.record_superseded(
+                ctx, str(existing["provider"]), str(existing["inbound_forwarding_provider_sid"]),
+                existing.get("inbound_did"))
+        try:
+            inbound_did, forwarding_sid, purchase_id, newly_provisioned = await provider_purchases.buy(
+                ctx, "twilio", lambda: provision_twilio_forwarding_number(credentials=credentials))
+        except (provider_purchases.PurchaseInFlight, provider_purchases.PurchaseUnconfirmed) as exc:
+            raise InboundVoiceError(str(exc)) from exc
         forwarding_status = "pending"
-        newly_provisioned = True
 
     route = await upsert_telephony_route(
         ctx,
@@ -1369,6 +1377,10 @@ async def connect_business_number(
             updates["outbound_verification_failure_reason"] = str(exc)[:500]
 
     final = await _set_route_columns(ctx, updates)
+    if final is not None:
+        import provider_purchases
+
+        await provider_purchases.attached(ctx, purchase_id)
     return final or route
 
 
@@ -1473,6 +1485,7 @@ async def connect_business_number_generic(
     existing = await get_telephony_route(ctx)
     same_provider_existing = existing if (existing or {}).get("provider") == provider else None
 
+    purchase_id = None
     if (
         same_provider_existing
         and same_provider_existing.get("inbound_forwarding_provider_sid")
@@ -1485,11 +1498,18 @@ async def connect_business_number_generic(
         )
         newly_provisioned = False
     else:
-        purchase = await adapter.provision_forwarding_number(credentials=credentials)
-        inbound_did = str(purchase.detail["phone_number"])
-        forwarding_sid = purchase.reference
+        import provider_purchases
+
+        if existing and existing.get("provider") != provider and existing.get("inbound_forwarding_provider_sid"):
+            await provider_purchases.record_superseded(
+                ctx, str(existing.get("provider") or "twilio"), str(existing["inbound_forwarding_provider_sid"]),
+                existing.get("inbound_did"))
+        try:
+            inbound_did, forwarding_sid, purchase_id, newly_provisioned = await provider_purchases.buy(
+                ctx, provider, lambda: adapter.provision_forwarding_number(credentials=credentials))
+        except (provider_purchases.PurchaseInFlight, provider_purchases.PurchaseUnconfirmed) as exc:
+            raise InboundVoiceError(str(exc)) from exc
         forwarding_status = "pending"
-        newly_provisioned = True
 
     route = await upsert_telephony_route(
         ctx,
@@ -1575,6 +1595,10 @@ async def connect_business_number_generic(
             updates["outbound_verification_failure_reason"] = str(exc)[:500]
 
     final = await _set_route_columns(ctx, updates)
+    if final is not None:
+        import provider_purchases
+
+        await provider_purchases.attached(ctx, purchase_id)
     return final or route
 
 

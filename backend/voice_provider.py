@@ -405,6 +405,25 @@ class TwilioVoiceProvider(VoiceProvider):
         return '<?xml version="1.0" encoding="UTF-8"?><Response><Hangup/></Response>'
 
 
+def _single_attempt(client: Any) -> Any:
+    """Stop the Plivo SDK re-POSTing a voice request to its fallback hosts.
+
+    plivo.RestClient resends any voice POST that gets a 5xx to two more base
+    URLs, with no idempotency key — so one approved call could ring the
+    contact up to three times. Starting the fallback counter past its last
+    step makes the first response final; the command executor then treats a
+    5xx as uncertain and reconciles instead of retrying.
+    """
+    try:
+        from plivo.rest.client import API_VOICE_BASE_URI
+
+        client.base_uri = API_VOICE_BASE_URI
+        client.voice_retry_count = 3
+    except Exception:  # noqa: BLE001 - SDK shape changed: fail safe below
+        raise ProviderConfigurationError("Plivo SDK no longer supports single-attempt voice requests")
+    return client
+
+
 class PlivoVoiceProvider(VoiceProvider):
     """New: places calls, verifies caller ID, and provisions DIDs via Plivo.
 
@@ -463,7 +482,7 @@ class PlivoVoiceProvider(VoiceProvider):
             raise ProviderConfigurationError("Plivo answer_url is required")
 
         def _call() -> str:
-            client = self._client(credentials)
+            client = _single_attempt(self._client(credentials))
             try:
                 response = client.calls.create(
                     from_=from_number,

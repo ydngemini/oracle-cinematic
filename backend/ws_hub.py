@@ -12,6 +12,8 @@ import asyncio
 import json
 import logging
 import os
+import random
+import time
 import uuid
 from collections import defaultdict
 from typing import Any, Optional
@@ -33,6 +35,17 @@ _instance_id = str(uuid.uuid4())
 _pool: Any = None
 _listener_connection: Any = None
 _listener_started = False
+# The LISTEN connection is a single long-lived socket. Until 2026-10-02 it was
+# acquired once and never replaced: after a database failover or connection
+# reset this replica silently stopped receiving every frame published by the
+# others (including worker→API chat replies) while /health stayed green.
+# _listener_healthy tracks the current socket; a supervisor reconnects it with
+# jittered backoff and a probe catches half-dead sockets no callback reports.
+_listener_healthy = False
+_supervisor_task: Optional[asyncio.Task] = None
+_listener_stats = {"reconnects": 0, "last_error": None, "down_since": None, "last_ok": None}
+_PROBE_SECONDS = float(os.getenv("ORACLE_WS_LISTENER_PROBE_SECONDS", "15"))
+_RECONNECT_MAX_SECONDS = 30.0
 
 # The platform tenant's sockets double as an all-tenant firehose: every frame
 # broadcast to any tenant is mirrored there (annotated with source_tenant) so
@@ -162,6 +175,8 @@ async def _deliver_user_local(tenant_id: str, user_id: str, payload: dict) -> in
 
 
 async def _publish(tenant_id: str, payload: dict, user_id: Optional[str] = None) -> None:
+    # Publishing does not need this replica's own listener — other replicas
+    # still deserve the frame while ours is reconnecting.
     if _pool is None or not _listener_started:
         return
     envelope = json.dumps(
@@ -218,9 +233,107 @@ def _notification_callback(
     asyncio.create_task(_receive_notification(payload))
 
 
+def _on_termination(_connection: Any) -> None:
+    """asyncpg calls this when the listener's socket closes."""
+    global _listener_healthy
+    if _listener_healthy:
+        logger.warning("WebSocket cross-replica listener connection lost; reconnecting")
+    _mark_down("connection terminated")
+
+
+def _mark_down(reason: str) -> None:
+    global _listener_healthy
+    _listener_healthy = False
+    _listener_stats["last_error"] = reason
+    if _listener_stats["down_since"] is None:
+        _listener_stats["down_since"] = time.time()
+
+
+async def _attach(pool: Any) -> bool:
+    """Acquire a fresh connection and LISTEN on it. True on success."""
+    global _listener_connection, _listener_healthy
+    old = _listener_connection
+    _listener_connection = None
+    if old is not None:
+        try:
+            await asyncio.wait_for(pool.release(old), timeout=5)
+        except Exception:  # noqa: BLE001 - a dead socket may not release cleanly
+            try:
+                old.terminate()
+            except Exception:  # noqa: BLE001
+                pass
+    connection = None
+    try:
+        connection = await asyncio.wait_for(pool.acquire(), timeout=10)
+        await connection.add_listener(_CHANNEL, _notification_callback)
+        connection.add_termination_listener(_on_termination)
+    except Exception as exc:  # noqa: BLE001 - retried by the supervisor
+        _mark_down(type(exc).__name__)
+        if connection is not None:
+            try:
+                await pool.release(connection)
+            except Exception:  # noqa: BLE001
+                pass
+        return False
+    _listener_connection = connection
+    _listener_healthy = True
+    _listener_stats["last_ok"] = time.time()
+    _listener_stats["down_since"] = None
+    _listener_stats["last_error"] = None
+    return True
+
+
+async def _probe() -> bool:
+    connection = _listener_connection
+    if connection is None or connection.is_closed():
+        return False
+    try:
+        await asyncio.wait_for(connection.fetchval("SELECT 1"), timeout=5)
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
+async def _supervise() -> None:
+    """Keep exactly one healthy LISTEN connection for the life of the process."""
+    delay = 1.0
+    while _listener_started and _pool is not None:
+        if _listener_healthy and await _probe():
+            delay = 1.0
+            await asyncio.sleep(_PROBE_SECONDS)
+            continue
+        if _listener_healthy:
+            logger.warning("WebSocket listener probe failed; reconnecting")
+            _mark_down("probe failed")
+        # Jittered so every replica does not reconnect on the same second
+        # when the database comes back.
+        await asyncio.sleep(delay * random.uniform(0.5, 1.5))
+        if not _listener_started or _pool is None:
+            return
+        if await _attach(_pool):
+            _listener_stats["reconnects"] += 1
+            logger.info("WebSocket cross-replica listener reconnected (instance=%s)", _instance_id)
+            delay = 1.0
+        else:
+            delay = min(delay * 2, _RECONNECT_MAX_SECONDS)
+
+
+def listener_status() -> dict:
+    """Component state for health reporting (no internals beyond counts)."""
+    if not _listener_started:
+        state = "UNAVAILABLE"
+    elif _listener_healthy:
+        state = "HEALTHY"
+    else:
+        state = "RECOVERING"
+    down = _listener_stats["down_since"]
+    return {"state": state, "reconnects": _listener_stats["reconnects"],
+            "down_seconds": round(time.time() - down, 1) if down else 0}
+
+
 async def start(pool: Optional[Any] = None) -> bool:
     """Start the dedicated PostgreSQL listener once per backend process."""
-    global _pool, _listener_connection, _listener_started
+    global _pool, _listener_started, _supervisor_task
     if _listener_started:
         return True
     if pool is None:
@@ -230,36 +343,37 @@ async def start(pool: Optional[Any] = None) -> bool:
     if pool is None:
         logger.warning("WebSocket hub running local-only because the DB pool is unavailable.")
         return False
-    connection = None
-    try:
-        connection = await pool.acquire()
-        await connection.add_listener(_CHANNEL, _notification_callback)
-    except Exception as exc:  # noqa: BLE001 - app can still serve local sockets
-        logger.warning("WebSocket PostgreSQL listener failed to start: %s", exc)
-        if connection is not None:
-            try:
-                await pool.release(connection)
-            except Exception as release_exc:  # noqa: BLE001
-                logger.debug("Failed to release WebSocket listener after startup error: %s", release_exc)
+    if not await _attach(pool):
+        logger.warning("WebSocket PostgreSQL listener failed to start: %s", _listener_stats["last_error"])
         return False
     _pool = pool
-    _listener_connection = connection
     _listener_started = True
+    _supervisor_task = asyncio.create_task(_supervise(), name="ws-hub-listener-supervisor")
     logger.info("WebSocket cross-replica listener online (instance=%s)", _instance_id)
     return True
 
 
 async def stop() -> None:
     """Release the dedicated listener connection during application shutdown."""
-    global _pool, _listener_connection, _listener_started
+    global _pool, _listener_connection, _listener_started, _listener_healthy, _supervisor_task
+    task = _supervisor_task
+    _supervisor_task = None
     connection = _listener_connection
     pool = _pool
     _listener_connection = None
     _listener_started = False
+    _listener_healthy = False
     _pool = None
+    if task is not None:
+        task.cancel()
+        try:
+            await task
+        except (asyncio.CancelledError, Exception):  # noqa: BLE001
+            pass
     if connection is None or pool is None:
         return
     try:
+        connection.remove_termination_listener(_on_termination)
         await connection.remove_listener(_CHANNEL, _notification_callback)
     except Exception as exc:  # noqa: BLE001
         logger.debug("WebSocket listener removal failed: %s", exc)

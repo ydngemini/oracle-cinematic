@@ -302,6 +302,11 @@ return {1, count + 1}
 # failed startup ping meant PostgreSQL until the next restart.
 _BREAKER_SECONDS = 10.0
 _redis_retry_at = 0.0
+# Returned as the count when no limiter store answered (Valkey AND PostgreSQL
+# down). Still a denial — fail closed — but answered as 503, not 429: telling
+# a user or a provider's webhook retrier "too many requests" during a database
+# outage sent operators chasing a traffic problem that did not exist.
+LIMITER_UNAVAILABLE = -1
 
 
 def _trip_breaker(exc: Exception) -> None:
@@ -351,12 +356,12 @@ async def _check_rate_limit_postgres(ip: str, endpoint: str, limit: int) -> tupl
         if IS_DEV:
             return await _check_rate_limit_memory(ip, endpoint, limit)
         logger.error("Distributed rate limiter unavailable: database pool is offline")
-        return False, limit
+        return False, LIMITER_UNAVAILABLE
 
     identity_hash = hashlib.sha256(ip.encode("utf-8", errors="replace")).hexdigest()
     window_start = int(time.time() // WINDOW_SECONDS) * WINDOW_SECONDS
     try:
-        async with pool.acquire() as conn:
+        async with pool.acquire(timeout=2.0) as conn:
             if window_start % 900 == 0:
                 await conn.execute(
                     "DELETE FROM api_rate_limit_windows WHERE expires_at < now()"
@@ -381,7 +386,7 @@ async def _check_rate_limit_postgres(ip: str, endpoint: str, limit: int) -> tupl
         logger.exception("PostgreSQL rate limit check failed")
         if IS_DEV:
             return await _check_rate_limit_memory(ip, endpoint, limit)
-        return False, limit
+        return False, LIMITER_UNAVAILABLE
 
 
 class RateLimitMiddleware(BaseHTTPMiddleware):
@@ -390,9 +395,13 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
     def __init__(self, app, enabled: bool = True):
         super().__init__(app)
         self.enabled = enabled
+        # Probes must answer during exactly the outages they exist to report.
         self.exempt_paths = {
             "/health",
+            "/health/workers",
+            "/live",
             "/ready",
+            "/version",
             "/metrics",
             "/favicon.ico",
         }
@@ -453,6 +462,18 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             # an unauthenticated flood is still contained per source.
 
         allowed, count = await _check_rate_limit_redis(identity, bucket, limit)
+
+        if not allowed and count == LIMITER_UNAVAILABLE:
+            retry = 5 + int(uuid.uuid4().int % 6)  # spread client retries over 5-10 s
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "detail": "Neoh is temporarily unavailable. Your work is saved — try again in a moment.",
+                    "code": "SERVICE_UNAVAILABLE",
+                    "retry_after": retry,
+                },
+                headers={"Retry-After": str(retry)},
+            )
 
         if not allowed:
             logger.warning(

@@ -38,6 +38,7 @@ SPACES_BUCKET="${SPACES_BUCKET:-neoh-media}"
 
 FAIL=0
 pass() { printf '  \033[32mPASS\033[0m  %s\n' "$1"; }
+warn() { printf '  \033[33mWARN\033[0m  %s\n' "$1"; }
 fail() { printf '  \033[31mFAIL\033[0m  %s\n' "$1"; FAIL=1; }
 info() { printf '  \033[2m%s\033[0m\n' "$1"; }
 
@@ -155,7 +156,11 @@ if command -v aws >/dev/null 2>&1; then
       pass "Spaces bucket $SPACES_BUCKET has no AllUsers grant"
     fi
   else
-    fail "Spaces bucket $SPACES_BUCKET is not reachable at $SPACES_ENDPOINT (check ORACLE_S3_ACCESS_KEY_ID/SECRET)"
+    # A provider outage is not a broken release: rolling back healthy code
+    # because Spaces is having a bad minute would only add a second incident.
+    # Reported loudly, but not a hard failure (docs/runbooks/object-storage-down.md).
+    # A public-ACL bucket above remains a hard failure — that one is ours.
+    warn "Spaces bucket $SPACES_BUCKET is not reachable at $SPACES_ENDPOINT — provider degradation or bad keys; NOT a release failure (check ORACLE_S3_ACCESS_KEY_ID/SECRET)"
   fi
 else
   info "aws CLI not installed — skipping Spaces bucket check"

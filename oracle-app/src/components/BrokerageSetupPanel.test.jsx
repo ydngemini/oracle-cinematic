@@ -276,4 +276,12 @@ describe('BrokerageSetupPanel — MLS honesty', () => {
     expect(screen.queryByRole('button', { name: 'Offboard…' })).toBeNull();
     sessionStorage.clear();
   });
+
+  it('tells the owner when an invitation email did not go out', async () => {
+    const team = { ...TEAM, pending_invitations: [{ ...TEAM.pending_invitations[0], delivery_status: 'failed' }] };
+    api.crmGet.mockImplementation((path) => Promise.resolve(path.includes('/team') ? team : SETUP));
+    render(<BrokerageSetupPanel />);
+    expect(await screen.findByText('Email not delivered')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Resend' })).toBeTruthy();
+  });
 });

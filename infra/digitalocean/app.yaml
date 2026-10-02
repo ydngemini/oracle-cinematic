@@ -97,12 +97,16 @@ services:
     # either restarts a merely-slow boot or leaves a hung process serving 502s.
     # failure_threshold is deliberately looser than readiness: killing a
     # container is the more expensive mistake.
+    # /live checks only that the process answers. It was /health, which needs
+    # the database: an outage over ~3 min restarted every replica into a boot
+    # that fails closed while the DB is down — a crash loop on top of an
+    # outage. A DB outage now makes replicas unready, not dead.
     liveness_health_check:
-      http_path: /health
+      http_path: /live
       initial_delay_seconds: 30
       period_seconds: 10
       timeout_seconds: 5
-      failure_threshold: 18
+      failure_threshold: 6
     # Graceful shutdown. drain_seconds stops new requests arriving before
     # SIGTERM is sent; grace_period_seconds is how long the process has to
     # finish what it already accepted before SIGKILL. Without these, a deploy
@@ -110,9 +114,6 @@ services:
     termination:
       drain_seconds: 30
       grace_period_seconds: 120
-      period_seconds: 10
-      timeout_seconds: 5
-      failure_threshold: 3
     envs:
       - key: ORACLE_ENV
         value: "prod"

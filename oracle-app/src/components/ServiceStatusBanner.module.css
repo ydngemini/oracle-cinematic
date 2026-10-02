@@ -1,0 +1,10 @@
+.banner {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-4);
+  padding: var(--space-2) var(--space-4);
+  border-bottom: 1px solid var(--oracle-border, rgba(255, 255, 255, 0.08));
+  font-size: var(--text-sm);
+  color: var(--oracle-text-dim);
+  background: var(--oracle-surface, transparent);
+}

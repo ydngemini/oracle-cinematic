@@ -252,21 +252,9 @@ class BridgeListingsFeed(DataSource):
         config, _error = _bridge_config_from_env()
         return config is not None
 
-    async def _cached_page(self, *, since: str, offset: int) -> dict:
-        if self._cache is None:
-            from .cache import get_integration_cache
-
-            self._cache = await get_integration_cache()
-
-        async def fetch_page() -> dict:
-            return await self.fetch(since=since, offset=offset) or {"bundle": []}
-
-        return await self._cache.get_or_fetch(
-            "mls",
-            {"provider": "bridge", "mls_id": self.mls_id, "since": since, "offset": offset},
-            fetch_page,
-            ttl=self._cache_ttl(),
-        )
+    async def _fetch_page(self, *, since: str, offset: int) -> dict:
+        # Always a live read of the board — see RESOFeedClient._fetch_page.
+        return await self.fetch(since=since, offset=offset) or {"bundle": []}
 
     # -- Bridge fetch ------------------------------------------------------ #
     async def fetch(
@@ -669,7 +657,7 @@ class BridgeListingsFeed(DataSource):
         exhausted = False
         pages = 0
         while pages < self.max_pages:
-            payload = await self._cached_page(since=since, offset=offset)
+            payload = await self._fetch_page(since=since, offset=offset)
             pages += 1
             batch = payload.get("bundle") or []
             for raw in batch:

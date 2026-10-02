@@ -584,12 +584,17 @@ async def telnyx_webhook(request: Request) -> Response:
     if event_type in ("message.sent", "message.finalized"):
         delivery = adapter.normalize_delivery_event(event)
         if delivery is not None:
-            await record_delivery_update(
+            known = await record_delivery_update(
                 provider=delivery.provider,
                 provider_message_id=delivery.provider_message_id,
                 status=delivery.status,
                 error_reason=delivery.error_reason,
             )
+            if not known:
+                # The receipt beat our own write of the message row; ask
+                # Telnyx to redeliver instead of dropping it (the row would
+                # otherwise sit at "queued" forever).
+                return Response(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, headers={"Retry-After": "30"})
         return Response(status_code=status.HTTP_204_NO_CONTENT)
 
     # Hosted-order / number-order status events and anything else this

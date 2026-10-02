@@ -316,10 +316,8 @@ async def expire_exports() -> int:
     return expired
 
 
-async def _export_job(job: dict, reporter) -> dict:
-    payload = job.get("payload") or {}
-    if isinstance(payload, str):
-        payload = json.loads(payload)
+async def _export_job(payload: dict, reporter) -> dict:
+    # Job handlers receive the payload; the job row is reporter.job.
     op_id = str(payload["operation_id"])
     try:
         return await build_export(op_id)

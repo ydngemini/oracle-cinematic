@@ -1208,7 +1208,7 @@ async def twilio_inbound_webhook(endpoint_key: str, request: Request) -> Respons
             <Parameter name="bridge_token" value="{xml_escape(bridge_token, quote=True)}"/>
         </Stream>
     </Connect>
-    <Say voice="Polly.Joanna">The realtime assistant is unavailable. Goodbye.</Say>
+    <Say voice="Polly.Joanna">The assistant is unavailable right now, but your agent has your details and will call you back. Goodbye.</Say>
 </Response>"""
     return Response(content=twiml, media_type="application/xml")
 

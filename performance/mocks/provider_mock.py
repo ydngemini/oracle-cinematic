@@ -16,6 +16,19 @@ Two surfaces, both instrumented so the harness can see what Neoh did to them:
   POST /config                change latency / failure mode mid-test (§55/§56)
   POST /reset                 zero the counters
 
+Fault simulator (resilience drills, docs/provider-failure-matrix.md):
+  CFG["faults"] = [{"match": "/reso", "mode": "...", "rate": 1.0,
+                    "retry_after": 30, "delay_ms": 0}, ...]
+  modes: timeout | 429 | 500 | 502 | 503 | 401 | 403 | malformed | slow | empty
+  Rules apply to every route below (first match by path prefix). "Connection
+  refused" needs no rule: point the provider URL at a closed port.
+  CFG["rt_fail"]: "" | "refuse" (close before session) | "after_audio"
+  (close once caller audio arrives) | "mid_reply" (close half-way through a
+  reply) — the realtime voice failure points.
+  GET /reso/Property          a RESO OData feed (paged with @odata.nextLink)
+                              for MLS drills: MOCK_RESO_LISTINGS rows,
+                              "corrupt_every" injects bad records.
+
 Nothing here reaches the internet. It costs nothing, which is the point: the
 infrastructure tests must never discover a database limit by spending money.
 """
@@ -50,6 +63,11 @@ CFG = {
     # over by injected record text would. The tool layer must refuse what the
     # signed-in user could not do. performance/security/ai_chain_attack.py.
     "llm_hijack_tools": None,
+    "faults": [],
+    "rt_fail": "",
+    "reso_listings": int(os.getenv("MOCK_RESO_LISTINGS", "120")),
+    "reso_page": 25,
+    "corrupt_every": 0,
 }
 STATS: dict = {}
 
@@ -81,6 +99,63 @@ async def reset():
     return STATS
 
 
+def _fault_for(path: str):
+    for rule in CFG.get("faults") or []:
+        if path.startswith(rule.get("match", "/")) and random.random() < float(rule.get("rate", 1.0)):
+            return rule
+    return None
+
+
+async def _apply_fault(path: str):
+    """Return a Response for an injected fault, or None to proceed."""
+    rule = _fault_for(path)
+    if rule is None:
+        return None
+    mode = str(rule.get("mode"))
+    STATS.setdefault("faults_injected", {})
+    STATS["faults_injected"][mode] = STATS["faults_injected"].get(mode, 0) + 1
+    if mode == "timeout":
+        await asyncio.sleep(3600)
+    if mode == "slow":
+        await asyncio.sleep(float(rule.get("delay_ms", 15000)) / 1000)
+        return None
+    if mode in ("429", "500", "502", "503", "401", "403"):
+        headers = {"Retry-After": str(rule["retry_after"])} if rule.get("retry_after") else {}
+        return JSONResponse({"error": {"message": f"mock {mode}"}}, status_code=int(mode), headers=headers)
+    if mode == "malformed":
+        from fastapi.responses import PlainTextResponse
+
+        return PlainTextResponse("<html>upstream proxy error</html>{not json", status_code=200)
+    if mode == "empty":
+        return JSONResponse({}, status_code=200)
+    return None
+
+
+@app.get("/reso/Property")
+async def reso_property(request: Request):
+    """Minimal RESO Web API Property feed: paged, ordered, optionally corrupt."""
+    fault = await _apply_fault("/reso")
+    if fault is not None:
+        return fault
+    skip = int(request.query_params.get("$skip", "0") or 0)
+    page = int(CFG["reso_page"])
+    total = int(CFG["reso_listings"])
+    rows = []
+    for i in range(skip, min(total, skip + page)):
+        row = {"ListingKey": f"MOCK{i:06d}", "ListingId": f"MOCK{i:06d}", "StandardStatus": "Active",
+               "UnparsedAddress": f"{100 + i} Mock St", "City": "Austin", "StateOrProvince": "TX",
+               "PostalCode": "78701", "ListPrice": 300000 + i, "BedroomsTotal": 3,
+               "BathroomsFull": 2, "LivingArea": 1500, "Latitude": 30.26, "Longitude": -97.74,
+               "ModificationTimestamp": f"2026-10-02T00:{(i // 60) % 60:02d}:{i % 60:02d}Z"}
+        if CFG["corrupt_every"] and i % int(CFG["corrupt_every"]) == 0:
+            row["ListPrice"] = 10 ** 15   # overflows numeric(14,2): the database refuses it
+        rows.append(row)
+    body = {"value": rows}
+    if skip + page < total:
+        body["@odata.nextLink"] = f"{request.url.scheme}://{request.url.netloc}/reso/Property?$skip={skip + page}"
+    return body
+
+
 def _count(status: int) -> None:
     STATS["llm_status"][str(status)] = STATS["llm_status"].get(str(status), 0) + 1
 
@@ -92,6 +167,10 @@ async def chat(request: Request):
     STATS["llm_inflight"] += 1
     STATS["llm_peak_inflight"] = max(STATS["llm_peak_inflight"], STATS["llm_inflight"])
     try:
+        fault = await _apply_fault("/v1/chat/completions")
+        if fault is not None:
+            _count(fault.status_code)
+            return fault
         fail = CFG["llm_fail"] or ("500" if random.random() < CFG["llm_fail_rate"] else "")
         if fail == "timeout":
             await asyncio.sleep(3600)
@@ -147,6 +226,10 @@ _OUT_CHUNK = base64.b64encode(b"\x00\x01" * (24 * _OUT_CHUNK_MS)).decode()
 
 @app.websocket("/realtime")
 async def realtime(ws: WebSocket):
+    if CFG.get("rt_fail") == "refuse":
+        await ws.close(code=1011)
+        STATS["rt_refused"] = STATS.get("rt_refused", 0) + 1
+        return
     await ws.accept()
     STATS["rt_sessions_open"] += 1
     STATS["rt_sessions_total"] += 1
@@ -157,7 +240,12 @@ async def realtime(ws: WebSocket):
     async def reply() -> None:
         await asyncio.sleep(CFG["rt_latency_ms"] / 1000)
         await ws.send_text(json.dumps({"type": "response.created"}))
-        for _ in range(max(1, CFG["rt_reply_ms"] // _OUT_CHUNK_MS)):
+        chunks = max(1, CFG["rt_reply_ms"] // _OUT_CHUNK_MS)
+        for n in range(chunks):
+            if CFG.get("rt_fail") == "mid_reply" and n == chunks // 2:
+                STATS["rt_dropped"] = STATS.get("rt_dropped", 0) + 1
+                await ws.close(code=1011)
+                return
             await ws.send_text(json.dumps({"type": "response.audio.delta", "delta": _OUT_CHUNK}))
             await asyncio.sleep(_OUT_CHUNK_MS / 1000)
         await ws.send_text(json.dumps({"type": "response.done"}))
@@ -170,6 +258,10 @@ async def realtime(ws: WebSocket):
             if kind == "session.update":
                 await ws.send_text(json.dumps({"type": "session.updated"}))
             elif kind == "input_audio_buffer.append":
+                if CFG.get("rt_fail") == "after_audio":
+                    STATS["rt_dropped"] = STATS.get("rt_dropped", 0) + 1
+                    await ws.close(code=1011)
+                    return
                 n = len(base64.b64decode(event.get("audio") or ""))
                 heard += n
                 STATS["rt_audio_bytes_in"] += n

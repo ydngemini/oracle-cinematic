@@ -376,6 +376,7 @@ async def init_pool(min_size: int = _ENV_POOL_MIN, max_size: int = _ENV_POOL_MAX
             min_size=min_size,
             max_size=max_size,
             command_timeout=30,
+            server_settings=_SERVER_SETTINGS,
             setup=_health_check_connection,
         )
     else:
@@ -389,6 +390,7 @@ async def init_pool(min_size: int = _ENV_POOL_MIN, max_size: int = _ENV_POOL_MAX
             min_size=min_size,
             max_size=max_size,
             command_timeout=30,
+            server_settings=_SERVER_SETTINGS,
             setup=_health_check_connection,
         )
 
@@ -439,6 +441,7 @@ async def _init_platform_pool(asyncpg) -> None:
                 min_size=_ENV_PLATFORM_POOL_MIN,
                 max_size=_ENV_PLATFORM_POOL_MAX,
                 command_timeout=30,
+                server_settings=_SERVER_SETTINGS,
                 setup=_health_check_connection,
             )
         else:
@@ -452,6 +455,7 @@ async def _init_platform_pool(asyncpg) -> None:
                 min_size=_ENV_PLATFORM_POOL_MIN,
                 max_size=_ENV_PLATFORM_POOL_MAX,
                 command_timeout=30,
+                server_settings=_SERVER_SETTINGS,
                 setup=_health_check_connection,
             )
     except Exception as exc:  # noqa: BLE001
@@ -499,6 +503,48 @@ async def close_pool():
         logger.info("DB pool closed.")
 
 
+# A request waiting on a row/table lock gives up after LOCK_TIMEOUT rather than
+# holding its pooled connection until command_timeout (30 s): under lock
+# contention every waiting request held a connection, the pool emptied, and
+# pages that never touched the locked table failed too (db_lock drill,
+# 2026-10-02). The waiter gets a 503 "busy, try again".
+LOCK_TIMEOUT = os.getenv("ORACLE_DB_LOCK_TIMEOUT", "5s")
+_SERVER_SETTINGS = {"lock_timeout": LOCK_TIMEOUT}
+
+
+class DatabaseUnavailable(RuntimeError):
+    """No connection could be had in bounded time: the database is down, or
+    the pool is exhausted. Mapped to 503 by the server — never a hang, never a
+    fake success. Subclasses RuntimeError so existing `except RuntimeError`
+    callers (pool not initialised) keep working."""
+
+    def __init__(self, reason: str):
+        super().__init__(reason)
+        self.reason = reason
+
+
+# How long a request waits for a pooled connection before failing honestly.
+# Without it a pool exhausted by a slow database queued every request
+# indefinitely (resilience drill 2026-10-02).
+ACQUIRE_TIMEOUT_SECONDS = float(os.getenv("ORACLE_DB_ACQUIRE_TIMEOUT", "10"))
+def unreachable_errors() -> tuple[type[BaseException], ...]:
+    """Exceptions that mean "the database is not there", not "the query is wrong"."""
+    import asyncpg
+
+    return (OSError, asyncpg.exceptions.PostgresConnectionError, asyncpg.exceptions.CannotConnectNowError,
+            asyncpg.exceptions.TooManyConnectionsError, asyncpg.exceptions.ConnectionDoesNotExistError)
+
+
+async def acquire_bounded(pool):
+    """pool.acquire() with the bounded wait and typed failure above."""
+    try:
+        return await pool.acquire(timeout=ACQUIRE_TIMEOUT_SECONDS)
+    except asyncio.TimeoutError as exc:
+        raise DatabaseUnavailable("pool_exhausted") from exc
+    except unreachable_errors() as exc:
+        raise DatabaseUnavailable("unreachable") from exc
+
+
 @asynccontextmanager
 async def tenant_tx(ctx: TenantContext):
     """Acquire a connection inside a transaction with this request's tenant
@@ -511,12 +557,15 @@ async def tenant_tx(ctx: TenantContext):
     of one request's identity into the next connection that reuses the socket.
     """
     if _pool is None:
-        raise RuntimeError("DB pool not initialized — call init_pool() at startup.")
+        raise DatabaseUnavailable("DB pool not initialized — call init_pool() at startup.")
 
     # The pool is chosen from the verified context, before any SQL runs: a
     # request context can never reach the login that RLS treats as admin.
     pool = (_platform_pool or _pool) if ctx.is_platform_admin else _pool
-    async with pool.acquire() as conn:
+    conn = await acquire_bounded(pool)
+    try:
         async with conn.transaction():
             await apply_rls_context(conn, ctx)
             yield conn
+    finally:
+        await pool.release(conn)

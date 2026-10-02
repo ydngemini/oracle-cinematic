@@ -390,7 +390,7 @@ def test_public_invite_shape_never_carries_the_token_hash():
     assert "token_hash" not in public
     assert set(public) == {
         "id", "email", "role", "state", "invited_by",
-        "expires_at", "created_at", "last_sent_at", "send_count",
+        "expires_at", "created_at", "last_sent_at", "send_count", "delivery_status",
     }
 
 

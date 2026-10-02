@@ -36,6 +36,12 @@ _PLATFORM_TENANT_ID = os.getenv(
 _LEASE_SECONDS = max(30, int(os.getenv("ORACLE_JOB_LEASE_SECONDS", "120")))
 _POLL_SECONDS = max(0.25, float(os.getenv("ORACLE_JOB_POLL_SECONDS", "2")))
 _WORKER_COUNT = max(1, min(16, int(os.getenv("ORACLE_JOB_WORKERS", "4"))))
+# Priority decides order only while a job is fresh. A job left ready for longer
+# than this is claimed oldest-first. Under strict priority, a steady stream of
+# priority-45 crm:client_reconcile starved everything below it for as long as
+# the load lasted: 5+ minutes in the first-10-brokerage drill, which included
+# privacy exports (60) and erasures (80). Aging bounds the wait instead.
+_STARVATION_SECONDS = max(5, int(os.getenv("ORACLE_JOB_STARVATION_SECONDS", "60")))
 
 # Interactive work — a person is waiting on it (Neoh's chat replies) — has its
 # own queue and its own workers. Measured (Mission 8): on the shared queue with
@@ -231,10 +237,26 @@ async def claim_next_job(worker_id: str, *, queue_name: str = "default") -> Opti
         await _reap_exhausted_leases(conn)
         row = await conn.fetchrow(
             """
-            WITH candidate AS (
+            WITH aged AS (
+                -- Starved work first, oldest first (idx_automation_jobs_aged).
                 SELECT id
                 FROM automation_jobs
                 WHERE queue_name = $1
+                  AND state IN ('queued','failed')
+                  AND attempt_count < max_attempts
+                  AND scheduled_at <= now() - ($5 || ' seconds')::interval
+                  AND (next_retry_at IS NULL OR next_retry_at <= now() - ($5 || ' seconds')::interval)
+                  AND (job_type LIKE 'privacy:%' OR NOT EXISTS (
+                      SELECT 1 FROM tenants t
+                       WHERE t.id = automation_jobs.tenant_id AND t.lifecycle_state <> 'active'))
+                ORDER BY scheduled_at ASC, created_at ASC
+                FOR UPDATE SKIP LOCKED
+                LIMIT 1
+            ), prioritized AS (
+                SELECT id
+                FROM automation_jobs
+                WHERE NOT EXISTS (SELECT 1 FROM aged)
+                  AND queue_name = $1
                   AND attempt_count < max_attempts
                   AND scheduled_at <= now()
                   AND (next_retry_at IS NULL OR next_retry_at <= now())
@@ -250,6 +272,8 @@ async def claim_next_job(worker_id: str, *, queue_name: str = "default") -> Opti
                 ORDER BY priority ASC, scheduled_at ASC, created_at ASC
                 FOR UPDATE SKIP LOCKED
                 LIMIT 1
+            ), candidate AS (
+                SELECT id FROM aged UNION ALL SELECT id FROM prioritized
             )
             UPDATE automation_jobs AS j
                SET state = 'leased',
@@ -268,6 +292,7 @@ async def claim_next_job(worker_id: str, *, queue_name: str = "default") -> Opti
             worker_id,
             lease_token,
             str(_LEASE_SECONDS),
+            str(_STARVATION_SECONDS),
         )
         if row is None:
             return None
@@ -376,6 +401,36 @@ async def heartbeat_job(
         message[:500],
         str(_LEASE_SECONDS),
     )
+
+
+async def extend_lease(job: Mapping[str, Any], worker_id: str) -> None:
+    """Keep a running job's lease alive without touching its progress."""
+    await _lease_update(
+        job,
+        worker_id,
+        """
+        UPDATE automation_jobs
+           SET lease_expires_at=now() + ($4 || ' seconds')::interval, updated_at=now()
+         WHERE id=$1::uuid AND lease_owner=$2 AND lease_token=$3::uuid
+        RETURNING id
+        """,
+        str(_LEASE_SECONDS),
+    )
+
+
+async def _keep_lease(job: Mapping[str, Any], worker_id: str) -> None:
+    """Renew the lease every third of its length while the handler runs.
+
+    Leases were renewed only when a handler happened to report progress. A
+    chat turn waiting on a slow model for longer than the lease was claimed
+    again by another worker and ran twice (resilience audit 2026-10-02). The
+    lease now expires only if this process actually stops."""
+    while True:
+        await asyncio.sleep(max(5.0, _LEASE_SECONDS / 3))
+        try:
+            await extend_lease(job, worker_id)
+        except Exception as exc:  # noqa: BLE001 - DB blip: try again next period
+            logger.warning("lease renewal for job %s failed: %s", job.get("id"), type(exc).__name__)
 
 
 async def complete_job(
@@ -587,6 +642,7 @@ class DurableJobWorkers:
         # Random phase, so a pool of pollers spreads its claims over the
         # interval instead of arriving together.
         await asyncio.sleep(random.uniform(0, poll_seconds))
+        consecutive_errors = 0
         while self._running:
             try:
                 job = await claim_next_job(worker_id, queue_name=queue_name)
@@ -605,6 +661,7 @@ class DurableJobWorkers:
                 await mark_running(job, worker_id)
                 reporter = JobReporter(job, worker_id)
                 await reporter.progress(1, "started")
+                lease_keeper = asyncio.create_task(_keep_lease(job, worker_id))
                 try:
                     result = await handler(dict(job.get("payload") or {}), reporter)
                 except asyncio.CancelledError:
@@ -619,11 +676,21 @@ class DurableJobWorkers:
                     await fail_job(job, worker_id, exc)
                 else:
                     await complete_job(job, worker_id, result or {})
+                finally:
+                    lease_keeper.cancel()
+                consecutive_errors = 0
             except asyncio.CancelledError:
                 break
             except Exception as exc:  # noqa: BLE001 - one queue error cannot kill worker
-                logger.exception("durable job worker %s recovered from error: %s", worker_id, exc)
-                await asyncio.sleep(min(10.0, _POLL_SECONDS * 2))
+                # Exponential, jittered backoff: during a database outage every
+                # loop on every replica used to retry every 4 s in lockstep and
+                # log a traceback each time (~360/min in production).
+                consecutive_errors += 1
+                delay = min(60.0, 2.0 ** min(consecutive_errors, 6)) * random.uniform(0.5, 1.5)
+                if consecutive_errors <= 3 or consecutive_errors % 20 == 0:
+                    logger.exception("durable job worker %s error #%d (retrying in %.0fs): %s",
+                                     worker_id, consecutive_errors, delay, exc)
+                await asyncio.sleep(delay)
 
 
 workers = DurableJobWorkers()

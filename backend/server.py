@@ -71,7 +71,7 @@ from workflow_engine import WorkflowEngine
 from qwen_voice_agent import QwenVoiceAgent
 from outreach_compliance import router as outreach_compliance_router, AI_VOICE_DISCLOSURE
 from agent_mind import MindService
-from db.connection import init_pool, close_pool, get_pool, pool_stats
+from db.connection import DatabaseUnavailable, init_pool, close_pool, get_pool, pool_stats
 from data_integrations.cache import IntegrationCacheUnavailable
 
 logger = logging.getLogger("oracle.server")
@@ -156,6 +156,12 @@ async def lifespan(app: FastAPI):
     if config.ORACLE_FEATURE_VIDEO_STUDIO and config.RUNS_BACKGROUND_WORK:
         from video_studio import start_video_studio_workers, stop_video_studio_workers
         await start_video_studio_workers()
+    # Alerting runs on every replica (an advisory lock picks one evaluator):
+    # if the worker is the thing that died, the API must still notice.
+    import ops_alerts
+
+    if get_pool() is not None:
+        ops_alerts.start()
     from data_integrations.periodic import start_periodic_scheduler, stop_periodic_scheduler
     from automation_jobs import start_job_workers, stop_job_workers
     # Importing periodic registers every job handler regardless of role, so a
@@ -204,6 +210,9 @@ async def lifespan(app: FastAPI):
                 await stop_video_studio_workers()
         await drain_pending()
         await mind_service.stop()
+        import ops_alerts
+
+        await ops_alerts.stop()
         await ws_hub.stop()
         await close_ai_rate_limit_redis()
         await close_request_rate_limit_redis()
@@ -235,6 +244,36 @@ async def _integration_cache_dependency_error(
             "code": "INTEGRATION_CACHE_UNAVAILABLE",
         },
     )
+
+def _database_unavailable_response() -> JSONResponse:
+    import uuid as _uuid
+
+    retry = 5 + _uuid.uuid4().int % 6  # spread client retries over 5-10 s
+    return JSONResponse(
+        status_code=503,
+        content={"detail": "Neoh is temporarily unavailable. Your work is saved — try again in a moment.",
+                 "code": "SERVICE_UNAVAILABLE", "retry_after": retry},
+        headers={"Retry-After": str(retry)},
+    )
+
+
+@app.exception_handler(DatabaseUnavailable)
+async def _database_unavailable(request: Request, exc: DatabaseUnavailable):
+    logger.error("Database unavailable for %s %s: %s", request.method, request.url.path, exc.reason)
+    return _database_unavailable_response()
+
+
+@app.exception_handler(asyncpg.exceptions.LockNotAvailableError)
+@app.exception_handler(asyncpg.exceptions.ConnectionDoesNotExistError)
+@app.exception_handler(asyncpg.exceptions.CannotConnectNowError)
+@app.exception_handler(asyncpg.exceptions.TooManyConnectionsError)
+async def _database_connection_lost(request: Request, exc: Exception):
+    # The connection died mid-request (failover, reset). The transaction was
+    # rolled back by the server, so nothing half-written is reported as done.
+    logger.error("Database connection lost during %s %s: %s", request.method, request.url.path,
+                 type(exc).__name__)
+    return _database_unavailable_response()
+
 
 @app.exception_handler(asyncpg.exceptions.InvalidAuthorizationSpecificationError)
 async def _session_no_longer_valid(request: Request, exc: Exception):
@@ -408,6 +447,8 @@ import privacy_lifecycle  # noqa: E402
 import privacy_export  # noqa: E402
 privacy_lifecycle.register()
 privacy_export.register()
+import email_outbox  # noqa: E402  # registers `email:outbox`
+email_outbox.register()
 
 app.include_router(commands_router)
 app.include_router(contracts_router)
@@ -448,6 +489,15 @@ from apis.market_data import get_market_snapshot
 # property_media row like every other asset.
 
 
+@app.get("/live")
+async def live() -> JSONResponse:
+    """Liveness: the process is up and its event loop answers. Touches no
+    dependency on purpose — a database outage must make replicas *unready*
+    (/health), never get them restarted into a boot that fails closed while the
+    database is still down. App Platform's liveness probe points here."""
+    return JSONResponse({"status": "alive", "uptime_seconds": round(time.monotonic() - _START_TIME, 1)})
+
+
 @app.get("/health")
 async def health() -> JSONResponse:
     """Readiness probe: reports process uptime and verifies PostgreSQL.
@@ -472,13 +522,28 @@ async def health() -> JSONResponse:
             logger.warning("Readiness database ping failed", exc_info=True)
             db_error = "database ping failed"
 
+    import ws_hub
+
     body = {
         "status": "ok" if db_ok else "degraded",
         "uptime_seconds": round(uptime_s, 1),
         "db": {**stats, "reachable": True} if db_ok else {**stats, "reachable": False, "error": db_error},
+        # Informational: a recovering listener degrades cross-replica pushes but
+        # not the CRM, so it does not fail readiness.
+        "components": {"realtime_fanout": ws_hub.listener_status()},
     }
     status_code = 200 if db_ok else 503
     return JSONResponse(content=body, status_code=status_code)
+
+
+@app.get("/api/status")
+async def product_status(ctx: TenantContext = Depends(require_context)) -> JSONResponse:
+    """What is degraded right now, in product language, for the banner.
+    Never provider names, codes or hostnames."""
+    import component_health
+
+    snap = await component_health.snapshot()
+    return JSONResponse({"state": snap["state"], "messages": component_health.user_banner(snap)})
 
 
 @app.get("/health/workers")

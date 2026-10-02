@@ -99,7 +99,7 @@ def build(n_telnyx: int, n_stripe: int, n_calls: int, dup_rate: float) -> dict:
         ids["stripe_subs"].add(sub)
         # Shaped like a real Stripe event (object/api_version/livemode): the SDK
         # builds its Event type from these, and a bare dict is not one.
-        event = {"id": f"evt_perf_{uuid.uuid4().hex[:16]}", "object": "event", "api_version": "2024-06-20",
+        event = {"id": f"evt_Perf{uuid.uuid4().hex[:16]}", "object": "event", "api_version": "2024-06-20",
                  "created": int(time.time()), "livemode": False, "type": "checkout.session.completed",
                  "data": {"object": {"id": f"cs_perf_{i}", "object": "checkout.session", "subscription": sub,
                                      "customer": f"cus_perf_{i}", "metadata": {"tenant_id": t["tenant_id"]}}}}

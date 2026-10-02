@@ -819,10 +819,13 @@ async def list_enrollments(
             UPDATE smart_plan_step_runs run
                SET state=CASE
                     WHEN command.state='succeeded' THEN 'succeeded'
-                    WHEN command.state IN ('failed','reconciliation_required') THEN 'failed'
+                    WHEN command.state='failed' THEN 'failed'
+                    -- Possibly delivered: blocked for a human, never "failed"
+                    -- (a plan treating it as failed could send it again).
+                    WHEN command.state='reconciliation_required' THEN 'blocked'
                     WHEN command.state='cancelled' THEN 'cancelled'
                     ELSE run.state END,
-                   finished_at=CASE WHEN command.state IN ('succeeded','failed','cancelled','reconciliation_required')
+                   finished_at=CASE WHEN command.state IN ('succeeded','failed','cancelled')
                                     THEN COALESCE(run.finished_at,now()) ELSE run.finished_at END
               FROM command_executions command
              WHERE run.command_id=command.id AND run.state='awaiting_approval'
@@ -1294,13 +1297,16 @@ async def validate_provider(provider: str, account_label: str, ctx: TenantContex
     error: Optional[str] = None
     try:
         if provider == "twilio":
+            from twilio.http.http_client import TwilioHttpClient
             from twilio.rest import Client
 
             def _check_twilio() -> None:
                 client = (
-                    Client(credentials["api_key"], credentials["api_secret"], credentials["account_sid"])
+                    Client(credentials["api_key"], credentials["api_secret"], credentials["account_sid"],
+                           http_client=TwilioHttpClient(timeout=15))
                     if credentials.get("api_key")
-                    else Client(credentials["account_sid"], credentials["auth_token"])
+                    else Client(credentials["account_sid"], credentials["auth_token"],
+                                http_client=TwilioHttpClient(timeout=15))
                 )
                 client.api.accounts(credentials["account_sid"]).fetch()
 

@@ -150,54 +150,65 @@ async def create_chat_request(
             # Redis provides the cross-replica fast path. Duplicate detection
             # precedes the concurrency reservation so retries never consume a
             # second active-response slot.
-            async with distributed_rate_limiter() as limiter:
-                if limiter is not None:
-                    allowed, _ = await limiter.check_rate_limit(
-                        ctx, max_requests=20, window_seconds=60
-                    )
-                    if not allowed:
-                        raise HTTPException(
-                            status.HTTP_429_TOO_MANY_REQUESTS,
-                            "Please wait before sending another message",
+            # Valkey is the fast path only. If it fails mid-request (it used
+            # to surface as a 500), fall through to the PostgreSQL checks
+            # below, which are authoritative for duplicates, concurrency and
+            # the per-minute limit.
+            try:
+                async with distributed_rate_limiter() as limiter:
+                    if limiter is not None:
+                        allowed, _ = await limiter.check_rate_limit(
+                            ctx, max_requests=20, window_seconds=60
                         )
-                    is_duplicate, existing_id = await limiter.check_duplicate_request(
-                        ctx, request_id
-                    )
-                    if is_duplicate:
-                        existing = await conn.fetchrow(
-                            """SELECT id, status FROM ai_chat_messages
-                                WHERE tenant_id=$1::uuid AND user_id=$2
-                                  AND request_id=$3::uuid AND role='assistant'""",
-                            ctx.tenant_id, ctx.agent_id, request_id,
+                        if not allowed:
+                            raise HTTPException(
+                                status.HTTP_429_TOO_MANY_REQUESTS,
+                                "Please wait before sending another message",
+                            )
+                        is_duplicate, existing_id = await limiter.check_duplicate_request(
+                            ctx, request_id
                         )
-                        if existing:
-                            return {
-                                "assistant_id": str(existing["id"]),
-                                "duplicate": True,
-                                "status": existing["status"],
-                            }
-                        if existing_id and existing_id != "processing":
-                            return {
-                                "assistant_id": existing_id,
-                                "duplicate": True,
-                                "status": "completed",
-                            }
-                        raise HTTPException(
-                            status.HTTP_409_CONFLICT,
-                            "This request is already being processed",
+                        if is_duplicate:
+                            existing = await conn.fetchrow(
+                                """SELECT id, status FROM ai_chat_messages
+                                    WHERE tenant_id=$1::uuid AND user_id=$2
+                                      AND request_id=$3::uuid AND role='assistant'""",
+                                ctx.tenant_id, ctx.agent_id, request_id,
+                            )
+                            if existing:
+                                return {
+                                    "assistant_id": str(existing["id"]),
+                                    "duplicate": True,
+                                    "status": existing["status"],
+                                }
+                            if existing_id and existing_id != "processing":
+                                return {
+                                    "assistant_id": existing_id,
+                                    "duplicate": True,
+                                    "status": "completed",
+                                }
+                            raise HTTPException(
+                                status.HTTP_409_CONFLICT,
+                                "This request is already being processed",
+                            )
+                        redis_request_claimed = True
+                        allowed, _ = await limiter.check_concurrency_limit(
+                            ctx, max_active=2
                         )
-                    redis_request_claimed = True
-                    allowed, _ = await limiter.check_concurrency_limit(
-                        ctx, max_active=2
-                    )
-                    if not allowed:
-                        await limiter.mark_request_failed(ctx, request_id)
-                        redis_request_claimed = False
-                        raise HTTPException(
-                            status.HTTP_429_TOO_MANY_REQUESTS,
-                            "Two responses are already in progress",
-                        )
-                    slot_reserved = True
+                        if not allowed:
+                            await limiter.mark_request_failed(ctx, request_id)
+                            redis_request_claimed = False
+                            raise HTTPException(
+                                status.HTTP_429_TOO_MANY_REQUESTS,
+                                "Two responses are already in progress",
+                            )
+                        slot_reserved = True
+            except HTTPException:
+                raise
+            except Exception:  # noqa: BLE001 - degraded to the database checks
+                logger.warning("AI chat Valkey admission failed; using database limits", exc_info=True)
+                redis_request_claimed = False
+                slot_reserved = False
 
             # Serialize admission for this agent across backend replicas. The
             # database remains authoritative when Redis is unavailable.

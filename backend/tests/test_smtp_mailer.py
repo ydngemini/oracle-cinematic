@@ -240,7 +240,7 @@ def test_server_rejection_is_a_send_error(configured, fake_smtp):
     """Distinct from misconfiguration so callers can tell them apart."""
     fake_smtp.send_error = smtplib.SMTPRecipientsRefused({"a@b.c": (550, b"nope")})
 
-    with pytest.raises(SmtpSendError, match="SMTP send failed"):
+    with pytest.raises(SmtpSendError, match="refused the message"):
         _send()
 
 
@@ -267,3 +267,46 @@ def test_password_reset_survives_an_unconfigured_smtp_server(fake_smtp):
     auth._send_reset_email("locked-out@example.com", "https://neohrs.com/?reset=tok")
 
     assert fake_smtp.instances == []
+
+
+# --- delivery ambiguity (resilience 2026-10-02) ----------------------------
+
+def test_connection_lost_while_sending_is_uncertain_not_a_rejection(configured, fake_smtp):
+    """A timeout waiting for the 250 after DATA may mean it was delivered:
+    the caller must reconcile, never resend (a resend is a duplicate email)."""
+    from smtp_mailer import SmtpUncertainError
+
+    fake_smtp.send_error = TimeoutError("timed out")
+    with pytest.raises(SmtpUncertainError):
+        _send()
+
+
+def test_explicit_refusal_is_definite(configured, fake_smtp):
+    from smtp_mailer import SmtpUncertainError
+
+    fake_smtp.send_error = smtplib.SMTPDataError(554, b"rejected")
+    with pytest.raises(SmtpSendError) as exc:
+        _send()
+    assert not isinstance(exc.value, SmtpUncertainError)
+
+
+def test_uncertain_email_is_reconciled_not_retried():
+    """command_providers maps uncertainty to ProviderRequestError, which the
+    command executor records as reconciliation_required instead of failed."""
+    import asyncio
+
+    import command_providers
+    import smtp_mailer
+    from command_providers import ProviderRequestError
+
+    def boom(**_kw):
+        raise smtp_mailer.SmtpUncertainError("lost")
+
+    original = smtp_mailer.send
+    smtp_mailer.send = boom
+    try:
+        with pytest.raises(ProviderRequestError, match="lost"):
+            asyncio.run(command_providers.send_smtp_email(
+                {"target": {"email": "a@b.test"}, "subject": "s", "body": "b"}))
+    finally:
+        smtp_mailer.send = original

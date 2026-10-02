@@ -235,7 +235,7 @@ jobs:
             psql -h localhost -U postgres -d oracle -v ON_ERROR_STOP=1 -q -f "$f"
             echo "::endgroup::"
           done
-      - name: Customer-data lifecycle, end to end (real PostgreSQL)
+      - name: Customer-data lifecycle, reconciliation and Stripe webhooks, end to end (real PostgreSQL)
         working-directory: backend
         env:
           ORACLE_LIVE_DB_ADMIN_DSN: postgresql://postgres:postgres@localhost:5432/oracle
@@ -245,7 +245,7 @@ jobs:
           ORACLE_ENV: dev
         run: |
           pip install --quiet -r requirements.txt -r requirements-test.txt
-          python -m pytest -q -p no:cacheprovider tests/test_privacy_lifecycle_live.py
+          python -m pytest -q -p no:cacheprovider tests/test_privacy_lifecycle_live.py tests/test_reconciliation_live.py tests/test_stripe_webhook_live.py tests/test_job_claim_aging_live.py
 
   release:
     name: build release → staging

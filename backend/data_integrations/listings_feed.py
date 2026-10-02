@@ -276,24 +276,14 @@ class RESOListingsFeed(DataSource):
     def _cache_ttl(self) -> int:
         return 5 * 60
 
-    async def _cached_page(
+    async def _fetch_page(
         self, *, since: str, skip: int, next_url: Optional[str] = None
     ) -> dict:
-        if self._cache is None:
-            from .cache import get_integration_cache
-
-            self._cache = await get_integration_cache()
-
-        async def fetch_page() -> dict:
-            return await self.fetch(since=since, skip=skip, next_url=next_url) or {"value": []}
-
-        page_ref = hashlib.sha256((next_url or f"skip:{skip}").encode("utf-8")).hexdigest()
-        return await self._cache.get_or_fetch(
-            "mls",
-            {"provider": "reso", "mls_id": self.mls_id, "since": since, "page": page_ref},
-            fetch_page,
-            ttl=self._cache_ttl(),
-        )
+        # A sync page is always a live read of the board. It used to go through
+        # the integration cache (7-day stale window): while the cursor stood
+        # still, a re-sync during a board outage replayed the cached page,
+        # recorded success, and the feed reported READY with the board down.
+        return await self.fetch(since=since, skip=skip, next_url=next_url) or {"value": []}
 
     @staticmethod
     def is_configured() -> bool:
@@ -483,7 +473,7 @@ class RESOListingsFeed(DataSource):
         exhausted = False
         pages = 0
         while pages < self.max_pages:
-            payload = await self._cached_page(since=since, skip=skip, next_url=next_url)
+            payload = await self._fetch_page(since=since, skip=skip, next_url=next_url)
             pages += 1
             batch = payload.get("value") or []
             for raw in batch:
@@ -588,9 +578,17 @@ class RESOListingsAggregator:
         semaphore = asyncio.Semaphore(concurrency)
 
         async def run(feed: RESOFeedConfig) -> dict[str, Any]:
+            from mls_sync_guard import guarded_sync
+
             async with semaphore:
                 try:
-                    return await RESOListingsFeed(feed).sync_once()
+                    # Guarded per board, under the board's own id: a revoked
+                    # token on one board used to be swallowed here (the guard
+                    # wrapped only the made-up aggregate id "reso"), so the
+                    # board kept reporting READY until it went STALE a day later.
+                    return await guarded_sync(
+                        RESOListingsFeed(feed).sync_once, mls_id=feed.mls_id, mls_name=feed.mls_name,
+                        feed_type="RESO_Web_API", provider="reso", dataset=feed.mls_id)
                 except Exception as exc:  # noqa: BLE001 - one board must not sink the others
                     logger.error("RESO board %s sync failed: %s", feed.mls_id, exc)
                     return {

@@ -29,6 +29,9 @@ from tenancy import Role, TenantContext
 import neoh_persona
 
 logger = logging.getLogger("oracle.ai_chat")
+# One Foundry model round may not take longer than this (the turn has several).
+_FOUNDRY_ROUND_SECONDS = 90.0
+_TURN_DEADLINE_SECONDS = float(os.getenv("ORACLE_AI_TURN_DEADLINE_SECONDS", "90"))
 
 MODEL_ID = os.getenv("ORACLE_AI_CHAT_MODEL", "us.amazon.nova-pro-v1:0")
 # Azure Foundry is the platform's inference plane; an unset variable must not
@@ -695,7 +698,9 @@ async def _foundry_generate(
     input_items = _foundry_inputs(bundle, runtime_context)
     context_type = bundle["assistant"].get("context_type")
     context_id = str(bundle["assistant"].get("context_id") or "") or None
-    response = await asyncio.to_thread(_foundry_response, input_items, context_type)
+    # Bounded: the SDK's own default is 600 s x 3 attempts per call.
+    response = await asyncio.wait_for(
+        asyncio.to_thread(_foundry_response, input_items, context_type), timeout=_FOUNDRY_ROUND_SECONDS)
     # Metered at every model call, not once per turn: a turn that runs tools
     # calls the model again for each round, and those rounds carry the whole
     # conversation plus every tool receipt so far. They are the expensive half.
@@ -735,9 +740,9 @@ async def _foundry_generate(
         prior_output = [
             item.model_dump(mode="json", exclude_none=True) for item in response.output
         ]
-        response = await asyncio.to_thread(
+        response = await asyncio.wait_for(asyncio.to_thread(
             _foundry_response, input_items + prior_output + tool_outputs, context_type
-        )
+        ), timeout=_FOUNDRY_ROUND_SECONDS)
         await record_inference(
             ctx, response, idempotency_key=f"chat:{assistant_id}:foundry:{round_index + 1}"
         )
@@ -1249,11 +1254,40 @@ async def handle_ai_chat_job(payload: dict, reporter: JobReporter) -> dict:
     request_id = str(payload["request_id"])
     ctx = TenantContext(agent_id=user_id, tenant_id=tenant_id, role=Role.AGENT)
     bundle = await load_response_bundle(ctx, assistant_id)
-    if bundle["assistant"].get("status") == "completed":
+    status = bundle["assistant"].get("status")
+    if status == "completed":
         return {"message_id": assistant_id, "already_completed": True}
+    if status == "failed":
+        return {"message_id": assistant_id, "status": "failed"}
+    if status == "streaming":
+        # An earlier attempt started this turn and its worker died (the job
+        # was re-claimed when the lease lapsed). That attempt may already have
+        # run CRM tool writes, and the user stopped waiting a lease ago.
+        # Regenerating would repeat both (worker-kill drill, 2026-10-02).
+        # End the turn honestly instead.
+        logger.warning("AI chat turn %s was interrupted by a worker restart; not re-running", assistant_id)
+        safe_message = "Neoh was interrupted before finishing that response. Your work is saved — please ask again."
+        await update_assistant(
+            ctx, assistant_id, content=safe_message, status_value="failed",
+            model_id=MODEL_ID, error_code="AI_RESPONSE_INTERRUPTED",
+        )
+        await ws_hub.broadcast_user(tenant_id, user_id, {
+            "type": "AI_CHAT_ERROR", "version": 1, "message_id": assistant_id,
+            "request_id": request_id, "code": "AI_RESPONSE_INTERRUPTED", "message": safe_message,
+        })
+        try:
+            await release_concurrency(ctx)
+        except Exception:  # noqa: BLE001 - counter has a TTL
+            logger.warning("AI chat concurrency release failed for turn %s", assistant_id)
+        return {"message_id": assistant_id, "status": "interrupted"}
     await update_assistant(ctx, assistant_id, content="", status_value="streaming", model_id=MODEL_ID)
     try:
-        content, actions, model_id = await _generate(ctx, bundle, assistant_id)
+        # One deadline for the whole turn. Each model call was bounded, but a
+        # hung provider times three tool rounds times the fallback ladder kept
+        # an agent watching a spinner for minutes (llm_timeout drill,
+        # 2026-10-02); now the turn ends, honestly, at the deadline.
+        content, actions, model_id = await asyncio.wait_for(
+            _generate(ctx, bundle, assistant_id), timeout=_TURN_DEADLINE_SECONDS)
         await _broadcast_chunks(ctx, assistant_id, request_id, content)
         await update_assistant(
             ctx, assistant_id, content=content, status_value="completed", model_id=model_id
@@ -1266,7 +1300,10 @@ async def handle_ai_chat_job(payload: dict, reporter: JobReporter) -> dict:
         })
         return {"message_id": assistant_id, "model_id": model_id, "action_count": len(actions)}
     except Exception as exc:  # noqa: BLE001
-        safe_message = str(exc)[:500] or "The assistant is temporarily unavailable."
+        # Product language only: provider errors ("HTTP 503", "1006", a
+        # stack frame) used to reach the user verbatim.
+        logger.warning("AI chat turn %s failed: %s", assistant_id, exc, exc_info=True)
+        safe_message = "Neoh couldn't complete that response. Your work is saved — try again in a moment."
         await update_assistant(
             ctx, assistant_id, content=safe_message, status_value="failed",
             model_id=MODEL_ID, error_code="AI_RESPONSE_UNAVAILABLE",
@@ -1276,10 +1313,17 @@ async def handle_ai_chat_job(payload: dict, reporter: JobReporter) -> dict:
             "request_id": request_id, "code": "AI_RESPONSE_UNAVAILABLE",
             "message": safe_message,
         })
-        raise
+        # The user has been told this turn failed. Re-raising made the job
+        # system run it again later — an answer (and possibly actions) the
+        # user had already given up on. Finish the job as a failed turn.
+        return {"message_id": assistant_id, "status": "failed"}
     finally:
-        # Release concurrency slot regardless of success/failure
-        await release_concurrency(ctx)
+        # Release concurrency slot regardless of success/failure. A Valkey
+        # outage here must not replace the turn's real outcome with a 500.
+        try:
+            await release_concurrency(ctx)
+        except Exception:  # noqa: BLE001 - counter has a TTL; the sweep covers stuck rows
+            logger.warning("AI chat concurrency release failed for turn %s", assistant_id)
 
 
 register_handler("ai_chat:response", handle_ai_chat_job)

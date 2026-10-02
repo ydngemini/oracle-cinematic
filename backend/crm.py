@@ -1485,13 +1485,9 @@ async def send_message(
                 queued_email_id = str(outbox["id"])
                 delivery_status = "queued"
 
-            # Only a delivery-backed channel advances last_contacted_at here.
-            # Internal notes and providerless SMS logs are not client contact.
-            if stored_channel == "email" and outbound:
-                await conn.execute(
-                    "UPDATE clients SET last_contacted_at = now() WHERE id = $1",
-                    client_id,
-                )
+            # last_contacted_at advances when the email is actually accepted by
+            # the mail server (email_outbox.deliver), not when it is typed: a
+            # queued email nobody sent used to mark the client as contacted.
 
             if is_internal:
                 activity_summary = "Internal note"
@@ -1523,6 +1519,13 @@ async def send_message(
         client_id, public_channel, direction, delivery_status, queued_email_id,
         ctx.tenant_id, ctx.agent_id,
     )
+    if queued_email_id:
+        import email_outbox
+
+        try:
+            await email_outbox.enqueue_delivery(ctx, queued_email_id)
+        except Exception:  # noqa: BLE001 - the row stays queued; the sweep re-enqueues it
+            logger.exception("could not enqueue delivery for email %s", queued_email_id)
     await _queue_client_ai(ctx, client_id, "interaction_recorded")
     return {
         "interaction": _interaction_json(interaction),

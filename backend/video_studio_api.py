@@ -17,6 +17,7 @@ so a burst of multi-clip jobs cannot overspend the tenant's allowance.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import uuid
@@ -226,7 +227,9 @@ async def draft_script_for_property(
 ):
     """Draft a reel script from property data before creating a job, so the
     operator can review/edit it ahead of generation."""
-    script = await studio.draft_script(body.property or {})
+    # draft_script is synchronous (a Foundry call): awaiting its str raised
+    # TypeError on every request; and on the loop it blocked every request.
+    script = await asyncio.wait_for(asyncio.to_thread(studio.draft_script, body.property or {}), timeout=90)
     await ledger.record(
         category=AuditCategory.VIDEO_STUDIO,
         action="video-studio script draft",
@@ -293,7 +296,9 @@ async def regenerate_script(
             status.HTTP_409_CONFLICT,
             "script can only be regenerated while the job is queued, failed, or cancelled.",
         )
-    script = await studio.draft_script(body.property or {})
+    # draft_script is synchronous (a Foundry call): awaiting its str raised
+    # TypeError on every request; and on the loop it blocked every request.
+    script = await asyncio.wait_for(asyncio.to_thread(studio.draft_script, body.property or {}), timeout=90)
     async with tenant_tx(ctx) as conn:
         await conn.execute(
             "UPDATE video_studio_jobs SET script = $1 WHERE id = $2::uuid",

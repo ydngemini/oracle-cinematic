@@ -164,7 +164,7 @@ def test_sync_follows_server_paging_and_advances_only_after_exhaustion(monkeypat
         calls.append(kwargs)
         return pages[len(calls) - 1]
 
-    feed._cached_page = cached_page
+    feed._fetch_page = cached_page
 
     class FakeConnection:
         def __init__(self):
@@ -228,3 +228,27 @@ def test_overlay_requires_identity_evidence_and_remains_separate():
         "listing_id": "one", "list_price": 1,
     }
     assert clean_mls_overlay({}) is None
+
+
+def test_sync_page_is_a_live_read_never_a_cached_replay():
+    """A board outage must fail the sync — not replay last success's page.
+
+    Sync pages used to go through the integration cache (7-day stale window):
+    with the cursor standing still, a re-sync during an outage served the old
+    page, recorded success and the feed reported READY with the board down."""
+
+    class PoisonCache:
+        async def get_or_fetch(self, *_a, **_kw):
+            raise AssertionError("sync pages must not be served from the cache")
+
+    feed = RESOListingsFeed(_config(), cache=PoisonCache())
+    calls = []
+
+    async def outage(**kwargs):
+        calls.append(kwargs)
+        raise DataIntegrationError("board unavailable (503)")
+
+    feed.fetch = outage
+    with pytest.raises(DataIntegrationError):
+        asyncio.run(feed._fetch_page(since="2026-07-27T10:00:00Z", skip=0))
+    assert calls == [{"since": "2026-07-27T10:00:00Z", "skip": 0, "next_url": None}]

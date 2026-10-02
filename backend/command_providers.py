@@ -115,6 +115,9 @@ async def send_smtp_email(
             )
         except smtp_mailer.SmtpConfigurationError as exc:
             raise ProviderConfigurationError(str(exc)[:500]) from exc
+        except smtp_mailer.SmtpUncertainError as exc:
+            # May already be in the recipient's inbox: reconcile, never resend.
+            raise ProviderRequestError(str(exc)[:500]) from exc
         except smtp_mailer.SmtpSendError as exc:
             raise ProviderRejectedError(str(exc)[:500]) from exc
 
@@ -155,11 +158,34 @@ def _twilio_client(account_sid: str, auth_token: str, api_key: str, api_secret: 
     An incomplete pair is ignored rather than used — _twilio_credential_error
     has already guaranteed an auth token exists in that case.
     """
+    from twilio.http.http_client import TwilioHttpClient
     from twilio.rest import Client
 
+    # The Twilio SDK's default timeout is None: a stalled request held its
+    # worker thread forever while asyncio.wait_for merely stopped waiting, and
+    # a few such threads starved every other to_thread caller in the process.
+    http = TwilioHttpClient(timeout=TWILIO_HTTP_TIMEOUT_SECONDS)
     if api_key and api_secret:
-        return Client(api_key, api_secret, account_sid)
-    return Client(account_sid, auth_token)
+        return Client(api_key, api_secret, account_sid, http_client=http)
+    return Client(account_sid, auth_token, http_client=http)
+
+
+TWILIO_HTTP_TIMEOUT_SECONDS = 20.0
+
+
+def twilio_failure(exc: Exception, what: str) -> Exception:
+    """Classify a TwilioRestException for a side-effecting request.
+
+    A 4xx other than 408/409/429 is a definite refusal — nothing happened, a
+    retry is safe. A 5xx, 408, 409 or 429 means Twilio may or may not have
+    acted, so it must be reconciled, not retried into a duplicate call or SMS.
+    """
+    status = int(getattr(exc, "status", 0) or 0)
+    code = getattr(exc, "code", None) or "unknown"
+    if status >= 500 or status in (408, 409, 429) or status == 0:
+        return ProviderRequestError(
+            f"Twilio did not confirm the {what} (HTTP {status or 'n/a'}); it may have been accepted.")
+    return ProviderRejectedError(f"Twilio rejected the {what} (code {code}).")
 
 
 async def send_twilio_sms(
@@ -212,9 +238,7 @@ async def send_twilio_sms(
         try:
             message = client.messages.create(to=recipient, from_=sender, body=body)
         except TwilioRestException as exc:
-            raise ProviderRejectedError(
-                f"Twilio rejected the SMS request (code {exc.code or 'unknown'})."
-            ) from exc
+            raise twilio_failure(exc, "SMS request") from exc
         return str(message.sid or "")
 
     reference = await asyncio.wait_for(asyncio.to_thread(_send), timeout=25.0)
@@ -323,9 +347,7 @@ async def place_twilio_call(
                 timeout=30,
             )
         except TwilioRestException as exc:
-            raise ProviderRejectedError(
-                f"Twilio rejected the call request (code {exc.code or 'unknown'})."
-            ) from exc
+            raise twilio_failure(exc, "call request") from exc
         return call.sid
 
     reference = await asyncio.wait_for(asyncio.to_thread(_call), timeout=25.0)

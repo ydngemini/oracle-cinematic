@@ -1123,7 +1123,7 @@ async def _phase_caches(ctx, op_id, tenant_id, progress) -> dict:
         try:
             import redis.asyncio as redis
 
-            client = redis.from_url(url)
+            client = redis.from_url(url, socket_timeout=2.0, socket_connect_timeout=2.0)
             async for key in client.scan_iter(match=f"ai-chat:*{tenant_id}*", count=500):
                 removed += int(await client.delete(key) or 0)
             await client.aclose()
@@ -1359,10 +1359,8 @@ _PHASE_HANDLERS = {
 }
 
 
-async def _erase_job(job: dict, reporter) -> dict:
-    payload = job.get("payload") or {}
-    if isinstance(payload, str):
-        payload = json.loads(payload)
+async def _erase_job(payload: dict, reporter) -> dict:
+    # Job handlers receive the payload; the job row is reporter.job.
     result = await run_erasure(str(payload["operation_id"]))
     return {"state": result.get("state"), "operation_id": result.get("operation_id")}
 

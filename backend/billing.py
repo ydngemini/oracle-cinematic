@@ -1,8 +1,11 @@
 import json
 import logging
 import os
+import re
 import recovery_mode
 from datetime import datetime, timezone
+import asyncio
+import time
 from typing import Optional
 
 import stripe
@@ -283,8 +286,29 @@ async def create_checkout_session(
         session_kwargs["custom_text"]["terms_of_service_acceptance"] = {
             "message": AUTO_RENEW_DISCLOSURE,
         }
+    # One paid plan per brokerage. A second checkout while one is live used to
+    # create a second subscription that billed alongside the first.
+    from db import connection as _dbc
+
+    live = None
+    if _dbc.get_pool() is not None:
+        async with tenant_tx(ctx) as conn:
+            live = await conn.fetchval(
+                "SELECT 1 FROM subscriptions WHERE tenant_id = $1 "
+                "AND status IN ('active','trialing','past_due') LIMIT 1", body.tenant_id)
+    if live:
+        raise HTTPException(status_code=409,
+                            detail="This brokerage already has an active plan. Manage it from Billing.")
+    # Same key for the same brokerage within ten minutes: a double click (or a
+    # retry after a timeout) returns the same session instead of a second one.
+    idem = f"checkout:{body.tenant_id}:{STRIPE_PRICE_ID}:{int(time.time() // 600)}"
     try:
-        session = stripe.checkout.Session.create(**session_kwargs)
+        # Off the event loop and bounded: the SDK call is synchronous (80 s x 3
+        # attempts by default), and on the loop it froze every request.
+        session = await asyncio.wait_for(asyncio.to_thread(
+            lambda: stripe.checkout.Session.create(**session_kwargs, idempotency_key=idem)), timeout=45)
+    except asyncio.TimeoutError:
+        raise HTTPException(status_code=503, detail="Checkout is temporarily unavailable. Please try again shortly.")
     except stripe.error.InvalidRequestError as exc:
         # Stripe's message names prices, tax registration and account state.
         # That is operator detail: the request body here is only a tenant_id, so
@@ -343,7 +367,8 @@ async def create_portal_session(
 
     async with tenant_tx(ctx) as conn:
         row = await conn.fetchrow(
-            "SELECT stripe_customer_id FROM subscriptions WHERE tenant_id = $1 LIMIT 1",
+            "SELECT stripe_customer_id FROM subscriptions WHERE tenant_id = $1 "
+            "ORDER BY created_at DESC LIMIT 1",
             body.tenant_id,
         )
 
@@ -355,10 +380,11 @@ async def create_portal_session(
         raise HTTPException(status_code=404, detail="No subscription found")
 
     try:
-        session = stripe.billing_portal.Session.create(
-            customer=row["stripe_customer_id"],
-            return_url=f"{BASE_URL}/dashboard",
-        )
+        session = await asyncio.wait_for(asyncio.to_thread(
+            lambda: stripe.billing_portal.Session.create(
+                customer=row["stripe_customer_id"],
+                return_url=f"{BASE_URL}/dashboard",
+            )), timeout=30)
     except stripe.error.StripeError as exc:
         # This is the cancellation path — CA ARL requires cancelling to be as
         # easy as subscribing — so a failure here is one a customer is likely to
@@ -479,21 +505,59 @@ async def stripe_webhook(request: Request):
 
     event_id = str(verified.get("id") or "")
     event_created = int(verified.get("created") or 0)
+    # The ledger's CHECK (0118) refuses any other shape. Hitting it inside the
+    # transaction answered 500, and Stripe redelivers a 5xx for days. A signed
+    # event we can never record is a permanent 400.
+    if not _EVENT_ID_SHAPE.fullmatch(event_id):
+        logger.warning("[billing] refused %s with malformed event id %r", event_type, event_id[:80])
+        raise HTTPException(status_code=400, detail="Invalid webhook event id")
     # The event id and its effect commit together (0118): a failed delivery
     # leaves no row, so Stripe's retry runs; a processed one makes every
     # replay — and every concurrent duplicate — a no-op.
-    async with tenant_tx(_SYSTEM_CTX) as conn:
-        first = await conn.fetchval(
-            "INSERT INTO stripe_webhook_events (event_id, event_type, event_created) "
-            "VALUES ($1, $2, $3) ON CONFLICT (event_id) DO NOTHING RETURNING event_id",
-            event_id, event_type, event_created,
-        )
-        if first is None:
-            logger.info("[billing] duplicate event ignored: %s %s", event_type, event_id)
-            return JSONResponse(content={"received": True, "duplicate": True})
-        await handler(conn, obj, event_created)
+    try:
+        async with tenant_tx(_SYSTEM_CTX) as conn:
+            first = await conn.fetchval(
+                "INSERT INTO stripe_webhook_events (event_id, event_type, event_created) "
+                "VALUES ($1, $2, $3) ON CONFLICT (event_id) DO NOTHING RETURNING event_id",
+                event_id, event_type, event_created,
+            )
+            if first is None:
+                logger.info("[billing] duplicate event ignored: %s %s", event_type, event_id)
+                return JSONResponse(content={"received": True, "duplicate": True})
+            try:
+                await handler(conn, obj, event_created)
+            except _SubscriptionNotYetKnown:
+                # Stripe does not guarantee order: invoice.paid or
+                # subscription.updated can arrive before checkout.session.completed.
+                # Recording it as processed lost it for good. Roll back (the event
+                # id is not kept) and ask Stripe to redeliver later.
+                raise _RetryLater()
+    except _RetryLater:
+        logger.info("[billing] %s %s arrived before its subscription; asking Stripe to redeliver",
+                    event_type, event_id)
+        return JSONResponse(status_code=503, content={"received": False, "retry": True},
+                            headers={"Retry-After": "60"})
 
     return JSONResponse(content={"received": True})
+
+
+_EVENT_ID_SHAPE = re.compile(r"evt_[A-Za-z0-9]{1,250}")
+
+
+class _SubscriptionNotYetKnown(Exception):
+    pass
+
+
+class _RetryLater(Exception):
+    pass
+
+
+async def _require_known(conn, status_line: str, sub_id: Optional[str]) -> None:
+    """After an UPDATE that touched nothing: stale (fine) or not yet known (retry)."""
+    if str(status_line).endswith(" 0") and sub_id:
+        known = await conn.fetchval("SELECT 1 FROM subscriptions WHERE stripe_subscription_id = $1", sub_id)
+        if not known:
+            raise _SubscriptionNotYetKnown(sub_id)
 
 
 # ---------------------------------------------------------------------------
@@ -554,12 +618,13 @@ async def _handle_invoice_paid(conn, invoice, event_created: int = 0):
     period_end_dt = datetime.fromtimestamp(period_end, tz=timezone.utc) if period_end else None
 
     # Not if a newer event (a cancellation, say) has already been applied.
-    await conn.execute(
+    status_line = await conn.execute(
         """UPDATE subscriptions SET status = 'active', current_period_end = $2,
                   last_event_created = $3, updated_at = now()
            WHERE stripe_subscription_id = $1 AND last_event_created <= $3""",
         subscription_id, period_end_dt, event_created,
     )
+    await _require_known(conn, status_line, subscription_id)
 
     logger.info("[billing] invoice.paid — sub=%s period_end=%s", subscription_id, period_end_dt)
 
@@ -575,12 +640,13 @@ async def _handle_subscription_updated(conn, subscription, event_created: int = 
         period_end = max(ends) if ends else None
     period_end_dt = datetime.fromtimestamp(period_end, tz=timezone.utc) if period_end else None
 
-    await conn.execute(
+    status_line = await conn.execute(
         """UPDATE subscriptions SET status = $2, current_period_end = $3,
                   last_event_created = $4, updated_at = now()
            WHERE stripe_subscription_id = $1 AND last_event_created <= $4""",
         sub_id, status, period_end_dt, event_created,
     )
+    await _require_known(conn, status_line, sub_id)
 
     logger.info("[billing] subscription.updated — sub=%s status=%s", sub_id, status)
 

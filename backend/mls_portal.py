@@ -315,7 +315,7 @@ async def mls_portal_search(
         "has_more": offset + len(listings) < total,
         # Was hardcoded False, so the response claimed health even while every
         # feed behind it was failing.
-        "degraded": note["state"] in ("stale", "backfilling", "developer_data_only"),
+        "degraded": note["state"] in ("stale", "partially_stale", "backfilling", "developer_data_only"),
         "source": "combined authorized listing cache",
         "sources": sources,
         "notice": note["message"] or None,

@@ -94,6 +94,9 @@ def _patch_tx(monkeypatch, conn: FakeRouteConn):
         yield conn
 
     monkeypatch.setattr(inbound_voice, "tenant_tx", fake_tx)
+    from tests._purchase_stub import stub_purchase_ledger
+
+    stub_purchase_ledger(monkeypatch)
 
 
 class FakePlivoAdapter:

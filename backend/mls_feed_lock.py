@@ -75,6 +75,9 @@ async def feed_sync_lock(conn, mls_id: str, *, wait: bool = False):
     _require_transaction(conn)
     key = f"{_NAMESPACE}:{mls_id}"
     if wait:
+        # A deliberate wait (another sync of this feed is finishing): longer
+        # than the request pool's lock_timeout.
+        await conn.execute("SET LOCAL lock_timeout = '300s'")
         await conn.execute("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", key)
         acquired = True
     else:

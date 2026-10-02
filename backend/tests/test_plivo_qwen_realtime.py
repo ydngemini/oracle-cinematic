@@ -160,3 +160,32 @@ def test_plivo_bridge_token_rejects_malformed_call_uuid(monkeypatch):
     monkeypatch.setenv("ORACLE_ENCRYPTION_MASTER_KEY", "test-master-key")
     with pytest.raises(ValueError):
         plivo_call_handler.create_plivo_bridge_token("not-a-uuid")
+
+
+def test_realtime_failure_mid_call_hands_inbound_plivo_caller_to_agent(monkeypatch):
+    import inbound_voice
+
+    bridge = PlivoQwenRealtimeBridge(_BridgeWebSocket(), CALL_UUID, _start_event(),
+                                     settings=QwenRealtimeSettings(api_key="secret", workspace_id="ws"))
+    redirects = []
+
+    async def state(_uuid, **_kw):
+        return {"direction": "inbound"}
+
+    async def noop(*_a, **_kw):
+        return None
+
+    async def session_fails(self):
+        raise qwen_omni_realtime.QwenRealtimeError("realtime provider dropped the stream")
+
+    async def redirect(reason="caller_request"):
+        redirects.append(reason)
+
+    monkeypatch.setattr(plivo_call_handler, "load_plivo_call_state", state)
+    monkeypatch.setattr(inbound_voice, "mark_inbound_streaming", noop)
+    monkeypatch.setattr(inbound_voice, "finalize_inbound_voice_call", noop)
+    monkeypatch.setattr(qwen_omni_realtime.QwenOmniRealtimeBridge, "run", session_fails)
+    monkeypatch.setattr(bridge, "_redirect_to_agent", redirect)
+    with pytest.raises(qwen_omni_realtime.QwenRealtimeError):
+        asyncio.run(bridge.run())
+    assert redirects == ["ai_unavailable"]

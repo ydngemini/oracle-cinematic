@@ -31,6 +31,9 @@ except ImportError:
 
 _REDIS_URL = os.environ.get("REDIS_URL", "").strip()
 
+# How long an empty answer is believed (see _refresh).
+EMPTY_RESULT_TTL = 3600
+
 TTL = {
     "fema_flood": 30 * 86_400,
     "census_acs": 365 * 86_400,
@@ -308,6 +311,12 @@ class IntegrationCache:
         value = await fetcher()
         if not isinstance(value, dict):
             raise TypeError("integration fetcher must return a dictionary")
+        if value.get("_cacheable_empty"):
+            # "No result" is often a swallowed transient failure (many fetch()
+            # implementations catch and return None). Caching it for the
+            # source's full TTL meant one timeout = 90 days of "no geocode".
+            ttl = min(ttl, EMPTY_RESULT_TTL)
+            stale_ttl = min(stale_ttl, EMPTY_RESULT_TTL)
         await self.set(
             key,
             value,

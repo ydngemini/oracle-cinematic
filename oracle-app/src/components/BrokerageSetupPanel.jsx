@@ -325,7 +325,9 @@ export function BrokerageSetupPanel() {
             <li key={inv.id} className={styles.member} data-pending="true">
               <span className={styles.memberName}>{inv.email}</span>
               <span className={styles.memberRole}>{inv.role === 'broker_owner' ? 'Owner' : 'Agent'}</span>
-              <span className={styles.memberState} data-state="pending">Pending</span>
+              <span className={styles.memberState} data-state={inv.delivery_status === 'failed' ? 'failed' : 'pending'}>
+                {inv.delivery_status === 'failed' ? 'Email not delivered' : 'Pending'}
+              </span>
               <span className={styles.rowActions}>
                 <button
                   type="button" className={styles.link} disabled={busy}

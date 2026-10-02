@@ -236,11 +236,17 @@ def coverage_note(feeds: list[dict]) -> dict[str, Any]:
     if all(f.get("health") == BACKFILLING for f in licensed):
         return {"state": "backfilling",
                 "message": "Initial MLS sync is still running; results are incomplete."}
-    stale = [f for f in licensed if f.get("health") in (STALE, DEGRADED)]
-    if stale and len(stale) == len(licensed):
-        oldest = max((f.get("age_seconds") or 0) for f in stale)
+    # Any feed that is not syncing successfully is not "fresh" — an auth or
+    # rate-limit failure used to be reported as fresh because only STALE and
+    # DEGRADED counted, so a revoked token read as live inventory.
+    unhealthy = [f for f in licensed if f.get("health") in (STALE, DEGRADED, AUTH_ERROR, RATE_LIMITED)]
+    if unhealthy and len(unhealthy) == len(licensed):
+        oldest = max((f.get("age_seconds") or 0) for f in unhealthy)
         return {"state": "stale",
-                "message": f"MLS data last refreshed {int(oldest // 3600)}h ago."}
+                "message": f"Listing data may be out of date (last refreshed {int(oldest // 3600)}h ago)."}
+    if unhealthy:
+        return {"state": "partially_stale",
+                "message": "Some listing sources are temporarily out of date."}
     return {"state": "fresh", "message": ""}
 
 

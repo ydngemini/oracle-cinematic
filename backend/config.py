@@ -480,6 +480,12 @@ ENV_VARS: dict[str, tuple[str, ...]] = {
         "ORACLE_CLOSURE_GRACE_DAYS", "ORACLE_CANCELED_ACCOUNT_ERASURE_DAYS",
         "ORACLE_EXPORT_MAX_MEDIA_BYTES",
     ),
+    # Dependency resilience (docs/dependency-resilience-map.md).
+    "resilience": (
+        "ORACLE_DB_ACQUIRE_TIMEOUT", "ORACLE_DB_LOCK_TIMEOUT", "ORACLE_WS_LISTENER_PROBE_SECONDS", "ORACLE_RECON_STALL_HOURS", "ORACLE_AI_TURN_DEADLINE_SECONDS",
+        "ORACLE_ALERT_EMAIL", "ORACLE_ALERT_EVALUATE_SECONDS", "ORACLE_ALERTS_ENABLED",
+        "ORACLE_JOB_STARVATION_SECONDS",
+    ),
     "video_studio": (
         "ORACLE_VIDEO_PROVIDER",         # sora | veo (default: sora)
         "ORACLE_AZURE_OPENAI_ENDPOINT",  # Sora: base endpoint (retires 2026-09-15)

@@ -24,7 +24,7 @@ from typing import Any, Optional
 
 import jwt
 import websockets
-from fastapi import WebSocket
+from fastapi import WebSocket, WebSocketDisconnect
 from jwt import InvalidTokenError, PyJWKClient, PyJWKClientError
 
 from outreach_compliance import AI_VOICE_DISCLOSURE
@@ -220,6 +220,34 @@ class QwenOmniRealtimeBridge:
             1,
             min(80, int(os.getenv("QWEN_REALTIME_MAX_TURNS", "20"))),
         )
+
+    async def _hand_off_after_failure(self) -> None:
+        """The realtime session failed mid-call: hand an inbound caller to the
+        agent instead of letting the call fall through to "Goodbye".
+
+        Only routes with `forward_when_ai_unavailable` and an agent number get
+        a transfer URL. Otherwise the call falls through to the inbound
+        XML's callback message. A caller who already hung up makes the redirect
+        fail; that is logged and changes nothing.
+        """
+        state = getattr(self, "_call_state", None) or {}
+        if state.get("direction") != "inbound" or getattr(self, "_handoff_started", False):
+            return
+        self._handoff_started = True
+        try:
+            await self._redirect_to_agent(reason="ai_unavailable")
+            logger.warning(
+                "Realtime voice failed mid-call; caller handed to the agent: cid=%s",
+                self.call_connection_id,
+            )
+        except Exception:
+            logger.exception(
+                "Realtime voice failed and the agent hand-off failed too: cid=%s",
+                self.call_connection_id,
+            )
+
+    async def _redirect_to_agent(self, reason: str = "caller_request") -> None:
+        raise QwenRealtimeError("This media bridge cannot hand a call to an agent")
 
     async def run(self) -> None:
         logger.info(
@@ -495,6 +523,11 @@ class TwilioQwenRealtimeBridge(QwenOmniRealtimeBridge):
                 "Qwen session ended for live agent hand-off: sid=%s",
                 self.call_connection_id,
             )
+        except Exception as exc:
+            # The caller's side closing is a hang-up, not a provider failure.
+            if not isinstance(exc, WebSocketDisconnect):
+                await self._hand_off_after_failure()
+            raise
         finally:
             if self._call_state.get("direction") == "inbound":
                 try:
@@ -557,13 +590,11 @@ class TwilioQwenRealtimeBridge(QwenOmniRealtimeBridge):
         )
         return True
 
-    async def _redirect_to_agent(self) -> None:
+    async def _redirect_to_agent(self, reason: str = "caller_request") -> None:
         from telephony_api import transfer_webhook_url
         from twilio_call_handler import twilio_redirect_call
 
-        url = await transfer_webhook_url(
-            self.call_connection_id, reason="caller_request"
-        )
+        url = await transfer_webhook_url(self.call_connection_id, reason=reason)
         if not url:
             raise QwenRealtimeError("No transfer URL is available for this call")
         await twilio_redirect_call(self.call_connection_id, url)
@@ -734,6 +765,11 @@ class PlivoQwenRealtimeBridge(QwenOmniRealtimeBridge):
                 "Qwen session ended for live agent hand-off: uuid=%s",
                 self.call_connection_id,
             )
+        except Exception as exc:
+            # The caller's side closing is a hang-up, not a provider failure.
+            if not isinstance(exc, WebSocketDisconnect):
+                await self._hand_off_after_failure()
+            raise
         finally:
             if self._call_state.get("direction") == "inbound":
                 try:
@@ -788,13 +824,11 @@ class PlivoQwenRealtimeBridge(QwenOmniRealtimeBridge):
         logger.info("Live agent hand-off started: uuid=%s", self.call_connection_id)
         return True
 
-    async def _redirect_to_agent(self) -> None:
+    async def _redirect_to_agent(self, reason: str = "caller_request") -> None:
         from telephony_api import plivo_transfer_webhook_url
         from voice_provider import get_voice_provider
 
-        url = await plivo_transfer_webhook_url(
-            self.call_connection_id, reason="caller_request"
-        )
+        url = await plivo_transfer_webhook_url(self.call_connection_id, reason=reason)
         if not url:
             raise QwenRealtimeError("No transfer URL is available for this call")
         await get_voice_provider("plivo").transfer_call(

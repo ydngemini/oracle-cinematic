@@ -21,7 +21,10 @@ with the outcome. Nothing here knows what an OData `$filter` or a Bridge
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any, Optional
+
+logger = logging.getLogger("oracle.mls_sink")
 
 _UPSERT = """
     INSERT INTO oracle_mls_listings (
@@ -72,6 +75,17 @@ def reject_reason(rec: dict[str, Any]) -> Optional[str]:
     return None
 
 
+def _row_refused() -> tuple:
+    import asyncpg
+
+    return (asyncpg.exceptions.DataError, asyncpg.exceptions.IntegrityConstraintViolationError)
+
+
+_ROW_REFUSED = _row_refused()
+# Rows the database refused, per feed, since process start (surfaced in notes).
+WRITE_REJECTIONS: dict[str, int] = {}
+
+
 async def upsert_mls_records(
     conn: Any,
     records: list[dict[str, Any]],
@@ -98,21 +112,39 @@ async def upsert_mls_records(
                 modified = _dt.fromisoformat(raw_modified.replace("Z", "+00:00"))
             except ValueError:
                 modified = None
-        await conn.execute(
-            _UPSERT,
-            rec["mls_id"], rec["mls_number"], rec["address"], rec["city"],
-            rec["state_code"], rec["zip_code"], rec["county"], rec["latitude"],
-            rec["longitude"], rec["list_price"], rec["orig_list_price"], rec["status"],
-            rec["property_type"], rec["beds"], rec["baths_full"], rec["baths_half"],
-            rec["sqft"], rec["lot_sqft"], rec["year_built"], rec["hoa_monthly"],
-            rec["days_on_market"], rec["list_date"], rec["close_date"],
-            rec["close_price"], rec["description"], rec["photos"],
-            json.dumps(rec["features"], separators=(",", ":")),
-            license_classification,
-            modified,
-        )
+        # One row the database refuses (a price past numeric(14,2), a bad
+        # encoding) used to abort the whole batch — and, because the next run
+        # fetched the same row, stall the feed for good. Each row now gets a
+        # savepoint: a refused row is counted and logged, the rest are kept.
+        try:
+            if hasattr(conn, "transaction"):
+                async with conn.transaction():
+                    await _write_one(conn, rec, license_classification, modified)
+            else:  # test doubles without savepoints
+                await _write_one(conn, rec, license_classification, modified)
+        except _ROW_REFUSED as exc:
+            WRITE_REJECTIONS[str(rec.get("mls_id"))] = WRITE_REJECTIONS.get(str(rec.get("mls_id")), 0) + 1
+            logger.warning("MLS row %s/%s refused by the database: %s",
+                           rec.get("mls_id"), rec.get("mls_number"), type(exc).__name__)
+            continue
         upserted += 1
     return upserted
+
+
+async def _write_one(conn: Any, rec: dict, license_classification: str, modified: Any) -> None:
+    await conn.execute(
+        _UPSERT,
+        rec["mls_id"], rec["mls_number"], rec["address"], rec["city"],
+        rec["state_code"], rec["zip_code"], rec["county"], rec["latitude"],
+        rec["longitude"], rec["list_price"], rec["orig_list_price"], rec["status"],
+        rec["property_type"], rec["beds"], rec["baths_full"], rec["baths_half"],
+        rec["sqft"], rec["lot_sqft"], rec["year_built"], rec["hoa_monthly"],
+        rec["days_on_market"], rec["list_date"], rec["close_date"],
+        rec["close_price"], rec["description"], rec["photos"],
+        json.dumps(rec["features"], separators=(",", ":")),
+        license_classification,
+        modified,
+    )
 
 
 async def record_sync_status(
@@ -228,8 +260,12 @@ async def upsert_mls_records_and_status(
     """
     from mls_licensing import classify_from_env
     licence = classify_from_env(status_kwargs.get("dataset") or mls_id)
+    refused_before = WRITE_REJECTIONS.get(mls_id, 0)
     upserted = await upsert_mls_records(
         conn, records, license_classification=licence.classification)
+    refused = WRITE_REJECTIONS.get(mls_id, 0) - refused_before
+    if refused:
+        notes = {**(notes or {}), "rejected_on_write": refused}
     await record_sync_status(
         conn,
         mls_id=mls_id,

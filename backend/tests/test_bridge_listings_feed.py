@@ -193,7 +193,7 @@ def test_sync_follows_offset_paging_and_advances_only_after_exhaustion(monkeypat
         calls.append(kwargs)
         return pages[len(calls) - 1]
 
-    feed._cached_page = cached_page
+    feed._fetch_page = cached_page
     conn = FakeConnection(since=since)
 
     @asynccontextmanager

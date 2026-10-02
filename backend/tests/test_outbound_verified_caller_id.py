@@ -185,13 +185,17 @@ def patched_webhook(monkeypatch):
     updates: list[tuple[str, str]] = []
     cleanups: list[str] = []
 
-    def fake_update(call_sid: str, status: str) -> None:
+    async def fake_update(call_sid: str, status: str, outcome=None) -> None:
         updates.append((call_sid, status))
+        if outcome:
+            outcomes.append((call_sid, outcome))
 
     async def fake_cleanup(call_sid: str) -> None:
         cleanups.append(call_sid)
 
-    monkeypatch.setattr(ca, "_update_call_session", fake_update)
+    outcomes.clear()
+    # The webhook now awaits the write (a failure → 503 → Twilio retries).
+    monkeypatch.setattr(ca, "_update_call_session_async", fake_update)
 
     import twilio_call_handler
 
@@ -223,6 +227,9 @@ def test_all_eight_call_states_are_accepted_without_error(patched_webhook):
         assert response.status_code == 204
 
 
+outcomes: list = []
+
+
 def test_active_states_map_to_in_progress_and_terminal_states_map_to_completed(patched_webhook):
     updates, cleanups = patched_webhook
     call_sid = "CA" + "b" * 32
@@ -252,6 +259,7 @@ def test_active_states_map_to_in_progress_and_terminal_states_map_to_completed(p
             )
         )
         assert (sid, "completed") in updates, terminal
+        assert (sid, terminal) in outcomes, terminal       # busy ≠ completed any more
         assert sid in cleanups, terminal
 
 
@@ -278,9 +286,18 @@ def test_duplicate_status_callback_for_same_callsid_is_idempotent(patched_webhoo
     # row or a second CRM write — verified structurally here since the fake
     # webhook layer only proves "called twice", not "row count", which is
     # covered by _update_call_session_async's own UPDATE-only shape below.
-    source = inspect.getsource(ca._update_call_session_async)
+    import ast
+    import pathlib
+
+    # The fixture replaces the function with a fake; read the real one from
+    # the module file (reloading the module would break later tests).
+    tree = ast.parse(pathlib.Path(ca.__file__).read_text())
+    node = next(n for n in tree.body if isinstance(n, ast.AsyncFunctionDef)
+                and n.name == "_update_call_session_async")
+    source = ast.get_source_segment(pathlib.Path(ca.__file__).read_text(), node)
     assert "UPDATE live_call_sessions" in source
     assert "INSERT" not in source
+    assert "COALESCE(ended_at" in source       # duplicates no longer move ended_at
 
 
 def test_status_callback_event_subscription_covers_terminal_states():

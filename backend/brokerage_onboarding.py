@@ -434,8 +434,31 @@ async def _send_invitation(*, email: str, brokerage: str, inviter: str,
             timeout=40.0,
         )
     except Exception as exc:  # noqa: BLE001 — every failure is the same outcome here
-        log.error("Invitation email to %s failed: %s", email, exc)
+        log.error("Invitation email delivery failed: %s", type(exc).__name__)
+        _LAST_DELIVERY_ERROR[email.lower()] = type(exc).__name__
+        return None
+    _LAST_DELIVERY_ERROR.pop(email.lower(), None)
     return None
+
+
+# Outcome of the most recent send per address, read straight after the call by
+# _record_delivery (same task, so no interleaving with another send to it).
+_LAST_DELIVERY_ERROR: dict[str, str] = {}
+
+
+async def _record_delivery(ctx: TenantContext, email: str, link: Optional[str]) -> bool:
+    """Write whether the invitation email left, so the owner can see it."""
+    error = _LAST_DELIVERY_ERROR.pop(email.lower(), None)
+    state = "dev_captured" if link else ("failed" if error else "sent")
+    try:
+        async with tenant_tx(ctx) as conn:
+            await conn.execute(
+                "UPDATE brokerage_invitations SET delivery_status=$3, delivery_error=$4 "
+                "WHERE tenant_id=$1::uuid AND lower(email)=lower($2) AND consumed_at IS NULL "
+                "AND revoked_at IS NULL", ctx.tenant_id, email, state, error)
+    except Exception:  # noqa: BLE001 - visibility only
+        log.warning("could not record invitation delivery state")
+    return state != "failed"
 
 
 # ---------------------------------------------------------------------------
@@ -463,12 +486,13 @@ def _invite_row(row) -> dict[str, Any]:
         "created_at": row["created_at"],
         "last_sent_at": row["last_sent_at"],
         "send_count": row["send_count"],
+        "delivery_status": row.get("delivery_status"),
     }
 
 
 _INVITE_COLUMNS = (
     "id, email, invited_role, invited_by_agent_id, expires_at, "
-    "consumed_at, revoked_at, created_at, last_sent_at, send_count"
+    "consumed_at, revoked_at, created_at, last_sent_at, send_count, delivery_status"
 )
 
 
@@ -674,15 +698,21 @@ async def post_invitations(
     # after a successful send would leave a live link to a row that no longer
     # exists.
     dev_links: dict[str, str] = {}
+    undelivered: list[str] = []
     for email, raw_token in deliveries:
         link = await _send_invitation(
             email=email, brokerage=brokerage, inviter=ctx.agent_id,
             raw_token=raw_token, expires_at=expires_at,
         )
+        if not await _record_delivery(ctx, email, link):
+            undelivered.append(email)
         if link:
             dev_links[email] = link
     if dev_links:
         result["dev_links"] = dev_links
+    # The invitation exists either way; tell the owner which emails did not
+    # leave so they can resend instead of waiting on someone who never got it.
+    result["undelivered"] = undelivered
     return result
 
 
@@ -714,15 +744,21 @@ async def resend_invitation(
         deliveries = result.pop("_deliveries")
 
     dev_links = {}
+    undelivered: list[str] = []
     for email, raw_token in deliveries:
         link = await _send_invitation(
             email=email, brokerage=brokerage, inviter=ctx.agent_id,
             raw_token=raw_token, expires_at=expires_at,
         )
+        if not await _record_delivery(ctx, email, link):
+            undelivered.append(email)
         if link:
             dev_links[email] = link
     if dev_links:
         result["dev_links"] = dev_links
+    # The invitation exists either way; tell the owner which emails did not
+    # leave so they can resend instead of waiting on someone who never got it.
+    result["undelivered"] = undelivered
     return result
 
 

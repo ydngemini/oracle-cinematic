@@ -42,6 +42,13 @@ class SmtpSendError(RuntimeError):
     """The server accepted the connection but refused the message."""
 
 
+class SmtpUncertainError(SmtpSendError):
+    """The connection failed after the message may have been handed over.
+
+    Neither "sent" nor "not sent" is known; a blind retry could deliver it
+    twice. Callers that record side effects must reconcile, not resend."""
+
+
 def _clean(value: Any) -> str:
     return str(value or "").strip()
 
@@ -262,15 +269,35 @@ def send(
         reply_to=reply_to,
     )
 
+    # Phase 1 — connect, STARTTLS, login. Nothing has been handed over yet,
+    # so every failure here is a definite "not sent".
     try:
-        with connect(settings, timeout=timeout) as client:
-            client.send_message(message)
+        client = connect(settings, timeout=timeout)
     except SmtpConfigurationError:
         raise
     except smtplib.SMTPAuthenticationError as exc:
         # Overwhelmingly this is a Gmail account without an app password.
         raise SmtpConfigurationError(f"SMTP authentication rejected: {exc}") from exc
     except (smtplib.SMTPException, OSError, ssl.SSLError) as exc:
-        raise SmtpSendError(f"SMTP send failed: {exc}") from exc
+        raise SmtpSendError(f"SMTP connection failed: {exc}") from exc
 
+    # Phase 2 — MAIL / RCPT / DATA. An explicit refusal from the server is a
+    # definite "not sent". Losing the connection (timeout waiting for the 250
+    # after DATA, reset, disconnect) is not: the server may have queued it.
+    try:
+        client.send_message(message)
+    except (smtplib.SMTPRecipientsRefused, smtplib.SMTPSenderRefused,
+            smtplib.SMTPDataError, smtplib.SMTPHeloError, smtplib.SMTPNotSupportedError) as exc:
+        client.close()
+        raise SmtpSendError(f"SMTP server refused the message: {exc}") from exc
+    except (smtplib.SMTPException, OSError, ssl.SSLError) as exc:
+        client.close()
+        raise SmtpUncertainError(f"SMTP connection lost while sending: {type(exc).__name__}") from exc
+
+    # Phase 3 — the server accepted it. A failed QUIT no longer turns a
+    # delivered message into an error (it used to, and the job resent it).
+    try:
+        client.__exit__(None, None, None)  # QUIT + close, as `with` would
+    except (smtplib.SMTPException, OSError, ssl.SSLError):
+        client.close()
     return str(message["Message-ID"])

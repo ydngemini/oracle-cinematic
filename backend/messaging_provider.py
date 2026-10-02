@@ -291,6 +291,11 @@ def _verification_client(api_key: str, public_key: str):
     return telnyx.Telnyx(api_key=api_key, public_key=public_key)
 
 
+# Below our 25 s wait, so the SDK gives up (and the thread ends) before the
+# caller stops waiting — no orphaned request still running in the background.
+TELNYX_TIMEOUT = 20.0
+
+
 class TelnyxMessagingProvider(MessagingProvider):
     """New: SMS/MMS send, Hosted Messaging, and 10DLC via the real Telnyx SDK.
 
@@ -315,7 +320,13 @@ class TelnyxMessagingProvider(MessagingProvider):
         import telnyx
 
         api_key = cls._api_key(credentials)
-        return telnyx.Telnyx(api_key=api_key, public_key=public_key)
+        # max_retries=0: the SDK otherwise re-POSTs on 408/409/429/5xx and on
+        # connection errors with no idempotency header (it builds a key but
+        # never sends it), so one approved SMS could go out three times — and
+        # keep going out after our 25 s wait had already recorded the attempt.
+        # Retrying is the job system's decision, made with reconciliation.
+        return telnyx.Telnyx(api_key=api_key, public_key=public_key, max_retries=0,
+                             timeout=TELNYX_TIMEOUT)
 
     async def send_message(
         self,
@@ -350,7 +361,13 @@ class TelnyxMessagingProvider(MessagingProvider):
             try:
                 return client.messages.send_long_code(**kwargs)
             except APIStatusError as exc:
-                raise ProviderRejectedError(f"Telnyx rejected the message: {exc}") from exc
+                # Only a definite 4xx means nothing was sent. 5xx/408/409/429
+                # may have been accepted: reconcile, do not resend.
+                code = int(getattr(exc, "status_code", 0) or 0)
+                if code >= 500 or code in (408, 409, 429):
+                    raise ProviderRequestError(
+                        f"Telnyx did not confirm the message (HTTP {code}); it may have been sent.") from exc
+                raise ProviderRejectedError(f"Telnyx rejected the message (HTTP {code}).") from exc
 
         response = await asyncio.wait_for(asyncio.to_thread(_send), timeout=25.0)
         data = getattr(response, "data", None)
@@ -446,8 +463,12 @@ class TelnyxMessagingProvider(MessagingProvider):
             "delivery_failed": MSG_FAILED,
             "sent": MSG_SENT,
             "queued": MSG_QUEUED,
+            # Carrier never confirmed: still "sent", never invented as failed.
+            "delivery_unconfirmed": MSG_SENT,
         }
-        normalized = status_map.get(to_status, MSG_SENT if event_type == "message.sent" else MSG_FAILED)
+        # An unrecognised final status is not evidence of failure — keep it as
+        # sent (delivery unconfirmed) rather than telling the agent it failed.
+        normalized = status_map.get(to_status, MSG_SENT)
         errors = getattr(payload, "errors", None) or []
         error_reason = str(getattr(errors[0], "detail", "") or "") if errors else None
         return NormalizedDeliveryEvent(

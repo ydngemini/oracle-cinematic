@@ -76,6 +76,24 @@ async def require_platform_admin(
     return ctx
 
 
+@router.get("/health/components")
+async def health_components(ctx: TenantContext = Depends(require_platform_admin)):
+    """Every dependency in the normalized health model, plus open alerts."""
+    import component_health
+    from db.connection import tenant_tx
+
+    snap = await component_health.snapshot(fresh=True)
+    alerts = []
+    try:
+        async with tenant_tx(ctx) as conn:
+            alerts = [dict(r) for r in await conn.fetch(
+                "SELECT component, state, summary, opened_at, last_seen_at, notified_at, notify_error "
+                "FROM ops_alerts WHERE resolved_at IS NULL ORDER BY opened_at")]
+    except Exception:  # noqa: BLE001 - components still answer without the alert table
+        pass
+    return {**snap, "open_alerts": alerts}
+
+
 @router.get("/runtime-load")
 async def runtime_load(ctx: TenantContext = Depends(require_platform_admin)):
     """What this replica is actually carrying, right now.

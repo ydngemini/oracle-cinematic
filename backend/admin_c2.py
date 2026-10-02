@@ -122,7 +122,8 @@ async def _query_hpa_metrics() -> dict:
     )
 
     headers = {"Authorization": f"Bearer {token}"}
-    verify = K8S_CA_PATH if os.path.exists(K8S_CA_PATH) else False
+    # Never fall back to unverified TLS with a bearer token on the wire.
+    verify = K8S_CA_PATH if os.path.exists(K8S_CA_PATH) else True
 
     try:
         async with httpx.AsyncClient(verify=verify, timeout=5.0) as client:
@@ -171,7 +172,8 @@ async def _query_pod_count() -> dict:
     )
 
     headers = {"Authorization": f"Bearer {token}"}
-    verify = K8S_CA_PATH if os.path.exists(K8S_CA_PATH) else False
+    # Never fall back to unverified TLS with a bearer token on the wire.
+    verify = K8S_CA_PATH if os.path.exists(K8S_CA_PATH) else True
 
     try:
         async with httpx.AsyncClient(verify=verify, timeout=5.0) as client:

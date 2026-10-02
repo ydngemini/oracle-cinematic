@@ -376,7 +376,7 @@ def test_twilio_calls_api_uses_separate_twiml_and_status_urls(monkeypatch):
             return SimpleNamespace(sid=CALL_SID)
 
     class _Client:
-        def __init__(self, *_args):
+        def __init__(self, *_args, **_kwargs):
             self.calls = _Calls()
 
     import twilio.rest
@@ -411,7 +411,7 @@ def test_twilio_calls_api_uses_separate_twiml_and_status_urls(monkeypatch):
 
 def test_twilio_trial_rejects_before_calls_api_side_effect(monkeypatch):
     class _Client:
-        def __init__(self, *_args):
+        def __init__(self, *_args, **_kwargs):
             raise AssertionError("Twilio client must not be created for a trial call")
 
     import twilio.rest
@@ -441,3 +441,66 @@ def test_definite_provider_rejection_is_not_reconciliation_required():
     assert not commands_api._provider_submission_is_uncertain(True, rejected)
     assert commands_api._provider_submission_is_uncertain(True, uncertain)
     assert not commands_api._provider_submission_is_uncertain(False, uncertain)
+
+
+def _failing_inbound_bridge(monkeypatch, *, direction="inbound", failure=None):
+    """A Twilio bridge whose realtime session fails mid-call."""
+    import inbound_voice
+
+    bridge = TwilioQwenRealtimeBridge(
+        _BridgeWebSocket([]), CALL_SID, _start_event(),
+        settings=QwenRealtimeSettings(api_key="secret", workspace_id="workspace"),
+    )
+    redirects = []
+
+    async def state(_sid, **_kw):
+        return {"direction": direction}
+
+    async def noop(*_a, **_kw):
+        return None
+
+    async def session_fails(self):
+        raise failure or qwen_omni_realtime.QwenRealtimeError("realtime provider dropped the stream")
+
+    async def redirect(reason="caller_request"):
+        redirects.append(reason)
+
+    monkeypatch.setattr(twilio_call_handler, "load_twilio_call_state", state)
+    monkeypatch.setattr(inbound_voice, "mark_inbound_streaming", noop)
+    monkeypatch.setattr(inbound_voice, "finalize_inbound_voice_call", noop)
+    monkeypatch.setattr(qwen_omni_realtime.QwenOmniRealtimeBridge, "run", session_fails)
+    monkeypatch.setattr(bridge, "_redirect_to_agent", redirect)
+    return bridge, redirects
+
+
+def test_realtime_failure_mid_call_hands_inbound_caller_to_agent(monkeypatch):
+    """A realtime-provider failure used to fall through to "Goodbye" with the
+    caller still on the line; now the call is redirected to the agent
+    (reason ai_unavailable — the route's forward_when_ai_unavailable gate)."""
+    bridge, redirects = _failing_inbound_bridge(monkeypatch)
+    with pytest.raises(qwen_omni_realtime.QwenRealtimeError):
+        asyncio.run(bridge.run())
+    assert redirects == ["ai_unavailable"]
+
+
+def test_realtime_failure_on_outbound_call_does_not_redirect(monkeypatch):
+    bridge, redirects = _failing_inbound_bridge(monkeypatch, direction="outbound")
+    with pytest.raises(qwen_omni_realtime.QwenRealtimeError):
+        asyncio.run(bridge.run())
+    assert redirects == []
+
+
+def test_requested_handoff_is_not_treated_as_a_failure(monkeypatch):
+    bridge, redirects = _failing_inbound_bridge(
+        monkeypatch, failure=qwen_omni_realtime.QwenHandoffRequested("caller asked"))
+    asyncio.run(bridge.run())
+    assert redirects == []
+
+
+def test_caller_hangup_is_not_treated_as_a_provider_failure(monkeypatch):
+    from fastapi import WebSocketDisconnect
+
+    bridge, redirects = _failing_inbound_bridge(monkeypatch, failure=WebSocketDisconnect(1000))
+    with pytest.raises(WebSocketDisconnect):
+        asyncio.run(bridge.run())
+    assert redirects == []

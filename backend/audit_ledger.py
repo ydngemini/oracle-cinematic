@@ -239,6 +239,9 @@ class AuditLedger:
         if _dbc.get_pool() is not None:
             try:
                 async with _global_chain_conn() as conn:
+                    # Every audit write queues on this one lock; it must outlast
+                    # the request pool's short lock_timeout (db/connection.py).
+                    await conn.execute("SET LOCAL lock_timeout = '30s'")
                     await conn.execute(
                         "SELECT pg_advisory_xact_lock($1)", _AUDIT_CHAIN_LOCK_KEY
                     )

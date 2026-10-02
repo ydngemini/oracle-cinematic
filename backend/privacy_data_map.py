@@ -105,6 +105,7 @@ TABLES: dict[str, TableEntry] = {
     "negotiation_events": TableEntry(C.CALL_TRANSCRIPT, E),
     "command_executions": TableEntry(C.COMMUNICATION_CONTENT, E, "outbound drafts"),
     "telephony_routes": TableEntry(C.COMMUNICATION_METADATA, E, "numbers released first"),
+    "provider_purchases": TableEntry(C.FINANCIAL_BILLING, E, "number purchase intents; numbers released first"),
     "messaging_routes": TableEntry(C.COMMUNICATION_METADATA, E, "hosted SMS disconnected first"),
     "messaging_hosted_documents": TableEntry(C.DOCUMENT, E, "LOA/invoice objects deleted"),
     "tenant_messaging_brands": TableEntry(C.CONTACT_PII, E, "EIN, address"),
@@ -171,6 +172,7 @@ TABLES: dict[str, TableEntry] = {
     "audit_chain_checkpoints": TableEntry(C.AUDIT_SECURITY, G, "hash anchors of expired audit rows; no customer data"),
     "api_rate_limit_windows": TableEntry(C.OPERATIONAL, G, "minutes-long windows"),
     "process_heartbeats": TableEntry(C.OPERATIONAL, G),
+    "ops_alerts": TableEntry(C.OPERATIONAL, G, "component incidents; no customer data"),
     "operator_otp_challenges": TableEntry(C.SECRET, G, "operator, not customer"),
     "operator_totp_uses": TableEntry(C.SECRET, G, "operator, not customer"),
     # ── secrets & capability tokens ──────────────────────────────────────

@@ -2151,7 +2151,8 @@ def _update_call_session(call_connection_id: str, status: str) -> None:
     _asyncio.ensure_future(_update_call_session_async(call_connection_id, status))
 
 
-async def _update_call_session_async(call_connection_id: str, status: str) -> None:
+async def _update_call_session_async(call_connection_id: str, status: str,
+                                     outcome: Optional[str] = None) -> None:
     platform_ctx = TenantContext(
         agent_id="acs-webhook",
         tenant_id=os.getenv(
@@ -2166,12 +2167,15 @@ async def _update_call_session_async(call_connection_id: str, status: str) -> No
             UPDATE live_call_sessions
                SET started_at=CASE WHEN $2='in-progress'
                                     THEN COALESCE(started_at,now()) ELSE started_at END,
-                   ended_at=CASE WHEN $2='completed'
-                                  THEN now() ELSE ended_at END
+                   -- The first final callback wins; duplicates do not move it.
+                   ended_at=CASE WHEN $2 IN ('completed','failed')
+                                  THEN COALESCE(ended_at, now()) ELSE ended_at END,
+                   outcome=COALESCE(outcome, $3)
              WHERE provider_call_id=$1
             """,
             call_connection_id,
             status,
+            outcome,
         )
 
 
@@ -2479,17 +2483,23 @@ async def _execute_command_job(payload: dict[str, Any], reporter) -> dict[str, A
                 )
                 from messaging_data import record_outbound_message
 
-                await record_outbound_message(
-                    tenant_id=ctx.tenant_id,
-                    agent_id=ctx.agent_id,
-                    contact_id=str(target.get("contact_id")) if target.get("contact_id") else None,
-                    client_id=str(target.get("client_id")) if target.get("client_id") else None,
-                    provider="telnyx",
-                    provider_message_id=provider_result.reference,
-                    from_e164=sender_number,
-                    to_e164=str(target["phone"]),
-                    body=str(draft.get("body") or ""),
-                )
+                # Telnyx has the message. A failure to write our log row must
+                # not turn a sent text into an error (and lose its id): the
+                # command still records provider_reference below.
+                try:
+                    await record_outbound_message(
+                        tenant_id=ctx.tenant_id,
+                        agent_id=ctx.agent_id,
+                        contact_id=str(target.get("contact_id")) if target.get("contact_id") else None,
+                        client_id=str(target.get("client_id")) if target.get("client_id") else None,
+                        provider="telnyx",
+                        provider_message_id=provider_result.reference,
+                        from_e164=sender_number,
+                        to_e164=str(target["phone"]),
+                        body=str(draft.get("body") or ""),
+                    )
+                except Exception:  # noqa: BLE001 - logged; the send itself succeeded
+                    logger.exception("SMS %s sent but its log row failed to write", provider_result.reference)
             else:
                 twilio_raw = await _load_provider_credential(ctx, "twilio")
                 twilio_credentials = None
@@ -2617,6 +2627,11 @@ async def _execute_command_job(payload: dict[str, Any], reporter) -> dict[str, A
                     )
 
                     await ensure_twilio_call_state_available()
+                    # From here a call may exist at Twilio even if no answer
+                    # comes back: a timeout or dropped response must become
+                    # reconciliation_required, never a clean "failed" that the
+                    # job retries into a second call (resilience drill 2026-10-02).
+                    submission_started = True
                     provider_result = await place_twilio_call(
                         {**draft, "target": target}, credentials=twilio_credentials
                     )
@@ -2643,6 +2658,7 @@ async def _execute_command_job(payload: dict[str, Any], reporter) -> dict[str, A
                     # A custom call URL is configured as the fallback; let its own
                     # ProviderConfigurationError (if any) propagate instead of
                     # Twilio's, since it is the error that actually applies.
+                    submission_started = True
                     provider_result = await place_custom_http_call(
                         {**draft, "target": target}
                     )
@@ -2903,10 +2919,12 @@ async def twilio_status_webhook(request: Request):
     call_sid = str(form.get("CallSid") or "")
     call_status = str(form.get("CallStatus") or "").strip().lower()
     if call_sid:
+        # Awaited, not fire-and-forget: if the write fails the exception
+        # becomes a 503 and Twilio retries, instead of the outcome vanishing.
         if call_status in {"in-progress", "answered"}:
-            _update_call_session(call_sid, "in-progress")
+            await _update_call_session_async(call_sid, "in-progress")
         elif call_status in {"completed", "busy", "failed", "no-answer", "canceled"}:
-            _update_call_session(call_sid, "completed")
+            await _update_call_session_async(call_sid, "completed", outcome=call_status)
             await cleanup_twilio_call(call_sid)
     logger.info(
         "Twilio call status received: sid=%s status=%s",
