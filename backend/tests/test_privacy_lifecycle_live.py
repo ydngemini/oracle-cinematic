@@ -32,7 +32,10 @@ pytestmark = pytest.mark.skipif(not DSN, reason="needs ORACLE_LIVE_DB_ADMIN_DSN 
 MASTER = "f" * 64
 
 
-def test_full_lifecycle_against_real_postgres(monkeypatch, tmp_path):
+def test_full_lifecycle_against_real_postgres(monkeypatch, tmp_path, caplog):
+    import logging
+
+    caplog.set_level(logging.INFO, logger="oracle.privacy.events")
     monkeypatch.setenv("ORACLE_ENCRYPTION_MASTER_KEY", MASTER)
     monkeypatch.setenv("ORACLE_CLOSURE_GRACE_DAYS", "30")
     import object_storage
@@ -40,6 +43,13 @@ def test_full_lifecycle_against_real_postgres(monkeypatch, tmp_path):
     monkeypatch.setattr(object_storage, "BACKEND", "local")
     monkeypatch.setattr(object_storage, "MEDIA_ROOT", tmp_path)
     asyncio.run(_scenario(monkeypatch, tmp_path))
+    events = [json.loads(r.getMessage())["event"] for r in caplog.records if r.name == "oracle.privacy.events"]
+    for expected in ("offboarding.completed", "export.requested", "export.completed",
+                     "deletion.scheduled", "deletion.started", "deletion.completed"):
+        assert expected in events, (expected, events)
+    # telemetry carries no customer content
+    assert not any("SENTINEL" in r.getMessage() or "@" in r.getMessage()
+                   for r in caplog.records if r.name == "oracle.privacy.events")
 
 
 async def _scenario(monkeypatch, media_root):
@@ -180,6 +190,18 @@ async def _scenario(monkeypatch, media_root):
         assert reopened["state"] == "active" and reopened["restored_users"] == 1
         assert await admin.fetchval("SELECT active FROM telephony_routes WHERE id=$1", ids["route"]) is True
         assert await _claimable(admin, late_job) is True
+        # a record-id subject request finds the same person as their address
+        by_id = await privacy_requests.handle_subject_request(
+            octx, kind="dsr_access", email=None, phone=None, reason="asked", preview=True,
+            contact_id=ids["k1"])
+        assert by_id["matches"]["clients"] == 1 and by_id["matches"]["agent_contacts"] == 1
+
+        # dry run before closing: counts only, nothing changes
+        dry = await pl.erasure_preview(T)
+        assert dry["highlights"]["clients"] == 1 and dry["highlights"]["users"] == 3
+        assert dry["stored_objects"] == 1 and dry["retained_after_erasure"]["subscriptions"] == 1
+        assert sentinel not in json.dumps(dry)
+        assert await admin.fetchval("SELECT count(*) FROM clients WHERE tenant_id=$1", T) == 1
         await pl.request_closure(octx, confirm_name=f"Brokerage {sentinel}", reason="closing for good")
 
         # ── 6. Legal hold blocks erasure; release; erase ──────────────────

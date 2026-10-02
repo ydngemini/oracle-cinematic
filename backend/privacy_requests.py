@@ -47,7 +47,8 @@ _RETAINED = (
 )
 
 
-async def _discover(conn, tenant_id: str, email: Optional[str], phone: Optional[str]) -> dict[str, Any]:
+async def _discover(conn, tenant_id: str, email: Optional[str], phone: Optional[str],
+                    contact_id: Optional[str] = None, client_id: Optional[str] = None) -> dict[str, Any]:
     from contact_truth import lookup_hash, normalize_email, normalize_phone
 
     e = normalize_email(email) if email else None
@@ -63,6 +64,9 @@ async def _discover(conn, tenant_id: str, email: Optional[str], phone: Optional[
               ($2::text IS NOT NULL AND lower(email) = $2)
            OR ($3::text <> '' AND regexp_replace(coalesce(phone,''), '\\D', '', 'g') IN ($3, '1' || $3)))
         """, tenant_id, e, national)]
+    if client_id:
+        clients += [r[0] for r in await conn.fetch(
+            "SELECT id FROM clients WHERE tenant_id=$1 AND id=$2::uuid", tenant_id, client_id)]
     contacts = [r[0] for r in await conn.fetch(
         """
         SELECT id FROM agent_contacts WHERE tenant_id=$1 AND (
@@ -70,6 +74,10 @@ async def _discover(conn, tenant_id: str, email: Optional[str], phone: Optional[
            OR ($3::text IS NOT NULL AND phone_lookup_hash = $3)
            OR legacy_client_id = ANY($4::uuid[]))
         """, tenant_id, he, hp, clients)]
+    if contact_id:
+        contacts += [r[0] for r in await conn.fetch(
+            "SELECT id FROM agent_contacts WHERE tenant_id=$1 AND id=$2::uuid", tenant_id, contact_id)]
+        contacts = sorted(set(contacts), key=str)
     more_clients = [r[0] for r in await conn.fetch(
         "SELECT id FROM clients WHERE tenant_id=$1 AND contact_id = ANY($2::uuid[])", tenant_id, contacts)]
     clients = sorted(set(clients) | set(more_clients), key=str)
@@ -83,7 +91,35 @@ async def _discover(conn, tenant_id: str, email: Optional[str], phone: Optional[
     found["email_outbox"] = [r[0] for r in await conn.fetch(
         "SELECT id FROM email_outbox WHERE tenant_id=$1 AND (($2::text IS NOT NULL AND lower(to_email)=$2) "
         "OR client_id = ANY($3::uuid[]))", tenant_id, e, clients)]
-    identifiers = [v for v in (e, p) if v]
+    # Every address the person is known by — the ones asked about, and the
+    # ones on their records (a request by record id names none) — so the
+    # opt-out tombstone covers them all.
+    found_ids: set[str] = {v for v in (e, p) if v}
+    for row in await conn.fetch("SELECT email, phone FROM clients WHERE tenant_id=$1 AND id = ANY($2::uuid[])",
+                                tenant_id, clients):
+        for value, norm in ((row["email"], normalize_email), (row["phone"], normalize_phone)):
+            try:
+                if value and norm(value):
+                    found_ids.add(norm(value))
+            except ValueError:
+                pass
+    if contacts:
+        from contact_truth import open_json
+
+        for row in await conn.fetch(
+                "SELECT pii_ciphertext FROM agent_contacts WHERE tenant_id=$1 AND id = ANY($2::uuid[]) "
+                "AND pii_ciphertext IS NOT NULL", tenant_id, contacts):
+            try:
+                pii = await open_json(conn, tenant_id, row["pii_ciphertext"])
+            except Exception:  # noqa: BLE001 - undecryptable contact: its identifiers stay unknown
+                continue
+            for key, norm in (("email", normalize_email), ("phone", normalize_phone)):
+                try:
+                    if pii.get(key) and norm(pii[key]):
+                        found_ids.add(norm(pii[key]))
+                except ValueError:
+                    pass
+    identifiers = sorted(found_ids)
     for table in ("outreach_consent", "outreach_suppression", "outreach_attempt_log"):
         found[table] = [r[0] for r in await conn.fetch(
             f"SELECT id FROM {table} WHERE tenant_id=$1 AND contact = ANY($2::text[])", tenant_id, identifiers)]
@@ -109,12 +145,13 @@ def subject_ref(tenant_id: str, email: Optional[str], phone: Optional[str]) -> s
 
 
 async def handle_subject_request(ctx: TenantContext, *, kind: str, email: Optional[str],
-                                 phone: Optional[str], reason: str, preview: bool) -> dict:
+                                 phone: Optional[str], reason: str, preview: bool,
+                                 contact_id: Optional[str] = None, client_id: Optional[str] = None) -> dict:
     from privacy_lifecycle import LifecycleError, _audit, _create_operation, _finish_operation, active_legal_hold
 
-    ref = subject_ref(ctx.tenant_id, email, phone)
+    ref = subject_ref(ctx.tenant_id, email, phone or contact_id or client_id)
     async with tenant_tx(ctx) as conn:
-        found = await _discover(conn, ctx.tenant_id, email, phone)
+        found = await _discover(conn, ctx.tenant_id, email, phone, contact_id, client_id)
     counts = {t: len(ids) for t, ids in found["ids"].items() if ids}
     caveat = ("Found by email/phone only. Names or details typed into free-text notes, chat "
               "messages or documents are not discoverable by identifier; search for those manually.")

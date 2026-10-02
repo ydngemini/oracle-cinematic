@@ -109,6 +109,9 @@ async def request_export(ctx: TenantContext, *, include_media: bool = True) -> d
     await enqueue_job(_platform_ctx(), job_type=JOB_EXPORT, payload={"operation_id": str(op["id"])},
                       idempotency_key=f"privacy-export:{op['id']}", created_by=ctx.agent_id,
                       max_attempts=3, priority=60)
+    from privacy_lifecycle import emit_event
+
+    emit_event("export.requested", operation_id=str(op["id"]), tenant_id=ctx.tenant_id)
     await _audit(ctx, "privacy.export.requested", str(op["id"]))
     return {"operation_id": str(op["id"]), "state": "running"}
 
@@ -181,6 +184,9 @@ async def build_export(operation_id: str) -> dict:
                                 result={"rows": rows, "tables": len(manifest["files"]), "bytes": size,
                                         "sha256": digest, "media": manifest["media"]},
                                 receipt={"sha256": digest, "expires_at": expires.isoformat()})
+    from privacy_lifecycle import emit_event
+
+    emit_event("export.completed", operation_id=operation_id, tenant_id=tenant_id, rows=rows, bytes=size)
     return {"state": "succeeded", "rows": rows, "sha256": digest}
 
 
@@ -320,9 +326,12 @@ async def _export_job(job: dict, reporter) -> dict:
     except Exception as exc:
         from privacy_lifecycle import _finish_operation
 
+        from privacy_lifecycle import emit_event
+
         async with tenant_tx(_platform_ctx()) as conn:
             await _finish_operation(conn, op_id, state="failed", result={},
                                     error=f"export failed: {type(exc).__name__}")
+        emit_event("export.failed", operation_id=op_id, reason_code=type(exc).__name__)
         raise
 
 

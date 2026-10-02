@@ -54,8 +54,13 @@ describe('AccountDataPanel', () => {
   });
 
   it('closes only after the exact brokerage name, a reason and the password', async () => {
+    api.crmGet.mockImplementation((path) => Promise.resolve(path.endsWith('/closure/preview')
+      ? { highlights: { clients: 120, agent_contacts: 80, sms_messages: 900, inbound_voice_calls: 12,
+        ai_chat_messages: 40, users: 4 }, stored_objects: 33 }
+      : ACTIVE));
     render(<AccountDataPanel />);
     fireEvent.click(await screen.findByRole('button', { name: /Close this brokerage/ }));
+    expect((await screen.findByTestId('closure-preview')).textContent).toMatch('120 clients');
     const close = screen.getByRole('button', { name: 'Close brokerage' });
     expect(screen.getByText(/permanently erased/)).toBeTruthy();
     typePassword();

@@ -62,6 +62,18 @@ class LifecycleError(RuntimeError):
         self.status_code = status_code
 
 
+_events = logging.getLogger("oracle.privacy.events")
+
+
+def emit_event(name: str, **fields: Any) -> None:
+    """Aggregate lifecycle telemetry: event name, ids and counts — never
+    customer content (no names, addresses, message text). One JSON line on
+    the oracle.privacy.events logger, which the log pipeline can count."""
+    safe = {k: v for k, v in fields.items() if isinstance(v, (int, float, bool)) or k.endswith("_id")
+            or k in ("kind", "state", "phase", "reason_code")}
+    _events.info(json.dumps({"event": name, **safe}, default=str, sort_keys=True))
+
+
 def _platform_ctx(actor: str = "privacy-lifecycle") -> TenantContext:
     return TenantContext(agent_id=actor, tenant_id=PLATFORM_TENANT_ID, role=Role.PLATFORM_ADMIN)
 
@@ -396,6 +408,9 @@ async def offboard_agent(ctx: TenantContext, *, departing_agent_id: str, success
         await conn.execute(
             "UPDATE privacy_operations SET result = result || $2::jsonb, updated_at=now() WHERE id=$1",
             op["id"], json.dumps({"credential_revocation": revocations}))
+    emit_event("offboarding.completed", operation_id=str(op["id"]), tenant_id=ctx.tenant_id,
+               reassigned=sum(plan.reassign.values()), cancelled=sum(plan.pending.values()),
+               credential_revocations_failed=sum(1 for r in revocations if r["status"] == "revoke_failed"))
     await _audit(ctx, "team.member.offboarded", target=str(plan.departing["id"]),
                  metadata={"successor": plan.successor["agent_id"], "reason": reason,
                            "reassigned": plan.reassign, "cancelled": plan.pending,
@@ -597,6 +612,7 @@ async def request_closure(ctx: TenantContext, *, confirm_name: str, reason: str)
             json.dumps({"freeze": {"cancelled": cancelled, "revoked": revoked, "routes": routes,
                                    "signed_out_user_ids": signed_out}}))
     billing = await _cancel_billing_at_period_end(ctx.tenant_id)
+    emit_event("deletion.scheduled", operation_id=str(op["id"]), tenant_id=ctx.tenant_id, grace_days=grace)
     await _audit(ctx, "brokerage.closure.requested", target=ctx.tenant_id,
                  metadata={"erase_after": erase_after.isoformat(), "operation_id": str(op["id"]),
                            "billing": billing})
@@ -683,6 +699,48 @@ PHASES = ("freeze", "providers", "objects", "tombstones", "rows", "pseudonymize"
           "caches", "tenant_row", "verify", "receipt")
 
 
+async def erasure_preview(tenant_id: str) -> dict:
+    """What erasing this brokerage would remove — counts by category and the
+    number of stored objects. No names, no content. Shown to the owner before
+    they close and to an operator before starting erasure early."""
+    from privacy_data_map import TABLES, Disposition
+
+    ctx = _platform_ctx("erasure-preview")
+    by_category: dict[str, int] = {}
+    by_table: dict[str, int] = {}
+    async with tenant_tx(ctx) as conn:
+        tables, _ = await _erasure_catalog(conn)
+        types = {r[0]: r[1] for r in await conn.fetch(
+            "SELECT c.relname, format_type(a.atttypid, a.atttypmod) FROM pg_class c "
+            "JOIN pg_attribute a ON a.attrelid=c.oid AND a.attname='tenant_id' AND NOT a.attisdropped "
+            "WHERE c.relkind='r' AND c.relnamespace='public'::regnamespace")}
+        for table in tables:
+            if not _SAFE_NAME.match(table) or table not in types:
+                continue
+            n = int(await conn.fetchval(
+                f'SELECT count(*) FROM public."{table}" WHERE tenant_id = $1::{types[table]}', tenant_id) or 0)
+            if not n:
+                continue
+            by_table[table] = n
+            entry = TABLES.get(table)
+            category = entry.category.value if entry else "unclassified"
+            by_category[category] = by_category.get(category, 0) + n
+        media_keys, vault_keys = await _object_keys(conn, tenant_id)
+        retained = {t: int(await conn.fetchval(
+            f'SELECT count(*) FROM public."{t}" WHERE tenant_id = $1::uuid', tenant_id) or 0)
+            for t in ("subscriptions", "billing_usage_events", "audit_ledger", "suppression_tombstones")}
+        hold = await active_legal_hold(conn, tenant_id)
+    people = {k: by_table.get(k, 0) for k in ("users", "clients", "agent_contacts", "sms_messages",
+                                               "inbound_voice_calls", "email_outbox", "ai_chat_messages")}
+    return {"tenant_id": tenant_id, "rows_by_category": by_category, "highlights": people,
+            "stored_objects": len(media_keys) + len(vault_keys),
+            "stored_bytes": None,  # not recorded per object; the receipt reports what was deleted
+            "retained_after_erasure": retained,
+            "outreach_opt_outs_kept_as_hashes": True,
+            "legal_hold": bool(hold),
+            "note": "Counts only; ai_record_attachments are counted at erasure time (agent-scoped)."}
+
+
 async def start_due_erasures() -> list[str]:
     """Periodic: closing tenants past their grace period begin erasure. A
     tenant under legal hold is left in 'closing' with a blocked operation."""
@@ -731,6 +789,7 @@ async def begin_erasure(tenant_id: str, *, requested_by: str) -> Optional[str]:
             op_id = str(op["id"])
         await conn.execute("UPDATE tenants SET lifecycle_state='erasing', updated_at=now() WHERE id=$1",
                            tenant_id)
+    emit_event("deletion.started", operation_id=op_id, tenant_id=tenant_id)
     await enqueue_job(ctx, job_type=JOB_ERASE, payload={"operation_id": op_id},
                       idempotency_key=f"privacy-erase:{op_id}", created_by=requested_by,
                       max_attempts=20, priority=80)
@@ -1126,6 +1185,14 @@ async def _phase_receipt(ctx, op_id, tenant_id, progress) -> dict:
 
     directive_written = await asyncio.to_thread(_write_erasure_directive, op_id, tenant_id, receipt)
     clean = bool(progress.get("verify", {}).get("clean"))
+    provider_failures = int(progress.get("providers", {}).get("failed", 0))
+    emit_event("deletion.completed" if clean else "deletion.failed", operation_id=op_id, tenant_id=tenant_id,
+               rows_deleted=sum((progress.get("rows", {}).get("deleted") or {}).values()),
+               objects_deleted=int(progress.get("objects", {}).get("deleted", 0)),
+               rows_left=sum((progress.get("verify", {}).get("rows_left") or {}).values()))
+    if provider_failures:
+        emit_event("deletion.external_cleanup_pending", operation_id=op_id, tenant_id=tenant_id,
+                   provider_failures=provider_failures)
     async with tenant_tx(ctx) as conn:
         await _finish_operation(conn, op_id, state="succeeded" if clean else "failed",
                                 result={"clean": clean, "directive_written": directive_written},

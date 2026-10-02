@@ -660,9 +660,13 @@ async def _privacy_lifecycle_task() -> dict:
         audit_days = days[R.AUDIT_SECURITY]
         audit_expired = (await conn.fetchval("SELECT privacy_expire_audit($1)", max(365, audit_days))
                          if audit_days is not None else 0)
+    swept = _json.loads(swept) if isinstance(swept, str) else swept
+    from privacy_lifecycle import emit_event
+
+    emit_event("retention.purge_executed", exports_expired=expired, audit_rows_expired=int(audit_expired or 0),
+               **{f"swept_{k}": int(v) for k, v in (swept or {}).items()})
     return {"erasures_started": len(started), "exports_expired": expired,
-            "swept": _json.loads(swept) if isinstance(swept, str) else swept,
-            "audit_rows_expired": audit_expired}
+            "swept": swept, "audit_rows_expired": audit_expired}
 
 
 async def _retention_cleanup_task() -> dict:

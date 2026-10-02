@@ -73,6 +73,8 @@ class SubjectRequest(_Body):
     kind: Literal["dsr_access", "dsr_delete"]
     email: Optional[str] = Field(default=None, max_length=320)
     phone: Optional[str] = Field(default=None, max_length=32)
+    contact_id: Optional[str] = Field(default=None, max_length=36)
+    client_id: Optional[str] = Field(default=None, max_length=36)
     reason: str = Field(min_length=3, max_length=500)
     preview: bool = True
     password: Optional[str] = Field(default=None, max_length=256)
@@ -98,6 +100,15 @@ async def lifecycle(ctx: TenantContext = Depends(require_context)) -> dict:
     except Exception as exc:  # noqa: BLE001
         _raise(exc)
     return {**state, "operations": await list_operations(ctx)}
+
+
+@router.get("/closure/preview")
+async def closure_preview(ctx: TenantContext = Depends(require_context)) -> dict:
+    """What closing would eventually erase — counts only."""
+    from privacy_lifecycle import erasure_preview
+
+    _owner(ctx)
+    return await erasure_preview(ctx.tenant_id)
 
 
 @router.post("/exports", status_code=202)
@@ -182,13 +193,15 @@ async def subject_request(body: SubjectRequest, ctx: TenantContext = Depends(req
     from privacy_requests import handle_subject_request
 
     _owner(ctx)
-    if not (body.email or body.phone):
-        raise HTTPException(422, "Give the person's email or phone number.")
+    if not (body.email or body.phone or body.contact_id or body.client_id):
+        raise HTTPException(422, "Give the person's email, phone number, or record id.")
     if body.kind == "dsr_delete" and not body.preview:
         await confirm_password(ctx, body.password or "")
     try:
-        return await handle_subject_request(ctx, kind=body.kind, email=body.email, phone=body.phone,
-                                            reason=body.reason, preview=body.preview)
+        return await handle_subject_request(
+            ctx, kind=body.kind, email=body.email, phone=body.phone, reason=body.reason, preview=body.preview,
+            contact_id=_uuid(body.contact_id) if body.contact_id else None,
+            client_id=_uuid(body.client_id) if body.client_id else None)
     except Exception as exc:  # noqa: BLE001
         _raise(exc)
 
@@ -262,6 +275,29 @@ async def purge_mls_feed(mls_id: str, body: MlsPurgeRequest,
     if not body.preview:
         await _admin_audit(ctx, "privacy.mls.purged", mls_id, {"deleted": out.get("deleted")})
     return out
+
+
+@admin_router.get("/erasures/{tenant_id}/preview")
+async def admin_erasure_preview(tenant_id: str, ctx: TenantContext = Depends(require_platform_admin)) -> dict:
+    from privacy_lifecycle import erasure_preview
+
+    return await erasure_preview(_uuid(tenant_id))
+
+
+@admin_router.get("/summary")
+async def privacy_summary(ctx: TenantContext = Depends(require_platform_admin)) -> dict:
+    """Aggregate lifecycle telemetry: operations by kind and state, open
+    holds, overdue requests. No tenant names, no content."""
+    async with tenant_tx(ctx) as conn:
+        ops = await conn.fetch(
+            "SELECT kind, state, count(*) AS n FROM privacy_operations GROUP BY 1, 2 ORDER BY 1, 2")
+        holds = await conn.fetchval("SELECT count(*) FROM legal_holds WHERE released_at IS NULL")
+        closing = await conn.fetchval("SELECT count(*) FROM tenants WHERE lifecycle_state='closing'")
+        overdue = await conn.fetchval(
+            "SELECT count(*) FROM privacy_operations WHERE kind IN ('dsr_access','dsr_delete') "
+            "AND state IN ('requested','running') AND requested_at < now() - interval '30 days'")
+    return {"operations": [dict(r) for r in ops], "active_legal_holds": holds,
+            "tenants_closing": closing, "subject_requests_older_than_30_days": overdue}
 
 
 @admin_router.get("/operations")

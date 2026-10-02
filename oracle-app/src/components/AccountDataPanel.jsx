@@ -27,6 +27,7 @@ export function AccountDataPanel() {
   const [closing, setClosing] = useState(false);
   const [confirmName, setConfirmName] = useState('');
   const [reason, setReason] = useState('');
+  const [preview, setPreview] = useState(null);
 
   const load = useCallback(() => (
     crmGet('/api/privacy/lifecycle')
@@ -178,7 +179,13 @@ export function AccountDataPanel() {
             </div>
           </>
         ) : !closing ? (
-          <button type="button" className={styles.link} onClick={() => setClosing(true)}>
+          <button
+            type="button" className={styles.link}
+            onClick={() => {
+              setClosing(true);
+              crmGet('/api/privacy/closure/preview').then(setPreview).catch(() => setPreview(null));
+            }}
+          >
             Close this brokerage…
           </button>
         ) : (
@@ -192,6 +199,15 @@ export function AccountDataPanel() {
               <li>After that everything is permanently erased. Billing records and opt-out
                 lists are kept as the law requires; you will get a receipt.</li>
             </ul>
+            {preview && (
+              <p className={styles.text} data-testid="closure-preview">
+                This would permanently erase {preview.highlights?.clients ?? 0} clients,{' '}
+                {preview.highlights?.agent_contacts ?? 0} contacts, {preview.highlights?.sms_messages ?? 0} text
+                messages, {preview.highlights?.inbound_voice_calls ?? 0} calls,{' '}
+                {preview.highlights?.ai_chat_messages ?? 0} Neoh conversations, {preview.stored_objects ?? 0} files,
+                and the accounts of {preview.highlights?.users ?? 0} people.
+              </p>
+            )}
             <label className={styles.field}>
               <span className={styles.micro}>Type the brokerage name: {state?.name}</span>
               <input className={styles.input} value={confirmName} onChange={(e) => setConfirmName(e.target.value)} />
