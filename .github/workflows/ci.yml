@@ -263,6 +263,13 @@ jobs:
     # ORACLE_DB_HOST, …) but not values — which is what keeps staging from
     # ever being handed a production credential.
     environment: staging
+    # Identifiers every later step needs. They used to be set only on the
+    # "Required secrets are present" step, so every later `${DIGITALOCEAN_APP_ID}`
+    # expanded EMPTY and the first doctl call would have failed. Not
+    # credentials; the database credentials stay on the steps that use them.
+    env:
+      DIGITALOCEAN_APP_ID: ${{ secrets.DIGITALOCEAN_APP_ID }}
+      NEOH_PUBLIC_API_BASE: ${{ secrets.NEOH_PUBLIC_API_BASE }}
     concurrency:
       group: staging-deploy
       cancel-in-progress: false
@@ -346,7 +353,11 @@ jobs:
             --build-arg BUILD_TIMESTAMP="${{ steps.release.outputs.built_at }}" \
             -t "${REGISTRY}/neoh-backend:${{ steps.release.outputs.sha }}" \
             -t "${REGISTRY}/neoh-backend:latest" \
-            -f backend/Dockerfile .
+            -f backend/Dockerfile backend
+          # Context is backend/, as in docker-compose.yml: the Dockerfile COPYs
+          # requirements.txt from its context, and only backend/.dockerignore
+          # exists. A repo-root context failed the build and would have copied
+          # the whole monorepo into /app (test_ci_build_contexts.py).
           docker push "${REGISTRY}/neoh-backend:${{ steps.release.outputs.sha }}"
           docker push "${REGISTRY}/neoh-backend:latest"
         env:
@@ -481,6 +492,29 @@ jobs:
             > /tmp/app.staging.yaml
           grep -n "digest:\|ORACLE_RECOVERY_MODE" /tmp/app.staging.yaml
 
+      # A SECRET with no value in `doctl apps update --spec` WIPES that secret
+      # (proven on neoh-staging, 2026-10-03: backend refused to boot, DO
+      # auto-rolled back). The rendered spec's secrets are blank by design, so
+      # carry the encrypted values of the ACTIVE deployment (never
+      # `apps spec get`, whose EV values can encrypt empty strings after a bad
+      # update). Refuses here — before migrations — if a required secret has
+      # no value anywhere. Names only are printed. The deploy file holds EV
+      # ciphertexts: it is never uploaded.
+      - name: Carry the app's secrets into the spec (staging)
+        run: |
+          set -euo pipefail
+          doctl apps list-deployments "${DIGITALOCEAN_APP_ID}" -o json > /tmp/deployments.staging.json
+          python3 scripts/carry-secrets.py --env staging \
+            --deployments /tmp/deployments.staging.json \
+            --rendered /tmp/app.staging.yaml --out /tmp/app.staging.deploy.yaml
+          rm -f /tmp/deployments.staging.json
+
+      # App Platform's own schema check, BEFORE migrations touch the database.
+      # The first real bring-up found a spec the renderer accepted and DO
+      # rejected (`unknown field "drain_seconds"` on the worker). Read-only.
+      - name: Validate the staging spec with App Platform
+        run: doctl apps spec validate /tmp/app.staging.deploy.yaml > /dev/null
+
       - name: Migration precheck (staging)
         run: |
           chmod +x scripts/migration-precheck.sh
@@ -497,8 +531,18 @@ jobs:
 
       # Migrations run from the image BY DIGEST — the exact artifact — before
       # it serves traffic.
+      # DO Managed Postgres presents a certificate signed by the cluster's own
+      # project CA, so TLS verification needs that CA (ORACLE_DB_CA_CERT). The
+      # cluster is resolved from the RENDERED spec's cluster_name, never typed
+      # here; `--format ID,Name` keeps connection credentials out of the step.
       - name: Run database migrations (staging)
         run: |
+          set -euo pipefail
+          cluster=$(python3 -c 'import yaml; print(next(d["cluster_name"] for d in yaml.safe_load(open("/tmp/app.staging.yaml"))["databases"] if d["name"] == "neoh-postgres"))')
+          id=$(doctl databases list --format ID,Name --no-header | awk -v n="$cluster" '$2 == n {print $1}')
+          [ -n "$id" ] || { echo "::error::no database cluster named $cluster"; exit 1; }
+          ORACLE_DB_CA_CERT=$(doctl databases get-ca "$id" -o json | python3 -c 'import base64, json, sys; print(base64.b64decode(json.load(sys.stdin)["certificate"]).decode())')
+          export ORACLE_DB_CA_CERT
           docker run --rm \
             -e ORACLE_DB_HOST \
             -e ORACLE_DB_PORT \
@@ -506,11 +550,20 @@ jobs:
             -e ORACLE_DB_ADMIN_USER \
             -e ORACLE_DB_ADMIN_PASSWORD \
             -e ORACLE_DB_PLATFORM_PASSWORD \
+            -e ORACLE_DB_CA_CERT \
             -e ORACLE_DB_SSL=require \
             "${REGISTRY}/neoh-backend@${{ steps.digests.outputs.backend }}" \
             python run_migrations.py
         env:
           REGISTRY: registry.digitalocean.com/${{ secrets.DIGITALOCEAN_REGISTRY }}
+          # `docker run -e NAME` forwards NAME from THIS step's environment;
+          # without these the container got every one of them empty.
+          ORACLE_DB_HOST: ${{ secrets.ORACLE_DB_HOST }}
+          ORACLE_DB_PORT: ${{ secrets.ORACLE_DB_PORT }}
+          ORACLE_DB_NAME: ${{ secrets.ORACLE_DB_NAME }}
+          ORACLE_DB_ADMIN_USER: ${{ secrets.ORACLE_DB_ADMIN_USER }}
+          ORACLE_DB_ADMIN_PASSWORD: ${{ secrets.ORACLE_DB_ADMIN_PASSWORD }}
+          ORACLE_DB_PLATFORM_PASSWORD: ${{ secrets.ORACLE_DB_PLATFORM_PASSWORD }}
 
       # `doctl apps update` is deterministic ONLY because the spec is
       # digest-pinned: DigitalOcean documents that update reuses the image
@@ -532,15 +585,20 @@ jobs:
 
       - name: Deploy the staging app
         run: |
+          # The CARRIED spec — the rendered one would wipe every secret.
+          status=0
           doctl apps update "${DIGITALOCEAN_APP_ID}" \
-            --spec /tmp/app.staging.yaml \
-            --wait
+            --spec /tmp/app.staging.deploy.yaml \
+            --wait || status=$?
+          rm -f /tmp/app.staging.deploy.yaml
+          exit $status
 
       - name: Smoke test (staging)
         run: |
           chmod +x infra/digitalocean/smoke-test.sh
           APP_URL="${NEOH_PUBLIC_API_BASE}" \
           EXPECTED_GIT_SHA="${{ steps.release.outputs.sha }}" \
+          SPACES_BUCKET=neoh-media-staging \
             ./infra/digitalocean/smoke-test.sh
 
       # Uploaded LAST, and only reached if everything above passed. Its
@@ -589,6 +647,9 @@ jobs:
       actions: read   # to download the staging-verified manifest from its run
     env:
       PROMOTE_SHA: ${{ github.event.inputs.promote_sha }}
+      # See the release job: these were empty in every step but one.
+      DIGITALOCEAN_APP_ID: ${{ secrets.DIGITALOCEAN_APP_ID }}
+      NEOH_PUBLIC_API_BASE: ${{ secrets.NEOH_PUBLIC_API_BASE }}
     steps:
       # Fail in the first second, not mid-rollout. A missing secret used to
       # surface only at the step that needed it — in `promote`, possibly after
@@ -740,6 +801,19 @@ jobs:
             > /tmp/app.production.yaml
           grep -n "digest:" /tmp/app.production.yaml
 
+      # Never wipe production's secrets: see the staging step of the same name.
+      - name: Carry the app's secrets into the spec (production)
+        run: |
+          set -euo pipefail
+          doctl apps list-deployments "${DIGITALOCEAN_APP_ID}" -o json > /tmp/deployments.production.json
+          python3 scripts/carry-secrets.py --env production \
+            --deployments /tmp/deployments.production.json \
+            --rendered /tmp/app.production.yaml --out /tmp/app.production.deploy.yaml
+          rm -f /tmp/deployments.production.json
+
+      - name: Validate the production spec with App Platform
+        run: doctl apps spec validate /tmp/app.production.deploy.yaml > /dev/null
+
       - name: Migration precheck (production)
         run: |
           chmod +x scripts/migration-precheck.sh
@@ -756,6 +830,12 @@ jobs:
 
       - name: Run database migrations (production)
         run: |
+          set -euo pipefail
+          cluster=$(python3 -c 'import yaml; print(next(d["cluster_name"] for d in yaml.safe_load(open("/tmp/app.production.yaml"))["databases"] if d["name"] == "neoh-postgres"))')
+          id=$(doctl databases list --format ID,Name --no-header | awk -v n="$cluster" '$2 == n {print $1}')
+          [ -n "$id" ] || { echo "::error::no database cluster named $cluster"; exit 1; }
+          ORACLE_DB_CA_CERT=$(doctl databases get-ca "$id" -o json | python3 -c 'import base64, json, sys; print(base64.b64decode(json.load(sys.stdin)["certificate"]).decode())')
+          export ORACLE_DB_CA_CERT
           docker run --rm \
             -e ORACLE_DB_HOST \
             -e ORACLE_DB_PORT \
@@ -763,11 +843,20 @@ jobs:
             -e ORACLE_DB_ADMIN_USER \
             -e ORACLE_DB_ADMIN_PASSWORD \
             -e ORACLE_DB_PLATFORM_PASSWORD \
+            -e ORACLE_DB_CA_CERT \
             -e ORACLE_DB_SSL=require \
             "${REGISTRY}/neoh-backend@${{ steps.digests.outputs.backend }}" \
             python run_migrations.py
         env:
           REGISTRY: registry.digitalocean.com/${{ secrets.DIGITALOCEAN_REGISTRY }}
+          # `docker run -e NAME` forwards NAME from THIS step's environment;
+          # without these the container got every one of them empty.
+          ORACLE_DB_HOST: ${{ secrets.ORACLE_DB_HOST }}
+          ORACLE_DB_PORT: ${{ secrets.ORACLE_DB_PORT }}
+          ORACLE_DB_NAME: ${{ secrets.ORACLE_DB_NAME }}
+          ORACLE_DB_ADMIN_USER: ${{ secrets.ORACLE_DB_ADMIN_USER }}
+          ORACLE_DB_ADMIN_PASSWORD: ${{ secrets.ORACLE_DB_ADMIN_PASSWORD }}
+          ORACLE_DB_PLATFORM_PASSWORD: ${{ secrets.ORACLE_DB_PLATFORM_PASSWORD }}
 
       # Refuse to silently destroy what someone changed in the console.
       # `doctl apps update` replaces the whole spec; anything added through the
@@ -786,15 +875,21 @@ jobs:
 
       - name: Deploy to App Platform (production)
         run: |
+          # The CARRIED spec — the rendered one would wipe every secret. The
+          # release record below keeps the rendered spec, which holds no EV values.
+          status=0
           doctl apps update "${DIGITALOCEAN_APP_ID}" \
-            --spec /tmp/app.production.yaml \
-            --wait
+            --spec /tmp/app.production.deploy.yaml \
+            --wait || status=$?
+          rm -f /tmp/app.production.deploy.yaml
+          exit $status
 
       - name: Smoke test (production)
         run: |
           chmod +x infra/digitalocean/smoke-test.sh
           APP_URL="${NEOH_PUBLIC_API_BASE}" \
           EXPECTED_GIT_SHA="${{ env.PROMOTE_SHA }}" \
+          REQUIRE_CALLBACK_PROVIDERS="${{ vars.REQUIRE_CALLBACK_PROVIDERS }}" \
             ./infra/digitalocean/smoke-test.sh
 
       # The release record: what went out, from which staged run, rendered

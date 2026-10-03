@@ -15,8 +15,36 @@ What differs, and nothing else:
     Valkey cluster        neoh-redis        neoh-redis-staging
     Spaces bucket         neoh-media        neoh-media-staging
     ORACLE_ENV            prod              staging
-    api instance_count    (from spec)       1
     ORACLE_RECOVERY_MODE  absent            "1" on every backend component
+    ORACLE_JWT_ISSUER/    neoh / neoh       neoh-staging / neoh-staging
+      _AUDIENCE
+    component sizing      (from spec)       reduced — see below
+    DB pool ceilings      (from spec)       sized for a 2 GiB cluster
+
+Staging is the REDUCED size, not production parity (owner decision,
+2026-10-03): ~$109/month instead of ~$240. What is reduced is capacity, never
+shape — the same three components, the same images, the same envs:
+
+    component  production                  staging
+    api        2 x apps-s-2vcpu-4gb        2 x apps-s-1vcpu-1gb
+    worker     1 x apps-s-2vcpu-4gb        1 x apps-s-1vcpu-2gb
+    web        2 x apps-s-1vcpu-1gb        1 x apps-s-1vcpu-0.5gb
+
+The api stays at TWO instances on purpose: cross-replica WebSocket fan-out
+(Postgres LISTEN/NOTIFY) is only exercised with more than one replica, so a
+one-replica staging would pass releases that break it. The render refuses a
+staging api below 2. Measured backend RSS is 255-561 MiB per replica
+(docs/capacity-plan.md), which fits 1 GiB.
+
+Pools are cut to fit a 2 GiB Managed Postgres (47 usable connections,
+docs/database-connection-budget.md). Each process opens POOL_MAX + 1 (the
+ws_hub LISTEN connection) + PLATFORM_POOL_MAX:
+
+    api     2 x (6 + 1 + 3) = 20
+    worker  1 x (8 + 1 + 4) = 13
+    total                     33 of 47 — headroom for migrations and admin
+
+The render refuses a staging spec whose total leaves less than 10 free.
 
 Staging runs with ORACLE_RECOVERY_MODE on. That is the disaster-recovery kill
 switch, reused deliberately: it blocks every provider egress method, SMTP, both
@@ -30,7 +58,11 @@ The render FAILS rather than emitting anything unsafe:
 
   * a staging spec without recovery mode on every backend component
   * a production spec WITH recovery mode (production would silently do nothing)
-  * staging and production sharing any identity: app, clusters, bucket
+  * staging and production sharing any identity: app, clusters, bucket,
+    domain, JWT issuer or audience
+  * a backend component without the JWT issuer/audience pair (it cannot boot)
+  * a worker carrying a service-only field (drain_seconds, http_port,
+    health_check, routes) — App Platform rejects the whole spec
   * a digest that is not sha256:…, or a placeholder surviving substitution
   * ORACLE_ALLOW_LIVE_STRIPE anywhere in staging
 
@@ -62,7 +94,8 @@ ENVIRONMENTS = {
         "clusters": {"neoh-postgres": "neoh-postgres", "neoh-redis": "neoh-redis"},
         "bucket": "neoh-media",
         "oracle_env": "prod",
-        "api_instances": None,          # keep the spec's value
+        "jwt": None,                    # keep the spec's pair ("neoh")
+        "components": {},               # production keeps the spec's values exactly
         "recovery_mode": False,
     },
     "staging": {
@@ -71,10 +104,29 @@ ENVIRONMENTS = {
                      "neoh-redis": "neoh-redis-staging"},
         "bucket": "neoh-media-staging",
         "oracle_env": "staging",
-        "api_instances": 1,
+        # Its own issuer/audience: a token minted by staging must never be
+        # accepted by production (check_separation refuses a shared pair).
+        "jwt": {"ORACLE_JWT_ISSUER": "neoh-staging", "ORACLE_JWT_AUDIENCE": "neoh-staging"},
+        "components": {
+            "api": {"instance_count": 2, "instance_size_slug": "apps-s-1vcpu-1gb",
+                    "envs": {"ORACLE_DB_POOL_MAX": "6", "ORACLE_DB_PLATFORM_POOL_MAX": "3"}},
+            "worker": {"instance_count": 1, "instance_size_slug": "apps-s-1vcpu-2gb",
+                       "envs": {"ORACLE_DB_POOL_MAX": "8", "ORACLE_DB_PLATFORM_POOL_MAX": "4"}},
+            "web": {"instance_count": 1, "instance_size_slug": "apps-s-1vcpu-0.5gb"},
+        },
         "recovery_mode": True,
+        # db-s-1vcpu-2gb: 25 per GiB minus 3 reserved (database-connection-budget.md).
+        "db_connection_budget": 47,
     },
 }
+
+# db/connection.py defaults, used when a component sets no explicit value.
+_DEFAULT_POOL_MAX = 10
+_DEFAULT_PLATFORM_POOL_MAX = 4
+_LISTENER_RESERVED = 1   # ws_hub's permanent LISTEN connection
+# Connections a budget must leave free for migrations and the admin console,
+# beyond the 3 DigitalOcean already reserves for its own maintenance.
+_BUDGET_HEADROOM = 10
 
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 
@@ -157,10 +209,19 @@ def render(env: str, backend_digest: str, frontend_digest: str,
             _set_env(comp, "ORACLE_S3_BUCKET", cfg["bucket"])
         if cfg["recovery_mode"]:
             _set_env(comp, "ORACLE_RECOVERY_MODE", "1")
-    if cfg["api_instances"] is not None:
-        for svc in spec.get("services") or []:
-            if svc.get("name") == "api":
-                svc["instance_count"] = cfg["api_instances"]
+        for key, value in (cfg.get("jwt") or {}).items():
+            _set_env(comp, key, value)
+    by_name = {c.get("name"): c for c in list(spec.get("services") or [])
+               + list(spec.get("workers") or [])}
+    for name, override in cfg["components"].items():
+        comp = by_name.get(name)
+        if comp is None:
+            raise RenderError(f"{env} sizing names component {name!r}, which the spec does not have")
+        for field in ("instance_count", "instance_size_slug"):
+            if field in override:
+                comp[field] = override[field]
+        for key, value in (override.get("envs") or {}).items():
+            _set_env(comp, key, value)
 
     for comp in _backend_components(spec) + _frontend_components(spec):
         image = comp.get("image") or {}
@@ -173,6 +234,24 @@ def render(env: str, backend_digest: str, frontend_digest: str,
     return spec
 
 
+def _worker_service_only(comp: dict) -> list[str]:
+    """Fields App Platform accepts on services but rejects on workers."""
+    bad = [f for f in ("http_port", "internal_ports", "health_check", "routes", "cors")
+           if f in comp]
+    if "drain_seconds" in (comp.get("termination") or {}):
+        bad.append("termination.drain_seconds")
+    return bad
+
+
+# (spec section, check) — found by `doctl apps spec validate` on the first
+# real staging bring-up; kept offline so it can never ship again.
+SERVICE_ONLY_FIELDS = (("workers", _worker_service_only),)
+
+# Sizes App Platform refuses to run more than one instance of ("must not exceed
+# 1 instance for instance_size_slug …", `doctl apps spec validate`, 2026-10-03).
+SINGLE_INSTANCE_SLUGS = frozenset({"apps-s-1vcpu-0.5gb", "apps-s-1vcpu-1gb-fixed"})
+
+
 def validate(env: str, spec: dict) -> None:
     """Refuse anything unsafe. Called on every render."""
     text = yaml.safe_dump(spec)
@@ -183,7 +262,29 @@ def validate(env: str, spec: dict) -> None:
     if not backend:
         raise RenderError("the spec has no backend components")
 
+    for kind, field in SERVICE_ONLY_FIELDS:
+        for comp in spec.get(kind) or []:
+            bad = field(comp)
+            if bad:
+                raise RenderError(
+                    f"{kind[:-1]} {comp.get('name')!r} has service-only field(s) {bad}; "
+                    f"App Platform rejects the whole spec"
+                )
+
+    for comp in list(spec.get("services") or []) + list(spec.get("workers") or []):
+        if comp.get("instance_size_slug") in SINGLE_INSTANCE_SLUGS and int(comp.get("instance_count") or 1) > 1:
+            raise RenderError(
+                f"{comp.get('name')!r}: App Platform allows only 1 instance of "
+                f"{comp.get('instance_size_slug')} — use apps-s-1vcpu-1gb or larger to scale"
+            )
+
     for comp in backend:
+        for key in ("ORACLE_JWT_ISSUER", "ORACLE_JWT_AUDIENCE"):
+            if not str(_env_value(comp, key) or "").strip():
+                raise RenderError(
+                    f"{comp.get('name')!r} lacks {key}; outside dev the backend refuses to boot "
+                    f"without the issuer/audience pair (config._REQUIRED_IN_PROD)"
+                )
         rm = str(_env_value(comp, "ORACLE_RECOVERY_MODE") or "")
         if env == "staging" and rm != "1":
             raise RenderError(
@@ -198,6 +299,35 @@ def validate(env: str, spec: dict) -> None:
         if env == "staging" and _env_value(comp, "ORACLE_ALLOW_LIVE_STRIPE") is not None:
             raise RenderError("staging must never set ORACLE_ALLOW_LIVE_STRIPE")
 
+    if env == "staging":
+        api = next((c for c in spec.get("services") or [] if c.get("name") == "api"), None)
+        if api is None or int(api.get("instance_count") or 1) < 2:
+            raise RenderError(
+                "staging api must run at least 2 instances — with one, cross-replica "
+                "WebSocket fan-out is never exercised and a release that breaks it passes"
+            )
+
+    budget = (ENVIRONMENTS.get(env) or {}).get("db_connection_budget")
+    if budget:
+        need = connection_demand(spec)
+        if need + _BUDGET_HEADROOM > budget:
+            raise RenderError(
+                f"{env} components can open {need} Postgres connections; the cluster allows "
+                f"{budget} and {_BUDGET_HEADROOM} must stay free for migrations and admin "
+                f"(docs/database-connection-budget.md)"
+            )
+
+
+def connection_demand(spec: dict) -> int:
+    """Postgres connections every backend instance can hold at once:
+    (POOL_MAX + the LISTEN connection + PLATFORM_POOL_MAX) x instance_count."""
+    total = 0
+    for comp in _backend_components(spec):
+        pool = int(_env_value(comp, "ORACLE_DB_POOL_MAX") or _DEFAULT_POOL_MAX)
+        platform = int(_env_value(comp, "ORACLE_DB_PLATFORM_POOL_MAX") or _DEFAULT_PLATFORM_POOL_MAX)
+        total += int(comp.get("instance_count") or 1) * (pool + _LISTENER_RESERVED + platform)
+    return total
+
 
 def identities(spec: dict) -> dict:
     """The values that must NEVER be shared between environments."""
@@ -209,6 +339,8 @@ def identities(spec: dict) -> dict:
         "app": {spec.get("name")},
         "clusters": {db.get("cluster_name") for db in spec.get("databases") or []},
         "buckets": buckets,
+        "jwt_issuers": {_env_value(c, "ORACLE_JWT_ISSUER") for c in _backend_components(spec)} - {None},
+        "jwt_audiences": {_env_value(c, "ORACLE_JWT_AUDIENCE") for c in _backend_components(spec)} - {None},
     }
 
 

@@ -1,0 +1,96 @@
+{
+  "__note": "Launch conditions no tool can verify. scripts/neoh-launch-readiness.py reports each one: an open 'blocker' is BLOCKED, an open 'warning' is WARN. Close one by setting status to \"done\" and adding evidence (who, when, where) in the same commit. Sources: docs/subprocessor-inventory.md, docs/privacy-data-map.md, docs/privacy-counsel-checklist.md, docs/resilience-drill-report.md, docs/security-launch-gate.json.",
+  "updated": "2026-10-03",
+  "gates": [
+    {
+      "id": "privacy_email_dpa",
+      "area": "privacy",
+      "class": "blocker",
+      "environments": ["production"],
+      "status": "open",
+      "title": "Email sent through a provider with a DPA",
+      "how_to_close": "replace consumer Gmail SMTP with Google Workspace (DPA) or a transactional email provider; set ORACLE_SMTP_* on the production app (docs/subprocessor-inventory.md item 1)",
+      "evidence": ""
+    },
+    {
+      "id": "privacy_dashscope_region",
+      "area": "privacy",
+      "class": "blocker",
+      "environments": ["production"],
+      "status": "open",
+      "title": "Realtime voice model not processing in Singapore undisclosed",
+      "how_to_close": "re-region DashScope to the US, or keep Qwen realtime disabled (no DASHSCOPE_API_KEY in production), or disclose Singapore processing to brokerages (docs/subprocessor-inventory.md item 2)",
+      "evidence": ""
+    },
+    {
+      "id": "privacy_counsel_signoff",
+      "area": "privacy",
+      "class": "blocker",
+      "environments": ["production"],
+      "status": "open",
+      "title": "Counsel sign-off: DPAs, subprocessor list, plaintext PII accepted or remediated",
+      "how_to_close": "counsel completes docs/privacy-counsel-checklist.md, confirms each DPA (DigitalOcean, Twilio, Fireworks, Plivo, Telnyx, RunPod) and accepts or rejects the plaintext PII columns in docs/privacy-data-map.md",
+      "evidence": ""
+    },
+    {
+      "id": "privacy_erasure_role_on_do",
+      "area": "privacy",
+      "class": "blocker",
+      "environments": ["production", "staging"],
+      "status": "done",
+      "title": "Erasure owner can see every row under FORCE RLS on DigitalOcean",
+      "how_to_close": "confirm the SECURITY DEFINER erasure owner (the migration role) is BYPASSRLS or every erasable table has a platform DELETE+SELECT policy, so an erasure cannot silently delete 0 rows and report clean",
+      "evidence": "2026-10-03, lead, on neoh-postgres-staging: doadmin (the migration role, owner of the DEFINER functions) has BYPASSRLS=true and is not superuser; oracle_app_login (doctl-created) has no superuser/BYPASSRLS/CREATEROLE/CREATEDB. Condition: doadmin only ever runs migrations, never the app."
+    },
+    {
+      "id": "privacy_erasure_live_on_do",
+      "area": "privacy",
+      "class": "warning",
+      "environments": ["production", "staging"],
+      "status": "open",
+      "title": "Live erasure test run against the DigitalOcean cluster",
+      "how_to_close": "run backend/tests/test_privacy_lifecycle_live.py and tests/privacy_lifecycle.sql against neoh-postgres-staging (throwaway tenant) and record the result in docs/launch-state.md",
+      "evidence": ""
+    },
+    {
+      "id": "privacy_elevenlabs_training",
+      "area": "privacy",
+      "class": "warning",
+      "environments": ["production"],
+      "status": "open",
+      "title": "ElevenLabs training opt-out (only if ElevenLabs is enabled)",
+      "how_to_close": "ElevenLabs is not in the production spec; before adding its key, opt out of training on the account (docs/subprocessor-inventory.md item 3)",
+      "evidence": ""
+    },
+    {
+      "id": "resilience_on_staging",
+      "area": "resilience",
+      "class": "blocker",
+      "environments": ["production"],
+      "status": "open",
+      "title": "Failure drills re-run on DigitalOcean staging and provider sandboxes",
+      "how_to_close": "run performance/resilience/run_drill.sh (db_stop, valkey, worker kill, AI 429/hang, MLS 401/503) against neoh-staging and the providers' test/sandbox modes; record results in docs/resilience-drill-report.md",
+      "evidence": ""
+    },
+    {
+      "id": "spend_alerts",
+      "area": "operations",
+      "class": "warning",
+      "environments": ["production", "staging"],
+      "status": "open",
+      "title": "DigitalOcean spend alerts configured",
+      "how_to_close": "Billing -> Spend Alerts in the DigitalOcean console (email notification, not a cap)",
+      "evidence": ""
+    },
+    {
+      "id": "support_contact",
+      "area": "operations",
+      "class": "blocker",
+      "environments": ["production"],
+      "status": "open",
+      "title": "Support email and urgent route decided",
+      "how_to_close": "the owner fills the placeholders in docs/support-model.md (support address, urgent phone/route, who is on point)",
+      "evidence": ""
+    }
+  ]
+}

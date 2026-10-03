@@ -401,13 +401,26 @@ def _run_rollback(tmp_path, target_head: str, current_head: str):
     import os
     import subprocess
 
+    import yaml
+
     calls = tmp_path / "doctl-calls.txt"
     fake = tmp_path / "bin"
     fake.mkdir()
+    # The app's ACTIVE deployment, every secret set — what carry-secrets.py
+    # copies from so the rollback does not wipe them.
+    active = yaml.safe_load(APP_SPEC.read_text(encoding="utf-8"))
+    for comp in active["services"] + active["workers"]:
+        for e in comp.get("envs") or []:
+            if e.get("type") == "SECRET" and not e.get("value"):
+                e["value"] = f"EV[1:running-{comp['name']}-{e['key']}]"
+    deployments = tmp_path / "deployments.json"
+    deployments.write_text(json.dumps([{"id": "dep-active", "phase": "ACTIVE",
+                                        "created_at": "2026-10-03T20:00:00Z", "spec": active}]))
     doctl = fake / "doctl"
     doctl.write_text(
         "#!/usr/bin/env bash\n"
         f'echo "$@" >> "{calls}"\n'
+        f'if [ "$1 $2" = "apps list-deployments" ]; then cat "{deployments}"; exit 0; fi\n'
         # Keep a copy of the spec it was handed, to check the digests.
         'for a in "$@"; do case "$prev" in --spec) cp "$a" "' + str(tmp_path) + '/applied.yaml";; esac; prev="$a"; done\n'
         "exit 0\n"
@@ -445,6 +458,9 @@ def test_do_rollback_applies_the_previous_digests(tmp_path):
     assert "sha256:" + "a" * 64 in applied, "api/worker not pinned to the target backend digest"
     assert "sha256:" + "b" * 64 in applied, "web not pinned to the target frontend digest"
     assert "__BACKEND_DIGEST__" not in applied and "__FRONTEND_DIGEST__" not in applied
+    # A blank SECRET in the applied spec would WIPE it on the app.
+    assert "EV[1:running-api-ORACLE_SECRET_KEY]" in applied, "secrets were not carried"
+    assert "apps list-deployments app-123" in calls
 
 
 def test_do_rollback_never_calls_doctl_across_a_destructive_migration(tmp_path):

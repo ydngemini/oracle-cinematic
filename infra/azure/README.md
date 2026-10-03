@@ -1,3 +1,5 @@
+> **LEGACY — Azure. This is NOT how Neoh is deployed.** Azure Container Apps was retired (subscription disabled 2026-08-09); production is DigitalOcean App Platform — see [`docs/deploy-digitalocean.md`](../../docs/deploy-digitalocean.md) and [`docs/infrastructure-status.md`](../../docs/infrastructure-status.md). Kept as history only.
+
 # NEOH Azure production deployment
 
 This deployment keeps application secrets out of source and images. Azure

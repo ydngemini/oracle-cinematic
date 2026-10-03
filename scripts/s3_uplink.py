@@ -1,3 +1,4 @@
+# LEGACY (AWS S3 training-data upload) — not used by Neoh production; see docs/infrastructure-status.md.
 """
 S3 Uplink — uploads swarm_textbook.jsonl to the nexum-swarm-training-data bucket.
 

@@ -1,4 +1,8 @@
 #!/bin/bash
+# LEGACY / ARCHIVED: one-off domain purchase helper, not part of any deploy.
+# The production domain is NEOH_DOMAIN, served by DigitalOcean App Platform:
+# docs/deploy-digitalocean.md. Classification: docs/infrastructure-status.md.
+#
 # Purchase neohr.app domain on Porkbun
 # Requires Porkbun API key from https://porkbun.com/account/api
 
@@ -70,11 +74,8 @@ if echo "$PURCHASE" | grep -q '"status":"SUCCESS"'; then
   echo "1. Go to https://porkbun.com/account/domains"
   echo "2. Click on $DOMAIN"
   echo "3. Go to 'Nameservers' and select 'Use porkbun nameservers'"
-  echo "4. Then update nameservers to Azure DNS:"
-  echo "   - ns1-03.azure-dns.com"
-  echo "   - ns2-03.azure-dns.net"
-  echo "   - ns3-03.azure-dns.org"
-  echo "   - ns4-03.azure-dns.info"
+  echo "4. Point DNS at the DigitalOcean app: see docs/deploy-digitalocean.md (Domain / TLS)."
+  echo "   Set NEOH_DOMAIN on the GitHub environment. The Azure DNS zone is retired."
 else
   echo "Purchase failed: $PURCHASE"
   exit 1

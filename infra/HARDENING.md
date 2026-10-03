@@ -1,3 +1,5 @@
+> **LEGACY — AWS.** The Aurora/IAM/VPC/WAF controls below describe the retired AWS stack. The SQL-layer controls (FORCE RLS, REVOKE PUBLIC, migration 0003) still apply on DigitalOcean; the perimeter for production is in [`docs/deploy-digitalocean.md`](../docs/deploy-digitalocean.md) and [`docs/security-launch-review.md`](../docs/security-launch-review.md). See [`docs/infrastructure-status.md`](../docs/infrastructure-status.md).
+
 # Oracle — Security Hardening Map (Decision 007)
 
 Enterprise hardening for the Neolithic backend. Split by enforcement layer —

@@ -1,3 +1,4 @@
+# LEGACY (AWS Bedrock training experiment) — not used by Neoh production; see docs/infrastructure-status.md.
 import json
 import os
 import sys

@@ -1,3 +1,5 @@
+> **LEGACY — AWS.** Not needed for DigitalOcean: the production domain is set as `NEOH_DOMAIN` (see [`docs/deploy-digitalocean.md`](deploy-digitalocean.md)). Kept as history only.
+
 # AWS Support case — unblock `neohrealestate.com` registration
 
 `aws support create-case` returns `SubscriptionRequiredException` on this

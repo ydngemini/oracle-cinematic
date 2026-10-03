@@ -1,3 +1,4 @@
+# LEGACY (AWS Bedrock training experiment) — not used by Neoh production; see docs/infrastructure-status.md.
 """
 Oracle Query — invokes the fine-tuned oracle-underwriter-70b on Bedrock.
 

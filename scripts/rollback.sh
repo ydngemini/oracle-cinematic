@@ -223,8 +223,21 @@ head2 "Applying"
 # that pin is a second incident waiting to happen when the fix-forward release
 # is ready and will not deploy. Applying a digest-pinned spec reaches the same
 # artifact and leaves the app deployable.
-doctl apps update "$DIGITALOCEAN_APP_ID" --spec "$SPEC_OUT" --wait || \
-  die "the rollback deploy failed. The previous release is still live."
+#
+# The spec above has every SECRET blank (the committed template), and
+# applying a blank SECRET WIPES it — the rollback would take the app down
+# instead of restoring it. Carry the encrypted values of the ACTIVE deployment
+# first (scripts/carry-secrets.py; names only are printed; needs PyYAML).
+DEPLOYMENTS="$(mktemp)"
+doctl apps list-deployments "$DIGITALOCEAN_APP_ID" -o json > "$DEPLOYMENTS" || \
+  { rm -f "$DEPLOYMENTS"; die "could not read the app's deployments — nothing was changed"; }
+python3 "$REPO/scripts/carry-secrets.py" --env production --deployments "$DEPLOYMENTS" \
+  --rendered "$SPEC_OUT" --out "$SPEC_OUT.deploy" || \
+  { rm -f "$DEPLOYMENTS"; die "secrets could not be carried — nothing was changed"; }
+rm -f "$DEPLOYMENTS"
+doctl apps update "$DIGITALOCEAN_APP_ID" --spec "$SPEC_OUT.deploy" --wait || \
+  { rm -f "$SPEC_OUT.deploy"; die "the rollback deploy failed. The previous release is still live."; }
+rm -f "$SPEC_OUT.deploy"
 
 head2 "Verify"
 say "run the smoke test against the rolled-back release:"

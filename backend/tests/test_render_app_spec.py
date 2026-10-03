@@ -59,19 +59,65 @@ def test_staging_differs_from_production_only_where_intended():
         for kind in ("services", "workers"):
             for c in spec.get(kind) or []:
                 out[f"{c['name']}:instances"] = c.get("instance_count")
+                out[f"{c['name']}:size"] = c.get("instance_size_slug")
+                out[f"{c['name']}:image"] = repr(c.get("image"))
                 for e in c.get("envs") or []:
                     out[f"{c['name']}:{e['key']}"] = e.get("value", e.get("type"))
+        for k, v in spec.items():
+            if k not in ("name", "databases", "services", "workers"):
+                out[f"top:{k}"] = repr(v)
         return out
 
     prod, stag = flat(r.render("production", B, F)), flat(r.render("staging", B, F))
     changed = {k for k in set(prod) | set(stag) if prod.get(k) != stag.get(k)}
     assert changed == {
         "name", "db:neoh-postgres", "db:neoh-redis",
-        "api:instances",
         "api:ORACLE_ENV", "worker:ORACLE_ENV",
         "api:ORACLE_S3_BUCKET", "worker:ORACLE_S3_BUCKET",
         "api:ORACLE_RECOVERY_MODE", "worker:ORACLE_RECOVERY_MODE",
+        # Its own JWT issuer/audience: a staging token never validates in production.
+        "api:ORACLE_JWT_ISSUER", "worker:ORACLE_JWT_ISSUER",
+        "api:ORACLE_JWT_AUDIENCE", "worker:ORACLE_JWT_AUDIENCE",
+        # Reduced staging (owner decision 2026-10-03): capacity, never shape.
+        "api:size", "worker:size", "web:instances", "web:size",
+        "api:ORACLE_DB_POOL_MAX",                 # absent (default 10) -> 6
+        "worker:ORACLE_DB_POOL_MAX", "worker:ORACLE_DB_PLATFORM_POOL_MAX",
     }, "staging drifted from production somewhere unintended"
+
+
+def test_staging_is_the_reduced_size():
+    spec = r.render("staging", B, F)
+    comps = {c["name"]: c for c in spec["services"] + spec["workers"]}
+    assert (comps["api"]["instance_count"], comps["api"]["instance_size_slug"]) == (2, "apps-s-1vcpu-1gb")
+    assert (comps["worker"]["instance_count"], comps["worker"]["instance_size_slug"]) == (1, "apps-s-1vcpu-2gb")
+    assert (comps["web"]["instance_count"], comps["web"]["instance_size_slug"]) == (1, "apps-s-1vcpu-0.5gb")
+    assert _env(comps["api"], "ORACLE_DB_POOL_MAX") == "6"
+    assert _env(comps["api"], "ORACLE_DB_PLATFORM_POOL_MAX") == "3"
+    assert _env(comps["worker"], "ORACLE_DB_POOL_MAX") == "8"
+    assert _env(comps["worker"], "ORACLE_DB_PLATFORM_POOL_MAX") == "4"
+
+
+def test_staging_pools_fit_a_2_gib_cluster_with_headroom():
+    """2 x (6+1+3) + (8+1+4) = 33 of the 47 a db-s-1vcpu-2gb allows."""
+    assert r.connection_demand(r.render("staging", B, F)) == 33
+
+
+def test_staging_pools_over_budget_are_refused(monkeypatch):
+    sizing = {**r.ENVIRONMENTS["staging"]["components"]}
+    sizing["worker"] = {**sizing["worker"], "envs": {"ORACLE_DB_POOL_MAX": "20",
+                                                     "ORACLE_DB_PLATFORM_POOL_MAX": "4"}}
+    monkeypatch.setitem(r.ENVIRONMENTS["staging"], "components", sizing)
+    with pytest.raises(r.RenderError, match="Postgres connections"):
+        r.render("staging", B, F)
+
+
+def test_staging_api_below_two_replicas_is_refused(monkeypatch):
+    """One replica never exercises cross-replica WebSocket fan-out."""
+    sizing = {**r.ENVIRONMENTS["staging"]["components"]}
+    sizing["api"] = {**sizing["api"], "instance_count": 1}
+    monkeypatch.setitem(r.ENVIRONMENTS["staging"], "components", sizing)
+    with pytest.raises(r.RenderError, match="at least 2 instances"):
+        r.render("staging", B, F)
 
 
 def test_both_environments_pin_the_same_digests():
@@ -102,6 +148,93 @@ def test_a_shared_cluster_is_caught(monkeypatch):
     )
     with pytest.raises(r.RenderError, match="share clusters"):
         r.check_separation()
+
+
+def test_every_backend_component_carries_the_jwt_pair():
+    """Outside dev the backend refuses to boot without ORACLE_JWT_ISSUER and
+    ORACLE_JWT_AUDIENCE. The first staging bring-up found the spec had neither."""
+    for env in ("production", "staging"):
+        for comp in r._backend_components(r.render(env, B, F)):
+            assert _env(comp, "ORACLE_JWT_ISSUER") and _env(comp, "ORACLE_JWT_AUDIENCE"), (env, comp["name"])
+
+
+def test_a_component_without_the_jwt_pair_is_refused(tmp_path, monkeypatch):
+    raw = yaml.safe_load((REPO / "infra" / "digitalocean" / "app.yaml").read_text(encoding="utf-8"))
+    raw["workers"][0]["envs"] = [e for e in raw["workers"][0]["envs"] if e["key"] != "ORACLE_JWT_AUDIENCE"]
+    fake = tmp_path / "app.yaml"
+    fake.write_text(yaml.safe_dump(raw))
+    monkeypatch.setattr(r, "SPEC", fake)
+    with pytest.raises(r.RenderError, match="ORACLE_JWT_AUDIENCE"):
+        r.render("production", B, F)
+
+
+def test_a_shared_jwt_issuer_is_caught(monkeypatch):
+    """Same issuer AND same audience would let a staging token pass production's
+    claim checks; either one shared is refused."""
+    monkeypatch.setitem(r.ENVIRONMENTS["staging"], "jwt",
+                        {"ORACLE_JWT_ISSUER": "neoh", "ORACLE_JWT_AUDIENCE": "neoh-staging"})
+    with pytest.raises(r.RenderError, match="share jwt_issuers"):
+        r.check_separation()
+
+
+SERVICE_ONLY = ("http_port", "internal_ports", "health_check", "routes", "cors")
+
+
+def test_workers_carry_no_service_only_fields():
+    """`doctl apps spec validate` rejected the first real staging spec:
+    `unknown field "drain_seconds"` on the worker. Checked offline here."""
+    for env in ("production", "staging"):
+        for w in r.render(env, B, F).get("workers") or []:
+            assert not [f for f in SERVICE_ONLY if f in w], w["name"]
+            assert "drain_seconds" not in (w.get("termination") or {}), w["name"]
+            assert 1 <= (w.get("termination") or {}).get("grace_period_seconds", 120) <= 600
+
+
+def test_no_component_scales_a_single_instance_size():
+    """App Platform rejected production's 2x apps-s-1vcpu-0.5gb web."""
+    for env in ("production", "staging"):
+        spec = r.render(env, B, F)
+        for c in spec["services"] + spec["workers"]:
+            if c.get("instance_size_slug") in r.SINGLE_INSTANCE_SLUGS:
+                assert int(c.get("instance_count") or 1) == 1, (env, c["name"])
+
+
+def test_scaling_a_single_instance_size_is_refused(monkeypatch):
+    sizing = {**r.ENVIRONMENTS["staging"]["components"]}
+    sizing["web"] = {"instance_count": 2, "instance_size_slug": "apps-s-1vcpu-0.5gb"}
+    monkeypatch.setitem(r.ENVIRONMENTS["staging"], "components", sizing)
+    with pytest.raises(r.RenderError, match="only 1 instance"):
+        r.render("staging", B, F)
+
+
+def test_every_api_ingress_rule_preserves_its_prefix():
+    """App Platform strips the matched prefix unless told not to; every API
+    route 404'd on the first live staging app because of it."""
+    for env in ("production", "staging"):
+        rules = r.render(env, B, F)["ingress"]["rules"]
+        api_rules = [x for x in rules if x["component"]["name"] != "web"]
+        assert api_rules
+        for rule in api_rules:
+            assert rule["component"].get("preserve_path_prefix") is True, (env, rule["match"])
+
+
+def test_every_backend_route_prefix_the_checks_probe_is_routed_to_api():
+    """The readiness script and smoke test probe these; each must reach the API."""
+    prefixes = [x["match"]["path"]["prefix"] for x in r.render("staging", B, F)["ingress"]["rules"]
+                if x["component"]["name"] == "api"]
+    for path in ("/health", "/health/workers", "/version", "/api/status", "/api/admin/mls/feeds",
+                 "/billing/webhook", "/ws"):
+        assert any(path == p or path.startswith(p.rstrip("/") + "/") for p in prefixes), path
+
+
+def test_a_worker_with_drain_seconds_is_refused(tmp_path, monkeypatch):
+    raw = yaml.safe_load((REPO / "infra" / "digitalocean" / "app.yaml").read_text(encoding="utf-8"))
+    raw["workers"][0].setdefault("termination", {})["drain_seconds"] = 30
+    fake = tmp_path / "app.yaml"
+    fake.write_text(yaml.safe_dump(raw))
+    monkeypatch.setattr(r, "SPEC", fake)
+    with pytest.raises(r.RenderError, match="drain_seconds"):
+        r.render("staging", B, F)
 
 
 def test_a_shared_bucket_is_caught(monkeypatch):

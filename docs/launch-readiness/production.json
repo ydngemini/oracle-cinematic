@@ -1,0 +1,369 @@
+{
+  "tool": "scripts/neoh-launch-readiness.py",
+  "tool_version": "1",
+  "environment": "production",
+  "app_name": "neoh",
+  "app_id": null,
+  "base_url": null,
+  "generated_at": "2026-10-03T20:13:45Z",
+  "summary": {
+    "verdict": "BLOCKED",
+    "PASS": 5,
+    "WARN": 9,
+    "BLOCKED": 30
+  },
+  "checks": [
+    {
+      "id": "doctl_access",
+      "area": "platform",
+      "title": "DigitalOcean account readable",
+      "status": "PASS",
+      "reason": "doctl authenticated",
+      "blocking": true
+    },
+    {
+      "id": "app_exists",
+      "area": "platform",
+      "title": "App 'neoh' exists",
+      "status": "BLOCKED",
+      "reason": "no App Platform app named 'neoh' \u2014 this environment has never been deployed (1 app(s) on the account: neoh-staging)",
+      "blocking": true
+    },
+    {
+      "id": "region",
+      "area": "platform",
+      "title": "Region",
+      "status": "BLOCKED",
+      "reason": "not verifiable: the app does not exist",
+      "blocking": true
+    },
+    {
+      "id": "components",
+      "area": "platform",
+      "title": "Expected components api/web/worker",
+      "status": "BLOCKED",
+      "reason": "not verifiable: the app does not exist",
+      "blocking": true
+    },
+    {
+      "id": "api_replicas",
+      "area": "platform",
+      "title": "API replicas",
+      "status": "BLOCKED",
+      "reason": "not verifiable: the app does not exist",
+      "blocking": true
+    },
+    {
+      "id": "worker_count",
+      "area": "platform",
+      "title": "Exactly one worker",
+      "status": "BLOCKED",
+      "reason": "not verifiable: the app does not exist",
+      "blocking": true
+    },
+    {
+      "id": "images_pinned",
+      "area": "release",
+      "title": "Images pinned by digest",
+      "status": "BLOCKED",
+      "reason": "not verifiable: the app does not exist",
+      "blocking": true
+    },
+    {
+      "id": "postgres_attached",
+      "area": "data",
+      "title": "Postgres exists, online, attached",
+      "status": "BLOCKED",
+      "reason": "cluster 'neoh-postgres' does not exist; not attached: the app does not exist",
+      "blocking": true
+    },
+    {
+      "id": "valkey_attached",
+      "area": "data",
+      "title": "Valkey exists, online, attached",
+      "status": "BLOCKED",
+      "reason": "cluster 'neoh-redis' does not exist; not attached: the app does not exist",
+      "blocking": true
+    },
+    {
+      "id": "registry",
+      "area": "release",
+      "title": "Container registry",
+      "status": "PASS",
+      "reason": "registry 'neoh-registry'; neoh-backend and neoh-frontend pushed",
+      "blocking": true
+    },
+    {
+      "id": "spaces",
+      "area": "data",
+      "title": "Spaces object storage configured",
+      "status": "BLOCKED",
+      "reason": "not verifiable: the app does not exist",
+      "blocking": true
+    },
+    {
+      "id": "core_secrets",
+      "area": "security",
+      "title": "Core secrets present",
+      "status": "BLOCKED",
+      "reason": "not verifiable: the app does not exist",
+      "blocking": true
+    },
+    {
+      "id": "recovery_mode",
+      "area": "safety",
+      "title": "Recovery mode",
+      "status": "BLOCKED",
+      "reason": "not verifiable: the app does not exist",
+      "blocking": true
+    },
+    {
+      "id": "demo_login_off",
+      "area": "safety",
+      "title": "Demo login off",
+      "status": "BLOCKED",
+      "reason": "not verifiable: the app does not exist",
+      "blocking": true
+    },
+    {
+      "id": "oracle_env",
+      "area": "safety",
+      "title": "ORACLE_ENV",
+      "status": "BLOCKED",
+      "reason": "not verifiable: the app does not exist",
+      "blocking": true
+    },
+    {
+      "id": "cors",
+      "area": "security",
+      "title": "CORS origins",
+      "status": "BLOCKED",
+      "reason": "not verifiable: the app does not exist",
+      "blocking": true
+    },
+    {
+      "id": "billing",
+      "area": "providers",
+      "title": "Billing configured",
+      "status": "BLOCKED",
+      "reason": "not verifiable: the app does not exist",
+      "blocking": true
+    },
+    {
+      "id": "email",
+      "area": "providers",
+      "title": "Email configured",
+      "status": "BLOCKED",
+      "reason": "not verifiable: the app does not exist",
+      "blocking": true
+    },
+    {
+      "id": "ai_provider",
+      "area": "providers",
+      "title": "AI provider configured",
+      "status": "BLOCKED",
+      "reason": "not verifiable: the app does not exist",
+      "blocking": true
+    },
+    {
+      "id": "voice",
+      "area": "providers",
+      "title": "Voice provider",
+      "status": "WARN",
+      "reason": "not verifiable: the app does not exist",
+      "blocking": false
+    },
+    {
+      "id": "messaging",
+      "area": "providers",
+      "title": "Messaging provider",
+      "status": "WARN",
+      "reason": "not verifiable: the app does not exist",
+      "blocking": false
+    },
+    {
+      "id": "mls_credentials",
+      "area": "providers",
+      "title": "MLS feed credential",
+      "status": "WARN",
+      "reason": "not verifiable: the app does not exist",
+      "blocking": false
+    },
+    {
+      "id": "alert_routing",
+      "area": "providers",
+      "title": "Alerts reach a person",
+      "status": "WARN",
+      "reason": "not verifiable: the app does not exist",
+      "blocking": false
+    },
+    {
+      "id": "health",
+      "area": "release",
+      "title": "Current release healthy",
+      "status": "BLOCKED",
+      "reason": "not verifiable: no URL (no app, and no --base-url given)",
+      "blocking": true
+    },
+    {
+      "id": "version",
+      "area": "release",
+      "title": "Release identity",
+      "status": "BLOCKED",
+      "reason": "not verifiable: no URL (no app, and no --base-url given)",
+      "blocking": true
+    },
+    {
+      "id": "worker_alive",
+      "area": "release",
+      "title": "Worker alive on this release",
+      "status": "BLOCKED",
+      "reason": "not verifiable: no URL (no app, and no --base-url given)",
+      "blocking": true
+    },
+    {
+      "id": "web_security_headers",
+      "area": "release",
+      "title": "Web security headers",
+      "status": "BLOCKED",
+      "reason": "not verifiable: no URL (no app, and no --base-url given)",
+      "blocking": true
+    },
+    {
+      "id": "operator_console",
+      "area": "operations",
+      "title": "Operator-console checks",
+      "status": "WARN",
+      "reason": "not checked \u2014 set NEOH_OPERATOR_TOKEN (and a reachable URL) for component health, MLS feeds and billing exceptions",
+      "blocking": true
+    },
+    {
+      "id": "backups",
+      "area": "data",
+      "title": "Backups newer than 26 h",
+      "status": "BLOCKED",
+      "reason": "no cluster 'neoh-postgres' \u2014 nothing is backed up",
+      "blocking": true
+    },
+    {
+      "id": "github_environment",
+      "area": "release",
+      "title": "GitHub environment 'production'",
+      "status": "PASS",
+      "reason": "exists; required reviewers on; branch policy set",
+      "blocking": true
+    },
+    {
+      "id": "github_env_secrets",
+      "area": "release",
+      "title": "CI secrets on 'production'",
+      "status": "BLOCKED",
+      "reason": "unset: DIGITALOCEAN_ACCESS_TOKEN, DIGITALOCEAN_REGISTRY, DIGITALOCEAN_APP_ID, ORACLE_DB_HOST, ORACLE_DB_PORT, ORACLE_DB_NAME, ORACLE_DB_ADMIN_USER, ORACLE_DB_ADMIN_PASSWORD, ORACLE_DB_PLATFORM_PASSWORD, NEOH_PUBLIC_API_BASE \u2014 the deploy job refuses to start",
+      "blocking": true
+    },
+    {
+      "id": "domain",
+      "area": "release",
+      "title": "Domain configured (NEOH_DOMAIN)",
+      "status": "BLOCKED",
+      "reason": "NEOH_DOMAIN unset \u2014 the app answers only on its ondigitalocean.app URL",
+      "blocking": true
+    },
+    {
+      "id": "security_gate",
+      "area": "security",
+      "title": "Security launch gate",
+      "status": "BLOCKED",
+      "reason": "verdict FAIL (2026-10-01); failing: staging_dast_no_blocker",
+      "blocking": true
+    },
+    {
+      "id": "rls_gate",
+      "area": "security",
+      "title": "RLS / cross-tenant suite",
+      "status": "PASS",
+      "reason": "tests/rls_security_review.sql PASS on a DB built from every migration and on the dev DB; CI job 'rls'",
+      "blocking": true
+    },
+    {
+      "id": "security_manual_controls",
+      "area": "security",
+      "title": "Manual security controls",
+      "status": "WARN",
+      "reason": "4 control(s) only a person can confirm \u2014 see docs/launch-state.md",
+      "blocking": true
+    },
+    {
+      "id": "gate:privacy_email_dpa",
+      "area": "privacy",
+      "title": "Email sent through a provider with a DPA",
+      "status": "BLOCKED",
+      "reason": "open: replace consumer Gmail SMTP with Google Workspace (DPA) or a transactional email provider; set ORACLE_SMTP_* on the production app (docs/subprocessor-inventory.md item 1)",
+      "blocking": true
+    },
+    {
+      "id": "gate:privacy_dashscope_region",
+      "area": "privacy",
+      "title": "Realtime voice model not processing in Singapore undisclosed",
+      "status": "BLOCKED",
+      "reason": "open: re-region DashScope to the US, or keep Qwen realtime disabled (no DASHSCOPE_API_KEY in production), or disclose Singapore processing to brokerages (docs/subprocessor-inventory.md item 2)",
+      "blocking": true
+    },
+    {
+      "id": "gate:privacy_counsel_signoff",
+      "area": "privacy",
+      "title": "Counsel sign-off: DPAs, subprocessor list, plaintext PII accepted or remediated",
+      "status": "BLOCKED",
+      "reason": "open: counsel completes docs/privacy-counsel-checklist.md, confirms each DPA (DigitalOcean, Twilio, Fireworks, Plivo, Telnyx, RunPod) and accepts or rejects the plaintext PII columns in docs/privacy-data-map.md",
+      "blocking": true
+    },
+    {
+      "id": "gate:privacy_erasure_role_on_do",
+      "area": "privacy",
+      "title": "Erasure owner can see every row under FORCE RLS on DigitalOcean",
+      "status": "PASS",
+      "reason": "done: confirm the SECURITY DEFINER erasure owner (the migration role) is BYPASSRLS or every erasable table has a platform DELETE+SELECT policy, so an erasure cannot silently delete 0 rows and report clean",
+      "blocking": true
+    },
+    {
+      "id": "gate:privacy_erasure_live_on_do",
+      "area": "privacy",
+      "title": "Live erasure test run against the DigitalOcean cluster",
+      "status": "WARN",
+      "reason": "open: run backend/tests/test_privacy_lifecycle_live.py and tests/privacy_lifecycle.sql against neoh-postgres-staging (throwaway tenant) and record the result in docs/launch-state.md",
+      "blocking": false
+    },
+    {
+      "id": "gate:privacy_elevenlabs_training",
+      "area": "privacy",
+      "title": "ElevenLabs training opt-out (only if ElevenLabs is enabled)",
+      "status": "WARN",
+      "reason": "open: ElevenLabs is not in the production spec; before adding its key, opt out of training on the account (docs/subprocessor-inventory.md item 3)",
+      "blocking": false
+    },
+    {
+      "id": "gate:resilience_on_staging",
+      "area": "resilience",
+      "title": "Failure drills re-run on DigitalOcean staging and provider sandboxes",
+      "status": "BLOCKED",
+      "reason": "open: run performance/resilience/run_drill.sh (db_stop, valkey, worker kill, AI 429/hang, MLS 401/503) against neoh-staging and the providers' test/sandbox modes; record results in docs/resilience-drill-report.md",
+      "blocking": true
+    },
+    {
+      "id": "gate:spend_alerts",
+      "area": "operations",
+      "title": "DigitalOcean spend alerts configured",
+      "status": "WARN",
+      "reason": "open: Billing -> Spend Alerts in the DigitalOcean console (email notification, not a cap)",
+      "blocking": false
+    },
+    {
+      "id": "gate:support_contact",
+      "area": "operations",
+      "title": "Support email and urgent route decided",
+      "status": "BLOCKED",
+      "reason": "open: the owner fills the placeholders in docs/support-model.md (support address, urgent phone/route, who is on point)",
+      "blocking": true
+    }
+  ]
+}
