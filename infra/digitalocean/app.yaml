@@ -1,7 +1,10 @@
-# DigitalOcean App Platform spec for Neoh production.
+# DigitalOcean App Platform spec for Neoh (ACTIVE PRODUCTION deploy target).
 #
-# Apply with: doctl apps create --spec infra/digitalocean/app.yaml
-# Update with: doctl apps update <app-id> --spec infra/digitalocean/app.yaml
+# Never applied as-is. Render it first, then create/update:
+#   scripts/render-app-spec.py --env production --backend-digest sha256:… \
+#       --frontend-digest sha256:… > app.production.yaml
+#   doctl apps create --spec app.production.yaml          # once, by hand
+#   doctl apps update <app-id> --spec app.production.yaml # CI does this
 #
 # Component shape, chosen from the actual repository (see
 # docs/deploy-digitalocean.md for the full audit this maps to):
@@ -23,13 +26,17 @@
 #                               have no cross-replica coordination, so a
 #                               second worker instance would silently miss
 #                               half of whatever it's racing the first one for.
-#   web       (static_site)  — the Vite SPA. App Platform builds it from the
-#                               existing oracle-app/Dockerfile (build stage
-#                               only matters; the static-site build extracts
-#                               output_dir from the built image) and serves it
-#                               from DO's CDN — cheaper and simpler than
-#                               running nginx as a always-on service for
-#                               something that never changes per-request.
+#   web       (service)      — the Vite SPA, served by the frontend image's own
+#                               nginx (port 8080) and pinned by digest like
+#                               api/worker. A service, not a static_site: only
+#                               nginx can send the CSP frame-ancestors, HSTS
+#                               and X-Frame-Options headers (security review
+#                               WEB-3). See the `web` component below.
+#
+# This file is a TEMPLATE, not something to apply directly: it carries digest
+# placeholders, and production/staging are both rendered from it by
+# scripts/render-app-spec.py (staging is reduced-size, recovery mode on). The
+# one deploy path is docs/deploy-digitalocean.md.
 #
 # GPU reconstruction is NOT a DigitalOcean component: it already dispatches to
 # an external GPU provider (RunPod, via RECON_POD_* / RUNPOD_* env vars) —
@@ -194,6 +201,13 @@ services:
       # (used when no TOTP secret is set). One of the two is required in prod.
       - key: ORACLE_ADMIN_OTP_EMAIL
         type: SECRET
+      # Where operational alerts go ("[Neoh] <component> <STATE>",
+      # backend/ops_alerts.py). Every replica runs the evaluator — an advisory
+      # lock elects one — so the api needs it too: if the worker is what died,
+      # the API is the one that notices. Unset, alerts reach only the logs.
+      # A SECRET only so the address is not printed in the spec; it is config.
+      - key: ORACLE_ALERT_EMAIL
+        type: SECRET
       - key: TWILIO_ACCOUNT_SID
         type: SECRET
       - key: TWILIO_AUTH_TOKEN
@@ -201,6 +215,12 @@ services:
       - key: STRIPE_SECRET_KEY
         type: SECRET
       - key: STRIPE_WEBHOOK_SECRET
+        type: SECRET
+      # The plan's Stripe price (price_…). Checkout refuses to run without it
+      # (billing.py _price_misconfigured). Not sensitive, but per-environment —
+      # a TEST-mode price on staging, the live price on production — so it is
+      # set on each app like the keys, never committed here.
+      - key: STRIPE_PRICE_ID
         type: SECRET
       - key: ORACLE_BRIDGE_ACCESS_TOKEN
         type: SECRET
@@ -212,6 +232,15 @@ services:
         type: SECRET
       - key: ORACLE_FIREWORKS_API_KEY
         type: SECRET
+      # Optional provider support, deliberately NOT listed here (add the key
+      # to api AND worker only when that provider is actually used):
+      #   TELNYX_API_KEY, TELNYX_PUBLIC_KEY       hosted SMS (docs/telnyx-hosted-sms-runbook.md)
+      #   PLIVO_AUTH_ID, PLIVO_AUTH_TOKEN         alternate voice carrier
+      #   GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET  Calendar / Google sign-in
+      #   RUNPOD_API_KEY, RECON_POD_*             3D reconstruction (GPU)
+      #   DASHSCOPE_API_KEY                       realtime voice model — Singapore
+      #                                           region by default; see
+      #                                           docs/subprocessor-inventory.md first
       # Release identity is NOT set here on purpose.
       #
       # This used to be `ORACLE_GIT_SHA: ${_self.GIT_COMMIT_HASH}`, a RUNTIME
@@ -357,6 +386,15 @@ workers:
       - key: ORACLE_SECRET_KEY
         type: SECRET
       - key: ORACLE_ENCRYPTION_MASTER_KEY
+        type: SECRET
+      - key: ORACLE_ALERT_EMAIL
+        type: SECRET
+      # Account erasure runs HERE, as a durable job (privacy_lifecycle.py
+      # _phase_providers), and stops the subscription's renewal through Stripe.
+      # Without the key that step reports "stripe_not_configured" — which the
+      # erasure does not count as a failure — and a closed brokerage keeps
+      # being billed. The webhook secret stays on api only (webhooks land there).
+      - key: STRIPE_SECRET_KEY
         type: SECRET
       - key: TWILIO_ACCOUNT_SID
         type: SECRET
