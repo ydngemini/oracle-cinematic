@@ -1,16 +1,27 @@
-# React + Vite
+# oracle-app — the Neoh web app
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+The shipping frontend: Vite + React, CSS Modules, no UI library. The product
+is three places, **Home / Work / Neoh**, with people, properties, deals and
+conversations as context inside them (`src/components/CrmShell.jsx`).
 
-Currently, two official plugins are available:
+```bash
+npm ci
+npm run dev           # proxies API calls to ORACLE_PROXY_TARGET (default http://backend:8000,
+                      # the compose service; ./scripts/dev-start.sh runs the whole stack)
+npm test              # vitest
+npm run lint
+npm run build         # production bundle in dist/
+npm run bundle:check  # bundle-size budget (CI enforces it)
+```
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+Configuration is compiled in at build time (`VITE_*`). Production builds leave
+`VITE_API_BASE` and `VITE_WS_URL` **empty**, so the bundle calls its own
+origin. The same bundle runs on staging and production. The only public keys
+are the referrer-locked Google Maps pair (`VITE_GOOGLE_MAPS_KEY`,
+`VITE_GOOGLE_MAP_ID`). Never put a backend secret in a `VITE_*` variable:
+it ships to every browser.
 
-## React Compiler
-
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
-
-## Expanding the ESLint configuration
-
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+In production the bundle is served by this image's own nginx (`Dockerfile`,
+`nginx.conf`), so the CSP, HSTS and frame headers apply. It is deployed as the
+`web` component of `infra/digitalocean/app.yaml`. For deploys, see
+[`../docs/deploy-digitalocean.md`](../docs/deploy-digitalocean.md).

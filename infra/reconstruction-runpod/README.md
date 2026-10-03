@@ -1,3 +1,5 @@
+> **LEGACY — RunPod Serverless.** Serverless workers never left `initializing`; Neoh reconstruction uses RunPod **pods** with a stock PyTorch image (`backend/reconstruction_providers.py`, [`docs/runpod-pods-runbook.md`](../../docs/runpod-pods-runbook.md)). This handler is not deployed. See [`docs/infrastructure-status.md`](../../docs/infrastructure-status.md).
+
 # Neoh GPU Reconstruction — RunPod Serverless
 
 A **RunPod Serverless** GPU worker that turns a property's captured photos into a

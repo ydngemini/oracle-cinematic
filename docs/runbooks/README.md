@@ -41,3 +41,15 @@ An alert arrives as an email titled **`[Neoh] <component> <STATE>`** (from `back
 - Measured detection and recovery times: [resilience drill report](../resilience-drill-report.md)
 - Release gate and smoke test: [release checklist](../release-checklist.md), `infra/digitalocean/smoke-test.sh`
 - Launch readiness, one command: `python3 scripts/neoh-launch-readiness.py` (see [deploy-digitalocean](../deploy-digitalocean.md))
+
+## Reading DigitalOcean signals
+
+- **504 from `server: cloudflare` with `x-do-orig-status: 503` is the API's own 503.** DigitalOcean's edge rewrites every application 503 (database down, fail-closed degradation, a webhook without its signing secret) into an HTML 504, and the API's `Retry-After` never reaches the client. In DO dashboards and logs, read such 504s as the component's 503 and follow its row above.
+- `/live` is not routed publicly: from outside it answers the SPA's 200. Use `/health`, which must return the API's JSON, and `/health/workers`.
+
+## Around incidents
+
+- Is a customer's problem an incident, and who owns it: [support model](../support-model.md) (urgent list, triage, bug → incident, safe diagnostics, incident log)
+- Launch state and open blockers: [launch state](../launch-state.md), and `python3 scripts/neoh-launch-readiness.py --env production`
+- Live UI check after a fix: `python3 scripts/audit-neoh-production.py --base-url https://<env> --output audit.json`
+- Operations index: [docs/README.md](../README.md)

@@ -1,0 +1,385 @@
+{
+  "tool": "scripts/neoh-launch-readiness.py",
+  "tool_version": "1",
+  "environment": "staging",
+  "app_name": "neoh-staging",
+  "app_id": "3386001b-9e15-4cee-900d-9d87e1057eb8",
+  "base_url": "https://neoh-staging-ksfpn.ondigitalocean.app",
+  "generated_at": "2026-10-03T20:13:52Z",
+  "summary": {
+    "verdict": "BLOCKED",
+    "PASS": 25,
+    "WARN": 17,
+    "BLOCKED": 4
+  },
+  "checks": [
+    {
+      "id": "doctl_access",
+      "area": "platform",
+      "title": "DigitalOcean account readable",
+      "status": "PASS",
+      "reason": "doctl authenticated",
+      "blocking": true
+    },
+    {
+      "id": "app_exists",
+      "area": "platform",
+      "title": "App 'neoh-staging' exists",
+      "status": "PASS",
+      "reason": "app 3386001b\u2026, active deployment phase ACTIVE",
+      "blocking": true
+    },
+    {
+      "id": "region",
+      "area": "platform",
+      "title": "Region",
+      "status": "PASS",
+      "reason": "region 'nyc' (expected 'nyc')",
+      "blocking": true
+    },
+    {
+      "id": "components",
+      "area": "platform",
+      "title": "Expected components api/web/worker",
+      "status": "PASS",
+      "reason": "api, web (services) and worker (worker) present",
+      "blocking": true
+    },
+    {
+      "id": "api_replicas",
+      "area": "platform",
+      "title": "API replicas",
+      "status": "PASS",
+      "reason": "api runs 2 instance(s); needs \u22652 (no single point of failure, cross-replica fan-out exercised)",
+      "blocking": true
+    },
+    {
+      "id": "worker_count",
+      "area": "platform",
+      "title": "Exactly one worker",
+      "status": "PASS",
+      "reason": "worker instance_count 1; must be exactly 1 (voice/reconstruction queues are in-process \u2014 a second worker silently loses work; zero runs no background work)",
+      "blocking": true
+    },
+    {
+      "id": "sizing",
+      "area": "platform",
+      "title": "Sizing matches the rendered spec",
+      "status": "PASS",
+      "reason": "every component matches render-app-spec.py",
+      "blocking": false
+    },
+    {
+      "id": "images_pinned",
+      "area": "release",
+      "title": "Images pinned by digest",
+      "status": "PASS",
+      "reason": "api/worker/web pinned to DOCR digests; api and worker run the same image",
+      "blocking": true
+    },
+    {
+      "id": "postgres_attached",
+      "area": "data",
+      "title": "Postgres exists, online, attached",
+      "status": "PASS",
+      "reason": "cluster 'neoh-postgres-staging' online (pg 16, db-s-1vcpu-2gb, nyc3); attached to the app",
+      "blocking": true
+    },
+    {
+      "id": "postgres_trusted_sources",
+      "area": "security",
+      "title": "Postgres trusted sources",
+      "status": "WARN",
+      "reason": "no trusted sources \u2014 reachable from any IP with the password; restrict to the app",
+      "blocking": false
+    },
+    {
+      "id": "valkey_attached",
+      "area": "data",
+      "title": "Valkey exists, online, attached",
+      "status": "PASS",
+      "reason": "cluster 'neoh-redis-staging' online (valkey 8, db-s-1vcpu-1gb, nyc3); attached to the app",
+      "blocking": true
+    },
+    {
+      "id": "valkey_trusted_sources",
+      "area": "security",
+      "title": "Valkey trusted sources",
+      "status": "WARN",
+      "reason": "no trusted sources \u2014 reachable from any IP with the password; restrict to the app",
+      "blocking": false
+    },
+    {
+      "id": "registry",
+      "area": "release",
+      "title": "Container registry",
+      "status": "PASS",
+      "reason": "registry 'neoh-registry'; neoh-backend and neoh-frontend pushed",
+      "blocking": true
+    },
+    {
+      "id": "spaces",
+      "area": "data",
+      "title": "Spaces object storage configured",
+      "status": "PASS",
+      "reason": "bucket neoh-media-staging configured on api and worker (privacy/listing is checked by smoke-test.sh)",
+      "blocking": true
+    },
+    {
+      "id": "core_secrets",
+      "area": "security",
+      "title": "Core secrets present",
+      "status": "PASS",
+      "reason": "all core secrets set (names checked; values never read \u2014 strength is enforced at boot by config.validate_or_die)",
+      "blocking": true
+    },
+    {
+      "id": "spec_secret_slots",
+      "area": "release",
+      "title": "Running spec has every secret slot",
+      "status": "WARN",
+      "reason": "running app lacks keys the repo spec declares (next deploy adds them, unset): api:ORACLE_ADMIN_OTP_EMAIL, api:ORACLE_ALERT_EMAIL, api:ORACLE_BRIDGE_ACCESS_TOKEN, api:ORACLE_FIREWORKS_API_KEY, api:ORACLE_SMTP_HOST, api:ORACLE_SMTP_PASSWORD, api:ORACLE_SMTP_USERNAME, api:STRIPE_PRICE_ID, api:STRIPE_SECRET_KEY, api:STRIPE_WEBHOOK_SECRET, api:TWILIO_ACCOUNT_SID, api:TWILIO_AUTH_TOKEN, worker:ORACLE_ALERT_EMAIL, worker:ORACLE_BRIDGE_ACCESS_TOKEN, worker:ORACLE_FIREWORKS_API_KEY, worker:ORACLE_SMTP_HOST, worker:ORACLE_SMTP_PASSWORD, worker:ORACLE_SMTP_USERNAME, worker:STRIPE_SECRET_KEY, worker:STRIPE_WEBHOOK_SECRET, worker:TWILIO_ACCOUNT_SID, worker:TWILIO_AUTH_TOKEN",
+      "blocking": false
+    },
+    {
+      "id": "recovery_mode",
+      "area": "safety",
+      "title": "Recovery mode ON in staging",
+      "status": "PASS",
+      "reason": "on for api and worker: staging cannot text, call, email or charge anyone",
+      "blocking": true
+    },
+    {
+      "id": "demo_login_off",
+      "area": "safety",
+      "title": "Demo login off",
+      "status": "PASS",
+      "reason": "ORACLE_ENABLE_DEMO_LOGINS and ORACLE_DEMO_USER/PASS absent",
+      "blocking": false
+    },
+    {
+      "id": "oracle_env",
+      "area": "safety",
+      "title": "ORACLE_ENV=staging",
+      "status": "PASS",
+      "reason": "ORACLE_ENV=staging on api and worker",
+      "blocking": true
+    },
+    {
+      "id": "cors",
+      "area": "security",
+      "title": "CORS origins",
+      "status": "PASS",
+      "reason": "ORACLE_CORS_ORIGINS='${APP_URL}'",
+      "blocking": false
+    },
+    {
+      "id": "billing",
+      "area": "billing",
+      "title": "Billing configured",
+      "status": "WARN",
+      "reason": "unset: api:STRIPE_SECRET_KEY, api:STRIPE_WEBHOOK_SECRET, api:STRIPE_PRICE_ID, worker:STRIPE_SECRET_KEY, worker:STRIPE_WEBHOOK_SECRET (staging cannot charge: recovery mode)",
+      "blocking": false
+    },
+    {
+      "id": "email",
+      "area": "providers",
+      "title": "Email configured",
+      "status": "WARN",
+      "reason": "unset: ORACLE_SMTP_HOST, ORACLE_SMTP_USERNAME, ORACLE_SMTP_PASSWORD \u2014 invites and password reset cannot send (staging cannot send anyway: recovery mode)",
+      "blocking": false
+    },
+    {
+      "id": "ai_provider",
+      "area": "providers",
+      "title": "AI provider configured",
+      "status": "BLOCKED",
+      "reason": "no AI provider key \u2014 Neoh cannot answer",
+      "blocking": true
+    },
+    {
+      "id": "voice",
+      "area": "providers",
+      "title": "Voice provider configured",
+      "status": "WARN",
+      "reason": "no voice carrier credentials \u2014 calling unavailable (CRM still works)",
+      "blocking": false
+    },
+    {
+      "id": "messaging",
+      "area": "providers",
+      "title": "Messaging provider configured",
+      "status": "WARN",
+      "reason": "no messaging credentials \u2014 texting unavailable",
+      "blocking": false
+    },
+    {
+      "id": "mls_credentials",
+      "area": "providers",
+      "title": "MLS feed credential",
+      "status": "WARN",
+      "reason": "no MLS feed credential \u2014 listing data unavailable (fine until a brokerage needs MLS)",
+      "blocking": false
+    },
+    {
+      "id": "alert_routing",
+      "area": "operations",
+      "title": "Alerts reach a person",
+      "status": "WARN",
+      "reason": "ORACLE_ALERT_EMAIL unset \u2014 alerts go only to logs",
+      "blocking": false
+    },
+    {
+      "id": "optional_providers",
+      "area": "providers",
+      "title": "Optional provider support",
+      "status": "WARN",
+      "reason": "not configured (optional): hosted SMS (Telnyx), alternate voice carrier (Plivo), Calendar / Google sign-in",
+      "blocking": false
+    },
+    {
+      "id": "gpu_3d",
+      "area": "providers",
+      "title": "3D reconstruction (GPU)",
+      "status": "WARN",
+      "reason": "3D reconstruction unavailable (no RUNPOD_API_KEY)",
+      "blocking": false
+    },
+    {
+      "id": "health",
+      "area": "release",
+      "title": "Current release healthy",
+      "status": "PASS",
+      "reason": "/health 200 (ok)",
+      "blocking": true
+    },
+    {
+      "id": "version",
+      "area": "release",
+      "title": "Release identity",
+      "status": "BLOCKED",
+      "reason": "git_sha unknown, migration_head 0124_job_claim_aging.sql",
+      "blocking": true
+    },
+    {
+      "id": "worker_alive",
+      "area": "release",
+      "title": "Worker alive on this release",
+      "status": "PASS",
+      "reason": "1 live worker(s) on unknown",
+      "blocking": true
+    },
+    {
+      "id": "cors_live",
+      "area": "security",
+      "title": "CORS refuses a foreign origin",
+      "status": "PASS",
+      "reason": "foreign origin not echoed",
+      "blocking": true
+    },
+    {
+      "id": "web_security_headers",
+      "area": "security",
+      "title": "Web security headers",
+      "status": "PASS",
+      "reason": "CSP frame-ancestors and HSTS present",
+      "blocking": false
+    },
+    {
+      "id": "operator_console",
+      "area": "operations",
+      "title": "Operator-console checks",
+      "status": "WARN",
+      "reason": "not checked \u2014 set NEOH_OPERATOR_TOKEN (and a reachable URL) for component health, MLS feeds and billing exceptions",
+      "blocking": true
+    },
+    {
+      "id": "backups",
+      "area": "data",
+      "title": "Backups newer than 26 h",
+      "status": "PASS",
+      "reason": "newest backup 0.7 h old (1 kept; DO retention 7 days, restore only to a NEW cluster)",
+      "blocking": false
+    },
+    {
+      "id": "github_environment",
+      "area": "release",
+      "title": "GitHub environment 'staging'",
+      "status": "PASS",
+      "reason": "exists; required reviewers OFF; branch policy set",
+      "blocking": false
+    },
+    {
+      "id": "github_env_secrets",
+      "area": "release",
+      "title": "CI secrets on 'staging'",
+      "status": "BLOCKED",
+      "reason": "unset: DIGITALOCEAN_ACCESS_TOKEN \u2014 the deploy job refuses to start",
+      "blocking": true
+    },
+    {
+      "id": "domain",
+      "area": "release",
+      "title": "Domain configured (NEOH_DOMAIN)",
+      "status": "WARN",
+      "reason": "NEOH_DOMAIN unset \u2014 the app answers only on its ondigitalocean.app URL",
+      "blocking": false
+    },
+    {
+      "id": "staging_enabled",
+      "area": "release",
+      "title": "STAGING_ENABLED",
+      "status": "WARN",
+      "reason": "STAGING_ENABLED=unset \u2014 main is not staged automatically (dispatch confirm=stage still works)",
+      "blocking": false
+    },
+    {
+      "id": "security_gate",
+      "area": "security",
+      "title": "Security launch gate",
+      "status": "BLOCKED",
+      "reason": "verdict FAIL (2026-10-01); failing: staging_dast_no_blocker",
+      "blocking": true
+    },
+    {
+      "id": "rls_gate",
+      "area": "security",
+      "title": "RLS / cross-tenant suite",
+      "status": "PASS",
+      "reason": "tests/rls_security_review.sql PASS on a DB built from every migration and on the dev DB; CI job 'rls'",
+      "blocking": true
+    },
+    {
+      "id": "security_manual_controls",
+      "area": "security",
+      "title": "Manual security controls",
+      "status": "WARN",
+      "reason": "4 control(s) only a person can confirm \u2014 see docs/launch-state.md",
+      "blocking": true
+    },
+    {
+      "id": "gate:privacy_erasure_role_on_do",
+      "area": "privacy",
+      "title": "Erasure owner can see every row under FORCE RLS on DigitalOcean",
+      "status": "PASS",
+      "reason": "done: confirm the SECURITY DEFINER erasure owner (the migration role) is BYPASSRLS or every erasable table has a platform DELETE+SELECT policy, so an erasure cannot silently delete 0 rows and report clean",
+      "blocking": true
+    },
+    {
+      "id": "gate:privacy_erasure_live_on_do",
+      "area": "privacy",
+      "title": "Live erasure test run against the DigitalOcean cluster",
+      "status": "WARN",
+      "reason": "open: run backend/tests/test_privacy_lifecycle_live.py and tests/privacy_lifecycle.sql against neoh-postgres-staging (throwaway tenant) and record the result in docs/launch-state.md",
+      "blocking": false
+    },
+    {
+      "id": "gate:spend_alerts",
+      "area": "operations",
+      "title": "DigitalOcean spend alerts configured",
+      "status": "WARN",
+      "reason": "open: Billing -> Spend Alerts in the DigitalOcean console (email notification, not a cap)",
+      "blocking": false
+    }
+  ]
+}

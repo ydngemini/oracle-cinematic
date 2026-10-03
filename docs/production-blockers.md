@@ -1,3 +1,5 @@
+> **LEGACY — AWS (2026-09-02).** Superseded: Neoh production is DigitalOcean App Platform, not AWS account 151105438863. The current launch blockers are in [`docs/launch-state.md`](launch-state.md) and are checked by `scripts/neoh-launch-readiness.py`. Kept as history only.
+
 # Production blockers — operator actions
 
 Everything here needs account access, billing, or a vendor fix. None of it is a

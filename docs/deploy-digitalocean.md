@@ -236,6 +236,16 @@ component per DO's instructions, then:
   including the Stripe webhook, `/admin`, `/ws`, `/health`, `/version`,
   `/portal`) to the `api` component, with `/` as the final catch-all to `web`.
   `/docs` and `/openapi.json` are deliberately not routed (review WEB-2).
+  Every api rule sets **`preserve_path_prefix: true`**. Without it, App
+  Platform strips the matched prefix and every API route 404s, as happened on
+  the first staging app.
+- **DigitalOcean's edge turns a 503 into a 504.** When the API answers 503
+  (database down, a webhook without its signing secret, fail-closed
+  degradation), the client and DO's dashboards see an **HTML 504** from
+  `server: cloudflare`. The real status is in the `x-do-orig-status: 503`
+  header, and the API's `Retry-After` does not reach the client. When you
+  read DO metrics or logs, treat 504 + `x-do-orig-status: 503` as the
+  application's own 503 (see [`runbooks/README.md`](runbooks/README.md)).
   A naive two-rule `/api` → api, `/` → web split (the obvious first attempt)
   would silently 404 all of those on the static site instead of reaching
   the backend — verified against the real route table in `server.py` before
@@ -273,7 +283,16 @@ Runs automatically on every push to `main` once the repository variable
    component with `ORACLE_RECOVERY_MODE=1` — a staging Neoh cannot text a
    client, charge a card, or email anyone.
 6. Migration precheck, then migrations **from the image by digest**.
-7. `doctl apps update` with the rendered spec.
+7. `doctl apps update` with the **carried** spec. A `type: SECRET` with no
+   value in an update **wipes** that secret (proven on staging 2026-10-03:
+   the backend refused to boot and DO auto-rolled back), and the rendered
+   spec's secrets are blank by design. So right after rendering, before
+   migrations, `scripts/carry-secrets.py` copies the encrypted values of the
+   app's **ACTIVE deployment**. It never uses `doctl apps spec get`, whose `EV[…]`
+   can encrypt empty strings after a bad update. It refuses if a required
+   secret has no value anywhere. `scripts/rollback.sh` does the same.
+   Whether DO accepts resubmitted `EV[…]` values is **unverified**: see
+   [`staging-setup.md`](staging-setup.md) step 13 and its plaintext-injection fallback.
 8. Smoke test — API, `/version`, **and a live worker on this release**.
 9. **Only then** uploads `staging-verified-release-<sha>`. Its existence is
    the statement "this exact build ran on staging and passed."

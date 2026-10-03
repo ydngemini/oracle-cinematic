@@ -19,7 +19,7 @@ python3 scripts/neoh-launch-readiness.py --env staging
 ## State on 2026-10-03, ~20:00 UTC
 
 The owner is creating staging now, so re-run the command above for the current
-state. Readiness output saved at that point: [`launch-readiness/staging.md`](launch-readiness/staging.md).
+state. Readiness output saved at that point: [`launch-readiness/README.md`](launch-readiness/README.md).
 
 | Resource | State |
 |---|---|
@@ -27,8 +27,14 @@ state. Readiness output saved at that point: [`launch-readiness/staging.md`](lau
 | `neoh-postgres-staging` (pg 16.15, `db-s-1vcpu-2gb`, nyc3, 1 node) | **online**. Database `oracle` and DO-managed user `oracle_app_login` exist. **All 123 migrations applied over verified TLS**. **0 trusted sources** |
 | `neoh-redis-staging` (valkey 8, `db-s-1vcpu-1gb`, nyc3) | **online**. **0 trusted sources** |
 | Spaces bucket `neoh-media-staging` | created, private, with a bucket-scoped readwrite key (doctl cannot see buckets) |
-| App `neoh-staging` | being created with the reduced sizes |
-| GitHub environment `staging` | exists (branch policy set, no reviewers). **None of the 10 CI secrets set yet**. `STAGING_ENABLED` unset. `NEOH_DOMAIN` unset |
+| App `neoh-staging` (id `3386001b-9e15-4cee-900d-9d87e1057eb8`, `https://neoh-staging-ksfpn.ondigitalocean.app`) | **ACTIVE** with the reduced sizes. `/health` 200, worker alive, recovery mode on. Runs the hand-built bootstrap image (`git_sha unknown`). AI, Stripe test, SMTP and Twilio values not yet set |
+| GitHub environment `staging` | exists (branch policy set, no reviewers). **9 of 10 CI secrets set** (`DIGITALOCEAN_ACCESS_TOKEN` missing). `STAGING_ENABLED` unset. `NEOH_DOMAIN` unset |
+
+`doctl apps list --format ID,Spec.Name,DefaultIngress` now shows one row:
+
+```
+3386001b-9e15-4cee-900d-9d87e1057eb8    neoh-staging    https://neoh-staging-ksfpn.ondigitalocean.app
+```
 
 ### Verified on real DigitalOcean (first bring-up, 2026-10-03)
 
@@ -42,6 +48,22 @@ tests until then. Each is now fixed, and a test or CI step keeps it fixed.
 | 3 | `CERTIFICATE_VERIFY_FAILED`: DO signs Postgres certificates with the cluster's own project CA, which is not publicly trusted | `ORACLE_DB_CA_CERT: ${neoh-postgres.CA_CERT}` on api + worker; CI migrations fetch the CA with `doctl databases get-ca`; `db/connection.py` and `run_migrations.py` load it (lead's fix on main) | spec + CI step |
 | 4 | `run_migrations.py` connected to maintenance database `postgres`, which does not exist on DO (it is `defaultdb`) | probes the target database first, then falls back `postgres` → `defaultdb` (lead's fix on main) | — |
 | 5 | App Platform refuses `instance_count: 2` for `apps-s-1vcpu-0.5gb` (production `web`) | production web 2× `apps-s-1vcpu-1gb`; staging 1× 0.5gb | renderer refuses scaling a single-instance size |
+| 6 | CI built the backend with the repo root as context: no root `requirements.txt` (build fails), and `COPY . .` would take the whole monorepo | `-f backend/Dockerfile backend`, as in compose | `backend/tests/test_ci_build_contexts.py` |
+| 7 | Every API route answered `{"detail":"Not Found"}` while the SPA worked: App Platform **strips the matched prefix** unless the rule sets `preserve_path_prefix: true` | every api ingress rule preserves its prefix | `test_render_app_spec.py` |
+| 8 | **`doctl apps update` with a blank SECRET wipes it.** The backend refused to boot and DO auto-rolled back. Every CI deploy and every rollback would have done this | `scripts/carry-secrets.py` carries the ACTIVE deployment's `EV[…]` values (CI release/promote and `rollback.sh`). Resubmission acceptance is **unverified**: step 13 | `test_carry_secrets.py`, `test_ci_deploy_wiring.py`, rollback test |
+| 9 | CI steps read `DIGITALOCEAN_APP_ID`, `NEOH_PUBLIC_API_BASE` and the migration DB variables **empty**: they were set only on one step | job-level identifiers, plus step env on the migration steps | `test_ci_deploy_wiring.py` |
+
+Two smoke-test lessons from the same app:
+
+- **DigitalOcean's edge rewrites an application 503 into an HTML 504.** The
+  real status is in the `x-do-orig-status: 503` header (server `cloudflare`).
+  A webhook whose signing secret is not configured answers 503, so in DO
+  dashboards and logs it shows as a 504. A `Retry-After` header never reaches
+  the client. `smoke-test.sh` treats `504` with `x-do-orig-status: 503` on a
+  callback as "provider not configured here" (WARN), unless the provider is in
+  `REQUIRE_CALLBACK_PROVIDERS`.
+- `/openapi.json` (like `/live`) is not routed to the api, so the SPA's
+  fallback answers 200 `text/html`. Only a JSON API map is a leak.
 
 Also verified: on DO Managed Postgres, `doadmin` has **BYPASSRLS** (it is not a
 superuser), and a `doctl databases user create` user (`oracle_app_login`) has
@@ -321,35 +343,81 @@ From now on every push to `main` builds once, deploys to staging and
 smoke-tests. To deploy without a push: Actions → CI → Run workflow →
 `confirm: stage`.
 
-### 13. Verify that a CI deploy preserves the encrypted secrets **[owner — empirical]**
+### 13. Prove that a deploy keeps the app's secrets **[owner — must pass before `STAGING_ENABLED`]**
 
-The committed spec carries `type: SECRET` keys with **no value**, and CI
-deploys it with `doctl apps update --spec`. App Platform must keep the
-encrypted values already set on the app (step 8) rather than wipe them. Nobody has
-observed this yet. Prove it on staging before production depends on it:
+**What is known (proven on neoh-staging, 2026-10-03):** `doctl apps update
+--spec` with a `type: SECRET` env var that has **no value WIPES that secret.**
+A CI-shaped spec (rendered from the committed `app.yaml`, secrets blank by
+design) left api and worker without `ORACLE_SECRET_KEY`. Both refused to boot,
+the deployment went to ERROR, and DO rolled back automatically. This
+happened twice. Two consequences:
+
+- After such an update, `doctl apps spec get` **still shows `EV[…]`** for the
+  wiped keys, but those encrypt **empty** strings. The containers got nothing.
+  The **ACTIVE deployment's** spec is the only trustworthy source.
+- **Current staging state:** the active deployment is the automatic rollback
+  (healthy, `/health` 200), but the **app spec is the blank-secret one**. Any
+  further `doctl apps update` from that spec fails the same way until the
+  values are re-applied.
+
+**The fix in the repo:** CI and `scripts/rollback.sh` no longer apply the
+rendered spec. `scripts/carry-secrets.py` copies each blank SECRET's
+encrypted value from the newest ACTIVE deployment's spec (same component and
+key; bindings untouched). It **refuses before migrations** if a required
+secret has no value anywhere. It prints names only.
+
+**What is NOT yet known: whether App Platform accepts resubmitted `EV[…]`
+values in an update.** Verify it on staging before setting
+`STAGING_ENABLED`. The commands below print key names, counts and phases,
+never values:
 
 ```sh
-doctl apps spec get "$APP_ID" --format json \
-  | python3 -c 'import json,sys;s=json.load(sys.stdin);print(sorted(e["key"] for c in s.get("services",[])+s.get("workers",[]) for e in c.get("envs",[]) if e.get("type")=="SECRET" and e.get("value")))' \
-  > /tmp/secrets-before.txt
-# trigger one CI staging deploy (Actions → CI → confirm: stage), wait for it, then:
-doctl apps spec get "$APP_ID" --format json | python3 -c '…same…' > /tmp/secrets-after.txt
-diff /tmp/secrets-before.txt /tmp/secrets-after.txt && echo "secrets preserved"
-python3 scripts/neoh-launch-readiness.py --env staging   # core_secrets must still PASS
+APP_ID=3386001b-9e15-4cee-900d-9d87e1057eb8
+# 0. if the app spec is still the blank-secret one, re-apply the real values
+#    first (step 8's fill, then `doctl apps update` with the filled file).
+# 1. Resubmit the ACTIVE deployment's own spec as an update — exactly what
+#    carry-secrets.py produces when nothing changed:
+doctl apps list-deployments "$APP_ID" -o json > /dev/shm/deps.json
+python3 - /dev/shm/deps.json /dev/shm/active.yaml <<'PY'
+import json, sys, yaml
+deps = [d for d in json.load(open(sys.argv[1])) if d.get("phase") == "ACTIVE"]
+d = max(deps, key=lambda d: d["created_at"])
+open(sys.argv[2], "w").write(yaml.safe_dump(d["spec"], sort_keys=False))
+print("active deployment", d["id"][:8])
+PY
+doctl apps spec validate /dev/shm/active.yaml > /dev/null && echo "spec valid"
+doctl apps update "$APP_ID" --spec /dev/shm/active.yaml --wait
+shred -u /dev/shm/active.yaml /dev/shm/deps.json
+# 2. The new deployment must be ACTIVE (not ERROR, not an automatic rollback):
+doctl apps list-deployments "$APP_ID" --format ID,Phase,Cause --no-header | head -3
+# 3. A container that boots proves ORACLE_SECRET_KEY reached it:
+curl -s https://neoh-staging-ksfpn.ondigitalocean.app/health          # {"status":"ok",…}
+curl -s https://neoh-staging-ksfpn.ondigitalocean.app/health/workers  # "healthy": true
+# 4. And the real CI path end to end: Actions → CI → Run workflow → confirm: stage
+python3 scripts/neoh-launch-readiness.py --env staging                # core_secrets PASS, health PASS
 ```
 
-Both lists hold key **names** only. If any name disappears, App Platform wiped it.
-In that case the CI deploy design needs a fix before production: the
-deploy would have to merge the running spec's `EV[…]` values into the rendered
-spec before `doctl apps update` (or `spec-drift.py` would have to refuse a
-blank-over-encrypted change). Do **not** promote to production until this is
-settled.
+**PASS:** the update's deployment is `ACTIVE` with cause "app spec updated",
+and `/health` and `/health/workers` answer. **FAIL:** the deployment goes to `ERROR` and
+is followed by "automated rollback after failed deployment", or the logs say
+"ORACLE_SECRET_KEY is not set".
+
+**If DO rejects resubmitted `EV[…]` values, use the fallback.** CI must inject
+**plaintext** secret values at render time from **GitHub environment
+secrets**: mirror each app SECRET (`ORACLE_SECRET_KEY`, …) as a secret on the
+`staging` and `production` GitHub environments, fill the rendered spec from
+the job's environment in the runner (the step 8 snippet does exactly this),
+apply, and shred the file. The values are encrypted by DO on receipt, never
+committed, never printed, never uploaded. The cost is a second copy of every
+secret in GitHub, and rotation then has to happen in both places
+(`docs/credential-rotation.md`). Do **not** set `STAGING_ENABLED`, or promote
+anything, until one of the two paths is proven.
 
 ### 14. Confirm
 
 ```sh
-APP_URL=$(gh secret list --env staging --repo $REPO >/dev/null; doctl apps get "$APP_ID" --format DefaultIngress --no-header)
-APP_URL=$APP_URL ./infra/digitalocean/smoke-test.sh
+APP_URL=$(doctl apps get "$APP_ID" --format DefaultIngress --no-header)
+APP_URL=$APP_URL SPACES_BUCKET=neoh-media-staging ./infra/digitalocean/smoke-test.sh
 python3 scripts/neoh-launch-readiness.py --env staging --json docs/launch-readiness/staging.json
 ```
 

@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# LEGACY: drives the retired five-tab UI (Today/People/Inbox/Deals/Our AI) and
+# will fail against the current Home / Work / Neoh shell. The current UI sweep
+# is scripts/audit-neoh-production.py. Kept for its Sites-draft flow only.
 """Authenticated local UI smoke test for the Neoh five-destination CRM.
 
 The script never prints credentials or persists browser storage state.  With

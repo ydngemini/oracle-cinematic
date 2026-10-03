@@ -1,3 +1,5 @@
+> **LEGACY — AWS Batch.** Neoh reconstruction runs on RunPod pods (`backend/reconstruction_worker.py`, [`docs/runpod-pods-runbook.md`](../../docs/runpod-pods-runbook.md)). This image and buildspec are not deployed. See [`docs/infrastructure-status.md`](../../docs/infrastructure-status.md).
+
 # Neoh GPU Reconstruction (AWS Batch)
 
 Turns a property's captured photos into a walkable Gaussian splat on a SPOT GPU

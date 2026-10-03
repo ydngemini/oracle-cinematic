@@ -1,4 +1,8 @@
 #!/bin/bash
+# LEGACY / ARCHIVED: one-off domain purchase helper, not part of any deploy.
+# The production domain is NEOH_DOMAIN, served by DigitalOcean App Platform:
+# docs/deploy-digitalocean.md. Classification: docs/infrastructure-status.md.
+#
 # Purchase neohr.app domain using Cloudflare API
 # Cloudflare sells domains at-cost (no markup)
 
@@ -58,11 +62,8 @@ echo "4. Payment: ~$12 for 1 year"
 echo "5. After purchase, go to: https://dash.cloudflare.com"
 echo "6. Navigate to: $DOMAIN > Overview > Nameservers"
 echo "7. Select 'Use my own nameservers'"
-echo "8. Add Azure nameservers:"
-echo "   ns1-03.azure-dns.com"
-echo "   ns2-03.azure-dns.net"
-echo "   ns3-03.azure-dns.org"
-echo "   ns4-03.azure-dns.info"
+echo "8. Point DNS at the DigitalOcean app: see docs/deploy-digitalocean.md (Domain / TLS)."
+echo "   Set NEOH_DOMAIN on the GitHub environment. The Azure DNS zone is retired."
 echo ""
 echo "=== ALTERNATIVE: Quick Link ==="
 echo ""
