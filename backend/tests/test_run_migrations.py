@@ -254,3 +254,61 @@ def test_a_recorded_migration_with_no_checksum_gets_one_without_re_applying(tmp_
     assert code == 0
     assert ("backfill_checksum", "0001_example.sql") in conn.events
     assert "migration" not in _event_names(conn)
+
+
+
+class _FakeConn:
+    def __init__(self, existing):
+        self.existing, self.executed = existing, []
+
+    async def fetchval(self, _sql, name):
+        return 1 if name in self.existing else None
+
+    async def execute(self, sql):
+        self.executed.append(sql)
+
+    async def close(self):
+        return None
+
+
+def _fake_server(monkeypatch, databases):
+    """asyncpg.connect against a server that has only `databases`."""
+    import asyncpg
+
+    calls = []
+    conns = []
+
+    async def connect(**kw):
+        calls.append(kw["database"])
+        if kw["database"] not in databases:
+            raise asyncpg.InvalidCatalogNameError(f'database "{kw["database"]}" does not exist')
+        conn = _FakeConn(databases)
+        conns.append(conn)
+        return conn
+
+    monkeypatch.setattr(asyncpg, "connect", connect)
+    monkeypatch.delenv("ORACLE_DB_MAINTENANCE_NAME", raising=False)
+    return calls, conns
+
+
+def test_existing_database_needs_no_maintenance_connection(monkeypatch):
+    calls, conns = _fake_server(monkeypatch, {"defaultdb", "oracle"})
+    asyncio.run(run_migrations._ensure_database(host="h", port=1, db="oracle", user="u", pw="p", ctx=False))
+    assert calls == ["oracle"] and not any(c.executed for c in conns)
+
+
+def test_digitalocean_maintenance_database_is_defaultdb(monkeypatch):
+    """DO Managed PostgreSQL has no `postgres` database — migrations used to
+    die there with InvalidCatalogNameError before touching the schema."""
+    calls, conns = _fake_server(monkeypatch, {"defaultdb"})
+    asyncio.run(run_migrations._ensure_database(host="h", port=1, db="oracle", user="u", pw="p", ctx=False))
+    assert calls == ["oracle", "postgres", "defaultdb"]
+    assert conns[-1].executed == ['CREATE DATABASE "oracle"']
+
+
+def test_no_reachable_maintenance_database_fails_loudly(monkeypatch):
+    import pytest as _pytest
+
+    _fake_server(monkeypatch, set())
+    with _pytest.raises(RuntimeError, match="no maintenance database"):
+        asyncio.run(run_migrations._ensure_database(host="h", port=1, db="oracle", user="u", pw="p", ctx=False))

@@ -29,6 +29,7 @@ def _reload(monkeypatch, **env):
     for key in (
         "ORACLE_DB_AUTH",
         "ORACLE_DB_CA_BUNDLE",
+        "ORACLE_DB_CA_CERT",
         "ORACLE_DB_TLS_MIN",
         "ORACLE_RDS_CA_BUNDLE",
         "ORACLE_DB_PASSWORD",
@@ -145,3 +146,23 @@ def test_credential_is_reused_across_connections(monkeypatch):
 
     assert mod._azure_credential() is mod._azure_credential()
     assert len(created) == 1
+
+
+def _first_pem_certificate() -> str:
+    import certifi
+
+    text = open(certifi.where()).read()
+    start = text.index("-----BEGIN CERTIFICATE-----")
+    end = text.index("-----END CERTIFICATE-----", start) + len("-----END CERTIFICATE-----")
+    return text[start:end]
+
+
+def test_ca_as_pem_text_is_trusted_for_platforms_without_files(monkeypatch):
+    """DigitalOcean Managed PostgreSQL signs with the cluster's own CA. App
+    Platform can only hand it over as text (${db.CA_CERT}), not as a file, so
+    ORACLE_DB_CA_CERT must be loaded as cadata — and ONLY it is then trusted."""
+    pem = _first_pem_certificate()
+    mod = _reload(monkeypatch, ORACLE_DB_CA_CERT=pem)
+    ctx = mod._build_ssl_context()
+    assert ctx.verify_mode == ssl.CERT_REQUIRED and ctx.check_hostname is True
+    assert ctx.cert_store_stats()["x509_ca"] == 1

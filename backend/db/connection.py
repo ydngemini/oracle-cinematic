@@ -91,6 +91,11 @@ RDS_CA_BUNDLE = os.getenv("ORACLE_RDS_CA_BUNDLE", "/etc/ssl/certs/rds-global-bun
 DB_CA_BUNDLE = os.getenv("ORACLE_DB_CA_BUNDLE") or (
     RDS_CA_BUNDLE if DB_AUTH == "aws-iam" else None
 )
+# The CA as PEM text, for platforms that cannot mount a file. DigitalOcean
+# Managed PostgreSQL signs its server certificate with the cluster's OWN CA (not
+# publicly trusted — verified on the first staging bring-up, 2026-10-03), so
+# verified TLS there needs App Platform's bindable ${<db>.CA_CERT} in this var.
+DB_CA_CERT = os.getenv("ORACLE_DB_CA_CERT", "").strip() or None
 
 # Minimum TLS version. Azure Flexible Server negotiates 1.2 or 1.3 depending on
 # server config, so requiring 1.3 there can hard-fail a healthy server; RDS keeps
@@ -151,8 +156,9 @@ def _build_ssl_context() -> ssl.SSLContext:
     """Verified TLS, with a provider-specific or system CA bundle.
 
     cafile=None falls back to the system trust store, which is what verifies
-    Azure Flexible Server's publicly-rooted certificate."""
-    ctx = ssl.create_default_context(cafile=DB_CA_BUNDLE)
+    Azure Flexible Server's publicly-rooted certificate. ORACLE_DB_CA_CERT (PEM
+    text) adds a private CA such as DigitalOcean's."""
+    ctx = ssl.create_default_context(cafile=DB_CA_BUNDLE, cadata=DB_CA_CERT)
     floor = _TLS_FLOOR.get(DB_TLS_MIN)
     if floor is None:
         raise RuntimeError(

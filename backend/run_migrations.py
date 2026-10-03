@@ -170,7 +170,9 @@ def _ssl_context(host: str = "") -> "ssl.SSLContext | bool":
         print(f"** TLS disabled for local host {host!r}", flush=True)
         return False
     ca = os.environ.get("ORACLE_DB_CA_BUNDLE") or os.environ.get("ORACLE_RDS_CA_BUNDLE")
-    ctx = ssl.create_default_context(cafile=ca)
+    # PEM text for a private CA (DigitalOcean Managed PostgreSQL), as in db/connection.py.
+    ca_pem = os.environ.get("ORACLE_DB_CA_CERT", "").strip() or None
+    ctx = ssl.create_default_context(cafile=ca, cadata=ca_pem)
     ctx.check_hostname = True
     ctx.verify_mode = ssl.CERT_REQUIRED
     return ctx
@@ -181,15 +183,30 @@ async def _ensure_database(*, host: str, port: int, db: str, user: str, pw: str,
 
     if not _DB_NAME_RE.fullmatch(db):
         raise ValueError("ORACLE_DB_NAME must be a safe PostgreSQL identifier")
-    maintenance_db = os.environ.get("ORACLE_DB_MAINTENANCE_NAME", "postgres")
-    conn = await asyncpg.connect(
-        host=host,
-        port=port,
-        user=user,
-        password=pw,
-        database=maintenance_db,
-        ssl=ctx,
-    )
+    # The usual case: the database already exists (managed providers create it,
+    # or an earlier run did). Then no maintenance connection is needed at all.
+    try:
+        probe = await asyncpg.connect(host=host, port=port, user=user, password=pw,
+                                      database=db, ssl=ctx)
+    except asyncpg.InvalidCatalogNameError:
+        pass
+    else:
+        await probe.close()
+        return
+    # Maintenance database names differ by provider: "postgres" on vanilla
+    # PostgreSQL/RDS/Azure, "defaultdb" on DigitalOcean Managed PostgreSQL.
+    candidates = [os.environ.get("ORACLE_DB_MAINTENANCE_NAME", "").strip() or "postgres", "defaultdb"]
+    conn = None
+    for maintenance_db in dict.fromkeys(candidates):
+        try:
+            conn = await asyncpg.connect(host=host, port=port, user=user, password=pw,
+                                         database=maintenance_db, ssl=ctx)
+            break
+        except asyncpg.InvalidCatalogNameError:
+            continue
+    if conn is None:
+        raise RuntimeError(f"database {db!r} does not exist and no maintenance database "
+                           f"({', '.join(dict.fromkeys(candidates))}) is reachable to create it")
     try:
         exists = await conn.fetchval("SELECT 1 FROM pg_database WHERE datname=$1", db)
         if not exists:
