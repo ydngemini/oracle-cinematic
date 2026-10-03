@@ -126,6 +126,17 @@ services:
         value: "prod"
       - key: ORACLE_PROCESS_ROLE
         value: "web"
+      # JWT issuer/audience binding. Required outside dev: config.py
+      # _REQUIRED_IN_PROD and auth.py refuse to boot without the pair (found on
+      # the first real staging bring-up, 2026-10-03 — the worker, which has no
+      # ORACLE_PUBLIC_BASE_URL to fall back on, would have crash-looped). Plain
+      # config, not secrets. These are PRODUCTION's; render-app-spec.py gives
+      # staging its own pair and refuses to render the two sharing one, so a
+      # token minted by staging can never be accepted by production.
+      - key: ORACLE_JWT_ISSUER
+        value: "neoh"
+      - key: ORACLE_JWT_AUDIENCE
+        value: "neoh"
       # Per-replica WebSocket ceiling. The code default (120) would refuse the
       # 241st open tab across two replicas; 500 per replica was MEASURED to
       # hold (first frame p95 9 ms, <5% CPU, flat memory — docs/capacity-plan.md).
@@ -154,6 +165,13 @@ services:
         type: SECRET
       - key: ORACLE_DB_SSLMODE
         value: "require"
+      # DO Managed Postgres signs its server certificate with the cluster's
+      # OWN project CA, which no system trust store knows: without this the
+      # TLS handshake fails (CERTIFICATE_VERIFY_FAILED, found on the first
+      # real staging bring-up, 2026-10-03). PEM text, bound by App Platform —
+      # public, not a secret. db/connection.py loads it as ssl cadata.
+      - key: ORACLE_DB_CA_CERT
+        value: ${neoh-postgres.CA_CERT}
       # Platform contexts (workers, webhooks, sign-in, the operator) connect as
       # oracle_platform_login — the only login RLS treats as platform admin
       # (migration 0120, review RLS-1). Its own secret: set the same value as
@@ -290,8 +308,13 @@ services:
       repository: neoh-frontend
       digest: __FRONTEND_DIGEST__
     http_port: 8080
+    # 1 GiB, not 0.5 GiB: App Platform refuses more than ONE instance of
+    # apps-s-1vcpu-0.5gb ("must not exceed 1 instance", found by
+    # `doctl apps spec validate`, 2026-10-03). Two instances keep the SPA up
+    # through a deploy or an instance failure. The single-instance alternative
+    # is 1x apps-s-1vcpu-0.5gb ($5); staging uses that.
     instance_count: 2
-    instance_size_slug: apps-s-1vcpu-0.5gb
+    instance_size_slug: apps-s-1vcpu-1gb
     health_check:
       http_path: /healthz
       initial_delay_seconds: 5
@@ -312,14 +335,25 @@ workers:
     # layer heartbeats its lease, so a SIGKILL here does not lose work — the
     # lease expires and another worker reclaims it — but finishing cleanly
     # avoids the retry entirely.
+    #
+    # Workers accept ONLY grace_period_seconds (1-600). drain_seconds is a
+    # service-only field — a worker receives no requests to drain — and App
+    # Platform rejects the whole spec with `unknown field "drain_seconds"`
+    # (found by `doctl apps spec validate` on the first real staging bring-up,
+    # 2026-10-03). test_render_app_spec.py keeps service-only fields off workers.
     termination:
-      drain_seconds: 30
       grace_period_seconds: 300
     envs:
       - key: ORACLE_ENV
         value: "prod"
       - key: ORACLE_PROCESS_ROLE
         value: "worker"
+      # Same pair as api (see there): the worker boots the same server.py, so
+      # config.validate_or_die and auth.py's import-time check run here too.
+      - key: ORACLE_JWT_ISSUER
+        value: "neoh"
+      - key: ORACLE_JWT_AUDIENCE
+        value: "neoh"
       # Durable job pools (automation_jobs.py). Interactive = Neoh chat replies,
       # on their own queue so a long MLS/harvest job never holds a person's
       # turn; this is also the ceiling on concurrent chat model calls. Each
@@ -360,6 +394,8 @@ workers:
         type: SECRET
       - key: ORACLE_DB_SSLMODE
         value: "require"
+      - key: ORACLE_DB_CA_CERT # the cluster's own CA — see api
+        value: ${neoh-postgres.CA_CERT}
       # Platform contexts (workers, webhooks, sign-in, the operator) connect as
       # oracle_platform_login — the only login RLS treats as platform admin
       # (migration 0120, review RLS-1). Its own secret: set the same value as
@@ -393,8 +429,12 @@ workers:
       # _phase_providers), and stops the subscription's renewal through Stripe.
       # Without the key that step reports "stripe_not_configured" — which the
       # erasure does not count as a failure — and a closed brokerage keeps
-      # being billed. The webhook secret stays on api only (webhooks land there).
+      # being billed. With the key set, config.validate_or_die also requires
+      # the webhook secret (review BILL-1) — so the worker carries both, even
+      # though webhooks land on api (test_rendered_spec_boots.py).
       - key: STRIPE_SECRET_KEY
+        type: SECRET
+      - key: STRIPE_WEBHOOK_SECRET
         type: SECRET
       - key: TWILIO_ACCOUNT_SID
         type: SECRET

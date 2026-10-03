@@ -481,6 +481,12 @@ jobs:
             > /tmp/app.staging.yaml
           grep -n "digest:\|ORACLE_RECOVERY_MODE" /tmp/app.staging.yaml
 
+      # App Platform's own schema check, BEFORE migrations touch the database.
+      # The first real bring-up found a spec the renderer accepted and DO
+      # rejected (`unknown field "drain_seconds"` on the worker). Read-only.
+      - name: Validate the staging spec with App Platform
+        run: doctl apps spec validate /tmp/app.staging.yaml > /dev/null
+
       - name: Migration precheck (staging)
         run: |
           chmod +x scripts/migration-precheck.sh
@@ -497,8 +503,18 @@ jobs:
 
       # Migrations run from the image BY DIGEST — the exact artifact — before
       # it serves traffic.
+      # DO Managed Postgres presents a certificate signed by the cluster's own
+      # project CA, so TLS verification needs that CA (ORACLE_DB_CA_CERT). The
+      # cluster is resolved from the RENDERED spec's cluster_name, never typed
+      # here; `--format ID,Name` keeps connection credentials out of the step.
       - name: Run database migrations (staging)
         run: |
+          set -euo pipefail
+          cluster=$(python3 -c 'import yaml; print(next(d["cluster_name"] for d in yaml.safe_load(open("/tmp/app.staging.yaml"))["databases"] if d["name"] == "neoh-postgres"))')
+          id=$(doctl databases list --format ID,Name --no-header | awk -v n="$cluster" '$2 == n {print $1}')
+          [ -n "$id" ] || { echo "::error::no database cluster named $cluster"; exit 1; }
+          ORACLE_DB_CA_CERT=$(doctl databases get-ca "$id" -o json | python3 -c 'import base64, json, sys; print(base64.b64decode(json.load(sys.stdin)["certificate"]).decode())')
+          export ORACLE_DB_CA_CERT
           docker run --rm \
             -e ORACLE_DB_HOST \
             -e ORACLE_DB_PORT \
@@ -506,6 +522,7 @@ jobs:
             -e ORACLE_DB_ADMIN_USER \
             -e ORACLE_DB_ADMIN_PASSWORD \
             -e ORACLE_DB_PLATFORM_PASSWORD \
+            -e ORACLE_DB_CA_CERT \
             -e ORACLE_DB_SSL=require \
             "${REGISTRY}/neoh-backend@${{ steps.digests.outputs.backend }}" \
             python run_migrations.py
@@ -740,6 +757,9 @@ jobs:
             > /tmp/app.production.yaml
           grep -n "digest:" /tmp/app.production.yaml
 
+      - name: Validate the production spec with App Platform
+        run: doctl apps spec validate /tmp/app.production.yaml > /dev/null
+
       - name: Migration precheck (production)
         run: |
           chmod +x scripts/migration-precheck.sh
@@ -756,6 +776,12 @@ jobs:
 
       - name: Run database migrations (production)
         run: |
+          set -euo pipefail
+          cluster=$(python3 -c 'import yaml; print(next(d["cluster_name"] for d in yaml.safe_load(open("/tmp/app.production.yaml"))["databases"] if d["name"] == "neoh-postgres"))')
+          id=$(doctl databases list --format ID,Name --no-header | awk -v n="$cluster" '$2 == n {print $1}')
+          [ -n "$id" ] || { echo "::error::no database cluster named $cluster"; exit 1; }
+          ORACLE_DB_CA_CERT=$(doctl databases get-ca "$id" -o json | python3 -c 'import base64, json, sys; print(base64.b64decode(json.load(sys.stdin)["certificate"]).decode())')
+          export ORACLE_DB_CA_CERT
           docker run --rm \
             -e ORACLE_DB_HOST \
             -e ORACLE_DB_PORT \
@@ -763,6 +789,7 @@ jobs:
             -e ORACLE_DB_ADMIN_USER \
             -e ORACLE_DB_ADMIN_PASSWORD \
             -e ORACLE_DB_PLATFORM_PASSWORD \
+            -e ORACLE_DB_CA_CERT \
             -e ORACLE_DB_SSL=require \
             "${REGISTRY}/neoh-backend@${{ steps.digests.outputs.backend }}" \
             python run_migrations.py

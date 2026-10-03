@@ -75,8 +75,11 @@ def test_staging_differs_from_production_only_where_intended():
         "api:ORACLE_ENV", "worker:ORACLE_ENV",
         "api:ORACLE_S3_BUCKET", "worker:ORACLE_S3_BUCKET",
         "api:ORACLE_RECOVERY_MODE", "worker:ORACLE_RECOVERY_MODE",
+        # Its own JWT issuer/audience: a staging token never validates in production.
+        "api:ORACLE_JWT_ISSUER", "worker:ORACLE_JWT_ISSUER",
+        "api:ORACLE_JWT_AUDIENCE", "worker:ORACLE_JWT_AUDIENCE",
         # Reduced staging (owner decision 2026-10-03): capacity, never shape.
-        "api:size", "worker:size", "web:instances",
+        "api:size", "worker:size", "web:instances", "web:size",
         "api:ORACLE_DB_POOL_MAX",                 # absent (default 10) -> 6
         "worker:ORACLE_DB_POOL_MAX", "worker:ORACLE_DB_PLATFORM_POOL_MAX",
     }, "staging drifted from production somewhere unintended"
@@ -145,6 +148,73 @@ def test_a_shared_cluster_is_caught(monkeypatch):
     )
     with pytest.raises(r.RenderError, match="share clusters"):
         r.check_separation()
+
+
+def test_every_backend_component_carries_the_jwt_pair():
+    """Outside dev the backend refuses to boot without ORACLE_JWT_ISSUER and
+    ORACLE_JWT_AUDIENCE. The first staging bring-up found the spec had neither."""
+    for env in ("production", "staging"):
+        for comp in r._backend_components(r.render(env, B, F)):
+            assert _env(comp, "ORACLE_JWT_ISSUER") and _env(comp, "ORACLE_JWT_AUDIENCE"), (env, comp["name"])
+
+
+def test_a_component_without_the_jwt_pair_is_refused(tmp_path, monkeypatch):
+    raw = yaml.safe_load((REPO / "infra" / "digitalocean" / "app.yaml").read_text(encoding="utf-8"))
+    raw["workers"][0]["envs"] = [e for e in raw["workers"][0]["envs"] if e["key"] != "ORACLE_JWT_AUDIENCE"]
+    fake = tmp_path / "app.yaml"
+    fake.write_text(yaml.safe_dump(raw))
+    monkeypatch.setattr(r, "SPEC", fake)
+    with pytest.raises(r.RenderError, match="ORACLE_JWT_AUDIENCE"):
+        r.render("production", B, F)
+
+
+def test_a_shared_jwt_issuer_is_caught(monkeypatch):
+    """Same issuer AND same audience would let a staging token pass production's
+    claim checks; either one shared is refused."""
+    monkeypatch.setitem(r.ENVIRONMENTS["staging"], "jwt",
+                        {"ORACLE_JWT_ISSUER": "neoh", "ORACLE_JWT_AUDIENCE": "neoh-staging"})
+    with pytest.raises(r.RenderError, match="share jwt_issuers"):
+        r.check_separation()
+
+
+SERVICE_ONLY = ("http_port", "internal_ports", "health_check", "routes", "cors")
+
+
+def test_workers_carry_no_service_only_fields():
+    """`doctl apps spec validate` rejected the first real staging spec:
+    `unknown field "drain_seconds"` on the worker. Checked offline here."""
+    for env in ("production", "staging"):
+        for w in r.render(env, B, F).get("workers") or []:
+            assert not [f for f in SERVICE_ONLY if f in w], w["name"]
+            assert "drain_seconds" not in (w.get("termination") or {}), w["name"]
+            assert 1 <= (w.get("termination") or {}).get("grace_period_seconds", 120) <= 600
+
+
+def test_no_component_scales_a_single_instance_size():
+    """App Platform rejected production's 2x apps-s-1vcpu-0.5gb web."""
+    for env in ("production", "staging"):
+        spec = r.render(env, B, F)
+        for c in spec["services"] + spec["workers"]:
+            if c.get("instance_size_slug") in r.SINGLE_INSTANCE_SLUGS:
+                assert int(c.get("instance_count") or 1) == 1, (env, c["name"])
+
+
+def test_scaling_a_single_instance_size_is_refused(monkeypatch):
+    sizing = {**r.ENVIRONMENTS["staging"]["components"]}
+    sizing["web"] = {"instance_count": 2, "instance_size_slug": "apps-s-1vcpu-0.5gb"}
+    monkeypatch.setitem(r.ENVIRONMENTS["staging"], "components", sizing)
+    with pytest.raises(r.RenderError, match="only 1 instance"):
+        r.render("staging", B, F)
+
+
+def test_a_worker_with_drain_seconds_is_refused(tmp_path, monkeypatch):
+    raw = yaml.safe_load((REPO / "infra" / "digitalocean" / "app.yaml").read_text(encoding="utf-8"))
+    raw["workers"][0].setdefault("termination", {})["drain_seconds"] = 30
+    fake = tmp_path / "app.yaml"
+    fake.write_text(yaml.safe_dump(raw))
+    monkeypatch.setattr(r, "SPEC", fake)
+    with pytest.raises(r.RenderError, match="drain_seconds"):
+        r.render("staging", B, F)
 
 
 def test_a_shared_bucket_is_caught(monkeypatch):
