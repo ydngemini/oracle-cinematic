@@ -462,6 +462,7 @@ async def stripe_webhook(request: Request):
     # subscription (review BILL-1). Refuse before verifying anything.
     if not _webhook_secret_configured():
         logger.error("[billing] webhook refused: STRIPE_WEBHOOK_SECRET is not configured")
+        _note_refusal("not_configured")
         raise HTTPException(status_code=503, detail="Billing webhooks are not configured")
 
     payload = await request.body()
@@ -470,8 +471,10 @@ async def stripe_webhook(request: Request):
     try:
         event = stripe.Webhook.construct_event(payload, sig_header, STRIPE_WEBHOOK_SECRET)
     except ValueError:
+        _note_refusal("invalid_payload")
         raise HTTPException(status_code=400, detail="Invalid webhook payload")
     except stripe.error.SignatureVerificationError:
+        _note_refusal("invalid_signature")
         raise HTTPException(status_code=400, detail="Invalid webhook signature")
 
     # construct_event is the signature check. The handlers then read the SAME
@@ -489,6 +492,7 @@ async def stripe_webhook(request: Request):
     pool = get_pool()
     if not pool:
         logger.error("[billing] webhook received but DB pool unavailable — returning 503 so Stripe retries")
+        _note_refusal("database_unavailable")
         # Return 503 (not 200) so Stripe will retry delivery rather than
         # silently dropping the event when the DB is transiently unavailable.
         raise HTTPException(status_code=503, detail="DB unavailable — retry later")
@@ -498,6 +502,7 @@ async def stripe_webhook(request: Request):
         "invoice.paid": _handle_invoice_paid,
         "customer.subscription.updated": _handle_subscription_updated,
         "customer.subscription.deleted": _handle_subscription_deleted,
+        "invoice.payment_failed": _handle_invoice_payment_failed,
     }.get(event_type)
     if handler is None:
         logger.debug("[billing] unhandled event: %s", event_type)
@@ -510,6 +515,7 @@ async def stripe_webhook(request: Request):
     # event we can never record is a permanent 400.
     if not _EVENT_ID_SHAPE.fullmatch(event_id):
         logger.warning("[billing] refused %s with malformed event id %r", event_type, event_id[:80])
+        _note_refusal("malformed_event_id")
         raise HTTPException(status_code=400, detail="Invalid webhook event id")
     # The event id and its effect commit together (0118): a failed delivery
     # leaves no row, so Stripe's retry runs; a processed one makes every
@@ -535,6 +541,7 @@ async def stripe_webhook(request: Request):
     except _RetryLater:
         logger.info("[billing] %s %s arrived before its subscription; asking Stripe to redeliver",
                     event_type, event_id)
+        _note_refusal("arrived_before_subscription")
         return JSONResponse(status_code=503, content={"received": False, "retry": True},
                             headers={"Retry-After": "60"})
 
@@ -542,6 +549,36 @@ async def stripe_webhook(request: Request):
 
 
 _EVENT_ID_SHAPE = re.compile(r"evt_[A-Za-z0-9]{1,250}")
+
+
+# Deliveries this replica refused, by reason, since it started. A refused event
+# leaves no stripe_webhook_events row by design (so Stripe's retry can run), so
+# without this an operator cannot tell "Stripe sent nothing" from "we rejected
+# everything Stripe sent" — the second is how a rotated signing secret looks.
+_WEBHOOK_REFUSALS: dict[str, int] = {}
+_HANDLED_EVENT_TYPES = (
+    "checkout.session.completed", "invoice.paid", "invoice.payment_failed",
+    "customer.subscription.updated", "customer.subscription.deleted",
+)
+
+
+def _note_refusal(reason: str) -> None:
+    _WEBHOOK_REFUSALS[reason] = _WEBHOOK_REFUSALS.get(reason, 0) + 1
+
+
+def webhook_diagnostics() -> dict:
+    """Billing configuration posture for the operator console. Booleans and
+    counts only — never a key, a secret or a price id."""
+    key = (STRIPE_SECRET_KEY or "").strip()
+    return {
+        "stripe_mode": "live" if key.startswith("sk_live_") else "test" if key else "unset",
+        "webhook_secret_configured": _webhook_secret_configured(),
+        "price_configured": _price_misconfigured() is None,
+        "enforced": billing_enforced(),
+        "handled_event_types": list(_HANDLED_EVENT_TYPES),
+        "refused_since_start": dict(_WEBHOOK_REFUSALS),
+        "refusal_scope": "this API replica since it started",
+    }
 
 
 class _SubscriptionNotYetKnown(Exception):
@@ -627,6 +664,32 @@ async def _handle_invoice_paid(conn, invoice, event_created: int = 0):
     await _require_known(conn, status_line, subscription_id)
 
     logger.info("[billing] invoice.paid — sub=%s period_end=%s", subscription_id, period_end_dt)
+
+
+async def _handle_invoice_payment_failed(conn, invoice, event_created: int = 0):
+    """A renewal charge failed: active -> past_due, and nothing else.
+
+    Stripe also sends customer.subscription.updated for the same transition,
+    and that event stays authoritative — this handler exists so the failure is
+    recorded (its ledger row is the operator's evidence of WHEN it failed) and
+    so the status is right even if the update event is delayed. It moves only
+    an ACTIVE subscription, under the same last_event_created ordering as every
+    other handler: a first payment failing leaves 'incomplete' alone, and an
+    invoice.paid or cancellation that is newer always wins. past_due stays
+    entitled (Stripe's retry window), so this never locks anyone out.
+    """
+    subscription_id = _invoice_subscription_id(invoice)
+    if not subscription_id:
+        return
+    status_line = await conn.execute(
+        """UPDATE subscriptions SET status = 'past_due',
+                  last_event_created = $2, updated_at = now()
+           WHERE stripe_subscription_id = $1 AND status = 'active'
+             AND last_event_created <= $2""",
+        subscription_id, event_created,
+    )
+    await _require_known(conn, status_line, subscription_id)
+    logger.info("[billing] invoice.payment_failed — sub=%s", subscription_id)
 
 
 async def _handle_subscription_updated(conn, subscription, event_created: int = 0):

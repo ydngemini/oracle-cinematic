@@ -230,15 +230,22 @@ class _Counter:
         self._lock = threading.Lock()
         self._calls: dict[str, int] = {}
         self._failures: dict[str, int] = {}
+        # A subset of failures: the provider throttled us. Kept apart because
+        # the operator response differs — back off or raise a quota, rather
+        # than fail over or page someone about an outage.
+        self._rate_limited: dict[str, int] = {}
         self._recent: list[float] = []
         self._started = time.monotonic()
 
-    def record(self, task: str, provider: str, ok: bool) -> None:
+    def record(self, task: str, provider: str, ok: bool,
+               exc: Optional[BaseException] = None) -> None:
         key = f"{task}:{provider}"
         now = time.monotonic()
         with self._lock:
             target = self._calls if ok else self._failures
             target[key] = target.get(key, 0) + 1
+            if not ok and _is_rate_limit(exc):
+                self._rate_limited[key] = self._rate_limited.get(key, 0) + 1
             self._recent.append(now)
             # Retention is bounded here, on write, by age and then by count.
             # Age first so a quiet replica does not hold yesterday's stamps;
@@ -268,10 +275,18 @@ class _Counter:
             return {
                 "calls": dict(self._calls),
                 "failures": dict(self._failures),
+                "rate_limited": dict(self._rate_limited),
                 "total_calls": total,
                 "calls_per_minute": round(total / elapsed * 60.0, 2),
                 "window_seconds": round(elapsed, 1),
             }
+
+
+def _is_rate_limit(exc: Optional[BaseException]) -> bool:
+    """litellm raises RateLimitError (HTTP 429) for every provider it fronts."""
+    if exc is None:
+        return False
+    return type(exc).__name__ == "RateLimitError" or getattr(exc, "status_code", None) == 429
 
 
 counter = _Counter()
@@ -445,7 +460,7 @@ async def complete(
         except LLMUnavailable:
             raise
         except Exception as exc:  # noqa: BLE001 - any provider error is a fallback trigger
-            counter.record(task, provider.name, ok=False)
+            counter.record(task, provider.name, ok=False, exc=exc)
             last_error = exc
             logger.warning("llm_gateway: %s/%s failed: %s", task, provider.name, exc)
             continue
@@ -522,7 +537,7 @@ async def stream(
         except LLMUnavailable:
             raise
         except Exception as exc:  # noqa: BLE001
-            counter.record(task, provider.name, ok=False)
+            counter.record(task, provider.name, ok=False, exc=exc)
             last_error = exc
             if emitted:
                 # Mid-stream failure. The caller already has a partial answer;
@@ -591,7 +606,7 @@ async def tool_call(
     except LLMUnavailable:
         raise
     except Exception as exc:  # noqa: BLE001
-        counter.record(task, provider.name, ok=False)
+        counter.record(task, provider.name, ok=False, exc=exc)
         raise LLMUnavailable(f"{provider.name} failed during a tool round: {exc}") from exc
     counter.record(task, provider.name, ok=True)
     return response

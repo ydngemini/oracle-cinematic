@@ -1,0 +1,271 @@
+/* Operator overview — calm, sparse, readable at 375px.
+   Uses the same tokens as AdminOpsTab; states are words plus a glyph shape,
+   colour only reinforces them. */
+
+.overview {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4, 16px);
+}
+
+.head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-2, 8px) var(--space-3, 12px);
+}
+
+.title {
+  margin: 0;
+  font-family: var(--font-display, inherit);
+  font-size: var(--text-xl, 1.25rem);
+  font-weight: 600;
+  color: var(--oracle-text-heading, var(--oracle-text, inherit));
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 19rem), 1fr));
+  gap: var(--space-4, 16px);
+}
+
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3, 12px);
+  min-width: 0;
+  padding: var(--space-4, 16px);
+  border: 1px solid var(--oracle-border, rgba(255, 255, 255, 0.12));
+  border-radius: var(--radius-lg, 12px);
+  background: var(--oracle-glass, transparent);
+}
+
+.cardHead {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-2, 8px);
+}
+
+.cardTitle {
+  margin: 0;
+  font-size: var(--text-base, 1rem);
+  font-weight: 600;
+  color: var(--oracle-text-heading, var(--oracle-text, inherit));
+}
+
+.minor {
+  margin: 0;
+  font-size: var(--text-sm, 0.875rem);
+  font-weight: 600;
+  color: var(--oracle-text, inherit);
+}
+
+.minor:focus-visible,
+.linkBtn:focus-visible {
+  outline: 2px solid var(--oracle-accent-ink, currentColor);
+  outline-offset: 2px;
+}
+
+.lead {
+  margin: 0;
+  font-size: var(--text-base, 1rem);
+}
+
+.sub {
+  color: var(--oracle-text-dim, inherit);
+  font-size: var(--text-sm, 0.875rem);
+  overflow-wrap: anywhere;
+}
+
+.quiet {
+  margin: 0;
+  color: var(--oracle-text-dim, inherit);
+  font-size: var(--text-sm, 0.875rem);
+  overflow-wrap: anywhere;
+}
+
+.staleNote,
+.warnNote {
+  margin: 0;
+  font-size: var(--text-sm, 0.875rem);
+  color: var(--oracle-accent-ink, inherit);
+}
+
+.error {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2, 8px);
+  font-size: var(--text-sm, 0.875rem);
+}
+
+.error p {
+  margin: 0;
+}
+
+.linkBtn {
+  min-height: 44px; /* touch floor */
+  padding: 0 var(--space-3, 12px);
+  border: 1px solid var(--oracle-border, rgba(255, 255, 255, 0.16));
+  border-radius: var(--radius-md, 8px);
+  background: transparent;
+  color: var(--oracle-text, inherit);
+  font: inherit;
+  font-size: var(--text-sm, 0.875rem);
+  cursor: pointer;
+}
+
+.linkBtn:hover {
+  background: var(--oracle-glass-hover, rgba(255, 255, 255, 0.06));
+}
+
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2, 8px);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.tag {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  overflow-wrap: anywhere;
+}
+
+.glyph {
+  font-size: 0.7em;
+  line-height: 1;
+}
+
+.tag[data-tone='ok'] .glyph { color: var(--oracle-green, #3fb27f); }
+.tag[data-tone='warn'] .glyph { color: var(--oracle-amber-dim, #d9a441); }
+.tag[data-tone='bad'] .glyph { color: var(--oracle-red, #e0605a); }
+.tag[data-tone='muted'] { color: var(--oracle-text-dim, inherit); }
+
+.facts,
+.metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 9rem), 1fr));
+  gap: var(--space-3, 12px);
+  margin: 0;
+}
+
+.facts dt,
+.metrics dt {
+  font-size: var(--text-xs, 0.75rem);
+  color: var(--oracle-text-dim, inherit);
+}
+
+.facts dd,
+.metrics dd {
+  margin: 2px 0 0;
+  overflow-wrap: anywhere;
+}
+
+.metrics dd {
+  font-size: var(--text-xl, 1.25rem);
+  font-variant-numeric: tabular-nums;
+}
+
+.mono {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: var(--text-sm, 0.875rem);
+}
+
+.counts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2, 8px) var(--space-4, 16px);
+  margin: 0;
+}
+
+.count {
+  color: var(--oracle-text-dim, inherit);
+}
+
+.count b {
+  color: var(--oracle-text, inherit);
+  font-variant-numeric: tabular-nums;
+}
+
+.brokerage {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2, 8px);
+  padding: var(--space-3, 12px) 0;
+  border-top: 1px solid var(--oracle-border-subtle, rgba(255, 255, 255, 0.08));
+}
+
+.brokerageHead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1, 4px) var(--space-3, 12px);
+}
+
+.name {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.brokerageHead .linkBtn {
+  margin-left: auto;
+}
+
+.actions {
+  margin: 0;
+  padding-left: 1.2em;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.caps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1, 4px) var(--space-3, 12px);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: var(--text-sm, 0.875rem);
+}
+
+.group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2, 8px);
+}
+
+.diag {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3, 12px);
+  margin-top: var(--space-2, 8px);
+  padding: var(--space-3, 12px);
+  border-left: 2px solid var(--oracle-border-bright, var(--oracle-border, rgba(255, 255, 255, 0.2)));
+}
+
+.diagHead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2, 8px) var(--space-3, 12px);
+}
+
+.block {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2, 8px);
+}

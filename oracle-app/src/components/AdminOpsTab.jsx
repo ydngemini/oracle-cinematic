@@ -14,6 +14,9 @@ import DataSourceHealthPanel from './DataSourceHealthPanel';
 // agent to broker owner could only happen by direct database access — exactly
 // what an approval trail exists to prevent.
 import RoleChangePanel from './RoleChangePanel';
+// The operator's first screen (mission §13): health, release, brokerages and
+// what needs action. Everything below it is detail, behind a disclosure.
+import OperatorOverview from './admin/OperatorOverview';
 import styles from './AdminOpsTab.module.css';
 
 // Inline stroke glyphs — currentColor, zero icon deps (house rule).
@@ -98,7 +101,7 @@ const ENDPOINTS = {
 // failing service degrades only its own section. setState lands exclusively in
 // the promise continuation — never synchronously inside the effect call stack
 // (react-hooks/set-state-in-effect compliant).
-function useAdminFeeds() {
+function useAdminFeeds(enabled) {
   const [feeds, setFeeds] = useState({});
 
   const fetchAll = useCallback(() => {
@@ -117,11 +120,14 @@ function useAdminFeeds() {
     });
   }, []);
 
+  // Polls only while the detail is open: ten endpoints every 15 s is the
+  // noisiest thing this console does, and nobody reads it while it is folded.
   useEffect(() => {
+    if (!enabled) return undefined;
     fetchAll();
     const timer = setInterval(fetchAll, 15000);
     return () => clearInterval(timer);
-  }, [fetchAll]);
+  }, [fetchAll, enabled]);
 
   return [feeds, fetchAll];
 }
@@ -178,7 +184,10 @@ function Slot({ slot, onRetry, skelHeights, children }) {
 function BillingPanel({ data }) {
   const tenants = Array.isArray(data?.tenants) ? data.tenants : [];
   const byStatus = data?.subscriptions_by_status || {};
-  const revenue = data?.revenue || {};
+  // /billing-summary returns the revenue fields at the TOP level; this used to
+  // read `data.revenue`, which never exists, so MRR always showed "—" and the
+  // Stripe-unreachable note could never appear.
+  const revenue = data || {};
   const stripeDown = revenue.stripe_ok === false;
   return (
     <>
@@ -225,10 +234,10 @@ function AnomaliesPanel({ data }) {
         <li key={alert.id} className={styles.userRow}>
           <div className={styles.rowMain}>
             <span className={styles.rowTitle}>
-              {alert.description || alert.anomaly_type || 'Anomaly'}
+              {String(alert.anomaly_type || 'Anomaly').replace(/_/g, ' ')}
             </span>
-            {alert.detected_at ? (
-              <span className={styles.rowSub}>{new Date(alert.detected_at).toLocaleString()}</span>
+            {alert.created_at ? (
+              <span className={styles.rowSub}>{new Date(alert.created_at).toLocaleString()}</span>
             ) : null}
           </div>
           <span className={styles.roleChip} data-role={
@@ -586,14 +595,17 @@ function ActivityPanel({ slot, onRetry }) {
 }
 
 /**
- * AdminOpsTab — platform-admin OPS console. Five real /api/admin endpoints,
- * polled every 15 s, plus the firehose live feed from Oracle state. Renders
- * only what the backend returns; never simulates data.
+ * AdminOpsTab — platform-admin OPS console. The operator overview first
+ * (health, release, brokerages, providers, work, security, billing, pilot
+ * metrics); the original fleet panels and the firehose live feed sit behind a
+ * "Platform detail" disclosure and poll only while it is open. Renders only
+ * what the backend returns; never simulates data.
  */
 export default function AdminOpsTab() {
-  const [feeds, refetch] = useAdminFeeds();
+  const [detailOpen, setDetailOpen] = useState(false);
+  const [feeds, refetch] = useAdminFeeds(detailOpen);
   const [refreshing, setRefreshing] = useState(false);
-  const loading = Object.keys(feeds).length === 0;
+  const loading = detailOpen && Object.keys(feeds).length === 0;
 
   const refresh = () => {
     setRefreshing(true);
@@ -602,76 +614,93 @@ export default function AdminOpsTab() {
 
   return (
     <section className={styles.wrap} aria-label="Platform operations console" aria-busy={loading || refreshing}>
+      <OperatorOverview />
+
       <header className={styles.topRow}>
-        <span className={styles.kicker}>Platform Ops</span>
         <button
           type="button"
-          className={`${styles.refreshBtn} ${refreshing ? styles.refreshing : ''}`}
-          onClick={refresh}
-          disabled={refreshing || loading}
-          aria-label="Refresh all panels"
+          className={styles.disclosureBtn}
+          aria-expanded={detailOpen}
+          aria-controls="platform-detail"
+          onClick={() => setDetailOpen((open) => !open)}
         >
-          {GLYPHS.refresh}
+          {detailOpen ? 'Hide platform detail' : 'Platform detail — users, activity, outbox, runtime'}
         </button>
+        {detailOpen ? (
+          <button
+            type="button"
+            className={`${styles.refreshBtn} ${refreshing ? styles.refreshing : ''}`}
+            onClick={refresh}
+            disabled={refreshing || loading}
+            aria-label="Refresh platform detail"
+          >
+            {GLYPHS.refresh}
+          </button>
+        ) : null}
       </header>
 
-      <Section label="System">
-        <Slot slot={feeds.system} onRetry={refetch} skelHeights={[64]}>
-          {(data) => <SystemStrip data={data} />}
-        </Slot>
-      </Section>
+      {detailOpen ? (
+        <div id="platform-detail" className={styles.wrap}>
+          <Section label="System">
+            <Slot slot={feeds.system} onRetry={refetch} skelHeights={[64]}>
+              {(data) => <SystemStrip data={data} />}
+            </Slot>
+          </Section>
 
-      <Section label="Fleet">
-        <Slot slot={feeds.overview} onRetry={refetch} skelHeights={[150]}>
-          {(data) => <FleetTotals totals={data?.totals} />}
-        </Slot>
-      </Section>
+          <Section label="Fleet">
+            <Slot slot={feeds.overview} onRetry={refetch} skelHeights={[150]}>
+              {(data) => <FleetTotals totals={data?.totals} />}
+            </Slot>
+          </Section>
 
-      <LiveFeedPanel />
-      <TenantsPanel slot={feeds.overview} onRetry={refetch} />
-      <UsersPanel slot={feeds.users} onRetry={refetch} />
-      <OutboxPanel slot={feeds.outbox} onRetry={refetch} />
-      <ActivityPanel slot={feeds.activity} onRetry={refetch} />
+          <TenantsPanel slot={feeds.overview} onRetry={refetch} />
+          <UsersPanel slot={feeds.users} onRetry={refetch} />
 
-      <Section label="Billing">
-        <Slot slot={feeds.billing} onRetry={refetch} skelHeights={[110]}>
-          {(data) => <BillingPanel data={data} />}
-        </Slot>
-      </Section>
+          <Section label="Role changes">
+            <Slot slot={feeds.users} onRetry={refetch} skelHeights={[70]}>
+              {(data) => <RoleChangePanel users={data?.users} />}
+            </Slot>
+          </Section>
 
-      <Section label="Role changes">
-        <Slot slot={feeds.users} onRetry={refetch} skelHeights={[70]}>
-          {(data) => <RoleChangePanel users={data?.users} />}
-        </Slot>
-      </Section>
+          <Section label="Billing">
+            <Slot slot={feeds.billing} onRetry={refetch} skelHeights={[110]}>
+              {(data) => <BillingPanel data={data} />}
+            </Slot>
+          </Section>
 
-      <Section label="Usage">
-        <BillingUsagePanel />
-      </Section>
+          <Section label="Usage">
+            <BillingUsagePanel />
+          </Section>
 
-      <Section label="Anomalies">
-        <Slot slot={feeds.anomalies} onRetry={refetch} skelHeights={[110]}>
-          {(data) => <AnomaliesPanel data={data} />}
-        </Slot>
-      </Section>
+          <Section label="Anomalies">
+            <Slot slot={feeds.anomalies} onRetry={refetch} skelHeights={[110]}>
+              {(data) => <AnomaliesPanel data={data} />}
+            </Slot>
+          </Section>
 
-      <Section label="Data sources">
-        <DataSourceHealthPanel />
-      </Section>
+          <OutboxPanel slot={feeds.outbox} onRetry={refetch} />
+          <ActivityPanel slot={feeds.activity} onRetry={refetch} />
 
-      <Section label="Data coverage">
-        <Slot slot={feeds.coverage} onRetry={refetch} skelHeights={[80]}>
-          {(data) => <CoveragePanel data={data} />}
-        </Slot>
-      </Section>
+          <Section label="Data sources">
+            <DataSourceHealthPanel />
+          </Section>
 
-      <Section label="Runtime load">
-        <Slot slot={feeds.runtime} onRetry={refetch} skelHeights={[80]}>
-          {(data) => <RuntimeLoadPanel data={data} />}
-        </Slot>
-      </Section>
+          <Section label="Data coverage">
+            <Slot slot={feeds.coverage} onRetry={refetch} skelHeights={[80]}>
+              {(data) => <CoveragePanel data={data} />}
+            </Slot>
+          </Section>
 
-      <HarvestControl />
+          <Section label="Runtime load">
+            <Slot slot={feeds.runtime} onRetry={refetch} skelHeights={[80]}>
+              {(data) => <RuntimeLoadPanel data={data} />}
+            </Slot>
+          </Section>
+
+          <LiveFeedPanel />
+          <HarvestControl />
+        </div>
+      ) : null}
     </section>
   );
 }
