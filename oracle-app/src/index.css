@@ -542,32 +542,29 @@
 }
 
 /* ── Raised glass surfaces ────────────────────────────────────────────────
-   `.hud-glass-panel` / `.hud-reticle` keep their old names only because
-   markup outside this file still applies them. The gold top hairline and the
-   corner-bracket "reticles" are gone: a panel is a calm surface, not a HUD. */
-.hud-glass-panel {
+   A panel is a calm surface (the old gold-hairline HUD panel is gone). */
+.glass-panel {
   background: var(--oracle-glass);
   border: 1px solid var(--oracle-glass-edge);
   box-shadow: var(--shadow-e2);
 }
 
 @supports ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
-  .hud-glass-panel {
+  .glass-panel {
     background: var(--oracle-gloss), var(--oracle-glass);
     backdrop-filter: var(--oracle-backdrop);
     -webkit-backdrop-filter: var(--oracle-backdrop);
   }
 }
 
-/* Layout-only now: kept so positioned children of existing markup still
-   anchor to the panel. */
-.hud-reticle {
+/* Positioned children anchor to the panel. */
+.panel-anchor {
   position: relative;
   isolation: isolate;
 }
 
 @media (max-width: 719px) {
-  .hud-glass-panel {
+  .glass-panel {
     background: var(--oracle-glass);
     backdrop-filter: none;
     -webkit-backdrop-filter: none;
@@ -575,7 +572,7 @@
 }
 
 @media (prefers-reduced-transparency: reduce) {
-  .hud-glass-panel {
+  .glass-panel {
     background: var(--oracle-glass-solid);
     backdrop-filter: none;
     -webkit-backdrop-filter: none;
@@ -645,7 +642,7 @@ body {
    background on <body>, and that placement is the whole point.
    `isolation: isolate` on .neoh-app-shell and #root each create a Backdrop
    Root, and backdrop-filter only samples what is painted INSIDE its nearest
-   one. A gradient on <body> lives outside both, so every .hud-glass-panel
+   one. A gradient on <body> lives outside both, so every .glass-panel
    would blur an empty backdrop and flatten into a plain 14%-alpha box — the
    exact failure the gradient exists to prevent. <ReelBackdrop /> used to sit
    here for the same reason, which is why blurring the photo worked. */

@@ -70,7 +70,7 @@ const WORKSPACES = [
 const SOURCES = [
   { id: 'assistant', label: 'Neoh', path: '/api/ai/chat/status', load: fetchChatStatus, select: (payload) => payload || {} },
   { id: 'commands', label: 'Approval queue', path: '/api/commands?limit=20', select: (payload) => payload?.commands || [] },
-  { id: 'providers', label: 'Provider links', path: '/api/commands/providers', select: (payload) => payload?.providers || [] },
+  { id: 'providers', label: 'Connections', path: '/api/commands/providers', select: (payload) => payload?.providers || [] },
   { id: 'contacts', label: 'Contacts', path: '/api/crm/contacts?limit=200', select: (payload) => payload?.contacts || [] },
   { id: 'clients', label: 'Opportunities', path: '/api/crm/clients?type=all&sort=recent', select: (payload) => payload?.clients || [] },
   { id: 'segments', label: 'Saved audiences', path: '/api/crm/clients/segments', select: (payload) => payload?.segments || [] },
@@ -375,7 +375,7 @@ export default function OurAITab({
     },
     {
       name: 'Agentic Real Estate CRM',
-      detail: 'Contact truth, opportunity signals, conversations, tasks, listings, client records, and AI tools share one tenant-safe context.',
+      detail: 'Contact truth, opportunity signals, conversations, tasks, listings, client records, and AI tools share one brokerage-safe context.',
       status: sourceState('clients'),
       Icon: Users,
     },
@@ -436,7 +436,7 @@ export default function OurAITab({
     },
     {
       name: 'Provider delivery',
-      detail: 'Email, calendar, SMS, and calling use tenant-scoped provider credentials; no channel is represented as connected without a valid credential.',
+      detail: 'Email, calendar, SMS, and calling use your brokerage’s own connections; no channel is represented as connected without a valid credential.',
       status: sourceState('providers', data.connectedProviders.length > 0),
       Icon: PlugZap,
     },
@@ -532,7 +532,7 @@ export default function OurAITab({
     },
     {
       name: 'Customer Search App',
-      detail: 'A Closely-style branded customer app with alerts, chat, saved homes, and HomeGPT is not yet distributed from Neoh.',
+      detail: 'A branded app for your clients — alerts, chat and saved homes — is not available from Neoh yet.',
       status: STATUS.setup,
       Icon: Smartphone,
     },
@@ -553,7 +553,7 @@ export default function OurAITab({
     },
     {
       name: 'Channel providers',
-      detail: 'Google, SMTP, and Twilio credentials are tenant-scoped, encrypted, revocable, and never exposed in the UI.',
+      detail: 'Email, calendar and calling connections belong to your brokerage, are encrypted, can be revoked, and are never shown in the app.',
       status: sourceState('providers', data.connectedProviders.length > 0),
       Icon: PlugZap,
     },
@@ -710,11 +710,11 @@ export default function OurAITab({
               { label: 'CRM relationships', value: formatNumber(data.contacts.length || data.clients.length), detail: `${formatNumber(data.clients.length)} opportunities` },
               { label: 'Conversations', value: formatNumber(data.threads.length), detail: 'live threads' },
               { label: 'Transactions', value: formatNumber(data.transactions.length), detail: 'offers to close' },
-              { label: 'Provider links', value: formatNumber(data.connectedProviders.length), detail: 'valid credentials' },
+              { label: 'Connections', value: formatNumber(data.connectedProviders.length), detail: 'valid credentials' },
             ]} />
             <div className={styles.split}>
               <ActionPanel id="cowork" eyebrow="Ask Neoh" title="Work across the business" description="Start from a business outcome. Neoh gathers context, shows sources, and stages consequential actions for review." actions={coworkActions} onPrompt={stagePrompt} onNavigate={onNavigate} />
-              <CapabilityLedger id="cowork-ledger" eyebrow="Live operating map" title="Core platform" description="Actual backend and provider state—not a marketing checklist." items={coworkItems} />
+              <CapabilityLedger id="cowork-ledger" eyebrow="Live operating map" title="Core platform" description="What is actually connected and working right now." items={coworkItems} />
             </div>
           </>
         ) : null}

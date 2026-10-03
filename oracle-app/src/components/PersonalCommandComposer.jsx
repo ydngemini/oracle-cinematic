@@ -3,7 +3,6 @@ import { Bot, Check, ShieldCheck, X } from 'lucide-react';
 import { crmPost } from '../state/useCrmApi';
 import { useAssistant } from './AssistantContext';
 import { AgentStatusBar } from './AgentStatusBar';
-import { BorderBeam } from './motion/BorderBeam';
 import styles from './PersonalCommandComposer.module.css';
 
 const PLACEHOLDER =
@@ -211,8 +210,7 @@ export function PersonalCommandComposer({
   return (
     <section className={`${styles.wrap} ${compact ? styles.compact : ''}`} aria-label="Personal AI command">
       <AgentStatusBar />
-      <div className={`${styles.commandBox} hud-glass-panel hud-reticle`}>
-        {busy && <BorderBeam duration={4} size={250} />}
+      <div className={`${styles.commandBox} glass-panel panel-anchor`}>
         <div className={styles.heading}>
           <span className={styles.botMark}><Bot aria-hidden="true" /></span>
           <div>
@@ -255,13 +253,12 @@ export function PersonalCommandComposer({
           <button type="button" className={styles.scrim} onClick={cancel} tabIndex={-1} aria-label="Cancel staged action" />
           <div
             ref={modalRef}
-            className={`${styles.modal} hud-glass-panel hud-reticle`}
+            className={`${styles.modal} glass-panel panel-anchor`}
             role="dialog"
             aria-modal="true"
             aria-labelledby="hitl-title"
             tabIndex={-1}
           >
-            <BorderBeam duration={4} size={250} />
             <header>
               <div>
                 <span className={styles.intentBadge}>{proposal.intent}</span>

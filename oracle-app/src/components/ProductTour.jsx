@@ -12,7 +12,7 @@ import { placementFor, useSpotlight } from './useSpotlight';
 import styles from './ProductTour.module.css';
 
 // Current workflow is 3 views (Home / Work / Neoh). Work holds everything
-// searchable plus Our AI workspaces; Neoh is the conversation. Steps mirror
+// searchable plus the Neoh tools workspaces; Neoh is the conversation. Steps mirror
 // that shape and use live anchors so the spotlight stays on what exists.
 // Legacy ids (today, inbox) are kept as aliases in routes.js but steps now
 // name the current view/type so a reader can trace them without the alias
@@ -28,9 +28,9 @@ const STEPS = [
   { kind: 'work', destination: 'deals', anchor: '[data-tour-anchor="work-chip-deals"]', label: 'Deals', title: 'Search to settlement', detail: 'Track offer stages, deadlines, documents, state checklists, transaction milestones, and compliance holdings in one pipeline.', verify: 'Open a deal and confirm its deadlines and documents stay tied to that transaction.' },
   { kind: 'work', destination: 'properties', anchor: '[data-tour-anchor="work-chip-properties"]', label: 'Properties', title: 'Records, listings, tours', detail: 'Properties, MLS listings, market panels, and 3D tours live together. A property sheet can expand into its immersive tour and fold back.', verify: 'Open a property sheet and try the 3D tour; a capture renders instead of a black canvas.' },
   { kind: 'work', destination: 'opportunities', anchor: '#tab-work', label: 'Opportunities', title: 'Ranked asks, with evidence', detail: 'The Intelligence feed behind Work ranks what deserves attention, and every card shows its why, confidence, and evidence — not raw column names.', verify: 'Expand Why? and check evidence freshness (as of) rather than source table paths.' },
-  { kind: 'work', destination: 'ai', anchor: '#ai-workspace-tab-command', label: 'Our AI · Command', title: 'Everything Neoh can do for you', detail: 'Our AI lives inside Work. Command and Intelligence show what Neoh is working on; Cowork, Sales, Social, Homeowners, Automations, and Sites are the workspaces beneath.', verify: 'Ask for a revenue brief and check the cited records before accepting any recommendation. Status badges reflect what is really connected.' },
+  { kind: 'work', destination: 'ai', anchor: '#ai-workspace-tab-intelligence', label: 'Neoh tools · Intelligence', title: 'Everything Neoh can do for you', detail: 'Neoh tools live inside Work. Intelligence shows what Neoh is working on; Sales, Social, Homeowners, Automations, and Sites are the workspaces beneath.', verify: 'Ask for a revenue brief and check the cited records before accepting any recommendation. Status badges reflect what is really connected.' },
   { kind: 'workspace', destination: 'cowork', anchor: '#ai-workspace-tab-cowork', label: 'Cowork', title: 'Work across the business', detail: 'Ask Neoh to research, summarize, compare, and stage work across the CRM while retaining source and approval boundaries.', verify: 'Try "Research this property" and check that sources are cited and missing facts are named.' },
-  { kind: 'workspace', destination: 'sales', anchor: '#ai-workspace-tab-sales', label: 'Our AI · Sales', title: 'Turn CRM truth into action', detail: 'Sales routes CRM truth into prioritize → qualify → follow-up, and hands the full context back to the human. Five destinations live under Sales.', verify: 'Open Sales and confirm the four Sales metrics (contacts, threads, routes, calls) are live counts.' },
+  { kind: 'workspace', destination: 'sales', anchor: '#ai-workspace-tab-sales', label: 'Neoh tools · Sales', title: 'Turn CRM truth into action', detail: 'Sales routes CRM truth into prioritize → qualify → follow-up, and hands the full context back to the human. Five destinations live under Sales.', verify: 'Open Sales and confirm the four Sales metrics (contacts, threads, routes, calls) are live counts.' },
   { kind: 'sales', destination: '/our-ai/sales/agent', anchor: '[data-tour-anchor="/our-ai/sales/agent"]', label: 'Sales Agent', title: 'Qualify and hand off', detail: 'Summarize a relationship, identify missing qualification facts, create a task, or prepare an editable email or SMS draft.', verify: 'Staging a draft must never send it; outbound delivery still requires approval.' },
   { kind: 'sales', destination: '/our-ai/sales/routing', anchor: '[data-tour-anchor="/our-ai/sales/routing"]', label: 'Lead Routing', title: 'Capture and assign instantly', detail: 'Create signed lead connectors, apply source, ZIP, state, and intent rules, then route only to active agents with capacity.', verify: 'Connector secrets are shown once, lead details stay encrypted, and the same lead sent twice never creates a duplicate contact.' },
   { kind: 'sales', destination: '/our-ai/sales/dialer', anchor: '[data-tour-anchor="/our-ai/sales/dialer"]', label: 'Power Dialer', title: 'Call from verified identity', detail: 'Build a CRM-grounded call list, review scripts, place browser calls, and preserve call records and compliance decisions.', verify: 'Calling stays off until your phone account is connected and your caller ID is verified.' },
@@ -77,7 +77,7 @@ function visit(step, onNavigateTab, onNavigateSales) {
     return undefined;
   }
   window.sessionStorage.setItem('oracle_ai_workspace', step.destination);
-  // For Our AI workspaces inside Work?type=ai, go to Work first then
+  // For Neoh tools workspaces inside Work?type=ai, go to Work first then
   // dispatch the workspace id. The timeout lets the Work view mount before
   // OurAITab listens for the event.
   onNavigateSales(step.destination === 'sales' ? '/our-ai/sales' : '/our-ai', true);
@@ -167,7 +167,7 @@ export function ProductTour({ open, stepIndex, onStepChange, onClose, onNavigate
         ) : (
           // Target not found (or not laid out yet): no cut-out, no dimming,
           // and — unlike the resolved scrim above — no click-to-exit either.
-          // A lazy-mounted anchor (Our AI workspaces, sub-tabs) can still be
+          // A lazy-mounted anchor (Neoh tools workspaces, sub-tabs) can still be
           // resolving when the user tries the exact click the step told them
           // to make; a full-screen scrim there swallowed that click as "exit
           // the tour" instead. The panel's own Exit/X stays reachable.

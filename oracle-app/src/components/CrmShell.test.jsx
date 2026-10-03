@@ -21,7 +21,6 @@ vi.mock('./StateSelector', () => ({ StateSelector: () => null }));
 vi.mock('./NeohBrandMark', () => ({ NeohBrandMark: () => null }));
 vi.mock('./NeohFooter', () => ({ NeohFooter: () => null }));
 vi.mock('./ProductTour', () => ({ ProductTour: () => null }));
-vi.mock('./motion/BorderBeam', () => ({ BorderBeam: () => null }));
 vi.mock('./motion/AdaptiveViewTransition', () => ({ AdaptiveViewTransition: pass, hasHighMotionBudget: () => false }));
 vi.mock('../state/StateContext', () => ({ StateProvider: pass }));
 vi.mock('./AssistantContext', () => ({ AssistantProvider: pass }));

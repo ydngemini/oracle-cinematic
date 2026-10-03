@@ -42,7 +42,6 @@ import { StateSelector } from './StateSelector';
 import { NeohBrandMark } from './NeohBrandMark';
 import { NeohFooter } from './NeohFooter';
 import { AssistantProvider } from './AssistantContext';
-import { BorderBeam } from './motion/BorderBeam';
 import { AdaptiveViewTransition } from './motion/AdaptiveViewTransition';
 import { ProductTour } from './ProductTour';
 import { applyTheme, nextTheme, readTheme, resolveTheme, writeTheme } from '../theme';
@@ -555,7 +554,7 @@ export function CrmShell() {
             <motion.aside
               ref={profileSheetRef}
               id="agent-profile-sheet"
-              className={`${styles.profileSheet} hud-glass-panel hud-reticle`}
+              className={`${styles.profileSheet} glass-panel panel-anchor`}
               role="dialog"
               aria-modal="true"
               aria-labelledby="agent-profile-title"
@@ -565,7 +564,6 @@ export function CrmShell() {
               exit={{ opacity: 0, y: reducedMotion ? 0 : 20 }}
               transition={{ duration: reducedMotion ? 0 : 0.32, ease: [0.16, 1, 0.3, 1] }}
             >
-              <BorderBeam duration={4} size={250} />
               <div className={styles.profileSheetHead}>
                 <div>
                   <span>Agent settings</span>
