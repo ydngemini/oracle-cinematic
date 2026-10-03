@@ -1,0 +1,21 @@
+<!doctype html>
+<!--
+  Neoh Space test harness — DEV SERVER ONLY.
+
+  Not a product page and not in the production build (vite build only takes
+  index.html). It mounts the real TourViewer + PropertyTourViewer against a
+  controlled fixture so scripts/test-neoh-space-playwright.py can measure load,
+  entry view, frame rate, memory across open/close cycles, fallback and error
+  states without a backend, a login or a GPU job. See docs/neoh-space.md §Testing.
+-->
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>Neoh Space harness</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/dev/neohSpaceHarness.jsx"></script>
+  </body>
+</html>

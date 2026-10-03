@@ -43,6 +43,8 @@ from uuid import UUID, uuid4
 
 import ws_hub
 import media_storage
+import capture_quality
+import space_status
 from db.connection import tenant_tx
 from tenancy import Role, TenantContext
 from reconstruction_providers import (
@@ -58,6 +60,12 @@ from reconstruction_providers import (
 logger = logging.getLogger("oracle.reconstruction.worker")
 
 QUEUE_MAX = int(os.environ.get("RECON_QUEUE_MAX", "20"))
+#: Which pipeline produced an asset. Stamped on the job row, the scene
+#: manifest and the provenance manifest, so a later converter or viewer change
+#: can tell old assets from new ones instead of silently reinterpreting them.
+#: Bump when capture gating, frame selection, conversion, the scene schema or
+#: the delivery format changes.
+PIPELINE_VERSION = f"space-2026.10.1+st{SPLAT_TRANSFORM_VERSION}+scene2"
 WORKER_COUNT = int(os.environ.get("RECON_WORKER_COUNT", "1"))
 # How often an idle worker looks for a queued row. A capture takes 15-60 min,
 # so a few seconds of pickup latency is noise; the claim is one indexed query
@@ -70,12 +78,17 @@ _PROCESS_STARTED_AT = datetime.now(timezone.utc)
 
 @dataclass(frozen=True)
 class ReconstructionJob:
-    """One enqueued reconstruction. Carries the live TenantContext (in-process
-    queue → no serialization), the DB job id, and the target property."""
+    """One claimed reconstruction. Carries the live TenantContext, the DB job
+    id, and the target property — plus, for a retry, where it resumes."""
     ctx: TenantContext
     job_id: str
     lead_id: Optional[str]
     listing_id: Optional[str]
+    #: 'conversion' resumes from a preserved raw provider output, skipping the
+    #: GPU entirely. None is a full run.
+    resume_from: Optional[str] = None
+    raw_output_key: Optional[str] = None
+    attempt: int = 1
 
 
 _workers: list[asyncio.Task] = []
@@ -104,12 +117,19 @@ async def _claim_next() -> Optional[ReconstructionJob]:
     worker process — take different rows instead of the same one. The job runs
     as the person who submitted it: their tenant and their current role, read
     back from `users`, so the worker never holds more than they did.
+
+    The claim is also where an attempt is counted: `attempts` bounds how many
+    times a restart may resume the same job (the cost guard's last line).
     """
     async with tenant_tx(_platform_ctx("reconstruction-claim")) as conn:
         row = await conn.fetchrow(
             """
             UPDATE reconstruction_jobs j
-               SET status = 'running', updated_at = now()
+               SET status = 'running', stage = 'preparing',
+                   attempts = j.attempts + 1,
+                   started_at = COALESCE(j.started_at, now()),
+                   pipeline_version = $1,
+                   updated_at = now()
              WHERE j.id = (SELECT id FROM reconstruction_jobs
                             WHERE status = 'queued'
                             ORDER BY created_at
@@ -117,8 +137,9 @@ async def _claim_next() -> Optional[ReconstructionJob]:
                             LIMIT 1)
          RETURNING j.id::text AS id, j.tenant_id::text AS tenant_id,
                    j.lead_id::text AS lead_id, j.listing_id::text AS listing_id,
-                   j.created_by
-            """
+                   j.created_by, j.resume_from, j.raw_output_key, j.attempts
+            """,
+            PIPELINE_VERSION,
         )
         if row is None:
             return None
@@ -134,7 +155,17 @@ async def _claim_next() -> Optional[ReconstructionJob]:
         ctx=TenantContext(agent_id=row["created_by"] or "reconstruction-worker",
                           tenant_id=row["tenant_id"], role=role),
         job_id=row["id"], lead_id=row["lead_id"], listing_id=row["listing_id"],
+        resume_from=_field(row, "resume_from"),
+        raw_output_key=_field(row, "raw_output_key"),
+        attempt=int(_field(row, "attempts") or 1),
     )
+
+
+def _field(row, key):
+    try:
+        return row[key]
+    except (KeyError, IndexError, TypeError):
+        return None
 
 
 async def _set_status(ctx: TenantContext, job_id: str, status: str, **fields) -> None:
@@ -147,6 +178,58 @@ async def _set_status(ctx: TenantContext, job_id: str, status: str, **fields) ->
         await conn.execute(
             f"UPDATE reconstruction_jobs SET {', '.join(sets)} WHERE id = $1", *vals
         )
+
+
+async def _set_stage(job: "ReconstructionJob", stage: str, **fields) -> None:
+    """Move the job to `stage`, keeping the coarse `status` consistent with it.
+
+    One writer for both columns, so they cannot disagree. Never raises for a
+    bookkeeping failure mid-run — a stage label is not worth a lost capture —
+    but terminal stages are written through `_set_status` by the caller's
+    error handling as well, so a failed write here is retried there.
+    """
+    space_status.check_transition(None, stage)
+    status = space_status.STATUS_FOR_STAGE.get(stage, "running")
+    try:
+        await _set_status(job.ctx, job.job_id, status, stage=stage, **fields)
+    except Exception:  # noqa: BLE001
+        logger.exception("reconstruction %s: could not record stage %s", job.job_id, stage)
+
+
+async def _record_provider_job(ctx: TenantContext, job_id: str, provider_job_id: str) -> None:
+    """Persist the provider's id the moment it exists (see on_submitted)."""
+    try:
+        async with tenant_tx(ctx) as conn:
+            await conn.execute(
+                "UPDATE reconstruction_jobs SET provider_job_id = $2, updated_at = now() "
+                "WHERE id = $1::uuid",
+                UUID(job_id), provider_job_id,
+            )
+    except Exception:  # noqa: BLE001 — never break a run to record an id
+        logger.exception("reconstruction %s: could not record provider job id", job_id)
+
+
+#: How often a running job proves it is alive. The stalled-job reconciliation
+#: (reconciliation.RECON_STALL_HOURS) and the orphan sweep both read
+#: `updated_at`; without a heartbeat a genuinely long GPU run looked exactly
+#: like a dead one.
+HEARTBEAT_SECONDS = max(10.0, float(os.environ.get("RECON_HEARTBEAT_SECONDS", "60") or 60))
+
+
+async def _heartbeat(ctx: TenantContext, job_id: str) -> None:
+    while True:
+        await asyncio.sleep(HEARTBEAT_SECONDS)
+        try:
+            async with tenant_tx(ctx) as conn:
+                await conn.execute(
+                    "UPDATE reconstruction_jobs SET updated_at = now() "
+                    "WHERE id = $1::uuid AND status = 'running'",
+                    UUID(job_id),
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001
+            logger.debug("reconstruction %s: heartbeat failed", job_id)
 
 
 class QualityGateFailure(RuntimeError):
@@ -463,7 +546,9 @@ async def _convert_to_delivery(src: Path, work_dir: Path, media_id: str) -> Path
     return out
 
 
-async def _canonicalise(job: ReconstructionJob, splat: Path) -> None:
+async def _canonicalise(job: ReconstructionJob, splat: Path, *,
+                        media_id: Optional[str] = None,
+                        provider_name: Optional[str] = None) -> Optional[dict]:
     """Write scene.json beside the splat: canonical up, and where to open.
 
     Structure-from-motion picks an arbitrary frame, so without this the viewer
@@ -482,10 +567,16 @@ async def _canonicalise(job: ReconstructionJob, splat: Path) -> None:
     points = capture_sidecars.geometry_for(splat)
     if points is None:
         logger.info("No point cloud beside %s; the viewer will frame bounds instead.", splat.name)
-        return
-    manifest = await asyncio.to_thread(scene_manifest.build_for_artifact, splat, points)
+        await _record_stage(job.ctx, job.job_id, "canonical", skipped="no_point_cloud")
+        return None
+    manifest = await asyncio.to_thread(
+        lambda: scene_manifest.build_for_artifact(
+            splat, points, asset_id=media_id, pipeline_version=PIPELINE_VERSION,
+            provenance={"provider": provider_name, "jobId": job.job_id,
+                        "attempt": job.attempt},
+        ))
     if not manifest:
-        return
+        return None
     written = await asyncio.to_thread(scene_manifest.write, splat, manifest)
     if written:
         entry = manifest.get("entryCamera")
@@ -495,7 +586,13 @@ async def _canonicalise(job: ReconstructionJob, splat: Path) -> None:
             world_up_confidence=manifest.get("worldUpConfidence"),
             entry_camera_index=entry.get("index") if entry else None,
             entry_camera_source=manifest.get("entryCameraSource"),
+            tilt=(manifest.get("tiltCorrection") or {}).get("reason"),
+            tilt_degrees=(manifest.get("tiltCorrection") or {}).get("degrees"),
+            scale_status=(manifest.get("scale") or {}).get("status"),
+            scale_source=(manifest.get("scale") or {}).get("source"),
+            dense_bounds=manifest.get("denseBounds"),
         )
+    return manifest
 
 
 async def _store_splat(
@@ -585,55 +682,6 @@ async def _store_splat(
             logger.info("Could not store %s for media %s", companion.name, media_id)
 
     return f"/api/media/{media_id}", splat_key
-
-
-async def _record_media(
-    job: ReconstructionJob,
-    media_id: str,
-    url: str,
-    s3_key: Optional[str] = None,
-    *,
-    provenance: str = "captured",
-    generator: Optional[str] = None,
-) -> None:
-    """Insert the splat as a property_media row the resolver reads for tier 3.
-
-    s3_key is the canonical object key when stored on S3 (None for the fs seam).
-
-    `provenance` is what the row actually depicts, taken from the provider that
-    produced it. It is the only thing standing between the stub provider's demo
-    room and the tour telling a user they are walking through the actual home,
-    so it is passed explicitly rather than defaulted at the call site.
-    """
-    async with tenant_tx(job.ctx) as conn:
-        base = await conn.fetchval(
-            """
-            SELECT COALESCE(MAX(sort_order), -1)
-              FROM property_media
-             WHERE ($1::uuid IS NOT NULL AND lead_id = $1)
-                OR ($2::uuid IS NOT NULL AND listing_id = $2)
-            """,
-            UUID(job.lead_id) if job.lead_id else None,
-            UUID(job.listing_id) if job.listing_id else None,
-        )
-        await conn.execute(
-            """
-            INSERT INTO property_media (
-                id, tenant_id, lead_id, listing_id, kind, url, s3_key, sort_order,
-                provenance, generator
-            )
-            VALUES ($1, $2, $3, $4, 'splat', $5, $6, $7, $8, $9)
-            """,
-            UUID(media_id),
-            job.ctx.tenant_id,
-            UUID(job.lead_id) if job.lead_id else None,
-            UUID(job.listing_id) if job.listing_id else None,
-            url,
-            s3_key,
-            int(base) + 1,
-            provenance,
-            generator,
-        )
 
 
 async def _open_capture_session(job: ReconstructionJob) -> Optional[str]:
@@ -727,7 +775,7 @@ FLOORPLAN_FROM_RECONSTRUCTION = os.getenv(
 ).strip().lower() not in ("0", "false", "no", "off")
 
 
-async def _derive_floorplan(job: ReconstructionJob, splat: Path, provider_name: str) -> None:
+async def _derive_floorplan(job: ReconstructionJob, splat: Path, provider_name: str) -> dict:
     """Turn the finished reconstruction into a measured floor plan, or explain why not.
 
     This is the step that makes a capture worth more than a picture: the same
@@ -743,7 +791,7 @@ async def _derive_floorplan(job: ReconstructionJob, splat: Path, provider_name: 
     by the same constant.
     """
     if not FLOORPLAN_FROM_RECONSTRUCTION:
-        return
+        return {"status": "unavailable", "reason": "disabled"}
 
     import capture_sidecars
     import reconstruction_scale
@@ -755,7 +803,7 @@ async def _derive_floorplan(job: ReconstructionJob, splat: Path, provider_name: 
             "No point cloud beside %s, so it cannot be measured; the viewer "
             "artifact is unaffected.", splat.name,
         )
-        return
+        return {"status": "unavailable", "reason": "no_point_cloud"}
 
     try:
         async with tenant_tx(job.ctx) as conn:
@@ -773,7 +821,7 @@ async def _derive_floorplan(job: ReconstructionJob, splat: Path, provider_name: 
                 "reconstruction has no scale of its own, and a guessed one is "
                 "wrong in every dimension at once.", job.job_id,
             )
-            return
+            return {"status": "unavailable", "reason": "no_scale_anchor"}
 
         document = await asyncio.to_thread(
             _extract_plan, splat, anchor,
@@ -806,11 +854,22 @@ async def _derive_floorplan(job: ReconstructionJob, splat: Path, provider_name: 
             floorplan_id, revision, len(document.rooms), document.total_sqft,
             anchor.kind,
         )
+        return {
+            "status": "derived", "floorplan_id": str(floorplan_id), "revision": revision,
+            "rooms": len(document.rooms), "anchor": anchor.kind,
+            "cross_check": "disagrees" if disagreement else "agrees_or_unchecked",
+            # The plan's own provenance carries per-dimension measured /
+            # estimated / inferred; this records only that it is estimated
+            # from an anchor, never surveyed.
+            "measurement_basis": "estimated_from_anchor",
+        }
     except ExtractionError as exc:
         # The pipeline refusing is a measurement it declined to fake, not a bug.
         logger.info("No floor plan from job %s: %s", job.job_id, exc)
-    except Exception:  # noqa: BLE001 - the splat is delivered either way
+        return {"status": "refused", "reason": str(exc)[:300]}
+    except Exception as exc:  # noqa: BLE001 - the splat is delivered either way
         logger.exception("Floor plan derivation failed for job %s", job.job_id)
+        return {"status": "failed", "reason": type(exc).__name__}
 
 
 def _extract_plan(splat: Path, anchor):
@@ -837,53 +896,236 @@ def _as_api_document(document):
     return FloorplanDocumentIn.model_validate(document.to_json())
 
 
+async def _publish(
+    job: ReconstructionJob,
+    media_id: str,
+    url: str,
+    s3_key: Optional[str] = None,
+    *,
+    provenance: str = "captured",
+    generator: Optional[str] = None,
+    job_fields: Optional[dict[str, Any]] = None,
+) -> None:
+    """Publish the new space ATOMICALLY: one transaction inserts its media row,
+    retires the space it replaces, and marks the job ready.
+
+    Until this commits, the property keeps showing whatever was published
+    before — a half-built replacement is never visible. After it commits, the
+    old row is `superseded_at`-stamped (kept for rollback, hidden from the
+    tour) and the new one is the only current space. A demo/synthetic splat
+    never supersedes a real capture.
+
+    `provenance` is what the row actually depicts, taken from the provider that
+    produced it. It is the only thing standing between the stub provider's demo
+    room and the tour telling a user they are walking through the actual home,
+    so it is passed explicitly rather than defaulted at the call site.
+    """
+    lead = UUID(job.lead_id) if job.lead_id else None
+    listing = UUID(job.listing_id) if job.listing_id else None
+    fields = dict(job_fields or {})
+    async with tenant_tx(job.ctx) as conn:
+        base = await conn.fetchval(
+            """
+            SELECT COALESCE(MAX(sort_order), -1)
+              FROM property_media
+             WHERE ($1::uuid IS NOT NULL AND lead_id = $1)
+                OR ($2::uuid IS NOT NULL AND listing_id = $2)
+            """,
+            lead, listing,
+        )
+        await conn.execute(
+            """
+            INSERT INTO property_media (
+                id, tenant_id, lead_id, listing_id, kind, url, s3_key, sort_order,
+                provenance, generator
+            )
+            VALUES ($1, $2, $3, $4, 'splat', $5, $6, $7, $8, $9)
+            """,
+            UUID(media_id), job.ctx.tenant_id, lead, listing,
+            url, s3_key, int(base) + 1, provenance, generator,
+        )
+        if provenance == "captured":
+            await conn.execute(
+                """
+                UPDATE property_media
+                   SET superseded_at = now()
+                 WHERE kind = 'splat'
+                   AND id <> $1
+                   AND superseded_at IS NULL
+                   AND COALESCE(provenance, 'captured') = 'captured'
+                   AND (($2::uuid IS NOT NULL AND lead_id = $2)
+                     OR ($3::uuid IS NOT NULL AND listing_id = $3))
+                """,
+                UUID(media_id), lead, listing,
+            )
+        sets = ["status = 'succeeded'", "stage = 'ready'", "media_id = $2",
+                "progress = 100", "published_at = now()", "finished_at = now()",
+                "failure_category = NULL", "updated_at = now()"]
+        vals: list[Any] = [UUID(job.job_id), UUID(media_id)]
+        for key, value in fields.items():
+            vals.append(value)
+            sets.append(f"{key} = ${len(vals)}")
+        await conn.execute(
+            f"UPDATE reconstruction_jobs SET {', '.join(sets)} WHERE id = $1", *vals
+        )
+
+
+async def _preserve_raw(job: ReconstructionJob, raw: Path) -> Optional[str]:
+    """Keep the provider's raw output (and its companions) when delivery
+    conversion fails, so a retry reconverts it instead of renting a GPU again.
+
+    Stored under the tenant's `splats/` prefix, so tenant erasure and the
+    Space delete route remove it with everything else derived.
+    """
+    if not media_storage.storage_available() or not raw.is_file():
+        return None
+    import capture_sidecars
+    import object_storage
+
+    suffix = "".join(raw.suffixes[-2:]) if raw.name.lower().endswith(".compressed.ply") else raw.suffix
+    key = f"splats/{job.ctx.tenant_id}/raw/{job.job_id}{suffix.lower()}"
+    try:
+        await asyncio.to_thread(object_storage.put_file, key, raw, "application/octet-stream")
+        for locate, companion_suffix in (
+            (capture_sidecars.sidecar_for, capture_sidecars.CAMERA_SIDECAR_SUFFIX),
+            (capture_sidecars.points_sidecar_for, capture_sidecars.POINTS_SIDECAR_SUFFIX),
+        ):
+            companion = locate(raw)
+            if companion.is_file():
+                await asyncio.to_thread(object_storage.put_file, key + companion_suffix,
+                                        companion, "application/octet-stream")
+    except Exception:  # noqa: BLE001
+        logger.exception("reconstruction %s: could not preserve the raw output", job.job_id)
+        return None
+    return key
+
+
+async def _restore_raw(job: ReconstructionJob, work: Path) -> Path:
+    """Fetch a preserved raw output (and companions) for a conversion retry."""
+    import capture_sidecars
+    import object_storage
+
+    key = job.raw_output_key or ""
+    name = key.rsplit("/", 1)[-1] or "raw.ply"
+    raw = work / name
+    data = await asyncio.to_thread(object_storage.get_bytes, key)
+    raw.write_bytes(data)
+    for locate, companion_suffix in (
+        (capture_sidecars.sidecar_for, capture_sidecars.CAMERA_SIDECAR_SUFFIX),
+        (capture_sidecars.points_sidecar_for, capture_sidecars.POINTS_SIDECAR_SUFFIX),
+    ):
+        try:
+            blob = await asyncio.to_thread(object_storage.get_bytes, key + companion_suffix)
+        except Exception:  # noqa: BLE001 — a companion is optional
+            continue
+        locate(raw).write_bytes(blob)
+    return raw
+
+
+class ConversionFailure(RuntimeError):
+    """Delivery conversion failed after a successful reconstruction."""
+
+
+def _cost_fields(provider: Any) -> dict[str, Any]:
+    metrics = getattr(provider, "last_metrics", None) or {}
+    cost = metrics.get("cost") if isinstance(metrics, dict) else None
+    out: dict[str, Any] = {}
+    if isinstance(cost, dict):
+        if cost.get("estimated_usd") is not None:
+            out["cost_estimate_usd"] = float(cost["estimated_usd"])
+        if cost.get("billed_seconds_estimate") is not None:
+            out["gpu_seconds"] = float(cost["billed_seconds_estimate"])
+    return out
+
+
 async def _process(job: ReconstructionJob) -> None:
     provider = get_provider()
-    await _set_status(job.ctx, job.job_id, "running", provider=provider.name, progress=10)
+    await _set_status(job.ctx, job.job_id, "running", provider=provider.name)
     media_id = str(uuid4())
     session_id = await _open_capture_session(job)
+    loop = asyncio.get_running_loop()
+    # The provider's own id is persisted the instant it exists, so a restart
+    # can release exactly that GPU instead of waiting hours for the sweep.
+    provider.on_submitted = lambda pid: loop.create_task(
+        _record_provider_job(job.ctx, job.job_id, pid))
+    heartbeat = asyncio.create_task(_heartbeat(job.ctx, job.job_id))
+    counts: dict = {}
+    warnings: list[str] = []
     try:
         with tempfile.TemporaryDirectory(prefix="recon_") as tmp:
             work = Path(tmp)
-            images, counts = await _gather_source_images(job, work / "images")
-            # ── capture ──────────────────────────────────────────────────
-            await _record_stage(
-                job.ctx, job.job_id, "capture",
-                photos=counts.get("photos"), videos=counts.get("videos"),
-                extracted_frames=counts.get("frames"),
-                images_submitted=len(images),
-                dimensions=_image_dimensions(images),
-            )
-            if not images:
-                # A capture with nothing in it is not an outage. Marked as a
-                # quality gate so "recapture" and "fix the deployment" stay
-                # distinguishable in the job row.
+            if job.resume_from == "conversion" and job.raw_output_key:
+                # ── resume: the GPU work already happened ────────────────
+                raw = await _restore_raw(job, work)
+                await _record_stage(job.ctx, job.job_id, "reconstruction",
+                                    resumed_from=job.raw_output_key, provider=provider.name,
+                                    raw_format=raw.suffix.lower(), raw_bytes=raw.stat().st_size)
+            else:
+                images, counts = await _gather_source_images(job, work / "images")
+                # ── capture ──────────────────────────────────────────────
                 await _record_stage(
-                    job.ctx, job.job_id, "quality_gate",
-                    gate="no_usable_images", detail=(
-                        "No photos or extractable video frames are attached to "
-                        "this property."
-                    ),
+                    job.ctx, job.job_id, "capture",
+                    photos=counts.get("photos"), videos=counts.get("videos"),
+                    extracted_frames=counts.get("frames"),
+                    images_submitted=len(images),
+                    dimensions=_image_dimensions(images),
                 )
-                raise QualityGateFailure(
-                    "This property has no usable capture media yet.")
+                if not images:
+                    # A capture with nothing in it is not an outage. Marked as a
+                    # quality gate so "recapture" and "fix the deployment" stay
+                    # distinguishable in the job row.
+                    await _record_stage(
+                        job.ctx, job.job_id, "quality_gate",
+                        gate="no_usable_images", detail=(
+                            "No photos or extractable video frames are attached to "
+                            "this property."
+                        ),
+                        guidance=[capture_quality.GUIDANCE["no_media"]],
+                    )
+                    raise QualityGateFailure(
+                        "This property has no usable capture media yet.")
 
-            # ── reconstruction ───────────────────────────────────────────
-            started = time.monotonic()
-            raw = await provider.reconstruct(images, work)            # .ply/.spz/.sog/.splat
-            await _record_stage(
-                job.ctx, job.job_id, "reconstruction",
-                provider=provider.name,
-                seconds=round(time.monotonic() - started, 1),
-                images_submitted=len(images),
-                raw_format=raw.suffix.lower(),
-                raw_bytes=raw.stat().st_size if raw.exists() else 0,
-                **_provider_metrics(provider, work),
-            )
+                # ── quality gate + frame selection (before any GPU) ──────
+                # A synthetic provider (the dev stub) captures nothing, so only
+                # a real one is held to a real capture's minimum.
+                minimum = (capture_quality.MIN_USABLE_FRAMES
+                           if getattr(provider, "produces", "captured") == "captured" else 1)
+                verdict = await asyncio.to_thread(
+                    lambda: capture_quality.assess(images, minimum=minimum))
+                await _record_stage(job.ctx, job.job_id, "quality_gate",
+                                    guidance=verdict.guidance, **verdict.as_diagnostics())
+                if verdict.refused:
+                    raise QualityGateFailure(
+                        f"The capture cannot support a space yet ({verdict.reason}).")
+                warnings = list(verdict.warnings)
+                images = verdict.kept
+
+                # ── reconstruction ───────────────────────────────────────
+                await _set_stage(job, space_status.RECONSTRUCTING)
+                started = time.monotonic()
+                raw = await provider.reconstruct(images, work)        # .ply/.spz/.sog/.splat
+                await _record_stage(
+                    job.ctx, job.job_id, "reconstruction",
+                    provider=provider.name,
+                    seconds=round(time.monotonic() - started, 1),
+                    images_submitted=len(images),
+                    raw_format=raw.suffix.lower(),
+                    raw_bytes=raw.stat().st_size if raw.exists() else 0,
+                    **_provider_metrics(provider, work),
+                )
 
             # ── delivery conversion ──────────────────────────────────────
+            await _set_stage(job, space_status.CONVERTING)
             converting = time.monotonic()
-            splat = await _convert_to_delivery(raw, work, media_id)   # .sog (or legacy .splat)
+            try:
+                splat = await _convert_to_delivery(raw, work, media_id)   # .sog (or legacy .splat)
+            except ProviderError as exc:
+                # The reconstruction itself succeeded. Keep its output so a
+                # retry reconverts it without training again.
+                kept = await _preserve_raw(job, raw)
+                if kept is None:
+                    raise ConversionFailure(str(exc)) from exc
+                raise _ConversionWithRaw(str(exc), kept) from exc
             delivery_bytes = splat.stat().st_size if splat.exists() else 0
             await _record_stage(
                 job.ctx, job.job_id, "delivery",
@@ -902,24 +1144,37 @@ async def _process(job: ReconstructionJob) -> None:
                     f"finished but produced nothing renderable"
                 )
 
-            await _canonicalise(job, splat)
+            # ── analysis: orientation, scale, entry view, floor plan ─────
+            await _set_stage(job, space_status.ANALYZING)
+            manifest = await _canonicalise(job, splat, media_id=media_id,
+                                           provider_name=provider.name)
             url, s3_key = await _store_splat(
                 splat, media_id,
                 provider=provider.name,
                 address=job.listing_id or job.lead_id or "",
                 tenant_id=str(job.ctx.tenant_id),
-            )
-            await _record_media(
-                job, media_id, url, s3_key,
-                provenance=getattr(provider, "produces", "captured"),
-                generator=provider.name,
+                extra_manifest={"pipelineVersion": PIPELINE_VERSION},
             )
             await _record_stage(
                 job.ctx, job.job_id, "storage",
                 storage_key=s3_key, media_id=media_id,
                 delivery_bytes=delivery_bytes,
             )
-            await _derive_floorplan(job, splat, provider.name)
+            floorplan = await _derive_floorplan(job, splat, provider.name)
+            limitations = list((manifest or {}).get("limitations") or
+                               ["camera_poses_missing", "scale_unknown", "entry_view_default"])
+            if (floorplan or {}).get("status") != "derived":
+                limitations.append("floorplan_unavailable")
+            await _record_stage(job.ctx, job.job_id, "floorplan", **(floorplan or {}))
+            await _record_summary(job, warnings=warnings, limitations=limitations)
+
+            # ── publish (atomic) ─────────────────────────────────────────
+            await _publish(
+                job, media_id, url, s3_key,
+                provenance=getattr(provider, "produces", "captured"),
+                generator=provider.name,
+                job_fields={"output_bytes": delivery_bytes, **_cost_fields(provider)},
+            )
     except QualityGateFailure as exc:
         # The capture cannot support a reconstruction. Distinct from an outage
         # because the response is "capture more", not "page someone".
@@ -929,8 +1184,24 @@ async def _process(job: ReconstructionJob) -> None:
         await _set_status(
             job.ctx, job.job_id, "failed_quality_gate",
             error=str(exc)[:2000], quality_gate="capture",
+            stage=space_status.FAILED, failure_category="quality_gate",
+            finished_at=datetime.now(timezone.utc),
         )
         logger.warning("Reconstruction %s refused at the quality gate: %s", job.job_id, exc)
+        return
+    except _ConversionWithRaw as exc:
+        # Built, not packaged: the raw output is preserved, so this needs a
+        # reconversion (no GPU), not a rebuild.
+        await _close_capture_session(
+            job, session_id, status="failed", failure_reason=str(exc)[:2000]
+        )
+        await _set_status(
+            job.ctx, job.job_id, "needs_attention",
+            error=str(exc)[:2000], stage=space_status.NEEDS_ATTENTION,
+            failure_category="conversion", raw_output_key=exc.raw_key,
+            finished_at=datetime.now(timezone.utc), **_cost_fields(provider),
+        )
+        logger.warning("Reconstruction %s needs reconversion: %s", job.job_id, exc)
         return
     except Exception as exc:
         await _record_stage(
@@ -940,11 +1211,22 @@ async def _process(job: ReconstructionJob) -> None:
         await _close_capture_session(
             job, session_id, status="failed", failure_reason=str(exc)[:2000]
         )
+        try:
+            await _set_status(
+                job.ctx, job.job_id, "failed", error=str(exc)[:500],
+                stage=space_status.FAILED,
+                failure_category=_categorise(exc),
+                finished_at=datetime.now(timezone.utc), **_cost_fields(provider),
+            )
+        except Exception:  # noqa: BLE001 — the worker loop retries the write
+            pass
         raise
+    finally:
+        heartbeat.cancel()
+        provider.on_submitted = None
     await _close_capture_session(
         job, session_id, status="succeeded", counts=counts, result_media_id=media_id
     )
-    await _set_status(job.ctx, job.job_id, "succeeded", media_id=UUID(media_id), progress=100)
     try:
         await ws_hub.broadcast(job.ctx.tenant_id, {
             "type": "SPLAT_READY",
@@ -957,6 +1239,42 @@ async def _process(job: ReconstructionJob) -> None:
     except Exception:  # noqa: BLE001 — broadcast is best-effort; the row is the source of truth
         logger.debug("SPLAT_READY broadcast failed for job %s", job.job_id)
     logger.info("Reconstruction succeeded: job=%s media=%s provider=%s", job.job_id, media_id, provider.name)
+
+
+class _ConversionWithRaw(ConversionFailure):
+    def __init__(self, message: str, raw_key: str):
+        super().__init__(message)
+        self.raw_key = raw_key
+
+
+def _categorise(exc: BaseException) -> str:
+    """Which customer message a failure gets. The raw text stays for operators."""
+    if isinstance(exc, ConversionFailure):
+        return "conversion"
+    text = str(exc).lower()
+    if "object storage" in text or "storage" in type(exc).__name__.lower():
+        return "storage"
+    return "provider"
+
+
+async def _record_summary(job: ReconstructionJob, *, warnings: list[str],
+                          limitations: list[str]) -> None:
+    """The deterministic caveats a READY space carries (never a score)."""
+    try:
+        async with tenant_tx(job.ctx) as conn:
+            await conn.execute(
+                """UPDATE reconstruction_jobs
+                      SET diagnostics = diagnostics
+                          || jsonb_build_object('warnings', $2::jsonb,
+                                                'limitations', $3::jsonb),
+                          updated_at = now()
+                    WHERE id = $1::uuid""",
+                UUID(job.job_id),
+                json.dumps(sorted(set(warnings))),
+                json.dumps(sorted(set(limitations))),
+            )
+    except Exception:  # noqa: BLE001 — never break a run to record a caveat
+        logger.exception("reconstruction %s: could not record its caveats", job.job_id)
 
 
 async def _worker_loop(worker_id: int) -> None:
@@ -983,7 +1301,9 @@ async def _worker_loop(worker_id: int) -> None:
         except Exception as e:  # noqa: BLE001 — one bad job must not kill the worker
             logger.exception("Reconstruction job failed: job=%s tenant=%s", job.job_id, job.ctx.tenant_id)
             try:
-                await _set_status(job.ctx, job.job_id, "failed", error=str(e)[:500])
+                await _set_status(job.ctx, job.job_id, "failed", error=str(e)[:500],
+                                  stage=space_status.FAILED,
+                                  failure_category=_categorise(e))
             except Exception:  # noqa: BLE001
                 logger.debug("could not mark job %s failed", job.job_id)
 
@@ -1056,19 +1376,35 @@ async def _reaper_loop() -> None:
         await asyncio.sleep(REAP_INTERVAL_SECONDS)
 
 
+#: How many times one job may be started. A restart mid-run resumes the job
+#: automatically (its source media is intact on the property) until this many
+#: attempts have been spent; then it stops and asks a person. Bounded so a
+#: crash loop can never rent GPUs indefinitely.
+MAX_ATTEMPTS = max(1, int(os.environ.get("RECON_MAX_ATTEMPTS", "2") or 2))
+
+
 async def fail_orphaned_jobs() -> None:
-    """Fail jobs no process can still be working on.
+    """Recover jobs no process can still be working on.
 
     A restart abandons every RUNNING job — its row still says `running`, and
     nothing would ever move it: the caller polls a status that will never
     change again. Two real captures were lost that way before anything said so.
-    QUEUED rows are left alone: the row is the queue now, so a queued job
-    survives a restart and is simply claimed by the next worker.
 
-    This is the reaper's argument applied to rows instead of pods: the most
-    likely orphan is the one left by the restart that just happened. Only rows
-    untouched since before this process started are failed, so a job this
-    process is actively running is never harmed.
+    Recovery, in order:
+
+    1. **Release the GPU.** A job whose provider id was recorded
+       (`provider_job_id`, persisted the moment the pod existed) has exactly
+       that pod terminated now — not hours later when the age-based sweep
+       would reach it, billing all the while.
+    2. **Resume or stop.** The source photos and video are untouched on the
+       property, so a job with attempts left goes back to `queued` and the
+       next worker picks it up. One that has spent RECON_MAX_ATTEMPTS fails
+       as `orphaned` with a plain reason — never a silent loop.
+
+    QUEUED rows are left alone: the row is the queue, so a queued job survives
+    a restart and is simply claimed by the next worker. Only rows untouched
+    since before this process started are swept, so a job this process is
+    actively running (heartbeating) is never harmed.
 
     ASSUMPTION: ONE worker process runs reconstructions (the App Platform
     worker is pinned to instance_count: 1). The claim is already safe for more,
@@ -1078,31 +1414,55 @@ async def fail_orphaned_jobs() -> None:
     platform_ctx = _platform_ctx("reconstruction-orphan-sweep")
     reason = (
         "Abandoned: the worker restarted while this job was running. Any GPU "
-        "pod was released by the leaked-pod sweep. Nothing was produced — run "
-        "the capture again."
+        "pod was released. The source capture is intact; the job resumes "
+        "automatically while attempts remain, otherwise run the capture again."
     )
     try:
         async with tenant_tx(platform_ctx) as conn:
             rows = await conn.fetch(
                 """
                 UPDATE reconstruction_jobs
-                   SET status = 'failed', error = $1, updated_at = now()
+                   SET status = CASE WHEN attempts < $3 THEN 'queued' ELSE 'failed' END,
+                       stage  = CASE WHEN attempts < $3 THEN 'queued' ELSE 'failed' END,
+                       failure_category = CASE WHEN attempts < $3 THEN NULL ELSE 'orphaned' END,
+                       finished_at = CASE WHEN attempts < $3 THEN NULL ELSE now() END,
+                       error = $1, updated_at = now()
                  WHERE status = 'running'
                    AND updated_at < $2
-             RETURNING id::text
+             RETURNING id::text, status, provider_job_id
                 """,
                 reason,
                 _PROCESS_STARTED_AT,
+                MAX_ATTEMPTS,
             )
         if rows:
+            resumed = [r["id"] for r in rows if _field(r, "status") == "queued"]
+            failed = [r["id"] for r in rows if _field(r, "status") != "queued"]
             logger.warning(
-                "Failed %d reconstruction job(s) orphaned by a restart: %s",
-                len(rows), ", ".join(r["id"] for r in rows),
+                "Recovered %d reconstruction job(s) orphaned by a restart: "
+                "resumed=%s failed=%s", len(rows), resumed, failed,
             )
+            await _release_provider_jobs(rows)
     except Exception:  # noqa: BLE001
         # A sweep that cannot run must not stop the service from accepting
         # captures — the same rule the leaked-pod sweep follows.
         logger.exception("Orphaned-job sweep failed; jobs may still read as running")
+
+
+async def _release_provider_jobs(rows) -> None:
+    """Terminate the recorded GPU resource of each orphaned job. Never raises."""
+    ids = [p for p in (_field(r, "provider_job_id") for r in rows) if p]
+    if not ids:
+        return
+    terminate = getattr(get_provider(), "terminate_job", None)
+    if terminate is None:
+        return
+    for provider_job_id in ids:
+        try:
+            await asyncio.to_thread(terminate, provider_job_id)
+            logger.warning("Released GPU %s held by an orphaned reconstruction", provider_job_id)
+        except Exception:  # noqa: BLE001 — the age-based reaper is the backstop
+            logger.exception("Could not release GPU %s; the leaked-pod sweep will", provider_job_id)
 
 
 async def start_reconstruction_workers() -> None:

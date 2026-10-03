@@ -201,3 +201,31 @@ describe('360° capture mode — the no-GPU route to a walkable tour', () => {
     expect(screen.getByText(/2 scenes .* walkable 360/i)).toBeTruthy();
   });
 });
+
+describe('a large capture upload survives a dropped file (Neoh Space §45)', () => {
+  it('uploads file by file, keeps what landed, names what failed, and retries only that', async () => {
+    useTour.mockReturnValue({ tour: { pano_scene_count: 0, photo_count: 0 } });
+    await lookUpAProperty();
+    const files = ['a.jpg', 'b.jpg', 'c.jpg'].map((n) => new File(['x'], n, { type: 'image/jpeg' }));
+    crmUpload
+      .mockResolvedValueOnce({ media: [{ id: '1' }] })
+      .mockRejectedValueOnce(new Error('Network connection lost'))
+      .mockResolvedValueOnce({ media: [{ id: '3' }] });
+    fireEvent.change(document.querySelector('input[type="file"]'), { target: { files } });
+
+    await screen.findByText(/2 of 3 uploaded/);
+    expect(crmUpload).toHaveBeenCalledTimes(3);
+    // One file per request, in capture order.
+    expect(crmUpload.mock.calls.map((c) => c[1].getAll('files')[0].name)).toEqual(['a.jpg', 'b.jpg', 'c.jpg']);
+    const failed = screen.getByRole('group', { name: /files that did not upload/i });
+    expect(failed.textContent).toMatch(/b\.jpg/);
+    expect(failed.textContent).toMatch(/Network connection lost/);
+
+    crmUpload.mockResolvedValueOnce({ media: [{ id: '2' }] });
+    fireEvent.click(screen.getByRole('button', { name: /retry 1 failed file/i }));
+    await screen.findByText(/1 file uploaded/);
+    expect(crmUpload).toHaveBeenCalledTimes(4);
+    expect(crmUpload.mock.calls[3][1].getAll('files')[0].name).toBe('b.jpg');
+    expect(screen.queryByRole('group', { name: /files that did not upload/i })).toBeNull();
+  });
+});

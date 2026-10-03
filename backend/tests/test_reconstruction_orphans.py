@@ -57,21 +57,60 @@ def _run(conn, monkeypatch):
     return tx
 
 
-def test_it_fails_only_jobs_older_than_this_process(monkeypatch):
-    conn = _Conn(returns=[{"id": "job-1"}])
+def test_it_recovers_only_jobs_older_than_this_process(monkeypatch):
+    conn = _Conn(returns=[{"id": "job-1", "status": "failed", "provider_job_id": None}])
     _run(conn, monkeypatch)
 
     assert len(conn.calls) == 1
     sql, args = conn.calls[0]
-    assert "status = 'failed'" in sql
-    assert "status = 'running'" in sql
-    assert "queued" not in sql  # a queued job is waiting, not orphaned
+    assert "WHERE status = 'running'" in sql
     # The cutoff is this process's start: a job THIS process is running has a
-    # newer updated_at and must survive the sweep.
+    # newer updated_at (it heartbeats) and must survive the sweep.
     assert "updated_at < $2" in sql
     assert args[1] == worker._PROCESS_STARTED_AT
     assert isinstance(worker._PROCESS_STARTED_AT, datetime)
     assert worker._PROCESS_STARTED_AT.tzinfo is not None
+
+
+def test_a_job_with_attempts_left_resumes_and_one_without_fails(monkeypatch):
+    # The source capture is intact on the property, so an interrupted job goes
+    # back to the queue — bounded by RECON_MAX_ATTEMPTS so a crash loop cannot
+    # rent GPUs forever.
+    conn = _Conn(returns=[])
+    _run(conn, monkeypatch)
+    sql, args = conn.calls[0]
+    assert "CASE WHEN attempts < $3 THEN 'queued' ELSE 'failed' END" in sql
+    assert "'orphaned'" in sql
+    assert args[2] == worker.MAX_ATTEMPTS >= 1
+
+
+def test_the_recorded_gpu_is_released_immediately(monkeypatch):
+    released = []
+
+    class _Provider:
+        @staticmethod
+        def terminate_job(pid):
+            released.append(pid)
+            return True
+
+    monkeypatch.setattr(worker, "get_provider", lambda: _Provider())
+    conn = _Conn(returns=[
+        {"id": "a", "status": "queued", "provider_job_id": "pod-1"},
+        {"id": "b", "status": "failed", "provider_job_id": None},
+    ])
+    _run(conn, monkeypatch)
+    assert released == ["pod-1"]
+
+
+def test_a_release_failure_never_stops_the_sweep(monkeypatch):
+    class _Provider:
+        @staticmethod
+        def terminate_job(pid):
+            raise RuntimeError("runpod down")
+
+    monkeypatch.setattr(worker, "get_provider", lambda: _Provider())
+    conn = _Conn(returns=[{"id": "a", "status": "queued", "provider_job_id": "pod-1"}])
+    _run(conn, monkeypatch)  # must not raise
 
 
 def test_the_reason_tells_the_operator_what_to_do(monkeypatch):
@@ -81,8 +120,10 @@ def test_the_reason_tells_the_operator_what_to_do(monkeypatch):
     assert "restart" in reason.lower()
     # It must say the GPU was released, or the reader will hunt for a bill.
     assert "pod" in reason.lower()
-    # And that a rerun is needed — the capture itself was never at fault.
+    # And what happens next — resume, or run again — the capture itself was
+    # never at fault.
     assert "again" in reason.lower()
+    assert "intact" in reason.lower()
 
 
 def test_it_sweeps_across_tenants(monkeypatch):

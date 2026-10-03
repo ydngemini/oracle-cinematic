@@ -1,11 +1,18 @@
 /**
- * PropertyTourViewer — PlayCanvas renderer for phone-captured property tours.
+ * PropertyTourViewer — PlayCanvas renderer for Neoh Space (phone-captured
+ * property spaces).
  *
- * Accepts Gaussian splats as **.splat** and mesh assets as .glb/.gltf. `.splat`
- * is the one splat format in this pipeline: the reconstruction worker emits it,
- * the tour resolver serves it, and both viewers read it. PLY is refused at the
- * loader — it is training output, roughly an order of magnitude larger for the
- * same scene, and shipping it to a phone stalls the tour before first paint.
+ * Accepts Gaussian splats as **.sog** (delivery format) or legacy **.splat**,
+ * and mesh assets as .glb/.gltf. PLY is refused at the loader — it is training
+ * output, roughly an order of magnitude larger for the same scene, and
+ * shipping it to a phone stalls the tour before first paint.
+ *
+ * Device reality (docs/neoh-space.md): the caller passes the quality level the
+ * device assessment chose; a frame-rate governor lowers the pixel ratio when
+ * navigation stops being smooth; GPU context loss is caught and reported
+ * through `onUnavailable` so the property page falls back instead of showing a
+ * dead canvas. Navigation speeds and eye height come from scene.json's own
+ * units, never an assumed "1.6 metres".
  *
  * Runs ALONGSIDE the existing gsplat WalkableSplatViewer, selected by
  * VITE_TOUR_ENGINE. What this adds over that viewer: .glb mesh support (needed
@@ -24,7 +31,6 @@ import {
   type TourAssetSpec,
 } from '../lib/tour/assetLoader';
 import {
-  DEFAULT_CONFIG,
   createCameraState,
   createInputState,
   frameBounds,
@@ -33,6 +39,9 @@ import {
   type CameraMode,
   type CameraState,
 } from '../lib/tour/cameraModes';
+import { type QualityLevel } from '../lib/tour/deviceCapability';
+import { createFrameRateGovernor, pixelRatioFor } from '../lib/tour/renderQuality';
+import { configForScene, scaleNotice, type SceneScale } from '../lib/tour/sceneNavigation';
 import styles from './PropertyTourViewer.module.css';
 
 const AI_DISCLOSURE =
@@ -64,6 +73,11 @@ export interface PropertyTourViewerProps {
   scene?: SceneManifest | null;
   onClose?: () => void;
   embedded?: boolean;
+  /** Starting render quality, from the device assessment. Default balanced. */
+  quality?: QualityLevel;
+  /** Called when this device cannot keep showing the space (no WebGL, GPU
+   *  context lost and not restored). The caller shows its fallback. */
+  onUnavailable?: (reason: string) => void;
 }
 
 /** The subset of scene.json the viewer reads. Written by backend/scene_manifest.py. */
@@ -78,9 +92,18 @@ export interface SceneManifest {
     target: [number, number, number];
     fov?: number;
   } | null;
+  /** v2: what is known about real-world scale. */
+  scale?: SceneScale | null;
+  /** v2: eye height in scene units (the capture's own height). */
+  navigation?: { eyeHeight?: number | null } | null;
+  /** v2: deterministic caveats, e.g. camera_poses_missing. */
+  limitations?: string[] | null;
 }
 
-type Status = 'idle' | 'loading' | 'ready' | 'error' | 'unsupported';
+type Status = 'idle' | 'loading' | 'ready' | 'error' | 'unsupported' | 'lost';
+
+/** How long a lost GPU context may take to come back before we give up. */
+const CONTEXT_RESTORE_GRACE_MS = 5000;
 
 /**
  * Apply scene.json's canonical transform to a loaded entity.
@@ -252,7 +275,17 @@ export default function PropertyTourViewer({
   onClose,
   scene = null,
   embedded = false,
+  quality = 'balanced',
+  onUnavailable,
 }: PropertyTourViewerProps) {
+  // Scene-unit navigation: eye height and speeds from scene.json, so walking
+  // feels right whatever the reconstruction's units are.
+  const navConfigRef = useRef(configForScene(scene));
+  navConfigRef.current = configForScene(scene);
+  const onUnavailableRef = useRef(onUnavailable);
+  onUnavailableRef.current = onUnavailable;
+  const [qualityLevel, setQualityLevel] = useState<QualityLevel>(quality);
+  const scaleInfo = scaleNotice(scene?.scale);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
   // Every mutable engine handle lives in a ref so the teardown effect can reach
@@ -310,7 +343,8 @@ export default function PropertyTourViewer({
       } catch {
         if (!disposed) {
           setStatus('unsupported');
-          setError('WebGL is unavailable on this device.');
+          setError('3D view unavailable on this device.');
+          onUnavailableRef.current?.('no_webgl');
         }
         return;
       }
@@ -324,8 +358,9 @@ export default function PropertyTourViewer({
       app.setCanvasFillMode(pc.FILLMODE_FILL_WINDOW);
       app.setCanvasResolution(pc.RESOLUTION_AUTO);
       // Cap DPR: a 3x-density phone rendering a splat at native resolution is
-      // the single biggest cause of thermal throttling and OOM kills.
-      app.graphicsDevice.maxPixelRatio = Math.min(window.devicePixelRatio, 2);
+      // the single biggest cause of thermal throttling and OOM kills. The cap
+      // follows the device's quality level and drops further if frames stall.
+      app.graphicsDevice.maxPixelRatio = pixelRatioFor(quality, window.devicePixelRatio);
 
       const camera = new pc.Entity('tour-camera');
       camera.addComponent('camera', {
@@ -416,7 +451,7 @@ export default function PropertyTourViewer({
             // Never report ready with an unaimed camera: black is indis-
             // tinguishable from a failed reconstruction, and this one is real.
             setStatus('error');
-            setError('The 3D capture loaded but never reported its bounds, so the camera could not be aimed at it.');
+            setError('This 3D space loaded but could not be framed for viewing. Photos and listing details are still available on the property page.');
             return;
           }
           frameBounds(cameraStateRef.current, {
@@ -432,19 +467,54 @@ export default function PropertyTourViewer({
         if ((err as DOMException)?.name === 'AbortError') return;
         if (disposed) return;
         setStatus('error');
-        setError(err instanceof Error ? err.message : 'Failed to load the tour.');
+        // The technical cause is for the console; the person gets plain words.
+        // eslint-disable-next-line no-console
+        console.warn('[neoh-space] load failed', err instanceof Error ? err.message : err);
+        setError('This 3D space could not be loaded right now. Photos and listing details are still available on the property page.');
         return;
       }
 
       // Drive the camera from the engine's own frame loop so it stays in step
       // with rendering rather than fighting a separate rAF.
+      const governor = createFrameRateGovernor(quality);
       const onUpdate = (dt: number) => {
         const cam = cameraRef.current;
         if (!cam) return;
-        stepCamera(cam, cameraStateRef.current, inputRef.current, dt, DEFAULT_CONFIG);
+        stepCamera(cam, cameraStateRef.current, inputRef.current, dt, navConfigRef.current);
+        const next = governor.sample(dt);
+        if (next) {
+          app.graphicsDevice.maxPixelRatio = pixelRatioFor(next, window.devicePixelRatio);
+          if (!disposed) setQualityLevel(next);
+        }
       };
       app.on('update', onUpdate);
     })();
+
+    // GPU context loss (memory pressure, backgrounded tab on iOS, driver
+    // reset). PlayCanvas restores its resources if the browser gives the
+    // context back; if it does not within the grace period, the device cannot
+    // keep showing this space and the caller falls back to photos.
+    let restoreTimer: ReturnType<typeof setTimeout> | null = null;
+    const onContextLost = (event: Event) => {
+      event.preventDefault();
+      if (disposed) return;
+      setStatus('lost');
+      setError('Reconnecting the 3D view…');
+      restoreTimer = setTimeout(() => {
+        if (disposed) return;
+        setStatus('error');
+        setError('3D view unavailable on this device.');
+        onUnavailableRef.current?.('context_lost');
+      }, CONTEXT_RESTORE_GRACE_MS);
+    };
+    const onContextRestored = () => {
+      if (restoreTimer) { clearTimeout(restoreTimer); restoreTimer = null; }
+      if (disposed) return;
+      setError(null);
+      setStatus('ready');
+    };
+    canvas.addEventListener('webglcontextlost', onContextLost);
+    canvas.addEventListener('webglcontextrestored', onContextRestored);
 
     // --- teardown ----------------------------------------------------------
     // This is the part that matters on mobile. An Application that is not
@@ -455,6 +525,9 @@ export default function PropertyTourViewer({
     return () => {
       disposed = true;
       abort.abort();
+      if (restoreTimer) clearTimeout(restoreTimer);
+      canvas.removeEventListener('webglcontextlost', onContextLost);
+      canvas.removeEventListener('webglcontextrestored', onContextRestored);
 
       const app = appRef.current;
       if (app) {
@@ -480,6 +553,8 @@ export default function PropertyTourViewer({
     };
     // Re-initialising on an `assets` identity change is intended: a different
     // property means a different scene. Callers should memoise the array.
+    // `quality` is read once at engine start; the governor owns it after.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [assets]);
 
   // --- input ---------------------------------------------------------------
@@ -570,7 +645,7 @@ export default function PropertyTourViewer({
     state.mode = next;
     if (next === 'walk') {
       // Drop the eye onto the current floor at the orbit pivot.
-      state.position = [state.position[0], state.floorY + DEFAULT_CONFIG.eyeHeight, state.position[2]];
+      state.position = [state.position[0], state.floorY + navConfigRef.current.eyeHeight, state.position[2]];
       state.pitch = 0;
     } else {
       state.pitch = -0.35;
@@ -582,7 +657,7 @@ export default function PropertyTourViewer({
     if (floors.length === 0) return;
     setActiveFloor((current) => {
       const next = Math.max(0, Math.min(floors.length - 1, current + delta));
-      goToFloor(cameraStateRef.current, next, floors[next].y, DEFAULT_CONFIG);
+      goToFloor(cameraStateRef.current, next, floors[next].y, navConfigRef.current);
       return next;
     });
   }, [floors]);
@@ -607,8 +682,26 @@ export default function PropertyTourViewer({
   }, []);
 
   return (
-    <div className={styles.overlay} role={embedded ? undefined : 'dialog'} aria-modal={embedded ? undefined : true} aria-label={title || 'Property tour'}>
-      <canvas ref={canvasRef} className={styles.canvas} />
+    <div
+      className={styles.overlay}
+      role={embedded ? undefined : 'dialog'}
+      aria-modal={embedded ? undefined : true}
+      aria-label={title || 'Property tour'}
+      data-space-status={status}
+      data-space-quality={qualityLevel}
+    >
+      <canvas
+        ref={canvasRef}
+        className={styles.canvas}
+        role="img"
+        aria-label={`3D view of ${title || 'this property'}`}
+        aria-describedby="neoh-space-controls-help"
+      />
+      <p id="neoh-space-controls-help" className={styles.srOnly}>
+        Drag to look around. In Walk mode use W, A, S, D or the arrow keys to move;
+        on a phone, use the joystick. Scroll or pinch to zoom in Orbit mode.
+        Photos, the floor plan and listing details remain available on the property page.
+      </p>
 
       {!embedded && <header className={styles.header}>
         <div className={styles.titleBlock}>
@@ -629,10 +722,16 @@ export default function PropertyTourViewer({
         </div>
       ) : null}
 
-      {status === 'error' || status === 'unsupported' ? (
-        <div className={styles.error} role="alert">
+      {status === 'error' || status === 'unsupported' || status === 'lost' ? (
+        <div className={styles.error} role={status === 'lost' ? 'status' : 'alert'}>
           <p>{error || 'This tour could not be displayed.'}</p>
         </div>
+      ) : null}
+
+      {status === 'ready' && scene ? (
+        <p className={styles.scaleNote} title={scene.scale?.basis || undefined}>
+          {scaleInfo.label}
+        </p>
       ) : null}
 
       {status === 'ready' ? (
@@ -665,7 +764,7 @@ export default function PropertyTourViewer({
                   className={index === activeFloor ? styles.floorActive : styles.floorButton}
                   onClick={() => {
                     setActiveFloor(index);
-                    goToFloor(cameraStateRef.current, index, floor.y, DEFAULT_CONFIG);
+                    goToFloor(cameraStateRef.current, index, floor.y, navConfigRef.current);
                   }}
                   aria-pressed={index === activeFloor}
                 >

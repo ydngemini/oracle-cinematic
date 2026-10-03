@@ -1,5 +1,15 @@
 # Neoh GPU Reconstruction — RunPod Serverless
 
+> **DORMANT — not the production path (audited 2026-10-03, Mission 4).**
+> RunPod *serverless* never left `initializing` for this account and the
+> endpoint was deleted 2026-08-14. Production Neoh Space builds run on RunPod
+> **pods** through `PodProvider` (`RECONSTRUCTION_PROVIDER=runpod_pod`), whose
+> pipeline is embedded in `backend/reconstruction_providers.py` (`POD_PIPELINE`)
+> and returns `.sog` + camera poses + a point cloud. This worker still targets
+> antimatter15 `.splat`, which no released splat-transform can *write* — do not
+> redeploy it without switching its output to `.sog`. See `docs/neoh-space.md`
+> and `docs/runpod-pods-runbook.md`.
+
 A **RunPod Serverless** GPU worker that turns a property's captured photos into a
 walkable 3D **Gaussian splat** (`.splat`). It runs the same pipeline as the AWS
 Batch worker (`../reconstruction/`) — **COLMAP poses → nerfstudio splatfacto →
