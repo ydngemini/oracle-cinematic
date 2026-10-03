@@ -77,4 +77,21 @@ describe('UniversalWorkspace', () => {
     expect(screen.getByRole('tab', { name: 'People' })).toBeTruthy();
     expect(screen.getByRole('tab', { name: 'Properties' })).toBeTruthy();
   });
+
+  it('keeps the views with no chip one quiet tap away — including the old AI hub', async () => {
+    const onNavigate = vi.fn();
+    render(<UniversalWorkspace type="recent" onNavigate={onNavigate} />);
+    const more = screen.getByRole('navigation', { name: 'More in Work' });
+    expect(more).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Neoh tools' }));
+    expect(onNavigate).toHaveBeenCalledWith('ai');
+    fireEvent.click(screen.getByRole('button', { name: 'Missions' }));
+    expect(onNavigate).toHaveBeenCalledWith('missions');
+    fireEvent.click(screen.getByRole('button', { name: 'Opportunities' }));
+    expect(onNavigate).toHaveBeenCalledWith('opportunities');
+    // Not a second navigation bar on every view: only under Recent.
+    cleanup();
+    render(<UniversalWorkspace type="people" onNavigate={onNavigate} />);
+    expect(screen.queryByRole('navigation', { name: 'More in Work' })).toBeNull();
+  });
 });

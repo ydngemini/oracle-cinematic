@@ -57,6 +57,25 @@ describe('legacy addresses', () => {
     expect(resolveLegacyId('opportunities')).toEqual({ view: 'work', type: 'opportunities' });
     expect(resolveLegacyId('missions')).toEqual({ view: 'work', type: 'missions' });
   });
+
+  it('keeps every old AI-hub address working now that the Neoh tab is the conversation', () => {
+    // The hub moved into Work; each of its workspaces is a Work type.
+    expect(redirectFor('/our-ai')).toBe('/work?type=ai');
+    for (const type of ['social', 'homeowners', 'automations', 'sites']) {
+      const target = redirectFor(`/our-ai/${type}`);
+      expect(target).toBe(`/work?type=${type}`);
+      expect(parse('/work', target.slice(target.indexOf('?'))).params.type).toBe(type);
+    }
+    expect(parse('/work', '?type=ai').params.type).toBe('ai');
+    // Cowork was the conversation; the Command workspace was Home's briefing.
+    expect(redirectFor('/our-ai/cowork')).toBe('/neoh');
+    expect(redirectFor('/our-ai/command')).toBe('/');
+    expect(redirectFor('/command-center')).toBe('/');
+    expect(resolveLegacyId('cowork')).toEqual({ view: 'neoh' });
+    expect(resolveLegacyId('command')).toEqual({ view: 'home' });
+    expect(resolveLegacyId('our-ai')).toEqual({ view: 'work', type: 'ai' });
+    expect(parse('/neoh').view).toBe(VIEWS.neoh);
+  });
 });
 
 describe('parse', () => {

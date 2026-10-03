@@ -1,4 +1,4 @@
-import { Suspense, lazy, useState } from 'react';
+import { Suspense, lazy, useEffect, useState } from 'react';
 
 import { NeohAvatar } from './NeohAvatar';
 import { useMotionPolicy } from './motion';
@@ -12,10 +12,16 @@ import styles from './NeohCorner.module.css';
  * "no". The heavy renderer is a separate lazy chunk which then pulls
  * PlayCanvas at runtime.
  *
- * Three ways to end up flat rather than 3D, all of them ending in the same
+ * The flat SVG Neoh is the default and what almost every visit sees. The 3D
+ * one is fetched only after Home has sat open and visible for a while (see
+ * CORNER_3D_DWELL_MS) — never on first paint, never on a phone or tablet
+ * (the corner is hidden there), never on save-data or a slow connection.
+ *
+ * Ways to end up flat rather than 3D, all of them ending in the same
  * place — the mascot is still there, just not rendered:
- *   · the viewer asked for reduced motion, or is on a low-power / save-data
- *     device (`hasHighMotionBudget` covers cores, memory and saveData)
+ *   · the dwell has not elapsed, the corner is hidden at this width, or the
+ *     connection is slow / save-data
+ *   · the viewer asked for reduced motion, or is on a low-power device
  *   · the chunk or the engine failed to load
  *   · WebGL is unavailable, or the context was lost
  *
@@ -44,6 +50,66 @@ function canRender3D() {
   return true;
 }
 
+/**
+ * Whether the corner is on screen at all. Below the tablet breakpoint the
+ * stylesheet hides it — and the 3D chunk used to load anyway, so every phone
+ * that opened Home paid ~2.3 MB of PlayCanvas for a corner it never showed.
+ */
+function cornerShown() {
+  return typeof window !== 'undefined'
+    && typeof window.matchMedia === 'function'
+    && window.matchMedia('(min-width: 1100px)').matches;
+}
+
+/** A connection that has not asked to be spared, and is not slow. */
+function networkAllows3D() {
+  const connection = typeof navigator === 'undefined' ? null : navigator.connection;
+  if (!connection) return true;
+  if (connection.saveData === true) return false;
+  return !['slow-2g', '2g', '3g'].includes(connection.effectiveType);
+}
+
+/**
+ * How long Home has to sit open before the 3D Neoh is worth fetching.
+ *
+ * Home must not download the 3D engine to be useful: opening it to read three
+ * lines and leave should cost three lines. The SVG Neoh is the mascot; the
+ * 3D one is an upgrade a person who keeps Home open earns, fetched only
+ * after this long, only while the page is visible, only when the browser is
+ * idle, and only on a machine, screen and connection that can afford it.
+ */
+const CORNER_3D_DWELL_MS = 30_000;
+
+function useDwell(eligible) {
+  const [awake, setAwake] = useState(false);
+  useEffect(() => {
+    if (!eligible) return undefined;
+    let idle = 0;
+    const wake = () => {
+      if (typeof window.requestIdleCallback === 'function') {
+        idle = window.requestIdleCallback(() => setAwake(true), { timeout: 5_000 });
+      } else {
+        setAwake(true);
+      }
+    };
+    const onVisible = () => {
+      if (document.hidden) return;
+      document.removeEventListener('visibilitychange', onVisible);
+      wake();
+    };
+    const timer = window.setTimeout(() => {
+      if (document.hidden) document.addEventListener('visibilitychange', onVisible);
+      else wake();
+    }, CORNER_3D_DWELL_MS);
+    return () => {
+      window.clearTimeout(timer);
+      document.removeEventListener('visibilitychange', onVisible);
+      if (idle && typeof window.cancelIdleCallback === 'function') window.cancelIdleCallback(idle);
+    };
+  }, [eligible]);
+  return awake;
+}
+
 function FlatNeoh() {
   return (
     <span className={styles.flat}>
@@ -55,10 +121,13 @@ function FlatNeoh() {
 export function NeohCorner() {
   const policy = useMotionPolicy();
   const [failed, setFailed] = useState(false);
+  // Decided once at mount: whether this visit could ever earn the 3D Neoh.
+  const [eligible] = useState(() => canRender3D() && cornerShown() && networkAllows3D());
+  const awake = useDwell(eligible && !policy.reduced);
 
-  // Read once per render, not stored: the answer depends on the OS media
-  // query, which can change under the viewer mid-session.
-  const wants3D = !policy.reduced && canRender3D() && !failed;
+  // Reduced motion is re-read every render: the OS preference can change
+  // under the viewer mid-session, and it must win immediately.
+  const wants3D = awake && !policy.reduced && !failed;
 
   return (
     <div className={styles.corner} aria-hidden="true">

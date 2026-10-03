@@ -83,7 +83,10 @@ function PropertySheet({ id, onClose, tourOpen, onOpenTour }) {
   const dossier = useFetched(`/api/leads/${encodeURIComponent(id)}/dossier`);
   const record = dossier.data;
   const address = record?.payload?.address || record?.parcel_id || 'Property';
-  useAssistantRecord('property', id, address, record?.dossier_status || '');
+  // Registered as what the chat backend calls it — a `leads` row. As
+  // 'property' every question asked from this sheet was rejected outright
+  // (ChatContext accepts client | lead | listing | contract).
+  useAssistantRecord('lead', id, address, record?.dossier_status || '');
   const tour = useFetched(`/api/crm/property-tour?lead_id=${encodeURIComponent(id)}`);
   const scenes = tour.data?.pano_scenes;
   const offer = tourOffer(tour.data);
@@ -168,7 +171,11 @@ function DealSheet({ id, onClose }) {
   const detail = useFetched(`/api/portfolio/transactions/${id}`);
   const transaction = detail.data?.transaction || null;
   const title = entityTitle('deal', transaction);
-  useAssistantRecord('transaction', id, title, transaction?.status || '');
+  // There is no transaction context on the chat wire, so a deal is given to
+  // Neoh as the property it is on — and only when it has one. A chip that
+  // said "Talking about" a deal Neoh could not read would be hidden context
+  // pretending to be visible.
+  useAssistantRecord(transaction?.lead_id ? 'lead' : null, transaction?.lead_id, title, transaction?.status || '');
   const read = detail.data ? dealRead(transaction, detail.data.milestones) : null;
   const price = money(transaction?.purchase_price ?? transaction?.list_price);
   const milestones = detail.data?.milestones || [];

@@ -239,9 +239,9 @@
 
 .actionReceipt { margin-top: 7px; padding: 9px; display: grid; grid-template-columns: auto minmax(0,1fr) auto; align-items: center; gap: 8px; border: 1px solid rgba(110, 190, 145, 0.18); border-radius: 11px; background: rgba(75, 153, 111, 0.07); }
 .actionMark { width: 22px; height: 22px; display: grid; place-items: center; border-radius: 50%; color: #90d7ad; background: rgba(91, 185, 130, 0.1); font-size: 11px; }
-.actionReceipt strong { display: block; color: rgba(var(--oracle-ink-rgb), 0.76); font-size: 10px; }
-.actionReceipt small { display: block; margin-top: 2px; color: rgba(var(--oracle-ink-rgb), 0.4); font-size: 8px; line-height: 1.4; }
-.actionReceipt button { min-height: 34px; padding: 0 9px; border: 1px solid rgba(112, 191, 146, 0.2); border-radius: 8px; color: #ababab; background: transparent; font-size: 9px; cursor: pointer; }
+.actionReceipt strong { display: block; color: rgba(var(--oracle-ink-rgb), 0.86); font-size: var(--text-sm); line-height: 1.3; }
+.actionReceipt small { display: block; margin-top: 2px; color: rgba(var(--oracle-ink-rgb), 0.62); font-size: var(--text-xs); line-height: 1.4; overflow-wrap: anywhere; }
+.actionReceipt button { min-height: 36px; padding: 0 12px; border: 1px solid rgba(var(--oracle-ink-rgb), 0.18); border-radius: 8px; color: rgba(var(--oracle-ink-rgb), 0.8); background: transparent; font-size: var(--text-xs); cursor: pointer; }
 
 .composerZone { padding: 10px 12px calc(10px + var(--safe-bottom)); border-top: 1px solid rgba(var(--oracle-ink-rgb), 0.1); background: rgba(8, 8, 8, 0.78); }
 .composer { min-height: 54px; padding: 5px; display: flex; align-items: flex-end; gap: 3px; border: 1px solid rgba(var(--oracle-ink-rgb), 0.14); border-radius: 18px; background: rgba(171, 171, 171, 0.06); box-shadow: inset 0 1px rgba(var(--oracle-ink-rgb), 0.025); }
@@ -341,4 +341,32 @@
   .panel,
   .busyPin,
   .thinking i { animation: none; }
+}
+
+/* ── Receipt tones ──────────────────────────────────────────────────────────
+   The outcome is always in the words; the tone only repeats it, so nothing
+   here depends on colour alone. */
+.actionReceipt[data-tone='pending'] { border-color: rgba(var(--oracle-ink-rgb), 0.14); background: rgba(var(--oracle-ink-rgb), 0.03); }
+.actionReceipt[data-tone='pending'] .actionMark { color: rgba(var(--oracle-ink-rgb), 0.62); background: rgba(var(--oracle-ink-rgb), 0.06); }
+.actionReceipt[data-tone='review'] { border-color: rgba(214, 160, 40, 0.42); background: rgba(214, 160, 40, 0.08); }
+.actionReceipt[data-tone='review'] .actionMark { color: var(--oracle-accent-ink); background: rgba(214, 160, 40, 0.14); }
+.actionReceipt[data-tone='failed'] { border-color: rgba(207, 104, 104, 0.36); background: rgba(207, 104, 104, 0.07); }
+.actionReceipt[data-tone='failed'] .actionMark { color: var(--oracle-red); background: rgba(207, 104, 104, 0.12); }
+.actionReceipt[data-tone='muted'] { border-color: rgba(var(--oracle-ink-rgb), 0.1); background: transparent; }
+.actionReceipt[data-tone='muted'] .actionMark { color: rgba(var(--oracle-ink-rgb), 0.5); background: rgba(var(--oracle-ink-rgb), 0.05); }
+
+/* ── The Neoh tab: the same conversation, sized to be read ─────────────────
+   The panel variant is set for a narrow drawer. On the full page the text
+   steps up to body size and each turn stops at a readable measure. */
+.messageStack[data-variant='page'] { padding: var(--space-2) 0 var(--space-4); gap: var(--space-5); }
+.messageStack[data-variant='page'] .message { width: auto; max-width: min(88%, 62ch); }
+.messageStack[data-variant='page'] .bubble { padding: var(--space-3) var(--space-4); }
+.messageStack[data-variant='page'] .bubble p { font-size: var(--text-md); line-height: 1.55; }
+.messageStack[data-variant='page'] .messageMeta { font-size: var(--text-xs); }
+.emptyConversation[data-variant='page'] { padding: var(--space-6) 0; min-height: 0; }
+.emptyConversation[data-variant='page'] h2 { max-width: 22ch; }
+.emptyConversation[data-variant='page'] p { max-width: 52ch; font-size: var(--text-sm); color: rgba(var(--oracle-ink-rgb), 0.62); }
+
+@media (max-width: 479px) {
+  .messageStack[data-variant='page'] .message { max-width: 94%; }
 }

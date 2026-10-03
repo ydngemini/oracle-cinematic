@@ -59,7 +59,15 @@ export const LEGACY_TAB_IDS = Object.freeze({
   'house-profile': { view: 'work', type: 'properties' },
   studio: { view: 'work', type: 'ai' },
   ai: { view: 'work', type: 'ai' },
+  'our-ai': { view: 'work', type: 'ai' },
   'personal-ai': { view: 'work', type: 'ai' },
+  // The Neoh tab used to open the AI hub on its Cowork workspace; it is the
+  // conversation now, which is what Cowork was for. The hub's Command
+  // workspace was a copy of Home's briefing and was retired into Home.
+  cowork: { view: 'neoh' },
+  chat: { view: 'neoh' },
+  command: { view: 'home' },
+  'command-center': { view: 'home' },
 });
 
 /** Old paths → new paths. Kept as a table rather than derived so a reader can
@@ -71,6 +79,13 @@ export const LEGACY_PATHS = Object.freeze({
   '/deals': '/work?type=deals',
   '/property-view': '/work?type=properties',
   '/our-ai': '/work?type=ai',
+  '/our-ai/cowork': '/neoh',
+  '/our-ai/command': '/',
+  '/command-center': '/',
+  '/our-ai/social': '/work?type=social',
+  '/our-ai/homeowners': '/work?type=homeowners',
+  '/our-ai/automations': '/work?type=automations',
+  '/our-ai/sites': '/work?type=sites',
   '/our-ai/sales': '/work?type=sales',
   '/our-ai/sales/agent': '/work?type=sales&sales=%2Four-ai%2Fsales%2Fagent',
   '/our-ai/sales/dialer': '/work?type=sales&sales=%2Four-ai%2Fsales%2Fdialer',

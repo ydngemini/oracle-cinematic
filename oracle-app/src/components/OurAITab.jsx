@@ -15,7 +15,6 @@ import {
   CheckCircle2,
   CircleDashed,
   FileCheck2,
-  Gauge,
   Globe2,
   House,
   Mail,
@@ -37,14 +36,13 @@ import {
   Workflow,
 } from 'lucide-react';
 import { crmGet } from '../state/useCrmApi';
+import { fetchChatStatus } from '../neoh/useNeohChannel';
 import { useAssistant } from './AssistantContext';
 import styles from './OurAITab.module.css';
 
 const PersonalAITab = lazy(() => import('./PersonalAITab'));
 const IntelligenceFeed = lazy(() =>
   import('./IntelligenceFeed').then((m) => ({ default: m.IntelligenceFeed })));
-const CommandCenter = lazy(() =>
-  import('./CommandCenter').then((m) => ({ default: m.CommandCenter })));
 const AutonomyControls = lazy(() =>
   import('./AutonomyControls').then((m) => ({ default: m.AutonomyControls })));
 const SalesWorkspace = lazy(() => import('./SalesWorkspace'));
@@ -52,13 +50,11 @@ const StudioTab = lazy(() => import('./StudioTab'));
 
 const WORKSPACE_KEY = 'oracle_ai_workspace';
 
+// The old "Command" workspace is gone: it was the Command Center, a second
+// copy of Home's briefing (same /api/command-center call, same greeting, same
+// "Needs you"). Home is the briefing now; the one thing only it showed — "How
+// you decide" — moved under Opportunities in Work.
 const WORKSPACES = [
-  // First on purpose. The promise is that Neoh says what needs attention
-  // before the agent thinks to ask; opening on a prompt would contradict it.
-  // Command leads Intelligence because it answers the broader question — what
-  // changed, what it is worth, what is coming — and the feed is one section of
-  // that answer seen on its own.
-  { id: 'command', label: 'Command', Icon: Gauge },
   { id: 'intelligence', label: 'Intelligence', Icon: Radar },
   { id: 'cowork', label: 'Cowork', Icon: Bot },
   { id: 'sales', label: 'Sales', Icon: PhoneCall },
@@ -72,7 +68,7 @@ const WORKSPACES = [
 ];
 
 const SOURCES = [
-  { id: 'assistant', label: 'NEOH assistant', path: '/api/ai/chat/status', select: (payload) => payload || {} },
+  { id: 'assistant', label: 'Neoh', path: '/api/ai/chat/status', load: fetchChatStatus, select: (payload) => payload || {} },
   { id: 'commands', label: 'Approval queue', path: '/api/commands?limit=20', select: (payload) => payload?.commands || [] },
   { id: 'providers', label: 'Provider links', path: '/api/commands/providers', select: (payload) => payload?.providers || [] },
   { id: 'contacts', label: 'Contacts', path: '/api/crm/contacts?limit=200', select: (payload) => payload?.contacts || [] },
@@ -99,12 +95,11 @@ const STATUS = {
 };
 
 function savedWorkspace() {
-  // Defaults to the briefing, not the chat. The product claim is that Neoh
-  // says what matters before being asked; landing on a prompt would put the
-  // burden of the first question back on the agent.
-  if (typeof window === 'undefined') return 'command';
+  // The briefing is Home's job now, so the hub opens on its first workspace
+  // of tools. A stored 'command' (the retired Command Center) falls through.
+  if (typeof window === 'undefined') return 'cowork';
   const stored = window.sessionStorage.getItem(WORKSPACE_KEY);
-  return WORKSPACES.some((workspace) => workspace.id === stored) ? stored : 'command';
+  return WORKSPACES.some((workspace) => workspace.id === stored) ? stored : 'cowork';
 }
 
 function hasOwn(object, key) {
@@ -258,8 +253,10 @@ export default function OurAITab({
       loading: Object.keys(current.values).length === 0,
       refreshing: Object.keys(current.values).length > 0,
     }));
+    // `load` sources share a session-wide answer with the rest of the app
+    // (the Neoh surface asks the same status question on every view).
     const settled = await Promise.allSettled(SOURCES.map((source) => (
-      crmGet(source.path, { retries: 0, timeout: 15_000 })
+      source.load ? source.load() : crmGet(source.path, { retries: 0, timeout: 15_000 })
     )));
     if (requestRef.current !== requestId) return;
     const values = {};
@@ -472,7 +469,7 @@ export default function OurAITab({
   const socialItems = [
     {
       name: 'Social Agent',
-      detail: 'NEOH can research a market, prepare a weekly calendar, and draft listing, neighborhood, and educational content for review.',
+      detail: 'Neoh can research a market, prepare a weekly calendar, and draft listing, neighborhood, and educational content for review.',
       status: data.assistantEnabled ? STATUS.ready : sourceState('assistant', false),
       Icon: Sparkles,
     },
@@ -638,21 +635,21 @@ export default function OurAITab({
     <section className={styles.wrap} aria-labelledby="our-ai-title" aria-busy={snapshot.loading || snapshot.refreshing}>
       <header className={styles.hero}>
         <div>
-          <span className={styles.kicker}>Agentic real estate operating system</span>
-          <h1 id="our-ai-title">Our AI</h1>
-          <p>One command center for NEOH’s cowork, sales, homeowner, automation, social, and web capabilities—with real connection states and human approval boundaries.</p>
+          <span className={styles.kicker}>In Work</span>
+          <h1 id="our-ai-title">Neoh tools</h1>
+          <p>Sales, social, homeowner, automation and website tools, each with its real connection state. Nothing reaches a client without your approval.</p>
           <div className={styles.readiness} aria-label="AI readiness summary">
-            <span data-tone={data.assistantEnabled ? 'good' : 'neutral'}><Bot aria-hidden="true" /> {data.assistantEnabled ? 'NEOH online' : 'NEOH setup'}</span>
+            <span data-tone={data.assistantEnabled ? 'good' : 'neutral'}><Bot aria-hidden="true" /> {data.assistantEnabled ? 'Neoh online' : 'Neoh not set up'}</span>
             <span data-tone={sourceErrors.length ? 'warn' : 'good'}><CheckCircle2 aria-hidden="true" /> {liveSourceCount}/{SOURCES.length} sources</span>
             <span data-tone={data.pendingCommands.length ? 'warn' : 'good'}><ShieldCheck aria-hidden="true" /> {data.pendingCommands.length} awaiting review</span>
           </div>
         </div>
         <div className={styles.heroActions}>
-          <button type="button" className={styles.refresh} onClick={load} disabled={snapshot.loading || snapshot.refreshing} aria-label="Refresh Our AI status">
+          <button type="button" className={styles.refresh} onClick={load} disabled={snapshot.loading || snapshot.refreshing} aria-label="Refresh connection status">
             <RefreshCw aria-hidden="true" />
           </button>
           <button type="button" className={styles.ask} onClick={() => setOpen(true)}>
-            <Sparkles aria-hidden="true" /> Ask NEOH
+            <Sparkles aria-hidden="true" /> Ask Neoh
           </button>
         </div>
       </header>
@@ -668,7 +665,7 @@ export default function OurAITab({
         </div>
       ) : null}
 
-      <nav className={styles.workspaceNav} aria-label="Our AI capabilities">
+      <nav className={styles.workspaceNav} aria-label="Neoh tools">
         <div role="tablist" aria-orientation="horizontal">
           {WORKSPACES.map((item, index) => {
             const Icon = item.Icon;
@@ -699,11 +696,7 @@ export default function OurAITab({
         role="tabpanel"
         aria-labelledby={`ai-workspace-tab-${activeWorkspace.id}`}
       >
-        {activeWorkspace.id === 'command' ? (
-          <Suspense fallback={null}>
-            <CommandCenter />
-          </Suspense>
-        ) : activeWorkspace.id === 'intelligence' ? (
+        {activeWorkspace.id === 'intelligence' ? (
           <Suspense fallback={null}>
             <IntelligenceFeed />
           </Suspense>
@@ -720,7 +713,7 @@ export default function OurAITab({
               { label: 'Provider links', value: formatNumber(data.connectedProviders.length), detail: 'valid credentials' },
             ]} />
             <div className={styles.split}>
-              <ActionPanel id="cowork" eyebrow="Command NEOH" title="Work across the business" description="Start from a business outcome. NEOH gathers context, shows sources, and stages consequential actions for review." actions={coworkActions} onPrompt={stagePrompt} onNavigate={onNavigate} />
+              <ActionPanel id="cowork" eyebrow="Ask Neoh" title="Work across the business" description="Start from a business outcome. Neoh gathers context, shows sources, and stages consequential actions for review." actions={coworkActions} onPrompt={stagePrompt} onNavigate={onNavigate} />
               <CapabilityLedger id="cowork-ledger" eyebrow="Live operating map" title="Core platform" description="Actual backend and provider state—not a marketing checklist." items={coworkItems} />
             </div>
           </>

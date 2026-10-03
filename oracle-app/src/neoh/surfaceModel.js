@@ -46,5 +46,43 @@ export function restLabel({ record, messages, busy }) {
 
 /** Placeholder for the bar: the record narrows it, nothing else does. */
 export function inputPlaceholder(record) {
-  return record?.label ? `Ask about ${record.label}` : 'Ask Neoh anything about your work';
+  return record?.label ? `Ask about ${record.label}` : 'Ask Neoh anything…';
+}
+
+/** The context chip. Said in full, so there is never a mystery about what
+ *  Neoh is reading alongside the question. */
+export function contextLabel(record) {
+  return record?.label ? `Talking about ${record.label}` : '';
+}
+
+/**
+ * The connection, in product language. The raw state ("offline",
+ * "Channel offline.") is plumbing; what a person needs is whether their work
+ * is safe and whether they have to do anything.
+ */
+export function connectionMessage(connection) {
+  if (!connection || connection === 'online') return '';
+  return 'Neoh is reconnecting. Your work is saved.';
+}
+
+/**
+ * The microphone's label and availability, from the speech hook's state.
+ * The button is always rendered — the composer's shape is
+ * [field] [mic] [send] everywhere — so an unsupported browser gets a
+ * disabled button that says why, not a missing one.
+ */
+export function micControl({ supported, state }) {
+  if (!supported) return { label: "Voice input isn't available in this browser", disabled: true, pressed: false };
+  if (state === 'listening') return { label: 'Stop listening', disabled: false, pressed: true };
+  if (state === 'requesting') return { label: 'Waiting for microphone permission', disabled: false, pressed: false };
+  if (state === 'error') return { label: 'Try the microphone again', disabled: false, pressed: false };
+  return { label: 'Talk to Neoh', disabled: false, pressed: false };
+}
+
+/** One line under Neoh's name on the conversation page. */
+export function presenceLine({ connection, busy, listening }) {
+  if (connection && connection !== 'online') return 'Reconnecting…';
+  if (listening) return 'Listening…';
+  if (busy) return 'Thinking…';
+  return 'Ready when you are';
 }

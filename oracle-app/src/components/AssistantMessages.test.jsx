@@ -89,9 +89,51 @@ describe('ActionReceipt', () => {
     expect(screen.getByText('Note recorded in the client activity feed.')).toBeTruthy();
   });
 
+  it('titles a receipt with what happened, not "Record updated"', () => {
+    renderWith([receipt()]);
+    expect(screen.getByText('Note added')).toBeTruthy();
+  });
+
   it('drops the button once the action is undone', () => {
     renderWith([receipt({ status: 'undone' })]);
     expect(screen.queryByRole('button', { name: 'Undo' })).toBeNull();
     expect(screen.getByText('Change undone')).toBeTruthy();
+  });
+});
+
+describe('AssistantMessages', () => {
+  it('is not a live region — streaming text must not be re-read chunk by chunk', () => {
+    const { container } = render(
+      <AssistantMessages
+        messages={[{ id: 'm1', role: 'assistant', content: 'Streaming…', status: 'streaming' }]}
+        onUndo={vi.fn()}
+        undoing={null}
+      />,
+    );
+    expect(container.querySelector('[aria-live]')).toBeNull();
+    expect(container.querySelector('[aria-relevant]')).toBeNull();
+  });
+
+  it('promises nothing the composer cannot do (no attachment control exists)', () => {
+    render(<AssistantMessages messages={[]} onUndo={vi.fn()} undoing={null} />);
+    expect(screen.queryByText(/PDF|photo|attached/i)).toBeNull();
+    expect(screen.queryByText(/NEOH/)).toBeNull();
+  });
+
+  it('attaches staged outreach receipts to the turn that staged them', () => {
+    const onReview = vi.fn();
+    render(
+      <AssistantMessages
+        messages={[{ id: 'M1', role: 'assistant', content: 'Queued.', status: 'completed' }]}
+        receipts={new Map([['m1', [{ id: 'c1', command_type: 'CALL', state: 'awaiting_approval', target: { phone: '+15555550100' } }]]])}
+        onReview={onReview}
+        onUndo={vi.fn()}
+        undoing={null}
+      />,
+    );
+    expect(screen.getByText('Call waiting for your approval')).toBeTruthy();
+    expect(screen.getByText(/To \+15555550100\. Nothing has been sent\./)).toBeTruthy();
+    screen.getByRole('button', { name: 'Review' }).click();
+    expect(onReview).toHaveBeenCalled();
   });
 });
