@@ -14,6 +14,7 @@ import {
   normalizeMessage,
   statusMeta,
 } from './CommsShared';
+import { friendlyError } from '../lib/errorMessages';
 
 // Channel filters offered above the thread list. 'all' is the back-compat
 // default; the rest map to the normalized thread channel.
@@ -219,8 +220,8 @@ export default function CommsTab() {
     const loading = messages === null && !msgError;
     const msgErrMsg =
       msgError?.status === 404
-        ? 'Conversation history isn’t online yet.'
-        : msgError?.message || 'Couldn’t load this conversation.';
+        ? 'Conversation history isn’t available for your brokerage yet.'
+        : friendlyError(msgError, { fallback: 'Couldn’t load this conversation.' });
 
     return (
       <section className={styles.wrap} aria-label={`Conversation with ${name}`} aria-busy={loading}>
@@ -376,8 +377,8 @@ export default function CommsTab() {
   const isLoading = threads === null && !threadsError;
   const errMsg =
     threadsError?.status === 404
-      ? 'Comms service isn’t online yet.'
-      : threadsError?.message || 'Couldn’t reach the comms service.';
+      ? 'Messaging isn’t set up for your brokerage yet.'
+      : friendlyError(threadsError, { fallback: 'Your conversations couldn’t load. Try again in a moment.' });
 
   return (
     <section

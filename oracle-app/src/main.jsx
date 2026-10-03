@@ -1,7 +1,7 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { OracleProvider } from './state';
-import { ErrorBoundary } from './components';
+import { ErrorBoundary } from './components/ErrorBoundary';
 import App from './App.jsx';
 import './index.css';
 import { applyTheme, readTheme } from './theme';

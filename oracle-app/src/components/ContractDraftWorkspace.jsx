@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { crmDownload, crmGet, crmPost } from '../state/useCrmApi';
 import { ContractDraftWorkspaceView } from './ContractDraftWorkspaceView';
+import { friendlyError } from '../lib/errorMessages';
 
 export function ContractDraftWorkspace({ surface = 'contracts' }) {
   const [templates, setTemplates] = useState([]);
@@ -69,7 +70,7 @@ export function ContractDraftWorkspace({ surface = 'contracts' }) {
         ? `${result.assistant.missing_fields.length} fields remain visibly marked for Personal AI.`
         : 'Preview is ready with all required values supplied.');
     } catch (requestError) {
-      setError(requestError.message || 'The draft preview could not be created.');
+      setError(friendlyError(requestError, { fallback: 'The draft preview could not be created.' }));
     } finally {
       setBusyAction('');
     }
@@ -87,10 +88,10 @@ export function ContractDraftWorkspace({ surface = 'contracts' }) {
       setActiveWorkspace(result.workspace);
       setPreview(result.editable_draft || '');
       setWorkspaces((current) => [result.workspace, ...current.filter((item) => item.id !== result.workspace.id)]);
-      setNotice('Encrypted working draft saved on the backend.');
+      setNotice('Draft saved securely.');
       return result.workspace;
     } catch (requestError) {
-      setError(requestError.message || 'The working draft could not be saved.');
+      setError(friendlyError(requestError, { fallback: 'The working draft could not be saved.' }));
       return null;
     } finally {
       setBusyAction('');
@@ -115,7 +116,7 @@ export function ContractDraftWorkspace({ surface = 'contracts' }) {
         ? 'Personal AI saved a new encrypted revision and kept unknown fields visible.'
         : 'Personal AI saved the completed working draft.');
     } catch (requestError) {
-      setError(requestError.message || 'Personal AI could not save this draft revision.');
+      setError(friendlyError(requestError, { fallback: 'Personal AI could not save this draft revision.' }));
     } finally {
       setBusyAction('');
     }
@@ -132,7 +133,7 @@ export function ContractDraftWorkspace({ surface = 'contracts' }) {
       setActiveWorkspace(result.workspace);
       setNotice('Saved draft loaded into Personal AI.');
     } catch (requestError) {
-      setError(requestError.message || 'The saved draft could not be loaded.');
+      setError(friendlyError(requestError, { fallback: 'The saved draft could not be loaded.' }));
     } finally {
       setBusyAction('');
     }
@@ -148,7 +149,7 @@ export function ContractDraftWorkspace({ surface = 'contracts' }) {
       );
       setNotice('Draft PDF sent to your device.');
     } catch (requestError) {
-      setError(requestError.message || 'The draft PDF could not be downloaded.');
+      setError(friendlyError(requestError, { fallback: 'The draft PDF could not be downloaded.' }));
     } finally {
       setBusyAction('');
     }

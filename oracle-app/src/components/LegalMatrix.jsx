@@ -88,10 +88,10 @@ export function LegalMatrix({ legalPackage, visible }) {
     : '';
 
   return (
-    <aside className={styles.panel} data-visible={visible} aria-label="Legal Matrix">
+    <aside className={styles.panel} data-visible={visible} aria-label="Legal checklist">
       {/* Header */}
       <div className={styles.header}>
-        <span className={styles.kicker}>LEGAL MATRIX</span>
+        <span className={styles.kicker}>Legal checklist</span>
         <h2 className={styles.headline}>{contract_type}</h2>
       </div>
 

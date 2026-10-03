@@ -1,6 +1,9 @@
-import { Suspense, lazy, useEffect, useRef, useState, useCallback } from 'react';
-import { useOracleWebSocket, useOracleDispatch, ACTIONS } from './state';
-import { CrmShell, LoginVault } from './components';
+import { Suspense, lazy, useEffect, useState, useCallback } from 'react';
+import { useOracleWebSocket } from './state';
+// Direct imports, not the old components/index.js barrel: a barrel's static
+// re-exports dragged every legacy panel it listed into the entry chunk.
+import { CrmShell } from './components/CrmShell';
+import { LoginVault } from './components/LoginVault';
 import { PolicyAcceptanceGate } from './components/PolicyAcceptanceGate';
 import { NetworkProvider } from './context/NetworkContext';
 import { apiGet, apiPost } from './lib/apiClient';
@@ -15,76 +18,8 @@ const SecureDossierPage = lazy(() => import('./components/SecureDossierPage'));
 // shell too — the token in the link is the whole capability.
 const AcceptInvitePage = lazy(() => import('./components/AcceptInvitePage'));
 
-function useJarvisVoice() {
-  const { dispatch } = useOracleDispatch();
-  const recognitionRef = useRef(null);
-  const holdingRef = useRef(false);
-
-  useEffect(() => {
-    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SpeechRecognition) return;
-
-    const recognition = new SpeechRecognition();
-    recognition.continuous = true;
-    recognition.interimResults = true;
-    recognition.lang = 'en-US';
-
-    recognition.onresult = (event) => {
-      let interim = '';
-      let final = '';
-
-      for (let i = event.resultIndex; i < event.results.length; i++) {
-        const transcript = event.results[i][0].transcript;
-        if (event.results[i].isFinal) {
-          final += transcript;
-        } else {
-          interim += transcript;
-        }
-      }
-
-      if (interim) {
-        dispatch({ type: ACTIONS.SET_JARVIS_TRANSCRIPT, payload: interim });
-      }
-
-      if (final) {
-        dispatch({ type: ACTIONS.SET_JARVIS_TRANSCRIPT, payload: final });
-        dispatch({ type: ACTIONS.JARVIS_COMMAND, payload: final });
-
-        dispatch({
-          type: ACTIONS.APPEND_TRANSCRIPT,
-          payload: {
-            id: crypto.randomUUID(),
-            agent: 'JARVIS',
-            text: final,
-            timestamp: Date.now(),
-          },
-        });
-      }
-    };
-
-    recognition.onerror = (event) => {
-      if (event.error !== 'aborted') {
-        console.warn('[Jarvis] Speech error:', event.error);
-      }
-    };
-
-    recognition.onend = () => {
-      if (holdingRef.current) {
-        try { recognition.start(); } catch { /* already started — ignore */ }
-      }
-    };
-
-    recognitionRef.current = recognition;
-  }, [dispatch]);
-
-  // Voice capture is controlled by explicit press-to-talk controls. A global
-  // Space shortcut used to steal focus after leaving a text field and make the
-  // page look selected; keyboard input now remains native and predictable.
-}
-
 function ReadyCrm() {
   useOracleWebSocket();
-  useJarvisVoice();
 
   return <CrmShell />;
 }
@@ -113,6 +48,15 @@ function NeohApp() {
       .then((identity) => {
         if (identity?.authenticated && identity?.role) {
           sessionStorage.setItem('oracle_role', identity.role);
+        }
+        // A restored session (cookie still valid, storage cleared) used to fall
+        // back to the demo identity in state/identity.js, so Settings showed
+        // "demo-operator" and the demo brokerage id to a real customer.
+        if (identity?.authenticated) {
+          try {
+            if (identity.agent_id) localStorage.setItem('oracle_user_id', identity.agent_id);
+            if (identity.tenant_id) localStorage.setItem('oracle_tenant_id', identity.tenant_id);
+          } catch { /* storage blocked — identity falls back as before */ }
         }
         setAuthed(Boolean(identity?.authenticated));
       })

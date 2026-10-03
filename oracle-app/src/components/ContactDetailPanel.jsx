@@ -5,6 +5,7 @@ import { crmGet, crmPatch, crmPost } from '../state/useCrmApi';
 // timeline could not be recorded anywhere.
 import ContactIntakeForm from './ContactIntakeForm';
 import styles from './PeopleTab.module.css';
+import { friendlyError } from '../lib/errorMessages';
 
 /**
  * One contact: read it, correct it, and reserve the next nurture touch.
@@ -36,7 +37,7 @@ export default function ContactDetailPanel({ contactId, onClose, onChanged }) {
         setContact(record);
         setEdits({});
       },
-      (reason) => setError(reason?.message || 'This contact could not be read.'),
+      (reason) => setError(friendlyError(reason, { fallback: 'This contact could not be read.' })),
     );
   }, [contactId]);
 
@@ -70,7 +71,7 @@ export default function ContactDetailPanel({ contactId, onClose, onChanged }) {
       await load();
       await onChanged?.();
     } catch (reason) {
-      setError(reason?.message || 'The change was refused.');
+      setError(friendlyError(reason, { fallback: 'The change was refused.' }));
     } finally {
       setBusy('');
     }
@@ -89,7 +90,7 @@ export default function ContactDetailPanel({ contactId, onClose, onChanged }) {
       setError(
         reason?.status === 409
           ? 'A nurture touch is already reserved for this contact.'
-          : reason?.message || 'No nurture touch could be reserved.',
+          : friendlyError(reason, { fallback: 'No nurture touch could be reserved.' }),
       );
     } finally {
       setBusy('');

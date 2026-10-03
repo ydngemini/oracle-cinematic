@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { crmGet, crmPost } from '../state/useCrmApi';
 import styles from './AdminOpsTab.module.css';
+import { friendlyError } from '../lib/errorMessages';
 
 /**
  * Request and execute a brokerage role change, under two-person approval.
@@ -48,8 +49,8 @@ export default function RoleChangePanel({ users }) {
     } catch (reason_) {
       setError(
         reason_?.status === 409
-          ? (reason_?.message || 'Refused — a broker cannot change their own role, and a requester cannot approve their own request.')
-          : reason_?.message || 'The request was refused.',
+          ? (friendlyError(reason_, { fallback: 'Refused — a broker cannot change their own role, and a requester cannot approve their own request.' }))
+          : friendlyError(reason_, { fallback: 'The request was refused.' }),
       );
     } finally {
       setBusy('');

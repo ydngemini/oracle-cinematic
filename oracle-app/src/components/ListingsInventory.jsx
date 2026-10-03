@@ -2,13 +2,14 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { House, ImageOff, Loader2, Plus, RefreshCw, UserPlus, Users } from 'lucide-react';
 import { crmGet, crmPost } from '../state/useCrmApi';
 import styles from './ListingsInventory.module.css';
+import { friendlyError } from '../lib/errorMessages';
 
 /**
  * ListingsInventory — the tenant's own listing records.
  *
  * `GET` and `POST /api/crm/listings` had no caller anywhere in the frontend, so
  * a listing could not be created through the product at all — while
- * `AssistantRecordPicker` lets the assistant anchor to one and `update_listing`
+ * the assistant could anchor to one (the since-removed record picker) and `update_listing`
  * is an allowlisted agent tool. The agent could edit records nobody could make.
  *
  * This is distinct from the Houses view, which browses `/api/mls/public-records`
@@ -113,7 +114,7 @@ export default function ListingsInventory() {
       if (error?.name === 'AbortError') return;
       // "Nothing loaded" and "nothing exists" are different facts; the empty
       // state below only claims the second when this is clear.
-      setLoadError(error?.message || 'Listings could not be loaded.');
+      setLoadError(friendlyError(error, { fallback: 'Listings could not be loaded.' }));
     } finally {
       setLoading(false);
     }
@@ -171,7 +172,7 @@ export default function ListingsInventory() {
       setOpen(false);
       await load();
     } catch (error) {
-      setSaveError(error?.message || 'The listing could not be created.');
+      setSaveError(friendlyError(error, { fallback: 'The listing could not be created.' }));
     } finally {
       setSaving(false);
     }

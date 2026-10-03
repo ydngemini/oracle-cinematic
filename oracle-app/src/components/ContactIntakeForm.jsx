@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { crmGet, crmPost } from '../state/useCrmApi';
 import styles from './PeopleTab.module.css';
+import { friendlyError } from '../lib/errorMessages';
 
 /**
  * The three-question buyer or seller intake, on one contact.
@@ -40,7 +41,7 @@ export default function ContactIntakeForm({ contactId, onSubmitted }) {
         setVersion(payload?.version || '');
         setAnswers(['', '', '']);
       },
-      (reason) => setError(reason?.message || 'The intake questions could not be loaded.'),
+      (reason) => setError(friendlyError(reason, { fallback: 'The intake questions could not be loaded.' })),
     );
   }, [persona]);
 
@@ -64,7 +65,7 @@ export default function ContactIntakeForm({ contactId, onSubmitted }) {
       setNotice('Intake recorded.');
       await onSubmitted?.();
     } catch (reason) {
-      setError(reason?.message || 'The intake was refused.');
+      setError(friendlyError(reason, { fallback: 'The intake was refused.' }));
     } finally {
       setBusy(false);
     }

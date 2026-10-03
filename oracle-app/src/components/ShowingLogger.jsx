@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { crmGet, crmPatch, crmPost } from '../state/useCrmApi';
 import styles from './ClientDetailDrawer.module.css';
+import { friendlyError } from '../lib/errorMessages';
 
 /**
  * Log that a client was shown a property.
@@ -60,7 +61,7 @@ function RecentShowings({ clientId, reloadKey, onResolved }) {
       await load();
       await onResolved?.();
     } catch (reason) {
-      setError(reason?.message || 'The showing could not be updated.');
+      setError(friendlyError(reason, { fallback: 'The showing could not be updated.' }));
     } finally {
       setSavingId('');
     }
@@ -137,7 +138,7 @@ export default function ShowingLogger({ clientId, houses, onLogged }) {
       setLogged((n) => n + 1);
       await onLogged?.();
     } catch (reason) {
-      setError(reason?.message || 'The showing could not be logged.');
+      setError(friendlyError(reason, { fallback: 'The showing could not be logged.' }));
     } finally {
       setBusy(false);
     }

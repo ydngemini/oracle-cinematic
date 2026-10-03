@@ -1,96 +1,111 @@
+/* App-level: the whole screen, nothing else survived. */
 .boundary {
   position: fixed;
   inset: 0;
-  z-index: 9999;
+  z-index: var(--z-modal);
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 2rem;
-  background: radial-gradient(ellipse at 50% 40%, rgba(8, 8, 8, 0.92) 0%, rgba(8, 8, 8, 0.97) 75%);
-  backdrop-filter: blur(8px);
+  padding: var(--space-8) var(--space-4);
+  background: var(--oracle-bg-deep);
+}
+
+/* Section-level: stays in the section's own box. */
+.inline {
+  display: flex;
+  justify-content: center;
+  padding: var(--space-6) var(--space-4);
 }
 
 .panel {
-  max-width: 36rem;
   width: 100%;
-  padding: 2.25rem 2.5rem;
-  border: 1px solid rgba(255, 188, 31, 0.18);
-  border-radius: 14px;
-  background: rgba(8, 8, 8, 0.75);
-  box-shadow:
-    0 0 40px rgba(0, 0, 0, 0.6),
-    0 0 24px rgba(255, 188, 31, 0.06);
+  max-width: 32rem;
+  padding: var(--space-6);
+  border: 1px solid var(--oracle-border);
+  border-radius: var(--radius-lg);
+  background: var(--oracle-surface);
+  box-shadow: var(--shadow-e2);
   text-align: center;
 }
 
-.tag {
-  display: inline-block;
-  font-size: 0.68rem;
-  letter-spacing: 0.4em;
-  text-transform: uppercase;
+.icon {
   color: var(--oracle-accent-ink);
 }
 
 .title {
-  margin: 0.85rem 0 0.5rem;
-  font-size: 1.4rem;
-  font-weight: 400;
-  letter-spacing: -0.01em;
-  color: rgba(242, 242, 242, 0.92);
+  margin: var(--space-3) 0 var(--space-2);
+  color: var(--oracle-text-heading);
+  font-size: var(--text-lg);
+  font-weight: 600;
 }
 
 .detail {
-  margin: 0 0 1.6rem;
-  font-size: 0.82rem;
-  line-height: 1.55;
-  color: rgba(242, 242, 242, 0.5);
-  word-break: break-word;
+  margin: 0 0 var(--space-5);
+  color: var(--oracle-text-dim);
+  font-size: var(--text-base);
+  line-height: var(--leading-normal);
 }
 
 .actions {
   display: flex;
-  gap: 0.75rem;
-  justify-content: center;
   flex-wrap: wrap;
+  justify-content: center;
+  gap: var(--space-3);
 }
 
 .retry,
 .reload {
-  padding: 0.7rem 1.4rem;
-  font-size: 0.72rem;
-  letter-spacing: 0.25em;
-  text-transform: uppercase;
-  border-radius: 8px;
+  min-height: 40px;
+  padding: var(--space-2) var(--space-5);
+  border-radius: var(--radius-sm);
+  font: inherit;
+  font-size: var(--text-base);
+  font-weight: 600;
   cursor: pointer;
-  transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+  transition: background var(--duration-fast) var(--ease-out), border-color var(--duration-fast) var(--ease-out);
 }
 
 .retry {
-  border: 1px solid rgba(255, 188, 31, 0.35);
-  background: linear-gradient(to bottom, rgba(255, 188, 31, 0.14), rgba(255, 188, 31, 0.04));
-  color: var(--oracle-accent-ink);
-}
-
-.retry:hover {
-  border-color: rgba(255, 188, 31, 0.6);
-  box-shadow: 0 0 18px rgba(255, 188, 31, 0.12);
+  border: 1px solid var(--oracle-text);
+  background: var(--oracle-text);
+  color: var(--oracle-bg-deep);
 }
 
 .reload {
-  border: 1px solid rgba(242, 242, 242, 0.1);
-  background: rgba(242, 242, 242, 0.02);
-  color: rgba(242, 242, 242, 0.6);
+  border: 1px solid var(--oracle-border-bright);
+  background: transparent;
+  color: var(--oracle-text);
 }
 
 .reload:hover {
-  border-color: rgba(242, 242, 242, 0.2);
-  color: rgba(242, 242, 242, 0.85);
+  background: var(--oracle-surface-sunken);
 }
 
 .retry:focus-visible,
-.reload:focus-visible {
-  outline: 2px solid rgba(255, 188, 31, 0.6);
-  outline-offset: 2px;
+.reload:focus-visible,
+.technical summary:focus-visible {
+  outline: none;
+  box-shadow: var(--ring-focus);
+}
+
+.technical {
+  margin-top: var(--space-5);
+  color: var(--oracle-text-ghost);
+  font-size: var(--text-sm);
+  text-align: left;
+}
+
+.technical summary {
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+}
+
+.technical code {
+  display: block;
+  margin-top: var(--space-2);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  word-break: break-word;
 }
 
 @media (prefers-reduced-motion: reduce) {

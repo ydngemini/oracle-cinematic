@@ -210,7 +210,7 @@ describe('BrokerageSetupPanel — MLS honesty', () => {
     ));
     render(<BrokerageSetupPanel />);
     await screen.findByText('Lockwood Realty');
-    expect(screen.getByText(/not live inventory/)).toBeTruthy();
+    expect(screen.getByText(/not live MLS listings/)).toBeTruthy();
     expect(screen.queryByText('ACTRIS reference')).toBeNull();
   });
 
@@ -233,7 +233,7 @@ describe('BrokerageSetupPanel — MLS honesty', () => {
     ));
     render(<BrokerageSetupPanel />);
     await screen.findByText('Lockwood Realty');
-    expect(screen.queryByText(/not live inventory/)).toBeNull();
+    expect(screen.queryByText(/not live MLS listings/)).toBeNull();
     expect(screen.queryByText(/updated/)).toBeNull();
   });
 

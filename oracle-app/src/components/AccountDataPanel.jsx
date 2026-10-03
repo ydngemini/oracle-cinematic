@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { crmGet, crmPost, crmPostDownload } from '../state/useCrmApi';
 import styles from './AccountDataPanel.module.css';
+import { friendlyError } from '../lib/errorMessages';
 
 // Account & data — the brokerage owner's export, retention and closure
 // controls. Owner-only (the server enforces it; this only hides the panel).
@@ -32,7 +33,7 @@ export function AccountDataPanel() {
   const load = useCallback(() => (
     crmGet('/api/privacy/lifecycle')
       .then((data) => { setState(data); setError(''); })
-      .catch((err) => setError(err?.message || 'Could not load your account status.'))
+      .catch((err) => setError(friendlyError(err, { fallback: 'Could not load your account status.' })))
   ), []);
 
   useEffect(() => { load(); }, [load]);
@@ -47,7 +48,7 @@ export function AccountDataPanel() {
       setPassword('');
       await load();
     } catch (err) {
-      setError(err?.message || 'That did not work. Nothing was changed.');
+      setError(friendlyError(err, { fallback: 'That did not work. Nothing was changed.' }));
     } finally {
       setBusy(false);
     }
@@ -137,7 +138,7 @@ export function AccountDataPanel() {
         {!policy ? (
           <button
             type="button" className={styles.link}
-            onClick={() => crmGet('/api/privacy/policy').then(setPolicy).catch((e) => setError(e?.message || ''))}
+            onClick={() => crmGet('/api/privacy/policy').then(setPolicy).catch((e) => setError(friendlyError(e, { fallback: '' })))}
           >
             Show the retention schedule
           </button>

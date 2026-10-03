@@ -287,7 +287,7 @@
 .chipPin { color: var(--oracle-green); flex-shrink: 0; }
 
 .chipConfidence {
-  font: var(--text-xs) / 1 var(--font-mono);
+  font: var(--text-xs) / 1 var(--font-sans);
   color: var(--oracle-text-ghost);
   font-variant-numeric: tabular-nums;
 }

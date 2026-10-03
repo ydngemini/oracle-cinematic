@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { crmGet, crmPost } from '../state/useCrmApi';
 import styles from './DealIntakePanel.module.css';
+import { friendlyError } from '../lib/errorMessages';
 
 const ROLES = [
   ['buyer', 'Buyer'],
@@ -99,7 +100,7 @@ export default function DealIntakePanel({
     } catch (reason) {
       setError(reason?.status === 404
         ? 'The selected property or client is no longer available.'
-        : reason?.message || 'The deal could not be created.');
+        : friendlyError(reason, { fallback: 'The deal could not be created.' }));
     } finally {
       setBusy(false);
     }

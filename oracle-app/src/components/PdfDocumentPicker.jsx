@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { crmDownload, crmGet, crmGetBlob } from '../state/useCrmApi';
 import styles from './PdfDocumentPicker.module.css';
 import { useAssistantRecord } from './AssistantContext';
+import { friendlyError } from '../lib/errorMessages';
 
 const GROUP_ORDER = [
   'Source-controlled PDFs',
@@ -167,7 +168,7 @@ export function PdfDocumentPicker({ documents = [] }) {
       link.click();
     } catch (error) {
       previewWindow?.close();
-      setActionError(error?.message || 'Unable to open this PDF.');
+      setActionError(friendlyError(error, { fallback: 'Unable to open this PDF.' }));
     } finally {
       setAction('');
     }
@@ -179,7 +180,7 @@ export function PdfDocumentPicker({ documents = [] }) {
     setActionError('');
     try {
       if (selectedItem.delivery === 'source_link') {
-        throw new Error('This source is available through its authorized provider and cannot be saved from NEOH.');
+        throw new Error('This source can only be opened from its official publisher, so it can’t be saved in Neoh.');
       }
       if (selectedItem.download_url) {
         await crmDownload(selectedItem.download_url, filenameFor(selectedItem));
@@ -197,7 +198,7 @@ export function PdfDocumentPicker({ documents = [] }) {
       link.rel = 'noopener noreferrer';
       link.click();
     } catch (error) {
-      setActionError(error?.message || 'Unable to save this PDF.');
+      setActionError(friendlyError(error, { fallback: 'Unable to save this PDF.' }));
     } finally {
       setAction('');
     }
@@ -282,8 +283,8 @@ export function PdfDocumentPicker({ documents = [] }) {
       {loadError && <p className={styles.error} role="alert">{loadError}</p>}
       {actionError && <p className={styles.error} role="alert">{actionError}</p>}
       {!loading && selectedState && selectedStateItems.length === 0 && !loadError && <p className={styles.empty}>No approved source is registered for {selectedState.state_name} yet. Federal and source-controlled PDFs remain available above.</p>}
-      {!loading && federalSelected && federalItems.length === 0 && !loadError && <p className={styles.empty}>No approved federal source is registered yet.</p>}
-      {!loading && !selectedItem && !loadError && <p className={styles.empty}>No approved documents or sources are registered for this tenant yet.</p>}
+      {!loading && federalSelected && federalItems.length === 0 && !loadError && <p className={styles.empty}>No approved federal sources yet.</p>}
+      {!loading && !selectedItem && !loadError && <p className={styles.empty}>No approved documents yet. Upload or approve a template to use it here.</p>}
       <p className={styles.note}>All 50 states and federal sources are available. Public government PDFs can be opened and saved; association forms open their approved portal and may require a membership or license.</p>
     </section>
   );

@@ -262,7 +262,8 @@ export function statusMeta(status) {
   if (/(read|open|seen)/.test(s)) return { label: 'Read', tone: 'good' };
   if (/(sent|complete|done)/.test(s)) return { label: 'Sent', tone: 'neutral' };
   if (/(draft)/.test(s)) return { label: 'Draft', tone: 'ghost' };
-  return { label: s.slice(0, 12).toUpperCase(), tone: 'neutral' };
+  // Unknown delivery states stay internal rather than leaking a raw code.
+  return { label: 'Logged', tone: 'neutral' };
 }
 
 // ── Normalizers — one canonical object from either server shape ────────────

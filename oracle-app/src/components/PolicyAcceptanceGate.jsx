@@ -33,7 +33,7 @@ const FALLBACK_ESA_AGREEMENT = {
       heading: '3. Data access discipline',
       paragraphs: [
         'Access only information necessary for assigned workflows. Do not export, print, or forward confidential data without authority.',
-        'Do not bypass tenant boundaries, impersonate another broker, or access records outside approved roles.',
+        'Do not access another brokerage’s records, impersonate another broker, or reach records outside your approved role.',
       ],
     },
     {

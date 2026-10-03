@@ -8,6 +8,7 @@ import { BrokerageSetupPanel } from './BrokerageSetupPanel';
 import { toMarkets } from '../lib/targetMarkets';
 import styles from './MyProfileTab.module.css';
 import { clearPrivateCaches } from '../lib/clearPrivateCaches.js';
+import { friendlyError } from '../lib/errorMessages';
 
 // Owner-only and opened rarely: kept out of the main bundle.
 const AccountDataPanel = lazy(() => import('./AccountDataPanel'));
@@ -147,8 +148,8 @@ export default function MyProfileTab() {
     } catch (err) {
       setSaveError(
         err.status === 404
-          ? 'The profile service is not deployed yet — nothing was saved.'
-          : err.message || 'The profile could not be saved.'
+          ? 'Your profile couldn’t be saved right now — nothing was changed. Try again in a moment.'
+          : friendlyError(err, { fallback: 'The profile could not be saved.' })
       );
       setSaveStatus('error');
     }
@@ -173,7 +174,7 @@ export default function MyProfileTab() {
       setPwMsg('Password updated.');
     } catch (err) {
       setPwStatus('error');
-      setPwMsg(err?.message || 'Could not change password.');
+      setPwMsg(friendlyError(err, { fallback: 'Could not change password.' }));
     }
   };
   const setPwField = (key) => (e) => {
@@ -185,8 +186,8 @@ export default function MyProfileTab() {
   const isLoading = profile === null && !loadError;
   const loadErrMsg =
     loadError?.status === 404
-      ? 'Profile service isn’t online yet.'
-      : loadError?.message || 'Couldn’t reach the profile service.';
+      ? 'Your profile isn’t available right now. Try again in a moment.'
+      : friendlyError(loadError, { fallback: 'Your profile couldn’t load. Try again in a moment.' });
 
   // Identity card binds to the live form — edits preview before they save.
   const displayName = form.display_name.trim();
@@ -495,11 +496,11 @@ export default function MyProfileTab() {
         <span className={styles.sectionLabel}>Session</span>
         <dl className={styles.sessionGrid}>
           <div className={styles.sessionRow}>
-            <dt className={styles.microLabel}>Operator</dt>
+            <dt className={styles.microLabel}>Signed in as</dt>
             <dd className={styles.sessionValue}>{userId}</dd>
           </div>
           <div className={styles.sessionRow}>
-            <dt className={styles.microLabel}>Tenant</dt>
+            <dt className={styles.microLabel}>Brokerage account</dt>
             <dd className={styles.sessionValue}>{tenantId}</dd>
           </div>
         </dl>
@@ -513,7 +514,7 @@ export default function MyProfileTab() {
       </>
 
       <footer className={styles.foot}>
-        <span className={styles.wordmark}>NEOH · AGENT CRM</span>
+        <span className={styles.wordmark}>Neoh</span>
       </footer>
     </section>
   );

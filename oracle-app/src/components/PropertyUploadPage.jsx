@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import styles from './PropertyUploadPage.module.css';
+import { friendlyError } from '../lib/errorMessages';
 
 /**
  * PropertyUploadPage — the page a CLIENT lands on from an agent's capture link.
@@ -53,7 +54,7 @@ export default function PropertyUploadPage() {
       } catch (err) {
         if (cancelled) return;
         setState('invalid');
-        setError(err?.message || 'This link is no longer valid.');
+        setError(friendlyError(err, { fallback: 'This link is no longer valid.' }));
       }
     })();
     return () => { cancelled = true; };
@@ -87,7 +88,7 @@ export default function PropertyUploadPage() {
           setLink((prev) => (prev ? { ...prev, remaining_uploads: payload.remaining_uploads } : prev));
         }
       } catch (err) {
-        const message = err?.message || 'Upload failed.';
+        const message = friendlyError(err, { fallback: 'Upload failed.' });
         setQueue((q) => q.map((i) => (i === entry ? { ...i, status: 'failed', error: message } : i)));
       }
     }

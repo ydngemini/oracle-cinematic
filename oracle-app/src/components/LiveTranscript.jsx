@@ -1,13 +1,37 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
+import { AlertTriangle, CheckCircle2, CircleDashed, Wifi, WifiOff } from 'lucide-react';
 import { useOracleState, useOracleDispatch, ACTIONS } from '../state';
 import { crmGet } from '../state/useCrmApi';
 import styles from './LiveTranscript.module.css';
 
+// Speaker codes come from the call pipeline (voice_intel.py: CLIENT/AGENT/AI)
+// and from this client (NOTE, MEMORY). Show people words, never the codes.
+const SPEAKER_LABELS = {
+  CLIENT: 'Client',
+  AGENT: 'You',
+  AI: 'Neoh',
+  SYSTEM: 'Neoh',
+  VOICE: 'Call',
+  MEMORY: 'Your profile',
+  WHISPER: 'Your note to Neoh',
+};
+
+function speakerLabel(code) {
+  const key = String(code || '').toUpperCase();
+  return SPEAKER_LABELS[key] || 'Call';
+}
+
+// Offer guidance is a safety signal, so it is spelled out and carries an icon;
+// the badge colour only reinforces what the words already say.
+const OFFER_GUIDANCE = {
+  green: { label: 'Offer is within your limit', Icon: CheckCircle2 },
+  amber: { label: 'Offer is close to your limit', Icon: AlertTriangle },
+  red: { label: 'Offer is over your maximum', Icon: AlertTriangle },
+};
+
 export function LiveTranscript() {
   const {
     transcriptLog,
-    jarvisListening,
-    jarvisTranscript,
     negotiationTelemetry,
     aiChatConnection,
   } = useOracleState();
@@ -16,9 +40,10 @@ export function LiveTranscript() {
   const inputRef = useRef(null);
   const lastTelemetryEventRef = useRef(0);
   const [whisperText, setWhisperText] = useState('');
+  const [sendError, setSendError] = useState('');
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+    bottomRef.current?.scrollIntoView?.({ behavior: 'smooth', block: 'nearest' });
   }, [transcriptLog.length]);
 
   useEffect(() => {
@@ -72,13 +97,17 @@ export function LiveTranscript() {
     const text = whisperText.trim();
     if (!text) return;
 
-    if (wsRef.current?.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({
-        type: 'WHISPER_INSTRUCT',
-        instruction: text,
-        timestamp: Date.now(),
-      }));
+    // Only record the note once it has actually gone out. Writing it into the
+    // log while the live link is down showed a note Neoh never received.
+    if (wsRef.current?.readyState !== WebSocket.OPEN) {
+      setSendError("Couldn't send your note — the live call connection is offline. Try again in a moment.");
+      return;
     }
+    wsRef.current.send(JSON.stringify({
+      type: 'WHISPER_INSTRUCT',
+      instruction: text,
+      timestamp: Date.now(),
+    }));
 
     dispatch({
       type: ACTIONS.APPEND_TRANSCRIPT,
@@ -90,6 +119,7 @@ export function LiveTranscript() {
       },
     });
 
+    setSendError('');
     setWhisperText('');
   }, [whisperText, dispatch, wsRef]);
 
@@ -100,46 +130,48 @@ export function LiveTranscript() {
     }
   }, [sendWhisper]);
 
+  const online = aiChatConnection === 'online';
+  const guidance = OFFER_GUIDANCE[negotiationTelemetry?.threshold];
+  const GuidanceIcon = guidance?.Icon || CircleDashed;
+
   return (
     <div className={styles.panel}>
       {negotiationTelemetry && (
-        <div className={styles.telemetry} aria-live="polite">
+        <div className={styles.telemetry} role="status" aria-live="polite" aria-atomic="true">
           <span
             className={styles.maoBadge}
-            data-threshold={negotiationTelemetry.threshold || 'unavailable'}
+            data-threshold={guidance ? negotiationTelemetry.threshold : 'unavailable'}
           >
-            {negotiationTelemetry.threshold === 'green' && 'GREEN: OFFER SAFE'}
-            {negotiationTelemetry.threshold === 'amber' && 'AMBER: MARGIN TIGHT'}
-            {negotiationTelemetry.threshold === 'red' && 'RED: OVER MAO'}
-            {!['green', 'amber', 'red'].includes(negotiationTelemetry.threshold) && 'MAO: NEEDS DATA'}
+            <GuidanceIcon size={14} aria-hidden="true" />
+            {guidance ? guidance.label : 'Not enough data to check this offer yet'}
           </span>
           {Number.isFinite(Number(negotiationTelemetry.mao)) && (
             <span className={styles.maoValue}>
-              MAO ${Math.round(Number(negotiationTelemetry.mao)).toLocaleString()}
+              Max offer ${Math.round(Number(negotiationTelemetry.mao)).toLocaleString()}
             </span>
           )}
         </div>
       )}
       {negotiationTelemetry?.objection_draft && (
-        <aside className={styles.objection} aria-label="Recommended objection response">
-          <strong>Recommended Objection Response</strong>
+        <aside className={styles.objection} aria-label="Suggested response">
+          <strong>Suggested response</strong>
           <p>{negotiationTelemetry.objection_draft}</p>
-          <small>Draft only · Agent approval required</small>
+          <small>Draft only — nothing is said until you use it.</small>
         </aside>
       )}
-      <div className={styles.body}>
+      {/* aria-live off: a live call adds lines every few seconds, and announcing
+          each one would talk over the call for screen-reader users. */}
+      <div className={styles.body} role="log" aria-live="off" aria-label="Call transcript">
         {transcriptLog.length === 0 && (
-          <div className={styles.idle}>Awaiting voice link...</div>
+          <p className={styles.idle}>The transcript appears here once a call starts.</p>
         )}
 
-        {transcriptLog.map((entry, i) => (
+        {transcriptLog.map((entry) => (
           <div
             key={entry.id}
-            className={`${styles.line} ${entry.agent === 'WHISPER' ? styles.whisperLine : ''} ${entry.agent === 'JARVIS' ? styles.jarvisLine : ''}`}
-            style={{ animationDelay: `${i * 0.04}s` }}
-            data-seq={String(i + 1).padStart(2, '0')}
+            className={`${styles.line} ${entry.agent === 'WHISPER' ? styles.whisperLine : ''}`}
           >
-            <span className={styles.agent}>{entry.agent}</span>
+            <span className={styles.agent}>{speakerLabel(entry.agent)}</span>
             <span className={styles.text}>{entry.text}</span>
           </div>
         ))}
@@ -147,42 +179,40 @@ export function LiveTranscript() {
         <div ref={bottomRef} />
       </div>
 
-      {/* Jarvis listening indicator */}
-      {jarvisListening && (
-        <div className={styles.jarvisBar}>
-          <span className={styles.jarvisPulse} />
-          <span className={styles.jarvisLabel}>
-            {jarvisTranscript || 'LISTENING...'}
-          </span>
-        </div>
-      )}
-
-      {/* Whisper command input */}
-      <div className={styles.whisperInput}>
+      <form
+        className={styles.whisperInput}
+        onSubmit={(e) => { e.preventDefault(); sendWhisper(); }}
+      >
+        <label className={styles.srOnly} htmlFor="live-transcript-note">Private note to Neoh</label>
         <input
+          id="live-transcript-note"
           ref={inputRef}
           type="text"
           className={styles.whisperField}
           value={whisperText}
-          onChange={(e) => setWhisperText(e.target.value)}
+          onChange={(e) => { setWhisperText(e.target.value); if (sendError) setSendError(''); }}
           onKeyDown={handleKeyDown}
-          placeholder="Whisper instruction to AI Closer..."
-          spellCheck={false}
+          placeholder="Private note to Neoh — the caller won't hear it"
+          aria-describedby={sendError ? 'live-transcript-note-error' : undefined}
         />
         <button
-          type="button"
+          type="submit"
           className={styles.whisperSend}
-          onClick={sendWhisper}
           disabled={!whisperText.trim()}
         >
-          SEND
+          Send
         </button>
-      </div>
+      </form>
+      {sendError && (
+        <p id="live-transcript-note-error" className={styles.sendError} role="alert">
+          <AlertTriangle size={14} aria-hidden="true" /> {sendError}
+        </p>
+      )}
 
-      <div className={styles.footer}>
-        <span className={styles.pulse} data-online={aiChatConnection === 'online'} />
+      <div className={styles.footer} data-online={online}>
+        {online ? <Wifi size={14} aria-hidden="true" /> : <WifiOff size={14} aria-hidden="true" />}
         <span className={styles.linkLabel}>
-          {aiChatConnection === 'online' ? 'ORCL_VOICE_LINK_ACTIVE' : 'VOICE_LINK_OFFLINE · REST FALLBACK READY'}
+          {online ? 'Live call updates connected' : 'Live updates paused — checking every few seconds'}
         </span>
       </div>
     </div>

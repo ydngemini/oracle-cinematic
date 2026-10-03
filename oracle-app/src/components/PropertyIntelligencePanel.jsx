@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { crmGet } from '../state/useCrmApi';
 import styles from './DossierPanel.module.css';
+import { friendlyError } from '../lib/errorMessages';
 
 /**
  * Stored intelligence for one property.
@@ -65,7 +66,7 @@ export default function PropertyIntelligencePanel({ propertyKey, reloadKey = 0 }
           setAnalyses([]);
           return;
         }
-        setError(reason?.message || 'Stored intelligence could not be read.');
+        setError(friendlyError(reason, { fallback: 'Stored intelligence could not be read.' }));
       },
     );
   }, [propertyKey]);
@@ -86,7 +87,7 @@ export default function PropertyIntelligencePanel({ propertyKey, reloadKey = 0 }
       <h3 className={styles.kicker}>Intelligence</h3>
 
       {error ? <p className={styles.error}>{error}</p> : null}
-      {analyses === null && !error ? <p className={styles.loading}>READING ANALYSES…</p> : null}
+      {analyses === null && !error ? <p className={styles.loading} role="status">Loading saved analyses…</p> : null}
 
       {analyses !== null && analyses.length === 0 ? (
         <p className={styles.provenance}>

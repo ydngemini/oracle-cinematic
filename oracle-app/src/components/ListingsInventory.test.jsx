@@ -144,7 +144,9 @@ describe('ListingsInventory', () => {
   });
 
   it('surfaces the server refusal instead of a generic failure', async () => {
-    crmPost.mockRejectedValue(new Error('provide seller_client_id OR an inline seller, not both'));
+    const refusal = new Error('Choose an existing seller or enter a new one, not both.');
+    refusal.status = 422;
+    crmPost.mockRejectedValue(refusal);
     render(<ListingsInventory />);
     await waitFor(() => expect(crmGet).toHaveBeenCalled());
 
@@ -153,5 +155,20 @@ describe('ListingsInventory', () => {
     await click(screen.getByRole('button', { name: /create listing/i }));
 
     await waitFor(() => expect(screen.getByText(/not both/i)).toBeTruthy());
+  });
+
+  it('never shows a developer-facing refusal (field names, codes) verbatim', async () => {
+    const refusal = new Error('provide seller_client_id OR an inline seller, not both');
+    refusal.status = 422;
+    crmPost.mockRejectedValue(refusal);
+    render(<ListingsInventory />);
+    await waitFor(() => expect(crmGet).toHaveBeenCalled());
+
+    await click(screen.getByRole('button', { name: /new listing/i }));
+    await type(screen.getByLabelText('Address'), '15 Main St');
+    await click(screen.getByRole('button', { name: /create listing/i }));
+
+    await waitFor(() => expect(screen.getByText(/Some details need another look/)).toBeTruthy());
+    expect(screen.queryByText(/seller_client_id/)).toBeNull();
   });
 });

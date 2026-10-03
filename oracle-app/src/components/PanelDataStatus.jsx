@@ -1,3 +1,4 @@
+import { friendlyError } from '../lib/errorMessages';
 import styles from './PanelDataStatus.module.css';
 
 function freshnessLabel(updatedAt) {
@@ -8,7 +9,7 @@ function freshnessLabel(updatedAt) {
 export function PanelDataStatus({ label, loading, refreshing, error, updatedAt, onRetry }) {
   const state = error ? 'error' : loading || refreshing ? 'loading' : 'ready';
   const detail = error
-    ? error.message || 'Source unavailable'
+    ? friendlyError(error, { fallback: 'Couldn’t load this right now.' })
     : loading
       ? 'Loading live data'
       : refreshing

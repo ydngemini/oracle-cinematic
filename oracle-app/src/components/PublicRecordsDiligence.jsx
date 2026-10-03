@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { crmGet } from '../state/useCrmApi';
 import styles from './DossierPanel.module.css';
+import { friendlyError } from '../lib/errorMessages';
 
 /**
  * Keyless public-records diligence for one property.
@@ -28,7 +29,7 @@ const FEEDS = [
     path: ({ lat, lng }) => (lat && lng ? `/api/market/flood-zone?lat=${lat}&lng=${lng}` : null),
     summarise: (payload) => {
       const zone = payload?.zone || payload?.flood_zone;
-      if (!zone) return 'No designation returned.';
+      if (!zone) return 'No flood-zone record found for this location — that is not the same as being outside a flood zone.';
       // Zone X is a real answer meaning minimal hazard — it is not "no data",
       // and the two were conflated here once before.
       return payload?.in_sfha ? `${zone} — special flood hazard area` : `${zone}`;
@@ -41,7 +42,7 @@ const FEEDS = [
     path: ({ lat, lng }) => (lat && lng ? `/api/market/schools?lat=${lat}&lng=${lng}&radius=5` : null),
     summarise: (payload) => {
       const rows = payload?.districts || payload?.schools || payload?.results || [];
-      if (!Array.isArray(rows) || rows.length === 0) return 'No district returned.';
+      if (!Array.isArray(rows) || rows.length === 0) return 'No school district on record for this location.';
       const first = rows[0];
       const name = first?.district_name || first?.name || 'district';
       // The live NCES source is point-in-polygon: one result means "the
@@ -58,7 +59,7 @@ const FEEDS = [
     path: ({ state }) => (state ? `/api/data/fema/disasters?state=${state}&top=5` : null),
     summarise: (payload) => {
       const rows = payload?.disasters || payload?.results || [];
-      if (!Array.isArray(rows) || rows.length === 0) return 'No declarations returned.';
+      if (!Array.isArray(rows) || rows.length === 0) return 'No disaster declarations on record for this area.';
       const latest = rows[0];
       return `${rows.length} recent · latest ${latest?.incidentType || latest?.incident_type || 'incident'}`;
     },
@@ -81,7 +82,7 @@ const FEEDS = [
     path: ({ state }) => (state ? `/api/data/fbi/crime?state=${state}&offense=violent-crime` : null),
     summarise: (payload) => {
       const rows = payload?.series || payload?.results || payload?.data || [];
-      if (!Array.isArray(rows) || rows.length === 0) return 'No series returned.';
+      if (!Array.isArray(rows) || rows.length === 0) return 'No crime figures published for this state yet.';
       return `${rows.length} period${rows.length === 1 ? '' : 's'} of state-level data`;
     },
   },
@@ -92,7 +93,7 @@ const FEEDS = [
     path: ({ state }) => (state ? `/api/data/bls/unemployment?area=${state}` : null),
     summarise: (payload) => {
       const rows = payload?.series || payload?.observations || payload?.data || [];
-      if (!Array.isArray(rows) || rows.length === 0) return 'No series returned.';
+      if (!Array.isArray(rows) || rows.length === 0) return 'No unemployment figures published for this state yet.';
       const latest = rows[0];
       const value = latest?.value ?? latest?.rate;
       return value !== undefined ? `latest ${value}%` : `${rows.length} observations`;
@@ -122,8 +123,8 @@ function Feed({ feed, subject }) {
         // 503 from this API means a provider is unconfigured or its credential
         // has lapsed, which is an operator fact rather than a property fact.
         detail: reason?.status === 503
-          ? (reason?.message || 'Source unavailable — check its credential.')
-          : (reason?.message || 'Source did not answer.'),
+          ? (friendlyError(reason, { fallback: 'This source isn’t connected for your brokerage yet.' }))
+          : (friendlyError(reason, { fallback: 'This source didn’t respond. Try again in a moment.' })),
       }),
     );
   }, [feed, subject]);

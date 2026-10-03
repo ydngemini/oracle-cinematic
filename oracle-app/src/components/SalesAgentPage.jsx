@@ -15,12 +15,10 @@ import {
 } from 'lucide-react';
 import { crmGet, crmPost } from '../state/useCrmApi';
 import styles from './SalesWorkspace.module.css';
+import { friendlyError } from '../lib/errorMessages';
 
 function errorText(error) {
-  const detail = error?.payload?.detail;
-  if (typeof detail === 'string') return detail;
-  if (detail?.message) return detail.message;
-  return error?.message || 'The sales action could not be completed.';
+  return friendlyError(error, { fallback: 'That didn’t go through. Try again in a moment.' });
 }
 
 export default function SalesAgentPage({ onNavigate }) {
@@ -157,7 +155,7 @@ export default function SalesAgentPage({ onNavigate }) {
           </div>
           <div className={styles.scrollList}>
             {loading ? <div className={styles.empty}>Loading the work queue…</div> : null}
-            {!loading && items.length === 0 ? <div className={styles.empty}>No contacts match this queue. Add canonical contacts or change the filters.</div> : null}
+            {!loading && items.length === 0 ? <div className={styles.empty}>No contacts match this queue. Add contacts or change the filters.</div> : null}
             <ul className={styles.itemList}>
               {items.map((item) => (
                 <li key={item.contact.id}>

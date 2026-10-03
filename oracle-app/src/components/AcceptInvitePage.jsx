@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 
 import { apiGet, apiPost } from '../lib/apiClient';
 import styles from './BrokerageSetupPanel.module.css';
+import { friendlyError } from '../lib/errorMessages';
 
 /**
  * The invitee's first screen.
@@ -38,7 +39,7 @@ export function AcceptInvitePage() {
     if (!token) return Promise.resolve();
     return apiGet(`/auth/invitation?token=${encodeURIComponent(token)}`)
       .then(setInvite)
-      .catch((err) => setLoadError(err?.message || 'This invitation link is not valid.'));
+      .catch((err) => setLoadError(friendlyError(err, { fallback: 'This invitation link is not valid.' })));
   }, [token]);
 
   useEffect(() => { load(); }, [load]);
@@ -51,7 +52,7 @@ export function AcceptInvitePage() {
       // The session cookie is set by the response; land them inside Neoh.
       window.location.assign('/');
     } catch (err) {
-      setError(err?.message || 'Could not accept this invitation.');
+      setError(friendlyError(err, { fallback: 'Could not accept this invitation.' }));
       setBusy(false);
     }
   };

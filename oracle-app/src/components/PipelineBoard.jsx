@@ -5,6 +5,7 @@ import { contractCountdown } from './pipelineUtils';
 import { DossierPanel } from './DossierPanel';
 import { apiPatch } from '../lib/apiClient';
 import styles from './PipelineBoard.module.css';
+import { friendlyError } from '../lib/errorMessages';
 
 // Columns mirror the 0007 dossier_status state machine exactly — the CHECK
 // constraint is the source of truth, these are just display labels.
@@ -107,7 +108,7 @@ export function PipelineBoard({ onClose, onOpen }) {
         delete next[leadId];
         return next;
       });
-      setError(String(err.message || err));
+      setError(friendlyError(err));
     }
   };
 

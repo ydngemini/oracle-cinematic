@@ -14,6 +14,7 @@ import {
 import { crmGet, crmDelete, crmPost } from '../state/useCrmApi';
 import useProtectedMedia from '../state/useProtectedMedia';
 import styles from './VideoStudioPanel.module.css';
+import { friendlyError } from '../lib/errorMessages';
 
 const ACTIVE_STATUSES = ['queued', 'scripting', 'generating', 'stitching'];
 const POLL_MS = 5000;
@@ -29,7 +30,7 @@ const STATUS_LABELS = {
 };
 
 function statusLabel(job) {
-  return STATUS_LABELS[job?.status] || String(job?.status || 'unknown').replaceAll('_', ' ');
+  return STATUS_LABELS[job?.status] || 'In progress';
 }
 
 function normalizeJobs(payload) {
@@ -178,7 +179,7 @@ export default function VideoStudioPanel() {
       .then((payload) => {
         if (payload?.script) setScript(payload.script);
       })
-      .catch((error) => setSubmitError(error?.message || 'Script drafting failed.'))
+      .catch((error) => setSubmitError(friendlyError(error, { fallback: 'Script drafting failed.' })))
       .finally(() => setDraftingScript(false));
   };
 
@@ -221,11 +222,7 @@ export default function VideoStudioPanel() {
         setSubmitting(false);
       })
       .catch((error) => {
-        const detail = error?.detail;
-        const message = typeof detail === 'object' && detail?.message
-          ? detail.message
-          : (error?.message || 'The video job could not be created.');
-        setSubmitError(message);
+        setSubmitError(friendlyError(error, { fallback: 'The video couldn’t be started. Try again in a moment.' }));
         setSubmitting(false);
       });
   };
@@ -251,15 +248,14 @@ export default function VideoStudioPanel() {
       <section className={styles.wrap} aria-labelledby="video-studio-title">
         <header className={styles.hero}>
           <div>
-            <span className={styles.kicker}>Marketing reel engine</span>
+            <span className={styles.kicker}>Marketing reels</span>
             <h1 id="video-studio-title">Video Studio</h1>
-            <p>Not enabled on this deployment.</p>
+            <p>Video studio isn’t enabled for your brokerage yet.</p>
           </div>
         </header>
         <p className={styles.quota} role="status">
-          Video generation is turned off here, so nothing has failed and no quota
-          has been used. An administrator can enable it by setting{' '}
-          <code>ORACLE_FEATURE_VIDEO_STUDIO</code> and restarting the backend.
+          Nothing has failed and no video credits have been used. Ask your
+          broker or Neoh support to turn it on.
         </p>
       </section>
     );
@@ -269,7 +265,7 @@ export default function VideoStudioPanel() {
     <section className={styles.wrap} aria-labelledby="video-studio-title">
       <header className={styles.hero}>
         <div>
-          <span className={styles.kicker}>Marketing reel engine</span>
+          <span className={styles.kicker}>Marketing reels</span>
           <h1 id="video-studio-title">Video Studio</h1>
           <p>Turn property data and photos into a scripted, narrated marketing reel.</p>
           {/* The backend now reports whether a video provider can actually
@@ -282,7 +278,7 @@ export default function VideoStudioPanel() {
           ) : null}
         </div>
         <div className={styles.heroActions}>
-          <button type="button" className={styles.iconButton} onClick={loadJobs} aria-label="Refresh video jobs">
+          <button type="button" className={styles.iconButton} onClick={loadJobs} aria-label="Refresh reels">
             <RefreshCw aria-hidden="true" />
           </button>
           <button type="button" className={styles.primary} onClick={() => setCreating(true)}>
@@ -294,7 +290,7 @@ export default function VideoStudioPanel() {
       {quota > 0 ? (
         <p className={styles.quota} role="status">
           Today&apos;s quota: <strong>{Math.round(consumed)}</strong> / {quota}s used
-          {activeCount > 0 ? <> · {activeCount} active job{activeCount === 1 ? '' : 's'}</> : null}
+          {activeCount > 0 ? <> · {activeCount} reel{activeCount === 1 ? '' : 's'} in progress</> : null}
           {configError ? <> · limits unavailable</> : null}
         </p>
       ) : null}
@@ -498,7 +494,7 @@ export default function VideoStudioPanel() {
               {submitError ? <p className={styles.saveError} role="alert">{submitError}</p> : null}
               {created ? (
                 <p className={styles.created} role="status">
-                  <Check aria-hidden="true" /> Job queued — the reel will appear in the queue above.
+                  <Check aria-hidden="true" /> Reel started — it will appear in the list above.
                 </p>
               ) : null}
 

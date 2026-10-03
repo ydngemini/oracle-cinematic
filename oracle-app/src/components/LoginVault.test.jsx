@@ -19,8 +19,8 @@ const { LoginVault } = await import('./LoginVault');
 
 function signIn() {
   fireEvent.change(screen.getByLabelText('Email or Agent ID'), { target: { value: 'ops@neoh.test' } });
-  fireEvent.change(screen.getByLabelText('Passphrase'), { target: { value: 'correct-passphrase' } });
-  fireEvent.click(screen.getByRole('button', { name: 'Authenticate' }));
+  fireEvent.change(screen.getByLabelText('Password'), { target: { value: 'correct-passphrase' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Sign in' }));
 }
 
 describe('LoginVault operator second factor', () => {
@@ -38,7 +38,7 @@ describe('LoginVault operator second factor', () => {
     expect(api.apiPost.mock.calls[0][1]).toEqual({ agent_id: 'ops@neoh.test', passphrase: 'correct-passphrase' });
 
     fireEvent.change(codeField, { target: { value: '12 34-56' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Authenticate' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Sign in' }));
     await waitFor(() => expect(api.apiPost).toHaveBeenCalledTimes(2));
     expect(api.apiPost.mock.calls[1][1]).toEqual({ agent_id: 'ops@neoh.test', passphrase: 'correct-passphrase', otp: '123456' });
   });
@@ -50,7 +50,7 @@ describe('LoginVault operator second factor', () => {
     render(<LoginVault onAuthenticated={() => {}} />);
     signIn();
     fireEvent.change(await screen.findByLabelText('Sign-in code'), { target: { value: '000000' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Authenticate' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Sign in' }));
     expect(await screen.findByText(/not valid or has expired/)).toBeTruthy();
     expect(screen.getByLabelText('Sign-in code').value).toBe('');
     expect(screen.getByRole('button', { name: 'Send a new code' })).toBeTruthy();

@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { crmPost } from '../state/useCrmApi';
 import styles from './AccountDataPanel.module.css';
+import { friendlyError } from '../lib/errorMessages';
 
 // Offboard one agent: pick who takes over, see exactly what will move (a dry
 // run of the real thing), then confirm with your password. Their notes,
@@ -40,7 +41,7 @@ export function OffboardMemberForm({ member, members, onDone, onCancel }) {
       if (preview) setPlan(result);
       else onDone(result);
     } catch (err) {
-      setError(err?.message || 'Offboarding failed. Nothing was changed.');
+      setError(friendlyError(err, { fallback: 'Offboarding failed. Nothing was changed.' }));
     } finally {
       setBusy(false);
     }

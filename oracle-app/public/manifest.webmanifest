@@ -1,11 +1,11 @@
 {
-  "name": "Neoh Agent CRM",
+  "name": "Neoh",
   "short_name": "Neoh",
-  "description": "AI-assisted real-estate agent command center",
+  "description": "Neoh — your AI partner for real-estate clients, properties and deals.",
   "theme_color": "#0a0a0c",
   "background_color": "#000000",
   "display": "standalone",
-  "orientation": "portrait",
+  "orientation": "any",
   "start_url": "/",
   "scope": "/",
   "icons": [

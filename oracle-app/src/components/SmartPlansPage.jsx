@@ -19,6 +19,7 @@ import {
 } from 'lucide-react';
 import { crmGet, crmPatch, crmPost } from '../state/useCrmApi';
 import styles from './SalesWorkspace.module.css';
+import { friendlyError } from '../lib/errorMessages';
 
 const STEP_TYPES = [
   { value: 'wait', label: 'Wait' },
@@ -35,10 +36,7 @@ function localStartValue() {
 }
 
 function errorText(error) {
-  const detail = error?.payload?.detail;
-  if (typeof detail === 'string') return detail;
-  if (detail?.message) return detail.message;
-  return error?.message || 'The Smart Plan action could not be completed.';
+  return friendlyError(error, { fallback: 'That Smart Plan change didn’t go through. Try again in a moment.' });
 }
 
 function newStep(index, type = 'wait') {
@@ -309,7 +307,7 @@ export default function SmartPlansPage() {
       <div className={styles.pageIntro}>
         <div>
           <h3>Versioned nurture with manual enrollment</h3>
-          <p>Build a visual sequence, publish an immutable revision, preview compliance and provider readiness for the exact contacts you select, then schedule durable work.</p>
+          <p>Build a visual sequence, publish a version, preview compliance and channel setup for the exact contacts you select, then schedule it.</p>
         </div>
         <div className={styles.pageActions}>
           <button type="button" className={styles.secondaryButton} onClick={newDraft}><Plus aria-hidden="true" /> New plan</button>
@@ -319,14 +317,14 @@ export default function SmartPlansPage() {
 
       <div className={styles.notice}>
         <ShieldAlert aria-hidden="true" />
-        <span>Email, SMS, and AI call steps create approval records—not provider sends. Tasks and waits can run automatically. Published revisions are immutable, and enrollment is always based on a signed preview.</span>
+        <span>Email, text, and AI call steps wait for your approval — nothing is sent on its own. Tasks and waits can run automatically. A published version never changes, and contacts are only enrolled from a preview you approved.</span>
       </div>
       {error ? <div className={styles.error} role="alert"><XCircle aria-hidden="true" /> {error}</div> : null}
       {message ? <div className={styles.success} role="status"><CheckCircle2 aria-hidden="true" /> {message}</div> : null}
 
       <div className={styles.metricGrid}>
         <div className={styles.metricCard}><span>Plans</span><strong>{plans.length}</strong><small>active drafts and publications</small></div>
-        <div className={styles.metricCard}><span>Published</span><strong>{plans.filter((plan) => plan.status === 'published').length}</strong><small>immutable current revisions</small></div>
+        <div className={styles.metricCard}><span>Published</span><strong>{plans.filter((plan) => plan.status === 'published').length}</strong><small>live versions</small></div>
         <div className={styles.metricCard}><span>Enrollments</span><strong>{enrollments.length}</strong><small>recorded contact journeys</small></div>
         <div className={styles.metricCard}><span>Waiting approval</span><strong>{enrollments.reduce((sum, item) => sum + Number(item.approvals_waiting || 0), 0)}</strong><small>outbound steps</small></div>
       </div>

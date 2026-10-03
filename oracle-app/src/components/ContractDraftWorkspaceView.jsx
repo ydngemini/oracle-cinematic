@@ -152,7 +152,7 @@ export function ContractDraftWorkspaceView({
           <section className={styles.saved} aria-labelledby={`${surface}-saved-drafts-title`}>
             <header>
               <div>
-                <span>Encrypted backend save</span>
+                <span>Saved securely</span>
                 <h3 id={`${surface}-saved-drafts-title`}>Saved Personal AI drafts</h3>
               </div>
               <small>{workspaces.length}</small>

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { crmGet, crmPost } from '../state/useCrmApi';
 import styles from './CommsTab.module.css';
 import { GLYPHS, MAX_BODY_HEIGHT, firstNameOf } from './CommsShared';
+import { friendlyError } from '../lib/errorMessages';
 
 /* CommsComposer — the fixed comms chrome pinned above the Deck. Channel
    selector (email/SMS/internal note), an email subject line, the growing body,
@@ -295,15 +296,15 @@ export default function CommsComposer({
   const draftErrMsg = useMemo(() => {
     if (!draftError) return '';
     return draftError.status === 404
-      ? 'AI drafting isn’t online yet — try a template.'
-      : draftError.message || 'Couldn’t draft that — try a template.';
+      ? 'Neoh can’t draft messages for your brokerage yet — start from a template.'
+      : friendlyError(draftError, { fallback: 'Couldn’t draft that — try a template.' });
   }, [draftError]);
 
   const sendErrMsg = useMemo(() => {
     if (!sendError) return '';
     return sendError.status === 404
-      ? 'Comms service isn’t online yet — nothing was saved or sent.'
-      : sendError.message || 'The communication wasn’t saved.';
+      ? 'Messaging isn’t set up for your brokerage yet — nothing was saved or sent.'
+      : friendlyError(sendError, { fallback: 'The communication wasn’t saved.' });
   }, [sendError]);
 
   const actionLabel =
@@ -317,7 +318,7 @@ export default function CommsComposer({
       ? 'No email on file — switched to an internal note.'
       : 'No phone on file — switched to an internal note.'
     : activeChannel === 'sms'
-      ? 'Logged only — no SMS provider is connected.'
+      ? 'Logged only — text messaging isn’t set up for your brokerage yet.'
       : activeChannel === 'note'
         ? 'Internal only — never sent to the client.'
         : 'Email is queued for delivery.';

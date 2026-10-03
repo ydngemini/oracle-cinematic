@@ -4,6 +4,7 @@ import {
 } from 'lucide-react';
 import { crmGet, crmPost, crmPut } from '../state/useCrmApi';
 import styles from './MarketplaceBrowse.module.css';
+import { friendlyError } from '../lib/errorMessages';
 
 /**
  * MarketplaceBrowse — the disposition surface for properties already under a
@@ -104,8 +105,8 @@ function MyListings() {
         if (cancelled) return;
         setError(
           reason?.status === 404
-            ? 'The marketplace is not enabled for this deployment.'
-            : reason?.message || 'Could not load your listings.',
+            ? 'The marketplace isn’t turned on for your brokerage yet.'
+            : friendlyError(reason, { fallback: 'Could not load your listings.' }),
         );
         setPublications((current) => current ?? []);
         setContracts((current) => current ?? []);
@@ -144,7 +145,7 @@ function MyListings() {
       });
       setRefreshKey((k) => k + 1);
     } catch (err) {
-      setNotice({ tone: 'error', text: err?.message || 'Could not create the publication.' });
+      setNotice({ tone: 'error', text: friendlyError(err, { fallback: 'Could not create the publication.' }) });
     } finally {
       setBusyId(null);
     }
@@ -161,7 +162,7 @@ function MyListings() {
       setPublishReason((current) => ({ ...current, [publicationId]: '' }));
       setRefreshKey((k) => k + 1);
     } catch (err) {
-      setNotice({ tone: 'error', text: err?.message || 'Publish failed.' });
+      setNotice({ tone: 'error', text: friendlyError(err, { fallback: 'Publish failed.' }) });
     } finally {
       setBusyId(null);
     }
@@ -181,7 +182,7 @@ function MyListings() {
         {publications === null ? (
           <p className={styles.muted}><Loader2 className={styles.spin} aria-hidden="true" /> Loading…</p>
         ) : publications.length === 0 ? (
-          <p className={styles.muted}>No publications yet.</p>
+          <p className={styles.muted}>Nothing published yet.</p>
         ) : (
           <ul className={styles.list}>
             {publications.map((publication) => (
@@ -238,7 +239,7 @@ function MyListings() {
         {contracts === null ? (
           <p className={styles.muted}><Loader2 className={styles.spin} aria-hidden="true" /> Loading…</p>
         ) : eligibleContracts.length === 0 ? (
-          <p className={styles.muted}>No eligible signed contracts.</p>
+          <p className={styles.muted}>No signed contracts ready to publish yet.</p>
         ) : (
           <ul className={styles.list}>
             {eligibleContracts.map((doc) => (
@@ -311,8 +312,8 @@ function BuyersView() {
         if (cancelled) return;
         setError(
           reason?.status === 404
-            ? 'The marketplace is not enabled for this deployment.'
-            : reason?.message || 'Could not load buyer profiles.',
+            ? 'The marketplace isn’t turned on for your brokerage yet.'
+            : friendlyError(reason, { fallback: 'Could not load buyer profiles.' }),
         );
         setProfiles((current) => current ?? []);
       },
@@ -344,7 +345,7 @@ function BuyersView() {
       setForm({ client_id: '', states: '', min_price: '', max_price: '' });
       setRefreshKey((k) => k + 1);
     } catch (err) {
-      setNotice({ tone: 'error', text: err?.message || 'Could not save the profile.' });
+      setNotice({ tone: 'error', text: friendlyError(err, { fallback: 'Could not save the profile.' }) });
     } finally {
       setSaving(false);
     }
@@ -371,7 +372,7 @@ function BuyersView() {
       setRequestName('');
       setRefreshKey((k) => k + 1);
     } catch (err) {
-      setNotice({ tone: 'error', text: err?.message || 'Could not create the request.' });
+      setNotice({ tone: 'error', text: friendlyError(err, { fallback: 'Could not create the request.' }) });
     } finally {
       setSaving(false);
     }
@@ -553,8 +554,8 @@ export default function MarketplaceBrowse() {
         // 404 is the feature gate, not a failure — say which it is.
         setLoadError(
           reason?.status === 404
-            ? 'The marketplace is not enabled for this deployment.'
-            : reason?.message || 'Could not load the marketplace.',
+            ? 'The marketplace isn’t turned on for your brokerage yet.'
+            : friendlyError(reason, { fallback: 'Could not load the marketplace.' }),
         );
         setPublications((current) => current ?? []);
         setRefreshing(false);
@@ -581,7 +582,7 @@ export default function MarketplaceBrowse() {
       const result = await crmPost(`/api/marketplace/publications/${selected.id}/match`);
       setMatches(result?.matches ?? []);
     } catch (err) {
-      setMatchError(err?.message || 'Buyer matching failed.');
+      setMatchError(friendlyError(err, { fallback: 'Buyer matching failed.' }));
     } finally {
       setMatching(false);
     }
@@ -603,7 +604,7 @@ export default function MarketplaceBrowse() {
       // competing offers the record cannot support. Show the server's own
       // reason rather than a generic failure — the agent needs to know it is
       // the CLAIM that was refused, not the request that broke.
-      setDraftError(err?.message || 'Could not draft this message.');
+      setDraftError(friendlyError(err, { fallback: 'Could not draft this message.' }));
     } finally {
       setDrafting(false);
     }
@@ -621,7 +622,7 @@ export default function MarketplaceBrowse() {
       setSendState(result?.send_state ?? 'approved_not_sent');
       setPendingApproval(null);
     } catch (err) {
-      setDraftError(err?.message || 'Approval failed.');
+      setDraftError(friendlyError(err, { fallback: 'Approval failed.' }));
     } finally {
       setApproving(false);
     }

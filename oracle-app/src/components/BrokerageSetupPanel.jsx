@@ -1,8 +1,10 @@
 import { Suspense, lazy, useCallback, useEffect, useState } from 'react';
 
 import { crmDelete, crmGet, crmPatch, crmPost } from '../state/useCrmApi';
+import { IntegrationStatus } from './IntegrationStatus';
 import styles from './BrokerageSetupPanel.module.css';
 import { getUserId } from '../state/identity';
+import { friendlyError } from '../lib/errorMessages';
 
 const OffboardMemberForm = lazy(() => import('./OffboardMemberForm'));
 
@@ -29,16 +31,8 @@ const CAPABILITY_LABELS = {
   readiness: 'Ready to work',
 };
 
-// What each state means to a person, rather than what it is called in the API.
-const STATE_LABELS = {
-  NOT_STARTED: 'Not set up',
-  NEEDS_ACTION: 'Needs you',
-  IN_PROGRESS: 'In progress',
-  READY: 'Ready',
-  BLOCKED: 'Waiting on setup',
-  ERROR: 'Something went wrong',
-  OPTIONAL: 'Optional',
-};
+// What each state means to a person lives in lib/integrationStatus.js, shared
+// with every other place a customer sees integration state.
 
 const ORG_TYPE_LABELS = {
   brokerage: 'Brokerage',
@@ -73,8 +67,11 @@ function CapabilityRow({ name, state, optional, detail }) {
         {detail ? <em className={styles.capabilityDetail}>{detail}</em> : null}
       </span>
       <span className={styles.capabilityState}>
-        {STATE_LABELS[state] || state}
-        {optional && state !== 'READY' ? <em className={styles.optional}> · optional</em> : null}
+        <IntegrationStatus
+          integration={name}
+          state={state}
+          suffix={optional && state !== 'READY' ? <em className={styles.optional}> · optional</em> : null}
+        />
       </span>
     </li>
   );
@@ -86,7 +83,7 @@ function mlsDetail(mls) {
   const licensed = mls.feeds.filter((f) => f.licensed);
   if (licensed.length === 0) {
     // Never let a reference dataset read as MLS coverage.
-    return `${mls.feeds.length} developer/reference feed${mls.feeds.length === 1 ? '' : 's'} — not live inventory`;
+    return 'Sample data only — not live MLS listings';
   }
   const lead = licensed[0];
   return [lead.mls_name, freshness(lead.age_seconds)].filter(Boolean).join(' · ');
@@ -119,7 +116,7 @@ export function BrokerageSetupPanel() {
         });
         setError('');
       })
-      .catch((err) => setError(err?.message || 'Could not load your brokerage setup.'))
+      .catch((err) => setError(friendlyError(err, { fallback: 'Could not load your brokerage setup.' })))
   ), []);
 
   useEffect(() => { load(); }, [load]);
@@ -154,7 +151,7 @@ export function BrokerageSetupPanel() {
       setInviteText('');
       await load();
     } catch (err) {
-      setError(err?.message || 'Could not send those invitations.');
+      setError(friendlyError(err, { fallback: 'Could not send those invitations.' }));
     } finally {
       setBusy(false);
     }
@@ -168,7 +165,7 @@ export function BrokerageSetupPanel() {
       setNotice(successText);
       await load();
     } catch (err) {
-      setError(err?.message || 'That did not work.');
+      setError(friendlyError(err, { fallback: 'That did not work.' }));
     } finally {
       setBusy(false);
     }

@@ -71,7 +71,7 @@ describe('MarketplaceBrowse loading and empty states', () => {
 
     render(<MarketplaceBrowse />);
 
-    await waitFor(() => expect(screen.queryByText(/not enabled for this deployment/)).toBeTruthy());
+    await waitFor(() => expect(screen.queryByText(/isn’t turned on for your brokerage yet/)).toBeTruthy());
   });
 
   it('a non-404 failure is reported as a failure', async () => {
@@ -81,8 +81,9 @@ describe('MarketplaceBrowse loading and empty states', () => {
 
     render(<MarketplaceBrowse />);
 
+    // A backend 503 carrying a product sentence is shown as that sentence.
     await waitFor(() => expect(screen.queryByText('Memory Core offline.')).toBeTruthy());
-    expect(screen.queryByText(/not enabled/)).toBeNull();
+    expect(screen.queryByText(/isn’t turned on/)).toBeNull();
   });
 });
 
@@ -243,7 +244,7 @@ describe('MarketplaceBrowse — My listings (publication authoring)', () => {
       documents: [SIGNED_CONTRACT],
     }));
 
-    await waitFor(() => expect(screen.queryByText('No eligible signed contracts.')).toBeTruthy());
+    await waitFor(() => expect(screen.queryByText('No signed contracts ready to publish yet.')).toBeTruthy());
   });
 
   it('a draft is shown as a draft and says it is not yet visible to others', async () => {

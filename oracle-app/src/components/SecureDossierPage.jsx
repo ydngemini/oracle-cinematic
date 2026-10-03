@@ -1,5 +1,6 @@
 import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import styles from './SecureDossierPage.module.css';
+import { friendlyError } from '../lib/errorMessages';
 // Lazy: PlayCanvas is the heaviest thing this page can load, and a dossier
 // without a tour must never pay for it.
 const TourViewer = lazy(() => import('./TourViewer'));
@@ -182,7 +183,7 @@ export default function SecureDossierPage() {
         // Deliberately the same message for expired, revoked and never-existed.
         // The backend returns a uniform 404 for exactly this reason and the UI
         // must not reintroduce the oracle it was careful to avoid.
-        setError(err?.message || 'This link is no longer valid.');
+        setError(friendlyError(err, { fallback: 'This link is no longer valid.' }));
       }
     })();
     return () => { cancelled = true; };

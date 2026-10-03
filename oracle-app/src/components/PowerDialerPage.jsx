@@ -24,12 +24,10 @@ import { LiveTranscript } from './LiveTranscript';
 // verbal opt-out — compliance you cannot record is compliance you cannot prove.
 import OutreachConsentPanel from './OutreachConsentPanel';
 import styles from './SalesWorkspace.module.css';
+import { friendlyError } from '../lib/errorMessages';
 
 function errorText(error) {
-  const detail = error?.payload?.detail;
-  if (typeof detail === 'string') return detail;
-  if (detail?.message) return detail.message;
-  return error?.message || 'The dialer action could not be completed.';
+  return friendlyError(error, { capability: 'Calling', fallback: 'Calling is temporarily unavailable. Your CRM is still available.' });
 }
 
 function callLabel(call) {
@@ -143,7 +141,7 @@ export default function PowerDialerPage() {
       });
       deviceRef.current = device;
       device.on('error', (deviceError) => {
-        setError(deviceError?.message || 'The browser calling device reported an error.');
+        setError(friendlyError(deviceError, { fallback: 'The browser calling device reported an error.' }));
         setCallState('failed');
       });
 
@@ -170,7 +168,7 @@ export default function PowerDialerPage() {
       call.on('error', (callError) => finishCall(
         'failed',
         '',
-        callError?.message || 'The browser call failed.',
+        friendlyError(callError, { fallback: 'The browser call failed.' }),
       ));
       if (prepared.warnings?.length) setMessage(prepared.warnings.join(' '));
     } catch (callError) {
@@ -245,7 +243,7 @@ export default function PowerDialerPage() {
       <div className={styles.pageIntro}>
         <div>
           <h3>Human browser calling + approval-bound AI voice</h3>
-          <p>Select a canonical CRM contact. Human calls use the browser microphone and a single-use server intent; AI calls remain drafts until an authorized person approves them.</p>
+          <p>Pick a contact from your CRM. Your own calls use your browser microphone; AI calls stay drafts until someone with permission approves them.</p>
         </div>
         <button type="button" className={styles.secondaryButton} onClick={load} disabled={loading || working}>
           <RefreshCw aria-hidden="true" /> Refresh
@@ -254,14 +252,14 @@ export default function PowerDialerPage() {
 
       <div className={styles.notice}>
         <ShieldCheck aria-hidden="true" />
-        <span>No destination number is sent from this dialer to Twilio. The server resolves the selected contact again, rechecks consent and calling hours, and keeps browser calls unrecorded.</span>
+        <span>Your browser never sends the number itself. Neoh looks the contact up again, rechecks consent and calling hours, and never records browser calls.</span>
       </div>
       {error ? <div className={styles.error} role="alert"><PhoneOff aria-hidden="true" /> {error}</div> : null}
       {message ? <div className={styles.success} role="status"><CheckCircle2 aria-hidden="true" /> {message}</div> : null}
 
       <div className={styles.metricGrid}>
-        <div className={styles.metricCard}><span>Agent calling</span><strong>{channels.agent_call ? 'Ready' : 'Setup'}</strong><small>verified Twilio route</small></div>
-        <div className={styles.metricCard}><span>AI calling</span><strong>{channels.ai_call ? 'Ready' : 'Setup'}</strong><small>approval required</small></div>
+        <div className={styles.metricCard}><span>Agent calling</span><strong>{channels.agent_call ? 'Ready' : 'Not set up'}</strong><small>verified calling number</small></div>
+        <div className={styles.metricCard}><span>AI calling</span><strong>{channels.ai_call ? 'Ready' : 'Not set up'}</strong><small>approval required</small></div>
         <div className={styles.metricCard}><span>Call state</span><strong className={styles.metricText}>{callState}</strong><small>recording disabled</small></div>
         <div className={styles.metricCard}><span>History</span><strong>{history.length}</strong><small>browser call intents</small></div>
       </div>
@@ -269,7 +267,7 @@ export default function PowerDialerPage() {
       <div className={styles.twoColumn}>
         <section className={styles.panel} aria-labelledby="dialer-contact-title">
           <header className={styles.panelHeader}>
-            <div><h4 id="dialer-contact-title">Choose a contact</h4><p>Canonical contacts only</p></div>
+            <div><h4 id="dialer-contact-title">Choose a contact</h4><p>Contacts from your CRM</p></div>
             <Headphones aria-hidden="true" />
           </header>
           <div className={styles.panelBody}>
@@ -300,7 +298,7 @@ export default function PowerDialerPage() {
         <div className={styles.stack}>
           <section className={styles.panel} aria-labelledby="dialer-console-title">
             <header className={styles.panelHeader}>
-              <div><h4 id="dialer-console-title">{selected?.full_name || 'Dialer console'}</h4><p>{selected ? `${selected.phone || 'phone missing'} · ${selected.timezone || 'timezone missing'}` : 'Select a contact'}</p></div>
+              <div><h4 id="dialer-console-title">{selected?.full_name || 'Dialer'}</h4><p>{selected ? `${selected.phone || 'phone missing'} · ${selected.timezone || 'timezone missing'}` : 'Select a contact'}</p></div>
               <div className={styles.toggle} aria-label="Calling mode">
                 <button type="button" aria-pressed={mode === 'agent'} onClick={() => setMode('agent')} disabled={activeCall}>Agent</button>
                 <button type="button" aria-pressed={mode === 'ai'} onClick={() => setMode('ai')} disabled={activeCall}>AI</button>
@@ -311,7 +309,7 @@ export default function PowerDialerPage() {
                 <>
                   <div className={styles.resultCard}>
                     <h5>Human browser call</h5>
-                    <p>Your microphone carries your voice. This mode does not use an AI voice or recording. Contact consent and local calling hours are checked before Twilio receives permission to connect.</p>
+                    <p>Your microphone carries your voice. This mode does not use an AI voice or recording. Contact consent and local calling hours are checked before the call connects.</p>
                   </div>
                   <div className={styles.callControls}>
                     {!activeCall ? (
@@ -332,7 +330,7 @@ export default function PowerDialerPage() {
                 <>
                   <div className={styles.resultCard}>
                     <h5>AI voice approval</h5>
-                    <p>Write the script the approved AI call may use. The system will check written AI-voice consent, disclosure, recording, calling hours, state requirements, and provider readiness before delivery.</p>
+                    <p>Write the script the approved AI call may use. Before the call goes out, Neoh checks written AI-voice consent, disclosure, recording rules, calling hours, state requirements, and that calling is set up.</p>
                   </div>
                   <div className={styles.field}>
                     <label htmlFor="dialer-ai-script">Call script</label>
@@ -348,7 +346,7 @@ export default function PowerDialerPage() {
 
           <section className={styles.panel} aria-labelledby="dialer-history-title">
             <header className={styles.panelHeader}>
-              <div><h4 id="dialer-history-title">Recent browser calls</h4><p>Intent and provider state</p></div>
+              <div><h4 id="dialer-history-title">Recent browser calls</h4><p>What each call was for and how it ended</p></div>
               <History aria-hidden="true" />
             </header>
             {history.length ? (

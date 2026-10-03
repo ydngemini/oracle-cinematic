@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { crmDelete, crmGet, crmPost, crmPut } from '../state/useCrmApi';
 import styles from './StudioTab.module.css';
+import { friendlyError } from '../lib/errorMessages';
 
 /**
  * Publish approval, audience attribution, and collaborators for one site.
@@ -70,7 +71,7 @@ export default function SitePublishPanel({ siteId }) {
     try {
       await run();
     } catch (reason) {
-      setError(reason?.message || 'The request was refused.');
+      setError(friendlyError(reason, { fallback: 'The request was refused.' }));
     } finally {
       setBusy('');
     }
@@ -170,7 +171,7 @@ export default function SitePublishPanel({ siteId }) {
 
       <h4>Audience (90 days)</h4>
       {breakdown.length === 0 ? (
-        <p className={styles.empty}>No attributed events recorded in this window.</p>
+        <p className={styles.empty}>No visits or leads from your site in this period.</p>
       ) : (
         <ul className={styles.siteList}>
           {breakdown.map((row) => (

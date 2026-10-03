@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { crmGet, crmPost, crmPut } from '../state/useCrmApi';
 import styles from './HarvestControl.module.css';
+import { friendlyError } from '../lib/errorMessages';
 
 const integer = new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 });
 const MUNICIPAL_HARVESTS_ENABLED =
@@ -78,22 +79,22 @@ export function HarvestControl() {
     <section className={styles.wrap} aria-labelledby="harvest-control-title" aria-busy={!feed || Boolean(busy)}>
       <header className={styles.header}>
         <div>
-          <span className={styles.kicker}>Municipal data plane</span>
-          <h2 id="harvest-control-title">Harvest control</h2>
+          <span className={styles.kicker}>Public records</span>
+          <h2 id="harvest-control-title">Public-records refresh</h2>
         </div>
         <button type="button" onClick={load} className={styles.refresh}>Refresh</button>
       </header>
 
-      {error && <p className={styles.error} role="alert">{error.message || 'Harvest status is unavailable.'}</p>}
+      {error && <p className={styles.error} role="alert">{friendlyError(error, { fallback: 'Refresh status couldn’t load. Try again in a moment.' })}</p>}
       {feed?.feature_enabled === false && (
-        <p>Municipal harvest controls are disabled for this deployment.</p>
+        <p>Public-records refresh isn’t turned on for your brokerage yet.</p>
       )}
 
       {!feed ? <div className={styles.skeleton} aria-hidden="true" /> : (
         <>
           <div className={styles.scheduler}>
             <span className={styles.statusDot} data-state={feed.scheduler?.running ? 'running' : 'stopped'} aria-hidden="true" />
-            <div><strong>Durable scheduler</strong><small>{feed.scheduler?.running ? 'PostgreSQL leases active' : 'worker not reporting'}</small></div>
+            <div><strong>Automatic refresh</strong><small>{feed.scheduler?.running ? 'Running' : 'Not running right now'}</small></div>
           </div>
 
           <ul className={styles.sources}>
@@ -107,11 +108,11 @@ export function HarvestControl() {
                 </header>
                 <dl className={styles.stats}>
                   <div><dt>Freshness</dt><dd>{duration(source.source_freshness_seconds)}</dd></div>
-                  <div><dt>Cursor age</dt><dd>{duration(source.cursor_age_seconds)}</dd></div>
+                  <div><dt>Last progress</dt><dd>{duration(source.cursor_age_seconds)}</dd></div>
                   <div><dt>Cache saved</dt><dd>{source.cache_savings_rate == null ? '—' : `${Math.round(Number(source.cache_savings_rate) * 100)}%`}</dd></div>
                   <div><dt>Failures</dt><dd>{integer.format(Number(source.failure_count) || 0)}</dd></div>
                   <div><dt>Fetched</dt><dd>{integer.format(Number(source.latest_fetched) || 0)}</dd></div>
-                  <div><dt>Inserted</dt><dd>{integer.format(Number(source.latest_inserted) || 0)}</dd></div>
+                  <div><dt>New records</dt><dd>{integer.format(Number(source.latest_inserted) || 0)}</dd></div>
                 </dl>
                 {source.health_detail || source.latest_error_summary || source.last_error ? <p className={styles.sourceError}>{source.health_detail || source.latest_error_summary || source.last_error}</p> : null}
                 <footer>
@@ -131,7 +132,7 @@ export function HarvestControl() {
       {rerun && (
         <form className={styles.rerun} onSubmit={submitRerun}>
           <h3>Rerun {title(rerun)}</h3>
-          <p>This creates a durable, idempotent job and records your reason.</p>
+          <p>This queues a fresh run and records your reason. Running it twice never duplicates records.</p>
           <label>
             <span>Reason</span>
             <textarea value={reason} onChange={(event) => setReason(event.target.value)} rows={3} minLength={8} maxLength={500} required />
@@ -144,12 +145,12 @@ export function HarvestControl() {
       )}
 
       <section className={styles.jobs} aria-labelledby="harvest-jobs-title">
-        <header><h3 id="harvest-jobs-title">Recent jobs</h3><span>{jobs.length}</span></header>
-        {jobs.length === 0 ? <p>No harvest jobs recorded.</p> : (
+        <header><h3 id="harvest-jobs-title">Recent runs</h3><span>{jobs.length}</span></header>
+        {jobs.length === 0 ? <p>No refresh runs yet. Runs appear here once a schedule is on or you queue one.</p> : (
           <ul>
             {jobs.slice(0, 8).map((job) => (
               <li key={job.id}>
-                <div><strong>{title(job.job_type)}</strong><small>{job.message || `attempt ${job.attempt || 0}`}</small></div>
+                <div><strong>{title(job.job_type)}</strong><small>{friendlyError(job, { fallback: `attempt ${job.attempt || 0}` })}</small></div>
                 <span data-state={job.state}>{title(job.state)} · {Number(job.progress || 0)}%</span>
               </li>
             ))}

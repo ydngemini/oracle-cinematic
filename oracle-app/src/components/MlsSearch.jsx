@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { Building2, RefreshCw, Search } from 'lucide-react';
 import { crmGet } from '../state/useCrmApi';
 import styles from './MlsSearch.module.css';
+import { friendlyError } from '../lib/errorMessages';
 
 /**
  * Retail MLS browse over authorized, already-ingested listing rows.
@@ -44,7 +45,7 @@ function ListingDetail({ listingId, onClose }) {
     let alive = true;
     crmGet(`/api/mls/listings/${encodeURIComponent(listingId)}`).then(
       (payload) => { if (alive) setDetail(payload?.listing || payload || null); },
-      (reason) => { if (alive) setError(reason?.message || 'This listing could not be opened.'); },
+      (reason) => { if (alive) setError(friendlyError(reason, { fallback: 'This listing could not be opened.' })); },
     );
     return () => { alive = false; };
   }, [listingId]);
@@ -93,7 +94,7 @@ export default function MlsSearch() {
     return crmGet(`/api/mls/search?${params.toString()}`).then(
       (payload) => { setResult(payload || null); setBusy(false); },
       (reason) => {
-        setError(reason?.message || 'The MLS cache did not answer.');
+        setError(friendlyError(reason, { fallback: 'The MLS cache did not answer.' }));
         setBusy(false);
       },
     );
@@ -125,8 +126,8 @@ export default function MlsSearch() {
         <div>
           <h2 id="mls-title">MLS search</h2>
           <p>
-            Authorized listing rows already ingested into this workspace. Distinct from Houses,
-            which browses the shared public parcel catalogue.
+            Listings your MLS feed has synced to your brokerage. Different from Houses,
+            which browses public parcel records.
           </p>
         </div>
         <button type="button" onClick={() => search(1)} disabled={busy} aria-label="Run search">

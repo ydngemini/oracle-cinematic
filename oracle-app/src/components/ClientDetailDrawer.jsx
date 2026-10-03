@@ -23,6 +23,7 @@ const RelationshipIntelligence = lazy(() =>
   import('./RelationshipIntelligence').then((m) => ({ default: m.RelationshipIntelligence })));
 
 import styles from './ClientDetailDrawer.module.css';
+import { friendlyError } from '../lib/errorMessages';
 
 const SUBTABS = [
   { id: 'overview', label: 'Overview' },
@@ -620,7 +621,7 @@ function TagEditor({ clientId, tags, onChanged }) {
       setValue('');
       await onChanged?.();
     } catch (reason) {
-      setError(reason?.status === 409 ? 'That tag is already applied.' : reason?.message || 'Tag not added.');
+      setError(reason?.status === 409 ? 'That tag is already applied.' : friendlyError(reason, { fallback: 'Tag not added.' }));
     } finally {
       setBusy('');
     }
@@ -634,7 +635,7 @@ function TagEditor({ clientId, tags, onChanged }) {
       await crmDelete(`/api/crm/clients/${clientId}/tags/${encodeURIComponent(tag)}`);
       await onChanged?.();
     } catch (reason) {
-      setError(reason?.message || 'Tag not removed.');
+      setError(friendlyError(reason, { fallback: 'Tag not removed.' }));
     } finally {
       setBusy('');
     }
@@ -694,7 +695,7 @@ function OverviewPane({ detail, loadErr, prefChips, houses, applyPatch, automati
       {loadErr && loadErr.status === 404 && (
         <div className={styles.errorStrip} role="status">
           <span className={styles.errorTick} aria-hidden="true" />
-          <p className={styles.errorText}>Extended profile service isn’t online yet — showing what’s on the card.</p>
+          <p className={styles.errorText}>More details aren’t available right now — showing what’s on the card.</p>
         </div>
       )}
 

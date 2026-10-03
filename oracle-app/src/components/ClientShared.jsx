@@ -4,6 +4,7 @@
    atoms (Avatar, StagePill, ScoreMeter, TagList) reused by the list, the
    detail drawer, and every sub-pane. Renders only what the API returns. */
 import styles from './ClientShared.module.css';
+import { friendlyError } from '../lib/errorMessages';
 
 export const fmtInt = new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 });
 
@@ -301,10 +302,10 @@ export function prefChipsOf(preferences) {
 
 // Friendly message from a thrown crmApi error (carries .status).
 export function errMessage(err, noun = 'data') {
-  if (!err) return `Couldn’t reach the ${noun}.`;
-  if (err.status === 404) return `The ${noun} service isn’t online yet.`;
-  if (err.status === 401 || err.status === 403) return 'Your session expired — sign in again.';
-  return err.message || `Couldn’t reach the ${noun}.`;
+  if (!err) return `Couldn’t load the ${noun}. Try again in a moment.`;
+  if (err.status === 404) return `The ${noun} isn’t available for your brokerage yet.`;
+  if (err.status === 401) return 'Your session ended. Sign in again to continue.';
+  return friendlyError(err, { fallback: `Couldn’t load the ${noun}. Try again in a moment.` });
 }
 
 // ── Presentational atoms ──────────────────────────────────────────────────
