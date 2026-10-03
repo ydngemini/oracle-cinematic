@@ -1,5 +1,15 @@
 # Neoh — DigitalOcean Production Deploy Runbook
 
+**This is the one way Neoh is deployed.** Everything AWS/Azure/Terraform in
+the repository is legacy ([`infrastructure-status.md`](infrastructure-status.md)).
+
+> **Current state (2026-10-03): Neoh has never been deployed to DigitalOcean.**
+> There is no production app. Staging is being created now: its Postgres,
+> Valkey and registry exist, but its app does not yet. Check the live answer
+> with `python3 scripts/neoh-launch-readiness.py --env production` (or
+> `--env staging`). The ranked blockers are in [`launch-state.md`](launch-state.md),
+> and staging creation is in [`staging-setup.md`](staging-setup.md).
+
 Target platform as of 2026-09-21. Supersedes `infra/DEPLOY.md` (AWS) and
 `infra/azure/README.md` (Azure, already retired before this migration
 started) as the production deploy path. Neither AWS nor Azure support code
@@ -17,7 +27,7 @@ model with almost no code change:
 |---|---|---|
 | Backend API | App Platform **Service**, `instance_count: 2+` | `ORACLE_PROCESS_ROLE=web` (new) makes it safe to scale horizontally — see below |
 | Background jobs / scheduler | App Platform **Worker**, `instance_count: 1` | Same image, `ORACLE_PROCESS_ROLE=worker` — pinned to one instance, see below |
-| Frontend SPA | App Platform **Static Site** | Built from `oracle-app/Dockerfile`, served from DO's CDN — cheaper than an always-on container for static files |
+| Frontend SPA | App Platform **Service** (`web`, the image's nginx) | Pinned by digest like the backend. Not a Static Site: only nginx can send the CSP/HSTS/frame headers (security review WEB-3) |
 | PostgreSQL | **Managed PostgreSQL** | `db/connection.py`'s generic password+TLS path already works unmodified |
 | Redis | **Managed Valkey** | Every Redis call site parses `REDIS_URL` via `redis.asyncio.from_url()`, which natively supports `rediss://` (TLS) — zero code change |
 | Object storage | **Spaces** | `object_storage.py`'s `s3` backend now accepts `ORACLE_S3_ENDPOINT_URL` (added this migration) — Spaces speaks the S3 API |
@@ -51,7 +61,7 @@ Per the audit, nothing here is "AWS" or "Azure" anymore in the sense the
 brief assumed — the live production target *before* this migration was
 already **AWS** (`docs/production-blockers.md`, `infra/terraform/`), not
 Azure; Azure Container Apps was retired earlier and is legacy documentation
-only (`infra/azure/`, `backend/NEOH_AZURE_DEPLOYMENT.md`). Both AWS and
+only (`infra/azure/README.md`). Both AWS and
 Azure code paths remain in the repository as **optional provider support**,
 selected by env var, never required:
 
@@ -63,9 +73,9 @@ selected by env var, never required:
 - `ORACLE_AI_CHAT_PROVIDER=bedrock|azure-foundry|fireworks|local` — DO
   deployment uses `fireworks` (no cloud-specific dependency); Bedrock/Foundry
   remain available if a tenant's key is configured.
-- `infra/terraform/` (AWS) and `infra/azure/` (Azure) are untouched. They
-  are no longer *the* deploy path but remain usable for a hybrid/multi-cloud
-  future without being rebuilt from scratch.
+- `infra/terraform/` (AWS) and `infra/azure/` (Azure) are untouched and
+  **legacy**. They do not deploy Neoh. They are kept as history, and as a
+  starting point if a second cloud is ever needed.
 
 ## Database
 
@@ -85,11 +95,17 @@ selected by env var, never required:
    `ORACLE_DB_USER` (a non-owner role, `oracle_app_login`, so `FORCE ROW
    LEVEL SECURITY` actually applies), `ORACLE_DB_PASSWORD`,
    `ORACLE_DB_SSLMODE=require`. Leave `ORACLE_DB_AUTH` unset.
-3. Leave `ORACLE_DB_CA_BUNDLE` unset — DO Managed Postgres presents a
-   publicly-trusted certificate chain, and `db/connection.py`'s TLS context
-   falls back to the system trust store when no bundle is given (the same
-   fallback that already verifies Azure's cert). Set it explicitly only if
-   you need `verify-full` against DO's own downloadable CA certificate.
+3. **TLS needs the cluster's own CA.** DO Managed Postgres signs its server
+   certificate with the cluster's private *project CA*, which no system trust
+   store contains. Without it, every connection fails with
+   `CERTIFICATE_VERIFY_FAILED: self-signed certificate in certificate chain`.
+   This was found on the first real staging bring-up (2026-10-03); the earlier
+   claim here that DO "presents a publicly-trusted chain" was false.
+   `app.yaml` binds `ORACLE_DB_CA_CERT: ${neoh-postgres.CA_CERT}` (PEM text) on
+   api and worker, and `db/connection.py` / `run_migrations.py` load it as
+   `ssl` cadata. CI's migration step fetches the same CA with
+   `doctl databases get-ca`. By hand:
+   `doctl databases get-ca <cluster-id> -o json | python3 -c 'import base64,json,sys;print(base64.b64decode(json.load(sys.stdin)["certificate"]).decode())'`.
 4. Migrations: `backend/run_migrations.py`'s `_admin_credentials()` already
    has a plain-env-var path that needs no cloud SDK —
    `ORACLE_DB_ADMIN_USER`/`ORACLE_DB_ADMIN_PASSWORD` (the cluster's admin
@@ -165,8 +181,12 @@ sourced as follows:
 |---|---|
 | `ORACLE_SECRET_KEY`, `ORACLE_ENCRYPTION_MASTER_KEY` | Generate once (`openssl rand -hex 32`), store nowhere else. Rotating either invalidates existing sessions/encrypted data — see `config.py`'s weak-secret checks for the minimum entropy this must clear. |
 | `ORACLE_ADMIN_ID`, `ORACLE_ADMIN_PASSPHRASE` | The operator/platform-admin login — choose, don't reuse a personal password. |
+| `ORACLE_ADMIN_TOTP_SECRET` or `ORACLE_ADMIN_OTP_EMAIL` | Operator second factor — production refuses to boot with neither. TOTP: `scripts/generate-operator-totp.py`. |
+| `ORACLE_DB_PLATFORM_PASSWORD` | Password of `oracle_platform_login` (migration 0120). Same value on the app AND the GitHub environment — the migration step creates the role with it. `openssl rand -hex 24`. |
+| `ORACLE_ALERT_EMAIL` | Where `[Neoh] <component> <STATE>` alerts go (`backend/ops_alerts.py`). Unset = alerts reach only the logs. Set on api AND worker. |
 | `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN` | Twilio console. |
-| `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET` | Stripe dashboard — the webhook secret is per-endpoint, generated when you register the DO backend's `/billing/webhook` URL in Stripe. |
+| `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET` | Stripe dashboard — the webhook secret is per-endpoint, generated when you register the DO backend's `/billing/webhook` URL in Stripe. The key is needed on the **worker** too (account erasure stops renewal there). |
+| `STRIPE_PRICE_ID` | The plan's `price_…` (test-mode price on staging, live price on production). Checkout refuses to run without it. |
 | `ORACLE_BRIDGE_ACCESS_TOKEN` | Bridge Interactive / RESO MLS data provider. |
 | `ORACLE_SMTP_HOST/USERNAME/PASSWORD` | Your transactional-mail provider (Gmail app password, SendGrid SMTP, etc. — see `backend/smtp_mailer.py`). |
 | `ORACLE_FIREWORKS_API_KEY` (or Bedrock/Foundry keys, if used instead) | The chosen `ORACLE_AI_CHAT_PROVIDER`'s console. |
@@ -175,6 +195,16 @@ sourced as follows:
 | `ORACLE_S3_ACCESS_KEY_ID/SECRET` | DO Spaces access keys (Account → API → Spaces Keys). |
 | `VITE_GOOGLE_MAPS_KEY`, `VITE_GOOGLE_MAP_ID` | These are **browser-public** despite living in Actions secrets — the Maps key is referrer-restricted in the Google console, not actually secret. They ship in the JS bundle regardless of where they're stored in CI. |
 | GitHub Actions: `DIGITALOCEAN_ACCESS_TOKEN`, `DIGITALOCEAN_REGISTRY`, `DIGITALOCEAN_APP_ID` | DO API token (Account → API), your Container Registry name, and the App Platform app's ID (`doctl apps list` after the first manual `doctl apps create`). |
+
+**Optional provider support** — deliberately absent from `app.yaml`; add the
+key to **api and worker** only when the provider is actually used:
+`TELNYX_API_KEY`/`TELNYX_PUBLIC_KEY` (hosted SMS, `docs/telnyx-hosted-sms-runbook.md`),
+`PLIVO_AUTH_ID`/`PLIVO_AUTH_TOKEN` (alternate voice carrier),
+`GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET` (Calendar / Google sign-in),
+`RUNPOD_API_KEY` + `RECON_POD_*` (3D reconstruction, `docs/runpod-pods-runbook.md`),
+`DASHSCOPE_API_KEY` (realtime voice model — processes in **Singapore** by
+default; read `docs/subprocessor-inventory.md` before enabling it). The
+launch-readiness check reports each one as a WARN, never a blocker.
 
 **Never** commit a real value to `.env.example`/`.env.prod.example` (both
 stay templates), and never expose a backend-only secret through a `VITE_*`
@@ -192,10 +222,9 @@ component per DO's instructions, then:
   callback URLs, OAuth redirect URIs, and client-facing links
   (`commands_api.py`, `telephony_api.py`, `config.py`). Set to the API's
   final public HTTPS URL.
-- `VITE_API_BASE` / `VITE_WS_URL` (frontend build args) — the app spec
-  wires these to `${api.PUBLIC_URL}` automatically via App Platform's
-  cross-component variable binding, so they stay correct across deploys
-  without manual editing once the domain is attached.
+- `VITE_API_BASE` / `VITE_WS_URL` (frontend build args) — deliberately
+  **empty**: web and api share one origin, so the one bundle calls its own
+  origin in both environments (see "Deployment flow" below).
 - Twilio webhooks (`/api/commands/webhooks/twilio*`,
   `/api/telephony/webhooks/twilio/*`) and the Stripe webhook
   (`/billing/webhook`) are registered in each provider's own dashboard
@@ -205,7 +234,8 @@ component per DO's instructions, then:
 - `infra/digitalocean/app.yaml`'s top-level `ingress.rules` explicitly routes
   every non-`/api` prefix the backend actually serves (`/auth`, `/billing` —
   including the Stripe webhook, `/admin`, `/ws`, `/health`, `/version`,
-  `/docs`) to the `api` component, with `/` as the final catch-all to `web`.
+  `/portal`) to the `api` component, with `/` as the final catch-all to `web`.
+  `/docs` and `/openapi.json` are deliberately not routed (review WEB-2).
   A naive two-rule `/api` → api, `/` → web split (the obvious first attempt)
   would silently 404 all of those on the static site instead of reaching
   the backend — verified against the real route table in `server.py` before
@@ -402,7 +432,11 @@ New/updated for this migration, all passing:
 ## Remaining manual DigitalOcean setup
 
 Nothing in this repo can create your actual DigitalOcean resources — that
-needs your DO account and API token:
+needs your DO account and API token. **Staging first:** the exact,
+copy-pasteable command sequence (registry, clusters, bucket, bootstrap images,
+app, GitHub environment, secrets) is [`staging-setup.md`](staging-setup.md).
+Production is the same sequence with the production names. After either one, run
+`scripts/neoh-launch-readiness.py --env <env>`.
 
 0. **Do this one well before deployment day, not on it**: check the
    account's resource limit tier (Settings → Account → Limits, or
@@ -426,7 +460,7 @@ needs your DO account and API token:
    will fail, deliberately. Bootstrap:
    ```sh
    doctl registry login
-   docker build -t registry.digitalocean.com/<reg>/neoh-backend:bootstrap -f backend/Dockerfile .
+   docker build -t registry.digitalocean.com/<reg>/neoh-backend:bootstrap -f backend/Dockerfile backend
    docker build -t registry.digitalocean.com/<reg>/neoh-frontend:bootstrap -f oracle-app/Dockerfile oracle-app
    docker push …/neoh-backend:bootstrap && docker push …/neoh-frontend:bootstrap
    # read each digest back:  docker inspect --format '{{index .RepoDigests 0}}' <image>
@@ -479,6 +513,11 @@ own pricing page before budgeting:
 | Managed Valkey | smallest tier | ~$15 |
 | Spaces | 250GB + CDN | $5 |
 | **Total** | | **~$240/month** |
+
+Staging is **reduced size** (owner decision, 2026-10-03), about **$109/month**.
+It has the same shape but less capacity: api 2× `apps-s-1vcpu-1gb`, worker 1× `apps-s-1vcpu-2gb`,
+web 1×, Postgres `db-s-1vcpu-2gb`. The breakdown and the production-parity
+alternative are in [`staging-setup.md`](staging-setup.md#cost).
 
 Twilio, Stripe, Bridge/RESO, Fireworks, and RunPod GPU usage are all
 usage-billed separately and not included — they scale with actual customer

@@ -346,7 +346,11 @@ jobs:
             --build-arg BUILD_TIMESTAMP="${{ steps.release.outputs.built_at }}" \
             -t "${REGISTRY}/neoh-backend:${{ steps.release.outputs.sha }}" \
             -t "${REGISTRY}/neoh-backend:latest" \
-            -f backend/Dockerfile .
+            -f backend/Dockerfile backend
+          # Context is backend/, as in docker-compose.yml: the Dockerfile COPYs
+          # requirements.txt from its context, and only backend/.dockerignore
+          # exists. A repo-root context failed the build and would have copied
+          # the whole monorepo into /app (test_ci_build_contexts.py).
           docker push "${REGISTRY}/neoh-backend:${{ steps.release.outputs.sha }}"
           docker push "${REGISTRY}/neoh-backend:latest"
         env:
