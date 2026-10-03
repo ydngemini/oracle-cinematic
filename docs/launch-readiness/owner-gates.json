@@ -37,9 +37,19 @@
       "area": "privacy",
       "class": "blocker",
       "environments": ["production", "staging"],
+      "status": "done",
+      "title": "Erasure owner can see every row under FORCE RLS on DigitalOcean",
+      "how_to_close": "confirm the SECURITY DEFINER erasure owner (the migration role) is BYPASSRLS or every erasable table has a platform DELETE+SELECT policy, so an erasure cannot silently delete 0 rows and report clean",
+      "evidence": "2026-10-03, lead, on neoh-postgres-staging: doadmin (the migration role, owner of the DEFINER functions) has BYPASSRLS=true and is not superuser; oracle_app_login (doctl-created) has no superuser/BYPASSRLS/CREATEROLE/CREATEDB. Condition: doadmin only ever runs migrations, never the app."
+    },
+    {
+      "id": "privacy_erasure_live_on_do",
+      "area": "privacy",
+      "class": "warning",
+      "environments": ["production", "staging"],
       "status": "open",
-      "title": "Erasure works under FORCE RLS with DigitalOcean's non-superuser doadmin",
-      "how_to_close": "on staging, run tests/test_privacy_lifecycle_live.py (and tests/privacy_lifecycle.sql) against the DO cluster: confirm the SECURITY DEFINER erasure owner is BYPASSRLS or every erasable table has a platform DELETE+SELECT policy, so an erasure cannot silently delete 0 rows and report clean",
+      "title": "Live erasure test run against the DigitalOcean cluster",
+      "how_to_close": "run backend/tests/test_privacy_lifecycle_live.py and tests/privacy_lifecycle.sql against neoh-postgres-staging (throwaway tenant) and record the result in docs/launch-state.md",
       "evidence": ""
     },
     {

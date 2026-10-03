@@ -22,7 +22,10 @@
 #   APP_URL           (required)
 #   EXPECTED_GIT_SHA  (optional — skip to only check that /version answers)
 #   SPACES_ENDPOINT   (default https://nyc3.digitaloceanspaces.com)
-#   SPACES_BUCKET     (default neoh-media)
+#   SPACES_BUCKET     (default neoh-media; use neoh-media-staging for staging)
+#   REQUIRE_CALLBACK_PROVIDERS  space-separated providers (as named in
+#                     callback-routes.txt, e.g. "stripe") whose webhook MUST be
+#                     configured here; otherwise a not-configured one is a WARN
 #
 # Requires: curl, and (only for check 4) the aws CLI with Spaces keys set as
 # AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY — Spaces accepts the same CLI,
@@ -121,17 +124,33 @@ echo "== 2c. Provider callback URLs are still reachable =="
 # Each probe is unsigned and must get its EXACT expected status — an unmounted
 # POST path is answered 403 by the CSRF middleware, so "not 404" would pass a
 # missing webhook. See infra/digitalocean/callback-routes.txt.
+#
+# DigitalOcean's edge REWRITES an application 503 into an HTML 504 and keeps
+# the real status in `x-do-orig-status`. A webhook whose signing secret is not
+# configured answers 503 (it refuses to verify with an empty key), so on an
+# environment without that provider the probe sees 504 + x-do-orig-status: 503.
+# That means "provider not configured HERE": a WARN, unless the provider is
+# listed in REQUIRE_CALLBACK_PROVIDERS (e.g. "stripe" on a production that
+# bills), where it is a FAIL. Any other mismatch is a FAIL.
 CALLBACKS="$(dirname "${BASH_SOURCE[0]}")/callback-routes.txt"
+CB_HEADERS="$(mktemp)"
 if [ -f "$CALLBACKS" ]; then
   while read -r method path want provider; do
     case "$method" in ''|'#'*) continue ;; esac
-    got=$(curl -s -m 15 -o /dev/null -w '%{http_code}' -X "$method" "$APP_URL$path" || echo "000")
+    got=$(curl -s -m 15 -o /dev/null -D "$CB_HEADERS" -w '%{http_code}' -X "$method" "$APP_URL$path" || echo "000")
+    orig=$(tr -d '\r' < "$CB_HEADERS" | awk -F': ' 'tolower($1)=="x-do-orig-status"{print $2}' | tail -1)
     if [ "$got" = "$want" ]; then
       pass "$provider callback $method $path -> $got"
+    elif [ "$got" = "504" ] && [ "$orig" = "503" ]; then
+      case " ${REQUIRE_CALLBACK_PROVIDERS:-} " in
+        *" $provider "*) fail "$provider callback $method $path -> 503 (shown as 504 by DO's edge): its signing secret is not configured, but this environment requires $provider" ;;
+        *)               warn "$provider callback $method $path -> 503 (shown as 504 by DO's edge): $provider is not configured on this environment" ;;
+      esac
     else
       fail "$provider callback $method $path -> $got (expected $want) — the provider's deliveries are failing"
     fi
   done < "$CALLBACKS"
+  rm -f "$CB_HEADERS"
 else
   fail "callback-routes.txt not found next to this script"
 fi
@@ -184,11 +203,18 @@ for want in "content-security-policy:.*frame-ancestors 'none'" "x-frame-options:
     fail "API is missing '${want}'"
   fi
 done
-docs_code=$(curl -s -o /dev/null -w '%{http_code}' "$APP_URL/openapi.json" || echo "000")
-case "$docs_code" in
-  200) fail "GET /openapi.json -> 200: the API map is public (ORACLE_ENV must be prod)" ;;
-  *)   pass "API schema not published (/openapi.json -> $docs_code)" ;;
-esac
+# /openapi.json is not routed to the api, so publicly it falls through to the
+# SPA, whose index.html fallback answers 200 text/html. Only an actual JSON
+# API map is a leak — a bare 200 used to fail every release on that fallback.
+docs_body=$(curl -s -m 15 -o - -w '\n%{http_code} %{content_type}' "$APP_URL/openapi.json" || echo "000 -")
+docs_meta=$(printf '%s' "$docs_body" | tail -n 1)
+docs_code=${docs_meta%% *}
+if [ "$docs_code" = "200" ] && { printf '%s' "$docs_meta" | grep -qi 'application/json' \
+     || printf '%s' "$docs_body" | head -c 200 | grep -q '"openapi"'; }; then
+  fail "GET /openapi.json -> 200 JSON: the API map is public (ORACLE_ENV must be prod)"
+else
+  pass "API schema not published (/openapi.json -> $docs_meta)"
+fi
 
 echo
 if [ "$FAIL" = "0" ]; then

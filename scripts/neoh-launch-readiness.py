@@ -588,8 +588,11 @@ class Audit:
                   (" (test mode enforced at boot: billing.py refuses sk_live_ outside production)"
                    if self.env != "production" else ""))
                  if not missing else f"unset: {', '.join(missing)}"
-                 + ("" if self.charging else " (not charging yet — run without --not-charging once you bill)"),
-                 blocking=self.charging)
+                 + ("" if self.charging else " (not charging yet — run without --not-charging once you bill)")
+                 + ("" if self.env == "production" else " (staging cannot charge: recovery mode)"),
+                 # Staging cannot charge anyone (recovery mode), so missing test
+                 # keys there limit what it can rehearse; they do not block launch.
+                 blocking=self.charging and self.env == "production")
         if self.env == "production" and not missing:
             self.add("stripe_live_mode", "billing", "Stripe key is LIVE mode", False,
                      "not verifiable remotely (value is encrypted) — confirm sk_live_ and the live "
@@ -598,7 +601,9 @@ class Audit:
         self.add("email", "providers", "Email configured", not e_missing,
                  "SMTP host/username/password set (invites, password reset and operator codes depend "
                  "on it)" if not e_missing else f"unset: {', '.join(e_missing)} — invites and password "
-                 "reset cannot send", blocking=True)
+                 "reset cannot send" + ("" if self.env == "production" else
+                                        " (staging cannot send anyway: recovery mode)"),
+                 blocking=self.env == "production")
         self._capability("ai_provider", "AI provider configured", AI_SETS, blocking=True,
                          unmet="no AI provider key — Neoh cannot answer")
         self._capability("voice", "Voice provider configured", VOICE_SETS,

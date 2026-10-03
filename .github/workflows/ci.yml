@@ -562,6 +562,7 @@ jobs:
           chmod +x infra/digitalocean/smoke-test.sh
           APP_URL="${NEOH_PUBLIC_API_BASE}" \
           EXPECTED_GIT_SHA="${{ steps.release.outputs.sha }}" \
+          SPACES_BUCKET=neoh-media-staging \
             ./infra/digitalocean/smoke-test.sh
 
       # Uploaded LAST, and only reached if everything above passed. Its
@@ -826,6 +827,7 @@ jobs:
           chmod +x infra/digitalocean/smoke-test.sh
           APP_URL="${NEOH_PUBLIC_API_BASE}" \
           EXPECTED_GIT_SHA="${{ env.PROMOTE_SHA }}" \
+          REQUIRE_CALLBACK_PROVIDERS="${{ vars.REQUIRE_CALLBACK_PROVIDERS }}" \
             ./infra/digitalocean/smoke-test.sh
 
       # The release record: what went out, from which staged run, rendered
