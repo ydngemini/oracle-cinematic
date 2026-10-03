@@ -1,10 +1,13 @@
 import { useCallback, useEffect, useState } from 'react';
-import { ChevronDown, Radar } from 'lucide-react';
+import { ChevronDown, Radar, Sparkles } from 'lucide-react';
 
 import { crmGet } from '../state/useCrmApi';
+import { useOptionalAssistant } from '../components/AssistantContext';
 import { ConfidenceMeter, DecisionBar, EvidenceList } from '../components/IntelligenceFeed';
 import { VIEWS } from '../routes';
 import { arrange } from './timeOfDay';
+import { handledPhrase } from './actionLabels';
+import { wireContext } from './useNeohChannel';
 import styles from './NeohHome.module.css';
 
 /**
@@ -40,11 +43,79 @@ function greeting(date) {
   return 'Good evening';
 }
 
-function humanize(text) {
-  return String(text || '').replace(/_/g, ' ');
+/**
+ * "Ask Neoh about Sarah" — the first thing worth doing in this product, made
+ * the obvious thing to do. It opens the Neoh tab with Sarah as the visible,
+ * removable context and the question staged; it never sends on its own.
+ */
+function useAskNeoh(onNavigate) {
+  const assistant = useOptionalAssistant();
+  return useCallback((subject, question) => {
+    if (!assistant) return;
+    if (subject && wireContext(subject)) assistant.registerRecord(subject, 'home');
+    assistant.requestCommand({ rawText: question, surface: 'conversation' });
+    onNavigate?.(VIEWS.neoh);
+  }, [assistant, onNavigate]);
 }
 
-function HomeItem({ opportunity, rank, lead, showDecisions, onDecided }) {
+function AskNeoh({ label, onAsk }) {
+  return (
+    <button type="button" className={styles.ask} onClick={onAsk}>
+      <Sparkles aria-hidden="true" size={15} />
+      <span>{label}</span>
+    </button>
+  );
+}
+
+/**
+ * A quiet day still has a first move. If there is anyone or anything in the
+ * CRM, offer to ask Neoh about the most recent one; if there is nothing at
+ * all, say so and point at the one action that fixes it. Fetched only when
+ * the briefing had nothing to show, so a busy Home pays nothing for it.
+ */
+const RECENT_CONTEXT = Object.freeze({ people: 'client', properties: 'lead' });
+
+function QuietStart({ onNavigate, onAsk }) {
+  const [state, setState] = useState({ loading: true, record: null, failed: false });
+  useEffect(() => {
+    let live = true;
+    crmGet('/api/search/recent?limit=6', { retries: 0 }).then(
+      (data) => {
+        if (!live) return;
+        const hit = (data?.results || []).find((row) => RECENT_CONTEXT[row.kind] && row.label);
+        setState({
+          loading: false,
+          failed: false,
+          record: hit ? { type: RECENT_CONTEXT[hit.kind], id: hit.id, label: hit.label } : null,
+        });
+      },
+      () => { if (live) setState({ loading: false, record: null, failed: true }); },
+    );
+    return () => { live = false; };
+  }, []);
+
+  if (state.loading) return <div className={styles.skeletonAsk} aria-hidden="true" />;
+  if (state.record) {
+    return (
+      <AskNeoh
+        label={`Ask Neoh about ${state.record.label}`}
+        onAsk={() => onAsk(state.record, `What should I know about ${state.record.label} today?`)}
+      />
+    );
+  }
+  // Recent could not be read: say nothing rather than claim the CRM is empty.
+  if (state.failed) return null;
+  return (
+    <div className={styles.firstRun}>
+      <p className={styles.firstRunText}>No contacts yet. Import them or add your first client.</p>
+      <button type="button" className={styles.firstRunAction} onClick={() => onNavigate?.('people')}>
+        Add or import contacts
+      </button>
+    </div>
+  );
+}
+
+function HomeItem({ opportunity, rank, lead, showDecisions, onDecided, onAsk }) {
   const [open, setOpen] = useState(false);
   return (
     <li className={`${styles.item} ${lead ? styles.itemLead : ''}`}>
@@ -64,6 +135,9 @@ function HomeItem({ opportunity, rank, lead, showDecisions, onDecided }) {
       <h2 className={styles.subject}>{opportunity.subject}</h2>
       <p className={styles.headline}>{opportunity.headline}</p>
       <p className={styles.action}>{opportunity.recommended_action}</p>
+      {lead && onAsk && opportunity.subject && (
+        <AskNeoh label={`Ask Neoh about ${opportunity.subject}`} onAsk={onAsk} />
+      )}
 
       <button
         type="button"
@@ -111,7 +185,7 @@ function Handled({ changed, expanded }) {
           {rows.map(([tool, n]) => (
             <li key={tool}>
               <span className={styles.handledCount}>{n}</span>
-              <span>{humanize(tool)}</span>
+              <span>{handledPhrase(tool, n)}</span>
             </li>
           ))}
         </ul>
@@ -138,6 +212,7 @@ function CannotSee({ perception }) {
 export function NeohHome({ onNavigate }) {
   const [briefing, setBriefing] = useState(null);
   const [status, setStatus] = useState('loading');
+  const ask = useAskNeoh(onNavigate);
 
   const load = useCallback(async (isCancelled = () => false) => {
     try {
@@ -168,9 +243,16 @@ export function NeohHome({ onNavigate }) {
     return (
       <div className={styles.shell}>
         <p className={styles.error} role="alert">
-          The briefing did not load. This screen reads live data and will not
-          show a stale one, because a stale briefing is worse than none.
+          Today&rsquo;s briefing didn&rsquo;t load. Home only shows live data, so it
+          shows nothing rather than an old briefing. Work and Neoh still work.
         </p>
+        <button
+          type="button"
+          className={styles.more}
+          onClick={() => { setStatus('loading'); void load(); }}
+        >
+          Try again
+        </button>
       </div>
     );
   }
@@ -179,6 +261,7 @@ export function NeohHome({ onNavigate }) {
   const needYou = (briefing?.attention?.opportunities ?? []).length;
   const handled = briefing?.changed?.handled_automatically ?? 0;
   const portfolio = briefing?.attention?.portfolio;
+  const newClients = briefing?.changed?.new_clients ?? 0;
 
   return (
     <div className={styles.shell}>
@@ -188,16 +271,24 @@ export function NeohHome({ onNavigate }) {
           {needYou === 0 ? 'Nothing needs you right now.' : `${needYou} ${needYou === 1 ? 'thing needs' : 'things need'} you.`}
           {handled > 0 && <span className={styles.summaryHandled}> Neoh handled {handled}.</span>}
         </h1>
+        {newClients > 0 && (
+          <p className={styles.since}>
+            {newClients} new {newClients === 1 ? 'client' : 'clients'} since yesterday.
+          </p>
+        )}
       </header>
 
       {layout.items.length === 0 ? (
-        <p className={styles.quiet}>
-          Nothing is above the confidence Neoh will speak at.
-          {briefing?.suppressed_low_confidence > 0 && (
-            <> {briefing.suppressed_low_confidence} weaker signal
-              {briefing.suppressed_low_confidence === 1 ? ' was' : 's were'} held back rather than shown as a guess.</>
-          )}
-        </p>
+        <>
+          <p className={styles.quiet}>
+            Nothing is above the confidence Neoh will speak at.
+            {briefing?.suppressed_low_confidence > 0 && (
+              <> {briefing.suppressed_low_confidence} weaker signal
+                {briefing.suppressed_low_confidence === 1 ? ' was' : 's were'} held back rather than shown as a guess.</>
+            )}
+          </p>
+          <QuietStart onNavigate={onNavigate} onAsk={ask} />
+        </>
       ) : (
         <ol className={styles.items}>
           {layout.items.map((opportunity, index) => (
@@ -214,6 +305,12 @@ export function NeohHome({ onNavigate }) {
                 lead={index === 0}
                 showDecisions={layout.showDecisions}
                 onDecided={load}
+                onAsk={index === 0 ? () => ask(
+                  opportunity.subject_id
+                    ? { type: opportunity.subject_type || 'client', id: opportunity.subject_id, label: opportunity.subject }
+                    : null,
+                  `What should I do next with ${opportunity.subject}?`,
+                ) : undefined}
               />
             )
           ))}

@@ -51,17 +51,18 @@ import styles from './CrmShell.module.css';
 // Each tab is its own chunk — a field agent on LTE only pays for the tab
 // they open. (Same code-split rationale the HUD used for its 3D canvas.)
 const loadNeohHome = () => import('../neoh/NeohHome');
-const loadPeopleTab = () => import('./PeopleTab');
-const loadOurAITab = () => import('./OurAITab');
+const loadUniversalWorkspace = () => import('../neoh/UniversalWorkspace');
+const loadNeohConversation = () => import('../neoh/NeohConversation');
 const loadPersonalAITab = () => import('./PersonalAITab');
 const loadMyProfileTab = () => import('./MyProfileTab');
 const loadAdminOpsTab = () => import('./AdminOpsTab');
 
 const NeohHome = lazy(() =>
   import('../neoh/NeohHome').then((m) => ({ default: m.NeohHome })));
-const OurAITab = lazy(loadOurAITab);
 const UniversalWorkspace = lazy(() =>
-  import('../neoh/UniversalWorkspace').then((m) => ({ default: m.UniversalWorkspace })));
+  loadUniversalWorkspace().then((m) => ({ default: m.UniversalWorkspace })));
+const NeohConversation = lazy(() =>
+  loadNeohConversation().then((m) => ({ default: m.NeohConversation })));
 const EntitySheet = lazy(() =>
   import('../neoh/EntitySheet').then((m) => ({ default: m.EntitySheet })));
 const NeohSurface = lazy(() =>
@@ -76,15 +77,17 @@ const MyProfileTab = lazy(loadMyProfileTab);
 const AdminOpsTab = lazy(loadAdminOpsTab);
 
 // Three destinations. The six old tabs are not gone — People, Inbox, Deals
-// and Property View are Work views chosen by ?type, and Our AI's workspaces
-// live there too until they are re-homed — but they are no longer places the
+// and Property View are Work views chosen by ?type, and the old AI hub's
+// workspaces (sales, social, homeowners, automations, sites) are Work views
+// too, behind one quiet "Neoh tools" link — but none of them is a place the
 // agent has to know about to find anything. Home says what matters, Work
 // holds everything, Neoh is the conversation. `preload` warms the chunk each
-// view renders first.
+// view renders FIRST: Work opens on Recent (UniversalWorkspace), not on the
+// People tab it used to preload.
 const TABS = [
   { id: VIEWS.home, label: 'Home', Icon: House, preload: loadNeohHome },
-  { id: VIEWS.work, label: 'Work', Icon: Search, preload: loadPeopleTab },
-  { id: VIEWS.neoh, label: 'Neoh', Icon: Radar, preload: loadOurAITab },
+  { id: VIEWS.work, label: 'Work', Icon: Search, preload: loadUniversalWorkspace },
+  { id: VIEWS.neoh, label: 'Neoh', Icon: Radar, preload: loadNeohConversation },
 ];
 
 const TAB_KEY = 'oracle_crm_tab';
@@ -324,6 +327,10 @@ export function CrmShell() {
     setRoute((prev) => ({ ...prev, entity: { ...prev.entity, tour: true } }));
   }, [route.entity]);
 
+  // The floating bar's "Open the full conversation". The bar hands its draft
+  // over itself (AssistantContext), so this is only a change of view.
+  const expandNeoh = useCallback(() => select(VIEWS.neoh), [select]);
+
   const navigateSales = useCallback((path, replace = false) => {
     if (path === '/our-ai') {
       go({ view: VIEWS.work, params: workParams('ai'), entity: null }, replace);
@@ -404,16 +411,22 @@ export function CrmShell() {
 
   // The header is transparent until content passes under it. Passive, and
   // compared before setting, so a scroll does not re-render on every frame.
+  // The view, not the window, is the scroll container (the shell is a fixed
+  // 100dvh frame), so a window listener never fired and the header never
+  // separated from the content scrolling under it.
   const [scrolled, setScrolled] = useState(false);
+  const mainRef = useRef(null);
   useEffect(() => {
+    const node = mainRef.current;
+    if (!node) return undefined;
     const onScroll = () => {
-      const past = window.scrollY > 4;
+      const past = node.scrollTop > 4;
       setScrolled((was) => (was === past ? was : past));
     };
     onScroll();
-    window.addEventListener('scroll', onScroll, { passive: true });
-    return () => window.removeEventListener('scroll', onScroll);
-  }, []);
+    node.addEventListener('scroll', onScroll, { passive: true });
+    return () => node.removeEventListener('scroll', onScroll);
+  }, [viewKey]);
 
   return (
     <StateProvider>
@@ -470,6 +483,7 @@ export function CrmShell() {
         default="none"
       >
         <main
+          ref={mainRef}
           className={styles.scrollableContent}
         >
           <div
@@ -499,14 +513,9 @@ export function CrmShell() {
                         onOpenEntity={openEntity}
                       />
                     ) : route.view === VIEWS.neoh ? (
-                      // The full-screen conversation lands in U7. Until then
-                      // Neoh is the AI workspace it has always been.
-                      <OurAITab
-                        onNavigate={select}
-                        salesRoute={null}
-                        onSalesNavigate={navigateSales}
-                        initialWorkspace="cowork"
-                      />
+                      // The conversation, full height. Same thread as the
+                      // floating bar (it lives in the shared store).
+                      <NeohConversation onNavigate={select} onOpenEntity={openEntity} />
                     ) : (
                       <NeohHome onNavigate={select} />
                     )}
@@ -609,11 +618,21 @@ export function CrmShell() {
           </Suspense>
         </ErrorBoundary>
       )}
-      <ErrorBoundary label="Personal AI">
-        <Suspense fallback={null}>
-          <NeohSurface entityOpen={Boolean(route.entity)} onOpenEntity={openEntity} />
-        </Suspense>
-      </ErrorBoundary>
+      {/* The quick way in, everywhere except the Neoh tab — which IS the
+          conversation and has its own docked composer. One composer on
+          screen, never two. */}
+      {route.view !== VIEWS.neoh && (
+        <ErrorBoundary label="Neoh">
+          <Suspense fallback={null}>
+            <NeohSurface
+              entityOpen={Boolean(route.entity)}
+              onOpenEntity={openEntity}
+              onExpand={expandNeoh}
+              onNavigate={select}
+            />
+          </Suspense>
+        </ErrorBoundary>
+      )}
       <ProductTour
         open={tourOpen}
         stepIndex={tourStep}

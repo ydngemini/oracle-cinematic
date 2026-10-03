@@ -40,6 +40,38 @@ const MissionBuilder = lazy(() =>
   import('./MissionBuilder').then((m) => ({ default: m.MissionBuilder })));
 const IntelligenceFeed = lazy(() =>
   import('../components/IntelligenceFeed').then((m) => ({ default: m.IntelligenceFeed })));
+const AgentTwin = lazy(() => import('./AgentTwin').then((m) => ({ default: m.AgentTwin })));
+
+/**
+ * The Work views with no chip of their own. They are not destinations to
+ * learn: one quiet line under Recent, so each stays one tap away without a
+ * second navigation bar. "Neoh tools" is the old AI hub (sales, social,
+ * homeowners, automations, sites), moved out of the Neoh tab when that tab
+ * became the conversation.
+ */
+const MORE_IN_WORK = Object.freeze([
+  { type: 'opportunities', label: 'Opportunities' },
+  { type: 'missions', label: 'Missions' },
+  { type: 'ai', label: 'Neoh tools' },
+]);
+
+function MoreInWork({ onNavigate }) {
+  if (!onNavigate) return null;
+  return (
+    <nav className={styles.more} aria-label="More in Work">
+      <span className={styles.moreLabel}>Also in Work</span>
+      <ul className={styles.moreList}>
+        {MORE_IN_WORK.map((item) => (
+          <li key={item.type}>
+            <button type="button" className={styles.moreLink} onClick={() => onNavigate(item.type)}>
+              {item.label}
+            </button>
+          </li>
+        ))}
+      </ul>
+    </nav>
+  );
+}
 
 const AI_WORKSPACES = new Set(['ai', 'sales', 'social', 'homeowners', 'automations', 'sites']);
 
@@ -232,7 +264,7 @@ export function UniversalWorkspace({
   else if (type === 'deals') view = <DealsTab onNavigate={onNavigate} />;
   else if (type === 'properties') view = <PropertiesTab onNavigate={onNavigate} />;
   else if (type === 'people') view = <PeopleTab onNavigate={onNavigate} />;
-  else if (type === 'opportunities') view = <IntelligenceFeed />;
+  else if (type === 'opportunities') view = <><IntelligenceFeed /><AgentTwin /></>;
   else if (type === 'missions') view = <MissionBuilder onOpenEntity={onOpenEntity} />;
   else if (AI_WORKSPACES.has(type)) {
     view = (
@@ -243,7 +275,7 @@ export function UniversalWorkspace({
         initialWorkspace={type === 'ai' ? undefined : type}
       />
     );
-  } else view = <Recent onOpen={open} />;
+  } else view = <><Recent onOpen={open} /><MoreInWork onNavigate={onNavigate} /></>;
 
   return (
     <div className={styles.work} data-work-type={type}>

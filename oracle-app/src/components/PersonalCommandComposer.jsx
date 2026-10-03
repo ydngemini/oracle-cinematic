@@ -50,8 +50,12 @@ export function PersonalCommandComposer({
   const resolvedClientId = commandRequest?.clientId || clientId;
   const resolvedPropertyId = commandRequest?.propertyId || propertyId;
 
+  // A request handed to "Neoh" (Home, Work, record sheets) belongs to the
+  // Neoh composer. This draft-and-authorize box used to grab it too — the
+  // two raced for every request and whichever ran first cleared it — so it
+  // now takes only requests addressed to it explicitly.
   useEffect(() => {
-    if (!commandRequest) return undefined;
+    if (!commandRequest || commandRequest.surface !== 'command') return undefined;
     let active = true;
     queueMicrotask(() => {
       if (!active) return;
@@ -212,8 +216,8 @@ export function PersonalCommandComposer({
         <div className={styles.heading}>
           <span className={styles.botMark}><Bot aria-hidden="true" /></span>
           <div>
-            <h2>Personal AI Command</h2>
-            <p>Draft first. Nothing leaves NEOH without your authorization.</p>
+            <h2>Draft an action</h2>
+            <p>Draft first. Nothing leaves Neoh without your approval.</p>
           </div>
         </div>
         <label className={styles.inputLabel}>

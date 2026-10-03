@@ -1,6 +1,8 @@
 /* ─── Neoh surface ─────────────────────────────────────────────────────────
    One element, docked above the deck, that changes shape. The radius is the
-   only thing that says "interactive" here; no border, no glow. */
+   only thing that says "interactive" here; no border, no glow. The field,
+   mic, send, chip and captions are shared with the Neoh tab and live in
+   NeohComposer.module.css. */
 
 .surface {
   position: fixed;
@@ -20,15 +22,19 @@
   overflow: hidden;
   outline: none;
 
-  /* Neoh's own material, not the shell's.
-     It wore `hud-glass-panel` — the same glass, gold hairline and blur the
-     header and deck wore — which is exactly backwards. The shell is meant to
-     disappear; this is the one object that should feel unusual. An opaque
-     surface with a real shadow reads as a thing sitting above the page, and
-     it is the only thing on screen allowed to. */
+  /* Neoh's own material, not the shell's: an opaque surface with a real
+     shadow reads as a thing sitting above the page, and it is the only thing
+     on screen allowed to. */
   background: var(--oracle-surface-raised);
   border: 1px solid var(--oracle-border-subtle);
   box-shadow: var(--shadow-float);
+}
+
+/* With the on-screen keyboard up the deck hides, and on iOS a fixed element
+   is positioned against the layout viewport — which the keyboard covers.
+   CrmShell publishes the visual viewport; sit just above its bottom edge. */
+:global(html[data-keyboard-open='true']) .surface {
+  bottom: calc(100% - var(--visual-viewport-height, 100%) - var(--visual-viewport-offset-top, 0px) + var(--space-2));
 }
 
 .surface[data-state="input"],
@@ -39,6 +45,10 @@
 
 .surface[data-state="result"] {
   max-height: min(70dvh, 40rem);
+}
+
+:global(html[data-keyboard-open='true']) .surface[data-state="result"] {
+  max-height: calc(var(--visual-viewport-height, 70dvh) - var(--space-6));
 }
 
 .surface[data-state="yielded"] {
@@ -53,6 +63,7 @@
   align-items: center;
   gap: var(--space-3);
   min-height: 3rem;
+  max-width: 100%;
   padding: 0 var(--space-4) 0 var(--space-3);
   border: none;
   background: transparent;
@@ -63,7 +74,12 @@
 }
 .pill:focus-visible { outline: 2px solid var(--oracle-accent); outline-offset: -2px; }
 
-.label { display: inline-block; }
+.label {
+  display: inline-block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 
 .kbd {
   padding: 2px 6px;
@@ -73,10 +89,9 @@
   font: 500 var(--text-xs) / 1 var(--font-mono);
 }
 
-/* The mark slot: where Neoh's face sits, in the pill and in the bar.
-   It is the same node in both (one layoutId), so the character travels with
-   the surface instead of being replaced when the shape changes. Icon scale,
-   deliberately — the pill must not grow to accommodate a mascot. */
+/* The mark slot: where Neoh's face sits, in the pill and in the bar. The
+   same node in both (one layoutId), so the character travels with the
+   surface instead of being replaced when the shape changes. */
 .markSlot {
   display: inline-flex;
   flex-shrink: 0;
@@ -100,48 +115,15 @@
   min-height: 3.25rem;
 }
 
-.input {
-  flex: 1;
+/* The chip gets its own line above the field, so a long address never
+   squeezes the field to nothing on a 320px phone. */
+.contextRow {
+  display: flex;
+  padding: var(--space-2) var(--space-3) 0;
   min-width: 0;
-  max-height: 8rem;
-  padding: var(--space-2) 0;
-  border: none;
-  background: transparent;
-  color: var(--oracle-text);
-  font: 500 var(--text-md) / 1.4 var(--font-sans);
-  resize: none;
-  outline: none;
-  field-sizing: content;
 }
-.input::placeholder { color: var(--oracle-text-ghost); }
 
-.record {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1);
-  max-width: 12rem;
-  padding: 4px 6px 4px 10px;
-  border-radius: var(--radius-pill);
-  background: var(--oracle-surface-sunken);
-  color: var(--oracle-text);
-  font: 500 var(--text-sm) / 1 var(--font-sans);
-  white-space: nowrap;
-}
-.record > span { overflow: hidden; text-overflow: ellipsis; }
-
-.recordClear {
-  display: inline-flex;
-  padding: 2px;
-  border: none;
-  border-radius: 50%;
-  background: transparent;
-  color: var(--oracle-text-ghost);
-  cursor: pointer;
-}
-.recordClear:hover { color: var(--oracle-text); }
-
-.iconBtn,
-.send {
+.iconBtn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -151,12 +133,11 @@
   border: none;
   border-radius: 50%;
   cursor: pointer;
+  background: transparent;
+  color: var(--oracle-text-dim);
 }
-.iconBtn { background: transparent; color: var(--oracle-text-dim); }
 .iconBtn:hover { background: var(--oracle-surface-sunken); color: var(--oracle-text); }
-.send { background: var(--oracle-accent); color: #1a1200; }
-.send:disabled { background: var(--oracle-surface-sunken); color: var(--oracle-text-ghost); cursor: default; }
-.iconBtn:focus-visible, .send:focus-visible { outline: 2px solid var(--oracle-accent); outline-offset: 2px; }
+.iconBtn:focus-visible { outline: 2px solid var(--oracle-accent); outline-offset: 2px; }
 
 .messages {
   flex: 1;
@@ -167,11 +148,16 @@
   border-bottom: 1px solid var(--oracle-border-subtle);
 }
 
-.notice {
-  margin: 0;
-  padding: 0 var(--space-4) var(--space-3);
-  color: var(--oracle-text-dim);
-  font-size: var(--text-sm);
+.srOnly {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 @media (max-width: 719px) {
@@ -180,11 +166,17 @@
   .surface[data-state="thinking"],
   .surface[data-state="result"] { width: calc(100% - 2 * var(--space-3)); }
   .kbd { display: none; }
+  .bar { gap: var(--space-1); padding-left: var(--space-3); }
 }
 
-/* Reduced motion for the face itself lives in NeohAvatar.module.css, which
-   keeps every state legible through expression and accent rather than
-   hiding it. Nothing left to suppress here. */
+/* On the narrowest phones every 36px decides whether the field is usable.
+   "Show the conversation" goes: the panel opens on its own after a send, and
+   "Open the full conversation" shows the whole thread. */
+@media (max-width: 479px) {
+  .historyBtn { display: none; }
+}
+
+/* Reduced motion for the face itself lives in NeohAvatar.module.css. */
 
 /* ── A rendered answer ────────────────────────────────────────────────── */
 
@@ -199,90 +191,9 @@
 }
 
 /* The sentence above the blocks. It says what was found and, where it
-   matters, what it is not — so it is prose, sized to be read, not a label. */
+   matters, what it is not — so it is prose, sized to be read. */
 .spoken {
   margin: 0;
   font: 500 var(--text-lg) / 1.35 var(--font-sans);
   color: var(--oracle-text-heading);
-}
-
-/* ── Microphone: a peer of the text field, not a mode switch ───────────────
-   It sits inside the composer, immediately beside send, because the
-   relationship has to be obvious at a glance: type OR speak to Neoh. A
-   floating mic button somewhere else on screen would read as a different
-   feature. */
-
-.mic {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 2.25rem;
-  height: 2.25rem;
-  flex-shrink: 0;
-  border: none;
-  border-radius: 50%;
-  background: transparent;
-  color: var(--oracle-text-dim);
-  cursor: pointer;
-}
-.mic:hover { background: var(--oracle-surface-sunken); color: var(--oracle-text); }
-.mic:focus-visible { outline: 2px solid var(--oracle-accent); outline-offset: 2px; }
-.mic:disabled { color: var(--oracle-text-ghost); cursor: default; }
-
-/* Permission prompt is open: busy, but not yet capturing. The state must not
-   claim to be listening while the browser is still asking. */
-.mic[data-speech="requesting"] { color: var(--oracle-text); opacity: 0.6; }
-
-/* Actually capturing. The one place in the composer that takes Neoh's cyan,
-   which is what ties the microphone to the character above it. */
-.mic[data-speech="listening"] {
-  background: color-mix(in srgb, #35c8f5 18%, transparent);
-  color: #1c7fa0;
-}
-.mic[data-speech="listening"]::after {
-  content: '';
-  position: absolute;
-  width: 2.25rem;
-  height: 2.25rem;
-  border-radius: 50%;
-  border: 1.5px solid color-mix(in srgb, #35c8f5 55%, transparent);
-  animation: neoh-mic-ring 1.8s ease-out infinite;
-}
-.mic { position: relative; }
-
-.mic[data-speech="error"] { color: var(--oracle-red); }
-
-@keyframes neoh-mic-ring {
-  0%   { transform: scale(0.82); opacity: 0.9; }
-  100% { transform: scale(1.25); opacity: 0; }
-}
-
-/* What Neoh is hearing, forming in place. Fixed line height so the composer
-   does not jump as words arrive. */
-.hearing {
-  margin: 0;
-  padding: 0 var(--space-4) var(--space-2);
-  min-height: 1.25rem;
-  color: var(--oracle-text-dim);
-  font: 400 var(--text-sm) / 1.25 var(--font-sans);
-  font-style: italic;
-}
-
-.noticeAction {
-  padding: 0;
-  border: none;
-  background: none;
-  color: var(--oracle-accent-ink);
-  font: 500 var(--text-sm) / 1 var(--font-sans);
-  cursor: pointer;
-}
-
-/* Larger target on touch, and the composer must clear the safe area. */
-@media (max-width: 719px) {
-  .mic { width: 2.5rem; height: 2.5rem; }
-  .mic[data-speech="listening"]::after { width: 2.5rem; height: 2.5rem; }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .mic[data-speech="listening"]::after { animation: none; opacity: 0.6; }
 }

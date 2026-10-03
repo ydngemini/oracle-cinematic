@@ -1,0 +1,113 @@
+/* How you decide — moved with its component from the retired Command Center. */
+
+.twin {
+  max-width: 44rem;
+  margin-top: var(--space-6);
+  padding: var(--space-4);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--oracle-border-subtle);
+  background: var(--oracle-surface);
+}
+
+.twinHead {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--oracle-accent-ink);
+  margin-bottom: var(--space-3);
+}
+
+.heading {
+  margin: 0;
+  font-size: var(--text-base);
+  font-weight: 600;
+  color: var(--oracle-text-heading);
+}
+
+/* The learning state is a first-class thing to render, not a placeholder. */
+.learning {
+  margin: 0;
+  font-size: var(--text-sm);
+  line-height: 1.6;
+  color: var(--oracle-text);
+}
+
+.meta {
+  margin: var(--space-2) 0 0;
+  font-size: var(--text-xs);
+  color: var(--oracle-text-dim);
+}
+
+.kinds {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.kind { display: flex; flex-direction: column; gap: 2px; }
+
+.kindName {
+  font-size: var(--text-sm);
+  font-weight: 500;
+  color: var(--oracle-text);
+  text-transform: capitalize;
+}
+
+/* Carries the interval, never a bare percentage. */
+.kindNote {
+  font-size: var(--text-xs);
+  line-height: 1.5;
+  color: var(--oracle-text-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+.threshold {
+  margin: var(--space-3) 0 0;
+  padding: var(--space-3);
+  border-left: 2px solid var(--oracle-gold);
+  font-size: var(--text-sm);
+  line-height: 1.55;
+  color: var(--oracle-text);
+}
+
+.reasons { margin-top: var(--space-4); }
+
+.reasonsTitle {
+  margin: 0 0 var(--space-2);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--oracle-text-dim);
+}
+
+/* Verbatim and italic — these are the agent's own words. */
+.reasons ul {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: var(--text-sm);
+  font-style: italic;
+  color: var(--oracle-text);
+}
+
+.reasonCount {
+  margin-left: var(--space-2);
+  font: var(--text-xs) / 1 var(--font-mono);
+  font-style: normal;
+  color: var(--oracle-text-dim);
+}
+
+.caveat {
+  margin: var(--space-4) 0 0;
+  font-size: var(--text-xs);
+  line-height: 1.55;
+  color: var(--oracle-text-dim);
+  max-width: 60ch;
+}

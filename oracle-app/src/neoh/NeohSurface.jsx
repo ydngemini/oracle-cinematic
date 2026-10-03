@@ -1,18 +1,14 @@
 import { AnimatePresence, motion } from 'framer-motion';
-import { ArrowUp, History, Mic, Square, X } from 'lucide-react';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Suspense, lazy, useCallback, useEffect, useRef, useState } from 'react';
 
 import { useAssistant } from '../components/AssistantContext';
-import { crmPost } from '../state/useCrmApi';
-import { AssistantMessages } from '../components/AssistantMessages';
 import { useMotionPolicy } from './motion';
 import { NeohAvatar } from './NeohAvatar';
 import { useNeohAvatarState } from './useNeohAvatarState';
-import { inputPlaceholder, isBusy, restLabel, surfaceState } from './surfaceModel';
+import { isBusy, restLabel, surfaceState } from './surfaceModel';
 import { useGlobalShortcuts } from './useGlobalShortcuts';
 import { useNeohChannel } from './useNeohChannel';
-import { useSpeechInput } from './useSpeechInput';
-import { Blocks } from './Blocks';
+import { useCompletedAnnouncement } from './useNeohComposer';
 import styles from './NeohSurface.module.css';
 
 /**
@@ -26,90 +22,85 @@ import styles from './NeohSurface.module.css';
  * moving, never a thing replaced. Reduced motion cuts; a low motion budget
  * turns layout animation off and keeps every state.
  *
- * It owns no protocol. useNeohChannel speaks the wire; surfaceModel decides
- * the shape; this file only renders.
+ * It is the quick way in. The Neoh tab is the same conversation at full
+ * height (the thread lives in the shared store), so "Open the full
+ * conversation" is a change of size, not a change of chat. The shell does
+ * not mount this on the Neoh tab — one composer on screen, never two.
+ *
+ * At rest this file is all that loads: the pill, the face, the channel's
+ * availability and the reply announcer. Everything the open bar needs is
+ * NeohSurfacePanel, fetched on first open (or on hover/focus of the pill).
  */
+
+const loadPanel = () => import('./NeohSurfacePanel');
+const NeohSurfacePanel = lazy(() => loadPanel().then((m) => ({ default: m.NeohSurfacePanel })));
 
 const MAX_DRAFT = 8_000;
 
-export function NeohSurface({ entityOpen = false, onOpenEntity }) {
+export function NeohSurface({ entityOpen = false, onOpenEntity, onExpand, onNavigate }) {
   const {
     open, setOpen, record, clearRecord, commandRequest, clearCommandRequest, commandStatus,
+    requestCommand,
   } = useAssistant();
   const channel = useNeohChannel({ open });
   const policy = useMotionPolicy();
-  const [draft, setDraft] = useState('');
   const [showResult, setShowResult] = useState(false);
-  // The last rendered answer, when the question was one Neoh could draw.
-  const [rendered, setRendered] = useState(null);
-  const [asking, setAsking] = useState(false);
-  const inputRef = useRef(null);
-  const submitRef = useRef(null);
+  const draftState = useState('');
+  const [draft, setDraft] = draftState;
+  const [activity, setActivity] = useState({ asking: false, listening: false });
   const pillRef = useRef(null);
-  const listRef = useRef(null);
 
-  const busy = asking || isBusy(channel.messages);
   const state = surfaceState({ open, entityOpen, messages: channel.messages, showResult });
   const expanded = state === 'input' || state === 'thinking' || state === 'result';
+  const busy = activity.asking || isBusy(channel.messages);
+  const announcement = useCompletedAnnouncement(channel.messages);
 
-  // The face, derived from the same facts the shape is. Nothing here sets an
-  // avatar state by hand; there is one source and it is what is true.
+  // The face, derived from the same facts the shape is.
   const avatar = useNeohAvatarState({
     connection: channel.connection,
     messages: channel.messages,
-    asking,
+    asking: activity.asking,
+    // The browser recogniser actually capturing is a real source for
+    // "listening". Nothing yet is a source for "speaking" — there is no TTS.
+    micActive: activity.listening,
     commandStatus,
     failed: Boolean(channel.notice) && channel.connection !== 'online',
   });
 
-  // Voice gives Neoh room to be expressive: when a real-time conversation is
-  // running the face in the bar grows into a bust, and shrinks back when it
-  // ends. The shared layoutId carries it, so it is one character changing
-  // size rather than two components swapping.
-  //
-  // This is wired to real state and nothing else. `listening` and `speaking`
-  // come from micActive/speaking in useNeohAvatarState, which NeohSurface
-  // does not yet have a source for — the realtime voice channel is a backend
-  // capability that has not reached this component. So the mechanism is live
-  // and correct and will simply never fire until voice is connected here.
-  // Faking a trigger to demo it would make the avatar lie about the session.
+  // Voice gives Neoh room to be expressive: while the person is talking to
+  // Neoh the face in the bar grows into a bust, and shrinks back after.
   const voiceActive = avatar.state === 'listening' || avatar.state === 'speaking';
 
-  // Speaking to Neoh. A finished utterance is submitted immediately rather
-  // than dropped into the field for the person to press send again — holding
-  // a button and then having to click is two interactions for one intent.
-  const speech = useSpeechInput({
-    onFinal: (text) => { void submitRef.current?.(text); },
-    disabled: busy,
-  });
-
-  const focusInput = useCallback(() => {
-    setOpen(true);
-    window.requestAnimationFrame(() => inputRef.current?.focus());
-  }, [setOpen]);
+  const openBar = useCallback(() => setOpen(true), [setOpen]);
 
   const collapse = useCallback(() => {
     setOpen(false);
     setShowResult(false);
+    setActivity({ asking: false, listening: false });
     window.requestAnimationFrame(() => pillRef.current?.focus());
   }, [setOpen]);
 
   useGlobalShortcuts({
-    onFocus: focusInput,
-    onEscape: () => { if (open) collapse(); },
+    onFocus: openBar,
+    onEscape: () => {
+      // While the microphone is open the panel's own Escape stops it first.
+      if (activity.listening) return;
+      if (open) collapse();
+    },
   });
 
-  // Today, record surfaces and the old AI tab hand a draft straight to Neoh.
-  // It opens with the text staged; it never sends on its own.
+  // Record surfaces and Work hand a draft straight to Neoh. It opens with the
+  // text staged; it never sends on its own. A request addressed to the full
+  // conversation is the Neoh tab's to take, not this bar's.
   useEffect(() => {
-    if (!commandRequest) return undefined;
+    if (!commandRequest || commandRequest.surface === 'conversation') return undefined;
     const frame = window.requestAnimationFrame(() => {
       setDraft((commandRequest.rawText || '').slice(0, MAX_DRAFT));
       clearCommandRequest();
-      focusInput();
+      setOpen(true);
     });
     return () => window.cancelAnimationFrame(frame);
-  }, [clearCommandRequest, commandRequest, focusInput]);
+  }, [clearCommandRequest, commandRequest, setDraft, setOpen]);
 
   // A reply arriving while the bar is open is the moment to show the panel.
   useEffect(() => {
@@ -118,64 +109,14 @@ export function NeohSurface({ entityOpen = false, onOpenEntity }) {
     return () => window.cancelAnimationFrame(frame);
   }, [open, state]);
 
-  useEffect(() => {
-    if (state === 'result' && listRef.current) listRef.current.scrollTop = listRef.current.scrollHeight;
-  }, [channel.messages, state]);
-
-  // Ask the deterministic path first; fall through to the model on a miss.
-  // The order matters: a question with a real interface behind it should never
-  // come back as a paragraph, and a question without one must still be
-  // answered rather than refused.
-  // Built once, not during render: `collapse` reads a ref, and the linter is
-  // right that a ref must not be reached for while rendering.
-  const blockContext = useMemo(() => ({
-    onOpen: (href) => { collapse(); onOpenEntity?.(href); },
-    onAct: (item) => setDraft(item.action || ''),
-  }), [collapse, onOpenEntity]);
-
-  // `spoken` goes through here unchanged. A turn that arrived from the
-  // microphone is the same kind of turn as one that arrived from the
-  // keyboard — same ask path, same channel, same transcript. Nothing
-  // downstream can tell the difference, which is the whole point.
-  const submit = async (override) => {
-    const spoken = typeof override === 'string';
-    const text = (spoken ? override : draft).trim();
-    if (!text) return;
-    // A spoken turn must not eat a half-typed message. The composer invites
-    // the person to "keep typing" while the microphone is open, so anything
-    // already in the field survives the utterance and stays theirs to send.
-    if (!spoken) setDraft('');
-    setAsking(true);
-    // The ask path is an optimisation, never a gate: if it fails, the question
-    // still reaches the model, which is what would have happened without it.
-    const answer = await crmPost('/api/neoh/ask', { text }).catch(() => null);
-    setAsking(false);
-    if (answer && !answer.fallthrough && (answer.blocks || []).length > 0) {
-      setRendered({ ...answer, question: text });
-      setShowResult(true);
-      return;
-    }
-    setRendered(null);
-    if (!channel.send(text, record)) {
-      // The channel refused (reconnecting); put the text back rather than
-      // silently eating it — but never overwrite a draft the person is still
-      // typing with a spoken utterance they have already finished.
-      setDraft((current) => (current.trim() ? current : text));
-      return;
-    }
-    setShowResult(true);
-  };
-
-  // Kept current so useSpeechInput can reach the latest submit without
-  // depending on it and tearing down a live recognition session.
-  useEffect(() => { submitRef.current = submit; });
-
-  const onKeyDown = (event) => {
-    if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
-      event.preventDefault();
-      submit();
-    }
-  };
+  const expand = useCallback(() => {
+    // The draft travels with the person to the full view, staged there.
+    if (draft.trim()) requestCommand({ rawText: draft, surface: 'conversation' });
+    setDraft('');
+    setOpen(false);
+    setShowResult(false);
+    onExpand?.();
+  }, [draft, onExpand, requestCommand, setDraft, setOpen]);
 
   if (channel.available !== true) return null;
 
@@ -191,7 +132,6 @@ export function NeohSurface({ entityOpen = false, onOpenEntity }) {
       data-state={state}
       role={expanded ? 'dialog' : undefined}
       aria-label={expanded ? 'Neoh' : undefined}
-      aria-live={state === 'thinking' ? 'polite' : undefined}
     >
       <AnimatePresence mode="popLayout" initial={false}>
         {state === 'rest' || state === 'yielded' ? (
@@ -200,7 +140,9 @@ export function NeohSurface({ entityOpen = false, onOpenEntity }) {
             ref={pillRef}
             type="button"
             className={styles.pill}
-            onClick={focusInput}
+            onClick={openBar}
+            onPointerEnter={() => { void loadPanel(); }}
+            onFocus={() => { void loadPanel(); }}
             aria-label={`${label}. Press slash or command K.`}
             aria-expanded={false}
             initial={{ opacity: 0 }}
@@ -216,9 +158,7 @@ export function NeohSurface({ entityOpen = false, onOpenEntity }) {
                 attentionLevel={avatar.attentionLevel}
               />
             </motion.span>
-            <motion.span layoutId="neoh-label" layout={policy.layout} className={styles.label} transition={transition}>
-              {label}
-            </motion.span>
+            <span className={styles.label}>{label}</span>
             <kbd className={styles.kbd} aria-hidden="true">/</kbd>
           </motion.button>
         ) : (
@@ -230,125 +170,28 @@ export function NeohSurface({ entityOpen = false, onOpenEntity }) {
             exit={{ opacity: 0 }}
             transition={transition}
           >
-            {state === 'result' && (
-              <div className={styles.messages} ref={listRef}>
-                {rendered ? (
-                  <div className={styles.answer}>
-                    <p className={styles.question}>{rendered.question}</p>
-                    {rendered.spoken && <p className={styles.spoken}>{rendered.spoken}</p>}
-                    <Blocks blocks={rendered.blocks} ctx={blockContext} />
-                  </div>
-                ) : (
-                  <AssistantMessages messages={channel.messages} onUndo={channel.undo} undoing={channel.undoing} />
-                )}
-              </div>
-            )}
-
-            <div className={styles.bar}>
-              {/* Same layoutId as the pill's: one object changing shape, not
-                  an avatar destroyed and rebuilt between states. */}
-              <motion.span
-                layoutId="neoh-avatar"
-                layout={policy.layout}
-                transition={transition}
-                className={styles.markSlot}
-                data-voice={voiceActive ? 'true' : 'false'}
-              >
-                <NeohAvatar
-                  state={avatar.state}
-                  audioLevel={avatar.audioLevel}
-                  actionType={avatar.actionType}
-                  attentionLevel={avatar.attentionLevel}
-                  variant={voiceActive ? 'bust' : 'head'}
-                  size={voiceActive ? '56px' : '20px'}
-                />
-              </motion.span>
-              {record && (
-                <span className={styles.record}>
-                  <motion.span layoutId="neoh-label" layout={policy.layout} transition={transition}>
-                    {record.label}
-                  </motion.span>
-                  <button type="button" className={styles.recordClear} onClick={() => clearRecord()} aria-label={`Stop looking at ${record.label}`}>
-                    <X aria-hidden="true" size={12} />
-                  </button>
-                </span>
-              )}
-              {/* The field is never removed, never disabled and never moves —
-                  not while Neoh is working, not while the microphone is open.
-                  Typing and speaking are peers, so either is always available. */}
-              <textarea
-                ref={inputRef}
-                className={styles.input}
-                value={draft}
-                rows={1}
-                maxLength={MAX_DRAFT}
-                placeholder={
-                  speech.state === 'listening'
-                    ? 'Listening… or keep typing'
-                    : (busy ? 'Neoh is working…' : inputPlaceholder(record))
-                }
-                aria-label="Message Neoh"
-                onChange={(event) => setDraft(event.target.value.slice(0, MAX_DRAFT))}
-                onKeyDown={onKeyDown}
+            <Suspense fallback={<div className={styles.bar} aria-hidden="true" />}>
+              <NeohSurfacePanel
+                channel={channel}
+                record={record}
+                clearRecord={clearRecord}
+                draftState={draftState}
+                state={state}
+                setShowResult={setShowResult}
+                avatar={avatar}
+                voiceActive={voiceActive}
+                policy={policy}
+                onCollapse={collapse}
+                onExpand={onExpand ? expand : undefined}
+                onNavigate={onNavigate}
+                onOpenEntity={onOpenEntity}
+                onActivity={setActivity}
               />
-              {speech.supported && (
-                <button
-                  type="button"
-                  className={styles.mic}
-                  data-speech={speech.state}
-                  onClick={() => (speech.state === 'listening' ? speech.stop() : speech.start())}
-                  disabled={busy && speech.state !== 'listening'}
-                  aria-label={speech.state === 'listening' ? 'Stop listening' : 'Talk to Neoh'}
-                  aria-pressed={speech.state === 'listening'}
-                >
-                  {speech.state === 'listening'
-                    ? <Square aria-hidden="true" size={14} />
-                    : <Mic aria-hidden="true" size={16} />}
-                </button>
-              )}
-              {channel.messages.length > 0 && state !== 'result' && (
-                <button type="button" className={styles.iconBtn} onClick={() => setShowResult(true)} aria-label="Show the conversation">
-                  <History aria-hidden="true" size={16} />
-                </button>
-              )}
-              <button
-                type="button"
-                className={styles.send}
-                onClick={submit}
-                disabled={!draft.trim()}
-                aria-label="Send"
-              >
-                <ArrowUp aria-hidden="true" size={16} />
-              </button>
-              <button type="button" className={styles.iconBtn} onClick={collapse} aria-label="Close Neoh">
-                <X aria-hidden="true" size={16} />
-              </button>
-            </div>
-
-            {/* What Neoh is hearing, as it forms. It settles into the
-                conversation as an ordinary turn the moment it is final —
-                there is no separate voice transcript to reconcile. */}
-            {speech.interim && (
-              <p className={styles.hearing} aria-live="polite">{speech.interim}</p>
-            )}
-
-            {speech.error && (
-              <p className={styles.notice} role="status">
-                {speech.error}{' '}
-                <button type="button" className={styles.noticeAction} onClick={speech.clearError}>
-                  Dismiss
-                </button>
-              </p>
-            )}
-
-            {(channel.notice || channel.connection !== 'online') && (
-              <p className={styles.notice} role="status">
-                {channel.notice || `Channel ${channel.connection}.`}
-              </p>
-            )}
+            </Suspense>
           </motion.div>
         )}
       </AnimatePresence>
+      <p className={styles.srOnly} aria-live="polite" aria-atomic="true">{announcement}</p>
     </motion.div>
   );
 }
