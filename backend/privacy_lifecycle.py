@@ -495,16 +495,18 @@ async def _hand_over_routes(conn, tenant_id: str, departing: str, successor: str
     theirs = await conn.fetchval(
         "SELECT 1 FROM telephony_routes WHERE tenant_id=$1 AND lower(agent_id)=lower($2)",
         tenant_id, successor)
-    clear_forward = ("agent_forward_e164=NULL, forward_on_request=false, "
-                     "forward_when_ai_unavailable=false, updated_at=now()")
     if theirs is None:
-        await conn.execute(f"UPDATE telephony_routes SET agent_id=$2, {clear_forward} WHERE id=$1",
-                           mine["id"], successor)
+        await conn.execute(
+            "UPDATE telephony_routes SET agent_id=$2, agent_forward_e164=NULL, forward_on_request=false, "
+            "forward_when_ai_unavailable=false, updated_at=now() WHERE id=$1",
+            mine["id"], successor)
         await conn.execute(
             "UPDATE messaging_routes SET agent_id=$3, updated_at=now() "
             "WHERE tenant_id=$1 AND lower(agent_id)=lower($2)", tenant_id, departing, successor)
         return "moved_to_successor"
-    await conn.execute(f"UPDATE telephony_routes SET {clear_forward} WHERE id=$1", mine["id"])
+    await conn.execute(
+        "UPDATE telephony_routes SET agent_forward_e164=NULL, forward_on_request=false, "
+        "forward_when_ai_unavailable=false, updated_at=now() WHERE id=$1", mine["id"])
     return "kept_forwarding_cleared"
 
 

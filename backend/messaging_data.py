@@ -592,7 +592,6 @@ async def record_outbound_message(
             )
 
 
-_STATUS_RANK_SQL = "CASE {col} WHEN 'queued' THEN 0 WHEN 'sent' THEN 1 ELSE 2 END"
 
 
 async def record_delivery_update(*, provider: str, provider_message_id: str, status: str,
@@ -607,7 +606,7 @@ async def record_delivery_update(*, provider: str, provider_message_id: str, sta
     """
     async with tenant_tx(_platform_context()) as conn:
         result = await conn.execute(
-            f"""
+            """
             UPDATE sms_messages
                SET status=$3,
                    provider_status=$3,
@@ -615,7 +614,8 @@ async def record_delivery_update(*, provider: str, provider_message_id: str, sta
                    delivered_at=CASE WHEN $3='delivered' THEN COALESCE(delivered_at,now()) ELSE delivered_at END,
                    failed_at=CASE WHEN $3 IN ('failed','undelivered') THEN COALESCE(failed_at,now()) ELSE failed_at END
              WHERE provider=$1 AND provider_message_id=$2
-               AND {_STATUS_RANK_SQL.format(col='$3')} > {_STATUS_RANK_SQL.format(col='status')}
+               AND (CASE $3 WHEN 'queued' THEN 0 WHEN 'sent' THEN 1 ELSE 2 END)
+                 > (CASE status WHEN 'queued' THEN 0 WHEN 'sent' THEN 1 ELSE 2 END)
             """,
             provider,
             provider_message_id,
