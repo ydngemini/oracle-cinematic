@@ -59,19 +59,62 @@ def test_staging_differs_from_production_only_where_intended():
         for kind in ("services", "workers"):
             for c in spec.get(kind) or []:
                 out[f"{c['name']}:instances"] = c.get("instance_count")
+                out[f"{c['name']}:size"] = c.get("instance_size_slug")
+                out[f"{c['name']}:image"] = repr(c.get("image"))
                 for e in c.get("envs") or []:
                     out[f"{c['name']}:{e['key']}"] = e.get("value", e.get("type"))
+        for k, v in spec.items():
+            if k not in ("name", "databases", "services", "workers"):
+                out[f"top:{k}"] = repr(v)
         return out
 
     prod, stag = flat(r.render("production", B, F)), flat(r.render("staging", B, F))
     changed = {k for k in set(prod) | set(stag) if prod.get(k) != stag.get(k)}
     assert changed == {
         "name", "db:neoh-postgres", "db:neoh-redis",
-        "api:instances",
         "api:ORACLE_ENV", "worker:ORACLE_ENV",
         "api:ORACLE_S3_BUCKET", "worker:ORACLE_S3_BUCKET",
         "api:ORACLE_RECOVERY_MODE", "worker:ORACLE_RECOVERY_MODE",
+        # Reduced staging (owner decision 2026-10-03): capacity, never shape.
+        "api:size", "worker:size", "web:instances",
+        "api:ORACLE_DB_POOL_MAX",                 # absent (default 10) -> 6
+        "worker:ORACLE_DB_POOL_MAX", "worker:ORACLE_DB_PLATFORM_POOL_MAX",
     }, "staging drifted from production somewhere unintended"
+
+
+def test_staging_is_the_reduced_size():
+    spec = r.render("staging", B, F)
+    comps = {c["name"]: c for c in spec["services"] + spec["workers"]}
+    assert (comps["api"]["instance_count"], comps["api"]["instance_size_slug"]) == (2, "apps-s-1vcpu-1gb")
+    assert (comps["worker"]["instance_count"], comps["worker"]["instance_size_slug"]) == (1, "apps-s-1vcpu-2gb")
+    assert (comps["web"]["instance_count"], comps["web"]["instance_size_slug"]) == (1, "apps-s-1vcpu-0.5gb")
+    assert _env(comps["api"], "ORACLE_DB_POOL_MAX") == "6"
+    assert _env(comps["api"], "ORACLE_DB_PLATFORM_POOL_MAX") == "3"
+    assert _env(comps["worker"], "ORACLE_DB_POOL_MAX") == "8"
+    assert _env(comps["worker"], "ORACLE_DB_PLATFORM_POOL_MAX") == "4"
+
+
+def test_staging_pools_fit_a_2_gib_cluster_with_headroom():
+    """2 x (6+1+3) + (8+1+4) = 33 of the 47 a db-s-1vcpu-2gb allows."""
+    assert r.connection_demand(r.render("staging", B, F)) == 33
+
+
+def test_staging_pools_over_budget_are_refused(monkeypatch):
+    sizing = {**r.ENVIRONMENTS["staging"]["components"]}
+    sizing["worker"] = {**sizing["worker"], "envs": {"ORACLE_DB_POOL_MAX": "20",
+                                                     "ORACLE_DB_PLATFORM_POOL_MAX": "4"}}
+    monkeypatch.setitem(r.ENVIRONMENTS["staging"], "components", sizing)
+    with pytest.raises(r.RenderError, match="Postgres connections"):
+        r.render("staging", B, F)
+
+
+def test_staging_api_below_two_replicas_is_refused(monkeypatch):
+    """One replica never exercises cross-replica WebSocket fan-out."""
+    sizing = {**r.ENVIRONMENTS["staging"]["components"]}
+    sizing["api"] = {**sizing["api"], "instance_count": 1}
+    monkeypatch.setitem(r.ENVIRONMENTS["staging"], "components", sizing)
+    with pytest.raises(r.RenderError, match="at least 2 instances"):
+        r.render("staging", B, F)
 
 
 def test_both_environments_pin_the_same_digests():

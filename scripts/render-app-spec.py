@@ -15,8 +15,34 @@ What differs, and nothing else:
     Valkey cluster        neoh-redis        neoh-redis-staging
     Spaces bucket         neoh-media        neoh-media-staging
     ORACLE_ENV            prod              staging
-    api instance_count    (from spec)       1
     ORACLE_RECOVERY_MODE  absent            "1" on every backend component
+    component sizing      (from spec)       reduced — see below
+    DB pool ceilings      (from spec)       sized for a 2 GiB cluster
+
+Staging is the REDUCED size, not production parity (owner decision,
+2026-10-03): ~$109/month instead of ~$240. What is reduced is capacity, never
+shape — the same three components, the same images, the same envs:
+
+    component  production                  staging
+    api        2 x apps-s-2vcpu-4gb        2 x apps-s-1vcpu-1gb
+    worker     1 x apps-s-2vcpu-4gb        1 x apps-s-1vcpu-2gb
+    web        2 x apps-s-1vcpu-0.5gb      1 x apps-s-1vcpu-0.5gb
+
+The api stays at TWO instances on purpose: cross-replica WebSocket fan-out
+(Postgres LISTEN/NOTIFY) is only exercised with more than one replica, so a
+one-replica staging would pass releases that break it. The render refuses a
+staging api below 2. Measured backend RSS is 255-561 MiB per replica
+(docs/capacity-plan.md), which fits 1 GiB.
+
+Pools are cut to fit a 2 GiB Managed Postgres (47 usable connections,
+docs/database-connection-budget.md). Each process opens POOL_MAX + 1 (the
+ws_hub LISTEN connection) + PLATFORM_POOL_MAX:
+
+    api     2 x (6 + 1 + 3) = 20
+    worker  1 x (8 + 1 + 4) = 13
+    total                     33 of 47 — headroom for migrations and admin
+
+The render refuses a staging spec whose total leaves less than 10 free.
 
 Staging runs with ORACLE_RECOVERY_MODE on. That is the disaster-recovery kill
 switch, reused deliberately: it blocks every provider egress method, SMTP, both
@@ -62,7 +88,7 @@ ENVIRONMENTS = {
         "clusters": {"neoh-postgres": "neoh-postgres", "neoh-redis": "neoh-redis"},
         "bucket": "neoh-media",
         "oracle_env": "prod",
-        "api_instances": None,          # keep the spec's value
+        "components": {},               # production keeps the spec's values exactly
         "recovery_mode": False,
     },
     "staging": {
@@ -71,10 +97,26 @@ ENVIRONMENTS = {
                      "neoh-redis": "neoh-redis-staging"},
         "bucket": "neoh-media-staging",
         "oracle_env": "staging",
-        "api_instances": 1,
+        "components": {
+            "api": {"instance_count": 2, "instance_size_slug": "apps-s-1vcpu-1gb",
+                    "envs": {"ORACLE_DB_POOL_MAX": "6", "ORACLE_DB_PLATFORM_POOL_MAX": "3"}},
+            "worker": {"instance_count": 1, "instance_size_slug": "apps-s-1vcpu-2gb",
+                       "envs": {"ORACLE_DB_POOL_MAX": "8", "ORACLE_DB_PLATFORM_POOL_MAX": "4"}},
+            "web": {"instance_count": 1, "instance_size_slug": "apps-s-1vcpu-0.5gb"},
+        },
         "recovery_mode": True,
+        # db-s-1vcpu-2gb: 25 per GiB minus 3 reserved (database-connection-budget.md).
+        "db_connection_budget": 47,
     },
 }
+
+# db/connection.py defaults, used when a component sets no explicit value.
+_DEFAULT_POOL_MAX = 10
+_DEFAULT_PLATFORM_POOL_MAX = 4
+_LISTENER_RESERVED = 1   # ws_hub's permanent LISTEN connection
+# Connections a budget must leave free for migrations and the admin console,
+# beyond the 3 DigitalOcean already reserves for its own maintenance.
+_BUDGET_HEADROOM = 10
 
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 
@@ -157,10 +199,17 @@ def render(env: str, backend_digest: str, frontend_digest: str,
             _set_env(comp, "ORACLE_S3_BUCKET", cfg["bucket"])
         if cfg["recovery_mode"]:
             _set_env(comp, "ORACLE_RECOVERY_MODE", "1")
-    if cfg["api_instances"] is not None:
-        for svc in spec.get("services") or []:
-            if svc.get("name") == "api":
-                svc["instance_count"] = cfg["api_instances"]
+    by_name = {c.get("name"): c for c in list(spec.get("services") or [])
+               + list(spec.get("workers") or [])}
+    for name, override in cfg["components"].items():
+        comp = by_name.get(name)
+        if comp is None:
+            raise RenderError(f"{env} sizing names component {name!r}, which the spec does not have")
+        for field in ("instance_count", "instance_size_slug"):
+            if field in override:
+                comp[field] = override[field]
+        for key, value in (override.get("envs") or {}).items():
+            _set_env(comp, key, value)
 
     for comp in _backend_components(spec) + _frontend_components(spec):
         image = comp.get("image") or {}
@@ -197,6 +246,35 @@ def validate(env: str, spec: dict) -> None:
             )
         if env == "staging" and _env_value(comp, "ORACLE_ALLOW_LIVE_STRIPE") is not None:
             raise RenderError("staging must never set ORACLE_ALLOW_LIVE_STRIPE")
+
+    if env == "staging":
+        api = next((c for c in spec.get("services") or [] if c.get("name") == "api"), None)
+        if api is None or int(api.get("instance_count") or 1) < 2:
+            raise RenderError(
+                "staging api must run at least 2 instances — with one, cross-replica "
+                "WebSocket fan-out is never exercised and a release that breaks it passes"
+            )
+
+    budget = (ENVIRONMENTS.get(env) or {}).get("db_connection_budget")
+    if budget:
+        need = connection_demand(spec)
+        if need + _BUDGET_HEADROOM > budget:
+            raise RenderError(
+                f"{env} components can open {need} Postgres connections; the cluster allows "
+                f"{budget} and {_BUDGET_HEADROOM} must stay free for migrations and admin "
+                f"(docs/database-connection-budget.md)"
+            )
+
+
+def connection_demand(spec: dict) -> int:
+    """Postgres connections every backend instance can hold at once:
+    (POOL_MAX + the LISTEN connection + PLATFORM_POOL_MAX) x instance_count."""
+    total = 0
+    for comp in _backend_components(spec):
+        pool = int(_env_value(comp, "ORACLE_DB_POOL_MAX") or _DEFAULT_POOL_MAX)
+        platform = int(_env_value(comp, "ORACLE_DB_PLATFORM_POOL_MAX") or _DEFAULT_PLATFORM_POOL_MAX)
+        total += int(comp.get("instance_count") or 1) * (pool + _LISTENER_RESERVED + platform)
+    return total
 
 
 def identities(spec: dict) -> dict:
