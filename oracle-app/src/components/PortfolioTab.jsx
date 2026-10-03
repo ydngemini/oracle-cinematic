@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { crmGet } from '../state/useCrmApi';
 import { useAssistant } from './AssistantContext';
 import styles from './PortfolioTab.module.css';
+import { friendlyError } from '../lib/errorMessages';
 
 const integer = new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 });
 const currency = new Intl.NumberFormat('en-US', {
@@ -120,7 +121,7 @@ export default function PortfolioTab() {
     <section className={styles.wrap} aria-label="Portfolio analytics" aria-busy={loading || refreshing}>
       <header className={styles.hero}>
         <div>
-          <span className={styles.kicker}>Today · Live tenant data</span>
+          <span className={styles.kicker}>Today · Your brokerage’s live data</span>
           <h1>Portfolio</h1>
         </div>
         <button type="button" className={styles.refresh} onClick={refresh} disabled={refreshing} aria-label="Refresh portfolio">
@@ -130,7 +131,7 @@ export default function PortfolioTab() {
 
       {error && (
         <div className={styles.error} role="alert">
-          <p>{error.message || 'Portfolio data is unavailable.'}</p>
+          <p>{friendlyError(error, { fallback: 'Portfolio data is unavailable.' })}</p>
           <button type="button" onClick={refresh}>Retry</button>
         </div>
       )}
@@ -250,7 +251,7 @@ export default function PortfolioTab() {
                     </div>
                   </header>
                   {activityPulse.length === 0 ? (
-                    <p className={styles.empty}>No recent audited activity.</p>
+                    <p className={styles.empty}>No recent activity yet.</p>
                   ) : (
                     <ol className={styles.pulseList}>
                       {activityPulse.slice(0, 8).map((event) => (

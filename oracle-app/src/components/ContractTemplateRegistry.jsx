@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { crmGet, crmPost } from '../state/useCrmApi';
 import styles from './ContractVaultTab.module.css';
+import { friendlyError } from '../lib/errorMessages';
 
 /**
  * The tenant's contract template registry, and the approval gate on it.
@@ -65,7 +66,7 @@ export default function ContractTemplateRegistry() {
       setError(
         reason_?.status === 403
           ? 'Only a broker owner can install or approve templates.'
-          : reason_?.message || 'The registry refused that change.',
+          : friendlyError(reason_, { fallback: 'The registry refused that change.' }),
       );
     } finally {
       setBusy('');

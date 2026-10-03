@@ -17,7 +17,7 @@ export class ApiError extends Error {
   constructor(detail, status, isNetworkError = false) {
     const message = typeof detail === 'string'
       ? detail
-      : detail?.message || detail?.detail || detail?.code || 'Request failed';
+      : detail?.message || detail?.detail || 'Request failed';
     super(message);
     this.name = 'ApiError';
     this.status = status;
@@ -58,7 +58,7 @@ async function getCsrfToken() {
     csrfPromise = fetch(`${API_BASE}/auth/csrf`, { credentials: 'include', cache: 'no-store' })
       .then(async (res) => {
         if (!res.ok) throw new ApiError('Unable to initialize request security.', res.status, false);
-        const payload = await res.json();
+        const payload = await readJson(res);
         if (!payload?.csrf_token) throw new ApiError('Invalid request-security response.', 0, false);
         csrfToken = payload.csrf_token;
         return csrfToken;
@@ -68,8 +68,24 @@ async function getCsrfToken() {
   return csrfPromise;
 }
 
+// Production sits behind DigitalOcean App Platform, whose edge REPLACES a
+// backend 503 with its own HTML 504 page (`content-type: text/html`,
+// `x-do-orig-status: 503`) and drops the JSON body and Retry-After. So: only
+// ever parse a body that says it is JSON, never surface HTML, and treat
+// 502/503/504 as "temporarily unavailable" whatever the body looked like.
+export const UNAVAILABLE_STATUSES = new Set([502, 503, 504]);
+// Default wait before retrying an unavailable response when the edge has
+// stripped Retry-After (jittered, doubled per attempt, capped).
+export const UNAVAILABLE_RETRY_BASE_MS = 2000;
+
+function isJsonResponse(res) {
+  return /\bjson\b/i.test(res.headers?.get?.('content-type') || '');
+}
+
 async function parseErrorResponse(res) {
-  let detail = res.statusText;
+  // statusText is empty on HTTP/2; never fall back to the body text.
+  let detail = res.statusText || '';
+  if (!isJsonResponse(res)) return detail;
   try {
     const data = await res.json();
     if (data?.code) {
@@ -80,9 +96,37 @@ async function parseErrorResponse(res) {
     }
     detail = data.detail || data.message || detail;
   } catch {
-    // non-JSON error body
+    // Mislabelled or truncated JSON — keep the status, drop the body.
   }
   return detail;
+}
+
+/** ApiError for a non-OK response, annotated for the error-language layer. */
+export async function errorFromResponse(res) {
+  const error = new ApiError(await parseErrorResponse(res), res.status, false);
+  error.contentType = res.headers?.get?.('content-type') || '';
+  // Readable only if CORS exposes it; nothing depends on it being present.
+  const orig = Number(res.headers?.get?.('x-do-orig-status'));
+  error.originStatus = Number.isFinite(orig) && orig > 0 ? orig : null;
+  error.isUnavailable = UNAVAILABLE_STATUSES.has(res.status) || UNAVAILABLE_STATUSES.has(error.originStatus);
+  return error;
+}
+
+/** res.json() that never leaks "Unexpected token <" from an HTML page. */
+async function readJson(res) {
+  try {
+    return await res.json();
+  } catch {
+    const error = new ApiError('Unexpected response', 502, false);
+    error.contentType = res.headers?.get?.('content-type') || '';
+    error.isUnavailable = true;
+    throw error;
+  }
+}
+
+function unavailableWait(res, attempt) {
+  const serverWait = retryAfterMs(res.headers?.get?.('retry-after'));
+  return serverWait ?? jitteredBackoff(attempt, { base: UNAVAILABLE_RETRY_BASE_MS, max: 30000 });
 }
 
 export async function fetchWithRetry(path, options = {}) {
@@ -136,8 +180,7 @@ export async function fetchWithRetry(path, options = {}) {
       clearTimeout(timeoutId);
 
       if (!res.ok) {
-        const detail = await parseErrorResponse(res);
-        const error = new ApiError(detail, res.status, false);
+        const error = await errorFromResponse(res);
 
         // The CSRF middleware rejects before dispatching the route, so exactly
         // one token refresh + replay is safe even for an otherwise non-retryable
@@ -164,7 +207,9 @@ export async function fetchWithRetry(path, options = {}) {
           // will sit through is surfaced instead of slept on.
           const serverWait = res.status === 429 ? retryAfterMs(res.headers.get('retry-after')) : null;
           if (serverWait != null && serverWait > MAX_RETRY_AFTER_MS) throw error;
-          const backoff = serverWait ?? jitteredBackoff(attempt, { base: 1000, max: 30000 });
+          const backoff = serverWait
+            ?? (error.isUnavailable ? unavailableWait(res, attempt) : jitteredBackoff(attempt, { base: 1000, max: 30000 }));
+          if (backoff > MAX_RETRY_AFTER_MS) throw error;
           await delay(backoff);
           lastError = error;
           attempt += 1;
@@ -175,7 +220,7 @@ export async function fetchWithRetry(path, options = {}) {
       }
 
       if (res.status === 204) return null;
-      return res.json();
+      return readJson(res);
 
     } catch (err) {
       clearTimeout(timeoutId);
@@ -237,7 +282,7 @@ export async function postForDownload(path, body, filename, options = {}) {
       signal: controller.signal,
     });
     if (!res.ok) {
-      throw new ApiError(await parseErrorResponse(res), res.status, false);
+      throw await errorFromResponse(res);
     }
     const link = window.document.createElement('a');
     link.style.display = 'none';
@@ -282,8 +327,7 @@ export async function fetchBlob(path, options = {}) {
     clearTimeout(timeoutId);
 
     if (!res.ok) {
-      const detail = await parseErrorResponse(res);
-      throw new ApiError(detail, res.status, false);
+      throw await errorFromResponse(res);
     }
 
     // Materialise the bytes ourselves rather than calling res.blob().
@@ -339,8 +383,7 @@ export async function uploadFile(path, formData, options = {}) {
       clearTimeout(timeoutId);
 
       if (!res.ok) {
-        const detail = await parseErrorResponse(res);
-        const error = new ApiError(detail, res.status, false);
+        const error = await errorFromResponse(res);
         if (
           res.status === 403
           && error.code === 'CSRF_TOKEN_INVALID'
@@ -353,7 +396,7 @@ export async function uploadFile(path, formData, options = {}) {
         throw error;
       }
 
-      return res.json();
+      return readJson(res);
     } catch (err) {
       clearTimeout(timeoutId);
 

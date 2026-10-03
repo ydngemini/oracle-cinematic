@@ -12,6 +12,7 @@ import ContactIntakePanel from './ContactIntakePanel';
 import ContactDetailPanel from './ContactDetailPanel';
 import { PanelDataStatus } from './PanelDataStatus';
 import styles from './PeopleTab.module.css';
+import { friendlyError } from '../lib/errorMessages';
 
 const ClientCrmTab = lazy(() => import('./ClientCrmTab'));
 
@@ -83,7 +84,7 @@ function ContactList({ contacts, error, loading, refreshing, updatedAt, onRetry,
     <section className={styles.contactBook} aria-labelledby="canonical-contacts-title" aria-busy={loading || refreshing}>
       <header className={styles.contactHead}>
         <div>
-          <span className={styles.kicker}>Canonical identity</span>
+          <span className={styles.kicker}>People</span>
           <h2 id="canonical-contacts-title">Contacts</h2>
         </div>
         <ul className={styles.sourceStatus}>
@@ -112,14 +113,14 @@ function ContactList({ contacts, error, loading, refreshing, updatedAt, onRetry,
         <div className={styles.skeleton} aria-hidden="true"><span /><span /><span /></div>
       ) : error ? (
         <div className={styles.errorState} role="alert">
-          <strong>Canonical contacts are temporarily unavailable</strong>
-          <p>{error.message || 'The contact source could not be loaded.'}</p>
+          <strong>Your contacts are temporarily unavailable</strong>
+          <p>{friendlyError(error, { fallback: 'The contact source could not be loaded.' })}</p>
           <div><button type="button" onClick={onRetry}>Retry contacts</button><button type="button" onClick={onOpenOpportunities}>Open opportunities</button></div>
         </div>
       ) : (contacts || []).length === 0 ? (
         <div className={styles.empty} role="status">
           <UsersRound aria-hidden="true" />
-          <div><strong>No contacts yet</strong><p>Canonical identities will appear here when they are created or migrated from an opportunity.</p></div>
+          <div><strong>No contacts yet</strong><p>Add your first client from an opportunity, or ask Neoh to add someone for you.</p></div>
           <button type="button" onClick={onOpenOpportunities}>Open opportunities</button>
         </div>
       ) : visible.length === 0 ? (

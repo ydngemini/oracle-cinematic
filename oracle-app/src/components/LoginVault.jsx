@@ -3,8 +3,8 @@ import styles from './LoginVault.module.css';
 import { apiPost, ApiError } from '../lib/apiClient';
 import { useNetwork } from '../context/useNetwork';
 
-const TITLES = { login: 'Command Center', signup: 'Create account', forgot: 'Reset password', reset: 'Set new password' };
-const CTAS = { login: 'Authenticate', signup: 'Create account', forgot: 'Send reset link', reset: 'Set password & sign in' };
+const TITLES = { login: 'Sign in', signup: 'Create your account', forgot: 'Reset your password', reset: 'Set a new password' };
+const CTAS = { login: 'Sign in', signup: 'Create account', forgot: 'Send reset link', reset: 'Set password & sign in' };
 
 /**
  * LoginVault — full-screen auth gate. Supports four modes:
@@ -88,7 +88,7 @@ export function LoginVault({ onAuthenticated }) {
       } else if (err instanceof ApiError) {
         setError(formatError(err));
       } else {
-        setError('Network error — backend unreachable.');
+        setError('Couldn’t reach Neoh. Check your connection and try again.');
       }
     }
   }
@@ -102,7 +102,7 @@ export function LoginVault({ onAuthenticated }) {
     } catch (err) {
       setLoading(false);
       if (err instanceof ApiError && err.code === 'OTP_REQUIRED') setNotice(err.message);
-      else setError(err instanceof ApiError ? formatError(err) : 'Network error — backend unreachable.');
+      else setError(err instanceof ApiError ? formatError(err) : 'Couldn’t reach Neoh. Check your connection and try again.');
     }
   };
 
@@ -114,8 +114,7 @@ export function LoginVault({ onAuthenticated }) {
     || (mode === 'reset' && password.length < 10);
 
   const switchTo = (m) => () => { setMode(m); setError(''); setNotice(''); };
-  const linkStyle = { background: 'none', border: 'none', color: 'var(--oracle-amber, #d8a657)', cursor: 'pointer', textDecoration: 'underline', font: 'inherit', padding: 0 };
-  const navLink = (to, label) => <button type="button" style={linkStyle} onClick={switchTo(to)}>{label}</button>;
+  const navLink = (to, label) => <button type="button" className={styles.linkBtn} onClick={switchTo(to)}>{label}</button>;
 
   const field = (id, label, value, set, type, auto, ph) => (
     <div className={styles.field}>
@@ -128,19 +127,18 @@ export function LoginVault({ onAuthenticated }) {
   return (
     <div ref={overlayRef} className={`${styles.overlay} ${fading ? styles.fadeOut : ''}`}>
       <div className={styles.panel}>
-        <div className={styles.wordmark}>
+        <h1 className={styles.wordmark}>
           <span className={styles.wordmarkKicker}>Neoh</span>
-          <span className={styles.wordmarkDivider} />
           <span className={styles.wordmarkSub}>{TITLES[mode]}</span>
-        </div>
+        </h1>
 
         <form className={styles.form} onSubmit={handleSubmit} noValidate>
           {mode === 'login' && (
             <>
               {field('agent-id', 'Email or Agent ID', agentId, setAgentId, 'text', 'username', 'you@brokerage.com')}
-              {field('passphrase', 'Passphrase', passphrase, setPassphrase, 'password', 'current-password', '••••••••')}
+              {field('passphrase', 'Password', passphrase, setPassphrase, 'password', 'current-password', '••••••••')}
               {otpRequired && field('otp', 'Sign-in code', otp, (v) => setOtp(v.replace(/\D/g, '').slice(0, 6)), 'text', 'one-time-code', '123456')}
-              {otpRequired && <button type="button" style={linkStyle} onClick={resendCode} disabled={busy}>Send a new code</button>}
+              {otpRequired && <button type="button" className={styles.linkBtn} onClick={resendCode} disabled={busy}>Send a new code</button>}
             </>
           )}
           {mode === 'signup' && (
@@ -155,10 +153,10 @@ export function LoginVault({ onAuthenticated }) {
           {mode === 'reset' && field('password', 'New password (10+ chars)', password, setPassword, 'password', 'new-password', '••••••••••')}
 
           {error && <p className={styles.errorMsg} role="alert">{error}</p>}
-          {notice && <p className={styles.errorMsg} role="status" style={{ color: 'var(--oracle-amber, #d8a657)' }}>{notice}</p>}
+          {notice && <p className={styles.noticeMsg} role="status">{notice}</p>}
 
           <button type="submit" className={styles.submitBtn} disabled={disabled}>
-            {loading ? <span className={styles.loadingDots}><span /><span /><span /></span> : CTAS[mode]}
+            {loading ? <span className={styles.loadingDots} role="status" aria-label="Working…"><span /><span /><span /></span> : CTAS[mode]}
           </button>
         </form>
 

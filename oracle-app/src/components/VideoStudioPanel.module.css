@@ -52,7 +52,7 @@
   background: rgba(8, 8, 8, 0.42);
   font-size: var(--text-xs);
 }
-.quota strong { color: var(--oracle-accent-ink); font-family: var(--font-mono); }
+.quota strong { color: var(--oracle-accent-ink); font-family: var(--font-sans); }
 
 .jobs,
 .builder {
@@ -77,7 +77,7 @@
 
 .jobs h2,
 .builderHead h2 { margin-top: var(--space-2); font-size: var(--text-xl); font-weight: 350; }
-.jobs > header > span { color: var(--oracle-text-dim); font: 500 var(--text-sm)/1 var(--font-mono); }
+.jobs > header > span { color: var(--oracle-text-dim); font: 500 var(--text-sm)/1 var(--font-sans); }
 .jobs > ul { margin: 0; padding: 0; list-style: none; border-top: 1px solid var(--oracle-border-subtle); }
 
 .jobs li {

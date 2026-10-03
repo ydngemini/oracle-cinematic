@@ -17,6 +17,7 @@ import { crmGet, crmPost } from '../state/useCrmApi';
 import SitePublishPanel from './SitePublishPanel';
 import { PanelDataStatus } from './PanelDataStatus';
 import styles from './StudioTab.module.css';
+import { friendlyError } from '../lib/errorMessages';
 
 const VideoStudioPanel = lazy(() => import('./VideoStudioPanel'));
 
@@ -235,7 +236,7 @@ export default function StudioTab({ embedded = false }) {
       setStep(0);
       setCreating(false);
     } catch (error) {
-      setSaveError(error?.message || 'The site draft could not be saved.');
+      setSaveError(friendlyError(error, { fallback: 'The site draft could not be saved.' }));
     } finally {
       setSaving(false);
     }
@@ -274,7 +275,7 @@ export default function StudioTab({ embedded = false }) {
         <div>
           <span className={styles.kicker}>{embedded ? 'Hyperlocal presence' : 'AI growth workspace'}</span>
           <h1 id={embedded ? 'studio-sites-title' : 'studio-title'}>{embedded ? 'Sites & IDX' : 'Our AI'}</h1>
-          <p>Build a source-backed local website with NEOH and preview every change before publishing.</p>
+          <p>Build a source-backed local website with Neoh and preview every change before publishing.</p>
         </div>
         <div className={styles.heroActions}>
           <button type="button" className={styles.iconButton} onClick={loadSites} disabled={sitesRefreshing} aria-label="Refresh sites">
@@ -404,7 +405,7 @@ export default function StudioTab({ embedded = false }) {
                   <label><span>Service areas</span><input value={draft.service_areas} onChange={(event) => setField('service_areas', event.target.value)} placeholder="Chicago, Oak Park, Evanston" required /><small>Separate cities, neighborhoods, or ZIPs with commas.</small></label>
                   <label className={styles.checkRow}>
                     <input type="checkbox" checked={draft.idx_enabled} disabled={!idxConnected} onChange={(event) => setField('idx_enabled', event.target.checked)} />
-                    <span><strong>Include authorized IDX search</strong><small>{idxConnected ? 'Connected provider will remain source-attributed.' : 'Connect an authorized MLS provider before enabling.'}</small></span>
+                    <span><strong>Include authorized IDX search</strong><small>{idxConnected ? 'Listings will show their MLS source, as your MLS requires.' : 'Connect an authorized MLS feed before turning this on.'}</small></span>
                   </label>
                   <div className={styles.intakeChoice} role="group" aria-label="Website chat intake">
                     <span>Website chat intake</span>

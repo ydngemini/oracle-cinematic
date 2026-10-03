@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { crmGet } from '../state/useCrmApi';
 import styles from './AdminOpsTab.module.css';
+import { friendlyError } from '../lib/errorMessages';
 
 /**
  * Whether each public-data source can actually answer right now.
@@ -39,7 +40,7 @@ function toneFor(source) {
 }
 
 function stateOf(source) {
-  if (source.credential_expired) return 'CREDENTIAL EXPIRED';
+  if (source.credential_expired) return 'Sign-in expired';
   if (source.configured === false) return 'not configured';
   const days = source.credential_days_remaining;
   if (typeof days === 'number') {
@@ -57,7 +58,7 @@ export default function DataSourceHealthPanel() {
     setError('');
     return crmGet('/api/data/health').then(
       (payload) => setData(payload || null),
-      (reason) => setError(reason?.message || 'Data source health could not be read.'),
+      (reason) => setError(friendlyError(reason, { fallback: 'Data source health could not be read.' })),
     );
   }, []);
 

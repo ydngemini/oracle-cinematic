@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { crmGet, crmPost } from '../state/useCrmApi';
 import styles from './IntelligenceFeed.module.css';
+import { friendlyError } from '../lib/errorMessages';
 
 /**
  * The Intelligence Feed — what needs attention, why, and what to do next.
@@ -296,7 +297,7 @@ export function IntelligenceFeed() {
         <div className={styles.error} role="alert">
           <h2 className={styles.emptyTitle}>The scan could not run</h2>
           <p className={styles.emptyBody}>
-            {state.error?.message || 'The opportunities service did not respond.'}
+            {friendlyError(state.error, { fallback: 'Opportunities couldn’t load right now. Try again in a moment.' })}
           </p>
           <button type="button" onClick={() => load()}>Try again</button>
         </div>
@@ -325,7 +326,7 @@ export function IntelligenceFeed() {
 
       {opportunities.length === 0 ? (
         <div className={styles.empty} role="status">
-          <h3 className={styles.emptyTitle}>No opportunities above the confidence floor</h3>
+          <h3 className={styles.emptyTitle}>No opportunities strong enough to show yet</h3>
           <p className={styles.emptyBody}>
             Findings below 45% confidence are withheld rather than shown, because a
             low-confidence guess costs more trust than a missed lead earns. The strip above

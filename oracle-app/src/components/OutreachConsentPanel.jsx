@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { crmPost } from '../state/useCrmApi';
 import styles from './SalesWorkspace.module.css';
+import { friendlyError } from '../lib/errorMessages';
 
 /**
  * The TCPA consent ledger: record consent, record an opt-out, and dry-run the
@@ -56,7 +57,7 @@ export default function OutreachConsentPanel() {
     try {
       await run();
     } catch (reason) {
-      setError(reason?.message || 'The consent ledger refused that.');
+      setError(friendlyError(reason, { fallback: 'The consent ledger refused that.' }));
     } finally {
       setBusy('');
     }

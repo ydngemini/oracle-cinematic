@@ -189,10 +189,10 @@ export function useOracleWebSocket() {
           // Load the operator's context into the LiveTranscript. Degrades to a
           // neutral line when the backend couldn't restore (no DB / unknown user).
           const restoredText = msg.restored
-            ? `Memory Sync active — MAO threshold ${Math.round(maoPct * 100)}%` +
+            ? `Loaded your underwriting profile — max offer at ${Math.round(maoPct * 100)}% of after-repair value` +
               (msg.summary ? ` · ${msg.summary}` : '') +
               (msg.markets?.length ? ` · Markets: ${msg.markets.join(', ')}` : '')
-            : 'Memory Sync unavailable — running with default underwriting profile.';
+            : "Couldn't load your underwriting profile — using the standard 70% rule for max offers.";
           dispatch({
             type: ACTIONS.APPEND_TRANSCRIPT,
             payload: {
@@ -207,7 +207,7 @@ export function useOracleWebSocket() {
 
         case 'VOICE_NOTE_LOGGED': {
           // Field walkthrough processed by the voice-intel worker. First real
-          // producer for the 'agent' (amber) actor in LivePulse.
+          // producer for the 'agent' actor in the activity feed (AdminOpsTab).
           const adj = Number(msg.price_adjustment);
           feed({
             actor: 'agent',

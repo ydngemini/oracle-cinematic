@@ -4,6 +4,7 @@ import { BrokerageOnboardingPanel } from './BrokerageOnboardingPanel';
 import { CommandApprovalPanel } from './CommandApprovalPanel';
 import { PersonalCommandComposer } from './PersonalCommandComposer';
 import styles from './PersonalAITab.module.css';
+import { friendlyError } from '../lib/errorMessages';
 
 const LOCAL_MODELS_ENABLED = import.meta.env.VITE_LOCAL_MODELS_ENABLED === 'true';
 
@@ -49,7 +50,7 @@ export default function PersonalAITab() {
       settled.forEach((result, index) => {
         const key = requests[index][0];
         if (result.status === 'rejected') {
-          nextErrors.push(`${human(key)}: ${result.reason?.message || 'unavailable'}`);
+          nextErrors.push(`${human(key)}: ${friendlyError(result.reason, { fallback: 'couldn’t load right now.' })}`);
           return;
         }
         if (key === 'models') next.models = Array.isArray(result.value?.models) ? result.value.models : [];
@@ -75,7 +76,7 @@ export default function PersonalAITab() {
     setDocumentError('');
     crmGet(`/api/contracts/documents/${encodeURIComponent(documentId)}/download`).then(
       (result) => {
-        if (!result?.url) throw new Error('No secure document link returned.');
+        if (!result?.url) throw new Error('This document couldn’t be opened. Try again in a moment.');
         const link = window.document.createElement('a');
         link.href = result.url;
         link.target = '_blank';
@@ -107,7 +108,7 @@ export default function PersonalAITab() {
         <div>
           <span className={styles.kicker}>Agent intelligence</span>
           <h1 id="personal-ai-title">Personal AI</h1>
-          <p>Your approved autonomy, private style model, provider links, live web search, and review-gated actions in one place.</p>
+          <p>What Neoh may do on its own, your private writing style, connected accounts, live web search, and actions waiting for review — in one place.</p>
         </div>
         <button type="button" className={styles.refresh} onClick={refresh} disabled={loading} aria-label="Refresh Personal AI status">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 4v7h-7"/></svg>
@@ -138,14 +139,14 @@ export default function PersonalAITab() {
             <div><dt>Autonomy enabled</dt><dd>{metrics.autonomy}</dd></div>
             <div><dt>Active models</dt><dd>{metrics.activeModels}</dd></div>
             <div><dt>Awaiting review</dt><dd>{metrics.pendingCommands}</dd></div>
-            <div><dt>Providers linked</dt><dd>{metrics.connectedProviders}</dd></div>
+            <div><dt>Accounts connected</dt><dd>{metrics.connectedProviders}</dd></div>
           </dl>
 
           <section className={styles.panel} aria-labelledby="ai-contract-holdings-title">
             <header><h2 id="ai-contract-holdings-title">AI contract holdings</h2><span>{data.contractDocuments.length}</span></header>
-            <p className={styles.contractNote}>Final vault records stay encrypted and tenant-scoped. Approved and signed records can be opened as PDFs; signature status remains a separate final workflow.</p>
+            <p className={styles.contractNote}>Final documents stay encrypted and private to your brokerage. Approved and signed documents open as PDFs; signatures are tracked separately.</p>
             {documentError && <p className={styles.documentError} role="alert">{documentError}</p>}
-            {visibleDocuments.length === 0 ? <p className={styles.empty}>No AI contract documents are held for this tenant yet.</p> : (
+            {visibleDocuments.length === 0 ? <p className={styles.empty}>No AI-prepared contract documents yet. Drafts Neoh prepares for you will appear here.</p> : (
               <ul className={styles.rows}>{visibleDocuments.map((contract) => {
                 const downloadable = ['approved', 'signed'].includes(contract.status);
                 return (
@@ -179,8 +180,8 @@ export default function PersonalAITab() {
           </section>
 
           <section className={styles.panel} aria-labelledby="personal-models-title">
-            <header><h2 id="personal-models-title">Model registry</h2><span>{data.models.length}</span></header>
-            {visibleModels.length === 0 ? <p className={styles.empty}>No model versions are registered for this tenant yet.</p> : (
+            <header><h2 id="personal-models-title">Personal AI versions</h2><span>{data.models.length}</span></header>
+            {visibleModels.length === 0 ? <p className={styles.empty}>No personal AI versions yet. When one is trained for your brokerage, a broker owner can review and activate it here.</p> : (
               <ul className={styles.rows}>{visibleModels.map((model) => (
                 <ModelRow key={model.id} model={model} onChanged={load} />
               ))}</ul>
@@ -189,7 +190,7 @@ export default function PersonalAITab() {
 
           <section className={styles.panel} aria-labelledby="personal-commands-title">
             <header><h2 id="personal-commands-title">Recent AI actions</h2><span>{data.commands.length}</span></header>
-            {visibleCommands.length === 0 ? <p className={styles.empty}>No email, call, or calendar commands have been drafted.</p> : (
+            {visibleCommands.length === 0 ? <p className={styles.empty}>Nothing is waiting for approval. When Neoh drafts an email, call, or calendar event, it appears here.</p> : (
               <ul className={styles.rows}>{visibleCommands.map((command) => (
                 <li key={command.id}>
                   <div><strong>{command.command_type}</strong><small>{formatTime(command.created_at)}</small></div>
@@ -235,7 +236,7 @@ function ModelRow({ model, onChanged }) {
       setError(
         reason_?.status === 403
           ? 'Only a broker owner can change which model is active.'
-          : reason_?.message || 'The registry did not accept that change.',
+          : friendlyError(reason_, { fallback: 'That change didn’t go through. Try again in a moment.' }),
       );
     } finally {
       setBusy('');

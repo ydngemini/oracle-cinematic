@@ -23,7 +23,7 @@ const FEATURES = [
   { id: 'ai',        label: 'Policy Autopilot',    detail: 'Core AI agents with approval guardrails' },
   { id: 'site',      label: 'Hyperlocal Website',  detail: 'One source-backed local site and private preview' },
   { id: 'voice',     label: 'Inbound AI Voice',    detail: 'One routed voice line with transcript and handoff' },
-  { id: 'contracts', label: 'Contract Vault',      detail: 'Tenant-scoped templates, approvals, and documents' },
+  { id: 'contracts', label: 'Contract Vault',      detail: 'Your brokerage’s templates, approvals, and documents' },
   { id: 'property',  label: 'Property View',       detail: 'Address lookup, exterior and interior capture, client upload links' },
   { id: 'user',      label: 'One Named User',      detail: 'Full export, monthly billing, no setup fee' },
 ];

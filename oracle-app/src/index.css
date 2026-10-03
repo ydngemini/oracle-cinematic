@@ -215,7 +215,7 @@
   /* ── CRM mobile layer (the Deck) ──────────────────────────────────────────
      Instrument-cluster type treatment: data (prices, counts, addresses) is
      set in the mono with tabular numerals and wide-tracked caps labels —
-     the pocket version of the command center, not another sans-on-white CRM. */
+     a dense, scannable data layer, not another sans-on-white CRM. */
   --font-display:   "Arial Narrow", "Aptos Narrow", "Roboto Condensed", var(--font-sans);
   --deck-height:    64px;
   --safe-top:       env(safe-area-inset-top, 0px);
@@ -541,54 +541,29 @@
   }
 }
 
-/* ── Tactical HUD surfaces ────────────────────────────────────────────────── */
+/* ── Raised glass surfaces ────────────────────────────────────────────────
+   `.hud-glass-panel` / `.hud-reticle` keep their old names only because
+   markup outside this file still applies them. The gold top hairline and the
+   corner-bracket "reticles" are gone: a panel is a calm surface, not a HUD. */
 .hud-glass-panel {
   background: var(--oracle-glass);
   border: 1px solid var(--oracle-glass-edge);
-  /* A gold hairline along the top edge only. Real glass catches light on one
-     edge; an even border reads as a flat rectangle, which is what made these
-     panels feel like overlays rather than surfaces. */
-  box-shadow:
-    inset 0 1px 0 var(--oracle-glass-edge-gold),
-    var(--shadow-e2);
+  box-shadow: var(--shadow-e2);
 }
 
 @supports ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
-.hud-glass-panel {
+  .hud-glass-panel {
     background: var(--oracle-gloss), var(--oracle-glass);
     backdrop-filter: var(--oracle-backdrop);
     -webkit-backdrop-filter: var(--oracle-backdrop);
   }
 }
 
+/* Layout-only now: kept so positioned children of existing markup still
+   anchor to the panel. */
 .hud-reticle {
   position: relative;
   isolation: isolate;
-}
-
-.hud-reticle::before,
-.hud-reticle::after {
-  content: '';
-  position: absolute;
-  z-index: 3;
-  width: 7px;
-  height: 7px;
-  pointer-events: none;
-  opacity: 0;
-}
-
-.hud-reticle::before {
-  top: 6px;
-  left: 6px;
-  border-top: 1px solid var(--oracle-white-gold);
-  border-left: 1px solid var(--oracle-white-gold);
-}
-
-.hud-reticle::after {
-  right: 6px;
-  bottom: 6px;
-  border-right: 1px solid var(--oracle-white-gold);
-  border-bottom: 1px solid var(--oracle-white-gold);
 }
 
 @media (max-width: 719px) {

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { crmGet, crmPost } from '../state/useCrmApi';
 import styles from './GovInfoSearch.module.css';
+import { friendlyError } from '../lib/errorMessages';
 
 function safeGovInfoUrl(value, pdf = false) {
   try {
@@ -61,7 +62,7 @@ export default function GovInfoSearch() {
       setSelectedId(nextResults[0]?.access_id || '');
       if (nextResults.length === 0) setError('No official federal sources matched that search.');
     } catch (requestError) {
-      setError(requestError?.message || 'Federal source search is unavailable.');
+      setError(friendlyError(requestError, { fallback: 'Federal source search is unavailable.' }));
     } finally {
       setSearching(false);
     }
@@ -81,7 +82,7 @@ export default function GovInfoSearch() {
       else window.open(pdfUrl, '_blank', 'noopener,noreferrer');
     } catch (requestError) {
       previewWindow?.close();
-      setError(requestError?.message || 'Unable to open this official PDF.');
+      setError(friendlyError(requestError, { fallback: 'Unable to open this official PDF.' }));
     } finally {
       setOpening(false);
     }

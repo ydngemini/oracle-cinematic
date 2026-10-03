@@ -3,6 +3,7 @@ import { crmGet, crmPut, crmPost } from '../state/useCrmApi';
 import { useTour } from '../state/useTour';
 import { tourOffer } from '../lib/tour/tourOffer';
 import styles from './DossierPanel.module.css';
+import { friendlyError } from '../lib/errorMessages';
 
 // The 3D floor-plan editor is a separate chunk (and a separate origin behind
 // the iframe) — a dossier opened to read comps should not pay for it.
@@ -93,12 +94,12 @@ function MarkdownBrief({ text }) {
 }
 
 const INTERACTION_LABEL = {
-  voice_note: 'VOICE NOTE',
-  portal_view: 'PORTAL VIEW',
-  document_signed: 'DOC SIGNED',
-  call_transcript: 'CALL',
-  sms: 'SMS',
-  status_change: 'STATUS',
+  voice_note: 'Voice note',
+  portal_view: 'Portal view',
+  document_signed: 'Document signed',
+  call_transcript: 'Call',
+  sms: 'Text',
+  status_change: 'Status',
 };
 
 function interactionSummary(entry) {
@@ -162,7 +163,7 @@ export function DossierPanel({ leadId, onClose, embedded = false, onOpenTour }) 
         setEntityState(d.acquisition_entity?.formation_state || '');
         setEntityEditing(false);
       })
-      .catch((err) => live && setError(String(err.message || err)));
+      .catch((err) => live && setError(friendlyError(err)));
     return () => {
       live = false;
       clearTimeout(copyTimer.current);
@@ -189,7 +190,7 @@ export function DossierPanel({ leadId, onClose, embedded = false, onOpenTour }) 
       });
       setCma(d.cma_markdown || '');
     } catch (err) {
-      setCmaError(String(err.message || err));
+      setCmaError(friendlyError(err));
     } finally {
       setCmaBusy(false);
     }
@@ -208,7 +209,7 @@ export function DossierPanel({ leadId, onClose, embedded = false, onOpenTour }) 
       setDossier((prev) => ({ ...prev, acquisition_entity: d.acquisition_entity }));
       setEntityEditing(false);
     } catch (err) {
-      setEntityError(String(err.message || err));
+      setEntityError(friendlyError(err));
     } finally {
       setEntityBusy(false);
     }
@@ -229,7 +230,7 @@ export function DossierPanel({ leadId, onClose, embedded = false, onOpenTour }) 
   const Shell = embedded ? 'div' : 'aside';
   const shellProps = embedded
     ? {}
-    : { role: 'dialog', 'aria-modal': 'false', 'aria-label': `Asset dossier — ${address}` };
+    : { role: 'dialog', 'aria-modal': 'false', 'aria-label': `Property file — ${address}` };
   const mkt = dossier?.marketing_payload;
   const property = dossier?.payload || {};
   const provenance = property.provenance || {};
@@ -246,7 +247,7 @@ export function DossierPanel({ leadId, onClose, embedded = false, onOpenTour }) 
       {!embedded && (
       <header className={styles.head}>
         <div className={styles.headText}>
-          <span className={styles.fileNo}>FILE № {dossier?.parcel_id || leadId.slice(0, 8)}</span>
+          <span className={styles.fileNo}>{dossier?.parcel_id ? `Parcel ${dossier.parcel_id}` : `Record ${leadId.slice(0, 8)}`}</span>
           <h2 className={styles.address}>{address}</h2>
           <span className={styles.subline}>
             {dossier?.payload?.city ? `${dossier.payload.city} · ` : ''}
@@ -264,14 +265,14 @@ export function DossierPanel({ leadId, onClose, embedded = false, onOpenTour }) 
       </header>
       )}
 
-      {error && <p className={styles.error}>{error}</p>}
-      {!dossier && !error && <p className={styles.loading}>DECRYPTING FILE…</p>}
+      {error && <p className={styles.error} role="alert">{error}</p>}
+      {!dossier && !error && <p className={styles.loading} role="status">Opening the property file…</p>}
 
       {dossier && (
         <div className={styles.body}>
           {/* ── Financial matrix ── */}
           <section className={styles.section} aria-label="Underwriting">
-            <h3 className={styles.kicker}>Underwriting Matrix</h3>
+            <h3 className={styles.kicker}>Underwriting</h3>
             <dl className={styles.matrix}>
               <div><dt>ARV</dt><dd>{money(dossier.underwriting?.arv)}</dd></div>
               <div><dt>MAO</dt><dd>{money(dossier.underwriting?.mao)}</dd></div>
@@ -294,7 +295,7 @@ export function DossierPanel({ leadId, onClose, embedded = false, onOpenTour }) 
               {intakeOpen ? 'Cancel deal intake' : 'Start a deal from this property'}
             </button>
             {intakeOpen && (
-              <Suspense fallback={<p className={styles.loading}>OPENING INTAKE…</p>}>
+              <Suspense fallback={<p className={styles.loading} role="status">Opening intake…</p>}>
                 <DealIntakePanel
                   propertyId={leadId}
                   propertySource="pipeline"
@@ -456,7 +457,7 @@ export function DossierPanel({ leadId, onClose, embedded = false, onOpenTour }) 
             {dossier.acquisition_entity && !entityEditing ? (
               <div className={styles.entityCard}>
                 <div className={styles.assetHead}>
-                  <span>TITLE VESTS IN</span>
+                  <span>Title held by</span>
                   <button
                     type="button"
                     className={styles.copyBtn}
@@ -511,7 +512,7 @@ export function DossierPanel({ leadId, onClose, embedded = false, onOpenTour }) 
                     disabled={entityBusy || entityName.trim().length < 2}
                     onClick={saveEntity}
                   >
-                    {entityBusy ? 'RECORDING…' : 'RECORD ENTITY'}
+                    {entityBusy ? 'Saving…' : 'Save entity'}
                   </button>
                 </div>
                 {entityError && <p className={styles.error}>{entityError}</p>}
@@ -530,13 +531,13 @@ export function DossierPanel({ leadId, onClose, embedded = false, onOpenTour }) 
               <div className={styles.assets}>
                 <div className={styles.assetBlock}>
                   <div className={styles.assetHead}>
-                    <span>EMAIL BLAST</span>
+                    <span>Email announcement</span>
                     <button
                       type="button"
                       className={styles.copyBtn}
                       onClick={() => copy('email', `${mkt.email_subject}\n\n${mkt.email_body}`)}
                     >
-                      {copied === 'email' ? 'COPIED' : 'COPY'}
+                      {copied === 'email' ? 'Copied' : 'Copy'}
                     </button>
                   </div>
                   <p className={styles.assetSubject}>{mkt.email_subject}</p>
@@ -544,13 +545,13 @@ export function DossierPanel({ leadId, onClose, embedded = false, onOpenTour }) 
                 </div>
                 <div className={styles.assetBlock}>
                   <div className={styles.assetHead}>
-                    <span>IG CAPTION</span>
+                    <span>Instagram caption</span>
                     <button
                       type="button"
                       className={styles.copyBtn}
                       onClick={() => copy('ig', mkt.ig_caption)}
                     >
-                      {copied === 'ig' ? 'COPIED' : 'COPY'}
+                      {copied === 'ig' ? 'Copied' : 'Copy'}
                     </button>
                   </div>
                   <p className={styles.assetText}>{mkt.ig_caption}</p>
@@ -586,16 +587,16 @@ export function DossierPanel({ leadId, onClose, embedded = false, onOpenTour }) 
                 disabled={cmaBusy || !Number(sqft) || !Number(arv)}
                 onClick={synthesizeCma}
               >
-                {cmaBusy ? 'SYNTHESIZING…' : 'SYNTHESIZE BRIEF'}
+                {cmaBusy ? 'Writing brief…' : 'Write listing brief'}
               </button>
             </div>
             {cmaError && <p className={styles.error}>{cmaError}</p>}
             {cma && (
               <div className={styles.briefWrap}>
                 <div className={styles.assetHead}>
-                  <span>LISTING BRIEF</span>
+                  <span>Listing brief</span>
                   <button type="button" className={styles.copyBtn} onClick={() => copy('cma', cma)}>
-                    {copied === 'cma' ? 'COPIED' : 'COPY MD'}
+                    {copied === 'cma' ? 'Copied' : 'Copy text'}
                   </button>
                 </div>
                 <MarkdownBrief text={cma} />

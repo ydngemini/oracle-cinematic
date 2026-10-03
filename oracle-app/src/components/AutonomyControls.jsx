@@ -3,6 +3,7 @@ import { Lock } from 'lucide-react';
 
 import { crmGet, crmPut } from '../state/useCrmApi';
 import styles from './AutonomyControls.module.css';
+import { friendlyError } from '../lib/errorMessages';
 
 /**
  * The autonomy dial — per capability, with the ceilings shown rather than hidden.
@@ -106,7 +107,7 @@ export function AutonomyControls() {
     } catch (error) {
       // The server's refusal text explains the ceiling. Replacing it with a
       // generic "could not save" would throw away the only useful part.
-      setNotice(error?.message || 'That setting did not save.');
+      setNotice(friendlyError(error, { fallback: 'That setting did not save.' }));
     } finally {
       setBusy(false);
     }

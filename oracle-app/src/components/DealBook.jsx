@@ -7,6 +7,7 @@ import DealRoomPanel from './DealRoomPanel';
 // transaction because nothing ever called the write half that creates the rows.
 import ComplianceChecklistPanel from './ComplianceChecklistPanel';
 import styles from './DealBook.module.css';
+import { friendlyError } from '../lib/errorMessages';
 
 const money = new Intl.NumberFormat('en-US', {
   maximumFractionDigits: 0,
@@ -184,7 +185,7 @@ export default function DealBook() {
       </dl>
 
       {error ? (
-        <p className={styles.error} role="alert">{error.message || 'Unable to load deal activity.'}</p>
+        <p className={styles.error} role="alert">{friendlyError(error, { fallback: 'Unable to load deal activity.' })}</p>
       ) : null}
 
       {(loading && transactions.length === 0) ? (
@@ -313,7 +314,7 @@ function TransactionCard({ transaction, expanded, onToggle, onTransactionUpdate 
       onTransactionUpdate(result.transaction);
       setTerms((previous) => ({ ...previous, version: result.transaction.version }));
     } catch (err) {
-      setTermError(err?.message || 'Could not save terms.');
+      setTermError(friendlyError(err, { fallback: 'Could not save terms.' }));
     } finally {
       setTermsBusy(false);
     }
@@ -330,7 +331,7 @@ function TransactionCard({ transaction, expanded, onToggle, onTransactionUpdate 
       });
       onTransactionUpdate(result.transaction);
     } catch (err) {
-      setClosingError(err?.message || 'Could not close transaction.');
+      setClosingError(friendlyError(err, { fallback: 'Could not close transaction.' }));
     }
   }, [transaction.id, transaction.version, onTransactionUpdate]);
 
@@ -343,8 +344,8 @@ function TransactionCard({ transaction, expanded, onToggle, onTransactionUpdate 
         </div>
         <p className={styles.metaLine}>
           {transaction.property_source === 'pipeline'
-            ? 'PIPELINE'
-            : 'PROPERTY'} · v{transaction.version} · {toDateLabel(transaction.updated_at)}
+            ? 'Pipeline'
+            : 'Property'} · v{transaction.version} · {toDateLabel(transaction.updated_at)}
           {transaction.client_name ? ` · ${transaction.client_name}` : ''}
         </p>
 
@@ -561,7 +562,7 @@ function OfferPanel({ transaction, onTransactionUpdate }) {
         loadOffers();
       }
     } catch (err) {
-      setOfferError(err?.message || 'Could not submit offer.');
+      setOfferError(friendlyError(err, { fallback: 'Could not submit offer.' }));
     } finally {
       setSaveBusy(false);
     }
@@ -579,7 +580,7 @@ function OfferPanel({ transaction, onTransactionUpdate }) {
       setOffers((prev) => prev.map((item) => ({ ...item, status: item.id === offer.id ? 'accepted' : 'rejected' })));
       setAccepting('');
     } catch (err) {
-      setOfferError(err?.message || 'Could not accept this offer.');
+      setOfferError(friendlyError(err, { fallback: 'Could not accept this offer.' }));
       setAccepting('');
     }
   }, [transaction.id, transaction.version, onTransactionUpdate]);

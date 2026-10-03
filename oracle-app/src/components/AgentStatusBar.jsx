@@ -1,78 +1,46 @@
-import { useOracleState } from '../state';
+import { AlertTriangle, CheckCircle2, Loader2, XCircle } from 'lucide-react';
 import { useOptionalAssistant } from './AssistantContext';
-import { BorderBeam } from './motion/BorderBeam';
-import { KineticText } from './motion/KineticText';
 import styles from './AgentStatusBar.module.css';
 
-const PHASES = [
-  { id: 'scout', label: 'SCOUTING_MATRIX' },
-  { id: 'stage', label: 'SPATIAL_STAGING' },
-  { id: 'voice', label: 'VOICE_NEGOTIATION' },
-];
+// Each state carries an icon AND words, so the outcome never rests on colour.
+const STATE_META = {
+  analyzing: { Icon: Loader2, fallback: 'Neoh is working on it…', spin: true },
+  authorizing: { Icon: Loader2, fallback: 'Checking your approval…', spin: true },
+  queued: { Icon: CheckCircle2, fallback: 'Queued — Neoh will follow up here.' },
+  completed: { Icon: CheckCircle2, fallback: 'Done.' },
+  cancelled: { Icon: XCircle, fallback: 'Cancelled.' },
+  failed: { Icon: AlertTriangle, fallback: "Neoh couldn't finish that. Nothing was sent." },
+};
 
-function resolveActivePhase(agent) {
-  if (!agent) return null;
-  const upper = agent.toUpperCase();
-  if (upper.includes('SCOUT') || upper.includes('INGEST') || upper.includes('SCAN')) return 'scout';
-  if (upper.includes('DESIGN') || upper.includes('STAGE') || upper.includes('SPATIAL')) return 'stage';
-  if (upper.includes('CLOSER') || upper.includes('VOICE') || upper.includes('NEGOTIAT')) return 'voice';
-  return 'scout';
-}
-
+/**
+ * Calm status line for the request Neoh is handling. It renders nothing while
+ * idle — the old idle state was a row of fake pipeline labels (SCOUTING_MATRIX,
+ * MEMORY SYNC) that described no real work.
+ */
 export function AgentStatusBar() {
-  const { activeAgent, memorySync } = useOracleState();
   const assistant = useOptionalAssistant();
-  const activePhase = resolveActivePhase(activeAgent);
   const commandStatus = assistant?.commandStatus;
+  if (!commandStatus || commandStatus.state === 'idle') return null;
 
-  if (commandStatus && commandStatus.state !== 'idle') {
-    const failed = commandStatus.state === 'failed';
-    const completed = ['completed', 'queued'].includes(commandStatus.state);
-    return (
-      <div
-        className={`${styles.commandBar} hud-glass-panel hud-reticle`}
-        data-state={commandStatus.state}
-        role="status"
-        aria-live="polite"
-        aria-atomic="true"
-      >
-        <BorderBeam
-          duration={4}
-          size={250}
-          colorFrom={failed ? '#ef4444' : completed ? '#10b981' : '#b88952'}
-          colorTo={failed ? '#f59e0b' : completed ? '#f4e5bc' : '#dfbd73'}
-        />
-        <span className={styles.commandPulse} aria-hidden="true" />
-        <span className={styles.commandCopy}>
-          <strong>
-            <KineticText
-              text={commandStatus.message || 'NEOH is processing'}
-              speed={34}
-              scrambleSpeed={28}
-            />
-          </strong>
-          {commandStatus.detail && <small>{commandStatus.detail}</small>}
-        </span>
-      </div>
-    );
-  }
-
+  const meta = STATE_META[commandStatus.state] || STATE_META.analyzing;
+  const { Icon } = meta;
   return (
-    <div className={`${styles.bar} hud-glass-panel hud-reticle`}>
-      <div className={styles.phases}>
-        {PHASES.map(({ id, label }) => (
-          <span
-            key={id}
-            className={styles.phase}
-            data-active={activePhase === id}
-          >
-            {label}
-          </span>
-        ))}
-        <span className={styles.memory} data-active={memorySync}>
-          {memorySync ? 'MEMORY SYNC: ACTIVE' : 'MEMORY SYNC: —'}
-        </span>
-      </div>
+    <div
+      className={styles.commandBar}
+      data-state={commandStatus.state}
+      role="status"
+      aria-live="polite"
+      aria-atomic="true"
+    >
+      <Icon
+        className={`${styles.commandIcon} ${meta.spin ? styles.spin : ''}`}
+        size={16}
+        aria-hidden="true"
+      />
+      <span className={styles.commandCopy}>
+        <strong>{commandStatus.message || meta.fallback}</strong>
+        {commandStatus.detail && <small>{commandStatus.detail}</small>}
+      </span>
     </div>
   );
 }

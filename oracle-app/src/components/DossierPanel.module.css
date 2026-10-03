@@ -33,10 +33,6 @@
   }
 }
 
-@keyframes loadingBlink {
-  0%, 100% { opacity: 0.15; }
-  50%       { opacity: 0.4; }
-}
 
 /* ─── Drawer Shell ───────────────────────────────────────────────────────── */
 
@@ -199,10 +195,8 @@
 
 .loading {
   padding: 2rem 1.3rem;
-  font-size: 0.6rem;
-  letter-spacing: 0.32em;
-  color: var(--oracle-text-ghost);
-  animation: loadingBlink 1.4s ease-in-out infinite;
+  font-size: var(--text-sm);
+  color: var(--oracle-text-dim);
 }
 
 .error {

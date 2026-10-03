@@ -14,6 +14,7 @@ import {
 } from 'lucide-react';
 import { crmGet, crmPatch, crmPost, crmPut } from '../state/useCrmApi';
 import styles from './SalesWorkspace.module.css';
+import { friendlyError } from '../lib/errorMessages';
 
 const EMPTY_CONNECTOR = { source_key: '', name: '' };
 const EMPTY_RULE = {
@@ -22,10 +23,7 @@ const EMPTY_RULE = {
 };
 
 function errorText(error) {
-  const detail = error?.payload?.detail;
-  if (typeof detail === 'string') return detail;
-  if (Array.isArray(detail)) return detail.map((item) => item?.msg).filter(Boolean).join(' · ');
-  return error?.message || 'The routing action could not be completed.';
+  return friendlyError(error, { fallback: 'That routing change didn’t go through. Try again in a moment.' });
 }
 
 function splitList(value, transform = (item) => item) {
@@ -210,14 +208,14 @@ export default function LeadRoutingPage() {
       <div className={styles.pageIntro}>
         <div>
           <h3>Lead intake and routing</h3>
-          <p>Capture signed lead webhooks, preserve source evidence, deduplicate contacts, and assign only to active agents who still have capacity.</p>
+          <p>Take in leads from your lead sources, keep where each came from, merge duplicates, and assign only to active agents who still have room.</p>
         </div>
         <button type="button" className={styles.secondaryButton} onClick={load} disabled={loading || Boolean(working)}><RefreshCw aria-hidden="true" /> Refresh</button>
       </div>
 
       <div className={styles.notice}>
         <ShieldCheck aria-hidden="true" />
-        <span>Webhook bodies and connector secrets are encrypted. Duplicate event IDs are idempotent, mismatched replays are rejected, and existing contact ownership is preserved.</span>
+        <span>Lead details and connector secrets are encrypted. A lead sent twice is only counted once, tampered or replayed requests are rejected, and existing contact ownership is kept.</span>
       </div>
       {error ? <div className={styles.error} role="alert"><XCircle aria-hidden="true" /> {error}</div> : null}
       {message ? <div className={styles.success} role="status"><CheckCircle2 aria-hidden="true" /> {message}</div> : null}
@@ -226,18 +224,20 @@ export default function LeadRoutingPage() {
         <div className={styles.metricCard}><span>Received</span><strong>{totals.received || 0}</strong><small>signed intake events</small></div>
         <div className={styles.metricCard}><span>Routed</span><strong>{totals.routed || 0}</strong><small>{Math.round((totals.routing_rate || 0) * 100)}% routing rate</small></div>
         <div className={styles.metricCard}><span>Unassigned</span><strong>{totals.unassigned || 0}</strong><small>needs capacity or a rule</small></div>
-        <div className={styles.metricCard}><span>Contacts</span><strong>{totals.unique_contacts || 0}</strong><small>unique canonical records</small></div>
+        <div className={styles.metricCard}><span>Contacts</span><strong>{totals.unique_contacts || 0}</strong><small>unique people</small></div>
       </div>
 
       {secret ? (
         <section className={styles.resultCard} aria-labelledby="connector-secret-title">
           <h4 id="connector-secret-title">Copy this connector secret now</h4>
-          <p>The secret is shown once. Store it in the lead provider’s secret manager and sign the exact raw JSON body with the Unix timestamp.</p>
+          <p>The secret is shown once. Store it in your lead source’s secret settings and sign the exact raw JSON body with the Unix timestamp.</p>
           <pre className={styles.codeBlock}>{JSON.stringify({
             endpoint: `${window.location.origin}${secret.path}`,
             headers: {
-              'X-Oracle-Timestamp': '&lt;unix timestamp&gt;',
-              'X-Oracle-Signature': 'sha256=&lt;HMAC of timestamp.raw_body&gt;',
+              // Real header names the webhook verifies (lead_routing_api.py) —
+              // integrators must send exactly these, so they stay as-is.
+              'X-Oracle-Timestamp': '<unix timestamp>',
+              'X-Oracle-Signature': 'sha256=<HMAC of timestamp.raw_body>',
             },
             secret: secret.value,
           }, null, 2)}</pre>
@@ -258,7 +258,7 @@ export default function LeadRoutingPage() {
           </form>
           <ul className={styles.itemList}>
             {connectors.map((item) => <li key={item.id}><button type="button" className={styles.itemButton} onClick={() => toggleConnector(item)} disabled={Boolean(working)} aria-label={`${item.active === false ? 'Enable' : 'Pause'} ${item.name}`}><span><strong>{item.name}</strong><small>{item.source_key} · {item.public_id}</small></span><span className={styles.itemMeta}>{item.active === false ? <ToggleLeft aria-hidden="true" /> : <ToggleRight aria-hidden="true" />}{item.active === false ? 'paused' : 'active'}</span></button></li>)}
-            {!connectors.length && !loading ? <li className={styles.empty}>No lead connectors yet.</li> : null}
+            {!connectors.length && !loading ? <li className={styles.empty}>No lead sources connected yet. Create a connector to start receiving leads.</li> : null}
           </ul>
         </section>
 
@@ -279,7 +279,7 @@ export default function LeadRoutingPage() {
           </form>
           <ul className={styles.itemList}>
             {rules.map((item) => <li key={item.id}><button type="button" className={styles.itemButton} onClick={() => toggleRule(item)} disabled={Boolean(working)} aria-label={`${item.enabled ? 'Pause' : 'Enable'} ${item.name}`}><span><strong>{item.name}</strong><small>Priority {item.priority} · {item.source_key || 'any source'} · {item.intent} · {item.assignment_mode.replaceAll('_', ' ')}</small></span><span className={styles.itemMeta}>{item.enabled ? <ToggleRight aria-hidden="true" /> : <ToggleLeft aria-hidden="true" />}{item.enabled ? 'enabled' : 'paused'}</span></button></li>)}
-            {!rules.length && !loading ? <li className={styles.empty}>No routing rules. The default capacity-aware round robin remains active.</li> : null}
+            {!rules.length && !loading ? <li className={styles.empty}>No routing rules yet — new leads are shared in turn among agents who have room.</li> : null}
           </ul>
         </section>
       </div>
@@ -299,13 +299,13 @@ export default function LeadRoutingPage() {
       </section>
 
       <section className={styles.panel} aria-labelledby="events-title">
-        <header className={styles.panelHeader}><div><h4 id="events-title">Recent intake</h4><p>Encrypted payloads stay sealed; operational routing evidence is visible</p></div><span className={styles.badge}>{events.length} shown</span></header>
+        <header className={styles.panelHeader}><div><h4 id="events-title">Recent intake</h4><p>Lead details stay encrypted; you can see where each lead was routed and why</p></div><span className={styles.badge}>{events.length} shown</span></header>
         <div className={styles.tableWrap}>
           <table className={styles.dataTable}>
             <thead><tr><th scope="col">Received</th><th scope="col">Source</th><th scope="col">Intent</th><th scope="col">Market</th><th scope="col">Status</th><th scope="col">Assigned</th><th scope="col">Reason</th></tr></thead>
             <tbody>{events.map((item) => <tr key={item.id}><td>{formatDate(item.received_at)}</td><td>{item.source_key}</td><td>{item.intent}</td><td>{[item.zip_code, item.state_code].filter(Boolean).join(', ') || '—'}</td><td><span className={styles.badge} data-tone={item.status === 'routed' ? 'good' : item.status === 'unassigned' ? 'warn' : 'bad'}>{item.status}</span></td><td>{item.assigned_agent_id || '—'}</td><td>{item.route_reason || '—'}</td></tr>)}</tbody>
           </table>
-          {!events.length && !loading ? <div className={styles.empty}>No signed lead intake events yet.</div> : null}
+          {!events.length && !loading ? <div className={styles.empty}>No leads received yet. Leads from your connected sources will appear here.</div> : null}
         </div>
       </section>
     </div>

@@ -15,7 +15,9 @@ import {
   XCircle,
 } from 'lucide-react';
 import { crmDelete, crmGet, crmPost, crmPut } from '../state/useCrmApi';
+import { IntegrationStatus } from './IntegrationStatus';
 import styles from './SalesWorkspace.module.css';
+import { friendlyError } from '../lib/errorMessages';
 
 /* One shared one-second clock for every component that needs to watch a
    deadline expire. Nothing subscribes when no lockout is on screen, so this
@@ -60,21 +62,30 @@ const EMPTY_ROUTE = {
 };
 
 function errorText(error) {
-  const detail = error?.payload?.detail;
-  if (typeof detail === 'string') return detail;
-  if (detail?.message) return detail.message;
-  return error?.message || 'The provider action could not be completed.';
+  return friendlyError(error, { fallback: 'That setup change didn’t go through. Try again in a moment.' });
 }
 
 function compact(payload) {
   return Object.fromEntries(Object.entries(payload).filter(([, value]) => value !== ''));
 }
 
+const PROVIDER_INTEGRATION = { google: 'calendar', smtp: 'email', twilio: 'phone' };
+// Names a person recognises — the credentials form is the one place the
+// vendor is named, because that is whose details they are typing in.
+const PROVIDER_NAMES = { google: 'Google', smtp: 'Your email server', twilio: 'Twilio' };
+const CAPABILITY_NAMES = { email: 'email', sms: 'text messages', ai_call: 'Neoh calls', agent_call: 'your calls', calendar: 'calendar', voice: 'calls' };
+const providerName = (provider) => PROVIDER_NAMES[provider] || 'This account';
+
+// Connection state in customer words ("Ready", "Needs verification",
+// "Reconnect") with an icon — never the raw validation_status string.
 function ProviderState({ provider }) {
-  const valid = provider?.configured && provider?.validation_status === 'valid';
-  const googleValid = provider?.provider === 'google' && provider?.configured;
-  const tone = valid || googleValid ? 'good' : provider?.validation_status === 'invalid' ? 'bad' : 'warn';
-  return <span className={styles.badge} data-tone={tone}>{valid || googleValid ? 'connected' : String(provider?.validation_status || 'setup required').replaceAll('_', ' ')}</span>;
+  const configured = Boolean(provider?.configured);
+  const state = !configured
+    ? 'NOT_STARTED'
+    : provider?.provider === 'google' || provider?.validation_status === 'valid'
+      ? 'READY'
+      : provider?.validation_status || 'unvalidated';
+  return <IntegrationStatus integration={PROVIDER_INTEGRATION[provider?.provider] || 'phone'} state={state} />;
 }
 
 export default function ProviderDeliveryPage() {
@@ -195,7 +206,7 @@ export default function ProviderDeliveryPage() {
     try {
       await crmPut(`/api/sales/providers/${provider}`, compact(values));
       reset();
-      setMessage(`${provider.toUpperCase()} credentials encrypted and stored. Validate them before delivery can be connected.`);
+      setMessage(`${providerName(provider)} details saved and encrypted. Validate them to finish connecting.`);
       await load();
     } catch (configureError) {
       setError(errorText(configureError));
@@ -210,9 +221,12 @@ export default function ProviderDeliveryPage() {
     try {
       const result = await crmPost(`/api/sales/providers/${provider}/${encodeURIComponent(accountLabel)}/validate`, {});
       if (result.validation_status === 'valid') {
-        setMessage(`${provider.toUpperCase()} validated. Enabled capabilities: ${Object.entries(result.capabilities || {}).filter(([, ready]) => ready).map(([name]) => name).join(', ') || 'none'}.`);
+        const ready = Object.entries(result.capabilities || {}).filter(([, on]) => on).map(([name]) => CAPABILITY_NAMES[name] || name.replaceAll('_', ' '));
+        setMessage(ready.length
+          ? `${providerName(provider)} is connected. Ready for ${ready.join(', ')}.`
+          : `${providerName(provider)} checked out, but nothing is ready to use yet — finish the sender or number setup below.`);
       } else {
-        setError(result.error || `${provider.toUpperCase()} validation failed.`);
+        setError(friendlyError({ message: result.error, status: 422 }, { fallback: `${providerName(provider)} didn’t accept those details. Check them and try again.` }));
       }
       await load();
     } catch (validateError) {
@@ -224,11 +238,11 @@ export default function ProviderDeliveryPage() {
 
   const disconnect = useCallback(async (provider) => {
     const accountLabel = byName[provider]?.account_label || 'default';
-    if (!window.confirm(`Disconnect ${provider.toUpperCase()} account “${accountLabel}”?`)) return;
+    if (!window.confirm(`Disconnect ${providerName(provider)} (“${accountLabel}”)?`)) return;
     setWorking(`disconnect:${provider}`); setError(''); setMessage('');
     try {
       await crmDelete(`/api/sales/providers/${provider}/${encodeURIComponent(accountLabel)}`);
-      setMessage(`${provider.toUpperCase()} disconnected. Stored credentials are disabled and cannot be used for delivery.`);
+      setMessage(`${providerName(provider)} disconnected. Its saved details are switched off and won’t be used.`);
       await load();
     } catch (disconnectError) {
       setError(errorText(disconnectError));
@@ -264,7 +278,7 @@ export default function ProviderDeliveryPage() {
       }
       const response = await crmPut('/api/telephony/routes/me', payload);
       setRoute(response);
-      setMessage('Telephony route saved. Browser calling is ready only when provider validation and verified caller-ID requirements both pass.');
+      setMessage('Calling settings saved. Calling from your browser turns on once your account checks out and your caller ID is verified.');
       await load();
     } catch (routeError) {
       setError(errorText(routeError));
@@ -396,38 +410,38 @@ export default function ProviderDeliveryPage() {
     <div className={styles.page}>
       <div className={styles.pageIntro}>
         <div>
-          <h3>Tenant-scoped delivery truth</h3>
-          <p>Connect email, SMS, and voice with structured provider setup. A channel is shown as connected only after credentials validate and its required sender or route is present.</p>
+          <h3>Email, text and calling</h3>
+          <p>Connect the accounts Neoh sends and calls through. A channel shows as ready only after its sign-in details check out and its sending address or number is in place.</p>
         </div>
         <button type="button" className={styles.secondaryButton} onClick={load} disabled={loading || Boolean(working)}><RefreshCw aria-hidden="true" /> Refresh</button>
       </div>
 
       <div className={styles.notice}>
         <KeyRound aria-hidden="true" />
-        <span>Secret fields are write-only: values are encrypted server-side, never returned, and never prefilled here. Provider validation is read-only and does not place a call or send a message.</span>
+        <span>Passwords and keys are write-only: they are encrypted when saved, never shown again, and never prefilled here. Checking a connection never places a call or sends a message.</span>
       </div>
       {error ? <div className={styles.error} role="alert"><XCircle aria-hidden="true" /> {error}</div> : null}
       {message ? <div className={styles.success} role="status"><CheckCircle2 aria-hidden="true" /> {message}</div> : null}
 
       <div className={styles.metricGrid}>
-        <div className={styles.metricCard}><span>Email</span><strong>{channels.email ? 'Ready' : 'Setup'}</strong><small>SMTP or Google</small></div>
-        <div className={styles.metricCard}><span>SMS</span><strong>{channels.sms ? 'Ready' : 'Setup'}</strong><small>registered sender</small></div>
-        <div className={styles.metricCard}><span>AI voice</span><strong>{channels.ai_call ? 'Ready' : 'Setup'}</strong><small>approval delivery route</small></div>
-        <div className={styles.metricCard}><span>Agent voice</span><strong>{channels.agent_call ? 'Ready' : 'Setup'}</strong><small>browser + verified caller ID</small></div>
+        <div className={styles.metricCard}><span>Email</span><strong>{channels.email ? 'Ready' : 'Not set up'}</strong><small>SMTP or Google</small></div>
+        <div className={styles.metricCard}><span>Text messages</span><strong>{channels.sms ? 'Ready' : 'Not set up'}</strong><small>registered text number</small></div>
+        <div className={styles.metricCard}><span>Neoh calls</span><strong>{channels.ai_call ? 'Ready' : 'Not set up'}</strong><small>calls you approve</small></div>
+        <div className={styles.metricCard}><span>Your calls</span><strong>{channels.agent_call ? 'Ready' : 'Not set up'}</strong><small>from your browser, verified caller ID</small></div>
       </div>
 
-      <section className={styles.providerGrid} aria-label="Delivery providers">
+      <section className={styles.providerGrid} aria-label="Connected accounts">
         <article className={styles.panel}>
-          <header className={styles.panelHeader}><div><h4>Google Workspace</h4><p>OAuth email and calendar</p></div><ProviderState provider={byName.google || { provider: 'google' }} /></header>
+          <header className={styles.panelHeader}><div><h4>Google Workspace</h4><p>Email and calendar</p></div><ProviderState provider={byName.google || { provider: 'google' }} /></header>
           <div className={styles.panelBody}>
-            <div className={styles.providerIcon}><CalendarDays aria-hidden="true" /><span><strong>Google OAuth</strong><small>Oracle never receives your Google password.</small></span></div>
+            <div className={styles.providerIcon}><CalendarDays aria-hidden="true" /><span><strong>Sign in with Google</strong><small>Neoh never sees your Google password.</small></span></div>
             <button type="button" className={styles.primaryButton} onClick={connectGoogle} disabled={Boolean(working)}><PlugZap aria-hidden="true" /> {byName.google?.configured ? 'Reconnect Google' : 'Connect Google'}</button>
             {byName.google?.configured ? <button type="button" className={styles.dangerButton} onClick={() => disconnect('google')} disabled={Boolean(working)}><Trash2 aria-hidden="true" /> Disconnect</button> : null}
           </div>
         </article>
 
         <article className={styles.panel}>
-          <header className={styles.panelHeader}><div><h4>Your email (SMTP)</h4><p>NEOH sends outreach through your own mail server and address</p></div><ProviderState provider={byName.smtp || { provider: 'smtp' }} /></header>
+          <header className={styles.panelHeader}><div><h4>Your email (SMTP)</h4><p>Neoh sends outreach through your own mail server and address</p></div><ProviderState provider={byName.smtp || { provider: 'smtp' }} /></header>
           <form className={styles.panelBody} onSubmit={(event) => { event.preventDefault(); void configure('smtp', smtp, () => setSmtp(EMPTY_SMTP)); }} autoComplete="off">
             <div className={styles.providerIcon}><Mail aria-hidden="true" /><span><strong>Bring your own mail server</strong><small>Broker owners set the brokerage default; agents may connect their own to send and receive replies from their own inbox.</small></span></div>
             <div className={styles.fieldGrid}>
@@ -536,7 +550,7 @@ export default function ProviderDeliveryPage() {
           </header>
           <div className={styles.panelBody}>
             {smsReady ? (
-              <p>Your business number can send and receive text messages through NEOH.</p>
+              <p>Your business number can send and receive text messages through Neoh.</p>
             ) : smsPendingVerification ? (
               <>
                 <p>We sent a verification code to your business number. Enter it below.</p>
@@ -573,29 +587,29 @@ export default function ProviderDeliveryPage() {
 
       <section className={styles.panel} aria-labelledby="provider-route-title">
         <header className={styles.panelHeader}>
-          <div><h4 id="provider-route-title">Verified telephony route</h4><p>Inbound number, browser caller ID, and registered SMS sender</p></div>
+          <div><h4 id="provider-route-title">Advanced call and text routing</h4><p>Incoming number, browser caller ID, and registered text sender</p></div>
           <ProviderState provider={{ provider: 'route', configured: Boolean(route?.active && route?.voice_caller_id_verified), validation_status: route?.active ? 'valid' : 'unverified' }} />
         </header>
         <form className={styles.panelBody} onSubmit={(event) => { event.preventDefault(); void saveRoute(); }}>
           <div className={styles.fieldGridWide}>
-            <div className={styles.field}><label htmlFor="route-inbound">Inbound Twilio DID</label><input id="route-inbound" type="tel" value={routeForm.inbound_did} onChange={(event) => setRouteForm((current) => ({ ...current, inbound_did: event.target.value }))} placeholder="+15551234567" required /></div>
+            <div className={styles.field}><label htmlFor="route-inbound">Incoming Twilio number</label><input id="route-inbound" type="tel" value={routeForm.inbound_did} onChange={(event) => setRouteForm((current) => ({ ...current, inbound_did: event.target.value }))} placeholder="+15551234567" required /></div>
             <div className={styles.field}><label htmlFor="route-account">Twilio Account SID</label><input id="route-account" value={routeForm.twilio_account_sid} onChange={(event) => setRouteForm((current) => ({ ...current, twilio_account_sid: event.target.value }))} placeholder="AC…" minLength={34} maxLength={34} required /></div>
             <div className={styles.field}><label htmlFor="route-caller-id">Outbound voice caller ID</label><input id="route-caller-id" type="tel" value={routeForm.voice_caller_id_e164} onChange={(event) => setRouteForm((current) => ({ ...current, voice_caller_id_e164: event.target.value }))} placeholder="+15551234567" /></div>
             <div className={styles.field}><label htmlFor="route-sms-sender">Registered SMS sender</label><input id="route-sms-sender" type="tel" value={routeForm.sms_sender_e164} onChange={(event) => setRouteForm((current) => ({ ...current, sms_sender_e164: event.target.value }))} placeholder="+15551234567" /></div>
             <div className={styles.field}><label htmlFor="route-sms-type">SMS sender type</label><select id="route-sms-type" value={routeForm.sms_sender_type} onChange={(event) => setRouteForm((current) => ({ ...current, sms_sender_type: event.target.value }))}><option value="">No SMS sender</option><option value="twilio_registered">Twilio registered</option><option value="ported">Ported</option><option value="toll_free_verified">Toll-free verified</option></select></div>
             <div className={styles.field}><label htmlFor="route-intake">Inbound intake mode</label><select id="route-intake" value={routeForm.intake_mode} onChange={(event) => setRouteForm((current) => ({ ...current, intake_mode: event.target.value }))}><option value="auto">Auto</option><option value="buyer">Buyer</option><option value="seller">Seller</option></select></div>
-            <div className={styles.field}><label htmlFor="route-forwarding-mode">Keep your existing number</label><select id="route-forwarding-mode" value={routeForm.forwarding_mode} onChange={(event) => setRouteForm((current) => ({ ...current, forwarding_mode: event.target.value }))} aria-describedby="route-forwarding-mode-help"><option value="none">Off — clients call the Neoh number directly</option><option value="carrier_conditional">Carrier forwarding — clients keep calling my number</option><option value="sip">SIP trunk</option></select><small id="route-forwarding-mode-help">Carrier forwarding lets clients keep dialling the number on your signs and cards. You set the forward at your carrier; NEOH answers.</small></div>
-            <div className={styles.field}><label htmlFor="route-forwarding-source">Your public number</label><input id="route-forwarding-source" type="tel" value={routeForm.forwarding_source_e164} onChange={(event) => setRouteForm((current) => ({ ...current, forwarding_source_e164: event.target.value }))} placeholder="+15551234567" disabled={routeForm.forwarding_mode !== 'carrier_conditional'} required={routeForm.forwarding_mode === 'carrier_conditional'} aria-describedby="route-forwarding-source-help" /><small id="route-forwarding-source-help">The number your clients already dial. Forward it to the Neoh DID above, then NEOH picks up.</small></div>
+            <div className={styles.field}><label htmlFor="route-forwarding-mode">Keep your existing number</label><select id="route-forwarding-mode" value={routeForm.forwarding_mode} onChange={(event) => setRouteForm((current) => ({ ...current, forwarding_mode: event.target.value }))} aria-describedby="route-forwarding-mode-help"><option value="none">Off — clients call the Neoh number directly</option><option value="carrier_conditional">Carrier forwarding — clients keep calling my number</option><option value="sip">SIP trunk</option></select><small id="route-forwarding-mode-help">Carrier forwarding lets clients keep dialling the number on your signs and cards. You set the forward at your carrier; Neoh answers.</small></div>
+            <div className={styles.field}><label htmlFor="route-forwarding-source">Your public number</label><input id="route-forwarding-source" type="tel" value={routeForm.forwarding_source_e164} onChange={(event) => setRouteForm((current) => ({ ...current, forwarding_source_e164: event.target.value }))} placeholder="+15551234567" disabled={routeForm.forwarding_mode !== 'carrier_conditional'} required={routeForm.forwarding_mode === 'carrier_conditional'} aria-describedby="route-forwarding-source-help" /><small id="route-forwarding-source-help">The number your clients already dial. Forward it to the Neoh number above, then Neoh picks up.</small></div>
             <div className={styles.field}><label htmlFor="route-sip-domain">SIP domain</label><input id="route-sip-domain" value={routeForm.sip_domain} onChange={(event) => setRouteForm((current) => ({ ...current, sip_domain: event.target.value }))} placeholder="pbx.example.com" disabled={routeForm.forwarding_mode !== 'sip'} required={routeForm.forwarding_mode === 'sip'} aria-describedby="route-sip-domain-help" /><small id="route-sip-domain-help">Required for SIP trunking. Your PBX sends the call here instead of a carrier forward.</small></div>
-            <div className={styles.field}><label htmlFor="route-forward">Your phone for live hand-off</label><input id="route-forward" type="tel" value={routeForm.agent_forward_e164} onChange={(event) => setRouteForm((current) => ({ ...current, agent_forward_e164: event.target.value }))} placeholder="+15551234567" aria-describedby="route-forward-help" /><small id="route-forward-help">Where NEOH transfers a live caller. Leave blank to disable hand-off.</small></div>
+            <div className={styles.field}><label htmlFor="route-forward">Your phone for live hand-off</label><input id="route-forward" type="tel" value={routeForm.agent_forward_e164} onChange={(event) => setRouteForm((current) => ({ ...current, agent_forward_e164: event.target.value }))} placeholder="+15551234567" aria-describedby="route-forward-help" /><small id="route-forward-help">Where Neoh transfers a live caller. Leave blank to disable hand-off.</small></div>
             <div className={styles.field}><label htmlFor="route-forward-timeout">Ring your phone for</label><input id="route-forward-timeout" type="number" min={5} max={120} step={1} value={routeForm.forward_timeout_seconds} onChange={(event) => setRouteForm((current) => ({ ...current, forward_timeout_seconds: Number(event.target.value) || 25 }))} disabled={!routeForm.agent_forward_e164} aria-describedby="route-forward-timeout-help" /><small id="route-forward-timeout-help">Seconds before the caller is told you will call back (5-120).</small></div>
           </div>
-          <label className={styles.consentRow}><input type="checkbox" checked={routeForm.forward_on_request} disabled={!routeForm.agent_forward_e164} onChange={(event) => setRouteForm((current) => ({ ...current, forward_on_request: event.target.checked }))} /><span><strong>Transfer when the caller asks for a person</strong><small>NEOH says it is connecting them, then bridges the live call to your phone.</small></span></label>
+          <label className={styles.consentRow}><input type="checkbox" checked={routeForm.forward_on_request} disabled={!routeForm.agent_forward_e164} onChange={(event) => setRouteForm((current) => ({ ...current, forward_on_request: event.target.checked }))} /><span><strong>Transfer when the caller asks for a person</strong><small>Neoh says it is connecting them, then bridges the live call to your phone.</small></span></label>
           <label className={styles.consentRow}><input type="checkbox" checked={routeForm.forward_when_ai_unavailable} disabled={!routeForm.agent_forward_e164} onChange={(event) => setRouteForm((current) => ({ ...current, forward_when_ai_unavailable: event.target.checked }))} /><span><strong>Transfer when the assistant is unavailable</strong><small>Without this the caller is told to expect a callback and the call ends.</small></span></label>
-          <label className={styles.consentRow}><input type="checkbox" checked={routeForm.voice_caller_id_verified} onChange={(event) => setRouteForm((current) => ({ ...current, voice_caller_id_verified: event.target.checked }))} /><span><strong>Caller ID is verified for this Twilio account</strong><small>I confirm the number is owned or verified in Twilio and may be used for outbound voice. Provider validation is still required.</small></span></label>
-          <label className={styles.consentRow}><input type="checkbox" checked={routeForm.active} onChange={(event) => setRouteForm((current) => ({ ...current, active: event.target.checked }))} /><span><strong>Route active</strong><small>Inactive routes cannot receive calls or originate browser calls.</small></span></label>
-          <button type="submit" className={styles.primaryButton} disabled={Boolean(working)}><Save aria-hidden="true" /> Save route</button>
-          {route?.voice_webhook_url ? <div className={styles.endpointGrid}><div><PhoneCall aria-hidden="true" /><span><strong>Inbound voice webhook</strong><code>{route.voice_webhook_url}</code></span></div><div><MessageSquareText aria-hidden="true" /><span><strong>Status callback</strong><code>{route.status_callback_url}</code></span></div></div> : null}
+          <label className={styles.consentRow}><input type="checkbox" checked={routeForm.voice_caller_id_verified} onChange={(event) => setRouteForm((current) => ({ ...current, voice_caller_id_verified: event.target.checked }))} /><span><strong>Caller ID is verified for this Twilio account</strong><small>I confirm the number is owned or verified in Twilio and may be used for outbound voice. Neoh still checks the account before using it.</small></span></label>
+          <label className={styles.consentRow}><input type="checkbox" checked={routeForm.active} onChange={(event) => setRouteForm((current) => ({ ...current, active: event.target.checked }))} /><span><strong>Routing on</strong><small>While off, this number can’t receive calls and you can’t call from the browser.</small></span></label>
+          <button type="submit" className={styles.primaryButton} disabled={Boolean(working)}><Save aria-hidden="true" /> Save routing</button>
+          {route?.voice_webhook_url ? <div className={styles.endpointGrid}><div><PhoneCall aria-hidden="true" /><span><strong>Voice webhook URL (paste into Twilio)</strong><code>{route.voice_webhook_url}</code></span></div><div><MessageSquareText aria-hidden="true" /><span><strong>Status callback URL (paste into Twilio)</strong><code>{route.status_callback_url}</code></span></div></div> : null}
         </form>
       </section>
     </div>

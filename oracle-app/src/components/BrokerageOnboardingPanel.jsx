@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useState } from 'react';
 import { crmGet, crmPost, crmPut } from '../state/useCrmApi';
 import { getUserId } from '../state/identity';
+import { IntegrationStatus } from './IntegrationStatus';
 import styles from './BrokerageOnboardingPanel.module.css';
+import { friendlyError } from '../lib/errorMessages';
 
 const EMPTY_LICENSE = { state_code: '', license_number: '', license_type: 'salesperson', expires_on: '' };
 
@@ -65,7 +67,7 @@ export function BrokerageOnboardingPanel() {
         setApprovals(rows.filter((approval) => approval.action_type === 'brokerage.onboarding'));
       }
       setError('');
-    }).catch((reasonValue) => setError(reasonValue.message || 'Brokerage onboarding is unavailable.'));
+    }).catch((reasonValue) => setError(friendlyError(reasonValue, { fallback: 'Brokerage onboarding is unavailable.' })));
   }, [role]);
 
   useEffect(() => { load(); }, [load]);
@@ -100,7 +102,7 @@ export function BrokerageOnboardingPanel() {
         preferences: {},
       },
     }).then(() => { setNotice('Submitted for a different broker’s approval.'); return load(); })
-      .catch((reasonValue) => setError(reasonValue.message || 'Submission failed.'))
+      .catch((reasonValue) => setError(friendlyError(reasonValue, { fallback: 'Submission failed.' })))
       .finally(() => setBusy(false));
   };
 
@@ -108,7 +110,7 @@ export function BrokerageOnboardingPanel() {
     setBusy(true); setNotice('');
     crmPost(`/api/agents/brokerage-onboarding/${approval.id}/decision`, { decision, reason: reason.trim() })
       .then(() => { setNotice(`Onboarding ${decision}.`); return load(); })
-      .catch((reasonValue) => setError(reasonValue.message || 'Decision failed.'))
+      .catch((reasonValue) => setError(friendlyError(reasonValue, { fallback: 'Decision failed.' })))
       .finally(() => setBusy(false));
   };
 
@@ -118,7 +120,7 @@ export function BrokerageOnboardingPanel() {
     crmPost('/api/commands/providers/google/oauth/start', { return_path: returnPath })
       .then((result) => window.location.assign(result.authorization_url))
       .catch((reasonValue) => {
-        setError(reasonValue.message || 'Google Calendar connection failed.');
+        setError(friendlyError(reasonValue, { fallback: 'Google Calendar connection failed.' }));
         setBusy(false);
       });
   };
@@ -138,10 +140,10 @@ export function BrokerageOnboardingPanel() {
           <div><span>Membership</span><strong>{human(status.membership?.status)}</strong></div>
           <div><span>License</span><strong>{human(status.licenses?.[0]?.verification_status)}</strong></div>
           <div className={styles.providerStatus}>
-            <span>Google</span>
-            <strong>{status.google_connected ? 'connected' : 'not connected'}</strong>
+            <span>Calendar</span>
+            <strong><IntegrationStatus integration="calendar" state={status.google_connected ? 'READY' : 'NOT_STARTED'} /></strong>
             <button type="button" onClick={connectGoogle} disabled={busy}>
-              {status.google_connected ? 'Reconnect Calendar' : 'Connect Calendar'}
+              {status.google_connected ? 'Reconnect Google Calendar' : 'Connect Google Calendar'}
             </button>
           </div>
           <div><span>Style model</span><strong>{human(status.membership?.training_status)}</strong></div>
@@ -206,7 +208,7 @@ export function BrokerageOnboardingPanel() {
 
           <section className={styles.review} aria-labelledby="team-roster-title">
             <header><h3 id="team-roster-title">Team roster</h3><span>{team.length}</span></header>
-            {team.length === 0 ? <p>No team memberships recorded.</p> : <ul>{team.map((member) => (
+            {team.length === 0 ? <p>No team members yet.</p> : <ul>{team.map((member) => (
               <li key={member.id}><div><strong>{member.agent_id}</strong><small>{member.team_name} · {human(member.member_role)}</small></div><span>{human(member.status)} · {member.verified_licenses}/{member.license_count} licenses</span></li>
             ))}</ul>}
           </section>

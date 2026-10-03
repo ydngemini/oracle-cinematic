@@ -13,8 +13,6 @@ export const initialState = {
   legalPackage: null,
   gisBoundaryVisible: true,
   anchorsVisible: true,
-  jarvisListening: false,
-  jarvisTranscript: '',
   predictiveCache: [],
   cacheWarm: [],
   isAiAppraisalMode: true,
@@ -23,7 +21,7 @@ export const initialState = {
   maoThreshold: 0.70,
   profileSummary: '',
   targetMarkets: [],
-  liveFeed: [],          // Live Pulse — newest-first activity cards, capped at 50
+  liveFeed: [],          // activity feed (AdminOpsTab) — newest-first cards, capped at 50
   jobProgress: {},       // durable job id -> latest authenticated progress frame
   negotiationTelemetry: null,
   callConsents: {},
@@ -42,9 +40,6 @@ export const ACTIONS = {
   SET_LEGAL_PACKAGE: 'SET_LEGAL_PACKAGE',
   TOGGLE_GIS_BOUNDARY: 'TOGGLE_GIS_BOUNDARY',
   TOGGLE_ANCHORS: 'TOGGLE_ANCHORS',
-  SET_JARVIS_LISTENING: 'SET_JARVIS_LISTENING',
-  SET_JARVIS_TRANSCRIPT: 'SET_JARVIS_TRANSCRIPT',
-  JARVIS_COMMAND: 'JARVIS_COMMAND',
   SET_PREDICTIVE_CACHE: 'SET_PREDICTIVE_CACHE',
   SET_CACHE_WARM: 'SET_CACHE_WARM',
   TOGGLE_APPRAISAL_MODE: 'TOGGLE_APPRAISAL_MODE',
@@ -223,15 +218,6 @@ export function oracleReducer(state, action) {
     case ACTIONS.TOGGLE_ANCHORS:
       return { ...state, anchorsVisible: !state.anchorsVisible };
 
-    case ACTIONS.SET_JARVIS_LISTENING:
-      return { ...state, jarvisListening: action.payload };
-
-    case ACTIONS.SET_JARVIS_TRANSCRIPT:
-      return { ...state, jarvisTranscript: action.payload };
-
-    case ACTIONS.JARVIS_COMMAND:
-      return applyJarvisCommand(state, action.payload);
-
     case ACTIONS.SET_PREDICTIVE_CACHE:
       return { ...state, predictiveCache: action.payload };
 
@@ -289,50 +275,3 @@ function upsertAssistant(messages, payload, patch) {
   return next;
 }
 
-function applyJarvisCommand(state, transcript) {
-  const t = transcript.toLowerCase().trim();
-
-  if (matches(t, ['show property lines', 'show boundaries', 'show gis', 'show parcel lines'])) {
-    return { ...state, gisBoundaryVisible: true };
-  }
-  if (matches(t, ['hide property lines', 'hide boundaries', 'hide gis', 'hide parcel lines'])) {
-    return { ...state, gisBoundaryVisible: false };
-  }
-  if (matches(t, ['toggle property lines', 'toggle boundaries', 'toggle gis'])) {
-    return { ...state, gisBoundaryVisible: !state.gisBoundaryVisible };
-  }
-
-  if (matches(t, ['show anchors', 'show data', 'show cards', 'show labels', 'show specs'])) {
-    return { ...state, anchorsVisible: true };
-  }
-  if (matches(t, ['hide anchors', 'hide data', 'hide cards', 'hide labels', 'hide specs'])) {
-    return { ...state, anchorsVisible: false };
-  }
-
-  if (matches(t, ['furnish', 'stage the property', 'show furnished', 'stage it'])) {
-    return { ...state, isFurnished: true };
-  }
-  if (matches(t, ['unfurnish', 'clear staging', 'remove furniture'])) {
-    return { ...state, isFurnished: false };
-  }
-
-  if (matches(t, ['clear transcript', 'clear log', 'clear chat'])) {
-    return { ...state, transcriptLog: [] };
-  }
-
-  if (matches(t, ['go inside', 'interior view', 'show interior', 'enter the house'])) {
-    return { ...state, activeAgent: 'INTERIOR_ROOM' };
-  }
-  if (matches(t, ['exterior', 'outside view', 'show exterior', 'pull back'])) {
-    return { ...state, activeAgent: null };
-  }
-  if (matches(t, ['isometric', 'bird eye', 'birds eye', 'overview', 'top down'])) {
-    return { ...state, activeAgent: 'ISOMETRIC' };
-  }
-
-  return state;
-}
-
-function matches(input, patterns) {
-  return patterns.some((p) => input.includes(p));
-}

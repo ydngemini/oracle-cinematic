@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { crmGet } from '../state/useCrmApi';
 import styles from './AdminOpsTab.module.css';
+import { friendlyError } from '../lib/errorMessages';
 
 /**
  * What this tenant actually consumed, and whether any of it is billable yet.
@@ -39,7 +40,7 @@ export default function BillingUsagePanel() {
       (reason) => setError(
         reason?.status === 403
           ? 'Only a broker owner can see billing usage.'
-          : reason?.message || 'Usage could not be read.',
+          : friendlyError(reason, { fallback: 'Usage could not be read.' }),
       ),
     );
   }, [days]);

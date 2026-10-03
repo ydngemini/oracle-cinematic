@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { crmGet } from '../state/useCrmApi';
 import { useStateCtx } from '../state/StateContext';
 import styles from './MarketDataPanels.module.css';
+import { friendlyError } from '../lib/errorMessages';
 
 const GLYPHS = {
   trendUp: (
@@ -117,7 +118,7 @@ export function MarketDataPanels() {
           <span className={styles.errorText}>
             {error.status === 404
               ? `No market data has been loaded for ${primaryState}.`
-              : (error.message || 'Market data could not be read.')}
+              : (friendlyError(error, { fallback: 'Market data could not be read.' }))}
           </span>
           <button type="button" className={styles.retryBtn} onClick={load}>Retry</button>
         </div>

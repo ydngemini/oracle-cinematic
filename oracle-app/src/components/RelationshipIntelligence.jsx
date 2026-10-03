@@ -3,6 +3,7 @@ import { AlertCircle, Eye, Pin, X } from 'lucide-react';
 
 import { crmGet, crmPost } from '../state/useCrmApi';
 import styles from './RelationshipIntelligence.module.css';
+import { friendlyError } from '../lib/errorMessages';
 
 /**
  * Relationship Intelligence — what Neoh believes about one person, and why.
@@ -232,7 +233,7 @@ export function RelationshipIntelligence({ clientId }) {
       setSelected(null);
       await load();
     } catch (error) {
-      setNotice(error?.message || 'That correction did not save.');
+      setNotice(friendlyError(error, { fallback: 'That correction did not save.' }));
     } finally {
       setBusy(false);
     }

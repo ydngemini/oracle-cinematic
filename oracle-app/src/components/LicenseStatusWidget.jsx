@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { crmGet } from '../state/useCrmApi';
 import { getUserId } from '../state/identity';
+import { friendlyError } from '../lib/errorMessages';
 import styles from './LicenseStatusWidget.module.css';
 
 const GLYPHS = {
@@ -73,7 +74,9 @@ export function LicenseStatusWidget() {
       ) : error ? (
         <div className={styles.errorBox} role="alert">
           <span className={styles.errorText}>
-            {error.status === 404 ? 'Licensing service not deployed.' : error.message}
+            {error.status === 404
+              ? 'License tracking isn’t set up for your brokerage yet.'
+              : friendlyError(error, { fallback: 'Your licenses couldn’t load right now.' })}
           </span>
           <button type="button" className={styles.retryBtn} onClick={fetch_}>Retry</button>
         </div>

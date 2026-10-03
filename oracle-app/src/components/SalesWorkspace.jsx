@@ -19,7 +19,7 @@ const DESTINATIONS = [
   { path: '/our-ai/sales/agent', label: 'Sales Agent', Icon: Bot, Component: SalesAgentPage },
   { path: '/our-ai/sales/dialer', label: 'Power Dialer', Icon: PhoneCall, Component: PowerDialerPage },
   { path: '/our-ai/sales/plans', label: 'Smart Plans', Icon: Workflow, Component: SmartPlansPage },
-  { path: '/our-ai/sales/providers', label: 'Providers', Icon: PlugZap, Component: ProviderDeliveryPage },
+  { path: '/our-ai/sales/providers', label: 'Connections', Icon: PlugZap, Component: ProviderDeliveryPage },
   { path: '/our-ai/sales/routing', label: 'Lead Routing', Icon: Route, Component: LeadRoutingPage },
 ];
 
@@ -43,7 +43,7 @@ export default function SalesWorkspace({ route, onNavigate }) {
         <div>
           <span>Our AI / Sales</span>
           <h2 id="sales-workspace-title">{destination.label}</h2>
-          <p>CRM-grounded sales work with explicit provider readiness, compliance checks, and human approval before outbound delivery.</p>
+          <p>Sales work grounded in your CRM, with clear setup status, compliance checks, and your approval before anything goes out.</p>
         </div>
       </header>
 

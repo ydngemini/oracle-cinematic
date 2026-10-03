@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { crmGet, crmPatch, crmPost } from '../state/useCrmApi';
 import styles from './DealBook.module.css';
+import { friendlyError } from '../lib/errorMessages';
 
 /**
  * Parties and milestones for one transaction.
@@ -82,7 +83,7 @@ export default function DealRoomPanel({ transactionId }) {
         setLoading(false);
       },
       (reason) => {
-        setLoadError(reason?.message || 'The deal room could not be loaded.');
+        setLoadError(friendlyError(reason, { fallback: 'The deal room could not be loaded.' }));
         setLoading(false);
       },
     );
@@ -106,7 +107,7 @@ export default function DealRoomPanel({ transactionId }) {
       setParty((prev) => ({ ...prev, name: '' }));
       await load();
     } catch (reason) {
-      setActionError(reason?.message || 'The party could not be added.');
+      setActionError(friendlyError(reason, { fallback: 'The party could not be added.' }));
     } finally {
       setBusy('');
     }
@@ -128,7 +129,7 @@ export default function DealRoomPanel({ transactionId }) {
       setMilestone({ type: 'inspection', title: '', due: '', assignee: '' });
       await load();
     } catch (reason) {
-      setActionError(reason?.message || 'The milestone could not be added.');
+      setActionError(friendlyError(reason, { fallback: 'The milestone could not be added.' }));
     } finally {
       setBusy('');
     }
@@ -148,7 +149,7 @@ export default function DealRoomPanel({ transactionId }) {
       await crmPatch(`/api/portfolio/milestones/${row.id}`, { status });
     } catch (reason) {
       setMilestones(previous);
-      setActionError(reason?.message || 'The milestone status could not be changed.');
+      setActionError(friendlyError(reason, { fallback: 'The milestone status could not be changed.' }));
     } finally {
       setBusy('');
     }

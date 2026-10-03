@@ -1,611 +1,214 @@
-/* ─── LiveTranscript — Cinematic Mission Log ─────────────────────────────
-   Design language: PropertyCanvas gold standard
-   Each line is a telemetry entry with staggered entrance + hover reveals.
-   Depth layers: panel shell → line track → agent tag → body text → glow.
-   ──────────────────────────────────────────────────────────────────────── */
-
-/* ─── Shared Animations ─────────────────────────────────────────────────── */
-
-@keyframes lineEnter {
-  0% {
-    opacity: 0;
-    transform: translateX(-8px) translateY(6px);
-    filter: blur(3px);
-  }
-  60% {
-    filter: blur(0);
-  }
-  100% {
-    opacity: 1;
-    transform: translateX(0) translateY(0);
-    filter: blur(0);
-  }
-}
-
-@keyframes glyphFlash {
-  0%   { opacity: 0; }
-  20%  { opacity: 1; }
-  40%  { opacity: 0.3; }
-  60%  { opacity: 1; }
-  100% { opacity: 1; }
-}
-
-@keyframes idleBlink {
-  0%, 100% { opacity: 0.12; }
-  50%       { opacity: 0.28; }
-}
-
-@keyframes jarvisFadeIn {
-  from {
-    opacity: 0;
-    transform: translateY(6px);
-    filter: blur(2px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-    filter: blur(0);
-  }
-}
-
-@keyframes jarvisDot {
-  0%, 100% {
-    transform: scale(1);
-    box-shadow: 0 0 6px rgba(171, 171, 171, 0.6);
-  }
-  50% {
-    transform: scale(1.6);
-    box-shadow: 0 0 14px rgba(171, 171, 171, 0.9);
-  }
-}
-
-@keyframes pulseDot {
-  0%, 100% {
-    opacity: 0.9;
-    transform: scale(1);
-    box-shadow: 0 0 4px rgba(242, 242, 242, 0.4);
-  }
-  50% {
-    opacity: 0.25;
-    transform: scale(0.65);
-    box-shadow: none;
-  }
-}
-
-@keyframes scanTrack {
-  0%   { background-position: 0% 0%; }
-  100% { background-position: 0% 100%; }
-}
-
-@keyframes whisperBorderGlow {
-  0%, 100% { border-color: rgba(171, 171, 171, 0.25); }
-  50%       { border-color: rgba(171, 171, 171, 0.45); }
-}
-
-/* ─── Panel Shell ────────────────────────────────────────────────────────── */
+/* LiveTranscript — the call transcript inside the dialer.
+   Calm, readable, theme-aware: every colour comes from the shared tokens so
+   the panel reads the same in light and dark. */
 
 .panel {
-  font-family: 'PP Neue Montreal', 'Inter', -apple-system, sans-serif;
-
-  background: var(--oracle-glass);
-  backdrop-filter: var(--oracle-backdrop);
-  -webkit-backdrop-filter: var(--oracle-backdrop);
-
-  border: 1px solid var(--oracle-glass-edge);
-  border-top: 1px solid var(--oracle-border-bright);
-  border-radius: 2px;
-
-  box-shadow:
-    0 8px 32px rgba(0, 0, 0, 0.4),
-    0 1px 0 rgba(242, 242, 242, 0.025) inset;
-
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  position: relative;
-}
-
-/* Very subtle noise / grain texture over the panel */
-.panel::before {
-  content: '';
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  opacity: 0.018;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='200' height='200'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='4'/%3E%3C/filter%3E%3Crect width='200' height='200' filter='url(%23n)' opacity='1'/%3E%3C/svg%3E");
-  z-index: 0;
+  border: 1px solid var(--oracle-border);
+  border-radius: var(--radius-md);
+  background: var(--oracle-surface);
+  color: var(--oracle-text);
+  font-family: var(--font-sans);
 }
 
 .telemetry {
-  position: relative;
-  z-index: 2;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 0.75rem;
-  padding: 0.72rem 1rem;
-  border-bottom: 1px solid rgba(242, 242, 242, 0.06);
-  background: rgba(242, 242, 242, 0.018);
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--oracle-border-subtle);
 }
 
 .maoBadge {
-  border-radius: 999px;
-  padding: 0.34rem 0.65rem;
-  background: rgba(171, 171, 171, 0.1);
-  color: #ababab;
-  font-size: 0.52rem;
-  font-weight: 750;
-  letter-spacing: 0.12em;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  border: 1px solid var(--oracle-border);
+  border-radius: var(--radius-pill);
+  padding: var(--space-1) var(--space-3);
+  color: var(--oracle-text-dim);
+  font-size: var(--text-sm);
+  font-weight: 600;
 }
 
 .maoBadge[data-threshold='green'] {
-  background: rgba(34, 197, 94, 0.14);
-  color: #86efac;
+  border-color: var(--oracle-green-dim);
+  color: var(--oracle-green);
 }
 
 .maoBadge[data-threshold='amber'] {
-  background: rgba(255, 188, 31, 0.14);
-  color: #ffbc1f;
+  border-color: var(--oracle-amber-ghost);
+  color: var(--oracle-accent-ink);
 }
 
 .maoBadge[data-threshold='red'] {
-  background: rgba(239, 68, 68, 0.14);
-  color: #fca5a5;
+  border-color: var(--oracle-red-dim);
+  color: var(--oracle-red);
 }
 
 .maoValue {
-  color: rgba(242, 242, 242, 0.78);
-  font-size: 0.69rem;
+  color: var(--oracle-text-dim);
+  font-size: var(--text-sm);
   font-variant-numeric: tabular-nums;
 }
 
 .objection {
-  position: relative;
-  z-index: 2;
   display: grid;
-  gap: 0.28rem;
-  padding: 0.72rem 1rem;
-  border-bottom: 1px solid rgba(171, 171, 171, 0.12);
-  background: rgba(171, 171, 171, 0.035);
+  gap: var(--space-1);
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--oracle-border-subtle);
+  background: var(--oracle-surface-sunken);
 }
 
 .objection strong {
-  color: rgba(242, 242, 242, 0.85);
-  font-size: 0.58rem;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
+  color: var(--oracle-text-heading);
+  font-size: var(--text-sm);
+  font-weight: 600;
 }
 
 .objection p {
   margin: 0;
-  color: rgba(242, 242, 242, 0.83);
-  font-size: 0.72rem;
-  line-height: 1.48;
+  color: var(--oracle-text);
+  font-size: var(--text-base);
+  line-height: var(--leading-normal);
 }
 
 .objection small {
-  color: rgba(242, 242, 242, 0.36);
-  font-size: 0.57rem;
+  color: var(--oracle-text-ghost);
+  font-size: var(--text-xs);
 }
-
-/* ─── Scrolling Log Body ─────────────────────────────────────────────────── */
 
 .body {
-  flex: 1;
-  overflow-y: auto;
-  padding: 1.4rem 1.2rem 1.2rem;
   display: flex;
+  flex: 1;
   flex-direction: column;
-  gap: 0;
+  gap: var(--space-2);
   min-height: 180px;
   max-height: 320px;
-  position: relative;
-  z-index: 1;
-
-  /* Fade near the top so entries feel like they scroll into existence */
-  -webkit-mask-image: linear-gradient(
-    180deg,
-    transparent 0%,
-    rgba(0, 0, 0, 0.5) 6%,
-    black 14%
-  );
-  mask-image: linear-gradient(
-    180deg,
-    transparent 0%,
-    rgba(0, 0, 0, 0.5) 6%,
-    black 14%
-  );
+  overflow-y: auto;
+  padding: var(--space-4);
 }
-
-.body::-webkit-scrollbar {
-  width: 2px;
-}
-
-.body::-webkit-scrollbar-track {
-  background: rgba(242, 242, 242, 0.02);
-}
-
-.body::-webkit-scrollbar-thumb {
-  background: rgba(255, 188, 31, 0.18);
-  border-radius: 1px;
-}
-
-.body::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 188, 31, 0.35);
-}
-
-/* ─── Idle State ─────────────────────────────────────────────────────────── */
 
 .idle {
-  font-size: 0.62rem;
-  letter-spacing: 0.22em;
-  text-transform: uppercase;
-  color: rgba(242, 242, 242, 0.12);
-  font-weight: 400;
-  padding: 0.4rem 0;
-  animation: idleBlink 3.5s ease-in-out infinite;
+  margin: 0;
+  color: var(--oracle-text-ghost);
+  font-size: var(--text-base);
 }
-
-/* ─── Log Line ───────────────────────────────────────────────────────────── */
 
 .line {
   display: grid;
-  grid-template-rows: auto auto;
-  gap: 0.18rem;
-  padding: 0.55rem 0.7rem;
-  margin: 0 -0.7rem;
-  border-radius: 2px;
-  position: relative;
-  cursor: default;
-
-  animation: lineEnter 0.55s cubic-bezier(0.16, 1, 0.3, 1) both;
-
-  transition:
-    background 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+  gap: 2px;
 }
-
-/* Left accent rail — hidden by default, revealed on hover */
-.line::before {
-  content: '';
-  position: absolute;
-  left: 0;
-  top: 20%;
-  bottom: 20%;
-  width: 1px;
-  background: rgba(255, 188, 31, 0.35);
-  border-radius: 1px;
-  opacity: 0;
-  transform: scaleY(0.4);
-  transition:
-    opacity 0.3s cubic-bezier(0.16, 1, 0.3, 1),
-    transform 0.3s cubic-bezier(0.16, 1, 0.3, 1);
-}
-
-/* Timestamp / line-number pseudo-label — far right, hover reveal */
-.line::after {
-  content: attr(data-seq);
-  position: absolute;
-  right: 0.7rem;
-  top: 50%;
-  transform: translateY(-50%);
-  font-size: 0.38rem;
-  letter-spacing: 0.25em;
-  color: rgba(242, 242, 242, 0.08);
-  font-variant-numeric: tabular-nums;
-  opacity: 0;
-  transition: opacity 0.35s ease;
-}
-
-.line:hover {
-  background: rgba(242, 242, 242, 0.022);
-}
-
-.line:hover::before {
-  opacity: 1;
-  transform: scaleY(1);
-}
-
-.line:hover::after {
-  opacity: 1;
-}
-
-/* ─── Agent Tag ──────────────────────────────────────────────────────────── */
 
 .agent {
-  font-size: 0.48rem;
-  letter-spacing: 0.38em;
-  text-transform: uppercase;
-  color: var(--oracle-accent-ink);
+  color: var(--oracle-text-dim);
+  font-size: var(--text-xs);
   font-weight: 600;
-  line-height: 1;
-
-  /* First-render glyph flash */
-  animation: glyphFlash 0.4s ease both;
 }
-
-/* ─── Body Text ──────────────────────────────────────────────────────────── */
 
 .text {
-  font-size: 0.78rem;
-  color: rgba(242, 242, 242, 0.88);
-  font-weight: 300;
-  line-height: 1.6;
-  letter-spacing: -0.008em;
-}
-
-/* ─── Whisper Lines ──────────────────────────────────────────────────────── */
-
-.whisperLine .agent {
-  color: rgba(171, 171, 171, 0.75);
-  letter-spacing: 0.3em;
+  color: var(--oracle-text);
+  font-size: var(--text-base);
+  line-height: var(--leading-normal);
 }
 
 .whisperLine .text {
-  color: rgba(242, 242, 242, 0.72);
+  color: var(--oracle-text-dim);
   font-style: italic;
-  letter-spacing: 0.005em;
 }
-
-.whisperLine::before {
-  background: rgba(171, 171, 171, 0.4);
-}
-
-/* ─── Jarvis Lines ───────────────────────────────────────────────────────── */
-
-.jarvisLine .agent {
-  color: rgba(171, 171, 171, 0.75);
-}
-
-.jarvisLine .text {
-  color: rgba(242, 242, 242, 0.72);
-}
-
-.jarvisLine::before {
-  background: rgba(171, 171, 171, 0.45);
-}
-
-/* ─── Jarvis Listening Bar ───────────────────────────────────────────────── */
-
-.jarvisBar {
-  display: flex;
-  align-items: center;
-  gap: 0.65rem;
-  padding: 0.65rem 1.2rem;
-
-  background: rgba(171, 171, 171, 0.035);
-  border-top: 1px solid rgba(171, 171, 171, 0.14);
-  border-bottom: 1px solid rgba(171, 171, 171, 0.08);
-  position: relative;
-  overflow: hidden;
-
-  animation: jarvisFadeIn 0.4s cubic-bezier(0.16, 1, 0.3, 1) both;
-}
-
-/* Ambient wash */
-.jarvisBar::before {
-  content: '';
-  position: absolute;
-  inset: 0;
-  background: linear-gradient(
-    90deg,
-    rgba(171, 171, 171, 0.04) 0%,
-    transparent 60%
-  );
-  pointer-events: none;
-}
-
-.jarvisPulse {
-  flex-shrink: 0;
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: rgba(171, 171, 171, 0.9);
-  animation: jarvisDot 0.75s ease-in-out infinite;
-}
-
-.jarvisLabel {
-  font-size: 0.52rem;
-  letter-spacing: 0.22em;
-  text-transform: uppercase;
-  color: rgba(242, 242, 242, 0.85);
-  font-weight: 400;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-/* ─── Whisper Command Input ──────────────────────────────────────────────── */
 
 .whisperInput {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
-  padding: 0.55rem 0.9rem;
-  border-top: 1px solid rgba(242, 242, 242, 0.04);
-
-  background:
-    linear-gradient(
-      180deg,
-      rgba(242, 242, 242, 0) 0%,
-      rgba(242, 242, 242, 0.008) 100%
-    ),
-    rgba(8, 8, 8, 0.65);
-  backdrop-filter: var(--oracle-backdrop);
-  -webkit-backdrop-filter: var(--oracle-backdrop);
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  border-top: 1px solid var(--oracle-border-subtle);
 }
 
 .whisperField {
   flex: 1;
-  border: none;
-  outline: none;
-  background: rgba(242, 242, 242, 0.028);
-  border: 1px solid rgba(242, 242, 242, 0.055);
-  border-radius: 2px;
-  padding: 0.52rem 0.9rem;
-  font-family: inherit;
-  font-size: 0.71rem;
-  font-weight: 300;
-  color: rgba(242, 242, 242, 0.9);
-  letter-spacing: 0.01em;
-
-  transition:
-    border-color 0.35s cubic-bezier(0.16, 1, 0.3, 1),
-    background 0.35s cubic-bezier(0.16, 1, 0.3, 1),
-    box-shadow 0.35s cubic-bezier(0.16, 1, 0.3, 1);
+  min-width: 0;
+  border: 1px solid var(--oracle-border);
+  border-radius: var(--radius-sm);
+  padding: var(--space-2) var(--space-3);
+  background: var(--oracle-surface);
+  color: var(--oracle-text);
+  font: inherit;
+  font-size: var(--text-base);
 }
 
 .whisperField::placeholder {
-  color: rgba(242, 242, 242, 0.16);
-  font-style: italic;
-  letter-spacing: 0.02em;
+  color: var(--oracle-text-ghost);
 }
 
-.whisperField:focus {
-  background: rgba(171, 171, 171, 0.04);
-  border-color: rgba(171, 171, 171, 0.28);
-  box-shadow:
-    0 0 0 3px rgba(171, 171, 171, 0.04),
-    0 4px 12px rgba(171, 171, 171, 0.06);
-  animation: whisperBorderGlow 2.8s ease-in-out infinite;
+.whisperField:focus-visible,
+.whisperSend:focus-visible {
+  outline: none;
+  box-shadow: var(--ring-focus);
 }
 
 .whisperSend {
   flex-shrink: 0;
-  border: none;
-  background: rgba(171, 171, 171, 0.07);
-  border: 1px solid rgba(171, 171, 171, 0.18);
-  color: rgba(171, 171, 171, 0.75);
-  font-family: inherit;
-  font-size: 0.48rem;
+  border: 1px solid var(--oracle-border-bright);
+  border-radius: var(--radius-sm);
+  padding: var(--space-2) var(--space-4);
+  background: var(--oracle-surface-raised);
+  color: var(--oracle-text);
+  font: inherit;
+  font-size: var(--text-base);
   font-weight: 600;
-  letter-spacing: 0.28em;
-  text-transform: uppercase;
-  padding: 0.52rem 1rem;
-  border-radius: 2px;
   cursor: pointer;
-  white-space: nowrap;
-
-  transition:
-    background 0.3s cubic-bezier(0.16, 1, 0.3, 1),
-    border-color 0.3s cubic-bezier(0.16, 1, 0.3, 1),
-    box-shadow 0.3s cubic-bezier(0.16, 1, 0.3, 1),
-    transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1),
-    color 0.3s ease;
+  transition: background var(--duration-fast) var(--ease-out);
 }
 
 .whisperSend:hover:not(:disabled) {
-  background: rgba(171, 171, 171, 0.14);
-  border-color: rgba(171, 171, 171, 0.38);
-  color: rgba(242, 242, 242, 0.92);
-  box-shadow:
-    0 0 16px rgba(171, 171, 171, 0.1),
-    0 4px 12px rgba(0, 0, 0, 0.3);
-  transform: translateY(-1px);
-}
-
-.whisperSend:active:not(:disabled) {
-  transform: translateY(0px);
-  transition-duration: 0.08s;
+  background: var(--oracle-surface-sunken);
 }
 
 .whisperSend:disabled {
-  opacity: 0.22;
+  opacity: 0.5;
   cursor: not-allowed;
-  transform: none;
 }
 
-/* ─── Footer ─────────────────────────────────────────────────────────────── */
+.sendError {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0 var(--space-4) var(--space-3);
+  color: var(--oracle-red);
+  font-size: var(--text-sm);
+}
 
 .footer {
   display: flex;
   align-items: center;
-  gap: 0.55rem;
-  padding: 0.62rem 1.2rem;
-  border-top: 1px solid rgba(242, 242, 242, 0.03);
-
-  /* Keep footer slightly distinct from whisperInput */
-  background: rgba(8, 8, 8, 0.35);
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-4);
+  border-top: 1px solid var(--oracle-border-subtle);
+  color: var(--oracle-text-ghost);
 }
 
-.pulse {
-  flex-shrink: 0;
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-  background: rgba(242, 242, 242, 0.9);
-  animation: pulseDot 2.6s ease-in-out infinite;
+.footer[data-online='true'] {
+  color: var(--oracle-green);
 }
 
 .linkLabel {
-  font-size: 0.43rem;
-  letter-spacing: 0.32em;
-  text-transform: uppercase;
-  color: rgba(242, 242, 242, 0.18);
-  font-weight: 500;
+  color: var(--oracle-text-dim);
+  font-size: var(--text-sm);
 }
 
-/* ─── Responsive ─────────────────────────────────────────────────────────── */
-
-@media (max-width: 768px) {
-  .telemetry {
-    align-items: flex-start;
-    flex-direction: column;
-  }
-
-  .body {
-    max-height: 260px;
-    padding: 1.1rem 0.9rem 1rem;
-  }
-
-  .text {
-    font-size: 0.72rem;
-  }
-
-  .agent {
-    font-size: 0.44rem;
-  }
-
-  .whisperInput {
-    padding: 0.45rem 0.7rem;
-  }
-
-  .whisperSend {
-    padding: 0.48rem 0.7rem;
-    font-size: 0.44rem;
-    letter-spacing: 0.2em;
-  }
-}
-
-/* ─── Reduced Motion ─────────────────────────────────────────────────────── */
-
-@media (prefers-reduced-motion: reduce) {
-  .line {
-    animation: none;
-  }
-
-  .agent {
-    animation: none;
-  }
-
-  .idle {
-    animation: none;
-    opacity: 0.2;
-  }
-
-  .jarvisBar {
-    animation: none;
-  }
-
-  .jarvisPulse {
-    animation: none;
-  }
-
-  .pulse {
-    animation: none;
-    opacity: 0.6;
-  }
-
-  .whisperField:focus {
-    animation: none;
-  }
+.srOnly {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
 }

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { crmGet, crmPost } from '../state/useCrmApi';
 import styles from './DealBook.module.css';
+import { friendlyError } from '../lib/errorMessages';
 
 /**
  * The state disclosure checklist for one transaction.
@@ -70,7 +71,7 @@ export default function ComplianceChecklistPanel({ transaction }) {
           setChecklist(null);
           return;
         }
-        setLoadError(reason?.message || 'The compliance checklist could not be read.');
+        setLoadError(friendlyError(reason, { fallback: 'The compliance checklist could not be read.' }));
       },
     );
   }, [transactionId]);
@@ -102,7 +103,7 @@ export default function ComplianceChecklistPanel({ transaction }) {
       });
       setChecklist(payload || null);
     } catch (reason) {
-      setActionError(reason?.message || 'The checklist could not be built.');
+      setActionError(friendlyError(reason, { fallback: 'The checklist could not be built.' }));
     } finally {
       setBusy(false);
     }

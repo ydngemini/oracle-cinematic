@@ -103,7 +103,7 @@
 
 .siteList h2,
 .builderHead h2 { margin-top: var(--space-2); font-size: var(--text-xl); font-weight: 350; }
-.siteList > header > span { color: var(--oracle-text-dim); font: 500 var(--text-sm)/1 var(--font-mono); }
+.siteList > header > span { color: var(--oracle-text-dim); font: 500 var(--text-sm)/1 var(--font-sans); }
 .siteList > ul { margin: 0; padding: 0; list-style: none; border-top: 1px solid var(--oracle-border-subtle); }
 
 .siteList li {
@@ -142,7 +142,7 @@
 .steps li::before { position: absolute; z-index: 0; top: 13px; left: 0; width: 100%; height: 1px; content: ''; background: var(--oracle-border-bright); }
 .steps li:first-child::before { left: 50%; width: 50%; }
 .steps li:last-child::before { width: 50%; }
-.steps li > span { position: relative; z-index: 1; width: 27px; height: 27px; display: grid; place-items: center; border: 1px solid var(--oracle-border-bright); border-radius: 50%; color: inherit; background: #1b1b1b; font: 600 0.625rem/1 var(--font-mono); }
+.steps li > span { position: relative; z-index: 1; width: 27px; height: 27px; display: grid; place-items: center; border: 1px solid var(--oracle-border-bright); border-radius: 50%; color: inherit; background: #1b1b1b; font: 600 0.625rem/1 var(--font-sans); }
 .steps li > span svg { width: 13px; height: 13px; }
 .steps small { font: 650 0.5625rem/1 var(--font-display); letter-spacing: var(--tracking-wide); text-transform: uppercase; }
 .steps li[aria-current='step'], .steps li[data-complete='true'] { color: var(--oracle-accent-ink); }
@@ -191,7 +191,7 @@
 .preview { min-height: 24rem; overflow: hidden; border: 1px solid var(--oracle-border-bright); border-radius: var(--radius-sm); background: #080808; box-shadow: var(--shadow-e2); }
 .previewChrome { height: 30px; display: flex; align-items: center; gap: 5px; padding: 0 var(--space-3); border-bottom: 1px solid var(--oracle-border-subtle); }
 .previewChrome i { width: 6px; height: 6px; border-radius: 50%; background: var(--oracle-text-ghost); }
-.previewChrome small { margin-left: auto; color: var(--oracle-text-ghost); font: 0.5rem/1 var(--font-mono); letter-spacing: var(--tracking-wider); text-transform: uppercase; }
+.previewChrome small { margin-left: auto; color: var(--oracle-text-ghost); font: 0.5rem/1 var(--font-sans); letter-spacing: var(--tracking-wider); text-transform: uppercase; }
 .previewMedia { min-height: calc(24rem - 30px); display: flex; flex-direction: column; justify-content: flex-end; align-items: flex-start; gap: var(--space-3); padding: var(--space-5); background: linear-gradient(90deg, rgba(8, 8, 8, 0.72), rgba(8, 8, 8, 0.14)), url('/media/mountain-waterfall-estate-v1.webp') center / cover; }
 .previewMedia small, .previewMedia > span { color: var(--oracle-accent-ink); font: 650 0.5625rem/1 var(--font-display); letter-spacing: var(--tracking-widest); text-transform: uppercase; }
 .previewMedia strong { max-width: 11ch; color: var(--oracle-text-heading); font: 300 clamp(1.5rem, 4vw, 2.65rem)/0.95 var(--font-display); letter-spacing: 0.02em; text-transform: uppercase; }

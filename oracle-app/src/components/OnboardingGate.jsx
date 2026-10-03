@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useOracleState, useOracleDispatch, ACTIONS } from '../state';
 import { apiPost } from '../lib/apiClient';
 import styles from './OnboardingGate.module.css';
+import { friendlyError } from '../lib/errorMessages';
 
 // Three lethal data points — nothing else. Agents close 5-page wizards.
 const EXPERIENCE_TIERS = [
@@ -66,7 +67,7 @@ export function OnboardingGate() {
       });
       sessionStorage.setItem(DISMISS_KEY, '1');
     } catch (err) {
-      setError(String(err.message || err));
+      setError(friendlyError(err));
       setSubmitting(false);
     }
   };

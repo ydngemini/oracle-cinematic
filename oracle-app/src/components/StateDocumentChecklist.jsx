@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { crmGet, crmPost } from '../state/useCrmApi';
+import { friendlyError } from '../lib/errorMessages';
 import styles from './StateDocumentChecklist.module.css';
 
 const DEFAULT_STATE = '';
 
 function messageOf(error, fallback) {
   const detail = error?.detail ?? error?.message;
-  if (typeof detail === 'string' && detail.trim()) return detail;
+  if (typeof detail === 'string' && detail.trim()) return friendlyError(error, { fallback });
   if (detail && typeof detail === 'object') {
     const missing = detail.missing_variables;
     if (Array.isArray(missing) && missing.length) {
@@ -144,7 +145,7 @@ export default function StateDocumentChecklist({
         <div>
           <span className={styles.kicker}>State document vault</span>
           <h2>{clientId ? 'Client paperwork' : 'Compliance checklist'}</h2>
-          <p>Only an exact, attorney-approved tenant template can be generated.</p>
+          <p>Only your brokerage’s exact, attorney-approved templates can be generated.</p>
         </div>
         <label className={styles.statePicker}>
           <span>State</span>

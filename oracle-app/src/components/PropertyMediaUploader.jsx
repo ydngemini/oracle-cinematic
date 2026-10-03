@@ -5,6 +5,7 @@ import { crmDelete, crmGet, crmUpload } from '../state/useCrmApi';
 // same path the video studio and property tour already use.
 import useProtectedMedia from '../state/useProtectedMedia';
 import styles from './PropertyMediaUploader.module.css';
+import { friendlyError } from '../lib/errorMessages';
 
 /**
  * Attach and remove photos on a lead or a listing.
@@ -39,7 +40,7 @@ export default function PropertyMediaUploader({ leadId, listingId, onChanged }) 
       (payload) => setMedia(Array.isArray(payload?.media) ? payload.media : []),
       (reason) => {
         setMedia([]);
-        setError(reason?.message || 'Existing photos could not be listed.');
+        setError(friendlyError(reason, { fallback: 'Existing photos could not be listed.' }));
       },
     );
     // subject is derived from the props below; listing it directly would rebuild
@@ -77,7 +78,7 @@ export default function PropertyMediaUploader({ leadId, listingId, onChanged }) 
       setError(
         reason?.status === 404
           ? 'That record no longer exists.'
-          : reason?.message || 'The upload was refused.',
+          : friendlyError(reason, { fallback: 'The upload was refused.' }),
       );
     } finally {
       setBusy('');
@@ -93,7 +94,7 @@ export default function PropertyMediaUploader({ leadId, listingId, onChanged }) 
       await load();
       await onChanged?.();
     } catch (reason) {
-      setError(reason?.message || 'The photo could not be removed.');
+      setError(friendlyError(reason, { fallback: 'The photo could not be removed.' }));
     } finally {
       setBusy('');
     }

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { crmGet, crmPost, crmPut } from '../state/useCrmApi';
 import styles from './ContractVaultTab.module.css';
+import { friendlyError } from '../lib/errorMessages';
 
 /**
  * The review lifecycle for one contract document: read, revise, decide, record
@@ -38,7 +39,7 @@ export default function ContractDocumentPanel({ documentId, onChanged }) {
         setDoc(record);
         setRevisedText(record?.draft_text || record?.body_text || '');
       },
-      (reason_) => setError(reason_?.message || 'This document could not be read.'),
+      (reason_) => setError(friendlyError(reason_, { fallback: 'This document could not be read.' })),
     );
   }, [documentId]);
 
@@ -60,7 +61,7 @@ export default function ContractDocumentPanel({ documentId, onChanged }) {
       setError(
         reason_?.status === 403
           ? 'Only a broker owner can approve, reject, or record a signature.'
-          : reason_?.message || 'The vault refused that change.',
+          : friendlyError(reason_, { fallback: 'The vault refused that change.' }),
       );
     } finally {
       setBusy('');

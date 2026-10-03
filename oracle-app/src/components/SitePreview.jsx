@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { ArrowLeft, ArrowUpRight, MapPin, ShieldCheck } from 'lucide-react';
 import { crmGet } from '../state/useCrmApi';
 import styles from './SitePreview.module.css';
+import { friendlyError } from '../lib/errorMessages';
 
 function readRoute() {
   const marker = '/site-preview/';
@@ -91,7 +92,7 @@ export function SitePreview() {
     let live = true;
     loadPreview(slug, revision).then(
       (result) => { if (live) setSite(result); },
-      (reason) => { if (live) setError(reason?.message || 'The private preview could not be loaded.'); },
+      (reason) => { if (live) setError(friendlyError(reason, { fallback: 'The private preview could not be loaded.' })); },
     );
     return () => { live = false; };
   }, [revision, slug]);

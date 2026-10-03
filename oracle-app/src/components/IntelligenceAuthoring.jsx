@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { crmGet, crmPost } from '../state/useCrmApi';
 import styles from './DossierPanel.module.css';
+import { friendlyError } from '../lib/errorMessages';
 
 /**
  * Run a pre-distress analysis against cited public-record evidence.
@@ -66,7 +67,7 @@ export default function IntelligenceAuthoring({ propertyKey, onAuthored }) {
         // data credential has probably lapsed, which is the right diagnosis for
         // "no records retained" and exactly the wrong one for a 500 or a dropped
         // connection. Leaving it null keeps the error the only thing on screen.
-        setError(reason?.message || 'Citable source records could not be read.');
+        setError(friendlyError(reason, { fallback: 'Citable source records could not be read.' }));
       },
     );
   }, [propertyKey]);
@@ -170,9 +171,9 @@ export default function IntelligenceAuthoring({ propertyKey, onAuthored }) {
       if (code === 'SOURCE_LICENSE_FORBIDS_PROPERTY_USE') {
         setError('One of those records carries a licence that forbids property-level use.');
       } else if (code === 'SOURCE_RECORD_NOT_VISIBLE') {
-        setError('A cited record is no longer visible to this tenant. Reload the evidence list.');
+        setError('A cited record is no longer available to your brokerage. Reload the evidence list.');
       } else {
-        setError(reason?.message || 'The analysis was refused.');
+        setError(friendlyError(reason, { fallback: 'The analysis was refused.' }));
       }
     } finally {
       setBusy(false);
@@ -187,7 +188,7 @@ export default function IntelligenceAuthoring({ propertyKey, onAuthored }) {
 
       {error ? <p className={styles.error} role="alert">{error}</p> : null}
       {notice ? <p className={styles.sourceNote} role="status">{notice}</p> : null}
-      {sources === null && !error ? <p className={styles.loading}>READING EVIDENCE…</p> : null}
+      {sources === null && !error ? <p className={styles.loading} role="status">Loading sources…</p> : null}
 
       {sources !== null && citable.length === 0 ? (
         <p className={styles.emptyNote}>

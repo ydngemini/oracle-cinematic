@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { crmPost } from '../state/useCrmApi';
 import styles from './PeopleTab.module.css';
+import { friendlyError } from '../lib/errorMessages';
 
 /**
  * Create one canonical contact.
@@ -71,7 +72,7 @@ export default function ContactIntakePanel({ onCreated, onCancel }) {
       setError(
         reason?.status === 409
           ? 'A contact with that email or phone already exists.'
-          : reason?.message || 'The contact could not be created.',
+          : friendlyError(reason, { fallback: 'The contact could not be created.' }),
       );
     } finally {
       setBusy(false);
