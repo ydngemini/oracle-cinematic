@@ -29,6 +29,30 @@
   color: var(--oracle-accent-ink);
 }
 
+/* "Platform detail" disclosure — the noisy panels live behind it. */
+.disclosureBtn {
+  min-height: 44px;
+  padding: 0 var(--space-3);
+  border: 1px solid var(--oracle-border);
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--oracle-text-dim);
+  font: inherit;
+  font-size: var(--text-sm);
+  text-align: left;
+  cursor: pointer;
+}
+
+.disclosureBtn:hover {
+  background: var(--oracle-glass-hover);
+  color: var(--oracle-text);
+}
+
+.disclosureBtn:focus-visible {
+  outline: 2px solid var(--oracle-accent-ink);
+  outline-offset: 2px;
+}
+
 .refreshBtn {
   width: 44px;
   height: 44px;

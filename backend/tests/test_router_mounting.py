@@ -58,6 +58,9 @@ def _frontend_paths() -> dict[str, list[str]]:
     for source in sorted(FRONTEND_SRC.rglob("*")):
         if source.suffix not in {".js", ".jsx", ".ts", ".tsx"}:
             continue
+        # Test files are fixtures, not callers: they use made-up paths on purpose.
+        if ".test." in source.name or ".spec." in source.name or "__tests__" in source.parts:
+            continue
         try:
             text = source.read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError):

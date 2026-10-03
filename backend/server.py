@@ -368,6 +368,8 @@ app.include_router(ai_chat_router)
 app.include_router(outreach_compliance_router)
 from admin_ops import router as admin_ops_router  # noqa: E402 — late import, matches local router convention
 app.include_router(admin_ops_router)
+from operator_api import router as operator_router  # noqa: E402 — late import, matches local router convention
+app.include_router(operator_router)
 
 from state_compliance import router as state_compliance_router  # noqa: E402
 app.include_router(state_compliance_router)
