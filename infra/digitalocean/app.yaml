@@ -459,26 +459,36 @@ workers:
 # directly on `app` (server.py) — every one of those needs its own explicit
 # rule, or it falls through to the last `/` rule and gets served 404s by the
 # static site instead of reaching the API.
+#
+# preserve_path_prefix: true on EVERY api rule. Without it App Platform
+# STRIPS the matched prefix: /health reached FastAPI as /, /api/status as
+# /status, and every API route answered {"detail":"Not Found"} while the SPA
+# worked (found live on neoh-staging, 2026-10-03). FastAPI's routes include
+# their prefixes, so the prefix must arrive intact. test_render_app_spec.py
+# asserts it for every non-web rule.
+#
+# /live is deliberately NOT routed: it is the in-container liveness probe
+# only. Publicly it falls through to the SPA, so never probe it from outside.
 ingress:
   rules:
-    - component: { name: api }
+    - component: { name: api, preserve_path_prefix: true }
       match: { path: { prefix: /api } }
-    - component: { name: api }
+    - component: { name: api, preserve_path_prefix: true }
       match: { path: { prefix: /auth } }
-    - component: { name: api }
+    - component: { name: api, preserve_path_prefix: true }
       match: { path: { prefix: /billing } }
-    - component: { name: api }
+    - component: { name: api, preserve_path_prefix: true }
       match: { path: { prefix: /admin } }
-    - component: { name: api }
+    - component: { name: api, preserve_path_prefix: true }
       match: { path: { prefix: /ws } }
-    - component: { name: api }
+    - component: { name: api, preserve_path_prefix: true }
       match: { path: { prefix: /health } }
-    - component: { name: api }
+    - component: { name: api, preserve_path_prefix: true }
       match: { path: { prefix: /version } }
     # The client portal API (client_portal.py, prefix /portal). Without this
     # rule /portal/session/{token} fell through to the static site, so every
     # client secure-access link 404'd. The SPA page itself is /vault/....
-    - component: { name: api }
+    - component: { name: api, preserve_path_prefix: true }
       match: { path: { prefix: /portal } }
     # /docs, /redoc and /openapi.json are deliberately NOT routed: production
     # does not publish the API map (server.py _PUBLISH_API_DOCS, review WEB-2).

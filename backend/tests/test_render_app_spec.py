@@ -207,6 +207,26 @@ def test_scaling_a_single_instance_size_is_refused(monkeypatch):
         r.render("staging", B, F)
 
 
+def test_every_api_ingress_rule_preserves_its_prefix():
+    """App Platform strips the matched prefix unless told not to; every API
+    route 404'd on the first live staging app because of it."""
+    for env in ("production", "staging"):
+        rules = r.render(env, B, F)["ingress"]["rules"]
+        api_rules = [x for x in rules if x["component"]["name"] != "web"]
+        assert api_rules
+        for rule in api_rules:
+            assert rule["component"].get("preserve_path_prefix") is True, (env, rule["match"])
+
+
+def test_every_backend_route_prefix_the_checks_probe_is_routed_to_api():
+    """The readiness script and smoke test probe these; each must reach the API."""
+    prefixes = [x["match"]["path"]["prefix"] for x in r.render("staging", B, F)["ingress"]["rules"]
+                if x["component"]["name"] == "api"]
+    for path in ("/health", "/health/workers", "/version", "/api/status", "/api/admin/mls/feeds",
+                 "/billing/webhook", "/ws"):
+        assert any(path == p or path.startswith(p.rstrip("/") + "/") for p in prefixes), path
+
+
 def test_a_worker_with_drain_seconds_is_refused(tmp_path, monkeypatch):
     raw = yaml.safe_load((REPO / "infra" / "digitalocean" / "app.yaml").read_text(encoding="utf-8"))
     raw["workers"][0].setdefault("termination", {})["drain_seconds"] = 30
