@@ -534,6 +534,16 @@ async def health() -> JSONResponse:
         # not the CRM, so it does not fail readiness.
         "components": {"realtime_fanout": ws_hub.listener_status()},
     }
+    # Which kind of instance this is: a restored/staging copy refuses outbound
+    # side effects. Only the state and a COUNT of demo recipients — never the
+    # numbers — so an operator (and demo preflight) can tell the two apart.
+    import recovery_mode
+
+    state = recovery_mode.describe()
+    body["outbound"] = {
+        "side_effects": state["outbound_side_effects"],
+        "demo_recipient_allowlist_count": state["demo_recipient_allowlist_count"],
+    }
     status_code = 200 if db_ok else 503
     return JSONResponse(content=body, status_code=status_code)
 
