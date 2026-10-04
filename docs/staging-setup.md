@@ -50,7 +50,7 @@ tests until then. Each is now fixed, and a test or CI step keeps it fixed.
 | 5 | App Platform refuses `instance_count: 2` for `apps-s-1vcpu-0.5gb` (production `web`) | production web 2× `apps-s-1vcpu-1gb`; staging 1× 0.5gb | renderer refuses scaling a single-instance size |
 | 6 | CI built the backend with the repo root as context: no root `requirements.txt` (build fails), and `COPY . .` would take the whole monorepo | `-f backend/Dockerfile backend`, as in compose | `backend/tests/test_ci_build_contexts.py` |
 | 7 | Every API route answered `{"detail":"Not Found"}` while the SPA worked: App Platform **strips the matched prefix** unless the rule sets `preserve_path_prefix: true` | every api ingress rule preserves its prefix | `test_render_app_spec.py` |
-| 8 | **`doctl apps update` with a blank SECRET wipes it.** The backend refused to boot and DO auto-rolled back. Every CI deploy and every rollback would have done this | `scripts/carry-secrets.py` carries the ACTIVE deployment's `EV[…]` values (CI release/promote and `rollback.sh`). Resubmission acceptance is **unverified**: step 13 | `test_carry_secrets.py`, `test_ci_deploy_wiring.py`, rollback test |
+| 8 | **`doctl apps update` with a blank SECRET wipes it.** The backend refused to boot and DO auto-rolled back. Every CI deploy and every rollback would have done this | `scripts/carry-secrets.py` carries the ACTIVE deployment's `EV[…]` values (CI release/promote and `rollback.sh`). Resubmission accepted (first CI release, 2026-10-04); never-set secrets come from `--inject-from-env`: step 13 | `test_carry_secrets.py`, `test_ci_deploy_wiring.py`, rollback test |
 | 9 | CI steps read `DIGITALOCEAN_APP_ID`, `NEOH_PUBLIC_API_BASE` and the migration DB variables **empty**: they were set only on one step | job-level identifiers, plus step env on the migration steps | `test_ci_deploy_wiring.py` |
 
 Two smoke-test lessons from the same app:
@@ -423,6 +423,21 @@ committed, never printed, never uploaded. The cost is a second copy of every
 secret in GitHub, and rotation then has to happen in both places
 (`docs/credential-rotation.md`). Do **not** set `STAGING_ENABLED`, or promote
 anything, until one of the two paths is proven.
+
+**Result (2026-10-04, first CI release, run 37236009143): carry works** — DO
+accepts resubmitted `EV[…]` values in `apps update` (but `apps spec validate`
+refuses them, so CI validates the rendered spec).
+
+**Secrets the app has never had** (a new provider, the demo recipient
+allowlist) have nothing to carry. CI fills them from GitHub environment
+secrets with `carry-secrets.py --inject-from-env` — only for the closed
+`INJECTABLE` list, only when the ACTIVE deployment has no value (carried values
+win; `--override-from-env KEY` replaces one), and an unset GitHub secret
+injects nothing. The release/promote carry steps map these names:
+`PLIVO_AUTH_ID`, `PLIVO_AUTH_TOKEN`, `TELNYX_API_KEY`, `TELNYX_PUBLIC_KEY`,
+`TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `ORACLE_FIREWORKS_API_KEY`, and on
+staging only `ORACLE_DEMO_RECIPIENT_ALLOWLIST` (the operator's own phone —
+personal data, so a GitHub secret, never a committed value).
 
 ### 14. Confirm
 

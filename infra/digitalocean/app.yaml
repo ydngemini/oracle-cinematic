@@ -265,6 +265,13 @@ services:
         type: SECRET
       - key: PLIVO_AUTH_TOKEN
         type: SECRET
+      # Texting (Telnyx is the default ORACLE_MESSAGING_PROVIDER). Optional: blank
+      # means an approved text is refused before any carrier request. Filled by
+      # CI from GitHub environment secrets (carry-secrets.py --inject-from-env).
+      - key: TELNYX_API_KEY
+        type: SECRET
+      - key: TELNYX_PUBLIC_KEY
+        type: SECRET
       # No realtime voice model (DASHSCOPE_*) is configured in this spec, so an
       # answered AI call speaks the AI disclosure and says the agent will
       # follow up. Set "1" only together with DASHSCOPE_API_KEY + workspace.
@@ -272,7 +279,6 @@ services:
         value: "0"
       # Optional provider support, deliberately NOT listed here (add the key
       # to api AND worker only when that provider is actually used):
-      #   TELNYX_API_KEY, TELNYX_PUBLIC_KEY       hosted SMS (docs/telnyx-hosted-sms-runbook.md)
       #   GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET  Calendar / Google sign-in
       #   RUNPOD_API_KEY, RECON_POD_*             3D reconstruction (GPU)
       #   DASHSCOPE_API_KEY                       realtime voice model — Singapore
@@ -483,6 +489,13 @@ workers:
       - key: PLIVO_AUTH_ID
         type: SECRET
       - key: PLIVO_AUTH_TOKEN
+        type: SECRET
+      # Texting (Telnyx is the default ORACLE_MESSAGING_PROVIDER). Optional: blank
+      # means an approved text is refused before any carrier request. Filled by
+      # CI from GitHub environment secrets (carry-secrets.py --inject-from-env).
+      - key: TELNYX_API_KEY
+        type: SECRET
+      - key: TELNYX_PUBLIC_KEY
         type: SECRET
       # No realtime voice model (DASHSCOPE_*) is configured in this spec, so an
       # answered AI call speaks the AI disclosure and says the agent will

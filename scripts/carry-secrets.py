@@ -12,10 +12,17 @@ keys, but those ciphertexts can be encrypted EMPTY strings: the containers got
 nothing (observed on neoh-staging, 2026-10-03). The ACTIVE deployment is the
 one that is actually serving, so its values are the ones that booted.
 
-UNVERIFIED: that App Platform accepts `EV[…]` values resubmitted in an
-update. The operator must prove it on staging before CI deploys are enabled
-(docs/staging-setup.md step 13). If DO rejects it, the fallback is plaintext
-injection from GitHub environment secrets at render time.
+VERIFIED on neoh-staging (first CI release, 2026-10-04): App Platform accepts
+`EV[…]` values resubmitted in `apps update` (but `apps spec validate` refuses
+them, so CI validates the RENDERED spec).
+
+A secret that has never been set on the app has nothing to carry. For those,
+`--inject-from-env KEY,...` fills the listed SECRET keys from the job's own
+environment (GitHub environment secrets mapped onto the step) when the ACTIVE
+deployment has no value for them. Only keys in INJECTABLE for the environment
+are accepted, and an empty or absent variable injects nothing. Carried values
+win — rotating an existing secret is done on the app — unless the key is also
+named in `--override-from-env`.
 
 WHY. `doctl apps update --spec` applies the WHOLE desired state, and a
 `type: SECRET` env var with no value in that spec WIPES the secret on the
@@ -44,6 +51,7 @@ Exit codes: 0 written; 1 a required secret is missing; 2 bad input.
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from typing import Optional
 
@@ -63,6 +71,17 @@ REQUIRED = {
 }
 OPERATOR_2FA = ("ORACLE_ADMIN_TOTP_SECRET", "ORACLE_ADMIN_OTP_EMAIL")
 
+# Secrets CI may fill from GitHub environment secrets (--inject-from-env).
+# Deliberately a closed list per environment: a typo or a stray variable in a
+# job's env can never become an app secret. The demo recipient allowlist is
+# staging-only (the backend refuses to boot production with it set).
+_PROVIDERS = ("PLIVO_AUTH_ID", "PLIVO_AUTH_TOKEN", "TELNYX_API_KEY", "TELNYX_PUBLIC_KEY",
+              "TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "ORACLE_FIREWORKS_API_KEY")
+INJECTABLE = {
+    "staging": _PROVIDERS + ("ORACLE_DEMO_RECIPIENT_ALLOWLIST",),
+    "production": _PROVIDERS,
+}
+
 
 class CarryError(ValueError):
     pass
@@ -80,13 +99,32 @@ def _has(v) -> bool:
     return v not in (None, "")
 
 
-def carry(running: Optional[dict], rendered: dict, env: str = "") -> tuple[dict, dict]:
+def check_injectable(keys, env: str) -> list[str]:
+    """The keys, validated against INJECTABLE[env]. Raises CarryError otherwise."""
+    allowed = INJECTABLE.get(env, ())
+    bad = [k for k in keys if k not in allowed]
+    if bad:
+        raise CarryError(
+            f"refusing to inject {bad} into {env or 'an unnamed environment'}: only "
+            f"{sorted(allowed)} may come from the job environment")
+    return list(keys)
+
+
+def carry(running: Optional[dict], rendered: dict, env: str = "", *,
+          inject: Optional[dict] = None, override: frozenset = frozenset()) -> tuple[dict, dict]:
     """Return (spec_to_apply, report). Raises CarryError if a required secret
-    would be empty. `report` holds names only."""
+    would be empty. `report` holds names only.
+
+    `inject` maps KEY -> value from the job environment (already validated
+    against INJECTABLE). It fills a blank rendered SECRET when the running app
+    has no value for it, or always for keys in `override`.
+    """
     if not isinstance(rendered, dict):
         raise CarryError("rendered spec is not a mapping")
+    inject = {k: v for k, v in (inject or {}).items() if _has(v)}
     run_comps = _components(running or {})
-    report = {"carried": [], "kept": [], "optional_unset": [], "missing_required": []}
+    report = {"carried": [], "kept": [], "injected": [], "optional_unset": [],
+              "missing_required": []}
     for name, comp in _components(rendered).items():
         run_envs = {e.get("key"): e for e in (run_comps.get(name, {}).get("envs") or [])}
         for e in comp.get("envs") or []:
@@ -98,7 +136,10 @@ def carry(running: Optional[dict], rendered: dict, env: str = "") -> tuple[dict,
                 report["kept"].append(label)
                 continue
             prev = run_envs.get(key) or {}
-            if _has(prev.get("value")):
+            if key in inject and (key in override or not _has(prev.get("value"))):
+                e["value"] = inject[key]
+                report["injected"].append(label)
+            elif _has(prev.get("value")):
                 e["value"] = prev["value"]
                 report["carried"].append(label)
             elif key in REQUIRED.get(name, ()):
@@ -146,8 +187,22 @@ def main(argv: Optional[list] = None) -> int:
     ap.add_argument("--rendered", required=True, help="spec from scripts/render-app-spec.py")
     ap.add_argument("--out", required=True, help="spec to apply (holds EV[…] ciphertexts — never upload it)")
     ap.add_argument("--env", default="", choices=["", "production", "staging"])
+    ap.add_argument("--inject-from-env", default="",
+                    help="comma-separated SECRET keys to fill from this process's environment "
+                         "when the ACTIVE deployment has none (INJECTABLE only; never printed)")
+    ap.add_argument("--override-from-env", default="",
+                    help="comma-separated subset of --inject-from-env that replaces a carried value")
     args = ap.parse_args(argv)
+    keys: list[str] = []
+    inject: dict = {}
     try:
+        keys = [k.strip() for k in args.inject_from_env.split(",") if k.strip()]
+        overrides = frozenset(k.strip() for k in args.override_from_env.split(",") if k.strip())
+        check_injectable(keys, args.env)
+        if overrides - set(keys):
+            raise CarryError("--override-from-env names keys not in --inject-from-env: "
+                             f"{sorted(overrides - set(keys))}")
+        inject = {k: os.environ.get(k, "") for k in keys}
         with open(args.deployments, encoding="utf-8") as f:
             deployments = yaml.safe_load(f)   # JSON is YAML
         with open(args.rendered, encoding="utf-8") as f:
@@ -155,7 +210,7 @@ def main(argv: Optional[list] = None) -> int:
         running, dep_id = active_deployment_spec(deployments)
         if not _components(running):
             raise CarryError("the ACTIVE deployment's spec has no components — refusing to guess")
-        spec, report = carry(running, rendered, args.env)
+        spec, report = carry(running, rendered, args.env, inject=inject, override=overrides)
     except CarryError as exc:
         print(f"\n  CARRY-SECRETS: {exc}\n", file=sys.stderr)
         return 1
@@ -167,6 +222,11 @@ def main(argv: Optional[list] = None) -> int:
     print(f"carried {len(report['carried'])} encrypted secret value(s) from ACTIVE deployment "
           f"{dep_id[:8]}; "
           f"{len(report['kept'])} rendered value(s) kept (bindings)")
+    if report["injected"]:
+        print("injected from the job environment: " + ", ".join(report["injected"]))
+    absent = [k for k in keys if not inject.get(k)]
+    if absent:
+        print("not provided by the job environment (carried or left unset): " + ", ".join(absent))
     if report["optional_unset"]:
         print("optional secrets unset on this app: " + ", ".join(report["optional_unset"]))
     return 0

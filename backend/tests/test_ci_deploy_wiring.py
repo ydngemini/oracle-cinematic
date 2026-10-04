@@ -71,6 +71,28 @@ def test_secrets_are_carried_before_migrations_and_from_the_active_deployment(jo
     assert "list-deployments" in run and "apps spec get" not in run
 
 
+@pytest.mark.parametrize("job", DEPLOY_JOBS)
+def test_injected_secrets_are_given_to_the_carry_step_and_allowed_for_its_environment(job):
+    """Every key the carry step injects must be mapped from a GitHub secret
+    onto THAT step, and be injectable for the job's environment — the demo
+    recipient allowlist only ever reaches staging."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("carry_secrets_w", REPO / "scripts" / "carry-secrets.py")
+    cs = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(cs)
+    env_name = "production" if job == "promote" else "staging"
+    step = next(s for s in _steps(job) if s.get("name", "").startswith("Carry the app's secrets"))
+    m = re.search(r"--inject-from-env\s+(\S+)", step["run"])
+    assert m, f"{job}: the carry step injects nothing"
+    keys = m.group(1).split(",")
+    cs.check_injectable(keys, env_name)  # raises on a key not allowed there
+    for key in keys:
+        assert (step.get("env") or {}).get(key) == "${{ secrets.%s }}" % key, (job, key)
+    if job == "promote":
+        assert "ORACLE_DEMO_RECIPIENT_ALLOWLIST" not in step["run"] + str(step.get("env"))
+
+
 def test_no_job_has_a_duplicate_key():
     """YAML keeps the LAST duplicate key silently; a second `env:` on a job
     dropped the first one's variables."""
