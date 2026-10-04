@@ -227,6 +227,17 @@ The image must contain the lead's fixes from main: CA loading, and the
 and 4 above. On 2026-10-03 all 123 migrations applied this way to
 `neoh-postgres-staging`.
 
+**Stamp the database's environment, once.** CI's migration precheck refuses
+to migrate a database that does not say which environment it is (found by the
+first CI release, 2026-10-04):
+
+```sh
+PGPASSWORD="$ADMINPW" psql "host=$PGHOST port=25060 dbname=oracle user=doadmin sslmode=require" \
+  -c "COMMENT ON DATABASE oracle IS 'neoh-environment=staging'"
+```
+
+Production gets `neoh-environment=production` on its own cluster.
+
 ### 8. Render the spec, fill the secrets locally, create the app **[owner — app ≈ $54/month]**
 
 ```sh
