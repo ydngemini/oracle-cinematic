@@ -409,6 +409,72 @@ class TwilioVoiceProvider(VoiceProvider):
         return '<?xml version="1.0" encoding="UTF-8"?><Response><Hangup/></Response>'
 
 
+def _field_names(response: Any) -> list[str]:
+    try:
+        if isinstance(response, Mapping):
+            return sorted(str(k) for k in response.keys())
+        return sorted(str(k) for k in vars(response).keys())
+    except TypeError:
+        return []
+
+
+def plivo_identifier(response: Any, *names: str) -> str:
+    """The first non-empty identifier among `names` in a Plivo SDK response.
+
+    The SDK returns a ResponseObject (attributes AND item access), but a
+    request can also come back as a plain mapping, and Plivo answers a call
+    request with a LIST of request ids when it fans out — accept each shape
+    rather than silently returning "" for a call that was in fact placed.
+    """
+    for name in names:
+        value: Any = None
+        if isinstance(response, Mapping):
+            value = response.get(name)
+        else:
+            value = getattr(response, name, None)
+            if value is None:
+                try:
+                    value = response[name]  # ResponseObject.__getitem__
+                except Exception:  # noqa: BLE001 - absent is an answer
+                    value = None
+        if isinstance(value, (list, tuple)):
+            value = next((v for v in value if v), None)
+        if value:
+            return str(value)
+    return ""
+
+
+def _find_placed_call(client: Any, to_number: str, *, attempts: int = 4,
+                      pause_seconds: float = 1.0) -> str:
+    """The call id of a just-placed outbound call to `to_number`, or "".
+
+    Read-only lookups of this account's live outbound calls to that number.
+    Returns a value only when exactly ONE matching call is found — two would
+    mean we cannot tell which one this approval placed, and guessing would
+    bind the wrong call.
+    """
+    import time as _time
+
+    digits = to_number.lstrip("+")
+    for attempt in range(attempts):
+        found: list[str] = []
+        try:
+            response = client.live_calls.list_ids(call_direction="outbound", to_number=digits)
+            calls = (response.get("calls") if isinstance(response, Mapping)
+                     else getattr(response, "calls", None)) or []
+            found = [str(c) for c in calls if c]
+        except Exception:  # noqa: BLE001 - a failed lookup is "not found"
+            found = []
+        if len(set(found)) == 1:
+            return found[0]
+        if len(set(found)) > 1:
+            logger.warning("Plivo: %d live calls to the same number; not guessing", len(set(found)))
+            return ""
+        if attempt + 1 < attempts:
+            _time.sleep(pause_seconds)
+    return ""
+
+
 def _single_attempt(client: Any) -> Any:
     """Stop the Plivo SDK re-POSTing a voice request to its fallback hosts.
 
@@ -503,10 +569,21 @@ class PlivoVoiceProvider(VoiceProvider):
                 )
             except PlivoRestError as exc:
                 raise ProviderRequestError(f"Plivo rejected the call request: {exc}") from exc
-            call_uuid = getattr(response, "request_uuid", None) or getattr(
-                response, "call_uuid", None
-            )
-            return str(call_uuid or "")
+            call_uuid = plivo_identifier(response, "request_uuid", "call_uuid")
+            if not call_uuid:
+                # The first real staging call (2026-10-04) was placed and
+                # answered, yet no id came back here, so its call state was
+                # never written and the answer webhook refused it as
+                # "unmanaged". Record the SHAPE (field names only) so the next
+                # occurrence can be diagnosed without guessing.
+                logger.warning("Plivo call create returned no request id; fields=%s type=%s",
+                               _field_names(response), type(response).__name__)
+                # The call may still be ringing: find it among this account's
+                # live/queued outbound calls to that number (read-only), so
+                # its state can be bound to the CALL id the answer webhook
+                # will present. Never a second create.
+                call_uuid = _find_placed_call(client, to_number)
+            return call_uuid
 
         reference = await asyncio.wait_for(asyncio.to_thread(_call), timeout=25.0)
         if not reference:

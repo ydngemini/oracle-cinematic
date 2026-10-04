@@ -264,6 +264,18 @@ def test_the_persona_forbids_markdown_and_column_names():
     assert "No markdown" in prompt and "column" in prompt
 
 
+# ── client reconciliation's rule fallback satisfies its own evidence rule ──
+
+def test_the_deterministic_fallback_cites_the_facts_its_intent_came_from(monkeypatch):
+    import client_ai_automation as cai
+
+    monkeypatch.setenv("ORACLE_CLIENT_AI_MODEL_ENABLED", "0")
+    facts = [{"id": "f1", "text": "client_type: buyer"}, {"id": "f2", "text": "email on file"}]
+    signals, source, _ = asyncio.run(cai._extract_signals(facts))
+    assert source == "deterministic-rules"
+    assert signals.explicit_intent == "buyer" and signals.evidence_refs == ["f1"]
+
+
 # ── the carrier's word on a call reaches the timeline ──────────────────────
 
 @pytest.mark.parametrize("status, duration, summary", [

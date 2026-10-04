@@ -106,9 +106,14 @@ def wait_receipt(page, pattern: str, timeout_s: float = 90) -> str:
 
 def approve_first_pending(page, kind_word: str) -> None:
     """In the approvals queue, approve the newest pending request of this kind."""
-    page.wait_for_timeout(3000)
+    # "Review" lands on Work → Automations; the queue is a collapsed section.
+    queue = page.get_by_role("button", name=re.compile(r"^Waiting for your approval"))
+    queue.first.wait_for(timeout=45_000)
+    if not page.get_by_role("button", name="Approve").first.is_visible():
+        queue.first.click()
+    page.get_by_role("button", name="Approve").first.wait_for(timeout=20_000)
+    page.get_by_role("button", name="Approve").first.scroll_into_view_if_needed()
     page.screenshot(path=str(OUT / "e2e" / "last-review.png"))
-    page.get_by_role("button", name="Approve").first.wait_for(timeout=45_000)
     cards = page.locator("li, article, section").filter(has=page.get_by_role("button", name="Approve"))
     target = cards.filter(has_text=re.compile(kind_word, re.I)).last
     if target.count() == 0:
@@ -198,7 +203,7 @@ def run(args, results: dict) -> dict:
             if not page.get_by_text("Buyers who may fit").is_visible():
                 page.get_by_role("button", name="123 Main Street, Wilmington", exact=True).click()
                 page.get_by_text("Buyers who may fit").wait_for(timeout=30_000)
-            page.get_by_role("button", name="Sarah Johnson", exact=True).first.click()
+            page.locator("section[aria-label='Buyers who may fit']").get_by_role("button", name="Sarah Johnson", exact=True).click()
             page.wait_for_url(re.compile(r"/p/"), timeout=20_000)
             page.wait_for_timeout(1500)
             status, answer, took = ask(page, TEXT_ASK)
@@ -218,33 +223,46 @@ def run(args, results: dict) -> dict:
 
         with Step(results, "the text's receipt says what actually happened"):
             t0 = time.time()
-            page.go_back()
+            # The conversation, with its receipts, lives on the Neoh tab.
+            page.get_by_role("tab", name="Neoh", exact=True).click()
             outcome = wait_receipt(
-                page, r"(Text sent|Text not sent|Text failed|Couldn.t send|needs review|blocked)[^\n]*", 120)
+                page, r"(Text sent|Text not sent|Text didn.t go through|Text needs review)[^\n]*\n?[^\n]*", 120)
             obs["text_receipt_final"] = outcome
             obs["action_completion_s"] = round(time.time() - t0, 2)
             page.screenshot(path=str(shots / "07-text-receipt.png"))
 
         if args.real_call:
             with Step(results, "REAL call: ask Neoh to call Sarah, approve it"):
-                page.get_by_role("button", name="Sarah Johnson", exact=True).first.click() \
-                    if page.get_by_role("button", name="Sarah Johnson", exact=True).count() else None
+                page.get_by_role("tab", name="Home", exact=True).click()
+                page.get_by_role("button", name="123 Main Street, Wilmington", exact=True).click()
+                page.get_by_text("Buyers who may fit").wait_for(timeout=30_000)
+                page.locator("section[aria-label='Buyers who may fit']").get_by_role("button", name="Sarah Johnson", exact=True).click()
+                page.wait_for_url(re.compile(r"/p/"), timeout=20_000)
+                page.wait_for_timeout(1500)
                 status, answer, took = ask(page, CALL_ASK)
                 obs["call_proposal"] = answer[:800]
                 wait_receipt(page, r"Call (waiting for your approval|approved)[^\n]*", 60)
                 page.get_by_role("button", name="Review").last.click()
                 approve_first_pending(page, "call")
                 t0 = time.time()
-                page.go_back()
+                page.get_by_role("tab", name="Neoh", exact=True).click()
                 obs["call_receipt"] = wait_receipt(
-                    page, r"(Call placed|Call started|Call failed|Call not placed|Placing call)[^\n]*", 120)
+                    page, r"(Call placed|Placing call…|Call not sent|Call didn.t go through|Call needs review)[^\n]*\n?[^\n]*", 150)
                 obs["call_submit_s"] = round(time.time() - t0, 2)
                 page.screenshot(path=str(shots / "08-call-receipt.png"))
 
         with Step(results, "Sarah's timeline shows the outreach"):
             page.goto(args.base_url + f"/p/{_sarah_id(args)}", wait_until="domcontentloaded")
-            page.wait_for_timeout(4000)
+            page.get_by_role("tab", name=re.compile("^Timeline", re.I)).click(timeout=20_000)
+            page.wait_for_timeout(3000)
             body = page.inner_text("body")
+            # A real call's carrier outcome arrives by status callback once it ends.
+            deadline = time.time() + (90 if args.real_call else 0)
+            while args.real_call and "Call placed" not in body and time.time() < deadline:
+                page.reload(wait_until="domcontentloaded")
+                page.get_by_role("tab", name=re.compile("^Timeline", re.I)).click(timeout=20_000)
+                page.wait_for_timeout(5000)
+                body = page.inner_text("body")
             obs["timeline_excerpt"] = re.findall(
                 r"(?:Text[^\n]{0,80}|Call[^\n]{0,80}|Showing[^\n]{0,80}|Note[^\n]{0,60})", body)[:12]
             page.screenshot(path=str(shots / "09-timeline.png"), full_page=True)

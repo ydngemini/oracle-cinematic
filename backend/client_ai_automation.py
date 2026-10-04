@@ -437,7 +437,16 @@ async def _extract_signals(facts: list[dict[str, str]]) -> tuple[ModelSignals, s
             else "unknown"
         ),
         actionable_response=bool(_ACTION_RE.search(fallback_text)),
-        evidence_refs=[fact["id"] for fact in facts if _ACTION_RE.search(fact["text"])][:10],
+        # Cite every fact a signal came from — the intent words too. Citing
+        # only the action facts made the fallback for a plain "buyer" record
+        # fail its own evidence rule, so client reconciliation dead-lettered
+        # for every such client whenever the model was unavailable or refused
+        # (staging, killer-demo run 2026-10-04).
+        evidence_refs=[
+            fact["id"] for fact in facts
+            if _ACTION_RE.search(fact["text"])
+            or re.search(r"\b(buy|buyer|sell|seller)\b", fact["text"], re.I)
+        ][:10],
     )
     if not facts or os.getenv("ORACLE_CLIENT_AI_MODEL_ENABLED", "1") != "1":
         return fallback, "deterministic-rules", None

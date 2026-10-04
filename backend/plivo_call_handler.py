@@ -198,6 +198,38 @@ async def initialize_outbound_plivo_call_state(
     return state
 
 
+async def resolve_outbound_plivo_call_state(
+    call_uuid: str,
+    request_uuid: str = "",
+    *,
+    wait_for_initialization: bool = False,
+) -> Optional[dict[str, Any]]:
+    """State for an outbound call Neoh placed, by CallUUID or RequestUUID.
+
+    Placing a call returns Plivo's REQUEST id, and that is what the worker
+    stores the state under; Plivo's answer and status callbacks identify the
+    call by its CALL id and carry the request id alongside as RequestUUID.
+    Looking up only CallUUID meant every approved outbound call was refused as
+    "unmanaged" by its own answer webhook (first real staging call,
+    2026-10-04). When found by request id, the state is copied under the call
+    id too, so the media stream and later callbacks find it directly.
+    """
+    attempts = _STATE_WAIT_ATTEMPTS if wait_for_initialization else 1
+    for attempt in range(attempts):
+        state = await load_plivo_call_state(call_uuid)
+        if state is not None:
+            return state
+        if request_uuid and request_uuid != call_uuid:
+            state = await load_plivo_call_state(request_uuid)
+            if state is not None:
+                if _CALL_UUID_RE.fullmatch(call_uuid or ""):
+                    await _save_call_state(call_uuid, {**state, "request_uuid": request_uuid})
+                return state
+        if attempt + 1 < attempts:
+            await asyncio.sleep(_STATE_WAIT_SECONDS)
+    return None
+
+
 async def mark_plivo_streaming(call_uuid: str) -> None:
     state = await load_plivo_call_state(call_uuid)
     if state is None:

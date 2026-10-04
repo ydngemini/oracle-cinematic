@@ -149,3 +149,88 @@ def test_cli_never_prints_a_value(tmp_path, capsys):
     assert code == 0
     assert "SENTINEL" not in out.out + out.err
     assert "SENTINEL" in (tmp_path / "deploy.yaml").read_text()   # the ciphertexts went to the file only
+
+
+# ── --inject-from-env: secrets the app has never had ───────────────────────
+
+def _without(spec: dict, key: str) -> dict:
+    """A running app on which `key` was never set."""
+    for c in spec["services"] + spec["workers"]:
+        c["envs"] = [e for e in c.get("envs") or [] if e["key"] != key]
+    return spec
+
+
+def test_a_never_set_secret_is_filled_from_the_job_environment():
+    rendered = _rendered()
+    running = _without(_running_from(rendered), "PLIVO_AUTH_TOKEN")
+    out, report = cs.carry(running, copy.deepcopy(rendered), "staging",
+                           inject={"PLIVO_AUTH_TOKEN": "plain-INJECTED-value"})
+    assert _secret(out, "api", "PLIVO_AUTH_TOKEN") == "plain-INJECTED-value"
+    assert _secret(out, "worker", "PLIVO_AUTH_TOKEN") == "plain-INJECTED-value"
+    assert "api:PLIVO_AUTH_TOKEN" in report["injected"]
+
+
+def test_a_carried_value_wins_unless_overridden():
+    rendered = _rendered()
+    running = _running_from(rendered)
+    out, _ = cs.carry(running, copy.deepcopy(rendered), "staging",
+                      inject={"PLIVO_AUTH_TOKEN": "plain-INJECTED-value"})
+    assert _secret(out, "api", "PLIVO_AUTH_TOKEN") == EV.format("api-PLIVO_AUTH_TOKEN")
+    out, _ = cs.carry(running, copy.deepcopy(rendered), "staging",
+                      inject={"PLIVO_AUTH_TOKEN": "plain-INJECTED-value"},
+                      override=frozenset({"PLIVO_AUTH_TOKEN"}))
+    assert _secret(out, "api", "PLIVO_AUTH_TOKEN") == "plain-INJECTED-value"
+
+
+def test_an_empty_job_variable_injects_nothing():
+    rendered = _rendered()
+    running = _without(_running_from(rendered), "TELNYX_API_KEY")
+    out, report = cs.carry(running, copy.deepcopy(rendered), "staging", inject={"TELNYX_API_KEY": ""})
+    assert not _secret(out, "api", "TELNYX_API_KEY")
+    assert "api:TELNYX_API_KEY" in report["optional_unset"]
+
+
+def test_only_listed_keys_may_be_injected_and_the_allowlist_never_into_production():
+    with pytest.raises(cs.CarryError):
+        cs.check_injectable(["ORACLE_SECRET_KEY"], "staging")
+    with pytest.raises(cs.CarryError):
+        cs.check_injectable(["ORACLE_DEMO_RECIPIENT_ALLOWLIST"], "production")
+    assert cs.check_injectable(["ORACLE_DEMO_RECIPIENT_ALLOWLIST"], "staging")
+
+
+def test_the_demo_allowlist_has_no_target_in_a_production_spec():
+    rendered = _rendered("production")
+    out, _ = cs.carry(_running_from(rendered), copy.deepcopy(rendered), "production",
+                      inject={"PLIVO_AUTH_ID": "x"})
+    assert all(e["key"] != "ORACLE_DEMO_RECIPIENT_ALLOWLIST"
+               for c in out["services"] + out["workers"] for e in c.get("envs") or [])
+
+
+def test_cli_injects_without_printing_the_value(tmp_path, capsys, monkeypatch):
+    rendered = _rendered()
+    running = _without(_running_from(rendered), "ORACLE_DEMO_RECIPIENT_ALLOWLIST")
+    deps = [{"id": "dep-1", "phase": "ACTIVE", "created_at": "2026-10-04T20:00:00Z", "spec": running}]
+    (tmp_path / "deps.json").write_text(json.dumps(deps))
+    (tmp_path / "app.yaml").write_text(yaml.safe_dump(rendered))
+    monkeypatch.setenv("ORACLE_DEMO_RECIPIENT_ALLOWLIST", "+15555550100")
+    monkeypatch.delenv("PLIVO_AUTH_ID", raising=False)
+    code = cs.main(["--deployments", str(tmp_path / "deps.json"), "--rendered", str(tmp_path / "app.yaml"),
+                    "--out", str(tmp_path / "deploy.yaml"), "--env", "staging",
+                    "--inject-from-env", "ORACLE_DEMO_RECIPIENT_ALLOWLIST,PLIVO_AUTH_ID"])
+    out = capsys.readouterr()
+    assert code == 0
+    assert "+15555550100" not in out.out + out.err
+    assert "api:ORACLE_DEMO_RECIPIENT_ALLOWLIST" in out.out
+    assert "+15555550100" in (tmp_path / "deploy.yaml").read_text()
+
+
+def test_cli_refuses_an_unlisted_key(tmp_path):
+    rendered = _rendered()
+    deps = [{"id": "dep-1", "phase": "ACTIVE", "created_at": "2026-10-04T20:00:00Z",
+             "spec": _running_from(rendered)}]
+    (tmp_path / "deps.json").write_text(json.dumps(deps))
+    (tmp_path / "app.yaml").write_text(yaml.safe_dump(rendered))
+    code = cs.main(["--deployments", str(tmp_path / "deps.json"), "--rendered", str(tmp_path / "app.yaml"),
+                    "--out", str(tmp_path / "deploy.yaml"), "--env", "staging",
+                    "--inject-from-env", "ORACLE_SECRET_KEY"])
+    assert code == 1

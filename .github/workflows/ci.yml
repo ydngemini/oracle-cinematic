@@ -501,12 +501,26 @@ jobs:
       # update). Refuses here — before migrations — if a required secret has
       # no value anywhere. Names only are printed. The deploy file holds EV
       # ciphertexts: it is never uploaded.
+      # Secrets the app has never had cannot be carried. These come from the
+      # `staging` GitHub environment and fill a key ONLY when the ACTIVE
+      # deployment has no value (carry-secrets.py INJECTABLE; values never
+      # printed). An unset GitHub secret injects nothing.
       - name: Carry the app's secrets into the spec (staging)
+        env:
+          PLIVO_AUTH_ID: ${{ secrets.PLIVO_AUTH_ID }}
+          PLIVO_AUTH_TOKEN: ${{ secrets.PLIVO_AUTH_TOKEN }}
+          TELNYX_API_KEY: ${{ secrets.TELNYX_API_KEY }}
+          TELNYX_PUBLIC_KEY: ${{ secrets.TELNYX_PUBLIC_KEY }}
+          TWILIO_ACCOUNT_SID: ${{ secrets.TWILIO_ACCOUNT_SID }}
+          TWILIO_AUTH_TOKEN: ${{ secrets.TWILIO_AUTH_TOKEN }}
+          ORACLE_FIREWORKS_API_KEY: ${{ secrets.ORACLE_FIREWORKS_API_KEY }}
+          ORACLE_DEMO_RECIPIENT_ALLOWLIST: ${{ secrets.ORACLE_DEMO_RECIPIENT_ALLOWLIST }}
         run: |
           set -euo pipefail
           doctl apps list-deployments "${DIGITALOCEAN_APP_ID}" -o json > /tmp/deployments.staging.json
           python3 scripts/carry-secrets.py --env staging \
             --deployments /tmp/deployments.staging.json \
+            --inject-from-env PLIVO_AUTH_ID,PLIVO_AUTH_TOKEN,TELNYX_API_KEY,TELNYX_PUBLIC_KEY,TWILIO_ACCOUNT_SID,TWILIO_AUTH_TOKEN,ORACLE_FIREWORKS_API_KEY,ORACLE_DEMO_RECIPIENT_ALLOWLIST \
             --rendered /tmp/app.staging.yaml --out /tmp/app.staging.deploy.yaml
           rm -f /tmp/deployments.staging.json
 
@@ -807,12 +821,24 @@ jobs:
           grep -n "digest:" /tmp/app.production.yaml
 
       # Never wipe production's secrets: see the staging step of the same name.
+      # Same injection as staging, minus the demo allowlist (staging-only:
+      # INJECTABLE refuses it for production, and production refuses to boot
+      # with it set).
       - name: Carry the app's secrets into the spec (production)
+        env:
+          PLIVO_AUTH_ID: ${{ secrets.PLIVO_AUTH_ID }}
+          PLIVO_AUTH_TOKEN: ${{ secrets.PLIVO_AUTH_TOKEN }}
+          TELNYX_API_KEY: ${{ secrets.TELNYX_API_KEY }}
+          TELNYX_PUBLIC_KEY: ${{ secrets.TELNYX_PUBLIC_KEY }}
+          TWILIO_ACCOUNT_SID: ${{ secrets.TWILIO_ACCOUNT_SID }}
+          TWILIO_AUTH_TOKEN: ${{ secrets.TWILIO_AUTH_TOKEN }}
+          ORACLE_FIREWORKS_API_KEY: ${{ secrets.ORACLE_FIREWORKS_API_KEY }}
         run: |
           set -euo pipefail
           doctl apps list-deployments "${DIGITALOCEAN_APP_ID}" -o json > /tmp/deployments.production.json
           python3 scripts/carry-secrets.py --env production \
             --deployments /tmp/deployments.production.json \
+            --inject-from-env PLIVO_AUTH_ID,PLIVO_AUTH_TOKEN,TELNYX_API_KEY,TELNYX_PUBLIC_KEY,TWILIO_ACCOUNT_SID,TWILIO_AUTH_TOKEN,ORACLE_FIREWORKS_API_KEY \
             --rendered /tmp/app.production.yaml --out /tmp/app.production.deploy.yaml
           rm -f /tmp/deployments.production.json
 
