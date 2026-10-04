@@ -514,7 +514,10 @@ jobs:
       # The first real bring-up found a spec the renderer accepted and DO
       # rejected (`unknown field "drain_seconds"` on the worker). Read-only.
       - name: Validate the staging spec with App Platform
-        run: doctl apps spec validate /tmp/app.staging.deploy.yaml > /dev/null
+        # Validate the RENDERED spec: App Platform's validate (propose) endpoint
+        # refuses encrypted EV[...] values ("secret env value must not be encrypted",
+        # first real staging release), so the carried spec cannot be validated.
+        run: doctl apps spec validate /tmp/app.staging.yaml > /dev/null
 
       - name: Migration precheck (staging)
         run: |
@@ -814,7 +817,10 @@ jobs:
           rm -f /tmp/deployments.production.json
 
       - name: Validate the production spec with App Platform
-        run: doctl apps spec validate /tmp/app.production.deploy.yaml > /dev/null
+        # Validate the RENDERED spec: App Platform's validate (propose) endpoint
+        # refuses encrypted EV[...] values ("secret env value must not be encrypted",
+        # first real staging release), so the carried spec cannot be validated.
+        run: doctl apps spec validate /tmp/app.production.yaml > /dev/null
 
       - name: Migration precheck (production)
         run: |

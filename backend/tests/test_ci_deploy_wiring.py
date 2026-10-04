@@ -92,3 +92,16 @@ def test_the_carried_spec_is_never_uploaded():
         for s in _steps(job):
             if "upload-artifact" in str(s.get("uses", "")):
                 assert ".deploy.yaml" not in str((s.get("with") or {}).get("path", "")), s.get("name")
+
+
+@pytest.mark.parametrize("job", DEPLOY_JOBS)
+def test_validation_runs_on_the_rendered_spec_not_the_carried_one(job):
+    """App Platform's validate endpoint refuses encrypted EV[...] values
+    ("secret env value must not be encrypted"), which failed the first real
+    staging release. Validate the rendered spec; only `apps update` gets the
+    carried one."""
+    validates = [s for s in _steps(job) if "doctl apps spec validate" in (s.get("run") or "")]
+    assert validates
+    for s in validates:
+        target = re.search(r"spec validate\s+(\S+)", s["run"]).group(1)
+        assert not target.endswith(".deploy.yaml"), f"{job}: validates the carried spec {target}"
