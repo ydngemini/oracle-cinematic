@@ -944,3 +944,25 @@ hr {
   border-top:       1px solid var(--oracle-border);
   margin:           var(--space-6) 0;
 }
+
+/* Session could not be confirmed (not signed out): App.jsx / useSessionRestore. */
+.neoh-session-unreachable {
+  min-height: 100dvh;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: var(--space-4);
+  padding: var(--space-6) var(--space-4);
+  color: var(--oracle-text);
+  text-align: center;
+}
+.neoh-session-unreachable button {
+  min-height: 44px;
+  padding: 0 var(--space-5);
+  border: 1px solid var(--oracle-amber-dim);
+  border-radius: var(--radius-pill);
+  color: var(--oracle-accent-ink);
+  background: var(--oracle-surface);
+  font: 600 var(--text-sm) / 1 var(--font-sans);
+}
+.neoh-session-unreachable button:focus-visible { outline: none; box-shadow: var(--ring-focus); }

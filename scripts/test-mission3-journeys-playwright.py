@@ -661,7 +661,8 @@ def journey_communication(report: Report, browser, args, out: Path, found: dict)
         finally:
             mock_config(args, llm_hijack_tools=None)
         go(page, "/work?type=conversations")
-        reason = page.get_by_placeholder(re.compile("Reviewed target", re.I)).first
+        # The field arrives pre-filled; it is found by its label, then rewritten.
+        reason = page.get_by_label(re.compile("Why you.re approving or rejecting")).first
         try:
             reason.wait_for(timeout=4000)
         except Exception:  # noqa: BLE001 — collapsed: open it

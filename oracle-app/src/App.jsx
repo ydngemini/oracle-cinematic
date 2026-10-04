@@ -6,10 +6,11 @@ import { CrmShell } from './components/CrmShell';
 import { LoginVault } from './components/LoginVault';
 import { PolicyAcceptanceGate } from './components/PolicyAcceptanceGate';
 import { NetworkProvider } from './context/NetworkContext';
-import { apiGet, apiPost } from './lib/apiClient';
+import { apiPost } from './lib/apiClient';
 import { ReelExperience } from './components/ReelExperience';
 import { SitePreview } from './components/SitePreview';
 import { clearPrivateCaches } from './lib/clearPrivateCaches.js';
+import { useSessionRestore } from './lib/useSessionRestore';
 // Unauthenticated client capture page — the token in the URL is the whole
 // capability, so this route deliberately renders outside the auth shell.
 const PropertyUploadPage = lazy(() => import('./components/PropertyUploadPage'));
@@ -37,31 +38,27 @@ function AuthedApp({ onSignOut }) {
   );
 }
 
-function NeohApp() {
-  const [authed, setAuthed] = useState(() => (
-    import.meta.env.VITE_AUTH_BYPASS === '1' ? true : null
-  ));
+// What a restored identity leaves behind for the rest of the app.
+function rememberIdentity(identity) {
+  if (identity?.authenticated && identity?.role) {
+    sessionStorage.setItem('oracle_role', identity.role);
+  }
+  // A restored session (cookie still valid, storage cleared) used to fall
+  // back to the demo identity in state/identity.js, so Settings showed
+  // "demo-operator" and the demo brokerage id to a real customer.
+  if (identity?.authenticated) {
+    try {
+      if (identity.agent_id) localStorage.setItem('oracle_user_id', identity.agent_id);
+      if (identity.tenant_id) localStorage.setItem('oracle_tenant_id', identity.tenant_id);
+    } catch { /* storage blocked — identity falls back as before */ }
+  }
+}
 
-  useEffect(() => {
-    if (authed !== null) return;
-    apiGet('/auth/session', { retries: 0 })
-      .then((identity) => {
-        if (identity?.authenticated && identity?.role) {
-          sessionStorage.setItem('oracle_role', identity.role);
-        }
-        // A restored session (cookie still valid, storage cleared) used to fall
-        // back to the demo identity in state/identity.js, so Settings showed
-        // "demo-operator" and the demo brokerage id to a real customer.
-        if (identity?.authenticated) {
-          try {
-            if (identity.agent_id) localStorage.setItem('oracle_user_id', identity.agent_id);
-            if (identity.tenant_id) localStorage.setItem('oracle_tenant_id', identity.tenant_id);
-          } catch { /* storage blocked — identity falls back as before */ }
-        }
-        setAuthed(Boolean(identity?.authenticated));
-      })
-      .catch(() => setAuthed(false));
-  }, [authed]);
+function NeohApp() {
+  const { authed, unreachable, setAuthed, retry } = useSessionRestore({
+    bypass: import.meta.env.VITE_AUTH_BYPASS === '1',
+    onIdentity: rememberIdentity,
+  });
 
   useEffect(() => {
     const expireSession = () => {
@@ -71,21 +68,26 @@ function NeohApp() {
     };
     window.addEventListener('auth:expired', expireSession);
     return () => window.removeEventListener('auth:expired', expireSession);
-  }, []);
+  }, [setAuthed]);
 
   const signOut = useCallback(async () => {
     try { await apiPost('/auth/logout', {}, { retries: 0 }); } catch { /* expire locally regardless */ }
     sessionStorage.removeItem('oracle_role');
     await clearPrivateCaches();
     setAuthed(false);
-  }, []);
+  }, [setAuthed]);
 
   return (
     <div className="neoh-app-shell">
       <div className="neoh-app-atmosphere" aria-hidden="true" />
       <div className="neoh-app-foreground">
         <NetworkProvider>
-          {authed === null ? (
+          {unreachable ? (
+            <div role="alert" className="neoh-session-unreachable">
+              <p>Neoh can’t be reached right now. You are still signed in.</p>
+              <button type="button" onClick={retry}>Try again</button>
+            </div>
+          ) : authed === null ? (
             <div role="status" aria-live="polite">Restoring secure session…</div>
           ) : !authed ? (
             <LoginVault onAuthenticated={() => setAuthed(true)} />
