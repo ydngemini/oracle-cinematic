@@ -19,13 +19,16 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from typing import Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
+from pydantic import BaseModel, ConfigDict
 
+from audit_middleware import AuditCategory, audit_now
 from db.connection import tenant_tx
-from tenancy import TenantContext, require_context
+from tenancy import Role, TenantContext, require_context
 from billing import require_active_subscription
 from reconstruction_providers import SPATIAL_AI_DISCLOSURE, get_provider
 from reconstruction_worker import QUEUE_MAX as RECON_QUEUE_MAX, ReconstructionJob, enqueue
@@ -86,7 +89,30 @@ async def resolve_tour(
 
     tour = build_tour(rows, scene_rows, plan_row, lead_id=lead_id, listing_id=listing_id)
     tour["splat_scene"] = await _scene_manifest_for(rows, tour.get("splat_url"))
+    tour["splat_stream_url"] = _stream_url_for(rows, tour.get("splat_url"), ctx)
     return tour
+
+
+def _stream_url_for(rows, splat_url: Optional[str], ctx: TenantContext) -> Optional[str]:
+    """A short-lived signed URL for the splat the tour opens, if it is stored.
+
+    Lets the viewer stream with real progress and HTTP caching instead of
+    pulling the whole file into memory behind the JWT first. Minted only here,
+    inside an authenticated RLS-scoped read of that very row.
+    """
+    if not splat_url:
+        return None
+    row = next((r for r in rows if r["kind"] == "splat" and r["url"] == splat_url
+                and _has_key(r)), None)
+    if row is None:
+        return None
+    try:
+        import space_assets
+
+        return space_assets.signed_path(str(row["id"]), str(ctx.tenant_id))
+    except Exception:  # noqa: BLE001 — the JWT path still works without it
+        log.info("Could not sign a stream URL for %s", row["id"])
+        return None
 
 
 async def _scene_manifest_for(rows, splat_url: Optional[str]) -> Optional[dict]:
@@ -102,8 +128,9 @@ async def _scene_manifest_for(rows, splat_url: Optional[str]) -> Optional[dict]:
     """
     if not splat_url:
         return None
-    key = next((r["s3_key"] for r in rows
+    row = next((r for r in rows
                 if r["kind"] == "splat" and r["url"] == splat_url and _has_key(r)), None)
+    key = row["s3_key"] if row is not None else None
     if not key:
         return None
     import asyncio
@@ -117,9 +144,25 @@ async def _scene_manifest_for(rows, splat_url: Optional[str]) -> Optional[dict]:
         payload = _json.loads(raw)
     except Exception:  # noqa: BLE001 — absent or unreadable: frame bounds instead
         return None
-    if not isinstance(payload, dict) or payload.get("version") != scene_manifest.SCHEMA_VERSION:
+    # v1 is upgraded explicitly (marked legacy, scale unknown), never silently
+    # read as if it carried v2's fields; anything else is ignored.
+    payload = scene_manifest.normalise(payload)
+    if payload is None:
         return None
-    return payload
+    override = _row_get(row, "scene_override")
+    if isinstance(override, str):
+        try:
+            override = _json.loads(override)
+        except ValueError:
+            override = None
+    return scene_manifest.apply_override(payload, override)
+
+
+def _row_get(row, key):
+    try:
+        return row[key]
+    except (KeyError, IndexError, TypeError):
+        return None
 
 
 def _has_key(row) -> bool:
@@ -162,11 +205,14 @@ async def fetch_tour_rows(conn, lead_id, listing_id):
     """
     rows = await conn.fetch(
         """
-        SELECT id, kind, url, sort_order, s3_key,
+        SELECT id, kind, url, sort_order, s3_key, scene_override,
                COALESCE(provenance, 'captured') AS provenance
           FROM property_media
          WHERE (($1::uuid IS NOT NULL AND lead_id = $1)
              OR ($2::uuid IS NOT NULL AND listing_id = $2))
+           -- A replaced space is kept for rollback but never shown: publish
+           -- stamps the old one in the same transaction as it inserts the new.
+           AND NOT (kind = 'splat' AND superseded_at IS NOT NULL)
          ORDER BY sort_order ASC, created_at ASC
         """,
         lead_id, listing_id,
@@ -209,7 +255,11 @@ def build_tour(rows, scene_rows, plan_row, *, lead_id=None, listing_id=None) -> 
 
     photos = [r for r in rows if r["kind"] == "photo"]
     pano_media = [r for r in rows if r["kind"] in ("pano", "tour")]
-    all_splats = [r for r in rows if r["kind"] == "splat"]
+    # Newest first. Rows arrive in sort order (oldest first), and a property
+    # can briefly hold more than one current capture — an uploaded scan beside
+    # a reconstruction, or rows from before atomic publish existed. The most
+    # recent one is the one someone meant to show.
+    all_splats = [r for r in reversed(rows) if r["kind"] == "splat"]
 
     # Only a captured splat is evidence about this property. A synthetic one is
     # still returned below, but it does not earn a tier.
@@ -579,24 +629,117 @@ def _floors_from_plan(document) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
-# Reconstruction jobs — enqueue a capture→splat job (tier 3) + poll its status.
+# Neoh Space builds — enqueue a capture→space job + poll its state.
 # Long jobs run in the reconstruction worker pool (reconstruction_worker.py);
-# this is the 202-accept-then-poll surface.
+# this is the 202-accept-then-poll surface. Customer responses carry the
+# stage-based public view (space_status.public_view) — never a provider name,
+# a percentage or raw toolchain errors. Operators read /diagnostics.
 # ---------------------------------------------------------------------------
+
+#: Full rebuilds of one property per rolling 24 h before the cost guard says
+#: no. Quality-gate refusals and conversion-only retries cost no GPU time and
+#: are not counted.
+RERUN_LIMIT_PER_DAY = max(1, int(os.environ.get("RECON_RERUN_LIMIT_PER_DAY", "3") or 3))
+#: Platform-wide bound on queued builds, so many brokerages together cannot
+#: grow the queue without limit (each is already bounded by RECON_QUEUE_MAX).
+GLOBAL_QUEUE_MAX = max(1, int(os.environ.get("RECON_GLOBAL_QUEUE_MAX", "100") or 100))
+
+_OPERATOR_ROLES = (Role.PLATFORM_ADMIN, Role.BROKER_OWNER)
+
+_JOB_COLUMNS = """id, status, stage, provider, provider_job_id, progress, media_id, error,
+                  diagnostics, quality_gate, failure_category, attempts,
+                  pipeline_version, cost_estimate_usd, gpu_seconds, output_bytes,
+                  raw_output_key, retry_of, created_at, updated_at"""
+
+
+def _subject_filter() -> str:
+    return ("(($1::uuid IS NOT NULL AND lead_id = $1) "
+            "OR ($2::uuid IS NOT NULL AND listing_id = $2))")
+
+
+def _job_payload(row, ctx: TenantContext) -> dict:
+    """The job as this caller may see it."""
+    import space_status
+
+    view = (space_status.operator_view(row) if ctx.role in _OPERATOR_ROLES
+            else space_status.public_view(row))
+    # Legacy fields existing callers read. `status` is coarse and harmless;
+    # `progress` is deliberately absent — no provider reports a real one.
+    view["status"] = row["status"]
+    view["media_id"] = str(row["media_id"]) if row["media_id"] else None
+    view["quality_gate"] = row["quality_gate"]
+    return view
+
+
+async def _active_job(conn, lead_id, listing_id):
+    return await conn.fetchrow(
+        f"SELECT {_JOB_COLUMNS} FROM reconstruction_jobs "
+        f"WHERE status IN ('queued', 'running') AND {_subject_filter()} "
+        "ORDER BY created_at DESC LIMIT 1",
+        lead_id, listing_id,
+    )
+
+
+async def _insert_job(conn, ctx, lead_id, listing_id, *, idempotency_key=None,
+                      retry_of=None, resume_from=None, raw_output_key=None):
+    """Insert one queued job, or return the one that already holds the slot.
+
+    The partial unique index (one active build per property, migration 0126)
+    makes a double-submit race lose cleanly instead of renting two GPUs.
+    """
+    import asyncpg
+
+    try:
+        row = await conn.fetchrow(
+            f"""
+            INSERT INTO reconstruction_jobs
+                (tenant_id, lead_id, listing_id, status, stage, created_by,
+                 idempotency_key, retry_of, resume_from, raw_output_key)
+            VALUES ($1, $2, $3, 'queued', 'queued', $4, $5, $6, $7, $8)
+            RETURNING {_JOB_COLUMNS}
+            """,
+            ctx.tenant_id, lead_id, listing_id, ctx.agent_id,
+            idempotency_key, retry_of, resume_from, raw_output_key,
+        )
+        return row, False
+    except asyncpg.UniqueViolationError:
+        existing = await _active_job(conn, lead_id, listing_id)
+        if existing is None and idempotency_key:
+            existing = await conn.fetchrow(
+                f"SELECT {_JOB_COLUMNS} FROM reconstruction_jobs WHERE idempotency_key = $1",
+                idempotency_key,
+            )
+        if existing is None:
+            raise
+        return existing, True
+
+
 @router.post("/crm/reconstruction-jobs", status_code=status.HTTP_202_ACCEPTED, dependencies=[Depends(require_active_subscription)])
 async def enqueue_reconstruction(
     lead_id: Optional[UUID] = Query(default=None),
     listing_id: Optional[UUID] = Query(default=None),
+    confirm_rebuild: bool = Query(default=False),
+    idempotency_key: Optional[str] = Query(default=None, max_length=128),
     ctx: TenantContext = Depends(require_context),
 ):
-    """Queue a Gaussian-splat reconstruction for one property. Returns 202 +
-    job_id; poll GET /crm/reconstruction-jobs/{id}. 503 if the configured
-    provider isn't available (no GPU / no key) — never silently fakes a result."""
+    """Queue a Neoh Space build for one property. Returns 202 + job_id; poll
+    GET /crm/reconstruction-jobs/{id}. 503 if the configured provider isn't
+    available (no GPU / no key) — never silently fakes a result.
+
+    Cost guard, in order: subscription (dependency) → idempotency key →
+    one active build per property (a second tap returns the first job) →
+    explicit confirmation before replacing a published space → a per-property
+    daily rebuild limit → bounded queues per brokerage and platform-wide.
+    """
     if lead_id is None and listing_id is None:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Provide lead_id or listing_id.")
     ok, why = get_provider().available()
     if not ok:
-        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, f"Reconstruction provider unavailable: {why}")
+        log.warning("Space build unavailable: %s", why)
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "Building 3D spaces is not available right now. Your photos and video are saved.",
+        )
 
     async with tenant_tx(ctx) as conn:
         # Validate the target exists in this tenant BEFORE inserting. The
@@ -607,6 +750,51 @@ async def enqueue_reconstruction(
             raise HTTPException(status.HTTP_404_NOT_FOUND, "Lead not found.")
         if listing_id is not None and not await conn.fetchval("SELECT 1 FROM listings WHERE id = $1", listing_id):
             raise HTTPException(status.HTTP_404_NOT_FOUND, "Listing not found.")
+
+        if idempotency_key:
+            prior = await conn.fetchrow(
+                f"SELECT {_JOB_COLUMNS} FROM reconstruction_jobs WHERE idempotency_key = $1",
+                idempotency_key,
+            )
+            if prior is not None:
+                return {"job_id": str(prior["id"]), "deduplicated": True,
+                        **_job_payload(prior, ctx)}
+
+        active = await _active_job(conn, lead_id, listing_id)
+        if active is not None:
+            # A second tap, a second tab, a retried request: the same build.
+            return {"job_id": str(active["id"]), "deduplicated": True,
+                    **_job_payload(active, ctx)}
+
+        published = await conn.fetchval(
+            f"""SELECT count(*) FROM property_media
+                 WHERE kind = 'splat' AND superseded_at IS NULL
+                   AND COALESCE(provenance, 'captured') = 'captured'
+                   AND {_subject_filter()}""",
+            lead_id, listing_id,
+        )
+        if published and not confirm_rebuild:
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                "This property already has a 3D space. Confirm to rebuild it — "
+                "the current space stays visible until the new one is ready.",
+            )
+
+        recent = await conn.fetchval(
+            f"""SELECT count(*) FROM reconstruction_jobs
+                 WHERE {_subject_filter()}
+                   AND created_at > now() - interval '24 hours'
+                   AND resume_from IS NULL
+                   AND status IN ('succeeded', 'failed', 'needs_attention')""",
+            lead_id, listing_id,
+        )
+        if recent >= RERUN_LIMIT_PER_DAY:
+            raise HTTPException(
+                status.HTTP_429_TOO_MANY_REQUESTS,
+                "This space was rebuilt too many times today. Try again tomorrow.",
+                headers={"Retry-After": "3600"},
+            )
+
         # Backpressure: a bounded backlog per brokerage, counted from the rows
         # that ARE the queue (RLS scopes the count to this tenant). One
         # brokerage cannot bury every other one's captures behind its own.
@@ -616,18 +804,32 @@ async def enqueue_reconstruction(
         if backlog >= RECON_QUEUE_MAX:
             raise HTTPException(
                 status.HTTP_503_SERVICE_UNAVAILABLE,
-                "Reconstruction queue is full — try again shortly.",
+                "Many spaces are being built right now — try again shortly.",
                 headers={"Retry-After": "60"},
             )
-        row = await conn.fetchrow(
-            """
-            INSERT INTO reconstruction_jobs (tenant_id, lead_id, listing_id, status, created_by)
-            VALUES ($1, $2, $3, 'queued', $4)
-            RETURNING id
-            """,
-            ctx.tenant_id, lead_id, listing_id, ctx.agent_id,
+    # Platform-wide bound, read across tenants (count only, nothing returned).
+    async with tenant_tx(_platform_ctx()) as pconn:
+        everyone = await pconn.fetchval(
+            "SELECT count(*) FROM reconstruction_jobs WHERE status = 'queued'")
+    if everyone >= GLOBAL_QUEUE_MAX:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "Many spaces are being built right now — try again shortly.",
+            headers={"Retry-After": "120"},
         )
+
+    async with tenant_tx(ctx) as conn:
+        # The committed row is the job, and it precedes the local wake-up.
+        row, deduplicated = await _insert_job(
+            conn, ctx, lead_id, listing_id, idempotency_key=idempotency_key)
     job_id = str(row["id"])
+    if not deduplicated:
+        try:
+            await audit_now(ctx, AuditCategory.GENERATE_TOUR, "space_build_requested",
+                            target_id=job_id, metadata={"lead_id": str(lead_id) if lead_id else None,
+                                                        "listing_id": str(listing_id) if listing_id else None})
+        except Exception:  # noqa: BLE001 — audit is best-effort here; the row is durable
+            log.debug("audit for space build %s failed", job_id)
     # The committed row is the job. This only wakes a worker sharing this
     # process (single-process dev); the worker service claims it regardless.
     enqueue(ReconstructionJob(
@@ -635,7 +837,17 @@ async def enqueue_reconstruction(
         lead_id=str(lead_id) if lead_id else None,
         listing_id=str(listing_id) if listing_id else None,
     ))
-    return {"job_id": job_id, "status": "queued"}
+    return {"job_id": job_id, "deduplicated": deduplicated, **_job_payload(row, ctx)}
+
+
+def _platform_ctx() -> TenantContext:
+    import os as _os
+
+    return TenantContext(
+        agent_id="space-queue-bound",
+        tenant_id=_os.getenv("ORACLE_PLATFORM_TENANT_ID", "00000000-0000-0000-0000-000000000000"),
+        role=Role.PLATFORM_ADMIN,
+    )
 
 
 @router.get("/crm/reconstruction-jobs/{job_id}")
@@ -643,36 +855,300 @@ async def reconstruction_job_status(
     job_id: UUID,
     ctx: TenantContext = Depends(require_context),
 ):
-    """Poll a reconstruction job (RLS-scoped)."""
+    """Poll a build (RLS-scoped). Stage-based and in product language for
+    everyone; operators additionally get provider, cost and diagnostics."""
     async with tenant_tx(ctx) as conn:
         row = await conn.fetchrow(
-            """SELECT id, status, provider, progress, media_id, error,
-                      diagnostics, quality_gate
-                 FROM reconstruction_jobs WHERE id = $1""",
-            job_id,
+            f"SELECT {_JOB_COLUMNS} FROM reconstruction_jobs WHERE id = $1", job_id,
         )
     if row is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Job not found.")
+    return _job_payload(row, ctx)
+
+
+@router.get("/crm/reconstruction-jobs/{job_id}/diagnostics")
+async def reconstruction_job_diagnostics(
+    job_id: UUID,
+    ctx: TenantContext = Depends(require_context),
+):
+    """Everything recorded about one build — operators only.
+
+    Counts, sizes, durations, tool names, provider ids and cost estimates.
+    Never capture content."""
+    if ctx.role not in _OPERATOR_ROLES:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Diagnostics are for brokerage admins.")
+    import space_status
+
+    async with tenant_tx(ctx) as conn:
+        row = await conn.fetchrow(
+            f"SELECT {_JOB_COLUMNS} FROM reconstruction_jobs WHERE id = $1", job_id,
+        )
+    if row is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Job not found.")
+    return space_status.operator_view(row)
+
+
+@router.post("/crm/reconstruction-jobs/{job_id}/retry", status_code=status.HTTP_202_ACCEPTED,
+             dependencies=[Depends(require_active_subscription)])
+async def retry_reconstruction(
+    job_id: UUID,
+    ctx: TenantContext = Depends(require_context),
+):
+    """Retry a failed build the cheapest honest way.
+
+    * Conversion failed after a good reconstruction → reconvert the preserved
+      raw output. No GPU, not counted against the daily limit.
+    * Anything else → a new full build, which goes through the same cost
+      guard as a fresh one (POST /crm/reconstruction-jobs).
+    The failed job is never mutated; the retry is a new row that names it.
+    """
+    async with tenant_tx(ctx) as conn:
+        old = await conn.fetchrow(
+            f"SELECT {_JOB_COLUMNS}, lead_id, listing_id FROM reconstruction_jobs WHERE id = $1",
+            job_id,
+        )
+        if old is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Job not found.")
+        if old["status"] in ("queued", "running", "succeeded"):
+            raise HTTPException(status.HTTP_409_CONFLICT, "This build does not need a retry.")
+        if not old["raw_output_key"]:
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                "Start a new build for this property — this one has nothing to resume from.",
+            )
+        row, deduplicated = await _insert_job(
+            conn, ctx, old["lead_id"], old["listing_id"],
+            retry_of=old["id"], resume_from="conversion",
+            raw_output_key=old["raw_output_key"],
+        )
+    new_id = str(row["id"])
+    enqueue(ReconstructionJob(
+        ctx=ctx, job_id=new_id,
+        lead_id=str(old["lead_id"]) if old["lead_id"] else None,
+        listing_id=str(old["listing_id"]) if old["listing_id"] else None,
+        resume_from="conversion", raw_output_key=old["raw_output_key"],
+    ))
+    return {**_job_payload(row, ctx), "job_id": new_id, "deduplicated": deduplicated,
+            "retry_kind": "conversion"}
+
+
+@router.get("/crm/space")
+async def space_summary(
+    lead_id: Optional[UUID] = Query(default=None),
+    listing_id: Optional[UUID] = Query(default=None),
+    ctx: TenantContext = Depends(require_context),
+):
+    """The property's Neoh Space at a glance: what is published, and the
+    latest build. Lets the capture panel resume watching a build after the
+    page was left, instead of forgetting it existed."""
+    if lead_id is None and listing_id is None:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Provide lead_id or listing_id.")
+    async with tenant_tx(ctx) as conn:
+        published = await conn.fetchrow(
+            f"""SELECT id, s3_key, created_at, COALESCE(provenance, 'captured') AS provenance
+                  FROM property_media
+                 WHERE kind = 'splat' AND superseded_at IS NULL AND {_subject_filter()}
+                 ORDER BY (COALESCE(provenance, 'captured') = 'captured') DESC, created_at DESC
+                 LIMIT 1""",
+            lead_id, listing_id,
+        )
+        latest = await conn.fetchrow(
+            f"SELECT {_JOB_COLUMNS} FROM reconstruction_jobs WHERE {_subject_filter()} "
+            "ORDER BY created_at DESC LIMIT 1",
+            lead_id, listing_id,
+        )
+        previous = await conn.fetchval(
+            f"""SELECT count(*) FROM property_media
+                 WHERE kind = 'splat' AND superseded_at IS NOT NULL AND {_subject_filter()}""",
+            lead_id, listing_id,
+        )
+    return {
+        "published": ({
+            "media_id": str(published["id"]),
+            "published_at": published["created_at"].isoformat() if published["created_at"] else None,
+            "is_this_property": published["provenance"] == "captured",
+            "format": _delivery_format(published),
+        } if published else None),
+        "previous_versions": int(previous or 0),
+        "latest_build": _job_payload(latest, ctx) if latest else None,
+    }
+
+
+class SceneOverrideIn(BaseModel):
+    """Curated corrections an operator may apply over the computed scene."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    entryCamera: Optional[dict] = None
+    scaleCalibration: Optional[dict] = None
+
+
+@router.put("/crm/space/{media_id}/scene-override")
+async def put_scene_override(
+    media_id: UUID,
+    body: SceneOverrideIn,
+    ctx: TenantContext = Depends(require_context),
+):
+    """Set a curated starting view and/or an operator scale calibration.
+
+    The computed scene.json is never rewritten; the override is stored on the
+    media row and merged on read, recorded under `overrides`. A calibration
+    is the ONLY way (besides measured capture metadata) a space becomes
+    `metric`, so it is restricted to brokerage admins and must carry its basis.
+    """
+    import scene_manifest
+
+    payload = body.model_dump(exclude_none=True)
+    if "entryCamera" in payload and not scene_manifest._valid_camera(payload["entryCamera"]):
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY,
+                            "entryCamera needs numeric position and target triples.")
+    calibration = payload.get("scaleCalibration")
+    if calibration is not None:
+        if ctx.role not in _OPERATOR_ROLES:
+            raise HTTPException(status.HTTP_403_FORBIDDEN,
+                                "Only brokerage admins can calibrate measurements.")
+        try:
+            mpu = float(calibration.get("metresPerUnit"))
+        except (TypeError, ValueError):
+            mpu = 0.0
+        basis = str(calibration.get("basis") or "").strip()
+        if not (0 < mpu < 1000) or not basis:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY,
+                                "A calibration needs a positive metresPerUnit and its basis "
+                                "(what known distance it was measured against).")
+        payload["scaleCalibration"] = {"metresPerUnit": mpu, "basis": basis[:300],
+                                       "by": ctx.agent_id}
     import json as _json
 
-    diagnostics = row["diagnostics"]
-    if isinstance(diagnostics, str):
-        try:
-            diagnostics = _json.loads(diagnostics)
-        except ValueError:
-            diagnostics = {}
-    return {
-        "job_id": str(row["id"]),
-        "status": row["status"],
-        "provider": row["provider"],
-        "progress": row["progress"],
-        "media_id": str(row["media_id"]) if row["media_id"] else None,
-        "error": row["error"],
-        # Per-stage measurements. Without these a caller polling a failed job
-        # learns only that it failed — which of the six stages broke, and what
-        # it measured before breaking, is the whole point of recording them.
-        # Counts, sizes, durations and tool names only; never capture content.
-        "diagnostics": diagnostics or {},
-        # Set when a gate refused the capture rather than the run breaking.
-        "quality_gate": row["quality_gate"],
+    async with tenant_tx(ctx) as conn:
+        updated = await conn.fetchval(
+            "UPDATE property_media SET scene_override = $2::jsonb "
+            "WHERE id = $1 AND kind = 'splat' RETURNING id",
+            media_id, _json.dumps(payload) if payload else None,
+        )
+    if updated is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Space not found.")
+    return {"media_id": str(media_id), "override": payload or None}
+
+
+@router.delete("/crm/space")
+async def delete_space(
+    lead_id: Optional[UUID] = Query(default=None),
+    listing_id: Optional[UUID] = Query(default=None),
+    confirm: bool = Query(default=False),
+    ctx: TenantContext = Depends(require_context),
+):
+    """Delete a property's 3D space: every published and previous version,
+    its poses, point cloud, scene file, provenance manifest and any preserved
+    raw output. Original photos and video are NOT deleted here — they are the
+    customer's source media and are removed through media deletion or the
+    privacy lifecycle, which own them.
+    """
+    if lead_id is None and listing_id is None:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Provide lead_id or listing_id.")
+    if not confirm:
+        raise HTTPException(status.HTTP_409_CONFLICT,
+                            "Confirm to delete this property's 3D space. Photos and video are kept.")
+    import space_assets
+
+    async with tenant_tx(ctx) as conn:
+        active = await _active_job(conn, lead_id, listing_id)
+        if active is not None:
+            raise HTTPException(status.HTTP_409_CONFLICT,
+                                "A build is still running for this property. Try again when it finishes.")
+        media = await conn.fetch(
+            f"SELECT id, s3_key FROM property_media WHERE kind = 'splat' AND {_subject_filter()}",
+            lead_id, listing_id,
+        )
+        raw = await conn.fetch(
+            f"SELECT raw_output_key FROM reconstruction_jobs "
+            f"WHERE raw_output_key IS NOT NULL AND {_subject_filter()}",
+            lead_id, listing_id,
+        )
+    keys: list[str] = []
+    for row in media:
+        keys.extend(space_assets.keys_for_space(row["s3_key"]))
+    keys.extend(space_assets.keys_for_space(None, [r["raw_output_key"] for r in raw]))
+    result = await asyncio.to_thread(space_assets.delete_objects, keys)
+    if result["failed"]:
+        # Rows stay so a retry can find the objects again; nothing is orphaned.
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE,
+                            "Some files could not be deleted yet. Nothing was removed from the property; try again.")
+    async with tenant_tx(ctx) as conn:
+        await conn.execute(
+            f"UPDATE reconstruction_jobs SET raw_output_key = NULL WHERE {_subject_filter()}",
+            lead_id, listing_id,
+        )
+        await conn.execute(
+            f"DELETE FROM property_media WHERE kind = 'splat' AND {_subject_filter()}",
+            lead_id, listing_id,
+        )
+    try:
+        await audit_now(ctx, AuditCategory.DATA_DELETE, "space_deleted",
+                        target_id=str(lead_id or listing_id),
+                        metadata={"versions": len(media), "objects": result["deleted"]})
+    except Exception:  # noqa: BLE001
+        log.debug("audit for space deletion failed")
+    return {"deleted_versions": len(media), "deleted_objects": result["deleted"],
+            "photos_and_video": "kept"}
+
+
+@router.get("/space/assets/{media_id}")
+async def signed_space_asset(
+    media_id: UUID,
+    request: Request,
+    t: str = Query(..., max_length=64),
+    exp: int = Query(...),
+    sig: str = Query(..., max_length=128),
+):
+    """Stream a space's delivery file to a holder of a fresh signed URL.
+
+    No JWT: the URL itself is the short-lived capability, minted by the
+    authenticated resolver for one media id and tenant. Range requests are
+    honoured so the viewer can stream; the response is privately cacheable
+    for no longer than the URL lives. Never lists, never redirects to a raw
+    storage URL, and answers 404 for anything it will not serve.
+    """
+    import time as _time
+
+    import space_assets
+
+    if not space_assets.verify(str(media_id), t, exp, sig):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Not found.")
+    try:
+        tenant = str(UUID(t))
+    except ValueError:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Not found.")
+    ctx = TenantContext(agent_id="space-asset", tenant_id=tenant, role=Role.AGENT)
+    async with tenant_tx(ctx) as conn:
+        key = await conn.fetchval(
+            "SELECT s3_key FROM property_media "
+            "WHERE id = $1 AND kind = 'splat' AND s3_key IS NOT NULL",
+            media_id,
+        )
+    if not key:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Not found.")
+
+    headers = {
+        "Accept-Ranges": "bytes",
+        "Cache-Control": f"private, max-age={max(0, int(exp) - int(_time.time()))}",
     }
+    range_header = request.headers.get("range")
+    try:
+        if not range_header:
+            data, _size = await asyncio.to_thread(space_assets.read_range, key, None)
+            return Response(content=data, media_type="application/octet-stream", headers=headers)
+        # Ranged: learn the size from a one-byte read, then read the slice.
+        _, size = await asyncio.to_thread(space_assets.read_range, key, (0, 0))
+        try:
+            rng = space_assets.parse_range(range_header, size)
+        except ValueError:
+            return Response(status_code=416, headers={"Content-Range": f"bytes */{size}"})
+        data, size = await asyncio.to_thread(space_assets.read_range, key, rng)
+    except FileNotFoundError:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Not found.")
+    if rng is None:
+        return Response(content=data, media_type="application/octet-stream", headers=headers)
+    headers["Content-Range"] = f"bytes {rng[0]}-{rng[0] + len(data) - 1}/{size}"
+    return Response(content=data, status_code=206, media_type="application/octet-stream",
+                    headers=headers)

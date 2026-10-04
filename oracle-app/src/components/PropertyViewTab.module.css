@@ -270,6 +270,20 @@
 .ok    { border-color: #34d399; background: rgba(52, 211, 153, 0.08); color: #a7f3d0; }
 .error { border-color: #ef4444; background: rgba(239, 68, 68, 0.08); color: #fecaca; }
 
+/* Files that did not upload: named, retried on their own. */
+.failedUploads {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: 10px 12px;
+  border: 1px solid rgba(239, 68, 68, 0.35);
+  border-radius: 10px;
+  font-size: 0.75rem;
+  color: #fecaca;
+}
+.failedUploads ul { margin: 0; padding-left: 1.1rem; }
+.failedUploads span { font-weight: 600; color: #fff1f1; }
+
 /* ── client link ─────────────────────────────────────────────────────────── */
 .linkCard {
   display: flex;

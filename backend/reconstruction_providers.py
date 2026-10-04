@@ -288,6 +288,21 @@ class ReconstructionProvider:
     # from the provider name.
     produces = "captured"
 
+    #: Called with the provider's own job id (e.g. a RunPod pod id) the moment
+    #: one exists, BEFORE any work. The worker persists it on the job row so a
+    #: restart can terminate exactly that resource instead of waiting hours for
+    #: the age-based sweep. Set per job by the worker; never required.
+    on_submitted = None
+
+    def _notify_submitted(self, provider_job_id: str) -> None:
+        hook = getattr(self, "on_submitted", None)
+        if hook is None:
+            return
+        try:
+            hook(provider_job_id)
+        except Exception:  # noqa: BLE001 - bookkeeping must never fail a job
+            log.exception("on_submitted hook failed for %s", provider_job_id)
+
     def available(self) -> tuple[bool, str]:
         """(ready, reason-if-not). The enqueue endpoint 503s when not ready."""
         return (False, "not implemented")
@@ -1993,6 +2008,7 @@ class PodProvider(ReconstructionProvider):
             # whether or not it computes, and nothing surfaces a leaked one.
             for pod_id in launched:
                 await asyncio.to_thread(self._terminate, settings["api_key"], pod_id)
+            self._record_cost(launched)
 
     async def _launch(self, settings: dict, launched: list[str]):
         """Create a pod and wait for SSH. Returns (host, port, key, hourly).
@@ -2049,6 +2065,7 @@ class PodProvider(ReconstructionProvider):
         log.info("RunPod pod %s provisioning (%s)", pod_id, settings["image"])
 
         hourly = float(created.get("costPerHr") or 0) or _POD_FALLBACK_HOURLY
+        self._billing_started(pod_id, hourly)
         deadline = _now() + min(900, settings["timeout"])
         while _now() < deadline:
             pod = await asyncio.to_thread(
@@ -2058,6 +2075,7 @@ class PodProvider(ReconstructionProvider):
             port = (pod.get("portMappings") or {}).get("22")
             if host and port:
                 hourly = float(pod.get("costPerHr") or 0) or hourly
+                self._billing.setdefault(pod_id, {})["hourly"] = hourly
                 return host, int(port), key, hourly
             await asyncio.sleep(5)
 
@@ -2355,6 +2373,7 @@ class PodProvider(ReconstructionProvider):
         log.info("RunPod pod %s running (blob transport, job %s)", pod_id, job_key)
 
         hourly = float(created.get("costPerHr") or 0) or _POD_FALLBACK_HOURLY
+        self._billing_started(pod_id, hourly)
         budget_seconds = int((settings["max_cost"] / max(hourly, 0.01)) * 3600)
         deadline = _now() + min(settings["timeout"], budget_seconds)
 
@@ -2392,6 +2411,57 @@ class PodProvider(ReconstructionProvider):
             f"({int(settings['max_cost'] / max(hourly, 0.01) * 3600)}s at "
             f"${hourly:.2f}/hr); the pod is being terminated"
         )
+
+    # -- cost accounting ----------------------------------------------------
+    def _billing_started(self, pod_id: str, hourly: float) -> None:
+        """Start the billing clock for one pod and announce its id."""
+        if not hasattr(self, "_billing"):
+            self._billing = {}
+        self._billing[pod_id] = {"started": _now(), "hourly": float(hourly)}
+        metrics = dict(getattr(self, "last_metrics", None) or {})
+        metrics["provider_job_id"] = pod_id
+        self.last_metrics = metrics
+        self._notify_submitted(pod_id)
+
+    def _record_cost(self, launched: list[str]) -> None:
+        """Billed seconds and an estimated cost, from the rate RunPod quoted.
+
+        An ESTIMATE, and labelled one: RunPod bills per second at the quoted
+        rate, but this clock starts when the create call returned and stops
+        when terminate returned, so it can be off by the API round trips. It
+        is recorded for pricing, never shown to customers.
+        """
+        billing = getattr(self, "_billing", {}) or {}
+        seconds = 0.0
+        cost = 0.0
+        ended = _now()
+        for pod_id in launched:
+            entry = billing.get(pod_id)
+            if not entry:
+                continue
+            elapsed = max(0.0, ended - float(entry["started"]))
+            seconds += elapsed
+            cost += elapsed / 3600.0 * float(entry["hourly"])
+        if not launched:
+            return
+        metrics = dict(getattr(self, "last_metrics", None) or {})
+        metrics["cost"] = {
+            "provider": "runpod",
+            "pods": list(launched),
+            "billed_seconds_estimate": round(seconds, 1),
+            "hourly_usd": round(max((float(e.get("hourly") or 0) for e in billing.values()),
+                                    default=0.0), 4),
+            "estimated_usd": round(cost, 4),
+            "basis": "quoted hourly rate x create-to-terminate wall clock",
+        }
+        self.last_metrics = metrics
+
+    @classmethod
+    def terminate_job(cls, provider_job_id: str) -> bool:
+        """Terminate one known pod now (orphan recovery). True when gone."""
+        settings = cls._settings()
+        cls._terminate(settings["api_key"], provider_job_id)
+        return True
 
     # -- cleanup ------------------------------------------------------------
     @classmethod

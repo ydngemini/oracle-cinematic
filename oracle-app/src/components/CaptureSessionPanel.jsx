@@ -1,51 +1,53 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { CAPTURE_STEPS } from '../lib/tour/captureGuide';
 import { crmGet, crmPost } from '../state/useCrmApi';
 import styles from './CaptureSessionPanel.module.css';
 
 /**
- * Turn the photos already uploaded for a property into a walkable 3D capture.
+ * Neoh Space — turn the photos and video already uploaded for a property into
+ * a 3D space someone can walk through.
  *
- * This is the enqueue + poll half of the old CaptureWizard, moved onto Property
- * View. The wizard was a self-contained three-step modal that owned its own
- * uploader — and had zero importers, so it was the only way to start a
- * reconstruction and no screen could reach it. Property View is the shipped
- * capture surface (photo + video + 360, surface tagging, client upload links,
- * review queue), so the job controls belong beside the photos they consume
- * rather than in a parallel flow that duplicates uploading.
+ * Written for a person holding a phone, not for someone who knows how 3D is
+ * made: no tool names, no file formats, no percentages. The server reports a
+ * build as a STAGE (space_status.py) because no step of the pipeline exposes a
+ * real percentage, and an honest "Building your space" beats a fake "83%".
  *
- * The guidance below is the wizard's genuinely valuable part: an amateur with a
- * phone produces an unreconstructable set without it, and the failure only
- * surfaces 20 minutes later at the end of a GPU job.
+ * Durable from the user's side too: on mount the panel asks the server for the
+ * property's latest build and resumes watching it, so leaving the page never
+ * loses track of a build that is still running.
  *
- * Props: { leadId, listingId, photoCount, onComplete }
+ * Cost guard, visible: a second tap returns the same build (idempotency key +
+ * the server's one-active-build rule); replacing a published space asks first;
+ * a failed conversion retries without rebuilding.
+ *
+ * Props: { leadId, listingId, photoCount, videoCount, onComplete }
  */
 
-const POLL_MS = 3000;
+const POLL_MS = 4000;
 
-// Reconstruction needs overlapping views of textured surfaces. Each of these
-// corresponds to a way the solver actually fails, not to generic photo advice.
-const CAPTURE_TIPS = [
-  'Keep 70–80% overlap between consecutive shots — every photo should share most of its frame with the last.',
-  'Walk slowly and cover every corner from several heights (low, eye-level, high).',
-  'Aim for even, diffuse light — open blinds, turn on every lamp, avoid harsh shadows and blown-out windows.',
-  'Avoid shooting mirrors, glass and windows head-on; reflections and transparency confuse the solver.',
-  'Blank walls reconstruct poorly — include doorframes, furniture and trim for the solver to lock onto.',
-  'Capture one room at a time, then move through doorways so the rooms stitch together.',
-];
-
-// Below this the solver has too little to work with. The backend enforces its
-// own minimum; this is here so the agent finds out before starting a job rather
-// than after one fails.
+// Below this the build is refused before any processing starts. The server
+// enforces its own gate; this only stops someone starting a build that will be
+// refused.
 const MIN_USEFUL_PHOTOS = 8;
 
-export default function CaptureSessionPanel({ leadId, listingId, photoCount = 0, onComplete }) {
-  // idle → queuing → running → succeeded | failed | unavailable
+function newKey() {
+  try {
+    if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
+  } catch { /* fall through */ }
+  return `k-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+export default function CaptureSessionPanel({
+  leadId, listingId, photoCount = 0, videoCount = 0, onComplete,
+}) {
+  // idle | starting | watching | confirm | done | failed | unavailable
   const [phase, setPhase] = useState('idle');
-  const [jobId, setJobId] = useState(null);
-  const [progress, setProgress] = useState(0);
+  const [job, setJob] = useState(null);
+  const [published, setPublished] = useState(null);
   const [message, setMessage] = useState('');
-  const [tipsOpen, setTipsOpen] = useState(false);
+  const [guideOpen, setGuideOpen] = useState(false);
   const pollRef = useRef(null);
+  const keyRef = useRef(null);
 
   const ownerQS = leadId
     ? `lead_id=${encodeURIComponent(leadId)}`
@@ -53,161 +55,222 @@ export default function CaptureSessionPanel({ leadId, listingId, photoCount = 0,
       ? `listing_id=${encodeURIComponent(listingId)}`
       : '';
 
-  // Poll while a job runs. Every setState is inside an async callback or a
-  // timeout — never synchronously in the effect body.
+  // Resume: what does this property already have, and is a build running?
   useEffect(() => {
-    if (phase !== 'running' || !jobId) return undefined;
+    if (!ownerQS) return undefined;
     let cancelled = false;
+    crmGet(`/api/crm/space?${ownerQS}`).then(
+      (summary) => {
+        if (cancelled) return;
+        setPublished(summary?.published || null);
+        const latest = summary?.latest_build || null;
+        if (latest) {
+          setJob(latest);
+          if (latest.active) setPhase('watching');
+          else if (latest.state === 'failed' || latest.state === 'needs_attention') setPhase('failed');
+        }
+      },
+      () => { /* no summary is not an error worth showing; start stays available */ },
+    );
+    return () => { cancelled = true; };
+  }, [ownerQS]);
 
+  // Poll while a build runs. Every setState is inside an async callback.
+  useEffect(() => {
+    if (phase !== 'watching' || !job?.job_id) return undefined;
+    let cancelled = false;
     const tick = () => {
-      crmGet(`/api/crm/reconstruction-jobs/${jobId}`).then(
-        (job) => {
+      crmGet(`/api/crm/reconstruction-jobs/${job.job_id}`).then(
+        (next) => {
           if (cancelled) return;
-          setProgress(Math.max(0, Math.min(100, Math.round(Number(job?.progress) || 0))));
-          if (job?.status === 'succeeded') {
-            setPhase('succeeded');
+          setJob(next);
+          if (next?.state === 'ready') {
+            setPhase('done');
+            setPublished((p) => p || { media_id: next.media_id });
             onComplete?.();
-          } else if (job?.status === 'failed') {
-            setMessage(job?.error || 'The reconstruction job failed.');
+          } else if (next?.terminal) {
             setPhase('failed');
           } else {
             pollRef.current = setTimeout(tick, POLL_MS);
           }
         },
-        (error) => {
+        () => {
           if (cancelled) return;
-          setMessage(error?.message || 'Lost contact with the reconstruction job.');
-          setPhase('failed');
+          // A dropped poll is not a failed build. Keep watching, slower.
+          pollRef.current = setTimeout(tick, POLL_MS * 3);
         },
       );
     };
-
     tick();
     return () => {
       cancelled = true;
       if (pollRef.current) { clearTimeout(pollRef.current); pollRef.current = null; }
     };
-  }, [phase, jobId, onComplete]);
+  }, [phase, job?.job_id, onComplete]);
 
-  const start = useCallback(async () => {
+  const start = useCallback(async ({ confirmed = false } = {}) => {
     if (!ownerQS) return;
-    setPhase('queuing');
+    setPhase('starting');
     setMessage('');
-    setProgress(0);
+    // One key per intent: a double tap or a retried request reuses it, so the
+    // server returns the same build instead of starting a second one.
+    if (!keyRef.current) keyRef.current = newKey();
+    const qs = `${ownerQS}&idempotency_key=${encodeURIComponent(keyRef.current)}${confirmed ? '&confirm_rebuild=true' : ''}`;
     try {
-      const job = await crmPost(`/api/crm/reconstruction-jobs?${ownerQS}`, {});
-      setJobId(job?.job_id || null);
-      setPhase('running');
+      const created = await crmPost(`/api/crm/reconstruction-jobs?${qs}`, {});
+      setJob(created);
+      setPhase(created?.terminal ? (created.state === 'ready' ? 'done' : 'failed') : 'watching');
+      keyRef.current = null;
     } catch (error) {
-      if (error?.status === 503) {
-        // The provider is not configured on this deployment. That is a
-        // deployment fact, not a failure of this property's photos, and the
-        // backend's message says which.
-        setMessage(error?.message || 'Reconstruction is not available on this deployment.');
-        setPhase('unavailable');
-      } else {
-        setMessage(error?.message || 'Could not start the reconstruction.');
-        setPhase('failed');
+      if (error?.status === 409) {
+        setMessage(error?.message || 'This property already has a 3D space.');
+        setPhase('confirm');
+        return;
       }
+      keyRef.current = null;
+      setMessage(error?.message || 'Could not start building the space.');
+      setPhase(error?.status === 503 ? 'unavailable' : 'failed');
     }
   }, [ownerQS]);
 
-  const reset = useCallback(() => {
-    if (pollRef.current) { clearTimeout(pollRef.current); pollRef.current = null; }
-    setPhase('idle');
-    setJobId(null);
-    setProgress(0);
-    setMessage('');
-  }, []);
+  const retry = useCallback(async () => {
+    if (job?.retry_kind === 'conversion' && job?.job_id) {
+      setPhase('starting');
+      try {
+        const next = await crmPost(`/api/crm/reconstruction-jobs/${job.job_id}/retry`, {});
+        setJob(next);
+        setPhase('watching');
+      } catch (error) {
+        setMessage(error?.message || 'Could not retry.');
+        setPhase('failed');
+      }
+      return;
+    }
+    start({ confirmed: Boolean(published) });
+  }, [job, published, start]);
 
-  const enoughPhotos = photoCount >= MIN_USEFUL_PHOTOS;
-  const busy = phase === 'queuing' || phase === 'running';
+  const total = photoCount + videoCount;
+  const enough = photoCount >= MIN_USEFUL_PHOTOS || videoCount > 0;
+  const steps = Array.isArray(job?.steps) ? job.steps : [];
+  const watching = phase === 'watching' || phase === 'starting';
 
   return (
-    <section className={styles.panel} aria-labelledby="capture-session-title">
+    <section className={styles.panel} aria-labelledby="capture-session-title" data-space-phase={phase}>
       <header className={styles.head}>
         <div>
-          <h3 id="capture-session-title">Build a walkable 3D capture</h3>
+          <h3 id="capture-session-title">Neoh Space</h3>
           <p className={styles.sub}>
-            Uses the photos already uploaded for this property. Takes 20–60 minutes.
+            Build a 3D space from the photos and video uploaded for this property.
+            It usually takes 20–60 minutes, and you can leave this page.
           </p>
         </div>
         <button
           type="button"
           className={styles.link}
-          aria-expanded={tipsOpen}
-          onClick={() => setTipsOpen((open) => !open)}
+          aria-expanded={guideOpen}
+          aria-controls="capture-guide"
+          onClick={() => setGuideOpen((open) => !open)}
         >
-          {tipsOpen ? 'Hide shooting guide' : 'How to shoot it'}
+          {guideOpen ? 'Hide capture guide' : 'How to capture'}
         </button>
       </header>
 
-      {tipsOpen && (
-        <ul className={styles.tips}>
-          {CAPTURE_TIPS.map((tip) => <li key={tip}>{tip}</li>)}
-        </ul>
+      {guideOpen && (
+        <ol className={styles.tips} id="capture-guide">
+          {CAPTURE_STEPS.map((step) => (
+            <li key={step.title}><strong>{step.title}.</strong> {step.text}</li>
+          ))}
+        </ol>
       )}
 
-      {/* Say what the solver has to work with before a job is started, rather
-          than after twenty minutes of GPU time. */}
-      <p className={enoughPhotos ? styles.ready : styles.notReady} role="status">
-        {photoCount === 0
-          ? 'No photos uploaded yet. Add interior photos above to build a capture.'
-          : enoughPhotos
-            ? `${photoCount} photos uploaded — enough to attempt a reconstruction.`
-            : `${photoCount} of at least ${MIN_USEFUL_PHOTOS} photos. More overlapping shots make a usable capture far more likely.`}
-      </p>
+      {/* What the build has to work with, before anything starts. */}
+      {!watching && phase !== 'done' && (
+        <p className={enough ? styles.ready : styles.notReady} role="status">
+          {total === 0
+            ? 'Nothing uploaded yet. Add interior photos or a walkthrough video above.'
+            : enough
+              ? `${photoCount} photo${photoCount === 1 ? '' : 's'}${videoCount ? ` and ${videoCount} video${videoCount === 1 ? '' : 's'}` : ''} ready to build from.`
+              : `${photoCount} of at least ${MIN_USEFUL_PHOTOS} photos. More overlapping shots make a usable space far more likely.`}
+        </p>
+      )}
 
-      {phase === 'running' || phase === 'queuing' ? (
-        <div className={styles.progressWrap}>
-          <div
-            className={styles.progressBar}
-            role="progressbar"
-            aria-valuenow={progress}
-            aria-valuemin={0}
-            aria-valuemax={100}
-            aria-label="Reconstruction progress"
-          >
-            <span className={styles.progressFill} style={{ width: `${progress}%` }} />
-          </div>
-          <p className={styles.progressText}>
-            {phase === 'queuing' ? 'Queuing…' : `Building — ${progress}%`}
-            {' · you can leave this page, the job keeps running.'}
+      {(watching || phase === 'done' || phase === 'failed') && job && (
+        <div className={styles.progressWrap} aria-live="polite">
+          <p className={styles.stageLabel}>
+            <span>{job.label || 'Building your space'}</span>
           </p>
+          {job.message ? <p className={styles.progressText}>{job.message}</p> : null}
+          {steps.length > 0 && (
+            <ol className={styles.steps} aria-label="Build steps">
+              {steps.map((step) => (
+                <li
+                  key={step.stage}
+                  className={styles[`step_${step.state}`] || ''}
+                  aria-current={step.state === 'current' ? 'step' : undefined}
+                >
+                  {step.label}
+                </li>
+              ))}
+            </ol>
+          )}
+        </div>
+      )}
+
+      {phase === 'done' && job?.caveats?.length ? (
+        <ul className={styles.caveats} aria-label="About this space">
+          {job.caveats.map((c) => <li key={c}>{c}</li>)}
+        </ul>
+      ) : null}
+
+      {phase === 'done' && (
+        <p className={styles.ready} role="status">
+          Your space is ready. Open it from the tour above.
+          {job?.floorplan === 'unavailable' ? ' A floor plan could not be made from this capture.' : ''}
+        </p>
+      )}
+
+      {phase === 'failed' && job?.guidance?.length ? (
+        <div className={styles.guidance}>
+          <p>How to get a better capture:</p>
+          <ul>{job.guidance.map((g) => <li key={g}>{g}</li>)}</ul>
         </div>
       ) : null}
 
-      {phase === 'succeeded' && (
-        <p className={styles.ready} role="status">
-          Capture complete. The property now offers a walkable 3D tour.
-        </p>
-      )}
-
-      {(phase === 'failed' || phase === 'unavailable') && (
-        <p className={styles.error} role="alert">
+      {(phase === 'failed' || phase === 'unavailable' || phase === 'confirm') && message ? (
+        <p className={phase === 'confirm' ? styles.notReady : styles.error} role={phase === 'confirm' ? 'status' : 'alert'}>
           {message}
         </p>
-      )}
+      ) : null}
 
       <div className={styles.actions}>
-        {phase === 'idle' || phase === 'succeeded' ? (
+        {(phase === 'idle' || phase === 'done' || phase === 'unavailable') && (
           <button
             type="button"
             className={styles.primary}
-            onClick={start}
-            disabled={!ownerQS || photoCount === 0}
+            onClick={() => start()}
+            disabled={!ownerQS || total === 0}
           >
-            {phase === 'succeeded' ? 'Rebuild capture' : 'Build 3D capture'}
-          </button>
-        ) : null}
-        {(phase === 'failed' || phase === 'unavailable') && (
-          <button type="button" className={styles.secondary} onClick={reset}>
-            Try again
+            {published || phase === 'done' ? 'Rebuild space' : 'Build 3D space'}
           </button>
         )}
-        {busy && (
-          <button type="button" className={styles.secondary} onClick={reset}>
-            Stop watching
+        {phase === 'confirm' && (
+          <>
+            <button type="button" className={styles.primary} onClick={() => start({ confirmed: true })}>
+              Rebuild — keep the current space until it is ready
+            </button>
+            <button type="button" className={styles.secondary} onClick={() => { setPhase('idle'); setMessage(''); }}>
+              Cancel
+            </button>
+          </>
+        )}
+        {phase === 'failed' && job?.can_retry && job?.retry_kind !== 'recapture' && (
+          <button type="button" className={styles.primary} onClick={retry}>
+            {job.retry_kind === 'conversion' ? 'Finish preparing the space' : 'Try again'}
+          </button>
+        )}
+        {phase === 'failed' && (job?.retry_kind === 'recapture' || !job?.can_retry) && (
+          <button type="button" className={styles.secondary} onClick={() => { setPhase('idle'); setMessage(''); }}>
+            Build again after uploading more
           </button>
         )}
       </div>

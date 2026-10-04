@@ -146,3 +146,74 @@
   font-size: var(--text-sm);
   opacity: 0.75;
 }
+
+/* The 3D view could not run here. The property is still fully usable; the
+   card says so and lists the rooms so the space is understandable without 3D. */
+.fallback {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-modal);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  padding: var(--space-4);
+  text-align: center;
+  background: var(--oracle-bg-deep, #0b0b0d);
+  color: var(--oracle-text-dim, #b9b9c0);
+  font: 500 var(--text-md) / 1.4 var(--font-sans);
+}
+
+.embedded .fallback {
+  position: absolute;
+}
+
+.fallbackTitle {
+  margin: 0;
+  color: var(--oracle-text, #f4f4f5);
+  font-size: var(--text-lg, 1.125rem);
+}
+
+.fallbackRooms {
+  margin-top: var(--space-2);
+  font-size: var(--text-sm);
+}
+
+.fallbackRooms h3 {
+  margin: 0 0 var(--space-1);
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+
+.fallbackRooms ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: var(--space-1) var(--space-2);
+}
+
+.fallbackActions {
+  display: flex;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+}
+
+.fallbackActions button {
+  min-height: 44px;
+  padding: 0 var(--space-3);
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: rgba(255, 255, 255, 0.06);
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.fallbackActions button:focus-visible {
+  outline: 2px solid var(--oracle-accent, #8ab4ff);
+  outline-offset: 2px;
+}

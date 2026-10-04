@@ -27,9 +27,15 @@ export interface ControllerConfig {
   lookSensitivity: number;
   /** Clamp so the camera never flips over the pole. */
   maxPitch: number;
-  /** Orbit distance limits, metres. */
+  /** Orbit distance limits, in scene units (metres only when scale is). */
   minDistance: number;
   maxDistance: number;
+  /**
+   * The orbit eye never sinks below the floor plus this. Without it, looking
+   * up from a low pivot swung the camera under the floor — the "fell through
+   * the floor" view of the splat's underside. Optional for older callers.
+   */
+  minEyeAboveFloor?: number;
 }
 
 export const DEFAULT_CONFIG: ControllerConfig = {
@@ -40,6 +46,7 @@ export const DEFAULT_CONFIG: ControllerConfig = {
   maxPitch: Math.PI / 2 - 0.05,
   minDistance: 1.2,
   maxDistance: 60,
+  minEyeAboveFloor: 0.25,
 };
 
 const MOVE_KEYS: Record<string, [number, number]> = {
@@ -208,7 +215,8 @@ export function stepCamera(
     // Third-person: place the eye on a sphere around the pivot.
     const cosPitch = Math.cos(state.pitch);
     const eyeX = state.position[0] - Math.sin(state.yaw) * cosPitch * state.distance;
-    const eyeY = state.position[1] - Math.sin(state.pitch) * state.distance;
+    const floorGuard = state.floorY + (config.minEyeAboveFloor ?? 0);
+    const eyeY = Math.max(floorGuard, state.position[1] - Math.sin(state.pitch) * state.distance);
     const eyeZ = state.position[2] - Math.cos(state.yaw) * cosPitch * state.distance;
     camera.setPosition(eyeX, eyeY, eyeZ);
     camera.lookAt(state.position[0], state.position[1], state.position[2]);

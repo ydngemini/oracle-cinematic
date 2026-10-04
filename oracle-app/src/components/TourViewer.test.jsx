@@ -32,17 +32,35 @@ vi.mock('./PanoViewer', () => ({
          data-disclosure={disclosure} />
   ),
 }));
+// Renderer behaviour each test can switch: throw while rendering (a broken
+// engine or chunk), or report the device unable (lost GPU context).
+const viewerBehaviour = { throws: false, reportUnavailable: false };
 vi.mock('./PropertyTourViewer', () => ({
   // `assets` is reported because the regression below is entirely about what
   // this component is handed: a protected URL PlayCanvas cannot authenticate.
-  default: ({ title, disclosure, assets }) => (
-    <div
-      data-testid="splat" data-title={title} data-disclosure={disclosure}
-      data-asset-url={assets?.[0]?.url ?? ''}
-      data-asset-filename={assets?.[0]?.filename ?? ''}
-      data-asset-count={assets?.length ?? 0}
-    />
-  ),
+  default: function MockViewer({ title, disclosure, assets, quality, onUnavailable }) {
+    if (viewerBehaviour.throws) throw new Error('engine exploded');
+    if (viewerBehaviour.reportUnavailable) setTimeout(() => onUnavailable?.('context_lost'), 0);
+    return (
+      <div
+        data-testid="splat" data-title={title} data-disclosure={disclosure}
+        data-asset-url={assets?.[0]?.url ?? ''}
+        data-asset-filename={assets?.[0]?.filename ?? ''}
+        data-asset-count={assets?.length ?? 0}
+        data-quality={quality ?? ''}
+      />
+    );
+  },
+}));
+
+// jsdom has no WebGL, so the real probe would (correctly) say "cannot render".
+// Tests state the device they mean.
+const deviceState = { canRender3D: true, constrainedNetwork: false };
+vi.mock('../lib/tour/deviceCapability', () => ({
+  probeDevice: () => ({}),
+  assessDevice: () => (deviceState.canRender3D
+    ? { canRender3D: true, reason: null, quality: 'balanced', maxPixelRatio: 1.5, constrainedNetwork: deviceState.constrainedNetwork }
+    : { canRender3D: false, reason: '3D view unavailable on this device.', quality: 'performance', maxPixelRatio: 1, constrainedNetwork: false }),
 }));
 vi.mock('./WalkableSplatViewer', () => ({
   default: ({ splatUrl }) => <div data-testid="gsplat" data-splat-url={splatUrl ?? ''} />,
@@ -69,6 +87,10 @@ vi.mock('../state/useCrmApi', async (importOriginal) => ({
 beforeEach(() => {
   blobCalls.length = 0;
   holdBlob = false;
+  deviceState.canRender3D = true;
+  deviceState.constrainedNetwork = false;
+  viewerBehaviour.throws = false;
+  viewerBehaviour.reportUnavailable = false;
   let n = 0;
   URL.createObjectURL = vi.fn(() => `blob:https://neoh.test/${(n += 1)}`);
   URL.revokeObjectURL = vi.fn();
@@ -307,14 +329,20 @@ describe('a protected splat never reaches PlayCanvas as a URL it cannot authenti
     expect(viewer.getAttribute('data-asset-url')).toBe(cdn);
   });
 
-  it('carries a legacy .splat through the same path', async () => {
+  it('sends a legacy .splat to the gsplat engine, which can read it', async () => {
+    // PlayCanvas 2.21 has no .splat parser ("No parser found for resource"),
+    // found by the browser harness. The protected bytes still go through the
+    // one resolver, then to the engine that understands the format.
     const legacy = '/api/media/0000aaaa-1111-2222-3333-444455556666.splat';
     renderTour({ splatUrl: legacy });
-    const viewer = await screen.findByTestId('splat');
+    const viewer = await screen.findByTestId('gsplat');
+    expect(viewer.getAttribute('data-splat-url')).toMatch(/^blob:/);
+    expect(screen.queryByTestId('splat')).toBeNull();
+  });
 
-    expect(viewer.getAttribute('data-asset-url')).toMatch(/^blob:/);
-    // The hint keeps the extension the loader maps to gsplat.
-    expect(viewer.getAttribute('data-asset-filename')).toBe(legacy);
+  it('routes a server-declared .splat the same way even without an extension', async () => {
+    renderTour({ splatUrl: '/api/media/0000aaaa-1111-2222-3333-444455556666', splatFormat: '.splat' });
+    expect(await screen.findByTestId('gsplat')).toBeTruthy();
   });
 
   it('gives the gsplat fallback the resolved bytes too, not the protected URL', () => {
@@ -340,5 +368,76 @@ describe('a protected splat never reaches PlayCanvas as a URL it cannot authenti
     fireEvent.click(screen.getByRole('button', { name: /Full 3D/i }));
     const back = await screen.findByTestId('splat');
     expect(back.getAttribute('data-asset-url')).toMatch(/^blob:/);
+  });
+});
+
+describe('Neoh Space never takes the property page down (§35/36)', () => {
+  const PROTECTED = '/api/media/8d1e2f3a-1111-2222-3333-444455556666';
+  it('shows the fallback instead of an engine on a device that cannot render', async () => {
+    deviceState.canRender3D = false;
+    renderTour({ splatUrl: PROTECTED, photoCount: 12, roomNames: ['Kitchen', 'Living Room'] });
+    const card = await screen.findByTestId('space-fallback');
+    expect(card.textContent).toMatch(/3D view unavailable on this device/);
+    expect(card.textContent).toMatch(/12 photos, floor plan and listing details are still available/);
+    expect(screen.getByRole('heading', { name: /Rooms in this space/ })).toBeTruthy();
+    expect(screen.queryByTestId('splat')).toBeNull();
+    // Nothing was downloaded for a viewer that was never going to run.
+  });
+
+  it('keeps 360s reachable when only the 3D view is unavailable', async () => {
+    deviceState.canRender3D = false;
+    renderTour({ splatUrl: PROTECTED, panoScenes: SCENES });
+    await screen.findByTestId('space-fallback');
+    fireEvent.click(screen.getByRole('button', { name: /360/i }));
+    expect(await screen.findByTestId('pano')).toBeTruthy();
+  });
+
+  it('catches a renderer that throws and offers a retry', async () => {
+    viewerBehaviour.throws = true;
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    renderTour({ splatUrl: PROTECTED });
+    const card = await screen.findByTestId('space-fallback');
+    expect(card.textContent).toMatch(/still available on the property page/);
+    viewerBehaviour.throws = false;
+    fireEvent.click(screen.getByRole('button', { name: /Try 3D again/i }));
+    expect(await screen.findByTestId('splat')).toBeTruthy();
+    warn.mockRestore();
+    error.mockRestore();
+  });
+
+  it('falls back when the viewer reports the GPU context is gone', async () => {
+    viewerBehaviour.reportUnavailable = true;
+    renderTour({ splatUrl: PROTECTED });
+    expect(await screen.findByTestId('space-fallback')).toBeTruthy();
+  });
+
+  it('passes the device quality level to the renderer', async () => {
+    renderTour({ splatUrl: PROTECTED });
+    const viewer = await screen.findByTestId('splat');
+    expect(viewer.getAttribute('data-quality')).toBe('balanced');
+  });
+
+  it('streams from a signed URL without downloading the protected copy first', async () => {
+    renderTour({
+      splatUrl: PROTECTED, splatFormat: '.sog',
+      splatStreamUrl: '/api/space/assets/m1?t=x&exp=1&sig=y',
+    });
+    const viewer = await screen.findByTestId('splat');
+    expect(viewer.getAttribute('data-asset-url')).toBe('/api/space/assets/m1?t=x&exp=1&sig=y');
+    expect(viewer.getAttribute('data-asset-filename')).toBe('capture.sog');
+    expect(blobCalls).toHaveLength(0);
+  });
+
+  it('asks before downloading a space on a slow or limited connection', async () => {
+    deviceState.constrainedNetwork = true;
+    renderTour({ splatUrl: PROTECTED });
+    const gate = await screen.findByTestId('space-data-gate');
+    expect(gate.textContent).toMatch(/slow or limited connection/);
+    // Nothing is fetched until the person asks.
+    expect(blobCalls).toHaveLength(0);
+    fireEvent.click(screen.getByRole('button', { name: /load the 3d space/i }));
+    expect(await screen.findByTestId('splat')).toBeTruthy();
+    expect(blobCalls.length).toBeGreaterThan(0);
   });
 });

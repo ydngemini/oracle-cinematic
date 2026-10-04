@@ -80,7 +80,8 @@ def test_the_route_admits_by_counting_queued_rows_not_by_a_memory_queue():
     assert "count(*) FROM reconstruction_jobs WHERE status = 'queued'" in src
     assert "QueueFull" not in src
     # The row is committed before the (optional) local wake-up.
-    assert src.index("INSERT INTO reconstruction_jobs") < src.index("enqueue(")
+    assert src.index("_insert_job(") < src.index("enqueue(")
+    assert "INSERT INTO reconstruction_jobs" in inspect.getsource(tour_api._insert_job)
 
 
 def test_the_stale_status_constraint_is_dropped():

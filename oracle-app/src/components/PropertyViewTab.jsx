@@ -214,6 +214,42 @@ export default function PropertyViewTab() {
     }
   }, [lookup, query]);
 
+  // One request per file, in order. A capture is dozens of large files over a
+  // phone connection; a single multipart batch meant one dropped connection
+  // lost every file in it. Sequential (never parallel) requests keep
+  // sort_order in capture order, which the walk-through relies on. Files that
+  // made it stay uploaded; the ones that did not are listed and retried alone.
+  const [failedUploads, setFailedUploads] = useState([]);
+  const [uploadProgress, setUploadProgress] = useState(null); // { done, total }
+  const uploadEach = useCallback(async (files, { surface, capture, floor }) => {
+    setBusy(true);
+    setNotice(null);
+    const failed = [];
+    let done = 0;
+    setUploadProgress({ done: 0, total: files.length });
+    for (const file of files) {
+      const form = new FormData();
+      form.append('surface', surface);
+      form.append('capture', capture);
+      if (capture === 'pano') form.append('floor_index', String(floor));
+      form.append('files', file);
+      try {
+        await crmUpload(`/api/crm/property-view/media?${subjectQs}`, form);
+        done += 1;
+      } catch (err) {
+        failed.push({ file, name: file.name, error: err?.message || 'Upload failed.', surface, capture, floor });
+      }
+      setUploadProgress({ done: done + failed.length, total: files.length });
+    }
+    setFailedUploads(failed);
+    setUploadProgress(null);
+    setBusy(false);
+    if (done) refreshView();
+    setNotice(failed.length
+      ? { tone: 'error', text: `${done} of ${files.length} uploaded. ${failed.length} file${failed.length === 1 ? '' : 's'} failed — retry them below; nothing already uploaded is lost.` }
+      : { tone: 'ok', text: `${done} file${done === 1 ? '' : 's'} uploaded.` });
+  }, [subjectQs, refreshView]);
+
   const onPickFiles = useCallback(async (event) => {
     const files = Array.from(event.target.files || []);
     event.target.value = ''; // allow re-picking the same file after a failure
@@ -244,27 +280,22 @@ export default function PropertyViewTab() {
       return;
     }
 
-    setBusy(true);
-    setNotice(null);
-    // One multipart request for the batch — the route takes `files` (plural)
-    // and computes sort_order once, so per-file requests would interleave.
-    const form = new FormData();
-    form.append('surface', activeSurface);
-    form.append('capture', captureMode);
-    if (captureMode === 'pano') form.append('floor_index', String(floorIndex));
-    for (const file of files) form.append('files', file);
+    await uploadEach(files, { surface: activeSurface, capture: captureMode, floor: floorIndex });
+  }, [subjectQs, activeSurface, captureMode, floorIndex, uploadEach]);
 
-    try {
-      const result = await crmUpload(`/api/crm/property-view/media?${subjectQs}`, form);
-      const count = result?.media?.length ?? files.length;
-      setNotice({ tone: 'ok', text: `${count} file${count === 1 ? '' : 's'} uploaded.` });
-      refreshView();
-    } catch (err) {
-      setNotice({ tone: 'error', text: err?.message || 'Upload failed.' });
-    } finally {
-      setBusy(false);
+  // Retry only what failed, with the settings it was picked under.
+  const retryFailed = useCallback(async () => {
+    if (!failedUploads.length) return;
+    const groups = new Map();
+    for (const item of failedUploads) {
+      const key = `${item.surface}|${item.capture}|${item.floor}`;
+      if (!groups.has(key)) groups.set(key, { opts: item, files: [] });
+      groups.get(key).files.push(item.file);
     }
-  }, [subjectQs, activeSurface, captureMode, floorIndex, refreshView]);
+    for (const { opts, files } of groups.values()) {
+      await uploadEach(files, opts);
+    }
+  }, [failedUploads, uploadEach]);
 
   const mintLink = useCallback(async () => {
     if (!subjectQs) return;
@@ -309,6 +340,9 @@ export default function PropertyViewTab() {
   const photoTotal = Object.values(view?.by_surface || {})
     .flat()
     .filter((item) => item?.kind === 'photo').length;
+  const videoTotal = Object.values(view?.by_surface || {})
+    .flat()
+    .filter((item) => item?.kind === 'video').length;
   const enrich = lookup?.enrichment;
   const hasCandidates = Boolean(candidates?.leads?.length || candidates?.listings?.length);
 
@@ -509,8 +543,34 @@ export default function PropertyViewTab() {
             />
           </div>
 
+          {uploadProgress ? (
+            <p className={styles.ok} role="status" aria-live="polite">
+              Uploading {Math.min(uploadProgress.done + 1, uploadProgress.total)} of {uploadProgress.total}… keep this page open.
+            </p>
+          ) : null}
+
           {notice ? (
             <p className={notice.tone === 'error' ? styles.error : styles.ok} role="status">{notice.text}</p>
+          ) : null}
+
+          {failedUploads.length > 0 && !busy ? (
+            <div className={styles.failedUploads} role="group" aria-label="Files that did not upload">
+              <ul>
+                {failedUploads.map((item) => (
+                  <li key={`${item.name}-${item.file.size}`}>
+                    <span>{item.name}</span> — {item.error}
+                  </li>
+                ))}
+              </ul>
+              <div className={styles.actions}>
+                <button type="button" className={styles.primary} onClick={retryFailed}>
+                  Retry {failedUploads.length} failed file{failedUploads.length === 1 ? '' : 's'}
+                </button>
+                <button type="button" className={styles.secondary} onClick={() => setFailedUploads([])}>
+                  Dismiss
+                </button>
+              </div>
+            </div>
           ) : null}
 
           {mintedLink ? (
@@ -606,6 +666,7 @@ export default function PropertyViewTab() {
             leadId={subject?.leadId}
             listingId={subject?.listingId}
             photoCount={photoTotal}
+            videoCount={videoTotal}
             onComplete={refreshView}
           />
 
@@ -613,6 +674,8 @@ export default function PropertyViewTab() {
             <Suspense fallback={null}>
               <TourViewer
                 splatUrl={tour.splat_url}
+                splatStreamUrl={tour.splat_stream_url}
+                photoCount={photoTotal}
                 splatFormat={tour.splat_format}
                 splatScene={tour.splat_scene}
                 panoScenes={tour.pano_scenes}
