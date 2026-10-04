@@ -269,6 +269,7 @@ jobs:
     # credentials; the database credentials stay on the steps that use them.
     env:
       DIGITALOCEAN_APP_ID: ${{ secrets.DIGITALOCEAN_APP_ID }}
+      DIGITALOCEAN_REGISTRY: ${{ secrets.DIGITALOCEAN_REGISTRY }}
       NEOH_PUBLIC_API_BASE: ${{ secrets.NEOH_PUBLIC_API_BASE }}
     concurrency:
       group: staging-deploy
@@ -649,6 +650,7 @@ jobs:
       PROMOTE_SHA: ${{ github.event.inputs.promote_sha }}
       # See the release job: these were empty in every step but one.
       DIGITALOCEAN_APP_ID: ${{ secrets.DIGITALOCEAN_APP_ID }}
+      DIGITALOCEAN_REGISTRY: ${{ secrets.DIGITALOCEAN_REGISTRY }}
       NEOH_PUBLIC_API_BASE: ${{ secrets.NEOH_PUBLIC_API_BASE }}
     steps:
       # Fail in the first second, not mid-rollout. A missing secret used to
