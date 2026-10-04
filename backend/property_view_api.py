@@ -841,6 +841,21 @@ async def upload_property_scan(
             UUID(media_id), ctx.tenant_id, lead_id, listing_id, url, s3_key,
             "application/octet-stream", int(next_order), app_name,
         )
+        # Same rule as reconstruction_worker._publish: the new captured space
+        # replaces older captured ones (kept for rollback, hidden from tours).
+        await conn.execute(
+            """
+            UPDATE property_media
+               SET superseded_at = now()
+             WHERE kind = 'splat'
+               AND id <> $1
+               AND superseded_at IS NULL
+               AND COALESCE(provenance, 'captured') = 'captured'
+               AND (($2::uuid IS NOT NULL AND lead_id = $2)
+                 OR ($3::uuid IS NOT NULL AND listing_id = $3))
+            """,
+            UUID(media_id), lead_id, listing_id,
+        )
 
     # The claim gets a named author. Strike this and 'captured' becomes an
     # assertion nobody is accountable for.
