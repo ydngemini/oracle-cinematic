@@ -269,6 +269,7 @@ jobs:
     # credentials; the database credentials stay on the steps that use them.
     env:
       DIGITALOCEAN_APP_ID: ${{ secrets.DIGITALOCEAN_APP_ID }}
+      DIGITALOCEAN_REGISTRY: ${{ secrets.DIGITALOCEAN_REGISTRY }}
       NEOH_PUBLIC_API_BASE: ${{ secrets.NEOH_PUBLIC_API_BASE }}
     concurrency:
       group: staging-deploy
@@ -513,7 +514,10 @@ jobs:
       # The first real bring-up found a spec the renderer accepted and DO
       # rejected (`unknown field "drain_seconds"` on the worker). Read-only.
       - name: Validate the staging spec with App Platform
-        run: doctl apps spec validate /tmp/app.staging.deploy.yaml > /dev/null
+        # Validate the RENDERED spec: App Platform's validate (propose) endpoint
+        # refuses encrypted EV[...] values ("secret env value must not be encrypted",
+        # first real staging release), so the carried spec cannot be validated.
+        run: doctl apps spec validate /tmp/app.staging.yaml > /dev/null
 
       - name: Migration precheck (staging)
         run: |
@@ -649,6 +653,7 @@ jobs:
       PROMOTE_SHA: ${{ github.event.inputs.promote_sha }}
       # See the release job: these were empty in every step but one.
       DIGITALOCEAN_APP_ID: ${{ secrets.DIGITALOCEAN_APP_ID }}
+      DIGITALOCEAN_REGISTRY: ${{ secrets.DIGITALOCEAN_REGISTRY }}
       NEOH_PUBLIC_API_BASE: ${{ secrets.NEOH_PUBLIC_API_BASE }}
     steps:
       # Fail in the first second, not mid-rollout. A missing secret used to
@@ -812,7 +817,10 @@ jobs:
           rm -f /tmp/deployments.production.json
 
       - name: Validate the production spec with App Platform
-        run: doctl apps spec validate /tmp/app.production.deploy.yaml > /dev/null
+        # Validate the RENDERED spec: App Platform's validate (propose) endpoint
+        # refuses encrypted EV[...] values ("secret env value must not be encrypted",
+        # first real staging release), so the carried spec cannot be validated.
+        run: doctl apps spec validate /tmp/app.production.yaml > /dev/null
 
       - name: Migration precheck (production)
         run: |

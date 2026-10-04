@@ -28,7 +28,7 @@ Branch commits referenced below are on the Mission 3 launch-operations branch.
 | **Resilience** (Mission 2) | **FAIL for pilot.** Every drill passed, but against a local topology and a provider mock. None has run on DigitalOcean staging or against provider sandboxes. Backlog drain throughput is unexplained (29.7/s vs 49.3/s) | [`resilience-drill-report.md`](resilience-drill-report.md) |
 | **Billing** | Single plan. Checkout needs `STRIPE_PRICE_ID`, which the spec never carried until today. The worker needs the Stripe key too (erasure stops renewal there). Live-mode key and live webhook endpoint are unverifiable remotely, so the owner confirms them in Stripe | `billing.py`, [`brokerage-go-live-checklist.md`](brokerage-go-live-checklist.md) |
 | **Communications** | Twilio is in the spec. Telnyx (hosted SMS), Plivo and Google OAuth are optional and absent. The Twilio account's number purchase was blocked by KYC (Trust Hub) at last check | [`telnyx-hosted-sms-runbook.md`](telnyx-hosted-sms-runbook.md), [`provider-failure-matrix.md`](provider-failure-matrix.md) |
-| **AI** | Fireworks is the production provider. Its key is not yet set on staging | [`runbooks/ai-provider-down.md`](runbooks/ai-provider-down.md) |
+| **AI** | Fireworks is the production provider. Staging reuses the existing Fireworks key (owner decision, 2026-10-04); readiness `ai_provider` PASS. The spec now sets `ORACLE_AI_CHAT_PROVIDER=fireworks` — without it the chat path defaulted to the retired `azure-foundry` and Neoh never answered (`bdc90ab`) | [`runbooks/ai-provider-down.md`](runbooks/ai-provider-down.md) |
 | **MLS** | No licensed production feed. Bridge/RESO credentials are absent from staging. MLS is a WARN, not a blocker, until a brokerage requires it | [`mls-production-runbook.md`](mls-production-runbook.md) |
 | **Alerts and incidents** | `ORACLE_ALERT_EMAIL` is now in the spec (it was missing, so production alerts would have reached only logs). Staging cannot send alert email (recovery mode); alerts land in logs and `ops_alerts` | [`runbooks/README.md`](runbooks/README.md) |
 | **Backups / DR** | Staging Postgres has a daily backup (first one taken). DO retention is 7 days, backups cannot be downloaded, and restore goes only to a NEW cluster | [`disaster-recovery-state-map.md`](disaster-recovery-state-map.md) |
@@ -49,7 +49,7 @@ the first deploy. Each is now kept fixed by a test or a CI step.
 | 5 | Production `web` 2× `apps-s-1vcpu-0.5gb` (that size allows 1 instance) | App Platform rejects the production spec | `6f4de80`: 2× `apps-s-1vcpu-1gb` | renderer refuses scaling a single-instance size |
 | 6 | CI built the backend with the repo root as context | first release fails at build (no root `requirements.txt`); `COPY . .` would copy the monorepo | `a571fee`: context `backend/` | `test_ci_build_contexts.py` |
 | 7 | Ingress rules stripped the path prefix (no `preserve_path_prefix`) | every API route 404 while the SPA worked | `59bcf7f` | test: every api rule preserves its prefix |
-| 8 | **`doctl apps update` with a blank SECRET wipes it** (proven twice on staging; DO auto-rolled back). CI and `rollback.sh` applied blank-secret specs | every deploy after the first, and every rollback, would fail and silently roll back | `6ab519b`: `scripts/carry-secrets.py` carries the ACTIVE deployment's `EV[…]` values, refuses before migrations if a required secret is missing everywhere. **Resubmission acceptance UNVERIFIED** (staging step 13, with a plaintext-injection fallback) | `test_carry_secrets.py`, `test_ci_deploy_wiring.py`, rollback test |
+| 8 | **`doctl apps update` with a blank SECRET wipes it** (proven twice on staging; DO auto-rolled back). CI and `rollback.sh` applied blank-secret specs | every deploy after the first, and every rollback, would fail and silently roll back | `6ab519b`: `scripts/carry-secrets.py` carries the ACTIVE deployment's `EV[…]` values, refuses before migrations if a required secret is missing everywhere. **Resubmission PROVEN 2026-10-04** by the first CI release (run 37236009143): `apps update` accepts carried `EV[…]` values; `apps spec validate` rejects them, so CI validates the rendered spec (`c0cdc46`) | `test_carry_secrets.py`, `test_ci_deploy_wiring.py`, rollback test |
 | 9 | CI steps after the first read `DIGITALOCEAN_APP_ID`, `NEOH_PUBLIC_API_BASE` and the migration DB variables **empty** | first `doctl apps get ""` fails; migrations get no host | `6ab519b` | `test_ci_deploy_wiring.py` |
 
 Found while building the readiness check, before any deploy:
@@ -60,6 +60,24 @@ Found while building the readiness check, before any deploy:
 | Worker lacked `STRIPE_SECRET_KEY` | erasure reported `stripe_not_configured`, which it does not count as a failure, so a **closed brokerage would have kept being billed** | `e77118b`, plus `STRIPE_WEBHOOK_SECRET` (`6f4de80`; `validate_or_die` requires it once the key is set) |
 | `ORACLE_ALERT_EMAIL` absent from the spec | production alerts only in logs | `e77118b` |
 | Smoke test failed on the SPA's 200 for `/openapi.json`, and on DO's 503→504 rewrite of unconfigured webhooks | every release would fail, or report a broken webhook falsely | `0daa205` |
+
+Found after the merge (2026-10-04), now fixed:
+
+| Defect | Effect | Fix |
+|---|---|---|
+| `ORACLE_AI_CHAT_PROVIDER` absent from the spec | Neoh never answered in staging or production, even with a valid Fireworks key | `bdc90ab` |
+| Deleting a photo deleted only its database row | the file (and a 3D space's companions) stayed in the bucket forever — a privacy defect | `417899a`: files removed first; failure → 503, nothing deleted |
+| Neoh's 3D-build and listing-video tools staged approvals no code ever executed | the agent was told "approving it starts the job"; nothing ever happened | `c341e9c`: hand-off to the real confirm-with-cost paths |
+| `/api/admin/users` listed only demo identities and profiles | real users without a profile were invisible to operators | `42d93e0` (also: every admin read bounded to 5 s) |
+| gitleaks flagged three fake test fixtures; bandit flagged constant-built SQL | CI security job red | `.gitleaksignore` fingerprints; literal SQL |
+
+First CI release to staging (2026-10-04, run 37236009143) — staging now runs a CI-built, digest-pinned release (`252a58d`). Getting there found:
+
+| Defect | Fix |
+|---|---|
+| Release-manifest step read `DIGITALOCEAN_REGISTRY` it was never given → `registry.digitalocean.com//neoh-backend` | `76335d5` (job-level identifier; wiring test extended) |
+| `doctl apps spec validate` refuses carried `EV[…]` secret values | `c0cdc46`: validate the rendered spec; `apps update` (which accepts them) gets the carried one |
+| The staging database carried no environment stamp; the migration precheck refused (as designed) | stamped `neoh-environment=staging`; step added to `staging-setup.md` |
 
 ## Launch blockers, ranked
 

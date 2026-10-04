@@ -211,6 +211,10 @@ async def _fetch(ctx: TenantContext, query: str, *args) -> list[dict]:
     (crm.py house style) instead of a 500 stack trace."""
     try:
         async with tenant_tx(ctx) as conn:
+            # Every admin read is fleet-wide; bound it so a slow per-tenant
+            # aggregate answers 503 instead of holding a connection (and the
+            # operator console) for the 30 s command timeout.
+            await conn.execute("SET LOCAL statement_timeout = '5s'")
             return [_row(r) for r in await conn.fetch(query, *args)]
     except HTTPException:
         raise
@@ -245,6 +249,7 @@ async def overview(ctx: TenantContext = Depends(require_platform_admin)):
                  WHERE i.tenant_id = t.id) AS last_activity_at
         FROM tenants t
         ORDER BY t.created_at
+        LIMIT 500
         """,
     )
 
@@ -385,6 +390,20 @@ async def billing_summary(ctx: TenantContext = Depends(require_platform_admin)):
 
 @router.get("/users")
 async def users(ctx: TenantContext = Depends(require_platform_admin)):
+    # Real accounts first. This used to list only the demo identity map and
+    # user_profiles rows, so a real user without a profile never appeared.
+    # password_hash is never selected.
+    accounts = await _fetch(
+        ctx,
+        """
+        SELECT u.agent_id, u.tenant_id::text AS tenant_id, t.name AS tenant_name,
+               u.role, u.is_active, u.full_name
+        FROM users u
+        LEFT JOIN tenants t ON t.id = u.tenant_id
+        ORDER BY t.name NULLS LAST, u.agent_id
+        LIMIT 2000
+        """,
+    )
     profiles = await _fetch(
         ctx,
         """
@@ -394,50 +413,50 @@ async def users(ctx: TenantContext = Depends(require_platform_admin)):
         FROM user_profiles p
         LEFT JOIN tenants t ON t.id::text = p.tenant_id
         ORDER BY t.name NULLS LAST, p.user_id
+        LIMIT 2000
         """,
     )
 
     live = {s["agent_id"]: s for s in active_sessions()}
-    by_id = {p["user_id"]: p for p in profiles}
+    by_id = {str(p["user_id"]).lower(): p for p in profiles}
+
+    def _entry(agent_id, *, tenant_id, tenant_name, role, profile, is_active, full_name=None):
+        session = live.get(agent_id)
+        return {
+            "agent_id": agent_id,
+            "tenant_id": profile.get("tenant_id", tenant_id),
+            "tenant_name": profile.get("tenant_name") or tenant_name,
+            "role": role,
+            "is_active": is_active,
+            "display_name": profile.get("display_name") or full_name,
+            "public_email": profile.get("public_email"),
+            "brokerage": profile.get("brokerage"),
+            "has_profile": bool(profile),
+            "online": session is not None,
+            "session_issued_at": session["issued_at"] if session else None,
+            "session_expires_at": session["expires_at"] if session else None,
+        }
 
     merged: list[dict] = []
-    # Auth identities first (passphrases never leave auth.py — IDs only).
+    seen: set[str] = set()
+    for acct in accounts:
+        agent_id = str(acct["agent_id"])
+        seen.add(agent_id.lower())
+        merged.append(_entry(agent_id, tenant_id=acct["tenant_id"], tenant_name=acct["tenant_name"],
+                             role=acct["role"], profile=by_id.pop(agent_id.lower(), None) or {},
+                             is_active=bool(acct["is_active"]), full_name=acct["full_name"]))
+    # Built-in identities (dev/demo auth map) not backed by a users row.
     for agent_id, (tenant_id, role) in DEMO_TENANCY.items():
-        profile = by_id.pop(agent_id, None) or {}
-        session = live.get(agent_id)
-        merged.append(
-            {
-                "agent_id": agent_id,
-                "tenant_id": profile.get("tenant_id", tenant_id),
-                "tenant_name": profile.get("tenant_name"),
-                "role": role,
-                "display_name": profile.get("display_name"),
-                "public_email": profile.get("public_email"),
-                "brokerage": profile.get("brokerage"),
-                "has_profile": bool(profile),
-                "online": session is not None,
-                "session_issued_at": session["issued_at"] if session else None,
-                "session_expires_at": session["expires_at"] if session else None,
-            }
-        )
-    # Profile rows with no auth-map identity (future real-user table rows).
+        if agent_id.lower() in seen:
+            continue
+        seen.add(agent_id.lower())
+        merged.append(_entry(agent_id, tenant_id=tenant_id, tenant_name=None, role=role,
+                             profile=by_id.pop(agent_id.lower(), None) or {}, is_active=True))
+    # Profile rows with no account at all (orphans worth seeing).
     for user_id, profile in by_id.items():
-        session = live.get(user_id)
-        merged.append(
-            {
-                "agent_id": user_id,
-                "tenant_id": profile.get("tenant_id"),
-                "tenant_name": profile.get("tenant_name"),
-                "role": "agent",
-                "display_name": profile.get("display_name"),
-                "public_email": profile.get("public_email"),
-                "brokerage": profile.get("brokerage"),
-                "has_profile": True,
-                "online": session is not None,
-                "session_issued_at": session["issued_at"] if session else None,
-                "session_expires_at": session["expires_at"] if session else None,
-            }
-        )
+        merged.append(_entry(str(profile["user_id"]), tenant_id=profile.get("tenant_id"),
+                             tenant_name=profile.get("tenant_name"), role="unknown",
+                             profile=profile, is_active=None))
 
     merged.sort(key=lambda u: (not u["online"], u["agent_id"]))
     return {"users": merged, "online": sum(1 for u in merged if u["online"])}

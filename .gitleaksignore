@@ -11,3 +11,7 @@ ba967f98d8ff90142bf81245ff278aa71525273f:backend/ai_chat_agent.py:generic-api-ke
 56af519efce45677ffa7251e91a873e14e6a8a17:backend/tests/test_operator_billing_ai.py:stripe-access-token:106
 6f4de8061f3bb775b8cf971601ed5aa1fde8258e:backend/tests/test_rendered_spec_boots.py:generic-api-key:42
 6f4de8061f3bb775b8cf971601ed5aa1fde8258e:backend/tests/test_rendered_spec_boots.py:generic-api-key:56
+
+# 2026-10-04 verified-fake test keys in the demo allowlist test (s3cur3-…/m4st3r-… entropy fixtures for validate_or_die)
+0fa10b3bba50ddb88548a9317db685d299741d07:backend/tests/test_demo_recipient_allowlist.py:generic-api-key:194
+0fa10b3bba50ddb88548a9317db685d299741d07:backend/tests/test_demo_recipient_allowlist.py:generic-api-key:195
