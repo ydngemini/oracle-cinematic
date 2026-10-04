@@ -184,6 +184,21 @@ class ListingCreate(BaseModel):
     status: str = "active"
     seller_client_id: Optional[str] = None
     seller: Optional[InlineSeller] = None
+    #: What the agent says the home has ("updated kitchen", "den / home
+    #: office"). Free text, shown on the property and to Neoh as listing data;
+    #: never scored. Stored on the companion lead's payload.
+    features: Optional[list[str]] = Field(None, max_length=20)
+    property_type: Optional[str] = Field(None, max_length=40)
+
+    @field_validator("features")
+    @classmethod
+    def _features(cls, v):
+        if v is None:
+            return v
+        cleaned = [str(item).strip() for item in v if str(item).strip()]
+        if any(len(item) > 80 for item in cleaned):
+            raise ValueError("each feature must be at most 80 characters")
+        return cleaned or None
 
     @field_validator("status")
     @classmethod
@@ -567,7 +582,8 @@ async def create_listing(
 
             # Companion lead — only when there are house specs to persist.
             lead_id = None
-            if body.beds is not None or body.baths is not None or body.sqft is not None:
+            if (body.beds is not None or body.baths is not None or body.sqft is not None
+                    or body.features or body.property_type):
                 m = _ADDR_STATE_RE.search(address)
                 lead_state = m.group(1).upper() if m else "NA"
                 lead_row = await conn.fetchrow(
@@ -581,7 +597,11 @@ async def create_listing(
                     ctx.tenant_id,
                     f"crm:{address[:96]}",
                     lead_state,
-                    json.dumps({"address": address, "source": "crm_manual"}),
+                    json.dumps({
+                        "address": address, "source": "crm_manual",
+                        **({"features": body.features} if body.features else {}),
+                        **({"property_type": body.property_type} if body.property_type else {}),
+                    }),
                     seller_id,
                     address,
                     body.price,

@@ -95,6 +95,39 @@ async def get_dossier(
                 """,
                 lead_id,
             )
+            # A brokerage's own listing: price, status and specs live on the
+            # listing and its companion lead, and the sheet showed none of
+            # them — an agent opening their own listing saw a wholesaler's
+            # underwriting grid instead of the price. And the buyers who fit
+            # it, with the evidence, because "who should I call about this?"
+            # is the first question asked of a listing (§71).
+            listing, buyers = None, []
+            try:
+                import buyer_matching
+
+                async with conn.transaction():
+                    owned = await buyer_matching.property_buyer_matches(
+                        conn, ctx, lead_id=lead_id, limit=3,
+                    )
+                if owned and owned["property"].get("listing_id"):
+                    prop = owned["property"]
+                    listing = {
+                        "listing_id": prop["listing_id"],
+                        "price": float(prop["list_price"]) if prop["list_price"] is not None else None,
+                        "status": prop["status"],
+                        "beds": prop["beds"],
+                        "baths": float(prop["baths"]) if prop["baths"] is not None else None,
+                        "sqft": prop["sqft"],
+                        "city": prop["city"],
+                        "features": prop["features"],
+                    }
+                    buyers = [
+                        {k: m[k] for k in ("client_id", "name", "verdict", "matched_criteria",
+                                           "unknown", "stated_needs", "recent_showings")}
+                        for m in owned["matches"]
+                    ]
+            except Exception:  # noqa: BLE001 — the file still opens without it
+                logger.warning("listing/buyer section unavailable for %s", lead_id, exc_info=True)
     except RuntimeError as exc:
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -102,6 +135,8 @@ async def get_dossier(
         )
 
     return {
+        "listing": listing,
+        "buyer_matches": buyers,
         "parcel_id": row["parcel_id"],
         "state": row["state"],
         "motivation_score": row["motivation_score"],

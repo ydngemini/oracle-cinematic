@@ -115,6 +115,10 @@ def test_the_check_would_have_caught_the_missing_jwt_pair():
     env = _component_env("staging", worker)
     env.pop("ORACLE_JWT_ISSUER")
     env.pop("ORACLE_JWT_AUDIENCE")
+    # config.py derives a fallback pair from the public origin; the worker now
+    # carries ORACLE_PUBLIC_BASE_URL (approved-call callbacks), so remove it
+    # too or the fallback masks exactly the omission this test is about.
+    env.pop("ORACLE_PUBLIC_BASE_URL", None)
     child_env = {"PATH": os.environ.get("PATH", ""), "HOME": os.environ.get("HOME", "/tmp"),
                  "ORACLE_SKIP_DOTENV": "1", **env}
     proc = subprocess.run([sys.executable, "-c", BOOT], cwd=BACKEND, env=child_env,

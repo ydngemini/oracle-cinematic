@@ -1678,9 +1678,14 @@ async def plivo_outbound_answer(request: Request) -> Response:
         tokens=await _outbound_plivo_tokens(state),
     )
     if not plivo_qwen_enabled(state):
+        # Someone picked up a call a person approved. Say what this is — the
+        # AI disclosure comes first, as it always must — and that their agent
+        # will follow up, instead of a bare "unavailable" from a stranger.
         return Response(
             content=adapter.safe_hangup_markup(
-                "The realtime assistant is unavailable. Goodbye."
+                "Hi, this is an automated AI assistant calling on behalf of your "
+                "real estate agent. The live voice assistant is unavailable "
+                "right now, so your agent will follow up with you directly. Goodbye."
             ),
             media_type="application/xml",
         )
@@ -1733,6 +1738,17 @@ async def plivo_outbound_status(request: Request) -> Response:
         request, form, PLIVO_OUTBOUND_STATUS_PATH,
         tokens=await _outbound_plivo_tokens(state),
     )
+    # The carrier's own word on the call, recorded where the agent looks.
+    from commands_api import record_call_outcome
+
+    try:
+        duration = int(str(form.get("Duration") or form.get("BillDuration") or "").strip() or -1)
+    except ValueError:
+        duration = -1
+    try:
+        await record_call_outcome(call_uuid, call_status, duration if duration >= 0 else None)
+    except Exception:  # noqa: BLE001 — never let bookkeeping skip the cleanup below
+        logger.warning("Plivo outbound call outcome not recorded: uuid=%s", call_uuid, exc_info=True)
     if call_status in _PLIVO_TERMINAL_STATUSES:
         try:
             await cleanup_plivo_call(call_uuid)

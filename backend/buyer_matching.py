@@ -294,3 +294,156 @@ async def buyers_for_listing(conn, listing: dict, *, limit: int = 25,
     )
     matches = [match_listing_to_buyer(listing, dict(r)) for r in rows]
     return rank_matches(matches)[:limit]
+
+
+# ---------------------------------------------------------------------------
+# A brokerage's OWN property (listings / leads), not an MLS row
+# ---------------------------------------------------------------------------
+#
+# "Who should I call about this?" asked with the brokerage's own listing open
+# had no answer: buyers_for_listing was reachable only from the MLS detail
+# page, keyed on the shared MLS cache's columns. A brokerage's own listing keeps
+# its address on `listings`/`leads` and its specs on the companion lead, with
+# no city/zip columns, so those are read from the address the agent typed.
+
+_US_ADDRESS = re.compile(
+    r"^\s*(?P<street>[^,]+),\s*(?P<city>[^,]+?)\s*,\s*(?P<state>[A-Za-z]{2})\s*(?P<zip>\d{5})?"
+)
+
+#: Preference keys that hold free-text needs ("home office", "updated
+#: kitchen"). They are never scored — there is no honest way to score free text
+#: against free text without a model — but they are evidence an agent (and the
+#: assistant) should see next to the match.
+_NEEDS_KEYS = ("must_haves", "needs", "wants")
+
+
+def parse_us_address(address: str) -> dict:
+    """'123 Main Street, Wilmington, DE 19801' -> street/city/state/zip, or {}."""
+    m = _US_ADDRESS.match(str(address or ""))
+    if not m:
+        return {}
+    return {
+        "street": m.group("street").strip(),
+        "city": m.group("city").strip(),
+        "state": m.group("state").upper(),
+        "zip_code": m.group("zip") or "",
+    }
+
+
+def _as_dict(raw: Any) -> dict:
+    if isinstance(raw, str):
+        import json
+        try:
+            raw = json.loads(raw)
+        except ValueError:
+            return {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def stated_needs(raw: Any) -> list[str]:
+    prefs = _as_dict(raw)
+    out: list[str] = []
+    for key in _NEEDS_KEYS:
+        out.extend(_as_list(prefs.get(key)))
+    return out[:10]
+
+
+async def load_owned_property(conn, ctx, *, lead_id: Optional[str] = None,
+                              listing_id: Optional[str] = None) -> Optional[dict]:
+    """The brokerage's own property, in the matcher's listing shape."""
+    row = await conn.fetchrow(
+        """
+        SELECT ld.id::text AS lead_id, l.id::text AS listing_id,
+               COALESCE(l.address, ld.address) AS address,
+               COALESCE(l.price, ld.asking_price) AS price,
+               l.status, ld.beds, ld.baths, ld.sqft, ld.state, ld.payload
+          FROM leads ld
+          FULL OUTER JOIN listings l ON l.lead_id = ld.id AND l.tenant_id = ld.tenant_id
+         WHERE ($1::uuid IS NOT NULL AND ld.id = $1::uuid AND ld.tenant_id = $3::uuid)
+            OR ($2::uuid IS NOT NULL AND l.id = $2::uuid AND l.tenant_id = $3::uuid)
+         LIMIT 1
+        """,
+        lead_id, listing_id, ctx.tenant_id,
+    )
+    if row is None:
+        return None
+    payload = _as_dict(row["payload"])
+    place = parse_us_address(row["address"] or payload.get("address") or "")
+    return {
+        "lead_id": row["lead_id"],
+        "listing_id": row["listing_id"],
+        "address": row["address"] or payload.get("address"),
+        "status": row["status"],
+        "list_price": row["price"],
+        "beds": row["beds"],
+        "baths": row["baths"],
+        "sqft": row["sqft"],
+        "city": payload.get("city") or place.get("city"),
+        "zip_code": payload.get("zip_code") or place.get("zip_code"),
+        "state": row["state"] if row["state"] not in (None, "", "NA") else place.get("state"),
+        "property_type": payload.get("property_type"),
+        "features": [str(f) for f in (payload.get("features") or []) if str(f).strip()][:20],
+    }
+
+
+async def property_buyer_matches(conn, ctx, *, lead_id: Optional[str] = None,
+                                 listing_id: Optional[str] = None,
+                                 limit: int = 5) -> Optional[dict]:
+    """Rank this brokerage's buyers for one of its own properties, with the
+    evidence behind each: the criteria that agree, what is unknown, their
+    stated needs, and the properties they were actually shown recently."""
+    prop = await load_owned_property(conn, ctx, lead_id=lead_id, listing_id=listing_id)
+    if prop is None:
+        return None
+    matches = [m for m in await buyers_for_listing(conn, prop, ctx=ctx, limit=50)
+               if m.verdict in (STRONG, POSSIBLE)][:limit]
+    ids = [m.client_id for m in matches]
+    showings: dict[str, list[dict]] = {}
+    needs: dict[str, list[str]] = {}
+    if ids:
+        rows = await conn.fetch(
+            """
+            SELECT s.client_id::text AS client_id, s.shown_at, s.outcome, s.feedback,
+                   COALESCE(l.address, ld.address) AS address
+              FROM showings s
+              LEFT JOIN listings l ON l.id = s.listing_id
+              LEFT JOIN leads ld ON ld.id = COALESCE(s.lead_id, l.lead_id)
+             WHERE s.client_id = ANY($1::uuid[])
+               AND s.shown_at > now() - interval '120 days'
+             ORDER BY s.shown_at DESC
+            """,
+            ids,
+        )
+        for r in rows:
+            showings.setdefault(r["client_id"], []).append({
+                "address": r["address"],
+                "shown_at": r["shown_at"].date().isoformat() if r["shown_at"] else None,
+                "outcome": r["outcome"],
+                "feedback": (r["feedback"] or "")[:240] or None,
+            })
+        pref_rows = await conn.fetch(
+            "SELECT id::text AS id, preferences FROM clients WHERE id = ANY($1::uuid[])", ids,
+        )
+        needs = {r["id"]: stated_needs(r["preferences"]) for r in pref_rows}
+    return {
+        "property": prop,
+        "matches": [
+            {
+                "client_id": m.client_id,
+                "name": m.name,
+                "verdict": m.verdict,
+                "matched_criteria": m.evidence,
+                "unknown": m.unknowns,
+                "matched_signals": m.matched_signals,
+                "stated_needs": needs.get(m.client_id, []),
+                "recent_showings": showings.get(m.client_id, [])[:5],
+            }
+            for m in matches
+        ],
+        "method": (
+            "Rule-based: each buyer's recorded location, budget, bedroom and "
+            "property-type preferences compared with this property. 'strong' "
+            "means two or more criteria agree and none conflict. There is no "
+            "model score or probability behind it."
+        ),
+    }

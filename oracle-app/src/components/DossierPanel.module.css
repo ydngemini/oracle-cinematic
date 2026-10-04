@@ -836,3 +836,53 @@ p.provenance {
   overflow: visible;
   padding: 0;
 }
+
+/* ─── Listing facts + buyers who may fit ─────────────────────────────────── */
+
+.features,
+.noBuyers {
+  margin: 0 0 1rem;
+  font-size: var(--text-sm);
+  color: var(--oracle-text-secondary, inherit);
+}
+
+.buyerList {
+  list-style: none;
+  margin: 0 0 1rem;
+  padding: 0;
+  display: grid;
+  gap: 0.6rem;
+}
+
+.buyer {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.15rem 0.75rem;
+  align-items: baseline;
+}
+
+.buyerName {
+  font: inherit;
+  font-weight: 600;
+  color: var(--oracle-accent-ink);
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  text-align: left;
+}
+
+.buyerName:hover,
+.buyerName:focus-visible {
+  text-decoration: underline;
+}
+
+.buyerVerdict {
+  font-size: var(--text-xs);
+  color: var(--oracle-text-ghost);
+}
+
+.buyerWhy {
+  grid-column: 1 / -1;
+  font-size: var(--text-sm);
+}

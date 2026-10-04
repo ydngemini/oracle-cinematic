@@ -93,6 +93,30 @@ class TestSafety:
         assert intents.MAX_TEXT <= 400
 
 
+class TestOpenRecord:
+    def test_who_to_call_about_the_open_property_reaches_the_model(self, monkeypatch):
+        """With a property open, "who should I call about this?" is about that
+        property. The tenant-wide call queue answered a different question."""
+        import command_center
+
+        async def must_not_run(ctx, **kwargs):  # pragma: no cover - asserted below
+            raise AssertionError("the generic call queue answered a record question")
+
+        monkeypatch.setattr(command_center, "briefing", must_not_run)
+        out = asyncio.run(intents.ask(CTX, "Who should I call about this?", has_record=True))
+        assert out["fallthrough"] is True
+
+    def test_record_aware_intents_still_answer_with_a_record_open(self, monkeypatch):
+        import search_api
+
+        async def nothing(*_args, **_kwargs):
+            return {"results": []}
+
+        monkeypatch.setattr(search_api, "search", nothing)
+        out = asyncio.run(intents.ask(CTX, "show Zebediah Nobody", has_record=True))
+        assert out.get("intent") == "show_person"
+
+
 class TestResolvers:
     def test_who_to_call_reuses_the_briefing_rather_than_ranking_again(self, monkeypatch):
         """Two rankings in one product put the same card in two positions."""

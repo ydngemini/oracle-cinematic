@@ -4,6 +4,7 @@ import { useTour } from '../state/useTour';
 import { tourOffer } from '../lib/tour/tourOffer';
 import styles from './DossierPanel.module.css';
 import { friendlyError } from '../lib/errorMessages';
+import { entityHref } from '../routes';
 
 // The 3D floor-plan editor is a separate chunk (and a separate origin behind
 // the iframe) — a dossier opened to read comps should not pay for it.
@@ -270,6 +271,59 @@ export function DossierPanel({ leadId, onClose, embedded = false, onOpenTour }) 
 
       {dossier && (
         <div className={styles.body}>
+          {/* ── The brokerage's own listing: what it is, at a glance ── */}
+          {dossier.listing && (
+            <section className={styles.section} aria-label="Listing">
+              <h3 className={styles.kicker}>Listing</h3>
+              <dl className={styles.matrix}>
+                <div><dt>Price</dt><dd>{money(dossier.listing.price)}</dd></div>
+                <div><dt>Status</dt><dd>{dossier.listing.status || '—'}</dd></div>
+                <div>
+                  <dt>Beds · Baths</dt>
+                  <dd>{dossier.listing.beds ?? '—'} · {dossier.listing.baths ?? '—'}</dd>
+                </div>
+                <div>
+                  <dt>Size</dt>
+                  <dd>{dossier.listing.sqft ? `${Number(dossier.listing.sqft).toLocaleString()} sq ft` : '—'}</dd>
+                </div>
+              </dl>
+              {dossier.listing.features?.length > 0 && (
+                <p className={styles.features}>{dossier.listing.features.join(' · ')}</p>
+              )}
+            </section>
+          )}
+
+          {/* ── Who in the book fits it, and why (rule-based, no score) ── */}
+          {dossier.listing && (
+            <section className={styles.section} aria-label="Buyers who may fit">
+              <h3 className={styles.kicker}>Buyers who may fit</h3>
+              {dossier.buyer_matches?.length ? (
+                <ul className={styles.buyerList}>
+                  {dossier.buyer_matches.map((buyer) => (
+                    <li key={buyer.client_id} className={styles.buyer}>
+                      <button
+                        type="button"
+                        className={styles.buyerName}
+                        onClick={() => {
+                          window.history.pushState({}, '', entityHref('person', buyer.client_id));
+                          window.dispatchEvent(new PopStateEvent('popstate'));
+                        }}
+                      >
+                        {buyer.name}
+                      </button>
+                      <span className={styles.buyerVerdict}>
+                        {buyer.verdict === 'strong' ? 'Strong fit' : 'Possible fit'}
+                      </span>
+                      <span className={styles.buyerWhy}>{(buyer.matched_criteria || []).join(' · ')}</span>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className={styles.noBuyers}>No buyer&apos;s recorded criteria fit this home yet.</p>
+              )}
+            </section>
+          )}
+
           {/* ── Financial matrix ── */}
           <section className={styles.section} aria-label="Underwriting">
             <h3 className={styles.kicker}>Underwriting</h3>

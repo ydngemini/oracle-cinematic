@@ -327,7 +327,12 @@ async def _intent_model_opportunities(conn, ctx: TenantContext) -> list[Opportun
         if not actions:
             continue
         first = actions[0]
-        action_text = first.get("action") if isinstance(first, dict) else str(first)
+        # client_ai_automation writes {code, title, reason}; reading only
+        # "action" turned every one of these cards into "Recommended
+        # follow-up" / "Follow up" whatever the model had actually said.
+        action_text = (
+            (first.get("title") or first.get("action")) if isinstance(first, dict) else str(first)
+        )
         gaps = r["data_gaps"]
         if isinstance(gaps, str):
             try:
@@ -433,10 +438,93 @@ async def _distress_opportunities(conn, ctx: TenantContext) -> list[Opportunity]
     return out
 
 
+async def _listing_buyer_opportunities(conn, ctx: TenantContext) -> list[Opportunity]:
+    """One of the brokerage's own active listings fits one of its buyers.
+
+    The most ordinary opportunity in residential brokerage — "123 Main St may
+    fit Sarah" — and the engine had no detector for it: matching existed only
+    on the MLS detail page. Deterministic (buyer_matching), so every card says
+    which recorded criteria agree and which homes the buyer was actually
+    shown; nothing is inferred and no model is called.
+
+    Only STRONG fits (two or more criteria agree, none conflict) become a
+    card. Confidence is the share of the four criteria that agree, capped well
+    below certainty, because recorded preferences are what a buyer said, not
+    what they will buy.
+    """
+    # Its own savepoint: scan() runs every detector in ONE transaction, and a
+    # failed statement here would otherwise abort it for the detectors after.
+    async with conn.transaction():
+        return await _listing_buyer_cards(conn, ctx)
+
+
+async def _listing_buyer_cards(conn, ctx: TenantContext) -> list[Opportunity]:
+    import buyer_matching
+
+    listings = await conn.fetch(
+        """
+        SELECT l.id::text AS listing_id, l.lead_id::text AS lead_id
+          FROM listings l
+         WHERE l.tenant_id = $1::uuid AND l.status = 'active' AND l.lead_id IS NOT NULL
+         ORDER BY l.updated_at DESC
+         LIMIT 10
+        """,
+        ctx.tenant_id,
+    )
+    out: list[Opportunity] = []
+    for row in listings:
+        found = await buyer_matching.property_buyer_matches(
+            conn, ctx, listing_id=row["listing_id"], limit=3,
+        )
+        if not found:
+            continue
+        strong = [m for m in found["matches"] if m["verdict"] == buyer_matching.STRONG]
+        if not strong:
+            continue
+        best = strong[0]
+        prop = found["property"]
+        place = buyer_matching.parse_us_address(prop.get("address") or "")
+        where = (f"{place['street']}, {place['city']}" if place
+                 else str(prop.get("address") or "This listing"))
+        first_name = (best["name"] or "the buyer").split()[0]
+        evidence = [
+            Evidence(label="Fits", value=note, source="clients.preferences")
+            for note in best["matched_criteria"]
+        ]
+        for need in best["stated_needs"][:2]:
+            evidence.append(Evidence(label="Wants", value=need, source="clients.preferences"))
+        for shown in best["recent_showings"][:2]:
+            evidence.append(Evidence(
+                label="Was shown",
+                value=f"{shown['address']}" + (f" — {shown['outcome']}" if shown.get("outcome") else ""),
+                source="showings", as_of=shown.get("shown_at"),
+            ))
+        others = len(strong) - 1
+        out.append(Opportunity(
+            kind="listing_buyer_match",
+            subject=where,
+            subject_id=prop.get("lead_id") or row["lead_id"],
+            subject_type="lead",
+            headline=f"May fit {best['name']}",
+            why=(
+                f"{best['name']}'s recorded criteria agree on {best['matched_signals']} of 4: "
+                + "; ".join(best["matched_criteria"])
+                + (f". {others} other buyer{'s' if others != 1 else ''} also fit." if others else ".")
+            )[:280],
+            recommended_action=f"Ask Neoh about {first_name} and this home, then reach out.",
+            confidence=round(min(0.8, 0.2 * best["matched_signals"] + 0.15), 2),
+            evidence=evidence,
+            safe_to_automate=False,
+            action_type="call",
+        ))
+    return out
+
+
 #: Detectors run in order; each is independently allowed to find nothing.
 _DETECTORS = (
     _contract_deadline_opportunities,
     _intent_model_opportunities,
+    _listing_buyer_opportunities,
     _distress_opportunities,
 )
 

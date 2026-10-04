@@ -132,7 +132,7 @@ def test_call_branch_rejects_before_any_provider_submission_when_unverified():
     next_branch = source.index("else:\n            await reporter.progress(45, \"creating approved calendar event\")")
     call_branch = source[call_branch_start:next_branch]
 
-    verify_idx = call_branch.index("get_verified_caller_id(ctx)")
+    verify_idx = call_branch.index("get_verified_caller_id(owner_ctx)")
     raise_idx = call_branch.index('"Call blocked: Connect and verify your business number')
     submission_started_idx = call_branch.index("submission_started = True")
 
@@ -141,6 +141,19 @@ def test_call_branch_rejects_before_any_provider_submission_when_unverified():
         "is set, or a real Twilio call could be placed while the command is "
         "later marked reconciliation_required instead of a clean failure"
     )
+
+
+def test_per_agent_phone_setup_is_resolved_for_the_agent_who_staged_it():
+    """The worker runs as "command-worker". Looking the business number or the
+    verified caller ID up under THAT identity found nobody's route, so every
+    approved call and Telnyx text failed for agents who had set them up
+    (killer-demo run, 2026-10-04). They resolve for command["created_by"]."""
+    source = inspect.getsource(ca._execute_command_job)
+    assert 'agent_id=str(command["created_by"] or "command-worker")' in source
+    for lookup in ("get_verified_caller_id", "get_telephony_route",
+                   "get_messaging_route", "get_public_business_number"):
+        assert f"{lookup}(owner_ctx)" in source, lookup
+        assert f"{lookup}(ctx)" not in source, lookup
 
 
 def test_call_branch_never_falls_back_to_an_unverified_or_default_from_number():

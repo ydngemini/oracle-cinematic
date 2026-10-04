@@ -254,10 +254,20 @@ services:
       # Neoh never answered even with a valid Fireworks key (found on staging).
       - key: ORACLE_AI_CHAT_PROVIDER
         value: "fireworks"
+      # Voice carrier (Plivo is the default ORACLE_VOICE_PROVIDER). The worker
+      # places an approved Neoh call; the api signs/answers its webhooks.
+      - key: PLIVO_AUTH_ID
+        type: SECRET
+      - key: PLIVO_AUTH_TOKEN
+        type: SECRET
+      # No realtime voice model (DASHSCOPE_*) is configured in this spec, so an
+      # answered AI call speaks the AI disclosure and says the agent will
+      # follow up. Set "1" only together with DASHSCOPE_API_KEY + workspace.
+      - key: ORACLE_PLIVO_QWEN_REALTIME_ENABLED
+        value: "0"
       # Optional provider support, deliberately NOT listed here (add the key
       # to api AND worker only when that provider is actually used):
       #   TELNYX_API_KEY, TELNYX_PUBLIC_KEY       hosted SMS (docs/telnyx-hosted-sms-runbook.md)
-      #   PLIVO_AUTH_ID, PLIVO_AUTH_TOKEN         alternate voice carrier
       #   GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET  Calendar / Google sign-in
       #   RUNPOD_API_KEY, RECON_POD_*             3D reconstruction (GPU)
       #   DASHSCOPE_API_KEY                       realtime voice model — Singapore
@@ -458,6 +468,21 @@ workers:
       # Neoh never answered even with a valid Fireworks key (found on staging).
       - key: ORACLE_AI_CHAT_PROVIDER
         value: "fireworks"
+      # Voice carrier (Plivo is the default ORACLE_VOICE_PROVIDER). The worker
+      # places an approved Neoh call; the api signs/answers its webhooks.
+      - key: PLIVO_AUTH_ID
+        type: SECRET
+      - key: PLIVO_AUTH_TOKEN
+        type: SECRET
+      # No realtime voice model (DASHSCOPE_*) is configured in this spec, so an
+      # answered AI call speaks the AI disclosure and says the agent will
+      # follow up. Set "1" only together with DASHSCOPE_API_KEY + workspace.
+      - key: ORACLE_PLIVO_QWEN_REALTIME_ENABLED
+        value: "0"
+      # The worker builds the Plivo answer/status URLs for an approved call;
+      # without this every approved call fails before reaching the carrier.
+      - key: ORACLE_PUBLIC_BASE_URL
+        value: ${APP_URL}
 
 # `ingress` (not the deprecated per-component `routes:`) is the current App
 # Spec way to route paths to components. Order matters: FastAPI serves
