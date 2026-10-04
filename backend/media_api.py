@@ -364,8 +364,35 @@ async def delete_media(
     media_id: UUID,
     ctx: TenantContext = Depends(require_context),
 ):
-    """Delete a photo. RLS confines the DELETE to this tenant; media_blobs
-    cascades via the 0022 FK."""
+    """Delete a photo (or a 3D space version) and its stored files.
+
+    RLS confines both statements to this tenant; media_blobs cascades via the
+    0022 FK. Object-storage files are removed FIRST: deleting only the row used
+    to leave the file (and a space's companions) in the bucket forever, with
+    nothing left that points at it. If any removal fails, nothing is deleted and
+    the caller retries."""
+    import object_storage
+    import space_assets
+
+    async with tenant_tx(ctx) as conn:
+        row = await conn.fetchrow(
+            "SELECT id, kind, s3_key FROM property_media WHERE id = $1", media_id
+        )
+    if row is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Media not found.")
+    if row["s3_key"]:
+        keys = (space_assets.keys_for_space(row["s3_key"]) if row["kind"] == "splat"
+                else [row["s3_key"]])
+        if object_storage.is_configured():
+            result = await asyncio.to_thread(space_assets.delete_objects, keys)
+            if result["failed"]:
+                raise HTTPException(
+                    status.HTTP_503_SERVICE_UNAVAILABLE,
+                    "This file couldn't be removed yet. Nothing was deleted — try again.",
+                )
+        else:
+            log.warning("Media %s has a storage key but object storage is not configured; "
+                        "its file cannot be removed from here", media_id)
     async with tenant_tx(ctx) as conn:
         row = await conn.fetchrow(
             "DELETE FROM property_media WHERE id = $1 RETURNING id", media_id

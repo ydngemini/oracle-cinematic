@@ -85,7 +85,7 @@ async def run_sweep(*, only_tenant: Optional[str] = None) -> dict[str, Any]:
         out["reconstructions_timed_out"] = _n(await conn.execute(
             """
             UPDATE reconstruction_jobs
-               SET status='failed', updated_at=now(),
+               SET status='failed', updated_at=now(), stage='failed', failure_category='stalled',
                    error=left('Timed out with no progress for ' || $3 || ' h — needs attention. '
                               || 'Your original photos and video are kept.', 500)
              WHERE id IN (SELECT id FROM reconstruction_jobs WHERE status='running'
