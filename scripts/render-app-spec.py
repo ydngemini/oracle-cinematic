@@ -115,6 +115,12 @@ ENVIRONMENTS = {
             "web": {"instance_count": 1, "instance_size_slug": "apps-s-1vcpu-0.5gb"},
         },
         "recovery_mode": True,
+        # Staging-only SECRET envs on every backend component. The demo
+        # recipient allowlist is the single exception to recovery mode
+        # (backend/recovery_mode.py): the operator's own phone, for the sales
+        # demo's real text/call. It is never rendered into production, and
+        # validate() refuses a production spec that carries it.
+        "staging_only_secrets": ("ORACLE_DEMO_RECIPIENT_ALLOWLIST",),
         # db-s-1vcpu-2gb: 25 per GiB minus 3 reserved (database-connection-budget.md).
         "db_connection_budget": 47,
     },
@@ -211,6 +217,9 @@ def render(env: str, backend_digest: str, frontend_digest: str,
             _set_env(comp, "ORACLE_RECOVERY_MODE", "1")
         for key, value in (cfg.get("jwt") or {}).items():
             _set_env(comp, key, value)
+        for key in cfg.get("staging_only_secrets") or ():
+            if not any(item.get("key") == key for item in comp.get("envs") or []):
+                comp.setdefault("envs", []).append({"key": key, "type": "SECRET"})
     by_name = {c.get("name"): c for c in list(spec.get("services") or [])
                + list(spec.get("workers") or [])}
     for name, override in cfg["components"].items():
@@ -295,6 +304,13 @@ def validate(env: str, spec: dict) -> None:
             raise RenderError(
                 f"production component {comp.get('name')!r} has ORACLE_RECOVERY_MODE set — "
                 f"production would silently refuse every outbound action"
+            )
+        if env == "production" and any(
+            item.get("key") == "ORACLE_DEMO_RECIPIENT_ALLOWLIST" for item in comp.get("envs") or []
+        ):
+            raise RenderError(
+                f"production component {comp.get('name')!r} carries ORACLE_DEMO_RECIPIENT_ALLOWLIST — "
+                f"the demo exception to recovery mode is staging-only (the backend refuses to boot with it)"
             )
         if env == "staging" and _env_value(comp, "ORACLE_ALLOW_LIVE_STRIPE") is not None:
             raise RenderError("staging must never set ORACLE_ALLOW_LIVE_STRIPE")

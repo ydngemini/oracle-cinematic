@@ -271,7 +271,11 @@ class TwilioMessagingProvider(MessagingProvider):
         media_urls: Optional[list[str]] = None,
         credentials: Optional[Mapping[str, Any]] = None,
     ) -> ProviderResult:
-        recovery_mode.guard("send_message via TwilioMessagingProvider")
+        recovery_mode.guard(
+            "send_message via TwilioMessagingProvider",
+            kind="send_message",
+            destination=to,
+        )
         from command_providers import send_twilio_sms
 
         return await send_twilio_sms(
@@ -337,7 +341,11 @@ class TelnyxMessagingProvider(MessagingProvider):
         media_urls: Optional[list[str]] = None,
         credentials: Optional[Mapping[str, Any]] = None,
     ) -> ProviderResult:
-        recovery_mode.guard("send_message via TelnyxMessagingProvider")
+        recovery_mode.guard(
+            "send_message via TelnyxMessagingProvider",
+            kind="send_message",
+            destination=to,
+        )
         import asyncio
 
         from telnyx import APIStatusError

@@ -82,6 +82,9 @@ def test_staging_differs_from_production_only_where_intended():
         "api:size", "worker:size", "web:instances", "web:size",
         "api:ORACLE_DB_POOL_MAX",                 # absent (default 10) -> 6
         "worker:ORACLE_DB_POOL_MAX", "worker:ORACLE_DB_PLATFORM_POOL_MAX",
+        # The demo exception to recovery mode (operator's own phone) is
+        # staging-only; production must never carry it.
+        "api:ORACLE_DEMO_RECIPIENT_ALLOWLIST", "worker:ORACLE_DEMO_RECIPIENT_ALLOWLIST",
     }, "staging drifted from production somewhere unintended"
 
 
@@ -270,3 +273,25 @@ def test_staging_refuses_a_live_stripe_override(tmp_path, monkeypatch):
 def test_the_cli_refuses_loudly(capsys):
     assert r.main(["--env", "staging", "--backend-digest", "latest", "--frontend-digest", F]) == 1
     assert "REFUSING TO RENDER" in capsys.readouterr().err
+
+
+def test_the_demo_recipient_allowlist_is_a_staging_only_secret():
+    stag = r.render("staging", B, F)
+    for comp in stag["services"] + stag["workers"]:
+        if comp["name"] == "web":
+            continue
+        entry = next(e for e in comp["envs"] if e["key"] == "ORACLE_DEMO_RECIPIENT_ALLOWLIST")
+        assert entry == {"key": "ORACLE_DEMO_RECIPIENT_ALLOWLIST", "type": "SECRET"}
+    prod = r.render("production", B, F)
+    for comp in prod["services"] + prod["workers"]:
+        assert all(e["key"] != "ORACLE_DEMO_RECIPIENT_ALLOWLIST" for e in comp.get("envs") or [])
+
+
+def test_production_refuses_a_demo_recipient_allowlist(tmp_path, monkeypatch):
+    raw = yaml.safe_load((REPO / "infra" / "digitalocean" / "app.yaml").read_text(encoding="utf-8"))
+    raw["services"][0]["envs"].append({"key": "ORACLE_DEMO_RECIPIENT_ALLOWLIST", "type": "SECRET"})
+    fake = tmp_path / "app.yaml"
+    fake.write_text(yaml.safe_dump(raw))
+    monkeypatch.setattr(r, "SPEC", fake)
+    with pytest.raises(r.RenderError, match="DEMO_RECIPIENT_ALLOWLIST"):
+        r.render("production", B, F)

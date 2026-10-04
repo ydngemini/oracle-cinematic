@@ -240,7 +240,11 @@ class TwilioVoiceProvider(VoiceProvider):
         status_callback_url: Optional[str] = None,
         credentials: Optional[Mapping[str, Any]] = None,
     ) -> ProviderResult:
-        recovery_mode.guard("place_call via TwilioVoiceProvider")
+        recovery_mode.guard(
+            "place_call via TwilioVoiceProvider",
+            kind="place_call",
+            destination=to_number,
+        )
         from command_providers import place_twilio_call
 
         return await place_twilio_call(
@@ -469,7 +473,11 @@ class PlivoVoiceProvider(VoiceProvider):
         status_callback_url: Optional[str] = None,
         credentials: Optional[Mapping[str, Any]] = None,
     ) -> ProviderResult:
-        recovery_mode.guard("place_call via PlivoVoiceProvider")
+        recovery_mode.guard(
+            "place_call via PlivoVoiceProvider",
+            kind="place_call",
+            destination=to_number,
+        )
         import asyncio
 
         from plivo.exceptions import PlivoRestError

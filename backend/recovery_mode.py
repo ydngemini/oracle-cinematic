@@ -51,6 +51,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from typing import Optional
 
 log = logging.getLogger("oracle.recovery_mode")
@@ -127,14 +128,96 @@ def is_recovery_mode() -> bool:
     return raw.strip().lower() not in _OFF_VALUES
 
 
-def guard(action: str, *, detail: Optional[str] = None) -> None:
+# ── The one exception: a named demo recipient on a non-production instance ──
+#
+# Staging runs in recovery mode so that nothing it does can reach a customer.
+# A sales demo still has to show a real text and a real call arriving on a
+# real phone, so there is exactly one way through: an explicit list of E.164
+# numbers belonging to the operator (their own phone), honoured only
+#
+#   * while recovery mode is ON (normal operation needs no exception),
+#   * on an instance whose ORACLE_ENV is explicitly a non-production value —
+#     unset or unrecognised does NOT qualify, so a production box that forgot
+#     to set ORACLE_ENV cannot use it (config.validate_or_die also refuses to
+#     boot production with the variable set at all),
+#   * for the two actions that reach one person — sending a message and
+#     placing a call — and only when the caller passes the destination, and
+#   * for an EXACT match after stripping whitespace. No prefix matching, no
+#     "close enough": +13024078981 does not admit +130240789810.
+#
+# Everything else — provider-state mutations, transfers, number purchases,
+# email, calendar, any other recipient — stays blocked.
+DEMO_ALLOWLIST_ENV_VAR = "ORACLE_DEMO_RECIPIENT_ALLOWLIST"
+
+#: ORACLE_ENV values on which the allowlist may be honoured. Opt-in, like
+#: config.IS_DEV: anything not listed (including unset and prod) fails closed.
+_ALLOWLIST_ENVIRONMENTS = {"staging", "dev", "development", "local", "test"}
+
+#: Actions an allowlisted destination can unlock. Matched on the `kind`
+#: argument callers pass, never inferred from the free-text phrase.
+ALLOWLISTABLE_KINDS = frozenset({"send_message", "place_call"})
+
+_E164 = re.compile(r"^\+[1-9][0-9]{7,14}$")
+
+
+def demo_recipient_allowlist() -> frozenset[str]:
+    """The configured demo recipients, as validated E.164 strings.
+
+    Malformed entries are dropped (and logged), never "repaired": a number we
+    had to guess at is a number we might guess wrong.
+    """
+    raw = os.getenv(DEMO_ALLOWLIST_ENV_VAR, "")
+    numbers: set[str] = set()
+    for entry in raw.split(","):
+        candidate = entry.strip()
+        if not candidate:
+            continue
+        if _E164.match(candidate):
+            numbers.add(candidate)
+        else:
+            log.warning("%s: ignoring malformed entry (not E.164)", DEMO_ALLOWLIST_ENV_VAR)
+    return frozenset(numbers)
+
+
+def allowlist_environment_ok() -> bool:
+    """True only on an instance explicitly marked as non-production."""
+    env = os.getenv("ORACLE_ENV", "").strip().lower()
+    return env in _ALLOWLIST_ENVIRONMENTS
+
+
+def is_allowlisted_destination(kind: Optional[str], destination: Optional[str]) -> bool:
+    if kind not in ALLOWLISTABLE_KINDS or not destination:
+        return False
+    if not allowlist_environment_ok():
+        return False
+    return str(destination).strip() in demo_recipient_allowlist()
+
+
+def guard(
+    action: str,
+    *,
+    detail: Optional[str] = None,
+    kind: Optional[str] = None,
+    destination: Optional[str] = None,
+) -> None:
     """Refuse `action` when in recovery mode. A no-op in normal operation.
 
     `action` is a human phrase completing "Refused to ..." — it ends up in an
     operator's log during an incident, so "send an SMS to +1555…" beats
     "send_message".
+
+    `kind` + `destination` are passed only by the message-send and call-place
+    paths; they let an explicitly allowlisted demo recipient through on a
+    non-production instance (see DEMO_ALLOWLIST_ENV_VAR above).
     """
     if not is_recovery_mode():
+        return
+    if is_allowlisted_destination(kind, destination):
+        log.warning(
+            "RECOVERY MODE: allowing %s — destination is on %s (demo recipient)",
+            action,
+            DEMO_ALLOWLIST_ENV_VAR,
+        )
         return
     log.warning("RECOVERY MODE: refused to %s", action)
     raise RecoveryModeBlocked(action, detail)
@@ -153,4 +236,10 @@ def describe() -> dict:
         "outbound_side_effects": "blocked" if active else "enabled",
         "blocks": sorted(MUST_BE_GUARDED) if active else [],
         "env_var": ENV_VAR,
+        # How many demo recipients are honoured right now (never the numbers
+        # themselves — /health is not the place to publish a phone number).
+        "demo_recipient_allowlist_count": (
+            len(demo_recipient_allowlist())
+            if active and allowlist_environment_ok() else 0
+        ),
     }
