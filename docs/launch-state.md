@@ -49,7 +49,7 @@ the first deploy. Each is now kept fixed by a test or a CI step.
 | 5 | Production `web` 2× `apps-s-1vcpu-0.5gb` (that size allows 1 instance) | App Platform rejects the production spec | `6f4de80`: 2× `apps-s-1vcpu-1gb` | renderer refuses scaling a single-instance size |
 | 6 | CI built the backend with the repo root as context | first release fails at build (no root `requirements.txt`); `COPY . .` would copy the monorepo | `a571fee`: context `backend/` | `test_ci_build_contexts.py` |
 | 7 | Ingress rules stripped the path prefix (no `preserve_path_prefix`) | every API route 404 while the SPA worked | `59bcf7f` | test: every api rule preserves its prefix |
-| 8 | **`doctl apps update` with a blank SECRET wipes it** (proven twice on staging; DO auto-rolled back). CI and `rollback.sh` applied blank-secret specs | every deploy after the first, and every rollback, would fail and silently roll back | `6ab519b`: `scripts/carry-secrets.py` carries the ACTIVE deployment's `EV[…]` values, refuses before migrations if a required secret is missing everywhere. **Resubmission acceptance UNVERIFIED** (staging step 13, with a plaintext-injection fallback) | `test_carry_secrets.py`, `test_ci_deploy_wiring.py`, rollback test |
+| 8 | **`doctl apps update` with a blank SECRET wipes it** (proven twice on staging; DO auto-rolled back). CI and `rollback.sh` applied blank-secret specs | every deploy after the first, and every rollback, would fail and silently roll back | `6ab519b`: `scripts/carry-secrets.py` carries the ACTIVE deployment's `EV[…]` values, refuses before migrations if a required secret is missing everywhere. **Resubmission PROVEN 2026-10-04** by the first CI release (run 37236009143): `apps update` accepts carried `EV[…]` values; `apps spec validate` rejects them, so CI validates the rendered spec (`c0cdc46`) | `test_carry_secrets.py`, `test_ci_deploy_wiring.py`, rollback test |
 | 9 | CI steps after the first read `DIGITALOCEAN_APP_ID`, `NEOH_PUBLIC_API_BASE` and the migration DB variables **empty** | first `doctl apps get ""` fails; migrations get no host | `6ab519b` | `test_ci_deploy_wiring.py` |
 
 Found while building the readiness check, before any deploy:
@@ -70,6 +70,14 @@ Found after the merge (2026-10-04), now fixed:
 | Neoh's 3D-build and listing-video tools staged approvals no code ever executed | the agent was told "approving it starts the job"; nothing ever happened | `c341e9c`: hand-off to the real confirm-with-cost paths |
 | `/api/admin/users` listed only demo identities and profiles | real users without a profile were invisible to operators | `42d93e0` (also: every admin read bounded to 5 s) |
 | gitleaks flagged three fake test fixtures; bandit flagged constant-built SQL | CI security job red | `.gitleaksignore` fingerprints; literal SQL |
+
+First CI release to staging (2026-10-04, run 37236009143) — staging now runs a CI-built, digest-pinned release (`252a58d`). Getting there found:
+
+| Defect | Fix |
+|---|---|
+| Release-manifest step read `DIGITALOCEAN_REGISTRY` it was never given → `registry.digitalocean.com//neoh-backend` | `76335d5` (job-level identifier; wiring test extended) |
+| `doctl apps spec validate` refuses carried `EV[…]` secret values | `c0cdc46`: validate the rendered spec; `apps update` (which accepts them) gets the carried one |
+| The staging database carried no environment stamp; the migration precheck refused (as designed) | stamped `neoh-environment=staging`; step added to `staging-setup.md` |
 
 ## Launch blockers, ranked
 
