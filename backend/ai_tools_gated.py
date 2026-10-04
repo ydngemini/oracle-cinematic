@@ -610,17 +610,14 @@ async def _request_property_reconstruction(conn, ctx, *, tool_input, user_id) ->
     """Ask for a 3D reconstruction of a property. Rents a GPU; does not start one.
 
     This spends real money — a pod-based reconstruction is roughly $0.25-0.35 —
-    so it stages an approval and returns. The GPU is rented later, on the path a
-    human decision triggers, which is the same rule every other gated tool
-    follows: a tool that could act would make its own approval decorative.
+    so it never starts one: it checks readiness and hands the agent to the
+    property's 3D space panel, where the build is confirmed with its cost.
 
     Readiness is checked *before* staging. Queuing an approval for a job that
     cannot run — no credits, no provider configured — spends a human's attention
     on a decision that has no effect, and the provider's own reason says exactly
     what to fix.
     """
-    from approval_service import create_approval
-    from platform_policy import ActionRisk
 
     anchor, error = await _property_anchor(conn, ctx, tool_input)
     if error:
@@ -637,33 +634,22 @@ async def _request_property_reconstruction(conn, ctx, *, tool_input, user_id) ->
             f"Nothing was requested."
         )
 
-    approval = await create_approval(
-        ctx,
-        action_type="property_reconstruction",
-        risk=ActionRisk.FINANCIAL,
-        target_type=anchor["target_type"],
-        target_id=anchor["id"],
-        draft_payload={
-            anchor["field"]: anchor["id"],
-            "provider": provider.name,
-            # What the resulting media will be allowed to claim. Recorded in the
-            # approval so the approver sees it, and so a later change of
-            # provider cannot quietly upgrade the claim.
-            "provenance": getattr(provider, "produces", "captured"),
-            "requested_by": user_id,
-        },
-    )
+    # No approval is staged: nothing ever executed a "property_reconstruction"
+    # approval, so approving one did nothing while the tool promised it would
+    # start the build (Mission 3 audit). A build starts only from the
+    # property's 3D space panel, which shows the cost, applies the cost guard
+    # and the one-active-build rule, and asks for confirmation.
     return {
         "ok": True,
         "action_type": "request_property_reconstruction",
-        "approval_id": str(approval.get("id") or ""),
         "target_id": anchor["id"],
         "provider": provider.name,
         "started": False,
+        "next_step": "property_3d_space",
         "detail": (
-            "A 3D reconstruction was requested and is awaiting approval. No GPU "
-            "has been rented and nothing has been charged. Approving it starts "
-            "the job; it takes roughly 30-60 minutes."
+            "A 3D space can be built for this property. Nothing has started and "
+            "nothing has been charged. Open the property and choose Build 3D space "
+            "— it shows the cost and asks you to confirm. It takes roughly 30–60 minutes."
         ),
     }
 
@@ -677,8 +663,6 @@ async def _request_listing_video(conn, ctx, *, tool_input, user_id) -> dict:
     the approver picks from media this workspace holds rather than the model
     naming a URL it found.
     """
-    from approval_service import create_approval
-    from platform_policy import ActionRisk
 
     anchor, error = await _property_anchor(conn, ctx, tool_input)
     if error:
@@ -697,32 +681,21 @@ async def _request_listing_video(conn, ctx, *, tool_input, user_id) -> dict:
     if not ready:
         return _err(f"Video generation is not available: {reason}. Nothing was requested.")
 
-    approval = await create_approval(
-        ctx,
-        action_type="listing_video",
-        risk=ActionRisk.FINANCIAL,
-        target_type=anchor["target_type"],
-        target_id=anchor["id"],
-        draft_payload={
-            anchor["field"]: anchor["id"],
-            "brief": brief,
-            "provider": getattr(provider, "name", "unknown"),
-            # Always. A generated walkthrough is not footage of the home, and
-            # the label travels with the media rather than being decided later.
-            "provenance": "ai_generated",
-            "requested_by": user_id,
-        },
-    )
+    # No approval is staged, for the same reason as reconstruction: nothing
+    # executed a "listing_video" approval. Videos start from the Video studio,
+    # where the approver picks the source media this workspace holds.
     return {
         "ok": True,
         "action_type": "request_listing_video",
-        "approval_id": str(approval.get("id") or ""),
         "target_id": anchor["id"],
         "generated": False,
+        "next_step": "video_studio",
+        "brief": brief,
         "detail": (
-            "A marketing video was requested and is awaiting approval. Nothing "
-            "has been generated or charged. The finished video is labelled "
-            "AI-generated; it is not footage of the property."
+            "A marketing video can be made for this property. Nothing has been "
+            "generated or charged. Open Video studio to choose the photos and "
+            "confirm; the finished video is labelled AI-generated — it is not "
+            "footage of the property."
         ),
     }
 

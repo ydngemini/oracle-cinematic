@@ -7,7 +7,7 @@ answer the model gave was invented.
 Both halves are pinned here. The read tool returns *every* asset a property has,
 each with its own provenance, so the agent can say "the 360s are of this house,
 the 3D model is a demo" rather than flattening both into one claim. The request
-tools stage an approval and stop: a pod reconstruction rents a GPU and a video
+tools never start a paid job: a pod reconstruction rents a GPU and a video
 bills a generation provider, and an agent that could loop on either would spend
 without a ceiling.
 """
@@ -150,11 +150,13 @@ def test_a_reconstruction_is_requested_and_no_gpu_is_rented(monkeypatch):
 
     assert result["ok"] is True
     assert result["started"] is False, "the tool must not start the job"
-    assert result["approval_id"] == "ap-1"
-    assert created[0]["target_id"] == LEAD_ID
-    # The claim the resulting media will be allowed to make is fixed at request
-    # time, so a later provider swap cannot quietly upgrade it.
-    assert created[0]["draft_payload"]["provenance"] == "captured"
+    # Nothing ever executed a property_reconstruction approval, so staging one
+    # promised a build that could never start. The tool now hands the agent to
+    # the 3D space panel, where the build is confirmed with its cost.
+    assert created == [], "no dead-end approval may be staged"
+    assert result["next_step"] == "property_3d_space"
+    assert result["target_id"] == LEAD_ID
+    assert "nothing has been charged" in result["detail"].lower()
 
 
 def test_nothing_is_staged_when_the_job_could_not_run(monkeypatch):
@@ -218,9 +220,11 @@ def test_a_video_is_requested_and_labelled_ai_generated(monkeypatch):
 
     assert result["ok"] is True
     assert result["generated"] is False
-    # A generated walkthrough is not footage of the home, and the label travels
-    # with the media rather than being decided later.
-    assert created[0]["draft_payload"]["provenance"] == "ai_generated"
+    assert created == [], "no dead-end approval may be staged"
+    assert result["next_step"] == "video_studio"
+    # A generated walkthrough is not footage of the home; the agent is told so
+    # up front, and Video studio labels the result AI-generated.
+    assert "ai-generated" in result["detail"].lower()
 
 
 def test_a_video_request_needs_a_brief(monkeypatch):
