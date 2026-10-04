@@ -77,6 +77,22 @@ describe('People fits a phone', () => {
   });
 });
 
+describe('Deals, Property View and the composer fit a phone', () => {
+  it('gives Deals and Property View shrinkable tracks and a wrapping switcher', () => {
+    for (const file of ['./components/DealsTab.module.css', './components/PropertiesTab.module.css']) {
+      const css = read(file);
+      expect(block(css, '.wrap {'), file).toMatch(/grid-template-columns:\s*minmax\(0, 1fr\)/);
+      const phone = css.slice(css.indexOf('@media (max-width: 680px)'));
+      expect(phone, file).toMatch(/\.hero \{ grid-template-columns: minmax\(0, 1fr\)/);
+      expect(phone, file).toMatch(/\.switcher \{[^}]*flex-wrap: wrap/);
+    }
+  });
+
+  it('lets the conversation composer toolbar wrap', () => {
+    expect(block(read('./components/CommsTab.module.css'), '.chRow {')).toMatch(/flex-wrap:\s*wrap/);
+  });
+});
+
 describe('the Neoh bar never covers a sheet', () => {
   it('sits one step below the overlay tier that sheets and dialogs use', () => {
     for (const [file, selector] of [['./neoh/NeohSurface.module.css', '.surface {'], ['./neoh/NeohConversation.module.css', '.dock {']]) {

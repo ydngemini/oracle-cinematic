@@ -234,9 +234,16 @@ LAYOUT_JS = """() => {
     return r.width && r.height ? { l: Math.round(r.left), r: Math.round(r.right), t: Math.round(r.top), b: Math.round(r.bottom) } : null; };
   const visible = (e) => { const r = e.getBoundingClientRect(); const cs = getComputedStyle(e);
     return r.width > 0 && r.height > 0 && cs.visibility !== 'hidden' && cs.display !== 'none' && Number(cs.opacity) > 0.05; };
-  const header = [...document.querySelectorAll('header button, header [role=button]')].filter(visible)
-    .map((e) => ({ name: e.getAttribute('aria-label') || e.innerText.trim().slice(0, 30), ...rect(e) }))
-    .filter((b) => b.l < 0 || b.r > vw);
+  // A control outside the screen is a defect unless it sits in a strip the
+  // person can scroll sideways (a chip row with overflow-x: auto is fine).
+  const scrollsSideways = (e) => { for (let p = e.parentElement; p && p !== document.body; p = p.parentElement) {
+      const ox = getComputedStyle(p).overflowX; if ((ox === 'auto' || ox === 'scroll') && p.scrollWidth > p.clientWidth) return true; }
+    return false; };
+  const header = [...document.querySelectorAll('button, a[href], input, select, textarea, [role=button], [role=tab]')]
+    .filter((e) => visible(e) && !e.closest('[aria-hidden=true]'))
+    .map((e) => ({ e, name: e.getAttribute('aria-label') || e.innerText.trim().slice(0, 30), ...rect(e) }))
+    .filter((b) => (b.l < -1 || b.r > vw + 1) && !scrollsSideways(b.e))
+    .map(({ e, ...b }) => b);
   const nav = rect(document.querySelector('nav[aria-label="Neoh CRM"]'));
   const field = [...document.querySelectorAll('textarea[aria-label="Message Neoh"]')].find(visible);
   const composer = field ? rect(field.closest('[role=dialog], [class*=dock], [class*=surface]') || field) : null;
@@ -254,7 +261,7 @@ def layout_problems(probe: dict, *, need_composer=False) -> list[str]:
     if max(probe["scrollWidth"], probe["bodyScrollWidth"]) > vw:
         out.append(f"horizontal overflow {max(probe['scrollWidth'], probe['bodyScrollWidth'])} > {vw}")
     if probe["headerOffscreen"]:
-        out.append(f"header control off-screen: {probe['headerOffscreen']}")
+        out.append(f"control off-screen (not in a sideways-scrolling strip): {probe['headerOffscreen']}")
     nav = probe.get("nav")
     for key in ("composer", "pill"):
         box = probe.get(key)
@@ -654,10 +661,12 @@ def journey_communication(report: Report, browser, args, out: Path, found: dict)
         finally:
             mock_config(args, llm_hijack_tools=None)
         go(page, "/work?type=conversations")
-        toggle = page.get_by_role("button", name=re.compile("^Waiting for your approval"))
-        toggle.first.click()
         reason = page.get_by_placeholder(re.compile("Reviewed target", re.I)).first
-        reason.wait_for(timeout=8000)
+        try:
+            reason.wait_for(timeout=4000)
+        except Exception:  # noqa: BLE001 — collapsed: open it
+            page.get_by_role("button", name=re.compile("^Waiting for your approval")).first.click()
+            reason.wait_for(timeout=8000)
         reason.fill("Buyer asked for a Saturday tour; content checked.")
         with page.expect_response(lambda r: re.search(r"/api/commands/[^/]+/approve$", r.url) is not None, timeout=15000) as resp:
             button(page, "Approve").click()
@@ -808,18 +817,27 @@ def keyboard(report: Report, browser, args, out: Path, found: dict) -> None:
         go(page, "/")
         page.locator("body").click(position={"x": 5, "y": 300})
         stops = []
-        for _ in range(60):
+        for _ in range(40):
             page.keyboard.press("Tab")
             stops.append(focus_name(page))
-            if stops[-1].startswith("BUTTON:Neoh") and "BUTTON:Work" in stops:
+            if stops[-1] == "BODY":  # wrapped past the last stop to the browser chrome
                 break
         joined = " | ".join(stops)
-        for want in ("Open agent profile and settings", "Home", "Work", "Neoh"):
-            if want not in joined:
+        for want in ("Open agent profile and settings", "BUTTON:Home", "Ask Neoh", "Neoh answered"):
+            if want not in joined and not (want == "Ask Neoh" and "Neoh answered" in joined) \
+                    and not (want == "Neoh answered" and "Ask Neoh" in joined):
                 raise AssertionError(f"'{want}' not reachable by Tab: {joined}")
-        if "BODY" in stops[1:]:
-            raise AssertionError(f"focus fell to the page: {joined}")
-        return joined[:220]
+        if "BODY" in stops[:-1]:
+            raise AssertionError(f"focus fell to the page mid-order: {joined}")
+        # The tab bar is one Tab stop with roving focus (WAI-ARIA tabs):
+        # arrows move between Home, Work and Neoh, Enter opens.
+        page.get_by_role("tab", name="Home").focus()
+        page.keyboard.press("ArrowRight")
+        if focus_name(page) != "BUTTON:Work":
+            raise AssertionError(f"ArrowRight from Home focused {focus_name(page)}")
+        page.keyboard.press("Enter")
+        page.wait_for_url(re.compile(r"/work"), timeout=8000)
+        return f"{len(stops) - 1} stops then wraps; tab bar arrows Home→Work + Enter opened /work. Order: {joined[:200]}"
 
     def slash_composer_enter():
         go(page, "/")
@@ -991,6 +1009,9 @@ def visual(report: Report, browser, args, out: Path, found: dict, engine: str) -
         ctx = new_context(browser, args, viewport=vp, state=str(out / "owner-state.json"), quiet_status=True)
         page = ctx.new_page()
         page.route("**/api/status", lambda r: r.fulfill(status=200, content_type="application/json", body='{"state":"HEALTHY","messages":[]}'))
+        # Chat history differs on every run; the baseline is the empty conversation.
+        page.route(lambda u: urlparse(u).path == "/api/ai/chat/messages",
+                   lambda r: r.fulfill(status=200, content_type="application/json", body='{"messages":[]}'))
         try:
             go(page, path)
             if prep:
