@@ -698,10 +698,14 @@ def journey_failure(report: Report, browser, args, out: Path) -> None:
             go(page, "/neoh")
             # A question the instant-answer path cannot take, so it reaches the model.
             ask_neoh(page, "Draft a warm note for a first-time buyer in Dover.", wait_for_reply=False)
-            page.wait_for_function("""() => { const a = [...document.querySelectorAll('article[aria-label="Neoh said"]')].pop();
-                const t = (a?.innerText || '') + ' ' + [...document.querySelectorAll('[role=alert],[role=status]')].map(e => e.innerText).join(' ');
-                return /trouble|try again|couldn|unavailable|not available|saved/i.test(t); }""", timeout=90_000)
-            said = page.evaluate("""() => { const a = [...document.querySelectorAll('article[aria-label="Neoh said"]')].pop(); return a ? a.innerText : ''; }""")
+            question = "Draft a warm note for a first-time buyer in Dover."
+            answer_js = """(q) => { const turns = [...document.querySelectorAll('article')];
+                const i = turns.map(a => a.getAttribute('aria-label') === 'You said' && a.innerText.includes(q)).lastIndexOf(true);
+                const next = turns.slice(i + 1).find(a => a.getAttribute('aria-label') === 'Neoh said');
+                return next ? next.innerText : ''; }"""
+            page.wait_for_function(f"(q) => /trouble|try again|couldn|unavailable|saved/i.test(({answer_js})(q))",
+                                   arg=question, timeout=90_000)
+            said = page.evaluate(answer_js, question)
         finally:
             mock_config(args, llm_fail_rate=0.0, llm_fail="")
         if raw.search(said):
