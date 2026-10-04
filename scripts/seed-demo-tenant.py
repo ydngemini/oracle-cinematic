@@ -98,7 +98,8 @@ def _plivo_owns(number: str) -> bool:
     return bool(body.get("voice_enabled")) and str(body.get("number", "")).lstrip("+") == number.lstrip("+")
 
 
-async def seed(base_url: str, execute: bool, *, with_space: bool = True) -> dict:
+async def seed(base_url: str, execute: bool, *, with_space: bool = True,
+               reuse_space: dict | None = None) -> dict:
     common.refuse_production(base_url)
     plan = Plan(execute)
     creds = common.load_or_create_credentials()
@@ -315,16 +316,23 @@ async def seed(base_url: str, execute: bool, *, with_space: bool = True) -> dict
             "SELECT 1 FROM property_media WHERE lead_id = $1::uuid AND kind = 'splat' "
             "AND superseded_at IS NULL", lead_id)
         if with_space and not has_space:
-            common.backend_on_path()
-            import reconstruction_worker
+            if reuse_space:
+                # A reset keeps the already-stored space: same media id, same
+                # object, so the reset needs no object-storage credentials and
+                # the bytes are not re-uploaded on every rehearsal.
+                media_id, s3_key = reuse_space["id"], reuse_space["s3_key"]
+                url = f"/api/media/{media_id}"
+            else:
+                common.backend_on_path()
+                import reconstruction_worker
 
-            media_id = str(uuid4())
-            url, s3_key = await reconstruction_worker._store_splat(
-                FIXTURE_SPACE, media_id, provider="neoh-demo-room", address=lead_id,
-                tenant_id=tenant_id,
-                extra_manifest={"note": "Generated demo room (Neoh stub). Not a capture "
-                                        "of any real property."},
-            )
+                media_id = str(uuid4())
+                url, s3_key = await reconstruction_worker._store_splat(
+                    FIXTURE_SPACE, media_id, provider="neoh-demo-room", address=lead_id,
+                    tenant_id=tenant_id,
+                    extra_manifest={"note": "Generated demo room (Neoh stub). Not a capture "
+                                            "of any real property."},
+                )
             # RAW SQL: see the module docstring (no product path for a
             # synthetic space outside development).
             await conn.execute(

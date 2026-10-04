@@ -152,9 +152,19 @@ async def reset(tenant_id: str, base_url: str, execute: bool) -> dict:
         if not execute:
             return {"dry_run": True, "would_delete": before}
 
+        # The demo Space on the subject property is kept (same id, same
+        # object) and re-attached by the seed; every other stored file of the
+        # tenant's media rows is removed.
+        space = await conn.fetchrow(
+            """SELECT m.id::text AS id, m.s3_key FROM property_media m
+                 JOIN listings l ON l.lead_id = m.lead_id AND l.tenant_id = m.tenant_id
+                WHERE m.tenant_id = $1::uuid AND m.kind = 'splat' AND m.superseded_at IS NULL
+                  AND m.s3_key IS NOT NULL AND l.address = $2
+                ORDER BY m.created_at DESC LIMIT 1""", tenant_id, common.SUBJECT_ADDRESS)
+        reuse_space = dict(space) if space else None
         keys = [r["s3_key"] for r in await conn.fetch(
             "SELECT s3_key FROM property_media WHERE tenant_id = $1::uuid AND s3_key IS NOT NULL",
-            tenant_id)]
+            tenant_id) if not (reuse_space and r["s3_key"] == reuse_space["s3_key"])]
         async with conn.transaction():
             # Re-check inside the transaction: the guard and the deletes see
             # the same snapshot of the tenant row.
@@ -194,7 +204,7 @@ async def reset(tenant_id: str, base_url: str, execute: bool) -> dict:
                     pass
 
     seed = _load_seed()
-    state = await seed.seed(base_url, True)
+    state = await seed.seed(base_url, True, reuse_space=reuse_space)
     print(f"reset complete: {sum(deleted.values())} rows removed, {removed_objects} stored "
           f"objects removed, demo data re-seeded")
     return {"deleted": deleted, "objects_removed": removed_objects, "state": state}
