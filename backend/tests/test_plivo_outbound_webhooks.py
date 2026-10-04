@@ -167,6 +167,90 @@ def test_status_cleans_up_when_signed(client):
     assert r.status_code == 204 and client.cleaned == [UUID]
 
 
+REQUEST = "99999999-8888-7777-6666-555555555555"
+
+
+def test_an_outbound_call_is_found_by_its_request_id_and_aliased(monkeypatch):
+    """Placing a call returns the REQUEST id and the worker stores state under
+    it; Plivo's answer callback names the CALL id and sends RequestUUID too.
+    The first real staging call was refused as unmanaged because only CallUUID
+    was looked up (2026-10-04)."""
+    import asyncio
+
+    store = {REQUEST: {"tenant_id": TENANT, "direction": "outbound"}}
+    saved = {}
+
+    async def fake_load(uuid, wait_for_initialization=False):
+        return store.get(uuid)
+
+    async def fake_save(uuid, state):
+        saved[uuid] = state
+
+    monkeypatch.setattr(plivo_call_handler, "load_plivo_call_state", fake_load)
+    monkeypatch.setattr(plivo_call_handler, "_save_call_state", fake_save)
+    state = asyncio.run(plivo_call_handler.resolve_outbound_plivo_call_state(UUID, REQUEST))
+    assert state["tenant_id"] == TENANT
+    assert saved[UUID]["request_uuid"] == REQUEST  # later lookups by CallUUID hit directly
+    assert asyncio.run(plivo_call_handler.resolve_outbound_plivo_call_state(UUID, "")) is None
+
+
+def test_answer_accepts_a_call_known_only_by_its_request_id(client, monkeypatch):
+    async def by_request(uuid, request_uuid="", wait_for_initialization=False):
+        return client.state_box["value"] if request_uuid == REQUEST else None
+
+    monkeypatch.setattr(plivo_call_handler, "resolve_outbound_plivo_call_state", by_request)
+    params = {"CallUUID": UUID, "RequestUUID": REQUEST}
+    r = client.post(ANSWER, data=params, headers=_sign(ANSWER, params, PLATFORM_TOKEN))
+    assert r.status_code == 200 and "cannot be connected safely" not in r.text
+    # With realtime off, the answered call still opens with the AI disclosure.
+    assert "automated AI assistant" in r.text
+
+
+@pytest.mark.parametrize("response, expected", [
+    (type("R", (), {"request_uuid": "req-1"})(), "req-1"),
+    ({"request_uuid": "req-2"}, "req-2"),
+    ({"request_uuid": ["req-3"]}, "req-3"),
+    ({"call_uuid": "call-4"}, "call-4"),
+    ({"api_id": "x", "message": "call fired"}, ""),
+    (None, ""),
+])
+def test_the_call_id_is_read_from_every_response_shape(response, expected):
+    from voice_provider import plivo_identifier
+
+    assert plivo_identifier(response, "request_uuid", "call_uuid") == expected
+
+
+class _LiveCalls:
+    def __init__(self, answers):
+        self.answers, self.calls = list(answers), []
+
+    def list_ids(self, **kwargs):
+        self.calls.append(kwargs)
+        return self.answers.pop(0) if self.answers else {"calls": []}
+
+
+def test_a_placed_call_with_no_returned_id_is_found_among_live_calls():
+    from types import SimpleNamespace
+
+    from voice_provider import _find_placed_call
+
+    live = _LiveCalls([{"calls": []}, {"calls": ["call-xyz"]}])
+    client = SimpleNamespace(live_calls=live)
+    assert _find_placed_call(client, "+13025550100", pause_seconds=0) == "call-xyz"
+    assert live.calls[0] == {"call_direction": "outbound", "to_number": "13025550100"}
+
+
+def test_two_live_calls_to_the_number_are_never_guessed_between():
+    from types import SimpleNamespace
+
+    from voice_provider import _find_placed_call
+
+    client = SimpleNamespace(live_calls=_LiveCalls([{"calls": ["a", "b"]}]))
+    assert _find_placed_call(client, "+13025550100", pause_seconds=0) == ""
+    client = SimpleNamespace(live_calls=_LiveCalls([]))
+    assert _find_placed_call(client, "+13025550100", attempts=2, pause_seconds=0) == ""
+
+
 def test_the_tenant_token_counts_only_for_the_account_that_placed_the_call(client):
     """Same rule the inbound routes apply: resolve broadly, confirm with the
     secret of the account that actually owns the call."""

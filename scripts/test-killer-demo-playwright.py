@@ -203,7 +203,7 @@ def run(args, results: dict) -> dict:
             if not page.get_by_text("Buyers who may fit").is_visible():
                 page.get_by_role("button", name="123 Main Street, Wilmington", exact=True).click()
                 page.get_by_text("Buyers who may fit").wait_for(timeout=30_000)
-            page.get_by_role("button", name="Sarah Johnson", exact=True).first.click()
+            page.locator("section[aria-label='Buyers who may fit']").get_by_role("button", name="Sarah Johnson", exact=True).click()
             page.wait_for_url(re.compile(r"/p/"), timeout=20_000)
             page.wait_for_timeout(1500)
             status, answer, took = ask(page, TEXT_ASK)
@@ -224,7 +224,7 @@ def run(args, results: dict) -> dict:
         with Step(results, "the text's receipt says what actually happened"):
             t0 = time.time()
             # The conversation, with its receipts, lives on the Neoh tab.
-            page.get_by_role("button", name="Neoh", exact=True).last.click()
+            page.get_by_role("tab", name="Neoh", exact=True).click()
             outcome = wait_receipt(
                 page, r"(Text sent|Text not sent|Text didn.t go through|Text needs review)[^\n]*\n?[^\n]*", 120)
             obs["text_receipt_final"] = outcome
@@ -233,10 +233,10 @@ def run(args, results: dict) -> dict:
 
         if args.real_call:
             with Step(results, "REAL call: ask Neoh to call Sarah, approve it"):
-                page.get_by_role("button", name="Home", exact=True).last.click()
+                page.get_by_role("tab", name="Home", exact=True).click()
                 page.get_by_role("button", name="123 Main Street, Wilmington", exact=True).click()
                 page.get_by_text("Buyers who may fit").wait_for(timeout=30_000)
-                page.get_by_role("button", name="Sarah Johnson", exact=True).first.click()
+                page.locator("section[aria-label='Buyers who may fit']").get_by_role("button", name="Sarah Johnson", exact=True).click()
                 page.wait_for_url(re.compile(r"/p/"), timeout=20_000)
                 page.wait_for_timeout(1500)
                 status, answer, took = ask(page, CALL_ASK)
@@ -245,7 +245,7 @@ def run(args, results: dict) -> dict:
                 page.get_by_role("button", name="Review").last.click()
                 approve_first_pending(page, "call")
                 t0 = time.time()
-                page.get_by_role("button", name="Neoh", exact=True).last.click()
+                page.get_by_role("tab", name="Neoh", exact=True).click()
                 obs["call_receipt"] = wait_receipt(
                     page, r"(Call placed|Placing call…|Call not sent|Call didn.t go through|Call needs review)[^\n]*\n?[^\n]*", 150)
                 obs["call_submit_s"] = round(time.time() - t0, 2)
@@ -253,8 +253,16 @@ def run(args, results: dict) -> dict:
 
         with Step(results, "Sarah's timeline shows the outreach"):
             page.goto(args.base_url + f"/p/{_sarah_id(args)}", wait_until="domcontentloaded")
-            page.wait_for_timeout(4000)
+            page.get_by_role("tab", name=re.compile("^Timeline", re.I)).click(timeout=20_000)
+            page.wait_for_timeout(3000)
             body = page.inner_text("body")
+            # A real call's carrier outcome arrives by status callback once it ends.
+            deadline = time.time() + (90 if args.real_call else 0)
+            while args.real_call and "Call placed" not in body and time.time() < deadline:
+                page.reload(wait_until="domcontentloaded")
+                page.get_by_role("tab", name=re.compile("^Timeline", re.I)).click(timeout=20_000)
+                page.wait_for_timeout(5000)
+                body = page.inner_text("body")
             obs["timeline_excerpt"] = re.findall(
                 r"(?:Text[^\n]{0,80}|Call[^\n]{0,80}|Showing[^\n]{0,80}|Note[^\n]{0,60})", body)[:12]
             page.screenshot(path=str(shots / "09-timeline.png"), full_page=True)

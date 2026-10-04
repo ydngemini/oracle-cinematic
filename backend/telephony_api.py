@@ -1650,9 +1650,9 @@ async def plivo_outbound_answer(request: Request) -> Response:
     from plivo_call_handler import (
         PlivoCallStateUnavailable,
         create_plivo_bridge_token,
-        load_plivo_call_state,
         plivo_media_websocket_url,
         plivo_qwen_enabled,
+        resolve_outbound_plivo_call_state,
     )
     from outreach_compliance import AI_VOICE_DISCLOSURE
     from voice_provider import get_voice_provider
@@ -1660,7 +1660,9 @@ async def plivo_outbound_answer(request: Request) -> Response:
     adapter = get_voice_provider(PROVIDER_PLIVO)
     form = await request.form()
     call_uuid = str(form.get("CallUUID") or "")
-    state = await load_plivo_call_state(call_uuid, wait_for_initialization=True)
+    request_uuid = str(form.get("RequestUUID") or "")
+    state = await resolve_outbound_plivo_call_state(
+        call_uuid, request_uuid, wait_for_initialization=True)
     if state is None:
         logger.error("Rejecting unmanaged Plivo call: uuid=%s", call_uuid)
         return Response(
@@ -1714,16 +1716,17 @@ async def plivo_outbound_status(request: Request) -> Response:
     from plivo_call_handler import (
         PlivoCallStateUnavailable,
         cleanup_plivo_call,
-        load_plivo_call_state,
+        resolve_outbound_plivo_call_state,
     )
 
     form = await request.form()
     call_uuid = str(form.get("CallUUID") or "")
+    request_uuid = str(form.get("RequestUUID") or "")
     call_status = str(form.get("CallStatus") or "").strip().lower()
     if not call_uuid:
         return Response(status_code=status.HTTP_204_NO_CONTENT)
     try:
-        state = await load_plivo_call_state(call_uuid)
+        state = await resolve_outbound_plivo_call_state(call_uuid, request_uuid)
     except PlivoCallStateUnavailable:
         # Cannot tell whose call this is, so cannot verify it — and an
         # unverified request must not act. The state carries a TTL, so a
@@ -1746,12 +1749,17 @@ async def plivo_outbound_status(request: Request) -> Response:
     except ValueError:
         duration = -1
     try:
-        await record_call_outcome(call_uuid, call_status, duration if duration >= 0 else None)
+        # live_call_sessions knows the call by the id placing it returned:
+        # Plivo's request id.
+        await record_call_outcome(state.get("request_uuid") or request_uuid or call_uuid,
+                                  call_status, duration if duration >= 0 else None)
     except Exception:  # noqa: BLE001 — never let bookkeeping skip the cleanup below
         logger.warning("Plivo outbound call outcome not recorded: uuid=%s", call_uuid, exc_info=True)
     if call_status in _PLIVO_TERMINAL_STATUSES:
         try:
             await cleanup_plivo_call(call_uuid)
+            if request_uuid and request_uuid != call_uuid:
+                await cleanup_plivo_call(request_uuid)
         except PlivoCallStateUnavailable:
             logger.warning("Distributed outbound call cleanup was unavailable: uuid=%s", call_uuid)
     logger.info("Plivo outbound call status received: uuid=%s status=%s", call_uuid, call_status or "unknown")
