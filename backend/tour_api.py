@@ -1076,11 +1076,11 @@ async def delete_space(
                             "Some files could not be deleted yet. Nothing was removed from the property; try again.")
     async with tenant_tx(ctx) as conn:
         await conn.execute(
-            f"UPDATE reconstruction_jobs SET raw_output_key = NULL WHERE {_subject_filter()}",
+            "UPDATE reconstruction_jobs SET raw_output_key = NULL WHERE (($1::uuid IS NOT NULL AND lead_id = $1) OR ($2::uuid IS NOT NULL AND listing_id = $2))",
             lead_id, listing_id,
         )
         await conn.execute(
-            f"DELETE FROM property_media WHERE kind = 'splat' AND {_subject_filter()}",
+            "DELETE FROM property_media WHERE kind = 'splat' AND (($1::uuid IS NOT NULL AND lead_id = $1) OR ($2::uuid IS NOT NULL AND listing_id = $2))",
             lead_id, listing_id,
         )
     try:
