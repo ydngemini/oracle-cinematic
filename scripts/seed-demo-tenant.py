@@ -202,8 +202,8 @@ async def seed(base_url: str, execute: bool, *, with_space: bool = True) -> dict
             if cid is None:
                 created = api.post("/api/crm/clients", {
                     "full_name": c["full_name"], "email": c["email"], "phone": c["phone"],
-                    "client_type": c["client_type"], "stage": c["stage"],
-                    "lead_score": c["lead_score"], "tags": c["tags"],
+                    "client_type": c["client_type"],
+                    "tags": c["tags"],
                     "preferences": c["preferences"],
                 })
                 cid = str((created.get("client") or created)["id"])

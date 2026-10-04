@@ -170,6 +170,60 @@ def test_voice_quiet_hours_use_the_contacts_timezone():
     assert 'tz_name=target.get("timezone")' in gate
 
 
+# ── a multi-step hosted turn finishes with an answer ───────────────────────
+
+def test_a_spent_tool_budget_ends_with_an_answer_not_an_error(monkeypatch):
+    """read client → read listing → stage text → … then answer. When the rounds
+    run out, the model is asked once, without tools, to answer from what the
+    tools already returned — the staged text is not left orphaned next to
+    "Neoh couldn't complete that response"."""
+    from types import SimpleNamespace
+
+    import ai_chat_agent
+
+    async def fake_execute(*_args, **_kwargs):
+        return {"ok": True, "staged": True}
+
+    seen = []
+
+    async def fake_chat(payload, **_kwargs):
+        seen.append(bool(payload.get("tools")))
+        if payload.get("tools"):
+            return {"choices": [{"message": {"role": "assistant", "content": "", "tool_calls": [
+                {"id": f"c{len(seen)}", "type": "function",
+                 "function": {"name": "get_client_detail", "arguments": "{}"}}]}}]}
+        return {"choices": [{"message": {"role": "assistant", "content": "Text staged for approval."}}]}
+
+    monkeypatch.setattr(ai_chat_agent, "execute_safe_tool", fake_execute)
+    monkeypatch.setattr(ai_chat_agent, "_local_chat", fake_chat)
+    monkeypatch.setattr(ai_chat_agent, "_local_tools", lambda _ctx: [{"type": "function"}])
+    bundle = {"attachments": [], "record": None,
+              "assistant": {"context_type": "client", "context_id": "c-1"},
+              "messages": [{"role": "user", "content": "text her"}]}
+    text, _ = asyncio.run(ai_chat_agent._local_fallback(
+        SimpleNamespace(agent_id="a"), bundle, "system", "asst", applied=[],
+        max_rounds=ai_chat_agent._HOSTED_TOOL_ROUNDS))
+    assert text == "Text staged for approval."
+    assert seen == [True] * ai_chat_agent._HOSTED_TOOL_ROUNDS + [False]
+
+
+def test_hosted_tiers_get_more_rounds_than_the_local_model():
+    import inspect
+
+    import ai_chat_agent
+
+    assert ai_chat_agent._HOSTED_TOOL_ROUNDS > ai_chat_agent._LOCAL_TOOL_ROUNDS
+    src = inspect.getsource(ai_chat_agent)
+    assert src.count("max_rounds=_HOSTED_TOOL_ROUNDS") == 2  # gateway + direct Fireworks
+
+
+def test_the_persona_forbids_markdown_and_column_names():
+    import neoh_persona
+
+    prompt = neoh_persona.build_system_prompt(compact=True)
+    assert "No markdown" in prompt and "column" in prompt
+
+
 # ── the carrier's word on a call reaches the timeline ──────────────────────
 
 @pytest.mark.parametrize("status, duration, summary", [

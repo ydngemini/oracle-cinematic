@@ -51,6 +51,13 @@ FOUNDRY_PROJECT_ENDPOINT = os.getenv("ORACLE_FOUNDRY_PROJECT_ENDPOINT", "").rstr
 FOUNDRY_AGENT_NAME = os.getenv("ORACLE_FOUNDRY_AGENT_NAME", "neoh-kimi-k2-6")
 FOUNDRY_MODEL_ID = os.getenv("ORACLE_FOUNDRY_MODEL", "Kimi-K2.6")
 _LOCAL_TOOL_ROUNDS = 3
+# Hosted models (Fireworks, through the gateway or directly) do real multi-step
+# work: "text Sarah about this house" is read the client, read the listing,
+# stage the text, then answer — four rounds. Three was sized for a small local
+# model and cut that turn off after the text was already staged, so the agent
+# saw "couldn't complete that response" next to a waiting approval (found by
+# the killer-demo run, 2026-10-04).
+_HOSTED_TOOL_ROUNDS = max(1, int(os.getenv("ORACLE_HOSTED_TOOL_ROUNDS", "6") or 6))
 # Qwen3 and other hybrid-reasoning models emit a <think> block by default, which
 # consumes the whole token budget on a CPU-only host and truncates the real
 # answer. Templates without an enable_thinking variable simply ignore this.
@@ -827,6 +834,7 @@ async def _local_fallback(
     timeout: float = 0.0,
     disable_thinking: Optional[bool] = None,
     gateway_provider: Any = None,
+    max_rounds: Optional[int] = None,
 ) -> tuple[str, list[dict]]:
     """Local llama.cpp fallback, with tool calling when the server supports it.
 
@@ -889,7 +897,7 @@ async def _local_fallback(
     # See the Foundry loop: the ledger keys on (assistant_id, call_index), so
     # this counts every tool call in the turn, across rounds.
     call_index = 0
-    for _ in range(_LOCAL_TOOL_ROUNDS):
+    for _ in range(max_rounds or _LOCAL_TOOL_ROUNDS):
         try:
             data = await _round()
         except httpx.HTTPStatusError as exc:
@@ -955,6 +963,22 @@ async def _local_fallback(
             )
         payload["messages"] = messages
 
+    # The tool budget is spent. Everything the tools did is already in the
+    # transcript (and committed, with receipts); ask for the answer once, with
+    # no tools offered, rather than throwing the turn away. A model that still
+    # tries to call a tool here gets the old refusal.
+    if tools:
+        payload["messages"] = messages + [{
+            "role": "user",
+            "content": "Tool budget for this turn is used up. Answer now from the tool "
+                       "results above; do not call any tools.",
+        }]
+        payload.pop("tools", None)
+        payload.pop("tool_choice", None)
+        data = await _round()
+        message = (data.get("choices") or [{}])[0].get("message") or {}
+        if not message.get("tool_calls") and str(message.get("content") or "").strip():
+            return str(message.get("content")).strip(), actions
     raise RuntimeError("The assistant exceeded the safe tool-call limit")
 
 
@@ -972,6 +996,7 @@ async def _fireworks_generate(
         timeout=FIREWORKS_TIMEOUT,
         # llama.cpp-only knob; Fireworks rejects unknown template kwargs.
         disable_thinking=False,
+        max_rounds=_HOSTED_TOOL_ROUNDS,
     )
     return (
         text or "I completed the review but did not receive a text response.",
@@ -1102,6 +1127,7 @@ async def _generate(ctx: TenantContext, bundle: dict, assistant_id: str) -> tupl
                 model=provider.model, max_tokens=FIREWORKS_MAX_TOKENS,
                 timeout=FIREWORKS_TIMEOUT, disable_thinking=False,
                 gateway_provider=provider,
+                max_rounds=_HOSTED_TOOL_ROUNDS,
             )
             return (
                 text or "I completed the review but did not receive a text response.",
