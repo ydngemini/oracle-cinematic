@@ -38,7 +38,7 @@ FIREWORKS_URL = os.environ.get(
 )
 # The callers escalate PRIMARY -> SECONDARY on a None return, so keep two tiers.
 FIREWORKS_PRIMARY = os.environ.get(
-    "ORACLE_FIREWORKS_MODEL", "accounts/fireworks/models/deepseek-v4p1-flash"
+    "ORACLE_FIREWORKS_MODEL", "accounts/fireworks/models/kimi-k3"
 )
 FIREWORKS_SECONDARY = os.environ.get(
     "ORACLE_FIREWORKS_FAST_MODEL", "accounts/fireworks/routers/glm-5p2-fast"

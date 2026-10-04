@@ -58,11 +58,15 @@ KEEP = frozenset({
 #: Refuse while any of these is in flight: a provider may be mid-request.
 IN_FLIGHT_STATES = ("executing",)
 
+#: Why a table could not be cleared, for the refusal message.
+LAST_ERRORS: dict[str, str] = {}
 
-async def tenant_tables(conn) -> list[str]:
+
+async def tenant_tables(conn) -> dict[str, str]:
+    """{table: tenant_id data type} for every tenant-scoped table not kept."""
     rows = await conn.fetch(
         """
-        SELECT c.table_name FROM information_schema.columns c
+        SELECT c.table_name, c.data_type FROM information_schema.columns c
           JOIN information_schema.tables t
             ON t.table_schema = c.table_schema AND t.table_name = c.table_name
          WHERE c.table_schema = 'public' AND c.column_name = 'tenant_id'
@@ -70,19 +74,25 @@ async def tenant_tables(conn) -> list[str]:
          ORDER BY 1
         """
     )
-    return [r["table_name"] for r in rows if r["table_name"] not in KEEP]
+    return {r["table_name"]: r["data_type"] for r in rows if r["table_name"] not in KEEP}
 
 
-async def count_rows(conn, tables: list[str], tenant_id: str) -> dict[str, int]:
+def tenant_predicate(data_type: str) -> str:
+    """Most tables key tenant_id as uuid; a few older ones as text."""
+    return "tenant_id = $1::uuid" if data_type == "uuid" else "tenant_id::text = $1"
+
+
+async def count_rows(conn, tables: dict[str, str], tenant_id: str) -> dict[str, int]:
     out = {}
-    for table in tables:
-        n = await conn.fetchval(f'SELECT count(*) FROM "{table}" WHERE tenant_id = $1::uuid', tenant_id)
+    for table, dtype in tables.items():
+        n = await conn.fetchval(
+            f'SELECT count(*) FROM "{table}" WHERE {tenant_predicate(dtype)}', tenant_id)
         if n:
             out[table] = int(n)
     return out
 
 
-async def purge(conn, tables: list[str], tenant_id: str) -> tuple[dict[str, int], list[str]]:
+async def purge(conn, tables: dict[str, str], tenant_id: str) -> tuple[dict[str, int], list[str]]:
     """Delete in FK-safe order by repeated passes, each table in a savepoint.
 
     A table whose rows are still referenced fails its savepoint and is retried
@@ -97,12 +107,14 @@ async def purge(conn, tables: list[str], tenant_id: str) -> tuple[dict[str, int]
             try:
                 async with conn.transaction():
                     status = await conn.execute(
-                        f'DELETE FROM "{table}" WHERE tenant_id = $1::uuid', tenant_id)
+                        f'DELETE FROM "{table}" WHERE {tenant_predicate(tables[table])}',
+                        tenant_id)
                 n = int(status.split()[-1])
                 if n:
                     deleted[table] = deleted.get(table, 0) + n
-            except Exception:  # noqa: BLE001 — retried next pass
+            except Exception as exc:  # noqa: BLE001 — retried next pass
                 failed.append(table)
+                LAST_ERRORS[table] = str(exc).splitlines()[0][:200]
         if not failed or failed == pending:
             pending = failed
             break
@@ -150,10 +162,18 @@ async def reset(tenant_id: str, base_url: str, execute: bool) -> dict:
                 "SELECT id::text AS id, slug, is_demo FROM tenants WHERE id = $1::uuid FOR UPDATE",
                 tenant_id)
             common.assert_demo_tenant(dict(locked) if locked else None, tenant_id)
+            # clients ⇄ agent_contacts reference each other (0054, both
+            # RESTRICT), so neither can go first; unlink the pair, then purge.
+            await conn.execute(
+                "UPDATE clients SET contact_id = NULL WHERE tenant_id = $1::uuid", tenant_id)
+            await conn.execute(
+                "UPDATE agent_contacts SET legacy_client_id = NULL WHERE tenant_id = $1::uuid",
+                tenant_id)
             deleted, stuck = await purge(conn, tables, tenant_id)
             if stuck:
                 raise common.DemoSafetyError(
-                    f"could not clear {stuck}; nothing was changed (transaction rolled back)")
+                    f"could not clear {stuck} ({ {t: LAST_ERRORS.get(t) for t in stuck} }); "
+                    "nothing was changed (transaction rolled back)")
     finally:
         await conn.close()
 

@@ -138,7 +138,7 @@ The `neoh-api` container needs three settings:
   `fireworks-api-key`, backed by the versionless Key Vault secret
   `fireworks-api-key` through the `neoh-app-id` managed identity.
 - `ORACLE_FIREWORKS_MODEL` names the model, e.g.
-  `accounts/fireworks/models/deepseek-v4p1-flash`.
+  `accounts/fireworks/models/kimi-k3`.
 
 Run `infra/scripts/set-fireworks-secret.sh` to create the Key Vault secret and
 bind it. It cannot run while the subscription is suspended: Key Vault still

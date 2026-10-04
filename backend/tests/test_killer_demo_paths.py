@@ -182,7 +182,7 @@ def test_a_spent_tool_budget_ends_with_an_answer_not_an_error(monkeypatch):
     import ai_chat_agent
 
     async def fake_execute(*_args, **_kwargs):
-        return {"ok": True, "staged": True}
+        return {"ok": True, "command_id": "cmd-1"}
 
     seen = []
 
@@ -205,6 +205,46 @@ def test_a_spent_tool_budget_ends_with_an_answer_not_an_error(monkeypatch):
         max_rounds=ai_chat_agent._HOSTED_TOOL_ROUNDS))
     assert text == "Text staged for approval."
     assert seen == [True] * ai_chat_agent._HOSTED_TOOL_ROUNDS + [False]
+
+
+def test_a_reply_cannot_claim_a_staged_text_no_tool_staged():
+    import ai_chat_agent as a
+
+    claim = "I've drafted the text to Sarah. It's staged for your approval."
+    assert a._guard_unbacked_claims(claim, []).endswith(a.UNBACKED_CLAIM_NOTE)
+    assert a._guard_unbacked_claims(claim, ["cmd-1"]) == claim
+    plain = "Call Sarah Johnson first; she fits on budget, area and bedrooms."
+    assert a._guard_unbacked_claims(plain, []) == plain
+
+
+def test_the_guard_sees_what_the_tools_actually_staged(monkeypatch):
+    from types import SimpleNamespace
+
+    import ai_chat_agent
+
+    calls = {"n": 0}
+
+    async def fake_execute(*_args, **_kwargs):
+        return {"ok": True, "command_id": "cmd-9", "approval_id": "ap-9", "sent": False}
+
+    async def fake_chat(payload, **_kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return {"choices": [{"message": {"role": "assistant", "content": "", "tool_calls": [
+                {"id": "c1", "type": "function",
+                 "function": {"name": "draft_sms", "arguments": '{"client_id":"x","body":"hi"}'}}]}}]}
+        return {"choices": [{"message": {"role": "assistant",
+                                         "content": "Staged for your approval."}}]}
+
+    monkeypatch.setattr(ai_chat_agent, "execute_safe_tool", fake_execute)
+    monkeypatch.setattr(ai_chat_agent, "_local_chat", fake_chat)
+    monkeypatch.setattr(ai_chat_agent, "_local_tools", lambda _ctx: [{"type": "function"}])
+    bundle = {"attachments": [], "record": None,
+              "assistant": {"context_type": "client", "context_id": "c-1"},
+              "messages": [{"role": "user", "content": "text her"}]}
+    text, _ = asyncio.run(ai_chat_agent._local_fallback(
+        SimpleNamespace(agent_id="a"), bundle, "system", "asst", applied=[], max_rounds=6))
+    assert text == "Staged for your approval."
 
 
 def test_hosted_tiers_get_more_rounds_than_the_local_model():

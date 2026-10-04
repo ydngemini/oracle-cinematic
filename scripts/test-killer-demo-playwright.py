@@ -106,7 +106,9 @@ def wait_receipt(page, pattern: str, timeout_s: float = 90) -> str:
 
 def approve_first_pending(page, kind_word: str) -> None:
     """In the approvals queue, approve the newest pending request of this kind."""
-    page.get_by_role("button", name="Approve").first.wait_for(timeout=30_000)
+    page.wait_for_timeout(3000)
+    page.screenshot(path=str(OUT / "e2e" / "last-review.png"))
+    page.get_by_role("button", name="Approve").first.wait_for(timeout=45_000)
     cards = page.locator("li, article, section").filter(has=page.get_by_role("button", name="Approve"))
     target = cards.filter(has_text=re.compile(kind_word, re.I)).last
     if target.count() == 0:

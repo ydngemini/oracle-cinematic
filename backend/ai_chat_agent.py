@@ -80,7 +80,7 @@ FIREWORKS_URL = os.getenv(
     "ORACLE_FIREWORKS_URL", "https://api.fireworks.ai/inference/v1/chat/completions"
 )
 FIREWORKS_MODEL = os.getenv(
-    "ORACLE_FIREWORKS_MODEL", "accounts/fireworks/models/deepseek-v4p1-flash"
+    "ORACLE_FIREWORKS_MODEL", "accounts/fireworks/models/kimi-k3"
 )
 # Reasoning models spend the budget on `reasoning_content` before emitting any
 # `content`; at the local tier's 1000 the reply comes back empty with
@@ -780,6 +780,31 @@ def _converse(messages: list[dict], system_prompt: str, tool_config: dict | None
     return _get_client().converse(**kwargs)
 
 
+#: Phrases that tell the agent something is waiting for their approval.
+_STAGING_CLAIM = re.compile(
+    r"\b(staged|approval queue|command queue|queued for (?:your )?approval|"
+    r"waiting for your approval|sitting in (?:the|your) (?:approval|command) queue)\b",
+    re.IGNORECASE,
+)
+
+UNBACKED_CLAIM_NOTE = (
+    "Note from Neoh: nothing was actually staged in this reply, so there is "
+    "nothing waiting for your approval. Ask again and I will draft it."
+)
+
+
+def _guard_unbacked_claims(text: str, staged_commands: list[str]) -> str:
+    """A reply may not say an action is waiting for approval unless a tool in
+    this turn really staged one. Both hosted models tried on staging wrote a
+    complete text message into the reply and called it "staged for your
+    approval" without calling draft_sms (killer-demo run, 2026-10-04): the
+    agent would have gone to approve something that did not exist."""
+    if staged_commands or not text or not _STAGING_CLAIM.search(text):
+        return text
+    logger.warning("chat reply claimed a staged action that no tool staged")
+    return f"{text}\n\n{UNBACKED_CLAIM_NOTE}"
+
+
 def _local_tools(context_type: str | None) -> list[dict]:
     """The same gated tool set, in OpenAI Chat Completions shape.
 
@@ -897,6 +922,7 @@ async def _local_fallback(
     # See the Foundry loop: the ledger keys on (assistant_id, call_index), so
     # this counts every tool call in the turn, across rounds.
     call_index = 0
+    staged_commands: list[str] = []
     for _ in range(max_rounds or _LOCAL_TOOL_ROUNDS):
         try:
             data = await _round()
@@ -918,7 +944,7 @@ async def _local_fallback(
         message = (data.get("choices") or [{}])[0].get("message") or {}
         tool_calls = message.get("tool_calls") or []
         if not tool_calls:
-            return str(message.get("content") or "").strip(), actions
+            return _guard_unbacked_claims(str(message.get("content") or "").strip(), staged_commands), actions
 
         # Echo the assistant turn back verbatim so the model sees its own call.
         messages.append(
@@ -953,6 +979,14 @@ async def _local_fallback(
                 )
                 if _is_record_change(name, receipt):
                     actions.append(receipt)
+            # Which tools a turn actually ran, and whether they worked — the
+            # one thing needed to tell "the model never asked" from "the tool
+            # refused" when a reply claims an action. No arguments, no PII.
+            ok = bool(isinstance(receipt, dict) and receipt.get("ok"))
+            if ok and (receipt.get("command_id") or receipt.get("approval_id")):
+                staged_commands.append(str(receipt.get("command_id") or receipt.get("approval_id")))
+            logger.info("chat tool %s ok=%s%s", name, ok,
+                        "" if ok else f" error={str((receipt or {}).get('error') or '')[:160]!r}")
             call_index += 1
             messages.append(
                 {
@@ -978,7 +1012,7 @@ async def _local_fallback(
         data = await _round()
         message = (data.get("choices") or [{}])[0].get("message") or {}
         if not message.get("tool_calls") and str(message.get("content") or "").strip():
-            return str(message.get("content")).strip(), actions
+            return _guard_unbacked_claims(str(message.get("content")).strip(), staged_commands), actions
     raise RuntimeError("The assistant exceeded the safe tool-call limit")
 
 

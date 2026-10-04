@@ -258,7 +258,7 @@ services:
       # by Fireworks but answered 404 'not deployed', so Neoh failed every
       # turn on staging (found by the killer-demo run, 2026-10-04).
       - key: ORACLE_FIREWORKS_MODEL
-        value: "accounts/fireworks/models/deepseek-v4p1-flash"
+        value: "accounts/fireworks/models/kimi-k3"
       # Voice carrier (Plivo is the default ORACLE_VOICE_PROVIDER). The worker
       # places an approved Neoh call; the api signs/answers its webhooks.
       - key: PLIVO_AUTH_ID
@@ -477,7 +477,7 @@ workers:
       # by Fireworks but answered 404 'not deployed', so Neoh failed every
       # turn on staging (found by the killer-demo run, 2026-10-04).
       - key: ORACLE_FIREWORKS_MODEL
-        value: "accounts/fireworks/models/deepseek-v4p1-flash"
+        value: "accounts/fireworks/models/kimi-k3"
       # Voice carrier (Plivo is the default ORACLE_VOICE_PROVIDER). The worker
       # places an approved Neoh call; the api signs/answers its webhooks.
       - key: PLIVO_AUTH_ID
