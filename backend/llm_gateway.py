@@ -173,7 +173,7 @@ def _local(model: str) -> Optional[Provider]:
 # fallbacks, and only `complete()` is allowed to use them.
 _TASK_MODELS: dict[str, tuple[tuple[str, str], ...]] = {
     "analysis": (
-        ("fireworks", _env("ORACLE_FIREWORKS_MODEL") or "accounts/fireworks/models/kimi-k2p7-code"),
+        ("fireworks", _env("ORACLE_FIREWORKS_MODEL") or "accounts/fireworks/models/kimi-k3"),
         ("foundry", _env("ORACLE_FOUNDRY_MODEL") or "Kimi-K2.6"),
         ("bedrock", "us.meta.llama3-3-70b-instruct-v1:0"),
         ("local", _env("ORACLE_LOCAL_LLM_MODEL") or "local-llama"),

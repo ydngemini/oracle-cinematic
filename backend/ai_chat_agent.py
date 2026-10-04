@@ -51,6 +51,13 @@ FOUNDRY_PROJECT_ENDPOINT = os.getenv("ORACLE_FOUNDRY_PROJECT_ENDPOINT", "").rstr
 FOUNDRY_AGENT_NAME = os.getenv("ORACLE_FOUNDRY_AGENT_NAME", "neoh-kimi-k2-6")
 FOUNDRY_MODEL_ID = os.getenv("ORACLE_FOUNDRY_MODEL", "Kimi-K2.6")
 _LOCAL_TOOL_ROUNDS = 3
+# Hosted models (Fireworks, through the gateway or directly) do real multi-step
+# work: "text Sarah about this house" is read the client, read the listing,
+# stage the text, then answer — four rounds. Three was sized for a small local
+# model and cut that turn off after the text was already staged, so the agent
+# saw "couldn't complete that response" next to a waiting approval (found by
+# the killer-demo run, 2026-10-04).
+_HOSTED_TOOL_ROUNDS = max(1, int(os.getenv("ORACLE_HOSTED_TOOL_ROUNDS", "6") or 6))
 # Qwen3 and other hybrid-reasoning models emit a <think> block by default, which
 # consumes the whole token budget on a CPU-only host and truncates the real
 # answer. Templates without an enable_thinking variable simply ignore this.
@@ -73,7 +80,7 @@ FIREWORKS_URL = os.getenv(
     "ORACLE_FIREWORKS_URL", "https://api.fireworks.ai/inference/v1/chat/completions"
 )
 FIREWORKS_MODEL = os.getenv(
-    "ORACLE_FIREWORKS_MODEL", "accounts/fireworks/models/kimi-k2p7-code"
+    "ORACLE_FIREWORKS_MODEL", "accounts/fireworks/models/kimi-k3"
 )
 # Reasoning models spend the budget on `reasoning_content` before emitting any
 # `content`; at the local tier's 1000 the reply comes back empty with
@@ -281,7 +288,7 @@ TOOLS = {
     "archive_client":       _tool("archive_client", "Archive an inactive client. This is reversible.", {"client_id": _text("client_id")}),
     "list_client_activity": _tool("list_client_activity", "Recent timeline of notes, stage changes, tasks, and communications for a client.", {"client_id": _text("client_id")}),
     "get_client_contact_history": _tool("get_client_contact_history", "Communication log for a client: calls, emails, messages, and meeting notes.", {"client_id": _text("client_id")}),
-    "suggest_client_matches": _tool("suggest_client_matches", "Find buyers who match a seller's property, or sellers who match a buyer's criteria.", {"client_id": _text("client_id")}),
+    "suggest_client_matches": _tool("suggest_client_matches", "Which of this brokerage's buyers fit one of its own properties — use it for 'who should I call about this?' with a property open (pass its lead_id or listing_id). Returns each buyer's verdict (strong/possible), the criteria that agree (budget, location, bedrooms, type), what is not recorded, their stated needs, and homes they were recently shown, with feedback. Pass only a buyer's client_id to rank active listings for them instead. Rule-based: never present it as a percentage or AI score.", {"lead_id": _text("lead_id", "The open property (a lead id)"), "listing_id": _text("listing_id", "Or the listing id"), "client_id": _text("client_id", "Or a buyer/seller client id")}, []),
     "list_client_documents": _tool("list_client_documents", "List contracts, disclosures, and attachments associated with a client.", {"client_id": _text("client_id")}),
     "merge_duplicate_clients": _tool("merge_duplicate_clients", "Merge two client records into one, preserving history. Requires review.", {"keep_id": _text("keep_id"), "merge_id": _text("merge_id")}),
     "create_client":        _tool("create_client", "Create a new client record.", {"full_name": _text("full_name"), "email": _text("email", "Optional"), "phone": _text("phone", "Optional"), "client_type": _text("client_type", "seller, buyer, or both")}, ["full_name"]),
@@ -773,6 +780,31 @@ def _converse(messages: list[dict], system_prompt: str, tool_config: dict | None
     return _get_client().converse(**kwargs)
 
 
+#: Phrases that tell the agent something is waiting for their approval.
+_STAGING_CLAIM = re.compile(
+    r"\b(staged|approval queue|command queue|queued for (?:your )?approval|"
+    r"waiting for your approval|sitting in (?:the|your) (?:approval|command) queue)\b",
+    re.IGNORECASE,
+)
+
+UNBACKED_CLAIM_NOTE = (
+    "Note from Neoh: nothing was actually staged in this reply, so there is "
+    "nothing waiting for your approval. Ask again and I will draft it."
+)
+
+
+def _guard_unbacked_claims(text: str, staged_commands: list[str]) -> str:
+    """A reply may not say an action is waiting for approval unless a tool in
+    this turn really staged one. Both hosted models tried on staging wrote a
+    complete text message into the reply and called it "staged for your
+    approval" without calling draft_sms (killer-demo run, 2026-10-04): the
+    agent would have gone to approve something that did not exist."""
+    if staged_commands or not text or not _STAGING_CLAIM.search(text):
+        return text
+    logger.warning("chat reply claimed a staged action that no tool staged")
+    return f"{text}\n\n{UNBACKED_CLAIM_NOTE}"
+
+
 def _local_tools(context_type: str | None) -> list[dict]:
     """The same gated tool set, in OpenAI Chat Completions shape.
 
@@ -827,6 +859,7 @@ async def _local_fallback(
     timeout: float = 0.0,
     disable_thinking: Optional[bool] = None,
     gateway_provider: Any = None,
+    max_rounds: Optional[int] = None,
 ) -> tuple[str, list[dict]]:
     """Local llama.cpp fallback, with tool calling when the server supports it.
 
@@ -889,7 +922,8 @@ async def _local_fallback(
     # See the Foundry loop: the ledger keys on (assistant_id, call_index), so
     # this counts every tool call in the turn, across rounds.
     call_index = 0
-    for _ in range(_LOCAL_TOOL_ROUNDS):
+    staged_commands: list[str] = []
+    for _ in range(max_rounds or _LOCAL_TOOL_ROUNDS):
         try:
             data = await _round()
         except httpx.HTTPStatusError as exc:
@@ -910,7 +944,7 @@ async def _local_fallback(
         message = (data.get("choices") or [{}])[0].get("message") or {}
         tool_calls = message.get("tool_calls") or []
         if not tool_calls:
-            return str(message.get("content") or "").strip(), actions
+            return _guard_unbacked_claims(str(message.get("content") or "").strip(), staged_commands), actions
 
         # Echo the assistant turn back verbatim so the model sees its own call.
         messages.append(
@@ -945,6 +979,14 @@ async def _local_fallback(
                 )
                 if _is_record_change(name, receipt):
                     actions.append(receipt)
+            # Which tools a turn actually ran, and whether they worked — the
+            # one thing needed to tell "the model never asked" from "the tool
+            # refused" when a reply claims an action. No arguments, no PII.
+            ok = bool(isinstance(receipt, dict) and receipt.get("ok"))
+            if ok and (receipt.get("command_id") or receipt.get("approval_id")):
+                staged_commands.append(str(receipt.get("command_id") or receipt.get("approval_id")))
+            logger.info("chat tool %s ok=%s%s", name, ok,
+                        "" if ok else f" error={str((receipt or {}).get('error') or '')[:160]!r}")
             call_index += 1
             messages.append(
                 {
@@ -955,6 +997,22 @@ async def _local_fallback(
             )
         payload["messages"] = messages
 
+    # The tool budget is spent. Everything the tools did is already in the
+    # transcript (and committed, with receipts); ask for the answer once, with
+    # no tools offered, rather than throwing the turn away. A model that still
+    # tries to call a tool here gets the old refusal.
+    if tools:
+        payload["messages"] = messages + [{
+            "role": "user",
+            "content": "Tool budget for this turn is used up. Answer now from the tool "
+                       "results above; do not call any tools.",
+        }]
+        payload.pop("tools", None)
+        payload.pop("tool_choice", None)
+        data = await _round()
+        message = (data.get("choices") or [{}])[0].get("message") or {}
+        if not message.get("tool_calls") and str(message.get("content") or "").strip():
+            return _guard_unbacked_claims(str(message.get("content")).strip(), staged_commands), actions
     raise RuntimeError("The assistant exceeded the safe tool-call limit")
 
 
@@ -972,6 +1030,7 @@ async def _fireworks_generate(
         timeout=FIREWORKS_TIMEOUT,
         # llama.cpp-only knob; Fireworks rejects unknown template kwargs.
         disable_thinking=False,
+        max_rounds=_HOSTED_TOOL_ROUNDS,
     )
     return (
         text or "I completed the review but did not receive a text response.",
@@ -1102,6 +1161,7 @@ async def _generate(ctx: TenantContext, bundle: dict, assistant_id: str) -> tupl
                 model=provider.model, max_tokens=FIREWORKS_MAX_TOKENS,
                 timeout=FIREWORKS_TIMEOUT, disable_thinking=False,
                 gateway_provider=provider,
+                max_rounds=_HOSTED_TOOL_ROUNDS,
             )
             return (
                 text or "I completed the review but did not receive a text response.",

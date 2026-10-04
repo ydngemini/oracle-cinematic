@@ -101,12 +101,35 @@ async def _outreach_target(conn, ctx: TenantContext, client_id: str):
             ORDER BY updated_at DESC LIMIT 1""",
         client_id, ctx.tenant_id,
     )
+    # A buyer owns no listed property, so the lead above never exists for
+    # them and every buyer was refused "No state is recorded" — Neoh could not
+    # text or call the very people buyer matching recommends. The contact
+    # record (agent_contacts, linked by legacy_client_id / clients.contact_id)
+    # carries the person's own state and IANA timezone; the timezone also
+    # lets quiet hours use where they actually are.
+    contact_place = await conn.fetchrow(
+        """SELECT ac.state_code, ac.timezone
+             FROM agent_contacts ac
+            WHERE ac.tenant_id=$2::uuid AND ac.deleted_at IS NULL
+              AND (ac.legacy_client_id=$1::uuid
+                   OR ac.id=(SELECT contact_id FROM clients
+                              WHERE id=$1::uuid AND tenant_id=$2::uuid))
+            ORDER BY (ac.state_code IS NOT NULL) DESC, ac.updated_at DESC
+            LIMIT 1""",
+        client_id, ctx.tenant_id,
+    )
+    if not state_code and contact_place and contact_place.get("state_code"):
+        state_code = contact_place.get("state_code")
+    timezone_name = ""
+    if contact_place and contact_place.get("timezone") not in (None, "", "UTC"):
+        timezone_name = str(contact_place.get("timezone"))
     return {
         "client_id": client_id,
         "full_name": client["full_name"],
         "email": (client["email"] or "").strip(),
         "phone_raw": client["phone"],
-        "state_code": (state_code or "").upper(),
+        "state_code": (state_code or "").strip().upper(),
+        "timezone": timezone_name,
     }, None
 
 
@@ -201,6 +224,8 @@ async def _outreach(conn, ctx, *, tool_name, tool_input, client_id, user_id,
         )
     target = {"phone": phone, "client_id": client_id,
               "state_code": contact["state_code"]}
+    if contact.get("timezone"):
+        target["timezone"] = contact["timezone"]
 
     if tool_name == "draft_sms":
         message = str(tool_input.get("body") or "").strip()

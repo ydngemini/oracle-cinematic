@@ -197,12 +197,22 @@ INTENTS: tuple[Intent, ...] = (
 )
 
 
-async def ask(ctx: TenantContext, text: str) -> dict[str, Any]:
+#: Intents whose answer ignores whatever is on screen. "Who should I call?"
+#: from Home is the tenant-wide call queue; the same words asked with a
+#: property open mean "who should I call about THIS house", and answering with
+#: the generic queue was a confident answer to a different question.
+RECORD_AGNOSTIC = frozenset({"who_to_call"})
+
+
+async def ask(ctx: TenantContext, text: str, *, has_record: bool = False) -> dict[str, Any]:
     """Classify, resolve, render. Never raises; a failure falls through.
 
     A resolver that breaks must not cost the person their question: the text
     still reaches the model, which is what would have happened without this
     module at all.
+
+    `has_record`: a record (property, client, ...) is open. Intents that would
+    answer without it fall through to the model, which is given the record.
     """
     cleaned = (text or "").strip()[:MAX_TEXT]
     if not cleaned:
@@ -212,6 +222,8 @@ async def ask(ctx: TenantContext, text: str) -> dict[str, Any]:
         match = intent.pattern.match(cleaned)
         if not match:
             continue
+        if has_record and intent.name in RECORD_AGNOSTIC:
+            return render.fallthrough(f"{intent.name} asked about the open record")
         try:
             return await intent.resolve(ctx, match)
         except Exception:  # noqa: BLE001 — a broken resolver degrades to chat

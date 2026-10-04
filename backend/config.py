@@ -265,6 +265,18 @@ def _weak_secret_reason(value: str, min_len: int) -> str | None:
 def validate_or_die() -> None:
     """Fail the boot fast when a production deployment is missing a critical
     secret. In development, log the relaxed posture and continue."""
+    # The demo-recipient allowlist is the single exception to recovery mode's
+    # block on outbound texts/calls (recovery_mode.py). It is a staging/sales
+    # demo tool; a production instance carrying it is a misconfiguration that
+    # must stop the boot, not a warning someone reads after a client's phone
+    # rings. recovery_mode also ignores it unless ORACLE_ENV is explicitly
+    # non-production — this check is the loud half of the same rule.
+    if IS_PROD and os.environ.get("ORACLE_DEMO_RECIPIENT_ALLOWLIST", "").strip():
+        raise RuntimeError(
+            "Refusing to start: ORACLE_DEMO_RECIPIENT_ALLOWLIST is set on a "
+            "production instance. It exists only for staging/demo instances "
+            "running in recovery mode; unset it."
+        )
     # ACS readiness check — log warnings for missing telephony config (non-fatal)
     _acs_missing = []
     if not os.environ.get("ACS_CONNECTION_STRING"):
@@ -398,7 +410,10 @@ ENV_VARS: dict[str, tuple[str, ...]] = {
              "ORACLE_CORS_ORIGINS", "ORACLE_BASE_URL", "ORACLE_DEMO_TENANT_ID",
              "ORACLE_ENABLE_DEMO_LOGINS", "ORACLE_JWT_ISSUER", "ORACLE_JWT_AUDIENCE",
              "ORACLE_JWT_TENANT_ISSUER", "ORACLE_JWT_TENANT_AUDIENCE",
-             "ORACLE_ADMIN_ID", "ORACLE_ADMIN_PASSPHRASE"),
+             "ORACLE_ADMIN_ID", "ORACLE_ADMIN_PASSPHRASE",
+             # Staging/demo only: E.164 numbers recovery mode lets texts/calls
+             # reach (recovery_mode.py). Refused at boot in production.
+             "ORACLE_DEMO_RECIPIENT_ALLOWLIST"),
     "db": ("ORACLE_DB_HOST", "ORACLE_DB_PORT", "ORACLE_DB_NAME", "ORACLE_DB_USER",
            "ORACLE_DB_PASSWORD", "ORACLE_DB_SSLMODE", "ORACLE_DB_POOL_MIN",
            "ORACLE_DB_POOL_MAX", "ORACLE_RDS_CA_BUNDLE", "ORACLE_DB_CA_BUNDLE", "ORACLE_DB_CA_CERT",

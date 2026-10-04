@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { crmPost } from '../state/useCrmApi';
 import { isBusy } from './surfaceModel';
+import { wireContext } from './useNeohChannel';
 import { useSpeechInput } from './useSpeechInput';
 
 /**
@@ -53,7 +54,10 @@ export function useNeohComposer({ channel, record, onSettled, draftState }) {
     setAsking(true);
     // The ask path is an optimisation, never a gate: if it fails, the
     // question still reaches the model.
-    const answer = await crmPost('/api/neoh/ask', { text }).catch(() => null);
+    // The open record rides along: "who should I call about this?" asked on
+    // a property is about that property, and only the model has it.
+    const context = wireContext(record);
+    const answer = await crmPost('/api/neoh/ask', context ? { text, context } : { text }).catch(() => null);
     setAsking(false);
     if (answer && !answer.fallthrough && (answer.blocks || []).length > 0) {
       setRendered({ ...answer, question: text });

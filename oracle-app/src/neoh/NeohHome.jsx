@@ -4,7 +4,7 @@ import { ChevronDown, Radar, Sparkles } from 'lucide-react';
 import { crmGet } from '../state/useCrmApi';
 import { useOptionalAssistant } from '../components/AssistantContext';
 import { ConfidenceMeter, DecisionBar, EvidenceList } from '../components/IntelligenceFeed';
-import { VIEWS } from '../routes';
+import { VIEWS, entityHref } from '../routes';
 import { arrange } from './timeOfDay';
 import { handledPhrase } from './actionLabels';
 import { wireContext } from './useNeohChannel';
@@ -115,7 +115,10 @@ function QuietStart({ onNavigate, onAsk }) {
   );
 }
 
-function HomeItem({ opportunity, rank, lead, showDecisions, onDecided, onAsk }) {
+/** Opportunity subject types that open a record sheet, and the sheet kind. */
+const ENTITY_KIND = Object.freeze({ lead: 'property', client: 'person' });
+
+function HomeItem({ opportunity, rank, lead, showDecisions, onDecided, onAsk, onOpenEntity }) {
   const [open, setOpen] = useState(false);
   return (
     <li className={`${styles.item} ${lead ? styles.itemLead : ''}`}>
@@ -132,7 +135,20 @@ function HomeItem({ opportunity, rank, lead, showDecisions, onDecided, onAsk }) 
           </time>
         )}
       </div>
-      <h2 className={styles.subject}>{opportunity.subject}</h2>
+      <h2 className={styles.subject}>
+        {/* The subject IS the record: a property card opens the property, a
+            person card the person. Otherwise the first useful thing on Home
+            had no way into the thing it was about. */}
+        {onOpenEntity && opportunity.subject_id && ENTITY_KIND[opportunity.subject_type] ? (
+          <button
+            type="button"
+            className={styles.subjectLink}
+            onClick={() => onOpenEntity(entityHref(ENTITY_KIND[opportunity.subject_type], opportunity.subject_id))}
+          >
+            {opportunity.subject}
+          </button>
+        ) : opportunity.subject}
+      </h2>
       <p className={styles.headline}>{opportunity.headline}</p>
       <p className={styles.action}>{opportunity.recommended_action}</p>
       {lead && onAsk && opportunity.subject && (
@@ -209,7 +225,7 @@ function CannotSee({ perception }) {
   );
 }
 
-export function NeohHome({ onNavigate }) {
+export function NeohHome({ onNavigate, onOpenEntity }) {
   const [briefing, setBriefing] = useState(null);
   const [status, setStatus] = useState('loading');
   const ask = useAskNeoh(onNavigate);
@@ -305,6 +321,7 @@ export function NeohHome({ onNavigate }) {
                 lead={index === 0}
                 showDecisions={layout.showDecisions}
                 onDecided={load}
+                onOpenEntity={onOpenEntity}
                 onAsk={index === 0 ? () => ask(
                   opportunity.subject_id
                     ? { type: opportunity.subject_type || 'client', id: opportunity.subject_id, label: opportunity.subject }

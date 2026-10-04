@@ -60,6 +60,10 @@ class NeohAsk(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     text: str = Field(min_length=1, max_length=400)
+    #: The record open on screen, if any ({type, id}, same shape as the chat
+    #: channel's context). Only its presence is used here: a question asked
+    #: about the property on screen must reach the model, which has the record.
+    context: Optional[dict[str, str]] = None
 
 
 @router.post("/neoh/ask")
@@ -74,7 +78,7 @@ async def neoh_ask(body: NeohAsk, ctx: TenantContext = Depends(require_context))
     than a limit on what can be asked.
     """
     require_feature(Feature.PREDICTIVE_INTELLIGENCE)
-    return await neoh_intents.ask(ctx, body.text)
+    return await neoh_intents.ask(ctx, body.text, has_record=bool(body.context))
 
 
 # ---------------------------------------------------------------------------

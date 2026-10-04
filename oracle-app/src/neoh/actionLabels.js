@@ -87,6 +87,16 @@ export const TERMINAL_COMMAND_STATES = Object.freeze(new Set([
   'succeeded', 'failed', 'cancelled', 'reconciliation_required',
 ]));
 
+const BLOCKED = /^(?:Text message|SMS|Call|Outreach) blocked:\s*([\s\S]+)$/;
+
+/** The policy reason from a refused command's last_error, or null. */
+export function blockedReason(lastError) {
+  const match = BLOCKED.exec(String(lastError || '').trim());
+  if (!match) return null;
+  const reason = match[1].trim().slice(0, 240);
+  return reason.charAt(0).toUpperCase() + reason.slice(1).replace(/([^.])$/, '$1.');
+}
+
 /**
  * A receipt for one row of command_executions.
  *
@@ -113,8 +123,16 @@ export function commandReceipt(command) {
       return { tone: 'pending', title: DOING[type] || 'In progress…', detail: toLine.trim(), review: false };
     case 'succeeded':
       return { tone: 'done', title: DONE[type] || 'Done', detail: toLine.trim(), review: false };
-    case 'failed':
-      return { tone: 'failed', title: `${kind} didn't go through`, detail: `${toLine}You can try again.`, review: false };
+    case 'failed': {
+      // A refusal by policy (no consent, outside calling hours, texting not
+      // set up) is the product's own sentence, and "you can try again" would
+      // be wrong about it. Anything else stays generic: provider errors are
+      // not written for people.
+      const refusal = blockedReason(command?.last_error);
+      return refusal
+        ? { tone: 'failed', title: `${kind} not sent`, detail: `${toLine}${refusal}`, review: false }
+        : { tone: 'failed', title: `${kind} didn't go through`, detail: `${toLine}You can try again.`, review: false };
+    }
     case 'cancelled':
       return { tone: 'muted', title: `${kind} cancelled`, detail: `${toLine}Nothing was sent.`, review: false };
     case 'reconciliation_required':

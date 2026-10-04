@@ -52,6 +52,7 @@ from mls_health import visible_feed_predicate
 
 
 TOOLS_HANDLED = frozenset({
+    "suggest_client_matches",
     "get_property_tour",
     "search_listings",
     "get_listing_detail",
@@ -1955,7 +1956,92 @@ async def _get_property_tour(conn, ctx: TenantContext, tool_input: dict) -> dict
     }
 
 
+async def _suggest_client_matches(conn, ctx: TenantContext, tool_input: dict) -> dict:
+    """Who in this brokerage's book fits a property — or what fits a buyer.
+
+    In the catalog from the start, never implemented, so "who should I call
+    about this?" on an open property had nothing to answer with but a name
+    search. Deterministic (buyer_matching): the criteria that agree, the ones
+    nobody recorded, the buyer's stated needs and the homes they were shown.
+    """
+    from uuid import UUID as _UUID
+
+    import buyer_matching
+
+    def _uuid(name: str) -> Optional[str]:
+        raw = str(tool_input.get(name) or "").strip()
+        if not raw:
+            return None
+        return str(_UUID(raw))
+
+    try:
+        lead_id, listing_id, client_id = _uuid("lead_id"), _uuid("listing_id"), _uuid("client_id")
+    except ValueError:
+        return _err("lead_id, listing_id and client_id must be UUIDs.")
+
+    if client_id and not (lead_id or listing_id):
+        client = await conn.fetchrow(
+            """SELECT id::text AS id, full_name, client_type, preferences FROM clients
+                WHERE id=$1::uuid AND tenant_id=$2::uuid AND archived_at IS NULL""",
+            client_id, ctx.tenant_id,
+        )
+        if not client:
+            return _err("That client is not in this workspace.")
+        if client["client_type"] == "seller":
+            lead_id = await conn.fetchval(
+                """SELECT id::text FROM leads WHERE seller_client_id=$1::uuid
+                     AND tenant_id=$2::uuid ORDER BY updated_at DESC LIMIT 1""",
+                client_id, ctx.tenant_id,
+            )
+            if not lead_id:
+                return _err(f"{client['full_name']} is a seller with no property on file to match.")
+        else:
+            rows = await conn.fetch(
+                """SELECT l.id::text AS listing_id FROM listings l
+                    WHERE l.tenant_id=$1::uuid AND l.status='active'
+                    ORDER BY l.updated_at DESC LIMIT 50""",
+                ctx.tenant_id,
+            )
+            ranked = []
+            for r in rows:
+                prop = await buyer_matching.load_owned_property(conn, ctx, listing_id=r["listing_id"])
+                if not prop:
+                    continue
+                m = buyer_matching.match_listing_to_buyer(prop, dict(client))
+                if m.verdict in (buyer_matching.STRONG, buyer_matching.POSSIBLE):
+                    ranked.append((m, prop))
+            ranked.sort(key=lambda pair: (pair[0].verdict != buyer_matching.STRONG,
+                                          -pair[0].matched_signals))
+            return _ok(
+                "suggest_client_matches",
+                buyer={"client_id": client["id"], "name": client["full_name"],
+                       "stated_needs": buyer_matching.stated_needs(client["preferences"])},
+                properties=[
+                    {"address": p["address"], "lead_id": p["lead_id"], "listing_id": p["listing_id"],
+                     "price": p["list_price"], "beds": p["beds"], "features": p["features"],
+                     "verdict": m.verdict, "matched_criteria": m.evidence, "unknown": m.unknowns}
+                    for m, p in ranked[:5]
+                ],
+                method="Rule-based comparison of the buyer's recorded criteria with active listings.",
+            )
+
+    if not (lead_id or listing_id):
+        return _err("Pass the property (lead_id or listing_id) or a client_id.")
+    result = await buyer_matching.property_buyer_matches(
+        conn, ctx, lead_id=lead_id, listing_id=listing_id,
+    )
+    if result is None:
+        return _err("That property is not in this workspace.")
+    if not result["matches"]:
+        result["note"] = (
+            "No buyer's recorded criteria fit this property. Buyers with no "
+            "criteria recorded are not counted as a fit or a miss."
+        )
+    return _ok("suggest_client_matches", **_clean(result))
+
+
 _HANDLERS = {
+    "suggest_client_matches": _suggest_client_matches,
     "get_property_tour": _get_property_tour,
     "search_listings": _search_listings,
     "get_listing_detail": _get_listing_detail,

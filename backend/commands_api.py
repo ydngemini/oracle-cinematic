@@ -2179,6 +2179,75 @@ async def _update_call_session_async(call_connection_id: str, status: str,
         )
 
 
+#: Provider call statuses, in the words a client timeline should use. Only a
+#: status the carrier itself reported ever reaches the timeline; "answered" is
+#: written when the carrier says the call was picked up, never before.
+_CALL_OUTCOME_SUMMARY: dict[str, str] = {
+    "completed": "Call answered and ended",
+    "busy": "Call not connected — line busy",
+    "no-answer": "Call not answered",
+    "timeout": "Call not answered",
+    "failed": "Call failed at the carrier",
+    "canceled": "Call canceled before it connected",
+    "cancel": "Call canceled before it connected",
+}
+
+
+async def record_call_outcome(provider_call_id: str, call_status: str,
+                              duration_seconds: Optional[int] = None) -> None:
+    """Carrier-confirmed call status → live_call_sessions + the client's timeline.
+
+    Plivo's outbound status callback only logged and cleaned up, so an approved
+    Neoh call left "Call placed" as the last thing anyone could see — whether
+    it was answered was known to the carrier and to nobody here.
+    """
+    status_value = (call_status or "").strip().lower()
+    if not provider_call_id or not status_value:
+        return
+    if status_value in {"in-progress", "answered"}:
+        await _update_call_session_async(provider_call_id, "in-progress")
+        return
+    summary = _CALL_OUTCOME_SUMMARY.get(status_value)
+    if summary is None:
+        return
+    await _update_call_session_async(provider_call_id, "completed", outcome=status_value)
+    if status_value == "completed" and duration_seconds is not None and duration_seconds <= 0:
+        # Plivo reports a never-answered call as completed with zero billed time.
+        summary = "Call not answered"
+    elif status_value == "completed" and duration_seconds:
+        minutes, seconds = divmod(int(duration_seconds), 60)
+        summary = f"{summary} ({minutes}:{seconds:02d})"
+    platform_ctx = TenantContext(
+        agent_id="call-status-webhook",
+        tenant_id=os.getenv("ORACLE_PLATFORM_TENANT_ID", "00000000-0000-0000-0000-000000000000"),
+        role=Role.PLATFORM_ADMIN,
+    )
+    try:
+        async with tenant_tx(platform_ctx) as conn:
+            await conn.execute(
+                """
+                INSERT INTO client_activities (tenant_id, client_id, kind, summary, meta, actor)
+                SELECT s.tenant_id, s.client_id, 'message', $2,
+                       jsonb_build_object('direction', 'outbound', 'channel', 'call',
+                                          'command_id', s.command_id::text,
+                                          'provider_call_id', $1::text,
+                                          'carrier_status', $3::text,
+                                          'duration_seconds', $4::int),
+                       'carrier'
+                  FROM live_call_sessions s
+                 WHERE s.provider_call_id = $1 AND s.client_id IS NOT NULL
+                   AND NOT EXISTS (
+                       SELECT 1 FROM client_activities a
+                        WHERE a.client_id = s.client_id
+                          AND a.meta->>'provider_call_id' = $1
+                          AND a.meta ? 'carrier_status')
+                """,
+                provider_call_id, summary, status_value, duration_seconds,
+            )
+    except Exception:  # noqa: BLE001 — the status is recorded above; the timeline row is extra
+        logger.warning("call outcome not added to the timeline: %s", provider_call_id, exc_info=True)
+
+
 #: What an approved send looks like in interaction_logs. CALENDAR is absent on
 #: purpose: a calendar event is not a touch on a thread, it is an appointment,
 #: and it is recorded as an outcome below rather than as an interaction.
@@ -2186,6 +2255,13 @@ _SEND_INTERACTION_TYPE: dict[str, str] = {
     "EMAIL": "email",
     "SMS": "sms",
     "CALL": "call_transcript",
+}
+
+#: Timeline wording per approved send — what the provider acknowledged, only.
+_SEND_ACTIVITY_SUMMARY: dict[str, str] = {
+    "EMAIL": "Email sent (approved in Neoh)",
+    "SMS": "Text accepted by the carrier (approved in Neoh)",
+    "CALL": "Call placed (approved in Neoh)",
 }
 
 
@@ -2211,6 +2287,7 @@ async def _record_send_bookkeeping(
     target: dict[str, Any],
     draft: dict[str, Any],
     provider_result: Any,
+    actor: Optional[str] = None,
 ) -> None:
     """Make an approved send visible to the layers that reason about it.
 
@@ -2292,6 +2369,44 @@ async def _record_send_bookkeeping(
                     )
             except Exception:  # noqa: BLE001
                 logger.warning("lead_response 'sent' not recorded for %s", command_id, exc_info=True)
+
+            # 4. The client's timeline. ClientTimeline reads client_activities
+            #    only; until now an approved call, an approved email and a
+            #    Twilio text reached the provider and left the relationship
+            #    timeline silent (only the Telnyx path wrote a row, inside
+            #    record_outbound_message — skipped here so it is not doubled).
+            #    The wording states what the provider acknowledged, nothing
+            #    more: "accepted" is not "delivered", "placed" is not "answered".
+            activity = _SEND_ACTIVITY_SUMMARY.get(command_type.value)
+            provider_name = str(getattr(provider_result, "provider", "") or "")
+            if (
+                client_id and activity
+                and not (command_type is CommandType.SMS and provider_name == "telnyx")
+            ):
+                try:
+                    async with conn.transaction():
+                        await conn.execute(
+                            """
+                            INSERT INTO client_activities
+                                (tenant_id, client_id, kind, summary, meta, actor)
+                            SELECT $1::uuid, $2::uuid, 'message', $3, $4::jsonb, $5
+                             WHERE NOT EXISTS (
+                                 SELECT 1 FROM client_activities
+                                  WHERE client_id = $2::uuid AND meta->>'command_id' = $6)
+                            """,
+                            ctx.tenant_id, client_id, activity,
+                            json.dumps({
+                                "direction": "outbound",
+                                "channel": command_type.value.lower(),
+                                "command_id": command_id,
+                                "provider_reference": reference,
+                                "approved": True,
+                            }),
+                            actor or ctx.agent_id,
+                            command_id,
+                        )
+                except Exception:  # noqa: BLE001 — best-effort by contract
+                    logger.warning("timeline activity not recorded for %s", command_id, exc_info=True)
 
             if command_type is CommandType.CALENDAR and (client_id or lead_id):
                 await outcome_memory.record_outcome(
@@ -2382,6 +2497,20 @@ async def _execute_command_job(payload: dict[str, Any], reporter) -> dict[str, A
             command_id,
         )
 
+    # `ctx` is the job runner ("command-worker"), not a person. Everything
+    # keyed per agent — the business number a text goes out from, the verified
+    # caller ID a call shows — belongs to the agent who staged the command.
+    # Looking those up as "command-worker" found nobody's route, so every
+    # approved call failed "Connect and verify your business number" and every
+    # Telnyx text "connect and finish setting up text messages", for agents
+    # who had done exactly that (found by the killer-demo run, 2026-10-04).
+    # The email branch already resolved its sender this way.
+    owner_ctx = TenantContext(
+        agent_id=str(command["created_by"] or "command-worker"),
+        tenant_id=tenant_id,
+        role=Role.PLATFORM_ADMIN,
+    )
+
     await reporter.progress(15, "compliance check")
     submission_started = False
     try:
@@ -2451,8 +2580,8 @@ async def _execute_command_job(payload: dict[str, Any], reporter) -> dict[str, A
                 # SMS — retries on a fallback provider could double-send.
                 from messaging_data import get_messaging_route, get_public_business_number
 
-                messaging_route = await get_messaging_route(ctx)
-                business_number = await get_public_business_number(ctx)
+                messaging_route = await get_messaging_route(owner_ctx)
+                business_number = await get_public_business_number(owner_ctx)
                 if (
                     messaging_route is None
                     or messaging_route.get("hosted_order_status") != "active"
@@ -2489,7 +2618,7 @@ async def _execute_command_job(payload: dict[str, Any], reporter) -> dict[str, A
                 try:
                     await record_outbound_message(
                         tenant_id=ctx.tenant_id,
-                        agent_id=ctx.agent_id,
+                        agent_id=owner_ctx.agent_id,
                         contact_id=str(target.get("contact_id")) if target.get("contact_id") else None,
                         client_id=str(target.get("client_id")) if target.get("client_id") else None,
                         provider="telnyx",
@@ -2524,6 +2653,7 @@ async def _execute_command_job(payload: dict[str, Any], reporter) -> dict[str, A
                 channel=Channel.VOICE,
                 contact=str(target["phone"]),
                 state_code=str(target.get("state_code") or ""),
+                tz_name=target.get("timezone"),
             )
             if not decision.allowed:
                 raise RuntimeError("Call blocked: " + "; ".join(decision.blockers))
@@ -2542,13 +2672,13 @@ async def _execute_command_job(payload: dict[str, Any], reporter) -> dict[str, A
             # calls under this path at all.
             from inbound_voice import get_telephony_route, get_verified_caller_id
 
-            verified_caller_id = await get_verified_caller_id(ctx)
+            verified_caller_id = await get_verified_caller_id(owner_ctx)
             if not verified_caller_id:
                 raise RuntimeError(
                     "Call blocked: Connect and verify your business number "
                     "before placing calls."
                 )
-            call_route = await get_telephony_route(ctx)
+            call_route = await get_telephony_route(owner_ctx)
             call_provider = str((call_route or {}).get("provider") or "twilio")
             if call_provider == "plivo":
                 # Plivo is a distinct carrier, never a silent fallback for a
@@ -2778,6 +2908,7 @@ async def _execute_command_job(payload: dict[str, Any], reporter) -> dict[str, A
         target=target,
         draft=draft,
         provider_result=provider_result,
+        actor=str(reporter.job.get("created_by") or "") or None,
     )
     await ledger.record(
         category=AuditCategory.AI_PHONE_CALL

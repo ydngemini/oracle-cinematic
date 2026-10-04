@@ -256,7 +256,7 @@ def test_call_index_is_monotonic_across_rounds_not_per_round():
     wrong receipt — so it is asserted here rather than left to production.
     """
     src = (BACKEND / "ai_chat_agent.py").read_text()
-    for loop in ("for round_index in range(2):", "for _ in range(_LOCAL_TOOL_ROUNDS):"):
+    for loop in ("for round_index in range(2):", "for _ in range(max_rounds or _LOCAL_TOOL_ROUNDS):"):
         head = src.index(loop)
         assert "call_index = 0" in src[max(0, head - 500):head], (
             f"call_index must be initialised outside `{loop}`"

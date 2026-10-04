@@ -36,6 +36,24 @@ describe('commandReceipt', () => {
     expect(commandReceipt(sms('cancelled')).detail).toMatch(/Nothing was sent/);
   });
 
+  it('gives a policy refusal its real reason instead of "try again"', () => {
+    const refused = commandReceipt({
+      ...sms('failed'),
+      last_error: 'Text message blocked: connect and finish setting up text messages for your business number before sending.',
+    });
+    expect(refused.title).toBe('Text not sent');
+    expect(refused.detail).toMatch(/Connect and finish setting up text messages/);
+    expect(refused.detail).not.toMatch(/try again/);
+    const quiet = commandReceipt({
+      command_type: 'CALL', state: 'failed',
+      last_error: 'Call blocked: outside the 8am-8pm calling window (recipient local time 06:10 EDT)',
+    });
+    expect(quiet.detail).toMatch(/Outside the 8am-8pm calling window/);
+    // A provider's own error is not shown to the agent.
+    expect(commandReceipt({ ...sms('failed'), last_error: 'provider returned HTTP 500: {...}' }).detail)
+      .toMatch(/You can try again/);
+  });
+
   it('never reads an uncertain send as success or failure', () => {
     const receipt = commandReceipt(sms('reconciliation_required'));
     expect(receipt.title).toBe('Text needs review');

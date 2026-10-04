@@ -194,7 +194,11 @@ async def send_twilio_sms(
     credentials: Optional[Mapping[str, Any]] = None,
 ) -> ProviderResult:
     """Send one previously-approved SMS with a registered Twilio sender."""
-    recovery_mode.guard("send an SMS")
+    recovery_mode.guard(
+        "send an SMS",
+        kind="send_message",
+        destination=str(((draft or {}).get("target") or {}).get("phone") or ""),
+    )
     credentials = dict(credentials or {})
     account_sid = str(
         credentials.get("account_sid") or os.getenv("TWILIO_ACCOUNT_SID", "")
@@ -289,7 +293,11 @@ async def place_twilio_call(
     *,
     credentials: Optional[Mapping[str, Any]] = None,
 ) -> ProviderResult:
-    recovery_mode.guard("place a phone call")
+    recovery_mode.guard(
+        "place a phone call",
+        kind="place_call",
+        destination=str(((draft or {}).get("target") or {}).get("phone") or ""),
+    )
     credentials = dict(credentials or {})
     account_sid = str(credentials.get("account_sid") or os.getenv("TWILIO_ACCOUNT_SID", ""))
     api_key = str(credentials.get("api_key") or os.getenv("TWILIO_API_KEY", ""))

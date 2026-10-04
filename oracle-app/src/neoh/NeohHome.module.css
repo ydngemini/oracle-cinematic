@@ -85,6 +85,24 @@
 /* Exactly one element on the screen is set at this size. */
 .itemLead .subject { font-size: var(--text-4xl); }
 
+/* The subject opens its record; it reads as the heading it is. */
+.subjectLink {
+  font: inherit;
+  color: inherit;
+  letter-spacing: inherit;
+  background: none;
+  border: none;
+  padding: 0;
+  text-align: left;
+  cursor: pointer;
+}
+
+.subjectLink:hover,
+.subjectLink:focus-visible {
+  text-decoration: underline;
+  text-underline-offset: 0.15em;
+}
+
 .headline {
   margin: 0;
   font-size: var(--text-lg);

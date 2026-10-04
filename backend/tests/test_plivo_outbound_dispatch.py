@@ -26,7 +26,7 @@ def _call_branch_source() -> str:
 
 def test_provider_is_read_from_the_route_not_a_client_supplied_field():
     branch = _call_branch_source()
-    assert "get_telephony_route(ctx)" in branch
+    assert "get_telephony_route(owner_ctx)" in branch
     assert 'call_provider = str((call_route or {}).get("provider") or "twilio")' in branch
 
 

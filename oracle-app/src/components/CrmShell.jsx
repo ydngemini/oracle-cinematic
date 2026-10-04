@@ -516,7 +516,7 @@ export function CrmShell() {
                       // floating bar (it lives in the shared store).
                       <NeohConversation onNavigate={select} onOpenEntity={openEntity} />
                     ) : (
-                      <NeohHome onNavigate={select} />
+                      <NeohHome onNavigate={select} onOpenEntity={openEntity} />
                     )}
                   </AdaptiveViewTransition>
                 </Suspense>
