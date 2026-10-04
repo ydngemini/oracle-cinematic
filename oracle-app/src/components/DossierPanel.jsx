@@ -326,6 +326,10 @@ export function DossierPanel({ leadId, onClose, embedded = false, onOpenTour }) 
 
           {/* ── Financial matrix ── */}
           <section className={styles.section} aria-label="Underwriting">
+            {/* A brokerage's own listing with no underwriting run would show
+                four dashes under a wholesaler heading; the actions stay. */}
+            {!(dossier.listing && !dossier.underwriting?.arv && !dossier.underwriting?.mao) && (
+            <>
             <h3 className={styles.kicker}>Underwriting</h3>
             <dl className={styles.matrix}>
               <div><dt>ARV</dt><dd>{money(dossier.underwriting?.arv)}</dd></div>
@@ -333,6 +337,8 @@ export function DossierPanel({ leadId, onClose, embedded = false, onOpenTour }) 
               <div><dt>Rehab</dt><dd>{money(dossier.underwriting?.rehab || dossier.underwriting?.rehab_estimate)}</dd></div>
               <div><dt>Est. Value</dt><dd>{money(dossier.payload?.estimated_value || dossier.underwriting?.estimated_value)}</dd></div>
             </dl>
+            </>
+            )}
             <button
               type="button"
               className={styles.floorplanBtn}

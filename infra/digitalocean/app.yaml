@@ -254,6 +254,11 @@ services:
       # Neoh never answered even with a valid Fireworks key (found on staging).
       - key: ORACLE_AI_CHAT_PROVIDER
         value: "fireworks"
+      # Pinned, not left to the code default: kimi-k2p7-code was still LISTED
+      # by Fireworks but answered 404 'not deployed', so Neoh failed every
+      # turn on staging (found by the killer-demo run, 2026-10-04).
+      - key: ORACLE_FIREWORKS_MODEL
+        value: "accounts/fireworks/models/deepseek-v4p1-flash"
       # Voice carrier (Plivo is the default ORACLE_VOICE_PROVIDER). The worker
       # places an approved Neoh call; the api signs/answers its webhooks.
       - key: PLIVO_AUTH_ID
@@ -468,6 +473,11 @@ workers:
       # Neoh never answered even with a valid Fireworks key (found on staging).
       - key: ORACLE_AI_CHAT_PROVIDER
         value: "fireworks"
+      # Pinned, not left to the code default: kimi-k2p7-code was still LISTED
+      # by Fireworks but answered 404 'not deployed', so Neoh failed every
+      # turn on staging (found by the killer-demo run, 2026-10-04).
+      - key: ORACLE_FIREWORKS_MODEL
+        value: "accounts/fireworks/models/deepseek-v4p1-flash"
       # Voice carrier (Plivo is the default ORACLE_VOICE_PROVIDER). The worker
       # places an approved Neoh call; the api signs/answers its webhooks.
       - key: PLIVO_AUTH_ID

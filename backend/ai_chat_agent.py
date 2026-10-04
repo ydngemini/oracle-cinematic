@@ -73,7 +73,7 @@ FIREWORKS_URL = os.getenv(
     "ORACLE_FIREWORKS_URL", "https://api.fireworks.ai/inference/v1/chat/completions"
 )
 FIREWORKS_MODEL = os.getenv(
-    "ORACLE_FIREWORKS_MODEL", "accounts/fireworks/models/kimi-k2p7-code"
+    "ORACLE_FIREWORKS_MODEL", "accounts/fireworks/models/deepseek-v4p1-flash"
 )
 # Reasoning models spend the budget on `reasoning_content` before emitting any
 # `content`; at the local tier's 1000 the reply comes back empty with

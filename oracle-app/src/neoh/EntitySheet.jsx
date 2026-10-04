@@ -133,7 +133,10 @@ function PropertySheet({ id, onClose, tourOpen, onOpenTour }) {
       subline={[
         record?.payload?.city,
         record?.state,
-        record?.dossier_status && humanState(record.dossier_status),
+        // A brokerage's own listing is "active"/"pending", not a dossier "draft".
+        record?.listing?.status
+          ? humanState(record.listing.status)
+          : record?.dossier_status && humanState(record.dossier_status),
       ]}
       onClose={onClose}
       immersive={tourOpen ? tourContent : null}

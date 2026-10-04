@@ -59,6 +59,23 @@ describe('NeohHome', () => {
     expect(onNavigate).toHaveBeenCalledWith('neoh');
   });
 
+  it('opens the property a card is about when its subject is pressed', async () => {
+    const LEAD_ID = 'aaaaaaaa-1111-4111-8111-111111111111';
+    crmGet.mockResolvedValue(briefing({
+      attention: {
+        opportunities: [{
+          kind: 'listing_buyer_match', subject: '123 Main Street, Wilmington', subject_id: LEAD_ID,
+          subject_type: 'lead', headline: 'May fit Sarah Johnson',
+          recommended_action: 'Ask Neoh about Sarah and this home, then reach out.', confidence: 0.75,
+        }],
+      },
+    }));
+    const onOpenEntity = vi.fn();
+    render(<NeohHome onNavigate={vi.fn()} onOpenEntity={onOpenEntity} />);
+    fireEvent.click(await screen.findByRole('button', { name: '123 Main Street, Wilmington' }));
+    expect(onOpenEntity).toHaveBeenCalledWith(`/property/${LEAD_ID}`);
+  });
+
   it('says what Neoh handled in product verbs, never tool names', async () => {
     crmGet.mockResolvedValue(briefing());
     render(<NeohHome onNavigate={vi.fn()} />);

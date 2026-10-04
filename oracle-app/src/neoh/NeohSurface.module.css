@@ -41,6 +41,9 @@
 .surface[data-state="thinking"],
 .surface[data-state="result"] {
   width: min(100% - 2 * var(--space-4), 44rem);
+  /* Opened over a property or person sheet (press "/"), Neoh is the thing
+     being used: it sits above the sheet instead of being cut off behind it. */
+  z-index: calc(var(--z-modal) + 1);
 }
 
 .surface[data-state="result"] {

@@ -292,9 +292,10 @@ async def seed(base_url: str, execute: bool, *, with_space: bool = True) -> dict
                     """INSERT INTO telephony_routes (tenant_id, agent_id, inbound_did, provider,
                            provider_account_id, voice_caller_id_e164, voice_caller_id_verified,
                            outbound_verification_status, outbound_verification_last_tested_at,
-                           intake_mode, forwarding_mode, active)
+                           intake_mode, forwarding_mode, forward_on_request,
+                           forward_when_ai_unavailable, active)
                        VALUES ($1::uuid, $2, $3, 'plivo', $4, $3, true, 'verified', now(),
-                               'auto', 'none', true)
+                               'auto', 'none', false, false, true)
                        ON CONFLICT (tenant_id, agent_id) DO UPDATE SET
                            inbound_did = EXCLUDED.inbound_did, provider = 'plivo',
                            provider_account_id = EXCLUDED.provider_account_id,
