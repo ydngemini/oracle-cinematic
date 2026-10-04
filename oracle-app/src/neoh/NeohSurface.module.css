@@ -6,7 +6,10 @@
 
 .surface {
   position: fixed;
-  z-index: var(--z-overlay);
+  /* One step BELOW the overlay tier. At the same tier, later in the DOM, the
+     bar sat on top of every z-overlay sheet — it covered "Create Profile" in
+     Add client and took the click. Modal sheets now cover it, scrim and all. */
+  z-index: calc(var(--z-overlay) - 1);
   /* Centred with auto margins, not a transform: framer's layout animation
      writes `transform` inline, and a translateX(-50%) here would be
      overwritten mid-morph, leaving the bar hanging off the right edge. */
@@ -49,6 +52,24 @@
 
 :global(html[data-keyboard-open='true']) .surface[data-state="result"] {
   max-height: calc(var(--visual-viewport-height, 70dvh) - var(--space-6));
+}
+
+/* Asked for (⌘K, "/", a tap) while a record sheet holds the screen: the
+   surface must come up OVER the sheet. At its resting tier it opened beneath
+   the person drawer and the property sheet (z-modal) — focus went into an
+   invisible composer and "Talking about {name}" could not be seen. */
+.surface[data-state="input"],
+.surface[data-state="thinking"],
+.surface[data-state="result"] {
+  z-index: calc(var(--z-modal) + 1);
+}
+
+/* A view with its own composer (a Conversations thread) owns the bottom of
+   the screen: the resting pill sat on top of its message field. "/" and ⌘K
+   still open Neoh over it. */
+:global(html:has([data-standalone-composer])) .surface[data-state="rest"],
+:global(html:has([data-standalone-composer])) .surface[data-state="yielded"] {
+  display: none;
 }
 
 .surface[data-state="yielded"] {

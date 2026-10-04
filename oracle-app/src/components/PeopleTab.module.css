@@ -1,4 +1,6 @@
-.wrap { width: min(100%, 68rem); display: grid; gap: var(--space-5); padding: clamp(var(--space-3), 3vw, var(--space-8)) 0; }
+.wrap { width: min(100%, 68rem); display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--space-5); padding: clamp(var(--space-3), 3vw, var(--space-8)) 0; }
+/* minmax(0, 1fr): an auto track grew to the Opportunities book's min-content
+   (477px), pushing New contact, the switcher and New profile off a phone. */
 .hero { min-height: 8rem; display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-8); }
 .hero > div { max-width: 39rem; }
 .kicker { color: var(--oracle-accent-ink); font: 650 var(--text-xs)/1.2 var(--font-display); letter-spacing: var(--tracking-widest); text-transform: uppercase; }
@@ -80,3 +82,24 @@
 
 @media (prefers-reduced-motion: reduce) { .skeleton span { animation: none; } }
 @media (prefers-reduced-transparency: reduce) { .switcher, .contactBook { background: var(--oracle-surface); backdrop-filter: none; -webkit-backdrop-filter: none; } }
+
+/* New contact. The form shipped with no styles of its own, so it rendered as
+   browser-default inline labels, a bare fieldset and a text-only submit. */
+.intake { display: grid; gap: var(--space-4); padding-bottom: var(--space-5); }
+.intake > .contactHead { min-height: 0; padding-bottom: 0; }
+.intake > .errorState { margin: 0 var(--space-5); min-height: 0; }
+.intakeFields { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 14rem), 1fr)); gap: var(--space-3) var(--space-4); padding: 0 var(--space-5); }
+.intakeField { min-width: 0; display: flex; flex-direction: column; gap: 4px; font-size: var(--text-sm); }
+.intakeField > span { color: var(--oracle-text-dim); }
+.intakeField input, .intakeField select { min-height: 44px; min-width: 0; padding: var(--space-2) var(--space-3); border: 1px solid var(--oracle-border-subtle); border-radius: var(--radius-md); background: var(--oracle-surface-sunken); color: var(--oracle-text); font: 400 var(--text-sm) / 1.4 var(--font-sans); }
+.intakeField input:focus-visible, .intakeField select:focus-visible { outline: none; border-color: var(--oracle-amber); box-shadow: var(--ring-focus); }
+.intakeConsent { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2) var(--space-5); margin: 0 var(--space-5); padding: var(--space-3) var(--space-4); border: 1px solid var(--oracle-border-subtle); border-radius: var(--radius-md); }
+.intakeConsent legend { padding: 0 var(--space-1); color: var(--oracle-text-dim); font-size: var(--text-sm); }
+.intakeConsent > p { flex-basis: 100%; color: var(--oracle-text-dim); font-size: var(--text-xs); line-height: var(--leading-relaxed); }
+.intakeCheck { min-height: 44px; display: inline-flex; align-items: center; gap: var(--space-2); color: var(--oracle-text); font-size: var(--text-sm); }
+.intakeCheck input { width: 18px; height: 18px; accent-color: var(--oracle-accent); }
+.intakeCheck input:focus-visible { outline: 2px solid var(--oracle-amber); outline-offset: 2px; }
+.intakeSubmit { justify-self: start; min-height: 44px; margin: 0 var(--space-5); padding: 0 var(--space-5); border: none; border-radius: var(--radius-pill); background: var(--oracle-accent); color: #1a1200; font: 600 var(--text-sm) / 1 var(--font-sans); }
+.intakeSubmit:disabled { background: var(--oracle-surface-sunken); color: var(--oracle-text-ghost); }
+.intakeSubmit:focus-visible, .intakeCancel:focus-visible { outline: none; box-shadow: var(--ring-focus); }
+.intakeCancel { min-height: 44px; padding: 0 var(--space-2); color: var(--oracle-accent-ink); font: 500 var(--text-sm) / 1 var(--font-sans); }

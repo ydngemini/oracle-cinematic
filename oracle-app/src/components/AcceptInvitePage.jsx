@@ -105,7 +105,16 @@ export function AcceptInvitePage() {
 
       {error ? <p className={styles.error} role="alert">{error}</p> : null}
 
-      <div className={styles.block}>
+      {/* A form, so Enter in either field submits — it was a div, and the
+          keyboard path to joining was Tab-Tab-Space. */}
+      <form
+        className={styles.block}
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (!busy && password.length >= 10 && fullName.trim()) accept();
+        }}
+        noValidate
+      >
         <label className={styles.field}>
           <span>Your name</span>
           <input
@@ -132,15 +141,14 @@ export function AcceptInvitePage() {
         <p id="accept-invite-password-hint" className={styles.muted}>At least 10 characters.</p>
         <div className={styles.actions}>
           <button
-            type="button"
+            type="submit"
             className={styles.primary}
-            onClick={accept}
             disabled={busy || password.length < 10 || !fullName.trim()}
           >
             {busy ? 'Joining…' : `Join ${invite.brokerage}`}
           </button>
         </div>
-      </div>
+      </form>
     </main>
   );
 }

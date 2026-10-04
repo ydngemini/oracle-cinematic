@@ -58,10 +58,14 @@ export default function ContactIntakePanel({ onCreated, onCancel }) {
 
     // Only send a grant where one was actually ticked. Sending `false`
     // explicitly would be indistinguishable from a recorded refusal.
+    // A grant is a recorded fact, so the server requires WHEN it was captured
+    // (ConsentGrant.captured_at); a bare `{ granted: true }` was a 422 and the
+    // form failed for every contact with any box ticked.
     const granted = CHANNELS.filter(([key]) => consent[key]);
     if (granted.length > 0) {
+      const capturedAt = new Date().toISOString();
       payload.consent = Object.fromEntries(
-        granted.map(([key]) => [key, { granted: true }]),
+        granted.map(([key]) => [key, { granted: true, captured_at: capturedAt, source: 'agent_entry' }]),
       );
     }
 
@@ -80,55 +84,57 @@ export default function ContactIntakePanel({ onCreated, onCancel }) {
   };
 
   return (
-    <form className={styles.contactBook} onSubmit={submit} aria-label="New contact">
+    <form className={`${styles.contactBook} ${styles.intake}`} onSubmit={submit} aria-label="New contact">
       <div className={styles.contactHead}>
         <strong>New contact</strong>
         {onCancel ? (
-          <button type="button" onClick={onCancel} disabled={busy}>Cancel</button>
+          <button type="button" className={styles.intakeCancel} onClick={onCancel} disabled={busy}>Cancel</button>
         ) : null}
       </div>
 
       {error ? <p className={styles.errorState} role="alert">{error}</p> : null}
 
-      <label>
-        <span>Full name</span>
-        <input value={form.full_name} onChange={set('full_name')} required maxLength={160} />
-      </label>
-      <label>
-        <span>Email</span>
-        <input value={form.email} onChange={set('email')} type="email" maxLength={254} />
-      </label>
-      <label>
-        <span>Phone</span>
-        <input value={form.phone} onChange={set('phone')} inputMode="tel" maxLength={40} />
-      </label>
-      <label>
-        <span>State</span>
-        <input
-          value={form.state_code}
-          onChange={set('state_code')}
-          maxLength={2}
-          placeholder="DE"
-        />
-      </label>
-      <label>
-        <span>Preferred channel</span>
-        <select value={form.preferred_channel} onChange={set('preferred_channel')}>
-          <option value="none">Not stated</option>
-          {CHANNELS.map(([value, label]) => (
-            <option key={value} value={value}>{label}</option>
-          ))}
-        </select>
-      </label>
-      <label>
-        <span>Source</span>
-        <input value={form.source} onChange={set('source')} maxLength={80} placeholder="Referral" />
-      </label>
+      <div className={styles.intakeFields}>
+        <label className={styles.intakeField}>
+          <span>Full name</span>
+          <input value={form.full_name} onChange={set('full_name')} required maxLength={160} />
+        </label>
+        <label className={styles.intakeField}>
+          <span>Email</span>
+          <input value={form.email} onChange={set('email')} type="email" maxLength={254} />
+        </label>
+        <label className={styles.intakeField}>
+          <span>Phone</span>
+          <input value={form.phone} onChange={set('phone')} inputMode="tel" maxLength={40} />
+        </label>
+        <label className={styles.intakeField}>
+          <span>State</span>
+          <input
+            value={form.state_code}
+            onChange={set('state_code')}
+            maxLength={2}
+            placeholder="DE"
+          />
+        </label>
+        <label className={styles.intakeField}>
+          <span>Preferred channel</span>
+          <select value={form.preferred_channel} onChange={set('preferred_channel')}>
+            <option value="none">Not stated</option>
+            {CHANNELS.map(([value, label]) => (
+              <option key={value} value={value}>{label}</option>
+            ))}
+          </select>
+        </label>
+        <label className={styles.intakeField}>
+          <span>Source</span>
+          <input value={form.source} onChange={set('source')} maxLength={80} placeholder="Referral" />
+        </label>
+      </div>
 
-      <fieldset>
+      <fieldset className={styles.intakeConsent}>
         <legend>Consent given for</legend>
         {CHANNELS.map(([key, label]) => (
-          <label key={key}>
+          <label key={key} className={styles.intakeCheck}>
             <input
               type="checkbox"
               checked={consent[key]}
@@ -143,7 +149,7 @@ export default function ContactIntakePanel({ onCreated, onCancel }) {
         </p>
       </fieldset>
 
-      <button type="submit" disabled={busy || !form.full_name.trim()}>
+      <button type="submit" className={styles.intakeSubmit} disabled={busy || !form.full_name.trim()}>
         {busy ? 'Creating…' : 'Create contact'}
       </button>
     </form>

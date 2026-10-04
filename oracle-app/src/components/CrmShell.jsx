@@ -162,6 +162,9 @@ export function CrmShell() {
     }
   });
   const [tourStep, setTourStep] = useState(0);
+  // Locked until BillingOverlay reports otherwise: the walkthrough must not
+  // open over the billing gate (two dialogs, and the tour held focus).
+  const [billingLocked, setBillingLocked] = useState(true);
 
   useEffect(() => {
     const viewport = window.visualViewport;
@@ -455,7 +458,7 @@ export function CrmShell() {
             className={styles.profileButton}
             onClick={() => { setTourStep(0); setTourOpen(true); }}
             aria-label="Start CRM guided walkthrough"
-            aria-expanded={tourOpen}
+            aria-expanded={tourOpen && !billingLocked}
             aria-controls="crm-product-tour"
           >
             <CircleHelp aria-hidden="true" />
@@ -632,7 +635,7 @@ export function CrmShell() {
         </ErrorBoundary>
       )}
       <ProductTour
-        open={tourOpen}
+        open={tourOpen && !billingLocked}
         stepIndex={tourStep}
         onStepChange={setTourStep}
         onClose={closeTour}
@@ -640,7 +643,7 @@ export function CrmShell() {
         onNavigateSales={navigateSales}
       />
 
-      <BillingOverlay />
+      <BillingOverlay onLockedChange={setBillingLocked} />
       <OnboardingGate />
     </div>
     </LayoutGroup>

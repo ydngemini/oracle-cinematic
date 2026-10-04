@@ -15,6 +15,13 @@ describe('ServiceStatusBanner', () => {
     expect(await screen.findByText('Listing data may be out of date.')).toBeTruthy();
   });
 
+  it('marks itself so the shell can place it below the fixed header', async () => {
+    api.crmGet.mockResolvedValue({ state: 'DEGRADED', messages: ['Some emails are waiting to send.'] });
+    render(<ServiceStatusBanner />);
+    const banner = await screen.findByRole('status');
+    expect(banner.hasAttribute('data-service-banner')).toBe(true);
+  });
+
   it('renders nothing when everything is healthy', async () => {
     api.crmGet.mockResolvedValue({ state: 'HEALTHY', messages: [] });
     const { container } = render(<ServiceStatusBanner />);

@@ -158,7 +158,10 @@
 
 .dock {
   position: fixed;
-  z-index: var(--z-overlay);
+  /* One step BELOW the overlay tier. At the same tier, later in the DOM, the
+     bar sat on top of every z-overlay sheet — it covered "Create Profile" in
+     Add client and took the click. Modal sheets now cover it, scrim and all. */
+  z-index: calc(var(--z-overlay) - 1);
   left: 0;
   right: 0;
   margin-inline: auto;

@@ -120,6 +120,15 @@ describe('AssistantMessages', () => {
     expect(screen.queryByText(/NEOH/)).toBeNull();
   });
 
+  it('shows example requests in the panel but not on the Neoh tab, which offers its own starters', () => {
+    render(<AssistantMessages messages={[]} onUndo={vi.fn()} undoing={null} />);
+    expect(screen.getByLabelText('Example requests')).toBeTruthy();
+    cleanup();
+    render(<AssistantMessages variant="page" messages={[]} onUndo={vi.fn()} undoing={null} />);
+    expect(screen.queryByLabelText('Example requests')).toBeNull();
+    expect(screen.getByRole('heading', { name: /Ask about a person/ })).toBeTruthy();
+  });
+
   it('attaches staged outreach receipts to the turn that staged them', () => {
     const onReview = vi.fn();
     render(

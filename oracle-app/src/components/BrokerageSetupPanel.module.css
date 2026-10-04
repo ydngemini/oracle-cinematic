@@ -109,7 +109,9 @@
 }
 .invites { resize: vertical; min-height: 4.5rem; }
 
-.actions { display: flex; gap: var(--space-2); }
+.actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2) var(--space-4); }
+/* In a row the ghost link centres with the pill beside it; it sat on the top edge. */
+.actions > .ghost { align-self: center; min-height: 44px; }
 
 .primary {
   padding: var(--space-2) var(--space-4);

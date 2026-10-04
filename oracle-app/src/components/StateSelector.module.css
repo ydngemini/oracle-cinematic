@@ -135,3 +135,14 @@
   font: var(--text-xs) / 1 var(--font-sans);
   color: var(--oracle-accent-ink);
 }
+
+/* Phones: the label alone pushed the header's settings button off-screen
+   (CrmShell.module.css). The flag stays, the accessible name says the rest. */
+@media (max-width: 479px) {
+  .pill {
+    min-width: 44px;
+    justify-content: center;
+  }
+
+  .pillLabel { display: none; }
+}

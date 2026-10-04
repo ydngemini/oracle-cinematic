@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { crmGet, crmPost } from '../state/useCrmApi';
 import {
   GLYPHS, CLIENT_TYPES, STAGES, SORTS, fmtInt, normalizeType,
@@ -6,6 +6,7 @@ import {
 } from './ClientShared';
 import ClientDetailDrawer from './ClientDetailDrawer';
 import styles from './ClientCrmTab.module.css';
+import { useDialogFocus } from '../hooks/useDialogFocus';
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const EMPTY_FORM = {
@@ -112,6 +113,9 @@ export default function ClientCrmTab({ embedded = false }) {
       () => setSegmentsOnline(false)
     );
   }, []);
+
+  const sheetRef = useRef(null);
+  useDialogFocus(sheetRef, sheetOpen);
 
   // Esc closes the quick-add sheet.
   useEffect(() => {
@@ -490,7 +494,7 @@ export default function ClientCrmTab({ embedded = false }) {
       {sheetOpen && (
         <div className={styles.sheetLayer}>
           <button type="button" className={styles.scrim} aria-label="Close" onClick={closeSheet} />
-          <div className={styles.sheet} role="dialog" aria-modal="true" aria-label="Add client">
+          <div ref={sheetRef} className={styles.sheet} role="dialog" aria-modal="true" aria-label="Add client">
             <span className={styles.sheetGrip} aria-hidden="true" />
             <header className={styles.sheetHead}>
               <div className={styles.sheetHeading}>

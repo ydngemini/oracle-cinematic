@@ -22,6 +22,11 @@ import { crmGet, crmPost } from '../state/useCrmApi';
 
 const HISTORY_LIMIT = 80;
 
+// A failed status check — a 429 after moving quickly between views, a dropped
+// connection — is not "switched off". It is asked again on this schedule and
+// only then reported, as unreachable rather than disabled.
+export const STATUS_RETRY_MS = Object.freeze([1500, 4000, 9000]);
+
 /** The record types the backend's ChatContext accepts (ai_chat_models.py).
  *  Anything else is rejected as INVALID_MESSAGE, so it must never be sent. */
 export const WIRE_CONTEXT_TYPES = Object.freeze(['client', 'lead', 'listing', 'contract']);
@@ -81,16 +86,37 @@ export function useNeohChannel({ open = false } = {}) {
   const { aiChatMessages, aiChatRevision, aiChatConnection } = useOracleState();
   const { dispatch, wsRef } = useOracleDispatch();
   const [available, setAvailable] = useState(null);
+  const [statusFailed, setStatusFailed] = useState(false);
+  const [statusAttempt, setStatusAttempt] = useState(0);
   const [notice, setNotice] = useState('');
   const [undoing, setUndoing] = useState('');
 
   useEffect(() => {
     let active = true;
+    let timer = 0;
     fetchChatStatus().then(
-      (data) => { if (active) setAvailable(data?.enabled === true); },
-      () => { if (active) setAvailable(false); },
+      (data) => {
+        if (!active) return;
+        setStatusFailed(false);
+        setAvailable(data?.enabled === true);
+      },
+      () => {
+        if (!active) return;
+        if (statusAttempt < STATUS_RETRY_MS.length) {
+          timer = window.setTimeout(() => setStatusAttempt((n) => n + 1), STATUS_RETRY_MS[statusAttempt]);
+        } else {
+          setStatusFailed(true);
+          setAvailable(false);
+        }
+      },
     );
-    return () => { active = false; };
+    return () => { active = false; window.clearTimeout(timer); };
+  }, [statusAttempt]);
+
+  const retryStatus = useCallback(() => {
+    setStatusFailed(false);
+    setAvailable(null);
+    setStatusAttempt(0);
   }, []);
 
   useEffect(() => {
@@ -163,6 +189,8 @@ export function useNeohChannel({ open = false } = {}) {
 
   return {
     available,
+    statusFailed,
+    retryStatus,
     messages: aiChatMessages,
     connection: aiChatConnection,
     revision: aiChatRevision,

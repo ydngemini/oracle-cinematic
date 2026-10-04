@@ -2,9 +2,9 @@
   display: grid;
   gap: 14px;
   padding: 18px;
-  border: 1px solid var(--border, rgba(171, 171, 171, 0.2));
+  border: 1px solid var(--oracle-border, rgba(171, 171, 171, 0.2));
   border-radius: 18px;
-  background: color-mix(in srgb, var(--surface, #080808) 93%, transparent);
+  background: color-mix(in srgb, var(--oracle-surface, #080808) 93%, transparent);
 }
 
 .header {
@@ -23,7 +23,7 @@
 .note,
 .empty {
   margin: 0;
-  color: var(--text-muted, #ababab);
+  color: var(--oracle-text-ghost, #ababab);
   font-size: 0.78rem;
   line-height: 1.45;
 }
@@ -39,7 +39,7 @@
 .statePicker {
   display: grid;
   gap: 4px;
-  color: var(--text-muted, #ababab);
+  color: var(--oracle-text-ghost, #ababab);
   font-size: 0.65rem;
   font-weight: 700;
   letter-spacing: 0.08em;
@@ -49,10 +49,10 @@
 .statePicker input {
   width: 58px;
   min-height: 38px;
-  border: 1px solid var(--border, #ababab);
+  border: 1px solid var(--oracle-border, #ababab);
   border-radius: 10px;
-  background: var(--surface-raised, #080808);
-  color: var(--text, #f2f2f2);
+  background: var(--oracle-surface-raised, #080808);
+  color: var(--oracle-text, #f2f2f2);
   text-align: center;
   font: inherit;
   font-size: 0.85rem;
@@ -71,9 +71,9 @@
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 14px;
   padding: 13px;
-  border: 1px solid color-mix(in srgb, var(--border, #ababab) 75%, transparent);
+  border: 1px solid color-mix(in srgb, var(--oracle-border, #ababab) 75%, transparent);
   border-radius: 13px;
-  background: color-mix(in srgb, var(--surface-raised, #080808) 75%, transparent);
+  background: color-mix(in srgb, var(--oracle-surface-raised, #080808) 75%, transparent);
 }
 
 .itemMain,
@@ -134,7 +134,7 @@
 
 .meta,
 .fields {
-  color: var(--text-muted, #ababab);
+  color: var(--oracle-text-ghost, #ababab);
   font-size: 0.7rem;
   line-height: 1.35;
 }
@@ -221,5 +221,5 @@
   margin-top: 2px;
   font-size: 0.6875rem;
   line-height: 1.45;
-  color: var(--text-secondary, rgba(244, 244, 245, 0.48));
+  color: var(--oracle-text-dim, rgba(244, 244, 245, 0.48));
 }

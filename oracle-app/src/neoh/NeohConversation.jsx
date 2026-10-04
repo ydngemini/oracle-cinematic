@@ -196,13 +196,20 @@ export function NeohConversation({ onNavigate, onOpenEntity }) {
           <span className={styles.face}><NeohAvatar state="idle" variant="bust" size="64px" /></span>
           <div>
             <h1 id="neoh-title" className={styles.name}>Neoh</h1>
-            <p className={styles.presenceLine}>Not switched on for this workspace yet</p>
+            <p className={styles.presenceLine}>
+              {channel.statusFailed ? 'Can’t be reached right now' : 'Not switched on for this workspace yet'}
+            </p>
           </div>
         </header>
         <p className={styles.unavailable}>
-          The conversation with Neoh isn&rsquo;t available here right now. Everything
-          in Home and Work still works, and nothing you have done is lost.
+          {channel.statusFailed ? 'Neoh can’t be reached right now.' : 'The conversation with Neoh isn’t available here right now.'}
+          {' '}Everything in Home and Work still works, and nothing you have done is lost.
         </p>
+        {channel.statusFailed && (
+          <button type="button" className={styles.secondary} onClick={channel.retryStatus}>
+            Try again
+          </button>
+        )}
         <button type="button" className={styles.secondary} onClick={() => onNavigate?.('work')}>
           Go to Work
         </button>

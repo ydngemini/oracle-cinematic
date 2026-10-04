@@ -229,3 +229,14 @@ describe('a large capture upload survives a dropped file (Neoh Space §45)', () 
     expect(screen.queryByRole('group', { name: /files that did not upload/i })).toBeNull();
   });
 });
+
+describe('Property View upload control', () => {
+  it('keeps the hidden file input out of the tab order; the visible button opens it', async () => {
+    useTour.mockReturnValue({ tour: null });
+    await lookUpAProperty();
+    const input = document.querySelector('input[type="file"]');
+    expect(input).toBeTruthy();
+    expect(input.tabIndex).toBe(-1);
+    expect(screen.getByRole('button', { name: /^upload .*photos or video/i })).toBeTruthy();
+  });
+});

@@ -60,7 +60,13 @@ const BILLING_STATUS_ERROR =
 const CHECKOUT_ERROR = 'We couldn\'t open secure checkout. Please try again.';
 const PORTAL_ERROR = 'We couldn\'t open the billing portal. Please try again.';
 
-export function BillingOverlay() {
+/**
+ * @param {{ onLockedChange?: (locked: boolean) => void }} props
+ *   Told whether the workspace is behind this gate, so the shell can hold
+ *   anything else that would open over it (the first-visit walkthrough opened
+ *   on top of the locked dialog and took the keyboard).
+ */
+export function BillingOverlay({ onLockedChange } = {}) {
   const {
     active,
     status,
@@ -84,6 +90,8 @@ export function BillingOverlay() {
   const mode = subLoading ? 'checking' : (verificationError ? 'error' : 'purchase');
   const isVisible = !active;
   const copy = DIALOG_COPY[mode];
+
+  useEffect(() => { onLockedChange?.(isVisible); }, [isVisible, onLockedChange]);
 
   const handleSubscribe = useCallback(async () => {
     setCheckoutLoading(true);

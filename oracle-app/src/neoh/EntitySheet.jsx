@@ -3,7 +3,7 @@ import { Suspense, lazy, useCallback, useEffect, useState } from 'react';
 import { useAssistantRecord } from '../components/AssistantContext';
 import { ErrorBoundary } from '../components/ErrorBoundary';
 import { crmGet } from '../state/useCrmApi';
-import { dealRead, entityTitle, humanState, personRead } from './entityModel';
+import { dealRead, entityTitle, humanState, personRead, propertyLabel } from './entityModel';
 import { NeohRead } from './NeohRead';
 import { EntityFrame } from './EntityFrame';
 import { LivingStrip } from './LivingObject';
@@ -82,7 +82,7 @@ function PropertySheet({ id, onClose, tourOpen, onOpenTour }) {
   // frame exists to close.
   const dossier = useFetched(`/api/leads/${encodeURIComponent(id)}/dossier`);
   const record = dossier.data;
-  const address = record?.payload?.address || record?.parcel_id || 'Property';
+  const address = propertyLabel(record);
   // Registered as what the chat backend calls it — a `leads` row. As
   // 'property' every question asked from this sheet was rejected outright
   // (ChatContext accepts client | lead | listing | contract).

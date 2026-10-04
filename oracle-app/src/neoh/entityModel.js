@@ -103,3 +103,13 @@ function dueWord(iso, now = new Date()) {
   if (days < 7) return `in ${days} days`;
   return due.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 }
+
+/**
+ * What to call a property. A Property View subject keeps its address on the
+ * row, not in `payload`, and its parcel key is synthetic ("pv:<hash>") — so
+ * the header and Neoh's chip read "Talking about pv:ef32f869…".
+ */
+export function propertyLabel(record) {
+  const parcel = record?.parcel_id && !String(record.parcel_id).startsWith('pv:') ? record.parcel_id : '';
+  return record?.payload?.address || record?.address || parcel || 'Property';
+}

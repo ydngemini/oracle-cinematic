@@ -22,7 +22,7 @@ export function ServiceStatusBanner() {
 
   if (!messages.length) return null;
   return (
-    <div className={styles.banner} role="status" aria-live="polite">
+    <div className={styles.banner} role="status" aria-live="polite" data-service-banner="">
       {messages.map((m) => <span key={m}>{m}</span>)}
     </div>
   );

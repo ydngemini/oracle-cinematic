@@ -237,7 +237,7 @@
 /* ── LEVEL 2 — thread header (sticky under the CRM header) ───────────────── */
 .threadHeader {
   position: sticky;
-  top: calc(var(--crm-header-h) + var(--safe-top));
+  top: var(--view-sticky-top, calc(var(--crm-header-h) + var(--safe-top)));
   z-index: var(--z-above);
   display: flex;
   align-items: center;
@@ -246,7 +246,9 @@
   /* Bleed across the view's gutters so scrolled bubbles pass underneath */
   margin: calc(-1 * var(--space-4)) calc(-1 * var(--space-4)) 0;
   padding: var(--space-2) var(--space-4);
-  background: rgba(8, 8, 8, 0.72);
+  /* Theme token, not a literal: rgba(8,8,8,.72) was a near-black bar on the
+     light theme's paper. */
+  background: var(--oracle-glass-solid);
   backdrop-filter: var(--oracle-backdrop-light);
   -webkit-backdrop-filter: var(--oracle-backdrop-light);
   border-bottom: 1px solid var(--oracle-border);
@@ -519,7 +521,7 @@
   flex-direction: column;
   gap: var(--space-2);
   padding: var(--space-3) var(--space-4);
-  background: rgba(8, 8, 8, 0.82);
+  background: var(--oracle-glass-solid);
   backdrop-filter: var(--oracle-backdrop);
   -webkit-backdrop-filter: var(--oracle-backdrop);
   border-top: 1px solid var(--oracle-border-bright);
