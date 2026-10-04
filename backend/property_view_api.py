@@ -297,6 +297,15 @@ async def resolve_subject(
     otherwise photos orphan themselves the moment the deal progresses."""
     # Trigram-free prefix/substring match; the tenant's record count is small
     # enough that ILIKE is fine and avoids a pg_trgm dependency.
+    #
+    # Scoped to the ACTING tenant explicitly. Under the `admin OR tenant` RLS
+    # policy alone nothing narrowed the scan, so a substring with no match
+    # walked every brokerage's leads (millions) backwards by created_at and
+    # died at the 30 s command timeout — every address lookup hung on
+    # "Locating…". This is not the RLS-duplication trap: media attaches to
+    # the record of the tenant being worked in (create_subject inserts with
+    # ctx.tenant_id), so another brokerage's lead is never a valid answer,
+    # even for a platform admin.
     pattern = f"%{address.strip()}%"
 
     async with tenant_tx(ctx) as conn:
@@ -304,21 +313,21 @@ async def resolve_subject(
             """
             SELECT id, address, motivation_score, created_at
               FROM leads
-             WHERE address ILIKE $1
+             WHERE tenant_id = $2::uuid AND address ILIKE $1
              ORDER BY created_at DESC
              LIMIT 10
             """,
-            pattern,
+            pattern, ctx.tenant_id,
         )
         listings = await conn.fetch(
             """
             SELECT id, address, price, status, created_at
               FROM listings
-             WHERE address ILIKE $1
+             WHERE tenant_id = $2::uuid AND address ILIKE $1
              ORDER BY created_at DESC
              LIMIT 10
             """,
-            pattern,
+            pattern, ctx.tenant_id,
         )
 
     return {
@@ -363,8 +372,11 @@ async def create_subject(
     parcel_id = f"pv:{hashlib.sha256(address.lower().encode()).hexdigest()[:32]}"
 
     async with tenant_tx(ctx) as conn:
+        # The (tenant_id, parcel_id) upsert key, not parcel_id alone: under the
+        # admin branch of RLS a bare parcel match could return — and attach
+        # media to — another brokerage's record for the same address.
         existing = await conn.fetchval(
-            "SELECT id FROM leads WHERE parcel_id = $1", parcel_id,
+            "SELECT id FROM leads WHERE tenant_id = $2::uuid AND parcel_id = $1", parcel_id, ctx.tenant_id,
         )
         if existing is not None:
             return {"lead_id": str(existing), "created": False}

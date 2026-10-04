@@ -8,19 +8,27 @@
  * floating composer stands down on the tab that already is one.
  */
 
-import { cleanup, render, screen } from '@testing-library/react';
+import { useEffect } from 'react';
+import { act, cleanup, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { CrmShell } from './CrmShell';
 
 const { pass } = vi.hoisted(() => ({ pass: ({ children }) => children }));
-vi.mock('./BillingOverlay', () => ({ BillingOverlay: () => null }));
+// The gate reports whether it is locking the workspace; tests flip it.
+vi.mock('./BillingOverlay', () => ({
+  BillingOverlay: ({ onLockedChange }) => {
+    const locked = globalThis.__billingLocked ?? false;
+    useEffect(() => { onLockedChange?.(locked); }, [locked, onLockedChange]);
+    return locked ? <div role="dialog" aria-label="Billing" /> : null;
+  },
+}));
 vi.mock('./ServiceStatusBanner', () => ({ ServiceStatusBanner: () => null }));
 vi.mock('./OnboardingGate', () => ({ OnboardingGate: () => null }));
 vi.mock('./StateSelector', () => ({ StateSelector: () => null }));
 vi.mock('./NeohBrandMark', () => ({ NeohBrandMark: () => null }));
 vi.mock('./NeohFooter', () => ({ NeohFooter: () => null }));
-vi.mock('./ProductTour', () => ({ ProductTour: () => null }));
+vi.mock('./ProductTour', () => ({ ProductTour: ({ open }) => (open ? <div data-testid="tour" /> : null) }));
 vi.mock('./motion/AdaptiveViewTransition', () => ({ AdaptiveViewTransition: pass, hasHighMotionBudget: () => false }));
 vi.mock('../state/StateContext', () => ({ StateProvider: pass }));
 vi.mock('./AssistantContext', () => ({ AssistantProvider: pass }));
@@ -46,6 +54,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  delete globalThis.__billingLocked;
   window.history.replaceState({}, '', '/');
 });
 
@@ -79,5 +88,18 @@ describe('CrmShell destinations', () => {
     window.history.replaceState({}, '', '/our-ai/cowork');
     render(<CrmShell />);
     expect(await screen.findByTestId('conversation')).toBeTruthy();
+  });
+
+  it('holds the first-visit walkthrough while the billing gate locks the workspace', async () => {
+    window.localStorage.removeItem('oracle_product_tour_v1');
+    globalThis.__billingLocked = true;
+    const { rerender } = render(<CrmShell />);
+    expect(await screen.findByTestId('home')).toBeTruthy();
+    expect(screen.getByRole('dialog', { name: 'Billing' })).toBeTruthy();
+    expect(screen.queryByTestId('tour')).toBeNull();
+
+    globalThis.__billingLocked = false;
+    await act(async () => { rerender(<CrmShell />); });
+    expect(await screen.findByTestId('tour')).toBeTruthy();
   });
 });

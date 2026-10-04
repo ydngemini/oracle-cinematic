@@ -77,11 +77,15 @@ export function AssistantMessages({
         <span className={styles.eyebrow}>Neoh</span>
         <h2>Ask about a person, a property or a deal.</h2>
         <p>Neoh can summarize a client, review a deal, research a property and make safe updates you can undo. Anything that reaches a client waits for your approval.</p>
-        <div className={styles.promptSeeds} aria-label="Example requests">
-          <span>“What needs me today?”</span>
-          <span>“Summarize this client”</span>
-          <span>“Who should I call first?”</span>
-        </div>
+        {/* The Neoh tab ('page') renders its own clickable starters with the
+            same questions directly below; the quoted examples repeated them. */}
+        {variant !== 'page' && (
+          <div className={styles.promptSeeds} aria-label="Example requests">
+            <span>“What needs me today?”</span>
+            <span>“Summarize this client”</span>
+            <span>“Who should I call first?”</span>
+          </div>
+        )}
       </div>
     );
   }

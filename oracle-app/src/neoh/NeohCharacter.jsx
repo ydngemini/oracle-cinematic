@@ -95,8 +95,12 @@ function ChestEmblem({ x, y, scale = 1 }) {
   );
 }
 
-function Arm({ side, x, y, length, className }) {
+function Arm({ side, x: ax, y: ay, length, className }) {
   const dir = side === 'left' ? -1 : 1;
+  // Coerced: the callers passed x/y as strings, so `x + dir * 0.9` became
+  // "9.4-0.9" and the hands were never drawn (SVG rejected the attribute).
+  const x = Number(ax);
+  const y = Number(ay);
   return (
     <g className={className}>
       <circle className={styles.joint} cx={x} cy={y} r="1.9" />
@@ -120,8 +124,8 @@ function BustBody() {
         d="M20 23c-6.6 0-11.4 4.3-11.4 10.2V44h22.8v-10.8C31.4 27.3 26.6 23 20 23Z"
       />
       <ChestEmblem x="20" y="31.4" scale="0.42" />
-      <Arm side="left" x="9.4" y="30.5" length={11} className={styles.armLeft} />
-      <Arm side="right" x="30.6" y="30.5" length={11} className={styles.armRight} />
+      <Arm side="left" x={9.4} y={30.5} length={11} className={styles.armLeft} />
+      <Arm side="right" x={30.6} y={30.5} length={11} className={styles.armRight} />
     </g>
   );
 }
@@ -136,8 +140,8 @@ function FullBody() {
         d="M20 22c-5.6 0-9.6 3.6-9.6 8.6v12.6c0 2.7 2.1 4.6 4.8 4.6h9.6c2.7 0 4.8-1.9 4.8-4.6V30.6c0-5-4-8.6-9.6-8.6Z"
       />
       <ChestEmblem x="20" y="29.6" scale="0.42" />
-      <Arm side="left" x="11" y="28" length={13} className={styles.armLeft} />
-      <Arm side="right" x="29" y="28" length={13} className={styles.armRight} />
+      <Arm side="left" x={11} y={28} length={13} className={styles.armLeft} />
+      <Arm side="right" x={29} y={28} length={13} className={styles.armRight} />
       {/* Legs: two rounded columns and feet. Simple on purpose — an animated
           walk cycle is not something this character is ever asked to do. */}
       <g className={styles.legs}>

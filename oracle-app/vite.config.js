@@ -21,6 +21,12 @@ const PRODUCTION_CSP = [
   'upgrade-insecure-requests',
 ].join('; ')
 
+// Every backend prefix production routes to the API (app.yaml `ingress`),
+// so the dev server reaches the same endpoints the deployed app does.
+export const DEV_PROXY_PREFIXES = Object.freeze([
+  '/api', '/auth', '/billing', '/admin', '/portal', '/ws', '/health', '/version',
+])
+
 export default defineConfig({
   // Read env from the project root (one .env for backend + frontend). Vite only
   // exposes VITE_-prefixed vars to the client, so the Stripe/AWS secrets in the
@@ -35,10 +41,14 @@ export default defineConfig({
   // is not, and every request died as ERR_CONNECTION_RESET. Proxying keeps the
   // app on one origin, so it no longer depends on how the backend is published.
   // Same lesson the WebSocket URL already learned: derive from the page.
+  // The prefixes mirror production's ingress (infra/digitalocean/app.yaml).
+  // With only /api, /auth and /ws proxied, /billing/status fell through to
+  // index.html and every dev workspace opened on "Workspace verification
+  // unavailable" — the license gate could never be passed locally.
   server: {
     host: true,
     proxy: Object.fromEntries(
-      ['/api', '/auth', '/ws'].map((path) => [path, {
+      DEV_PROXY_PREFIXES.map((path) => [path, {
         target: process.env.ORACLE_PROXY_TARGET || 'http://backend:8000',
         changeOrigin: true,
         ws: path === '/ws',

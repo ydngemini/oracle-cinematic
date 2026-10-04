@@ -87,7 +87,6 @@ function ContactList({ contacts, error, loading, refreshing, updatedAt, onRetry,
           <span className={styles.kicker}>People</span>
           <h2 id="canonical-contacts-title">Contacts</h2>
         </div>
-        <ul className={styles.sourceStatus}>
         <ul className={styles.sourceStatus} aria-label="Contact source status">
           <PanelDataStatus
             label="Contact source"
@@ -97,7 +96,6 @@ function ContactList({ contacts, error, loading, refreshing, updatedAt, onRetry,
             updatedAt={updatedAt}
             onRetry={onRetry}
           />
-        </ul>
         </ul>
       </header>
 
@@ -120,7 +118,7 @@ function ContactList({ contacts, error, loading, refreshing, updatedAt, onRetry,
       ) : (contacts || []).length === 0 ? (
         <div className={styles.empty} role="status">
           <UsersRound aria-hidden="true" />
-          <div><strong>No contacts yet</strong><p>Add your first client from an opportunity, or ask Neoh to add someone for you.</p></div>
+          <div><strong>No contacts yet</strong><p>Add your first client with New contact, or ask Neoh to add someone for you.</p></div>
           <button type="button" onClick={onOpenOpportunities}>Open opportunities</button>
         </div>
       ) : visible.length === 0 ? (

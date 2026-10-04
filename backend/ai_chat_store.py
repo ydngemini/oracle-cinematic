@@ -400,7 +400,7 @@ async def list_messages(
                   WHERE m.tenant_id=$1::uuid AND m.user_id=$2
                     AND ($3::timestamptz IS NULL OR m.created_at < $3)
                GROUP BY m.id
-               ORDER BY m.created_at DESC, m.id DESC LIMIT $4""",
+               ORDER BY m.created_at DESC, (m.role = 'user') ASC, m.id DESC LIMIT $4""",
             ctx.tenant_id, ctx.agent_id, before, max(1, min(100, limit)),
         )
         action_rows = await conn.fetch(
@@ -417,6 +417,10 @@ async def list_messages(
                 "record_id": str(action["record_id"]), "fields": fields,
                 "status": action["status"], "undo_expires_at": action["undo_expires_at"].isoformat(),
             })
+        # A turn's question and its answer are written in one transaction and
+        # share created_at; the random-uuid tiebreak alone put "Neoh said" ABOVE
+        # "You said" for about half of all turns after a reload. Within a tie the
+        # user row sorts last here, so it reads first once reversed.
         result = []
         for row in reversed(rows):
             result.append({

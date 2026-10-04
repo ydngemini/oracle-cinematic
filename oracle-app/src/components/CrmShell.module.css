@@ -109,6 +109,23 @@
   animation: view-in var(--duration-slow) var(--ease-spring);
 }
 
+/* A service banner already sits below the fixed header and pushes the view
+   down, so the view must not reserve the header's height a second time. */
+.shellContainer:has(> [data-service-banner]) .scrollableContent {
+  padding-top: var(--space-4);
+  /* Sticky bars inside the view stick to its top edge, not a header's
+     height below it (the header is above the banner, outside the view). */
+  --view-sticky-top: 0px;
+}
+
+/* Phones: the wordmark, the jurisdiction pill and three 44px buttons were
+   ~430px wide, so at 320–390px the settings button was pushed partly or half
+   off-screen. The pill keeps its accessible name and drops its visible label. */
+@media (max-width: 479px) {
+  .header { padding-inline: var(--space-3); }
+  .headerTools { gap: var(--space-1); }
+}
+
 .profileLayer {
   position: fixed;
   inset: 0;

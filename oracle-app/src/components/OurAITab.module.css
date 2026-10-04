@@ -117,7 +117,7 @@
 .workspaceNav {
   position: sticky;
   z-index: var(--z-above);
-  top: calc(var(--crm-header-h) + var(--safe-top) + var(--space-2));
+  top: calc(var(--view-sticky-top, calc(var(--crm-header-h) + var(--safe-top))) + var(--space-2));
   overflow-x: auto;
   border: 1px solid var(--oracle-border-subtle);
   border-radius: var(--radius-md);
@@ -252,7 +252,7 @@
   .readiness span { padding-inline: var(--space-2); }
   .sourceNotice { grid-template-columns: auto minmax(0, 1fr); }
   .sourceNotice button { grid-column: 2; justify-self: start; }
-  .workspaceNav { top: calc(var(--crm-header-h) + var(--safe-top) + var(--space-1)); margin-inline: calc(var(--space-4) * -1); border-radius: 0; }
+  .workspaceNav { top: calc(var(--view-sticky-top, calc(var(--crm-header-h) + var(--safe-top))) + var(--space-1)); margin-inline: calc(var(--space-4) * -1); border-radius: 0; }
   .workspaceNav > div { min-width: max-content; display: flex; }
   .workspaceNav button { min-width: 7.1rem; padding-inline: var(--space-3); }
   .metrics > div { min-height: 84px; padding: var(--space-3); }

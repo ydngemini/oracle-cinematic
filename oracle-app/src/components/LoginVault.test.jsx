@@ -27,6 +27,15 @@ describe('LoginVault operator second factor', () => {
   beforeEach(() => api.apiPost.mockReset());
   afterEach(cleanup);
 
+  it('says the password did not match, not that a session ended, when sign-in is refused', async () => {
+    api.apiPost.mockRejectedValueOnce(new api.ApiError('Invalid agent credentials.', 401));
+    render(<LoginVault onAuthenticated={() => {}} />);
+    signIn();
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toMatch(/email and password don.t match/);
+    expect(alert.textContent).not.toMatch(/session ended/i);
+  });
+
   it('asks for the emailed code and sends it with the next attempt', async () => {
     api.apiPost
       .mockRejectedValueOnce(new api.ApiError({ code: 'OTP_REQUIRED', message: 'We emailed a 6-digit sign-in code to y***@gmail.com.' }, 401))

@@ -331,7 +331,9 @@ export function ScoreMeter({ score, showVal = true }) {
   const v = clampScore(score);
   if (v === null) return null;
   return (
-    <span className={styles.meter} aria-label={`Lead score ${v} of 100`}>
+    // role="img": an aria-label on a role-less span is prohibited ARIA (axe
+    // serious) and screen readers ignored it, so the score was never announced.
+    <span className={styles.meter} role="img" aria-label={`Lead score ${v} of 100`}>
       <span className={styles.meterTrack} data-tier={scoreTier(v)}>
         <span className={styles.meterFill} style={{ '--pct': `${v}%` }} />
       </span>

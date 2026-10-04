@@ -843,7 +843,7 @@ p.provenance {
 .noBuyers {
   margin: 0 0 1rem;
   font-size: var(--text-sm);
-  color: var(--oracle-text-secondary, inherit);
+  color: var(--oracle-text-dim);
 }
 
 .buyerList {

@@ -4,6 +4,7 @@ import { apiPost, ApiError } from '../lib/apiClient';
 import { useNetwork } from '../context/useNetwork';
 
 const TITLES = { login: 'Sign in', signup: 'Create your account', forgot: 'Reset your password', reset: 'Set a new password' };
+const BAD_CREDENTIALS = 'That email and password don’t match. Try again, or reset your password.';
 const CTAS = { login: 'Sign in', signup: 'Create account', forgot: 'Send reset link', reset: 'Set password & sign in' };
 
 /**
@@ -85,6 +86,10 @@ export function LoginVault({ onAuthenticated }) {
         setOtp('');
         setError(err.code === 'OTP_INVALID' ? err.message : '');
         setNotice(err.code === 'OTP_REQUIRED' ? err.message : '');
+      } else if (err instanceof ApiError && mode === 'login' && err.status === 401) {
+        // A wrong password is not an ended session; the generic 401 copy told
+        // someone who had just typed their password to "sign in again".
+        setError(BAD_CREDENTIALS);
       } else if (err instanceof ApiError) {
         setError(formatError(err));
       } else {

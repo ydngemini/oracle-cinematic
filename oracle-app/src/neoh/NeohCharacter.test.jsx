@@ -62,6 +62,19 @@ describe('NeohCharacter rig', () => {
     expect(fullParts).toBeGreaterThan(bustParts);
   });
 
+  it('gives every circle and ellipse a numeric position (the hands were "9.4-0.9")', () => {
+    for (const variant of VARIANTS) {
+      const c = render3(variant);
+      for (const node of c.querySelectorAll('circle, ellipse')) {
+        for (const attr of ['cx', 'cy']) {
+          const value = node.getAttribute(attr);
+          expect(Number.isFinite(Number(value)), `${variant} ${attr}=${value}`).toBe(true);
+        }
+      }
+      cleanup();
+    }
+  });
+
   it('keeps every part independently addressable rather than one mega-path', () => {
     // A single clever path cannot tilt a head without dragging the shoulders.
     const c = render3('bust');

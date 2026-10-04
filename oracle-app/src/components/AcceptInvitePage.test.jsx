@@ -91,6 +91,27 @@ describe('AcceptInvitePage', () => {
     Object.defineProperty(window, 'location', { configurable: true, value: realLocation });
   });
 
+  it('submits on Enter from the password field, and not before the form is complete', async () => {
+    api.apiPost.mockResolvedValue({ tenant_id: 't1', role: 'agent' });
+    const realLocation = window.location;
+    Object.defineProperty(window, 'location', {
+      configurable: true,
+      value: { ...realLocation, assign: vi.fn(), search: '?token=tok-9', pathname: '/accept-invite' },
+    });
+    render(<AcceptInvitePage />);
+    await screen.findByRole('heading', { name: /Join Lockwood Realty on Neoh/ });
+    const password = screen.getByLabelText('Choose a password');
+    fireEvent.change(password, { target: { value: 'correct horse battery' } });
+    fireEvent.submit(password.closest('form'));
+    expect(api.apiPost).not.toHaveBeenCalled();
+    fireEvent.change(screen.getByLabelText('Your name'), { target: { value: 'John' } });
+    fireEvent.submit(password.closest('form'));
+    await waitFor(() => expect(api.apiPost).toHaveBeenCalledWith('/auth/accept-invite', {
+      token: 'tok-9', password: 'correct horse battery', full_name: 'John',
+    }));
+    Object.defineProperty(window, 'location', { configurable: true, value: realLocation });
+  });
+
   it.each([
     ['accepted', /already been used/],
     ['revoked', /withdrew this invitation/],

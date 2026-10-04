@@ -1,4 +1,12 @@
+/* The shell header is position: fixed, so a banner left at the top of the
+   flow sat UNDER it — "Listing data may be out of date" was printed through
+   the NEOH wordmark. It now starts below the header and the view drops its
+   own header allowance while a banner is shown (CrmShell.module.css). */
 .banner {
+  position: relative;
+  z-index: var(--z-above);
+  flex: 0 0 auto;
+  margin-top: calc(var(--crm-header-h) + var(--safe-top));
   display: flex;
   flex-wrap: wrap;
   gap: var(--space-1) var(--space-4);

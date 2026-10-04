@@ -115,7 +115,7 @@
   font-size: 0.5rem;
   letter-spacing: 0.25em;
   font-variant-numeric: tabular-nums;
-  color: rgba(242, 242, 242, 0.22);
+  color: var(--oracle-text-ghost);
 }
 
 /* ─── Step Content ───────────────────────────────────────────────────────── */
@@ -127,7 +127,7 @@
 .title {
   font-size: 1.35rem;
   font-weight: 300;
-  color: rgba(242, 242, 242, 0.94);
+  color: var(--oracle-text-heading);
   letter-spacing: -0.01em;
   margin: 0 0 0.4rem;
   line-height: 1.25;
@@ -136,7 +136,7 @@
 .subtitle {
   font-size: 0.74rem;
   font-weight: 300;
-  color: rgba(242, 242, 242, 0.42);
+  color: var(--oracle-text-ghost);
   line-height: 1.55;
   margin: 0 0 1.3rem;
 }
@@ -183,7 +183,7 @@
 .optionLabel {
   font-size: 0.82rem;
   font-weight: 400;
-  color: rgba(242, 242, 242, 0.9);
+  color: var(--oracle-text-heading);
   letter-spacing: 0.01em;
 }
 
@@ -191,7 +191,7 @@
   font-size: 0.6rem;
   font-weight: 300;
   letter-spacing: 0.06em;
-  color: rgba(242, 242, 242, 0.35);
+  color: var(--oracle-text-ghost);
 }
 
 /* ─── ZIP Field ──────────────────────────────────────────────────────────── */
@@ -210,7 +210,7 @@
   font-family: 'JetBrains Mono', ui-monospace, monospace;
   font-size: 0.85rem;
   letter-spacing: 0.08em;
-  color: rgba(242, 242, 242, 0.92);
+  color: var(--oracle-text-heading);
 
   transition:
     border-color 0.35s cubic-bezier(0.16, 1, 0.3, 1),
@@ -218,7 +218,7 @@
 }
 
 .zipField::placeholder {
-  color: rgba(242, 242, 242, 0.16);
+  color: var(--oracle-text-ghost);
   letter-spacing: 0.08em;
 }
 
@@ -297,13 +297,13 @@
   font-size: 0.52rem;
   letter-spacing: 0.28em;
   text-transform: uppercase;
-  color: rgba(242, 242, 242, 0.25);
+  color: var(--oracle-text-ghost);
   padding: 0.3rem 0.2rem;
   transition: color 0.3s ease;
 }
 
 .ghost:hover {
-  color: rgba(242, 242, 242, 0.55);
+  color: var(--oracle-text-dim);
 }
 
 /* ─── Reduced Motion ─────────────────────────────────────────────────────── */

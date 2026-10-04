@@ -1,6 +1,9 @@
 .wrap {
   width: min(100%, 68rem);
   display: grid;
+  /* A shrinkable track: the default auto column grew to its widest child's
+     min-content, which pushed the view switcher and Refresh off a phone. */
+  grid-template-columns: minmax(0, 1fr);
   gap: var(--space-6);
   padding: clamp(var(--space-3), 3vw, var(--space-8)) 0;
 }
@@ -88,8 +91,9 @@
 
 @media (max-width: 680px) {
   .wrap { width: 100%; padding-top: 0; }
-  .hero { grid-template-columns: 1fr; align-items: start; gap: var(--space-5); }
-  .switcher { width: 100%; backdrop-filter: none; -webkit-backdrop-filter: none; }
+  .hero { grid-template-columns: minmax(0, 1fr); align-items: start; gap: var(--space-5); }
+  /* Wraps to a second row on a phone instead of running off the right edge. */
+  .switcher { width: 100%; flex-wrap: wrap; backdrop-filter: none; -webkit-backdrop-filter: none; }
   .switcher button { flex: 1; justify-content: center; }
 }
 

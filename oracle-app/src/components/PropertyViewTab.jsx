@@ -540,6 +540,10 @@ export default function PropertyViewTab() {
               accept={captureMode === 'pano' ? 'image/*' : 'image/*,video/mp4,video/quicktime,video/webm'}
               className={styles.srOnly}
               onChange={onPickFiles}
+              // Opened by the button above. Left in the tab order, it was an
+              // invisible stop where keyboard focus vanished.
+              tabIndex={-1}
+              aria-hidden="true"
             />
           </div>
 

@@ -326,7 +326,7 @@ export default function CommsComposer({
   const toggleTray = (which) => setTray((cur) => (cur === which ? null : which));
 
   return (
-    <div className={styles.composer} ref={rootRef}>
+    <div className={styles.composer} ref={rootRef} data-standalone-composer="">
       {/* Trays open ABOVE the fields so the body stays anchored to the Deck. */}
       {tray === 'draft' && (
         <div className={styles.tray} role="group" aria-label="AI draft intents">

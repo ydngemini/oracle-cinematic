@@ -857,3 +857,30 @@ def test_without_a_gateway_the_original_ladder_still_answers_callers(monkeypatch
     reply = asyncio.run(ai_chat_agent._generate_voice_reply("+15555550123", "hello?"))
     assert called.get("used") is True
     assert reply == "answered by the direct path"
+
+
+def test_history_lists_a_turns_question_before_its_answer(monkeypatch):
+    """The user row and the assistant row of one turn are inserted in the same
+    transaction, so they share created_at. Ordered by (created_at, id) alone, a
+    random uuid decided which came first and about half of all turns reloaded
+    with "Neoh said" above "You said". The query must break the tie on role."""
+    class _Conn:
+        query = ""
+
+        async def fetch(self, query, *args):
+            if "FROM ai_chat_messages" in query:
+                _Conn.query = query
+            return []
+
+    @asynccontextmanager
+    async def tx(_ctx):
+        yield _Conn()
+
+    monkeypatch.setattr(ai_chat_store, "tenant_tx", tx)
+    monkeypatch.setattr(ai_chat_store, "tenant_key", lambda _ctx: "k")
+    ctx = TenantContext(agent_id="agent-alice", tenant_id=str(uuid.uuid4()), role=Role.AGENT)
+    asyncio.run(ai_chat_store.list_messages(ctx, limit=10))
+    order = " ".join(_Conn.query.split()).split("ORDER BY", 1)[1].strip()
+    # DESC page, reversed for display: within a tie the user row must sort LAST
+    # here so that it reads FIRST.
+    assert order.startswith("m.created_at DESC, (m.role = 'user') ASC, m.id DESC")

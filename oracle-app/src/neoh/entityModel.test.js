@@ -1,6 +1,16 @@
 import { describe, expect, it } from 'vitest';
 
-import { MIN_READ_CONFIDENCE, dealRead, entityTitle, personRead } from './entityModel';
+import { MIN_READ_CONFIDENCE, dealRead, entityTitle, personRead, propertyLabel } from './entityModel';
+
+describe('propertyLabel', () => {
+  it('names a property by its address, never by a synthetic Property View key', () => {
+    expect(propertyLabel({ parcel_id: 'pv:ef32f869', address: '100 W 10th St', payload: {} })).toBe('100 W 10th St');
+    expect(propertyLabel({ parcel_id: 'pv:ef32f869', payload: {} })).toBe('Property');
+    expect(propertyLabel({ parcel_id: '1002-334', payload: { address: '5 Elm St' } })).toBe('5 Elm St');
+    expect(propertyLabel({ parcel_id: '1002-334', payload: {} })).toBe('1002-334');
+    expect(propertyLabel(null)).toBe('Property');
+  });
+});
 
 describe('personRead', () => {
   it('uses the latent sentence, the top state, and the first dispute question', () => {

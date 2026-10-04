@@ -75,7 +75,7 @@ async def get_dossier(
         async with tenant_tx(ctx) as conn:
             row = await conn.fetchrow(
                 """
-                SELECT parcel_id, state, motivation_score, underwriting, payload,
+                SELECT parcel_id, address, state, motivation_score, underwriting, payload,
                        dossier_status, contract_execution_date, contract_expires_at,
                        marketing_payload, marketing_generated_at, acquisition_entity,
                        """ + MLS_OVERLAY_SELECT + """
@@ -138,6 +138,10 @@ async def get_dossier(
         "listing": listing,
         "buyer_matches": buyers,
         "parcel_id": row["parcel_id"],
+        # The street address. A Property View subject has no payload yet, so
+        # without this column the sheet (and Neoh's "Talking about …" chip)
+        # named the house by its synthetic parcel key, "pv:ef32f869…".
+        "address": row["address"],
         "state": row["state"],
         "motivation_score": row["motivation_score"],
         "underwriting": _jsonb(row["underwriting"]),
