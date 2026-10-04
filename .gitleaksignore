@@ -6,3 +6,8 @@
 ba967f98d8ff90142bf81245ff278aa71525273f:backend/NEOH_AZURE_DEPLOYMENT.md:generic-api-key:90
 ba967f98d8ff90142bf81245ff278aa71525273f:backend/NEOH_AZURE_DEPLOYMENT.md:generic-api-key:92
 ba967f98d8ff90142bf81245ff278aa71525273f:backend/ai_chat_agent.py:generic-api-key:531
+
+# 2026-10-03 test fixtures, verified fake (sk_test_SENTINELKEY, Pg-dummy-…, …Dummy0…) — operator billing + rendered-spec boot tests
+56af519efce45677ffa7251e91a873e14e6a8a17:backend/tests/test_operator_billing_ai.py:stripe-access-token:106
+6f4de8061f3bb775b8cf971601ed5aa1fde8258e:backend/tests/test_rendered_spec_boots.py:generic-api-key:42
+6f4de8061f3bb775b8cf971601ed5aa1fde8258e:backend/tests/test_rendered_spec_boots.py:generic-api-key:56
