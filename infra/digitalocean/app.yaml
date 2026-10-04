@@ -250,6 +250,10 @@ services:
         type: SECRET
       - key: ORACLE_FIREWORKS_API_KEY
         type: SECRET
+      # Without this the chat path defaults to azure-foundry (retired), so
+      # Neoh never answered even with a valid Fireworks key (found on staging).
+      - key: ORACLE_AI_CHAT_PROVIDER
+        value: "fireworks"
       # Optional provider support, deliberately NOT listed here (add the key
       # to api AND worker only when that provider is actually used):
       #   TELNYX_API_KEY, TELNYX_PUBLIC_KEY       hosted SMS (docs/telnyx-hosted-sms-runbook.md)
@@ -450,6 +454,10 @@ workers:
         type: SECRET
       - key: ORACLE_FIREWORKS_API_KEY
         type: SECRET
+      # Without this the chat path defaults to azure-foundry (retired), so
+      # Neoh never answered even with a valid Fireworks key (found on staging).
+      - key: ORACLE_AI_CHAT_PROVIDER
+        value: "fireworks"
 
 # `ingress` (not the deprecated per-component `routes:`) is the current App
 # Spec way to route paths to components. Order matters: FastAPI serves
