@@ -451,6 +451,11 @@ def validate_plivo_signature(
             detail="Plivo webhook validation is not configured.",
         )
     canonical_url = _canonical_webhook_url(request, suffix)
+    # Plivo signs the callback URL it was GIVEN, query string included
+    # (signature_v3.construct_post_url), and outbound calls carry Neoh's
+    # correlation reference there — so the query is part of what is verified.
+    if request.url.query:
+        canonical_url = f"{canonical_url}?{request.url.query}"
     if validate_plivo_webhook_signature(
         canonical_url,
         nonce,
@@ -1648,6 +1653,7 @@ async def plivo_outbound_answer(request: Request) -> Response:
     disclosure has to be spoken before the realtime stream ever opens.
     """
     from plivo_call_handler import (
+        PLIVO_CORRELATION_PARAM,
         PlivoCallStateUnavailable,
         bind_outbound_plivo_call_id,
         create_plivo_bridge_token,
@@ -1662,8 +1668,9 @@ async def plivo_outbound_answer(request: Request) -> Response:
     form = await request.form()
     call_uuid = str(form.get("CallUUID") or "")
     request_uuid = str(form.get("RequestUUID") or "")
+    correlation = str(request.query_params.get(PLIVO_CORRELATION_PARAM) or "")
     state = await resolve_outbound_plivo_call_state(
-        call_uuid, request_uuid, wait_for_initialization=True)
+        call_uuid, request_uuid, correlation=correlation, wait_for_initialization=True)
     if state is None:
         logger.error("Rejecting unmanaged Plivo call: uuid=%s", call_uuid)
         return Response(
@@ -1717,6 +1724,7 @@ async def plivo_outbound_answer(request: Request) -> Response:
 async def plivo_outbound_status(request: Request) -> Response:
     """Status callback for a Neoh AI-placed outbound Plivo call."""
     from plivo_call_handler import (
+        PLIVO_CORRELATION_PARAM,
         PlivoCallStateUnavailable,
         cleanup_plivo_call,
         resolve_outbound_plivo_call_state,
@@ -1725,11 +1733,13 @@ async def plivo_outbound_status(request: Request) -> Response:
     form = await request.form()
     call_uuid = str(form.get("CallUUID") or "")
     request_uuid = str(form.get("RequestUUID") or "")
+    correlation = str(request.query_params.get(PLIVO_CORRELATION_PARAM) or "")
     call_status = str(form.get("CallStatus") or "").strip().lower()
     if not call_uuid:
         return Response(status_code=status.HTTP_204_NO_CONTENT)
     try:
-        state = await resolve_outbound_plivo_call_state(call_uuid, request_uuid)
+        state = await resolve_outbound_plivo_call_state(call_uuid, request_uuid,
+                                                        correlation=correlation)
     except PlivoCallStateUnavailable:
         # Cannot tell whose call this is, so cannot verify it — and an
         # unverified request must not act. The state carries a TTL, so a
@@ -1754,15 +1764,17 @@ async def plivo_outbound_status(request: Request) -> Response:
     try:
         # live_call_sessions knows the call by the id placing it returned:
         # Plivo's request id.
-        await record_call_outcome(state.get("request_uuid") or request_uuid or call_uuid,
+        await record_call_outcome(state.get("reference") or state.get("request_uuid")
+                                  or request_uuid or call_uuid,
                                   call_status, duration if duration >= 0 else None)
     except Exception:  # noqa: BLE001 — never let bookkeeping skip the cleanup below
         logger.warning("Plivo outbound call outcome not recorded: uuid=%s", call_uuid, exc_info=True)
     if call_status in _PLIVO_TERMINAL_STATUSES:
         try:
             await cleanup_plivo_call(call_uuid)
-            if request_uuid and request_uuid != call_uuid:
-                await cleanup_plivo_call(request_uuid)
+            for alias in {request_uuid, correlation, str(state.get("reference") or "")}:
+                if alias and alias != call_uuid:
+                    await cleanup_plivo_call(alias)
         except PlivoCallStateUnavailable:
             logger.warning("Distributed outbound call cleanup was unavailable: uuid=%s", call_uuid)
     logger.info("Plivo outbound call status received: uuid=%s status=%s", call_uuid, call_status or "unknown")

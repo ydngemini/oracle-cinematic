@@ -85,3 +85,18 @@ def test_plivo_branch_requires_public_base_url_for_the_answer_url():
     plivo_block = branch[plivo_idx:else_idx]
     assert 'ORACLE_PUBLIC_BASE_URL' in plivo_block
     assert "raise ProviderConfigurationError" in plivo_block
+
+
+def test_call_state_exists_before_the_call_and_the_urls_carry_neohs_reference():
+    """Plivo hits the answer URL seconds after create — and on staging its
+    create response carried no id. So state is written FIRST, under Neoh's own
+    reference, and both callback URLs carry that reference."""
+    branch = _call_branch_source()
+    plivo_idx = branch.index('if call_provider == "plivo":')
+    src = branch[plivo_idx:branch.index("else:", plivo_idx)]
+    init = src.index("initialize_outbound_plivo_call_state(")
+    place = src.index("adapter.place_call(")
+    assert init < place, "state must exist before Plivo can call the answer URL"
+    call = src[place:src.index(")", src.index("correlation_ref=", place))]
+    assert "{ref_query}" in call and "correlation_ref=correlation" in call
+    assert "PLIVO_CORRELATION_PARAM" in src

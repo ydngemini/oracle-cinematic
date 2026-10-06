@@ -2701,8 +2701,10 @@ async def _execute_command_job(payload: dict[str, Any], reporter) -> dict[str, A
                         "ORACLE_PUBLIC_BASE_URL is not set — Plivo answer_url is unavailable"
                     )
                 from plivo_call_handler import (
+                    PLIVO_CORRELATION_PARAM,
                     ensure_plivo_call_state_available,
                     initialize_outbound_plivo_call_state,
+                    record_outbound_plivo_reference,
                 )
                 from telephony_api import (
                     PLIVO_OUTBOUND_ANSWER_PATH,
@@ -2712,27 +2714,38 @@ async def _execute_command_job(payload: dict[str, Any], reporter) -> dict[str, A
 
                 adapter = get_voice_provider("plivo")
                 await ensure_plivo_call_state_available()
+                account_id = str(
+                    (plivo_credentials or {}).get("auth_id")
+                    or os.getenv("PLIVO_AUTH_ID", "")
+                )
+                # Neoh's OWN reference for this call, carried in the callback
+                # URLs and stored BEFORE the call exists. Plivo's create
+                # response came back with no request id on both real staging
+                # calls (2026-10-04, 2026-10-06: fields api_id + message only),
+                # so a call keyed on that id had no state and its answer webhook
+                # refused it as "unmanaged". The URL is covered by the V3
+                # signature, so the reference cannot be forged onto a webhook.
+                correlation = str(uuid.uuid4())
+                await initialize_outbound_plivo_call_state(
+                    correlation,
+                    str(target.get("phone") or ""),
+                    tenant_id=ctx.tenant_id,
+                    account_id=account_id,
+                )
+                ref_query = f"?{PLIVO_CORRELATION_PARAM}={correlation}"
                 provider_result = await adapter.place_call(
                     to_number=str(target.get("phone") or ""),
                     from_number=verified_caller_id,
                     # Imported, not re-typed: these URLs were once written as
                     # /api/commands/… — a path with no route — so every
                     # outbound Plivo call fetched a 404 for its instructions.
-                    answer_url=f"{base}{PLIVO_OUTBOUND_ANSWER_PATH}",
-                    status_callback_url=f"{base}{PLIVO_OUTBOUND_STATUS_PATH}",
+                    answer_url=f"{base}{PLIVO_OUTBOUND_ANSWER_PATH}{ref_query}",
+                    status_callback_url=f"{base}{PLIVO_OUTBOUND_STATUS_PATH}{ref_query}",
                     credentials=plivo_credentials,
-                )
-                account_id = str(
-                    (plivo_credentials or {}).get("auth_id")
-                    or os.getenv("PLIVO_AUTH_ID", "")
+                    correlation_ref=correlation,
                 )
                 try:
-                    await initialize_outbound_plivo_call_state(
-                        provider_result.reference,
-                        str(target.get("phone") or ""),
-                        tenant_id=ctx.tenant_id,
-                        account_id=account_id,
-                    )
+                    await record_outbound_plivo_reference(correlation, provider_result.reference)
                 except Exception:
                     await adapter.abort_call(
                         provider_result.reference, credentials=plivo_credentials

@@ -351,3 +351,33 @@ def test_get_voice_provider_returns_matching_adapter():
     assert isinstance(voice_provider.get_voice_provider("plivo"), voice_provider.PlivoVoiceProvider)
     with pytest.raises(voice_provider.VoiceProviderError):
         voice_provider.get_voice_provider("carrier-pigeon")
+
+
+def test_a_call_plivo_returns_no_id_for_is_tracked_by_neohs_own_reference(monkeypatch):
+    """Both real staging calls (2026-10-04, 2026-10-06) came back from create
+    with only api_id + message. The call WAS placed; Neoh's correlation
+    reference identifies it, instead of failing as 'no call UUID'."""
+    import time
+
+    monkeypatch.setattr(time, "sleep", lambda s: None)
+    fake_calls = MagicMock()
+    fake_calls.create.return_value = {"api_id": "a-1", "message": "call fired"}
+    fake_client = MagicMock(calls=fake_calls)
+    fake_client.live_calls.list_ids.return_value = {"calls": []}
+    _patch_client(monkeypatch, fake_client)
+
+    result = asyncio.run(voice_provider.PlivoVoiceProvider().place_call(
+        to_number="+15551234567", from_number="+13025551234",
+        answer_url="https://neoh.example/a?neoh_ref=x", credentials=CREDENTIALS,
+        correlation_ref="3f2b1c9e-0d4a-4e8b-9a1f-6c7d8e9f0a1b"))
+    assert result.reference == "3f2b1c9e-0d4a-4e8b-9a1f-6c7d8e9f0a1b"
+
+
+def test_plivos_own_id_still_wins_over_the_correlation(monkeypatch):
+    fake_calls = MagicMock()
+    fake_calls.create.return_value = MagicMock(request_uuid="uuid-123", call_uuid=None)
+    _patch_client(monkeypatch, MagicMock(calls=fake_calls))
+    result = asyncio.run(voice_provider.PlivoVoiceProvider().place_call(
+        to_number="+15551234567", from_number="+13025551234",
+        answer_url="https://neoh.example/a", credentials=CREDENTIALS, correlation_ref="ref"))
+    assert result.reference == "uuid-123"

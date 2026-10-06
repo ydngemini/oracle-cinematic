@@ -202,7 +202,7 @@ def test_an_unsigned_answer_never_binds_a_call_id(client, monkeypatch):
     state under an attacker-chosen CallUUID."""
     bound = []
 
-    async def by_request(uuid, request_uuid="", wait_for_initialization=False):
+    async def by_request(uuid, request_uuid="", correlation="", wait_for_initialization=False):
         return {**client.state_box["value"], "request_uuid": REQUEST}
 
     async def fake_bind(uuid, state):
@@ -216,7 +216,7 @@ def test_an_unsigned_answer_never_binds_a_call_id(client, monkeypatch):
 
 
 def test_answer_accepts_a_call_known_only_by_its_request_id(client, monkeypatch):
-    async def by_request(uuid, request_uuid="", wait_for_initialization=False):
+    async def by_request(uuid, request_uuid="", correlation="", wait_for_initialization=False):
         return client.state_box["value"] if request_uuid == REQUEST else None
 
     monkeypatch.setattr(plivo_call_handler, "resolve_outbound_plivo_call_state", by_request)
@@ -289,3 +289,86 @@ def test_status_for_an_unknown_call_does_nothing(client):
     client.state_box["value"] = None
     r = client.post(STATUS, data={"CallUUID": UUID, "CallStatus": "completed"})
     assert r.status_code == 204 and client.cleaned == []
+
+
+CORRELATION = "3f2b1c9e-0d4a-4e8b-9a1f-6c7d8e9f0a1b"
+
+
+def test_answer_resolves_a_call_by_neohs_own_reference(client, monkeypatch):
+    """Plivo's create gave no id, so the state lives only under Neoh's
+    correlation reference, carried in the answer URL's query string."""
+    bound = []
+
+    async def only_correlation(uuid, wait_for_initialization=False):
+        return client.state_box["value"] if uuid == CORRELATION else None
+
+    async def fake_bind(uuid, state):
+        bound.append((uuid, state.get("request_uuid")))
+
+    monkeypatch.setattr(plivo_call_handler, "load_plivo_call_state", only_correlation)
+    monkeypatch.setattr(plivo_call_handler, "bind_outbound_plivo_call_id", fake_bind)
+    path = f"{ANSWER}?neoh_ref={CORRELATION}"
+    params = {"CallUUID": UUID}
+    r = client.post(path, data=params, headers=_sign(path, params, PLATFORM_TOKEN))
+    assert r.status_code == 200 and "cannot be connected safely" not in r.text
+    assert "automated AI assistant" in r.text
+    assert bound == [(UUID, CORRELATION)], "the call id is bound only after verification"
+
+
+def test_the_signature_covers_the_reference_in_the_url(client, monkeypatch):
+    """A request signed for the bare path must not validate once a reference
+    is in the query: otherwise a captured signature could carry a forged one."""
+    async def only_correlation(uuid, wait_for_initialization=False):
+        return client.state_box["value"] if uuid == CORRELATION else None
+
+    monkeypatch.setattr(plivo_call_handler, "load_plivo_call_state", only_correlation)
+    params = {"CallUUID": UUID}
+    r = client.post(f"{ANSWER}?neoh_ref={CORRELATION}", data=params,
+                    headers=_sign(ANSWER, params, PLATFORM_TOKEN))
+    assert r.status_code == 400
+
+
+def test_status_reports_the_outcome_under_the_commands_reference(client, monkeypatch):
+    recorded = []
+
+    async def only_correlation(uuid, wait_for_initialization=False):
+        if uuid == CORRELATION:
+            return {**client.state_box["value"], "reference": CORRELATION}
+        return None
+
+    async def fake_record(ref, status, duration):
+        recorded.append((ref, status))
+
+    import commands_api
+
+    monkeypatch.setattr(plivo_call_handler, "load_plivo_call_state", only_correlation)
+    monkeypatch.setattr(commands_api, "record_call_outcome", fake_record)
+    path = f"{STATUS}?neoh_ref={CORRELATION}"
+    params = {"CallUUID": UUID, "CallStatus": "completed", "Duration": "10"}
+    r = client.post(path, data=params, headers=_sign(path, params, PLATFORM_TOKEN))
+    assert r.status_code in (200, 204)
+    assert recorded == [(CORRELATION, "completed")]
+    assert UUID in client.cleaned and CORRELATION in client.cleaned
+
+
+def test_the_reference_is_recorded_and_aliased(monkeypatch):
+    import asyncio
+
+    store = {CORRELATION: {"tenant_id": TENANT, "direction": "outbound"}}
+
+    async def fake_load(uuid, wait_for_initialization=False):
+        return store.get(uuid)
+
+    async def fake_save(uuid, state):
+        store[uuid] = state
+
+    monkeypatch.setattr(plivo_call_handler, "load_plivo_call_state", fake_load)
+    monkeypatch.setattr(plivo_call_handler, "_save_call_state", fake_save)
+    asyncio.run(plivo_call_handler.record_outbound_plivo_reference(CORRELATION, REQUEST))
+    assert store[CORRELATION]["reference"] == REQUEST
+    assert store[REQUEST]["correlation"] == CORRELATION
+    # No id from Plivo: the correlation is its own reference, and no alias.
+    store2 = {CORRELATION: {"tenant_id": TENANT}}
+    store.clear(); store.update(store2)
+    asyncio.run(plivo_call_handler.record_outbound_plivo_reference(CORRELATION, CORRELATION))
+    assert list(store) == [CORRELATION] and store[CORRELATION]["reference"] == CORRELATION

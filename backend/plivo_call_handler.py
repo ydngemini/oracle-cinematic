@@ -175,6 +175,24 @@ async def initialize_inbound_plivo_call_state(
     return state
 
 
+#: Query parameter carrying Neoh's own reference for an outbound call.
+PLIVO_CORRELATION_PARAM = "neoh_ref"
+
+
+async def record_outbound_plivo_reference(correlation: str, reference: str) -> None:
+    """After placing: remember the reference the command recorded for this call
+    (Plivo's request id, its call id, or — when Plivo returned neither — the
+    correlation itself), and store the state under it too. The status webhook
+    reports the carrier outcome under exactly that reference."""
+    state = await load_plivo_call_state(correlation)
+    if state is None:
+        raise PlivoCallStateUnavailable("outbound call state vanished before placement finished")
+    state = {**state, "reference": reference, "correlation": correlation}
+    await _save_call_state(correlation, state)
+    if reference and reference != correlation and _CALL_UUID_RE.fullmatch(reference):
+        await _save_call_state(reference, state)
+
+
 async def initialize_outbound_plivo_call_state(
     call_uuid: str,
     callee_number: str,
@@ -202,6 +220,7 @@ async def resolve_outbound_plivo_call_state(
     call_uuid: str,
     request_uuid: str = "",
     *,
+    correlation: str = "",
     wait_for_initialization: bool = False,
 ) -> Optional[dict[str, Any]]:
     """State for an outbound call Neoh placed, by CallUUID or RequestUUID.
@@ -225,6 +244,12 @@ async def resolve_outbound_plivo_call_state(
             state = await load_plivo_call_state(request_uuid)
             if state is not None:
                 return {**state, "request_uuid": request_uuid}
+        # Neoh's own reference from the callback URL — the one key that does
+        # not depend on what Plivo's create response contained.
+        if correlation and _CALL_UUID_RE.fullmatch(correlation) and correlation != call_uuid:
+            state = await load_plivo_call_state(correlation)
+            if state is not None:
+                return {**state, "request_uuid": state.get("reference") or correlation}
         if attempt + 1 < attempts:
             await asyncio.sleep(_STATE_WAIT_SECONDS)
     return None

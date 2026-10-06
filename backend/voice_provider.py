@@ -538,6 +538,7 @@ class PlivoVoiceProvider(VoiceProvider):
         answer_url: str,
         status_callback_url: Optional[str] = None,
         credentials: Optional[Mapping[str, Any]] = None,
+        correlation_ref: Optional[str] = None,
     ) -> ProviderResult:
         recovery_mode.guard(
             "place_call via PlivoVoiceProvider",
@@ -583,6 +584,12 @@ class PlivoVoiceProvider(VoiceProvider):
                 # its state can be bound to the CALL id the answer webhook
                 # will present. Never a second create.
                 call_uuid = _find_placed_call(client, to_number)
+            if not call_uuid and correlation_ref:
+                # Placed (Plivo answered the request with no error), with no
+                # id of Plivo's to report: Neoh's own reference identifies it
+                # — the webhooks resolve calls by it (plivo_call_handler).
+                logger.info("Plivo call placed; tracking it by Neoh's own reference")
+                call_uuid = correlation_ref
             return call_uuid
 
         reference = await asyncio.wait_for(asyncio.to_thread(_call), timeout=25.0)
