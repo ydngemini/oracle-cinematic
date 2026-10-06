@@ -64,3 +64,33 @@ export function scaleNotice(scale: SceneScale | null | undefined): {
   }
   return { measurementsAllowed: false, label: 'Measurements unavailable — scale unknown' };
 }
+
+/** How the splats were trained to be drawn (scene.json `renderModel`). */
+export type SplatRenderModel = 'antialiased' | 'classic';
+
+/**
+ * Whether the scene's splats must be drawn with PlayCanvas's anti-aliased
+ * (mip-splatting style) projection. A scene trained with gsplat
+ * `--antialiased` drawn in classic mode renders small splats too opaque.
+ * Absent (spaces from before the field existed) means classic.
+ */
+export function gsplatAntiAliasFor(scene: { renderModel?: SplatRenderModel | null } | null | undefined): boolean {
+  return scene?.renderModel === 'antialiased';
+}
+
+/**
+ * Apply the scene's render model to a PlayCanvas app. Scene-wide in 2.21
+ * (`app.scene.gsplat.antiAlias`); guarded because the unified gsplat params
+ * may not exist on every engine build. Returns the value applied, or null
+ * when there was nothing to apply it to.
+ */
+export function applySceneRenderModel(
+  app: { scene?: { gsplat?: { antiAlias?: boolean } | null } | null } | null | undefined,
+  scene: { renderModel?: SplatRenderModel | null } | null | undefined,
+): boolean | null {
+  const params = app?.scene?.gsplat;
+  if (!params) return null;
+  const antiAlias = gsplatAntiAliasFor(scene);
+  params.antiAlias = antiAlias;
+  return antiAlias;
+}
