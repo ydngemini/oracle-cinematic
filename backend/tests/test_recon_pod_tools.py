@@ -159,10 +159,14 @@ def test_people_and_screens_are_masked_furniture_is_not():
     person = np.zeros((h, w)); person[10:20, 10:20] = 0.9
     sofa = np.zeros((h, w)); sofa[25:35, 30:50] = 0.9
     tv = np.zeros((h, w)); tv[5:10, 40:55] = 0.9
-    keep = tools.keep_mask(np.stack([person, sofa, tv]), ["person", "couch", "tv"],
-                           [0.95, 0.99, 0.8], dilate_px=0)
-    assert not keep[15, 15] and not keep[7, 45]
+    stack, labels, scores = np.stack([person, sofa, tv]), ["person", "couch", "tv"], [0.95, 0.99, 0.8]
+    keep = tools.keep_mask(stack, labels, scores, dilate_px=0)
+    assert not keep[15, 15], "people move"
     assert keep[30, 40], "furniture is the room, not a moving object"
+    assert keep[7, 45], "a screen is static unless asked: masked, a switched-off TV becomes a hole"
+    with_screens = tools.keep_mask(stack, labels, scores, dilate_px=0,
+                                   classes=tools.DYNAMIC_CLASSES + tools.SCREEN_CLASSES)
+    assert not with_screens[7, 45]
 
 
 def test_a_low_confidence_detection_is_not_masked_and_masks_are_dilated():

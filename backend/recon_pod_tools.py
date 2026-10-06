@@ -21,7 +21,8 @@ Subcommands (python neoh_recon_tools.py <cmd> ...):
 
   lens-groups IMAGES OUT_DIR      group frames by lens (EXIF + size) for COLMAP
   masks-check                     load the segmentation model (downloads weights)
-  masks IMAGES MASK_DIR REPORT    mask people, pets and screens for COLMAP + training
+  masks IMAGES MASK_DIR REPORT [--screens]
+                                  mask people and pets (and screens) for COLMAP + training
   train MASK_DIR -- ARGS...       run gsplat's simple_trainer with those masks applied
   tag-antialiased PLY             mark a PLY as trained with --antialiased
   ply-count PLY                   print a PLY's vertex count
@@ -142,11 +143,15 @@ def cmd_lens_groups(images: str, out_dir: str) -> Dict[str, Any]:
 
 # ── moving-object masks ──────────────────────────────────────────────────────
 
-#: COCO classes that move or change between frames. People and pets walk
-#: through the capture; screens show different content in every frame. Each
-#: becomes a ghost of translucent splats if trained on. Mirrors and windows are
-#: NOT here — no COCO class covers them — and are reported as a known limit.
-DYNAMIC_CLASSES = ("person", "cat", "dog", "bird", "tv", "laptop", "cell phone")
+#: COCO classes that MOVE between frames. People and pets walk through the
+#: capture and become ghosts of translucent splats if trained on. Mirrors and
+#: windows are NOT here — no COCO class covers them — a known limit.
+DYNAMIC_CLASSES = ("person", "cat", "dog", "bird")
+#: Screens change only when they are ON, and are opt-in (`masks --screens`,
+#: RECON_MASK_SCREENS=1). Masked by default, the switched-off TV of the golden
+#: capture was masked in 113 of 150 frames — a static object with no
+#: supervision from any view becomes a hole or fog in the listing (2026-10-06).
+SCREEN_CLASSES = ("tv", "laptop", "cell phone")
 MASK_SCORE_MIN = 0.6
 MASK_DILATE_PX = 12
 
@@ -200,13 +205,13 @@ def _load_segmenter():
 
 def cmd_masks_check() -> Dict[str, Any]:
     _model, categories, device = _load_segmenter()
-    missing = [c for c in DYNAMIC_CLASSES if c not in categories]
+    missing = [c for c in DYNAMIC_CLASSES + SCREEN_CLASSES if c not in categories]
     if missing:
         raise RuntimeError(f"segmentation model lacks classes {missing}")
     return {"device": device, "classes": list(DYNAMIC_CLASSES)}
 
 
-def cmd_masks(images: str, mask_dir: str, report_path: str) -> Dict[str, Any]:
+def cmd_masks(images: str, mask_dir: str, report_path: str, screens: bool = False) -> Dict[str, Any]:
     """COLMAP mask convention: <mask_dir>/<image name>.png, 0 = ignore.
 
     Only frames with something masked get a file; a frame without one is used
@@ -215,8 +220,10 @@ def cmd_masks(images: str, mask_dir: str, report_path: str) -> Dict[str, Any]:
     from PIL import Image
 
     model, categories, device = _load_segmenter()
+    classes = DYNAMIC_CLASSES + (SCREEN_CLASSES if screens else ())
     os.makedirs(mask_dir, exist_ok=True)
     per_frame: Dict[str, float] = {}
+    by_class: Dict[str, int] = {}
     names = sorted(n for n in os.listdir(images) if not n.startswith("."))
     with torch.no_grad():
         for name in names:
@@ -226,7 +233,10 @@ def cmd_masks(images: str, mask_dir: str, report_path: str) -> Dict[str, Any]:
             out = model([tensor])[0]
             labels = [categories[int(i)] for i in out["labels"].tolist()]
             masks = out["masks"][:, 0].float().cpu().numpy() if len(labels) else np.zeros((0,) + rgb.shape[:2])
-            keep = keep_mask(masks, labels, out["scores"].tolist(), shape=rgb.shape[:2])
+            scores = out["scores"].tolist()
+            keep = keep_mask(masks, labels, scores, classes=classes, shape=rgb.shape[:2])
+            for label in {l for l, sc in zip(labels, scores) if l in classes and sc >= MASK_SCORE_MIN}:
+                by_class[label] = by_class.get(label, 0) + 1
             masked = float(1.0 - keep.mean())
             if masked > 0.0:
                 Image.fromarray(keep.astype(np.uint8) * 255).save(os.path.join(mask_dir, f"{name}.png"))
@@ -236,7 +246,8 @@ def cmd_masks(images: str, mask_dir: str, report_path: str) -> Dict[str, Any]:
         "frames_masked": len(per_frame),
         "mean_masked_fraction": round(sum(per_frame.values()) / max(len(names), 1), 4),
         "max_masked_fraction": max(per_frame.values()) if per_frame else 0.0,
-        "classes": list(DYNAMIC_CLASSES),
+        "classes": list(classes),
+        "frames_by_class": by_class,
         "per_frame": per_frame,
     }
     _write_json(report_path, report)
@@ -604,7 +615,8 @@ def main(argv: List[str]) -> int:
         elif cmd == "masks-check":
             result = cmd_masks_check()
         elif cmd == "masks":
-            result = cmd_masks(args[0], args[1], args[2])
+            pos = [a for a in args if a != "--screens"]
+            result = cmd_masks(pos[0], pos[1], pos[2], screens="--screens" in args)
         elif cmd == "train":
             split = args.index("--") if "--" in args else len(args)
             cmd_train(args[0] if split > 0 else "", args[split + 1:])
@@ -631,7 +643,9 @@ def main(argv: List[str]) -> int:
         traceback.print_exc()
         print(f">>> {cmd} failed: {exc}", file=sys.stderr)
         return 1
-    print(">>> " + json.dumps(result, sort_keys=True, default=str)[:600], file=sys.stderr)
+    # "... ", never ">>> ": the provider reports the last ">>> " line as the
+    # STAGE a failed job died in, and a tool's result is not a stage.
+    print("... " + json.dumps(result, sort_keys=True, default=str)[:600], file=sys.stderr)
     return 0
 
 

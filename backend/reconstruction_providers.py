@@ -1319,7 +1319,11 @@ phase() {                        # $1 = name; closes the previous phase
       >> /workspace/phases.jsonl
   fi
   _PHASE_NAME="$1"; _PHASE_START="$now"
-  [ -n "$1" ] && say "$1"
+  # An `if`, not `[ -n "$1" ] && say`: as a function's LAST command that
+  # returns 1 for `phase ""`, and set -e then ends the job — which is exactly
+  # how a finished 30k-step run with its .sog built died on its final line
+  # (2026-10-06, $0.30).
+  if [ -n "$1" ]; then say "$1"; fi
 }
 quietly() {                      # $1 = label, rest = command
   local label="$1"; shift
@@ -1484,7 +1488,7 @@ rm -f /workspace/smoke.ply /workspace/smoke.sog /workspace/smoke_rt.ply
 MASK_ARG=""
 if [ "$MASKS" = 1 ]; then
   phase "masks"
-  if python "$TOOLS" masks images /workspace/masks /workspace/masks.json \
+  if python "$TOOLS" masks images /workspace/masks /workspace/masks.json __MASK_SCREENS__ \
      && [ -n "$(ls -A /workspace/masks 2>/dev/null)" ]; then
     MASK_ARG="--ImageReader.mask_path /workspace/masks"
   else
@@ -1780,6 +1784,7 @@ def render_pod_pipeline(settings: dict[str, Any]) -> str:
         .replace("__NODE__", _POD_NODE_VERSION)
         .replace("__MATCHER__", settings["matcher"])
         .replace("__MATCH_CMD__", _matcher_command(settings["matcher"]))
+        .replace("__MASK_SCREENS__", "--screens" if settings.get("mask_screens") else "")
         .replace("__RECON_TOOLS__", tools.rstrip("\n"))
     )
 
@@ -2046,6 +2051,9 @@ class PodProvider(ReconstructionProvider):
             # 7 000 (2.22 M vs 923 k Gaussians on the golden capture, 1 230 s,
             # $0.25). ONE value everywhere: code, .env.example and the runbook.
             "steps": _num("RECON_POD_STEPS", "30000", 500, 60000, int),
+            # Screens are masked only on request: a switched-off TV is static,
+            # and masking it leaves a hole (docs/neoh-space-quality.md).
+            "mask_screens": os.environ.get("RECON_MASK_SCREENS", "0").strip() == "1",
         }
 
     # -- HTTP ---------------------------------------------------------------

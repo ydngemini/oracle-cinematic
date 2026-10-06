@@ -13,7 +13,7 @@ Every step in this table is optional. If one fails, the run skips that measureme
 | Step | What | Why |
 |---|---|---|
 | Self-tests, before COLMAP | Render a 1-Gaussian PLY through gsplat; read a `.sog` back to PLY; load the segmenter | Proves the toolchain cheaply. All five early pod failures were found at the last line |
-| Masks | torchvision Mask R-CNN (COCO): person, cat, dog, bird, tv, laptop, cell phone; score ≥ 0.6; 12 px dilation. Written as `masks/<image>.png`, where 0 means ignore | Moving objects and screens become translucent ghosts. Masks are applied to COLMAP features (`--ImageReader.mask_path`) and to training |
+| Masks | torchvision Mask R-CNN (COCO): person, cat, dog, bird; screens (tv, laptop, cell phone) only with `RECON_MASK_SCREENS=1`; score ≥ 0.6; 12 px dilation. Written as `masks/<image>.png`, where 0 means ignore | Moving objects become translucent ghosts. Masks are applied to COLMAP features (`--ImageReader.mask_path`) and to training. Screens are opt-in because the golden capture's switched-off TV was masked in 113 of 150 frames, and a static object with no supervision becomes a hole |
 | Lens groups | One COLMAP camera per (image size, EXIF make/model/lens/focal). Groups under 3 frames fold into the main group | Phones switch lenses mid-walk. One forced camera model gives a compromise lens and soft geometry. Video frames have no EXIF and stay one group |
 | Training | gsplat `simple_trainer default`, **30 000 steps** (one value everywhere), `--antialiased`, `--use-bilateral-grid`, held-out evaluation at the final step | The bilateral grid normalises exposure and white balance per frame, which removes the foggy look. Antialiasing stops thin detail shimmering and popping |
 | Training fallback | If that run fails, the plain proven trainer runs instead (no masks, no new flags) | An improvement can never cost the job |
@@ -51,6 +51,12 @@ So the **block** lines sit far out, at results nobody would publish. Everything 
 - the raw output is preserved (`raw_output_key`), because the GPU time is already spent.
 
 **Every number lands in two places:** the job's diagnostics (stage `quality`), and `scene.json` (`quality`, plus `renderModel`, which the viewer uses to switch PlayCanvas's `scene.gsplat.antiAlias`). The delivered `.sog`'s own `meta.json` decides `renderModel`, with the pod report as the fallback.
+
+## Proof runs
+
+| Date | Capture | Result |
+|---|---|---|
+| 2026-10-06 | mip-NeRF 360 `room`, 280 photos at 779×519 → 150, 30k steps, all steps on | **Failed on its last line, $0.30.** `phase ""` returned 1 under `set -e` after every quality step had run (fixed; `tests/test_pod_pipeline_dry_run.py` now executes the whole script). Measured: COLMAP 150/150, 0.50 px; held-out PSNR **29.56 dB** / SSIM **0.914** / LPIPS **0.072** (colour-corrected 30.63 dB); 1.85 M Gaussians; 1 lens group; masks hit 113/150 frames (the static TV, which is why screens are now opt-in). The `.sog` was built but never downloaded |
 
 ## Known limits
 
