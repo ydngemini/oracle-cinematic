@@ -1670,6 +1670,12 @@ if splat-transform $ST_DEVICE "$PLY" --filter-nan --filter-floaters 0.05,0.1,0.0
   if python -c "import sys; b,a=int(sys.argv[1]),int(sys.argv[2]); sys.exit(0 if b>0 and 0<a and (b-a)/b<=0.25 else 1)" "$BEFORE" "$AFTER"; then
     DELIVER=/workspace/pruned.ply
   fi
+  # splat-transform 3.3.0's filters DROP the antialiased tag from the PLY they
+  # write (plain conversions keep it) — measured 2026-10-06: the proof run's
+  # .sog came out with no "model" at all. So the pruned scene is re-tagged.
+  if [ "$AA" = 1 ] && [ "$DELIVER" = /workspace/pruned.ply ]; then
+    python "$TOOLS" tag-antialiased /workspace/pruned.ply || say "could not tag the pruned PLY"
+  fi
   printf '{"before":%s,"after":%s,"accepted":%s}\n' "$BEFORE" "$AFTER" \
     "$([ "$DELIVER" = /workspace/pruned.ply ] && echo true || echo false)" > /workspace/prune.json
 else

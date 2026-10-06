@@ -455,6 +455,26 @@ def test_the_file_decides_how_it_is_drawn(env):
     assert json.loads(env.store.objects[sog + ".scene.json"])["renderModel"] == "classic"
 
 
+def test_an_untagged_sog_falls_back_to_the_training_report(env):
+    """splat-transform's filters drop the tag; untagged is unknown, and the pod
+    report (trained antialiased) decides. Treating it as classic drew the proof
+    run's scene the wrong way."""
+    _with_images(env, _good_capture(env.tmp))
+
+    class _Untagged(_MeasuredProvider):
+        async def reconstruct(self, images, work_dir):
+            import zipfile
+
+            out = await super().reconstruct(images, work_dir)
+            with zipfile.ZipFile(out, "w") as bundle:
+                bundle.writestr("meta.json", json.dumps({"version": 2}))
+            return out
+
+    _run(env, _Untagged(_GOOD_QUALITY))
+    sog = next(k for k in env.store.objects if k.endswith(".sog"))
+    assert json.loads(env.store.objects[sog + ".scene.json"])["renderModel"] == "antialiased"
+
+
 def test_a_run_without_a_quality_report_is_marked_unverified(env):
     _with_images(env, _good_capture(env.tmp))
     _run(env, _Provider())

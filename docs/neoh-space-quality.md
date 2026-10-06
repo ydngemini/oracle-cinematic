@@ -57,6 +57,9 @@ So the **block** lines sit far out, at results nobody would publish. Everything 
 | Date | Capture | Result |
 |---|---|---|
 | 2026-10-06 | mip-NeRF 360 `room`, 280 photos at 779×519 → 150, 30k steps, all steps on | **Failed on its last line, $0.30.** `phase ""` returned 1 under `set -e` after every quality step had run (fixed; `tests/test_pod_pipeline_dry_run.py` now executes the whole script). Measured: COLMAP 150/150, 0.50 px; held-out PSNR **29.56 dB** / SSIM **0.914** / LPIPS **0.072** (colour-corrected 30.63 dB); 1.85 M Gaussians; 1 lens group; masks hit 113/150 frames (the static TV, which is why screens are now opt-in). The `.sog` was built but never downloaded |
+| 2026-10-06 (run 2) | same capture, same settings, screens not masked | **Published end to end, $0.29**, pod verified gone. Held-out PSNR **28.82 dB** / SSIM **0.890** / LPIPS **0.086** (colour-corrected 29.90 / 0.905); COLMAP 150/150 at 0.51 px; `.sog` vs PLY on held-out views **41.97 dB** (compression is not the softness); floater filter removed 858 Gaussians at 60.3 dB vs raw (no visible cost); 1.90 M Gaussians, 26.7 MB `.sog` (30.7 MB at baseline). The 0.7 dB drop from run 1 is run 1's masked TV inflating its score. Found: splat-transform's filters drop the antialiased tag, so the `.sog` was untagged and the worker wrote `renderModel: classic`. Fixed: the pruned PLY is re-tagged, and untagged now means unknown, with the pod report deciding. Browser (Chrome, Iris 540): ready in 13.1 s desktop / 9.5 s mobile, 28–33 fps; walls built in 292 ms from 1.9 M splats (887 of 120×76 cells solid); walking into a wall stops at it, and with walls off the same walk passes into the void |
+
+**What still softens this scene:** the photos rarely look up, so the **ceiling is never observed** and renders as fog. Neither the floater filter nor the gate can fix unobserved surfaces; the capture has to cover them. The capture itself is 779×519 (`soft_resolution`). The same room exists at 1557×1038 in `neoh-capture-room-hires`, which is the next lever.
 
 ## Known limits
 
@@ -65,3 +68,5 @@ So the **block** lines sit far out, at results nobody would publish. Everything 
 - **Held-out PSNR on masked frames is slightly optimistic,** since masked pixels are black on both sides.
 - **The round-trip runs on up to 12 held-out views,** not all of them.
 - **The thresholds are provisional** (see above).
+- **Walls stop you close.** The body radius is 0.15 nominal m so that 80 cm doorways stay open, so walking into a wall ends very near it (a blurry close-up). A larger radius would stop further back but risks closing doorways.
+- **Unobserved surfaces (usually ceilings) render as fog.** Capture guidance, not processing, fixes them.

@@ -607,6 +607,11 @@ def _render_model_of(splat: Path) -> Optional[str]:
     except Exception:  # noqa: BLE001 - not a bundle, or no meta: unknown
         return None
     model = meta.get("model") if isinstance(meta, dict) else None
+    if model is None:
+        # Untagged is UNKNOWN, not classic: splat-transform's filters drop the
+        # tag, and treating its absence as "classic" drew an antialiased scene
+        # the wrong way (proof run, 2026-10-06). The pod report decides then.
+        return None
     return "antialiased" if model == "antialiased" else "classic"
 
 

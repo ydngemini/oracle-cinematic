@@ -134,6 +134,15 @@ case "$out" in
   *.sog) printf 'PK\003\004SOG-from-%s' "$(basename "$in")" > "$out";;
   *.ply) case "$in" in *.ply) cp "$in" "$out";; *) cp "$NEOH_W/../template.ply" "$out";; esac;;
 esac
+# Like the real 3.3.0: a filter's PLY output loses its header comments.
+case " $* " in *" --filter-floaters "*|*" --filter-nan "*)
+  python3 - "$out" <<'STRIP'
+import sys
+p = sys.argv[1]; b = open(p, "rb").read(); end = b.index(b"end_header\n") + 11
+head = b"".join(l + b"\n" for l in b[:end - 1].split(b"\n") if not l.startswith(b"comment"))
+open(p, "wb").write(head + b[end:])
+STRIP
+;; esac
 '''
 
 
@@ -209,6 +218,9 @@ def test_the_whole_script_runs_to_its_last_line(tmp_path):
     assert "--ImageReader.mask_path" in calls and "--image_list_path" in calls
     assert "comment antialiased 1" in (w / "out" / "ply" / f"point_cloud_{STEPS - 1}.ply").read_bytes()[:400].decode("latin-1")
     assert "masked" in (w / "trainer_calls.log").read_text()
+    # The scene actually delivered — the PRUNED one — still says antialiased,
+    # though the floater filter strips header comments.
+    assert b"comment antialiased 1" in (w / "pruned.ply").read_bytes()[:400]
 
 
 def test_every_optional_quality_step_can_fail_and_the_space_still_ships(tmp_path):
