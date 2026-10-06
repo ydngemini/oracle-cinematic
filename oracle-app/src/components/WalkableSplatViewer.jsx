@@ -1,6 +1,13 @@
 import { useEffect, useRef, useState } from 'react';
 import * as SPLAT from 'gsplat';
 import styles from './WalkableSplatViewer.module.css';
+import {
+  buildOccupancyGridAsync,
+  collisionPlanForScene,
+  createCollider,
+  moveWithCollision,
+} from '../lib/tour/collision';
+import { samplesFromGsplatData } from '../lib/tour/splatSamples';
 
 /**
  * WalkableSplatViewer — first-person walk-INSIDE a property's Gaussian splat.
@@ -10,11 +17,14 @@ import styles from './WalkableSplatViewer.module.css';
  * compact first-person controller: WASD + drag-look on desktop, an on-screen
  * joystick + drag-look on touch. Movement is clamped to the loaded splat's bounds
  * (expanded) so you can't walk out into the void where the capture has no data.
+ * When a v2 scene.json is supplied, walls are built from the splat's own dense
+ * opaque Gaussians (lib/tour/collision.ts) and the walk stops/slides at them;
+ * without one, no walls are invented and only the bounds clamp applies.
  *
  * Tier-3 only — the resolver only hands us a splat_url for a real captured home.
  * The AI-reconstruction disclosure is shown persistently.
  *
- * Props: { splatUrl, disclosure?, address?, title?, onClose }
+ * Props: { splatUrl, scene?, disclosure?, address?, title?, onClose }
  */
 
 const API_BASE = import.meta.env.VITE_API_BASE
@@ -25,12 +35,16 @@ const DISCLOSURE_FALLBACK =
 
 const MOVE_KEYS = ['w', 'a', 's', 'd', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright'];
 
-export default function WalkableSplatViewer({ splatUrl, disclosure, address, title, onClose, embedded = false }) {
+export default function WalkableSplatViewer({ splatUrl, scene = null, disclosure, address, title, onClose, embedded = false }) {
   const canvasRef = useRef(null);
   const ctrlRef = useRef(null); // live controller state (mutated in the rAF loop)
   const [status, setStatus] = useState('loading'); // loading | ready | error | nowebgl
   const [progress, setProgress] = useState(0);
   const [hintVisible, setHintVisible] = useState(true);
+  const [collision, setCollision] = useState('none'); // none | building | on | unavailable
+  // Read once per load; a new scene object for the same splat must not reload it.
+  const sceneRef = useRef(scene);
+  useEffect(() => { sceneRef.current = scene; }, [scene]);
 
   // The gsplat package ships Loader (.splat), PLYLoader and SplatvLoader — there
   // is no SOG reader. Since the pipeline delivers .sog, this fallback engine
@@ -67,12 +81,13 @@ export default function WalkableSplatViewer({ splatUrl, disclosure, address, tit
     const S = {
       pos: [0, 1.4, 3], yaw: Math.PI, pitch: 0,
       keys: new Set(), drag: false, lastX: 0, lastY: 0,
-      joy: { x: 0, y: 0 }, bounds: null, speed: 0.04, ready: false,
+      joy: { x: 0, y: 0 }, bounds: null, speed: 0.04, ready: false, collider: null,
     };
     ctrlRef.current = S;
 
     let raf = 0;
     let disposed = false;
+    const abort = new AbortController();
 
     SPLAT.Loader.LoadAsync(absUrl(splatUrl), scene, (p) => setProgress(Math.round(p * 100)))
       .then((splat) => {
@@ -90,6 +105,26 @@ export default function WalkableSplatViewer({ splatUrl, disclosure, address, tit
         S.speed = Math.max(0.01, Math.max(sz.x, sz.z) * 0.012); // scale walk speed to scene size
         S.ready = true;
         setStatus('ready');
+
+        // Walls from the splat itself, built after the walk is already live.
+        // This engine walks in the splat's SOURCE frame, so the grid (built in
+        // scene.json's canonical floor frame) is queried through the same
+        // canonical transform.
+        const sc = sceneRef.current;
+        const db = sc?.denseBounds;
+        const pad = db ? Math.max(db.max[0] - db.min[0], db.max[2] - db.min[2]) * ex : 1;
+        const plan = collisionPlanForScene(sc, pad);
+        const samples = plan ? samplesFromGsplatData(splat.data) : null;
+        if (!plan || !samples) return;
+        setCollision('building');
+        buildOccupancyGridAsync([samples], plan, { signal: abort.signal })
+          .then((outcome) => {
+            if (disposed || outcome.reason === 'aborted') return;
+            if (!outcome.grid) { setCollision('unavailable'); return; }
+            S.collider = createCollider(outcome.grid, plan, plan.transform);
+            setCollision('on');
+          })
+          .catch(() => { if (!disposed) setCollision('unavailable'); });
       })
       .catch(() => { if (!disposed) setStatus('error'); });
 
@@ -139,8 +174,12 @@ export default function WalkableSplatViewer({ splatUrl, disclosure, address, tit
         // forward(horizontal) = (sin yaw, 0, cos yaw); right = (cos yaw, 0, -sin yaw)
         const sy = Math.sin(S.yaw);
         const cy = Math.cos(S.yaw);
-        S.pos[0] += (sy * mf + cy * ms) * S.speed;
-        S.pos[2] += (cy * mf - sy * ms) * S.speed;
+        const next = [
+          S.pos[0] + (sy * mf + cy * ms) * S.speed,
+          S.pos[1],
+          S.pos[2] + (cy * mf - sy * ms) * S.speed,
+        ];
+        S.pos = S.collider ? moveWithCollision(S.collider, S.pos, next) : next;
         const b = S.bounds;
         if (b) {
           S.pos[0] = Math.max(b.minx, Math.min(b.maxx, S.pos[0]));
@@ -161,6 +200,7 @@ export default function WalkableSplatViewer({ splatUrl, disclosure, address, tit
 
     return () => {
       disposed = true;
+      abort.abort();
       cancelAnimationFrame(raf);
       window.removeEventListener('keydown', kd);
       window.removeEventListener('keyup', ku);
@@ -191,7 +231,7 @@ export default function WalkableSplatViewer({ splatUrl, disclosure, address, tit
   const endJoy = (e) => { e.stopPropagation(); const S = ctrlRef.current; if (S) S.joy = { x: 0, y: 0 }; };
 
   return (
-    <div className={styles.overlay} role={embedded ? undefined : 'dialog'} aria-modal={embedded ? undefined : true} aria-label={`Walk inside ${title || address || 'property'}`}>
+    <div className={styles.overlay} data-space-collision={collision} role={embedded ? undefined : 'dialog'} aria-modal={embedded ? undefined : true} aria-label={`Walk inside ${title || address || 'property'}`}>
       <canvas ref={canvasRef} className={styles.canvas} />
 
       {unsupportedFormat && (

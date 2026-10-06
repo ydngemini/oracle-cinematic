@@ -11,7 +11,7 @@ set -euo pipefail
 
 : "${INPUT_S3:?INPUT_S3 (s3://bucket/recon-inputs/<job>) is required}"
 : "${OUTPUT_S3:?OUTPUT_S3 (s3://bucket/recon-outputs/<job>/model.sog) is required}"
-ITERS="${RECON_ITERS:-7000}"
+ITERS="${RECON_ITERS:-30000}"   # one value everywhere: matches RECON_POD_STEPS
 
 WORK=/work
 rm -rf "$WORK"; mkdir -p "$WORK/images" "$WORK/proc" "$WORK/out" "$WORK/export"

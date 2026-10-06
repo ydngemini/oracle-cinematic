@@ -1286,6 +1286,14 @@ POD_PIPELINE = r"""
 set -euo pipefail
 cd /workspace
 
+# The quality tools (backend/recon_pod_tools.py, embedded at render time). Every
+# use below is optional: a tool that fails disables its own measurement or
+# improvement and the reconstruction carries on without it.
+cat > /workspace/neoh_recon_tools.py <<'NEOH_TOOLS_PY'
+__RECON_TOOLS__
+NEOH_TOOLS_PY
+TOOLS=/workspace/neoh_recon_tools.py
+
 # Every stage announces itself, and the noisy installers are muted unless they
 # fail. The provider reports the tail of the combined streams, and apt alone
 # emits hundreds of "Setting up ..." lines — enough that a real failure was
@@ -1311,7 +1319,11 @@ phase() {                        # $1 = name; closes the previous phase
       >> /workspace/phases.jsonl
   fi
   _PHASE_NAME="$1"; _PHASE_START="$now"
-  [ -n "$1" ] && say "$1"
+  # An `if`, not `[ -n "$1" ] && say`: as a function's LAST command that
+  # returns 1 for `phase ""`, and set -e then ends the job — which is exactly
+  # how a finished 30k-step run with its .sog built died on its final line
+  # (2026-10-06, $0.30).
+  if [ -n "$1" ]; then say "$1"; fi
 }
 quietly() {                      # $1 = label, rest = command
   local label="$1"; shift
@@ -1404,7 +1416,6 @@ else
   vulkaninfo --summary 2>&1 | head -20 >&2 || say "vulkaninfo unavailable"
   exit 2
 fi
-rm -f /workspace/smoke.ply /workspace/smoke.sog
 
 export QT_QPA_PLATFORM=offscreen
 
@@ -1451,17 +1462,64 @@ say "checking the trainer imports"
   say "the trainer cannot import its own dependencies; not spending COLMAP time on it"
   exit 6
 }
+# The exposure model (bilateral grid) and antialiased rasterisation are imported
+# lazily by the trainer — at `__main__`, after COLMAP has been paid for — so they
+# are proven here and simply not requested if they are missing.
+TRAIN_EXTRA="--antialiased"
+if ( cd gs/examples && python -c "import lib_bilagrid" ) 2>/dev/null; then
+  TRAIN_EXTRA="$TRAIN_EXTRA --use-bilateral-grid"
+else
+  say "bilateral grid unavailable; training without exposure normalisation"
+fi
+
+# Quality tools, proven before COLMAP for the same reason as everything above.
+say "checking the quality tools"
+QA_RENDER=0; SOG_READBACK=0; MASKS=0
+if python "$TOOLS" selftest-render /workspace/smoke.ply; then QA_RENDER=1; fi
+if quietly "read a .sog back" splat-transform $ST_DEVICE /workspace/smoke.sog /workspace/smoke_rt.ply; then
+  SOG_READBACK=1
+fi
+if quietly "load the moving-object segmenter" python "$TOOLS" masks-check; then MASKS=1; fi
+say "quality tools: render=$QA_RENDER sog-readback=$SOG_READBACK masks=$MASKS"
+rm -f /workspace/smoke.ply /workspace/smoke.sog /workspace/smoke_rt.ply
+
+# Moving objects — people, pets, screens — are masked out of BOTH the pose solve
+# and training. Trained on, each becomes a translucent ghost.
+MASK_ARG=""
+if [ "$MASKS" = 1 ]; then
+  phase "masks"
+  if python "$TOOLS" masks images /workspace/masks /workspace/masks.json __MASK_SCREENS__ \
+     && [ -n "$(ls -A /workspace/masks 2>/dev/null)" ]; then
+    MASK_ARG="--ImageReader.mask_path /workspace/masks"
+  else
+    rm -rf /workspace/masks
+  fi
+fi
+
+# One camera model PER LENS (EXIF + size), not one for the whole capture.
+LENS_LISTS=""
+if python "$TOOLS" lens-groups images /workspace/lens; then
+  LENS_LISTS=$(ls /workspace/lens/lens_*.txt 2>/dev/null || true)
+fi
 
 phase "colmap_features"
-colmap feature_extractor  --database_path db.db --image_path images \
-                             --ImageReader.single_camera 1 --SiftExtraction.use_gpu 1
+if [ -n "$LENS_LISTS" ]; then
+  for LIST in $LENS_LISTS; do
+    colmap feature_extractor  --database_path db.db --image_path images \
+                              --image_list_path "$LIST" \
+                              --ImageReader.single_camera 1 $MASK_ARG --SiftExtraction.use_gpu 1
+  done
+else
+  colmap feature_extractor  --database_path db.db --image_path images \
+                               --ImageReader.single_camera 1 $MASK_ARG --SiftExtraction.use_gpu 1
+fi
 phase "colmap_matching"
 __MATCH_CMD__
 mkdir -p sparse
 phase "colmap_mapping"
 colmap mapper             --database_path db.db --image_path images --output_path sparse
 test -d sparse/0 || { echo "!! COLMAP registered no cameras" >&2; exit 3; }
-colmap model_analyzer     --path sparse/0
+colmap model_analyzer     --path sparse/0 2>&1 | tee /workspace/model_analyzer.txt >&2
 
 phase "training"
 # --save-ply is REQUIRED, and its absence is not visible until the very end.
@@ -1471,11 +1529,35 @@ phase "training"
 # SSIM 0.807 over 735,049 gaussians, rendered its trajectory video, exited 0,
 # and left nothing for splat-transform to convert. Fifty-two minutes and a
 # whole GPU hour to arrive at "training produced no .ply".
-cd gs/examples && python simple_trainer.py default \
-    --data-dir /workspace --data-factor 1 --result-dir /workspace/out \
-    --max-steps __STEPS__ --save-steps __STEPS__ \
-    --save-ply --ply-steps __STEPS__ --disable-viewer
+#
+# --eval-steps is explicit: gsplat holds out every 8th photo and scores the
+# render against it at these steps — the held-out measurement the quality gate
+# reads. Its default list only happens to include 7000 and 30000.
+TRAIN_ARGS="--data-dir /workspace --data-factor 1 --result-dir /workspace/out \
+    --max-steps __STEPS__ --save-steps __STEPS__ --eval-steps __STEPS__ \
+    --save-ply --ply-steps __STEPS__ --disable-viewer"
+USED_MASKS=0; [ -n "$MASK_ARG" ] && USED_MASKS=1
+cd gs/examples
+TRAINED=0
+if [ "$USED_MASKS" = 1 ]; then
+  python "$TOOLS" train /workspace/masks -- default $TRAIN_ARGS $TRAIN_EXTRA && TRAINED=1
+else
+  python simple_trainer.py default $TRAIN_ARGS $TRAIN_EXTRA && TRAINED=1
+fi
+if [ "$TRAINED" = 0 ]; then
+  # The proven configuration, so an improvement can never cost the job.
+  say "training with masks/exposure/antialiasing failed; retrying the plain trainer"
+  rm -rf /workspace/out
+  python simple_trainer.py default $TRAIN_ARGS
+  USED_MASKS=0; TRAIN_EXTRA=""
+fi
 cd /workspace
+AA=0; case " $TRAIN_EXTRA " in *" --antialiased "*) AA=1;; esac
+BG=0; case " $TRAIN_EXTRA " in *" --use-bilateral-grid "*) BG=1;; esac
+printf '{"steps":%s,"antialiased":%s,"bilateral_grid":%s,"masks":%s,"fallback":%s}\n' \
+  "__STEPS__" "$([ $AA = 1 ] && echo true || echo false)" "$([ $BG = 1 ] && echo true || echo false)" \
+  "$([ $USED_MASKS = 1 ] && echo true || echo false)" "$([ $TRAINED = 0 ] && echo true || echo false)" \
+  > /workspace/training.json
 
 phase "conversion"
 
@@ -1570,11 +1652,75 @@ with open("/workspace/points.ply", "wb") as handle:
 print(f">>> wrote {count} points", file=sys.stderr)
 POINTS
 
+# Trained antialiased: say so in the PLY, so the .sog carries
+# "model": "antialiased" and the viewer draws it the way it was trained.
+if [ "$AA" = 1 ]; then
+  python "$TOOLS" tag-antialiased "$PLY" || say "could not tag the PLY antialiased"
+fi
+
+# Floaters: splat-transform's own voxel filter, then a sanity bound. A filter
+# that would remove more than a quarter of the scene is not removing floaters,
+# and its output is not trusted.
+DELIVER="$PLY"
+if splat-transform $ST_DEVICE "$PLY" --filter-nan --filter-floaters 0.05,0.1,0.004 \
+     /workspace/pruned.ply >>/workspace/install.log 2>&1; then
+  # `|| echo 0`: under set -e a failed count here would end the job.
+  BEFORE=$(python "$TOOLS" ply-count "$PLY" || echo 0)
+  AFTER=$(python "$TOOLS" ply-count /workspace/pruned.ply || echo 0)
+  if python -c "import sys; b,a=int(sys.argv[1]),int(sys.argv[2]); sys.exit(0 if b>0 and 0<a and (b-a)/b<=0.25 else 1)" "$BEFORE" "$AFTER"; then
+    DELIVER=/workspace/pruned.ply
+  fi
+  # splat-transform 3.3.0's filters DROP the antialiased tag from the PLY they
+  # write (plain conversions keep it) — measured 2026-10-06: the proof run's
+  # .sog came out with no "model" at all. So the pruned scene is re-tagged.
+  if [ "$AA" = 1 ] && [ "$DELIVER" = /workspace/pruned.ply ]; then
+    python "$TOOLS" tag-antialiased /workspace/pruned.ply || say "could not tag the pruned PLY"
+  fi
+  printf '{"before":%s,"after":%s,"accepted":%s}\n' "$BEFORE" "$AFTER" \
+    "$([ "$DELIVER" = /workspace/pruned.ply ] && echo true || echo false)" > /workspace/prune.json
+else
+  say "floater filter failed; delivering the unpruned scene"
+fi
+
 say "converting to .sog"
 # .sog, never .splat: splat-transform lists .splat input-only in every released
 # version, so asking it to write one fails on every real run.
-splat-transform $ST_DEVICE "$PLY" /workspace/model.sog
+splat-transform $ST_DEVICE "$DELIVER" /workspace/model.sog
 test -s /workspace/model.sog || { echo "!! conversion produced no .sog" >&2; exit 5; }
+
+# Raw vs pruned vs compressed, from the trainer's held-out views, one renderer.
+# If pruning cost real detail, the unpruned scene is delivered instead.
+if [ "$QA_RENDER" = 1 ] && [ "$SOG_READBACK" = 1 ]; then
+  phase "quality_check"
+  RT_AA=""; [ "$AA" = 1 ] && RT_AA="--antialiased"
+  if splat-transform $ST_DEVICE /workspace/model.sog /workspace/sog_rt.ply >>/workspace/install.log 2>&1 \
+     && python "$TOOLS" roundtrip /workspace "$PLY" "$DELIVER" /workspace/sog_rt.ply \
+          /workspace/roundtrip.json $RT_AA; then
+    if [ "$DELIVER" != "$PLY" ] && python -c "
+import json, sys
+m = json.load(open('/workspace/roundtrip.json'))['mean']
+sys.exit(0 if m['pruned_vs_photo'] < m['raw_vs_photo'] - 0.3 else 1)"; then
+      say "pruning cost detail on held-out views; delivering the unpruned scene"
+      # Converted beside, then swapped in: a failed reconversion must leave
+      # the already-good pruned .sog in place, not a half-written one.
+      if splat-transform $ST_DEVICE "$PLY" /workspace/model_unpruned.sog >>/workspace/install.log 2>&1 \
+         && [ -s /workspace/model_unpruned.sog ]; then
+        mv -f /workspace/model_unpruned.sog /workspace/model.sog
+        python -c "
+import json; p='/workspace/prune.json'; d=json.load(open(p)); d['accepted']=False
+d['reverted']='held-out PSNR fell'; json.dump(d, open(p,'w'))" || true
+      else
+        say "reconverting unpruned failed; keeping the pruned scene"
+      fi
+    fi
+  else
+    say "round-trip comparison unavailable"
+  fi
+  rm -f /workspace/sog_rt.ply
+fi
+python "$TOOLS" qa /workspace /workspace/quality.json || say "quality report unavailable"
+test -s /workspace/model.sog || { echo "!! conversion produced no .sog" >&2; exit 5; }
+phase ""   # close the final phase
 echo "OK $(stat -c%s /workspace/model.sog) bytes"
 """
 
@@ -1603,7 +1749,8 @@ echo ">> fetched $n source images"
 bash /workspace/pipeline.sh
 
 # x-ms-blob-type is required by Azure and ignored by S3, so one PUT covers both.
-phase ""   # close the final phase
+# (The pipeline closes its own final phase: `phase` is defined in pipeline.sh's
+# shell, not this one, and calling it here exited the job before any upload.)
 # Which card actually ran this, so a timing is comparable against another run.
 nvidia-smi --query-gpu=name,memory.total --format=csv,noheader 2>/dev/null \
   | head -1 | sed 's/^/{"phase":"gpu","name":"/; s/$/"}/' >> /workspace/phases.jsonl || true
@@ -1621,7 +1768,41 @@ fi
 if [ -s /workspace/points.ply ] && [ -n "${NEOH_POINTS_URL:-}" ]; then
   curl -fsS -X PUT -T /workspace/points.ply         -H "x-ms-blob-type: BlockBlob"         -H "Content-Type: application/octet-stream"         "$NEOH_POINTS_URL" && echo ">> uploaded point cloud" || echo ">> point cloud upload failed (ignored)"
 fi
+
+if [ -s /workspace/quality.json ] && [ -n "${NEOH_QUALITY_URL:-}" ]; then
+  curl -fsS -X PUT -T /workspace/quality.json         -H "x-ms-blob-type: BlockBlob"         -H "Content-Type: application/json"         "$NEOH_QUALITY_URL" && echo ">> uploaded quality report" || echo ">> quality report upload failed (ignored)"
+fi
 """
+
+
+def render_pod_pipeline(settings: dict[str, Any]) -> str:
+    """The exact script a pod runs — ONE renderer for both transports, so the
+    SSH and blob paths cannot drift apart. The quality tools are embedded last
+    so no placeholder substitution can ever touch their source."""
+    tools = (Path(__file__).with_name("recon_pod_tools.py")).read_text(encoding="utf-8")
+    if "\nNEOH_TOOLS_PY\n" in f"\n{tools}\n":
+        raise ProviderError("recon_pod_tools.py contains its own heredoc delimiter")
+    return (
+        POD_PIPELINE
+        .replace("__STEPS__", str(settings["steps"]))
+        .replace("__ST__", SPLAT_TRANSFORM_VERSION)
+        .replace("__GSPLAT__", _POD_GSPLAT_VERSION)
+        .replace("__NODE__", _POD_NODE_VERSION)
+        .replace("__MATCHER__", settings["matcher"])
+        .replace("__MATCH_CMD__", _matcher_command(settings["matcher"]))
+        .replace("__MASK_SCREENS__", "--screens" if settings.get("mask_screens") else "")
+        .replace("__RECON_TOOLS__", tools.rstrip("\n"))
+    )
+
+
+def _read_quality(path: Path) -> dict[str, Any]:
+    """The pod's quality.json, or {} — never a guess. A malformed report is
+    treated exactly like a missing one: the gate then says "unverified"."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
 
 
 def _subsample_capture(images: list[Path], target: int) -> list[Path]:
@@ -1872,7 +2053,13 @@ class PodProvider(ReconstructionProvider):
             "min_mbps": _num("RECON_POD_MIN_MBPS", str(POD_MIN_MBPS), 0.0, 10000.0),
             "cloud_type": cloud,
             "transport": transport,
-            "steps": _num("RECON_POD_STEPS", "7000", 500, 60000, int),
+            # 30 000 is the standard 3DGS schedule and measurably sharper than
+            # 7 000 (2.22 M vs 923 k Gaussians on the golden capture, 1 230 s,
+            # $0.25). ONE value everywhere: code, .env.example and the runbook.
+            "steps": _num("RECON_POD_STEPS", "30000", 500, 60000, int),
+            # Screens are masked only on request: a switched-off TV is static,
+            # and masking it leaves a hole (docs/neoh-space-quality.md).
+            "mask_screens": os.environ.get("RECON_MASK_SCREENS", "0").strip() == "1",
         }
 
     # -- HTTP ---------------------------------------------------------------
@@ -2178,15 +2365,7 @@ class PodProvider(ReconstructionProvider):
         if conn is None:
             raise ProviderError(f"Could not open SSH to the RunPod pod: {last_error}")
 
-        script = (
-            POD_PIPELINE
-            .replace("__STEPS__", str(settings["steps"]))
-            .replace("__ST__", SPLAT_TRANSFORM_VERSION)
-            .replace("__GSPLAT__", _POD_GSPLAT_VERSION)
-            .replace("__NODE__", _POD_NODE_VERSION)
-            .replace("__MATCHER__", settings["matcher"])
-            .replace("__MATCH_CMD__", _matcher_command(settings["matcher"]))
-        )
+        script = render_pod_pipeline(settings)
 
         async def _upload() -> None:
             # One archive, one transfer. A per-file SFTP put pays a round trip
@@ -2263,6 +2442,16 @@ class PodProvider(ReconstructionProvider):
                     )
                 except Exception:  # noqa: BLE001
                     log.info("Pod returned no point cloud; this splat cannot be measured")
+                try:
+                    report = work_dir / "quality.json"
+                    await sftp.get("/workspace/quality.json", str(report))
+                except Exception:  # noqa: BLE001
+                    log.info("Pod returned no quality report; the space will be marked unverified")
+                else:
+                    quality = _read_quality(report)
+                    if quality:
+                        existing = getattr(self, "last_metrics", None)
+                        self.last_metrics = {**(existing or {}), "quality": quality}
 
         _validate_artifact(out, provider="RunPod pod")
         return out
@@ -2290,26 +2479,19 @@ class PodProvider(ReconstructionProvider):
         out_key = f"recon-outputs/{job_key}/model{DELIVERY_SUFFIX}"
         poses_key = f"recon-outputs/{job_key}/cameras.json"
         points_key = f"recon-outputs/{job_key}/points.ply"
+        quality_key = f"recon-outputs/{job_key}/quality.json"
         # The URLs must outlive queue wait plus the whole run, or the pod loses
         # the ability to hand back a result it has already paid to compute.
         ttl = int(settings["timeout"]) + 3600
 
-        def _stage() -> tuple[str, str, str, str, str]:
+        def _stage() -> tuple[str, str, str, str, str, str]:
             urls = []
             for index, path in enumerate(images):
                 key = f"{in_prefix}/{_staged_image_name(index, path)}"
                 object_storage.put_file(key, path, "image/jpeg")
                 urls.append(object_storage.signed_url(key, ttl))
 
-            pipeline = (
-                POD_PIPELINE
-                .replace("__STEPS__", str(settings["steps"]))
-                .replace("__ST__", SPLAT_TRANSFORM_VERSION)
-                .replace("__GSPLAT__", _POD_GSPLAT_VERSION)
-            .replace("__NODE__", _POD_NODE_VERSION)
-            .replace("__MATCHER__", settings["matcher"])
-            .replace("__MATCH_CMD__", _matcher_command(settings["matcher"]))
-            )
+            pipeline = render_pod_pipeline(settings)
             object_storage.put_bytes(f"{in_prefix}/manifest.txt",
                                      "\n".join(urls).encode(), "text/plain")
             object_storage.put_bytes(f"{in_prefix}/pipeline.sh",
@@ -2320,6 +2502,7 @@ class PodProvider(ReconstructionProvider):
             output_url = object_storage.presigned_put_url(out_key, ttl)
             poses_url = object_storage.presigned_put_url(poses_key, ttl)
             points_url = object_storage.presigned_put_url(points_key, ttl)
+            quality_url = object_storage.presigned_put_url(quality_key, ttl)
             if not output_url:
                 raise ProviderError(
                     "The blob transport needs a storage backend that can issue a "
@@ -2332,9 +2515,10 @@ class PodProvider(ReconstructionProvider):
                 output_url,
                 poses_url or "",
                 points_url or "",
+                quality_url or "",
             )
 
-        manifest_url, bootstrap_url, output_url, poses_url, points_url = (
+        manifest_url, bootstrap_url, output_url, poses_url, points_url, quality_url = (
             await asyncio.to_thread(_stage)
         )
 
@@ -2354,6 +2538,7 @@ class PodProvider(ReconstructionProvider):
                     "NEOH_OUTPUT_URL": output_url,
                     "NEOH_POSES_URL": poses_url,
                     "NEOH_POINTS_URL": points_url,
+                    "NEOH_QUALITY_URL": quality_url,
                     "NEOH_BOOTSTRAP_URL": bootstrap_url,
                 },
                 # Tiny on purpose: the real script is fetched, not embedded.
@@ -2403,6 +2588,17 @@ class PodProvider(ReconstructionProvider):
                 log.info("Pod returned no point cloud; this splat cannot be measured")
             else:
                 capture_sidecars.points_sidecar_for(out).write_bytes(cloud)
+            try:
+                raw_quality = await asyncio.to_thread(object_storage.get_bytes, quality_key)
+            except Exception:  # noqa: BLE001
+                log.info("Pod returned no quality report; the space will be marked unverified")
+            else:
+                staged = work_dir / "quality.json"
+                staged.write_bytes(raw_quality)
+                quality = _read_quality(staged)
+                if quality:
+                    self.last_metrics = {**(getattr(self, "last_metrics", None) or {}),
+                                         "quality": quality}
             _validate_artifact(out, provider="RunPod pod")
             return out
 

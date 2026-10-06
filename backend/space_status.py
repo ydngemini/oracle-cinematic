@@ -99,6 +99,12 @@ LIMITATION_LABELS = {
     "floorplan_unavailable": "Floor plan unavailable",
     "entry_view_default": "Opens on an overview instead of a room view",
     "floaters_present": "Some stray artefacts outside the rooms (windows, edges)",
+    # From the post-reconstruction quality check (recon_quality.py).
+    "quality_unverified": "Image quality wasn't measured for this space",
+    "quality_low": "Some views may look soft or blurry",
+    "partial_registration": "Parts of the capture couldn't be placed — some areas may be missing",
+    "pose_error_high": "Some views may look slightly smeared",
+    "compression_loss": "Fine detail is softened by compression",
 }
 
 

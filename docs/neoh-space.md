@@ -205,10 +205,89 @@ light, cover transitions, full loop, full resolution, keep moving).
 ## 9. Navigation and collision
 
 Orbit (default) and Walk (`F`/`O`, buttons), drag to look, WASD/arrows,
-pinch/scroll zoom, touch joystick. Constraints are pragmatic: the camera is
-clamped to dense bounds (+ margin), Walk holds the eye at the capture height
-above the floor, and the Orbit eye never sinks below the floor
-(`minEyeAboveFloor`). There is no claim of game-engine collision.
+pinch/scroll zoom, touch joystick. The camera is clamped to dense bounds
+(+ margin), Walk holds the eye at the capture height above the floor, and the
+Orbit eye never sinks below the floor (`minEyeAboveFloor`).
+
+### Walls (Walk mode) — built from the splat, never from the floor plan
+
+Derived floor-plan walls are unreliable on real captures (gaps make rooms
+leak, clutter reads as wall), so colliding against them would block real
+doorways and let people through real walls. Walls come from the **splat
+itself**: where the reconstruction put dense, opaque Gaussians.
+Code: `lib/tour/collision.ts` (pure, no engine), `lib/tour/splatSamples.ts`
+(reads centers + opacity out of PlayCanvas / gsplat.js by duck typing).
+
+**Grid.** A 2D occupancy grid in the canonical floor plane. Sizes are in
+"nominal metres" derived from scene.json `navigation.eyeHeight` (taken as
+1.55 m), never from an assumed scale:
+
+| setting | value | why |
+|---|---|---|
+| cell | 0.10 | an 80 cm doorway stays ~8 cells open |
+| body band | 0.30–1.80 above `floorHeight` | above floor noise, rugs, thresholds; below door headers |
+| body radius | 0.15 | small on purpose — a wide body closes real doorways |
+| opacity | ≥ 0.3 | haze and floaters are translucent |
+| solid cell | opacity-weighted count ≥ max(3, 2% × p95 of occupied cells) | relative because density varies 20× between captures; 2% because a textured bookcase gets 10–20× the Gaussians of a plain white wall, and the wall must still count |
+| height spread | weighted std of heights ≥ 0.05 | a wall/sofa back has vertical extent; a thin horizontal sheet (residual floor tilt, sagging ceiling, haze layer) does not |
+| area opening | 8-connected solid blobs < 4 cells dropped | a stray clump is not an invisible wall (no erosion: it would delete 1-cell walls) |
+| plausibility | > 50% of the dense footprint solid → no grid | what a wrong up axis looks like |
+
+Splats are transformed by `canonicalTransform` (centers are in the source
+frame). For `.sog`, opacity is the sh0 texture's alpha, read back from the GPU
+once (async PBO readback) and decoded exactly as PlayCanvas does (v2: a/255;
+v1: sigmoid of the quantised logit). If the readback fails, the grid is built
+from centers alone and says `opacity none`. Legacy `.splat` (gsplat engine)
+uses the RGBA alpha; that engine walks in the source frame, so it queries the
+grid through the same transform.
+
+**Movement.** The proposed step is cut into ≤ half-cell sub-steps (no
+tunnelling on a slow frame), the body circle is tested against the grid, and a
+blocked sub-step is replaced by the free one making the most progress (axis
+slides, then ±30°/±60° projected slides) — sliding along walls rather than
+stopping dead. **Never trapped:** if the body already overlaps solid cells
+(spawned inside furniture, bad data), any position no deeper in is allowed, so
+it can always walk out. Outside the grid nothing is solid. Orbit mode and
+other floors (`floors[].y` ≠ `floorHeight`) are unconstrained.
+
+**When.** Built after the Space is already interactive (750 ms after
+`ready`), in 65 536-splat slices that yield to the event loop; walking works
+unconstrained until the grid arrives. Measured: 2.22 M synthetic splats in
+77 ms (one go) / 98 ms wall in 18 slices, longest slice 4.8 ms, on an i5-6360U
+(Node 20 / V8, same engine as Chrome); the 9 270-splat fixture in 25–65 ms
+including the GPU readback, in headless Chrome on Iris 540. The viewer exposes
+`data-space-collision` (`none` / `building` / `on` / `unavailable`) and
+`data-space-collision-detail` (timings, splat counts, solid cells, reason).
+
+**Fallback.** No `floorHeight` or no `eyeHeight` (no scene.json, v1, missing
+poses) → `none`: nothing is invented, the old clamp-only walk applies. No
+splat centers, fewer than 500 band splats, a grid that would need cells > 2×
+nominal, nothing solid, or an implausible grid → `unavailable`, same walk.
+
+**Known limits (stated plainly).**
+* Not yet tried on a real phone capture or the 2.2 M-Gaussian real run — no
+  real `.sog` was available locally; thresholds are reasoned + synthetic, not
+  calibrated. Check `data-space-collision-detail` on the first real spaces.
+* Glass, mirrors, windows and screens: reconstructed as either nothing (glass
+  → walk through) or a "room" behind the mirror (walls appear where none are,
+  or the mirror plane is missing).
+* Sparse walls in poor captures (plain white walls with few large Gaussians,
+  dark areas, unvisited sides) can fall under the threshold → gaps you can
+  walk through. Centers only — a Gaussian's footprint (scale) is not used.
+* Low, flat things fail the height-spread rule: a table top, a bed's flat
+  top, a low coffee table can be walked through; sloped attic ceilings
+  likewise do not block.
+* Floaters with real vertical extent and ≥ 4 cells survive the opening and
+  can block; residual tilt over large floors is assumed handled by
+  scene.json's tilt correction.
+* One floor only (the scene's `floorHeight`); stairs are not modelled.
+
+### Render model
+
+scene.json `renderModel` (`"antialiased"` | `"classic"`, absent = classic)
+sets PlayCanvas's scene-wide `app.scene.gsplat.antiAlias` before any splat is
+added (`applySceneRenderModel`): scenes trained with gsplat `--antialiased`
+drawn in classic mode render small splats too opaque.
 
 ## 10. Privacy and access
 
@@ -236,7 +315,10 @@ above the floor, and the Orbit eye never sinks below the floor
 * Frontend (vitest): `TourViewer.test.jsx` (fallback, error boundary, context
   loss, streaming, data gate, legacy `.splat` routing),
   `CaptureSessionPanel.test.jsx`, `PropertyViewTab.test.jsx` (per-file upload
-  retry), `lib/tour/neohSpace.test.ts` (device, governor, units, collision).
+  retry), `lib/tour/neohSpace.test.ts` (device, governor, units, floor guard),
+  `lib/tour/collision.test.ts` (splat-built walls: doorway room, sliding,
+  floaters, haze, thin sheets, escape from inside solid, empty input,
+  frames, async build; .sog opacity decode; render model).
 * Browser: `scripts/test-neoh-space-playwright.py` against the dev-only
   `oracle-app/neoh-space-harness.html` (real TourViewer + PlayCanvas, fixture
   `scripts/fixtures/neoh-space-demo-room.sog`, generated by our own stub; no

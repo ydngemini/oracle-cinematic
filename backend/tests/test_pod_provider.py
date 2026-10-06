@@ -446,7 +446,7 @@ def test_the_pod_receives_capability_urls_and_no_credentials(monkeypatch, tmp_pa
     # point: what matters is that the pod cannot write anywhere it was not
     # explicitly granted, so every URL it holds is checked against the exact set
     # of keys this job owns.
-    allowed = {f"model{DELIVERY_SUFFIX}", "cameras.json", "points.ply"}
+    allowed = {f"model{DELIVERY_SUFFIX}", "cameras.json", "points.ply", "quality.json"}
     assert storage.write_urls, "the pod must be able to return its result"
     prefixes = set()
     for url in storage.write_urls:
@@ -613,16 +613,22 @@ def test_the_trainer_is_asked_for_the_point_cloud_it_must_produce():
     converter can read. That failure is invisible until the last line of the
     job, which is the most expensive place to discover anything.
     """
-    train = [l for l in POD_PIPELINE.splitlines() if "simple_trainer.py" in l]
+    train = [l for l in POD_PIPELINE.splitlines()
+             if "simple_trainer.py default" in l or '"$TOOLS" train' in l]
     assert train, "the pipeline no longer trains"
-    command = POD_PIPELINE[POD_PIPELINE.index("simple_trainer.py"):]
-    command = command.split("cd /workspace")[0]
+    # Every way the trainer is started — through the mask wrapper, directly,
+    # and the plain fallback — takes the one shared argument list.
+    assert all("$TRAIN_ARGS" in line for line in train), train
+    start = POD_PIPELINE.index('TRAIN_ARGS="')
+    command = POD_PIPELINE[start:POD_PIPELINE.index('"', start + len('TRAIN_ARGS="'))]
 
     assert "--save-ply" in command, "the trainer will not write a point cloud"
     assert "--ply-steps" in command, "the PLY must be written at the step we stop on"
     # And the step it writes at has to be the step we stop at, or the file is
-    # from the middle of training.
-    assert command.count("__STEPS__") >= 3
+    # from the middle of training — and the held-out evaluation the quality
+    # gate reads has to happen at that same step.
+    assert command.count("__STEPS__") >= 4
+    assert "--eval-steps __STEPS__" in command
 
 
 def test_a_network_floor_is_asked_for_but_stays_out_of_the_way(pod_env, monkeypatch):

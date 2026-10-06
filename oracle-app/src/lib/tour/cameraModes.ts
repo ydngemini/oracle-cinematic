@@ -8,6 +8,7 @@
  */
 
 import type * as pcNS from 'playcanvas';
+import { colliderAppliesAt, moveWithCollision, type Collider } from './collision';
 
 export type CameraMode = 'walk' | 'orbit';
 
@@ -91,6 +92,12 @@ export interface CameraState {
   floorIndex: number;
   /** Y of the current floor plane, metres. */
   floorY: number;
+  /**
+   * Walk-mode walls, built from the splat's own dense opaque Gaussians
+   * (collision.ts). Null until built, and null for good when it cannot be
+   * built honestly — walking then behaves exactly as it did without it.
+   */
+  collider?: Collider | null;
 }
 
 export function createCameraState(mode: CameraMode = 'orbit'): CameraState {
@@ -103,6 +110,7 @@ export function createCameraState(mode: CameraMode = 'orbit'): CameraState {
     bounds: null,
     floorIndex: 0,
     floorY: 0,
+    collider: null,
   };
 }
 
@@ -187,10 +195,13 @@ export function stepCamera(
     const dz = (moveX * sin + moveZ * cos) * speed;
 
     if (state.mode === 'walk') {
-      state.position = clampToBounds(
-        [state.position[0] + dx, state.position[1], state.position[2] + dz],
-        state.bounds,
-      );
+      let next: [number, number, number] = [state.position[0] + dx, state.position[1], state.position[2] + dz];
+      // Walls: stop at solid cells and slide along them. Only on the floor the
+      // grid was built for, and never trapping someone who starts inside one.
+      if (colliderAppliesAt(state.collider, state.floorY)) {
+        next = moveWithCollision(state.collider, state.position, next);
+      }
+      state.position = clampToBounds(next, state.bounds);
       // Walk mode stays pinned to the current floor plane — a splat has no
       // ground collision, so gravity would drop us through the model.
       state.position[1] = state.floorY + config.eyeHeight;

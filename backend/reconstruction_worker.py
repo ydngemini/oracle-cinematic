@@ -239,7 +239,22 @@ class QualityGateFailure(RuntimeError):
     means "capture more of the house", a ProviderError means "the deployment is
     broken". They were both `status='failed'` with a string, which is why the
     first real run could not have told us which had happened.
+
+    `gate` says WHICH gate: "capture" (before any GPU) or "reconstruction"
+    (the finished space did not match its photographs; `raw_key` is the
+    preserved output, so an operator can still inspect it).
     """
+
+    def __init__(self, message: str, *, gate: str = "capture",
+                 raw_key: Optional[str] = None) -> None:
+        super().__init__(message)
+        self.gate = gate
+        self.raw_key = raw_key
+
+
+#: Recapture advice when the FINISHED space fails the quality check — the
+#: capture habits that most often produce soft or ghosted reconstructions.
+RECONSTRUCTION_GUIDANCE_KEYS = ("blurry", "cover_transitions", "still_scene", "dark")
 
 
 def _image_dimensions(images: list[Path]) -> Optional[dict[str, Any]]:
@@ -546,9 +561,64 @@ async def _convert_to_delivery(src: Path, work_dir: Path, media_id: str) -> Path
     return out
 
 
+async def _assess_quality(job: ReconstructionJob, provider: Any, raw: Path):
+    """Judge the finished reconstruction from the pod's own measurements.
+
+    Records every number (diagnostics stage "quality"), then either raises a
+    reconstruction-gate failure — preserving the raw output first, since the
+    GPU time is already spent — or returns the verdict whose limitations and
+    render model travel with the published space."""
+    import recon_quality
+
+    measured = (getattr(provider, "last_metrics", None) or {}).get("quality")
+    verdict = recon_quality.assess(measured)
+    await _record_stage(
+        job.ctx, job.job_id, "quality",
+        blocked=verdict.blocked, reasons=verdict.reasons,
+        limitations=verdict.limitations, render_model=verdict.render_model,
+        **verdict.metrics,
+    )
+    if verdict.blocked:
+        kept = await _preserve_raw(job, raw)
+        await _record_stage(
+            job.ctx, job.job_id, "quality_gate",
+            gate="reconstruction", detail="; ".join(verdict.reasons),
+            guidance=[capture_quality.GUIDANCE[k] for k in RECONSTRUCTION_GUIDANCE_KEYS],
+        )
+        raise QualityGateFailure(
+            "The finished space doesn't match its photographs closely enough to "
+            "publish: " + "; ".join(verdict.reasons) + ".",
+            gate="reconstruction", raw_key=kept,
+        )
+    return verdict
+
+
+def _render_model_of(splat: Path) -> Optional[str]:
+    """How a .sog must be drawn, from the file itself: SOG bundles are a zip
+    whose meta.json carries `"model": "antialiased"` when the scene was trained
+    that way (splat-transform copies it from the PLY tag). None when unknown."""
+    import zipfile
+
+    if splat.suffix.lower() != ".sog":
+        return None
+    try:
+        with zipfile.ZipFile(splat) as bundle:
+            meta = json.loads(bundle.read("meta.json"))
+    except Exception:  # noqa: BLE001 - not a bundle, or no meta: unknown
+        return None
+    model = meta.get("model") if isinstance(meta, dict) else None
+    if model is None:
+        # Untagged is UNKNOWN, not classic: splat-transform's filters drop the
+        # tag, and treating its absence as "classic" drew an antialiased scene
+        # the wrong way (proof run, 2026-10-06). The pod report decides then.
+        return None
+    return "antialiased" if model == "antialiased" else "classic"
+
+
 async def _canonicalise(job: ReconstructionJob, splat: Path, *,
                         media_id: Optional[str] = None,
-                        provider_name: Optional[str] = None) -> Optional[dict]:
+                        provider_name: Optional[str] = None,
+                        quality: Any = None) -> Optional[dict]:
     """Write scene.json beside the splat: canonical up, and where to open.
 
     Structure-from-motion picks an arbitrary frame, so without this the viewer
@@ -577,6 +647,14 @@ async def _canonicalise(job: ReconstructionJob, splat: Path, *,
         ))
     if not manifest:
         return None
+    if quality is not None:
+        # The file is the authority on how it must be drawn; the pod's report
+        # is the fallback. Drawing an antialiased scene classically makes
+        # small splats too opaque — worse than never training it that way.
+        manifest["renderModel"] = _render_model_of(splat) or quality.render_model
+        manifest["quality"] = dict(quality.metrics)
+        manifest["limitations"] = list(manifest.get("limitations") or []) + [
+            x for x in quality.limitations if x not in (manifest.get("limitations") or [])]
     written = await asyncio.to_thread(scene_manifest.write, splat, manifest)
     if written:
         entry = manifest.get("entryCamera")
@@ -1051,6 +1129,9 @@ async def _process(job: ReconstructionJob) -> None:
     heartbeat = asyncio.create_task(_heartbeat(job.ctx, job.job_id))
     counts: dict = {}
     warnings: list[str] = []
+    import recon_quality
+    # A resumed conversion has no pod report: honestly "unverified".
+    quality = recon_quality.assess(None)
     try:
         with tempfile.TemporaryDirectory(prefix="recon_") as tmp:
             work = Path(tmp)
@@ -1113,6 +1194,9 @@ async def _process(job: ReconstructionJob) -> None:
                     raw_bytes=raw.stat().st_size if raw.exists() else 0,
                     **_provider_metrics(provider, work),
                 )
+                # ── quality check (after the GPU, before publishing) ─────
+                # "Training wrote a file" is not "this looks like the room".
+                quality = await _assess_quality(job, provider, raw)
 
             # ── delivery conversion ──────────────────────────────────────
             await _set_stage(job, space_status.CONVERTING)
@@ -1147,7 +1231,7 @@ async def _process(job: ReconstructionJob) -> None:
             # ── analysis: orientation, scale, entry view, floor plan ─────
             await _set_stage(job, space_status.ANALYZING)
             manifest = await _canonicalise(job, splat, media_id=media_id,
-                                           provider_name=provider.name)
+                                           provider_name=provider.name, quality=quality)
             url, s3_key = await _store_splat(
                 splat, media_id,
                 provider=provider.name,
@@ -1163,6 +1247,7 @@ async def _process(job: ReconstructionJob) -> None:
             floorplan = await _derive_floorplan(job, splat, provider.name)
             limitations = list((manifest or {}).get("limitations") or
                                ["camera_poses_missing", "scale_unknown", "entry_view_default"])
+            limitations += [x for x in quality.limitations if x not in limitations]
             if (floorplan or {}).get("status") != "derived":
                 limitations.append("floorplan_unavailable")
             await _record_stage(job.ctx, job.job_id, "floorplan", **(floorplan or {}))
@@ -1181,11 +1266,14 @@ async def _process(job: ReconstructionJob) -> None:
         await _close_capture_session(
             job, session_id, status="failed", failure_reason=str(exc)[:2000]
         )
+        extra = {"raw_output_key": exc.raw_key} if exc.raw_key else {}
+        if exc.gate == "reconstruction":
+            extra.update(_cost_fields(provider))
         await _set_status(
             job.ctx, job.job_id, "failed_quality_gate",
-            error=str(exc)[:2000], quality_gate="capture",
+            error=str(exc)[:2000], quality_gate=exc.gate,
             stage=space_status.FAILED, failure_category="quality_gate",
-            finished_at=datetime.now(timezone.utc),
+            finished_at=datetime.now(timezone.utc), **extra,
         )
         logger.warning("Reconstruction %s refused at the quality gate: %s", job.job_id, exc)
         return
