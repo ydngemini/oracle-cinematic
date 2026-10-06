@@ -41,7 +41,20 @@ import {
 } from '../lib/tour/cameraModes';
 import { type QualityLevel } from '../lib/tour/deviceCapability';
 import { createFrameRateGovernor, pixelRatioFor } from '../lib/tour/renderQuality';
-import { configForScene, scaleNotice, type SceneScale } from '../lib/tour/sceneNavigation';
+import {
+  applySceneRenderModel,
+  configForScene,
+  scaleNotice,
+  type SceneScale,
+  type SplatRenderModel,
+} from '../lib/tour/sceneNavigation';
+import {
+  buildOccupancyGridAsync,
+  collisionPlanForScene,
+  createCollider,
+  type SplatSamples,
+} from '../lib/tour/collision';
+import { samplesFromPlayCanvasResource } from '../lib/tour/splatSamples';
 import styles from './PropertyTourViewer.module.css';
 
 const AI_DISCLOSURE =
@@ -98,9 +111,21 @@ export interface SceneManifest {
   navigation?: { eyeHeight?: number | null } | null;
   /** v2: deterministic caveats, e.g. camera_poses_missing. */
   limitations?: string[] | null;
+  /** How the splats were trained to be drawn. Absent (older spaces) = classic. */
+  renderModel?: SplatRenderModel | null;
 }
 
 type Status = 'idle' | 'loading' | 'ready' | 'error' | 'unsupported' | 'lost';
+
+/**
+ * Walk-mode walls (collision.ts). `none`: the scene does not say enough to
+ * size a body or find the floor, so no walls are invented. `unavailable`:
+ * tried and declined (no splat data, too few splats, implausible grid).
+ */
+type CollisionStatus = 'none' | 'building' | 'on' | 'unavailable';
+
+/** Wait this long after the Space is interactive before building walls. */
+const COLLISION_START_DELAY_MS = 750;
 
 /** How long a lost GPU context may take to come back before we give up. */
 const CONTEXT_RESTORE_GRACE_MS = 5000;
@@ -301,6 +326,7 @@ export default function PropertyTourViewer({
   const [error, setError] = useState<string | null>(null);
   const [mode, setMode] = useState<CameraMode>(initialMode);
   const [activeFloor, setActiveFloor] = useState(0);
+  const [collision, setCollision] = useState<{ status: CollisionStatus; detail: string }>({ status: 'none', detail: '' });
 
   // --- engine lifecycle ----------------------------------------------------
   useEffect(() => {
@@ -311,6 +337,7 @@ export default function PropertyTourViewer({
     // unmounts (or StrictMode double-invokes) mid-import.
     let disposed = false;
     const abort = new AbortController();
+    let collisionTimer: ReturnType<typeof setTimeout> | null = null;
 
     (async () => {
       let pc: typeof pcNS;
@@ -376,6 +403,11 @@ export default function PropertyTourViewer({
       light.addComponent('light', { type: 'directional', intensity: 1.1 });
       light.setEulerAngles(45, 30, 0);
       app.root.addChild(light);
+
+      // Draw the splats the way they were trained: an --antialiased capture in
+      // classic mode renders small splats too opaque. Scene-wide, set before
+      // any splat is added.
+      applySceneRenderModel(app, scene);
 
       app.start();
       setStatus('loading');
@@ -488,6 +520,43 @@ export default function PropertyTourViewer({
         }
       };
       app.on('update', onUpdate);
+
+      // Walls, built from the splat itself once the Space is already
+      // interactive: walking works (unconstrained) the moment it is ready,
+      // and gains walls a moment later. Chunked so no frame stalls.
+      const plan = collisionPlanForScene(scene);
+      if (!plan) return;
+      collisionTimer = setTimeout(() => {
+        collisionTimer = null;
+        void (async () => {
+          if (disposed) return;
+          setCollision({ status: 'building', detail: '' });
+          const started = performance.now();
+          const sources: SplatSamples[] = [];
+          for (const item of loadedRef.current) {
+            const samples = await samplesFromPlayCanvasResource(item.asset?.resource, { signal: abort.signal });
+            if (samples) sources.push(samples);
+          }
+          if (disposed) return;
+          const readMs = performance.now() - started;
+          const outcome = await buildOccupancyGridAsync(sources, plan, { signal: abort.signal });
+          if (disposed || outcome.reason === 'aborted') return;
+          const ms = Math.round(performance.now() - started);
+          if (!outcome.grid) {
+            setCollision({ status: 'unavailable', detail: `${outcome.reason}; ${ms} ms` });
+            return;
+          }
+          cameraStateRef.current.collider = createCollider(outcome.grid, plan);
+          const st = outcome.grid.stats;
+          setCollision({
+            status: 'on',
+            detail: `${ms} ms (read ${Math.round(readMs)} ms); ${st.splats} splats, ${st.bandSplats} in band, `
+              + `${st.solidCells} solid of ${outcome.grid.cols}x${outcome.grid.rows}; opacity ${st.opacity}`,
+          });
+        })().catch(() => {
+          if (!disposed) setCollision({ status: 'unavailable', detail: 'error' });
+        });
+      }, COLLISION_START_DELAY_MS);
     })();
 
     // GPU context loss (memory pressure, backgrounded tab on iOS, driver
@@ -526,6 +595,8 @@ export default function PropertyTourViewer({
       disposed = true;
       abort.abort();
       if (restoreTimer) clearTimeout(restoreTimer);
+      if (collisionTimer) clearTimeout(collisionTimer);
+      cameraStateRef.current.collider = null;
       canvas.removeEventListener('webglcontextlost', onContextLost);
       canvas.removeEventListener('webglcontextrestored', onContextRestored);
 
@@ -689,6 +760,8 @@ export default function PropertyTourViewer({
       aria-label={title || 'Property tour'}
       data-space-status={status}
       data-space-quality={qualityLevel}
+      data-space-collision={collision.status}
+      data-space-collision-detail={collision.detail || undefined}
     >
       <canvas
         ref={canvasRef}

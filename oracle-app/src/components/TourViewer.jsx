@@ -410,6 +410,7 @@ export function TourViewer({
       <WalkableSplatViewer
         embedded={embedded}
         splatUrl={splatBytesUrl}
+        scene={splatScene || null}
         disclosure={shownDisclosure}
         address={address}
         title={shownTitle}
