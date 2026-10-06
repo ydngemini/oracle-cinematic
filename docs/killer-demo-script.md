@@ -51,8 +51,9 @@ The automated twin of this script is `scripts/test-killer-demo-playwright.py`. R
 ## The real call (beat 8): rules
 
 - **Who can be called:** only the allowlisted operator phone. `ORACLE_DEMO_RECIPIENT_ALLOWLIST` is a staging-only secret, and production refuses to boot with it set. Any other number is refused before the carrier.
-- **Budget:** at most 3 real texts and 3 real calls in total across all rehearsals and the live demo. As of 2026-10-04 that's 0 texts and 1 call.
-  - Call 1 was answered but refused as "unmanaged". Fixed in f21ed15 plus the post-validation call-id binding.
+- **Budget:** at most 3 real texts and 3 real calls in total across all rehearsals and the live demo. **As of 2026-10-06 all 3 calls are used** (0 texts). Ask the operator before placing another.
+  - Call 1 (10-04) and call 2 (10-06): Plivo's create response had no request id (only `api_id` + `message`), so the answer webhook refused the call as "unmanaged". **Fixed (6cab880):** Neoh's own reference travels in the callback URLs, and the call state exists before the call is placed.
+  - Call 3 (10-06): matched, and the AI disclosure played (answered, 14 s). The receipt still read "needs review", because the acknowledgement insert's `ON CONFLICT` couldn't infer the partial unique index. **Fixed (21ae08e)**, and proven by replaying the write on staging in a rolled-back transaction. Not yet proven by a real call.
   - Rehearse beats 1–7 and 9 with the automated test, without `--real-call`.
 - **Hours:** 8 am–8 pm recipient-local only.
 - **If the receipt reads "Call needs review":** the carrier outcome is unconfirmed. Don't retry. Check Plivo's call log first. A retry could ring twice.

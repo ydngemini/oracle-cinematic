@@ -79,6 +79,20 @@ First CI release to staging (2026-10-04, run 37236009143) — staging now runs a
 | `doctl apps spec validate` refuses carried `EV[…]` secret values | `c0cdc46`: validate the rendered spec; `apps update` (which accepts them) gets the carried one |
 | The staging database carried no environment stamp; the migration precheck refused (as designed) | stamped `neoh-environment=staging`; step added to `staging-setup.md` |
 
+## Found on staging 2026-10-06 (real calls, real database, DAST), now fixed
+
+| Defect | Effect | Fix |
+|---|---|---|
+| Plivo's call-create response carries no request id on this account (only `api_id` + `message`) | Every approved call was refused at answer as "unmanaged". The phone rang and the caller heard "cannot be connected safely" | `6cab880`: Neoh's own reference is stored before the call and carried in the callback URLs. The signature is verified over the URL including its query |
+| `ON CONFLICT (command_id)` vs a **partial** unique index on `live_call_sessions` | Every approved call failed to record after it rang, and was left as "needs review". 0 call sessions on staging, ever | `21ae08e`, plus `test_on_conflict_targets_live.py`: all 86 ON CONFLICT targets checked against the real catalog in CI |
+| `finish_automation_job_attempt` duplicated half the RLS predicate | No job attempt ever finalized, and per-attempt errors were lost | migration `0128`. Live test uses a brokerage tenant (verified: 16/16 attempts now finalize) |
+| A text refused for missing setup was retried 5 times | Could send a "not sent" text later, unannounced | Configuration errors are terminal on attempt 1 (`NOT_CONFIGURED`), verified on staging |
+| CSP `media-src https:` and the retired `neohrs.com` in `connect-src` | Media from any origin. A lapsed domain stays trusted | `media-src 'self' blob:`, plus `test_csp_policy.py` |
+
+**Proof status:**
+- **Calls:** a real call was matched and spoke the AI disclosure. The acknowledgement fix is proven by replaying the write on staging in a rolled-back transaction, **not yet by a real call**: the 3-call budget is used.
+- **DAST:** OWASP ZAP baseline gave 0 FAIL / 10 WARN / 57 PASS (`docs/security/zap-baseline-staging-2026-10-06.md`). The authenticated active scan is still open, so the gate stays FAIL.
+
 ## Launch blockers, ranked
 
 Each one unblocks the next. Rows 1–4 need the owner.
