@@ -377,3 +377,87 @@ def test_unreadable_files_are_reported_not_fatal(tmp_path):
     assert not verdict.refused
     assert verdict.dropped["unreadable"] == 1
     assert "unreadable" in verdict.warnings
+
+
+# ── post-reconstruction quality gate ────────────────────────────────────────
+
+class _MeasuredProvider(_Provider):
+    """A provider whose pod returned a quality report (quality.json)."""
+
+    def __init__(self, quality, *, sog_model=None, **kw):
+        super().__init__(**kw)
+        self.quality = quality
+        self.sog_model = sog_model
+
+    async def reconstruct(self, images, work_dir):
+        out = await super().reconstruct(images, work_dir)
+        if self.sog_model is not None:
+            import zipfile
+
+            with zipfile.ZipFile(out, "w") as bundle:
+                bundle.writestr("meta.json", json.dumps({"version": 2, "model": self.sog_model}))
+                bundle.writestr("means_l.webp", b"0" * 2048)
+        self.last_metrics = {**(self.last_metrics or {}), "quality": self.quality}
+        return out
+
+
+_GOOD_QUALITY = {
+    "input_images": 24,
+    "colmap": {"registration_ratio": 0.95, "mean_reprojection_error_px": 0.7},
+    "held_out": {"psnr": 26.0, "ssim": 0.86},
+    "training": {"antialiased": True},
+}
+
+
+def test_a_reconstruction_that_does_not_match_its_photos_is_not_published(env):
+    _with_images(env, _good_capture(env.tmp))
+    bad = {**_GOOD_QUALITY, "held_out": {"psnr": 12.0, "ssim": 0.41}}
+    _run(env, _MeasuredProvider(bad))
+
+    assert not env.db.find("stage = 'ready'"), "a space that fails its own photos was published"
+    final = env.db.find("SET status = $2")[-1]
+    assert final[2][1] == "failed_quality_gate"
+    assert "reconstruction" in final[2], "the gate must say WHICH gate refused it"
+    # The GPU work is already paid for: its output is kept.
+    assert any("/raw/" in k for k in env.store.objects)
+    gate = [a for _, s, a in env.db.calls if "jsonb_build_object($2::text" in s and a[1] == "quality_gate"]
+    payload = json.loads(gate[-1][2])
+    assert payload["gate"] == "reconstruction" and payload["guidance"]
+    view = space_status.public_view({"id": JOB, "status": "failed_quality_gate", "stage": "failed",
+                                     "quality_gate": "reconstruction",
+                                     "diagnostics": {"quality_gate": payload}})
+    assert view["retry_kind"] == "recapture"
+    for word in ("COLMAP", "Gaussian", "GPU", "pod", "splat", "PSNR"):
+        assert word.lower() not in json.dumps(view["guidance"]).lower()
+
+
+def test_measured_quality_and_render_model_travel_with_the_space(env):
+    _with_images(env, _good_capture(env.tmp))
+    soft = {**_GOOD_QUALITY, "held_out": {"psnr": 20.0, "ssim": 0.8}}
+    _run(env, _MeasuredProvider(soft, sog_model="antialiased"))
+
+    assert env.db.find("stage = 'ready'")
+    sog = next(k for k in env.store.objects if k.endswith(".sog"))
+    scene = json.loads(env.store.objects[sog + ".scene.json"])
+    assert scene["renderModel"] == "antialiased"
+    assert scene["quality"]["held_out_psnr"] == 20.0
+    assert "quality_low" in scene["limitations"]
+    summary = json.loads(env.db.find("'limitations'")[-1][2][2])
+    assert "quality_low" in summary
+
+
+def test_the_file_decides_how_it_is_drawn(env):
+    """The pod report says antialiased, the delivered .sog says classic: the
+    file wins, because it is what the viewer will actually draw."""
+    _with_images(env, _good_capture(env.tmp))
+    _run(env, _MeasuredProvider(_GOOD_QUALITY, sog_model="classic-tagless"))
+    sog = next(k for k in env.store.objects if k.endswith(".sog"))
+    assert json.loads(env.store.objects[sog + ".scene.json"])["renderModel"] == "classic"
+
+
+def test_a_run_without_a_quality_report_is_marked_unverified(env):
+    _with_images(env, _good_capture(env.tmp))
+    _run(env, _Provider())
+    assert env.db.find("stage = 'ready'")
+    summary = json.loads(env.db.find("'limitations'")[-1][2][2])
+    assert "quality_unverified" in summary

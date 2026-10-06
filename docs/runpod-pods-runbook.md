@@ -194,8 +194,8 @@ colmap model_analyzer     --path sparse/0        # registered images + reproject
 
 cd gs/examples && python simple_trainer.py default \
     --data-dir /workspace --data-factor 1 --result-dir /workspace/out \
-    --max-steps 7000 --save-steps 7000 \
-    --save-ply --ply-steps 7000 --disable-viewer   # --save-ply is NOT optional
+    --max-steps 30000 --save-steps 30000 --eval-steps 30000 \
+    --save-ply --ply-steps 30000 --disable-viewer   # --save-ply is NOT optional
 ```
 
 **Image count drives cost.** Exhaustive matching is O(n²): 128 images is 8,128
@@ -251,7 +251,7 @@ sitting beside genuine 360s no longer marks the whole tour as not-this-property.
 | `RECON_POD_CLOUD_TYPE` | `SECURE` | or `COMMUNITY` |
 | `RECON_POD_TRANSPORT` | `ssh` | or `blob`, for deploys with no outbound 22 |
 | `RECON_POD_IMAGE` | `runpod/pytorch:2.4.0-…` | any CUDA image; the pipeline installs what it needs |
-| `RECON_POD_STEPS` | `7000` | training steps |
+| `RECON_POD_STEPS` | `30000` | training steps (the standard 3DGS schedule; the same default in code, `.env.example` and here) |
 | `RECON_POD_VOLUME_GB` | `0` | persistent volume; only worth it to keep datasets between runs |
 
 `available()` reads the **live balance**, so an unfunded account reports

@@ -90,6 +90,7 @@ GUIDANCE: dict[str, str] = {
     "unreadable": "Some files could not be read. Re-upload them as JPEG/PNG photos or MP4/MOV video.",
     "keep_level": "Hold the phone level at chest height as you walk.",
     "cover_transitions": "Walk slowly through doorways so rooms connect, and cover each transition.",
+    "still_scene": "Keep people and pets out of the shot, and turn off TVs and screens while you capture.",
 }
 
 #: Customer-facing caveat for each warning that survives into a READY space.
