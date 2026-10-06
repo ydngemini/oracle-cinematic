@@ -50,6 +50,16 @@ def test_no_retired_domain_is_trusted():
     assert "neohrs.com" not in NGINX.read_text()
 
 
+def test_the_3d_viewer_may_fetch_its_own_blob_urls():
+    """The Space viewer downloads the (authenticated) .sog, hands PlayCanvas a
+    blob: URL, and PlayCanvas fetch()es it. Without blob: in connect-src the
+    Space never loaded on staging — every rehearsal since 2026-10-04 showed
+    "could not be loaded" behind a passing check. blob: URLs are minted by this
+    origin only, so this opens nothing to other sites."""
+    for directives in _policies():
+        assert "blob:" in directives["connect-src"]
+
+
 def test_scripts_and_objects_stay_locked_down():
     for directives in _policies():
         assert directives["object-src"] == ["'none'"]

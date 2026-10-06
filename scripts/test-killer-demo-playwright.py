@@ -178,8 +178,17 @@ def run(args, results: dict) -> dict:
             # for two seconds without an error message appearing.
             page.wait_for_timeout(2000)
             body = page.inner_text("body")
-            if re.search(r"couldn.t load|failed to load|unavailable on this device", body, re.I):
-                raise AssertionError("the Space viewer reported a load failure")
+            # The viewer's own status, not a guess at its wording: the old
+            # regex missed "could not be loaded", so a Space that never loaded
+            # on staging passed every rehearsal (2026-10-04..06).
+            page.wait_for_function(
+                "() => ['ready', 'error'].includes(document.querySelector('[data-space-status]')?.dataset.spaceStatus)",
+                timeout=60_000)
+            status = page.evaluate(
+                "() => document.querySelector('[data-space-status]')?.dataset.spaceStatus || null")
+            if status != "ready" or re.search(
+                    r"couldn.t load|could not be loaded|failed to load|unavailable on this device", body, re.I):
+                raise AssertionError(f"the Space viewer did not become ready (status={status})")
             obs["space_interactive_s"] = round(time.time() - t0, 2)
             page.screenshot(path=str(shots / "03-space.png"))
             page.keyboard.press("Escape")

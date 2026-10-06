@@ -133,7 +133,14 @@ export function NeohSurface({ entityOpen = false, onOpenEntity, onExpand, onNavi
       role={expanded ? 'dialog' : undefined}
       aria-label={expanded ? 'Neoh' : undefined}
     >
-      <AnimatePresence mode="popLayout" initial={false}>
+      {/* Not mode="popLayout": that mode pins the exiting child by injecting a
+          <style> element, which the production CSP (style-src 'self') blocks —
+          a console error on every open/close, and the exit was never pinned,
+          so the layout jumped. `position: absolute` in `exit` is an inline
+          style attribute (allowed: style-src-attr) and does the same job: the
+          leaving child drops out of flow at its static position while it
+          fades. .surface is position: fixed, so it is the containing block. */}
+      <AnimatePresence initial={false}>
         {state === 'rest' || state === 'yielded' ? (
           <motion.button
             key="pill"
@@ -147,7 +154,7 @@ export function NeohSurface({ entityOpen = false, onOpenEntity, onExpand, onNavi
             aria-expanded={false}
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
+            exit={{ opacity: 0, position: 'absolute' }}
             transition={transition}
           >
             <motion.span layoutId="neoh-avatar" layout={policy.layout} transition={transition} className={styles.markSlot}>
@@ -167,7 +174,7 @@ export function NeohSurface({ entityOpen = false, onOpenEntity, onExpand, onNavi
             className={styles.open}
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
+            exit={{ opacity: 0, position: 'absolute' }}
             transition={transition}
           >
             <Suspense fallback={<div className={styles.bar} aria-hidden="true" />}>
