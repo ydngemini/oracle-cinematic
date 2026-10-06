@@ -2452,7 +2452,7 @@ async def _execute_command_job(payload: dict[str, Any], reporter) -> dict[str, A
                     ) VALUES ($1::uuid,$2::uuid,$3::uuid,$4::uuid,$5::uuid,false,
                               'awaiting_explicit_live_transcription_consent',
                               'pending',$6,$7)
-                    ON CONFLICT (command_id) DO NOTHING
+                    ON CONFLICT (command_id) WHERE command_id IS NOT NULL DO NOTHING
                     """,
                     tenant_id,
                     command_id,
@@ -2587,7 +2587,7 @@ async def _execute_command_job(payload: dict[str, Any], reporter) -> dict[str, A
                     or messaging_route.get("hosted_order_status") != "active"
                     or business_number is None
                 ):
-                    raise RuntimeError(
+                    raise ProviderConfigurationError(
                         "Text message blocked: connect and finish setting up "
                         "text messages for your business number before sending."
                     )
@@ -2891,7 +2891,7 @@ async def _execute_command_job(payload: dict[str, Any], reporter) -> dict[str, A
                         ) VALUES ($1::uuid,$2::uuid,$3::uuid,$4::uuid,$5::uuid,false,
                                   'awaiting_explicit_live_transcription_consent',
                                   'pending',$6,$7)
-                        ON CONFLICT (command_id) DO NOTHING
+                        ON CONFLICT (command_id) WHERE command_id IS NOT NULL DO NOTHING
                         """,
                         tenant_id,
                         command_id,

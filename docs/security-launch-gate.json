@@ -109,7 +109,7 @@
     {
       "id": "staging_dast_no_blocker",
       "pass": false,
-      "evidence": "no staging app exists; OWASP ZAP not run"
+      "evidence": "2026-10-06 OWASP ZAP baseline (passive) vs neoh-staging @6cab880: 0 FAIL / 10 WARN / 57 PASS (docs/security/zap-baseline-staging-2026-10-06.md). Only Medium: CSP media-src https: wildcard -> fixed (media-src 'self' blob:; retired neohrs.com removed from connect-src; test_csp_policy.py). Cookie warnings are DO's Cloudflare __cf_bm, not Neoh's. STILL OPEN: the authenticated, rate-bounded active scan on a test tenant."
     }
   ],
   "external_or_manual": [

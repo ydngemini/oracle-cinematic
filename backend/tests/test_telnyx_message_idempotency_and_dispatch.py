@@ -139,10 +139,12 @@ def test_sms_branch_fails_closed_when_telnyx_route_not_ready():
     else_idx = branch.index("else:", telnyx_idx)
     telnyx_block = branch[telnyx_idx:else_idx]
     assert 'hosted_order_status") != "active"' in telnyx_block
-    assert "raise RuntimeError" in telnyx_block
+    # A configuration refusal: a clean failure (never "uncertain"), and terminal
+    # for the job worker, so it is not retried into a later, unannounced send.
+    assert "raise ProviderConfigurationError" in telnyx_block
     # The raise must occur before submission_started = True, same fail-closed
     # discipline as the Plivo/Twilio CALL branch.
-    raise_idx = telnyx_block.index("raise RuntimeError")
+    raise_idx = telnyx_block.index("raise ProviderConfigurationError")
     submission_idx = telnyx_block.index("submission_started = True")
     assert raise_idx < submission_idx
 

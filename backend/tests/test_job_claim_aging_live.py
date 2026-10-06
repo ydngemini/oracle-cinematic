@@ -58,6 +58,31 @@ async def _scenario():
             order.append(str(row["id"]))
         assert order == [str(starved), str(fresh_urgent), str(retry_just_ready)], order
         assert await automation_jobs.claim_next_job("aging-test-worker", queue_name=queue) is None
+        # A claimed attempt is finalized by the worker in the PLATFORM context,
+        # for a job that belongs to a BROKERAGE. Until 0128 the function also
+        # required the job's tenant to equal the caller's (platform) tenant, so
+        # it matched nothing and every attempt on staging stayed open forever.
+        # The brokerage must not be the platform tenant, or the old predicate
+        # matches by coincidence (it did, in this test's first version).
+        brokerage = str(uuid.uuid4())
+        await admin.execute("INSERT INTO tenants (id, slug, name) VALUES ($1,$2,'Attempt test')",
+                            brokerage, f"attempt-{brokerage[:8]}")
+        attempt_queue = f"{queue}-attempts"
+        await admin.execute(
+            """INSERT INTO automation_jobs (tenant_id, job_type, state, payload, idempotency_key, created_by,
+                                            max_attempts, queue_name, priority, scheduled_at)
+               VALUES ($1, 'loadtest:noop', 'queued', '{}'::jsonb, $2, 'aging-test', 3, $3, 5, now())""",
+            brokerage, f"attempt-{uuid.uuid4()}", attempt_queue)
+        claimed = await automation_jobs.claim_next_job("aging-test-worker", queue_name=attempt_queue)
+        assert claimed is not None and str(claimed["tenant_id"]) == brokerage
+        await automation_jobs._finish_attempt(claimed, "aging-test-worker", "failed", "TEST",
+                                              "attempt bookkeeping check")
+        row = await admin.fetchrow(
+            "SELECT finished_at, outcome, error_code FROM automation_job_attempts "
+            "WHERE job_id = $1 AND attempt_number = $2", claimed["id"], int(claimed["attempt_count"]))
+        assert row is not None, "the claim recorded no attempt"
+        assert row["finished_at"] is not None and row["outcome"] == "failed" and row["error_code"] == "TEST", \
+            "a brokerage job's attempt was never finalized"
     finally:
         await admin.execute("DELETE FROM automation_job_attempts WHERE job_id IN "
                             "(SELECT id FROM automation_jobs WHERE queue_name=$1)", queue)

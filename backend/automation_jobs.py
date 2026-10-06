@@ -673,7 +673,14 @@ class DurableJobWorkers:
                     await fail_job(job, worker_id, exc, error_code="RECOVERY_MODE_BLOCKED",
                                    terminal=True)
                 except Exception as exc:  # noqa: BLE001 - persisted retry path
-                    await fail_job(job, worker_id, exc)
+                    # An error that says retrying cannot help (job_terminal,
+                    # e.g. command_providers.ProviderConfigurationError) is
+                    # dead-lettered now rather than re-run later.
+                    if getattr(exc, "job_terminal", False):
+                        await fail_job(job, worker_id, exc, error_code="NOT_CONFIGURED",
+                                       terminal=True)
+                    else:
+                        await fail_job(job, worker_id, exc)
                 else:
                     await complete_job(job, worker_id, result or {})
                 finally:

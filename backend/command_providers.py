@@ -23,7 +23,15 @@ logger = logging.getLogger("oracle.command_providers")
 
 
 class ProviderConfigurationError(RuntimeError):
-    pass
+    """The send cannot happen until someone changes the setup.
+
+    `job_terminal`: the durable job worker dead-letters it on the FIRST attempt.
+    Retrying cannot fix configuration — it only re-runs the refused action
+    minutes later, and if the setup is fixed in between, a message the person
+    was told "not sent" would go out unannounced (staging, 2026-10-06: a
+    refused text retried 5 times)."""
+
+    job_terminal = True
 
 
 class ProviderRequestError(RuntimeError):
