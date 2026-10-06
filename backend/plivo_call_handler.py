@@ -211,8 +211,10 @@ async def resolve_outbound_plivo_call_state(
     call by its CALL id and carry the request id alongside as RequestUUID.
     Looking up only CallUUID meant every approved outbound call was refused as
     "unmanaged" by its own answer webhook (first real staging call,
-    2026-10-04). When found by request id, the state is copied under the call
-    id too, so the media stream and later callbacks find it directly.
+    2026-10-04). Read-only: this runs BEFORE the webhook's signature is
+    checked (the signing token comes from the state), so it must not write.
+    A state found by request id carries `request_uuid`; once the request is
+    verified, `bind_outbound_plivo_call_id` copies it under the call id.
     """
     attempts = _STATE_WAIT_ATTEMPTS if wait_for_initialization else 1
     for attempt in range(attempts):
@@ -222,12 +224,19 @@ async def resolve_outbound_plivo_call_state(
         if request_uuid and request_uuid != call_uuid:
             state = await load_plivo_call_state(request_uuid)
             if state is not None:
-                if _CALL_UUID_RE.fullmatch(call_uuid or ""):
-                    await _save_call_state(call_uuid, {**state, "request_uuid": request_uuid})
-                return state
+                return {**state, "request_uuid": request_uuid}
         if attempt + 1 < attempts:
             await asyncio.sleep(_STATE_WAIT_SECONDS)
     return None
+
+
+async def bind_outbound_plivo_call_id(call_uuid: str, state: dict[str, Any]) -> None:
+    """Copy a call's state, found by its request id, under its CALL id, so the
+    media stream and later callbacks find it directly. Call only after the
+    webhook that named this call id has passed signature validation."""
+    request_uuid = state.get("request_uuid")
+    if request_uuid and request_uuid != call_uuid and _CALL_UUID_RE.fullmatch(call_uuid or ""):
+        await _save_call_state(call_uuid, state)
 
 
 async def mark_plivo_streaming(call_uuid: str) -> None:

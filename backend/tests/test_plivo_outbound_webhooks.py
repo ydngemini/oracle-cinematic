@@ -189,9 +189,30 @@ def test_an_outbound_call_is_found_by_its_request_id_and_aliased(monkeypatch):
     monkeypatch.setattr(plivo_call_handler, "load_plivo_call_state", fake_load)
     monkeypatch.setattr(plivo_call_handler, "_save_call_state", fake_save)
     state = asyncio.run(plivo_call_handler.resolve_outbound_plivo_call_state(UUID, REQUEST))
-    assert state["tenant_id"] == TENANT
+    assert state["tenant_id"] == TENANT and state["request_uuid"] == REQUEST
+    # Resolving runs before the signature check, so it never writes.
+    assert saved == {}
+    asyncio.run(plivo_call_handler.bind_outbound_plivo_call_id(UUID, state))
     assert saved[UUID]["request_uuid"] == REQUEST  # later lookups by CallUUID hit directly
     assert asyncio.run(plivo_call_handler.resolve_outbound_plivo_call_state(UUID, "")) is None
+
+
+def test_an_unsigned_answer_never_binds_a_call_id(client, monkeypatch):
+    """A forged answer naming a real request id must not alias that call's
+    state under an attacker-chosen CallUUID."""
+    bound = []
+
+    async def by_request(uuid, request_uuid="", wait_for_initialization=False):
+        return {**client.state_box["value"], "request_uuid": REQUEST}
+
+    async def fake_bind(uuid, state):
+        bound.append(uuid)
+
+    monkeypatch.setattr(plivo_call_handler, "resolve_outbound_plivo_call_state", by_request)
+    monkeypatch.setattr(plivo_call_handler, "bind_outbound_plivo_call_id", fake_bind)
+    r = client.post(ANSWER, data={"CallUUID": UUID, "RequestUUID": REQUEST})
+    assert r.status_code == 400
+    assert bound == []
 
 
 def test_answer_accepts_a_call_known_only_by_its_request_id(client, monkeypatch):

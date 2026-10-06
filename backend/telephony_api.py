@@ -1649,6 +1649,7 @@ async def plivo_outbound_answer(request: Request) -> Response:
     """
     from plivo_call_handler import (
         PlivoCallStateUnavailable,
+        bind_outbound_plivo_call_id,
         create_plivo_bridge_token,
         plivo_media_websocket_url,
         plivo_qwen_enabled,
@@ -1679,6 +1680,8 @@ async def plivo_outbound_answer(request: Request) -> Response:
         request, form, PLIVO_OUTBOUND_ANSWER_PATH,
         tokens=await _outbound_plivo_tokens(state),
     )
+    # Verified: now the call id may be bound to the state (found by request id).
+    await bind_outbound_plivo_call_id(call_uuid, state)
     if not plivo_qwen_enabled(state):
         # Someone picked up a call a person approved. Say what this is — the
         # AI disclosure comes first, as it always must — and that their agent
