@@ -3,8 +3,11 @@ import react from '@vitejs/plugin-react'
 import { fileURLToPath } from 'node:url'
 import { createHash } from 'node:crypto'
 
-// The policy nginx.conf serves, minus frame-ancestors (ignored in <meta>) and
-// the retired Azure API host; 'self' covers the same-origin API and /ws.
+// The policy nginx.conf serves, minus frame-ancestors (ignored in <meta>);
+// 'self' covers the same-origin API and /ws. Browsers enforce BOTH policies, so
+// a source missing here is blocked even when nginx allows it — which is how the
+// 3D Space stayed broken on staging after nginx gained blob: (2026-10-06).
+// backend/tests/test_csp_policy.py holds the two to the same directives.
 const PRODUCTION_CSP = [
   "default-src 'self'",
   "base-uri 'self'",
@@ -15,9 +18,9 @@ const PRODUCTION_CSP = [
   "style-src-attr 'unsafe-inline'",
   "img-src 'self' data: blob: https://maps.googleapis.com https://maps.gstatic.com https://streetviewpixels-pa.googleapis.com",
   "font-src 'self' data:",
-  "media-src 'self' blob: https:",
+  "media-src 'self' blob:",
   "worker-src 'self' blob:",
-  "connect-src 'self' https://maps.googleapis.com https://*.googleapis.com https://eventgw.twilio.com wss://voice-js.roaming.twilio.com https://media.twiliocdn.com https://sdk.twilio.com",
+  "connect-src 'self' blob: https://maps.googleapis.com https://*.googleapis.com https://eventgw.twilio.com wss://voice-js.roaming.twilio.com https://media.twiliocdn.com https://sdk.twilio.com",
   'upgrade-insecure-requests',
 ].join('; ')
 

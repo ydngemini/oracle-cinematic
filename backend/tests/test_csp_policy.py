@@ -13,6 +13,7 @@ import re
 from pathlib import Path
 
 NGINX = Path(__file__).resolve().parents[2] / "oracle-app" / "nginx.conf"
+VITE = Path(__file__).resolve().parents[2] / "oracle-app" / "vite.config.js"
 
 
 def _policies() -> list[dict[str, list[str]]]:
@@ -66,3 +67,28 @@ def test_scripts_and_objects_stay_locked_down():
         assert directives["frame-ancestors"] == ["'none'"]
         assert "'unsafe-inline'" not in directives["script-src"]
         assert "'unsafe-eval'" not in directives["script-src"]
+
+
+def _meta_policy() -> dict[str, list[str]]:
+    """PRODUCTION_CSP from vite.config.js — the <meta> policy in index.html."""
+    block = re.search(r"const PRODUCTION_CSP = \[(.*?)\]\.join", VITE.read_text(), re.S).group(1)
+    directives = {}
+    for line in block.splitlines():
+        line = line.strip().rstrip(",")
+        if not line or line.startswith("//"):
+            continue
+        text = line[1:-1]
+        tokens = text.split()
+        if tokens:
+            directives[tokens[0]] = tokens[1:]
+    return directives
+
+
+def test_the_meta_policy_matches_nginx():
+    """Both are enforced at once (intersection): the <meta> copy lacking blob:
+    kept the 3D Space broken after nginx was fixed (2026-10-06)."""
+    meta = _meta_policy()
+    header = _policies()[0]
+    assert set(meta) == set(header) - {"frame-ancestors"}
+    for name, sources in meta.items():
+        assert sorted(sources) == sorted(header[name]), name
