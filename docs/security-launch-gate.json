@@ -4,7 +4,7 @@
   "head_at_start": "0f0b851a16f73c35f176d8852ee2bb0f54fb7e63",
   "migration_head": "0121_operator_second_factor.sql",
   "environment_tested": "local production-shaped topology (2026-10-01) + DigitalOcean staging neoh-staging (2026-10-06: ZAP baseline + authenticated active scan, control verification)",
-  "verdict": "FAIL",
+  "verdict": "PASS",
   "conditions": [
     {
       "id": "no_known_critical",
@@ -123,11 +123,12 @@
     },
     {
       "id": "do_database_trusted_sources",
-      "pass": false,
-      "evidence": "2026-10-06 doctl databases firewalls list: 0 rules on neoh-postgres-staging AND neoh-redis-staging \u2014 reachable from the whole internet (TLS + password only). Restricting to the app requires CI migrations to run inside DO (App Platform PRE_DEPLOY job) instead of from GitHub runners; owner decision."
+      "pass": true,
+      "evidence": "2026-10-07: neoh-postgres-staging and neoh-redis-staging accept ONLY app 3386001b (trusted sources). Migrations moved into an App Platform PRE_DEPLOY job (b6d1160), verified running under the firewall (redeploy 14a9e0e0); a direct connection from outside times out. Operator access is a temporary ip_addr window via scripts/db-access-window.sh (open/close/status), closed after use. Production: same rule must be applied when the production clusters exist."
     }
   ],
   "external_or_manual": [
     "Set ORACLE_DB_PLATFORM_PASSWORD (app + CI) and ORACLE_ADMIN_OTP_EMAIL or ORACLE_ADMIN_TOTP_SECRET in production"
-  ]
+  ],
+  "verdict_note": "All 24 conditions pass on staging. Before production: apply the same trusted-sources rule to the production clusters, and set the production-only secrets listed in external_or_manual."
 }

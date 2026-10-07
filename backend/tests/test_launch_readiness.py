@@ -269,13 +269,25 @@ def test_billing_missing_blocks_only_when_charging():
     assert c["billing"].status == lr.WARN
 
 
-def test_security_gate_fail_blocks():
-    """The real gate in the repo is FAIL and must name what fails. Staging DAST
-    passed on 2026-10-06; the databases' trusted sources are still open."""
+def test_security_gate_reflects_the_recorded_verdict():
+    """The real gate in the repo: every condition passed on staging by
+    2026-10-07 (DAST closed 2026-10-06, database trusted sources 2026-10-07),
+    so the check passes — and it names no failing condition."""
     _, c = audit(World())
+    assert c["security_gate"].status == lr.PASS
+    assert "verdict PASS" in c["security_gate"].reason
+    assert "failing" not in c["security_gate"].reason
+
+
+def test_a_failing_gate_condition_blocks(passing_gates):
+    gate_file = passing_gates / "docs" / "security-launch-gate.json"
+    gate = json.loads(gate_file.read_text())
+    gate["verdict"] = "FAIL"
+    gate["conditions"].append({"id": "do_database_trusted_sources", "pass": False, "evidence": "0 rules"})
+    gate_file.write_text(json.dumps(gate))
+    _, c = audit(World(), gates_root=passing_gates)
     assert c["security_gate"].status == lr.BLOCKED
     assert "do_database_trusted_sources" in c["security_gate"].reason
-    assert "staging_dast_no_blocker" not in c["security_gate"].reason
 
 
 def test_open_owner_blocker_blocks_and_warning_warns():
