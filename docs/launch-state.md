@@ -88,6 +88,8 @@ First CI release to staging (2026-10-04, run 37236009143) — staging now runs a
 | `finish_automation_job_attempt` duplicated half the RLS predicate | No job attempt ever finalized, and per-attempt errors were lost | migration `0128`. Live test uses a brokerage tenant (verified: 16/16 attempts now finalize) |
 | A text refused for missing setup was retried 5 times | Could send a "not sent" text later, unannounced | Configuration errors are terminal on attempt 1 (`NOT_CONFIGURED`), verified on staging |
 | CSP `media-src https:` and the retired `neohrs.com` in `connect-src` | Media from any origin. A lapsed domain stays trusted | `media-src 'self' blob:`, plus `test_csp_policy.py` |
+| **The 3D Space never loaded on staging.** The viewer fetches a `blob:` URL that `connect-src` forbade, in **both** the nginx header and the `<meta>` copy from `vite.config.js` (the browser enforces both). The demo check missed it: its regex didn't match "could not be loaded" | Every rehearsal since 2026-10-04 "passed" over an error box | `f831a91` + `3a4cb84`: `blob:` in both policies, which are now held equal by test. The demo test reads the viewer's own `data-space-status`. Rehearsal 6: Space ready, **0 console errors** (was 18) |
+| `AnimatePresence mode="popLayout"` injected a `<style>` that `style-src 'self'` blocks | 8 console errors per run. The exiting pill was never pinned, so the layout jumped | The exit sets `position: absolute` inline (allowed by `style-src-attr`) |
 
 **Proof status:**
 - **Calls:** a real call was matched and spoke the AI disclosure. The acknowledgement fix is proven by replaying the write on staging in a rolled-back transaction, **not yet by a real call**: the 3-call budget is used.

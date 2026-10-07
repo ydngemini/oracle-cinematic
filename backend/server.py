@@ -275,6 +275,21 @@ async def _database_connection_lost(request: Request, exc: Exception):
     return _database_unavailable_response()
 
 
+@app.exception_handler(asyncpg.exceptions.InvalidTextRepresentationError)
+async def _invalid_input_syntax(request: Request, exc: Exception):
+    """A request value PostgreSQL could not parse — almost always an id that is
+    not a UUID reaching a `::uuid` cast. That is the CLIENT's malformed input, so
+    422, not an unhandled 500 (the OWASP ZAP active scan against staging found
+    three such routes, 2026-10-06). Logged with the route, so an internal value
+    in the wrong format still shows up rather than hiding behind a 4xx."""
+    logger.warning("Rejected malformed request value on %s %s: %s",
+                   request.method, request.url.path, type(exc).__name__)
+    return JSONResponse(
+        status_code=422,
+        content={"detail": "A value in this request isn't in the expected format."},
+    )
+
+
 @app.exception_handler(asyncpg.exceptions.InvalidAuthorizationSpecificationError)
 async def _session_no_longer_valid(request: Request, exc: Exception):
     # Raised by app_begin_session (0117) when a token's account was deactivated,
@@ -308,14 +323,23 @@ _SECURITY_HEADERS = {
     "X-Frame-Options": "DENY",
     "Referrer-Policy": "no-referrer",
     "Strict-Transport-Security": "max-age=31536000; includeSubDomains",
-    "Content-Security-Policy": "default-src 'none'; frame-ancestors 'none'",
+    # base-uri / form-action do not fall back to default-src, so they are
+    # stated too (ZAP 10055 "directive with no fallback").
+    "Content-Security-Policy": "default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'",
     "Permissions-Policy": "geolocation=(), microphone=(), camera=()",
 }
 
 
 @app.middleware("http")
 async def _security_headers(request: Request, call_next):
-    response = await call_next(request)
+    try:
+        response = await call_next(request)
+    except Exception:  # noqa: BLE001 - an unhandled error still gets the headers
+        # Starlette renders an unhandled exception OUTSIDE user middleware, so
+        # every 500 used to ship without HSTS, CSP or nosniff (ZAP active scan,
+        # staging 2026-10-06). Render it here instead — generic body, no detail.
+        logger.exception("Unhandled error on %s %s", request.method, request.url.path)
+        response = JSONResponse(status_code=500, content={"detail": "Internal server error."})
     for key, value in _SECURITY_HEADERS.items():
         response.headers.setdefault(key, value)
     return response

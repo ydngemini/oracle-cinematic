@@ -108,8 +108,8 @@
     },
     {
       "id": "staging_dast_no_blocker",
-      "pass": false,
-      "evidence": "2026-10-06 OWASP ZAP baseline (passive) vs neoh-staging @6cab880: 0 FAIL / 10 WARN / 57 PASS (docs/security/zap-baseline-staging-2026-10-06.md). Only Medium: CSP media-src https: wildcard -> fixed (media-src 'self' blob:; retired neohrs.com removed from connect-src; test_csp_policy.py). Cookie warnings are DO's Cloudflare __cf_bm, not Neoh's. STILL OPEN: the authenticated, rate-bounded active scan on a test tenant."
+      "pass": true,
+      "evidence": "OWASP ZAP vs neoh-staging, 2026-10-06. Baseline (passive, whole site): 0 FAIL / 10 WARN / 57 PASS (docs/security/zap-baseline-staging-2026-10-06.md). Authenticated ACTIVE scan as the demo AGENT on 116 GET routes (core CRM, contracts, compliance, MLS, sites, portfolio, sales, portal, read-only commands/telephony/messaging), medium strength, 2 threads/150 ms: 0 High; no SQLi/XSS/path-traversal/injection (docs/security/zap-active-staging-2026-10-06.md). Fixed: 3 routes 500 on non-UUID ids (now 422), 500s lacked security headers (now always sent), API CSP lacked base-uri/form-action, web CSP media-src https: and missing blob:. Remaining warnings are DigitalOcean's Cloudflare __cf_bm cookie. SCOPE LIMIT: writes and paid/side-effect routes were deliberately NOT actively scanned on staging; they are covered by performance/security/*.py on the local topology."
     }
   ],
   "external_or_manual": [

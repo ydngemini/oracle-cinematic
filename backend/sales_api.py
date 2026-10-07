@@ -810,8 +810,9 @@ async def list_enrollments(
     ctx: TenantContext = Depends(require_context),
 ) -> dict[str, Any]:
     require_feature(Feature.SMART_PLANS)
-    if plan_id:
-        plan_id = _uuid(plan_id, "plan_id")
+    # An empty ?plan_id= means "no filter", not a value to cast: it reached
+    # `$1::uuid` as '' and 500'd (ZAP active scan, staging 2026-10-06).
+    plan_id = _uuid(plan_id, "plan_id") if plan_id else None
     async with tenant_tx(ctx) as conn:
         privileged = ctx.is_platform_admin or ctx.is_broker_owner
         await conn.execute(
