@@ -753,13 +753,50 @@ def csrf_bootstrap(request: Request, response: Response) -> dict[str, str]:
     return {"csrf_token": get_or_issue_csrf_cookie(request, response)}
 
 
+async def _end_account_sessions(payload: dict) -> None:
+    """Revoke the signed-in account's sessions by bumping its session epoch
+    (the 0117 mechanism a password change uses; tenancy re-checks it on every
+    tenant transaction). Only when the presented token is CURRENT, so a stale
+    token cannot keep forcing logouts. Environment identities (no users row)
+    carry no `uid` and are not affected."""
+    uid, tenant = payload.get("uid"), payload.get("tenant_id")
+    if not uid or not tenant:
+        return
+    from db.connection import tenant_tx
+
+    async with tenant_tx(_admin_ctx()) as conn:
+        await conn.execute(
+            "UPDATE users SET session_epoch = session_epoch + 1, updated_at = now() "
+            "WHERE id = $1::uuid AND tenant_id = $2::uuid AND session_epoch = $3",
+            str(uid), str(tenant), int(payload.get("sep") or 0),
+        )
+
+
 @router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
-def logout(response: Response) -> Response:
+async def logout(request: Request, response: Response) -> Response:
+    """Sign out — and END the session server-side, on every device.
+
+    Clearing the cookie alone left the token valid until it expired: a cookie
+    replayed after logout still read the brokerage's clients (found on staging,
+    2026-10-06). The account's session epoch is bumped, which revokes every
+    token it issued — signing out of one device signs out the others, the
+    conservative choice for an app holding client data."""
     # FastAPI's injected Response has no concrete status until the framework
     # builds a response. Returning it directly requires setting the status
     # explicitly or Uvicorn receives ``status_code=None``.
     import config
 
+    raw_token = request.cookies.get("oracle_session")
+    if raw_token:
+        try:
+            payload = decode_token(raw_token)
+        except Exception:  # noqa: BLE001 - an expired/invalid token is already dead
+            payload = None
+        if payload:
+            try:
+                await _end_account_sessions(payload)
+            except Exception:  # noqa: BLE001 - still clear the cookie; say what failed
+                log.exception("logout could not revoke the session server-side")
     response.status_code = status.HTTP_204_NO_CONTENT
     cookie_secure = not config.IS_DEV
     cookie_samesite = config.session_cookie_samesite()

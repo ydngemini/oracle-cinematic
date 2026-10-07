@@ -270,10 +270,12 @@ def test_billing_missing_blocks_only_when_charging():
 
 
 def test_security_gate_fail_blocks():
-    """The real gate in the repo is FAIL (no staging DAST) and must say so."""
+    """The real gate in the repo is FAIL and must name what fails. Staging DAST
+    passed on 2026-10-06; the databases' trusted sources are still open."""
     _, c = audit(World())
     assert c["security_gate"].status == lr.BLOCKED
-    assert "staging_dast_no_blocker" in c["security_gate"].reason
+    assert "do_database_trusted_sources" in c["security_gate"].reason
+    assert "staging_dast_no_blocker" not in c["security_gate"].reason
 
 
 def test_open_owner_blocker_blocks_and_warning_warns():

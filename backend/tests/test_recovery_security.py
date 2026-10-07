@@ -264,7 +264,8 @@ def test_logout_returns_concrete_no_content_response_with_matching_dev_cookie_sc
     import config
 
     monkeypatch.setattr(config, "IS_DEV", True)
-    response = auth.logout(Response())
+    request = Request({"type": "http", "headers": [], "method": "POST", "path": "/auth/logout"})
+    response = asyncio.run(auth.logout(request, Response()))
     assert response.status_code == 204
     cookies = response.headers.getlist("set-cookie")
     assert len(cookies) == 2
@@ -446,3 +447,43 @@ def test_custom_call_status_callback_is_accepted_inline(monkeypatch):
         _WebhookRequest({}, "custom-test-secret")
     ))
     assert response == {"accepted": True}
+
+
+def _logout_request(token: str):
+    return Request({"type": "http", "method": "POST", "path": "/auth/logout",
+                    "headers": [(b"cookie", f"oracle_session={token}".encode())]})
+
+
+def test_logout_revokes_the_session_server_side(monkeypatch):
+    """A cookie replayed after logout used to keep reading the brokerage's
+    data until it expired (staging, 2026-10-06). Logout now bumps the account's
+    session epoch — only when the presented token is current."""
+    from contextlib import asynccontextmanager
+
+    calls = []
+
+    class _Conn:
+        async def execute(self, sql, *args):
+            calls.append((sql, args))
+
+    @asynccontextmanager
+    async def fake_tx(ctx):
+        yield _Conn()
+
+    import db.connection
+
+    monkeypatch.setattr(db.connection, "tenant_tx", fake_tx)
+    token = auth._issue_jwt("a@x.test", "aaaaaaaa-0000-4000-8000-00000000000a", "agent",
+                            user_id="bbbbbbbb-0000-4000-8000-00000000000b", session_epoch=4)
+    response = asyncio.run(auth.logout(_logout_request(token), Response()))
+    assert response.status_code == 204
+    assert len(calls) == 1
+    sql, args = calls[0]
+    assert "session_epoch = session_epoch + 1" in sql and "session_epoch = $3" in sql
+    assert args == ("bbbbbbbb-0000-4000-8000-00000000000b", "aaaaaaaa-0000-4000-8000-00000000000a", 4)
+
+
+def test_logout_with_a_bad_token_still_clears_the_cookie(monkeypatch):
+    response = asyncio.run(auth.logout(_logout_request("not-a-jwt"), Response()))
+    assert response.status_code == 204
+    assert len(response.headers.getlist("set-cookie")) == 2
