@@ -22,6 +22,20 @@ def client():
     app.middleware("http")(server._security_headers)
     app.exception_handler(asyncpg.exceptions.InvalidTextRepresentationError)(server._invalid_input_syntax)
     app.exception_handler(ValueError)(server._value_error)
+    app.exception_handler(asyncpg.exceptions.DataError)(server._value_error)
+
+    @app.get("/asyncpg-bind-error")
+    async def asyncpg_bind_error():
+        # The class prepared_stmt.pyx really raises (asyncpg.exceptions.DataError,
+        # a PostgresError — not a ValueError). The first fix tested the wrong
+        # class and passed locally while staging kept 500ing.
+        raise asyncpg.exceptions.DataError(
+            "invalid input for query argument $1: 'command_id' "
+            "(invalid UUID 'command_id': length must be between 32..36 characters, got 10)")
+
+    @app.get("/other-data-error")
+    async def other_data_error():
+        raise asyncpg.exceptions.DataError("numeric field overflow")
 
     @app.get("/asyncpg-uuid")
     async def asyncpg_uuid():
@@ -97,3 +111,19 @@ def test_any_other_value_error_is_a_500_with_headers(client):
 def test_asyncpgs_wrapped_bind_error_is_422(client):
     r = client.get("/asyncpg-wrapped-uuid")
     assert r.status_code == 422 and "client_id" not in r.text
+
+
+def test_asyncpgs_real_bind_error_class_is_422(client):
+    assert not issubclass(asyncpg.exceptions.DataError, ValueError), "the trap this guards"
+    r = client.get("/asyncpg-bind-error")
+    assert r.status_code == 422 and "command_id" not in r.text
+
+
+def test_another_data_error_is_a_logged_500_with_headers(client):
+    r = client.get("/other-data-error")
+    assert r.status_code == 500 and "overflow" not in r.text
+    assert "Strict-Transport-Security" in r.headers
+
+
+def test_the_real_app_registers_the_bind_error_handler():
+    assert asyncpg.exceptions.DataError in server.app.exception_handlers

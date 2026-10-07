@@ -290,18 +290,22 @@ async def _invalid_input_syntax(request: Request, exc: Exception):
     )
 
 
+@app.exception_handler(asyncpg.exceptions.DataError)
 @app.exception_handler(ValueError)
-async def _value_error(request: Request, exc: ValueError):
+async def _value_error(request: Request, exc: Exception):
     """asyncpg rejects a non-UUID string bound to a `$n::uuid` parameter on the
-    CLIENT side, as a plain ValueError("invalid UUID '…': …") — so the 422 above
-    never saw it and /api/clients/{id}/intent and /api/commands/{id} still 500'd
-    on staging. Only that exact shape is the caller's input; any other
-    ValueError is a server bug and stays a logged 500."""
+    CLIENT side, before PostgreSQL sees it: prepared_stmt.pyx raises
+    `asyncpg.exceptions.DataError` — the PostgresError subclass, which is NOT a
+    ValueError — wrapping the codec's ValueError("invalid UUID '…': …"). Neither
+    the 22P02 handler above nor a ValueError handler saw it, so
+    /api/clients/{id}/intent and /api/commands/{id} kept 500ing on staging.
+    Only that exact shape is the caller's input; anything else here is a server
+    bug and stays a logged 500 (generic body, security headers intact)."""
     # asyncpg WRAPS the codec error in its client-side DataError (a ValueError
     # subclass): "invalid input for query argument $1: 'x' (invalid UUID 'x': …)".
     if "invalid UUID" in str(exc):
         return await _invalid_input_syntax(request, exc)
-    logger.error("Unhandled ValueError on %s %s", request.method, request.url.path,
+    logger.error("Unhandled %s on %s %s", type(exc).__name__, request.method, request.url.path,
                  exc_info=(type(exc), exc, exc.__traceback__))
     return JSONResponse(status_code=500, content={"detail": "Internal server error."})
 
