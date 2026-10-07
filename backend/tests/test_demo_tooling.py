@@ -263,3 +263,22 @@ def test_seed_is_dry_run_by_default(monkeypatch):
     monkeypatch.setattr(seed, "seed", fake_seed)
     seed.main(["--base-url", "https://s.example.test"])
     assert called["execute"] is False
+
+
+def _spec(**envs):
+    return {"services": [{"name": "api", "envs": [
+        {"key": k, "value": v, **({"type": "SECRET"} if "KEY" in k or "AGENT" in k else {})}
+        for k, v in envs.items()]}]}
+
+
+@pytest.mark.parametrize("spec, live", [
+    (_spec(ORACLE_PLIVO_REALTIME_PROVIDER="elevenlabs", ELEVENLABS_API_KEY="EV[1:x]",
+           ELEVENLABS_AGENT_ID="EV[1:y]"), True),
+    (_spec(ORACLE_PLIVO_REALTIME_PROVIDER="elevenlabs", ELEVENLABS_API_KEY="EV[1:x]"), False),
+    (_spec(ORACLE_PLIVO_QWEN_REALTIME_ENABLED="0", DASHSCOPE_API_KEY="EV[1:z]"), False),
+    (_spec(ORACLE_PLIVO_QWEN_REALTIME_ENABLED="1", DASHSCOPE_API_KEY="EV[1:z]"), True),
+    (None, False),
+])
+def test_live_voice_is_read_from_the_deployed_spec_not_this_machine(monkeypatch, spec, live):
+    monkeypatch.setenv("ORACLE_PLIVO_QWEN_REALTIME_ENABLED", "1")   # local env must not matter
+    assert preflight.live_voice_from_spec(spec)[0] is live

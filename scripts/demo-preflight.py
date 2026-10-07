@@ -77,6 +77,63 @@ def allowlist_is_exactly_the_demo_phone(raw: str) -> bool:
     return entries == [common.DEMO_RECIPIENT]
 
 
+def _env_map(component: dict) -> dict:
+    return {e.get("key"): e for e in component.get("envs") or []}
+
+
+def live_voice_from_spec(spec: dict | None) -> tuple[bool, str]:
+    """Does the DEPLOYED api hold a live call voice? Read from the app spec, not
+    this machine's environment (which says nothing about the deployment).
+
+    Mirrors plivo_call_handler.plivo_qwen_enabled: with the elevenlabs provider
+    both ELEVENLABS_API_KEY and ELEVENLABS_AGENT_ID must be set; otherwise the
+    Qwen flag must be on and its key set. A SECRET is set when the spec carries
+    an encrypted value for it.
+    """
+    if not spec:
+        return False, "deployed app spec unreadable (doctl) — live voice unverified"
+    api = next((c for c in spec.get("services") or [] if c.get("name") == "api"), None)
+    if api is None:
+        return False, "no api service in the deployed spec"
+    envs = _env_map(api)
+
+    def value(key: str) -> str:
+        return str((envs.get(key) or {}).get("value") or "").strip()
+
+    provider = value("ORACLE_PLIVO_REALTIME_PROVIDER").lower() or "qwen"
+    if provider == "elevenlabs":
+        missing = [k for k in ("ELEVENLABS_API_KEY", "ELEVENLABS_AGENT_ID") if not value(k)]
+        if missing:
+            return False, f"provider elevenlabs, but {', '.join(missing)} not set on the api"
+        return True, "ElevenLabs Agents voices answered calls (key and agent id set on the api)"
+    if value("ORACLE_PLIVO_QWEN_REALTIME_ENABLED").lower() in ("", "0", "false", "no", "off"):
+        return False, "provider qwen, realtime flag off"
+    if not value("DASHSCOPE_API_KEY"):
+        return False, "provider qwen, DASHSCOPE_API_KEY not set on the api"
+    return True, "Qwen realtime voices answered calls"
+
+
+def _deployed_spec(base_url: str) -> dict | None:
+    """The spec of the App Platform app serving base_url, or None."""
+    import yaml
+    from urllib.parse import urlparse
+
+    host = urlparse(base_url).hostname or ""
+    cmd = ["doctl", "apps", "list", "-o", "json"]
+    env = {k: v for k, v in os.environ.items() if k != "DOCKER_HOST"}
+    try:
+        apps = json.loads(subprocess.run(cmd, capture_output=True, text=True, timeout=60,
+                                         env=env, check=True).stdout or "[]")
+        app = next((a for a in apps if urlparse(a.get("live_url") or "").hostname == host), None)
+        if app is None:
+            return None
+        out = subprocess.run(["doctl", "apps", "spec", "get", app["id"]], capture_output=True,
+                             text=True, timeout=60, env=env, check=True).stdout
+        return yaml.safe_load(out)
+    except Exception:  # noqa: BLE001 — unverifiable reads as "not live", never as live
+        return None
+
+
 def _head_sha() -> str:
     try:
         return subprocess.run(["git", "-C", str(common.REPO), "rev-parse", "HEAD"],
@@ -239,10 +296,11 @@ async def run(base_url: str, tenant_id: str, expected_sha: str, *, chat_check: b
                 rep.add("3D is a real capture of the home", False,
                         "the Space is a generated demo room, labelled 'not this home' — say so",
                         blocking=False)
-        voice_live = os.getenv("ORACLE_PLIVO_QWEN_REALTIME_ENABLED", "0") not in ("0", "false")
+        voice_live, voice_detail = live_voice_from_spec(_deployed_spec(base_url))
         rep.add("realtime AI voice on calls", voice_live,
-                "an answered call speaks the AI disclosure and says the agent will follow up; "
-                "there is no live AI conversation on this environment", blocking=False)
+                voice_detail if voice_live else
+                f"{voice_detail} — an answered call speaks the AI disclosure and says the agent "
+                "will follow up; there is no live AI conversation on this environment", blocking=False)
         if chat_check:
             rep.add("chat turn", True, "not run here — the Playwright E2E exercises a real turn",
                     blocking=False)
