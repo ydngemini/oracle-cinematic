@@ -792,6 +792,18 @@ UNBACKED_CLAIM_NOTE = (
     "nothing waiting for your approval. Ask again and I will draft it."
 )
 
+#: Said to the model ONCE per turn when its reply claims a staged action that no
+#: tool staged: on staging both hosted models sometimes narrated "Call request
+#: staged and waiting on your approval" without calling the tool (killer-demo
+#: rehearsal 7, 2026-10-07), leaving the presenter to ask twice. Nothing exists
+#: yet at that point, so asking for the real call cannot duplicate anything.
+STAGING_CLAIM_NUDGE = (
+    "[Neoh system check] Your reply says an action is staged or waiting for "
+    "approval, but no tool was called in this turn, so nothing exists. If the "
+    "person asked for that action, call the right tool now and then answer from "
+    "its result. Otherwise rewrite the reply without claiming anything is staged."
+)
+
 
 def _guard_unbacked_claims(text: str, staged_commands: list[str]) -> str:
     """A reply may not say an action is waiting for approval unless a tool in
@@ -923,6 +935,7 @@ async def _local_fallback(
     # this counts every tool call in the turn, across rounds.
     call_index = 0
     staged_commands: list[str] = []
+    nudged = False
     for _ in range(max_rounds or _LOCAL_TOOL_ROUNDS):
         try:
             data = await _round()
@@ -944,7 +957,17 @@ async def _local_fallback(
         message = (data.get("choices") or [{}])[0].get("message") or {}
         tool_calls = message.get("tool_calls") or []
         if not tool_calls:
-            return _guard_unbacked_claims(str(message.get("content") or "").strip(), staged_commands), actions
+            content = str(message.get("content") or "").strip()
+            if tools and not staged_commands and not nudged and _STAGING_CLAIM.search(content):
+                # Ask once for the real tool call instead of shipping a claim
+                # the guard would have to retract (see STAGING_CLAIM_NUDGE).
+                nudged = True
+                logger.warning("chat reply claimed a staged action no tool staged; asking the model to make the call")
+                messages.append({"role": "assistant", "content": content})
+                messages.append({"role": "user", "content": STAGING_CLAIM_NUDGE})
+                payload["messages"] = messages
+                continue
+            return _guard_unbacked_claims(content, staged_commands), actions
 
         # Echo the assistant turn back verbatim so the model sees its own call.
         messages.append(

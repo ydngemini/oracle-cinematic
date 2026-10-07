@@ -247,6 +247,73 @@ def test_the_guard_sees_what_the_tools_actually_staged(monkeypatch):
     assert text == "Staged for your approval."
 
 
+def _run_loop(monkeypatch, replies):
+    from types import SimpleNamespace
+
+    import ai_chat_agent
+
+    executed, seen = [], []
+
+    async def fake_execute(*args, **_kwargs):
+        executed.append(args[3])
+        return {"ok": True, "command_id": "cmd-9", "approval_id": "ap-9", "sent": False}
+
+    async def fake_chat(payload, **_kwargs):
+        seen.append([m.get("content") for m in payload["messages"]])
+        return replies[min(len(seen) - 1, len(replies) - 1)]
+
+    monkeypatch.setattr(ai_chat_agent, "execute_safe_tool", fake_execute)
+    monkeypatch.setattr(ai_chat_agent, "_local_chat", fake_chat)
+    monkeypatch.setattr(ai_chat_agent, "_local_tools", lambda _ctx: [{"type": "function"}])
+    bundle = {"attachments": [], "record": None,
+              "assistant": {"context_type": "client", "context_id": "c-1"},
+              "messages": [{"role": "user", "content": "call her"}]}
+    text, _ = asyncio.run(ai_chat_agent._local_fallback(
+        SimpleNamespace(agent_id="a"), bundle, "system", "asst", applied=[], max_rounds=6))
+    return text, executed, seen
+
+
+def _say(text):
+    return {"choices": [{"message": {"role": "assistant", "content": text}}]}
+
+
+_CALL_TOOL = {"choices": [{"message": {"role": "assistant", "content": "", "tool_calls": [
+    {"id": "c1", "type": "function",
+     "function": {"name": "request_call", "arguments": '{"client_id":"x"}'}}]}}]}
+
+
+def test_a_claimed_but_unstaged_call_gets_one_nudge_to_make_the_real_call(monkeypatch):
+    """Rehearsal 7 (2026-10-07): the model wrote "Call request staged and
+    waiting on your approval" without calling the tool. One nudge, then the
+    real tool call, then an honest answer — no retraction note."""
+    import ai_chat_agent
+
+    text, executed, seen = _run_loop(monkeypatch, [
+        _say("Call request staged and waiting on your approval."),
+        _CALL_TOOL,
+        _say("Call staged — waiting for your approval."),
+    ])
+    assert executed == ["request_call"]
+    assert ai_chat_agent.UNBACKED_CLAIM_NOTE not in text
+    assert any(ai_chat_agent.STAGING_CLAIM_NUDGE in (c or "") for c in seen[1])
+
+
+def test_the_nudge_is_sent_once_and_a_repeat_claim_is_still_retracted(monkeypatch):
+    import ai_chat_agent
+
+    text, executed, seen = _run_loop(monkeypatch, [
+        _say("It is staged for your approval."),
+        _say("Yes, it is staged for your approval."),
+    ])
+    assert executed == [] and len(seen) == 2
+    assert text.endswith(ai_chat_agent.UNBACKED_CLAIM_NOTE)
+
+
+def test_a_plain_answer_is_never_nudged(monkeypatch):
+    text, executed, seen = _run_loop(monkeypatch, [_say("Sarah fits: budget $525k.")])
+    assert len(seen) == 1 and text == "Sarah fits: budget $525k."
+
+
 def test_hosted_tiers_get_more_rounds_than_the_local_model():
     import inspect
 
