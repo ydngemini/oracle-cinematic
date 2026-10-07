@@ -28,6 +28,15 @@ def client():
         # Exactly what asyncpg raises binding "client_id" to a $1::uuid param.
         raise ValueError("invalid UUID 'client_id': length must be between 32..36 characters, got 9")
 
+    @app.get("/asyncpg-wrapped-uuid")
+    async def asyncpg_wrapped_uuid():
+        # What actually reached FastAPI on staging: asyncpg's client-side
+        # DataError (InterfaceError, ValueError) wrapping the codec's message.
+        from asyncpg.exceptions import _base
+
+        raise _base.DataError("invalid input for query argument $1: 'client_id' "
+                              "(invalid UUID 'client_id': length must be between 32..36 characters, got 9)")
+
     @app.get("/other-value-error")
     async def other_value_error():
         raise ValueError("an internal bug")
@@ -83,3 +92,8 @@ def test_any_other_value_error_is_a_500_with_headers(client):
     r = client.get("/other-value-error")
     assert r.status_code == 500 and "internal bug" not in r.text
     assert "Strict-Transport-Security" in r.headers
+
+
+def test_asyncpgs_wrapped_bind_error_is_422(client):
+    r = client.get("/asyncpg-wrapped-uuid")
+    assert r.status_code == 422 and "client_id" not in r.text

@@ -297,7 +297,9 @@ async def _value_error(request: Request, exc: ValueError):
     never saw it and /api/clients/{id}/intent and /api/commands/{id} still 500'd
     on staging. Only that exact shape is the caller's input; any other
     ValueError is a server bug and stays a logged 500."""
-    if str(exc).startswith("invalid UUID"):
+    # asyncpg WRAPS the codec error in its client-side DataError (a ValueError
+    # subclass): "invalid input for query argument $1: 'x' (invalid UUID 'x': …)".
+    if "invalid UUID" in str(exc):
         return await _invalid_input_syntax(request, exc)
     logger.error("Unhandled ValueError on %s %s", request.method, request.url.path,
                  exc_info=(type(exc), exc, exc.__traceback__))
