@@ -914,6 +914,84 @@ async def _run_migrations(conn, files: list[str]) -> int:
                 raise RuntimeError("failed to release migration advisory lock")
 
 
+_STAMP_RE = re.compile(r"neoh-environment=([a-z0-9_-]+)")
+
+
+def evaluate_precheck(*, stamp: str, expected_env: str, ledger: "list[tuple[str, str | None]] | None",
+                      release: "dict[str, str]") -> "tuple[list[str], list[str]]":
+    """Refuse to migrate a database that is not the one this release expects.
+
+    The same checks as scripts/migration-precheck.sh, in Python, because the
+    migrations now run INSIDE DigitalOcean as an App Platform PRE_DEPLOY job on
+    the release image (which has no psql) — the databases accept connections
+    from the app only (trusted sources), not from a CI runner.
+
+    `ledger` is (filename, sha256) rows, or None when there is no readable
+    ledger; `release` is filename -> sha256 of this release's files.
+    Returns (failures, notes). Any failure means: do not migrate."""
+    failures: list[str] = []
+    notes: list[str] = []
+    found = _STAMP_RE.search(stamp or "")
+    db_env = found.group(1) if found else ""
+    if expected_env:
+        if not db_env:
+            failures.append(
+                f"the database carries no environment stamp and this run expects "
+                f"'{expected_env}'; refusing to guess which database this is (stamp it once: "
+                f"COMMENT ON DATABASE <db> IS 'neoh-environment={expected_env}')")
+        elif db_env != expected_env:
+            failures.append(f"this is the '{db_env}' database and this run is for '{expected_env}'")
+    if ledger is None:
+        failures.append("no readable schema_migrations ledger — never migrated by this runner, "
+                        "or not a Neoh database")
+        return failures, notes
+    recorded = {name: sha for name, sha in ledger}
+    unknown = sorted(set(recorded) - set(release))
+    if unknown:
+        failures.append("the database records migration(s) this release does not contain: "
+                        + ", ".join(unknown))
+    release_head = max(release) if release else ""
+    db_head = max(recorded) if recorded else ""
+    if db_head and release_head < db_head:
+        failures.append(f"the release head ({release_head}) is BEHIND the database head ({db_head}) — "
+                        f"almost certainly the wrong release")
+    edited = sorted(name for name, sha in recorded.items()
+                    if sha and name in release and release[name] != sha)
+    if edited:
+        failures.append("applied migration(s) EDITED after they ran: " + ", ".join(edited))
+    pending = sorted(set(release) - set(recorded))
+    notes.append(f"database head {db_head or '(none)'}; release head {release_head}; "
+                 f"{len(pending)} pending")
+    return failures, notes
+
+
+async def _precheck(conn, files: list[str]) -> int:
+    expected = os.environ.get("ORACLE_EXPECTED_ENVIRONMENT", "").strip()
+    stamp = await conn.fetchval(
+        "SELECT coalesce(shobj_description(oid, 'pg_database'), '') "
+        "FROM pg_database WHERE datname = current_database()")
+    ledger = None
+    if await conn.fetchval("SELECT to_regclass('public.schema_migrations') IS NOT NULL"):
+        has_sha = await conn.fetchval(
+            "SELECT EXISTS (SELECT 1 FROM information_schema.columns "
+            "WHERE table_name = 'schema_migrations' AND column_name = 'sha256')")
+        rows = await conn.fetch(
+            "SELECT filename, " + ("sha256" if has_sha else "NULL::text") + " AS sha256 "
+            "FROM schema_migrations")
+        ledger = [(r["filename"], (r["sha256"] or "").strip() or None) for r in rows]
+    release = {}
+    for path in files:
+        with open(path, encoding="utf-8") as handle:
+            release[os.path.basename(path)] = _sha256(handle.read())
+    failures, notes = evaluate_precheck(stamp=stamp or "", expected_env=expected,
+                                        ledger=ledger, release=release)
+    for note in notes:
+        print(f">> precheck: {note}", flush=True)
+    for failure in failures:
+        print(f"!! precheck FAILED: {failure}", flush=True)
+    return 3 if failures else 0
+
+
 async def main() -> int:
     import asyncpg
 
@@ -929,6 +1007,12 @@ async def main() -> int:
     )
     try:
         files = sorted(glob.glob(os.path.join(MIGRATIONS_DIR, "*.sql")))
+        if "--precheck-then-migrate" in sys.argv or "--precheck" in sys.argv:
+            # PRE_DEPLOY job: refuse BEFORE touching anything (exit 3); a
+            # failed job cancels the deployment and the old release keeps serving.
+            code = await _precheck(conn, files)
+            if code or "--precheck" in sys.argv:
+                return code
         if "--reconcile" in sys.argv:
             return await _reconcile(conn, files)
         if "--prebuild-indexes" in sys.argv:

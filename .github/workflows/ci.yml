@@ -245,7 +245,7 @@ jobs:
           ORACLE_ENV: dev
         run: |
           pip install --quiet -r requirements.txt -r requirements-test.txt
-          python -m pytest -q -p no:cacheprovider tests/test_privacy_lifecycle_live.py tests/test_reconciliation_live.py tests/test_stripe_webhook_live.py tests/test_job_claim_aging_live.py tests/test_on_conflict_targets_live.py
+          python -m pytest -q -p no:cacheprovider tests/test_privacy_lifecycle_live.py tests/test_reconciliation_live.py tests/test_stripe_webhook_live.py tests/test_job_claim_aging_live.py tests/test_on_conflict_targets_live.py tests/test_migration_precheck.py
 
   release:
     name: build release → staging
@@ -507,6 +507,8 @@ jobs:
       # printed). An unset GitHub secret injects nothing.
       - name: Carry the app's secrets into the spec (staging)
         env:
+          ORACLE_DB_ADMIN_PASSWORD: ${{ secrets.ORACLE_DB_ADMIN_PASSWORD }}
+          ORACLE_DB_PLATFORM_PASSWORD: ${{ secrets.ORACLE_DB_PLATFORM_PASSWORD }}
           PLIVO_AUTH_ID: ${{ secrets.PLIVO_AUTH_ID }}
           PLIVO_AUTH_TOKEN: ${{ secrets.PLIVO_AUTH_TOKEN }}
           TELNYX_API_KEY: ${{ secrets.TELNYX_API_KEY }}
@@ -520,7 +522,7 @@ jobs:
           doctl apps list-deployments "${DIGITALOCEAN_APP_ID}" -o json > /tmp/deployments.staging.json
           python3 scripts/carry-secrets.py --env staging \
             --deployments /tmp/deployments.staging.json \
-            --inject-from-env PLIVO_AUTH_ID,PLIVO_AUTH_TOKEN,TELNYX_API_KEY,TELNYX_PUBLIC_KEY,TWILIO_ACCOUNT_SID,TWILIO_AUTH_TOKEN,ORACLE_FIREWORKS_API_KEY,ORACLE_DEMO_RECIPIENT_ALLOWLIST \
+            --inject-from-env PLIVO_AUTH_ID,PLIVO_AUTH_TOKEN,TELNYX_API_KEY,TELNYX_PUBLIC_KEY,TWILIO_ACCOUNT_SID,TWILIO_AUTH_TOKEN,ORACLE_FIREWORKS_API_KEY,ORACLE_DEMO_RECIPIENT_ALLOWLIST,ORACLE_DB_ADMIN_PASSWORD,ORACLE_DB_PLATFORM_PASSWORD \
             --rendered /tmp/app.staging.yaml --out /tmp/app.staging.deploy.yaml
           rm -f /tmp/deployments.staging.json
 
@@ -533,56 +535,11 @@ jobs:
         # first real staging release), so the carried spec cannot be validated.
         run: doctl apps spec validate /tmp/app.staging.yaml > /dev/null
 
-      - name: Migration precheck (staging)
-        run: |
-          chmod +x scripts/migration-precheck.sh
-          ./scripts/migration-precheck.sh release-manifest.json
-        env:
-          # The database must identify itself as staging; see the script.
-          ORACLE_EXPECTED_ENVIRONMENT: staging
-          ORACLE_DB_HOST: ${{ secrets.ORACLE_DB_HOST }}
-          ORACLE_DB_PORT: ${{ secrets.ORACLE_DB_PORT }}
-          ORACLE_DB_NAME: ${{ secrets.ORACLE_DB_NAME }}
-          ORACLE_DB_ADMIN_USER: ${{ secrets.ORACLE_DB_ADMIN_USER }}
-          PGPASSWORD: ${{ secrets.ORACLE_DB_ADMIN_PASSWORD }}
-          ORACLE_DB_SSLMODE: require
-
-      # Migrations run from the image BY DIGEST — the exact artifact — before
-      # it serves traffic.
-      # DO Managed Postgres presents a certificate signed by the cluster's own
-      # project CA, so TLS verification needs that CA (ORACLE_DB_CA_CERT). The
-      # cluster is resolved from the RENDERED spec's cluster_name, never typed
-      # here; `--format ID,Name` keeps connection credentials out of the step.
-      - name: Run database migrations (staging)
-        run: |
-          set -euo pipefail
-          cluster=$(python3 -c 'import yaml; print(next(d["cluster_name"] for d in yaml.safe_load(open("/tmp/app.staging.yaml"))["databases"] if d["name"] == "neoh-postgres"))')
-          id=$(doctl databases list --format ID,Name --no-header | awk -v n="$cluster" '$2 == n {print $1}')
-          [ -n "$id" ] || { echo "::error::no database cluster named $cluster"; exit 1; }
-          ORACLE_DB_CA_CERT=$(doctl databases get-ca "$id" -o json | python3 -c 'import base64, json, sys; print(base64.b64decode(json.load(sys.stdin)["certificate"]).decode())')
-          export ORACLE_DB_CA_CERT
-          docker run --rm \
-            -e ORACLE_DB_HOST \
-            -e ORACLE_DB_PORT \
-            -e ORACLE_DB_NAME \
-            -e ORACLE_DB_ADMIN_USER \
-            -e ORACLE_DB_ADMIN_PASSWORD \
-            -e ORACLE_DB_PLATFORM_PASSWORD \
-            -e ORACLE_DB_CA_CERT \
-            -e ORACLE_DB_SSL=require \
-            "${REGISTRY}/neoh-backend@${{ steps.digests.outputs.backend }}" \
-            python run_migrations.py
-        env:
-          REGISTRY: registry.digitalocean.com/${{ secrets.DIGITALOCEAN_REGISTRY }}
-          # `docker run -e NAME` forwards NAME from THIS step's environment;
-          # without these the container got every one of them empty.
-          ORACLE_DB_HOST: ${{ secrets.ORACLE_DB_HOST }}
-          ORACLE_DB_PORT: ${{ secrets.ORACLE_DB_PORT }}
-          ORACLE_DB_NAME: ${{ secrets.ORACLE_DB_NAME }}
-          ORACLE_DB_ADMIN_USER: ${{ secrets.ORACLE_DB_ADMIN_USER }}
-          ORACLE_DB_ADMIN_PASSWORD: ${{ secrets.ORACLE_DB_ADMIN_PASSWORD }}
-          ORACLE_DB_PLATFORM_PASSWORD: ${{ secrets.ORACLE_DB_PLATFORM_PASSWORD }}
-
+      # Migrations are NOT run from this runner: the databases accept the app
+      # only (trusted sources). The spec's PRE_DEPLOY job `migrate` runs
+      # `run_migrations.py --precheck-then-migrate` on this release's backend
+      # digest inside DigitalOcean before traffic switches; if it fails, the
+      # deployment is cancelled and the previous release keeps serving.
       # `doctl apps update` is deterministic ONLY because the spec is
       # digest-pinned: DigitalOcean documents that update reuses the image
       # when the tag is unchanged. A changed digest is a changed spec.
@@ -826,6 +783,8 @@ jobs:
       # with it set).
       - name: Carry the app's secrets into the spec (production)
         env:
+          ORACLE_DB_ADMIN_PASSWORD: ${{ secrets.ORACLE_DB_ADMIN_PASSWORD }}
+          ORACLE_DB_PLATFORM_PASSWORD: ${{ secrets.ORACLE_DB_PLATFORM_PASSWORD }}
           PLIVO_AUTH_ID: ${{ secrets.PLIVO_AUTH_ID }}
           PLIVO_AUTH_TOKEN: ${{ secrets.PLIVO_AUTH_TOKEN }}
           TELNYX_API_KEY: ${{ secrets.TELNYX_API_KEY }}
@@ -838,7 +797,7 @@ jobs:
           doctl apps list-deployments "${DIGITALOCEAN_APP_ID}" -o json > /tmp/deployments.production.json
           python3 scripts/carry-secrets.py --env production \
             --deployments /tmp/deployments.production.json \
-            --inject-from-env PLIVO_AUTH_ID,PLIVO_AUTH_TOKEN,TELNYX_API_KEY,TELNYX_PUBLIC_KEY,TWILIO_ACCOUNT_SID,TWILIO_AUTH_TOKEN,ORACLE_FIREWORKS_API_KEY \
+            --inject-from-env PLIVO_AUTH_ID,PLIVO_AUTH_TOKEN,TELNYX_API_KEY,TELNYX_PUBLIC_KEY,TWILIO_ACCOUNT_SID,TWILIO_AUTH_TOKEN,ORACLE_FIREWORKS_API_KEY,ORACLE_DB_ADMIN_PASSWORD,ORACLE_DB_PLATFORM_PASSWORD \
             --rendered /tmp/app.production.yaml --out /tmp/app.production.deploy.yaml
           rm -f /tmp/deployments.production.json
 
@@ -848,50 +807,11 @@ jobs:
         # first real staging release), so the carried spec cannot be validated.
         run: doctl apps spec validate /tmp/app.production.yaml > /dev/null
 
-      - name: Migration precheck (production)
-        run: |
-          chmod +x scripts/migration-precheck.sh
-          ./scripts/migration-precheck.sh release-manifest.json
-        env:
-          # The database must identify itself as production; see the script.
-          ORACLE_EXPECTED_ENVIRONMENT: production
-          ORACLE_DB_HOST: ${{ secrets.ORACLE_DB_HOST }}
-          ORACLE_DB_PORT: ${{ secrets.ORACLE_DB_PORT }}
-          ORACLE_DB_NAME: ${{ secrets.ORACLE_DB_NAME }}
-          ORACLE_DB_ADMIN_USER: ${{ secrets.ORACLE_DB_ADMIN_USER }}
-          PGPASSWORD: ${{ secrets.ORACLE_DB_ADMIN_PASSWORD }}
-          ORACLE_DB_SSLMODE: require
-
-      - name: Run database migrations (production)
-        run: |
-          set -euo pipefail
-          cluster=$(python3 -c 'import yaml; print(next(d["cluster_name"] for d in yaml.safe_load(open("/tmp/app.production.yaml"))["databases"] if d["name"] == "neoh-postgres"))')
-          id=$(doctl databases list --format ID,Name --no-header | awk -v n="$cluster" '$2 == n {print $1}')
-          [ -n "$id" ] || { echo "::error::no database cluster named $cluster"; exit 1; }
-          ORACLE_DB_CA_CERT=$(doctl databases get-ca "$id" -o json | python3 -c 'import base64, json, sys; print(base64.b64decode(json.load(sys.stdin)["certificate"]).decode())')
-          export ORACLE_DB_CA_CERT
-          docker run --rm \
-            -e ORACLE_DB_HOST \
-            -e ORACLE_DB_PORT \
-            -e ORACLE_DB_NAME \
-            -e ORACLE_DB_ADMIN_USER \
-            -e ORACLE_DB_ADMIN_PASSWORD \
-            -e ORACLE_DB_PLATFORM_PASSWORD \
-            -e ORACLE_DB_CA_CERT \
-            -e ORACLE_DB_SSL=require \
-            "${REGISTRY}/neoh-backend@${{ steps.digests.outputs.backend }}" \
-            python run_migrations.py
-        env:
-          REGISTRY: registry.digitalocean.com/${{ secrets.DIGITALOCEAN_REGISTRY }}
-          # `docker run -e NAME` forwards NAME from THIS step's environment;
-          # without these the container got every one of them empty.
-          ORACLE_DB_HOST: ${{ secrets.ORACLE_DB_HOST }}
-          ORACLE_DB_PORT: ${{ secrets.ORACLE_DB_PORT }}
-          ORACLE_DB_NAME: ${{ secrets.ORACLE_DB_NAME }}
-          ORACLE_DB_ADMIN_USER: ${{ secrets.ORACLE_DB_ADMIN_USER }}
-          ORACLE_DB_ADMIN_PASSWORD: ${{ secrets.ORACLE_DB_ADMIN_PASSWORD }}
-          ORACLE_DB_PLATFORM_PASSWORD: ${{ secrets.ORACLE_DB_PLATFORM_PASSWORD }}
-
+      # Migrations are NOT run from this runner: the databases accept the app
+      # only (trusted sources). The spec's PRE_DEPLOY job `migrate` runs
+      # `run_migrations.py --precheck-then-migrate` on this release's backend
+      # digest inside DigitalOcean before traffic switches; if it fails, the
+      # deployment is cancelled and the previous release keeps serving.
       # Refuse to silently destroy what someone changed in the console.
       # `doctl apps update` replaces the whole spec; anything added through the
       # DigitalOcean UI since the last deploy — an env var, a domain — would be

@@ -409,7 +409,7 @@ def _run_rollback(tmp_path, target_head: str, current_head: str):
     # The app's ACTIVE deployment, every secret set — what carry-secrets.py
     # copies from so the rollback does not wipe them.
     active = yaml.safe_load(APP_SPEC.read_text(encoding="utf-8"))
-    for comp in active["services"] + active["workers"]:
+    for comp in active["services"] + active["workers"] + (active.get("jobs") or []):
         for e in comp.get("envs") or []:
             if e.get("type") == "SECRET" and not e.get("value"):
                 e["value"] = f"EV[1:running-{comp['name']}-{e['key']}]"
@@ -458,6 +458,11 @@ def test_do_rollback_applies_the_previous_digests(tmp_path):
     assert "sha256:" + "a" * 64 in applied, "api/worker not pinned to the target backend digest"
     assert "sha256:" + "b" * 64 in applied, "web not pinned to the target frontend digest"
     assert "__BACKEND_DIGEST__" not in applied and "__FRONTEND_DIGEST__" not in applied
+    assert "__ENVIRONMENT__" not in applied
+    # A rollback target is older than the schema: its PRE_DEPLOY job must not
+    # run the migration precheck (it would refuse, cancelling the rollback).
+    assert "run_migrations.py" not in applied
+    assert "leaves the database untouched" in applied
     # A blank SECRET in the applied spec would WIPE it on the app.
     assert "EV[1:running-api-ORACLE_SECRET_KEY]" in applied, "secrets were not carried"
     assert "apps list-deployments app-123" in calls
@@ -521,11 +526,14 @@ def test_production_deploys_exactly_the_digests_staging_recorded():
 
 def test_migrations_run_from_the_image_by_digest_not_tag():
     """A tag can be repointed between staging and production; a digest
-    cannot."""
-    for job in ("release", "promote"):
-        step = next(s for s in _steps(job) if s.get("name", "").startswith("Run database migrations"))
-        assert "neoh-backend@${{ steps.digests.outputs.backend }}" in step["run"]
-        assert "neoh-backend:" not in step["run"], f"{job} migrates from a mutable tag"
+    cannot. Migrations run in the spec's PRE_DEPLOY job, pinned to the same
+    backend digest placeholder the api and worker use."""
+    import yaml as _yaml
+
+    spec = _yaml.safe_load((REPO / "infra" / "digitalocean" / "app.yaml").read_text())
+    job = next(j for j in spec["jobs"] if j["kind"] == "PRE_DEPLOY")
+    assert job["image"].get("digest") == "__BACKEND_DIGEST__"
+    assert "tag" not in job["image"], "the migration job must never run a mutable tag"
 
 
 def test_staging_and_production_use_separate_environments():

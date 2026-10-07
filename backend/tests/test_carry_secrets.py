@@ -36,7 +36,7 @@ def _rendered(env="staging"):
 def _running_from(rendered: dict) -> dict:
     """What a healthy running app looks like: every SECRET set (EV)."""
     run = copy.deepcopy(rendered)
-    for c in run["services"] + run["workers"]:
+    for c in run["services"] + run["workers"] + (run.get("jobs") or []):
         for e in c.get("envs") or []:
             if e.get("type") == "SECRET" and not e.get("value"):
                 e["value"] = EV.format(f"{c['name']}-{e['key']}")
@@ -234,3 +234,36 @@ def test_cli_refuses_an_unlisted_key(tmp_path):
                     "--out", str(tmp_path / "deploy.yaml"), "--env", "staging",
                     "--inject-from-env", "ORACLE_SECRET_KEY"])
     assert code == 1
+
+
+def _without_the_migration_job(spec: dict) -> dict:
+    """A running app deployed before migrations moved into a PRE_DEPLOY job."""
+    out = copy.deepcopy(spec)
+    out.pop("jobs", None)
+    return out
+
+
+def test_the_first_deploy_with_the_migration_job_refuses_without_its_credentials():
+    """The job has never existed on the app, so there is nothing to carry: with
+    no admin credential it would fail and cancel the deployment."""
+    rendered = _rendered()
+    running = _without_the_migration_job(_running_from(rendered))
+    with pytest.raises(cs.CarryError) as err:
+        cs.carry(running, copy.deepcopy(rendered), "staging")
+    assert "migrate:ORACLE_DB_ADMIN_PASSWORD" in str(err.value)
+
+
+def test_the_migration_job_credentials_are_injected_from_ci_on_the_first_deploy():
+    rendered = _rendered()
+    running = _without_the_migration_job(_running_from(rendered))
+    inject = {"ORACLE_DB_ADMIN_PASSWORD": "admin-pw", "ORACLE_DB_PLATFORM_PASSWORD": "platform-pw"}
+    cs.check_injectable(list(inject), "staging")
+    cs.check_injectable(list(inject), "production")
+    out, report = cs.carry(running, copy.deepcopy(rendered), "staging", inject=inject)
+    job = next(j for j in out["jobs"] if j["name"] == "migrate")
+    env = {e["key"]: e.get("value") for e in job["envs"]}
+    assert env["ORACLE_DB_ADMIN_PASSWORD"] == "admin-pw"
+    assert "migrate:ORACLE_DB_ADMIN_PASSWORD" in report["injected"]
+    # The api/worker keep their CARRIED platform password: injection never
+    # replaces a value the running app already has.
+    assert _secret(out, "api", "ORACLE_DB_PLATFORM_PASSWORD") == EV.format("api-ORACLE_DB_PLATFORM_PASSWORD")

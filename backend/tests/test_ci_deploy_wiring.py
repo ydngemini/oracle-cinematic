@@ -64,9 +64,13 @@ def test_the_app_is_updated_only_with_the_carried_spec(job):
 def test_secrets_are_carried_before_migrations_and_from_the_active_deployment(job):
     names = [s.get("name", "") for s in _steps(job)]
     carry = next(i for i, n in enumerate(names) if n.startswith("Carry the app's secrets"))
-    migrate = next(i for i, n in enumerate(names) if n.startswith("Run database migrations"))
     update = next(i for i, s in enumerate(_steps(job)) if "doctl apps update" in (s.get("run") or ""))
-    assert carry < migrate < update
+    assert carry < update
+    # Migrations run INSIDE DigitalOcean (the spec's PRE_DEPLOY job): the
+    # databases accept the app only, so no runner step may reach them.
+    for step in _steps(job):
+        text = (step.get("name") or "") + (step.get("run") or "")
+        assert "run_migrations.py" not in text and "migration-precheck.sh" not in text, step.get("name")
     run = _steps(job)[carry]["run"]
     assert "list-deployments" in run and "apps spec get" not in run
 
@@ -127,3 +131,21 @@ def test_validation_runs_on_the_rendered_spec_not_the_carried_one(job):
     for s in validates:
         target = re.search(r"spec validate\s+(\S+)", s["run"]).group(1)
         assert not target.endswith(".deploy.yaml"), f"{job}: validates the carried spec {target}"
+
+
+@pytest.mark.parametrize("job", DEPLOY_JOBS)
+def test_the_migration_job_gets_its_credentials_from_the_carry_step(job):
+    step = next(s for s in _steps(job) if s.get("name", "").startswith("Carry the app's secrets"))
+    for key in ("ORACLE_DB_ADMIN_PASSWORD", "ORACLE_DB_PLATFORM_PASSWORD"):
+        assert key in (step.get("env") or {}), key
+        assert key in re.search(r"--inject-from-env\s+(\S+)", step["run"]).group(1).split(",")
+
+
+def test_the_spec_migrates_in_a_pre_deploy_job_on_the_backend_image():
+    spec = yaml.safe_load((REPO / "infra" / "digitalocean" / "app.yaml").read_text())
+    jobs = [j for j in spec.get("jobs") or [] if j.get("kind") == "PRE_DEPLOY"]
+    assert len(jobs) == 1
+    job = jobs[0]
+    assert job["image"]["repository"] == "neoh-backend"
+    assert job["image"]["digest"] == "__BACKEND_DIGEST__"
+    assert "--precheck-then-migrate" in job["run_command"]

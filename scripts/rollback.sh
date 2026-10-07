@@ -189,15 +189,26 @@ say "the migrations STAY in place; no down-migration is attempted"
 head2 "Plan"
 say "pin api + worker  -> neoh-backend@$TARGET_BACKEND"
 say "pin web           -> neoh-frontend@$TARGET_FRONTEND"
-say "database          -> UNTOUCHED"
+say "database          -> UNTOUCHED (the PRE_DEPLOY migration job is a no-op)"
 
 SPEC_OUT="${ORACLE_ROLLBACK_SPEC:-/tmp/app.rollback.yaml}"
+# The PRE_DEPLOY migration job runs before every deployment, a rollback
+# included. A rollback target is OLDER than the schema, so its precheck would
+# refuse (release behind the database) and cancel the very rollback — and the
+# promise above is "database UNTOUCHED". So the job's command becomes a no-op
+# here, whatever runner the target image carries.
+ROLLBACK_JOB_COMMAND='echo "rollback - the PRE_DEPLOY migration job leaves the database untouched"'
 sed -e "s|__BACKEND_DIGEST__|$TARGET_BACKEND|g" \
     -e "s|__FRONTEND_DIGEST__|$TARGET_FRONTEND|g" \
+    -e "s|__ENVIRONMENT__|production|g" \
+    -e "s|^\(    run_command: \)python run_migrations.py --precheck-then-migrate\$|\1$ROLLBACK_JOB_COMMAND|" \
     "$REPO/infra/digitalocean/app.yaml" > "$SPEC_OUT"
 
-if grep -q "__.*_DIGEST__" "$SPEC_OUT"; then
-  die "a digest placeholder survived substitution in $SPEC_OUT"
+if grep -q "__.*_DIGEST__\|__ENVIRONMENT__" "$SPEC_OUT"; then
+  die "a placeholder survived substitution in $SPEC_OUT"
+fi
+if grep -q "run_migrations.py" "$SPEC_OUT"; then
+  die "the rollback spec would still run migrations — refusing"
 fi
 say "spec written      -> $SPEC_OUT"
 

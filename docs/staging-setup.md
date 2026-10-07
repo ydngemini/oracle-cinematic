@@ -298,14 +298,26 @@ doctl databases firewalls append "$PG_ID" --rule app:$APP_ID
 doctl databases firewalls append "$RD_ID" --rule app:$APP_ID
 ```
 
-> **Decision needed [owner]:** CI runs migrations from a GitHub-hosted runner
-> (`ci.yml` "Run database migrations"). Those runners have no fixed IP, so a
-> Postgres restricted to `app:$APP_ID` **refuses the CI migration step.**
-> The options are: leave Postgres open to the internet, protected by password
-> and TLS (the security gate lists trusted sources as an open manual control);
-> move migrations into an App Platform `PRE_DEPLOY` job that runs inside the
-> trusted boundary (a CI change); or use a self-hosted runner with a fixed IP.
-> Until you decide, append only the Valkey rule.
+**Decided 2026-10-07: migrations run inside DigitalOcean.** The spec's `jobs:` section holds a `PRE_DEPLOY` job, `migrate`. It runs `python run_migrations.py --precheck-then-migrate` on the release's own backend digest before traffic switches. If it fails, App Platform cancels the deployment and the previous release keeps serving.
+
+The precheck refuses (exit 3) before touching anything when:
+- the database's `neoh-environment=` stamp is missing or names another environment;
+- the database records a migration the release lacks;
+- the database is ahead of the release;
+- an applied migration was edited.
+
+CI never connects to a database, so both rules above apply to Postgres **and** Valkey. CI hands the job its credentials: `ORACLE_DB_ADMIN_PASSWORD` and `ORACLE_DB_PLATFORM_PASSWORD` are injected from the GitHub environment secrets by `carry-secrets.py --inject-from-env`.
+
+**Operator access** for the demo preflight and reset, backups or a one-off look: open a window for this machine's public IP, do the work, close it:
+
+```sh
+scripts/db-access-window.sh open staging     # adds ip_addr:<this machine> to both clusters
+# … demo-preflight.py / reset-demo-tenant.py / backup …
+scripts/db-access-window.sh close staging    # removes exactly that rule
+scripts/db-access-window.sh status staging
+```
+
+The script refuses to "open" a cluster that has no app rule, because that cluster is not locked down yet.
 
 ### 10. GitHub environment `staging` and its secrets
 

@@ -30,7 +30,8 @@ def test_production_render_is_exactly_the_placeholder_substitution():
     """The YAML round-trip must change NOTHING about production. It is what CI
     and rollback.sh were already validated against."""
     raw = (REPO / "infra" / "digitalocean" / "app.yaml").read_text(encoding="utf-8")
-    substituted = yaml.safe_load(raw.replace("__BACKEND_DIGEST__", B).replace("__FRONTEND_DIGEST__", F))
+    substituted = yaml.safe_load(raw.replace("__BACKEND_DIGEST__", B).replace("__FRONTEND_DIGEST__", F)
+                                 .replace("__ENVIRONMENT__", "production"))
     assert r.render("production", B, F) == substituted
 
 
@@ -56,7 +57,7 @@ def test_staging_differs_from_production_only_where_intended():
         out = {"name": spec["name"]}
         for db in spec["databases"]:
             out[f"db:{db['name']}"] = db["cluster_name"]
-        for kind in ("services", "workers"):
+        for kind in ("services", "workers", "jobs"):
             for c in spec.get(kind) or []:
                 out[f"{c['name']}:instances"] = c.get("instance_count")
                 out[f"{c['name']}:size"] = c.get("instance_size_slug")
@@ -64,7 +65,7 @@ def test_staging_differs_from_production_only_where_intended():
                 for e in c.get("envs") or []:
                     out[f"{c['name']}:{e['key']}"] = e.get("value", e.get("type"))
         for k, v in spec.items():
-            if k not in ("name", "databases", "services", "workers"):
+            if k not in ("name", "databases", "services", "workers", "jobs"):
                 out[f"top:{k}"] = repr(v)
         return out
 
@@ -85,7 +86,17 @@ def test_staging_differs_from_production_only_where_intended():
         # The demo exception to recovery mode (operator's own phone) is
         # staging-only; production must never carry it.
         "api:ORACLE_DEMO_RECIPIENT_ALLOWLIST", "worker:ORACLE_DEMO_RECIPIENT_ALLOWLIST",
+        # The PRE_DEPLOY migration job may only migrate ITS environment's
+        # database (checked against the database's own stamp).
+        "migrate:ORACLE_EXPECTED_ENVIRONMENT",
     }, "staging drifted from production somewhere unintended"
+
+
+def test_each_environment_migrates_only_its_own_database():
+    for env in ("staging", "production"):
+        job = next(j for j in r.render(env, B, F)["jobs"] if j["kind"] == "PRE_DEPLOY")
+        assert {e["key"]: e.get("value") for e in job["envs"]}["ORACLE_EXPECTED_ENVIRONMENT"] == env
+        assert job["image"]["digest"] == B, "the job migrates with the release's own backend"
 
 
 def test_staging_is_the_reduced_size():

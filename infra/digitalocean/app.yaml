@@ -525,6 +525,50 @@ workers:
 #
 # /live is deliberately NOT routed: it is the in-container liveness probe
 # only. Publicly it falls through to the SPA, so never probe it from outside.
+# Migrations run HERE, inside DigitalOcean, before every deployment — not from
+# a CI runner. The databases accept connections from this app only (trusted
+# sources), so nothing outside DigitalOcean can reach them, CI included.
+# PRE_DEPLOY: App Platform runs the job on the release image before switching
+# traffic; a failed job cancels the deployment and the previous release keeps
+# serving. `--precheck-then-migrate` refuses (exit 3) BEFORE touching anything
+# when the database is not this environment's (stamp), records migrations this
+# release lacks, is ahead of the release, or has an applied migration edited.
+jobs:
+  - name: migrate
+    kind: PRE_DEPLOY
+    image:
+      registry_type: DOCR
+      repository: neoh-backend
+      digest: __BACKEND_DIGEST__
+    run_command: python run_migrations.py --precheck-then-migrate
+    instance_count: 1
+    instance_size_slug: apps-s-1vcpu-1gb
+    envs:
+      # The environment this job may migrate; render-app-spec.py sets it, and
+      # the database's own stamp must match it.
+      - key: ORACLE_EXPECTED_ENVIRONMENT
+        value: "__ENVIRONMENT__"
+      - key: ORACLE_DB_HOST
+        value: ${neoh-postgres.HOSTNAME}
+      - key: ORACLE_DB_PORT
+        value: ${neoh-postgres.PORT}
+      - key: ORACLE_DB_NAME
+        value: ${neoh-postgres.DATABASE}
+      - key: ORACLE_DB_SSL
+        value: "require"
+      - key: ORACLE_DB_CA_CERT
+        value: ${neoh-postgres.CA_CERT}
+      # Migrations need the cluster admin (DO's fixed `doadmin`); the app
+      # components never see this credential.
+      - key: ORACLE_DB_ADMIN_USER
+        value: doadmin
+      - key: ORACLE_DB_ADMIN_PASSWORD
+        type: SECRET
+      # Creates/rotates oracle_platform_login (0120) — the same value the api
+      # and worker components hold.
+      - key: ORACLE_DB_PLATFORM_PASSWORD
+        type: SECRET
+
 ingress:
   rules:
     - component: { name: api, preserve_path_prefix: true }

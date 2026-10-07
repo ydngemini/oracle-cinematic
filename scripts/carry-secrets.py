@@ -68,6 +68,9 @@ REQUIRED = {
             "ORACLE_ADMIN_ID", "ORACLE_ADMIN_PASSPHRASE"),
     "worker": ("ORACLE_SECRET_KEY", "ORACLE_ENCRYPTION_MASTER_KEY", "ORACLE_DB_PLATFORM_PASSWORD",
                "ORACLE_S3_ACCESS_KEY_ID", "ORACLE_S3_SECRET_ACCESS_KEY"),
+    # The PRE_DEPLOY migration job (infra/digitalocean/app.yaml `jobs:`): with
+    # no admin credential it cannot migrate, and the deployment would fail.
+    "migrate": ("ORACLE_DB_ADMIN_PASSWORD", "ORACLE_DB_PLATFORM_PASSWORD"),
 }
 OPERATOR_2FA = ("ORACLE_ADMIN_TOTP_SECRET", "ORACLE_ADMIN_OTP_EMAIL")
 
@@ -77,9 +80,12 @@ OPERATOR_2FA = ("ORACLE_ADMIN_TOTP_SECRET", "ORACLE_ADMIN_OTP_EMAIL")
 # staging-only (the backend refuses to boot production with it set).
 _PROVIDERS = ("PLIVO_AUTH_ID", "PLIVO_AUTH_TOKEN", "TELNYX_API_KEY", "TELNYX_PUBLIC_KEY",
               "TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "ORACLE_FIREWORKS_API_KEY")
+# The migration job's credentials: GitHub environment secrets CI already held
+# for the runner-side migration step, now handed to the job inside DO.
+_MIGRATION = ("ORACLE_DB_ADMIN_PASSWORD", "ORACLE_DB_PLATFORM_PASSWORD")
 INJECTABLE = {
-    "staging": _PROVIDERS + ("ORACLE_DEMO_RECIPIENT_ALLOWLIST",),
-    "production": _PROVIDERS,
+    "staging": _PROVIDERS + _MIGRATION + ("ORACLE_DEMO_RECIPIENT_ALLOWLIST",),
+    "production": _PROVIDERS + _MIGRATION,
 }
 
 

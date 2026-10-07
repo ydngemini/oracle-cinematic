@@ -146,6 +146,9 @@ class RenderError(ValueError):
 FRONTEND_COMPONENTS = frozenset({"web"})
 
 
+ENVIRONMENT_PLACEHOLDER = "__ENVIRONMENT__"
+
+
 def _backend_components(spec: dict) -> list[dict]:
     return [c for c in list(spec.get("services") or []) + list(spec.get("workers") or [])
             if c.get("name") not in FRONTEND_COMPONENTS]
@@ -239,6 +242,16 @@ def render(env: str, backend_digest: str, frontend_digest: str,
         elif image.get("digest") == FRONTEND_PLACEHOLDER:
             image["digest"] = frontend_digest
 
+    # The PRE_DEPLOY migration job runs the SAME backend digest, and may only
+    # migrate the database stamped as THIS environment.
+    for job in spec.get("jobs") or []:
+        image = job.get("image") or {}
+        if image.get("digest") == BACKEND_PLACEHOLDER:
+            image["digest"] = backend_digest
+        for item in job.get("envs") or []:
+            if item.get("value") == ENVIRONMENT_PLACEHOLDER:
+                item["value"] = env
+
     validate(env, spec)
     return spec
 
@@ -266,6 +279,16 @@ def validate(env: str, spec: dict) -> None:
     text = yaml.safe_dump(spec)
     if BACKEND_PLACEHOLDER in text or FRONTEND_PLACEHOLDER in text:
         raise RenderError("a digest placeholder survived substitution")
+    if ENVIRONMENT_PLACEHOLDER in text:
+        raise RenderError("the migration job's environment placeholder survived substitution")
+    jobs = spec.get("jobs") or []
+    migrate = [j for j in jobs if j.get("kind") == "PRE_DEPLOY"]
+    if len(migrate) != 1:
+        raise RenderError("the spec must carry exactly one PRE_DEPLOY migration job "
+                          "(the databases accept the app only; nothing else can migrate them)")
+    env_of = {e.get("key"): e.get("value") for e in migrate[0].get("envs") or []}
+    if env_of.get("ORACLE_EXPECTED_ENVIRONMENT") != env:
+        raise RenderError(f"the migration job would expect {env_of.get('ORACLE_EXPECTED_ENVIRONMENT')!r}, not {env!r}")
 
     backend = _backend_components(spec)
     if not backend:
