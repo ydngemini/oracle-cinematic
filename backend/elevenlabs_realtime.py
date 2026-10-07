@@ -11,7 +11,8 @@ re-encoding, nothing written to disk.
 Protocol (docs: elevenlabs.io/docs/agents-platform/api-reference/agents-platform/websocket):
   client -> server  conversation_initiation_client_data, {"user_audio_chunk": b64}, pong
   server -> client  conversation_initiation_metadata, audio, interruption, ping,
-                    user_transcript, agent_response
+                    user_transcript, agent_response, client_tool_call
+  client -> server  client_tool_result {tool_call_id, result, is_error}
 
 The API key never leaves the backend: each call fetches a signed URL
 (GET /v1/convai/conversation/get-signed-url) and the agent is created with
@@ -21,8 +22,14 @@ retention, per-call prompt/first-message overrides allowed).
 
 Behaviour mirrors the Qwen bridge: a turn limit (QWEN_REALTIME_MAX_TURNS applies
 to every realtime engine), an inbound caller asking for a human is transferred,
-and a failure mid-call hands an inbound caller to the agent. Outbound
-transcripts are not stored (live-transcription consent is pending by design).
+and a failure mid-call hands an inbound caller to the agent.
+
+Outbound calls keep no transcript. The agent asks the callee whether it may
+take notes for their agent (client tool record_note_consent); only after a yes
+does save_note keep anything, and only the notes themselves — short facts the
+callee shared — which reach the agent as a note on the client's timeline when
+the call ends (commands_api.deliver_call_notes). Without a yes, save_note
+refuses, so the agent cannot claim to have noted what nothing kept.
 """
 
 from __future__ import annotations
@@ -40,6 +47,10 @@ _API_BASE = "https://api.elevenlabs.io"
 _MAX_AUDIO_B64 = 256 * 1024
 #: Plivo's stream format; the agent's asr/tts formats must match it exactly.
 AUDIO_FORMAT = "ulaw_8000"
+#: Client tools the provisioned agent declares (scripts/elevenlabs-agent.py).
+TOOL_NOTE_CONSENT = "record_note_consent"
+TOOL_SAVE_NOTE = "save_note"
+_MAX_NOTES = 25
 
 
 class ElevenLabsRealtimeError(RuntimeError):
@@ -123,14 +134,29 @@ def initiation_message(instructions: str, first_message: Optional[str]) -> dict[
 def outbound_instructions(base: str, state: dict[str, Any]) -> tuple[str, Optional[str]]:
     """The system prompt and opening line for an approved outbound call. The
     approved command's own reason is the briefing — the agent knows why it is
-    calling and nothing more."""
+    calling and nothing more.
+
+    Notes are real only after the callee agrees and save_note accepts them; on
+    the first live call the agent told the callee "I have noted down that you
+    are interested in a waterfront property" while nothing kept a word.
+    """
+    prompt = (
+        f"{base}\n\nNotes for their agent: once they are happy to talk, ask once whether it is "
+        f"alright to take a few notes for their agent, and call {TOOL_NOTE_CONSENT} with their "
+        f"answer. If they agree, call {TOOL_SAVE_NOTE} with one short factual note each time they "
+        "share an interest, a preference, a question or a good time to talk or visit, in their "
+        "own terms; only after the tool confirms may you say you have noted it for their agent. "
+        "If they decline or are unsure, or a tool reports an error, take no notes and never say "
+        "you have noted something or will pass it along; suggest they tell their agent directly. "
+        "You cannot book or hold times: their agent will follow up to confirm."
+    )
     briefing = str(state.get("briefing") or "").strip()[:800]
     if not briefing:
-        return base, None
-    prompt = (
-        f"{base}\n\nWhy you are calling (approved by the agent; do not add to it): {briefing}\n"
-        "Goal: find out whether they are interested and, if so, whether they would like "
-        "a showing. Do not schedule anything yourself: say their agent will confirm a time."
+        return prompt, None
+    prompt += (
+        f"\n\nWhy you are calling (approved by the agent; do not add to it): {briefing}\n"
+        "Goal: find out whether they are interested in the home and, if so, whether they "
+        "would like a showing."
     )
     first = "Hi, thanks for picking up. I'm calling about a home that may be a good fit for you. Is now a good time?"
     return prompt, first
@@ -178,6 +204,10 @@ class PlivoElevenLabsBridge:
         self._max_turns = max(1, min(80, int(os.getenv("QWEN_REALTIME_MAX_TURNS", "20"))))
         self._handoff_started = False
         self.conversation_id = ""
+        #: None until the callee answers; notes are kept only after a True
+        #: that the call's session row recorded.
+        self.notes_consent: Optional[bool] = None
+        self.notes: list[str] = []
 
     # ── instructions ────────────────────────────────────────────────────
     def _instructions(self) -> tuple[str, Optional[str]]:
@@ -224,6 +254,8 @@ class PlivoElevenLabsBridge:
                 await self._hand_off_after_failure()
             raise
         finally:
+            if not inbound and self.notes:
+                await self._deliver_notes()
             if inbound:
                 try:
                     from inbound_voice import finalize_inbound_voice_call
@@ -284,9 +316,67 @@ class PlivoElevenLabsBridge:
             elif kind == "agent_response":
                 text = str((event.get("agent_response_event") or {}).get("agent_response") or "")
                 await self._on_transcript("assistant", text)
+            elif kind == "client_tool_call":
+                call = event.get("client_tool_call") or {}
+                result, is_error = await self._on_tool_call(
+                    str(call.get("tool_name") or ""), call.get("parameters") or {})
+                await agent.send(json.dumps({
+                    "type": "client_tool_result", "tool_call_id": call.get("tool_call_id"),
+                    "result": result, "is_error": is_error}))
             elif kind == "client_error":
                 err = event.get("error_event") or {}
                 raise ElevenLabsRealtimeError(f"ElevenLabs error {err.get('code')}: {err.get('error_name')}")
+
+    # ── notes for the agent ─────────────────────────────────────────────
+    def _session_ref(self) -> str:
+        """live_call_sessions.provider_call_id — the same chain the status
+        callback uses (telephony_api.plivo_outbound_status)."""
+        state = self._call_state
+        return str(state.get("reference") or state.get("request_uuid") or self.call_uuid)
+
+    async def _on_tool_call(self, name: str, params: Any) -> tuple[str, bool]:
+        params = params if isinstance(params, dict) else {}
+        refuse = ("No notes can be kept. Do not take notes and do not say you have noted "
+                  "anything; suggest they tell their agent directly.")
+        if self._call_state.get("direction") == "inbound":
+            return "Notes are not used on this call.", True
+        if name == TOOL_NOTE_CONSENT:
+            from commands_api import record_call_note_consent
+
+            granted = params.get("granted") is True
+            try:
+                found = await record_call_note_consent(self._session_ref(), granted)
+            except Exception:
+                logger.exception("Note consent not recorded: uuid=%s", self.call_uuid)
+                found = False
+            if not found:
+                self.notes_consent = False
+                return refuse, True
+            self.notes_consent = granted
+            if granted:
+                return f"Consent recorded. Save each detail with {TOOL_SAVE_NOTE}.", False
+            return "Recorded that they declined. " + refuse, False
+        if name == TOOL_SAVE_NOTE:
+            if self.notes_consent is not True:
+                return "The caller has not agreed to notes. " + refuse, True
+            note = str(params.get("note") or "").strip()[:300]
+            if not note:
+                return "Empty note — nothing saved.", True
+            if len(self.notes) >= _MAX_NOTES:
+                return "The note limit for this call is reached; nothing more was saved.", True
+            self.notes.append(note)
+            return "Saved for their agent.", False
+        return f"Unknown tool {name!r}.", True
+
+    async def _deliver_notes(self) -> None:
+        from commands_api import deliver_call_notes
+
+        try:
+            note_id = await deliver_call_notes(self._session_ref(), self.notes, self.conversation_id)
+            logger.info("Call notes delivered: uuid=%s notes=%d note_id=%s",
+                        self.call_uuid, len(self.notes), note_id)
+        except Exception:
+            logger.exception("Call notes NOT delivered: uuid=%s notes=%d", self.call_uuid, len(self.notes))
 
     # ── transcript, limits, hand-off ────────────────────────────────────
     async def _on_transcript(self, role: str, text: str) -> None:

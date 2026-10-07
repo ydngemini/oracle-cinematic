@@ -159,9 +159,106 @@ def test_outbound_transcripts_are_not_kept(monkeypatch):
     assert bridge._transcript == [], "live-transcription consent is pending for outbound calls"
 
 
-def test_a_call_without_a_briefing_gets_the_base_rules_only():
+def test_a_call_without_a_briefing_gets_the_base_rules_and_no_opening_line():
     prompt, first = el.outbound_instructions("BASE", {})
-    assert (prompt, first) == ("BASE", None)
+    assert prompt.startswith("BASE") and first is None
+
+
+@pytest.mark.parametrize("state", [{}, {"briefing": "Sarah may like 123 Main Street."}])
+def test_the_agent_may_claim_a_note_only_after_consent_and_the_tool(state):
+    # Call #5: it said "I have noted down that you are interested in a
+    # waterfront property" while nothing kept a word.
+    prompt, _ = el.outbound_instructions("BASE", state)
+    assert el.TOOL_NOTE_CONSENT in prompt and el.TOOL_SAVE_NOTE in prompt
+    assert "only after the tool confirms" in prompt
+    assert "never say you have noted something" in prompt
+    assert "confirm a time" not in prompt and "cannot book" in prompt
+
+
+def _tool(name, call_id, **params):
+    return {"type": "client_tool_call",
+            "client_tool_call": {"tool_name": name, "tool_call_id": call_id, "parameters": params}}
+
+
+def _results(agent):
+    return {m["tool_call_id"]: m for m in agent.sent if m.get("type") == "client_tool_result"}
+
+
+@pytest.fixture
+def notes_backend(monkeypatch):
+    import commands_api
+
+    seen = {"consent": [], "delivered": []}
+
+    async def consent(ref, granted):
+        seen["consent"].append((ref, granted))
+        return seen.get("session_exists", True)
+
+    async def deliver(ref, notes, conversation_id=""):
+        seen["delivered"].append((ref, list(notes)))
+        return "note-1"
+
+    monkeypatch.setattr(commands_api, "record_call_note_consent", consent)
+    monkeypatch.setattr(commands_api, "deliver_call_notes", deliver)
+    return seen
+
+
+def test_notes_taken_after_a_yes_reach_the_agent(monkeypatch, notes_backend):
+    state = {"direction": "outbound", "reference": "ref-1", "briefing": "123 Main Street."}
+    _, agent, _, bridge = _run(monkeypatch, [], [
+        _tool(el.TOOL_NOTE_CONSENT, "t1", granted=True),
+        _tool(el.TOOL_SAVE_NOTE, "t2", note="Prefers afternoon showings"),
+        _tool(el.TOOL_SAVE_NOTE, "t3", note="Would love waterfront or a pond in the backyard"),
+    ], state=state)
+    results = _results(agent)
+    assert [results[t]["is_error"] for t in ("t1", "t2", "t3")] == [False, False, False]
+    assert notes_backend["consent"] == [("ref-1", True)], "consent keyed like the status callback"
+    assert notes_backend["delivered"] == [("ref-1", [
+        "Prefers afternoon showings", "Would love waterfront or a pond in the backyard"])]
+
+
+def test_without_a_yes_save_note_refuses_and_nothing_is_delivered(monkeypatch, notes_backend):
+    _, agent, _, _ = _run(monkeypatch, [], [
+        _tool(el.TOOL_SAVE_NOTE, "t1", note="Prefers afternoons"),
+        _tool(el.TOOL_NOTE_CONSENT, "t2", granted=False),
+        _tool(el.TOOL_SAVE_NOTE, "t3", note="Prefers afternoons"),
+    ])
+    results = _results(agent)
+    assert results["t1"]["is_error"] and results["t3"]["is_error"]
+    assert "do not say you have noted" in results["t3"]["result"]
+    assert notes_backend["delivered"] == []
+
+
+def test_a_yes_with_no_call_session_keeps_nothing(monkeypatch, notes_backend):
+    notes_backend["session_exists"] = False
+    _, agent, _, bridge = _run(monkeypatch, [], [
+        _tool(el.TOOL_NOTE_CONSENT, "t1", granted=True),
+        _tool(el.TOOL_SAVE_NOTE, "t2", note="Prefers afternoons"),
+    ])
+    results = _results(agent)
+    assert results["t1"]["is_error"] and results["t2"]["is_error"]
+    assert bridge.notes == [] and notes_backend["delivered"] == []
+
+
+def test_inbound_calls_do_not_use_the_note_tools(monkeypatch, notes_backend):
+    import inbound_voice
+
+    async def noop(*_a, **_k):
+        return None
+
+    monkeypatch.setattr(inbound_voice, "mark_inbound_streaming", noop)
+    monkeypatch.setattr(inbound_voice, "finalize_inbound_voice_call", noop)
+    _, agent, _, _ = _run(monkeypatch, [], [_tool(el.TOOL_NOTE_CONSENT, "t1", granted=True)],
+                          state={"direction": "inbound"})
+    assert _results(agent)["t1"]["is_error"] and notes_backend["consent"] == []
+
+
+def test_the_call_notes_read_as_the_callers_consented_words():
+    import commands_api
+
+    body = commands_api.format_call_notes(["Prefers afternoon showings"])
+    assert "the caller agreed to notes" in body and "- Prefers afternoon showings" in body
+    assert commands_api.AI_CALL_NOTE_AUTHOR == "neoh-ai-call", "never the agent's own id"
 
 
 def test_a_non_mulaw_stream_is_refused():
@@ -197,6 +294,10 @@ def test_the_provisioned_agent_matches_what_the_bridge_relies_on(monkeypatch):
     assert plat["privacy"]["record_voice"] is False
     assert plat["overrides"]["conversation_config_override"]["agent"]["prompt"]["prompt"] is True
     assert conv["conversation"]["max_duration_seconds"] <= 600
+    tools = {t["name"]: t for t in mod.tool_configs()}
+    assert set(tools) == {el.TOOL_NOTE_CONSENT, el.TOOL_SAVE_NOTE}
+    assert all(t["type"] == "client" and t["expects_response"] for t in tools.values())
+    assert mod.agent_config("staging", ["a", "b"])["conversation_config"]["agent"]["prompt"]["tool_ids"] == ["a", "b"]
 
 
 def test_the_approved_call_carries_its_reason_as_the_briefing():

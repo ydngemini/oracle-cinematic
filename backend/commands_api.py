@@ -2248,6 +2248,117 @@ async def record_call_outcome(provider_call_id: str, call_status: str,
         logger.warning("call outcome not added to the timeline: %s", provider_call_id, exc_info=True)
 
 
+#: Who wrote a note the AI took on a call — never the agent's own id: the agent
+#: did not say these words, the callee did, and the AI summarised them.
+AI_CALL_NOTE_AUTHOR = "neoh-ai-call"
+AI_CALL_NOTE_CONSENT_BASIS = "verbal_consent_on_ai_call"
+_MAX_CALL_NOTES = 25
+_MAX_CALL_NOTE_CHARS = 300
+
+
+def _call_platform_ctx(agent_id: str) -> TenantContext:
+    return TenantContext(
+        agent_id=agent_id,
+        tenant_id=os.getenv("ORACLE_PLATFORM_TENANT_ID", "00000000-0000-0000-0000-000000000000"),
+        role=Role.PLATFORM_ADMIN,
+    )
+
+
+async def record_call_note_consent(provider_call_id: str, granted: bool) -> bool:
+    """The callee's answer to "may I take a few notes for your agent?".
+
+    Outbound calls keep nothing by default (consent_recorded=false,
+    'awaiting_explicit_live_transcription_consent'). A yes said to the AI on
+    the call, after the recorded-line disclosure, is that explicit consent;
+    a no is recorded too, so nobody later mistakes silence for agreement.
+    Returns whether the call's session row was found — no row, no notes.
+    """
+    if not provider_call_id:
+        return False
+    async with tenant_tx(_call_platform_ctx("ai-call-consent")) as conn:
+        row = await conn.fetchrow(
+            """
+            UPDATE live_call_sessions
+               SET consent_recorded=$2,
+                   consent_basis=CASE WHEN $2 THEN $3 ELSE 'declined_on_ai_call' END,
+                   transcript_status=CASE WHEN $2 THEN 'active' ELSE 'complete' END
+             WHERE provider_call_id=$1
+            RETURNING id
+            """,
+            provider_call_id, bool(granted), AI_CALL_NOTE_CONSENT_BASIS,
+        )
+    return row is not None
+
+
+def format_call_notes(notes: list[str]) -> str:
+    lines = "\n".join(f"- {n}" for n in notes)
+    return f"Notes from Neoh's call (the caller agreed to notes):\n{lines}"
+
+
+async def deliver_call_notes(provider_call_id: str, notes: list[str],
+                             conversation_id: str = "") -> Optional[str]:
+    """Put the notes the AI took on a call where the agent works: a note on
+    the client plus a timeline entry, and a live CALL_NOTES frame.
+
+    Only for a call whose callee said yes (consent_recorded); idempotent per
+    call. Returns the note id, or None when nothing was written.
+    """
+    clean = [str(n).strip()[:_MAX_CALL_NOTE_CHARS] for n in notes if str(n).strip()][:_MAX_CALL_NOTES]
+    if not provider_call_id or not clean:
+        return None
+    body = format_call_notes(clean)
+    async with tenant_tx(_call_platform_ctx(AI_CALL_NOTE_AUTHOR)) as conn:
+        session = await conn.fetchrow(
+            """SELECT id, tenant_id, client_id, lead_id, command_id, consent_recorded
+                 FROM live_call_sessions WHERE provider_call_id=$1 FOR UPDATE""",
+            provider_call_id,
+        )
+        if session is None or not session["consent_recorded"]:
+            logger.warning("call notes dropped — no consented session: %s", provider_call_id)
+            return None
+        await conn.execute(
+            "UPDATE live_call_sessions SET transcript_status='complete' WHERE id=$1", session["id"])
+        if session["client_id"] is None:
+            # chk_call_anchor allows a lead-only call; leads have no notes table.
+            logger.warning("call notes not attached — lead-only call: %s", provider_call_id)
+            return None
+        if await conn.fetchval(
+            """SELECT 1 FROM client_activities
+                WHERE client_id=$1 AND meta->>'provider_call_id'=$2 AND meta->>'source'='ai_call_notes'""",
+            session["client_id"], provider_call_id,
+        ):
+            return None
+        note = await conn.fetchrow(
+            """INSERT INTO client_notes (tenant_id, client_id, body, author_id, pinned)
+               VALUES ($1, $2, $3, $4, false) RETURNING id""",
+            session["tenant_id"], session["client_id"], body, AI_CALL_NOTE_AUTHOR,
+        )
+        await conn.execute(
+            """INSERT INTO client_activities (tenant_id, client_id, kind, summary, meta, actor)
+               VALUES ($1, $2, 'note', $3, $4::jsonb, $5)""",
+            session["tenant_id"], session["client_id"],
+            f"Call notes from Neoh ({len(clean)})",
+            json.dumps({
+                "source": "ai_call_notes", "note_id": str(note["id"]),
+                "provider_call_id": provider_call_id,
+                "command_id": str(session["command_id"]) if session["command_id"] else None,
+                "consent_basis": AI_CALL_NOTE_CONSENT_BASIS,
+                "conversation_id": conversation_id or None,
+            }),
+            AI_CALL_NOTE_AUTHOR,
+        )
+    try:
+        await ws_hub.broadcast(str(session["tenant_id"]), {
+            "type": "CALL_NOTES", "version": 1,
+            "client_id": str(session["client_id"]),
+            "command_id": str(session["command_id"]) if session["command_id"] else None,
+            "note_id": str(note["id"]), "notes": clean,
+        })
+    except Exception:  # noqa: BLE001 — the note is saved; the live frame is extra
+        logger.warning("CALL_NOTES frame not sent: %s", provider_call_id, exc_info=True)
+    return str(note["id"])
+
+
 #: What an approved send looks like in interaction_logs. CALENDAR is absent on
 #: purpose: a calendar event is not a touch on a thread, it is an appointment,
 #: and it is recorded as an outcome below rather than as an interaction.

@@ -245,7 +245,7 @@ jobs:
           ORACLE_ENV: dev
         run: |
           pip install --quiet -r requirements.txt -r requirements-test.txt
-          python -m pytest -q -p no:cacheprovider tests/test_privacy_lifecycle_live.py tests/test_reconciliation_live.py tests/test_stripe_webhook_live.py tests/test_job_claim_aging_live.py tests/test_on_conflict_targets_live.py tests/test_migration_precheck.py
+          python -m pytest -q -p no:cacheprovider tests/test_privacy_lifecycle_live.py tests/test_reconciliation_live.py tests/test_stripe_webhook_live.py tests/test_job_claim_aging_live.py tests/test_on_conflict_targets_live.py tests/test_migration_precheck.py tests/test_call_notes_live.py
 
   release:
     name: build release → staging
