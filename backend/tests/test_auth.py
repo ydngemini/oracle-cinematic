@@ -1,3 +1,4 @@
+import asyncio
 """
 Auth token tests — decode_token is the single validation path every protected
 endpoint and the WebSocket handlers funnel through, so a forged/expired/garbled
@@ -110,16 +111,16 @@ def _request_with_cookie(token: str | None = None) -> Request:
 
 
 def test_session_probe_reports_signed_out_without_401():
-    result = auth.session_status(_request_with_cookie(), Response())
+    result = asyncio.run(auth.session_status(_request_with_cookie(), Response()))
     assert result.authenticated is False
     assert result.agent_id is None
 
 
 def test_session_probe_returns_valid_identity():
-    result = auth.session_status(
+    result = asyncio.run(auth.session_status(
         _request_with_cookie(_mint(_valid_claims())),
         Response(),
-    )
+    ))
     assert result.authenticated is True
     assert result.agent_id == "agent-1"
     assert result.role == "agent"
@@ -127,7 +128,7 @@ def test_session_probe_returns_valid_identity():
 
 def test_session_probe_clears_invalid_cookie():
     response = Response()
-    result = auth.session_status(_request_with_cookie("not.a.jwt"), response)
+    result = asyncio.run(auth.session_status(_request_with_cookie("not.a.jwt"), response))
     assert result.authenticated is False
     assert "oracle_session=" in response.headers["set-cookie"]
     assert "Max-Age=0" in response.headers["set-cookie"]
@@ -145,3 +146,49 @@ if __name__ == "__main__":
             print(f"  FAIL {fn.__name__}: {exc}")
     print(f"\n{len(fns) - failed}/{len(fns)} passed")
     sys.exit(1 if failed else 0)
+
+
+def _probe_with_epoch(monkeypatch, db_row=None, db_error=None, token_epoch=3):
+    from contextlib import asynccontextmanager
+
+    class _Conn:
+        async def fetchrow(self, sql, *args):
+            if db_error:
+                raise db_error
+            return db_row
+
+    @asynccontextmanager
+    async def fake_tx(ctx):
+        yield _Conn()
+
+    import db.connection
+
+    monkeypatch.setattr(db.connection, "tenant_tx", fake_tx)
+    token = auth._issue_jwt("a@x.test", "aaaaaaaa-0000-4000-8000-00000000000a", "agent",
+                            user_id="bbbbbbbb-0000-4000-8000-00000000000b", session_epoch=token_epoch)
+    response = Response()
+    return asyncio.run(auth.session_status(_request_with_cookie(token), response)), response
+
+
+def test_session_probe_honours_a_revoked_epoch(monkeypatch):
+    """After logout elsewhere the signature is still valid, but the session is
+    not; the probe said "authenticated" while every data call 401'd."""
+    result, response = _probe_with_epoch(monkeypatch, {"session_epoch": 4, "is_active": True})
+    assert result.authenticated is False
+    assert "Max-Age=0" in response.headers["set-cookie"]
+
+
+def test_session_probe_accepts_the_current_epoch(monkeypatch):
+    result, _ = _probe_with_epoch(monkeypatch, {"session_epoch": 3, "is_active": True})
+    assert result.authenticated is True
+
+
+def test_session_probe_rejects_a_deactivated_account(monkeypatch):
+    result, _ = _probe_with_epoch(monkeypatch, {"session_epoch": 3, "is_active": False})
+    assert result.authenticated is False
+
+
+def test_session_probe_trusts_the_token_when_the_database_is_down(monkeypatch):
+    """A failed check must never sign a person out (7ca8940)."""
+    result, _ = _probe_with_epoch(monkeypatch, db_error=ConnectionError("db down"))
+    assert result.authenticated is True

@@ -807,9 +807,34 @@ async def logout(request: Request, response: Response) -> Response:
     return response
 
 
+async def _session_still_current(payload: dict) -> Optional[bool]:
+    """Is this account token still its account's live session? None when it
+    cannot be checked (no users row, or the database is unreachable) — the
+    caller then trusts the signature, as before: a failed check must never
+    sign a person out (7ca8940)."""
+    uid, tenant = payload.get("uid"), payload.get("tenant_id")
+    if not uid or not tenant:
+        return None
+    try:
+        from db.connection import tenant_tx
+
+        async with tenant_tx(_admin_ctx()) as conn:
+            row = await conn.fetchrow(
+                "SELECT session_epoch, is_active FROM users WHERE id = $1::uuid AND tenant_id = $2::uuid",
+                str(uid), str(tenant))
+    except Exception:  # noqa: BLE001 - unknowable is not "signed out"
+        log.warning("session probe could not reach the database; trusting the token")
+        return None
+    return bool(row) and bool(row["is_active"]) and int(row["session_epoch"] or 0) == int(payload.get("sep") or 0)
+
+
 @router.get("/session", response_model=SessionStatusResponse)
-def session_status(request: Request, response: Response) -> SessionStatusResponse:
-    """Probe an HttpOnly browser session without treating signed-out as an error."""
+async def session_status(request: Request, response: Response) -> SessionStatusResponse:
+    """Probe an HttpOnly browser session without treating signed-out as an error.
+
+    Revocation counts: after a logout (on any device), a password change or a
+    deactivation the token's signature is still valid, but the session is not —
+    this used to answer "authenticated" for it while every data call 401'd."""
     raw_token = request.cookies.get("oracle_session")
     if not raw_token:
         return SessionStatusResponse(authenticated=False)
@@ -817,6 +842,9 @@ def session_status(request: Request, response: Response) -> SessionStatusRespons
     try:
         payload = decode_token(raw_token)
     except HTTPException:
+        _clear_session_cookie(response)
+        return SessionStatusResponse(authenticated=False)
+    if await _session_still_current(payload) is False:
         _clear_session_cookie(response)
         return SessionStatusResponse(authenticated=False)
 

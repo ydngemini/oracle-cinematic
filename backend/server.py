@@ -290,6 +290,20 @@ async def _invalid_input_syntax(request: Request, exc: Exception):
     )
 
 
+@app.exception_handler(ValueError)
+async def _value_error(request: Request, exc: ValueError):
+    """asyncpg rejects a non-UUID string bound to a `$n::uuid` parameter on the
+    CLIENT side, as a plain ValueError("invalid UUID '…': …") — so the 422 above
+    never saw it and /api/clients/{id}/intent and /api/commands/{id} still 500'd
+    on staging. Only that exact shape is the caller's input; any other
+    ValueError is a server bug and stays a logged 500."""
+    if str(exc).startswith("invalid UUID"):
+        return await _invalid_input_syntax(request, exc)
+    logger.error("Unhandled ValueError on %s %s", request.method, request.url.path,
+                 exc_info=(type(exc), exc, exc.__traceback__))
+    return JSONResponse(status_code=500, content={"detail": "Internal server error."})
+
+
 @app.exception_handler(asyncpg.exceptions.InvalidAuthorizationSpecificationError)
 async def _session_no_longer_valid(request: Request, exc: Exception):
     # Raised by app_begin_session (0117) when a token's account was deactivated,

@@ -21,6 +21,16 @@ def client():
     app = FastAPI()
     app.middleware("http")(server._security_headers)
     app.exception_handler(asyncpg.exceptions.InvalidTextRepresentationError)(server._invalid_input_syntax)
+    app.exception_handler(ValueError)(server._value_error)
+
+    @app.get("/asyncpg-uuid")
+    async def asyncpg_uuid():
+        # Exactly what asyncpg raises binding "client_id" to a $1::uuid param.
+        raise ValueError("invalid UUID 'client_id': length must be between 32..36 characters, got 9")
+
+    @app.get("/other-value-error")
+    async def other_value_error():
+        raise ValueError("an internal bug")
 
     @app.get("/bad-uuid")
     async def bad_uuid():
@@ -62,3 +72,14 @@ def test_an_empty_plan_filter_is_no_filter():
 
     src = inspect.getsource(sales_api.list_enrollments)
     assert 'plan_id = _uuid(plan_id, "plan_id") if plan_id else None' in src
+
+
+def test_asyncpgs_client_side_uuid_error_is_422(client):
+    r = client.get("/asyncpg-uuid")
+    assert r.status_code == 422 and "client_id" not in r.text
+
+
+def test_any_other_value_error_is_a_500_with_headers(client):
+    r = client.get("/other-value-error")
+    assert r.status_code == 500 and "internal bug" not in r.text
+    assert "Strict-Transport-Security" in r.headers
