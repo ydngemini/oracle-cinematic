@@ -13,8 +13,8 @@
 #   scripts/db-access-window.sh close <env>
 #   scripts/db-access-window.sh status <env>
 #
-# Rules this script adds are the only ones it removes (matched by this IP).
-# The app rule is never touched. Close the window when you are done: an open
+# `close` removes every ip_addr rule (all operator windows, whatever IP they
+# were opened for); the app rule is never touched. Close the window when you are done: an open
 # window is the whole internet's way in from this IP.
 
 set -euo pipefail
@@ -52,10 +52,15 @@ for name in "$PG" "$VALKEY"; do
         echo "$name: OPEN for $IP — close it when done: $0 close $ENV"
       fi ;;
     close)
-      for uuid in $mine; do
+      # EVERY ip_addr rule is an operator window (the policy is "the app, plus
+      # temporary windows"), so close removes them all — including one left for
+      # an address this machine no longer has (a mobile/DHCP connection changes
+      # IP mid-task; matching only the current IP left the old window open).
+      all="$(jq -r '[.[]? | select(.type == "ip_addr") | .uuid] | join(" ")' <<<"$rules")"
+      for uuid in $all; do
         "${DOCTL[@]}" databases firewalls remove "$id" --uuid "$uuid" >/dev/null
       done
-      echo "$name: closed for $IP" ;;
+      echo "$name: every operator window closed (the app rule stays)" ;;
     status)
       jq -r --arg n "$name" '.[]? | "\($n): \(.type) \(.value)"' <<<"$rules" ;;
     *) echo "usage: $0 open|close|status staging|production" >&2; exit 2 ;;

@@ -69,6 +69,9 @@ def test_place_call_uses_verified_from_number_and_answer_url(monkeypatch):
     assert kwargs["from_"] == "+13025551234"
     assert kwargs["to_"] == "+15551234567"
     assert kwargs["answer_url"] == "https://neoh.example/api/telephony/webhooks/plivo"
+    # The final (hangup) event must reach the status handler, not the answer one.
+    assert kwargs["hangup_url"] == "https://neoh.example/api/telephony/webhooks/plivo/status"
+    assert kwargs["hangup_method"] == "POST"
 
 
 def test_place_call_rejects_non_e164_from_number():

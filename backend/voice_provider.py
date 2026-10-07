@@ -566,6 +566,13 @@ class PlivoVoiceProvider(VoiceProvider):
                     answer_method="POST",
                     callback_url=status_callback_url,
                     callback_method="POST" if status_callback_url else None,
+                    # Plivo sends the FINAL event to hangup_url, which defaults
+                    # to answer_url — so the answered call's outcome (status,
+                    # duration) reached the answer handler, which records
+                    # nothing (real call 4, 2026-10-07). Route it to the status
+                    # handler, which writes the outcome to the timeline.
+                    hangup_url=status_callback_url,
+                    hangup_method="POST" if status_callback_url else None,
                     ring_timeout=30,
                 )
             except PlivoRestError as exc:
