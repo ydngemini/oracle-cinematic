@@ -277,6 +277,17 @@ services:
       # follow up. Set "1" only together with DASHSCOPE_API_KEY + workspace.
       - key: ORACLE_PLIVO_QWEN_REALTIME_ENABLED
         value: "0"
+      # Live AI voice on Plivo calls: ElevenLabs Agents (backend/elevenlabs_realtime.py).
+      # Live only when BOTH values below are set (CI injects them from the
+      # environment's GitHub secrets); otherwise an answered call speaks the
+      # disclosure and says the agent will follow up, exactly as before.
+      # The agent is provisioned by scripts/elevenlabs-agent.py.
+      - key: ORACLE_PLIVO_REALTIME_PROVIDER
+        value: "elevenlabs"
+      - key: ELEVENLABS_API_KEY
+        type: SECRET
+      - key: ELEVENLABS_AGENT_ID
+        type: SECRET
       # Optional provider support, deliberately NOT listed here (add the key
       # to api AND worker only when that provider is actually used):
       #   GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET  Calendar / Google sign-in
@@ -502,6 +513,17 @@ workers:
       # follow up. Set "1" only together with DASHSCOPE_API_KEY + workspace.
       - key: ORACLE_PLIVO_QWEN_REALTIME_ENABLED
         value: "0"
+      # Live AI voice on Plivo calls: ElevenLabs Agents (backend/elevenlabs_realtime.py).
+      # Live only when BOTH values below are set (CI injects them from the
+      # environment's GitHub secrets); otherwise an answered call speaks the
+      # disclosure and says the agent will follow up, exactly as before.
+      # The agent is provisioned by scripts/elevenlabs-agent.py.
+      - key: ORACLE_PLIVO_REALTIME_PROVIDER
+        value: "elevenlabs"
+      - key: ELEVENLABS_API_KEY
+        type: SECRET
+      - key: ELEVENLABS_AGENT_ID
+        type: SECRET
       # The worker builds the Plivo answer/status URLs for an approved call;
       # without this every approved call fails before reaching the carrier.
       - key: ORACLE_PUBLIC_BASE_URL

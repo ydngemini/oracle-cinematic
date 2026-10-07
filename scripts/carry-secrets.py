@@ -79,7 +79,8 @@ OPERATOR_2FA = ("ORACLE_ADMIN_TOTP_SECRET", "ORACLE_ADMIN_OTP_EMAIL")
 # job's env can never become an app secret. The demo recipient allowlist is
 # staging-only (the backend refuses to boot production with it set).
 _PROVIDERS = ("PLIVO_AUTH_ID", "PLIVO_AUTH_TOKEN", "TELNYX_API_KEY", "TELNYX_PUBLIC_KEY",
-              "TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "ORACLE_FIREWORKS_API_KEY")
+              "TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "ORACLE_FIREWORKS_API_KEY",
+              "ELEVENLABS_API_KEY", "ELEVENLABS_AGENT_ID")
 # The migration job's credentials: GitHub environment secrets CI already held
 # for the runner-side migration step, now handed to the job inside DO.
 _MIGRATION = ("ORACLE_DB_ADMIN_PASSWORD", "ORACLE_DB_PLATFORM_PASSWORD")

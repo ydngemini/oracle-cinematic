@@ -2731,6 +2731,7 @@ async def _execute_command_job(payload: dict[str, Any], reporter) -> dict[str, A
                     str(target.get("phone") or ""),
                     tenant_id=ctx.tenant_id,
                     account_id=account_id,
+                    briefing=str(draft.get("reason") or ""),
                 )
                 ref_query = f"?{PLIVO_CORRELATION_PARAM}={correlation}"
                 provider_result = await adapter.place_call(
@@ -3226,9 +3227,18 @@ async def plivo_qwen_media(websocket: WebSocket):
         await websocket.close(code=4403)
         return
 
+    from elevenlabs_realtime import (
+        ElevenLabsCallLimitReached,
+        ElevenLabsRealtimeError,
+        PlivoElevenLabsBridge,
+        realtime_provider,
+    )
+
+    use_elevenlabs = realtime_provider() == "elevenlabs"
     try:
-        bridge = PlivoQwenRealtimeBridge(websocket, call_uuid, start_event)
-    except QwenRealtimeError:
+        bridge = (PlivoElevenLabsBridge(websocket, call_uuid, start_event) if use_elevenlabs
+                  else PlivoQwenRealtimeBridge(websocket, call_uuid, start_event))
+    except (QwenRealtimeError, ElevenLabsRealtimeError):
         await websocket.close(code=4400)
         return
     await mark_plivo_streaming(call_uuid)
@@ -3236,13 +3246,14 @@ async def plivo_qwen_media(websocket: WebSocket):
         await bridge.run()
     except WebSocketDisconnect:
         logger.info("Plivo media socket disconnected: uuid=%s", call_uuid)
-    except QwenCallLimitReached:
+    except (QwenCallLimitReached, ElevenLabsCallLimitReached):
         logger.info("Qwen realtime turn limit reached: uuid=%s", call_uuid)
         from voice_provider import get_voice_provider
 
         await get_voice_provider("plivo").abort_call(call_uuid)
-    except QwenRealtimeError:
-        logger.exception("Plivo/Qwen realtime bridge failed: uuid=%s", call_uuid)
+    except (QwenRealtimeError, ElevenLabsRealtimeError):
+        logger.exception("Plivo realtime bridge failed (%s): uuid=%s",
+                         "elevenlabs" if use_elevenlabs else "qwen", call_uuid)
         await websocket.close(code=1011)
     except Exception:
         logger.exception("Unexpected Plivo/Qwen bridge failure: uuid=%s", call_uuid)

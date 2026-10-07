@@ -507,6 +507,8 @@ jobs:
       # printed). An unset GitHub secret injects nothing.
       - name: Carry the app's secrets into the spec (staging)
         env:
+          ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
+          ELEVENLABS_AGENT_ID: ${{ secrets.ELEVENLABS_AGENT_ID }}
           ORACLE_DB_ADMIN_PASSWORD: ${{ secrets.ORACLE_DB_ADMIN_PASSWORD }}
           ORACLE_DB_PLATFORM_PASSWORD: ${{ secrets.ORACLE_DB_PLATFORM_PASSWORD }}
           PLIVO_AUTH_ID: ${{ secrets.PLIVO_AUTH_ID }}
@@ -522,7 +524,7 @@ jobs:
           doctl apps list-deployments "${DIGITALOCEAN_APP_ID}" -o json > /tmp/deployments.staging.json
           python3 scripts/carry-secrets.py --env staging \
             --deployments /tmp/deployments.staging.json \
-            --inject-from-env PLIVO_AUTH_ID,PLIVO_AUTH_TOKEN,TELNYX_API_KEY,TELNYX_PUBLIC_KEY,TWILIO_ACCOUNT_SID,TWILIO_AUTH_TOKEN,ORACLE_FIREWORKS_API_KEY,ORACLE_DEMO_RECIPIENT_ALLOWLIST,ORACLE_DB_ADMIN_PASSWORD,ORACLE_DB_PLATFORM_PASSWORD \
+            --inject-from-env PLIVO_AUTH_ID,PLIVO_AUTH_TOKEN,TELNYX_API_KEY,TELNYX_PUBLIC_KEY,TWILIO_ACCOUNT_SID,TWILIO_AUTH_TOKEN,ORACLE_FIREWORKS_API_KEY,ORACLE_DEMO_RECIPIENT_ALLOWLIST,ORACLE_DB_ADMIN_PASSWORD,ORACLE_DB_PLATFORM_PASSWORD,ELEVENLABS_API_KEY,ELEVENLABS_AGENT_ID \
             --rendered /tmp/app.staging.yaml --out /tmp/app.staging.deploy.yaml
           rm -f /tmp/deployments.staging.json
 
@@ -783,6 +785,8 @@ jobs:
       # with it set).
       - name: Carry the app's secrets into the spec (production)
         env:
+          ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
+          ELEVENLABS_AGENT_ID: ${{ secrets.ELEVENLABS_AGENT_ID }}
           ORACLE_DB_ADMIN_PASSWORD: ${{ secrets.ORACLE_DB_ADMIN_PASSWORD }}
           ORACLE_DB_PLATFORM_PASSWORD: ${{ secrets.ORACLE_DB_PLATFORM_PASSWORD }}
           PLIVO_AUTH_ID: ${{ secrets.PLIVO_AUTH_ID }}
@@ -797,7 +801,7 @@ jobs:
           doctl apps list-deployments "${DIGITALOCEAN_APP_ID}" -o json > /tmp/deployments.production.json
           python3 scripts/carry-secrets.py --env production \
             --deployments /tmp/deployments.production.json \
-            --inject-from-env PLIVO_AUTH_ID,PLIVO_AUTH_TOKEN,TELNYX_API_KEY,TELNYX_PUBLIC_KEY,TWILIO_ACCOUNT_SID,TWILIO_AUTH_TOKEN,ORACLE_FIREWORKS_API_KEY,ORACLE_DB_ADMIN_PASSWORD,ORACLE_DB_PLATFORM_PASSWORD \
+            --inject-from-env PLIVO_AUTH_ID,PLIVO_AUTH_TOKEN,TELNYX_API_KEY,TELNYX_PUBLIC_KEY,TWILIO_ACCOUNT_SID,TWILIO_AUTH_TOKEN,ORACLE_FIREWORKS_API_KEY,ORACLE_DB_ADMIN_PASSWORD,ORACLE_DB_PLATFORM_PASSWORD,ELEVENLABS_API_KEY,ELEVENLABS_AGENT_ID \
             --rendered /tmp/app.production.yaml --out /tmp/app.production.deploy.yaml
           rm -f /tmp/deployments.production.json
 

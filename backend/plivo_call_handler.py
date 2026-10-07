@@ -40,8 +40,16 @@ class PlivoCallStateUnavailable(RuntimeError):
 
 
 def plivo_qwen_enabled(state: Optional[Mapping[str, Any]] = None) -> bool:
+    """Is a live AI voice engine available for this Plivo call? (Name kept for
+    its many callers; it covers every realtime engine.) ElevenLabs when
+    ORACLE_PLIVO_REALTIME_PROVIDER=elevenlabs and it is configured, otherwise
+    Qwen behind ORACLE_PLIVO_QWEN_REALTIME_ENABLED."""
     if state is not None and state.get("qwen_realtime_enabled") is False:
         return False
+    from elevenlabs_realtime import elevenlabs_enabled, realtime_provider
+
+    if realtime_provider() == "elevenlabs":
+        return elevenlabs_enabled()
     raw = os.getenv("ORACLE_PLIVO_QWEN_REALTIME_ENABLED", "true")
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
@@ -199,6 +207,7 @@ async def initialize_outbound_plivo_call_state(
     *,
     tenant_id: str,
     account_id: str,
+    briefing: str = "",
 ) -> dict[str, Any]:
     if not _CALL_UUID_RE.fullmatch(call_uuid or ""):
         raise ValueError("Plivo call UUID is invalid")
@@ -212,6 +221,10 @@ async def initialize_outbound_plivo_call_state(
         "created_at": time.time(),
         "qwen_realtime_enabled": plivo_qwen_enabled(),
     }
+    if briefing:
+        # Why this approved call is being made — the live voice agent's only
+        # context. Lives with the call state (TTL-bound), nowhere else.
+        state["briefing"] = str(briefing)[:800]
     await _save_call_state(call_uuid, state)
     return state
 
