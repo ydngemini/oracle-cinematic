@@ -1,0 +1,38 @@
+# Claude Code — Oracle / Neoh Repository Guidance
+
+> Repository agent entry point. Last updated 2026-10-08.
+> Read this before modifying the project. This document is a navigation and safety guide; it does not claim that proposed features exist.
+
+## Current requested initiative: Neoh Space Web Capture
+
+**Primary implementation specification:** [docs/neoh-space-web-capture-claude.md](docs/neoh-space-web-capture-claude.md)
+
+When working on mobile property capture, AI guidance, browser camera performance, room/doorway tracking, photorealistic Gaussian Splatting reconstruction, and mobile tour delivery, **read the primary specification first** and follow its P0 → P1 → P2 → P3 development/validation sequence. Re-read the current code and tests before every change; the design is a proposal, not an implemented feature list.
+
+**Product decision:** Neoh Space remains **100% web-based**, integrated with Property View and the property tour. Do **not** introduce a required native iOS/Android app, Swift, ARKit, RoomPlan, direct LiDAR access, or native bridge as part of this initiative.
+
+## Existing sources of truth
+
+- [docs/neoh-space.md](docs/neoh-space.md) — actual architecture, job stages, upload, publish and recovery rules.
+- [docs/neoh-space-quality.md](docs/neoh-space-quality.md) — reconstruction quality measurements, provisional gate and known limits.
+- [docs/neoh-space-baselines.md](docs/neoh-space-baselines.md) — measured GPU/browser baseline; **not** proof on real houses or iPhone Safari.
+- [docs/neoh-space-web-capture-claude.md](docs/neoh-space-web-capture-claude.md) — implementation roadmap, UX contracts, algorithms, tests, FPS targets and real-house acceptance gates.
+- [.claude/agents/spatial-stack-scout.md](.claude/agents/spatial-stack-scout.md) — evidence-based, read-only inspection of existing spatial code, dependencies and constraints.
+
+## Hard implementation rules
+
+1. **Inspect before coding.** Use file:line evidence for existing behavior. Do not assume proposed modules/APIs exist.
+2. **No fabricated spatial truth.** Don't invent unseen house geometry, disconnected room transitions, accurate metric scale, tracking confidence, or percentage complete.
+3. **No fake benchmarks.** Design targets are not measured outcomes. Actual mobile Safari/Chrome devices, independent held-out house imagery and documented failure cases are required for quality claims. The mip-NeRF room benchmark is not a full-house field validation.
+4. **Capture reliability over maximum AI FPS.** Keep smooth browser camera preview/recording separate from background quality inference. Use bounded queues, adaptive cadence, actual-device measurements and safe fallbacks. Default targets and capability matrix live in the primary specification.
+5. **Protect customers and budgets.** Preserve tenant authorization, property-scoped media, raw originals, explicit permissions, secure resumable uploads, quality/cost guards, idempotency, atomic publishing and working 2D/photo fallbacks. Track consent, retention and deletion.
+6. **Respect established frontend and provider choices.** This is React/Vite + PlayCanvas/gsplat; do not add Three.js to the main Oracle bundle. Check dependency licenses, transitive weight and browser compatibility before adopting packages or pretrained models.
+7. **Work in tested slices.** Prefer P0 camera + live pixel quality + durable upload/recovery; P1 overlap, room segments and server preflight; P2 verified whole-house fidelity/mobile delivery; P3 multi-house certification. Add unit, integration and device tests, keep docs current.
+8. **Keep reconstruction progress honest.** A backend stage is not a real percentage. Use actual bytes acknowledged for upload progress and measured registration/reconstruction metrics for quality reporting.
+9. **No unsupported sensor assumptions.** Ordinary web pages cannot freely access ARKit, RoomPlan or raw Apple LiDAR. Feature-detect browser APIs and always provide an accessible no-camera or no-accelerated-inference fallback.
+
+## Starting task for Claude
+
+Read the primary specification and current Property View/upload/Neoh Space code. Produce a concise integration map and a first deliverable implementing the **browser-based Capture Studio** with camera permission handling, a lightweight live quality worker, recording/upload recovery and tests. Don't attempt to “ship state of the art” by increasing Gaussian count alone; prove connected real-house camera registration and whole-home coverage before asserting quality.
+
+For unrelated Oracle work, inspect its own docs and code; don't apply Neoh Space design targets indiscriminately.
