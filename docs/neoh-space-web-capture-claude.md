@@ -5,6 +5,120 @@
 > **Owner decision: 100% browser-based. No native iOS/Android app, Swift, ARKit, RoomPlan, private Apple APIs, or raw LiDAR dependence.**
 > Existing Neoh Space lives **inside Property View** and the property tour; do not invent a separate product or standalone app.
 
+## Four approved priority workstreams (2026-10-08)
+
+**User decision:** pursue **all four**, not one in place of the others. These are explicit areas of investment, but this document is a specification; implementation, metrics and claims of completion still require code and real-world validation. All four must work in a **mobile web browser** with fallback behavior and integrate into the existing Property View/Space pipeline.
+
+### Workstream A — Reliable camera registration and whole-house room connectivity (P0 investigation → P1 pipeline)
+
+**Why:** some real phone-walkthrough tests have registered approximately 18–37% of frames, while the 150-image sequential mapping path can strand poorly connected rooms. A visually beautiful partial room is not a usable whole-house experience.
+
+**Build:**
+1. Instrument per-room and doorway feature tracking: selected frames, matched pairs, camera registration, track lengths, reprojection errors, camera graph connected components, loop-closure candidates, and unmatched passages. Evaluate within the actual budget of worker CPU and GPU.
+2. Replace global chronological sharpness selection as the only strategy with an **overlap-aware, room-aware and transition-aware candidate selector**; retain original images/video for re-selection. Maintain repeatable experiments against the existing selector.
+3. Benchmark improved matching and pose recovery, using COLMAP geometric verification and bundle adjustment, verified commercial-compatible neural geometry proposals **only as gated experiments**. Record lens/calibration groups, dynamic surfaces, blank walls, reflections, portrait/landscape switching and multistory failure cases.
+4. Make transition edges evidence-based: if the hallway to bedroom cannot be registered, it is **unverified**, not magically connected. Provide targeted recapture tasks before starting long gsplat training if practical.
+5. Preserve reconstruction failure categories, pod cost guards, original media and current published-space fallback.
+
+**Evidence/acceptance:** reproducible A/B report of registered camera fraction, number/size of connected components, room-to-room edges verified, mean/reprojection distributions, recovery of difficult phone captures, preflight false positives/negatives, time/cost, and regression tests. Do not set a hard registration percentage without calibrating on real homes. No published “whole-house coverage” claim when important rooms are disconnected.
+
+### Workstream B — Mobile web Capture Studio + intelligent guide (P0 → P1)
+
+**Build:** full-screen responsive rear-camera preview, user-initiated permission request, recording format negotiation, high-resolution still capture fallback, room/floor labeling, doorway markers, live quality worker and optional speech/haptics. Prioritize **one instruction at a time**, explain uncertainty, and keep actual source recording independent of AI analysis. Implement resumable per-chunk upload with server-verified receipts and safe interrupted-session recovery; existing property upload/build flows remain supported.
+
+**Guidance progression:** pixel checks (blur, light, duplicates) → overlap / optical-flow cues → reasoned room/doorway connectivity hints → server-verified repair prompts. Never draw a trustworthy coverage heatmap from time spent scanning. Provisional local evidence is a suggestion, not verified geometry.
+
+**Evidence/acceptance:** capture and resume **three connected rooms** on real mobile Safari and Android Chrome; preserve original media, show actionable warnings, avoid data loss across tested interruptions, maintain a smooth camera preview with bounded worker queues, and operate with camera or advanced AI feature unavailable using fallbacks. See §3–6 and §9–10.
+
+### Workstream C — High-fidelity photorealism and fast mobile tour delivery (P1 experiments → P2 pilot)
+
+**Build:** after pose/coverage failures are measured, evaluate higher-resolution images, more robust exposure and lens handling, better training/densification and surface/floater cleanup. Preserve credible edges, ceilings and reflective/glass areas through adequate **observation**, not invented detail. Couple photoreal splats to a separately validated structural representation for floors, walls and traversal. Experiment with LOD/streamed `.sog` only after checking upstream API reality and asset publishing protocols; retain a lightweight browser fallback and source photos.
+
+**Four specific R&D experiments previously agreed (all belong in this workstream or A):**
+- **Learned pose/geometry assistance:** commercially licensed neural models benchmarked against COLMAP + robust geometric checks; do not hard-depend on research-only licensed checkpoints.
+- **Improved Gaussian densification/training:** run controlled AbsGrad-style / high-resolution / exposure normalization experiments and compare held-out views, memory, artifacts and cost.
+- **Room-aware keyframe budgets:** increase capture and registration evidence at room transitions and difficult spaces within an explicit bounded GPU budget; do not blindly raise the global frame limit.
+- **Progressive/streamed 3D detail:** validate the exact supported PlayCanvas + SOG streaming/LOD integration and delivery/security changes; measure load, steady FPS, memory, thermal behavior and visual quality.
+
+**Evidence/acceptance:** blind held-out image evaluation per actual property/room (PSNR, SSIM, LPIPS under a declared policy), visible artifact review, connected navigation/collision, mobile Safari and Android Chrome actual-device test matrix; report median and worst-case quality, not the best room only. Stretch metrics in §7 are pilot hypotheses, not guarantees.
+
+### Workstream D — Live Reconstruction Readiness Engine (P0 model → P1 server verification → P2 property certificate)
+
+This is a **separate user-facing system**, not another generic “AI score.” It tells the agent exactly what evidence Neoh has, what is uncertain, whether to keep scanning, and whether spending GPU budget is justified.
+
+**Readiness dimensions (each with independent evidence):**
+1. **Media usability:** stable, sharp, sufficiently exposed frames, adequate actual source resolution and enough distinct views.
+2. **Viewpoint diversity / overlap:** usable geometric matches, sufficient baseline and coverage hints. Fast local heuristics may be useful but are not a camera-pose reconstruction.
+3. **Room evidence:** captured image/segment IDs for each agent-confirmed room, wall/ceiling/floor observations **only where evidence allows**, and explicit unscanned areas.
+4. **Connectivity:** doorway/transition segments and geometric **registered camera graph** links, not just adjacency from timestamps or text labels.
+5. **Build feasibility:** server preflight quality and registration, estimated GPU-cost tier if grounded in provider measurements, available device/network/storage. Warn if estimate is unavailable.
+
+**Three trust stages:**
+- `local_precheck`: cheap on-device quality and tentative overlap cues. Labels such as “Promising capture”, “More views suggested”, and “Tracking uncertain”; **no claim a room is verified**.
+- `server_preflight`: uploaded, server-scored frames and actual camera registration / matched pose evidence. Labels such as “Connected on preflight”, “Rescan hallway connection”, “Unable to verify”.
+- `post_reconstruction`: trained/held-out diagnostics, per-room visual and navigability QA, provenance, measured-vs-estimated scale caveats. This is the only stage eligible for “verified reconstruction”, and even then only for checks actually performed.
+
+**UI contract:** per room show `Not started | Capturing | Promising (unverified) | Needs another pass | Awaiting verification | Verified | Unable to verify` with a **specific reason and next-best action**, small unobtrusive status panel during capture and a room/doorway checklist on review. Do not use fake completion percentages, unlabeled quality grades, “100% captured,” or a green checkmark that implies server registration occurred when it has not. Provide a “Continue scanning / Repair capture / Upload for verification / Build space” next action. A build may run through the existing draft path under present policy; distinguish “eligible to attempt” from “professionally certified.”
+
+**Potential versioned data contract (proposal only; confirm actual schema and routes first):**
+
+```ts
+type ReadinessStage = 'local_precheck' | 'server_preflight' | 'post_reconstruction';
+type ReadinessState =
+  | 'not_started' | 'capturing' | 'promising_unverified'
+  | 'needs_recapture' | 'awaiting_verification'
+  | 'verified' | 'unable_to_verify';
+
+type ReadinessFinding = {
+  code: string; // e.g. weak_doorway_link, missing_ceiling_views, blurry_segment
+  source: 'browser_pixel' | 'browser_tracking' | 'server_registration' | 'reconstruction_qa';
+  confidence?: number; // calibrated; omit rather than invent
+  affectedRoomIds: string[];
+  affectedTransitionIds?: string[];
+  evidenceMediaIds?: string[];
+  recommendedAction: string;
+};
+
+type RoomReadiness = {
+  roomId: string;
+  stage: ReadinessStage;
+  state: ReadinessState;
+  capturedFrameIds: string[];
+  registeredFrameIds?: string[];
+  verifiedTransitionIds?: string[];
+  findings: ReadinessFinding[];
+  computedAt: string;
+  algorithmVersion: string;
+};
+
+type PropertyReadiness = {
+  captureSessionId: string;
+  stage: ReadinessStage;
+  rooms: RoomReadiness[];
+  unverifiedTransitions: string[];
+  canAttemptBuild: boolean; // existing gating policy, not a quality certificate
+  buildBlockReasons: string[];
+};
+```
+
+**Implementation seams:** propose `oracle-app/src/lib/tour/captureReadiness.ts` (pure evidence/state derivation), `oracle-app/src/components/CaptureReadinessPanel.jsx` (accessible UI), a server preflight service `backend/capture_preflight.py` or appropriate existing module, and read endpoints attached to the current tenant-scoped capture session. **Names/contracts are proposals**, never assume the database or API already implements them. Backend must be authoritative for server-verified labels. Handle stale server results against newer edits/uploads; version snapshots and keep verification states honest.
+
+**Acceptance tests:** deterministic readiness transitions; no “verified” state from client-only data; incomplete-room/doorway repair reasons supported by actual frame IDs; missing metrics become `unable_to_verify` or `awaiting_verification` rather than success; a disconnected two-room test never becomes whole-house ready; late upload cannot quietly invalidate a completed proof; reconstruction quality and scale caveats persist into final UI; recovery and permissions are safe.
+
+### How to execute the four together
+
+| Order | Vertical slice | Workstreams |
+|---|---|---|
+| 0 | Instrument existing phone-registration failures and capture session contract; establish honest baseline | A + D |
+| 1 | Ship browser Capture Studio, real source capture, cheap guidance and durable upload | B + D |
+| 2 | Implement room/doorway segments, geometric preflight, live readiness snapshots and rescan loop | A + B + D |
+| 3 | Run controlled reconstruction/fidelity/streaming R&D on connected scans | A + C |
+| 4 | Validate on real multiroom and multistory houses, real phones and independent holdouts | A + B + C + D |
+
+**The four are all approved for planning; do not conflate approval with completion.** Gate release on reproducible evidence and don't let a new feature bypass the existing quality, privacy, tenancy or cloud-spend controls.
+
+---
+
 ## 0. Instructions to Claude
 
 When asked to implement this initiative:
