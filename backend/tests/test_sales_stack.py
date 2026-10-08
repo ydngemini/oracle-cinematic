@@ -143,3 +143,11 @@ def test_personal_and_team_plan_access_is_role_safe():
     assert sales_api._plan_readable_by_agent(team, other)
     assert not sales_api._plan_mutable_by_agent(team, other)
     assert sales_api._plan_mutable_by_agent(team, broker)
+
+
+def test_a_saved_mail_server_needs_a_password_and_logs_in_as_the_from_address():
+    with pytest.raises(HTTPException, match="password is required"):
+        _provider_payload("smtp", ProviderSetupInput(host="mail.attacker.example", from_email="me@attacker.example"))
+    payload = _provider_payload("smtp", ProviderSetupInput(
+        host="smtp.gmail.com", port=587, from_email="jane@example.com", password="abcd efgh ijkl mnop"))
+    assert payload["username"] == "jane@example.com"

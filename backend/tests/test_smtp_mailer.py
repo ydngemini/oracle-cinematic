@@ -130,6 +130,23 @@ def test_tenant_credentials_override_the_platform_environment(configured, monkey
     assert settings["sender"] == "team@brokerage.example"
 
 
+def test_a_typed_in_server_never_gets_the_platform_login(configured, monkeypatch):
+    """Saving host + from_email with no login, then Validate, used to log in to
+    THAT host with ORACLE_SMTP_USERNAME/PASSWORD — any agent could collect the
+    platform mail password with their own server."""
+    monkeypatch.setenv("ORACLE_SMTP_PORT", "2525")
+    monkeypatch.setenv("ORACLE_SMTP_FROM_NAME", "Neoh")
+    monkeypatch.setattr(
+        smtp_mailer.socket, "getaddrinfo",
+        lambda *_a, **_k: [(2, 1, 6, "", ("93.184.216.34", 0))],
+    )
+    settings = smtp_mailer.resolve_settings({"host": "mail.attacker.example", "from_email": "me@attacker.example"})
+    assert settings["username"] == "" and settings["password"] == ""
+    assert settings["port"] == smtp_mailer.DEFAULT_PORT and settings["sender_name"] == ""
+    # The platform relay itself still uses its own environment.
+    assert smtp_mailer.resolve_settings()["password"] == "app-password"
+
+
 def test_missing_host_is_a_configuration_error():
     """There is deliberately no default host — guessing one would silently route
     mail through a third party."""

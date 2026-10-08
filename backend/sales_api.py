@@ -265,10 +265,13 @@ def _provider_payload(provider: str, body: ProviderSetupInput) -> dict[str, Any]
             raise HTTPException(status_code=422, detail="SMTP host is required.")
         if not _EMAIL_RE.fullmatch(str(raw.get("from_email") or "")):
             raise HTTPException(status_code=422, detail="SMTP from_email is invalid.")
-        if raw.get("username") and not raw.get("password"):
-            raise HTTPException(
-                status_code=422, detail="SMTP password is required when a username is set."
-            )
+        # A mail server you bring is one you log in to: the login defaults to
+        # the from address (Gmail, iCloud, Yahoo, Microsoft 365 all use it),
+        # and a password is always required — an "anonymous" saved server is
+        # either a mistake or a way to make Neoh connect somewhere unchecked.
+        raw.setdefault("username", raw["from_email"])
+        if not raw.get("password"):
+            raise HTTPException(status_code=422, detail="SMTP password is required.")
         return raw
     if provider == "twilio":
         if not _ACCOUNT_SID_RE.fullmatch(str(raw.get("account_sid") or "")):

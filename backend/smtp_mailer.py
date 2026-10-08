@@ -97,7 +97,15 @@ def resolve_settings(credentials: Optional[Mapping[str, Any]] = None) -> dict:
 
     tenant_host = _clean(supplied.get("host"))
     host = tenant_host or _clean(os.getenv("ORACLE_SMTP_HOST"))
-    raw_port = _clean(supplied.get("port")) or _clean(os.getenv("ORACLE_SMTP_PORT"))
+
+    def platform(name: str) -> str:
+        # A server someone typed in gets only what they typed in. Falling back
+        # to the platform's own login here sent ORACLE_SMTP_USERNAME/PASSWORD
+        # to whatever host an agent saved (host + from_email, no login — then
+        # Validate): the platform mail password, handed to their server.
+        return "" if tenant_host else _clean(os.getenv(name))
+
+    raw_port = _clean(supplied.get("port")) or platform("ORACLE_SMTP_PORT")
     try:
         port = int(raw_port) if raw_port else DEFAULT_PORT
     except ValueError as exc:
@@ -105,16 +113,16 @@ def resolve_settings(credentials: Optional[Mapping[str, Any]] = None) -> dict:
     if not 1 <= port <= 65535:
         raise SmtpConfigurationError(f"SMTP port {port} is out of range")
 
-    username = _clean(supplied.get("username")) or _clean(os.getenv("ORACLE_SMTP_USERNAME"))
-    password = _clean(supplied.get("password")) or _clean(os.getenv("ORACLE_SMTP_PASSWORD"))
+    username = _clean(supplied.get("username")) or platform("ORACLE_SMTP_USERNAME")
+    password = _clean(supplied.get("password")) or platform("ORACLE_SMTP_PASSWORD")
     # Falling back to the login address keeps the common Gmail case config-free:
     # the account you authenticate as is the account you send from.
     sender = (
         _clean(supplied.get("from_email"))
-        or _clean(os.getenv("ORACLE_SMTP_FROM_EMAIL"))
+        or platform("ORACLE_SMTP_FROM_EMAIL")
         or username
     )
-    sender_name = _clean(supplied.get("from_name")) or _clean(os.getenv("ORACLE_SMTP_FROM_NAME"))
+    sender_name = _clean(supplied.get("from_name")) or platform("ORACLE_SMTP_FROM_NAME")
 
     if not host:
         raise SmtpConfigurationError("ORACLE_SMTP_HOST is not configured")
