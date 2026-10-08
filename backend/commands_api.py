@@ -1417,10 +1417,13 @@ async def provider_status(ctx: TenantContext = Depends(require_context)):
                 SELECT id,provider,account_label,scopes,expires_at,last_validated_at,
                        disabled_at,created_by,created_at,updated_at
                   FROM provider_credentials
-                 WHERE provider='google' AND account_label=$1
-                 ORDER BY updated_at DESC
+                 WHERE provider=ANY($2::text[]) AND account_label=$1
+                 ORDER BY provider,updated_at DESC
                 """,
                 ctx.agent_id,
+                # Everything an agent may manage themselves, so a saved SMTP
+                # identity shows as connected (it used to list Google only).
+                sorted(_AGENT_SELF_SERVICE_PROVIDERS),
             )
     return {
         "providers": [

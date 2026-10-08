@@ -432,7 +432,7 @@ export default function ProviderDeliveryPage() {
 
       <section className={styles.providerGrid} aria-label="Connected accounts">
         <article className={styles.panel}>
-          <header className={styles.panelHeader}><div><h4>Google Workspace</h4><p>Email and calendar</p></div><ProviderState provider={byName.google || { provider: 'google' }} /></header>
+          <header className={styles.panelHeader}><div><h4>Google Calendar</h4><p>Calendar only. Neoh never sends mail through your Google account</p></div><ProviderState provider={byName.google || { provider: 'google' }} /></header>
           <div className={styles.panelBody}>
             <div className={styles.providerIcon}><CalendarDays aria-hidden="true" /><span><strong>Sign in with Google</strong><small>Neoh never sees your Google password.</small></span></div>
             <button type="button" className={styles.primaryButton} onClick={connectGoogle} disabled={Boolean(working)}><PlugZap aria-hidden="true" /> {byName.google?.configured ? 'Reconnect Google' : 'Connect Google'}</button>
