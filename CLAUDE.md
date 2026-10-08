@@ -11,6 +11,19 @@ When working on mobile property capture, AI guidance, browser camera performance
 
 **Product decision:** Neoh Space remains **100% web-based**, integrated with Property View and the property tour. Do **not** introduce a required native iOS/Android app, Swift, ARKit, RoomPlan, direct LiDAR access, or native bridge as part of this initiative.
 
+## Four approved focus areas (2026-10-08)
+
+Treat **all four** as first-class workstreams in [the Neoh Space implementation specification](docs/neoh-space-web-capture-claude.md#four-approved-priority-workstreams-2026-10-08):
+
+1. **Camera registration + room connectivity:** recover real-house visual poses and doorway links reliably; do not invent missing geometry.
+2. **Mobile browser Capture Studio + AI guide:** useful live feedback, resilient original capture and uploads, adaptive frame processing, room-aware rescans.
+3. **Photoreal reconstruction + mobile tour:** controlled fidelity/training improvements, structurally valid navigation, efficient SOG delivery and actual-phone performance.
+4. **Live Reconstruction Readiness Engine:** evidence-based per-room and doorway status; distinguish local hints, server geometric verification and post-build quality. Never show fake percentages or claim “verified” from local heuristics.
+
+Approved related R&D experiments: commercially licensed learned pose/geometry, Gaussian densification, room-aware keyframe budgets and streaming/LOD. They require verification, benchmarking and licensing review before becoming production dependencies.
+
+**Sequence:** instrument baseline → ship capture + provisional readiness → verify geometric connections and targeted recapture → fidelity/streaming work → field-test and certify. The four do not imply code already exists. All remain **100% web-only**.
+
 ## Existing sources of truth
 
 - [docs/neoh-space.md](docs/neoh-space.md) — actual architecture, job stages, upload, publish and recovery rules.
