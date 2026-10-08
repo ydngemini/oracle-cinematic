@@ -184,6 +184,11 @@ export default function ClientDetailDrawer({ card, onClose, onClientChanged, rea
 
   const flashToast = (msg) => { setToast(msg); setTimeout(() => setToast(''), 3200); };
   const bumpTimeline = useCallback(() => setTlKey((k) => k + 1), []);
+  useEffect(() => {
+    const onChanged = (e) => { if (e.detail?.clientId === clientId) bumpTimeline(); };
+    window.addEventListener('crm:client-changed', onChanged);
+    return () => window.removeEventListener('crm:client-changed', onChanged);
+  }, [clientId, bumpTimeline]);
   const reloadDetail = useCallback(() => setDetailKey((k) => k + 1), []);
 
   // Optimistic PATCH /clients/{id}; revert on failure, bubble the merged card up.

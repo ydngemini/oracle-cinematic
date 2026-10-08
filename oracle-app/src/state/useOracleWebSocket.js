@@ -329,6 +329,23 @@ export function useOracleWebSocket() {
           }
           break;
 
+        case 'CALL_NOTES': {
+          // Notes the AI took on a call (only after the callee said yes) are
+          // already saved on the client; tell the agent, and refresh any open
+          // drawer for that client so they appear without a reopen.
+          const count = Array.isArray(msg.notes) ? msg.notes.length : 0;
+          feed({
+            actor: 'ai',
+            actorName: 'Neoh',
+            text: `took ${count} note${count === 1 ? '' : 's'} on the call for you — see the client's Notes`,
+            tag: 'CALL NOTES',
+          });
+          if (msg.client_id) {
+            window.dispatchEvent(new CustomEvent('crm:client-changed', { detail: { clientId: msg.client_id } }));
+          }
+          break;
+        }
+
         case 'CALL_CONSENT':
           dispatch({ type: ACTIONS.CALL_CONSENT, payload: msg });
           feed({

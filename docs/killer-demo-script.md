@@ -36,8 +36,8 @@ The automated twin of this script is `scripts/test-killer-demo-playwright.py`. R
 | 5 | Open Sarah. Ask Neoh to text her about the listing | "Neoh drafts. It never sends on its own." | Receipt: **Text waiting for your approval** |
 | 6 | **Review**, then approve the text | "A person approves every outbound action." | Approvals queue → approved |
 | 7 | **Neoh** tab: read the text's receipt | "And it tells you what actually happened." | On staging: **Text not sent**, with the product's reason (no registered texting number). That honest refusal is the expected result: say so |
-| 8 *(optional, live)* | Ask Neoh to **call** Sarah. Approve it | "This is a real call, to my own phone." | The phone rings. On answer it speaks the AI disclosure. Receipt: **Call placed** |
-| 9 | Sarah → **Timeline** | "Everything Neoh did, or refused to do, lands on the person." | The text attempt, plus the call if placed |
+| 8 *(optional, live)* | Ask Neoh to **call** Sarah. Approve it. On the phone, say **yes** when the AI asks to take notes, then share a preference (e.g. "afternoons, and I'd love a waterfront") | "This is a real call, to my own phone. The AI talks, and it takes notes for me only because I said yes." | The phone rings. It speaks the AI disclosure, then the ElevenLabs agent talks. Receipt: **Call placed** |
+| 9 | Sarah → **Timeline**, then **Notes** | "Everything Neoh did, or refused to do, lands on the person, including what she told the AI." | The text attempt, the call and its outcome, **Call notes from Neoh (n)**, and the note itself under Notes |
 
 ## Limitations to state (from preflight-1, 2026-10-04)
 
@@ -45,7 +45,7 @@ The automated twin of this script is `scripts/test-killer-demo-playwright.py`. R
 |---|---|---|
 | texting (SMS) | beat 7 | "Texting needs a registered business number. Until then Neoh refuses before contacting any carrier, and says why." |
 | 3D is a real capture | beat 3 | "Demo room, labelled as such." |
-| realtime AI voice on calls | beat 8 | "When answered, it discloses that it's an AI and says the agent will follow up. There's no live AI conversation on this environment yet." |
+| realtime AI voice on calls | beat 8 | "When answered, it discloses that it's an AI and says the agent will follow up. There's no live AI conversation on this environment yet." (Staging has had live voice since 2026-10-07, ElevenLabs Agents.) |
 | calendar | only if asked to schedule | "Scheduling stages an approval that can't run until a calendar is connected, and Neoh says so." |
 
 ## The real call (beat 8): rules
@@ -54,6 +54,9 @@ The automated twin of this script is `scripts/test-killer-demo-playwright.py`. R
 - **Budget:** at most 3 real texts and 3 real calls in total across all rehearsals and the live demo. **As of 2026-10-06 all 3 calls are used** (0 texts). Ask the operator before placing another.
   - Call 1 (10-04) and call 2 (10-06): Plivo's create response had no request id (only `api_id` + `message`), so the answer webhook refused the call as "unmanaged". **Fixed (6cab880):** Neoh's own reference travels in the callback URLs, and the call state exists before the call is placed.
   - Call 3 (10-06): matched, and the AI disclosure played (answered, 14 s). The receipt still read "needs review", because the acknowledgement insert's `ON CONFLICT` couldn't infer the partial unique index. **Fixed (21ae08e)**, and proven by replaying the write on staging in a rolled-back transaction. Not yet proven by a real call.
+  - Call 4 (10-07, approved): the path was proven ("Call placed", answered). It had no live voice, so the callee heard the disclosure and "unavailable".
+  - Call 5 (10-07): the live ElevenLabs conversation ran 128 s, and the outcome was recorded. But the AI said it had "noted" preferences while nothing was kept. **Fixed (aec14c4):** notes are taken only after the callee says yes (`record_note_consent`), saved by `save_note`, and delivered to the client's Notes and Timeline when the call ends. Not yet proven by a real call.
+  - Claude Code cannot place a real call itself (its permission classifier blocks it). The operator runs the rehearsal command.
   - Rehearse beats 1–7 and 9 with the automated test, without `--real-call`.
 - **Hours:** 8 am–8 pm recipient-local only.
 - **If the receipt reads "Call needs review":** the carrier outcome is unconfirmed. Don't retry. Check Plivo's call log first. A retry could ring twice.

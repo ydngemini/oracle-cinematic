@@ -22,6 +22,9 @@ const KIND_GLYPH = {
 };
 
 const kindLabel = (k) => String(k || 'event').replace(/_/g, ' ');
+// System actors in words an agent reads; anything else is shown as stored.
+const ACTOR_LABEL = { 'neoh-ai-call': 'Neoh, on the call', carrier: 'phone carrier' };
+const actorLabel = (a) => ACTOR_LABEL[a] || a;
 
 /**
  * ClientTimeline — the activity spine for one client. Reads
@@ -92,7 +95,7 @@ export default function ClientTimeline({ clientId, reloadKey = 0 }) {
             <p className={styles.eventSummary}>{ev.summary || kindLabel(ev.kind)}</p>
             <span className={styles.eventMeta}>
               <span className={styles.eventKind}>{kindLabel(ev.kind)}</span>
-              {ev.actor && <span>· {ev.actor}</span>}
+              {ev.actor && <span>· {actorLabel(ev.actor)}</span>}
               <span>· {relTime(ev.created_at) || fmtDate(ev.created_at) || ''}</span>
             </span>
           </div>
