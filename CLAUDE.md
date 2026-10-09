@@ -1,7 +1,13 @@
 # Claude Code — Oracle / Neoh Repository Guidance
 
-> Repository agent entry point. Last updated 2026-10-08.
+> Repository agent entry point. Last updated 2026-10-09.
 > Read this before modifying the project. This document is a navigation and safety guide; it does not claim that proposed features exist.
+
+## Master twenty-category implementation program (2026-10-09)
+
+**Primary current task:** [docs/claude-prompts/README.md](docs/claude-prompts/README.md). It links **20 standalone, extensive, category-specific Claude prompts**, covering every frontend page, one brokerage with 20 agents and hybrid access, source audit, CRM, semantic understanding, evidence/memory, tools, orchestration, speech/telephony, communications/calendar, property intelligence, Neoh Space, contracts, marketing, skeletal mascot, performance/indexes, privacy, brokerage billing, production infrastructure and full-feature pilot acceptance.
+
+**Use the prompt corresponding to the engineering work.** Keep existing Neoh Space and platform audit specifications in force; the master index coordinates them rather than replacing them. Start category 02/03/17/18 audit before implementing cross-layer changes. Full page availability is the goal; do not claim missing partner integrations work or downgrade the scope without an approved product decision. Never confuse a prompt with implementation. Maintain a release ledger with verified code, tests, environment, performance and human/provider blockers.
 
 ## Platform-wide source audit and remediation backlog (2026-10-08)
 
