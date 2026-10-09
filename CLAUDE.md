@@ -3,6 +3,21 @@
 > Repository agent entry point. Last updated 2026-10-08.
 > Read this before modifying the project. This document is a navigation and safety guide; it does not claim that proposed features exist.
 
+## Platform-wide source audit and remediation backlog (2026-10-08)
+
+**Read:** [docs/neoh-full-platform-source-audit-2026-10-08.md](docs/neoh-full-platform-source-audit-2026-10-08.md) before undertaking cross-platform Neoh security, privacy, AI, billing, integrations, architecture, production-readiness or refactoring work.
+
+This documents the snapshot audit at commit `3b63d5b`, including confirmed source-level concerns, severity, file-and-line evidence, acceptance criteria, ten full customer journeys, and an ordered remediation backlog. **It is an audit backlog, not proof of implementation or completion of a literal every-line review.** Verify findings against the current code and tests before acting.
+
+**Platform-wide priority order:**
+1. **P0:** protect plaintext customer PII/communication content, prove production readiness separately from staging CI, and distinguish AI/property/3D source failures or missing quality metrics from verified success.
+2. **P1:** standardize staged/approved/delivered/billable events; test messaging-route races and provider outages; cover customer lifecycle journeys end-to-end; enforce per-tenant cost budgets and responsible model evaluation.
+3. **P2:** classify shipping vs legacy code, audit each tracked file and its tests/migrations in bounded commit-pinned batches, and refactor large modules incrementally after safety coverage.
+
+**Implementation rules:** Never claim an issue fixed without changing code and demonstrating tests. Preserve tenant isolation, data licensing, explicit human approvals, idempotency, honest degraded states, and retention/deletion. Use file:line and reproducible tests to validate each finding. Do not confuse passing GitHub Actions staging checks with production certification.
+
+**Relationship to Neoh Space:** These are additional platform-wide priorities; continue to honor **all four** approved Neoh Space workstreams and their **100% browser-based** product decision below. Apply the dedicated spatial specification for capture/reconstruction changes.
+
 ## Current requested initiative: Neoh Space Web Capture
 
 **Primary implementation specification:** [docs/neoh-space-web-capture-claude.md](docs/neoh-space-web-capture-claude.md)
