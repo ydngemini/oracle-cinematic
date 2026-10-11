@@ -202,3 +202,59 @@ The recent discussion of “cloud notes” is documented here as a shared, cloud
 - Test note edits, history, sync failures, and recovery.
 - Verify AI-generated notes are grounded in the actual conversation and flag uncertainty.
 - Verify that rejection or lack of approval prevents a proposed note/action from being executed where approval is required.
+
+
+## 18. Claude implementation prompts: repository source of truth
+
+The linked repository document is `docs/claude-prompts/README.md`:
+https://github.com/ydngemini/oracle-cinematic/blob/main/docs/claude-prompts/README.md
+
+This README is the index and execution guide for 20 category-specific Claude engineering prompts. It describes work to be implemented and verified; it is **not proof that those capabilities already exist**.
+
+### Execution discipline
+- Use one category prompt per coding session, pull request, or small related vertical slice—not all 20 prompts in one giant rewrite.
+- Read `CLAUDE.md`, the selected prompt, linked specs, current code, migrations, tests, and related docs; pin the base commit and create a source-linked baseline before editing.
+- Reuse the existing FastAPI, React/Vite, PostgreSQL, AI gateway, and job infrastructure instead of multiplying architectures.
+- Track each deliverable with a status, change SHA, affected files/routes/APIs/jobs, authorization coverage, evidence links, test results, resource use, and next task. Do not treat a blank status as a pass.
+
+### Twenty prompt categories in the README
+1. Repository architecture and source audit.
+2. All pages, routes, accessibility, and responsive mobile UI.
+3. Brokerage tenancy, teams, hybrid permissions, and owner console.
+4. CRM, contacts, lead routing, and relationships.
+5. Semantic intent and contextual understanding.
+6. Evidence retrieval, hybrid search, and memory.
+7. AI gateway, model routing, and governed tools.
+8. Durable missions, task graphs, and autonomy.
+9. Real-time speech, voice latency, and interruption.
+10. Communications, calendars, and showings.
+11. Property, MLS, market, and valuation intelligence.
+12. Neoh Space browser capture, 3D reconstruction, and tours.
+13. Deals, documents, contracts, and compliance.
+14. Websites, social, paid ads, SEO, and client experience.
+15. Neoh mascot, skeletal mesh, and contextual animation.
+16. Performance, PostgreSQL indexes, and caching.
+17. Security, privacy, compliance, and data lifecycle.
+18. Brokerage billing, 20 seats, and business intelligence.
+19. Production operations, CI/CD, resilience, and observability.
+20. Full-feature 20-agent launch certification and end-to-end evaluation.
+
+### Build order emphasized by the README
+- **P0: establish release truth.** Audit the source and inventory all routes/pages, current capabilities, and tests. Separate implemented, partially implemented, configured-but-unavailable, and not-built work.
+- **P0: security and access.** Validate brokerage tenancy, agent/team permissions, PostgreSQL row-level security, CRM identity, and authorization of external side effects.
+- **P0: business and deployment readiness.** Verify the 20-seat billing model and actual production infrastructure. Provider accounts, legal requirements, and service setup need authorized human configuration.
+- **P1: shared intelligence foundations.** Evidence/memory, semantic intent, AI/model/tool governance, and durable workflows should share consistent identities, facts, consent, permissions, and execution status.
+- **P1: revenue workflows.** Integrate communications, live voice, property information, transactions, websites, and marketing in tested vertical slices.
+- **P1/P2: experience and performance.** Validate mobile speed, 3D property workflows with real-house evidence, and avatar behavior/fallbacks on actual devices.
+- **Final release gate.** Run role-, route-, provider-, and device-aware end-to-end tests for every promised workflow and verify production/legal dependencies. Historical CI, staging, mock benchmarks, buttons, and status ledgers are not production proof.
+
+### Cross-cutting rules
+- Preserve tenant isolation, PostgreSQL RLS, source-grounded AI, licensing/privacy, consent, human approval of consequential actions, idempotency, provider status, spending limits, and audit receipts.
+- Every authorized page/workspace should be discoverable, reachable, functional, and tested—not just represented by a button or status indicator.
+- Keep the product owner's current MLS decision in mind: the README contains an MLS/property-intelligence category, but listing it in a planning document does **not** mean MLS is connected, approved, affordable, or in current scope. Do not enable or advertise MLS integration unless the owner explicitly changes the decision and lawful provider access is secured.
+- Do not deploy to production, purchase services, or contact real customers without explicit human approval.
+
+### Immediate starting instruction in the README
+Start with category 02 (all pages and responsive mobile UI) to build an exhaustive route/component/API/role matrix, while conducting read-only review of category 03 (brokerage access), category 17 (security/privacy), and category 18 (billing/seats). Then implement a safe P0 slice with tests and update the shared status ledger.
+
+**Reference:** This section summarizes the repository's Claude prompt index for easier shared-note review. The README and its linked specs remain the detailed source of truth.
