@@ -253,6 +253,10 @@ async def _create_internal_task(
                       AND c.tenant_id=a.tenant_id AND c.mission_id=a.mission_id
                  LEFT JOIN clients cl ON cl.id::text=c.subject_id
                       AND cl.tenant_id=a.tenant_id AND cl.archived_at IS NULL
+                      -- Fail closed until explicit per-agent sharing ACL ships:
+                      -- tenant membership alone must not permit creating a
+                      -- task for another agent's client.
+                      AND lower(cl.assignee_id)=lower(m.created_by)
                 WHERE a.id=$1::uuid AND a.tenant_id=$2::uuid AND a.channel='task'
                 FOR UPDATE OF a""",
             action["id"], ctx.tenant_id,

@@ -164,6 +164,7 @@ class TestExecutableInternalTasks:
                 self.statements.append(sql)
                 assert "FOR UPDATE OF a" in sql
                 assert "a.tenant_id=$2::uuid" in sql
+                assert "lower(cl.assignee_id)=lower(m.created_by)" in sql
                 return {
                     "state": state, "due_at": None, "subject_type": subject,
                     "subject_id": client_id, "evidence": {"intent": intent},
