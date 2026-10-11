@@ -193,6 +193,8 @@ def _refuse(
         return f"names candidate {step.candidate}, which is not in the list"
     if step.channel not in allowed:
         return f"uses {step.channel}, which this mission is not allowed to use"
+    if step.channel == "task" and candidates[step.candidate].get("subject_type") != "client":
+        return "internal tasks require an existing client record"
     if (step.candidate, step.day_offset) in seen:
         return "is a second contact with the same person on the same day"
     return None

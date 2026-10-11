@@ -67,7 +67,7 @@ async def tick(ctx: TenantContext, mission_id: str) -> dict[str, Any]:
 
     result: dict[str, Any] = {
         "mission_id": mission_id, "planned": 0, "staged": 0,
-        "released": 0, "withheld": 0, "blocked": 0,
+        "released": 0, "executed": 0, "withheld": 0, "blocked": 0,
     }
 
     # 1. Plan, but only when nothing is already pending. Planning costs a model
@@ -163,15 +163,29 @@ async def _work_one(
         return "withheld"
 
     if action["channel"] == "task":
-        # Internal work with no send behind it. The command surface is EMAIL,
-        # SMS, CALL and CALENDAR — all outbound — so there is nothing here to
-        # stage. Recorded as skipped with the reason rather than dressed up as
-        # a failure or, worse, promoted into an outbound command.
-        await _set_state(
-            ctx, action["id"], "skipped",
-            blocked_reason="task actions are not executed yet — no internal task surface",
-        )
-        return "withheld"
+        # Internal CRM work is not an outbound command. Only execute once the
+        # same action policy granted release; otherwise do not create the task.
+        if not verdict.may_release:
+            reason = "internal task requires an approved mission grant or autonomy permission"
+            await _set_state(ctx, action["id"], "blocked", blocked_reason=reason)
+            await _journal(ctx, mission["id"], "action_blocked", {
+                "action_id": str(action["id"]), "reason": reason,
+            })
+            return "blocked"
+        created, task_id_or_reason = await _create_internal_task(ctx, action)
+        if not created:
+            reason = f"cannot create internal task: {task_id_or_reason}"
+            await _set_state(ctx, action["id"], "blocked", blocked_reason=reason)
+            await _journal(ctx, mission["id"], "action_blocked", {
+                "action_id": str(action["id"]), "reason": reason,
+            })
+            return "blocked"
+        await _journal(ctx, mission["id"], "action_executed", {
+            "action_id": str(action["id"]),
+            "channel": "task",
+            "task_id": task_id_or_reason,
+        })
+        return "executed"
 
     staged, error = await _stage(ctx, mission, action, verdict)
     if staged is None:
@@ -204,6 +218,110 @@ async def _work_one(
         "authority": verdict.release_authority,
     })
     return "released"
+
+
+async def _create_internal_task(
+    ctx: TenantContext, action: dict[str, Any],
+) -> tuple[bool, str]:
+    """Create one real client_tasks row per mission action, atomically.
+
+    The action is locked and its state is updated in the same transaction as
+    the task insertion. Retries and concurrent ticks cannot create duplicates.
+    This is intentionally not an outbound command and never sends a message.
+    Only an active named agent's client can be assigned a task here; a lead or
+    contact that has not been linked to a canonical client is *blocked*, not
+    silently treated as a standalone task or a made-up client.
+    """
+    import json
+
+    from db.connection import tenant_tx
+
+    async with tenant_tx(ctx) as conn:
+        row = await conn.fetchrow(
+            """SELECT a.state, a.due_at, c.subject_type, c.subject_id,
+                      c.evidence, cl.id AS client_id, m.status AS mission_status,
+                      m.mode, m.created_by, m.objective_text,
+                      EXISTS(
+                          SELECT 1 FROM users u
+                           WHERE u.tenant_id=a.tenant_id
+                             AND lower(u.agent_id)=lower(m.created_by)
+                             AND u.is_active=true
+                      ) AS actor_active
+                 FROM mission_actions a
+                 JOIN missions m ON m.id=a.mission_id AND m.tenant_id=a.tenant_id
+                 LEFT JOIN mission_candidates c ON c.id=a.candidate_id
+                      AND c.tenant_id=a.tenant_id AND c.mission_id=a.mission_id
+                 LEFT JOIN clients cl ON cl.id::text=c.subject_id
+                      AND cl.tenant_id=a.tenant_id AND cl.archived_at IS NULL
+                WHERE a.id=$1::uuid AND a.tenant_id=$2::uuid AND a.channel='task'
+                FOR UPDATE OF a""",
+            action["id"], ctx.tenant_id,
+        )
+        if row is None:
+            return False, "mission action is unavailable"
+        if row["state"] == "executed":
+            task_id = await conn.fetchval(
+                """SELECT id FROM client_tasks
+                    WHERE tenant_id=$1::uuid AND mission_action_id=$2::uuid""",
+                ctx.tenant_id, action["id"],
+            )
+            return (True, str(task_id)) if task_id else (
+                False, "executed action has no linked task receipt")
+        if row["state"] != "planned":
+            return False, f"mission action is {row['state']}, not planned"
+        if row["mission_status"] != "active" or row["mode"] != "live":
+            return False, "mission is not active in live mode"
+        if not row["created_by"] or row["created_by"].lower() != ctx.agent_id.lower():
+            return False, "mission owner identity does not match the acting agent"
+        if not row["actor_active"]:
+            return False, "mission owner is no longer an active brokerage agent"
+        if row["subject_type"] != "client" or row["client_id"] is None:
+            return False, "task requires an accessible, non-archived client"
+
+        evidence = row["evidence"] or {}
+        if isinstance(evidence, str):
+            try:
+                evidence = json.loads(evidence)
+            except ValueError:
+                evidence = {}
+        if not isinstance(evidence, dict):
+            evidence = {}
+        intent = str(evidence.get("intent") or "").strip()
+        if not intent:
+            return False, "task has no validated planner intent"
+        title = f"Mission follow-up: {intent}"[:180]
+        details = (
+            f"Mission objective: {row['objective_text']}\n"
+            f"Action: {intent}\n"
+            f"Mission action ID: {action['id']}"
+        )[:1500]
+
+        task_id = await conn.fetchval(
+            """INSERT INTO client_tasks
+                   (tenant_id, client_id, title, details, due_at, status,
+                    priority, assignee_id, created_by, mission_action_id)
+               VALUES ($1::uuid,$2::uuid,$3,$4,$5,'open','normal',$6,$6,$7::uuid)
+               ON CONFLICT (tenant_id, mission_action_id)
+                    WHERE mission_action_id IS NOT NULL DO NOTHING
+               RETURNING id""",
+            ctx.tenant_id, row["client_id"], title, details,
+            row["due_at"], ctx.agent_id, action["id"],
+        )
+        if task_id is None:
+            task_id = await conn.fetchval(
+                """SELECT id FROM client_tasks
+                    WHERE tenant_id=$1::uuid AND mission_action_id=$2::uuid""",
+                ctx.tenant_id, action["id"],
+            )
+        if task_id is None:
+            return False, "task insert could not be verified"
+
+        await conn.execute(
+            """UPDATE mission_actions SET state='executed', updated_at=now()
+                WHERE id=$1::uuid AND tenant_id=$2::uuid AND state='planned'""",
+            action["id"], ctx.tenant_id,
+        )
+        return True, str(task_id)
 
 
 async def _stage(
