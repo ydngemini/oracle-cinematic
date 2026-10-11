@@ -161,3 +161,44 @@ The complete 10–20-year relationship system, complete end-to-end workflows, an
 Neho should aim to be a brokerage-wide AI operating system that brings communication, relationship management, marketing/content tools, and 3D property experiences together. The differentiator is not simply adding AI everywhere: it is making AI context-aware and useful while keeping the real estate professional in control of external actions.
 
 **Priority:** build the planned capabilities in sequence, preserve the agent-approval principle throughout the system, and prove reliability with repeatable end-to-end tests before making production or marketing claims.
+
+
+## 17. Cloud Notes and shared brokerage workspace
+The recent discussion of “cloud notes” is documented here as a shared, cloud-accessible notes capability for Neho, connected to both team collaboration and client relationship memory. This is a product requirement/idea, not a claim that the feature is already implemented.
+
+### Shared team notes
+- Let authorized agents access relevant shared notes from the brokerage workspace, so information is not trapped on one agent's device.
+- Support sharing relevant leads, client notes, tasks, calendars, updates, task assignments, progress tracking, and lead handoffs.
+- Preserve useful client context when another authorized team member takes over a lead or task.
+- Keep notes associated with the appropriate client/lead and allow agents to add dated updates rather than silently overwriting history.
+
+### AI-generated client notes
+- After authorized calls, emails, SMS conversations, or meetings, the AI may propose a structured note summarizing what the client actually said, preferences, questions, commitments, and agreed next steps.
+- Keep confirmed statements separate from AI interpretations or possible future needs.
+- Let the responsible agent review, correct, approve, or reject proposed notes according to the configured workflow.
+- Approved notes can support later email drafts, follow-up suggestions, and long-term relationship nurturing.
+- Examples of useful context include a preferred contact time, stated property preferences, a promised follow-up, or a move-in anniversary. Avoid collecting unnecessary sensitive personal details.
+
+### Cloud access, privacy, and reliability
+- Store notes in a secure cloud-backed service so authorized team members can access them across devices.
+- Enforce brokerage, role, and client-level permissions on the server; one brokerage must not be able to access another brokerage's notes.
+- Use encryption in transit and at rest, audit access and changes, and provide appropriate retention, export, correction, and deletion controls.
+- Do not treat cloud storage as permission to share every note with every agent. Restrict access to people who need it for their role.
+- Handle offline/network failures and sync conflicts clearly, and avoid losing edits.
+- Respect client consent and applicable privacy requirements. Never let the AI send a client-facing message merely because it has created or updated a note; the separate agent-approval rule still applies.
+
+### Suggested workflow
+1. An authorized conversation or interaction occurs.
+2. Neho drafts a proposed note and identifies its source.
+3. The agent reviews and approves/corrects it where required.
+4. The approved note is saved to the client's secure cloud record.
+5. Authorized teammates can see relevant information according to permissions.
+6. The relationship agent may use that information to recommend a future action.
+7. The agent separately approves or rejects the proposed action.
+
+### Implementation checks
+- Verify that notes save and load across devices and sessions.
+- Test role-based access and cross-brokerage isolation.
+- Test note edits, history, sync failures, and recovery.
+- Verify AI-generated notes are grounded in the actual conversation and flag uncertainty.
+- Verify that rejection or lack of approval prevents a proposed note/action from being executed where approval is required.
