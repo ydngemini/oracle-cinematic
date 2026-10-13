@@ -139,6 +139,20 @@ async def chat_status(ctx: TenantContext = Depends(require_context)):
     return {"enabled": _enabled(), "agent_id": ctx.agent_id}
 
 
+@router.get("/capabilities")
+async def chat_capabilities(ctx: TenantContext = Depends(require_context)):
+    """What the assistant can do for THIS caller, derived from the tools it can
+    actually run (ai_capabilities; audit A09). The Personal AI page renders
+    this instead of keeping its own list. Reads no tenant data."""
+    import ai_capabilities
+    from tenancy import Role
+
+    ops_role = bool(ctx.is_platform_admin or ctx.role is Role.BROKER_OWNER)
+    body = ai_capabilities.payload(ops_role=ops_role)
+    body["enabled"] = _enabled()
+    return body
+
+
 @router.get("/messages")
 async def messages(
     before: Optional[datetime] = None,

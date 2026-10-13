@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { crmGet, crmPost, crmPut } from '../state/useCrmApi';
 import { BrokerageOnboardingPanel } from './BrokerageOnboardingPanel';
+import AssistantCapabilities from './AssistantCapabilities';
 import { CommandApprovalPanel } from './CommandApprovalPanel';
 import { PersonalCommandComposer } from './PersonalCommandComposer';
 import styles from './PersonalAITab.module.css';
@@ -122,7 +123,7 @@ export default function PersonalAITab() {
         <div>
           <span className={styles.kicker}>Agent intelligence</span>
           <h1 id="personal-ai-title">Personal AI</h1>
-          <p>What Neoh may do on its own, your private writing style, connected accounts, live web search, and actions waiting for review — in one place.</p>
+          <p>What Neoh can do in chat, your private writing style, saved accounts, and actions waiting for review — in one place.</p>
         </div>
         <button type="button" className={styles.refresh} onClick={refresh} disabled={loading} aria-label="Refresh Personal AI status">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 4v7h-7"/></svg>
@@ -133,7 +134,7 @@ export default function PersonalAITab() {
 
       <div className={styles.guardrail} role="note">
         <strong>Approval boundary</strong>
-        <p>Research, drafting, and web search can run autonomously. Outreach, calls, calendar writes, legal documents, bidding messages, financial actions, and model promotion require review.</p>
+        <p>In chat, Neoh reads your records, searches the web and makes undoable edits when you ask. Outreach, calls, calendar writes, legal documents, bidding messages, financial actions, and model promotion wait for review.</p>
       </div>
 
       {errors.length > 0 && (
@@ -150,10 +151,10 @@ export default function PersonalAITab() {
       ) : (
         <>
           <dl className={styles.metrics}>
-            <div><dt>Autonomy enabled</dt><dd>{metrics.autonomy}</dd></div>
+            <div><dt>Autonomy preferences on</dt><dd>{metrics.autonomy}</dd></div>
             <div><dt>Active models</dt><dd>{metrics.activeModels}</dd></div>
             <div><dt>Awaiting review</dt><dd>{metrics.pendingCommands}</dd></div>
-            <div><dt>Accounts connected</dt><dd>{metrics.connectedProviders}</dd></div>
+            <div><dt>Accounts saved</dt><dd>{metrics.connectedProviders}</dd></div>
           </dl>
 
           <section className={styles.panel} aria-labelledby="ai-contract-holdings-title">
@@ -181,13 +182,17 @@ export default function PersonalAITab() {
             )}
           </section>
 
+          <AssistantCapabilities />
+
           <section className={styles.panel} aria-labelledby="ai-boundary-title">
             <header><h2 id="ai-boundary-title">Current AI boundary</h2><span>{human(settings?.autonomy_mode, 'policy autopilot')}</span></header>
             <ul className={styles.boundaries}>
               <li><span>Operating mode</span><strong data-enabled>{human(settings?.autonomy_mode, 'policy autopilot')}</strong></li>
               <li><span>Approved tone</span><strong>{human(settings?.approved_tone, 'neutral')}</strong></li>
-              <li><span>Public-record research</span><strong data-enabled={Boolean(settings?.autonomous_research)}>{settings?.autonomous_research ? 'Enabled' : 'Review first'}</strong></li>
-              <li><span>Draft preparation</span><strong data-enabled={Boolean(settings?.autonomous_drafting)}>{settings?.autonomous_drafting ? 'Enabled' : 'Review first'}</strong></li>
+              {/* Both preferences are saved but nothing reads them yet (audit A09):
+                  showing "Enabled" claimed an autonomy Neoh does not have. */}
+              <li><span>Public-record research preference (not used yet)</span><strong>{settings?.autonomous_research ? 'Saved on' : 'Saved off'}</strong></li>
+              <li><span>Draft preparation preference (not used yet)</span><strong>{settings?.autonomous_drafting ? 'Saved on' : 'Saved off'}</strong></li>
               <li><span>Style training consent</span><strong data-enabled={Boolean(settings?.style_training_opt_in)}>{settings?.style_training_opt_in ? 'Opted in' : 'Not opted in'}</strong></li>
               <li><span>Consented examples</span><strong>{data.onboarding?.style_training_examples ?? 0}</strong></li>
               <li>

@@ -1,0 +1,323 @@
+{
+  "version": "2026-10-13.1",
+  "generated_by": "backend/ai_capabilities.py --write-snapshot",
+  "areas": [
+    {
+      "id": "clients",
+      "label": "Client lookups",
+      "state": "available"
+    },
+    {
+      "id": "client_edits",
+      "label": "Edit the open client",
+      "state": "available"
+    },
+    {
+      "id": "deals",
+      "label": "Deals and deadlines",
+      "state": "available"
+    },
+    {
+      "id": "deal_edits",
+      "label": "Edit the open deal or listing",
+      "state": "available"
+    },
+    {
+      "id": "outreach",
+      "label": "Email, text, call and calendar drafts",
+      "state": "approval_gated"
+    },
+    {
+      "id": "contract_drafts",
+      "label": "Contract drafts",
+      "state": "approval_gated"
+    },
+    {
+      "id": "marketplace",
+      "label": "Marketplace listing drafts",
+      "state": "approval_gated"
+    },
+    {
+      "id": "properties",
+      "label": "Your properties",
+      "state": "available"
+    },
+    {
+      "id": "estimates",
+      "label": "Rough deal math",
+      "state": "available"
+    },
+    {
+      "id": "market",
+      "label": "Market figures",
+      "state": "degraded"
+    },
+    {
+      "id": "reference",
+      "label": "Templates and disclosures",
+      "state": "available"
+    },
+    {
+      "id": "workspace",
+      "label": "Workspace setup",
+      "state": "available"
+    },
+    {
+      "id": "workspace_admin",
+      "label": "Workspace health and billing (owner only)",
+      "state": "available"
+    },
+    {
+      "id": "research",
+      "label": "Web search",
+      "state": "available"
+    },
+    {
+      "id": "public_records",
+      "label": "Public records",
+      "state": "unavailable"
+    },
+    {
+      "id": "neighborhood",
+      "label": "Neighborhood and investor data",
+      "state": "unavailable"
+    },
+    {
+      "id": "market_analytics",
+      "label": "Market analytics",
+      "state": "unavailable"
+    },
+    {
+      "id": "underwriting",
+      "label": "Full underwriting",
+      "state": "unavailable"
+    },
+    {
+      "id": "negotiations",
+      "label": "Negotiations",
+      "state": "unavailable"
+    },
+    {
+      "id": "contract_analysis",
+      "label": "Contract review and signatures",
+      "state": "unavailable"
+    },
+    {
+      "id": "legal_reference",
+      "label": "State law and fair-housing checks",
+      "state": "unavailable"
+    },
+    {
+      "id": "documents_media",
+      "label": "Documents, videos and tour links",
+      "state": "unavailable"
+    },
+    {
+      "id": "spatial_spend",
+      "label": "3D builds and listing videos",
+      "state": "unavailable"
+    },
+    {
+      "id": "team",
+      "label": "Team roster and commissions",
+      "state": "unavailable"
+    },
+    {
+      "id": "client_merge",
+      "label": "Merging clients",
+      "state": "unavailable"
+    }
+  ],
+  "claim_terms": [
+    {
+      "pattern": "\\bMLS\\b",
+      "area": null
+    },
+    {
+      "pattern": "\\bIDX\\b",
+      "area": null
+    },
+    {
+      "pattern": "\\bRESO\\b",
+      "area": null
+    },
+    {
+      "pattern": "flood zones?",
+      "area": "public_records"
+    },
+    {
+      "pattern": "zoning (info|classification|lookup)",
+      "area": "public_records"
+    },
+    {
+      "pattern": "building permits?|permit history",
+      "area": "public_records"
+    },
+    {
+      "pattern": "\\bliens?\\b",
+      "area": "public_records"
+    },
+    {
+      "pattern": "owner(ship)? history|deed history|chain of title",
+      "area": "public_records"
+    },
+    {
+      "pattern": "tax (records|assessments?)",
+      "area": "public_records"
+    },
+    {
+      "pattern": "court records?",
+      "area": "public_records"
+    },
+    {
+      "pattern": "public[- ]records? (search|lookup|research)|search public records|public-property evidence",
+      "area": "public_records"
+    },
+    {
+      "pattern": "courtlistener|govinfo|regrid|county assessor",
+      "area": "public_records"
+    },
+    {
+      "pattern": "\\bschools?\\b",
+      "area": "neighborhood"
+    },
+    {
+      "pattern": "demographics?|census",
+      "area": "neighborhood"
+    },
+    {
+      "pattern": "neighbou?rhood (profile|analysis)",
+      "area": "neighborhood"
+    },
+    {
+      "pattern": "investor activity",
+      "area": "neighborhood"
+    },
+    {
+      "pattern": "rent estimates?",
+      "area": "market_analytics"
+    },
+    {
+      "pattern": "absorption",
+      "area": "market_analytics"
+    },
+    {
+      "pattern": "hot markets?",
+      "area": "market_analytics"
+    },
+    {
+      "pattern": "price (drops|reductions)",
+      "area": "market_analytics"
+    },
+    {
+      "pattern": "heat ?maps?",
+      "area": "market_analytics"
+    },
+    {
+      "pattern": "\\bforecasts?\\b",
+      "area": "market_analytics"
+    },
+    {
+      "pattern": "batchleads|propstream|firehose",
+      "area": "market_analytics"
+    },
+    {
+      "pattern": "underwriting models?",
+      "area": "underwriting"
+    },
+    {
+      "pattern": "cap rates?",
+      "area": "underwriting"
+    },
+    {
+      "pattern": "cash[- ]on[- ]cash",
+      "area": "underwriting"
+    },
+    {
+      "pattern": "break[- ]even",
+      "area": "underwriting"
+    },
+    {
+      "pattern": "\\bROI\\b",
+      "area": "underwriting"
+    },
+    {
+      "pattern": "equity reviews?|estimate (the )?equity",
+      "area": "underwriting"
+    },
+    {
+      "pattern": "counter[- ]offers?",
+      "area": "negotiations"
+    },
+    {
+      "pattern": "signature status|verify (the )?signatures?",
+      "area": "contract_analysis"
+    },
+    {
+      "pattern": "attorney[- ]review status",
+      "area": "contract_analysis"
+    },
+    {
+      "pattern": "extract (contract|key) terms|compare contract versions",
+      "area": "contract_analysis"
+    },
+    {
+      "pattern": "form library",
+      "area": "contract_analysis"
+    },
+    {
+      "pattern": "state (real[- ]estate )?laws?",
+      "area": "legal_reference"
+    },
+    {
+      "pattern": "fair[- ]housing (check|review)",
+      "area": "legal_reference"
+    },
+    {
+      "pattern": "retention polic(y|ies)",
+      "area": "legal_reference"
+    },
+    {
+      "pattern": "upload (a )?documents?",
+      "area": "documents_media"
+    },
+    {
+      "pattern": "download links?",
+      "area": "documents_media"
+    },
+    {
+      "pattern": "drone|walkthrough video|property videos?",
+      "area": "documents_media"
+    },
+    {
+      "pattern": "tour links?|share (a |the )?(3d )?tour",
+      "area": "documents_media"
+    },
+    {
+      "pattern": "3d builds?|reconstruct",
+      "area": "spatial_spend"
+    },
+    {
+      "pattern": "listing videos?|marketing videos?",
+      "area": "spatial_spend"
+    },
+    {
+      "pattern": "commissions?",
+      "area": "team"
+    },
+    {
+      "pattern": "(team|brokerage) roster",
+      "area": "team"
+    },
+    {
+      "pattern": "merge (duplicate )?(clients?|records)",
+      "area": "client_merge"
+    },
+    {
+      "pattern": "connect you|transfer (you|the call)",
+      "area": null
+    }
+  ],
+  "negation": "\\b(not|never|no|cannot|can't|can’t|isn't|aren't|without|unavailable|don't|do not|nor)\\b",
+  "sentence_split": "(?<=[.!?])\\s+|\\n\\s*\\n|\\n(?=\\s*[-#*])"
+}

@@ -1521,6 +1521,23 @@ async def _list_contract_templates(conn, ctx: TenantContext, tool_input: dict) -
 # job queue should be told it is not their information, not silently handed a
 # model that pretends the tool does not exist.
 
+# The tools whose handler calls _require_ops_role. Named here so the capability
+# registry (ai_capabilities) can tell an agent "broker-owner only" without
+# re-deciding it; tests/test_ai_capabilities.py checks this set against every
+# _require_ops_role call in this module.
+OPS_ROLE_TOOLS = frozenset({
+    "get_tenant_health",
+    "get_job_queue",
+    "get_audit_trail",
+    "list_integration_status",
+    "get_billing_status",
+    "list_billing_invoices",
+    "list_recent_errors",
+    "get_database_stats",
+    "run_health_check",
+})
+
+
 def _require_ops_role(ctx: TenantContext, tool_name: str) -> Optional[dict]:
     from tenancy import Role
 

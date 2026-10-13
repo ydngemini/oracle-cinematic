@@ -162,12 +162,12 @@ AI Chat API: ai_chat_api.py (WS chat handler, file upload with clamd scanning, R
 AI Chat Store: ai_chat_store.py (message persistence, safe tool execution, attachment management)
 Memory Core: memory_core/session_manager.py (JIT profile injection, MAO threshold, market preferences)
 Platform Policy: platform_policy.py (Feature flags, action risk levels, fair-housing enforcement)
-Commands: commands_api.py (approval-gated email/call/calendar execution, provider OAuth)
+Commands: commands_api.py (approval-gated email/call/calendar requests; delivery needs a connected provider)
 Models: models_api.py (LoRA/base model registry, style training, evaluation)
 Billing: billing.py (Stripe checkout, portal, webhook, subscription status)
 Contracts: contracts_api.py (template registry, draft workspace, approval workflow)
 CRM: crm.py (client/lead pipeline, company management, task assignments)
-MLS: mls_portal.py (MLS listing pipeline, freshness tracking, cross-tenant sharing)
+Legacy listing-feed code: mls_portal.py (switched off; not offered on this platform)
 Media: media_api.py (protected blob uploads, media proxy)
 Audit: audit_ledger.py (immutable append-only ledger with SHA-256 hash chain)
 WebSocket: ws_hub.py (cross-replica pub/sub, user/channel broadcast)
@@ -177,8 +177,10 @@ Feature flags (env vars): ORACLE_FEATURE_AI_CHAT, ORACLE_FEATURE_CONTRACTS,
 ORACLE_FEATURE_AUTOMATION, ORACLE_FEATURE_LOCAL_MODELS, ORACLE_FEATURE_MUNICIPAL_HARVESTS,
 ORACLE_FEATURE_PREDICTIVE_INTELLIGENCE, ORACLE_FEATURE_MARKETPLACE, ORACLE_FEATURE_SPATIAL_TOURS
 
-DB migrations: db/migrations/0001-0041 (tenancy, RLS, auth, subscriptions, audit, CRM, contracts,
-media, intelligence, AI chat, sequence privileges, pipeline performance, transaction workflow)
+DB migrations: db/migrations/ (numbered, applied in order: tenancy, RLS, auth, subscriptions,
+audit, CRM, contracts, media, intelligence, AI chat, pipeline performance, transaction workflow)
+
+This map is hand-written and can lag the code; it is not a live inventory.
 """
 
 
@@ -277,18 +279,18 @@ TOOLS = {
     "request_property_reconstruction": _tool("request_property_reconstruction", "Check whether a photoreal 3D space can be built for a property from its uploaded photos. Never starts a build (it rents a GPU and costs money): it tells the agent to start it from the property's 3D space panel, which shows the cost and asks to confirm.", {"lead_id": _text("lead_id", "Either this or listing_id"), "listing_id": _text("listing_id", "Either this or lead_id")}, []),
     "request_listing_video": _tool("request_listing_video", "Check whether an AI-generated marketing video can be made for a property. Never generates one (it bills a video provider): it tells the agent to start it from Video studio, where they pick the imagery and confirm.", {"brief": _text("brief", "What the video should show"), "lead_id": _text("lead_id", "Either this or listing_id"), "listing_id": _text("listing_id", "Either this or lead_id")}, ["brief"]),
 
-    "search_clients":       _tool("search_clients", "Search the client database by name, email, phone, stage, company, or tag.", {"query": _text("query")}),
+    "search_clients":       _tool("search_clients", "Search the clients you can see (not archived) by name, email, phone, company or tag; up to 20 results.", {"query": _text("query")}),
     "get_client_detail":    _tool("get_client_detail", "Return the full profile, preferences, notes, tags, and assigned agent for a client.", {"client_id": _text("client_id")}),
     "list_client_tasks":    _tool("list_client_tasks", "List pending and completed tasks for a client or across all clients.", {"client_id": _text("client_id", "Optional — omit to list all")}, []),
-    "add_client_note":      _tool("add_client_note", "Append a text note to a client record. Prefer short, factual notes.", {"client_id": _text("client_id"), "note": _text("note")}),
-    "set_client_stage":     _tool("set_client_stage", "Move a client to a new pipeline stage (lead, active, nurture, under_contract, closed, lost).", {"client_id": _text("client_id"), "stage": _text("stage")}),
-    "add_client_tag":       _tool("add_client_tag", "Tag a client with one or more labels for filtering and routing.", {"client_id": _text("client_id"), "tags": _text("tags", "Comma-separated tag labels")}),
-    "assign_client":        _tool("assign_client", "Assign or reassign a client to an agent.", {"client_id": _text("client_id"), "agent_id": _text("agent_id")}),
-    "score_client_lead":    _tool("score_client_lead", "Update the lead score for a client (0-100) with an optional reason.", {"client_id": _text("client_id"), "score": _text("score", "0-100 integer"), "reason": _text("reason", "Short justification")}),
-    "archive_client":       _tool("archive_client", "Archive an inactive client. This is reversible.", {"client_id": _text("client_id")}),
+    "add_client_note":      _tool("add_client_note", "Append a short, factual text note to the selected client.", {"client_id": _text("client_id"), "note": _text("note")}),
+    "set_client_stage":     _tool("set_client_stage", "Move the selected client to a new pipeline stage (lead, active, nurture, under_contract, closed, lost).", {"client_id": _text("client_id"), "stage": _text("stage")}),
+    "add_client_tag":       _tool("add_client_tag", "Tag the selected client with up to 10 labels for filtering and routing.", {"client_id": _text("client_id"), "tags": _text("tags", "Comma-separated tag labels")}),
+    "assign_client":        _tool("assign_client", "Reassign the selected client. An agent can take a client or hand it back; only the broker-owner can give it to a colleague.", {"client_id": _text("client_id"), "agent_id": _text("agent_id")}),
+    "score_client_lead":    _tool("score_client_lead", "Set the selected client's lead score (0-100).", {"client_id": _text("client_id"), "score": _text("score", "0-100 integer")}),
+    "archive_client":       _tool("archive_client", "Archive the selected client. This is reversible from its receipt.", {"client_id": _text("client_id")}),
     "list_client_activity": _tool("list_client_activity", "Recent timeline of notes, stage changes, tasks, and communications for a client.", {"client_id": _text("client_id")}),
-    "get_client_contact_history": _tool("get_client_contact_history", "Communication log for a client: calls, emails, messages, and meeting notes.", {"client_id": _text("client_id")}),
-    "suggest_client_matches": _tool("suggest_client_matches", "Which of this brokerage's buyers fit one of its own properties — use it for 'who should I call about this?' with a property open (pass its lead_id or listing_id). Returns each buyer's verdict (strong/possible), the criteria that agree (budget, location, bedrooms, type), what is not recorded, their stated needs, and homes they were recently shown, with feedback. Pass only a buyer's client_id to rank active listings for them instead. Rule-based: never present it as a percentage or AI score.", {"lead_id": _text("lead_id", "The open property (a lead id)"), "listing_id": _text("listing_id", "Or the listing id"), "client_id": _text("client_id", "Or a buyer/seller client id")}, []),
+    "get_client_contact_history": _tool("get_client_contact_history", "The selected client's logged messages (email, text, call) and showings, newest 50. Notes are in list_client_activity.", {"client_id": _text("client_id")}),
+    "suggest_client_matches": _tool("suggest_client_matches", "Which of this brokerage's buyers fit one of its own properties — use it for 'who should I call about this?' with a property open (pass its lead_id or listing_id). Returns each buyer's verdict (strong/possible), the criteria that agree (budget, location, bedrooms, type), what is not recorded, their stated needs, and homes they were recently shown, with feedback. Pass only a buyer's client_id to rank the top 5 of the 50 most recently updated active listings for them instead. Rule-based: never present it as a percentage or AI score.", {"lead_id": _text("lead_id", "The open property (a lead id)"), "listing_id": _text("listing_id", "Or the listing id"), "client_id": _text("client_id", "Or a buyer/seller client id")}, []),
     "list_client_documents": _tool("list_client_documents", "List contracts, disclosures, and attachments associated with a client.", {"client_id": _text("client_id")}),
     "merge_duplicate_clients": _tool("merge_duplicate_clients", "Merge two client records into one, preserving history. Requires review.", {"keep_id": _text("keep_id"), "merge_id": _text("merge_id")}),
     "create_client":        _tool("create_client", "Create a new client record.", {"full_name": _text("full_name"), "email": _text("email", "Optional"), "phone": _text("phone", "Optional"), "client_type": _text("client_type", "seller, buyer, or both")}, ["full_name"]),
@@ -301,12 +303,12 @@ TOOLS = {
     "draft_sms":            _tool("draft_sms", "Draft a text message to the selected client and stage it for human approval. Nothing is sent by this tool; the number comes from the client record.", {"client_id": _text("client_id", "The selected client"), "body": _text("body", "Message text, 1-1600 characters")}, ["client_id", "body"]),
 
     # ── Listings & Property (15) ──
-    "search_listings":      _tool("search_listings", "Search this brokerage's own listings (MLS only where the deployment offers it) by address, zip, price range, status, or state.", {"query": _text("query"), "state": _text("state", "2-letter code"), "min_price": _text("min_price"), "max_price": _text("max_price")}, ["query"]),
+    "search_listings":      _tool("search_listings", "Search this brokerage's own listings by address, with an optional state and price range.", {"query": _text("query"), "state": _text("state", "2-letter code"), "min_price": _text("min_price"), "max_price": _text("max_price")}, ["query"]),
     "get_listing_detail":   _tool("get_listing_detail", "Full listing detail for an owned listing: price, status, seller, media and showing counts, plus beds/baths/sqft/zoning from a matched public record when one exists. Does not return comps — use list_comparable_sales.", {"listing_id": _text("listing_id")}),
-    "list_comparable_sales": _tool("list_comparable_sales", "Find recently sold comps within a radius of a property address.", {"address": _text("address"), "radius_miles": _text("radius_miles", "default 0.5"), "limit": _text("limit", "default 10")}, ["address"]),
-    "estimate_arv":         _tool("estimate_arv", "Estimate After-Repair Value from the median price per square foot of sold public records near the address. Returns a low/high range from the comparable spread; confidence is not scored because nothing here is calibrated against realised sale prices.", {"address": _text("address"), "sqft": _text("sqft"), "beds": _text("beds"), "baths": _text("baths")}, ["address"]),
+    "list_comparable_sales": _tool("list_comparable_sales", "Recorded sales near an address from public records, widening to the same ZIP or the last 24 months when nothing closer exists; the basis used is returned.", {"address": _text("address"), "radius_miles": _text("radius_miles", "default 0.5"), "limit": _text("limit", "default 10")}, ["address"]),
+    "estimate_arv":         _tool("estimate_arv", "Estimate After-Repair Value from the median price per square foot of sold public records near the address (widening to the same ZIP or 24 months when needed). Returns a low/high range from the comparable spread; confidence is not scored because nothing here is calibrated against realised sale prices.", {"address": _text("address"), "sqft": _text("sqft")}, ["address"]),
     "estimate_rehab":       _tool("estimate_rehab", "Estimate renovation cost as square footage times a national rule-of-thumb band for the condition tier, plus a 15% contingency. No local labour or material rates exist on this deployment; year built is used only to flag pre-1978 and pre-1950 risks.", {"address": _text("address"), "year_built": _text("year_built"), "condition": _text("condition", "light, moderate, major, gut")}, ["address", "condition"]),
-    "calculate_mao":        _tool("calculate_mao", "Calculate Maximum Allowable Offer using the formula MAO = (ARV × 0.70) - Rehab.", {"arv": _text("arv"), "rehab": _text("rehab"), "holding_costs": _text("holding_costs")}, ["arv", "rehab"]),
+    "calculate_mao":        _tool("calculate_mao", "Calculate Maximum Allowable Offer: MAO = max(0, ARV x 0.70 - rehab - optional holding costs).", {"arv": _text("arv"), "rehab": _text("rehab"), "holding_costs": _text("holding_costs")}, ["arv", "rehab"]),
     "list_market_snapshots": _tool("list_market_snapshots", "Market statistics by zip or city: median price, DOM, inventory, absorption, rent ratio.", {"zip_code": _text("zip_code")}),
     "get_flood_zone":       _tool("get_flood_zone", "FEMA flood zone designation for a property address.", {"address": _text("address")}),
     "get_zoning_info":      _tool("get_zoning_info", "Zoning classification, FAR, and land-use restrictions for an address.", {"address": _text("address")}),
@@ -319,17 +321,17 @@ TOOLS = {
 
     # ── Deals & Pipeline (12) ──
     "list_deals":           _tool("list_deals", "List owned pipeline deals; filter by state or durable stage.", {"state": _text("state"), "stage": _text("stage")}, []),
-    "get_deal_detail":      _tool("get_deal_detail", "Full deal dossier: property, client, contract, notes, deadlines, financials.", {"deal_id": _text("deal_id")}),
-    "move_deal_stage":      _tool("move_deal_stage", "Advance a deal to a new durable stage (draft, under_contract, marketing, assigned, closed, expired, dead).", {"deal_id": _text("deal_id"), "stage": _text("stage")}),
+    "get_deal_detail":      _tool("get_deal_detail", "One pipeline deal: the property, seller, underwriting, and its transactions' prices and deadlines.", {"deal_id": _text("deal_id")}),
+    "move_deal_stage":      _tool("move_deal_stage", "Move the selected pipeline deal to a new durable stage (draft, under_contract, marketing, assigned, closed, expired, dead).", {"deal_id": _text("deal_id"), "stage": _text("stage")}),
     "calculate_deal_roi":   _tool("calculate_deal_roi", "Projected return: assignment fee, wholetail margin, or rental cash-on-cash.", {"deal_id": _text("deal_id")}),
     "list_active_negotiations": _tool("list_active_negotiations", "Deals currently under negotiation with seller or buyer.", {}),
-    "track_deadlines":      _tool("track_deadlines", "Upcoming milestones and deadlines: inspection, financing, closing, assignment.", {"deal_id": _text("deal_id", "Optional")}, []),
+    "track_deadlines":      _tool("track_deadlines", "Upcoming and recently missed contract-expiry, offer, inspection, financing and closing deadlines, for one deal or all the deals you can see.", {"deal_id": _text("deal_id", "Optional")}, []),
     "analyze_deal_risk":    _tool("analyze_deal_risk", "Risk assessment checklist: title, inspection, financing, market, legal.", {"deal_id": _text("deal_id")}),
     "suggest_disposition":  _tool("suggest_disposition", "Exit strategy recommendation: assignment, wholetail, or buy-and-hold.", {"deal_id": _text("deal_id")}),
-    "list_closing_checklist": _tool("list_closing_checklist", "Standard closing tasks and their status for a deal.", {"deal_id": _text("deal_id")}),
-    "create_deal_note":     _tool("create_deal_note", "Add a note to a deal with context and next actions.", {"deal_id": _text("deal_id"), "note": _text("note")}),
+    "list_closing_checklist": _tool("list_closing_checklist", "Compliance checklist items and milestones recorded on this deal's transactions; empty when the deal has no transaction.", {"deal_id": _text("deal_id")}),
+    "create_deal_note":     _tool("create_deal_note", "Append a note to a transaction linked to the selected client, lead or listing (deal_id is the transaction id).", {"deal_id": _text("deal_id"), "note": _text("note")}),
     "list_counter_offers":  _tool("list_counter_offers", "Active and historical counter-offers for a deal.", {"deal_id": _text("deal_id")}),
-    "get_transaction_workflow": _tool("get_transaction_workflow", "Transaction steps, required documents, and approval gates for a deal.", {"deal_id": _text("deal_id")}),
+    "get_transaction_workflow": _tool("get_transaction_workflow", "A deal's transactions with their milestones, offers, parties and contract documents.", {"deal_id": _text("deal_id")}),
 
     # ── Market Intelligence (12) ──
     "get_market_trends":    _tool("get_market_trends", "County and state market aggregates for the geography a ZIP resolves to. No zip-level aggregate and no forecast exist on this deployment; every figure returns with the geography it actually covers and its as-of date.", {"zip_code": _text("zip_code")}),
@@ -341,15 +343,15 @@ TOOLS = {
     "get_distress_map":     _tool("get_distress_map", "Distress signal density by zip: pre-foreclosure, tax delinquency, absentee rate.", {"state": _text("state"), "zip_code": _text("zip_code")}),
     "get_investment_activity": _tool("get_investment_activity", "Institutional and investor purchase activity, LLC-buyer trends, by zip.", {"zip_code": _text("zip_code")}),
     "forecast_appreciation": _tool("forecast_appreciation", "1–5 year appreciation forecast for a market using historical trends.", {"zip_code": _text("zip_code")}),
-    "get_days_on_market":   _tool("get_days_on_market", "Days on market for a ZIP from the MLS cache when it holds listings there, plus county and state medians as context. Not broken down by property type.", {"zip_code": _text("zip_code")}),
+    "get_days_on_market":   _tool("get_days_on_market", "Days-on-market medians for the county and state a ZIP belongs to. Not broken down by property type.", {"zip_code": _text("zip_code")}),
     "get_price_reductions": _tool("get_price_reductions", "Listings with recent price drops — negotiation opportunity signals.", {"zip_code": _text("zip_code")}),
     "get_market_heatmap":   _tool("get_market_heatmap", "Visual summary of activity, price, distress, and velocity across a market.", {"state": _text("state"), "zip_code": _text("zip_code")}),
 
     # ── Documents & Contracts (12) ──
-    "list_contract_templates": _tool("list_contract_templates", "Available contract templates by state and document type.", {"state": _text("state", "2-letter code"), "document_type": _text("document_type", "assignment, purchase, disclosure, etc.")}, []),
+    "list_contract_templates": _tool("list_contract_templates", "All contract templates in this workspace with their status and required fields; only approved ones can be drafted.", {}),
     "generate_contract":    _tool("generate_contract", "Draft a contract or disclosure from a template. Output requires professional review.", {"template_id": _text("template_id"), "deal_id": _text("deal_id")}, ["template_id", "deal_id"]),
     "review_contract_terms": _tool("review_contract_terms", "Summarize key terms, deadlines, contingencies, and risks in a contract. Informational — not legal advice.", {"contract_id": _text("contract_id")}),
-    "check_contract_deadlines": _tool("check_contract_deadlines", "Dates, milestones, and expiring contingencies in a contract.", {"contract_id": _text("contract_id")}),
+    "check_contract_deadlines": _tool("check_contract_deadlines", "Deadlines and milestones from the transaction a contract is linked to, with overdue and days-left flags.", {"contract_id": _text("contract_id")}),
     "list_required_disclosures": _tool("list_required_disclosures", "State-specific disclosure forms required for a property sale.", {"state": _text("state", "2-letter code")}),
     "verify_contract_signatures": _tool("verify_contract_signatures", "Signature status for all parties on a contract.", {"contract_id": _text("contract_id")}),
     "list_document_history": _tool("list_document_history", "Revision history and audit trail for a contract or document.", {"contract_id": _text("contract_id")}),
@@ -366,7 +368,7 @@ TOOLS = {
     "run_underwriting_model": _tool("run_underwriting_model", "Full deal underwriting: ARV, rehab, MAO, ROI, cap rate, cash-on-cash, break-even. Returns a scored verdict.", {"address": _text("address"), "asking_price": _text("asking_price")}, ["address"]),
     "estimate_closing_costs": _tool("estimate_closing_costs", "Estimated closing costs: title, escrow, recording, transfer tax, attorney fees.", {"property_value": _text("property_value"), "state": _text("state")}, ["property_value"]),
     "calculate_break_even": _tool("calculate_break_even", "Break-even timeline: how many months of holding until profit on this deal.", {"deal_id": _text("deal_id")}),
-    "list_billing_invoices": _tool("list_billing_invoices", "Metered usage not yet reported for billing. Issued invoices are held by the payment processor and are not mirrored on this platform, so none are returned.", {}),
+    "list_billing_invoices": _tool("list_billing_invoices", "Metered usage not yet reported for billing. Issued invoices are held by the payment processor and are not mirrored on this platform, so none are returned. Broker-owner only.", {}),
     "get_portfolio_performance": _tool("get_portfolio_performance", "Aggregate returns across all deals: total deals, average ROI, average margin, pipeline value.", {}),
     "calculate_interest_costs": _tool("calculate_interest_costs", "Hard money or private lending interest costs over a projected holding period.", {"loan_amount": _text("loan_amount"), "interest_rate": _text("interest_rate"), "months": _text("months", "holding period")}, ["loan_amount", "interest_rate"]),
     "estimate_after_repair_value": _tool("estimate_after_repair_value", "Detailed ARV with comps, adjustments, confidence score, and low/mid/high range.", {"address": _text("address"), "sqft": _text("sqft")}, ["address"]),
@@ -374,7 +376,7 @@ TOOLS = {
     "compare_financing_options": _tool("compare_financing_options", "Compare hard money, private, conventional, and cash for a deal.", {"deal_id": _text("deal_id")}),
 
     # ── Media & Assets (6) ──
-    "list_property_photos": _tool("list_property_photos", "Images and photos associated with a property or listing.", {"listing_id": _text("listing_id")}),
+    "list_property_photos": _tool("list_property_photos", "Photos attached to a listing, with AI-generated ones flagged.", {"listing_id": _text("listing_id")}),
     "generate_tour_link":   _tool("generate_tour_link", "Generate a shareable 3D property tour link for a listing.", {"listing_id": _text("listing_id")}),
     "list_property_videos": _tool("list_property_videos", "Video walkthroughs and drone footage for a property.", {"listing_id": _text("listing_id")}),
     "upload_property_document": _tool("upload_property_document", "Upload a document (PDF, image) to the encrypted vault for a record.", {"record_type": _text("record_type", "client, lead, listing, or contract"), "record_id": _text("record_id")}, ["record_type", "record_id"]),
@@ -382,24 +384,24 @@ TOOLS = {
     "get_splat_status":     _tool("get_splat_status", "3D reconstruction status and preview URL for a property address.", {"address": _text("address")}),
 
     # ── Agent & Brokerage (8) ──
-    "get_agent_performance": _tool("get_agent_performance", "Agent metrics: deals closed, pipeline value, conversion rate, average margin.", {"agent_id": _text("agent_id", "Optional")}, []),
+    "get_agent_performance": _tool("get_agent_performance", "Client counts, conversion rate (clients closed out of all clients), transaction counts and volume, and showings, for one agent or the workspace. Margin is not recorded.", {"agent_id": _text("agent_id", "Optional")}, []),
     "list_team_members":    _tool("list_team_members", "Brokerage roster with roles, licenses, and status.", {}),
     "get_agent_profile":    _tool("get_agent_profile", "Agent profile: license, markets, autonomy settings, communication prefs.", {"agent_id": _text("agent_id", "Optional")}, []),
     "list_agent_commissions": _tool("list_agent_commissions", "Commission tracking by agent: earned, pending, split breakdown.", {"agent_id": _text("agent_id", "Optional")}, []),
     "get_onboarding_status": _tool("get_onboarding_status", "Brokerage onboarding completeness: licenses, settings, billing, AI config.", {}),
-    "get_team_pipeline":    _tool("get_team_pipeline", "Team-wide deal view: all agents, all stages, aggregate metrics.", {}),
-    "list_providers":       _tool("list_providers", "Connected provider accounts: Google, Twilio, SES, Stripe status.", {}),
-    "get_billing_status":   _tool("get_billing_status", "Subscription plan, status and renewal date, plus how much usage is waiting to be reported. Card details are held by the payment processor and are never stored here.", {}),
+    "get_team_pipeline":    _tool("get_team_pipeline", "Deal counts per pipeline stage for this workspace, with how many contracts expire within 14 days.", {}),
+    "list_providers":       _tool("list_providers", "Provider accounts saved for this workspace and their last stored check. Saved is not the same as connected: only a passing check means a channel works.", {}),
+    "get_billing_status":   _tool("get_billing_status", "Subscription plan, status and renewal date, plus how much usage is waiting to be reported. Card details are held by the payment processor and are never stored here. Broker-owner only.", {}),
 
     # ── Ops & Admin (8) ──
-    "get_tenant_health":    _tool("get_tenant_health", "System health: API latency, DB pool size, job queue depth, cache freshness.", {}),
-    "get_database_stats":   _tool("get_database_stats", "Connection-pool state and this workspace's row counts. Table sizes and index-usage counters are database-wide and are returned only to a platform admin; the migration version is reported only if a schema_migrations ledger exists.", {}),
-    "list_recent_errors":   _tool("list_recent_errors", "Recent failures recorded in the job queue and the audit anomaly log. There is no queryable application log — an error that only reached stdout is not visible here.", {}),
+    "get_tenant_health":    _tool("get_tenant_health", "This workspace's counts of clients, leads, open transactions, failed jobs and pending approvals. Broker-owner only.", {}),
+    "get_database_stats":   _tool("get_database_stats", "Connection-pool state and this workspace's row counts. Table sizes and index-usage counters are database-wide and are returned only to a platform admin; applied migrations are counted only if a schema_migrations ledger exists. Broker-owner only.", {}),
+    "list_recent_errors":   _tool("list_recent_errors", "Recent failures recorded in the job queue and the audit anomaly log. There is no queryable application log — an error that only reached stdout is not visible here. Broker-owner only.", {}),
     "get_feature_flags":    _tool("get_feature_flags", "Which features are enabled on this deployment, including any whose call site defaults differently from the generic flag. Deployment-wide, not per workspace.", {}),
-    "get_audit_trail":      _tool("get_audit_trail", "Recent audit events: logins, data exports, AI actions, webhooks.", {"limit": _text("limit", "default 20")}, []),
-    "get_job_queue":        _tool("get_job_queue", "Pending and active durable automation jobs with status.", {}),
-    "list_integration_status": _tool("list_integration_status", "All external integrations and their health: MLS, SES, Stripe, Foundry, Regrid.", {}),
-    "run_health_check":     _tool("run_health_check", "Database reachability and latency, pool state, failed jobs, and stored provider validation status. Reads local state only — no third party is contacted, and the tool says which checks it did not perform.", {}),
+    "get_audit_trail":      _tool("get_audit_trail", "The workspace's 50 most recent audit-log entries (category, action, user, target, time), without their detail. Broker-owner only.", {}),
+    "get_job_queue":        _tool("get_job_queue", "The 50 most recent automation jobs in any state, without their payloads. Broker-owner only.", {}),
+    "list_integration_status": _tool("list_integration_status", "Provider accounts saved for this workspace with their stored validation status and expiry. Broker-owner only. Saved is not connected; nothing is probed live.", {}),
+    "run_health_check":     _tool("run_health_check", "Database reachability and latency, pool state, failed jobs, and stored provider validation status. Reads local state only — no third party is contacted, and the tool says which checks it did not perform. Broker-owner only.", {}),
 
     # ── Legal & Compliance (6) ──
     "get_state_laws":       _tool("get_state_laws", "Key real estate regulations for a state: wholesaling, disclosures, licenses.", {"state": _text("state", "2-letter code")}),
@@ -418,11 +420,13 @@ TOOLS = {
     "get_govinfo_record":   _tool("get_govinfo_record", "Search official government records: legislation, regulations, court opinions, reports.", {"query": _text("query")}),
 
     # ── Existing mutation tools (kept from original) ──
-    "codebase_summary":     _tool("codebase_summary", "Return a map of the NEOH codebase: key files, routers, feature flags, and migrations.", {}),
+    "codebase_summary":     _tool("codebase_summary", "A fixed, hand-written overview of the main backend files and feature-flag settings. It may be out of date; say so if it matters.", {}),
     "web_search":           _tool("web_search", "Search the live web for market data, news, public records, or factual answers.", {"query": _text("query", "The search query — be specific and factual.")}),
-    "update_client":        _tool("update_client", "Update reversible profile fields on the currently selected client only.", {
-        "client_id": _text("client_id"), "full_name": _text("full_name"), "email": _text("email"),
-        "phone": _text("phone"), "client_type": {"type": "string", "enum": ["seller","buyer","both"]},
+    # email and phone are not offered: the handler refuses both (they decide
+    # where messages go), so advertising them was a promise it always broke.
+    "update_client":        _tool("update_client", "Update the name, type, stage, lead score or company of the currently selected client. Email and phone cannot be changed here; the agent edits them in the client record.", {
+        "client_id": _text("client_id"), "full_name": _text("full_name"),
+        "client_type": {"type": "string", "enum": ["seller","buyer","both"]},
         "stage": {"type": "string", "enum": ["lead","active","nurture","under_contract","closed","lost"]},
         "lead_score": {"type": "integer", "minimum": 0, "maximum": 100},
         "company": _text("company"),
@@ -1419,11 +1423,13 @@ RULES:
 - Be concise. Speak in 1-3 short sentences per turn.
 - Be conversational — use natural spoken English.
 - Never give legal or financial advice.
-- If asked about specific properties, say you can look that up if they provide an address.
-- If the caller wants a human agent, say "Let me connect you — one moment please" and end with [CONNECT].
+- On this call you cannot look anything up, transfer the call, book appointments or send
+  anything. If the caller asks for one of those, say plainly that you can't do it on this call
+  and suggest they contact the brokerage directly. Never promise a lookup, a transfer or a
+  callback.
 - Never mention you're an AI beyond the initial disclosure.
 - Stay in character as a helpful brokerage receptionist.
-- If the caller is upset or says STOP, say "I understand. Goodbye." and end with [END].
+- If the caller is upset or says STOP, say "I understand. Goodbye."
 
 CALLER: {text}
 
