@@ -36,7 +36,7 @@ Listed weakest to strongest:
 | 01 | Repository source audit | [01](01-repository-source-audit.md) | `not_inspected` | — | — | — | Run the 01 inventory |
 | 02 | All pages, routes, mobile UI | [02](02-all-pages-mobile-ui.md) | `source_verified` | staging | `90372f2` crawl | — | Per-page verdicts |
 | 03 | Brokerage tenancy and hybrid access | [03](03-brokerage-tenancy-hybrid-access.md) | `source_verified` | local | 0131 (L03-02) | Owner: team leads (L03-03) | Deploy 0131; browser check; then agent_contacts |
-| 04 | CRM, contacts, leads, relationships | [04](04-crm-contact-leads-relationships.md) | `tests_pass` | local | 0133 (L04-01) | — | T04.01 + T04.13 (L04-01 next) |
+| 04 | CRM, contacts, leads, relationships | [04](04-crm-contact-leads-relationships.md) | `tests_pass` | local | `a8bff54` (L04-01) | — | T04.01 + T04.13 (L04-01 next) |
 | 05 | Semantic intent | [05](05-semantic-language-intent.md) | `source_verified` | local | `745f2fa` | — | L05-01 |
 | 06 | Evidence retrieval and memory | [06](06-evidence-retrieval-memory.md) | `source_verified` | local | `745f2fa` | A01, A02 | L06-01 |
 | 07 | AI gateway and governed tools | [07](07-ai-gateway-model-tool-governance.md) | `source_verified` | local | `745f2fa` | A09 | L07-01 |
@@ -50,7 +50,7 @@ Listed weakest to strongest:
 | 15 | Neoh mascot animation | [15](15-neoh-avatar-skeletal-character-animation.md) | `source_verified` | local | `745f2fa` | Owner: rig author | L15-01 |
 | 16 | Performance, indexes, cache | [16](16-performance-indexes-mobile-cache.md) | `source_verified` | local | `745f2fa` | A10; no production target | L16-01 |
 | 17 | Security, privacy, data lifecycle | [17](17-security-privacy-compliance-data-lifecycle.md) | `source_verified` | staging | `0739563` | A01, A06 | Read-only review with 02 |
-| 18 | Billing, seats, analytics | [18](18-brokerage-billing-seat-plans-analytics.md) | `source_verified` | local | 0133 (L18-02 `tests_pass`) | D-2026-10-12-02 (billable stage) | T18.04 + AC18.02 (seats) |
+| 18 | Billing, seats, analytics | [18](18-brokerage-billing-seat-plans-analytics.md) | `source_verified` | local | `a8bff54` (L18-02 `tests_pass`) | D-2026-10-12-02 (billable stage) | T18.04 + AC18.02 (seats) |
 | 19 | Production operations | [19](19-infrastructure-deploy-observability-recovery.md) | `source_verified` | staging | `745f2fa` | No production app; A04 | L19-03 |
 | 20 | 20-agent launch certification | [20](20-twenty-agent-full-feature-launch-e2e-evaluation.md) | `source_verified` | local | `745f2fa` | Every row above | Last |
 
@@ -227,7 +227,7 @@ CRM, contacts, leads and relationships.
 id: L04-01
 status: tests_pass
 env: local
-evidence_shas: [745f2fa]   # finding; fix in the commit that adds backend/outreach_lifecycle.py (migration 0133)
+evidence_shas: [745f2fa, a8bff54]   # finding; fix (migration 0133)
 files: [backend/outreach_lifecycle.py, backend/speed_to_lead.py, backend/lead_routing_api.py, backend/commands_api.py, backend/messaging_data.py, backend/email_outbox.py, backend/db/migrations/0133_engagement_lifecycle.sql, backend/tests/test_outreach_lifecycle.py, backend/tests/test_speed_to_lead.py, backend/tests/test_engagement_lifecycle_live.py]
 tests_run:
   - {cmd: "sed -n 380,392p backend/speed_to_lead.py; sed -n 535,552p backend/lead_routing_api.py", result: "lead_engaged metered right after staged; routing metrics count staged drafts as responded", date: 2026-10-12}
@@ -858,7 +858,7 @@ updated: 2026-10-12
 id: L18-02
 status: tests_pass
 env: local
-evidence_shas: [745f2fa]   # finding; fix in the commit that adds migration 0133 + backend/outreach_lifecycle.py
+evidence_shas: [745f2fa, a8bff54]   # finding; fix (migration 0133)
 files: [backend/outreach_lifecycle.py, backend/billing_usage.py, backend/speed_to_lead.py, backend/commands_api.py, backend/messaging_data.py, backend/operator_api.py, backend/ai_tools_read.py, backend/db/migrations/0133_engagement_lifecycle.sql, backend/tests/test_outreach_lifecycle.py, backend/tests/test_billing_usage.py, backend/tests/test_engagement_lifecycle_live.py, .github/workflows/ci.yml]
 tests_run:
   - {cmd: "grep -n record_usage backend/speed_to_lead.py; sed -n 74,77p backend/billing_usage.py", result: "lead_engaged recorded at :387-389 right after the staged event; it is the only Stripe-reported metric (billing_usage.py:76)", date: 2026-10-12}
@@ -1010,7 +1010,7 @@ From [neoh-full-platform-source-audit-2026-10-08.md](../neoh-full-platform-sourc
 | A02 | Failed property lookup reads as zero matches | P0 | open | `backend/client_ai_automation.py:700`, `:704` (`_property_candidates_bounded`); degraded set from `model_error` only (`:962`) | 11 | L11-02, L06-01 |
 | A03 | Professional 3D certification without verified evidence | P0 | partly fixed: labels bound to the verdict (L12-02); certification state not built | `backend/recon_quality.py:83`, `:101`; `backend/reconstruction_worker.py:581`; badge `backend/tour_api.py:41`, `:335` ignores the verdict | 12 | L12-01 |
 | A04 | Production readiness not established by staging CI | P0 | open (no production app) | `.github/workflows/ci.yml:606` (`promote` manual only) | 19 | L19-02 |
-| A05 | Usage event counted before approved/delivered outreach | P1 | fixed in code, `tests_pass` local (2026-10-13), not deployed: metered only at delivered (0133); owner to confirm the billable stage | was `backend/speed_to_lead.py:387-389`; now `backend/outreach_lifecycle.py` (`BILLABLE_ENGAGEMENT_STAGE`), `backend/billing_usage.py` (`record_lead_engagement`, `BILLABLE_PREDICATE`) | 18 | L18-02, L04-01 |
+| A05 | Usage event counted before approved/delivered outreach | P1 | fixed in code (`a8bff54`), `tests_pass` local (2026-10-13), not deployed: metered only at delivered (0133); owner to confirm the billable stage | was `backend/speed_to_lead.py:387-389`; now `backend/outreach_lifecycle.py` (`BILLABLE_ENGAGEMENT_STAGE`), `backend/billing_usage.py` (`record_lead_engagement`, `BILLABLE_PREDICATE`) | 18 | L18-02, L04-01 |
 | A06 | Customer names in failure logs | P1 | open | `backend/client_ai_automation.py:701-703` logs `full_name` | 17 | L17-04 |
 | A07 | Concurrent messaging route initialization | P1 | open | `backend/messaging_data.py:108` (`ON CONFLICT … DO UPDATE SET provider_account_id`) | 10 | L10-06 |
 | A08 | Heuristic valuation targets in model training | P1 | open in code | `backend/ml_forge/edge_forge/train_lora.py:207` (`_COUNTY_PPSF`), `:209` (`_MAO_RULE = 0.70`) | 11 | — |
