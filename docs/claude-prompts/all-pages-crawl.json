@@ -325,14 +325,6 @@
    "writes_attempted_on_open": [],
    "runs": 4
   },
-  "properties:mls": {
-   "status": "clean",
-   "not_offered_to": [],
-   "load_ms_median": 2596,
-   "issues": [],
-   "writes_attempted_on_open": [],
-   "runs": 4
-  },
   "properties:market": {
    "status": "clean",
    "not_offered_to": [],

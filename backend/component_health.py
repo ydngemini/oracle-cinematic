@@ -186,7 +186,11 @@ async def _db_components() -> dict[str, dict]:
 
 def _mls(rows: list[dict]) -> dict:
     import mls_health
+    from mls_switch import mls_enabled
 
+    if not mls_enabled():
+        # Not offered (D-2026-10-12-01): never degrades or alerts.
+        return _c(NOT_CONFIGURED, "MLS is not offered on this deployment")
     if not rows:
         return _c(NOT_CONFIGURED, "no MLS feed configured")
     states = {r["mls_id"]: mls_health.compute_health(r) for r in rows}

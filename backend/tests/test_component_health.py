@@ -19,7 +19,8 @@ def test_no_database_is_unavailable_and_everything_else_unknown(monkeypatch):
         assert snap["components"][name]["state"] == ch.UNKNOWN, name   # never claimed healthy
 
 
-def test_mls_auth_failure_is_reported_as_auth_not_down():
+def test_mls_auth_failure_is_reported_as_auth_not_down(monkeypatch):
+    monkeypatch.setenv("ORACLE_MLS_ENABLED", "1")   # feed health is only computed while MLS is offered
     row = {"mls_id": "actris", "license_classification": "licensed_property_listing",
            "last_error_class": "auth", "consecutive_failures": 3, "backfill_complete": True,
            "last_success_at": None, "last_attempt_at": None, "stale_after_minutes": 1440}

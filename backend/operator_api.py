@@ -53,6 +53,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from admin_ops import require_platform_admin
 from db.connection import tenant_tx
+from mls_switch import require_mls_enabled
 from tenancy import Role, TenantContext
 
 logger = logging.getLogger("oracle.operator_api")
@@ -1239,7 +1240,10 @@ async def billing_exceptions(ctx: TenantContext = Depends(require_platform_admin
 # ---------------------------------------------------------------------------
 
 @router.get("/mls/feeds")
-async def mls_feeds(ctx: TenantContext = Depends(require_platform_admin)) -> dict[str, Any]:
+async def mls_feeds(
+    ctx: TenantContext = Depends(require_platform_admin),
+    _mls: None = Depends(require_mls_enabled),   # after the role check: non-admins get 403
+) -> dict[str, Any]:
     try:
         async with tenant_tx(ctx) as conn:
             await _start(conn)

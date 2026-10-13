@@ -27,6 +27,7 @@ from typing import Any, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from db.connection import tenant_tx
+from mls_switch import require_mls_enabled
 from tenancy import TenantContext, require_context
 from marketplace_engine import rank_buyer_request
 from data_coverage import summary as data_coverage_summary
@@ -34,6 +35,11 @@ from data_coverage import summary as data_coverage_summary
 logger = logging.getLogger("oracle.mls_portal")
 
 router = APIRouter(prefix="/api/mls", tags=["MLS Portal"])
+# The public-records catalog is not MLS: it lived under /api/mls only by
+# history. Its canonical home is /api/property-records; the /api/mls/
+# public-records paths stay as aliases and keep working while MLS is off
+# (D-2026-10-12-01, prompt 11 T11.01).
+records_router = APIRouter(prefix="/api/property-records", tags=["Property records"])
 
 LISTING_FRESH_SECONDS = 24 * 3600
 LISTING_EXPIRED_SECONDS = 72 * 3600
@@ -205,7 +211,7 @@ async def _buyer_matches(conn: Any, listing: dict[str, Any]) -> list[dict[str, A
 
 # ── routes ────────────────────────────────────────────────────────────────────
 
-@router.get("/search", summary="Retail MLS browse — cached, quota-safe")
+@router.get("/search", summary="Retail MLS browse — cached, quota-safe", dependencies=[Depends(require_mls_enabled)])
 async def mls_portal_search(
     city: Optional[str] = Query(default=None, max_length=120),
     state: Optional[str] = Query(default=None, max_length=2),
@@ -325,7 +331,7 @@ async def mls_portal_search(
     }
 
 
-@router.get("/listings/{listing_id}", summary="Single MLS listing detail")
+@router.get("/listings/{listing_id}", summary="Single MLS listing detail", dependencies=[Depends(require_mls_enabled)])
 async def mls_portal_listing(
     listing_id: str,
     ctx: TenantContext = Depends(require_context),
@@ -388,7 +394,7 @@ async def mls_portal_listing(
     return {**listing, "buyer_matches": matches, "buyers": crm_buyers}
 
 
-@router.get("/health", summary="MLS source health and freshness")
+@router.get("/health", summary="MLS source health and freshness", dependencies=[Depends(require_mls_enabled)])
 async def mls_portal_health(
     ctx: TenantContext = Depends(require_context),
 ) -> dict[str, Any]:
@@ -863,8 +869,9 @@ async def _reconcile_sparse_public_record(
         return False
 
 
+@records_router.get("", summary="Search the shared source-backed property catalog")
 @router.get("/pipeline", include_in_schema=False)
-@router.get("/public-records", summary="Search the shared source-backed property catalog")
+@router.get("/public-records", include_in_schema=False)
 async def mls_pipeline_search(
     city: Optional[str] = Query(default=None, max_length=120),
     state: Optional[str] = Query(default=None, max_length=2),
@@ -1040,8 +1047,9 @@ async def mls_pipeline_search(
     }
 
 
+@records_router.get("/{record_id}", summary="Single public property record")
 @router.get("/pipeline/{record_id}", include_in_schema=False)
-@router.get("/public-records/{record_id}", summary="Single public property record")
+@router.get("/public-records/{record_id}", include_in_schema=False)
 async def mls_pipeline_listing(
     record_id: str,
     ctx: TenantContext = Depends(require_context),

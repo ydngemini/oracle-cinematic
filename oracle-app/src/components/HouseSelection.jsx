@@ -35,7 +35,7 @@ function buildPath({ q, state, page }) {
   const params = new URLSearchParams({ page: String(page) });
   if (q) params.set('q', q);
   if (state) params.set('state', state);
-  return `/api/mls/public-records?${params.toString()}`;
+  return `/api/property-records?${params.toString()}`;
 }
 
 function RecordSkeletons() {

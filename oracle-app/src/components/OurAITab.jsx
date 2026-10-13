@@ -79,7 +79,6 @@ const SOURCES = [
   { id: 'routes', label: 'Voice routes', path: '/api/telephony/routes', select: (payload) => payload?.routes || [] },
   { id: 'calls', label: 'Inbound calls', path: '/api/telephony/calls?limit=50', select: (payload) => payload?.calls || [] },
   { id: 'sites', label: 'Websites', path: '/api/sites', select: (payload) => payload?.sites || payload?.items || [] },
-  { id: 'idx', label: 'MLS / IDX', path: '/api/mls/health', select: (payload) => payload || {} },
   { id: 'sales', label: 'Sales stack', path: '/api/sales/capabilities', select: (payload) => payload || {} },
   { id: 'routing', label: 'Lead routing', path: '/api/crm/routing/metrics?days=30', select: (payload) => payload || {} },
 ];
@@ -121,15 +120,6 @@ function connectedProvider(provider) {
 
 function activeRoute(route) {
   return route?.active !== false && route?.is_active !== false && Boolean(route?.inbound_did);
-}
-
-function idxConnected(idx) {
-  const status = String(idx?.status || idx?.connection_status || '').toLowerCase();
-  const sources = Array.isArray(idx?.sources) ? idx.sources : Array.isArray(idx?.providers) ? idx.providers : [];
-  return ['active', 'connected', 'healthy', 'ready', 'degraded'].includes(status)
-    || sources.some((source) => ['active', 'connected', 'healthy', 'ready', 'degraded'].includes(
-      String(source?.health || source?.status || '').toLowerCase(),
-    ));
 }
 
 function CapabilityStatus({ status }) {
@@ -335,7 +325,6 @@ export default function OurAITab({
       connectedProviders: providers.filter(connectedProvider),
       pendingCommands: commands.filter((command) => ['draft', 'awaiting_approval', 'pending'].includes(command?.state)),
       assistantEnabled: values.assistant?.enabled === true,
-      idxReady: idxConnected(values.idx),
     };
   }, [snapshot.values]);
 
@@ -571,21 +560,9 @@ export default function OurAITab({
   const siteItems = [
     {
       name: 'Hyperlocal Website',
-      detail: 'Build source-backed area sites, private revisions, IDX-aware pages, lead intake, attribution, and approval-gated publishing.',
+      detail: 'Build source-backed area sites, private revisions, lead intake, attribution, and approval-gated publishing.',
       status: sourceState('sites'),
       Icon: Globe2,
-    },
-    {
-      name: 'MLS / IDX',
-      detail: 'Direct authorized MLS/RESO health is checked before IDX can be enabled; third-party listing aggregators are not treated as MLS.',
-      status: sourceState('idx', data.idxReady),
-      Icon: Search,
-    },
-    {
-      name: 'WordPress IDX Plugin',
-      detail: 'A packaged WordPress plugin with property search, listing pages, capture, and CRM sync still requires implementation and distribution.',
-      status: STATUS.setup,
-      Icon: PlugZap,
     },
     {
       name: 'Website Design',
@@ -781,7 +758,7 @@ export default function OurAITab({
 
         {activeWorkspace.id === 'sites' ? (
           <>
-            <CapabilityLedger id="sites-ledger" eyebrow="Owned audience" title="Web, IDX, and search presence" description="The hyperlocal builder is live. Adjacent distribution and visibility products remain visibly separated until implemented." items={siteItems} />
+            <CapabilityLedger id="sites-ledger" eyebrow="Owned audience" title="Web and search presence" description="The hyperlocal builder is live. Adjacent distribution and visibility products remain visibly separated until implemented." items={siteItems} />
             <div className={styles.embeddedWorkspace}>
               <Suspense fallback={<NestedFallback />}><StudioTab embedded /></Suspense>
             </div>

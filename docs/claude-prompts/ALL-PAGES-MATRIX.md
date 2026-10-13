@@ -4,7 +4,7 @@
 >
 > **Crawl** is how the page rendered on the last `scripts/crawl-all-pages.py` run (details in `all-pages-crawl.json`): `clean` means no page errors, API 5xx, on-screen error or phone overflow for that role and size. It is not a functional sign-off. **APIs** are the direct calls in each page's own component file; calls inside hooks or child components are not followed. **Verdict** starts at `not_inspected` and is set per row as each page is verified (T02.09). Status lives in [LEDGER.md](LEDGER.md#l02).
 
-52 pages across 9 registries.
+51 pages across 9 registries.
 
 ## Top-level views (3)
 
@@ -50,7 +50,7 @@
 | **Social**<br>`ai:social` | `/work?type=ai (workspace: social)` | `OurAITab`<br>`src/components/OurAITab.jsx` | member · signed-in member; per-role server checks not yet inspected (prompt 03, T02.14) | — | `clean`<br>2244 ms | `not_inspected` |
 | **Homeowners**<br>`ai:homeowners` | `/work?type=ai (workspace: homeowners)` | `OurAITab`<br>`src/components/OurAITab.jsx` | member · signed-in member; per-role server checks not yet inspected (prompt 03, T02.14) | — | `clean`<br>2276 ms | `not_inspected` |
 | **Automations**<br>`ai:automations` | `/work?type=ai (workspace: automations)` | `OurAITab`<br>`src/components/OurAITab.jsx` | member · signed-in member; per-role server checks not yet inspected (prompt 03, T02.14) | — | `clean`<br>2534 ms | `not_inspected` |
-| **Sites**<br>`ai:sites` | `/work?type=ai (workspace: sites)` | `StudioTab`<br>`src/components/StudioTab.jsx` | member · signed-in member; per-role server checks not yet inspected (prompt 03, T02.14) | `GET /api/mls/health`<br>`GET /api/sites`<br>`POST /api/sites`<br>`POST /api/sites/{param}/preview` | `clean`<br>2427 ms | `not_inspected` |
+| **Sites**<br>`ai:sites` | `/work?type=ai (workspace: sites)` | `StudioTab`<br>`src/components/StudioTab.jsx` | member · signed-in member; per-role server checks not yet inspected (prompt 03, T02.14) | `GET /api/sites`<br>`POST /api/sites`<br>`POST /api/sites/{param}/preview` | `clean`<br>2427 ms | `not_inspected` |
 | **Autonomy**<br>`ai:autonomy` | `/work?type=ai (workspace: autonomy)` | `AutonomyControls`<br>`src/components/AutonomyControls.jsx` | member · signed-in member; per-role server checks not yet inspected (prompt 03, T02.14) | `GET /api/autonomy`<br>`PUT /api/autonomy` | `clean`<br>2508 ms | `not_inspected` |
 
 ## Sales pages (5)
@@ -73,14 +73,13 @@
 | **Portfolio**<br>`deals:portfolio` | `/work?type=deals (view: portfolio)` | `PortfolioTab`<br>`src/components/PortfolioTab.jsx` | member · signed-in member; per-role server checks not yet inspected (prompt 03, T02.14) | `GET /api/portfolio/summary` | `clean`<br>2499 ms | `not_inspected` |
 | **Marketplace**<br>`deals:marketplace` | `/work?type=deals (view: marketplace)` | `MarketplaceBrowse`<br>`src/components/MarketplaceBrowse.jsx` | member · signed-in member; per-role server checks not yet inspected (prompt 03, T02.14) | `GET /api/contracts/documents`<br>`GET /api/crm/clients`<br>`GET /api/marketplace/buyers/profiles`<br>`GET /api/marketplace/publications`<br>`POST /api/marketplace/bidding-messages/{param}/approve`<br>`POST /api/marketplace/buyers/requests`<br>`POST /api/marketplace/publications/from-contract/{param}`<br>`POST /api/marketplace/publications/{param}/bidding-message`<br>`POST /api/marketplace/publications/{param}/match`<br>`POST /api/marketplace/publications/{param}/publish`<br>`PUT /api/marketplace/buyers/profile` | `clean`<br>2453 ms | `not_inspected` |
 
-## Properties sub-views (6)
+## Properties sub-views (5)
 
 | Page | Path | Component | Roles · gate | APIs (direct) | Crawl | Verdict |
 |---|---|---|---|---|---|---|
 | **Address**<br>`properties:address` | `/work?type=properties (view: address)` | `PropertyViewTab`<br>`src/components/PropertyViewTab.jsx` | member · signed-in member; per-role server checks not yet inspected (prompt 03, T02.14) | `DELETE /api/crm/property-view/upload-links/{param}`<br>`GET /api/crm/property-view`<br>`GET /api/crm/property-view/resolve`<br>`GET /api/enrich-property`<br>`GET /api/geocode`<br>`POST /api/crm/property-view/media`<br>`POST /api/crm/property-view/media/{param}/review`<br>`POST /api/crm/property-view/subject`<br>`POST /api/crm/property-view/upload-links` | `clean`<br>1956 ms | `not_inspected` |
 | **Houses**<br>`properties:houses` | `/work?type=properties (view: houses)` | `HouseSelection`<br>`src/components/HouseSelection.jsx` | member · signed-in member; per-role server checks not yet inspected (prompt 03, T02.14) | — | `clean`<br>2481 ms | `not_inspected` |
 | **Listings**<br>`properties:listings` | `/work?type=properties (view: listings)` | `ListingsInventory`<br>`src/components/ListingsInventory.jsx` | member · signed-in member; per-role server checks not yet inspected (prompt 03, T02.14) | `GET /api/crm/listings`<br>`POST /api/crm/listings` | `clean`<br>2485 ms | `not_inspected` |
-| **MLS**<br>`properties:mls`<br>*MLS is out of scope (D-2026-10-12-01); removed by prompt 11 T11.01* | `/work?type=properties (view: mls)` | `MlsSearch`<br>`src/components/MlsSearch.jsx` | member · signed-in member; per-role server checks not yet inspected (prompt 03, T02.14) | `GET /api/mls/listings/{param}`<br>`GET /api/mls/regions`<br>`GET /api/mls/search` | `clean`<br>2596 ms | `not_inspected` |
 | **Market**<br>`properties:market` | `/work?type=properties (view: market)` | `MarketDataPanels`<br>`src/components/MarketDataPanels.jsx` | member · signed-in member; per-role server checks not yet inspected (prompt 03, T02.14) | `GET /api/market/{param}/overview` | `clean`<br>2210 ms | `not_inspected` |
 | **Forms**<br>`properties:forms` | `/work?type=properties (view: forms)` | `StateDocumentLibrary`<br>`src/components/StateDocumentLibrary.jsx` | member · signed-in member; per-role server checks not yet inspected (prompt 03, T02.14) | `GET /api/licensing/requirements/{param}`<br>`GET /api/states`<br>`GET /api/states/{param}`<br>`GET /api/states/{param}/advertising-rules`<br>`GET /api/states/{param}/document-library` | `clean`<br>2618 ms | `not_inspected` |
 

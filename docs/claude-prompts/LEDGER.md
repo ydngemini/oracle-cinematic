@@ -43,7 +43,7 @@ Listed weakest to strongest:
 | 08 | Durable missions and workflows | [08](08-durable-missions-workflow-orchestration.md) | `source_verified` | local | `745f2fa` | PR #11 review; grant-release decision | L08-01 |
 | 09 | Real-time voice | [09](09-realtime-voice-speech-latency.md) | `source_verified` | staging | `9c3463a` | Call-note broadcast (L09-03); phone check (L09-02) | L09-03 |
 | 10 | Communications and calendars | [10](10-communications-calendar-provider-integrations.md) | `source_verified` | staging | `75c6ba6` (local) | Google OAuth client; 10DLC; deploy approval; A07 | L10-01 |
-| 11 | Property and market intelligence (non-MLS) | [11](11-property-market-intelligence.md) | `source_verified` | local | `745f2fa` | D-2026-10-12-01; A02 | L11-01: gate legacy MLS |
+| 11 | Property and market intelligence (non-MLS) | [11](11-property-market-intelligence.md) | `source_verified` | local | mls gate | A02 | T11.10 (A02) |
 | 12 | Neoh Space capture, 3D, tours | [12](12-neoh-space-browser-capture-reconstruction.md) | `source_verified` | local | `745f2fa` | A03 | Capture Studio first slice |
 | 13 | Deals, documents, compliance | [13](13-transactions-contract-vault-compliance.md) | `source_verified` | local | `745f2fa` | Owner: e-sign, commissions | L13-01 |
 | 14 | Sites, social, ads, client portal | [14](14-websites-social-ads-growth-client-portal.md) | `source_verified` | local | `745f2fa` | Owner: networks, listings on sites | L14-01 |
@@ -506,23 +506,22 @@ updated: 2026-10-12
 ### L11
 Property and market intelligence from authorized non-MLS sources.
 
-#### L11-01 Legacy MLS code and data, inventoried and gated off
+#### L11-01 Legacy MLS code and data, gated off (no data deleted)
 ```yaml
 id: L11-01
-status: source_verified
+status: tests_pass
 env: local
-evidence_shas: [745f2fa]
-files: [backend/mls_portal.py, backend/mls_sync_guard.py, backend/mls_health.py, backend/mls_licensing.py, backend/mls_enrichment.py, backend/mls_feed_lock.py, backend/state_compliance/routes_mls.py, backend/brokerage_onboarding.py, backend/component_health.py, backend/ai_tools_read.py, backend/portfolio_api.py, backend/data_integrations/periodic.py, backend/tests/golden_mls_flow.py, backend/db/migrations/0116_mls_search_order_index.sql, oracle-app/src/components/MlsSearch.jsx, oracle-app/src/components/PropertiesTab.jsx, oracle-app/src/components/OurAITab.jsx, oracle-app/src/components/StudioTab.jsx]
+evidence_shas: [745f2fa]   # inventory; the gate is in the commit that adds mls_switch.py
+files: [backend/mls_switch.py, backend/mls_portal.py, backend/state_compliance/routes_mls.py, backend/brokerage_onboarding.py, backend/operator_api.py, backend/data_integrations/periodic.py, backend/component_health.py, backend/ai_tools_read.py, backend/ai_chat_agent.py, oracle-app/src/components/PropertiesTab.jsx, oracle-app/src/components/HouseSelection.jsx, oracle-app/src/components/OurAITab.jsx, oracle-app/src/components/StudioTab.jsx]
 tests_run:
-  - {cmd: "ls backend/mls_*.py; grep -n MLS oracle-app/src/components/PropertiesTab.jsx", result: "MLS modules + MLS sub-tab present", date: 2026-10-12}
-  - {cmd: "doctl apps spec get (api envs)", result: "no MLS credentials configured on staging", date: 2026-10-07}
-  - {cmd: "grep -n mls brokerage_onboarding.py component_health.py OurAITab.jsx StudioTab.jsx", result: "MLS entitlement routes (:923, :940), legacy mls health component, MLS/IDX capability rows and /api/mls/health probes found; the legacy docs annotated in this change", date: 2026-10-12}
-authz_checked: n/a
-blockers: [{type: owner, note: "Retention/deletion of oracle_mls_listings data and any migration removal need owner approval."}]
+  - {cmd: "pytest backend/tests/test_mls_switch.py + full backend suite", result: "3307 passed: every /mls route (except the public-records aliases and the platform-admin privacy purge) depends on require_mls_enabled; /api/property-records is the same handler as the old alias; sync jobs skip; health NOT_CONFIGURED, never alerting", date: 2026-10-13}
+  - {cmd: "vitest full suite (allPagesMatrix: no MLS page, no /api/mls/ call)", result: "713 passed; matrix now 51 pages", date: 2026-10-13}
+authz_checked: role checks run before the MLS switch on role-gated routes (non-admins get 403, not 404)
+blockers: [{type: owner, note: "Retention/deletion of the cached MLS rows and migrations stays an owner decision; nothing was deleted."}]
 audit_refs: []
 decision_refs: [D-2026-10-12-01]
-next_task: "Gate MLS off in UI, jobs, AI context and matching (prompt 11 T11.01)."
-updated: 2026-10-12
+next_task: "Verify on staging after deploy."
+updated: 2026-10-13
 ```
 
 #### L11-02 A failed property lookup reads as zero matches (A02)

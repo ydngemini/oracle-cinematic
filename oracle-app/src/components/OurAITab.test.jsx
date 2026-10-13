@@ -29,8 +29,8 @@ describe('OurAITab live sources', () => {
     serve({ '/api/crm/routing/metrics': 403 });
     render(<OurAITab />);
     await waitFor(() => expect(api.crmGet).toHaveBeenCalledWith(expect.stringMatching(/routing\/metrics/), expect.anything()));
-    // 14 sources, one owner-only: the agent's count excludes it rather than showing 13/14.
-    expect(await screen.findByText(/13\/13 sources/)).toBeTruthy();
+    // 13 sources, one owner-only: the agent's count excludes it rather than showing 12/13.
+    expect(await screen.findByText(/12\/12 sources/)).toBeTruthy();
     expect(screen.queryByText('Partial live view')).toBeNull();
   });
 

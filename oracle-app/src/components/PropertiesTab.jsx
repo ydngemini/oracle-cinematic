@@ -1,5 +1,5 @@
 import { lazy, Suspense, useState } from 'react';
-import { House, MapPin, Store, LineChart, FileText, Building2 } from 'lucide-react';
+import { House, MapPin, Store, LineChart, FileText } from 'lucide-react';
 import { ErrorBoundary } from './ErrorBoundary';
 import styles from './PropertiesTab.module.css';
 
@@ -23,15 +23,14 @@ const MarketDataPanels = lazy(() =>
 const StateDocumentLibrary = lazy(() =>
   import('./StateDocumentLibrary').then((module) => ({ default: module.StateDocumentLibrary })),
 );
-// Retail MLS browse. /api/mls/search and both detail endpoints had no caller,
-// so an authorized listing could never be searched or opened here.
-const MlsSearch = lazy(() => import('./MlsSearch'));
+// The MLS sub-view (MlsSearch.jsx) is not offered: MLS is out of scope
+// (owner decision D-2026-10-12-01; prompt 11 T11.01). The component is kept,
+// not deleted, so re-enabling is a decision rather than a rewrite.
 
 const VIEWS = [
   { id: 'address', label: 'Address', Icon: MapPin },
   { id: 'houses', label: 'Houses', Icon: House },
   { id: 'listings', label: 'Listings', Icon: Store },
-  { id: 'mls', label: 'MLS', Icon: Building2 },
   { id: 'market', label: 'Market', Icon: LineChart },
   { id: 'forms', label: 'Forms', Icon: FileText },
 ];
@@ -72,7 +71,6 @@ export default function PropertiesTab() {
             {view === 'address' && <PropertyViewTab />}
             {view === 'houses' && <HouseSelection />}
             {view === 'listings' && <ListingsInventory />}
-            {view === 'mls' && <MlsSearch />}
             {view === 'market' && <MarketDataPanels />}
             {view === 'forms' && <StateDocumentLibrary />}
           </Suspense>

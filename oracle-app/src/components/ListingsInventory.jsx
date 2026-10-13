@@ -12,7 +12,7 @@ import { friendlyError } from '../lib/errorMessages';
  * the assistant could anchor to one (the since-removed record picker) and `update_listing`
  * is an allowlisted agent tool. The agent could edit records nobody could make.
  *
- * This is distinct from the Houses view, which browses `/api/mls/public-records`
+ * This is distinct from the Houses view, which browses `/api/property-records`
  * — seven million public parcels the workspace does not own.
  *
  * Two shapes of the API are surfaced rather than smoothed over:

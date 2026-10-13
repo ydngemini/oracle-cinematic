@@ -99,9 +99,6 @@ export default function StudioTab({ embedded = false }) {
   const [sitesError, setSitesError] = useState(null);
   const [sitesRefreshing, setSitesRefreshing] = useState(false);
   const [sitesUpdatedAt, setSitesUpdatedAt] = useState(null);
-  const [idx, setIdx] = useState(null);
-  const [idxError, setIdxError] = useState(null);
-  const [idxUpdatedAt, setIdxUpdatedAt] = useState(null);
   const [creating, setCreating] = useState(false);
   const [step, setStep] = useState(0);
   const [draft, setDraft] = useState(EMPTY_DRAFT);
@@ -124,22 +121,12 @@ export default function StudioTab({ embedded = false }) {
     );
   }, []);
 
-  const loadIdx = useCallback(() => crmGet('/api/mls/health').then(
-    (payload) => {
-      setIdx(payload || {});
-      setIdxError(null);
-      setIdxUpdatedAt(new Date());
-    },
-    (error) => setIdxError(error),
-  ), []);
-
+  // MLS/IDX is out of scope (owner decision D-2026-10-12-01): no IDX health
+  // probe, no IDX option in the builder. Sites carry the brokerage's own content.
   useEffect(() => {
-    const initial = Promise.allSettled([
-      Promise.resolve().then(loadSites),
-      Promise.resolve().then(loadIdx),
-    ]);
+    const initial = Promise.resolve().then(loadSites);
     return () => { void initial; };
-  }, [loadIdx, loadSites]);
+  }, [loadSites]);
 
   const setField = (name, value) => setDraft((current) => ({ ...current, [name]: value }));
   const closeWizard = () => {
@@ -149,20 +136,13 @@ export default function StudioTab({ embedded = false }) {
     setSaveError('');
   };
 
-  const idxConnected = useMemo(() => {
-    const status = String(idx?.status || idx?.connection_status || '').toLowerCase();
-    const providers = Array.isArray(idx?.sources) ? idx.sources : Array.isArray(idx?.providers) ? idx.providers : [];
-    return ['active', 'connected', 'healthy', 'ready'].includes(status)
-      || providers.some((provider) => ['active', 'connected', 'healthy', 'ready'].includes(String(provider.health || provider.status || '').toLowerCase()));
-  }, [idx]);
-
   const stepValid = useMemo(() => {
     if (step === 0) return Boolean(draft.template_key);
     if (step === 1) return Boolean(draft.site_name.trim() && draft.brand_name.trim() && draft.hero_headline.trim());
-    if (step === 2) return splitAreas(draft.service_areas).length > 0 && (!draft.idx_enabled || idxConnected);
+    if (step === 2) return splitAreas(draft.service_areas).length > 0;
     if (step === 3) return Boolean(draft.agent_name.trim());
     return Boolean(draft.seo_title.trim());
-  }, [draft, idxConnected, step]);
+  }, [draft, step]);
 
   const saveDraft = async () => {
     if (!stepValid || saving) return;
@@ -274,7 +254,7 @@ export default function StudioTab({ embedded = false }) {
       <header className={styles.hero}>
         <div>
           <span className={styles.kicker}>{embedded ? 'Hyperlocal presence' : 'AI growth workspace'}</span>
-          <h1 id={embedded ? 'studio-sites-title' : 'studio-title'}>{embedded ? 'Sites & IDX' : 'Our AI'}</h1>
+          <h1 id={embedded ? 'studio-sites-title' : 'studio-title'}>{embedded ? 'Sites' : 'Our AI'}</h1>
           <p>Build a source-backed local website with Neoh and preview every change before publishing.</p>
         </div>
         <div className={styles.heroActions}>
@@ -297,14 +277,6 @@ export default function StudioTab({ embedded = false }) {
             error={sitesError}
             updatedAt={sitesUpdatedAt}
             onRetry={loadSites}
-          />
-          <PanelDataStatus
-            label="MLS / IDX authorization"
-            loading={idx === null && !idxError}
-            refreshing={false}
-            error={idxError}
-            updatedAt={idxUpdatedAt}
-            onRetry={loadIdx}
           />
         </ul>
       </section>
@@ -401,12 +373,8 @@ export default function StudioTab({ embedded = false }) {
 
               {step === 2 ? (
                 <fieldset>
-                  <legend>Coverage and listing authorization</legend>
+                  <legend>Coverage</legend>
                   <label><span>Service areas</span><input value={draft.service_areas} onChange={(event) => setField('service_areas', event.target.value)} placeholder="Chicago, Oak Park, Evanston" required /><small>Separate cities, neighborhoods, or ZIPs with commas.</small></label>
-                  <label className={styles.checkRow}>
-                    <input type="checkbox" checked={draft.idx_enabled} disabled={!idxConnected} onChange={(event) => setField('idx_enabled', event.target.checked)} />
-                    <span><strong>Include authorized IDX search</strong><small>{idxConnected ? 'Listings will show their MLS source, as your MLS requires.' : 'Connect an authorized MLS feed before turning this on.'}</small></span>
-                  </label>
                   <div className={styles.intakeChoice} role="group" aria-label="Website chat intake">
                     <span>Website chat intake</span>
                     <label><input type="radio" name="intake" checked={draft.website_chat_intake === 'buyer_three_question'} onChange={() => setField('website_chat_intake', 'buyer_three_question')} /> Buyer · budget, beds/baths, area</label>

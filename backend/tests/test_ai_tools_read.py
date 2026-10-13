@@ -410,9 +410,10 @@ def test_days_on_market_separates_the_zip_level_source_from_its_context():
 # Listings, transactions, disclosures, media
 # ---------------------------------------------------------------------------
 
-def test_search_listings_reports_the_empty_mls_cache_instead_of_hiding_it():
+def test_search_listings_reports_the_empty_mls_cache_instead_of_hiding_it(monkeypatch):
     """Returning only owned listings without saying the other source held
     nothing reads as "these are all the listings that match"."""
+    monkeypatch.setenv("ORACLE_MLS_ENABLED", "1")   # the MLS leg exists only while MLS is offered
     conn = _Conn(
         ("FROM listings l", [{"id": "l1", "address": "15 Main St", "price": 250000,
                               "status": "active", "is_shared_mls": False,

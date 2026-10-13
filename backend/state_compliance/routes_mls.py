@@ -9,6 +9,8 @@ from datetime import date, datetime, timezone
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+
+from mls_switch import require_mls_enabled
 from pydantic import BaseModel, Field, field_validator
 
 from db.connection import tenant_tx
@@ -87,6 +89,7 @@ def _as_dict(value) -> dict:
 
 @router.get(
     "/api/mls/regions",
+    dependencies=[Depends(require_mls_enabled)],
     response_model=list[MLSRegion],
     summary="All MLS boards with state and county coverage",
 )
@@ -165,6 +168,7 @@ async def list_mls_regions(
 
 @router.get(
     "/api/mls/regions/{mls_id}/status",
+    dependencies=[Depends(require_mls_enabled)],
     response_model=MLSSyncStatus,
     summary="Sync health for an MLS feed",
 )
@@ -227,6 +231,7 @@ async def get_mls_sync_status(
 
 @router.post(
     "/api/mls/search",
+    dependencies=[Depends(require_mls_enabled)],
     response_model=MLSSearchResponse,
     summary="Normalized property search across one or more MLSs",
 )
@@ -394,6 +399,7 @@ async def mls_search(
 
 @router.get(
     "/api/mls/listing/{listing_id}",
+    dependencies=[Depends(require_mls_enabled)],
     response_model=NormalizedListing,
     summary="Normalized listing detail",
 )

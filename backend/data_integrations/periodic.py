@@ -544,6 +544,10 @@ async def _new_listings_task() -> dict:
     unavailable MLS therefore degrades the roll-up instead of blocking all
     listing updates.
     """
+    from mls_switch import NOT_OFFERED, mls_enabled
+
+    if not mls_enabled():
+        return {"skipped": NOT_OFFERED}
     try:
         from data_integrations.listings_feed import RESOListingsAggregator
     except Exception as exc:  # noqa: BLE001
@@ -569,6 +573,10 @@ async def _bridge_listings_task() -> dict:
     from RESO/OData, so it gets its own task and its own durable cursor. See
     bridge_listings_feed.py's module docstring for why this is not folded into
     _new_listings_task."""
+    from mls_switch import NOT_OFFERED, mls_enabled
+
+    if not mls_enabled():
+        return {"skipped": NOT_OFFERED}
     try:
         from data_integrations.bridge_listings_feed import BridgeListingsFeed
     except Exception as exc:  # noqa: BLE001

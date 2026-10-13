@@ -431,7 +431,10 @@ async def _search_listings(conn, ctx: TenantContext, tool_input: dict) -> dict:
             LIMIT 25""",
         ctx.tenant_id, pattern, state, min_price, max_price,
     )
-    mls = await conn.fetch(
+    from mls_switch import mls_enabled
+
+    mls_on = mls_enabled()
+    mls = [] if not mls_on else await conn.fetch(
         """SELECT mls_number,address,city,state_code,zip_code,list_price,status,
                   beds,baths_full,baths_half,sqft,year_built,days_on_market,list_date
              FROM oracle_mls_listings
@@ -451,7 +454,10 @@ async def _search_listings(conn, ctx: TenantContext, tool_input: dict) -> dict:
     # listings without saying the other source held nothing would read as
     # "these are all the listings that match".
     mls_note = None
-    if not mls and await _table_is_empty(conn, "oracle_mls_listings"):
+    if not mls_on:
+        mls_note = ("MLS is not offered on this deployment (owner decision); "
+                    "results are this workspace's own listings only.")
+    elif not mls and await _table_is_empty(conn, "oracle_mls_listings"):
         mls_note = (
             "The MLS listing cache is empty on this deployment — no rows at all, "
             "not a miss on this query. Live listing access goes through the "
@@ -465,6 +471,7 @@ async def _search_listings(conn, ctx: TenantContext, tool_input: dict) -> dict:
         sources_searched=[
             {"source": "listings", "scope": "this workspace", "matched": len(owned)},
             {"source": "oracle_mls_listings", "scope": "shared MLS cache",
+             "status": "checked" if mls_on else "not_applicable",
              "matched": len(mls), "note": mls_note},
         ],
         filters={"query": str(tool_input.get("query")).strip(), "state": state,
@@ -1027,8 +1034,11 @@ async def _get_days_on_market(conn, ctx: TenantContext, tool_input: dict) -> dic
     if not resolved["resolved"]:
         return _unresolved_zip("get_days_on_market", zip_code, resolved)
     # This is the one genuinely zip-level source: MLS rows carry both a zip and
-    # an observed days_on_market.
-    observed = await conn.fetchrow(
+    # an observed days_on_market. While MLS is not offered, only the county
+    # market context below answers, and the reason says so.
+    from mls_switch import mls_enabled
+
+    observed = None if not mls_enabled() else await conn.fetchrow(
         """SELECT count(*)::int AS n,
                   percentile_cont(0.5) WITHIN GROUP (ORDER BY days_on_market) AS median_dom,
                   avg(days_on_market)::numeric(10,1) AS mean_dom,
@@ -1053,6 +1063,9 @@ async def _get_days_on_market(conn, ctx: TenantContext, tool_input: dict) -> dic
             "closed_listings": observed["closed"],
             "source": "oracle_mls_listings",
         }
+    elif not mls_enabled():
+        zip_note = ("ZIP-level days on market comes only from MLS, which is not offered "
+                    "on this deployment; county market data is below.")
     else:
         zip_note = (
             dataset_load_hint("mls_boards")

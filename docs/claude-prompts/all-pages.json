@@ -734,7 +734,6 @@
       ],
       "gate": "signed-in member; per-role server checks not yet inspected (prompt 03, T02.14)",
       "apis": [
-        "GET /api/mls/health",
         "GET /api/sites",
         "POST /api/sites",
         "POST /api/sites/{param}/preview"
@@ -1210,36 +1209,6 @@
         "status": "clean",
         "issues": 0,
         "load_ms_median": 2485,
-        "writes_attempted_on_open": [],
-        "not_offered_to": [],
-        "run": "staging e219198 2026-10-13"
-      }
-    },
-    {
-      "id": "properties:mls",
-      "family": "Properties sub-views",
-      "label": "MLS",
-      "path": "/work?type=properties (view: mls)",
-      "aliases": [],
-      "component": "MlsSearch",
-      "component_file": "src/components/MlsSearch.jsx",
-      "registry": "src/components/PropertiesTab.jsx VIEWS",
-      "roles": [
-        "member"
-      ],
-      "gate": "signed-in member; per-role server checks not yet inspected (prompt 03, T02.14)",
-      "apis": [
-        "GET /api/mls/listings/{param}",
-        "GET /api/mls/regions",
-        "GET /api/mls/search"
-      ],
-      "legacy": "MLS is out of scope (D-2026-10-12-01); removed by prompt 11 T11.01",
-      "verdict": "not_inspected",
-      "verdict_evidence": null,
-      "crawl": {
-        "status": "clean",
-        "issues": 0,
-        "load_ms_median": 2596,
         "writes_attempted_on_open": [],
         "not_offered_to": [],
         "run": "staging e219198 2026-10-13"

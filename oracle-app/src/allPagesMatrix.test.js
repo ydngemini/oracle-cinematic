@@ -35,8 +35,9 @@ describe('ALL-PAGES-MATRIX (prompt 02 AC02.01)', () => {
     expect(built.filter((r) => !r.component_file).map((r) => r.id)).toEqual([]);
   });
 
-  it('marks the legacy MLS view and nothing else as legacy', async () => {
-    const legacy = (await buildMatrix()).filter((r) => r.legacy).map((r) => r.id);
-    expect(legacy).toEqual(['properties:mls']);
+  it('offers no MLS page (D-2026-10-12-01, prompt 11 T11.01)', async () => {
+    const built = await buildMatrix();
+    expect(built.filter((r) => /mls/i.test(r.id) || r.legacy).map((r) => r.id)).toEqual([]);
+    expect(built.flatMap((r) => r.apis).filter((a) => a.includes('/api/mls/'))).toEqual([]);
   });
 });

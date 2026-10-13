@@ -40,6 +40,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from db.connection import tenant_tx
+from mls_switch import require_mls_enabled
 from tenancy import Role, TenantContext, require_context, require_role
 
 log = logging.getLogger("oracle.brokerage_onboarding")
@@ -921,7 +922,10 @@ class MlsEntitlementGrant(BaseModel):
 
 
 @router.get("/mls/entitlements")
-async def list_mls_entitlements(ctx: TenantContext = Depends(require_context)) -> dict[str, Any]:
+async def list_mls_entitlements(
+    ctx: TenantContext = Depends(require_context),
+    _mls: None = Depends(require_mls_enabled),
+) -> dict[str, Any]:
     """Which feeds this brokerage is entitled to.
 
     A brokerage may see its own entitlements; only a platform admin may change
@@ -941,6 +945,7 @@ async def list_mls_entitlements(ctx: TenantContext = Depends(require_context)) -
 async def grant_mls_entitlement(
     body: MlsEntitlementGrant,
     ctx: TenantContext = Depends(require_context),
+    _mls: None = Depends(require_mls_enabled),
 ) -> dict[str, Any]:
     """Grant a brokerage access to a licensed feed. Platform admin only.
 
@@ -973,6 +978,7 @@ async def revoke_mls_entitlement(
     mls_id: str,
     tenant_id: str,
     ctx: TenantContext = Depends(require_context),
+    _mls: None = Depends(require_mls_enabled),
 ) -> dict[str, Any]:
     """Withdraw access. Platform admin only, and deliberately explicit about
     which tenant — revoking the wrong brokerage's MLS is a silent outage."""

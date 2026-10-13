@@ -421,7 +421,9 @@ app.include_router(state_compliance_router)
 from data_sources_api import router as data_sources_router  # noqa: E402 — keyless free data (geocode/fema/epa)
 app.include_router(data_sources_router)
 
-from mls_portal import router as mls_portal_router  # noqa: E402 — direct authorized MLS/RESO browse
+from mls_portal import records_router as property_records_router  # noqa: E402
+from mls_portal import router as mls_portal_router  # noqa: E402 — legacy MLS (off unless ORACLE_MLS_ENABLED); /public-records aliases
+app.include_router(property_records_router)
 app.include_router(mls_portal_router)
 
 from pipeline_api import router as pipeline_api_router  # noqa: E402 — public-property viewport map
