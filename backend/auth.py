@@ -444,14 +444,16 @@ def _send_reset_email(to_email: str, link: str) -> None:
         f'<p><a href="{link}">{link}</a></p>'
     )
     text = f"Reset your Neoh password (valid 30 minutes): {link}"
+    send = _RESET_EMAIL_SENDERS.get(provider)
+    if send is None:
+        log.warning("Reset email not sent: ORACLE_EMAIL_PROVIDER=%r is not supported", provider)
+        return
     try:
-        send = _RESET_EMAIL_SENDERS.get(provider)
-        if send is None:
-            raise RuntimeError(f"ORACLE_EMAIL_PROVIDER={provider!r} is not supported")
         send(to_email, subject, html, text)
-        log.info("Reset email sent to %r via %s", to_email, provider)
+        log.info("Reset email sent via %s", provider)
     except Exception as e:  # noqa: BLE001 — email is best-effort; never leak to the caller
-        log.warning("Reset email not sent via %s (not configured?): %s", provider, e)
+        # The class only: an SMTP refusal's text carries the recipient (C5.4).
+        log.warning("Reset email not sent via %s (not configured?): %s", provider, type(e).__name__)
 
 # ---------------------------------------------------------------------------
 # In-memory session registry
@@ -1015,7 +1017,7 @@ async def register(body: RegisterRequest, response: Response) -> LoginResponse:
     )
     _set_session_cookie(response, token)
     _register_session(email)
-    log.info("New signup: agent_id=%r tenant_id=%r", email, tenant_id)
+    log.info("New signup: user_id=%s tenant_id=%r", new_user["id"] if new_user else None, tenant_id)
     return LoginResponse(
         token=_browser_token(token),
         agent_id=email,
@@ -1483,7 +1485,7 @@ async def accept_invite(body: AcceptInviteRequest, response: Response) -> LoginR
     )
     _set_session_cookie(response, token)
     _register_session(email)
-    log.info("Invitation accepted: agent_id=%r tenant_id=%r", email, tenant_id)
+    log.info("Invitation accepted: user_id=%s tenant_id=%r", user["id"], tenant_id)
     return LoginResponse(
         token=_browser_token(token),
         agent_id=email,

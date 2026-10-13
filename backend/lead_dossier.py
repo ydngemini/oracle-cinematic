@@ -237,8 +237,8 @@ async def set_acquisition_entity(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "lead not found")
 
     logger.info(
-        "Acquisition entity recorded: lead=%s entity=%r (tenant=%s)",
-        lead_id, entity["entity_name"], ctx.tenant_id,
+        "Acquisition entity recorded: lead=%s (tenant=%s)",
+        lead_id, ctx.tenant_id,
     )
     return {"status": "recorded", "acquisition_entity": _jsonb(row["acquisition_entity"])}
 

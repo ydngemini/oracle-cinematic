@@ -422,7 +422,7 @@ async def _send_invitation(*, email: str, brokerage: str, inviter: str,
 
     link = invitation_link(raw_token)
     if _dev_capture_enabled():
-        log.warning("DEV: invitation for %s not emailed (no SMTP configured). Link: %s", email, link)
+        log.warning("DEV: invitation not emailed (no SMTP configured). Link: %s", link)
         return link
 
     subject, text, html = build_invitation_email(

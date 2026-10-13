@@ -32,6 +32,8 @@ from typing import Any, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field, field_validator
 
+import client_note_crypto
+from client_note_crypto import SEALED_COLUMNS as _NOTE_SEALED
 from db.connection import tenant_tx
 from record_access import client_access_level, require_client_edit, resolve_assignment
 from tenancy import TenantContext, require_context
@@ -817,13 +819,13 @@ async def get_client_detail(
             open_tasks = await conn.fetchval(
                 "SELECT count(*) FROM client_tasks WHERE client_id = $1 AND status = 'open'", client_id
             )
-            note_rows = await conn.fetch(
-                """SELECT id, body, author_id, pinned, created_at, updated_at,
-                          review_state, reviewed_by, reviewed_at
+            note_rows = await client_note_crypto.open_rows(conn, await conn.fetch(
+                f"""SELECT id, body, author_id, pinned, created_at, updated_at,
+                          review_state, reviewed_by, reviewed_at, {_NOTE_SEALED}
                      FROM client_notes WHERE client_id = $1
                     ORDER BY pinned DESC, created_at DESC""",
                 client_id,
-            )
+            ))
             task_rows = await conn.fetch(
                 """SELECT id, client_id, title, details, due_at, status, priority,
                           assignee_id, created_by, completed_at, created_at
@@ -979,13 +981,13 @@ async def list_notes(
         async with tenant_tx(ctx) as conn:
             if await conn.fetchval("SELECT 1 FROM clients WHERE id = $1", client_id) is None:
                 raise HTTPException(status.HTTP_404_NOT_FOUND, "client not found")
-            rows = await conn.fetch(
-                """SELECT id, body, author_id, pinned, created_at, updated_at,
-                          review_state, reviewed_by, reviewed_at
+            rows = await client_note_crypto.open_rows(conn, await conn.fetch(
+                f"""SELECT id, body, author_id, pinned, created_at, updated_at,
+                          review_state, reviewed_by, reviewed_at, {_NOTE_SEALED}
                      FROM client_notes WHERE client_id = $1
                     ORDER BY pinned DESC, created_at DESC""",
                 client_id,
-            )
+            ))
     except RuntimeError as exc:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, f"Memory Core offline ({exc})")
     return {"notes": [_note_json(r) for r in rows]}
@@ -1001,15 +1003,17 @@ async def create_note(
     try:
         async with tenant_tx(ctx) as conn:
             await require_client_edit(conn, client_id)
-            row = await conn.fetchrow(
-                """
-                INSERT INTO client_notes (tenant_id, client_id, body, author_id, pinned)
-                VALUES ($1, $2, $3, $4, $5)
+            # Sealed at rest (0132, audit A01): body stays '', the text is ciphertext.
+            sealed = await client_note_crypto.seal_body(conn, ctx.tenant_id, body.body)
+            row = await client_note_crypto.open_row(conn, await conn.fetchrow(
+                f"""
+                INSERT INTO client_notes (tenant_id, client_id, body, body_ciphertext, author_id, pinned)
+                VALUES ($1, $2, '', $3, $4, $5)
              RETURNING id, body, author_id, pinned, created_at, updated_at,
-                       review_state, reviewed_by, reviewed_at
+                       review_state, reviewed_by, reviewed_at, {_NOTE_SEALED}
                 """,
-                ctx.tenant_id, client_id, body.body, ctx.agent_id, body.pinned,
-            )
+                ctx.tenant_id, client_id, sealed, ctx.agent_id, body.pinned,
+            ))
             await _log_activity(conn, ctx, client_id, "note", "Note added",
                                 {"note_id": str(row["id"]), "pinned": body.pinned})
     except RuntimeError as exc:
@@ -1030,30 +1034,38 @@ async def update_note(
 ):
     _require_uuid(client_id, "client_id")
     _require_uuid(note_id, "note_id")
-    fields = body.model_dump(exclude_unset=True)
+    # An explicit null is "leave it", not "erase it" (body is NOT NULL).
+    fields = {k: v for k, v in body.model_dump(exclude_unset=True).items() if v is not None}
     if not fields:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "no fields to update")
-
-    sets, args = [], []
-    for col in ("body", "pinned"):
-        if col in fields:
-            sets.append(f"{col} = ${len(args) + 1}")
-            args.append(fields[col])
-    args.extend([note_id, client_id])
 
     try:
         async with tenant_tx(ctx) as conn:
             await require_client_edit(conn, client_id)
-            row = await conn.fetchrow(
+            sets, args = [], []
+            if "body" in fields:
+                # Sealed under the note's own tenant key (0132, audit A01).
+                note_tenant = await conn.fetchval(
+                    "SELECT tenant_id FROM client_notes WHERE id = $1 AND client_id = $2",
+                    note_id, client_id)
+                if note_tenant is None:
+                    raise HTTPException(status.HTTP_404_NOT_FOUND, "note not found")
+                sets += ["body = ''", f"body_ciphertext = ${len(args) + 1}"]
+                args.append(await client_note_crypto.seal_body(conn, note_tenant, fields["body"]))
+            if "pinned" in fields:
+                sets.append(f"pinned = ${len(args) + 1}")
+                args.append(fields["pinned"])
+            args.extend([note_id, client_id])
+            row = await client_note_crypto.open_row(conn, await conn.fetchrow(
                 f"""
                 UPDATE client_notes
                    SET {", ".join(sets)}
                  WHERE id = ${len(args) - 1} AND client_id = ${len(args)}
              RETURNING id, body, author_id, pinned, created_at, updated_at,
-                       review_state, reviewed_by, reviewed_at
+                       review_state, reviewed_by, reviewed_at, {_NOTE_SEALED}
                 """,
                 *args,
-            )
+            ))
     except RuntimeError as exc:
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -1078,17 +1090,17 @@ async def approve_note(
     try:
         async with tenant_tx(ctx) as conn:
             await require_client_edit(conn, client_id)
-            row = await conn.fetchrow(
-                """
+            row = await client_note_crypto.open_row(conn, await conn.fetchrow(
+                f"""
                 UPDATE client_notes
                    SET review_state = 'approved', reviewed_by = $3, reviewed_at = now(),
                        updated_at = now()
                  WHERE id = $1 AND client_id = $2 AND review_state = 'proposed'
              RETURNING id, body, author_id, pinned, created_at, updated_at,
-                       review_state, reviewed_by, reviewed_at
+                       review_state, reviewed_by, reviewed_at, {_NOTE_SEALED}
                 """,
                 note_id, client_id, ctx.agent_id,
-            )
+            ))
             if row is None:
                 exists = await conn.fetchval(
                     "SELECT review_state FROM client_notes WHERE id = $1 AND client_id = $2",

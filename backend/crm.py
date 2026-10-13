@@ -632,8 +632,8 @@ async def create_listing(
         )
 
     logger.info(
-        "Listing created: id=%s address=%r seller=%s lead=%s (tenant=%s, agent=%s)",
-        listing["id"], address, seller_id, lead_id, ctx.tenant_id, ctx.agent_id,
+        "Listing created: id=%s seller=%s lead=%s (tenant=%s, agent=%s)",
+        listing["id"], seller_id, lead_id, ctx.tenant_id, ctx.agent_id,
     )
     return {
         "listing": {

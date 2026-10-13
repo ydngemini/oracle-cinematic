@@ -578,12 +578,14 @@ async def _load_bundle(conn: Any, client_id: str) -> Optional[dict[str, Any]]:
         """,
         client_id,
     )
-    notes = await conn.fetch(
-        """SELECT id,body,created_at FROM client_notes
+    import client_note_crypto
+
+    notes = await client_note_crypto.open_rows(conn, await conn.fetch(
+        f"""SELECT id,body,created_at,{client_note_crypto.SEALED_COLUMNS} FROM client_notes
              WHERE client_id=$1::uuid AND review_state='approved'
              ORDER BY created_at DESC LIMIT 12""",
         client_id,
-    )
+    ))
     properties = await conn.fetch(
         """
         SELECT DISTINCT ON (kind,id) id,kind,address,price,zip_code
@@ -680,6 +682,7 @@ async def _property_candidates(
 
 async def _property_candidates_bounded(
     conn: Any, full_name: str, target_zips: list[str], linked_count: int,
+    *, client_id: str = "",
 ) -> list[dict[str, Any]]:
     """`_property_candidates`, but a slow plan can never fail the reconcile.
 
@@ -698,9 +701,11 @@ async def _property_candidates_bounded(
         async with conn.transaction():
             await conn.execute(f"SET LOCAL statement_timeout = {timeout_ms}")
             return await _property_candidates(conn, full_name, target_zips, linked_count)
-    except Exception:  # noqa: BLE001 - a slow lookup must degrade, not fail reconciliation
+    except Exception as exc:  # noqa: BLE001 - a slow lookup must degrade, not fail reconciliation
+        # The client id and the error class, never the name (audit A06, C5.4).
         logger.warning(
-            "property-candidate lookup skipped (slow plan or error) for %r", full_name
+            "property-candidate lookup skipped (slow plan or error): client=%s error=%s",
+            client_id or "?", type(exc).__name__,
         )
         return []
 
@@ -880,6 +885,7 @@ async def reconcile_client(
 
         candidates = await _property_candidates_bounded(
             conn, client["full_name"], list(preferences.get("target_zips") or []), len(properties),
+            client_id=client_id,
         )
         if candidates:
             next_actions.append({
