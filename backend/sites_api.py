@@ -18,6 +18,7 @@ from approval_service import create_approval
 from audit_ledger import AuditCategory, ledger
 from automation_jobs import canonical_json, payload_hash
 from db.connection import tenant_tx
+from public_sites_api import public_site_path
 from platform_policy import ActionRisk, enforce_public_property_data
 from tenancy import Role, TenantContext, require_context, require_role
 
@@ -704,6 +705,7 @@ async def publish_site(
                 site_id,
                 body.hostname,
             )
+        tenant_slug = await conn.fetchval("SELECT slug FROM tenants WHERE id=$1::uuid", ctx.tenant_id)
     await ledger.record(
         category=AuditCategory.USER_STATE_CHANGE,
         action="studio_site_published",
@@ -720,7 +722,9 @@ async def publish_site(
     return {
         "site": _row(site),
         "domain": _row(domain) if domain else None,
-        "platform_path": f"/sites/{site['slug']}",
+        # Served by public_sites_api; site slugs are unique only within a
+        # brokerage, so the brokerage's (global) slug is part of the address.
+        "platform_path": public_site_path(str(tenant_slug or ""), site["slug"]),
         "custom_domain_status": "pending_verification" if domain else "not_requested",
     }
 

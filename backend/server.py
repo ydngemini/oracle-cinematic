@@ -510,6 +510,8 @@ app.include_router(portfolio_router)
 app.include_router(sales_router)
 app.include_router(lead_routing_router)
 app.include_router(lead_intake_router)
+from public_sites_api import router as public_sites_router  # noqa: E402 — published sites, no auth
+app.include_router(public_sites_router)
 app.include_router(missions_router)
 app.include_router(sites_router)
 app.include_router(spatial_intelligence_router)

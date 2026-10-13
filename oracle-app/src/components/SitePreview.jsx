@@ -47,7 +47,11 @@ function PreviewMedia({ src }) {
     if (!video || !useVideo) return undefined;
     const sync = () => {
       if (document.hidden) video.pause();
-      else void video.play().catch(() => {});
+      else {
+        // play() returns a promise in current browsers but undefined in older ones.
+        const playing = video.play();
+        if (playing && typeof playing.catch === 'function') playing.catch(() => {});
+      }
     };
     document.addEventListener('visibilitychange', sync);
     video.addEventListener('canplay', sync);
@@ -97,31 +101,48 @@ export function SitePreview() {
     return () => { live = false; };
   }, [revision, slug]);
 
+  return <SiteDocument site={site} error={error} mode="preview" />;
+}
+
+/**
+ * One site's page. `preview` is the agent's private check of a saved
+ * revision; `public` is the published page at /sites/{brokerage}/{site}
+ * (prompt 14 T14.05). Public mode shows only what is ready for the public:
+ * no preview bar, no "pending" placeholders, no unreviewed areas, and no
+ * listing-feed wording (MLS/IDX is out of scope, D-2026-10-12-01).
+ */
+export function SiteDocument({ site, error = '', mode = 'preview' }) {
+  const isPublic = mode === 'public';
   const content = object(site?.content);
   const theme = object(site?.brand_theme);
   const areas = useMemo(() => cleanAreas(content), [content]);
   const authorizedFeeds = Array.isArray(site?.authorized_idx_sources) ? site.authorized_idx_sources : [];
   const media = content.hero_media_url || '/media/mountain-waterfall-estate-v1.webp';
   const brand = content.public_brand_name || site?.name || 'Local real estate';
+  const label = isPublic ? 'Local real estate' : 'Private preview';
 
   useLayoutEffect(() => {
     document.documentElement.dataset.sitePreview = 'true';
     return () => { delete document.documentElement.dataset.sitePreview; };
   }, []);
 
+  useEffect(() => {
+    if (isPublic && site) document.title = content.seo_title || brand;
+  }, [isPublic, site, content.seo_title, brand]);
+
   if (error) {
     return (
       <main className={styles.state}>
-        <span>Private preview</span>
-        <h1>Preview unavailable</h1>
+        <span>{label}</span>
+        <h1>{isPublic ? 'Site not found' : 'Preview unavailable'}</h1>
         <p role="alert">{error}</p>
-        <a href="/"><ArrowLeft aria-hidden="true" /> Return to Neoh</a>
+        {isPublic ? null : <a href="/"><ArrowLeft aria-hidden="true" /> Return to Neoh</a>}
       </main>
     );
   }
 
   if (!site) {
-    return <main className={styles.state} role="status"><span>Private preview</span><h1>Preparing your site</h1><p>Loading the exact saved revision…</p></main>;
+    return <main className={styles.state} role="status"><span>{label}</span><h1>{isPublic ? 'Loading' : 'Preparing your site'}</h1><p>{isPublic ? 'Loading this page…' : 'Loading the exact saved revision…'}</p></main>;
   }
 
   const tokens = {
@@ -132,58 +153,70 @@ export function SitePreview() {
     '--preview-accent': theme.accent || '#FFBC1F',
     '--preview-border': theme.border || '#8A7550',
   };
+  const publicAreas = isPublic ? (areas.verified ? areas.values : []) : areas.values;
+  const showTrust = !isPublic || Boolean(content.agent_name);
 
   return (
-    <main className={styles.preview} style={tokens}>
-      <div className={styles.previewBar} role="status">
-        <span><ShieldCheck aria-hidden="true" /> Private preview · revision {site.revision || '1'}</span>
-        <a href="/"><ArrowLeft aria-hidden="true" /> Back to Our AI</a>
-      </div>
+    <main className={styles.preview} style={tokens} data-site-mode={mode}>
+      {isPublic ? null : (
+        <div className={styles.previewBar} role="status">
+          <span><ShieldCheck aria-hidden="true" /> Private preview · revision {site.revision || '1'}</span>
+          <a href="/"><ArrowLeft aria-hidden="true" /> Back to Our AI</a>
+        </div>
+      )}
 
       <section className={styles.hero} aria-labelledby="preview-headline">
         <PreviewMedia src={media} />
         <div className={styles.scrim} aria-hidden="true" />
         <header className={styles.navigation}>
           <strong>{brand}</strong>
-          <span>{content.agent_name || 'Independent real-estate guidance'}</span>
+          {content.agent_name || !isPublic ? <span>{content.agent_name || 'Independent real-estate guidance'}</span> : null}
         </header>
         <div className={styles.heroCopy}>
           <span>{content.eyebrow || 'LOCAL REAL ESTATE'}</span>
           <h1 id="preview-headline">{content.headline || site.name}</h1>
           <p>{content.description}</p>
-          <a href="#areas">Explore the area <ArrowUpRight aria-hidden="true" /></a>
+          {publicAreas.length || !isPublic ? <a href="#areas">Explore the area <ArrowUpRight aria-hidden="true" /></a> : null}
         </div>
-        <aside className={styles.trust} aria-label="Agent information">
-          <span>Direct guidance</span>
-          <strong>{content.agent_name || 'Agent name pending'}</strong>
-          <small>{content.license_number ? `License ${content.license_number}` : 'License details pending review'}</small>
-        </aside>
+        {showTrust ? (
+          <aside className={styles.trust} aria-label="Agent information">
+            <span>Direct guidance</span>
+            <strong>{content.agent_name || 'Agent name pending'}</strong>
+            {content.license_number || !isPublic
+              ? <small>{content.license_number ? `License ${content.license_number}` : 'License details pending review'}</small>
+              : null}
+          </aside>
+        ) : null}
       </section>
 
-      <section id="areas" className={styles.areas} aria-labelledby="areas-title">
-        <header>
-          <span>Service area</span>
-          <h2 id="areas-title">Local, focused, accountable.</h2>
-          <p>{areas.verified ? 'Area descriptions are backed by the sources saved with this revision.' : 'These requested areas stay unpublished until their local claims and sources are reviewed.'}</p>
-        </header>
-        <ul>
-          {areas.values.length ? areas.values.map((area) => (
-            <li key={area}><MapPin aria-hidden="true" /><strong>{area}</strong><small>{areas.verified ? 'Source-backed guide' : 'Source review pending'}</small></li>
-          )) : <li><MapPin aria-hidden="true" /><strong>Area guide pending</strong><small>Add a source-backed service area in Our AI</small></li>}
-        </ul>
-      </section>
+      {isPublic && !publicAreas.length ? null : (
+        <section id="areas" className={styles.areas} aria-labelledby="areas-title">
+          <header>
+            <span>Service area</span>
+            <h2 id="areas-title">Local, focused, accountable.</h2>
+            {isPublic ? null : <p>{areas.verified ? 'Area descriptions are backed by the sources saved with this revision.' : 'These requested areas stay unpublished until their local claims and sources are reviewed.'}</p>}
+          </header>
+          <ul>
+            {publicAreas.length ? publicAreas.map((area) => (
+              <li key={area}><MapPin aria-hidden="true" /><strong>{area}</strong><small>{areas.verified ? 'Source-backed guide' : 'Source review pending'}</small></li>
+            )) : <li><MapPin aria-hidden="true" /><strong>Area guide pending</strong><small>Add a source-backed service area in Our AI</small></li>}
+          </ul>
+        </section>
+      )}
 
       <section className={styles.intake} aria-labelledby="intake-title">
-        <span>{authorizedFeeds.length ? 'AUTHORIZED LISTING ACCESS' : 'DIRECT AGENT INTAKE'}</span>
+        <span>{!isPublic && authorizedFeeds.length ? 'AUTHORIZED LISTING ACCESS' : 'DIRECT AGENT INTAKE'}</span>
         <h2 id="intake-title">A shorter path to the right next step.</h2>
-        <p>{authorizedFeeds.length ? `${authorizedFeeds.length} authorized IDX source${authorizedFeeds.length === 1 ? '' : 's'} attached to this revision.` : 'No listing feed is represented until an authorized IDX source is connected.'}</p>
+        {isPublic
+          ? <p>Tell us what you are looking for, and your agent will follow up.</p>
+          : <p>{authorizedFeeds.length ? `${authorizedFeeds.length} authorized IDX source${authorizedFeeds.length === 1 ? '' : 's'} attached to this revision.` : 'No listing feed is represented until an authorized IDX source is connected.'}</p>}
         <div><strong>01</strong><span>Tell us your goal</span><strong>02</strong><span>Answer three focused questions</span><strong>03</strong><span>Continue with your agent</span></div>
       </section>
 
       <footer className={styles.footer}>
         <strong>{brand}</strong>
         <span>{content.seo_description || 'Local real-estate guidance.'}</span>
-        <small>Private Neoh preview · not a published website</small>
+        <small>{isPublic ? 'Published with Neoh' : 'Private Neoh preview · not a published website'}</small>
       </footer>
     </main>
   );

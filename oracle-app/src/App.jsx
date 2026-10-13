@@ -9,6 +9,8 @@ import { NetworkProvider } from './context/NetworkContext';
 import { apiPost } from './lib/apiClient';
 import { ReelExperience } from './components/ReelExperience';
 import { SitePreview } from './components/SitePreview';
+// A published site is the one page anonymous visitors load; keep it its own chunk.
+const PublicSite = lazy(() => import('./components/PublicSite'));
 import { clearPrivateCaches } from './lib/clearPrivateCaches.js';
 import { useSessionRestore } from './lib/useSessionRestore';
 // Unauthenticated client capture page — the token in the URL is the whole
@@ -103,6 +105,8 @@ function NeohApp() {
 function App() {
   const isReelRoute = window.location.pathname === '/reel' || window.location.pathname.startsWith('/reel/');
   const isSitePreviewRoute = window.location.pathname.startsWith('/site-preview/');
+  // /sites/{brokerage}/{site} — the address publishing returns (sites_api platform_path).
+  const isPublicSiteRoute = window.location.pathname.startsWith('/sites/');
   const isPropertyUploadRoute = window.location.pathname.startsWith('/property-upload/');
   // The homeowner's dossier. The backend has served this since 0008 and the
   // agent UI has been minting links to it, but no route consumed them — every
@@ -111,6 +115,7 @@ function App() {
   const isAcceptInviteRoute = window.location.pathname === '/accept-invite';
   if (isReelRoute) return <ReelExperience />;
   if (isSitePreviewRoute) return <SitePreview />;
+  if (isPublicSiteRoute) return <Suspense fallback={null}><PublicSite /></Suspense>;
   if (isPropertyUploadRoute) {
     return (
       <Suspense fallback={null}>

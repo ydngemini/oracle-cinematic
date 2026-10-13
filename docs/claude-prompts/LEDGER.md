@@ -526,6 +526,24 @@ next_task: "T14.02 + T14.05 + T14.16"
 updated: 2026-10-12
 ```
 
+#### L14-02 Published sites are served at /sites/{brokerage}/{site}
+```yaml
+id: L14-02
+status: tests_pass
+env: local
+evidence_shas: [745f2fa]   # finding in L14-01; fix in the commit that adds public_sites_api.py
+files: [backend/public_sites_api.py, backend/sites_api.py, backend/server.py, oracle-app/src/components/PublicSite.jsx, oracle-app/src/components/SitePreview.jsx, oracle-app/src/App.jsx]
+tests_run:
+  - {cmd: "pytest backend/tests/test_public_sites.py + sites tests", result: "52 passed: public fields only; no-cache + ETag/304; unpublished, archived or malformed -> 404", date: 2026-10-13}
+  - {cmd: "vitest src/components/PublicSite.test.jsx", result: "2 passed: public mode hides preview bar, pending placeholders, unreviewed areas and IDX wording; unpublished says so", date: 2026-10-13}
+authz_checked: anonymous read limited to status='published' + its published revision; backend/tests/test_public_sites_live.py (real PostgreSQL, runs in CI) covers draft/archived/archive-takes-effect
+blockers: [{type: verification, note: "Live test runs in CI; domains (T14.04) and rollback still open."}]
+audit_refs: []
+decision_refs: [D-2026-10-12-01]
+next_task: "T14.04 domain verification and rollback; T14.02 + T14.16 honest badges."
+updated: 2026-10-13
+```
+
 ### L15
 Neoh mascot animation.
 
