@@ -812,6 +812,24 @@ next_task: "T17.14 + AC17.05"
 updated: 2026-10-12
 ```
 
+#### L17-05 Platform Use Policy kept current (v2) and guarded
+```yaml
+id: L17-05
+status: tests_pass
+env: local
+evidence_shas: []   # set in the commit that bumps PLATFORM_POLICY_VERSION to 2026-10-13-v2
+files: [backend/policy_contract.py, backend/tests/test_policy_coverage.py, oracle-app/src/components/PolicyAcceptanceGate.jsx, tests/golden/golden_e2e.py, docs/claude-prompts/CONTRACT.md]
+tests_run:
+  - {cmd: "pytest tests/test_policy_coverage.py + full backend suite; vitest full", result: "3229 passed; 718 passed", date: 2026-10-13}
+authz_checked: n/a
+blockers: []
+audit_refs: []
+decision_refs: [D-2026-10-13-01, D-2026-10-12-03]
+next_task: "After deploy every user re-accepts once (v2); re-accept for the two demo accounts before the next crawl."
+updated: 2026-10-13
+```
+The owner asked for the policy to be kept current. v2 (wording approved by the owner 2026-10-13) adds three paragraphs: per-record visibility and sharing (§2), AI call notes need consent and wait for review (§4), and the AI-voice disclosure must not be removed (§6). `POLICY_COVERAGE` ties each to the file that proves the capability; the test fails if the words go while the capability stays. CONTRACT C5.7 makes it a standing rule.
+
 ### L18
 Billing, seats and analytics.
 
@@ -867,6 +885,25 @@ decision_refs: [D-2026-10-12-02]
 next_task: "T18.06 (A05) and T18.04 (seats) per prompt 18 first slice."
 updated: 2026-10-13
 ```
+
+#### L18-04 No new brokerage can subscribe on staging
+```yaml
+id: L18-04
+status: external_configuration_required
+env: staging
+evidence_shas: [6719298]
+files: [backend/billing.py, oracle-app/src/components/BillingOverlay.jsx]
+tests_run:
+  - {cmd: "owner signed in on staging with their own brokerage (2026-10-13)", result: "/billing/plan source 'unavailable' (no Stripe price on staging); 'Start Neoh' -> create-checkout-session fails -> 'Neoh is temporarily unavailable'; /billing/status active=false", date: 2026-10-13}
+authz_checked: n/a
+blockers:
+  - {type: external, note: "Staging has no Stripe test-mode price/webhook, so checkout can never succeed there. The message also says 'temporarily' for a configuration that is absent."}
+audit_refs: []
+decision_refs: [D-2026-10-12-02]
+next_task: "Configure a Stripe test-mode price + webhook on staging (owner), or make the overlay say checkout is not set up on this deployment."
+updated: 2026-10-13
+```
+Owner-approved workaround (2026-10-13): a staging-only subscription row for the owner's own brokerage (`staging_comp_sub_2dd07d9c`, active to 2027-10-13), written the way the demo brokerage is entitled. It also opens the spend-gated routes for that tenant on staging.
 
 ### L19
 Production operations.

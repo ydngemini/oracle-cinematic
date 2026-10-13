@@ -60,6 +60,7 @@
 4. **No PII or secrets in logs, analytics, error messages, reports or the ledger.** Inspect the logs your change produces. Check a secret's presence and name, never print its value.
 5. **Never index plaintext PII for speed.** Use keyed lookup hashes (the `agent_contacts` pattern).
 6. **Fair housing.** No scoring, targeting, matching or steering on protected characteristics.
+7. **Keep the Platform Use Policy current** (owner, 2026-10-13). A change that alters who can see data, how people are contacted, or what the AI does on someone's behalf updates `backend/policy_contract.py` in the same change: the wording (drafted for owner approval), a `PLATFORM_POLICY_VERSION` bump, and a `POLICY_COVERAGE` row. `backend/tests/test_policy_coverage.py` fails when a covered capability's words leave the policy.
 
 ## C6. Truth vocabulary (use these words exactly)
 

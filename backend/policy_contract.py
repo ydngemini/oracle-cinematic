@@ -6,12 +6,12 @@ from __future__ import annotations
 # Bump this identifier whenever the policy text changes materially. Each user
 # acceptance record is tied to this value so prior acknowledgement remains
 # auditable rather than being silently reinterpreted under new wording.
-PLATFORM_POLICY_VERSION = "neoh-platform-use-policy-2026-07-15-v1"
+PLATFORM_POLICY_VERSION = "neoh-platform-use-policy-2026-10-13-v2"
 
 PLATFORM_POLICY_DOCUMENT = {
     "title": "NEOH™ Platform Use Policy",
     "operator": "NEOH™ is operated by YDN LLC.",
-    "effective_date": "July 15, 2026",
+    "effective_date": "October 13, 2026",
     "introduction": (
         "This policy governs use of the NEOH™ platform. It is a platform-use "
         "policy, not legal, tax, financial, licensing, privacy, or fair-housing advice. "
@@ -30,6 +30,7 @@ PLATFORM_POLICY_DOCUMENT = {
             "paragraphs": [
                 "Enter, import, or connect only data you are entitled to access and use. Obtain any consent, notice, or authorization required for client, customer, lead, vendor, or teammate information.",
                 "Protect confidential information and limit access to people with a legitimate business need. Do not submit authentication secrets, government identification numbers, payment-card data, bank credentials, or other sensitive information that is not necessary for the intended workflow.",
+                "Each client record is visible to the agent assigned to it, to your broker owner, and to anyone they share it with; a client with no assigned agent is visible to every agent in your brokerage. Share a record only with a colleague who has a legitimate business need, give edit access only when they need to change it, and remove access when the need ends.",
             ],
         },
         {
@@ -44,6 +45,7 @@ PLATFORM_POLICY_DOCUMENT = {
             "paragraphs": [
                 "AI-generated material is assistive and may be incomplete, inaccurate, or unsuitable for a particular transaction. Verify important facts against authoritative sources before relying on or communicating them.",
                 "NEOH™ does not provide legal, tax, investment, appraisal, lending, title, or compliance advice. Obtain qualified professional review whenever your workflow, client, brokerage, or law requires it.",
+                "Neoh takes notes on a call only after the person on the call agrees. Unless you choose to save them directly, those notes wait for your review, and Neoh does not rely on them until you approve them. Check AI call notes before you act on or share them.",
             ],
         },
         {
@@ -58,6 +60,7 @@ PLATFORM_POLICY_DOCUMENT = {
             "paragraphs": [
                 "Use email, calling, messaging, task, and automation features only with the permissions, consent, disclosures, opt-out handling, and supervision required for the recipient and jurisdiction.",
                 "Do not use NEOH™ to send deceptive, abusive, discriminatory, unsolicited, or unlawful communications, to impersonate another person, or to make an autonomous commitment for a client or brokerage.",
+                "Do not remove, shorten, or talk over the disclosure Neoh gives at the start of an AI voice call, and do not tell the person they are speaking with a human.",
             ],
         },
         {
@@ -84,6 +87,28 @@ PLATFORM_POLICY_DOCUMENT = {
     ],
 }
 
+
+
+# What the policy must keep saying (owner, 2026-10-13: "keep the text current").
+# Each row ties a shipped capability to the evidence that it exists and to the
+# words the policy uses for it. tests/test_policy_coverage.py fails when the
+# evidence exists but the words are gone — and a NEW capability that changes who
+# sees data, how people are contacted or what the AI does adds a row here, in
+# the same change, with a version bump (CONTRACT C5.7).
+POLICY_COVERAGE: tuple[dict[str, str], ...] = (
+    {"capability": "per-record client visibility and sharing (D-2026-10-13-01)",
+     "evidence": "db/migrations/0131_agent_record_scope.sql",
+     "section": "2. Authorized data and confidentiality",
+     "phrase": "anyone they share it with"},
+    {"capability": "AI call notes: consent, review by default (D-2026-10-12-03)",
+     "evidence": "call_note_settings.py",
+     "section": "4. AI-assisted work and professional judgment",
+     "phrase": "takes notes on a call only after the person on the call agrees"},
+    {"capability": "AI voice disclosure on calls",
+     "evidence": "outreach_compliance.py",
+     "section": "6. Communications and automation",
+     "phrase": "disclosure Neoh gives at the start of an AI voice call"},
+)
 
 # Separate account-security addendum for onboarding diagnostics.  This is a
 # non-legal acknowledgment surface that focuses on platform hardening, access
