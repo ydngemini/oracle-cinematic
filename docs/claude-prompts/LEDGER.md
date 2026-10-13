@@ -34,7 +34,7 @@ Listed weakest to strongest:
 | Cat | Category | Prompt | Rollup | Env high-water | Last evidence | Open blockers | Next task |
 |---|---|---|---|---|---|---|---|
 | 01 | Repository source audit | [01](01-repository-source-audit.md) | `not_inspected` | — | — | — | Run the 01 inventory |
-| 02 | All pages, routes, mobile UI | [02](02-all-pages-mobile-ui.md) | `source_verified` | local | `745f2fa` | — | **Start here** (README): L02-01 |
+| 02 | All pages, routes, mobile UI | [02](02-all-pages-mobile-ui.md) | `source_verified` | local | matrix | — | T02.13/T02.14, then the crawl |
 | 03 | Brokerage tenancy and hybrid access | [03](03-brokerage-tenancy-hybrid-access.md) | `source_verified` | local | `745f2fa` | — | Read-only review with 02 |
 | 04 | CRM, contacts, leads, relationships | [04](04-crm-contact-leads-relationships.md) | `source_verified` | local | `745f2fa` | A05 | L04-01 |
 | 05 | Semantic intent | [05](05-semantic-language-intent.md) | `source_verified` | local | `745f2fa` | — | L05-01 |
@@ -64,7 +64,7 @@ Rollup is the weakest row. A category holding `external_configuration_required` 
 Repository source audit. Artifacts it will own: the file-level inventory (`docs/audit/repo-inventory-<sha>.csv`, proposed). No rows yet.
 
 ### L02
-All pages, routes and mobile UI. Artifact it will own: `docs/claude-prompts/ALL-PAGES-MATRIX.md` (proposed; created when 02 runs).
+All pages, routes and mobile UI. Artifacts: [ALL-PAGES-MATRIX.md](ALL-PAGES-MATRIX.md) (generated, 52 pages) with its JSON twin [all-pages.json](all-pages.json) and hand-kept verdicts in [all-pages-verdicts.json](all-pages-verdicts.json).
 
 #### L02-01 Route and page inventory baseline
 ```yaml
@@ -81,6 +81,24 @@ audit_refs: []
 decision_refs: [D-2026-10-12-01]
 next_task: "T02.01: build ALL-PAGES-MATRIX.md"
 updated: 2026-10-12
+```
+
+#### L02-02 The route, component, API and role matrix exists and cannot go stale
+```yaml
+id: L02-02
+status: tests_pass
+env: local
+evidence_shas: [58b2f63]   # base; matrix in the commit that adds build-all-pages-matrix.mjs
+files: [oracle-app/scripts/build-all-pages-matrix.mjs, oracle-app/src/allPagesMatrix.test.js, docs/claude-prompts/ALL-PAGES-MATRIX.md, docs/claude-prompts/all-pages.json, docs/claude-prompts/all-pages-verdicts.json]
+tests_run:
+  - {cmd: "npm run pages:matrix", result: "52 pages from 9 registries (3 views, 13 Work types, 3 entity sheets, 8 AI workspaces, 5 Sales, 5 Deals, 6 Properties incl. legacy mls, 3 profile views, 6 routes outside the shell); every component file resolved", date: 2026-10-13}
+  - {cmd: "vitest src/allPagesMatrix.test.js", result: "4 passed; a deliberately removed row (sales:providers) made it fail, then restored", date: 2026-10-13}
+authz_checked: roles recorded per page; server-side role checks not yet inspected (T02.14)
+blockers: []
+audit_refs: []
+decision_refs: [D-2026-10-12-01]
+next_task: "T02.13/T02.14 (public-route token checks, Admin API role checks), then per-page verdicts via the crawl (T02.11)."
+updated: 2026-10-13
 ```
 
 ### L03

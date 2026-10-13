@@ -1,0 +1,3 @@
+{
+  "// how": "One entry per verified page id from all-pages.json: {\"verdict\": \"pass|fail|setup_required\", \"evidence\": \"test or run link\", \"reviewer\": \"who\", \"date\": \"YYYY-MM-DD\"}. Then run `npm run pages:matrix` in oracle-app/ (prompt 02 AC02.09)."
+}

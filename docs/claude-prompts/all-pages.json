@@ -1,0 +1,1145 @@
+{
+  "generated_by": "oracle-app/scripts/build-all-pages-matrix.mjs",
+  "pages": [
+    {
+      "id": "view:home",
+      "family": "Top-level views",
+      "label": "Home",
+      "path": "/",
+      "aliases": [
+        "/command-center",
+        "/our-ai/command",
+        "/today"
+      ],
+      "component": "NeohHome",
+      "component_file": "src/neoh/NeohHome.jsx",
+      "registry": "src/routes.js VIEW_PATHS",
+      "roles": [
+        "member"
+      ],
+      "gate": "signed-in member; per-role server checks not yet inspected (prompt 03, T02.14)",
+      "apis": [
+        "GET /api/command-center",
+        "GET /api/search/recent"
+      ],
+      "legacy": null,
+      "verdict": "not_inspected",
+      "verdict_evidence": null
+    },
+    {
+      "id": "view:work",
+      "family": "Top-level views",
+      "label": "Work",
+      "path": "/work",
+      "aliases": [],
+      "component": "UniversalWorkspace",
+      "component_file": "src/neoh/UniversalWorkspace.jsx",
+      "registry": "src/routes.js VIEW_PATHS",
+      "roles": [
+        "member"
+      ],
+      "gate": "signed-in member; per-role server checks not yet inspected (prompt 03, T02.14)",
+      "apis": [
+        "GET /api/search",
+        "GET /api/search/recent"
+      ],
+      "legacy": null,
+      "verdict": "not_inspected",
+      "verdict_evidence": null
+    },
+    {
+      "id": "view:neoh",
+      "family": "Top-level views",
+      "label": "Neoh",
+      "path": "/neoh",
+      "aliases": [
+        "/our-ai/cowork"
+      ],
+      "component": "NeohConversation",
+      "component_file": "src/neoh/NeohConversation.jsx",
+      "registry": "src/routes.js VIEW_PATHS",
+      "roles": [
+        "member"
+      ],
+      "gate": "signed-in member; per-role server checks not yet inspected (prompt 03, T02.14)",
+      "apis": [
+        "GET /api/search/recent"
+      ],
+      "legacy": null,
+      "verdict": "not_inspected",
+      "verdict_evidence": null
+    },
+    {
+      "id": "work:recent",
+      "family": "Work types",
+      "label": "recent",
+      "path": "/work?type=recent",
+      "aliases": [],
+      "component": "UniversalWorkspace",
+      "component_file": "src/neoh/UniversalWorkspace.jsx",
+      "registry": "src/routes.js WORK_TYPES",
+      "roles": [
+        "member"
+      ],
+      "gate": "signed-in member; per-role server checks not yet inspected (prompt 03, T02.14)",
+      "apis": [
+        "GET /api/search",
+        "GET /api/search/recent"
+      ],
+      "legacy": null,
+      "verdict": "not_inspected",
+      "verdict_evidence": null
+    },
+    {
+      "id": "work:people",
+      "family": "Work types",
+      "label": "people",
+      "path": "/work?type=people",
+      "aliases": [
+        "/people"
+      ],
+      "component": "PeopleTab",
+      "component_file": "src/components/PeopleTab.jsx",
+      "registry": "src/routes.js WORK_TYPES",
+      "roles": [
+        "member"
+      ],
+      "gate": "signed-in member; per-role server checks not yet inspected (prompt 03, T02.14)",
+      "apis": [
+        "GET /api/crm/contacts",
+        "GET /api/living"
+      ],
+      "legacy": null,
+      "verdict": "not_inspected",
+      "verdict_evidence": null
+    },
+    {
+      "id": "work:properties",
+      "family": "Work types",
+      "label": "properties",
+      "path": "/work?type=properties",
+      "aliases": [
+        "/property-view"
+      ],
+      "component": "PropertiesTab",
+      "component_file": "src/components/PropertiesTab.jsx",
+      "registry": "src/routes.js WORK_TYPES",
+      "roles": [
+        "member"
+      ],
+      "gate": "signed-in member; per-role server checks not yet inspected (prompt 03, T02.14)",
+      "apis": [],
+      "legacy": null,
+      "verdict": "not_inspected",
+      "verdict_evidence": null
+    },
+    {
+      "id": "work:deals",
+      "family": "Work types",
+      "label": "deals",
+      "path": "/work?type=deals",
+      "aliases": [
+        "/deals"
+      ],
+      "component": "DealsTab",
+      "component_file": "src/components/DealsTab.jsx",
+      "registry": "src/routes.js WORK_TYPES",
+      "roles": [
+        "member"
+      ],
+      "gate": "signed-in member; per-role server checks not yet inspected (prompt 03, T02.14)",
+      "apis": [],
+      "legacy": null,
+      "verdict": "not_inspected",
+      "verdict_evidence": null
+    },
+    {
+      "id": "work:conversations",
+      "family": "Work types",
+      "label": "conversations",
+      "path": "/work?type=conversations",
+      "aliases": [
+        "/inbox"
+      ],
+      "component": "CommsTab",
+      "component_file": "src/components/CommsTab.jsx",
+      "registry": "src/routes.js WORK_TYPES",
+      "roles": [
+        "member"
+      ],
+      "gate": "signed-in member; per-role server checks not yet inspected (prompt 03, T02.14)",
+      "apis": [
+        "GET /api/crm/clients/{param}/interactions",
+        "GET /api/crm/comms/threads",
+        "GET /api/crm/comms/threads/{param}"
+      ],
+      "legacy": null,
+      "verdict": "not_inspected",
+      "verdict_evidence": null
+    },
+    {
+      "id": "work:opportunities",
+      "family": "Work types",
+      "label": "opportunities",
+      "path": "/work?type=opportunities",
+      "aliases": [],
+      "component": "IntelligenceFeed",
+      "component_file": "src/components/IntelligenceFeed.jsx",
+      "registry": "src/routes.js WORK_TYPES",
+      "roles": [
+        "member"
+      ],
+      "gate": "signed-in member; per-role server checks not yet inspected (prompt 03, T02.14)",
+      "apis": [
+        "GET /api/agent-twin/reasons",
+        "GET /api/opportunities",
+        "POST /api/agent-twin/decisions",
+        "POST /api/agent-twin/decisions/{param}/rationale"
+      ],
+      "legacy": null,
+      "verdict": "not_inspected",
+      "verdict_evidence": null
+    },
+    {
+      "id": "work:ai",
+      "family": "Work types",
+      "label": "ai",
+      "path": "/work?type=ai",
+      "aliases": [
+        "/our-ai"
+      ],
+      "component": "OurAITab",
+      "component_file": "src/components/OurAITab.jsx",
+      "registry": "src/routes.js WORK_TYPES",
+      "roles": [
+        "member"
+      ],
+      "gate": "signed-in member; per-role server checks not yet inspected (prompt 03, T02.14)",
+      "apis": [],
+      "legacy": null,
+      "verdict": "not_inspected",
+      "verdict_evidence": null
+    },
+    {
+      "id": "work:sales",
+      "family": "Work types",
+      "label": "sales",
+      "path": "/work?type=sales",
+      "aliases": [
+        "/our-ai/sales"
+      ],
+      "component": "OurAITab",
+      "component_file": "src/components/OurAITab.jsx",
+      "registry": "src/routes.js WORK_TYPES",
+      "roles": [
+        "member"
+      ],
+      "gate": "signed-in member; per-role server checks not yet inspected (prompt 03, T02.14)",
+      "apis": [],
+      "legacy": null,
+      "verdict": "not_inspected",
+      "verdict_evidence": null
+    },
+    {
+      "id": "work:social",
+      "family": "Work types",
+      "label": "social",
+      "path": "/work?type=social",
+      "aliases": [
+        "/our-ai/social"
+      ],
+      "component": "OurAITab",
+      "component_file": "src/components/OurAITab.jsx",
+      "registry": "src/routes.js WORK_TYPES",
+      "roles": [
+        "member"
+      ],
+      "gate": "signed-in member; per-role server checks not yet inspected (prompt 03, T02.14)",
+      "apis": [],
+      "legacy": null,
+      "verdict": "not_inspected",
+      "verdict_evidence": null
+    },
+    {
+      "id": "work:homeowners",
+      "family": "Work types",
+      "label": "homeowners",
+      "path": "/work?type=homeowners",
+      "aliases": [
+        "/our-ai/homeowners"
+      ],
+      "component": "OurAITab",
+      "component_file": "src/components/OurAITab.jsx",
+      "registry": "src/routes.js WORK_TYPES",
+      "roles": [
+        "member"
+      ],
+      "gate": "signed-in member; per-role server checks not yet inspected (prompt 03, T02.14)",
+      "apis": [],
+      "legacy": null,
+      "verdict": "not_inspected",
+      "verdict_evidence": null
+    },
+    {
+      "id": "work:automations",
+      "family": "Work types",
+      "label": "automations",
+      "path": "/work?type=automations",
+      "aliases": [
+        "/our-ai/automations"
+      ],
+      "component": "OurAITab",
+      "component_file": "src/components/OurAITab.jsx",
+      "registry": "src/routes.js WORK_TYPES",
+      "roles": [
+        "member"
+      ],
+      "gate": "signed-in member; per-role server checks not yet inspected (prompt 03, T02.14)",
+      "apis": [],
+      "legacy": null,
+      "verdict": "not_inspected",
+      "verdict_evidence": null
+    },
+    {
+      "id": "work:sites",
+      "family": "Work types",
+      "label": "sites",
+      "path": "/work?type=sites",
+      "aliases": [
+        "/our-ai/sites"
+      ],
+      "component": "OurAITab",
+      "component_file": "src/components/OurAITab.jsx",
+      "registry": "src/routes.js WORK_TYPES",
+      "roles": [
+        "member"
+      ],
+      "gate": "signed-in member; per-role server checks not yet inspected (prompt 03, T02.14)",
+      "apis": [],
+      "legacy": null,
+      "verdict": "not_inspected",
+      "verdict_evidence": null
+    },
+    {
+      "id": "work:missions",
+      "family": "Work types",
+      "label": "missions",
+      "path": "/work?type=missions",
+      "aliases": [],
+      "component": "MissionBuilder",
+      "component_file": "src/neoh/MissionBuilder.jsx",
+      "registry": "src/routes.js WORK_TYPES",
+      "roles": [
+        "member"
+      ],
+      "gate": "signed-in member; per-role server checks not yet inspected (prompt 03, T02.14)",
+      "apis": [
+        "GET /api/missions",
+        "POST /api/missions",
+        "POST /api/missions/{param}/launch",
+        "POST /api/missions/{param}/simulate"
+      ],
+      "legacy": null,
+      "verdict": "not_inspected",
+      "verdict_evidence": null
+    },
+    {
+      "id": "entity:person",
+      "family": "Entity sheets",
+      "label": "person sheet",
+      "path": "/p/{id}",
+      "aliases": [],
+      "component": "EntitySheet",
+      "component_file": "src/neoh/EntitySheet.jsx",
+      "registry": "src/routes.js ENTITY_PREFIXES",
+      "roles": [
+        "member"
+      ],
+      "gate": "signed-in member; per-role server checks not yet inspected (prompt 03, T02.14)",
+      "apis": [],
+      "legacy": null,
+      "verdict": "not_inspected",
+      "verdict_evidence": null
+    },
+    {
+      "id": "entity:property",
+      "family": "Entity sheets",
+      "label": "property sheet",
+      "path": "/property/{key}",
+      "aliases": [],
+      "component": "EntitySheet",
+      "component_file": "src/neoh/EntitySheet.jsx",
+      "registry": "src/routes.js ENTITY_PREFIXES",
+      "roles": [
+        "member"
+      ],
+      "gate": "signed-in member; per-role server checks not yet inspected (prompt 03, T02.14)",
+      "apis": [],
+      "legacy": null,
+      "verdict": "not_inspected",
+      "verdict_evidence": null
+    },
+    {
+      "id": "entity:deal",
+      "family": "Entity sheets",
+      "label": "deal sheet",
+      "path": "/deal/{id}",
+      "aliases": [],
+      "component": "EntitySheet",
+      "component_file": "src/neoh/EntitySheet.jsx",
+      "registry": "src/routes.js ENTITY_PREFIXES",
+      "roles": [
+        "member"
+      ],
+      "gate": "signed-in member; per-role server checks not yet inspected (prompt 03, T02.14)",
+      "apis": [],
+      "legacy": null,
+      "verdict": "not_inspected",
+      "verdict_evidence": null
+    },
+    {
+      "id": "ai:intelligence",
+      "family": "AI hub workspaces",
+      "label": "Intelligence",
+      "path": "/work?type=ai (workspace: intelligence)",
+      "aliases": [],
+      "component": "IntelligenceFeed",
+      "component_file": "src/components/IntelligenceFeed.jsx",
+      "registry": "src/components/OurAITab.jsx WORKSPACES",
+      "roles": [
+        "member"
+      ],
+      "gate": "signed-in member; per-role server checks not yet inspected (prompt 03, T02.14)",
+      "apis": [
+        "GET /api/agent-twin/reasons",
+        "GET /api/opportunities",
+        "POST /api/agent-twin/decisions",
+        "POST /api/agent-twin/decisions/{param}/rationale"
+      ],
+      "legacy": null,
+      "verdict": "not_inspected",
+      "verdict_evidence": null
+    },
+    {
+      "id": "ai:cowork",
+      "family": "AI hub workspaces",
+      "label": "Cowork",
+      "path": "/work?type=ai (workspace: cowork)",
+      "aliases": [],
+      "component": "PersonalAITab",
+      "component_file": "src/components/PersonalAITab.jsx",
+      "registry": "src/components/OurAITab.jsx WORKSPACES",
+      "roles": [
+        "member"
+      ],
+      "gate": "signed-in member; per-role server checks not yet inspected (prompt 03, T02.14)",
+      "apis": [
+        "GET /api/agents/me/onboarding",
+        "GET /api/commands",
+        "GET /api/commands/providers",
+        "GET /api/contracts/documents",
+        "GET /api/contracts/documents/{param}/download",
+        "GET /api/crm/call-notes/settings",
+        "GET /api/models",
+        "POST /api/models/{param}/{param}",
+        "PUT /api/crm/call-notes/settings"
+      ],
+      "legacy": null,
+      "verdict": "not_inspected",
+      "verdict_evidence": null
+    },
+    {
+      "id": "ai:sales",
+      "family": "AI hub workspaces",
+      "label": "Sales",
+      "path": "/work?type=ai (workspace: sales)",
+      "aliases": [],
+      "component": "SalesWorkspace",
+      "component_file": "src/components/SalesWorkspace.jsx",
+      "registry": "src/components/OurAITab.jsx WORKSPACES",
+      "roles": [
+        "member"
+      ],
+      "gate": "signed-in member; per-role server checks not yet inspected (prompt 03, T02.14)",
+      "apis": [],
+      "legacy": null,
+      "verdict": "not_inspected",
+      "verdict_evidence": null
+    },
+    {
+      "id": "ai:social",
+      "family": "AI hub workspaces",
+      "label": "Social",
+      "path": "/work?type=ai (workspace: social)",
+      "aliases": [],
+      "component": "OurAITab",
+      "component_file": "src/components/OurAITab.jsx",
+      "registry": "src/components/OurAITab.jsx WORKSPACES",
+      "roles": [
+        "member"
+      ],
+      "gate": "signed-in member; per-role server checks not yet inspected (prompt 03, T02.14)",
+      "apis": [],
+      "legacy": null,
+      "verdict": "not_inspected",
+      "verdict_evidence": null
+    },
+    {
+      "id": "ai:homeowners",
+      "family": "AI hub workspaces",
+      "label": "Homeowners",
+      "path": "/work?type=ai (workspace: homeowners)",
+      "aliases": [],
+      "component": "OurAITab",
+      "component_file": "src/components/OurAITab.jsx",
+      "registry": "src/components/OurAITab.jsx WORKSPACES",
+      "roles": [
+        "member"
+      ],
+      "gate": "signed-in member; per-role server checks not yet inspected (prompt 03, T02.14)",
+      "apis": [],
+      "legacy": null,
+      "verdict": "not_inspected",
+      "verdict_evidence": null
+    },
+    {
+      "id": "ai:automations",
+      "family": "AI hub workspaces",
+      "label": "Automations",
+      "path": "/work?type=ai (workspace: automations)",
+      "aliases": [],
+      "component": "OurAITab",
+      "component_file": "src/components/OurAITab.jsx",
+      "registry": "src/components/OurAITab.jsx WORKSPACES",
+      "roles": [
+        "member"
+      ],
+      "gate": "signed-in member; per-role server checks not yet inspected (prompt 03, T02.14)",
+      "apis": [],
+      "legacy": null,
+      "verdict": "not_inspected",
+      "verdict_evidence": null
+    },
+    {
+      "id": "ai:sites",
+      "family": "AI hub workspaces",
+      "label": "Sites",
+      "path": "/work?type=ai (workspace: sites)",
+      "aliases": [],
+      "component": "StudioTab",
+      "component_file": "src/components/StudioTab.jsx",
+      "registry": "src/components/OurAITab.jsx WORKSPACES",
+      "roles": [
+        "member"
+      ],
+      "gate": "signed-in member; per-role server checks not yet inspected (prompt 03, T02.14)",
+      "apis": [
+        "GET /api/mls/health",
+        "GET /api/sites",
+        "POST /api/sites",
+        "POST /api/sites/{param}/preview"
+      ],
+      "legacy": null,
+      "verdict": "not_inspected",
+      "verdict_evidence": null
+    },
+    {
+      "id": "ai:autonomy",
+      "family": "AI hub workspaces",
+      "label": "Autonomy",
+      "path": "/work?type=ai (workspace: autonomy)",
+      "aliases": [],
+      "component": "AutonomyControls",
+      "component_file": "src/components/AutonomyControls.jsx",
+      "registry": "src/components/OurAITab.jsx WORKSPACES",
+      "roles": [
+        "member"
+      ],
+      "gate": "signed-in member; per-role server checks not yet inspected (prompt 03, T02.14)",
+      "apis": [
+        "GET /api/autonomy",
+        "PUT /api/autonomy"
+      ],
+      "legacy": null,
+      "verdict": "not_inspected",
+      "verdict_evidence": null
+    },
+    {
+      "id": "sales:agent",
+      "family": "Sales pages",
+      "label": "Sales Agent",
+      "path": "/work?type=sales&sales=%2Four-ai%2Fsales%2Fagent",
+      "aliases": [
+        "/our-ai/sales/agent"
+      ],
+      "component": "SalesAgentPage",
+      "component_file": "src/components/SalesAgentPage.jsx",
+      "registry": "src/components/SalesWorkspace.jsx DESTINATIONS",
+      "roles": [
+        "member"
+      ],
+      "gate": "signed-in member; per-role server checks not yet inspected (prompt 03, T02.14)",
+      "apis": [
+        "GET /api/sales/agent/work-queue",
+        "POST /api/sales/agent/actions"
+      ],
+      "legacy": null,
+      "verdict": "not_inspected",
+      "verdict_evidence": null
+    },
+    {
+      "id": "sales:dialer",
+      "family": "Sales pages",
+      "label": "Power Dialer",
+      "path": "/work?type=sales&sales=%2Four-ai%2Fsales%2Fdialer",
+      "aliases": [
+        "/our-ai/sales/dialer"
+      ],
+      "component": "PowerDialerPage",
+      "component_file": "src/components/PowerDialerPage.jsx",
+      "registry": "src/components/SalesWorkspace.jsx DESTINATIONS",
+      "roles": [
+        "member"
+      ],
+      "gate": "signed-in member; per-role server checks not yet inspected (prompt 03, T02.14)",
+      "apis": [
+        "GET /api/crm/contacts",
+        "GET /api/sales/capabilities",
+        "GET /api/telephony/agent/calls",
+        "GET /api/telephony/agent/token",
+        "POST /api/sales/agent/actions",
+        "POST /api/telephony/agent/calls/prepare"
+      ],
+      "legacy": null,
+      "verdict": "not_inspected",
+      "verdict_evidence": null
+    },
+    {
+      "id": "sales:plans",
+      "family": "Sales pages",
+      "label": "Smart Plans",
+      "path": "/work?type=sales&sales=%2Four-ai%2Fsales%2Fplans",
+      "aliases": [
+        "/our-ai/sales/plans"
+      ],
+      "component": "SmartPlansPage",
+      "component_file": "src/components/SmartPlansPage.jsx",
+      "registry": "src/components/SalesWorkspace.jsx DESTINATIONS",
+      "roles": [
+        "member"
+      ],
+      "gate": "signed-in member; per-role server checks not yet inspected (prompt 03, T02.14)",
+      "apis": [
+        "GET /api/crm/contacts",
+        "GET /api/sales/plans",
+        "GET /api/sales/plans/enrollments",
+        "GET /api/sales/plans/{param}",
+        "PATCH /api/sales/plans/{param}",
+        "POST /api/sales/plans",
+        "POST /api/sales/plans/enrollments/{param}/{param}",
+        "POST /api/sales/plans/{param}/enroll",
+        "POST /api/sales/plans/{param}/preview",
+        "POST /api/sales/plans/{param}/publish"
+      ],
+      "legacy": null,
+      "verdict": "not_inspected",
+      "verdict_evidence": null
+    },
+    {
+      "id": "sales:providers",
+      "family": "Sales pages",
+      "label": "Connections",
+      "path": "/work?type=sales&sales=%2Four-ai%2Fsales%2Fproviders",
+      "aliases": [
+        "/our-ai/sales/providers"
+      ],
+      "component": "ProviderDeliveryPage",
+      "component_file": "src/components/ProviderDeliveryPage.jsx",
+      "registry": "src/components/SalesWorkspace.jsx DESTINATIONS",
+      "roles": [
+        "member"
+      ],
+      "gate": "signed-in member; per-role server checks not yet inspected (prompt 03, T02.14)",
+      "apis": [
+        "DELETE /api/sales/providers/{param}/{param}",
+        "GET /api/messaging/business-number",
+        "GET /api/sales/providers",
+        "POST /api/commands/providers/google/oauth/start",
+        "POST /api/messaging/business-number/check-eligibility",
+        "POST /api/messaging/business-number/refresh",
+        "POST /api/messaging/business-number/verify/complete",
+        "POST /api/sales/providers/smtp/{param}/test-send",
+        "POST /api/sales/providers/smtp/{param}/validate",
+        "POST /api/sales/providers/{param}/{param}/validate",
+        "POST /api/telephony/business-number/verify",
+        "POST /api/telephony/business-number/verify/complete",
+        "PUT /api/messaging/business-number",
+        "PUT /api/sales/providers/smtp",
+        "PUT /api/sales/providers/{param}",
+        "PUT /api/telephony/business-number",
+        "PUT /api/telephony/routes/me"
+      ],
+      "legacy": null,
+      "verdict": "not_inspected",
+      "verdict_evidence": null
+    },
+    {
+      "id": "sales:routing",
+      "family": "Sales pages",
+      "label": "Lead Routing",
+      "path": "/work?type=sales&sales=%2Four-ai%2Fsales%2Frouting",
+      "aliases": [
+        "/our-ai/sales/routing"
+      ],
+      "component": "LeadRoutingPage",
+      "component_file": "src/components/LeadRoutingPage.jsx",
+      "registry": "src/components/SalesWorkspace.jsx DESTINATIONS",
+      "roles": [
+        "member"
+      ],
+      "gate": "signed-in member; per-role server checks not yet inspected (prompt 03, T02.14)",
+      "apis": [
+        "GET /api/crm/routing/agents",
+        "GET /api/crm/routing/connectors",
+        "GET /api/crm/routing/events",
+        "GET /api/crm/routing/metrics",
+        "GET /api/crm/routing/rules",
+        "PATCH /api/crm/routing/connectors/{param}",
+        "POST /api/crm/routing/connectors",
+        "POST /api/crm/routing/rules",
+        "PUT /api/crm/routing/agents/{param}",
+        "PUT /api/crm/routing/rules/{param}"
+      ],
+      "legacy": null,
+      "verdict": "not_inspected",
+      "verdict_evidence": null
+    },
+    {
+      "id": "deals:pipeline",
+      "family": "Deals sub-views",
+      "label": "Pipeline",
+      "path": "/work?type=deals (view: pipeline)",
+      "aliases": [],
+      "component": "DealPipeline",
+      "component_file": "src/components/DealPipeline.jsx",
+      "registry": "src/components/DealsTab.jsx VIEWS",
+      "roles": [
+        "member"
+      ],
+      "gate": "signed-in member; per-role server checks not yet inspected (prompt 03, T02.14)",
+      "apis": [],
+      "legacy": null,
+      "verdict": "not_inspected",
+      "verdict_evidence": null
+    },
+    {
+      "id": "deals:transactions",
+      "family": "Deals sub-views",
+      "label": "Transactions",
+      "path": "/work?type=deals (view: transactions)",
+      "aliases": [],
+      "component": "DealBook",
+      "component_file": "src/components/DealBook.jsx",
+      "registry": "src/components/DealsTab.jsx VIEWS",
+      "roles": [
+        "member"
+      ],
+      "gate": "signed-in member; per-role server checks not yet inspected (prompt 03, T02.14)",
+      "apis": [
+        "GET /api/portfolio/transactions",
+        "GET /api/portfolio/transactions/{param}/offers",
+        "PATCH /api/portfolio/transactions/{param}",
+        "POST /api/portfolio/transactions/{param}/close",
+        "POST /api/portfolio/transactions/{param}/offers",
+        "POST /api/portfolio/transactions/{param}/offers/{param}/accept"
+      ],
+      "legacy": null,
+      "verdict": "not_inspected",
+      "verdict_evidence": null
+    },
+    {
+      "id": "deals:contracts",
+      "family": "Deals sub-views",
+      "label": "Contracts",
+      "path": "/work?type=deals (view: contracts)",
+      "aliases": [],
+      "component": "ContractVaultTab",
+      "component_file": "src/components/ContractVaultTab.jsx",
+      "registry": "src/components/DealsTab.jsx VIEWS",
+      "roles": [
+        "member"
+      ],
+      "gate": "signed-in member; per-role server checks not yet inspected (prompt 03, T02.14)",
+      "apis": [
+        "GET /api/contracts/documents",
+        "GET /api/crm/clients"
+      ],
+      "legacy": null,
+      "verdict": "not_inspected",
+      "verdict_evidence": null
+    },
+    {
+      "id": "deals:portfolio",
+      "family": "Deals sub-views",
+      "label": "Portfolio",
+      "path": "/work?type=deals (view: portfolio)",
+      "aliases": [],
+      "component": "PortfolioTab",
+      "component_file": "src/components/PortfolioTab.jsx",
+      "registry": "src/components/DealsTab.jsx VIEWS",
+      "roles": [
+        "member"
+      ],
+      "gate": "signed-in member; per-role server checks not yet inspected (prompt 03, T02.14)",
+      "apis": [
+        "GET /api/portfolio/summary"
+      ],
+      "legacy": null,
+      "verdict": "not_inspected",
+      "verdict_evidence": null
+    },
+    {
+      "id": "deals:marketplace",
+      "family": "Deals sub-views",
+      "label": "Marketplace",
+      "path": "/work?type=deals (view: marketplace)",
+      "aliases": [],
+      "component": "MarketplaceBrowse",
+      "component_file": "src/components/MarketplaceBrowse.jsx",
+      "registry": "src/components/DealsTab.jsx VIEWS",
+      "roles": [
+        "member"
+      ],
+      "gate": "signed-in member; per-role server checks not yet inspected (prompt 03, T02.14)",
+      "apis": [
+        "GET /api/contracts/documents",
+        "GET /api/crm/clients",
+        "GET /api/marketplace/buyers/profiles",
+        "GET /api/marketplace/publications",
+        "POST /api/marketplace/bidding-messages/{param}/approve",
+        "POST /api/marketplace/buyers/requests",
+        "POST /api/marketplace/publications/from-contract/{param}",
+        "POST /api/marketplace/publications/{param}/bidding-message",
+        "POST /api/marketplace/publications/{param}/match",
+        "POST /api/marketplace/publications/{param}/publish",
+        "PUT /api/marketplace/buyers/profile"
+      ],
+      "legacy": null,
+      "verdict": "not_inspected",
+      "verdict_evidence": null
+    },
+    {
+      "id": "properties:address",
+      "family": "Properties sub-views",
+      "label": "Address",
+      "path": "/work?type=properties (view: address)",
+      "aliases": [],
+      "component": "PropertyViewTab",
+      "component_file": "src/components/PropertyViewTab.jsx",
+      "registry": "src/components/PropertiesTab.jsx VIEWS",
+      "roles": [
+        "member"
+      ],
+      "gate": "signed-in member; per-role server checks not yet inspected (prompt 03, T02.14)",
+      "apis": [
+        "DELETE /api/crm/property-view/upload-links/{param}",
+        "GET /api/crm/property-view",
+        "GET /api/crm/property-view/resolve",
+        "GET /api/enrich-property",
+        "GET /api/geocode",
+        "POST /api/crm/property-view/media",
+        "POST /api/crm/property-view/media/{param}/review",
+        "POST /api/crm/property-view/subject",
+        "POST /api/crm/property-view/upload-links"
+      ],
+      "legacy": null,
+      "verdict": "not_inspected",
+      "verdict_evidence": null
+    },
+    {
+      "id": "properties:houses",
+      "family": "Properties sub-views",
+      "label": "Houses",
+      "path": "/work?type=properties (view: houses)",
+      "aliases": [],
+      "component": "HouseSelection",
+      "component_file": "src/components/HouseSelection.jsx",
+      "registry": "src/components/PropertiesTab.jsx VIEWS",
+      "roles": [
+        "member"
+      ],
+      "gate": "signed-in member; per-role server checks not yet inspected (prompt 03, T02.14)",
+      "apis": [],
+      "legacy": null,
+      "verdict": "not_inspected",
+      "verdict_evidence": null
+    },
+    {
+      "id": "properties:listings",
+      "family": "Properties sub-views",
+      "label": "Listings",
+      "path": "/work?type=properties (view: listings)",
+      "aliases": [],
+      "component": "ListingsInventory",
+      "component_file": "src/components/ListingsInventory.jsx",
+      "registry": "src/components/PropertiesTab.jsx VIEWS",
+      "roles": [
+        "member"
+      ],
+      "gate": "signed-in member; per-role server checks not yet inspected (prompt 03, T02.14)",
+      "apis": [
+        "GET /api/crm/listings",
+        "POST /api/crm/listings"
+      ],
+      "legacy": null,
+      "verdict": "not_inspected",
+      "verdict_evidence": null
+    },
+    {
+      "id": "properties:mls",
+      "family": "Properties sub-views",
+      "label": "MLS",
+      "path": "/work?type=properties (view: mls)",
+      "aliases": [],
+      "component": "MlsSearch",
+      "component_file": "src/components/MlsSearch.jsx",
+      "registry": "src/components/PropertiesTab.jsx VIEWS",
+      "roles": [
+        "member"
+      ],
+      "gate": "signed-in member; per-role server checks not yet inspected (prompt 03, T02.14)",
+      "apis": [
+        "GET /api/mls/listings/{param}",
+        "GET /api/mls/regions",
+        "GET /api/mls/search"
+      ],
+      "legacy": "MLS is out of scope (D-2026-10-12-01); removed by prompt 11 T11.01",
+      "verdict": "not_inspected",
+      "verdict_evidence": null
+    },
+    {
+      "id": "properties:market",
+      "family": "Properties sub-views",
+      "label": "Market",
+      "path": "/work?type=properties (view: market)",
+      "aliases": [],
+      "component": "MarketDataPanels",
+      "component_file": "src/components/MarketDataPanels.jsx",
+      "registry": "src/components/PropertiesTab.jsx VIEWS",
+      "roles": [
+        "member"
+      ],
+      "gate": "signed-in member; per-role server checks not yet inspected (prompt 03, T02.14)",
+      "apis": [
+        "GET /api/market/{param}/overview"
+      ],
+      "legacy": null,
+      "verdict": "not_inspected",
+      "verdict_evidence": null
+    },
+    {
+      "id": "properties:forms",
+      "family": "Properties sub-views",
+      "label": "Forms",
+      "path": "/work?type=properties (view: forms)",
+      "aliases": [],
+      "component": "StateDocumentLibrary",
+      "component_file": "src/components/StateDocumentLibrary.jsx",
+      "registry": "src/components/PropertiesTab.jsx VIEWS",
+      "roles": [
+        "member"
+      ],
+      "gate": "signed-in member; per-role server checks not yet inspected (prompt 03, T02.14)",
+      "apis": [
+        "GET /api/licensing/requirements/{param}",
+        "GET /api/states",
+        "GET /api/states/{param}",
+        "GET /api/states/{param}/advertising-rules",
+        "GET /api/states/{param}/document-library"
+      ],
+      "legacy": null,
+      "verdict": "not_inspected",
+      "verdict_evidence": null
+    },
+    {
+      "id": "profile:settings",
+      "family": "Profile views",
+      "label": "Settings",
+      "path": "profile menu (view: settings)",
+      "aliases": [],
+      "component": "MyProfileTab",
+      "component_file": "src/components/MyProfileTab.jsx",
+      "registry": "src/components/CrmShell.jsx profileViews",
+      "roles": [
+        "member"
+      ],
+      "gate": "signed-in member; per-role server checks not yet inspected (prompt 03, T02.14)",
+      "apis": [
+        "GET /api/crm/profile",
+        "PUT /api/crm/profile"
+      ],
+      "legacy": null,
+      "verdict": "not_inspected",
+      "verdict_evidence": null
+    },
+    {
+      "id": "profile:ai",
+      "family": "Profile views",
+      "label": "AI controls",
+      "path": "profile menu (view: ai)",
+      "aliases": [],
+      "component": "PersonalAITab",
+      "component_file": "src/components/PersonalAITab.jsx",
+      "registry": "src/components/CrmShell.jsx profileViews",
+      "roles": [
+        "member"
+      ],
+      "gate": "signed-in member; per-role server checks not yet inspected (prompt 03, T02.14)",
+      "apis": [
+        "GET /api/agents/me/onboarding",
+        "GET /api/commands",
+        "GET /api/commands/providers",
+        "GET /api/contracts/documents",
+        "GET /api/contracts/documents/{param}/download",
+        "GET /api/crm/call-notes/settings",
+        "GET /api/models",
+        "POST /api/models/{param}/{param}",
+        "PUT /api/crm/call-notes/settings"
+      ],
+      "legacy": null,
+      "verdict": "not_inspected",
+      "verdict_evidence": null
+    },
+    {
+      "id": "profile:ops",
+      "family": "Profile views",
+      "label": "Admin",
+      "path": "profile menu (view: ops)",
+      "aliases": [],
+      "component": "AdminOpsTab",
+      "component_file": "src/components/AdminOpsTab.jsx",
+      "registry": "src/components/CrmShell.jsx profileViews",
+      "roles": [
+        "platform_admin"
+      ],
+      "gate": "client-side check of sessionStorage role (CrmShell isPlatformAdmin); server check is T02.14",
+      "apis": [],
+      "legacy": null,
+      "verdict": "not_inspected",
+      "verdict_evidence": null
+    },
+    {
+      "id": "public:reel",
+      "family": "Outside the signed-in shell",
+      "label": "Reel",
+      "path": "/reel",
+      "aliases": [],
+      "component": "ReelExperience",
+      "component_file": "src/components/ReelExperience.jsx",
+      "registry": "src/App.jsx",
+      "roles": [
+        "anonymous"
+      ],
+      "gate": "none",
+      "apis": [],
+      "legacy": null,
+      "verdict": "not_inspected",
+      "verdict_evidence": null
+    },
+    {
+      "id": "public:site-preview",
+      "family": "Outside the signed-in shell",
+      "label": "Private site preview",
+      "path": "/site-preview/{slug}",
+      "aliases": [],
+      "component": "SitePreview",
+      "component_file": "src/components/SitePreview.jsx",
+      "registry": "src/App.jsx",
+      "roles": [
+        "member"
+      ],
+      "gate": "signed-in session (calls the CRM API)",
+      "apis": [
+        "GET /api/sites",
+        "GET /api/sites/{param}"
+      ],
+      "legacy": null,
+      "verdict": "not_inspected",
+      "verdict_evidence": null
+    },
+    {
+      "id": "public:sites",
+      "family": "Outside the signed-in shell",
+      "label": "Published site",
+      "path": "/sites/{brokerage}/{site}",
+      "aliases": [],
+      "component": "PublicSite",
+      "component_file": "src/components/PublicSite.jsx",
+      "registry": "src/App.jsx",
+      "roles": [
+        "anonymous"
+      ],
+      "gate": "published sites only",
+      "apis": [
+        "GET /api/public/sites/{param}/{param}"
+      ],
+      "legacy": null,
+      "verdict": "not_inspected",
+      "verdict_evidence": null
+    },
+    {
+      "id": "public:property-upload",
+      "family": "Outside the signed-in shell",
+      "label": "Client property upload",
+      "path": "/property-upload/{token}",
+      "aliases": [],
+      "component": "PropertyUploadPage",
+      "component_file": "src/components/PropertyUploadPage.jsx",
+      "registry": "src/App.jsx",
+      "roles": [
+        "anonymous"
+      ],
+      "gate": "capability token",
+      "apis": [],
+      "legacy": null,
+      "verdict": "not_inspected",
+      "verdict_evidence": null
+    },
+    {
+      "id": "public:secure-dossier",
+      "family": "Outside the signed-in shell",
+      "label": "Client dossier",
+      "path": "/vault/secure-access/{token}",
+      "aliases": [],
+      "component": "SecureDossierPage",
+      "component_file": "src/components/SecureDossierPage.jsx",
+      "registry": "src/App.jsx",
+      "roles": [
+        "client"
+      ],
+      "gate": "capability token",
+      "apis": [],
+      "legacy": null,
+      "verdict": "not_inspected",
+      "verdict_evidence": null
+    },
+    {
+      "id": "public:accept-invite",
+      "family": "Outside the signed-in shell",
+      "label": "Accept invitation",
+      "path": "/accept-invite",
+      "aliases": [],
+      "component": "AcceptInvitePage",
+      "component_file": "src/components/AcceptInvitePage.jsx",
+      "registry": "src/App.jsx",
+      "roles": [
+        "invitee"
+      ],
+      "gate": "invitation token",
+      "apis": [],
+      "legacy": null,
+      "verdict": "not_inspected",
+      "verdict_evidence": null
+    }
+  ]
+}

@@ -12,7 +12,9 @@
     "test": "vitest run --config vitest.config.js",
     "test:watch": "vitest --config vitest.config.js",
     "bundle:check": "node scripts/check-bundle-budget.mjs",
-    "bundle:update": "node scripts/check-bundle-budget.mjs --update"
+    "bundle:update": "node scripts/check-bundle-budget.mjs --update",
+    "pages:matrix": "node scripts/build-all-pages-matrix.mjs",
+    "pages:matrix:check": "node scripts/build-all-pages-matrix.mjs --check"
   },
   "dependencies": {
     "@twilio/voice-sdk": "^2.18.3",
