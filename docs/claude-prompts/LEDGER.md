@@ -35,7 +35,7 @@ Listed weakest to strongest:
 |---|---|---|---|---|---|---|---|
 | 01 | Repository source audit | [01](01-repository-source-audit.md) | `not_inspected` | — | — | — | Run the 01 inventory |
 | 02 | All pages, routes, mobile UI | [02](02-all-pages-mobile-ui.md) | `source_verified` | staging | `90372f2` crawl | — | Per-page verdicts |
-| 03 | Brokerage tenancy and hybrid access | [03](03-brokerage-tenancy-hybrid-access.md) | `source_verified` | local | 0131 (L03-02) | Owner: team leads (L03-03) | Deploy 0131; browser check; then agent_contacts |
+| 03 | Brokerage tenancy and hybrid access | [03](03-brokerage-tenancy-hybrid-access.md) | `source_verified` | staging | 0131 (L03-02) | Owner: team leads (L03-03) | agent_contacts (L03-04) |
 | 04 | CRM, contacts, leads, relationships | [04](04-crm-contact-leads-relationships.md) | `source_verified` | local | `745f2fa` | A05 | L04-01 |
 | 05 | Semantic intent | [05](05-semantic-language-intent.md) | `source_verified` | local | `745f2fa` | — | L05-01 |
 | 06 | Evidence retrieval and memory | [06](06-evidence-retrieval-memory.md) | `source_verified` | local | `745f2fa` | A01, A02 | L06-01 |
@@ -185,19 +185,21 @@ updated: 2026-10-12
 ```yaml
 id: L03-02
 status: tests_pass
-env: local
-evidence_shas: [5d07552]
+env: staging
+evidence_shas: [5d07552, ef526bd]
 files: [backend/db/migrations/0131_agent_record_scope.sql, backend/record_access.py, backend/tenancy.py, backend/crm.py, backend/client_enterprise.py, backend/ai_chat_store.py, backend/privacy_lifecycle.py, backend/server.py, backend/client_portal.py, backend/client_ai_automation.py, backend/messaging_data.py, backend/inbound_voice.py, oracle-app/src/components/ClientAccess.jsx, oracle-app/src/state/useClientAccess.js, oracle-app/src/components/ClientDetailDrawer.jsx]
 tests_run:
   - {cmd: "pytest tests/test_brokerage_access_matrix_live.py (real PostgreSQL, app role, local dev DB)", result: "2 passed: agent A / B / C(shared) / owner / platform admin / other brokerage / brokerage pipeline; children inherit; view share refused at the DB and as 403; edit share cannot re-share; expired share grants nothing; agent cannot hand a client to a colleague (API 403 and DB WITH CHECK); policy == app_client_access() == tenancy.client_access for every actor; pg_policies composition", date: 2026-10-13}
   - {cmd: "EXPLAIN ANALYZE as oracle_app, agent listing a 21,268-client brokerage", result: "6,262 ms with the policy as a function (per-row) -> 10.7 ms inline (index scan; share list an InitPlan)", date: 2026-10-13}
   - {cmd: "full backend suite; CI live files; rls_security_review/rls_brokerage/platform_rls_test/privacy_lifecycle.sql", result: "3226 passed, 0 failed; live 5/5 (precheck fails locally only on a stale 0106 ledger row in the dev DB, unrelated); SQL proofs PASS", date: 2026-10-13}
   - {cmd: "vitest (ClientAccess.test.jsx + full) + eslint + build + bundle budget", result: "718 passed; lint clean; within budget", date: 2026-10-13}
+  - {cmd: "staging, real API, demo brokerage (owner-approved test-data change, restored afterwards)", result: "owner assigns Sarah to self -> agent list drops Sarah, GET /clients/{id} 404; owner shares view-only -> agent sees Sarah, /access = view; agent PATCH and note -> 403 'shared with you to view only'; agent re-share -> 403; share revoked + Sarah back to the pool", date: 2026-10-13}
+  - {cmd: "real Chrome (Playwright, /usr/bin/google-chrome) as the demo agent on /p/{sarah}, desktop 1440 + phone 390, after ef526bd", result: "'Shared with you by Jordan Miles: view only.'; stage buttons and tag input disabled; no share form, no Take it. Screenshots performance/out/access03/. Found and fixed in ef526bd: 'Shared with you by null' on the phone, and live-looking edit controls", date: 2026-10-13}
 authz_checked: "clients + 10 child tables (notes, activities, tasks, tags, buyer_profiles, client_ai_state, transactions, transaction_parties, showings, interaction_logs) under FORCE RLS as oracle_app"
 blockers: []
 audit_refs: []
 decision_refs: [D-2026-10-13-01]
-next_task: "Deploy; verify in a real browser on staging (owner assigns, shares view-only, agent sees and cannot edit)."
+next_task: "L03-04 (agent_contacts)."
 updated: 2026-10-13
 ```
 How it works: `assignee_user_id` (uuid) is derived from `assignee_id` by a trigger that rejects a string naming nobody (23503 → 422). Restrictive policies narrow `clients_tenant_isolation` (permissive policies OR together, F03.01). The API never re-implements the rule: it reads `app_client_access()` back for 404 vs 403. Platform admin, the broker owner and server-built pipelines marked `record_scope='brokerage'` (client portal, inbound SMS/voice matching, the client-AI steward) keep brokerage-wide access; a verified user session can never set it.
