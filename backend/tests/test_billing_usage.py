@@ -78,7 +78,7 @@ async def test_unknown_metrics_are_refused_not_recorded():
 async def test_negative_quantities_are_refused():
     sink: list = []
     assert await record_usage(
-        _ctx(), metric="lead_engaged", quantity=-1,
+        _ctx(), metric="media_capture", quantity=-1,
         idempotency_key="k1", conn=_Conn(sink),
     ) is False
     assert sink == []
@@ -88,13 +88,65 @@ async def test_negative_quantities_are_refused():
 async def test_a_valid_metric_is_written_with_its_idempotency_key():
     sink: list = []
     assert await record_usage(
-        _ctx(), metric="lead_engaged", quantity=1,
-        idempotency_key="lead-engaged:evt-1", conn=_Conn(sink),
+        _ctx(), metric="media_capture", quantity=1,
+        idempotency_key="media-capture:cap-1", conn=_Conn(sink),
     ) is True
     args = sink[0]
     assert args[0] == TENANT_ID
-    assert args[1] == "lead_engaged"
-    assert args[4] == "lead-engaged:evt-1"
+    assert args[1] == "media_capture"
+    assert args[4] == "media-capture:cap-1"
+
+
+@sync
+async def test_lead_engaged_cannot_be_metered_through_the_generic_writer():
+    """A05: lead_engaged was written by record_usage the moment a draft was
+    staged. It is stage-bound now — only record_lead_engagement, at delivery,
+    may write it — so no future caller can reintroduce the staged-step meter."""
+    sink: list = []
+    assert await record_usage(
+        _ctx(), metric="lead_engaged", quantity=1,
+        idempotency_key="lead-engaged:evt-1", conn=_Conn(sink),
+    ) is False
+    assert sink == []
+
+
+def test_billable_predicate_excludes_a_stageless_lead_engagement():
+    """Rows the pre-0133 code wrote at the staged step have lifecycle_stage
+    NULL. The predicate must be FALSE for them (not NULL), or a NOT-billable
+    count would silently drop them as well."""
+    pred = billing_usage.BILLABLE_PREDICATE
+    assert "IS NOT DISTINCT FROM 'delivered'" in pred
+    assert billing_usage.billable_predicate("u").startswith("(u.metric")
+
+
+@sync
+async def test_every_pending_billing_query_uses_the_billable_predicate(monkeypatch):
+    """The drain, the sweep, the operator backlog and the AI billing tools all
+    count 'pending billing'. Each must exclude non-billable rows, or a legacy
+    staged-step row reads as a bill waiting to go out."""
+    import inspect
+
+    import ai_tools_read
+    import operator_api
+
+    monkeypatch.setattr(billing_usage, "STRIPE_METERED_PRICE_ID", "price_metered_123")
+    calls: list = []
+    monkeypatch.setattr(billing_usage, "tenant_tx", _fake_tx([], calls))
+
+    async def _customer(ctx):
+        return "cus_123"
+
+    monkeypatch.setattr(billing_usage, "_stripe_customer_for", _customer)
+    await billing_usage.drain_usage_to_stripe(_ctx())
+    assert billing_usage.BILLABLE_PREDICATE in calls[0][0]
+
+    sweep = inspect.getsource(billing_usage.drain_all_tenants)
+    assert "BILLABLE_PREDICATE" in sweep
+    assert "BILLABLE_PREDICATE" in inspect.getsource(billing_usage.usage_summary)
+    assert inspect.getsource(operator_api).count("billing_usage.BILLABLE_PREDICATE") >= 1
+    assert 'billing_usage.billable_predicate("u")' in inspect.getsource(operator_api)
+    for fn in (ai_tools_read._get_billing_status, ai_tools_read._list_billing_invoices):
+        assert "BILLABLE_PREDICATE" in inspect.getsource(fn), fn.__name__
 
 
 @sync
@@ -118,7 +170,7 @@ async def test_a_database_failure_never_propagates_to_the_caller():
             raise RuntimeError("connection reset")
 
     assert await record_usage(
-        _ctx(), metric="lead_engaged", idempotency_key="k1", conn=_Broken([]),
+        _ctx(), metric="media_capture", idempotency_key="k1", conn=_Broken([]),
     ) is False
 
 
@@ -137,7 +189,7 @@ async def test_a_failed_insert_is_contained_in_a_savepoint():
 
     conn = _Broken([])
     assert await record_usage(
-        _ctx(), metric="lead_engaged", idempotency_key="k1", conn=conn,
+        _ctx(), metric="media_capture", idempotency_key="k1", conn=conn,
     ) is False
     assert conn.savepoints == ["enter", "rollback"]
 
@@ -146,7 +198,7 @@ async def test_a_failed_insert_is_contained_in_a_savepoint():
 async def test_a_successful_insert_releases_its_savepoint():
     conn = _Conn([])
     assert await record_usage(
-        _ctx(), metric="lead_engaged", idempotency_key="k1", conn=conn,
+        _ctx(), metric="media_capture", idempotency_key="k1", conn=conn,
     ) is True
     assert conn.savepoints == ["enter", "release"]
 

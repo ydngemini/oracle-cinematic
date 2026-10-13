@@ -81,10 +81,14 @@ def test_a_contact_only_target_writes_nothing_rather_than_inventing_an_anchor():
     assert "if interaction_type and (client_id or lead_id)" in helper
 
 
-def test_sent_disposition_is_an_update_guarded_on_staged():
-    """Enrich in place; never a second row (0097)."""
+def test_acceptance_moves_the_first_response_to_accepted_not_delivered():
+    """Enrich in place; never a second row (0097). A provider's acknowledgement
+    is ACCEPTED in the shared vocabulary (outreach_lifecycle, 0133) — the old
+    'sent' spelling read as delivery and was the stage A05 blurred."""
     import inspect
 
     helper = inspect.getsource(ca._record_send_bookkeeping)
-    assert "SET disposition = 'sent'" in helper
-    assert "AND disposition = 'staged'" in helper
+    assert "outreach_lifecycle.Stage.ACCEPTED" in helper
+    assert "reconcile_command_delivery" in helper
+    assert "SET disposition = 'sent'" not in helper
+    assert "Stage.DELIVERED" not in helper, "acceptance is not delivery"

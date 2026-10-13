@@ -6,7 +6,8 @@ implementation would be wrong in a way that costs money or breaks the law:
   * a compliance block must SUCCEED the job and leave a counted ledger row,
     not fail/retry (retrying a TCPA denial is the abuse the gate prevents);
   * the feature must be OFF by default;
-  * usage must be metered on engagement, never on a blocked attempt;
+  * usage is never metered by this job — not on a block, not on a staged draft
+    (A05: lead_engaged is metered at delivery by outreach_lifecycle);
   * a stated channel preference the contact cannot actually receive must not
     produce a message staged to nowhere.
 """
@@ -210,10 +211,7 @@ async def test_a_compliance_block_succeeds_and_is_recorded_not_retried(monkeypat
 
     monkeypatch.setattr(speed_to_lead, "guard_outreach", _blocked)
 
-    async def _never_meters(*a, **k):  # pragma: no cover - must never run
-        raise AssertionError("blocked leads must not be metered as engaged")
-
-    monkeypatch.setattr(speed_to_lead, "record_usage", _never_meters)
+    _forbid_metering(monkeypatch)
 
     result = await speed_to_lead._speed_to_lead_job(_payload(), _reporter())
 
@@ -225,10 +223,13 @@ async def test_a_compliance_block_succeeds_and_is_recorded_not_retried(monkeypat
 
 
 @sync
-async def test_a_staged_response_is_metered_once_on_engagement(monkeypatch):
+async def test_a_staged_draft_is_never_metered(monkeypatch):
+    """Audit A05. This test used to assert the defect: one lead_engaged row
+    the moment a draft was staged, before any human approved it or any
+    provider saw it. A staged draft has engaged nobody; the engagement is
+    metered at delivery by outreach_lifecycle (see test_outreach_lifecycle)."""
     monkeypatch.setenv("ORACLE_FEATURE_SPEED_TO_LEAD", "1")
     recorded: list[dict] = []
-    metered: list[dict] = []
     _stub_contact(monkeypatch, {"phone": "+13025550100", "preferred_channel": "sms"})
     monkeypatch.setattr(speed_to_lead, "_record_response_event", _recorder(recorded))
 
@@ -238,12 +239,7 @@ async def test_a_staged_response_is_metered_once_on_engagement(monkeypatch):
         )
 
     monkeypatch.setattr(speed_to_lead, "guard_outreach", _allowed)
-
-    async def _meter(ctx, **kwargs):
-        metered.append(kwargs)
-        return True
-
-    monkeypatch.setattr(speed_to_lead, "record_usage", _meter)
+    _forbid_metering(monkeypatch)
 
     result = await speed_to_lead._speed_to_lead_job(_payload(), _reporter())
 
@@ -251,9 +247,8 @@ async def test_a_staged_response_is_metered_once_on_engagement(monkeypatch):
     # Staged, never auto-sent: the human-in-the-loop default.
     assert result["requires_approval"] is True
     assert recorded[0]["disposition"] == "staged"
-    assert len(metered) == 1
-    assert metered[0]["metric"] == "lead_engaged"
-    assert metered[0]["idempotency_key"] == "lead-engaged:evt-1"
+    assert not hasattr(speed_to_lead, "record_usage"), \
+        "speed_to_lead must not import a metering call at all"
 
 
 @sync
@@ -266,11 +261,7 @@ async def test_latency_is_measured_from_lead_arrival_not_job_start(monkeypatch):
         return OutreachDecision(allowed=True, channel="sms", contact="x", state_code="DE")
 
     monkeypatch.setattr(speed_to_lead, "guard_outreach", _allowed)
-
-    async def _meter(*a, **k):
-        return True
-
-    monkeypatch.setattr(speed_to_lead, "record_usage", _meter)
+    _forbid_metering(monkeypatch)
 
     old = datetime.now(timezone.utc) - timedelta(seconds=300)
     result = await speed_to_lead._speed_to_lead_job(_payload(created_at=old), _reporter())
@@ -331,6 +322,17 @@ def _reporter():
             return None
 
     return _R()
+
+
+def _forbid_metering(monkeypatch) -> None:
+    """Any billing write from the staging job fails the test."""
+    import billing_usage
+
+    async def _never(*a, **k):  # pragma: no cover - must never run
+        raise AssertionError("speed-to-lead staging must not meter usage")
+
+    monkeypatch.setattr(billing_usage, "record_usage", _never)
+    monkeypatch.setattr(billing_usage, "record_lead_engagement", _never)
 
 
 def _recorder(sink: list[dict]):

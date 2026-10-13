@@ -36,7 +36,7 @@ Listed weakest to strongest:
 | 01 | Repository source audit | [01](01-repository-source-audit.md) | `not_inspected` | — | — | — | Run the 01 inventory |
 | 02 | All pages, routes, mobile UI | [02](02-all-pages-mobile-ui.md) | `source_verified` | staging | `90372f2` crawl | — | Per-page verdicts |
 | 03 | Brokerage tenancy and hybrid access | [03](03-brokerage-tenancy-hybrid-access.md) | `source_verified` | local | 0131 (L03-02) | Owner: team leads (L03-03) | Deploy 0131; browser check; then agent_contacts |
-| 04 | CRM, contacts, leads, relationships | [04](04-crm-contact-leads-relationships.md) | `source_verified` | local | `745f2fa` | A05 | L04-01 |
+| 04 | CRM, contacts, leads, relationships | [04](04-crm-contact-leads-relationships.md) | `tests_pass` | local | 0133 (L04-01) | — | T04.01 + T04.13 (L04-01 next) |
 | 05 | Semantic intent | [05](05-semantic-language-intent.md) | `source_verified` | local | `745f2fa` | — | L05-01 |
 | 06 | Evidence retrieval and memory | [06](06-evidence-retrieval-memory.md) | `source_verified` | local | `745f2fa` | A01, A02 | L06-01 |
 | 07 | AI gateway and governed tools | [07](07-ai-gateway-model-tool-governance.md) | `source_verified` | local | `745f2fa` | A09 | L07-01 |
@@ -50,7 +50,7 @@ Listed weakest to strongest:
 | 15 | Neoh mascot animation | [15](15-neoh-avatar-skeletal-character-animation.md) | `source_verified` | local | `745f2fa` | Owner: rig author | L15-01 |
 | 16 | Performance, indexes, cache | [16](16-performance-indexes-mobile-cache.md) | `source_verified` | local | `745f2fa` | A10; no production target | L16-01 |
 | 17 | Security, privacy, data lifecycle | [17](17-security-privacy-compliance-data-lifecycle.md) | `source_verified` | staging | `0739563` | A01, A06 | Read-only review with 02 |
-| 18 | Billing, seats, analytics | [18](18-brokerage-billing-seat-plans-analytics.md) | `source_verified` | local | `745f2fa` | D-2026-10-12-02; A05 | Read-only review with 02 |
+| 18 | Billing, seats, analytics | [18](18-brokerage-billing-seat-plans-analytics.md) | `source_verified` | local | 0133 (L18-02 `tests_pass`) | D-2026-10-12-02 (billable stage) | T18.04 + AC18.02 (seats) |
 | 19 | Production operations | [19](19-infrastructure-deploy-observability-recovery.md) | `source_verified` | staging | `745f2fa` | No production app; A04 | L19-03 |
 | 20 | 20-agent launch certification | [20](20-twenty-agent-full-feature-launch-e2e-evaluation.md) | `source_verified` | local | `745f2fa` | Every row above | Last |
 
@@ -222,22 +222,25 @@ updated: 2026-10-13
 ### L04
 CRM, contacts, leads and relationships.
 
-#### L04-01 Engagement counted at the staged step
+#### L04-01 Engagement counted at the staged step (fixed: stages kept apart)
 ```yaml
 id: L04-01
-status: source_verified
+status: tests_pass
 env: local
-evidence_shas: [745f2fa]
-files: [backend/speed_to_lead.py, backend/lead_routing_api.py]
+evidence_shas: [745f2fa]   # finding; fix in the commit that adds backend/outreach_lifecycle.py (migration 0133)
+files: [backend/outreach_lifecycle.py, backend/speed_to_lead.py, backend/lead_routing_api.py, backend/commands_api.py, backend/messaging_data.py, backend/email_outbox.py, backend/db/migrations/0133_engagement_lifecycle.sql, backend/tests/test_outreach_lifecycle.py, backend/tests/test_speed_to_lead.py, backend/tests/test_engagement_lifecycle_live.py]
 tests_run:
   - {cmd: "sed -n 380,392p backend/speed_to_lead.py; sed -n 535,552p backend/lead_routing_api.py", result: "lead_engaged metered right after staged; routing metrics count staged drafts as responded", date: 2026-10-12}
-authz_checked: n/a
+  - {cmd: "cd backend && pytest -q -p no:cacheprovider tests/", result: "3263 passed, 11 skipped, exit 0", date: 2026-10-13}
+  - {cmd: "livetest (real PostgreSQL, app + platform roles, 0133 applied): pytest tests/test_engagement_lifecycle_live.py", result: "1 passed: routing metrics count staged 1 / accepted 5 / delivered 4 / cancelled 1 apart, latency measured to accepted_at, no 'responded' key", date: 2026-10-13}
+authz_checked: "live test reads the metrics as the broker owner under FORCE RLS on a throwaway brokerage; ledger moves run as the approving agent (app role) and the platform webhook context"
 blockers: []
 audit_refs: [A05]
-decision_refs: []
-next_task: "T04.07"
-updated: 2026-10-12
+decision_refs: [D-2026-10-12-02]
+next_task: "Track 'responded' (inbound reply linked to the first response); mark a carrier-failed text as failed in the ledger; then T04.01 + T04.13."
+updated: 2026-10-13
 ```
+One vocabulary for every outbound store: `backend/outreach_lifecycle.py` (`Stage`, and maps for `command_executions.state`, `email_outbox.status`, `sms_messages.status`, carrier call statuses and `lead_response_events.disposition`; tests prove each map covers its CHECK). The first-response ledger now moves staged → approved (`commands_api.release_command`) → accepted (`_record_send_bookkeeping`, was `'sent'`) → delivered (Telnyx receipt in `messaging_data.record_delivery_update`, answered call in `commands_api.record_call_outcome`); a rejected draft becomes `cancelled`. Accepted and delivered are recorded only for a command whose state is `succeeded`. `routing_metrics` (`lead_routing_api.py:545`) no longer counts a staged draft as a response: it reports staged/approved/accepted/delivered/cancelled separately and measures p50/p90/under-90s to `accepted_at` (`latency_measured_to: "accepted"`); the `responded` key is gone (no caller). Not done: `responded` (a reply) is not tracked; a carrier-failed text stays `accepted`; email (SMTP) and Twilio texts never reach `delivered` (no receipt exists).
 
 ### L05
 Semantic intent.
@@ -850,22 +853,27 @@ next_task: "Design 20-seat entitlements and quantity on the single-price checkou
 updated: 2026-10-12
 ```
 
-#### L18-02 Engagement metered before approval or delivery
+#### L18-02 Engagement metered before approval or delivery (fixed: metered at delivery only)
 ```yaml
 id: L18-02
-status: source_verified
+status: tests_pass
 env: local
-evidence_shas: [745f2fa]
-files: [backend/speed_to_lead.py, backend/billing_usage.py]
+evidence_shas: [745f2fa]   # finding; fix in the commit that adds migration 0133 + backend/outreach_lifecycle.py
+files: [backend/outreach_lifecycle.py, backend/billing_usage.py, backend/speed_to_lead.py, backend/commands_api.py, backend/messaging_data.py, backend/operator_api.py, backend/ai_tools_read.py, backend/db/migrations/0133_engagement_lifecycle.sql, backend/tests/test_outreach_lifecycle.py, backend/tests/test_billing_usage.py, backend/tests/test_engagement_lifecycle_live.py, .github/workflows/ci.yml]
 tests_run:
   - {cmd: "grep -n record_usage backend/speed_to_lead.py; sed -n 74,77p backend/billing_usage.py", result: "lead_engaged recorded at :387-389 right after the staged event; it is the only Stripe-reported metric (billing_usage.py:76)", date: 2026-10-12}
-authz_checked: n/a
-blockers: []
+  - {cmd: "cd backend && pytest -q -p no:cacheprovider tests/test_outreach_lifecycle.py tests/test_speed_to_lead.py tests/test_billing_usage.py tests/test_command_send_bookkeeping.py", result: "75 passed: staged/approved/accepted never meter; delivered meters once; failed, cancelled, blocked, manual never meter; staged-step row promoted not duplicated", date: 2026-10-13}
+  - {cmd: "cd backend && pytest -q -p no:cacheprovider tests/", result: "3263 passed, 11 skipped, exit 0", date: 2026-10-13}
+  - {cmd: "livetest (real PostgreSQL, throwaway app + platform roles, 0133 applied): pytest tests/test_engagement_lifecycle_live.py", result: "1 passed: Telnyx receipt meters 1 row naming its command, duplicate receipt +0, receipt-before-acceptance applied at acceptance, answered call +1, failed/cancelled +0; drain (mock Stripe) reports 3 billable, 0 on rerun, never the staged-step row; CHECK refuses a billable row without a delivered source; reconcile query flags only a staged-step row already reported", date: 2026-10-13}
+  - {cmd: "livetest: pytest tests/test_on_conflict_targets_live.py tests/test_privacy_lifecycle_live.py tests/test_stripe_webhook_live.py tests/test_reconciliation_live.py tests/test_migration_precheck.py", result: "14 passed, 1 failed: test_precheck_against_a_real_migrated_database fails because the shared dev DB carries other branches' migrations (0132, 0134-0136) this worktree lacks — environmental, not 0133", date: 2026-10-13}
+authz_checked: "usage summary and reconciliation run as the broker owner under FORCE RLS; delivery hooks run in the platform webhook context with explicit tenant_id filters"
+blockers: [{type: owner, note: "Billable stage for email and Twilio texts (no delivery receipt exists, so they never meter today) and credit for any staged-step row already reported to Stripe — pricing contract (D-2026-10-12-02)."}]
 audit_refs: [A05]
-decision_refs: []
-next_task: "T18.06 + AC18.04"
-updated: 2026-10-12
+decision_refs: [D-2026-10-12-02]
+next_task: "Owner: confirm delivered as the billable stage (or name one per channel). Then run billing_usage.reconcile_lead_engagements on staging after 0133 deploys; then T18.04 + AC18.02 (seats)."
+updated: 2026-10-13
 ```
+`lead_engaged` is now written only by `billing_usage.record_lead_engagement` (`billing_usage.py:206`), called from `outreach_lifecycle.meter_delivered_engagement` (`outreach_lifecycle.py:232`), which re-reads that the command `succeeded` (approved and accepted) and its first response is `delivered`. `record_usage` refuses the metric (`_STAGE_BOUND`, `billing_usage.py:82`); `speed_to_lead.py:387` meters nothing. Migration 0133 adds `lifecycle_stage`/`source_table`/`source_id` with a CHECK (a stage-bearing `lead_engaged` row must be a delivered `command_executions` row). Pre-0133 staged-step rows have NULL stage by construction (no backfill needed under FORCE RLS) and are excluded by `BILLABLE_PREDICATE` (`billing_usage.py:97`) from the Stripe drain, the sweep, `/api/billing/usage` (shown as `not_billable_events`), the operator backlog and the AI billing tools; delivery later promotes the same row (same idempotency key) instead of adding one. Prices and plans unchanged. Not done: email and Twilio-SMS engagements never meter (no receipt); no UI change in `BillingUsagePanel.jsx` for `not_billable_events`; staging has not run 0133.
 
 #### L18-03 Billing screen shows the price checkout bills (fixed: no hard-coded plan)
 ```yaml
@@ -1002,7 +1010,7 @@ From [neoh-full-platform-source-audit-2026-10-08.md](../neoh-full-platform-sourc
 | A02 | Failed property lookup reads as zero matches | P0 | open | `backend/client_ai_automation.py:700`, `:704` (`_property_candidates_bounded`); degraded set from `model_error` only (`:962`) | 11 | L11-02, L06-01 |
 | A03 | Professional 3D certification without verified evidence | P0 | partly fixed: labels bound to the verdict (L12-02); certification state not built | `backend/recon_quality.py:83`, `:101`; `backend/reconstruction_worker.py:581`; badge `backend/tour_api.py:41`, `:335` ignores the verdict | 12 | L12-01 |
 | A04 | Production readiness not established by staging CI | P0 | open (no production app) | `.github/workflows/ci.yml:606` (`promote` manual only) | 19 | L19-02 |
-| A05 | Usage event counted before approved/delivered outreach | P1 | open | `backend/speed_to_lead.py:387-389` (`record_usage("lead_engaged")` right after `staged`) | 18 | L18-02, L04-01 |
+| A05 | Usage event counted before approved/delivered outreach | P1 | fixed in code, `tests_pass` local (2026-10-13), not deployed: metered only at delivered (0133); owner to confirm the billable stage | was `backend/speed_to_lead.py:387-389`; now `backend/outreach_lifecycle.py` (`BILLABLE_ENGAGEMENT_STAGE`), `backend/billing_usage.py` (`record_lead_engagement`, `BILLABLE_PREDICATE`) | 18 | L18-02, L04-01 |
 | A06 | Customer names in failure logs | P1 | open | `backend/client_ai_automation.py:701-703` logs `full_name` | 17 | L17-04 |
 | A07 | Concurrent messaging route initialization | P1 | open | `backend/messaging_data.py:108` (`ON CONFLICT … DO UPDATE SET provider_account_id`) | 10 | L10-06 |
 | A08 | Heuristic valuation targets in model training | P1 | open in code | `backend/ml_forge/edge_forge/train_lora.py:207` (`_COUNTY_PPSF`), `:209` (`_MAO_RULE = 0.70`) | 11 | — |

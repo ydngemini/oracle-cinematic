@@ -1167,12 +1167,14 @@ async def billing_exceptions(ctx: TenantContext = Depends(require_platform_admin
                 "SELECT count(*)::int AS backlog, min(occurred_at) AS oldest, "
                 "       count(*) FILTER (WHERE report_error IS NOT NULL)::int AS erroring "
                 "  FROM billing_usage_events "
-                " WHERE reported_at IS NULL AND metric = ANY($1::text[])", reportable), None)
+                " WHERE reported_at IS NULL AND metric = ANY($1::text[]) "
+                "   AND " + billing_usage.BILLABLE_PREDICATE, reportable), None)
             usage_tenants = await s.run("usage_tenants", lambda: conn.fetch(
                 "SELECT u.tenant_id, t.name, count(*)::int AS backlog, min(u.occurred_at) AS oldest, "
                 "       count(*) FILTER (WHERE u.report_error IS NOT NULL)::int AS erroring "
                 "  FROM billing_usage_events u LEFT JOIN tenants t ON t.id = u.tenant_id "
                 " WHERE u.reported_at IS NULL AND u.metric = ANY($1::text[]) "
+                "   AND " + billing_usage.billable_predicate("u") + " "
                 " GROUP BY u.tenant_id, t.name ORDER BY min(u.occurred_at) LIMIT 20", reportable), [])
     except HTTPException:
         raise

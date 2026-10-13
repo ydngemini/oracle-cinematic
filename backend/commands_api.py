@@ -1852,6 +1852,12 @@ async def release_command(
             command_id,
             job["id"],
         )
+        import outreach_lifecycle
+
+        await outreach_lifecycle.advance_first_response(
+            conn, tenant_id=ctx.tenant_id, command_id=command_id,
+            stage=outreach_lifecycle.Stage.APPROVED,
+        )
     return {"command": _command_dict(updated), "approval": approval, "job": job}
 
 
@@ -1886,6 +1892,14 @@ async def reject_command(
         updated = await conn.fetchrow(
             "UPDATE command_executions SET state='cancelled' WHERE id=$1::uuid RETURNING *",
             command_id,
+        )
+        import outreach_lifecycle
+
+        # A rejected draft never reached anyone. Without this the first-response
+        # ledger kept it 'staged' forever.
+        await outreach_lifecycle.advance_first_response(
+            conn, tenant_id=ctx.tenant_id, command_id=command_id,
+            stage=outreach_lifecycle.Stage.CANCELLED,
         )
     return {"command": _command_dict(updated), "approval": approval}
 
@@ -2196,6 +2210,22 @@ _CALL_OUTCOME_SUMMARY: dict[str, str] = {
 }
 
 
+async def _record_call_answered(provider_call_id: str) -> None:
+    import outreach_lifecycle
+
+    platform_ctx = TenantContext(
+        agent_id="call-status-webhook",
+        tenant_id=os.getenv("ORACLE_PLATFORM_TENANT_ID", "00000000-0000-0000-0000-000000000000"),
+        role=Role.PLATFORM_ADMIN,
+    )
+    try:
+        async with tenant_tx(platform_ctx) as conn:
+            await outreach_lifecycle.record_call_answered(conn, provider_call_id=provider_call_id)
+    except Exception:  # noqa: BLE001 — the carrier status is recorded regardless
+        logger.warning("call answer not applied to its first response: %s", provider_call_id,
+                       exc_info=True)
+
+
 async def record_call_outcome(provider_call_id: str, call_status: str,
                               duration_seconds: Optional[int] = None) -> None:
     """Carrier-confirmed call status → live_call_sessions + the client's timeline.
@@ -2207,6 +2237,16 @@ async def record_call_outcome(provider_call_id: str, call_status: str,
     status_value = (call_status or "").strip().lower()
     if not provider_call_id or not status_value:
         return
+    import outreach_lifecycle
+
+    if (
+        outreach_lifecycle.call_status_stage(status_value, duration_seconds)
+        is outreach_lifecycle.Stage.DELIVERED
+    ):
+        # An answer is the call's delivery (outreach_lifecycle). It is the
+        # only point a speed-to-lead call meters lead_engaged; idempotent, so
+        # 'answered' followed by 'completed' still counts once.
+        await _record_call_answered(provider_call_id)
     if status_value in {"in-progress", "answered"}:
         await _update_call_session_async(provider_call_id, "in-progress")
         return
@@ -2448,14 +2488,15 @@ async def _record_send_bookkeeping(
        brokerage's outreach as silence. chk_interaction_anchor needs a client
        or lead; a command that targets only a contact_id writes nothing and
        says so, because inventing an anchor would be worse than the gap.
-    2. lead_response_events.disposition → 'sent'. Allowed since 0067, never
-       once written, because nothing that sent could find the row.
+    2. lead_response_events.disposition → 'accepted' (0133; 'sent' before),
+       via outreach_lifecycle — and 'delivered' if a receipt already arrived.
     3. For a calendar command, an appointment_booked outcome — an actual
        future appointment with a provider reference behind it, which is what
        the vision means by "booked" and what `showings` (a past-tense record)
        cannot represent.
     """
     import outcome_memory
+    import outreach_lifecycle
 
     client_id = target.get("client_id") or None
     lead_id = target.get("lead_id") or None
@@ -2505,18 +2546,18 @@ async def _record_send_bookkeeping(
                     "no interaction row written (chk_interaction_anchor)", command_id,
                 )
 
-            try:
-                async with conn.transaction():
-                    await conn.execute(
-                        """
-                        UPDATE lead_response_events
-                           SET disposition = 'sent', updated_at = now()
-                         WHERE command_id = $1::uuid AND disposition = 'staged'
-                        """,
-                        command_id,
-                    )
-            except Exception:  # noqa: BLE001
-                logger.warning("lead_response 'sent' not recorded for %s", command_id, exc_info=True)
+            # Accepted, in outreach_lifecycle's words: the provider took it.
+            # Not delivered — that needs a carrier receipt or an answer, and is
+            # the only stage that meters lead_engaged. A receipt that beat
+            # this write is picked up by reconcile_command_delivery. Both run
+            # in their own SAVEPOINT; neither can fail the worker.
+            await outreach_lifecycle.advance_first_response(
+                conn, tenant_id=ctx.tenant_id, command_id=command_id,
+                stage=outreach_lifecycle.Stage.ACCEPTED,
+            )
+            await outreach_lifecycle.reconcile_command_delivery(
+                conn, tenant_id=ctx.tenant_id, command_id=command_id,
+            )
 
             # 4. The client's timeline. ClientTimeline reads client_activities
             #    only; until now an approved call, an approved email and a
