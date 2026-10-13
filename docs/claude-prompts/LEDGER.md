@@ -495,7 +495,7 @@ updated: 2026-10-12
 id: L10-06
 status: tests_pass
 env: local
-evidence_shas: [745f2fa]
+evidence_shas: [745f2fa, c52b4dc]
 files: [backend/messaging_data.py, backend/provider_purchases.py, backend/reconciliation.py, backend/privacy_data_map.py, backend/db/migrations/0136_hosted_messaging_order_ledger.sql, backend/tests/test_messaging_route_race_live.py, backend/tests/test_telnyx_messaging_data.py, .github/workflows/ci.yml, docs/provider-failure-matrix.md]
 tests_run:
   - {cmd: "sed -n 96,117p backend/messaging_data.py", result: "ensure_messaging_route ON CONFLICT ... DO UPDATE SET provider_account_id still present (:108)", date: 2026-10-12}
@@ -1019,7 +1019,7 @@ From [neoh-full-platform-source-audit-2026-10-08.md](../neoh-full-platform-sourc
 | A04 | Production readiness not established by staging CI | P0 | open (no production app) | `.github/workflows/ci.yml:606` (`promote` manual only) | 19 | L19-02 |
 | A05 | Usage event counted before approved/delivered outreach | P1 | open | `backend/speed_to_lead.py:387-389` (`record_usage("lead_engaged")` right after `staged`) | 18 | L18-02, L04-01 |
 | A06 | Customer names in failure logs | P1 | open | `backend/client_ai_automation.py:701-703` logs `full_name` | 17 | L17-04 |
-| A07 | Concurrent messaging route initialization | P1 | fixed in code, local real-PostgreSQL race test only (2026-10-13, L10-06); not deployed, migration 0136 unapplied outside the local dev DB; 10DLC brand/campaign re-submission still open | was `backend/messaging_data.py:108` (`ON CONFLICT … DO UPDATE SET provider_account_id`); now `ON CONFLICT … DO NOTHING` + re-read, and the hosted order goes through `provider_purchases` (`_claim_hosted_order`) | 10 | L10-06 |
+| A07 | Concurrent messaging route initialization | P1 | fixed in code at `c52b4dc`, local real-PostgreSQL race test only (2026-10-13, L10-06); not deployed, migration 0136 unapplied outside the local dev DB; 10DLC brand/campaign re-submission still open | was `backend/messaging_data.py:108` (`ON CONFLICT … DO UPDATE SET provider_account_id`); now `ON CONFLICT … DO NOTHING` + re-read, and the hosted order goes through `provider_purchases` (`_claim_hosted_order`) | 10 | L10-06 |
 | A08 | Heuristic valuation targets in model training | P1 | open in code | `backend/ml_forge/edge_forge/train_lora.py:207` (`_COUNTY_PPSF`), `:209` (`_MAO_RULE = 0.70`) | 11 | — |
 | A09 | AI capability descriptions exceed executable tooling | P1 | allowlist re-verified; UI and persona wording not re-verified | allowlist at `backend/ai_chat_store.py:605`, `:646`; 126 catalogued vs 57 allowlisted tools (L07-01) | 07 | L07-01 |
 | A10 | Local capacity test is not target-production evidence | P1 | open | `docs/capacity-plan.md:129` (nothing measured on DigitalOcean) | 16 | L16-01, L19-02 |
