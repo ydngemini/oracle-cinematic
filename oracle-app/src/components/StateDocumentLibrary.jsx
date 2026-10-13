@@ -24,9 +24,14 @@ function stateLabel(state) {
  * Each of the three resolves independently: a state whose licensing has not
  * been researched must not blank the advertising rules that have been.
  */
-function StateRegulatoryFacts({ stateCode }) {
+export function StateRegulatoryFacts({ stateCode }) {
   const [profile, setProfile] = useState(null);
   const [ads, setAds] = useState(null);
+  // Why the rules are missing, when they are: the backend answers 404 when the
+  // advertising dataset was never loaded, precisely so "no rules apply" is
+  // never implied (state_compliance _require_dataset_loaded). Showing that as
+  // "No advertising rules recorded" said the opposite (all-pages crawl, T02.11).
+  const [adsProblem, setAdsProblem] = useState(null);
   const [license, setLicense] = useState(null);
 
   useEffect(() => {
@@ -38,7 +43,13 @@ function StateRegulatoryFacts({ stateCode }) {
     ]).then(([p, a, l]) => {
       if (!active) return;
       setProfile(p.status === 'fulfilled' ? p.value : null);
-      setAds(a.status === 'fulfilled' && Array.isArray(a.value) ? a.value : []);
+      if (a.status === 'fulfilled' && Array.isArray(a.value)) {
+        setAds(a.value);
+        setAdsProblem(null);
+      } else {
+        setAds(null);
+        setAdsProblem(a.reason?.status === 404 ? 'not_loaded' : 'unavailable');
+      }
       setLicense(l.status === 'fulfilled' ? l.value : null);
     });
     return () => { active = false; };
@@ -87,6 +98,12 @@ function StateRegulatoryFacts({ stateCode }) {
       ) : null}
       {ads && ads.length === 0 ? (
         <p className={styles.notice}>No advertising rules recorded for this state.</p>
+      ) : null}
+      {adsProblem === 'not_loaded' ? (
+        <p className={styles.notice} role="note">Advertising rules for this state haven&rsquo;t been loaded yet. Don&rsquo;t assume none apply: check with the state commission.</p>
+      ) : null}
+      {adsProblem === 'unavailable' ? (
+        <p className={styles.notice} role="alert">Advertising rules couldn&rsquo;t be loaded right now.</p>
       ) : null}
     </div>
   );

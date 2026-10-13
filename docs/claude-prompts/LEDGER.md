@@ -34,7 +34,7 @@ Listed weakest to strongest:
 | Cat | Category | Prompt | Rollup | Env high-water | Last evidence | Open blockers | Next task |
 |---|---|---|---|---|---|---|---|
 | 01 | Repository source audit | [01](01-repository-source-audit.md) | `not_inspected` | — | — | — | Run the 01 inventory |
-| 02 | All pages, routes, mobile UI | [02](02-all-pages-mobile-ui.md) | `source_verified` | local | matrix | — | T02.11 crawl and per-page verdicts |
+| 02 | All pages, routes, mobile UI | [02](02-all-pages-mobile-ui.md) | `source_verified` | local | matrix | — | Re-crawl after deploy; per-page verdicts |
 | 03 | Brokerage tenancy and hybrid access | [03](03-brokerage-tenancy-hybrid-access.md) | `source_verified` | local | `745f2fa` | — | Read-only review with 02 |
 | 04 | CRM, contacts, leads, relationships | [04](04-crm-contact-leads-relationships.md) | `source_verified` | local | `745f2fa` | A05 | L04-01 |
 | 05 | Semantic intent | [05](05-semantic-language-intent.md) | `source_verified` | local | `745f2fa` | — | L05-01 |
@@ -136,6 +136,30 @@ decision_refs: []
 next_task: "Full crawl (T02.11) after deploy."
 updated: 2026-10-13
 ```
+
+#### L02-05 First full crawl of all 52 pages, and what it found
+```yaml
+id: L02-05
+status: tests_pass
+env: staging
+evidence_shas: [e219198]
+files: [scripts/crawl-all-pages.py, docs/claude-prompts/all-pages-crawl.json, oracle-app/src/components/OurAITab.jsx, oracle-app/src/components/StateDocumentLibrary.jsx]
+tests_run:
+  - {cmd: "scripts/crawl-all-pages.py --base-url <staging> (owner + agent, desktop + phone, anonymous for public pages; 204 page loads)", result: "29 clean, 21 with console errors, 1 not offered (Admin, correct), 1 not run (no demo transaction for the deal sheet); 0 page errors, 0 API 5xx, 0 phone overflow, 0 writes on open, 0 rate-limit 429s after L02-04", date: 2026-10-13}
+  - {cmd: "vitest OurAITab.test.jsx, StateDocumentLibrary.test.jsx + full suite", result: "713 passed", date: 2026-10-13}
+authz_checked: role gating observed per page (Admin hidden from owner and agent)
+blockers:
+  - {type: data, note: "Staging has no state_advertising_rules dataset loaded: the Forms view now says so instead of implying none apply."}
+  - {type: data, note: "The demo brokerage has no transaction, so the deal sheet was not opened."}
+  - {type: scope, note: "Legacy MLS view still 404s on /api/mls/regions until prompt 11 T11.01 removes it."}
+audit_refs: []
+decision_refs: [D-2026-10-12-01]
+next_task: "Re-crawl after deploy (expect the AI hub and Forms rows clean); seed a demo transaction; per-page verdicts in all-pages-verdicts.json."
+updated: 2026-10-13
+```
+Findings fixed from this crawl:
+- AI hub, for agents: owner-only lead-routing metrics answered 403 on every visit, and the page showed "Lead routing is temporarily unavailable". A 403 source is now "not available to your role" and leaves the outage banner and the source count (`OurAITab.jsx`).
+- Properties → Forms: a not-loaded advertising-rules dataset (backend 404, `dataset_not_loaded`) was shown as "No advertising rules recorded for this state", i.e. none apply. It now says the rules haven't been loaded and not to assume none apply (`StateDocumentLibrary.jsx`).
 
 ### L03
 Brokerage tenancy and hybrid access.

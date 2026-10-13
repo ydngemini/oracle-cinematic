@@ -90,6 +90,7 @@ const STATUS = {
   partial: { label: 'Partial', tone: 'warn' },
   setup: { label: 'Setup required', tone: 'neutral' },
   offline: { label: 'Unavailable', tone: 'danger' },
+  restricted: { label: 'Not available to your role', tone: 'neutral' },
   checking: { label: 'Checking', tone: 'neutral' },
   disabled: { label: 'Disabled', tone: 'neutral' },
 };
@@ -240,7 +241,7 @@ export default function OurAITab({
       : savedWorkspace()
   ));
   const [snapshot, setSnapshot] = useState({
-    values: {}, errors: {}, loading: true, refreshing: false, updatedAt: null,
+    values: {}, errors: {}, restricted: {}, loading: true, refreshing: false, updatedAt: null,
   });
   const requestRef = useRef(0);
   const { requestCommand, setOpen } = useAssistant();
@@ -261,16 +262,22 @@ export default function OurAITab({
     if (requestRef.current !== requestId) return;
     const values = {};
     const errors = {};
+    const restricted = {};
     settled.forEach((result, index) => {
       const source = SOURCES[index];
       if (result.status === 'fulfilled') {
         const selected = source.select(result.value);
         values[source.id] = Array.isArray(selected) ? selected : selected || {};
+      } else if (result.reason?.status === 403) {
+        // The server decided this role may not read it (e.g. lead-routing
+        // metrics are broker-owner only). That is not an outage: an agent saw
+        // "Lead routing is temporarily unavailable" on every visit.
+        restricted[source.id] = true;
       } else {
         errors[source.id] = result.reason;
       }
     });
-    setSnapshot({ values, errors, loading: false, refreshing: false, updatedAt: new Date() });
+    setSnapshot({ values, errors, restricted, loading: false, refreshing: false, updatedAt: new Date() });
   }, []);
 
   useEffect(() => {
@@ -333,11 +340,12 @@ export default function OurAITab({
   }, [snapshot.values]);
 
   const sourceState = useCallback((sourceId, active = true, partial = false) => {
+    if (snapshot.restricted?.[sourceId]) return STATUS.restricted;
     if (snapshot.errors[sourceId]) return STATUS.offline;
     if (!hasOwn(snapshot.values, sourceId)) return STATUS.checking;
     if (active) return partial ? STATUS.partial : STATUS.live;
     return STATUS.setup;
-  }, [snapshot.errors, snapshot.values]);
+  }, [snapshot.errors, snapshot.restricted, snapshot.values]);
 
   const selectWorkspace = useCallback((next) => {
     setWorkspace(next);
@@ -362,6 +370,7 @@ export default function OurAITab({
   }, [requestCommand, setOpen]);
 
   const liveSourceCount = SOURCES.filter((source) => hasOwn(snapshot.values, source.id)).length;
+  const visibleSourceCount = SOURCES.filter((source) => !snapshot.restricted?.[source.id]).length;
   const sourceErrors = SOURCES.filter((source) => snapshot.errors[source.id]);
   const routedWorkspace = salesRoute?.startsWith('/our-ai/sales') ? 'sales' : workspace;
   const activeWorkspace = WORKSPACES.find((item) => item.id === routedWorkspace) || WORKSPACES[0];
@@ -640,7 +649,7 @@ export default function OurAITab({
           <p>Sales, social, homeowner, automation and website tools, each with its real connection state. Nothing reaches a client without your approval.</p>
           <div className={styles.readiness} aria-label="AI readiness summary">
             <span data-tone={data.assistantEnabled ? 'good' : 'neutral'}><Bot aria-hidden="true" /> {data.assistantEnabled ? 'Neoh online' : 'Neoh not set up'}</span>
-            <span data-tone={sourceErrors.length ? 'warn' : 'good'}><CheckCircle2 aria-hidden="true" /> {liveSourceCount}/{SOURCES.length} sources</span>
+            <span data-tone={sourceErrors.length ? 'warn' : 'good'}><CheckCircle2 aria-hidden="true" /> {liveSourceCount}/{visibleSourceCount} sources</span>
             <span data-tone={data.pendingCommands.length ? 'warn' : 'good'}><ShieldCheck aria-hidden="true" /> {data.pendingCommands.length} awaiting review</span>
           </div>
         </div>

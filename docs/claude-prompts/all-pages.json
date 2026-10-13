@@ -24,7 +24,15 @@
       ],
       "legacy": null,
       "verdict": "not_inspected",
-      "verdict_evidence": null
+      "verdict_evidence": null,
+      "crawl": {
+        "status": "clean",
+        "issues": 0,
+        "load_ms_median": 2189,
+        "writes_attempted_on_open": [],
+        "not_offered_to": [],
+        "run": "staging e219198 2026-10-13"
+      }
     },
     {
       "id": "view:work",
@@ -45,7 +53,15 @@
       ],
       "legacy": null,
       "verdict": "not_inspected",
-      "verdict_evidence": null
+      "verdict_evidence": null,
+      "crawl": {
+        "status": "clean",
+        "issues": 0,
+        "load_ms_median": 1942,
+        "writes_attempted_on_open": [],
+        "not_offered_to": [],
+        "run": "staging e219198 2026-10-13"
+      }
     },
     {
       "id": "view:neoh",
@@ -67,7 +83,15 @@
       ],
       "legacy": null,
       "verdict": "not_inspected",
-      "verdict_evidence": null
+      "verdict_evidence": null,
+      "crawl": {
+        "status": "clean",
+        "issues": 0,
+        "load_ms_median": 2142,
+        "writes_attempted_on_open": [],
+        "not_offered_to": [],
+        "run": "staging e219198 2026-10-13"
+      }
     },
     {
       "id": "work:recent",
@@ -88,7 +112,15 @@
       ],
       "legacy": null,
       "verdict": "not_inspected",
-      "verdict_evidence": null
+      "verdict_evidence": null,
+      "crawl": {
+        "status": "clean",
+        "issues": 0,
+        "load_ms_median": 1954,
+        "writes_attempted_on_open": [],
+        "not_offered_to": [],
+        "run": "staging e219198 2026-10-13"
+      }
     },
     {
       "id": "work:people",
@@ -111,7 +143,15 @@
       ],
       "legacy": null,
       "verdict": "not_inspected",
-      "verdict_evidence": null
+      "verdict_evidence": null,
+      "crawl": {
+        "status": "clean",
+        "issues": 0,
+        "load_ms_median": 2105,
+        "writes_attempted_on_open": [],
+        "not_offered_to": [],
+        "run": "staging e219198 2026-10-13"
+      }
     },
     {
       "id": "work:properties",
@@ -131,7 +171,15 @@
       "apis": [],
       "legacy": null,
       "verdict": "not_inspected",
-      "verdict_evidence": null
+      "verdict_evidence": null,
+      "crawl": {
+        "status": "clean",
+        "issues": 0,
+        "load_ms_median": 1951,
+        "writes_attempted_on_open": [],
+        "not_offered_to": [],
+        "run": "staging e219198 2026-10-13"
+      }
     },
     {
       "id": "work:deals",
@@ -151,7 +199,15 @@
       "apis": [],
       "legacy": null,
       "verdict": "not_inspected",
-      "verdict_evidence": null
+      "verdict_evidence": null,
+      "crawl": {
+        "status": "clean",
+        "issues": 0,
+        "load_ms_median": 1988,
+        "writes_attempted_on_open": [],
+        "not_offered_to": [],
+        "run": "staging e219198 2026-10-13"
+      }
     },
     {
       "id": "work:conversations",
@@ -175,7 +231,15 @@
       ],
       "legacy": null,
       "verdict": "not_inspected",
-      "verdict_evidence": null
+      "verdict_evidence": null,
+      "crawl": {
+        "status": "clean",
+        "issues": 0,
+        "load_ms_median": 1915,
+        "writes_attempted_on_open": [],
+        "not_offered_to": [],
+        "run": "staging e219198 2026-10-13"
+      }
     },
     {
       "id": "work:opportunities",
@@ -198,7 +262,15 @@
       ],
       "legacy": null,
       "verdict": "not_inspected",
-      "verdict_evidence": null
+      "verdict_evidence": null,
+      "crawl": {
+        "status": "clean",
+        "issues": 0,
+        "load_ms_median": 1999,
+        "writes_attempted_on_open": [],
+        "not_offered_to": [],
+        "run": "staging e219198 2026-10-13"
+      }
     },
     {
       "id": "work:ai",
@@ -218,7 +290,15 @@
       "apis": [],
       "legacy": null,
       "verdict": "not_inspected",
-      "verdict_evidence": null
+      "verdict_evidence": null,
+      "crawl": {
+        "status": "issues",
+        "issues": 2,
+        "load_ms_median": 2157,
+        "writes_attempted_on_open": [],
+        "not_offered_to": [],
+        "run": "staging e219198 2026-10-13"
+      }
     },
     {
       "id": "work:sales",
@@ -238,7 +318,15 @@
       "apis": [],
       "legacy": null,
       "verdict": "not_inspected",
-      "verdict_evidence": null
+      "verdict_evidence": null,
+      "crawl": {
+        "status": "issues",
+        "issues": 2,
+        "load_ms_median": 2073,
+        "writes_attempted_on_open": [],
+        "not_offered_to": [],
+        "run": "staging e219198 2026-10-13"
+      }
     },
     {
       "id": "work:social",
@@ -258,7 +346,15 @@
       "apis": [],
       "legacy": null,
       "verdict": "not_inspected",
-      "verdict_evidence": null
+      "verdict_evidence": null,
+      "crawl": {
+        "status": "issues",
+        "issues": 2,
+        "load_ms_median": 2007,
+        "writes_attempted_on_open": [],
+        "not_offered_to": [],
+        "run": "staging e219198 2026-10-13"
+      }
     },
     {
       "id": "work:homeowners",
@@ -278,7 +374,15 @@
       "apis": [],
       "legacy": null,
       "verdict": "not_inspected",
-      "verdict_evidence": null
+      "verdict_evidence": null,
+      "crawl": {
+        "status": "issues",
+        "issues": 2,
+        "load_ms_median": 1951,
+        "writes_attempted_on_open": [],
+        "not_offered_to": [],
+        "run": "staging e219198 2026-10-13"
+      }
     },
     {
       "id": "work:automations",
@@ -298,7 +402,15 @@
       "apis": [],
       "legacy": null,
       "verdict": "not_inspected",
-      "verdict_evidence": null
+      "verdict_evidence": null,
+      "crawl": {
+        "status": "issues",
+        "issues": 2,
+        "load_ms_median": 2072,
+        "writes_attempted_on_open": [],
+        "not_offered_to": [],
+        "run": "staging e219198 2026-10-13"
+      }
     },
     {
       "id": "work:sites",
@@ -318,7 +430,15 @@
       "apis": [],
       "legacy": null,
       "verdict": "not_inspected",
-      "verdict_evidence": null
+      "verdict_evidence": null,
+      "crawl": {
+        "status": "issues",
+        "issues": 2,
+        "load_ms_median": 2001,
+        "writes_attempted_on_open": [],
+        "not_offered_to": [],
+        "run": "staging e219198 2026-10-13"
+      }
     },
     {
       "id": "work:missions",
@@ -341,7 +461,15 @@
       ],
       "legacy": null,
       "verdict": "not_inspected",
-      "verdict_evidence": null
+      "verdict_evidence": null,
+      "crawl": {
+        "status": "clean",
+        "issues": 0,
+        "load_ms_median": 1914,
+        "writes_attempted_on_open": [],
+        "not_offered_to": [],
+        "run": "staging e219198 2026-10-13"
+      }
     },
     {
       "id": "entity:person",
@@ -359,7 +487,15 @@
       "apis": [],
       "legacy": null,
       "verdict": "not_inspected",
-      "verdict_evidence": null
+      "verdict_evidence": null,
+      "crawl": {
+        "status": "clean",
+        "issues": 0,
+        "load_ms_median": 2072,
+        "writes_attempted_on_open": [],
+        "not_offered_to": [],
+        "run": "staging e219198 2026-10-13"
+      }
     },
     {
       "id": "entity:property",
@@ -377,7 +513,15 @@
       "apis": [],
       "legacy": null,
       "verdict": "not_inspected",
-      "verdict_evidence": null
+      "verdict_evidence": null,
+      "crawl": {
+        "status": "clean",
+        "issues": 0,
+        "load_ms_median": 3207,
+        "writes_attempted_on_open": [],
+        "not_offered_to": [],
+        "run": "staging e219198 2026-10-13"
+      }
     },
     {
       "id": "entity:deal",
@@ -395,7 +539,15 @@
       "apis": [],
       "legacy": null,
       "verdict": "not_inspected",
-      "verdict_evidence": null
+      "verdict_evidence": null,
+      "crawl": {
+        "status": "not_run",
+        "issues": 0,
+        "load_ms_median": null,
+        "writes_attempted_on_open": [],
+        "not_offered_to": [],
+        "run": "staging e219198 2026-10-13"
+      }
     },
     {
       "id": "ai:intelligence",
@@ -418,7 +570,15 @@
       ],
       "legacy": null,
       "verdict": "not_inspected",
-      "verdict_evidence": null
+      "verdict_evidence": null,
+      "crawl": {
+        "status": "issues",
+        "issues": 2,
+        "load_ms_median": 2837,
+        "writes_attempted_on_open": [],
+        "not_offered_to": [],
+        "run": "staging e219198 2026-10-13"
+      }
     },
     {
       "id": "ai:cowork",
@@ -446,7 +606,15 @@
       ],
       "legacy": null,
       "verdict": "not_inspected",
-      "verdict_evidence": null
+      "verdict_evidence": null,
+      "crawl": {
+        "status": "issues",
+        "issues": 2,
+        "load_ms_median": 2228,
+        "writes_attempted_on_open": [],
+        "not_offered_to": [],
+        "run": "staging e219198 2026-10-13"
+      }
     },
     {
       "id": "ai:sales",
@@ -464,7 +632,15 @@
       "apis": [],
       "legacy": null,
       "verdict": "not_inspected",
-      "verdict_evidence": null
+      "verdict_evidence": null,
+      "crawl": {
+        "status": "issues",
+        "issues": 2,
+        "load_ms_median": 2342,
+        "writes_attempted_on_open": [],
+        "not_offered_to": [],
+        "run": "staging e219198 2026-10-13"
+      }
     },
     {
       "id": "ai:social",
@@ -482,7 +658,15 @@
       "apis": [],
       "legacy": null,
       "verdict": "not_inspected",
-      "verdict_evidence": null
+      "verdict_evidence": null,
+      "crawl": {
+        "status": "issues",
+        "issues": 2,
+        "load_ms_median": 2256,
+        "writes_attempted_on_open": [],
+        "not_offered_to": [],
+        "run": "staging e219198 2026-10-13"
+      }
     },
     {
       "id": "ai:homeowners",
@@ -500,7 +684,15 @@
       "apis": [],
       "legacy": null,
       "verdict": "not_inspected",
-      "verdict_evidence": null
+      "verdict_evidence": null,
+      "crawl": {
+        "status": "issues",
+        "issues": 2,
+        "load_ms_median": 2276,
+        "writes_attempted_on_open": [],
+        "not_offered_to": [],
+        "run": "staging e219198 2026-10-13"
+      }
     },
     {
       "id": "ai:automations",
@@ -518,7 +710,15 @@
       "apis": [],
       "legacy": null,
       "verdict": "not_inspected",
-      "verdict_evidence": null
+      "verdict_evidence": null,
+      "crawl": {
+        "status": "issues",
+        "issues": 2,
+        "load_ms_median": 2759,
+        "writes_attempted_on_open": [],
+        "not_offered_to": [],
+        "run": "staging e219198 2026-10-13"
+      }
     },
     {
       "id": "ai:sites",
@@ -541,7 +741,15 @@
       ],
       "legacy": null,
       "verdict": "not_inspected",
-      "verdict_evidence": null
+      "verdict_evidence": null,
+      "crawl": {
+        "status": "issues",
+        "issues": 2,
+        "load_ms_median": 2568,
+        "writes_attempted_on_open": [],
+        "not_offered_to": [],
+        "run": "staging e219198 2026-10-13"
+      }
     },
     {
       "id": "ai:autonomy",
@@ -562,7 +770,15 @@
       ],
       "legacy": null,
       "verdict": "not_inspected",
-      "verdict_evidence": null
+      "verdict_evidence": null,
+      "crawl": {
+        "status": "issues",
+        "issues": 2,
+        "load_ms_median": 2578,
+        "writes_attempted_on_open": [],
+        "not_offered_to": [],
+        "run": "staging e219198 2026-10-13"
+      }
     },
     {
       "id": "sales:agent",
@@ -585,7 +801,15 @@
       ],
       "legacy": null,
       "verdict": "not_inspected",
-      "verdict_evidence": null
+      "verdict_evidence": null,
+      "crawl": {
+        "status": "issues",
+        "issues": 2,
+        "load_ms_median": 2128,
+        "writes_attempted_on_open": [],
+        "not_offered_to": [],
+        "run": "staging e219198 2026-10-13"
+      }
     },
     {
       "id": "sales:dialer",
@@ -612,7 +836,15 @@
       ],
       "legacy": null,
       "verdict": "not_inspected",
-      "verdict_evidence": null
+      "verdict_evidence": null,
+      "crawl": {
+        "status": "issues",
+        "issues": 2,
+        "load_ms_median": 2057,
+        "writes_attempted_on_open": [],
+        "not_offered_to": [],
+        "run": "staging e219198 2026-10-13"
+      }
     },
     {
       "id": "sales:plans",
@@ -643,7 +875,15 @@
       ],
       "legacy": null,
       "verdict": "not_inspected",
-      "verdict_evidence": null
+      "verdict_evidence": null,
+      "crawl": {
+        "status": "issues",
+        "issues": 2,
+        "load_ms_median": 2149,
+        "writes_attempted_on_open": [],
+        "not_offered_to": [],
+        "run": "staging e219198 2026-10-13"
+      }
     },
     {
       "id": "sales:providers",
@@ -681,7 +921,15 @@
       ],
       "legacy": null,
       "verdict": "not_inspected",
-      "verdict_evidence": null
+      "verdict_evidence": null,
+      "crawl": {
+        "status": "issues",
+        "issues": 2,
+        "load_ms_median": 2092,
+        "writes_attempted_on_open": [],
+        "not_offered_to": [],
+        "run": "staging e219198 2026-10-13"
+      }
     },
     {
       "id": "sales:routing",
@@ -712,7 +960,15 @@
       ],
       "legacy": null,
       "verdict": "not_inspected",
-      "verdict_evidence": null
+      "verdict_evidence": null,
+      "crawl": {
+        "status": "issues",
+        "issues": 2,
+        "load_ms_median": 2067,
+        "writes_attempted_on_open": [],
+        "not_offered_to": [],
+        "run": "staging e219198 2026-10-13"
+      }
     },
     {
       "id": "deals:pipeline",
@@ -730,7 +986,15 @@
       "apis": [],
       "legacy": null,
       "verdict": "not_inspected",
-      "verdict_evidence": null
+      "verdict_evidence": null,
+      "crawl": {
+        "status": "clean",
+        "issues": 0,
+        "load_ms_median": 2427,
+        "writes_attempted_on_open": [],
+        "not_offered_to": [],
+        "run": "staging e219198 2026-10-13"
+      }
     },
     {
       "id": "deals:transactions",
@@ -755,7 +1019,15 @@
       ],
       "legacy": null,
       "verdict": "not_inspected",
-      "verdict_evidence": null
+      "verdict_evidence": null,
+      "crawl": {
+        "status": "clean",
+        "issues": 0,
+        "load_ms_median": 1896,
+        "writes_attempted_on_open": [],
+        "not_offered_to": [],
+        "run": "staging e219198 2026-10-13"
+      }
     },
     {
       "id": "deals:contracts",
@@ -776,7 +1048,15 @@
       ],
       "legacy": null,
       "verdict": "not_inspected",
-      "verdict_evidence": null
+      "verdict_evidence": null,
+      "crawl": {
+        "status": "clean",
+        "issues": 0,
+        "load_ms_median": 2693,
+        "writes_attempted_on_open": [],
+        "not_offered_to": [],
+        "run": "staging e219198 2026-10-13"
+      }
     },
     {
       "id": "deals:portfolio",
@@ -796,7 +1076,15 @@
       ],
       "legacy": null,
       "verdict": "not_inspected",
-      "verdict_evidence": null
+      "verdict_evidence": null,
+      "crawl": {
+        "status": "clean",
+        "issues": 0,
+        "load_ms_median": 2499,
+        "writes_attempted_on_open": [],
+        "not_offered_to": [],
+        "run": "staging e219198 2026-10-13"
+      }
     },
     {
       "id": "deals:marketplace",
@@ -826,7 +1114,15 @@
       ],
       "legacy": null,
       "verdict": "not_inspected",
-      "verdict_evidence": null
+      "verdict_evidence": null,
+      "crawl": {
+        "status": "clean",
+        "issues": 0,
+        "load_ms_median": 2453,
+        "writes_attempted_on_open": [],
+        "not_offered_to": [],
+        "run": "staging e219198 2026-10-13"
+      }
     },
     {
       "id": "properties:address",
@@ -854,7 +1150,15 @@
       ],
       "legacy": null,
       "verdict": "not_inspected",
-      "verdict_evidence": null
+      "verdict_evidence": null,
+      "crawl": {
+        "status": "clean",
+        "issues": 0,
+        "load_ms_median": 1956,
+        "writes_attempted_on_open": [],
+        "not_offered_to": [],
+        "run": "staging e219198 2026-10-13"
+      }
     },
     {
       "id": "properties:houses",
@@ -872,7 +1176,15 @@
       "apis": [],
       "legacy": null,
       "verdict": "not_inspected",
-      "verdict_evidence": null
+      "verdict_evidence": null,
+      "crawl": {
+        "status": "clean",
+        "issues": 0,
+        "load_ms_median": 2481,
+        "writes_attempted_on_open": [],
+        "not_offered_to": [],
+        "run": "staging e219198 2026-10-13"
+      }
     },
     {
       "id": "properties:listings",
@@ -893,7 +1205,15 @@
       ],
       "legacy": null,
       "verdict": "not_inspected",
-      "verdict_evidence": null
+      "verdict_evidence": null,
+      "crawl": {
+        "status": "clean",
+        "issues": 0,
+        "load_ms_median": 2485,
+        "writes_attempted_on_open": [],
+        "not_offered_to": [],
+        "run": "staging e219198 2026-10-13"
+      }
     },
     {
       "id": "properties:mls",
@@ -915,7 +1235,15 @@
       ],
       "legacy": "MLS is out of scope (D-2026-10-12-01); removed by prompt 11 T11.01",
       "verdict": "not_inspected",
-      "verdict_evidence": null
+      "verdict_evidence": null,
+      "crawl": {
+        "status": "issues",
+        "issues": 4,
+        "load_ms_median": 2596,
+        "writes_attempted_on_open": [],
+        "not_offered_to": [],
+        "run": "staging e219198 2026-10-13"
+      }
     },
     {
       "id": "properties:market",
@@ -935,7 +1263,15 @@
       ],
       "legacy": null,
       "verdict": "not_inspected",
-      "verdict_evidence": null
+      "verdict_evidence": null,
+      "crawl": {
+        "status": "clean",
+        "issues": 0,
+        "load_ms_median": 2210,
+        "writes_attempted_on_open": [],
+        "not_offered_to": [],
+        "run": "staging e219198 2026-10-13"
+      }
     },
     {
       "id": "properties:forms",
@@ -959,7 +1295,15 @@
       ],
       "legacy": null,
       "verdict": "not_inspected",
-      "verdict_evidence": null
+      "verdict_evidence": null,
+      "crawl": {
+        "status": "issues",
+        "issues": 4,
+        "load_ms_median": 2534,
+        "writes_attempted_on_open": [],
+        "not_offered_to": [],
+        "run": "staging e219198 2026-10-13"
+      }
     },
     {
       "id": "profile:settings",
@@ -982,7 +1326,15 @@
       ],
       "legacy": null,
       "verdict": "not_inspected",
-      "verdict_evidence": null
+      "verdict_evidence": null,
+      "crawl": {
+        "status": "clean",
+        "issues": 0,
+        "load_ms_median": 2320,
+        "writes_attempted_on_open": [],
+        "not_offered_to": [],
+        "run": "staging e219198 2026-10-13"
+      }
     },
     {
       "id": "profile:ai",
@@ -1010,7 +1362,15 @@
       ],
       "legacy": null,
       "verdict": "not_inspected",
-      "verdict_evidence": null
+      "verdict_evidence": null,
+      "crawl": {
+        "status": "clean",
+        "issues": 0,
+        "load_ms_median": 2719,
+        "writes_attempted_on_open": [],
+        "not_offered_to": [],
+        "run": "staging e219198 2026-10-13"
+      }
     },
     {
       "id": "profile:ops",
@@ -1028,7 +1388,18 @@
       "apis": [],
       "legacy": null,
       "verdict": "not_inspected",
-      "verdict_evidence": null
+      "verdict_evidence": null,
+      "crawl": {
+        "status": "not_offered",
+        "issues": 0,
+        "load_ms_median": null,
+        "writes_attempted_on_open": [],
+        "not_offered_to": [
+          "agent",
+          "owner"
+        ],
+        "run": "staging e219198 2026-10-13"
+      }
     },
     {
       "id": "public:reel",
@@ -1046,7 +1417,15 @@
       "apis": [],
       "legacy": null,
       "verdict": "not_inspected",
-      "verdict_evidence": null
+      "verdict_evidence": null,
+      "crawl": {
+        "status": "clean",
+        "issues": 0,
+        "load_ms_median": 1960,
+        "writes_attempted_on_open": [],
+        "not_offered_to": [],
+        "run": "staging e219198 2026-10-13"
+      }
     },
     {
       "id": "public:site-preview",
@@ -1067,7 +1446,15 @@
       ],
       "legacy": null,
       "verdict": "not_inspected",
-      "verdict_evidence": null
+      "verdict_evidence": null,
+      "crawl": {
+        "status": "clean",
+        "issues": 0,
+        "load_ms_median": 1599,
+        "writes_attempted_on_open": [],
+        "not_offered_to": [],
+        "run": "staging e219198 2026-10-13"
+      }
     },
     {
       "id": "public:sites",
@@ -1087,7 +1474,15 @@
       ],
       "legacy": null,
       "verdict": "not_inspected",
-      "verdict_evidence": null
+      "verdict_evidence": null,
+      "crawl": {
+        "status": "clean",
+        "issues": 0,
+        "load_ms_median": 2079,
+        "writes_attempted_on_open": [],
+        "not_offered_to": [],
+        "run": "staging e219198 2026-10-13"
+      }
     },
     {
       "id": "public:property-upload",
@@ -1108,7 +1503,15 @@
       ],
       "legacy": null,
       "verdict": "not_inspected",
-      "verdict_evidence": null
+      "verdict_evidence": null,
+      "crawl": {
+        "status": "clean",
+        "issues": 0,
+        "load_ms_median": 1936,
+        "writes_attempted_on_open": [],
+        "not_offered_to": [],
+        "run": "staging e219198 2026-10-13"
+      }
     },
     {
       "id": "public:secure-dossier",
@@ -1130,7 +1533,15 @@
       ],
       "legacy": null,
       "verdict": "not_inspected",
-      "verdict_evidence": null
+      "verdict_evidence": null,
+      "crawl": {
+        "status": "clean",
+        "issues": 0,
+        "load_ms_median": 1932,
+        "writes_attempted_on_open": [],
+        "not_offered_to": [],
+        "run": "staging e219198 2026-10-13"
+      }
     },
     {
       "id": "public:accept-invite",
@@ -1151,7 +1562,15 @@
       ],
       "legacy": null,
       "verdict": "not_inspected",
-      "verdict_evidence": null
+      "verdict_evidence": null,
+      "crawl": {
+        "status": "clean",
+        "issues": 0,
+        "load_ms_median": 1614,
+        "writes_attempted_on_open": [],
+        "not_offered_to": [],
+        "run": "staging e219198 2026-10-13"
+      }
     }
   ]
 }
