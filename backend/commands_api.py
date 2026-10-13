@@ -2139,14 +2139,13 @@ async def _handle_incoming_acs_call(incoming_call_context: str, from_number: str
         await answer_incoming_call(incoming_call_context, from_number)
     except ProviderConfigurationError as exc:
         import logging
+        # Never the caller's number: it is personal data (CONTRACT C5.4, audit A06).
         logging.getLogger("oracle.acs_webhook").error(
-            "ACS configuration error — call rejected for %s: %s", from_number, exc
+            "ACS configuration error — incoming call rejected: %s", exc
         )
     except Exception:
         import logging
-        logging.getLogger("oracle.acs_webhook").exception(
-            "Incoming call handler failed for %s", from_number
-        )
+        logging.getLogger("oracle.acs_webhook").exception("Incoming call handler failed")
 
 
 def _update_call_session(call_connection_id: str, status: str) -> None:
@@ -2314,6 +2313,7 @@ async def deliver_call_notes(provider_call_id: str, notes: list[str],
     (CONTRACT C3.6). It used to go to every session in the brokerage.
     """
     import call_note_settings
+    import client_note_crypto
 
     clean = [str(n).strip()[:_MAX_CALL_NOTE_CHARS] for n in notes if str(n).strip()][:_MAX_CALL_NOTES]
     if not provider_call_id or not clean:
@@ -2348,10 +2348,14 @@ async def deliver_call_notes(provider_call_id: str, notes: list[str],
             "SELECT assignee_id FROM clients WHERE id=$1", session["client_id"])
         mode = await call_note_settings.read_mode(conn, session["tenant_id"], requester)
         review_state = "proposed" if mode == "review" else "approved"
+        # What the customer said is sealed at rest under the brokerage's key,
+        # never a plaintext body (0132, audit A01; the database refuses one).
+        sealed = await client_note_crypto.seal_body(conn, session["tenant_id"], body)
         note = await conn.fetchrow(
-            """INSERT INTO client_notes (tenant_id, client_id, body, author_id, pinned, review_state)
-               VALUES ($1, $2, $3, $4, false, $5) RETURNING id""",
-            session["tenant_id"], session["client_id"], body, AI_CALL_NOTE_AUTHOR, review_state,
+            """INSERT INTO client_notes (tenant_id, client_id, body, body_ciphertext, author_id,
+                                         pinned, review_state)
+               VALUES ($1, $2, '', $3, $4, false, $5) RETURNING id""",
+            session["tenant_id"], session["client_id"], sealed, AI_CALL_NOTE_AUTHOR, review_state,
         )
         summary = f"Call notes from Neoh ({len(clean)})"
         if review_state == "proposed":

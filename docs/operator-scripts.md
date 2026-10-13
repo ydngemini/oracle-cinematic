@@ -78,6 +78,55 @@ legacy `clients.full_name`, which is what the 0054 seed can produce.
 > row still matches `cardinality(...) = 0` and would otherwise be re-selected
 > forever.
 
+## `backend/backfill_client_notes.py` — seal the client notes written before 0132
+
+### When this is needed
+
+Migration `0132_client_note_body_sealed.sql` (audit A01) made every app write
+store a note's text only in `client_notes.body_ciphertext`, under the tenant
+key. Rows written before it — including AI call notes since `aec14c4` — keep
+their **plaintext** `body` until this script seals them. They still read
+correctly meanwhile (`backend/client_note_crypto.py` opens both shapes).
+
+### Check whether you need it
+
+```sql
+SELECT count(*) FROM client_notes WHERE body_ciphertext IS NULL AND body <> '';
+```
+
+`0` means that database is done. Check **production**, not a dev database.
+
+### Running it
+
+Requires `ORACLE_ENCRYPTION_MASTER_KEY` plus the usual `ORACLE_DB_*` vars
+(including `ORACLE_DB_PLATFORM_USER`: it runs in the platform context).
+
+```bash
+docker compose run --rm --no-deps \
+  -e ORACLE_ENCRYPTION_MASTER_KEY="$ORACLE_ENCRYPTION_MASTER_KEY" \
+  backend python /app/backfill_client_notes.py
+```
+
+Optional: `ORACLE_CLIENT_NOTE_BACKFILL_BATCH` (default `500`, range 1–5000).
+
+### What to expect
+
+Restart-safe: each batch commits on its own and selects only rows still in
+plaintext, with `FOR UPDATE ... SKIP LOCKED`, so it can be stopped, re-run and
+run beside live traffic. A seal-only rewrite keeps `updated_at` (the 0132
+trigger), so no note starts showing as "edited". It prints counts and tenant
+ids, never note text.
+
+| Exit | Meaning |
+|---|---|
+| `0` | No plaintext note remains. |
+| `1` | Rows locked by a concurrent writer were skipped; run it again. |
+| `2` | Refused to start — missing `ORACLE_ENCRYPTION_MASTER_KEY`, or an out-of-range batch size. |
+
+**Rollback:** `--unseal` writes the plaintext back (needed only before rolling
+the code back to before 0132). Drop `trg_client_notes_before_write` first, as
+the 0132 header describes: it refuses plaintext AI call notes.
+
 ## `backfill_property_coordinates.py` — geocode public property records
 
 **Why:** 8.59M `public_property_records` carry an address (93.8%) and an owner

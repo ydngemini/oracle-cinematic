@@ -580,7 +580,8 @@ async def record_consent(body: ConsentRecord, ctx: TenantContext = Depends(requi
         state_code=(body.state_code or None), proof_source=body.proof_source,
         proof_text=body.proof_text, lead_id=body.lead_id, client_id=body.client_id,
     )
-    logger.info("Consent recorded: %s %s (%s) tenant=%s", norm, body.channel.value,
+    # The id, never the number or address (CONTRACT C5.4, audit A06).
+    logger.info("Consent recorded: id=%s %s (%s) tenant=%s", consent_id, body.channel.value,
                 body.consent_type, ctx.tenant_id)
     return {"consent_id": consent_id, "contact": norm}
 
@@ -606,7 +607,7 @@ async def record_opt_out(body: OptOutRecord, ctx: TenantContext = Depends(requir
     norm = normalize_contact(body.contact, shape)
     await ConsentLedger.suppress(ctx, contact=norm, channel=ch, reason=body.reason,
                                  source_text=body.source_text)
-    logger.info("Opt-out recorded: %s ch=%s reason=%s tenant=%s", norm, ch, body.reason, ctx.tenant_id)
+    logger.info("Opt-out recorded: ch=%s reason=%s tenant=%s", ch, body.reason, ctx.tenant_id)
     return {"contact": norm, "channel": ch, "suppressed": True}
 
 
@@ -618,7 +619,7 @@ async def handle_inbound(body: InboundMessage, ctx: TenantContext = Depends(requ
         norm = normalize_contact(body.contact, body.channel)
         await ConsentLedger.suppress(ctx, contact=norm, channel="*", reason="stop_keyword",
                                      source_text=body.body[:200])
-        logger.info("STOP honoured: %s suppressed (tenant=%s)", norm, ctx.tenant_id)
+        logger.info("STOP honoured: %s contact suppressed (tenant=%s)", body.channel.value, ctx.tenant_id)
         return {"opted_out": True, "contact": norm}
     return {"opted_out": False}
 

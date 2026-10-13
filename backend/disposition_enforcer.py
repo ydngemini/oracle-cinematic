@@ -160,8 +160,8 @@ async def sweep_once() -> None:
         days = row["days_remaining"]
         address = lead["payload"].get("address") or lead["parcel_id"]
         logger.warning(
-            "Danger zone: lead %s (%s) — %d day(s) remaining.",
-            lead["id"], address, days,
+            "Danger zone: lead %s — %d day(s) remaining.",
+            lead["id"], days,
         )
 
         assets = None

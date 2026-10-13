@@ -10,7 +10,9 @@ Also proves (D-2026-10-12-03, prompt 09 T09.12/T09.14):
   direct;
 - the live frame goes only to the requesting and the assigned agent, never
   tenant-wide;
-- an agent approves a proposed note through the real route, under RLS.
+- an agent approves a proposed note through the real route, under RLS;
+- the note text is sealed at rest (0132, audit A01): body is empty, the
+  ciphertext opens under the brokerage's key, and the routes return the text.
 """
 
 from __future__ import annotations
@@ -25,7 +27,11 @@ DSN = os.getenv("ORACLE_LIVE_DB_ADMIN_DSN", "")
 pytestmark = pytest.mark.skipif(not DSN, reason="needs ORACLE_LIVE_DB_ADMIN_DSN (real PostgreSQL)")
 
 
-def test_consented_call_notes_reach_the_brokerage_clients_timeline():
+MASTER = "live-test-call-notes-master-key-0123456789"
+
+
+def test_consented_call_notes_reach_the_brokerage_clients_timeline(monkeypatch):
+    monkeypatch.setenv("ORACLE_ENCRYPTION_MASTER_KEY", MASTER)
     asyncio.run(_scenario())
 
 
@@ -37,6 +43,7 @@ async def _scenario():
     import commands_api
     import ws_hub
     from db import connection
+    from crypto import derive_tenant_key
     from tenancy import Role, TenantContext
 
     admin = await asyncpg.connect(DSN)
@@ -88,10 +95,12 @@ async def _scenario():
         assert await commands_api.deliver_call_notes(ref, notes) is None, "delivered twice"
 
         note = await admin.fetchrow(
-            "SELECT tenant_id, client_id, body, author_id, review_state FROM client_notes WHERE id=$1",
-            uuid.UUID(note_id))
+            "SELECT tenant_id, client_id, body, author_id, review_state, "
+            "pgp_sym_decrypt(body_ciphertext, $2) AS opened FROM client_notes WHERE id=$1",
+            uuid.UUID(note_id), derive_tenant_key(tenant, MASTER))
         assert str(note["tenant_id"]) == tenant and str(note["client_id"]) == client
-        assert "- Would love waterfront or a pond in the backyard" in note["body"]
+        assert note["body"] == "", "an AI call note was stored in plaintext"
+        assert "- Would love waterfront or a pond in the backyard" in note["opened"]
         assert note["author_id"] == "neoh-ai-call"
         assert note["review_state"] == "proposed", "review is the default mode"
         activity = await admin.fetchrow(
@@ -108,6 +117,9 @@ async def _scenario():
         agent_b = TenantContext(agent_id="agent-b", tenant_id=tenant, role=Role.AGENT)
         approved = await client_enterprise.approve_note(client, note_id, ctx=agent_b)
         assert approved["review_state"] == "approved" and approved["reviewed_by"] == "agent-b"
+        assert "- Prefers afternoon showings" in approved["body"]
+        listed = await client_enterprise.list_notes(client, ctx=agent_b)
+        assert any("- Prefers afternoon showings" in n["body"] for n in listed["notes"])
         with pytest.raises(Exception) as again:
             await client_enterprise.approve_note(client, note_id, ctx=agent_b)
         assert getattr(again.value, "status_code", None) == 409

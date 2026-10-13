@@ -227,7 +227,8 @@ async def ask(ctx: TenantContext, text: str, *, has_record: bool = False) -> dic
         try:
             return await intent.resolve(ctx, match)
         except Exception:  # noqa: BLE001 — a broken resolver degrades to chat
-            logger.exception("neoh intent %s failed for %r", intent.name, cleaned[:80])
+            # The request can name a customer; log its size, not its words (C5.4).
+            logger.exception("neoh intent %s failed (request of %d chars)", intent.name, len(cleaned))
             return render.fallthrough(f"resolver {intent.name} failed")
     return render.fallthrough("no pattern matched")
 

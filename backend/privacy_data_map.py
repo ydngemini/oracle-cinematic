@@ -62,7 +62,9 @@ TABLES: dict[str, TableEntry] = {
     "contact_property_relationships": TableEntry(C.CONTACT_PII, E),
     "buyer_profiles": TableEntry(C.CONTACT_PII, E),
     "lead_intake_events": TableEntry(C.CONTACT_PII, E),
-    "client_notes": TableEntry(C.BUSINESS_CRM, E),
+    "client_notes": TableEntry(C.BUSINESS_CRM, E, "body is communication content (AI call notes): "
+                               "sealed in body_ciphertext since 0132; pre-0132 rows plaintext until "
+                               "backfill_client_notes.py"),
     "client_tasks": TableEntry(C.BUSINESS_CRM, E),
     "client_activities": TableEntry(C.BUSINESS_CRM, E),
     "client_tags": TableEntry(C.BUSINESS_CRM, E),

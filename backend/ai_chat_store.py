@@ -21,6 +21,7 @@ from ai_tool_policy import READ_ONLY_TOOLS
 from ai_tools_gated import TOOLS_HANDLED as _GATED_TOOL_NAMES, execute as _execute_gated_tool
 from ai_tools_read import TOOLS_HANDLED as _READ_TOOL_NAMES, execute as _execute_read_tool
 from record_json import clean as _clean, json_value as _json
+import client_note_crypto
 from crypto import derive_tenant_key
 from db.connection import tenant_tx
 from rate_limiter import distributed_rate_limiter
@@ -754,15 +755,16 @@ async def _read_clients(conn, ctx: TenantContext, tool_name: str, tool_input: di
                  ORDER BY lower(tag) LIMIT 50""",
             client_id, ctx.tenant_id,
         )
-        notes = await conn.fetch(
-            """SELECT id,body,author_id,pinned,created_at,updated_at
+        notes = await client_note_crypto.open_rows(conn, await conn.fetch(
+            f"""SELECT id,body,author_id,pinned,created_at,updated_at,
+                       {client_note_crypto.SEALED_COLUMNS}
                  FROM client_notes
                 WHERE client_id=$1::uuid AND tenant_id=$2::uuid
                   -- a proposed AI call note is not the agent's word yet
                   AND review_state='approved'
                 ORDER BY pinned DESC,created_at DESC LIMIT 20""",
             client_id, ctx.tenant_id,
-        )
+        ))
         open_tasks = await conn.fetchval(
             """SELECT count(*) FROM client_tasks
                  WHERE client_id=$1::uuid AND tenant_id=$2::uuid AND status='open'""",
@@ -1348,12 +1350,13 @@ async def _execute_safe_tool(
                 target_id, ctx.tenant_id,
             ):
                 return {"ok": False, "error": "The selected client no longer exists."}
+            # Sealed at rest like every note (0132, audit A01): body stays ''.
             note_row = await conn.fetchrow(
                 """INSERT INTO client_notes
-                       (tenant_id,client_id,body,author_id,pinned)
-                     VALUES ($1::uuid,$2::uuid,$3,$4,false)
+                       (tenant_id,client_id,body,body_ciphertext,author_id,pinned)
+                     VALUES ($1::uuid,$2::uuid,'',$3,$4,false)
                      RETURNING id,created_at""",
-                ctx.tenant_id, target_id, note, user_id,
+                ctx.tenant_id, target_id, await _encrypt_text(conn, note, key), user_id,
             )
             activity_row = await conn.fetchrow(
                 """INSERT INTO client_activities

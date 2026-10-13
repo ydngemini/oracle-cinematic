@@ -581,12 +581,14 @@ async def _load_bundle(conn: Any, client_id: str) -> Optional[dict[str, Any]]:
         """,
         client_id,
     )
-    notes = await conn.fetch(
-        """SELECT id,body,created_at FROM client_notes
+    import client_note_crypto
+
+    notes = await client_note_crypto.open_rows(conn, await conn.fetch(
+        f"""SELECT id,body,created_at,{client_note_crypto.SEALED_COLUMNS} FROM client_notes
              WHERE client_id=$1::uuid AND review_state='approved'
              ORDER BY created_at DESC LIMIT 12""",
         client_id,
-    )
+    ))
     properties = await conn.fetch(
         """
         SELECT DISTINCT ON (kind,id) id,kind,address,price,zip_code
@@ -726,7 +728,7 @@ def property_lookup_status(
 
 async def _property_candidates_bounded(
     conn: Any, full_name: str, target_zips: list[str], linked_count: int,
-    *, last_checked_at: Optional[str] = None,
+    *, last_checked_at: Optional[str] = None, client_id: str = "",
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """`_property_candidates`, plus the source status that says what `[]` means.
 
@@ -761,11 +763,12 @@ async def _property_candidates_bounded(
             candidates = await _property_candidates(conn, full_name, target_zips, linked_count)
     except Exception as exc:  # noqa: BLE001 - a failed lookup must degrade, not fail reconciliation
         timed_out = _is_timeout(exc)
-        # The exception type only: never the owner name or the error text,
-        # which can echo query parameters (CRM data) into the log.
+        # The client id and the exception type only: never the owner name or
+        # the error text, which can echo query parameters (CRM data) into the
+        # log (audits A02, A06; CONTRACT C5.4).
         logger.warning(
-            "property-candidate lookup %s: %s",
-            "timed out" if timed_out else "failed", type(exc).__name__,
+            "property-candidate lookup %s: client=%s error=%s",
+            "timed out" if timed_out else "failed", client_id or "?", type(exc).__name__,
         )
         if timed_out:
             return [], property_lookup_status(
@@ -980,7 +983,7 @@ async def reconcile_client(
 
         candidates, property_lookup = await _property_candidates_bounded(
             conn, client["full_name"], list(preferences.get("target_zips") or []), len(properties),
-            last_checked_at=prior_lookup.get("last_checked_at"),
+            last_checked_at=prior_lookup.get("last_checked_at"), client_id=client_id,
         )
         source_status = {PROPERTY_SOURCE: property_lookup}
         lookup_failed = property_lookup["status"] in SOURCE_FAILED

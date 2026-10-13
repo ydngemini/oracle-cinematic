@@ -58,6 +58,9 @@ DECRYPT: dict[str, dict[str, str]] = {
     "lead_intake_events": {"payload_ciphertext": "payload"},
     "contract_draft_workspaces": {"payload_ciphertext": "payload"},
     "contract_documents": {"content_ciphertext": "content"},
+    # 0132: a sealed note's text; `body` is '' on those rows and still holds
+    # the text on rows the backfill has not sealed yet.
+    "client_notes": {"body_ciphertext": "sealed_body"},
 }
 _MAX_MEDIA_BYTES = int(os.getenv("ORACLE_EXPORT_MAX_MEDIA_BYTES", str(2 * 1024 ** 3)))
 

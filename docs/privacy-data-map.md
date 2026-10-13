@@ -42,7 +42,7 @@ Counts are from the dev database. They show shape, not production volume.
 - `leads` has 10.4M rows in dev. `payload` holds owner names **in plaintext**, and `encrypted_payload` is unused.
 - Also in this category: `transaction_parties` (encrypted), `contact_property_relationships`, `buyer_profiles` and `lead_intake_events` (encrypted payload).
 
-**Business CRM**: notes, tasks, activities, tags, segments, showings, listings, transactions, offers, milestones, checklists, buyer requests, marketplace, smart plans (revisions immutable), missions, hyperlocal sites, studio campaigns.
+**Business CRM**: notes (`client_notes.body` is communication content — AI call notes are what a customer said on a call; since 0132 every app write seals it in `body_ciphertext` under the tenant key, and pre-0132 rows stay plaintext until `backend/backfill_client_notes.py` runs), tasks, activities, tags, segments, showings, listings, transactions, offers, milestones, checklists, buyer requests, marketplace, smart plans (revisions immutable), missions, hyperlocal sites, studio campaigns.
 
 **Communication content**:
 - `sms_messages`: bodies and numbers **in plaintext**.
@@ -140,10 +140,11 @@ Spaces versioning is off, so a deleted object is gone.
 | Gap | Risk | Status |
 |---|---|---|
 | `clients` name/email/phone and `leads.payload` plaintext; `sms_messages.body` plaintext | DB read access exposes contacts | open — column encryption migration is a separate project (known limitation in security review) |
+| `client_notes.body` (AI call notes) plaintext | DB read access exposes what customers said | new writes sealed since 0132 (L17-03); old rows plaintext until `backfill_client_notes.py` runs in each environment |
 | Per-tenant keys are *derived* (HKDF of the master key), not stored | No crypto-shredding of one tenant | accepted; erasure deletes rows instead |
 | `recon-inputs/` staging copies carry no tenant | Orphaned photo copies | orphan audit finds them; worker should record the prefix (follow-up) |
 | SQLite audit fallback never purged | Emails/IPs on a container disk | containers are ephemeral on DO; purge on boot is a follow-up |
 | `inbound_voice_calls.retention_expires_at` set but never read | Implies a 365-day timer that does not exist | policy is "brokerage record" (no timer); column to be dropped or wired |
 | `pg_stat_statements` keeps query text | Literals in ad-hoc SQL | app queries are parameterised; operators must not paste PII into psql |
-| PII in a few log lines (reset/signup email, consent normalisation) | Logs at DO for 90 days (build) / runtime retention | log_redaction masks tokens, not emails; follow-up |
+| PII in a few log lines (reset/signup email, consent normalisation) | Logs at DO for 90 days (build) / runtime retention | fixed 2026-10-13 (L17-04): those lines log ids; `backend/tests/test_log_pii_guard.py` fails on a logging call that passes a name, email, phone, contact or note/transcript variable. Not covered: property addresses in geocoder/AVM/footprint lookups, `ctx.agent_id` (the user's email) in actor fields, and text inside exception messages and tracebacks |
 | Free-text mentions (a name inside a note or chat) | Not found by identifier search | stated in every subject-request result |
