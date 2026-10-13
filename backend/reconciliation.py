@@ -243,12 +243,13 @@ async def _reconcile_purchases(only_tenant: Optional[str] = None) -> dict[str, i
     """Unknown Twilio purchases: find a Neoh-named number bought around the
     attempt that no route uses; adopt it so the next connect reuses it. After
     an hour with nothing found, nothing was bought. Superseded numbers are
-    released."""
+    released. A hosted-messaging order (0136) is not a number: an unknown one
+    waits for an operator, and a Twilio number search must never adopt it."""
     ctx = _platform()
     async with tenant_tx(ctx) as conn:
         rows = await conn.fetch(
             "SELECT id, tenant_id, agent_id, provider, state, provider_ref, detail, created_at "
-            "FROM provider_purchases WHERE state IN ('unknown','confirmed') "
+            "FROM provider_purchases WHERE state IN ('unknown','confirmed') AND kind='phone_number' "
             "AND ($2::uuid IS NULL OR tenant_id = $2) ORDER BY created_at LIMIT $1", _BATCH, only_tenant)
         used = {r[0] for r in await conn.fetch(
             "SELECT inbound_forwarding_provider_sid FROM telephony_routes WHERE inbound_forwarding_provider_sid IS NOT NULL")}
