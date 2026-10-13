@@ -187,12 +187,38 @@ def properties_found(matches: list[dict[str, Any]], query: str) -> dict[str, Any
     )
 
 
-def properties_for(name: str, candidates: list[dict[str, Any]]) -> dict[str, Any]:
+def properties_for(
+    name: str, candidates: list[dict[str, Any]], lookup: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
     """Candidates the automation already maintains — not a new matcher.
 
     Inventing a second ranking here would give the same client two different
     "best" houses depending on which surface asked.
+
+    `lookup` is the public-record source status the automation recorded
+    (client_ai_state.source_status, migration 0135). An empty shortlist after
+    a lookup that timed out, failed or never ran is not "nothing matched", and
+    is never said as if it were (audit A02).
     """
+    # No lookup passed: a caller with no source status (the legacy shape).
+    status = lookup.get("status") if lookup is not None else "checked"
+    if not candidates and status in ("timed_out", "unavailable"):
+        last = lookup.get("last_checked_at")
+        return answer(
+            "properties_for",
+            f"I couldn't check public records for {name}: the last lookup "
+            f"{'timed out' if status == 'timed_out' else 'failed'}, so this is not "
+            f"a 'no matches'. It retries on the next reconciliation."
+            + (f" The last successful check was {str(last)[:10]}." if last else ""),
+            [],
+        )
+    if not candidates and status not in ("checked", "not_applicable"):
+        return answer(
+            "properties_for",
+            f"{name}'s record has not been checked against public records yet, "
+            f"so an empty shortlist here is not a 'no matches'.",
+            [],
+        )
     if not candidates:
         return answer(
             "properties_for",

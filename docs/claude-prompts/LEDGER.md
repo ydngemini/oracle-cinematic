@@ -43,7 +43,7 @@ Listed weakest to strongest:
 | 08 | Durable missions and workflows | [08](08-durable-missions-workflow-orchestration.md) | `source_verified` | local | `745f2fa` | PR #11 review; grant-release decision | L08-01 |
 | 09 | Real-time voice | [09](09-realtime-voice-speech-latency.md) | `source_verified` | staging | `9c3463a` | Call-note broadcast (L09-03); phone check (L09-02) | L09-03 |
 | 10 | Communications and calendars | [10](10-communications-calendar-provider-integrations.md) | `source_verified` | staging | `75c6ba6` (local) | Google OAuth client; 10DLC; deploy approval; A07 | L10-01 |
-| 11 | Property and market intelligence (non-MLS) | [11](11-property-market-intelligence.md) | `source_verified` | staging | `90372f2` | A02; staging catalog empty | T11.10 (A02) |
+| 11 | Property and market intelligence (non-MLS) | [11](11-property-market-intelligence.md) | `tests_pass` | staging (L11-01), local (L11-02) | `90372f2`; 0135 (L11-02) | Deploy 0135; live-DB test owed; staging catalog empty | Apply 0135 on staging; then T11.02 provenance |
 | 12 | Neoh Space capture, 3D, tours | [12](12-neoh-space-browser-capture-reconstruction.md) | `source_verified` | local | `745f2fa` | A03 | Capture Studio first slice |
 | 13 | Deals, documents, compliance | [13](13-transactions-contract-vault-compliance.md) | `source_verified` | local | `745f2fa` | Owner: e-sign, commissions | L13-01 |
 | 14 | Sites, social, ads, client portal | [14](14-websites-social-ads-growth-client-portal.md) | `source_verified` | local | `745f2fa` | Owner: networks, listings on sites | L14-01 |
@@ -567,18 +567,24 @@ updated: 2026-10-13
 #### L11-02 A failed property lookup reads as zero matches (A02)
 ```yaml
 id: L11-02
-status: source_verified
+status: tests_pass
 env: local
 evidence_shas: [745f2fa]
-files: [backend/client_ai_automation.py]
+files: [backend/db/migrations/0135_client_ai_source_status.sql, backend/client_ai_automation.py, backend/neoh_intents.py, backend/neoh_render.py, backend/buyer_matching.py, backend/ai_tools_read.py, backend/mls_portal.py, backend/tests/test_property_lookup_status.py, backend/tests/test_client_ai_automation.py, oracle-app/src/lib/propertyLookupStatus.js, oracle-app/src/lib/propertyLookupStatus.test.js, oracle-app/src/components/ClientDetailDrawer.jsx, oracle-app/src/components/ClientDetailDrawer.module.css]
 tests_run:
   - {cmd: "sed -n 676,710p backend/client_ai_automation.py; git diff 3b63d5b 745f2fa -- backend/client_ai_automation.py", result: "_property_candidates_bounded catches every exception (:700) and returns [] (:704); reconciliation sets degraded from model_error only (:962); file unchanged since the audit pin", date: 2026-10-12}
-authz_checked: n/a
-blockers: []
+  - {cmd: "cd backend && ORACLE_SKIP_DOTENV=1 python -m pytest -q -p no:cacheprovider tests/test_property_lookup_status.py tests/test_client_ai_automation.py tests/test_neoh_render.py tests/test_neoh_intents.py", result: "57 passed: verified zero = checked+matched 0; TimeoutError / asyncio.TimeoutError / SQLSTATE 57014 = timed_out; provider error = unavailable (no name in log or status); valid matches; not_applicable runs no query; reconcile with a failed lookup = degraded + PROPERTY_LOOKUP_* + data gap + timeline 'not checked'; stale candidates not re-served after a failed pass, last_checked_at kept; failed pass is retried (no 24 h shortcut), review task not duplicated; Neoh shortlist and suggest_client_matches never say 'no matches' for a failed or skipped search; public-records enrichment failure reported", date: 2026-10-13}
+  - {cmd: "cd backend && ORACLE_SKIP_DOTENV=1 python -m pytest -q -p no:cacheprovider tests/", result: "exit 0: 3247 passed, 10 skipped (live-DB tests skipped: no ORACLE_LIVE_DB_ADMIN_DSN)", date: 2026-10-13}
+  - {cmd: "cd oracle-app && npx vitest run && npx eslint . && npm run build && node scripts/check-bundle-budget.mjs", result: "vitest 724 passed (78 files, incl. propertyLookupStatus.test.js); eslint exit 0; build ok; bundle within budget", date: 2026-10-13}
+authz_checked: "no route or RLS change; client_ai_state keeps 0053's tenant policy and table-level grants (source_status needs no new grant; no new function). Buyer matching still refuses platform-admin sessions, now saying 'not_applicable' instead of an empty result."
+blockers:
+  - {type: deploy, note: "Migration 0135 must apply before this code runs: reconcile writes client_ai_state.source_status. Migrations run as the PRE_DEPLOY job; not applied anywhere yet."}
+  - {type: test, note: "Not run against real PostgreSQL (no live-DB DSN here). The reconcile path is proven with an in-memory connection; a live test of 0135 + reconcile under FORCE RLS is still owed."}
 audit_refs: [A02]
 decision_refs: []
-next_task: "Prompt 11 T11.10 + AC11.03"
-updated: 2026-10-12
+next_task: "Apply 0135 on staging with approval and run one reconcile with ORACLE_PROPERTY_CANDIDATES_TIMEOUT_MS forced low to see 'Lookup failed' in the client drawer; then the remaining non-property failure-as-zero sites found in the sweep (L11-02 note) under their owning categories."
+notes: "Sites fixed at the commit: client_ai_automation._property_candidates_bounded (returns candidates + per-source status, :727) and reconcile_client (degraded on a failed required source, :1079; no 24 h shortcut after a failed lookup, :882); neoh_intents._candidates_for (:291) + neoh_render.properties_for (:190); buyer_matching.property_buyer_matches buyer_search (:402) + ai_tools_read suggest_client_matches note (:2052); mls_portal public-records search/detail report a failed official-source enrichment (degraded + enrichment[], :1081, :1156); ClientDetailDrawer shows the lookup status (:779). Also removes the customer name from the lookup-failure log (A06 site client_ai_automation.py:701-703 at 745f2fa). Swept and NOT changed (other owners or already honest): data_integrations/building_footprint.py osm/regrid footprints return [] on error and floorplan_api.py footprint-candidates says empty is a real answer (category 12); data_integrations/census_geocoder.py batch/single geocode return matched:false on upstream failure via /api/data/geocode[/batch]; /api/data/eviction matched:false for miss and outage alike; apis/property_data.py flood/walkscore None with no reason on /api/enrich-property; apis/market_data.py FRED/Treasury None on /api/market-snapshot; avm_client.py UNAVAILABLE conflates provider outage with no estimate. Already honest: ai_tools_read search/comps/market tools, ai_chat_store read-tool exceptions (ok:false), search_api degraded legs, property-records DB failure = 503."
+updated: 2026-10-13
 ```
 
 ### L12
@@ -999,7 +1005,7 @@ From [neoh-full-platform-source-audit-2026-10-08.md](../neoh-full-platform-sourc
 | ID | Finding | Severity | Status at HEAD `745f2fa` (2026-10-12) | Evidence at HEAD | Owning category | Ledger |
 |---|---|---|---|---|---|---|
 | A01 | Customer PII and communications in plaintext | P0 | open; the audit missed the AI call notes (`aec14c4` predates its pin) | `docs/privacy-data-map.md:40`, `:42`, `:48`, `:71`; `backend/commands_api.py:2335` (`deliver_call_notes` → `client_notes.body`) | 17 | L17-03, L09-02, L09-03 |
-| A02 | Failed property lookup reads as zero matches | P0 | open | `backend/client_ai_automation.py:700`, `:704` (`_property_candidates_bounded`); degraded set from `model_error` only (`:962`) | 11 | L11-02, L06-01 |
+| A02 | Failed property lookup reads as zero matches | P0 | fixed in code, local tests only (2026-10-13, L11-02); not deployed, migration 0135 unapplied; non-property sites listed in L11-02 still open | was `backend/client_ai_automation.py:700`, `:704`; now `_property_candidates_bounded` returns per-source status (`:727`) and a failed lookup degrades the reconcile (`:1079`) | 11 | L11-02, L06-01 |
 | A03 | Professional 3D certification without verified evidence | P0 | partly fixed: labels bound to the verdict (L12-02); certification state not built | `backend/recon_quality.py:83`, `:101`; `backend/reconstruction_worker.py:581`; badge `backend/tour_api.py:41`, `:335` ignores the verdict | 12 | L12-01 |
 | A04 | Production readiness not established by staging CI | P0 | open (no production app) | `.github/workflows/ci.yml:606` (`promote` manual only) | 19 | L19-02 |
 | A05 | Usage event counted before approved/delivered outreach | P1 | open | `backend/speed_to_lead.py:387-389` (`record_usage("lead_engaged")` right after `staged`) | 18 | L18-02, L04-01 |

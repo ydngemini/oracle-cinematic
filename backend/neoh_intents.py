@@ -119,8 +119,8 @@ async def _properties_for(ctx: TenantContext, match: re.Match) -> dict[str, Any]
         return render.person_choices(matches, query)
 
     name = matches[0].get("label") or query
-    candidates = await _candidates_for(ctx, matches[0].get("id"))
-    return render.properties_for(name, candidates)
+    candidates, lookup = await _candidates_for(ctx, matches[0].get("id"))
+    return render.properties_for(name, candidates, lookup)
 
 
 async def _deal_blocker(ctx: TenantContext, match: re.Match) -> dict[str, Any]:
@@ -288,23 +288,34 @@ async def _person_detail(
     return dict(record), intent, timeline
 
 
-async def _candidates_for(ctx: TenantContext, client_id: Optional[str]) -> list[dict]:
-    """The shortlist the automation already maintains, not a new matcher."""
+async def _candidates_for(
+    ctx: TenantContext, client_id: Optional[str],
+) -> tuple[list[dict], dict]:
+    """The shortlist the automation already maintains, not a new matcher —
+    with the public-record source status that says what an empty one means.
+
+    `{}` for the status means nothing was recorded (no reconciliation yet, or
+    a row from before migration 0135): never read as a checked zero.
+    """
     import client_ai_automation
     from db.connection import tenant_tx
 
     if not client_id:
-        return []
+        return [], {}
     async with tenant_tx(ctx) as conn:
         row = await conn.fetchrow(
             "SELECT * FROM client_ai_state WHERE client_id=$1::uuid",
             client_id,
         )
     if row is None:
-        return []
+        return [], {}
     state = client_ai_automation.automation_state_json(row)
     candidates = state.get("property_candidates") or []
-    return [c for c in candidates if isinstance(c, dict)]
+    lookup = (state.get("source_status") or {}).get(client_ai_automation.PROPERTY_SOURCE)
+    return (
+        [c for c in candidates if isinstance(c, dict)],
+        lookup if isinstance(lookup, dict) else {},
+    )
 
 
 async def _deal_detail(

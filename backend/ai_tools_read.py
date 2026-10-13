@@ -2045,7 +2045,15 @@ async def _suggest_client_matches(conn, ctx: TenantContext, tool_input: dict) ->
     )
     if result is None:
         return _err("That property is not in this workspace.")
-    if not result["matches"]:
+    search = result.get("buyer_search") or {}
+    if not result["matches"] and search.get("status") not in (None, "checked"):
+        # Not searched is not "nobody fits" (audit A02).
+        result["note"] = (
+            f"Buyer matching did not run ({search.get('status')}): "
+            f"{search.get('reason') or 'no reason recorded'} This is not a result "
+            "that no buyer fits."
+        )
+    elif not result["matches"]:
         result["note"] = (
             "No buyer's recorded criteria fit this property. Buyers with no "
             "criteria recorded are not counted as a fit or a miss."
