@@ -114,7 +114,7 @@ def test_contract_data_failure_does_not_expose_internal_error(monkeypatch):
 
 
 def test_repeat_view_is_answered_without_rereading_the_bytes(monkeypatch):
-    """A matching If-None-Match must 304 before touching the database.
+    """A matching If-None-Match must 304 without reading the bytes.
 
     Media is the heaviest thing this API serves and a property card renders
     eight of them at once. Without a validator every re-render was a full read
@@ -127,10 +127,23 @@ def test_repeat_view_is_answered_without_rereading_the_bytes(monkeypatch):
 
     media_id = UUID("22222222-2222-4222-8222-222222222222")
 
-    def exploding_tx(_ctx):
-        raise AssertionError("a 304 must not query for the bytes")
+    from contextlib import asynccontextmanager
 
-    monkeypatch.setattr(media_api, "tenant_tx", exploding_tx)
+    class VisibilityOnly:
+        # A 304 is also an authorization answer (T16.14): it may confirm the
+        # row is visible under RLS, but must never read the bytes.
+        async def fetchval(self, sql, *_a):
+            assert "bytes" not in sql and "media_blobs" not in sql
+            return 1
+
+        async def fetchrow(self, *_a, **_k):
+            raise AssertionError("a 304 must not query for the bytes")
+
+    @asynccontextmanager
+    async def visibility_tx(_ctx):
+        yield VisibilityOnly()
+
+    monkeypatch.setattr(media_api, "tenant_tx", visibility_tx)
 
     response = asyncio.run(
         media_api.serve_media(media_id, ctx=CTX, if_none_match=f'"{media_id}"')

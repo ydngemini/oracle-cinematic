@@ -1,6 +1,7 @@
 import { ExpirationPlugin } from 'workbox-expiration';
 import { registerRoute } from 'workbox-routing';
 import { CacheFirst, NetworkFirst } from 'workbox-strategies';
+import { serveCachedSplat } from './lib/splatCacheGate.js';
 
 // Bump the cache generation so activate removes pre-expiration v2 entries
 // already retained by long-lived Azure SPA installations.
@@ -265,20 +266,15 @@ self.addEventListener('message', async (event) => {
 // every photo as well as every splat, and caching all of them here would fill
 // the 400 MB splat budget with thumbnails. Only prefetchSplat() writes, and it
 // only runs for ids the app has explicitly nominated.
-async function serveSplat(request) {
-  const mediaId = new URL(request.url).pathname.split('/').pop();
-  const cached = await idbGet(STORE_SPLATS, mediaId);
-  if (cached?.blob) {
-    return new Response(cached.blob, {
-      status: 200,
-      headers: {
-        'Content-Type': 'application/octet-stream',
-        'Content-Length': cached.blob.size.toString(),
-        'X-Neoh-Cache': 'predictive-hit',
-      },
-    });
-  }
-  return fetch(request);
+//
+// A cached copy is served only after the server confirms this viewer may
+// still see it (prompt 16 T16.14) — see lib/splatCacheGate.js.
+function serveSplat(request) {
+  return serveCachedSplat(request, {
+    get: (id) => idbGet(STORE_SPLATS, id),
+    remove: (id) => idbDelete(STORE_SPLATS, id),
+    fetch: (...args) => fetch(...args),
+  });
 }
 
 registerRoute(

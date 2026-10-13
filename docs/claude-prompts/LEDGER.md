@@ -604,6 +604,25 @@ next_task: "T16.04 + T16.05"
 updated: 2026-10-12
 ```
 
+#### L16-02 A prefetched splat is served only after the server re-confirms access
+```yaml
+id: L16-02
+status: tests_pass
+env: local
+evidence_shas: [745f2fa]   # finding in L16-01; fix in the commit that adds splatCacheGate.js
+files: [oracle-app/src/lib/splatCacheGate.js, oracle-app/src/sw-oracle.js, backend/media_api.py]
+tests_run:
+  - {cmd: "vitest src/lib/splatCacheGate.test.js", result: "8 passed: 304 -> cached copy; 401/403/404/410 -> purge + refuse; offline -> cached; 5xx not masked", date: 2026-10-13}
+  - {cmd: "pytest backend/tests/test_media_revalidation_auth.py backend/tests/test_media_api_security.py", result: "9 passed: 304 only after an RLS visibility read (no bytes); invisible row -> 404", date: 2026-10-13}
+  - {cmd: "npm run build", result: "sw-oracle.js bundles with the gate", date: 2026-10-13}
+authz_checked: revalidation goes through the authenticated route and RLS
+blockers: [{type: scope, note: "The browser HTTP cache still keeps media for 24 h (private, max-age=86400, immutable) without asking; per-agent RLS does not exist yet (prompt 03), so today 'losing access' means session revoked, media removed or another brokerage."}]
+audit_refs: []
+decision_refs: []
+next_task: "T16.06 permission-keyed caches; revisit the 24 h media max-age when per-agent access lands."
+updated: 2026-10-13
+```
+
 ### L17
 Security, privacy and data lifecycle.
 

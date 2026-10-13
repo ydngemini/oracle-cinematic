@@ -856,8 +856,14 @@ async def serve_media(
     # someone opens the property.
     etag = f'"{media_id}"'
     if if_none_match and etag in {tag.strip() for tag in if_none_match.split(",")}:
-        # Still inside the authenticated route: a 304 confirms nothing to a
-        # caller who could not already read the row.
+        # A 304 is an authorization answer too: the service worker revalidates
+        # a prefetched splat this way before serving it (sw-oracle.js), so a
+        # viewer who lost access must get 404 here, not "still yours". One
+        # primary-key read under RLS — still no bytes.
+        async with tenant_tx(ctx) as conn:
+            visible = await conn.fetchval("SELECT 1 FROM property_media WHERE id = $1", media_id)
+        if not visible:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Image not found.")
         return Response(status_code=status.HTTP_304_NOT_MODIFIED, headers={
             "ETag": etag,
             "Cache-Control": _MEDIA_CACHE_CONTROL,
