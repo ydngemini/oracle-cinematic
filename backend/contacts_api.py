@@ -1,4 +1,10 @@
-"""Canonical contact, exact intake, and consent-gated nurture API."""
+"""Canonical contact, exact intake, and consent-gated nurture API.
+
+Who sees which contact follows owner decision D-2026-10-13-01 (0134): the
+assigned agent, the broker owner, anyone it is shared with, and — when nobody
+is assigned — every agent (the brokerage pool). RLS decides; the routes ask
+record_access for 404 (invisible) versus 403 (view only) before writing.
+"""
 
 from __future__ import annotations
 
@@ -31,6 +37,12 @@ from contact_truth import (
     seal_json,
 )
 from db.connection import tenant_tx
+from record_access import (
+    contact_access_level,
+    require_client_edit,
+    require_contact_edit,
+    resolve_contact_assignment,
+)
 from tenancy import TenantContext, require_context
 
 
@@ -156,23 +168,6 @@ async def search_contact_rows(
         tail = rows[-1]
         next_cursor = _encode_contact_cursor(tail["updated_at"], tail["id"])
     return list(rows), next_cursor
-
-
-async def _canonical_assignee(conn: Any, ctx: TenantContext, agent_id: str) -> str:
-    row = await conn.fetchrow(
-        """
-        SELECT agent_id FROM users
-         WHERE tenant_id=$1::uuid AND lower(agent_id)=lower($2) AND is_active=true
-        """,
-        ctx.tenant_id,
-        agent_id,
-    )
-    if row is None:
-        raise HTTPException(
-            status.HTTP_422_UNPROCESSABLE_ENTITY,
-            "assigned_agent_id must identify an active user in this brokerage",
-        )
-    return str(row["agent_id"])
 
 
 def _contact_service_unavailable() -> HTTPException:
@@ -447,7 +442,7 @@ class NurtureJobRequest(BaseModel):
 
 
 _CONTACT_SELECT = """
-    SELECT contact.id, contact.assigned_agent_id, contact.pii_ciphertext,
+    SELECT contact.id, contact.assigned_agent_id, contact.assigned_user_id, contact.pii_ciphertext,
            contact.email_lookup_hash, contact.phone_lookup_hash,
            contact.birthday_month, contact.birthday_day, contact.timezone,
            contact.state_code,
@@ -496,6 +491,8 @@ async def _contact_json(conn: Any, ctx: TenantContext, row: Any) -> dict[str, An
         "email": pii.get("email"),
         "phone": pii.get("phone"),
         "assigned_agent_id": _row_get(row, "assigned_agent_id"),
+        # No assignee = the brokerage pool: every agent sees it (0134).
+        "pool": _row_get(row, "assigned_agent_id") is None,
         "birthday_month": _row_get(row, "birthday_month"),
         "birthday_day": _row_get(row, "birthday_day"),
         "timezone": _row_get(row, "timezone", "UTC"),
@@ -552,20 +549,32 @@ async def create_contact(
         phone_hash = lookup_hash(ctx.tenant_id, "phone", body.phone)
         search_tokens = name_search_tokens(ctx.tenant_id, body.full_name)
         async with tenant_tx(ctx) as conn:
-            assigned_agent_id = (
-                await _canonical_assignee(conn, ctx, body.assigned_agent_id)
-                if body.assigned_agent_id
-                else ctx.agent_id
-            )
+            client = None
             if body.client_id:
+                # Linking writes the client too, so the caller must be able to edit it.
+                await require_client_edit(conn, body.client_id)
                 client = await conn.fetchrow(
-                    "SELECT id,contact_id FROM clients WHERE id=$1::uuid",
+                    "SELECT id,contact_id,assignee_id FROM clients WHERE id=$1::uuid",
                     body.client_id,
                 )
                 if client is None:
                     raise HTTPException(status.HTTP_404_NOT_FOUND, "client not found")
                 if _row_get(client, "contact_id") is not None:
                     raise HTTPException(status.HTTP_409_CONFLICT, "client already has a contact")
+            if body.assigned_agent_id:
+                assigned_agent_id = await resolve_contact_assignment(
+                    conn, ctx, None, body.assigned_agent_id,
+                )
+            elif client is not None and _row_get(client, "assignee_id"):
+                # The contact of an assigned client stays with that client's
+                # agent: putting it in the pool would show a private client's
+                # details to the whole brokerage.
+                assigned_agent_id = await resolve_contact_assignment(
+                    conn, ctx, None, _row_get(client, "assignee_id"),
+                )
+            else:
+                # D-2026-10-13-01: not auto-assigned to its creator — the pool.
+                assigned_agent_id = None
 
             ciphertext = await seal_json(conn, ctx.tenant_id, pii)
             row = await conn.fetchrow(
@@ -637,6 +646,7 @@ async def get_contact(
             if row is None:
                 raise HTTPException(status.HTTP_404_NOT_FOUND, "contact not found")
             contact = await _contact_json(conn, ctx, row)
+            contact["access"] = await contact_access_level(conn, contact_id)
     except ContactTruthConfigError:
         raise _contact_service_unavailable()
     except RuntimeError:
@@ -661,6 +671,9 @@ async def update_contact(
     pii_fields = {"full_name", "email", "phone"}
     try:
         async with tenant_tx(ctx) as conn:
+            # 404 when invisible, 403 when shared view-only — never a silent
+            # no-op UPDATE that RLS filtered away.
+            await require_contact_edit(conn, contact_id)
             current = await conn.fetchrow(
                 _CONTACT_SELECT + " WHERE contact.id=$1::uuid",
                 contact_id,
@@ -734,8 +747,8 @@ async def update_contact(
             ):
                 if column in fields:
                     value = fields[column]
-                    if column == "assigned_agent_id" and value is not None:
-                        value = await _canonical_assignee(conn, ctx, value)
+                    if column == "assigned_agent_id":
+                        value = await resolve_contact_assignment(conn, ctx, contact_id, value)
                     args.append(value)
                     sets.append(f"{column}=${len(args)}")
             for column in ("consent", "suppression"):
@@ -771,6 +784,9 @@ async def update_contact(
                 contact_id,
             )
             contact = await _contact_json(conn, ctx, row)
+            # The caller's access after the change (taking a pool contact or
+            # returning one keeps edit).
+            contact["access"] = await contact_access_level(conn, contact_id)
     except ContactTruthConfigError:
         raise _contact_service_unavailable()
     except RuntimeError:
@@ -793,6 +809,7 @@ async def create_property_relationship(
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc))
     try:
         async with tenant_tx(ctx) as conn:
+            await require_contact_edit(conn, contact_id)
             contact = await conn.fetchrow(
                 "SELECT id FROM agent_contacts WHERE id=$1::uuid AND deleted_at IS NULL",
                 contact_id,
@@ -912,6 +929,7 @@ async def create_intake(
     }
     try:
         async with tenant_tx(ctx) as conn:
+            await require_contact_edit(conn, contact_id)
             contact = await conn.fetchrow(
                 """
                 SELECT contact.id,contact.assigned_agent_id,
@@ -1005,6 +1023,7 @@ async def reserve_nurture_job(
     now = datetime.now(timezone.utc)
     try:
         async with tenant_tx(ctx) as conn:
+            await require_contact_edit(conn, contact_id)
             contact = await conn.fetchrow(
                 """
                 SELECT id,birthday_month,birthday_day,timezone,consent,suppression,

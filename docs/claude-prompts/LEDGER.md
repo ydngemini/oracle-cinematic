@@ -35,7 +35,7 @@ Listed weakest to strongest:
 |---|---|---|---|---|---|---|---|
 | 01 | Repository source audit | [01](01-repository-source-audit.md) | `not_inspected` | — | — | — | Run the 01 inventory |
 | 02 | All pages, routes, mobile UI | [02](02-all-pages-mobile-ui.md) | `source_verified` | staging | `90372f2` crawl | — | Per-page verdicts |
-| 03 | Brokerage tenancy and hybrid access | [03](03-brokerage-tenancy-hybrid-access.md) | `source_verified` | local | 0131 (L03-02) | Owner: team leads (L03-03) | Deploy 0131; browser check; then agent_contacts |
+| 03 | Brokerage tenancy and hybrid access | [03](03-brokerage-tenancy-hybrid-access.md) | `source_verified` | local | 0134 (L03-04) | Owner: team leads, contact-vs-client assignee drift (L03-03, L03-04) | Deploy 0131+0134; browser check; then the communications tables |
 | 04 | CRM, contacts, leads, relationships | [04](04-crm-contact-leads-relationships.md) | `source_verified` | local | `745f2fa` | A05 | L04-01 |
 | 05 | Semantic intent | [05](05-semantic-language-intent.md) | `source_verified` | local | `745f2fa` | — | L05-01 |
 | 06 | Evidence retrieval and memory | [06](06-evidence-retrieval-memory.md) | `source_verified` | local | `745f2fa` | A01, A02 | L06-01 |
@@ -202,22 +202,47 @@ updated: 2026-10-13
 ```
 How it works: `assignee_user_id` (uuid) is derived from `assignee_id` by a trigger that rejects a string naming nobody (23503 → 422). Restrictive policies narrow `clients_tenant_isolation` (permissive policies OR together, F03.01). The API never re-implements the rule: it reads `app_client_access()` back for 404 vs 403. Platform admin, the broker owner and server-built pipelines marked `record_scope='brokerage'` (client portal, inbound SMS/voice matching, the client-AI steward) keep brokerage-wide access; a verified user session can never set it.
 
-#### L03-03 What 0131 does not cover yet
+#### L03-03 What 0131 and 0134 do not cover yet
 ```yaml
 id: L03-03
 status: source_verified
 env: local
 evidence_shas: []
-files: [backend/db/migrations/0054_agent_contacts_and_intake.sql, backend/db/migrations/0001_init_tenancy.sql]
+files: [backend/db/migrations/0054_agent_contacts_and_intake.sql, backend/db/migrations/0001_init_tenancy.sql, backend/db/migrations/0058_sales_ai_stack.sql]
 tests_run:
   - {cmd: "review of 0131 scope", result: "still brokerage-wide: agent_contacts (+ intake tables), leads, sms_messages, email_outbox, live_call_sessions, inbound_voice_calls, outreach_consent, lead_response_events, outcome_events, mission_candidates, contract_synthesis_artifacts, contact_property_relationships, media", date: 2026-10-13}
+  - {cmd: "review after 0134 (L03-04): grep of contact_id foreign keys to agent_contacts", result: "agent_contacts + its four intake tables are now agent-scoped. Still brokerage-wide: leads, lead_intake_events, sms_messages, email_outbox, live_call_sessions, inbound_voice_calls, outreach_consent/_suppression/_attempt_log (by design: compliance), lead_response_events, outcome_events, mission_candidates, contract_synthesis_artifacts, media, and two contact children: smart_plan_enrollments, agent_call_intents (0058). Their API reads already go through an actor-scoped contact lookup (sales_api._load_contact, telephony_api prepare/outbound), so an agent cannot enroll or call a contact they cannot see; the rows themselves are still readable by id.", date: 2026-10-13}
 authz_checked: n/a
 blockers:
-  - {type: design, note: "Communications tables feed consent, opt-out and frequency checks, which must stay brokerage-wide; scoping them needs a split between 'see the message' and 'check compliance'."}
+  - {type: design, note: "Communications tables feed consent, opt-out and frequency checks, which must stay brokerage-wide; scoping them needs a split between 'see the message' and 'check compliance'. 0134 adds the pattern: a function that sets app.record_scope='brokerage' for its own duration and returns no PII (app_client_contact_place, app_open_contact_counts)."}
   - {type: owner, note: "Team leads (T03.02): multiple teams per agent? edit or read-only on team records?"}
-next_task: "Scope agent_contacts the same way (assigned_agent_id), then the communications tables with a compliance-scope read path."
+next_task: "The communications tables with a compliance-scope read path; smart_plan_enrollments and agent_call_intents inheriting the contact."
 updated: 2026-10-13
 ```
+
+#### L03-04 Agent-scoped contacts and intake tables (D-2026-10-13-01)
+```yaml
+id: L03-04
+status: tests_pass
+env: local
+evidence_shas: []
+files: [backend/db/migrations/0134_agent_contact_scope.sql, backend/record_access.py, backend/contacts_api.py, backend/tenancy.py, backend/ai_tools_gated.py, backend/lead_routing_api.py, backend/privacy_data_map.py, backend/policy_contract.py, docs/privacy-data-map.md, oracle-app/src/components/ContactDetailPanel.jsx, oracle-app/src/components/ClientAccess.jsx, oracle-app/src/state/useClientAccess.js, .github/workflows/ci.yml]
+tests_run:
+  - {cmd: "livetest: pytest tests/test_contact_access_matrix_live.py tests/test_brokerage_access_matrix_live.py (real PostgreSQL 16.14, app role, local dev DB)", result: "4 passed: agent A / B / C(shared) / owner / platform admin / other brokerage / brokerage pipeline / user session asking for brokerage scope; intake tables inherit; view share refused at the DB and as 403 on PATCH, intake, nurture and property routes; edit share cannot re-share or take the record (contacts AND clients, F03.02); expired share and a CLIENT share grant nothing on a contact; agent-created contact lands in the pool, a linked client's contact stays with its agent; agent cannot create or reassign to a colleague (API 403, DB 42501); unknown/other-brokerage/inactive assignee 23503; policy == app_contact_access() == tenancy.contact_access for every actor; pg_policies composition; workload counts and quiet-hours inputs stay brokerage-wide without widening the caller", date: 2026-10-13}
+  - {cmd: "EXPLAIN ANALYZE as oracle_app, agent A in a throwaway 21,000-contact brokerage (7k A, 7k B, 7k pool, 50 shares), local dev DB", result: "contact list page (search_contact_rows): 1,760 ms before 0134 (tenant wall only), 280-470 ms scoped without an ordered index, 3.4 ms with idx_agent_contacts_list_order; the same rule as a function in the policy: 11,720 ms (48.6 ms with the index). Visible count 37-41 ms (seq scan, 21k rows). Child by contact_id 1.0 ms; access check 2.0 ms; app_open_contact_counts 36-41 ms. Phone-hash lookup seq scan 50-74 ms both before and after (tenant OR form, A10)", date: 2026-10-13}
+  - {cmd: "rls_security_review/rls_brokerage/platform_rls_test/privacy_lifecycle.sql on the local dev DB", result: "all PASS", date: 2026-10-13}
+  - {cmd: "CI live list locally (10 files)", result: "19 passed, 2 failed, both from OTHER sessions' migrations in the shared dev DB: test_migration_precheck (DB holds 0106/0132/0133/0135, not in this branch) and test_call_notes_live (0132 requires sealed call notes)", date: 2026-10-13}
+  - {cmd: "vitest (ContactDetailPanel.test.jsx + ClientAccess.test.jsx + full) + eslint + vite build + bundle budget", result: "721 passed; lint clean; within budget", date: 2026-10-13}
+authz_checked: "agent_contacts + contact_property_relationships, contact_intake_sessions, intake_handoff_tasks, contact_nurture_jobs under FORCE RLS as oracle_app; clients reassignment guard"
+blockers:
+  - {type: owner, note: "A contact and its linked client can name different assignees (a client moved in the CRM never moved its contact). 0134 counts them (NOTICE) and changes nothing. Should reassigning a client move its contact?"}
+  - {type: owner, note: "Platform Use Policy v3 wording ('Each client and contact record is visible to ...') is drafted for approval; the version bump makes every user re-accept."}
+audit_refs: []
+decision_refs: [D-2026-10-13-01]
+next_task: "Deploy 0131+0134 together; verify in a real browser on staging (People: owner assigns, agent shares view-only, colleague sees it read-only)."
+updated: 2026-10-13
+```
+How it works: the 0131 pattern on `agent_contacts`. `assigned_user_id` is derived from `assigned_agent_id` by a trigger that also replaces 0059's (active members only, 23503 → 422). Four restrictive policies, inline; the intake tables inherit. `record_shares` takes `resource_kind='contact'`; `/api/crm/contacts/{id}/access|shares` mirror the client routes. An agent-created contact is not auto-assigned; one created for an assigned client stays with that client's agent, so a private client's details never land in the pool. Reads that are compliance or brokerage functions, not "seeing the contact", go through a function that sets `app.record_scope='brokerage'` only while it runs and returns no PII: quiet-hours state/timezone (`app_client_contact_place`) and lead-routing workload (`app_open_contact_counts`). Consent, opt-out and frequency (`outreach_*`) are untouched and stay brokerage-wide. Inbound SMS/voice matching and intake already ran as `brokerage_scope`, lead intake as the owner, speed-to-lead and smart-plan workers as platform admin, privacy flows as the owner; the outbound-call webhook and the smart-plan step act as the agent, so a reassigned contact is refused at execution (C3.4). Also fixed (F03.02): an edit share let its holder assign a colleague's client to themselves; `app_may_reassign()` now guards both triggers and `record_access` refuses it first.
 
 ### L04
 CRM, contacts, leads and relationships.
@@ -989,7 +1014,7 @@ Decisions are binding ([CONTRACT C2.4](CONTRACT.md#c2-scope-and-owner-decisions)
 | D-2026-10-08-02 | 2026-10-08 | The four Neoh Space workstreams are approved: registration + room connectivity; mobile Capture Studio + AI guide; photoreal reconstruction + mobile tour; live readiness engine. | [spec](../neoh-space-web-capture-claude.md) | 12 | All four are first-class | Owner request |
 | D-2026-10-12-01 | 2026-10-12 | **MLS is out of scope.** There is no MLS connection, and approval or cost is not available. Do not build, advertise or present MLS/IDX/RESO search, ingestion or display as a feature. | Owner, in session 2026-10-12; shared notes 2026-10-11 | 02, 04, 06, 11, 12, 13, 14, 16, 18, 19, 20 | Gate the existing MLS code off (L11-01). **No deletion of MLS data or migrations without owner approval.** | Owner changes the decision and lawful access is secured |
 | D-2026-10-12-03 | 2026-10-12 | **AI call notes support both modes, chosen per agent:** `review` (default) saves the note proposed for the agent to approve, edit or discard (the AI ignores it until approved); `direct` saves it approved. | Owner, in session 2026-10-12 ("both") | 09, 17 | `client_notes.review_state` (0130), `call_note_settings.py`, approve route, Personal AI toggle | Owner request |
-| D-2026-10-13-01 | 2026-10-13 | **Agents see their own clients, the brokerage pool and what is shared with them.** A client with no assignee is the brokerage pool, visible to every agent; an agent-created client is NOT auto-assigned; a share is per record and grants view or edit, chosen per share. | Owner, in session 2026-10-13 (three answers) | 03, 04, 17 | `0131_agent_record_scope.sql` (restrictive policies, `record_shares`, `assignee_user_id`), `record_access.py`, `ClientAccess.jsx` | Team leads (T03.02) or a different default for imports |
+| D-2026-10-13-01 | 2026-10-13 | **Agents see their own clients, the brokerage pool and what is shared with them.** A client with no assignee is the brokerage pool, visible to every agent; an agent-created client is NOT auto-assigned; a share is per record and grants view or edit, chosen per share. | Owner, in session 2026-10-13 (three answers) | 03, 04, 17 | `0131_agent_record_scope.sql` (restrictive policies, `record_shares`, `assignee_user_id`), `record_access.py`, `ClientAccess.jsx`; contacts the same way in `0134_agent_contact_scope.sql` (L03-04) | Team leads (T03.02) or a different default for imports |
 | D-2026-10-12-02 | 2026-10-12 | Pricing is a hypothesis, not decided. Code: one Stripe price at quantity 1 (`backend/billing.py:44`, `:266`), no seats. Idea: ~$1,999/month per 20-agent brokerage, ~$1,499 pilot. | Shared notes 2026-10-11 | 18 | No price change without owner approval | Owner sets pricing |
 
 ## Audit cross-reference

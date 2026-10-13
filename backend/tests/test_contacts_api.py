@@ -55,12 +55,14 @@ class _CreateContactConn:
 
     async def fetchrow(self, query, *args):
         self.fetchrow_calls.append((query, args))
-        if "SELECT id,contact_id FROM clients" in query:
-            return {"id": CLIENT_ID, "contact_id": None}
+        if "app_client_access" in query:  # linking writes the client: edit check (0134)
+            return {"can_edit": True}
+        if "SELECT id,contact_id,assignee_id FROM clients" in query:
+            return {"id": CLIENT_ID, "contact_id": None, "assignee_id": None}
         if "INSERT INTO agent_contacts" in query:
             return {
                 "id": CONTACT_ID,
-                "assigned_agent_id": CTX.agent_id,
+                "assigned_agent_id": args[1],
                 "pii_ciphertext": b"sealed-contact",
                 "email_lookup_hash": "e" * 64,
                 "phone_lookup_hash": "p" * 64,
@@ -92,6 +94,8 @@ class _IntakeConn:
 
     async def fetchrow(self, query, *args):
         self.fetchrow_calls.append((query, args))
+        if "app_contact_access" in query:  # record_access edit check (0134)
+            return {"can_edit": True}
         if "SELECT contact.id,contact.assigned_agent_id" in query:
             return {
                 "id": CONTACT_ID,
@@ -113,6 +117,8 @@ class _NurtureConn:
 
     async def fetchrow(self, query, *args):
         self.fetchrow_calls.append((query, args))
+        if "app_contact_access" in query:  # record_access edit check (0134)
+            return {"can_edit": True}
         if "SELECT id,birthday_month,birthday_day" in query:
             return {
                 "id": CONTACT_ID,
@@ -152,6 +158,8 @@ class _MissingPropertyConn:
 
     async def fetchrow(self, query, *args):
         self.fetchrow_calls.append((query, args))
+        if "app_contact_access" in query:  # record_access edit check (0134)
+            return {"can_edit": True}
         if "SELECT id FROM agent_contacts" in query:
             return {"id": CONTACT_ID}
         if "SELECT id FROM leads" in query:
@@ -220,6 +228,9 @@ def test_create_contact_encrypts_canonical_pii_and_dual_writes_client(monkeypatc
         if "INSERT INTO agent_contacts" in query
     )
     assert insert_args[0] == TENANT_ID
+    # D-2026-10-13-01: not auto-assigned to its creator; a pool client's
+    # contact lands in the pool too.
+    assert insert_args[1] is None
     assert insert_args[2] == b"sealed-contact"
     assert insert_args[3:5] == ("e" * 64, "p" * 64)
     assert insert_args[5] == ["n" * 64]
@@ -416,3 +427,52 @@ def test_nurture_without_consent_does_not_create_a_job(monkeypatch):
         "INSERT INTO contact_nurture_jobs" in query
         for query, _args in conn.fetchrow_calls
     )
+
+
+# ── 0134: who may change a contact (D-2026-10-13-01) ───────────────────────
+
+class _AccessOnlyConn:
+    """Answers only the record_access check: can_edit True/False, or no row."""
+
+    def __init__(self, can_edit):
+        self.can_edit = can_edit
+        self.fetchrow_calls = []
+
+    async def fetchrow(self, query, *args):
+        self.fetchrow_calls.append((query, args))
+        if "app_contact_access" in query:
+            return None if self.can_edit is None else {"can_edit": self.can_edit}
+        raise AssertionError(f"the route went past the access check: {query}")
+
+    async def execute(self, query, *args):
+        raise AssertionError(f"the route wrote without edit access: {query}")
+
+
+@pytest.mark.parametrize("can_edit, status_code", [(False, 403), (None, 404)])
+def test_contact_writes_check_access_before_touching_anything(monkeypatch, can_edit, status_code):
+    calls = (
+        lambda: contacts_api.update_contact(CONTACT_ID, ContactPatch(timezone="UTC"), CTX),
+        lambda: contacts_api.create_intake(
+            CONTACT_ID,
+            IntakeSubmission(persona="seller", answers=["1 Main St, Dover, DE", "Within 60 days", "A clean sale"]),
+            CTX,
+        ),
+        lambda: contacts_api.reserve_nurture_job(
+            CONTACT_ID, NurtureJobRequest(event_type="birthday", channel="email"), CTX,
+        ),
+        lambda: contacts_api.create_property_relationship(
+            CONTACT_ID,
+            PropertyRelationshipCreate(property_ref_kind="manual", property_label="Home", relationship_type="owner"),
+            CTX,
+        ),
+    )
+    for call in calls:
+        conn = _AccessOnlyConn(can_edit)
+        monkeypatch.setattr(contacts_api, "tenant_tx", _fake_tenant_tx(conn))
+        with pytest.raises(HTTPException) as exc:
+            asyncio.run(call())
+        assert exc.value.status_code == status_code
+        if status_code == 403:
+            assert "view only" in exc.value.detail
+        else:
+            assert exc.value.detail == "contact not found"  # existence is not revealed

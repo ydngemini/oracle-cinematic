@@ -202,6 +202,15 @@ async def _scenario():
             await record_access.share_client(c_a, record_access.ShareCreate(grantee=agent["b"], permission="view"),
                                              ctx=ctx("c"))
         assert e.value.status_code == 403
+        # F03.02 (0134): an edit share changes the client, it never takes it —
+        # not through the route, not to the pool, not at the database.
+        for new_assignee in (agent["c"], None):
+            with pytest.raises(HTTPException) as e:
+                await crm.update_client(c_a, crm.ClientPatch(assignee_id=new_assignee), ctx=ctx("c"))
+            assert e.value.status_code == 403
+            with pytest.raises(asyncpg.InsufficientPrivilegeError):
+                async with connection.tenant_tx(ctx("c")) as conn:
+                    await conn.execute("UPDATE clients SET assignee_id=$2 WHERE id=$1", uuid.UUID(c_a), new_assignee)
 
         # ── the Python mirror agrees with the database, actor by actor ────────
         shares_by_user: dict[str, dict[str, str]] = {}

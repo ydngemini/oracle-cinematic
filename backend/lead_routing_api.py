@@ -401,15 +401,14 @@ async def list_routing_agents(ctx: TenantContext = Depends(require_context)) -> 
             """
             SELECT u.agent_id,u.role,COALESCE(s.accepting_leads,true) AS accepting_leads,
                    COALESCE(s.capacity,100) AS capacity,s.last_assigned_at,
-                   count(c.id)::int AS assigned_open_contacts
+                   COALESCE(w.open_contacts,0) AS assigned_open_contacts
               FROM users u
               LEFT JOIN agent_routing_state s
                 ON s.tenant_id=u.tenant_id AND s.agent_id=u.agent_id
-              LEFT JOIN agent_contacts c
-                ON c.tenant_id=u.tenant_id AND c.assigned_agent_id=u.agent_id
-               AND c.deleted_at IS NULL
+              -- Brokerage-wide workload (0134): an agent's own RLS would count
+              -- only the contacts they can see and show colleagues at 0.
+              LEFT JOIN app_open_contact_counts() w ON w.assigned_user_id=u.id
              WHERE u.is_active=true
-             GROUP BY u.agent_id,u.role,s.accepting_leads,s.capacity,s.last_assigned_at
              ORDER BY u.agent_id
             """
         )
@@ -605,16 +604,13 @@ async def _choose_agent(conn: Any, tenant_id: str, source_key: str, payload: Lea
         """
         SELECT u.agent_id,COALESCE(s.accepting_leads,true) AS accepting_leads,
                COALESCE(s.capacity,100) AS capacity,s.last_assigned_at,
-               count(c.id)::int AS open_contacts
+               COALESCE(w.open_contacts,0) AS open_contacts
           FROM users u
           LEFT JOIN agent_routing_state s
             ON s.tenant_id=u.tenant_id AND s.agent_id=u.agent_id
-          LEFT JOIN agent_contacts c
-            ON c.tenant_id=u.tenant_id AND c.assigned_agent_id=u.agent_id
-           AND c.deleted_at IS NULL
+          LEFT JOIN app_open_contact_counts() w ON w.assigned_user_id=u.id
          WHERE u.tenant_id=$1::uuid AND u.is_active=true
            AND (cardinality($2::text[])=0 OR u.agent_id=ANY($2::text[]))
-         GROUP BY u.agent_id,s.accepting_leads,s.capacity,s.last_assigned_at
         """,
         tenant_id,
         rule_agents,

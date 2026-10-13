@@ -32,7 +32,7 @@ import uuid
 from typing import Any, Optional
 
 STAMP = int(time.time())
-POLICY = "neoh-platform-use-policy-2026-10-13-v2"
+POLICY = "neoh-platform-use-policy-2026-10-13-v3"
 ESA = "neoh-account-security-esa-2026-07-18-v1"
 
 PASSWORD = "correct horse battery staple"
