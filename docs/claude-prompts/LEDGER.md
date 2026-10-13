@@ -34,7 +34,7 @@ Listed weakest to strongest:
 | Cat | Category | Prompt | Rollup | Env high-water | Last evidence | Open blockers | Next task |
 |---|---|---|---|---|---|---|---|
 | 01 | Repository source audit | [01](01-repository-source-audit.md) | `not_inspected` | — | — | — | Run the 01 inventory |
-| 02 | All pages, routes, mobile UI | [02](02-all-pages-mobile-ui.md) | `source_verified` | local | matrix | — | Re-crawl after deploy; per-page verdicts |
+| 02 | All pages, routes, mobile UI | [02](02-all-pages-mobile-ui.md) | `source_verified` | staging | `90372f2` crawl | — | Per-page verdicts |
 | 03 | Brokerage tenancy and hybrid access | [03](03-brokerage-tenancy-hybrid-access.md) | `source_verified` | local | `745f2fa` | — | Read-only review with 02 |
 | 04 | CRM, contacts, leads, relationships | [04](04-crm-contact-leads-relationships.md) | `source_verified` | local | `745f2fa` | A05 | L04-01 |
 | 05 | Semantic intent | [05](05-semantic-language-intent.md) | `source_verified` | local | `745f2fa` | — | L05-01 |
@@ -43,7 +43,7 @@ Listed weakest to strongest:
 | 08 | Durable missions and workflows | [08](08-durable-missions-workflow-orchestration.md) | `source_verified` | local | `745f2fa` | PR #11 review; grant-release decision | L08-01 |
 | 09 | Real-time voice | [09](09-realtime-voice-speech-latency.md) | `source_verified` | staging | `9c3463a` | Call-note broadcast (L09-03); phone check (L09-02) | L09-03 |
 | 10 | Communications and calendars | [10](10-communications-calendar-provider-integrations.md) | `source_verified` | staging | `75c6ba6` (local) | Google OAuth client; 10DLC; deploy approval; A07 | L10-01 |
-| 11 | Property and market intelligence (non-MLS) | [11](11-property-market-intelligence.md) | `source_verified` | local | mls gate | A02 | T11.10 (A02) |
+| 11 | Property and market intelligence (non-MLS) | [11](11-property-market-intelligence.md) | `source_verified` | staging | `90372f2` | A02; staging catalog empty | T11.10 (A02) |
 | 12 | Neoh Space capture, 3D, tours | [12](12-neoh-space-browser-capture-reconstruction.md) | `source_verified` | local | `745f2fa` | A03 | Capture Studio first slice |
 | 13 | Deals, documents, compliance | [13](13-transactions-contract-vault-compliance.md) | `source_verified` | local | `745f2fa` | Owner: e-sign, commissions | L13-01 |
 | 14 | Sites, social, ads, client portal | [14](14-websites-social-ads-growth-client-portal.md) | `source_verified` | local | `745f2fa` | Owner: networks, listings on sites | L14-01 |
@@ -142,20 +142,19 @@ updated: 2026-10-13
 id: L02-05
 status: tests_pass
 env: staging
-evidence_shas: [e219198]
+evidence_shas: [e219198, db4d0af, 1138dca, 90372f2]
 files: [scripts/crawl-all-pages.py, docs/claude-prompts/all-pages-crawl.json, oracle-app/src/components/OurAITab.jsx, oracle-app/src/components/StateDocumentLibrary.jsx]
 tests_run:
   - {cmd: "scripts/crawl-all-pages.py --base-url <staging> (owner + agent, desktop + phone, anonymous for public pages; 204 page loads)", result: "29 clean, 21 with console errors, 1 not offered (Admin, correct), 1 not run (no demo transaction for the deal sheet); 0 page errors, 0 API 5xx, 0 phone overflow, 0 writes on open, 0 rate-limit 429s after L02-04", date: 2026-10-13}
   - {cmd: "vitest OurAITab.test.jsx, StateDocumentLibrary.test.jsx + full suite", result: "713 passed", date: 2026-10-13}
   - {cmd: "re-crawl of the 20 affected pages after deploy (db4d0af), crawler scoring fixed", result: "20/20 clean; merged: 50 clean, 1 not offered (Admin), 1 not run (deal sheet, no demo transaction)", date: 2026-10-13}
+  - {cmd: "crawl --only entity:deal, work:properties, properties:*, ai:sites, work:ai after 90372f2 deployed (run 20261013T091139Z), merged into the full run", result: "9/9 clean; deal sheet opened on the demo transaction 7094dfe5 (owner-approved test data); matrix 51 pages: 50 clean, 1 not offered (Admin)", date: 2026-10-13}
 authz_checked: role gating observed per page (Admin hidden from owner and agent)
 blockers:
   - {type: data, note: "Staging has no state_advertising_rules dataset loaded: the Forms view now says so instead of implying none apply."}
-  - {type: data, note: "The demo brokerage has no transaction, so the deal sheet was not opened."}
-  - {type: scope, note: "Legacy MLS view still 404s on /api/mls/regions until prompt 11 T11.01 removes it."}
 audit_refs: []
 decision_refs: [D-2026-10-12-01]
-next_task: "Seed a demo transaction so the deal sheet can be opened; per-page verdicts in all-pages-verdicts.json; prompt 11 T11.01 removes the legacy MLS view."
+next_task: "Per-page verdicts in all-pages-verdicts.json."
 updated: 2026-10-13
 ```
 Findings fixed from this crawl:
@@ -510,17 +509,20 @@ Property and market intelligence from authorized non-MLS sources.
 ```yaml
 id: L11-01
 status: tests_pass
-env: local
-evidence_shas: [745f2fa]   # inventory; the gate is in the commit that adds mls_switch.py
+env: staging
+evidence_shas: [745f2fa, 90372f2]
 files: [backend/mls_switch.py, backend/mls_portal.py, backend/state_compliance/routes_mls.py, backend/brokerage_onboarding.py, backend/operator_api.py, backend/data_integrations/periodic.py, backend/component_health.py, backend/ai_tools_read.py, backend/ai_chat_agent.py, oracle-app/src/components/PropertiesTab.jsx, oracle-app/src/components/HouseSelection.jsx, oracle-app/src/components/OurAITab.jsx, oracle-app/src/components/StudioTab.jsx]
 tests_run:
   - {cmd: "pytest backend/tests/test_mls_switch.py + full backend suite", result: "3307 passed: every /mls route (except the public-records aliases and the platform-admin privacy purge) depends on require_mls_enabled; /api/property-records is the same handler as the old alias; sync jobs skip; health NOT_CONFIGURED, never alerting", date: 2026-10-13}
   - {cmd: "vitest full suite (allPagesMatrix: no MLS page, no /api/mls/ call)", result: "713 passed; matrix now 51 pages", date: 2026-10-13}
+  - {cmd: "curl staging after 90372f2 deployed (CI 38372824708 success)", result: "404 'MLS is not offered' on /api/mls/search, /api/mls/health, /api/mls/regions, /api/brokerage/mls/entitlements; 200 on /api/property-records and the /api/mls/public-records alias", date: 2026-10-13}
 authz_checked: role checks run before the MLS switch on role-gated routes (non-admins get 403, not 404)
-blockers: [{type: owner, note: "Retention/deletion of the cached MLS rows and migrations stays an owner decision; nothing was deleted."}]
+blockers:
+  - {type: owner, note: "Retention/deletion of the cached MLS rows and migrations stays an owner decision; nothing was deleted."}
+  - {type: data, note: "Staging's shared public property catalog is empty (total 0 for every query), so the public-records search answers correctly but returns no rows there. Harvesting into staging is not done and needs its own approval."}
 audit_refs: []
 decision_refs: [D-2026-10-12-01]
-next_task: "Verify on staging after deploy."
+next_task: "Decide whether to harvest a public-records sample into staging so the search can be verified with rows."
 updated: 2026-10-13
 ```
 

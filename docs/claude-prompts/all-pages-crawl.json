@@ -1,421 +1,421 @@
 {
- "// generated_by": "scripts/crawl-all-pages.py (prompt 02 T02.11) \u2014 renders, not functional sign-off",
- "env": "staging",
- "base_sha": "e219198",
- "run": "20261013T073520Z",
- "date": "2026-10-13",
- "pages": {
-  "view:home": {
-   "status": "clean",
-   "not_offered_to": [],
-   "load_ms_median": 2189,
-   "issues": [],
-   "writes_attempted_on_open": [],
-   "runs": 4
+  "// generated_by": "scripts/crawl-all-pages.py (prompt 02 T02.11) \u2014 renders, not functional sign-off",
+  "env": "staging",
+  "base_sha": "90372f2",
+  "run": "20261013T073520Z",
+  "date": "2026-10-13",
+  "pages": {
+    "ai:automations": {
+      "status": "clean",
+      "not_offered_to": [],
+      "load_ms_median": 2534,
+      "issues": [],
+      "writes_attempted_on_open": [],
+      "runs": 4
+    },
+    "ai:autonomy": {
+      "status": "clean",
+      "not_offered_to": [],
+      "load_ms_median": 2508,
+      "issues": [],
+      "writes_attempted_on_open": [],
+      "runs": 4
+    },
+    "ai:cowork": {
+      "status": "clean",
+      "not_offered_to": [],
+      "load_ms_median": 2261,
+      "issues": [],
+      "writes_attempted_on_open": [],
+      "runs": 4
+    },
+    "ai:homeowners": {
+      "status": "clean",
+      "not_offered_to": [],
+      "load_ms_median": 2276,
+      "issues": [],
+      "writes_attempted_on_open": [],
+      "runs": 4
+    },
+    "ai:intelligence": {
+      "status": "clean",
+      "not_offered_to": [],
+      "load_ms_median": 2576,
+      "issues": [],
+      "writes_attempted_on_open": [],
+      "runs": 4
+    },
+    "ai:sales": {
+      "status": "clean",
+      "not_offered_to": [],
+      "load_ms_median": 2303,
+      "issues": [],
+      "writes_attempted_on_open": [],
+      "runs": 4
+    },
+    "ai:sites": {
+      "status": "clean",
+      "not_offered_to": [],
+      "load_ms_median": 2497,
+      "issues": [],
+      "writes_attempted_on_open": [],
+      "runs": 4
+    },
+    "ai:social": {
+      "status": "clean",
+      "not_offered_to": [],
+      "load_ms_median": 2244,
+      "issues": [],
+      "writes_attempted_on_open": [],
+      "runs": 4
+    },
+    "deals:contracts": {
+      "status": "clean",
+      "not_offered_to": [],
+      "load_ms_median": 2693,
+      "issues": [],
+      "writes_attempted_on_open": [],
+      "runs": 4
+    },
+    "deals:marketplace": {
+      "status": "clean",
+      "not_offered_to": [],
+      "load_ms_median": 2453,
+      "issues": [],
+      "writes_attempted_on_open": [],
+      "runs": 4
+    },
+    "deals:pipeline": {
+      "status": "clean",
+      "not_offered_to": [],
+      "load_ms_median": 2427,
+      "issues": [],
+      "writes_attempted_on_open": [],
+      "runs": 4
+    },
+    "deals:portfolio": {
+      "status": "clean",
+      "not_offered_to": [],
+      "load_ms_median": 2499,
+      "issues": [],
+      "writes_attempted_on_open": [],
+      "runs": 4
+    },
+    "deals:transactions": {
+      "status": "clean",
+      "not_offered_to": [],
+      "load_ms_median": 1896,
+      "issues": [],
+      "writes_attempted_on_open": [],
+      "runs": 4
+    },
+    "entity:deal": {
+      "status": "clean",
+      "not_offered_to": [],
+      "load_ms_median": 2030,
+      "issues": [],
+      "writes_attempted_on_open": [],
+      "runs": 4
+    },
+    "entity:person": {
+      "status": "clean",
+      "not_offered_to": [],
+      "load_ms_median": 2072,
+      "issues": [],
+      "writes_attempted_on_open": [],
+      "runs": 4
+    },
+    "entity:property": {
+      "status": "clean",
+      "not_offered_to": [],
+      "load_ms_median": 3207,
+      "issues": [],
+      "writes_attempted_on_open": [],
+      "runs": 4
+    },
+    "profile:ai": {
+      "status": "clean",
+      "not_offered_to": [],
+      "load_ms_median": 2719,
+      "issues": [],
+      "writes_attempted_on_open": [],
+      "runs": 4
+    },
+    "profile:ops": {
+      "status": "not_offered",
+      "not_offered_to": [
+        "agent",
+        "owner"
+      ],
+      "load_ms_median": null,
+      "issues": [],
+      "writes_attempted_on_open": [],
+      "runs": 4
+    },
+    "profile:settings": {
+      "status": "clean",
+      "not_offered_to": [],
+      "load_ms_median": 2320,
+      "issues": [],
+      "writes_attempted_on_open": [],
+      "runs": 4
+    },
+    "properties:address": {
+      "status": "clean",
+      "not_offered_to": [],
+      "load_ms_median": 2025,
+      "issues": [],
+      "writes_attempted_on_open": [],
+      "runs": 4
+    },
+    "properties:forms": {
+      "status": "clean",
+      "not_offered_to": [],
+      "load_ms_median": 2717,
+      "issues": [],
+      "writes_attempted_on_open": [],
+      "runs": 4
+    },
+    "properties:houses": {
+      "status": "clean",
+      "not_offered_to": [],
+      "load_ms_median": 2636,
+      "issues": [],
+      "writes_attempted_on_open": [],
+      "runs": 4
+    },
+    "properties:listings": {
+      "status": "clean",
+      "not_offered_to": [],
+      "load_ms_median": 2501,
+      "issues": [],
+      "writes_attempted_on_open": [],
+      "runs": 4
+    },
+    "properties:market": {
+      "status": "clean",
+      "not_offered_to": [],
+      "load_ms_median": 2125,
+      "issues": [],
+      "writes_attempted_on_open": [],
+      "runs": 4
+    },
+    "public:accept-invite": {
+      "status": "clean",
+      "not_offered_to": [],
+      "load_ms_median": 1614,
+      "issues": [],
+      "writes_attempted_on_open": [],
+      "runs": 2
+    },
+    "public:property-upload": {
+      "status": "clean",
+      "not_offered_to": [],
+      "load_ms_median": 1936,
+      "issues": [],
+      "writes_attempted_on_open": [],
+      "runs": 2
+    },
+    "public:reel": {
+      "status": "clean",
+      "not_offered_to": [],
+      "load_ms_median": 1960,
+      "issues": [],
+      "writes_attempted_on_open": [],
+      "runs": 2
+    },
+    "public:secure-dossier": {
+      "status": "clean",
+      "not_offered_to": [],
+      "load_ms_median": 1932,
+      "issues": [],
+      "writes_attempted_on_open": [],
+      "runs": 2
+    },
+    "public:site-preview": {
+      "status": "clean",
+      "not_offered_to": [],
+      "load_ms_median": 1599,
+      "issues": [],
+      "writes_attempted_on_open": [],
+      "runs": 4
+    },
+    "public:sites": {
+      "status": "clean",
+      "not_offered_to": [],
+      "load_ms_median": 2079,
+      "issues": [],
+      "writes_attempted_on_open": [],
+      "runs": 2
+    },
+    "sales:agent": {
+      "status": "clean",
+      "not_offered_to": [],
+      "load_ms_median": 2074,
+      "issues": [],
+      "writes_attempted_on_open": [],
+      "runs": 4
+    },
+    "sales:dialer": {
+      "status": "clean",
+      "not_offered_to": [],
+      "load_ms_median": 2074,
+      "issues": [],
+      "writes_attempted_on_open": [],
+      "runs": 4
+    },
+    "sales:plans": {
+      "status": "clean",
+      "not_offered_to": [],
+      "load_ms_median": 2062,
+      "issues": [],
+      "writes_attempted_on_open": [],
+      "runs": 4
+    },
+    "sales:providers": {
+      "status": "clean",
+      "not_offered_to": [],
+      "load_ms_median": 2084,
+      "issues": [],
+      "writes_attempted_on_open": [],
+      "runs": 4
+    },
+    "sales:routing": {
+      "status": "clean",
+      "not_offered_to": [],
+      "load_ms_median": 2054,
+      "issues": [],
+      "writes_attempted_on_open": [],
+      "runs": 4
+    },
+    "view:home": {
+      "status": "clean",
+      "not_offered_to": [],
+      "load_ms_median": 2189,
+      "issues": [],
+      "writes_attempted_on_open": [],
+      "runs": 4
+    },
+    "view:neoh": {
+      "status": "clean",
+      "not_offered_to": [],
+      "load_ms_median": 2142,
+      "issues": [],
+      "writes_attempted_on_open": [],
+      "runs": 4
+    },
+    "view:work": {
+      "status": "clean",
+      "not_offered_to": [],
+      "load_ms_median": 1942,
+      "issues": [],
+      "writes_attempted_on_open": [],
+      "runs": 4
+    },
+    "work:ai": {
+      "status": "clean",
+      "not_offered_to": [],
+      "load_ms_median": 2109,
+      "issues": [],
+      "writes_attempted_on_open": [],
+      "runs": 4
+    },
+    "work:automations": {
+      "status": "clean",
+      "not_offered_to": [],
+      "load_ms_median": 2078,
+      "issues": [],
+      "writes_attempted_on_open": [],
+      "runs": 4
+    },
+    "work:conversations": {
+      "status": "clean",
+      "not_offered_to": [],
+      "load_ms_median": 1915,
+      "issues": [],
+      "writes_attempted_on_open": [],
+      "runs": 4
+    },
+    "work:deals": {
+      "status": "clean",
+      "not_offered_to": [],
+      "load_ms_median": 1988,
+      "issues": [],
+      "writes_attempted_on_open": [],
+      "runs": 4
+    },
+    "work:homeowners": {
+      "status": "clean",
+      "not_offered_to": [],
+      "load_ms_median": 1910,
+      "issues": [],
+      "writes_attempted_on_open": [],
+      "runs": 4
+    },
+    "work:missions": {
+      "status": "clean",
+      "not_offered_to": [],
+      "load_ms_median": 1914,
+      "issues": [],
+      "writes_attempted_on_open": [],
+      "runs": 4
+    },
+    "work:opportunities": {
+      "status": "clean",
+      "not_offered_to": [],
+      "load_ms_median": 1999,
+      "issues": [],
+      "writes_attempted_on_open": [],
+      "runs": 4
+    },
+    "work:people": {
+      "status": "clean",
+      "not_offered_to": [],
+      "load_ms_median": 2105,
+      "issues": [],
+      "writes_attempted_on_open": [],
+      "runs": 4
+    },
+    "work:properties": {
+      "status": "clean",
+      "not_offered_to": [],
+      "load_ms_median": 2218,
+      "issues": [],
+      "writes_attempted_on_open": [],
+      "runs": 4
+    },
+    "work:recent": {
+      "status": "clean",
+      "not_offered_to": [],
+      "load_ms_median": 1954,
+      "issues": [],
+      "writes_attempted_on_open": [],
+      "runs": 4
+    },
+    "work:sales": {
+      "status": "clean",
+      "not_offered_to": [],
+      "load_ms_median": 1936,
+      "issues": [],
+      "writes_attempted_on_open": [],
+      "runs": 4
+    },
+    "work:sites": {
+      "status": "clean",
+      "not_offered_to": [],
+      "load_ms_median": 2009,
+      "issues": [],
+      "writes_attempted_on_open": [],
+      "runs": 4
+    },
+    "work:social": {
+      "status": "clean",
+      "not_offered_to": [],
+      "load_ms_median": 1954,
+      "issues": [],
+      "writes_attempted_on_open": [],
+      "runs": 4
+    }
   },
-  "view:work": {
-   "status": "clean",
-   "not_offered_to": [],
-   "load_ms_median": 1942,
-   "issues": [],
-   "writes_attempted_on_open": [],
-   "runs": 4
-  },
-  "view:neoh": {
-   "status": "clean",
-   "not_offered_to": [],
-   "load_ms_median": 2142,
-   "issues": [],
-   "writes_attempted_on_open": [],
-   "runs": 4
-  },
-  "work:recent": {
-   "status": "clean",
-   "not_offered_to": [],
-   "load_ms_median": 1954,
-   "issues": [],
-   "writes_attempted_on_open": [],
-   "runs": 4
-  },
-  "work:people": {
-   "status": "clean",
-   "not_offered_to": [],
-   "load_ms_median": 2105,
-   "issues": [],
-   "writes_attempted_on_open": [],
-   "runs": 4
-  },
-  "work:properties": {
-   "status": "clean",
-   "not_offered_to": [],
-   "load_ms_median": 1951,
-   "issues": [],
-   "writes_attempted_on_open": [],
-   "runs": 4
-  },
-  "work:deals": {
-   "status": "clean",
-   "not_offered_to": [],
-   "load_ms_median": 1988,
-   "issues": [],
-   "writes_attempted_on_open": [],
-   "runs": 4
-  },
-  "work:conversations": {
-   "status": "clean",
-   "not_offered_to": [],
-   "load_ms_median": 1915,
-   "issues": [],
-   "writes_attempted_on_open": [],
-   "runs": 4
-  },
-  "work:opportunities": {
-   "status": "clean",
-   "not_offered_to": [],
-   "load_ms_median": 1999,
-   "issues": [],
-   "writes_attempted_on_open": [],
-   "runs": 4
-  },
-  "work:ai": {
-   "status": "clean",
-   "not_offered_to": [],
-   "load_ms_median": 2154,
-   "issues": [],
-   "writes_attempted_on_open": [],
-   "runs": 4
-  },
-  "work:sales": {
-   "status": "clean",
-   "not_offered_to": [],
-   "load_ms_median": 1936,
-   "issues": [],
-   "writes_attempted_on_open": [],
-   "runs": 4
-  },
-  "work:social": {
-   "status": "clean",
-   "not_offered_to": [],
-   "load_ms_median": 1954,
-   "issues": [],
-   "writes_attempted_on_open": [],
-   "runs": 4
-  },
-  "work:homeowners": {
-   "status": "clean",
-   "not_offered_to": [],
-   "load_ms_median": 1910,
-   "issues": [],
-   "writes_attempted_on_open": [],
-   "runs": 4
-  },
-  "work:automations": {
-   "status": "clean",
-   "not_offered_to": [],
-   "load_ms_median": 2078,
-   "issues": [],
-   "writes_attempted_on_open": [],
-   "runs": 4
-  },
-  "work:sites": {
-   "status": "clean",
-   "not_offered_to": [],
-   "load_ms_median": 2009,
-   "issues": [],
-   "writes_attempted_on_open": [],
-   "runs": 4
-  },
-  "work:missions": {
-   "status": "clean",
-   "not_offered_to": [],
-   "load_ms_median": 1914,
-   "issues": [],
-   "writes_attempted_on_open": [],
-   "runs": 4
-  },
-  "entity:person": {
-   "status": "clean",
-   "not_offered_to": [],
-   "load_ms_median": 2072,
-   "issues": [],
-   "writes_attempted_on_open": [],
-   "runs": 4
-  },
-  "entity:property": {
-   "status": "clean",
-   "not_offered_to": [],
-   "load_ms_median": 3207,
-   "issues": [],
-   "writes_attempted_on_open": [],
-   "runs": 4
-  },
-  "entity:deal": {
-   "status": "not_run",
-   "not_offered_to": [],
-   "load_ms_median": null,
-   "issues": [],
-   "writes_attempted_on_open": [],
-   "runs": 0
-  },
-  "ai:intelligence": {
-   "status": "clean",
-   "not_offered_to": [],
-   "load_ms_median": 2576,
-   "issues": [],
-   "writes_attempted_on_open": [],
-   "runs": 4
-  },
-  "ai:cowork": {
-   "status": "clean",
-   "not_offered_to": [],
-   "load_ms_median": 2261,
-   "issues": [],
-   "writes_attempted_on_open": [],
-   "runs": 4
-  },
-  "ai:sales": {
-   "status": "clean",
-   "not_offered_to": [],
-   "load_ms_median": 2303,
-   "issues": [],
-   "writes_attempted_on_open": [],
-   "runs": 4
-  },
-  "ai:social": {
-   "status": "clean",
-   "not_offered_to": [],
-   "load_ms_median": 2244,
-   "issues": [],
-   "writes_attempted_on_open": [],
-   "runs": 4
-  },
-  "ai:homeowners": {
-   "status": "clean",
-   "not_offered_to": [],
-   "load_ms_median": 2276,
-   "issues": [],
-   "writes_attempted_on_open": [],
-   "runs": 4
-  },
-  "ai:automations": {
-   "status": "clean",
-   "not_offered_to": [],
-   "load_ms_median": 2534,
-   "issues": [],
-   "writes_attempted_on_open": [],
-   "runs": 4
-  },
-  "ai:sites": {
-   "status": "clean",
-   "not_offered_to": [],
-   "load_ms_median": 2427,
-   "issues": [],
-   "writes_attempted_on_open": [],
-   "runs": 4
-  },
-  "ai:autonomy": {
-   "status": "clean",
-   "not_offered_to": [],
-   "load_ms_median": 2508,
-   "issues": [],
-   "writes_attempted_on_open": [],
-   "runs": 4
-  },
-  "sales:agent": {
-   "status": "clean",
-   "not_offered_to": [],
-   "load_ms_median": 2074,
-   "issues": [],
-   "writes_attempted_on_open": [],
-   "runs": 4
-  },
-  "sales:dialer": {
-   "status": "clean",
-   "not_offered_to": [],
-   "load_ms_median": 2074,
-   "issues": [],
-   "writes_attempted_on_open": [],
-   "runs": 4
-  },
-  "sales:plans": {
-   "status": "clean",
-   "not_offered_to": [],
-   "load_ms_median": 2062,
-   "issues": [],
-   "writes_attempted_on_open": [],
-   "runs": 4
-  },
-  "sales:providers": {
-   "status": "clean",
-   "not_offered_to": [],
-   "load_ms_median": 2084,
-   "issues": [],
-   "writes_attempted_on_open": [],
-   "runs": 4
-  },
-  "sales:routing": {
-   "status": "clean",
-   "not_offered_to": [],
-   "load_ms_median": 2054,
-   "issues": [],
-   "writes_attempted_on_open": [],
-   "runs": 4
-  },
-  "deals:pipeline": {
-   "status": "clean",
-   "not_offered_to": [],
-   "load_ms_median": 2427,
-   "issues": [],
-   "writes_attempted_on_open": [],
-   "runs": 4
-  },
-  "deals:transactions": {
-   "status": "clean",
-   "not_offered_to": [],
-   "load_ms_median": 1896,
-   "issues": [],
-   "writes_attempted_on_open": [],
-   "runs": 4
-  },
-  "deals:contracts": {
-   "status": "clean",
-   "not_offered_to": [],
-   "load_ms_median": 2693,
-   "issues": [],
-   "writes_attempted_on_open": [],
-   "runs": 4
-  },
-  "deals:portfolio": {
-   "status": "clean",
-   "not_offered_to": [],
-   "load_ms_median": 2499,
-   "issues": [],
-   "writes_attempted_on_open": [],
-   "runs": 4
-  },
-  "deals:marketplace": {
-   "status": "clean",
-   "not_offered_to": [],
-   "load_ms_median": 2453,
-   "issues": [],
-   "writes_attempted_on_open": [],
-   "runs": 4
-  },
-  "properties:address": {
-   "status": "clean",
-   "not_offered_to": [],
-   "load_ms_median": 1956,
-   "issues": [],
-   "writes_attempted_on_open": [],
-   "runs": 4
-  },
-  "properties:houses": {
-   "status": "clean",
-   "not_offered_to": [],
-   "load_ms_median": 2481,
-   "issues": [],
-   "writes_attempted_on_open": [],
-   "runs": 4
-  },
-  "properties:listings": {
-   "status": "clean",
-   "not_offered_to": [],
-   "load_ms_median": 2485,
-   "issues": [],
-   "writes_attempted_on_open": [],
-   "runs": 4
-  },
-  "properties:market": {
-   "status": "clean",
-   "not_offered_to": [],
-   "load_ms_median": 2210,
-   "issues": [],
-   "writes_attempted_on_open": [],
-   "runs": 4
-  },
-  "properties:forms": {
-   "status": "clean",
-   "not_offered_to": [],
-   "load_ms_median": 2618,
-   "issues": [],
-   "writes_attempted_on_open": [],
-   "runs": 4
-  },
-  "profile:settings": {
-   "status": "clean",
-   "not_offered_to": [],
-   "load_ms_median": 2320,
-   "issues": [],
-   "writes_attempted_on_open": [],
-   "runs": 4
-  },
-  "profile:ai": {
-   "status": "clean",
-   "not_offered_to": [],
-   "load_ms_median": 2719,
-   "issues": [],
-   "writes_attempted_on_open": [],
-   "runs": 4
-  },
-  "profile:ops": {
-   "status": "not_offered",
-   "not_offered_to": [
-    "agent",
-    "owner"
-   ],
-   "load_ms_median": null,
-   "issues": [],
-   "writes_attempted_on_open": [],
-   "runs": 4
-  },
-  "public:reel": {
-   "status": "clean",
-   "not_offered_to": [],
-   "load_ms_median": 1960,
-   "issues": [],
-   "writes_attempted_on_open": [],
-   "runs": 2
-  },
-  "public:site-preview": {
-   "status": "clean",
-   "not_offered_to": [],
-   "load_ms_median": 1599,
-   "issues": [],
-   "writes_attempted_on_open": [],
-   "runs": 4
-  },
-  "public:sites": {
-   "status": "clean",
-   "not_offered_to": [],
-   "load_ms_median": 2079,
-   "issues": [],
-   "writes_attempted_on_open": [],
-   "runs": 2
-  },
-  "public:property-upload": {
-   "status": "clean",
-   "not_offered_to": [],
-   "load_ms_median": 1936,
-   "issues": [],
-   "writes_attempted_on_open": [],
-   "runs": 2
-  },
-  "public:secure-dossier": {
-   "status": "clean",
-   "not_offered_to": [],
-   "load_ms_median": 1932,
-   "issues": [],
-   "writes_attempted_on_open": [],
-   "runs": 2
-  },
-  "public:accept-invite": {
-   "status": "clean",
-   "not_offered_to": [],
-   "load_ms_median": 1614,
-   "issues": [],
-   "writes_attempted_on_open": [],
-   "runs": 2
-  }
- },
- "// note": "Full crawl 20261013T073520Z at e219198; 20 pages re-crawled in 20261013T080644Z at db4d0af after fixes. Scored with the current rules."
+  "// note": "Full crawl run 20261013T073520Z at e219198; pages re-crawled at 90372f2 (run 20261013T091139Z): ai:sites, entity:deal, properties:address, properties:forms, properties:houses, properties:listings, properties:market, work:ai, work:properties. properties:mls removed with MLS (D-2026-10-12-01)."
 }
