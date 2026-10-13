@@ -484,6 +484,24 @@ next_task: "Prompt 12 first slice (Capture Studio); then T12.09/T12.10 to close 
 updated: 2026-10-12
 ```
 
+#### L12-02 3D labels follow the quality verdict (no "Full" without evidence)
+```yaml
+id: L12-02
+status: tests_pass
+env: local
+evidence_shas: [745f2fa]   # finding in L12-01; fix in the commit that adds splat_quality
+files: [backend/tour_api.py, oracle-app/src/components/TourViewer.jsx, oracle-app/src/neoh/EntitySheet.jsx]
+tests_run:
+  - {cmd: "pytest backend/tests/test_tour_tier_honesty.py + tour/space tests", result: "59 passed: label per state (measured, pending, degraded, incomplete); no label says Full or claims verified", date: 2026-10-13}
+  - {cmd: "vitest TourViewer, HouseWorkspace, neoh", result: "285 passed: viewer labels the mode from splat_label and shows the caveats in the disclosure", date: 2026-10-13}
+authz_checked: n/a
+blockers: [{type: scope, note: "T12.09 certification (verified state with held-out quality, registration, doorway and device evidence) is not built; nothing can be verified yet."}]
+audit_refs: [A03]
+decision_refs: [D-2026-10-08-01]
+next_task: "T12.09 certification state; owner question on publishing unverified spaces."
+updated: 2026-10-13
+```
+
 ### L13
 Deals, documents and compliance.
 
@@ -807,7 +825,7 @@ From [neoh-full-platform-source-audit-2026-10-08.md](../neoh-full-platform-sourc
 |---|---|---|---|---|---|---|
 | A01 | Customer PII and communications in plaintext | P0 | open; the audit missed the AI call notes (`aec14c4` predates its pin) | `docs/privacy-data-map.md:40`, `:42`, `:48`, `:71`; `backend/commands_api.py:2335` (`deliver_call_notes` → `client_notes.body`) | 17 | L17-03, L09-02, L09-03 |
 | A02 | Failed property lookup reads as zero matches | P0 | open | `backend/client_ai_automation.py:700`, `:704` (`_property_candidates_bounded`); degraded set from `model_error` only (`:962`) | 11 | L11-02, L06-01 |
-| A03 | Professional 3D certification without verified evidence | P0 | open | `backend/recon_quality.py:83`, `:101`; `backend/reconstruction_worker.py:581`; badge `backend/tour_api.py:41`, `:335` ignores the verdict | 12 | L12-01 |
+| A03 | Professional 3D certification without verified evidence | P0 | partly fixed: labels bound to the verdict (L12-02); certification state not built | `backend/recon_quality.py:83`, `:101`; `backend/reconstruction_worker.py:581`; badge `backend/tour_api.py:41`, `:335` ignores the verdict | 12 | L12-01 |
 | A04 | Production readiness not established by staging CI | P0 | open (no production app) | `.github/workflows/ci.yml:606` (`promote` manual only) | 19 | L19-02 |
 | A05 | Usage event counted before approved/delivered outreach | P1 | open | `backend/speed_to_lead.py:387-389` (`record_usage("lead_engaged")` right after `staged`) | 18 | L18-02, L04-01 |
 | A06 | Customer names in failure logs | P1 | open | `backend/client_ai_automation.py:701-703` logs `full_name` | 17 | L17-04 |

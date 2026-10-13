@@ -118,6 +118,8 @@ function PropertySheet({ id, onClose, tourOpen, onOpenTour }) {
           floors={tour.data.floors}
           tourpoints={tour.data.tourpoints}
           isThisProperty={tour.data.is_this_property !== false}
+          splatLabel={tour.data.splat_label}
+          splatCaveats={tour.data.splat_caveats || []}
           address={address}
           title={address}
           onClose={onClose}

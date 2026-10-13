@@ -365,7 +365,7 @@ describe('a protected splat never reaches PlayCanvas as a URL it cannot authenti
     fireEvent.click(screen.getByRole('button', { name: /360/i }));
     expect(await screen.findByTestId('pano')).toBeTruthy();
 
-    fireEvent.click(screen.getByRole('button', { name: /Full 3D/i }));
+    fireEvent.click(screen.getByRole('button', { name: /3D walkthrough/i }));
     const back = await screen.findByTestId('splat');
     expect(back.getAttribute('data-asset-url')).toMatch(/^blob:/);
   });
@@ -439,5 +439,17 @@ describe('Neoh Space never takes the property page down (§35/36)', () => {
     fireEvent.click(screen.getByRole('button', { name: /load the 3d space/i }));
     expect(await screen.findByTestId('splat')).toBeTruthy();
     expect(blobCalls.length).toBeGreaterThan(0);
+  });
+
+  it('labels a captured space by its quality and carries its caveats (A03)', async () => {
+    renderTour({
+      splatUrl: PROTECTED, panoScenes: SCENES,
+      splatLabel: 'Partial 3D walkthrough',
+      splatCaveats: ["Parts of the capture couldn't be placed — some areas may be missing"],
+    });
+    const splat = await screen.findByTestId('splat');
+    expect(splat.getAttribute('data-disclosure')).toMatch(/About this 3D space: Parts of the capture couldn't be placed/);
+    expect(screen.getByRole('button', { name: /Partial 3D walkthrough/i })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /Full 3D/i })).toBeNull();
   });
 });

@@ -110,7 +110,10 @@ def test_captured_splat_is_tier_three_and_says_so(monkeypatch):
 
     assert result["best_tier"] == 3
     assert result["is_this_property"] is True
-    assert result["badge"] == "Full 3D Walkthrough"
+    # No quality verdict on this row: a captured space is not "Full" on
+    # existence alone (audit A03, prompt 12 AC12.06).
+    assert result["badge"] == "3D Walkthrough · quality not verified"
+    assert result["splat_quality_state"] == "pending"
     assert "actual home" in result["honest_note"]
     assert result["tiers"]["splat"] is True
     assert result["walkable_interior"] is True
@@ -342,3 +345,35 @@ def test_a_captured_splat_still_outranks_panos(monkeypatch):
 
     assert result["best_tier"] == 3
     assert result["pano_scene_count"] == 2, "the 360s are still offered alongside"
+
+
+
+@pytest.mark.parametrize("limitations, state, badge", [
+    ([], "measured", "3D Walkthrough"),
+    (["floaters_present"], "measured", "3D Walkthrough"),
+    (["quality_unverified"], "pending", "3D Walkthrough · quality not verified"),
+    (["quality_low"], "degraded", "3D Walkthrough · reduced quality"),
+    (["partial_registration", "quality_low"], "incomplete", "Partial 3D Walkthrough"),
+    ('["partial_registration"]', "incomplete", "Partial 3D Walkthrough"),   # jsonb read as text
+    (None, "pending", "3D Walkthrough · quality not verified"),             # no job produced it
+])
+def test_the_3d_label_follows_the_quality_verdict(monkeypatch, limitations, state, badge):
+    row = _media("splat", provenance="captured")
+    row["quality_limitations"] = limitations
+    _patch_db(monkeypatch, [row])
+    result = _resolve()
+    assert result["best_tier"] == 3
+    assert (result["splat_quality_state"], result["badge"]) == (state, badge)
+    splat = next(a for a in result["assets"] if a["kind"] == "splat")
+    assert splat["quality_state"] == state
+    assert "Full" not in result["badge"] and "Full" not in splat["label"]
+    if state in ("incomplete", "degraded"):
+        assert result["splat_caveats"], "a reduced-quality space says why"
+
+
+def test_nothing_in_the_tour_says_full_or_verified():
+    import tour_api as t
+
+    labels = list(t._TIER_BADGE.values()) + list(t._SPLAT_BADGE.values()) + list(t._SPLAT_LABEL.values())
+    assert not any("Full" in x for x in labels)
+    assert not any("verified" in x.replace("not verified", "") for x in labels), "no label claims verification"

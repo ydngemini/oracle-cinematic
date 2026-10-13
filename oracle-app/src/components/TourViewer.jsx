@@ -149,6 +149,9 @@ export function TourViewer({
   splatUrl, splatFormat, splatScene, panoScenes, disclosure, address, title, floors, onClose,
   isThisProperty = true, tourpoints, embedded = false, splatStreamUrl = null,
   roomNames, photoCount = 0, device: deviceOverride = null,
+  // What the backend may honestly call this space, and why (tour_api
+  // splat_label / splat_caveats; prompt 12 T12.10, audit A03).
+  splatLabel = null, splatCaveats = [],
 }) {
   // Decided once per open, before any engine loads. Injected in tests.
   const device = useMemo(
@@ -255,12 +258,12 @@ export function TourViewer({
     if (splatUrl) {
       out.push({
         id: 'splat',
-        label: isThisProperty ? 'Full 3D' : 'Demo space',
+        label: isThisProperty ? (splatLabel || '3D walkthrough') : 'Demo space',
         isThisProperty,
       });
     }
     return out;
-  }, [scenes, splatUrl, isThisProperty]);
+  }, [scenes, splatUrl, isThisProperty, splatLabel]);
 
   // Which mode opens first. A real capture is the most immersive thing a
   // property can have, but a *generated* one is not evidence about the home, so
@@ -298,8 +301,13 @@ export function TourViewer({
   // thing separating "this is your house" from "this is a sample room" is what
   // the viewer says. Scoped to the active mode, so switching to real 360s stops
   // making the claim.
+  // A captured space's quality caveats travel with it, so a buyer sees
+  // "parts of the capture couldn't be placed" rather than a clean claim.
+  const caveats = active.id === 'splat' && active.isThisProperty && Array.isArray(splatCaveats)
+    ? splatCaveats.filter(Boolean)
+    : [];
   const shownDisclosure = active.isThisProperty
-    ? disclosure
+    ? [disclosure, caveats.length ? `About this 3D space: ${caveats.join('; ')}.` : ''].filter(Boolean).join(' ')
     : [DEMO_PREFIX, disclosure].filter(Boolean).join(' ');
   const shownTitle = active.isThisProperty ? title : `${title} — demo space`;
 

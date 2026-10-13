@@ -18,6 +18,7 @@ RLS scopes every read to the caller's tenant.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 from typing import Optional
@@ -42,8 +43,62 @@ _TIER_BADGE = {
     0: "Exterior 3D",
     1: "Photos + Exterior 3D",
     2: "360° Walkthrough",
-    3: "Full 3D Walkthrough",
+    3: "3D Walkthrough",
 }
+# What a captured 3D space may honestly be called, by its quality state
+# (prompt 12 T12.09/T12.10, audit A03). "Full 3D Walkthrough" was given to every
+# captured splat — including ones whose quality was never measured or that
+# only partly registered. No certification process exists yet, so nothing is
+# "verified"; a measured space with no quality caveats is a plain walkthrough.
+_QUALITY_LIMITATIONS = {"quality_unverified", "partial_registration", "quality_low",
+                        "pose_error_high", "compression_loss"}
+_SPLAT_BADGE = {
+    "measured": "3D Walkthrough",
+    "pending": "3D Walkthrough · quality not verified",
+    "degraded": "3D Walkthrough · reduced quality",
+    "incomplete": "Partial 3D Walkthrough",
+}
+_SPLAT_LABEL = {
+    "measured": "3D walkthrough",
+    "pending": "3D walkthrough · quality not verified",
+    "degraded": "3D walkthrough · reduced quality",
+    "incomplete": "Partial 3D walkthrough",
+}
+
+
+def splat_quality(row) -> tuple[str, list[str]]:
+    """(quality_state, limitation keys) for one splat row.
+
+    `pending` when quality was never measured (no job verdict, or the verdict
+    says quality_unverified) — a missing metric is missing evidence (C6).
+    `incomplete` when parts of the capture could not be placed. `degraded`
+    when a measured quality caveat applies. `measured` otherwise. Never
+    `verified`: that needs the certification T12.09 has not built yet.
+    """
+    raw = row.get("quality_limitations") if hasattr(row, "get") else None
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except ValueError:
+            raw = None
+    if not isinstance(raw, list):
+        return "pending", []
+    limitations = [x for x in raw if isinstance(x, str)]
+    if "partial_registration" in limitations:
+        return "incomplete", limitations
+    if "quality_unverified" in limitations:
+        return "pending", limitations
+    if any(x in _QUALITY_LIMITATIONS for x in limitations):
+        return "degraded", limitations
+    return "measured", limitations
+
+
+def _caveats(limitations: list[str]) -> list[str]:
+    from space_status import LIMITATION_LABELS
+
+    return [LIMITATION_LABELS[x] for x in limitations if x in LIMITATION_LABELS]
+
+
 _TIER_NOTE = {
     0: "Photoreal exterior 3D for this address. No interior has been captured yet.",
     1: "Photoreal exterior 3D plus uploaded photos. No walkable interior captured yet.",
@@ -206,7 +261,15 @@ async def fetch_tour_rows(conn, lead_id, listing_id):
     rows = await conn.fetch(
         """
         SELECT id, kind, url, sort_order, s3_key, scene_override,
-               COALESCE(provenance, 'captured') AS provenance
+               COALESCE(provenance, 'captured') AS provenance,
+               -- The reconstruction's own verdict (recon_quality via
+               -- _record_summary). NULL for a splat no job produced.
+               CASE WHEN kind = 'splat' THEN (
+                   SELECT j.diagnostics -> 'limitations'
+                     FROM reconstruction_jobs j
+                    WHERE j.media_id = property_media.id
+                    ORDER BY j.updated_at DESC LIMIT 1
+               ) END AS quality_limitations
           FROM property_media
          WHERE (($1::uuid IS NOT NULL AND lead_id = $1)
              OR ($2::uuid IS NOT NULL AND listing_id = $2))
@@ -297,6 +360,9 @@ def build_tour(rows, scene_rows, plan_row, *, lead_id=None, listing_id=None) -> 
     else:
         best = 0
 
+    _primary_quality = splat_quality(splats[0]) if has_splat else ("pending", [])
+    _splat_badge = _SPLAT_BADGE[_primary_quality[0]] if has_splat else _TIER_BADGE[3]
+
     # A demo splat is walkable, so the viewer can open — but it is not a
     # walkable interior *of this home*, which is what the flag means to callers.
     is_demo = has_demo_splat and not has_splat
@@ -321,6 +387,7 @@ def build_tour(rows, scene_rows, plan_row, *, lead_id=None, listing_id=None) -> 
 
     for row in all_splats:
         captured = _captured(row)
+        state, limitations = splat_quality(row) if captured else ("demo", [])
         assets.append({
             "kind": "splat",
             "url": row["url"],
@@ -332,7 +399,9 @@ def build_tour(rows, scene_rows, plan_row, *, lead_id=None, listing_id=None) -> 
             "provenance": row["provenance"],
             "is_this_property": captured,
             "walkable": True,
-            "label": "Full 3D walkthrough" if captured else _DEMO_BADGE,
+            "label": _SPLAT_LABEL[state] if captured else _DEMO_BADGE,
+            "quality_state": state,
+            "caveats": _caveats(limitations),
             "note": _TIER_NOTE[3] if captured else _DEMO_NOTE,
             "disclosure": SPATIAL_AI_DISCLOSURE,
         })
@@ -406,7 +475,11 @@ def build_tour(rows, scene_rows, plan_row, *, lead_id=None, listing_id=None) -> 
         # caller that renders only the winner drops real captures, which is the
         # bug this shape replaces. Read `assets` and render all of it.
         "best_tier": best,
-        "badge": _DEMO_BADGE if is_demo else _TIER_BADGE[best],
+        "badge": _DEMO_BADGE if is_demo else (_splat_badge if best == 3 else _TIER_BADGE[best]),
+        # The opening splat's quality, so a viewer labels it honestly.
+        "splat_quality_state": _primary_quality[0] if has_splat else None,
+        "splat_label": _SPLAT_LABEL[_primary_quality[0]] if has_splat else None,
+        "splat_caveats": _caveats(_primary_quality[1]) if has_splat else [],
         "honest_note": _DEMO_NOTE if is_demo else _TIER_NOTE[best],
         "walkable_interior": best >= 2,  # the only tiers you can truly walk inside
         # True only when the walkable asset depicts this address. The viewer

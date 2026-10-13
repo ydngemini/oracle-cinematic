@@ -36,7 +36,7 @@ const HOUSE = {
 function tourPayload(overrides = {}) {
   return {
     best_tier: 3,
-    badge: 'Full 3D Walkthrough',
+    badge: '3D Walkthrough · quality not verified',
     honest_note: 'Free-roam the actual home in a photoreal 3D reconstruction.',
     walkable_interior: true,
     is_this_property: true,
