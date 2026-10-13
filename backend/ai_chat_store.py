@@ -758,6 +758,8 @@ async def _read_clients(conn, ctx: TenantContext, tool_name: str, tool_input: di
             """SELECT id,body,author_id,pinned,created_at,updated_at
                  FROM client_notes
                 WHERE client_id=$1::uuid AND tenant_id=$2::uuid
+                  -- a proposed AI call note is not the agent's word yet
+                  AND review_state='approved'
                 ORDER BY pinned DESC,created_at DESC LIMIT 20""",
             client_id, ctx.tenant_id,
         )

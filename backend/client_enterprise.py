@@ -98,7 +98,18 @@ def _note_json(r) -> dict:
         "pinned": r["pinned"],
         "created_at": _iso(r["created_at"]),
         "updated_at": _iso(r["updated_at"]),
+        # 'proposed' = an AI call note waiting for the agent (D-2026-10-12-03).
+        "review_state": _row_get(r, "review_state") or "approved",
+        "reviewed_by": _row_get(r, "reviewed_by"),
+        "reviewed_at": _iso(_row_get(r, "reviewed_at")),
     }
+
+
+def _row_get(r, key):
+    try:
+        return r[key]
+    except (KeyError, IndexError):
+        return None
 
 
 def _task_json(r, client_name: Optional[str] = None) -> dict:
@@ -796,7 +807,8 @@ async def get_client_detail(
                 "SELECT count(*) FROM client_tasks WHERE client_id = $1 AND status = 'open'", client_id
             )
             note_rows = await conn.fetch(
-                """SELECT id, body, author_id, pinned, created_at, updated_at
+                """SELECT id, body, author_id, pinned, created_at, updated_at,
+                          review_state, reviewed_by, reviewed_at
                      FROM client_notes WHERE client_id = $1
                     ORDER BY pinned DESC, created_at DESC""",
                 client_id,
@@ -959,7 +971,8 @@ async def list_notes(
             if await conn.fetchval("SELECT 1 FROM clients WHERE id = $1", client_id) is None:
                 raise HTTPException(status.HTTP_404_NOT_FOUND, "client not found")
             rows = await conn.fetch(
-                """SELECT id, body, author_id, pinned, created_at, updated_at
+                """SELECT id, body, author_id, pinned, created_at, updated_at,
+                          review_state, reviewed_by, reviewed_at
                      FROM client_notes WHERE client_id = $1
                     ORDER BY pinned DESC, created_at DESC""",
                 client_id,
@@ -984,7 +997,8 @@ async def create_note(
                 """
                 INSERT INTO client_notes (tenant_id, client_id, body, author_id, pinned)
                 VALUES ($1, $2, $3, $4, $5)
-             RETURNING id, body, author_id, pinned, created_at, updated_at
+             RETURNING id, body, author_id, pinned, created_at, updated_at,
+                       review_state, reviewed_by, reviewed_at
                 """,
                 ctx.tenant_id, client_id, body.body, ctx.agent_id, body.pinned,
             )
@@ -1026,7 +1040,8 @@ async def update_note(
                 UPDATE client_notes
                    SET {", ".join(sets)}
                  WHERE id = ${len(args) - 1} AND client_id = ${len(args)}
-             RETURNING id, body, author_id, pinned, created_at, updated_at
+             RETURNING id, body, author_id, pinned, created_at, updated_at,
+                       review_state, reviewed_by, reviewed_at
                 """,
                 *args,
             )
@@ -1039,6 +1054,70 @@ async def update_note(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "note not found")
     await _queue_client_ai(ctx, client_id, "note_updated")
     return _note_json(row)
+
+
+@router.post("/clients/{client_id}/notes/{note_id}/approve")
+async def approve_note(
+    client_id: str,
+    note_id: str,
+    ctx: TenantContext = Depends(require_context),
+):
+    """Accept an AI call note the agent reviewed. Discarding one is DELETE;
+    editing one is PATCH (it stays proposed until approved)."""
+    _require_uuid(client_id, "client_id")
+    _require_uuid(note_id, "note_id")
+    try:
+        async with tenant_tx(ctx) as conn:
+            row = await conn.fetchrow(
+                """
+                UPDATE client_notes
+                   SET review_state = 'approved', reviewed_by = $3, reviewed_at = now(),
+                       updated_at = now()
+                 WHERE id = $1 AND client_id = $2 AND review_state = 'proposed'
+             RETURNING id, body, author_id, pinned, created_at, updated_at,
+                       review_state, reviewed_by, reviewed_at
+                """,
+                note_id, client_id, ctx.agent_id,
+            )
+            if row is None:
+                exists = await conn.fetchval(
+                    "SELECT review_state FROM client_notes WHERE id = $1 AND client_id = $2",
+                    note_id, client_id)
+                if exists is None:
+                    raise HTTPException(status.HTTP_404_NOT_FOUND, "note not found")
+                raise HTTPException(status.HTTP_409_CONFLICT, "note is not waiting for review")
+            await _log_activity(conn, ctx, client_id, "note", "Call notes approved",
+                                {"note_id": str(row["id"]), "source": "ai_call_notes_review"})
+    except RuntimeError as exc:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, f"Memory Core offline ({exc})")
+    await _queue_client_ai(ctx, client_id, "note_approved")
+    return _note_json(row)
+
+
+class CallNoteSettings(BaseModel):
+    mode: str = Field(..., pattern="^(review|direct)$")
+
+
+@router.get("/call-notes/settings")
+async def get_call_note_settings(ctx: TenantContext = Depends(require_context)):
+    """How the AI's call notes land for the signed-in agent (D-2026-10-12-03)."""
+    import call_note_settings
+
+    async with tenant_tx(ctx) as conn:
+        mode = await call_note_settings.read_mode(conn, ctx.tenant_id, ctx.agent_id)
+    return {"mode": mode, "modes": list(call_note_settings.CALL_NOTE_MODES)}
+
+
+@router.put("/call-notes/settings")
+async def put_call_note_settings(body: CallNoteSettings, ctx: TenantContext = Depends(require_context)):
+    import call_note_settings
+
+    try:
+        async with tenant_tx(ctx) as conn:
+            mode = await call_note_settings.write_mode(conn, ctx.tenant_id, ctx.agent_id, body.mode)
+    except LookupError:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "agent not found")
+    return {"mode": mode, "modes": list(call_note_settings.CALL_NOTE_MODES)}
 
 
 @router.delete("/clients/{client_id}/notes/{note_id}", status_code=status.HTTP_204_NO_CONTENT)

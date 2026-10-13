@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { crmGet, crmPost } from '../state/useCrmApi';
+import { crmGet, crmPost, crmPut } from '../state/useCrmApi';
 import { BrokerageOnboardingPanel } from './BrokerageOnboardingPanel';
 import { CommandApprovalPanel } from './CommandApprovalPanel';
 import { PersonalCommandComposer } from './PersonalCommandComposer';
@@ -27,7 +27,9 @@ function formatTime(value) {
 export default function PersonalAITab() {
   const [data, setData] = useState({
     onboarding: null, models: [], commands: [], providers: [], contractDocuments: [],
+    callNotesMode: null,
   });
+  const [callNotesSaving, setCallNotesSaving] = useState(false);
   const [errors, setErrors] = useState([]);
   const [loading, setLoading] = useState(true);
   const [documentError, setDocumentError] = useState('');
@@ -38,6 +40,7 @@ export default function PersonalAITab() {
       ['commands', crmGet('/api/commands?limit=20')],
       ['providers', crmGet('/api/commands/providers')],
       ['contractDocuments', crmGet('/api/contracts/documents?limit=20')],
+      ['callNotes', crmGet('/api/crm/call-notes/settings')],
     ];
     if (LOCAL_MODELS_ENABLED) {
       requests.push(['models', crmGet('/api/models?limit=20')]);
@@ -45,6 +48,7 @@ export default function PersonalAITab() {
     return Promise.allSettled(requests.map(([, request]) => request)).then((settled) => {
       const next = {
         onboarding: null, models: [], commands: [], providers: [], contractDocuments: [],
+        callNotesMode: null,
       };
       const nextErrors = [];
       settled.forEach((result, index) => {
@@ -57,6 +61,7 @@ export default function PersonalAITab() {
         else if (key === 'commands') next.commands = Array.isArray(result.value?.commands) ? result.value.commands : [];
         else if (key === 'providers') next.providers = Array.isArray(result.value?.providers) ? result.value.providers : [];
         else if (key === 'contractDocuments') next.contractDocuments = Array.isArray(result.value?.documents) ? result.value.documents : [];
+        else if (key === 'callNotes') next.callNotesMode = result.value?.mode || null;
         else next.onboarding = result.value;
       });
       setData(next);
@@ -66,6 +71,15 @@ export default function PersonalAITab() {
   }, []);
 
   useEffect(() => { load(); }, [load]);
+
+  // How the AI's call notes land for this agent (D-2026-10-12-03).
+  const saveCallNotesMode = useCallback((mode) => {
+    setCallNotesSaving(true);
+    crmPut('/api/crm/call-notes/settings', { mode }).then(
+      (result) => setData((prev) => ({ ...prev, callNotesMode: result?.mode || mode })),
+      (error) => setErrors((prev) => [...prev, `AI call notes: ${friendlyError(error, { fallback: 'couldn’t save that choice.' })}`]),
+    ).finally(() => setCallNotesSaving(false));
+  }, []);
 
   const refresh = () => {
     setLoading(true);
@@ -176,6 +190,19 @@ export default function PersonalAITab() {
               <li><span>Draft preparation</span><strong data-enabled={Boolean(settings?.autonomous_drafting)}>{settings?.autonomous_drafting ? 'Enabled' : 'Review first'}</strong></li>
               <li><span>Style training consent</span><strong data-enabled={Boolean(settings?.style_training_opt_in)}>{settings?.style_training_opt_in ? 'Opted in' : 'Not opted in'}</strong></li>
               <li><span>Consented examples</span><strong>{data.onboarding?.style_training_examples ?? 0}</strong></li>
+              <li>
+                <span id="call-notes-mode-label">AI call notes</span>
+                <select
+                  className={styles.inlineSelect}
+                  aria-labelledby="call-notes-mode-label"
+                  value={data.callNotesMode || 'review'}
+                  disabled={callNotesSaving || data.callNotesMode === null}
+                  onChange={(event) => saveCallNotesMode(event.target.value)}
+                >
+                  <option value="review">Ask me to approve</option>
+                  <option value="direct">Save directly</option>
+                </select>
+              </li>
             </ul>
           </section>
 

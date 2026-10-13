@@ -341,7 +341,7 @@ _REASSIGN: tuple[tuple[str, str], ...] = (
 # Never rewritten on offboarding — this is the authorship record:
 HISTORICAL_AUTHORSHIP = (
     "*.created_by", "*.updated_by", "audit_ledger.user_id", "client_activities.actor",
-    "client_notes.author_id", "sms_messages.agent_id", "lead_intake_events.assigned_agent_id",
+    "client_notes.author_id", "client_notes.reviewed_by", "sms_messages.agent_id", "lead_intake_events.assigned_agent_id",
     "ai_decision_traces.agent_id", "agent_ce_log", "protected_override_events.performed_by",
     "action_approvals.requested_by/decided_by", "team_memberships.approved_by",
     "brokerage_invitations.invited_by*", "missions.consent_by",

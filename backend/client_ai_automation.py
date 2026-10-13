@@ -580,7 +580,8 @@ async def _load_bundle(conn: Any, client_id: str) -> Optional[dict[str, Any]]:
     )
     notes = await conn.fetch(
         """SELECT id,body,created_at FROM client_notes
-             WHERE client_id=$1::uuid ORDER BY created_at DESC LIMIT 12""",
+             WHERE client_id=$1::uuid AND review_state='approved'
+             ORDER BY created_at DESC LIMIT 12""",
         client_id,
     )
     properties = await conn.fetch(

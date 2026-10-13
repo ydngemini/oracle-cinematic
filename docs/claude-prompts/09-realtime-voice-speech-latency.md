@@ -49,7 +49,7 @@ A caller always hears the disclosure first and is never told the AI is a person.
 - **T09.11 Keep the mascot off the audio path.** Speech-reactive visuals follow playback frames or verified events, never text generation time.
 - **T09.12 Send call notes only to authorized agents.** Replace the tenant-wide CALL_NOTES broadcast with delivery to the agents who may see that client (C3), and keep the note text out of frames other agents receive.
 - **T09.13 Protect call notes as customer content.** Store AI call notes through the encrypted path, matching inbound transcripts (A01, owned by 17), and classify them in the privacy data map.
-- **T09.14 Put notes up for agent approval if the owner confirms it.** Shared notes (2026-10-11) ask that AI notes be proposed for approval, not saved directly. Build the proposal flow once the owner decides (§7); keep the current behaviour until then.
+- **T09.14 Offer both note modes (decided: D-2026-10-12-03).** Each agent chooses in Personal AI: `review` (default) saves the note *proposed* for the agent to approve, edit or discard, and the AI ignores it until approved; `direct` saves it approved. Built in migration `0130_client_note_review.sql`, `backend/call_note_settings.py` and the client Notes pane.
 - **T09.15 Verify whether a spoken opt-out on an outbound call is recorded.** The disclosure promises "won't contact you again", but outbound bridges keep no transcript and contain no opt-out handling. Record the opt-out without storing the transcript.
 - **T09.16 Verify whether "recorded line" is true for each engine.** The disclosure says the line is recorded while the ElevenLabs agent keeps no audio. Bring the wording to the owner and counsel; do not change it alone.
 - **T09.17 Keep notes from lead-only calls.** Today they are logged and dropped. Attach them to the lead or tell the agent nothing was kept.
@@ -93,7 +93,8 @@ A caller always hears the disclosure first and is never told the AI is a person.
   - outbound calls store no transcript unless the callee consents;
   - no binding offers or terms on a call, and no requests for full SSNs, card numbers or passwords;
   - no voice cloning or imitation of a real person.
-- **Owner questions:** should AI call notes be proposed for agent approval instead of saved directly (L09-02)? Is "recorded line" the right wording when no audio is kept (T09.16)? Jurisdiction-specific disclosure needs counsel review.
+- **Decided:** AI call notes support both modes, chosen per agent (D-2026-10-12-03).
+- **Owner questions:** Is "recorded line" the right wording when no audio is kept (T09.16)? Jurisdiction-specific disclosure needs counsel review.
 - **Real calls** go only to the operator's own allow-listed number, with owner approval in that session (C4.3).
 - **Out of scope here:** SMS, email and calendars (10); mascot animation (15); encryption design for A01 (17).
 

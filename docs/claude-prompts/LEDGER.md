@@ -239,28 +239,30 @@ tests_run:
 authz_checked: brokerage tenant under FORCE RLS (live test)
 blockers:
   - {type: verification, note: "Not yet proven on a real phone call."}
-  - {type: owner, note: "Shared notes 2026-10-11 ask that AI notes be PROPOSED for agent approval; today they are saved directly."}
+  - {type: decided, note: "D-2026-10-12-03: both modes, per agent; review is the default (built 2026-10-13, see L09-03)."}
 audit_refs: [A01]
 decision_refs: []
-next_task: "Decide approval-vs-direct; then one real call with consent to verify the note reaches the client."
+next_task: "One real consented call to verify the note reaches the client in review mode (T09.18)."
 updated: 2026-10-12
 ```
 
-#### L09-03 Call-note text is pushed to the whole brokerage
+#### L09-03 Call-note text went to the whole brokerage (fixed: per-user push)
 ```yaml
 id: L09-03
-status: source_verified
+status: tests_pass
 env: local
-evidence_shas: [745f2fa]
-files: [backend/commands_api.py, backend/ws_hub.py]
+evidence_shas: [745f2fa]   # finding; fix in the commit that adds 0130 (see git log)
+files: [backend/commands_api.py, backend/call_note_settings.py, backend/client_enterprise.py, backend/db/migrations/0130_client_note_review.sql, oracle-app/src/components/ClientNotes.jsx, oracle-app/src/components/PersonalAITab.jsx]
 tests_run:
-  - {cmd: "sed -n 2350,2358p backend/commands_api.py; sed -n 386,399p backend/ws_hub.py", result: "deliver_call_notes sends CALL_NOTES with the note text through tenant-wide ws_hub.broadcast (commands_api.py:2354); the per-user broadcast_user (ws_hub.py:393) exists but deliver_call_notes does not use it", date: 2026-10-12}
-authz_checked: n/a
-blockers: []
+  - {cmd: "sed -n 2350,2358p backend/commands_api.py (at 745f2fa)", result: "CALL_NOTES with note text sent via tenant-wide ws_hub.broadcast", date: 2026-10-12}
+  - {cmd: "pytest backend/tests/test_call_note_review.py backend/tests/test_elevenlabs_realtime.py", result: "pass: frame only to requester + assignee; no tenant-wide broadcast; AI readers filter review_state='approved'", date: 2026-10-13}
+  - {cmd: "vitest src/components/ClientNotes.test.jsx", result: "pass: proposed badge + approve", date: 2026-10-13}
+authz_checked: frame recipients = requesting agent + client assignee; approve route runs under tenant RLS
+blockers: [{type: verification, note: "backend/tests/test_call_notes_live.py (real PostgreSQL) runs in CI only."}]
 audit_refs: [A01]
-decision_refs: []
-next_task: "Send the frame per user (T09.12); a code fix, not yet made"
-updated: 2026-10-12
+decision_refs: [D-2026-10-12-03]
+next_task: "CI live test, then deploy approval."
+updated: 2026-10-13
 ```
 
 #### L09-04 No spoken opt-out handling on outbound AI calls
@@ -775,6 +777,7 @@ Decisions are binding ([CONTRACT C2.4](CONTRACT.md#c2-scope-and-owner-decisions)
 | D-2026-10-08-01 | 2026-10-08 | Neoh Space is 100% browser-based. No required native app, Swift, ARKit, RoomPlan, direct LiDAR or native bridge. | root `CLAUDE.md` at `19bb3d3` (2026-10-08) | 12, 02, 16 | Feature-detect browser APIs; always keep a no-camera fallback | Owner request |
 | D-2026-10-08-02 | 2026-10-08 | The four Neoh Space workstreams are approved: registration + room connectivity; mobile Capture Studio + AI guide; photoreal reconstruction + mobile tour; live readiness engine. | [spec](../neoh-space-web-capture-claude.md) | 12 | All four are first-class | Owner request |
 | D-2026-10-12-01 | 2026-10-12 | **MLS is out of scope.** There is no MLS connection, and approval or cost is not available. Do not build, advertise or present MLS/IDX/RESO search, ingestion or display as a feature. | Owner, in session 2026-10-12; shared notes 2026-10-11 | 02, 04, 06, 11, 12, 13, 14, 16, 18, 19, 20 | Gate the existing MLS code off (L11-01). **No deletion of MLS data or migrations without owner approval.** | Owner changes the decision and lawful access is secured |
+| D-2026-10-12-03 | 2026-10-12 | **AI call notes support both modes, chosen per agent:** `review` (default) saves the note proposed for the agent to approve, edit or discard (the AI ignores it until approved); `direct` saves it approved. | Owner, in session 2026-10-12 ("both") | 09, 17 | `client_notes.review_state` (0130), `call_note_settings.py`, approve route, Personal AI toggle | Owner request |
 | D-2026-10-12-02 | 2026-10-12 | Pricing is a hypothesis, not decided. Code: one Stripe price at quantity 1 (`backend/billing.py:44`, `:266`), no seats. Idea: ~$1,999/month per 20-agent brokerage, ~$1,499 pilot. | Shared notes 2026-10-11 | 18 | No price change without owner approval | Owner sets pricing |
 
 ## Audit cross-reference

@@ -2305,15 +2305,27 @@ async def deliver_call_notes(provider_call_id: str, notes: list[str],
 
     Only for a call whose callee said yes (consent_recorded); idempotent per
     call. Returns the note id, or None when nothing was written.
+
+    The note lands at once in the mode the calling agent chose
+    (call_note_settings, owner decision D-2026-10-12-03): 'review' saves it
+    *proposed* for the agent to approve, edit or discard; 'direct' saves it
+    approved. The live frame carries customer content, so it goes only to the
+    agent who requested the call and the client's assigned agent
+    (CONTRACT C3.6). It used to go to every session in the brokerage.
     """
+    import call_note_settings
+
     clean = [str(n).strip()[:_MAX_CALL_NOTE_CHARS] for n in notes if str(n).strip()][:_MAX_CALL_NOTES]
     if not provider_call_id or not clean:
         return None
     body = format_call_notes(clean)
     async with tenant_tx(_call_platform_ctx(AI_CALL_NOTE_AUTHOR)) as conn:
         session = await conn.fetchrow(
-            """SELECT id, tenant_id, client_id, lead_id, command_id, consent_recorded
-                 FROM live_call_sessions WHERE provider_call_id=$1 FOR UPDATE""",
+            """SELECT s.id, s.tenant_id, s.client_id, s.lead_id, s.command_id, s.consent_recorded,
+                      s.created_by, c.created_by AS command_created_by
+                 FROM live_call_sessions s
+                 LEFT JOIN command_executions c ON c.id = s.command_id
+                WHERE s.provider_call_id=$1 FOR UPDATE OF s""",
             provider_call_id,
         )
         if session is None or not session["consent_recorded"]:
@@ -2331,35 +2343,57 @@ async def deliver_call_notes(provider_call_id: str, notes: list[str],
             session["client_id"], provider_call_id,
         ):
             return None
+        requester = str(session["command_created_by"] or session["created_by"] or "").strip()
+        assignee = await conn.fetchval(
+            "SELECT assignee_id FROM clients WHERE id=$1", session["client_id"])
+        mode = await call_note_settings.read_mode(conn, session["tenant_id"], requester)
+        review_state = "proposed" if mode == "review" else "approved"
         note = await conn.fetchrow(
-            """INSERT INTO client_notes (tenant_id, client_id, body, author_id, pinned)
-               VALUES ($1, $2, $3, $4, false) RETURNING id""",
-            session["tenant_id"], session["client_id"], body, AI_CALL_NOTE_AUTHOR,
+            """INSERT INTO client_notes (tenant_id, client_id, body, author_id, pinned, review_state)
+               VALUES ($1, $2, $3, $4, false, $5) RETURNING id""",
+            session["tenant_id"], session["client_id"], body, AI_CALL_NOTE_AUTHOR, review_state,
         )
+        summary = f"Call notes from Neoh ({len(clean)})"
+        if review_state == "proposed":
+            summary += " — waiting for your review"
         await conn.execute(
             """INSERT INTO client_activities (tenant_id, client_id, kind, summary, meta, actor)
                VALUES ($1, $2, 'note', $3, $4::jsonb, $5)""",
-            session["tenant_id"], session["client_id"],
-            f"Call notes from Neoh ({len(clean)})",
+            session["tenant_id"], session["client_id"], summary,
             json.dumps({
                 "source": "ai_call_notes", "note_id": str(note["id"]),
                 "provider_call_id": provider_call_id,
                 "command_id": str(session["command_id"]) if session["command_id"] else None,
                 "consent_basis": AI_CALL_NOTE_CONSENT_BASIS,
                 "conversation_id": conversation_id or None,
+                "review_state": review_state,
             }),
             AI_CALL_NOTE_AUTHOR,
         )
-    try:
-        await ws_hub.broadcast(str(session["tenant_id"]), {
-            "type": "CALL_NOTES", "version": 1,
-            "client_id": str(session["client_id"]),
-            "command_id": str(session["command_id"]) if session["command_id"] else None,
-            "note_id": str(note["id"]), "notes": clean,
-        })
-    except Exception:  # noqa: BLE001 — the note is saved; the live frame is extra
-        logger.warning("CALL_NOTES frame not sent: %s", provider_call_id, exc_info=True)
+    frame = {
+        "type": "CALL_NOTES", "version": 1,
+        "client_id": str(session["client_id"]),
+        "command_id": str(session["command_id"]) if session["command_id"] else None,
+        "note_id": str(note["id"]), "notes": clean, "review_state": review_state,
+    }
+    for recipient in call_note_recipients(requester, assignee):
+        try:
+            await ws_hub.broadcast_user(str(session["tenant_id"]), recipient, frame)
+        except Exception:  # noqa: BLE001 — the note is saved; the live frame is extra
+            logger.warning("CALL_NOTES frame not sent: %s", provider_call_id, exc_info=True)
     return str(note["id"])
+
+
+def call_note_recipients(requester: Optional[str], assignee: Optional[str]) -> list[str]:
+    """Who may receive a call's note text live: the agent who requested the
+    call and the client's assigned agent, once each (agent ids compare
+    case-insensitively), never the AI author or an empty id."""
+    out: list[str] = []
+    for agent in (requester, assignee):
+        agent = str(agent or "").strip()
+        if agent and agent != AI_CALL_NOTE_AUTHOR and agent.lower() not in {a.lower() for a in out}:
+            out.append(agent)
+    return out
 
 
 #: What an approved send looks like in interaction_logs. CALENDAR is absent on

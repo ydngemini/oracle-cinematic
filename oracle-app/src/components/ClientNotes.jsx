@@ -92,6 +92,22 @@ export default function ClientNotes({ clientId, onChange }) {
     );
   };
 
+  // An AI call note can arrive 'proposed' (the agent chose review in Personal
+  // AI, D-2026-10-12-03). Approving makes it the agent's own record; Discard
+  // is the ordinary delete; editing keeps it proposed until approved.
+  const approve = (note) => {
+    setBusyId(note.id);
+    crmPost(`/api/crm/clients/${clientId}/notes/${note.id}/approve`, {}).then(
+      (updated) => {
+        const merged = updated?.id ? updated : { ...note, review_state: 'approved' };
+        setNotes((prev) => order((Array.isArray(prev) ? prev : []).map((n) => (n.id === note.id ? { ...n, ...merged } : n))));
+        setBusyId(null);
+        onChange?.();
+      },
+      () => setBusyId(null)
+    );
+  };
+
   const startEdit = (note) => { setEditId(note.id); setEditBody(note.body || ''); };
 
   return (
@@ -136,7 +152,7 @@ export default function ClientNotes({ clientId, onChange }) {
       ) : (
         <ul className={styles.list}>
           {notes.map((n) => (
-            <li key={n.id} className={styles.row} data-pinned={!!n.pinned}>
+            <li key={n.id} className={styles.row} data-pinned={!!n.pinned} data-proposed={n.review_state === 'proposed'}>
               {editId === n.id ? (
                 <>
                   <textarea
@@ -158,10 +174,18 @@ export default function ClientNotes({ clientId, onChange }) {
                     <div className={styles.rowBody}>
                       <p className={styles.noteBody}>{n.body}</p>
                       <span className={styles.rowMeta}>
+                        {n.review_state === 'proposed' && <span className={styles.proposedFlag}>Proposed by Neoh from a call</span>}
                         {n.pinned && <span className={styles.pinnedFlag}>{GLYPHS.pin} Pinned</span>}
                         <span>{relTime(n.created_at) || fmtDate(n.created_at)}</span>
                         {n.updated_at && n.updated_at !== n.created_at && <span>· edited</span>}
                       </span>
+                      {n.review_state === 'proposed' && (
+                        <div className={styles.reviewBar} role="group" aria-label="Review the AI's call notes">
+                          <button type="button" className={styles.addBtn} disabled={busyId === n.id} onClick={() => approve(n)}>{GLYPHS.check}Approve</button>
+                          <button type="button" className={styles.retrySm} disabled={busyId === n.id} onClick={() => startEdit(n)}>Edit</button>
+                          <button type="button" className={styles.retrySm} data-danger="true" disabled={busyId === n.id} onClick={() => remove(n)}>Discard</button>
+                        </div>
+                      )}
                     </div>
                     <div className={styles.rowActions}>
                       <button type="button" className={styles.iconBtn} data-active={!!n.pinned} disabled={busyId === n.id} aria-label={n.pinned ? 'Unpin note' : 'Pin note'} onClick={() => patch(n, { pinned: !n.pinned })}>{GLYPHS.pin}</button>

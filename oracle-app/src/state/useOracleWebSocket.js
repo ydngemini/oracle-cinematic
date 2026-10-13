@@ -337,7 +337,9 @@ export function useOracleWebSocket() {
           feed({
             actor: 'ai',
             actorName: 'Neoh',
-            text: `took ${count} note${count === 1 ? '' : 's'} on the call for you — see the client's Notes`,
+            text: msg.review_state === 'proposed'
+              ? `took ${count} note${count === 1 ? '' : 's'} on the call — review them in the client's Notes`
+              : `took ${count} note${count === 1 ? '' : 's'} on the call for you — see the client's Notes`,
             tag: 'CALL NOTES',
           });
           if (msg.client_id) {

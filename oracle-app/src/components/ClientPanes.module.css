@@ -502,3 +502,22 @@
 @media (prefers-reduced-motion: reduce) {
   .row, .event { animation: none; }
 }
+
+/* An AI call note waiting for the agent (D-2026-10-12-03). */
+.row[data-proposed="true"] {
+  border-left: 2px solid var(--oracle-amber);
+}
+
+.proposedFlag {
+  display: inline-flex;
+  align-items: center;
+  color: var(--oracle-amber);
+  font-weight: 600;
+}
+
+.reviewBar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+}
