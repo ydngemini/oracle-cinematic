@@ -976,6 +976,8 @@
       "gate": "signed-in member; per-role server checks not yet inspected (prompt 03, T02.14)",
       "apis": [
         "GET /api/crm/profile",
+        "POST /auth/change-password",
+        "POST /auth/logout",
         "PUT /api/crm/profile"
       ],
       "legacy": null,
@@ -1100,7 +1102,10 @@
         "anonymous"
       ],
       "gate": "capability token",
-      "apis": [],
+      "apis": [
+        "GET /api/public/property-upload/{param}",
+        "POST /api/public/property-upload/{param}"
+      ],
       "legacy": null,
       "verdict": "not_inspected",
       "verdict_evidence": null
@@ -1118,7 +1123,11 @@
         "client"
       ],
       "gate": "capability token",
-      "apis": [],
+      "apis": [
+        "GET /portal/dossier",
+        "GET /portal/session/{param}",
+        "POST /portal/activity"
+      ],
       "legacy": null,
       "verdict": "not_inspected",
       "verdict_evidence": null
@@ -1136,7 +1145,10 @@
         "invitee"
       ],
       "gate": "invitation token",
-      "apis": [],
+      "apis": [
+        "GET /auth/invitation",
+        "POST /auth/accept-invite"
+      ],
       "legacy": null,
       "verdict": "not_inspected",
       "verdict_evidence": null

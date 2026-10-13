@@ -88,7 +88,7 @@
 
 | Page | Path | Component | Roles · gate | APIs (direct) | Verdict |
 |---|---|---|---|---|---|
-| **Settings**<br>`profile:settings` | `profile menu (view: settings)` | `MyProfileTab`<br>`src/components/MyProfileTab.jsx` | member · signed-in member; per-role server checks not yet inspected (prompt 03, T02.14) | `GET /api/crm/profile`<br>`PUT /api/crm/profile` | `not_inspected` |
+| **Settings**<br>`profile:settings` | `profile menu (view: settings)` | `MyProfileTab`<br>`src/components/MyProfileTab.jsx` | member · signed-in member; per-role server checks not yet inspected (prompt 03, T02.14) | `GET /api/crm/profile`<br>`POST /auth/change-password`<br>`POST /auth/logout`<br>`PUT /api/crm/profile` | `not_inspected` |
 | **AI controls**<br>`profile:ai` | `profile menu (view: ai)` | `PersonalAITab`<br>`src/components/PersonalAITab.jsx` | member · signed-in member; per-role server checks not yet inspected (prompt 03, T02.14) | `GET /api/agents/me/onboarding`<br>`GET /api/commands`<br>`GET /api/commands/providers`<br>`GET /api/contracts/documents`<br>`GET /api/contracts/documents/{param}/download`<br>`GET /api/crm/call-notes/settings`<br>`GET /api/models`<br>`POST /api/models/{param}/{param}`<br>`PUT /api/crm/call-notes/settings` | `not_inspected` |
 | **Admin**<br>`profile:ops` | `profile menu (view: ops)` | `AdminOpsTab`<br>`src/components/AdminOpsTab.jsx` | platform_admin · client-side check of sessionStorage role (CrmShell isPlatformAdmin); server check is T02.14 | — | `not_inspected` |
 
@@ -99,7 +99,7 @@
 | **Reel**<br>`public:reel` | `/reel` | `ReelExperience`<br>`src/components/ReelExperience.jsx` | anonymous · none | — | `not_inspected` |
 | **Private site preview**<br>`public:site-preview` | `/site-preview/{slug}` | `SitePreview`<br>`src/components/SitePreview.jsx` | member · signed-in session (calls the CRM API) | `GET /api/sites`<br>`GET /api/sites/{param}` | `not_inspected` |
 | **Published site**<br>`public:sites` | `/sites/{brokerage}/{site}` | `PublicSite`<br>`src/components/PublicSite.jsx` | anonymous · published sites only | `GET /api/public/sites/{param}/{param}` | `not_inspected` |
-| **Client property upload**<br>`public:property-upload` | `/property-upload/{token}` | `PropertyUploadPage`<br>`src/components/PropertyUploadPage.jsx` | anonymous · capability token | — | `not_inspected` |
-| **Client dossier**<br>`public:secure-dossier` | `/vault/secure-access/{token}` | `SecureDossierPage`<br>`src/components/SecureDossierPage.jsx` | client · capability token | — | `not_inspected` |
-| **Accept invitation**<br>`public:accept-invite` | `/accept-invite` | `AcceptInvitePage`<br>`src/components/AcceptInvitePage.jsx` | invitee · invitation token | — | `not_inspected` |
+| **Client property upload**<br>`public:property-upload` | `/property-upload/{token}` | `PropertyUploadPage`<br>`src/components/PropertyUploadPage.jsx` | anonymous · capability token | `GET /api/public/property-upload/{param}`<br>`POST /api/public/property-upload/{param}` | `not_inspected` |
+| **Client dossier**<br>`public:secure-dossier` | `/vault/secure-access/{token}` | `SecureDossierPage`<br>`src/components/SecureDossierPage.jsx` | client · capability token | `GET /portal/dossier`<br>`GET /portal/session/{param}`<br>`POST /portal/activity` | `not_inspected` |
+| **Accept invitation**<br>`public:accept-invite` | `/accept-invite` | `AcceptInvitePage`<br>`src/components/AcceptInvitePage.jsx` | invitee · invitation token | `GET /auth/invitation`<br>`POST /auth/accept-invite` | `not_inspected` |
 

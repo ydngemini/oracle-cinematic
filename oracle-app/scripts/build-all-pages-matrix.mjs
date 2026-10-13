@@ -91,10 +91,18 @@ function apiCalls(file) {
   const source = readFileSync(join(APP, file), 'utf8');
   const calls = new Set();
   for (const m of source.matchAll(CALL)) {
-    let path = m[3].replace(/\$\{[^}]*\}/g, '{param}').split('?')[0];
-    if (!path.startsWith('/api/') && !path.startsWith('/billing/')) continue;
+    // A leading `${API_BASE}` (or any base expression) is the origin, not the path.
+    let path = m[3].replace(/^\$\{[^}]*\}/, '').replace(/\$\{[^}]*\}/g, '{param}').split('?')[0];
+    if (!/^\/(api|billing|portal|auth)\//.test(path)) continue;
     path = path.replace(/\{param\}(\{param\})+/g, '{param}');
-    calls.add(`${METHOD[m[1]]} ${path}`);
+    let method = METHOD[m[1]];
+    if (m[1] === 'fetch') {
+      // fetch(url, { method: 'POST', … }): read the options that follow the URL.
+      const after = source.slice(m.index + m[0].length, m.index + m[0].length + 240);
+      const opt = /^\s*,\s*\{[^)]*?method:\s*['"`]([A-Z]+)['"`]/.exec(after);
+      if (opt) method = opt[1];
+    }
+    calls.add(`${method} ${path}`);
   }
   return [...calls].sort();
 }
