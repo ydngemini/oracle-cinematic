@@ -26,6 +26,7 @@ const RelationshipIntelligence = lazy(() =>
 
 import styles from './ClientDetailDrawer.module.css';
 import { friendlyError, isHumanMessage } from '../lib/errorMessages';
+import { degradedLabel, propertyLookupView } from '../lib/propertyLookupStatus';
 
 const SUBTABS = [
   { id: 'overview', label: 'Overview' },
@@ -281,7 +282,7 @@ export default function ClientDetailDrawer({ card, onClose, onClientChanged, rea
   const automation = detail?.automation || {};
   const automationStatus = automation.enabled === false ? 'disabled' : (automation.status || 'queued');
   const automationStatusLabel = {
-    queued: 'Queued', running: 'Reconciling', complete: 'Current', degraded: 'Rules only',
+    queued: 'Queued', running: 'Reconciling', complete: 'Current', degraded: degradedLabel(automation),
     failed: 'Needs retry', disabled: 'Paused',
   }[automationStatus] || 'Queued';
 
@@ -774,6 +775,8 @@ function AutomationBrief({ automation }) {
   const nextActions = Array.isArray(automation?.next_actions) ? automation.next_actions : [];
   const gaps = Array.isArray(automation?.data_gaps) ? automation.data_gaps : [];
   const candidates = Array.isArray(automation?.property_candidates) ? automation.property_candidates : [];
+  // An empty candidate list is only "no matches" when the source was checked.
+  const lookup = propertyLookupView(automation);
   return (
     <section className={`${styles.section} ${styles.automationBrief}`} aria-labelledby="ai-brief-title">
       <div className={styles.briefHeader}>
@@ -808,6 +811,15 @@ function AutomationBrief({ automation }) {
           ) : <p className={styles.briefEmpty}>No verified gaps flagged.</p>}
         </div>
       </div>
+      {lookup && (
+        <p
+          className={styles.lookupStatus}
+          data-tone={lookup.tone}
+          role={lookup.failed ? 'status' : undefined}
+        >
+          {lookup.text}
+        </p>
+      )}
       {candidates.length > 0 && (
         <div className={styles.candidateBlock}>
           <span className={styles.microLabel}>Review-only property candidates</span>

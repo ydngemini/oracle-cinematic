@@ -124,6 +124,8 @@ def automation_state_json(row: Any) -> dict[str, Any]:
             "data_gaps": [],
             "evidence": [],
             "property_candidates": [],
+            # Nothing has been checked yet: an empty map, never "checked".
+            "source_status": {},
             "model_id": None,
             "last_evaluated_at": None,
             "last_error_code": None,
@@ -141,6 +143,7 @@ def automation_state_json(row: Any) -> dict[str, Any]:
         "data_gaps": _json_value(row["data_gaps"], []),
         "evidence": _json_value(row["evidence"], []),
         "property_candidates": _json_value(row["property_candidates"], []),
+        "source_status": source_status_json(row),
         "model_id": row["model_id"],
         "last_evaluated_at": _iso(row["last_evaluated_at"]),
         "last_error_code": row["last_error_code"],
@@ -678,31 +681,122 @@ async def _property_candidates(
     ]
 
 
+# Per-source status vocabulary (CONTRACT C6). A required source that is not
+# `checked` makes the reconciliation `degraded`; a failed lookup is never
+# stored or shown as a verified zero (audit A02, ledger L11-02).
+PROPERTY_SOURCE = "public_property_records"
+SOURCE_CHECKED = "checked"
+SOURCE_TIMED_OUT = "timed_out"
+SOURCE_UNAVAILABLE = "unavailable"
+SOURCE_NOT_APPLICABLE = "not_applicable"
+SOURCE_FAILED = frozenset({SOURCE_TIMED_OUT, SOURCE_UNAVAILABLE})
+_LOOKUP_ERROR_CODES = {
+    SOURCE_TIMED_OUT: "PROPERTY_LOOKUP_TIMED_OUT",
+    SOURCE_UNAVAILABLE: "PROPERTY_LOOKUP_UNAVAILABLE",
+}
+# 57014 query_canceled is what a `SET LOCAL statement_timeout` expiry raises.
+_QUERY_CANCELED_SQLSTATE = "57014"
+
+
+def _is_timeout(exc: BaseException) -> bool:
+    return (
+        isinstance(exc, (TimeoutError, asyncio.TimeoutError))
+        or getattr(exc, "sqlstate", None) == _QUERY_CANCELED_SQLSTATE
+    )
+
+
+def property_lookup_status(
+    status: str,
+    *,
+    reason: Optional[str] = None,
+    matched: Optional[int] = None,
+    checked_at: Optional[str] = None,
+    last_checked_at: Optional[str] = None,
+) -> dict[str, Any]:
+    """One source's entry in `client_ai_state.source_status` (migration 0135)."""
+    return {
+        "status": status,
+        "required": True,
+        "reason": reason,
+        "checked_at": checked_at,
+        "last_checked_at": checked_at or last_checked_at,
+        "matched": matched,
+    }
+
+
 async def _property_candidates_bounded(
     conn: Any, full_name: str, target_zips: list[str], linked_count: int,
-) -> list[dict[str, Any]]:
-    """`_property_candidates`, but a slow plan can never fail the reconcile.
+    *, last_checked_at: Optional[str] = None,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """`_property_candidates`, plus the source status that says what `[]` means.
 
     Migration 0102 fixed the actual cause of the seq scan (a non-leakproof
     expression index that FORCE ROW LEVEL SECURITY made the planner refuse to
-    use — see that file). This wrapper is defense-in-depth, kept even after the
-    real fix: `public_property_records` is 9.6M+ rows and a future index,
-    query, or RLS-policy change could reintroduce the same class of slow plan.
-    A short `statement_timeout` inside its own savepoint means that costs a
-    few seconds and an honest empty result, never the `command_timeout=30`
-    bare `TimeoutError()` that used to take the whole client_ai_state row
-    down with it.
+    use — see that file). The short `statement_timeout` inside its own
+    savepoint is defense-in-depth, kept even after the real fix:
+    `public_property_records` is 9.6M+ rows and a future index, query, or
+    RLS-policy change could reintroduce the same class of slow plan. A slow or
+    failing lookup still never fails the reconcile (the `command_timeout=30`
+    bare `TimeoutError()` used to take the whole client_ai_state row down with
+    it) — but it is reported as `timed_out` / `unavailable`, never as an empty
+    `checked` result (audit A02). `last_checked_at` carries the previous
+    successful check forward, so a failed pass still says when the source was
+    last actually read.
     """
+    normalized_name = re.sub(r"[^a-z0-9]", "", str(full_name or "").lower())
+    if linked_count:
+        return [], property_lookup_status(
+            SOURCE_NOT_APPLICABLE, reason="client already has a linked property",
+            last_checked_at=last_checked_at,
+        )
+    if len(normalized_name) < 5:
+        return [], property_lookup_status(
+            SOURCE_NOT_APPLICABLE, reason="name too short for an exact owner-name match",
+            last_checked_at=last_checked_at,
+        )
     timeout_ms = max(500, min(15_000, int(os.getenv("ORACLE_PROPERTY_CANDIDATES_TIMEOUT_MS", "3000"))))
     try:
         async with conn.transaction():
             await conn.execute(f"SET LOCAL statement_timeout = {timeout_ms}")
-            return await _property_candidates(conn, full_name, target_zips, linked_count)
-    except Exception:  # noqa: BLE001 - a slow lookup must degrade, not fail reconciliation
+            candidates = await _property_candidates(conn, full_name, target_zips, linked_count)
+    except Exception as exc:  # noqa: BLE001 - a failed lookup must degrade, not fail reconciliation
+        timed_out = _is_timeout(exc)
+        # The exception type only: never the owner name or the error text,
+        # which can echo query parameters (CRM data) into the log.
         logger.warning(
-            "property-candidate lookup skipped (slow plan or error) for %r", full_name
+            "property-candidate lookup %s: %s",
+            "timed out" if timed_out else "failed", type(exc).__name__,
         )
-        return []
+        if timed_out:
+            return [], property_lookup_status(
+                SOURCE_TIMED_OUT, reason=f"lookup exceeded {timeout_ms} ms",
+                last_checked_at=last_checked_at,
+            )
+        return [], property_lookup_status(
+            SOURCE_UNAVAILABLE, reason=f"lookup error ({type(exc).__name__})",
+            last_checked_at=last_checked_at,
+        )
+    return candidates, property_lookup_status(
+        SOURCE_CHECKED, matched=len(candidates),
+        checked_at=datetime.now(timezone.utc).isoformat(),
+    )
+
+
+def source_status_json(row: Any) -> dict[str, Any]:
+    """`client_ai_state.source_status`, or `{}` for a row written before 0135."""
+    if row is None:
+        return {}
+    try:
+        raw = row["source_status"]
+    except (KeyError, IndexError):
+        return {}
+    value = _json_value(raw, {})
+    return value if isinstance(value, dict) else {}
+
+
+def _prior_property_lookup(state_row: Any) -> dict[str, Any]:
+    entry = source_status_json(state_row).get(PROPERTY_SOURCE)
+    return entry if isinstance(entry, dict) else {}
 
 
 async def reconcile_client(
@@ -774,12 +868,18 @@ async def reconcile_client(
         "transactions": transactions,
     }
     input_fingerprint = _fingerprint(source_snapshot)
+    prior_lookup = _prior_property_lookup(state_row)
     if (
         not force
         and state_row is not None
         and state_row["input_fingerprint"] == input_fingerprint
         and state_row["last_evaluated_at"] is not None
         and state_row["last_evaluated_at"] > now - timedelta(hours=24)
+        # A pass whose property lookup failed (or a row from before 0135 with
+        # no recorded status) is not "unchanged": nothing was checked, so the
+        # next pass retries the lookup instead of re-serving the failure for
+        # 24 hours (audit A02).
+        and prior_lookup.get("status") in (SOURCE_CHECKED, SOURCE_NOT_APPLICABLE)
     ):
         async with tenant_tx(ctx) as conn:
             row = await conn.fetchrow(
@@ -878,9 +978,22 @@ async def reconcile_client(
         score_mode = fresh_state["score_mode"]
         stage_mode = fresh_state["stage_mode"]
 
-        candidates = await _property_candidates_bounded(
+        candidates, property_lookup = await _property_candidates_bounded(
             conn, client["full_name"], list(preferences.get("target_zips") or []), len(properties),
+            last_checked_at=prior_lookup.get("last_checked_at"),
         )
+        source_status = {PROPERTY_SOURCE: property_lookup}
+        lookup_failed = property_lookup["status"] in SOURCE_FAILED
+        if lookup_failed:
+            # Not "no matches": the source was not read on this pass.
+            data_gaps.append({
+                "code": "property-lookup",
+                "label": (
+                    "Public-record property lookup timed out — not checked this pass"
+                    if property_lookup["status"] == SOURCE_TIMED_OUT
+                    else "Public-record property lookup unavailable — not checked this pass"
+                ),
+            })
         if candidates:
             next_actions.append({
                 "code": "review-property-match",
@@ -960,16 +1073,23 @@ async def reconcile_client(
             if signals.summary.strip() and signals.evidence_refs
             else "CRM facts reconciled from verified fields and recorded activity."
         )
-        result_status = "degraded" if model_error else "complete"
+        # A required source that was not checked degrades the pass (C6), the
+        # same as a model fallback. The model's code wins the single
+        # last_error_code slot; source_status always carries the lookup's.
+        result_status = "degraded" if (model_error or lookup_failed) else "complete"
+        error_code = model_error or (
+            _LOOKUP_ERROR_CODES[property_lookup["status"]] if lookup_failed else None
+        )
         state = await conn.fetchrow(
             """
             INSERT INTO client_ai_state (
                 client_id,tenant_id,enabled,status,score_version,score_breakdown,
                 normalized_preferences,summary,next_actions,data_gaps,evidence,
-                property_candidates,model_id,input_fingerprint,last_evaluated_at,last_error_code
+                property_candidates,model_id,input_fingerprint,last_evaluated_at,last_error_code,
+                source_status
             ) VALUES (
                 $1::uuid,$2::uuid,true,$3,$4,$5::jsonb,$6::jsonb,$7,$8::jsonb,
-                $9::jsonb,$10::jsonb,$11::jsonb,$12,$13,now(),$14
+                $9::jsonb,$10::jsonb,$11::jsonb,$12,$13,now(),$14,$15::jsonb
             )
             ON CONFLICT (client_id) DO UPDATE SET
                 status=EXCLUDED.status,score_version=EXCLUDED.score_version,
@@ -980,7 +1100,8 @@ async def reconcile_client(
                 property_candidates=EXCLUDED.property_candidates,
                 model_id=EXCLUDED.model_id,input_fingerprint=EXCLUDED.input_fingerprint,
                 last_evaluated_at=EXCLUDED.last_evaluated_at,
-                last_error_code=EXCLUDED.last_error_code
+                last_error_code=EXCLUDED.last_error_code,
+                source_status=EXCLUDED.source_status
             RETURNING *
             """,
             client_id,
@@ -996,16 +1117,27 @@ async def reconcile_client(
             json.dumps(candidates, separators=(",", ":")),
             model_id,
             input_fingerprint,
-            model_error,
+            error_code,
+            json.dumps(source_status, separators=(",", ":")),
         )
         await conn.execute(
             """
             INSERT INTO client_activities (tenant_id,client_id,kind,summary,meta,actor)
-            VALUES ($1::uuid,$2::uuid,'system','AI client reconciliation completed',$3::jsonb,'client-ai')
+            VALUES ($1::uuid,$2::uuid,'system',$4,$3::jsonb,'client-ai')
             """,
             ctx.tenant_id,
             client_id,
-            json.dumps({"status": result_status, "score": score, "stage": updated["stage"], "model_id": model_id}),
+            json.dumps({
+                "status": result_status, "score": score, "stage": updated["stage"], "model_id": model_id,
+                "property_lookup": property_lookup["status"],
+            }),
+            # The timeline uses the UI's words (C6): a pass whose public-record
+            # lookup did not run is not reported as a plain "completed".
+            (
+                "AI client reconciliation completed; public-record lookup not checked"
+                if lookup_failed
+                else "AI client reconciliation completed"
+            ),
         )
 
     # Feed the Relationship Memory layer. Only model-extracted signals that

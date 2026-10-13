@@ -703,13 +703,37 @@ def _public_coverage_json() -> dict[str, Any]:
     }
 
 
+def _enrichment_failure(source: str, exc: BaseException, timeout_s: int) -> dict[str, Any]:
+    """A targeted official-source lookup that did not run, in C6 words.
+
+    The sparse row is still served, so this is not a zero — but its missing
+    fields mean "the lookup to fill them failed", not "the source does not
+    publish this", and the response says which (audit A02). Only the
+    exception type is kept: its text can echo the address or parcel back.
+    """
+    timed_out = isinstance(exc, (TimeoutError, asyncio.TimeoutError))
+    return {
+        "source": source,
+        "status": "timed_out" if timed_out else "unavailable",
+        "reason": (
+            f"targeted lookup exceeded {timeout_s} s" if timed_out
+            else f"targeted lookup error ({type(exc).__name__})"
+        ),
+    }
+
+
 async def _reconcile_sparse_cook_record(
     *,
     query_text: str,
     rows: list[dict[str, Any]],
     ctx: TenantContext,
+    failures: Optional[list[dict[str, Any]]] = None,
 ) -> bool:
-    """Replace an address-only Chicago violation hit with its assessor PIN."""
+    """Replace an address-only Chicago violation hit with its assessor PIN.
+
+    A failed lookup returns False, as before, and is appended to `failures`
+    when the caller passes one.
+    """
     if not re.match(r"^\s*\d{1,7}\s+\S+", query_text):
         return False
     sparse = next(
@@ -755,6 +779,8 @@ async def _reconcile_sparse_cook_record(
             str(sparse.get("address"))[:120],
             exc,
         )
+        if failures is not None:
+            failures.append(_enrichment_failure("il_cook_assessor", exc, 30))
         return False
 
 
@@ -790,12 +816,15 @@ async def _reconcile_sparse_public_record(
     rows: list[dict[str, Any]],
     ctx: TenantContext,
     exact_match_only: bool,
+    failures: Optional[list[dict[str, Any]]] = None,
 ) -> bool:
     """Join an exact sparse catalog row against its official detail sources.
 
     This remains bounded to one property per request. Batch coverage continues
     through the firehose, while an opened or exact-matched record can be made
-    useful immediately without crawling a third-party listing site.
+    useful immediately without crawling a third-party listing site. A failed
+    lookup returns False, as before, and is appended to `failures` when the
+    caller passes one.
     """
     candidate = next(
         (
@@ -866,6 +895,8 @@ async def _reconcile_sparse_public_record(
             str(candidate.get("parcel_id"))[:120],
             exc,
         )
+        if failures is not None:
+            failures.append(_enrichment_failure("fl_fdor_parcel", exc, 30))
         return False
 
 
@@ -993,6 +1024,7 @@ async def mls_pipeline_search(
         return max(estimate, 0), True
 
     lead_ids: dict = {}
+    enrichment_failures: list[dict[str, Any]] = []
     try:
         async with tenant_tx(ctx) as conn:
             total, total_is_estimate = await _count_total(conn)
@@ -1001,6 +1033,7 @@ async def mls_pipeline_search(
             query_text=" ".join(q.split()),
             rows=rows,
             ctx=ctx,
+            failures=enrichment_failures,
         ):
             async with tenant_tx(ctx) as conn:
                 total, total_is_estimate = await _count_total(conn)
@@ -1009,6 +1042,7 @@ async def mls_pipeline_search(
             rows=rows,
             ctx=ctx,
             exact_match_only=True,
+            failures=enrichment_failures,
         ):
             async with tenant_tx(ctx) as conn:
                 total, total_is_estimate = await _count_total(conn)
@@ -1028,6 +1062,15 @@ async def mls_pipeline_search(
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Memory Core offline.")
 
     listings = [_public_record_json(r, lead_ids) for r in rows]
+    notice = _public_coverage_json()["notice"]
+    if enrichment_failures:
+        # The catalog itself was read; an official-source detail lookup for a
+        # sparse match was not. Say so instead of letting its blank fields
+        # read as "not published" (audit A02).
+        notice = (
+            "An official-source detail lookup for a matching record did not complete, "
+            "so some of its fields are blank because they were not checked. " + notice
+        )
     return {
         "listings": listings,
         "total": total,
@@ -1035,9 +1078,10 @@ async def mls_pipeline_search(
         "page": page,
         "page_size": PAGE_SIZE,
         "has_more": has_more,
-        "degraded": False,
+        "degraded": bool(enrichment_failures),
+        "enrichment": enrichment_failures,
         "source": "shared public property catalog",
-        "notice": _public_coverage_json()["notice"],
+        "notice": notice,
         "coverage": _public_coverage_json(),
         "accuracy": {
             "ranked_exact_matches": bool(q and q.strip()),
@@ -1077,10 +1121,12 @@ async def mls_pipeline_listing(
     if not row:
         raise HTTPException(status.HTTP_404_NOT_FOUND, f"Public record {record_id!r} not found.")
     row_dict = dict(row)
+    enrichment_failures: list[dict[str, Any]] = []
     if await _reconcile_sparse_public_record(
         rows=[row_dict],
         ctx=ctx,
         exact_match_only=False,
+        failures=enrichment_failures,
     ):
         try:
             async with tenant_tx(ctx) as conn:
@@ -1104,4 +1150,8 @@ async def mls_pipeline_listing(
     except Exception as exc:  # noqa: BLE001 — the record itself is still valid
         logger.warning("Lead resolution failed for public record %s: %s", record_id, exc)
 
-    return _public_record_json(row_dict, lead_ids)
+    detail = _public_record_json(row_dict, lead_ids)
+    # Blank fields after a failed official-source lookup are "not checked",
+    # not "not published" (audit A02). Empty when nothing failed.
+    detail["enrichment"] = enrichment_failures
+    return detail

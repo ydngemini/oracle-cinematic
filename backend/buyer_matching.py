@@ -395,6 +395,17 @@ async def property_buyer_matches(conn, ctx, *, lead_id: Optional[str] = None,
     prop = await load_owned_property(conn, ctx, lead_id=lead_id, listing_id=listing_id)
     if prop is None:
         return None
+    # What an empty `matches` means (CONTRACT C6). buyers_for_listing skips a
+    # platform-admin session on purpose; that is "not searched", and saying
+    # "no buyer fits" for it would be a false verified zero (audit A02).
+    if ctx is not None and getattr(ctx, "is_platform_admin", False):
+        buyer_search = {
+            "status": "not_applicable",
+            "reason": "Buyer matching does not run in a platform-admin session; "
+                      "open the property as a brokerage user to match its buyers.",
+        }
+    else:
+        buyer_search = {"status": "checked", "reason": None}
     matches = [m for m in await buyers_for_listing(conn, prop, ctx=ctx, limit=50)
                if m.verdict in (STRONG, POSSIBLE)][:limit]
     ids = [m.client_id for m in matches]
@@ -427,6 +438,7 @@ async def property_buyer_matches(conn, ctx, *, lead_id: Optional[str] = None,
         needs = {r["id"]: stated_needs(r["preferences"]) for r in pref_rows}
     return {
         "property": prop,
+        "buyer_search": buyer_search,
         "matches": [
             {
                 "client_id": m.client_id,
