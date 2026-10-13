@@ -43,7 +43,14 @@ SUMMARY = REPO / "docs/claude-prompts/all-pages-crawl.json"
 VIEWPORTS = {"desktop": {"width": 1440, "height": 900}, "phone": {"width": 390, "height": 844}}
 ALLOWED_WRITES = {"/auth/login", "/auth/logout"}
 API_PREFIXES = ("/api/", "/portal/", "/auth/", "/billing/")
-BOUNDARY = re.compile(r"could not be (loaded|opened)|something went wrong|unexpected error", re.I)
+# What a page SAYS when it is failing. "temporarily unavailable" is how the AI
+# hub announced an outage; it caught a 403 being shown as one (L02-05).
+BOUNDARY = re.compile(r"could not be (loaded|opened)|something went wrong|unexpected error"
+                      r"|temporarily unavailable", re.I)
+# Chrome logs every non-2xx response as "Failed to load resource: …". Those are
+# already recorded (api_4xx / api_5xx) and are often handled by the page, so
+# they are not counted again as console errors.
+NETWORK_NOISE = re.compile(r"^Failed to load resource: the server responded with a status of")
 SUBVIEW_NAV = {"ai": ("Neoh tools", "tab"), "deals": ("Deal workspace", "button"),
                "properties": ("Property workspace", "button")}
 FAKE = "crawl-not-a-real-token"
@@ -172,7 +179,8 @@ def _issues(run: dict, viewport: str, public: bool) -> list[str]:
     if viewport == "phone" and (run.get("overflow_px") or 0) > 1:
         out.append(f"horizontal overflow {run['overflow_px']}px at phone width")
     if not public:
-        out += [f"console: {e}" for e in run["console_errors"][:3]]
+        real = [e for e in run["console_errors"] if not NETWORK_NOISE.match(e)]
+        out += [f"console: {e}" for e in real[:3]]
     return out
 
 

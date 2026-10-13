@@ -78,68 +78,50 @@
    "runs": 4
   },
   "work:ai": {
-   "status": "issues",
+   "status": "clean",
    "not_offered_to": [],
-   "load_ms_median": 2157,
-   "issues": [
-    "agent/desktop: console: Failed to load resource: the server responded with a status of 403 ()",
-    "agent/phone: console: Failed to load resource: the server responded with a status of 403 ()"
-   ],
+   "load_ms_median": 2154,
+   "issues": [],
    "writes_attempted_on_open": [],
    "runs": 4
   },
   "work:sales": {
-   "status": "issues",
+   "status": "clean",
    "not_offered_to": [],
-   "load_ms_median": 2073,
-   "issues": [
-    "agent/desktop: console: Failed to load resource: the server responded with a status of 403 ()",
-    "agent/phone: console: Failed to load resource: the server responded with a status of 403 ()"
-   ],
+   "load_ms_median": 1936,
+   "issues": [],
    "writes_attempted_on_open": [],
    "runs": 4
   },
   "work:social": {
-   "status": "issues",
+   "status": "clean",
    "not_offered_to": [],
-   "load_ms_median": 2007,
-   "issues": [
-    "agent/desktop: console: Failed to load resource: the server responded with a status of 403 ()",
-    "agent/phone: console: Failed to load resource: the server responded with a status of 403 ()"
-   ],
+   "load_ms_median": 1954,
+   "issues": [],
    "writes_attempted_on_open": [],
    "runs": 4
   },
   "work:homeowners": {
-   "status": "issues",
+   "status": "clean",
    "not_offered_to": [],
-   "load_ms_median": 1951,
-   "issues": [
-    "agent/desktop: console: Failed to load resource: the server responded with a status of 403 ()",
-    "agent/phone: console: Failed to load resource: the server responded with a status of 403 ()"
-   ],
+   "load_ms_median": 1910,
+   "issues": [],
    "writes_attempted_on_open": [],
    "runs": 4
   },
   "work:automations": {
-   "status": "issues",
+   "status": "clean",
    "not_offered_to": [],
-   "load_ms_median": 2072,
-   "issues": [
-    "agent/desktop: console: Failed to load resource: the server responded with a status of 403 ()",
-    "agent/phone: console: Failed to load resource: the server responded with a status of 403 ()"
-   ],
+   "load_ms_median": 2078,
+   "issues": [],
    "writes_attempted_on_open": [],
    "runs": 4
   },
   "work:sites": {
-   "status": "issues",
+   "status": "clean",
    "not_offered_to": [],
-   "load_ms_median": 2001,
-   "issues": [
-    "agent/desktop: console: Failed to load resource: the server responded with a status of 403 ()",
-    "agent/phone: console: Failed to load resource: the server responded with a status of 403 ()"
-   ],
+   "load_ms_median": 2009,
+   "issues": [],
    "writes_attempted_on_open": [],
    "runs": 4
   },
@@ -176,145 +158,106 @@
    "runs": 0
   },
   "ai:intelligence": {
-   "status": "issues",
+   "status": "clean",
    "not_offered_to": [],
-   "load_ms_median": 2837,
-   "issues": [
-    "agent/desktop: console: Failed to load resource: the server responded with a status of 403 ()",
-    "agent/phone: console: Failed to load resource: the server responded with a status of 403 ()"
-   ],
+   "load_ms_median": 2576,
+   "issues": [],
    "writes_attempted_on_open": [],
    "runs": 4
   },
   "ai:cowork": {
-   "status": "issues",
+   "status": "clean",
    "not_offered_to": [],
-   "load_ms_median": 2228,
-   "issues": [
-    "agent/desktop: console: Failed to load resource: the server responded with a status of 403 ()",
-    "agent/phone: console: Failed to load resource: the server responded with a status of 403 ()"
-   ],
+   "load_ms_median": 2261,
+   "issues": [],
    "writes_attempted_on_open": [],
    "runs": 4
   },
   "ai:sales": {
-   "status": "issues",
+   "status": "clean",
    "not_offered_to": [],
-   "load_ms_median": 2342,
-   "issues": [
-    "agent/desktop: console: Failed to load resource: the server responded with a status of 403 ()",
-    "agent/phone: console: Failed to load resource: the server responded with a status of 403 ()"
-   ],
+   "load_ms_median": 2303,
+   "issues": [],
    "writes_attempted_on_open": [],
    "runs": 4
   },
   "ai:social": {
-   "status": "issues",
+   "status": "clean",
    "not_offered_to": [],
-   "load_ms_median": 2256,
-   "issues": [
-    "agent/desktop: console: Failed to load resource: the server responded with a status of 403 ()",
-    "agent/phone: console: Failed to load resource: the server responded with a status of 403 ()"
-   ],
+   "load_ms_median": 2244,
+   "issues": [],
    "writes_attempted_on_open": [],
    "runs": 4
   },
   "ai:homeowners": {
-   "status": "issues",
+   "status": "clean",
    "not_offered_to": [],
    "load_ms_median": 2276,
-   "issues": [
-    "agent/desktop: console: Failed to load resource: the server responded with a status of 403 ()",
-    "agent/phone: console: Failed to load resource: the server responded with a status of 403 ()"
-   ],
+   "issues": [],
    "writes_attempted_on_open": [],
    "runs": 4
   },
   "ai:automations": {
-   "status": "issues",
+   "status": "clean",
    "not_offered_to": [],
-   "load_ms_median": 2759,
-   "issues": [
-    "agent/desktop: console: Failed to load resource: the server responded with a status of 403 ()",
-    "agent/phone: console: Failed to load resource: the server responded with a status of 403 ()"
-   ],
+   "load_ms_median": 2534,
+   "issues": [],
    "writes_attempted_on_open": [],
    "runs": 4
   },
   "ai:sites": {
-   "status": "issues",
+   "status": "clean",
    "not_offered_to": [],
-   "load_ms_median": 2568,
-   "issues": [
-    "agent/desktop: console: Failed to load resource: the server responded with a status of 403 ()",
-    "agent/phone: console: Failed to load resource: the server responded with a status of 403 ()"
-   ],
+   "load_ms_median": 2427,
+   "issues": [],
    "writes_attempted_on_open": [],
    "runs": 4
   },
   "ai:autonomy": {
-   "status": "issues",
+   "status": "clean",
    "not_offered_to": [],
-   "load_ms_median": 2578,
-   "issues": [
-    "agent/desktop: console: Failed to load resource: the server responded with a status of 403 ()",
-    "agent/phone: console: Failed to load resource: the server responded with a status of 403 ()"
-   ],
+   "load_ms_median": 2508,
+   "issues": [],
    "writes_attempted_on_open": [],
    "runs": 4
   },
   "sales:agent": {
-   "status": "issues",
+   "status": "clean",
    "not_offered_to": [],
-   "load_ms_median": 2128,
-   "issues": [
-    "agent/desktop: console: Failed to load resource: the server responded with a status of 403 ()",
-    "agent/phone: console: Failed to load resource: the server responded with a status of 403 ()"
-   ],
+   "load_ms_median": 2074,
+   "issues": [],
    "writes_attempted_on_open": [],
    "runs": 4
   },
   "sales:dialer": {
-   "status": "issues",
+   "status": "clean",
    "not_offered_to": [],
-   "load_ms_median": 2057,
-   "issues": [
-    "agent/desktop: console: Failed to load resource: the server responded with a status of 403 ()",
-    "agent/phone: console: Failed to load resource: the server responded with a status of 403 ()"
-   ],
+   "load_ms_median": 2074,
+   "issues": [],
    "writes_attempted_on_open": [],
    "runs": 4
   },
   "sales:plans": {
-   "status": "issues",
+   "status": "clean",
    "not_offered_to": [],
-   "load_ms_median": 2149,
-   "issues": [
-    "agent/desktop: console: Failed to load resource: the server responded with a status of 403 ()",
-    "agent/phone: console: Failed to load resource: the server responded with a status of 403 ()"
-   ],
+   "load_ms_median": 2062,
+   "issues": [],
    "writes_attempted_on_open": [],
    "runs": 4
   },
   "sales:providers": {
-   "status": "issues",
+   "status": "clean",
    "not_offered_to": [],
-   "load_ms_median": 2092,
-   "issues": [
-    "agent/desktop: console: Failed to load resource: the server responded with a status of 403 ()",
-    "agent/phone: console: Failed to load resource: the server responded with a status of 403 ()"
-   ],
+   "load_ms_median": 2084,
+   "issues": [],
    "writes_attempted_on_open": [],
    "runs": 4
   },
   "sales:routing": {
-   "status": "issues",
+   "status": "clean",
    "not_offered_to": [],
-   "load_ms_median": 2067,
-   "issues": [
-    "agent/desktop: console: Failed to load resource: the server responded with a status of 403 ()",
-    "agent/phone: console: Failed to load resource: the server responded with a status of 403 ()"
-   ],
+   "load_ms_median": 2054,
+   "issues": [],
    "writes_attempted_on_open": [],
    "runs": 4
   },
@@ -383,15 +326,10 @@
    "runs": 4
   },
   "properties:mls": {
-   "status": "issues",
+   "status": "clean",
    "not_offered_to": [],
    "load_ms_median": 2596,
-   "issues": [
-    "agent/desktop: console: Failed to load resource: the server responded with a status of 404 ()",
-    "agent/phone: console: Failed to load resource: the server responded with a status of 404 ()",
-    "owner/desktop: console: Failed to load resource: the server responded with a status of 404 ()",
-    "owner/phone: console: Failed to load resource: the server responded with a status of 404 ()"
-   ],
+   "issues": [],
    "writes_attempted_on_open": [],
    "runs": 4
   },
@@ -404,15 +342,10 @@
    "runs": 4
   },
   "properties:forms": {
-   "status": "issues",
+   "status": "clean",
    "not_offered_to": [],
-   "load_ms_median": 2534,
-   "issues": [
-    "agent/desktop: console: Failed to load resource: the server responded with a status of 404 ()",
-    "agent/phone: console: Failed to load resource: the server responded with a status of 404 ()",
-    "owner/desktop: console: Failed to load resource: the server responded with a status of 404 ()",
-    "owner/phone: console: Failed to load resource: the server responded with a status of 404 ()"
-   ],
+   "load_ms_median": 2618,
+   "issues": [],
    "writes_attempted_on_open": [],
    "runs": 4
   },
@@ -491,5 +424,6 @@
    "writes_attempted_on_open": [],
    "runs": 2
   }
- }
+ },
+ "// note": "Full crawl 20261013T073520Z at e219198; 20 pages re-crawled in 20261013T080644Z at db4d0af after fixes. Scored with the current rules."
 }

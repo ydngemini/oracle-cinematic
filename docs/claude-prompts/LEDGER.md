@@ -147,6 +147,7 @@ files: [scripts/crawl-all-pages.py, docs/claude-prompts/all-pages-crawl.json, or
 tests_run:
   - {cmd: "scripts/crawl-all-pages.py --base-url <staging> (owner + agent, desktop + phone, anonymous for public pages; 204 page loads)", result: "29 clean, 21 with console errors, 1 not offered (Admin, correct), 1 not run (no demo transaction for the deal sheet); 0 page errors, 0 API 5xx, 0 phone overflow, 0 writes on open, 0 rate-limit 429s after L02-04", date: 2026-10-13}
   - {cmd: "vitest OurAITab.test.jsx, StateDocumentLibrary.test.jsx + full suite", result: "713 passed", date: 2026-10-13}
+  - {cmd: "re-crawl of the 20 affected pages after deploy (db4d0af), crawler scoring fixed", result: "20/20 clean; merged: 50 clean, 1 not offered (Admin), 1 not run (deal sheet, no demo transaction)", date: 2026-10-13}
 authz_checked: role gating observed per page (Admin hidden from owner and agent)
 blockers:
   - {type: data, note: "Staging has no state_advertising_rules dataset loaded: the Forms view now says so instead of implying none apply."}
@@ -154,7 +155,7 @@ blockers:
   - {type: scope, note: "Legacy MLS view still 404s on /api/mls/regions until prompt 11 T11.01 removes it."}
 audit_refs: []
 decision_refs: [D-2026-10-12-01]
-next_task: "Re-crawl after deploy (expect the AI hub and Forms rows clean); seed a demo transaction; per-page verdicts in all-pages-verdicts.json."
+next_task: "Seed a demo transaction so the deal sheet can be opened; per-page verdicts in all-pages-verdicts.json; prompt 11 T11.01 removes the legacy MLS view."
 updated: 2026-10-13
 ```
 Findings fixed from this crawl:
