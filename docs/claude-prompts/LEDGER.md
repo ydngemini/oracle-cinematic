@@ -817,7 +817,7 @@ updated: 2026-10-12
 id: L17-05
 status: tests_pass
 env: local
-evidence_shas: []   # set in the commit that bumps PLATFORM_POLICY_VERSION to 2026-10-13-v2
+evidence_shas: [da4c950]
 files: [backend/policy_contract.py, backend/tests/test_policy_coverage.py, oracle-app/src/components/PolicyAcceptanceGate.jsx, tests/golden/golden_e2e.py, docs/claude-prompts/CONTRACT.md]
 tests_run:
   - {cmd: "pytest tests/test_policy_coverage.py + full backend suite; vitest full", result: "3229 passed; 718 passed", date: 2026-10-13}
