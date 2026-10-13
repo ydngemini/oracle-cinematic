@@ -3,7 +3,6 @@ import {
   CalendarDays,
   CheckCircle2,
   KeyRound,
-  Mail,
   MessageSquareText,
   Phone,
   PhoneCall,
@@ -16,6 +15,8 @@ import {
 } from 'lucide-react';
 import { crmDelete, crmGet, crmPost, crmPut } from '../state/useCrmApi';
 import { IntegrationStatus } from './IntegrationStatus';
+import EmailConnectPanel from './EmailConnectPanel';
+import { explainEmailError } from './emailPresets';
 import styles from './SalesWorkspace.module.css';
 import { friendlyError } from '../lib/errorMessages';
 
@@ -45,10 +46,6 @@ function getSecond() {
   return Math.floor(Date.now() / 1_000);
 }
 
-const EMPTY_SMTP = {
-  account_label: 'default', host: '', port: '', username: '', password: '',
-  from_email: '', from_name: '',
-};
 const EMPTY_TWILIO = {
   account_label: 'default', account_sid: '', auth_token: '', api_key: '', api_secret: '',
   from_number: '', twiml_app_sid: '', sms_sender: '', sms_sender_type: '',
@@ -92,7 +89,7 @@ export default function ProviderDeliveryPage() {
   const [providers, setProviders] = useState([]);
   const [channels, setChannels] = useState({});
   const [route, setRoute] = useState(null);
-  const [smtp, setSmtp] = useState(EMPTY_SMTP);
+  const [platformSender, setPlatformSender] = useState(null);
   const [twilio, setTwilio] = useState(EMPTY_TWILIO);
   const [routeForm, setRouteForm] = useState(EMPTY_ROUTE);
   const [loading, setLoading] = useState(true);
@@ -126,6 +123,7 @@ export default function ProviderDeliveryPage() {
       setProviders(response?.providers || []);
       setChannels(response?.channels || {});
       setRoute(response?.route || null);
+      setPlatformSender(response?.platform_sender || null);
       if (response?.route && Object.keys(response.route).length) {
         const current = response.route;
         setRouteForm((prior) => ({
@@ -250,6 +248,44 @@ export default function ProviderDeliveryPage() {
       setWorking('');
     }
   }, [byName, load]);
+
+  // Save, then prove the login, in one step: a saved-but-unchecked mailbox is
+  // the state agents got stuck in when Validate was a separate button.
+  const connectEmail = useCallback(async (values) => {
+    setWorking('connect:smtp'); setError(''); setMessage('');
+    try {
+      const saved = await crmPut('/api/sales/providers/smtp', compact(values));
+      const label = saved?.account_label || values.account_label || 'default';
+      const result = await crmPost(`/api/sales/providers/smtp/${encodeURIComponent(label)}/validate`, {});
+      await load();
+      if (result.validation_status === 'valid') {
+        setMessage(`Connected. Emails you approve will be sent from ${values.from_email}. Send yourself a test to see one arrive.`);
+        return true;
+      }
+      // The refusal shows inside the email panel (from the saved validation
+      // result), in words that say what to do; not twice.
+      return false;
+    } catch (connectError) {
+      setError(errorText(connectError));
+      return false;
+    } finally {
+      setWorking('');
+    }
+  }, [load]);
+
+  const sendTestEmail = useCallback(async () => {
+    const label = byName.smtp?.account_label;
+    if (!label) return;
+    setWorking('test:smtp'); setError(''); setMessage('');
+    try {
+      const result = await crmPost(`/api/sales/providers/smtp/${encodeURIComponent(label)}/test-send`, {});
+      setMessage(`Test email sent to ${result.sent_to}. Check that inbox, and its spam folder if it isn’t there in a minute.`);
+    } catch (testError) {
+      setError(explainEmailError(testError?.message || errorText(testError), null));
+    } finally {
+      setWorking('');
+    }
+  }, [byName]);
 
   const connectGoogle = useCallback(async () => {
     setWorking('google'); setError(''); setMessage('');
@@ -424,7 +460,7 @@ export default function ProviderDeliveryPage() {
       {message ? <div className={styles.success} role="status"><CheckCircle2 aria-hidden="true" /> {message}</div> : null}
 
       <div className={styles.metricGrid}>
-        <div className={styles.metricCard}><span>Email</span><strong>{channels.email ? 'Ready' : 'Not set up'}</strong><small>SMTP or Google</small></div>
+        <div className={styles.metricCard}><span>Email</span><strong>{channels.email ? 'Ready' : 'Not set up'}</strong><small>your own email, or the brokerage’s</small></div>
         <div className={styles.metricCard}><span>Text messages</span><strong>{channels.sms ? 'Ready' : 'Not set up'}</strong><small>registered text number</small></div>
         <div className={styles.metricCard}><span>Neoh calls</span><strong>{channels.ai_call ? 'Ready' : 'Not set up'}</strong><small>calls you approve</small></div>
         <div className={styles.metricCard}><span>Your calls</span><strong>{channels.agent_call ? 'Ready' : 'Not set up'}</strong><small>from your browser, verified caller ID</small></div>
@@ -440,23 +476,14 @@ export default function ProviderDeliveryPage() {
           </div>
         </article>
 
-        <article className={styles.panel}>
-          <header className={styles.panelHeader}><div><h4>Your email (SMTP)</h4><p>Neoh sends outreach through your own mail server and address</p></div><ProviderState provider={byName.smtp || { provider: 'smtp' }} /></header>
-          <form className={styles.panelBody} onSubmit={(event) => { event.preventDefault(); void configure('smtp', smtp, () => setSmtp(EMPTY_SMTP)); }} autoComplete="off">
-            <div className={styles.providerIcon}><Mail aria-hidden="true" /><span><strong>Bring your own mail server</strong><small>Broker owners set the brokerage default; agents may connect their own to send and receive replies from their own inbox.</small></span></div>
-            <div className={styles.fieldGrid}>
-              <div className={styles.field}><label htmlFor="smtp-host">SMTP host</label><input id="smtp-host" value={smtp.host} onChange={(event) => setSmtp((current) => ({ ...current, host: event.target.value }))} placeholder="smtp.gmail.com" required /></div>
-              <div className={styles.field}><label htmlFor="smtp-port">Port</label><input id="smtp-port" type="number" min={1} max={65535} value={smtp.port} onChange={(event) => setSmtp((current) => ({ ...current, port: event.target.value }))} placeholder="587" /></div>
-              <div className={styles.field}><label htmlFor="smtp-username">Username</label><input id="smtp-username" value={smtp.username} onChange={(event) => setSmtp((current) => ({ ...current, username: event.target.value }))} autoComplete="off" /></div>
-              <div className={styles.field}><label htmlFor="smtp-password">Password</label><input id="smtp-password" type="password" value={smtp.password} onChange={(event) => setSmtp((current) => ({ ...current, password: event.target.value }))} autoComplete="new-password" /></div>
-              <div className={styles.field}><label htmlFor="smtp-from-email">From email</label><input id="smtp-from-email" type="email" value={smtp.from_email} onChange={(event) => setSmtp((current) => ({ ...current, from_email: event.target.value }))} placeholder="you@yourbrokerage.com" required /></div>
-              <div className={styles.field}><label htmlFor="smtp-from-name">From name (optional)</label><input id="smtp-from-name" value={smtp.from_name} onChange={(event) => setSmtp((current) => ({ ...current, from_name: event.target.value }))} placeholder="Jane Doe" /></div>
-            </div>
-            <button type="submit" className={styles.primaryButton} disabled={Boolean(working)}><Save aria-hidden="true" /> Encrypt and save</button>
-            {providerActions('smtp')}
-            {byName.smtp?.validation_error ? <p className={styles.inlineError}>{byName.smtp.validation_error}</p> : null}
-          </form>
-        </article>
+        <EmailConnectPanel
+          provider={byName.smtp}
+          platformSender={platformSender}
+          working={working}
+          onConnect={connectEmail}
+          onSendTest={sendTestEmail}
+          onDisconnect={() => disconnect('smtp')}
+        />
 
         <article className={styles.panel}>
           <header className={styles.panelHeader}><div><h4>Twilio</h4><p>Browser voice, AI voice, and SMS</p></div><ProviderState provider={byName.twilio || { provider: 'twilio' }} /></header>

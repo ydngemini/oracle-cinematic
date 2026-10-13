@@ -151,3 +151,68 @@ def test_a_saved_mail_server_needs_a_password_and_logs_in_as_the_from_address():
     payload = _provider_payload("smtp", ProviderSetupInput(
         host="smtp.gmail.com", port=587, from_email="jane@example.com", password="abcd efgh ijkl mnop"))
     assert payload["username"] == "jane@example.com"
+
+
+def test_the_test_email_goes_only_to_the_connected_address(monkeypatch):
+    import asyncio
+    import json as _json
+    import smtp_mailer
+
+    sent = []
+
+    async def load(_ctx, provider, *, account_label, exact):
+        assert (provider, account_label, exact) == ("smtp", "avery", True)
+        return _json.dumps({"host": "smtp.gmail.com", "port": 587, "username": "avery@example.com",
+                            "password": "app-pw", "from_email": "avery@example.com"})
+
+    monkeypatch.setattr(sales_api, "_load_provider_credential", load)
+    monkeypatch.setattr(smtp_mailer, "resolve_settings", lambda c: {"sender": c["from_email"]})
+    monkeypatch.setattr(smtp_mailer, "send", lambda **kw: sent.append(kw) or "<id@x>")
+    agent = TenantContext(agent_id="avery", tenant_id="00000000-0000-0000-0000-0000000000aa", role=Role.AGENT)
+    result = asyncio.run(sales_api.send_test_email("avery", ctx=agent))
+    assert result == {"sent": True, "sent_to": "avery@example.com", "credential_exposed": False}
+    assert [m["recipient"] for m in sent] == ["avery@example.com"]
+    for label in ("default", "someone-else"):
+        with pytest.raises(HTTPException) as exc:
+            asyncio.run(sales_api.send_test_email(label, ctx=agent))
+        assert exc.value.status_code == 403
+
+
+def _snapshot_for(monkeypatch, rows, role, agent_id):
+    import asyncio
+    import json as _json
+    from contextlib import asynccontextmanager
+
+    class Conn:
+        async def fetch(self, *_a):
+            return rows
+
+        async def fetchrow(self, *_a):
+            return None
+
+    @asynccontextmanager
+    async def tx(_ctx):
+        yield Conn()
+
+    async def load(_ctx, provider, *, account_label, exact):
+        return _json.dumps({"from_email": f"{account_label}@example.com"})
+
+    monkeypatch.setattr(sales_api, "tenant_tx", tx)
+    monkeypatch.setattr(sales_api, "_load_provider_credential", load)
+    ctx = TenantContext(agent_id=agent_id, tenant_id="00000000-0000-0000-0000-0000000000aa", role=role)
+    return asyncio.run(sales_api._provider_snapshot(ctx))
+
+
+def _cred_row(label):
+    return {"provider": "smtp", "account_label": label, "expires_at": None, "last_validated_at": None,
+            "disabled_at": None, "validation_status": "valid", "validation_error": None,
+            "validated_capabilities": {"email": True}, "updated_at": None}
+
+
+def test_an_agent_sees_whose_mailbox_sends_their_email(monkeypatch):
+    own = _snapshot_for(monkeypatch, [_cred_row("avery"), _cred_row("default")], Role.AGENT, "avery")
+    assert own["providers"]["smtp"]["own"] is True
+    assert own["providers"]["smtp"]["sending_as"] == "avery@example.com"
+    shared = _snapshot_for(monkeypatch, [_cred_row("default")], Role.AGENT, "avery")
+    assert shared["providers"]["smtp"]["own"] is False, "the brokerage default is not the agent's own"
+    assert shared["providers"]["smtp"]["sending_as"] == "default@example.com"

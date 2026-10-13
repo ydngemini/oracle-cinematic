@@ -264,3 +264,6 @@
 @media (prefers-reduced-transparency: reduce) {
   .salesHero, .metricCard, .panel { background: rgba(12, 12, 12, 0.98); }
 }
+
+.setupSteps { margin: 0; padding-left: 1.25rem; display: grid; gap: var(--space-1); color: var(--oracle-text); font-size: var(--text-xs); line-height: 1.55; }
+.setupNote { color: var(--oracle-text-ghost); font-size: 0.6875rem; line-height: 1.5; }

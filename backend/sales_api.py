@@ -296,6 +296,17 @@ def _provider_payload(provider: str, body: ProviderSetupInput) -> dict[str, Any]
     return raw
 
 
+async def _smtp_sender(ctx: TenantContext, account_label: str) -> Optional[str]:
+    raw = await _load_provider_credential(ctx, "smtp", account_label=account_label, exact=True)
+    try:
+        credentials = json.loads(raw) if raw else {}
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(credentials, dict):
+        return None
+    return str(credentials.get("from_email") or credentials.get("username") or "").strip() or None
+
+
 async def _provider_snapshot(ctx: TenantContext) -> dict[str, Any]:
     now = datetime.now(timezone.utc)
     async with tenant_tx(ctx) as conn:
@@ -366,8 +377,16 @@ async def _provider_snapshot(ctx: TenantContext) -> dict[str, Any]:
             "last_validated_at": _iso(row["last_validated_at"]),
             "updated_at": _iso(row["updated_at"]),
             "capabilities": _json(row["validated_capabilities"], {}),
+            # Whose row this is: an agent's own, or the brokerage default they
+            # fall back to (which only a broker owner may change).
+            "own": row["account_label"] == own_label,
             "credential_exposed": False,
         }
+    smtp_row = providers.get("smtp")
+    if smtp_row is not None:
+        # The address mail goes out from is what the recipient sees anyway —
+        # not a secret — and the one thing an agent needs to confirm.
+        smtp_row["sending_as"] = await _smtp_sender(ctx, smtp_row["account_label"])
     for provider in ("google", "smtp", "twilio"):
         providers.setdefault(
             provider,
@@ -399,6 +418,9 @@ async def _provider_snapshot(ctx: TenantContext) -> dict[str, Any]:
     return {
         "providers": providers,
         "route": route_data,
+        # What sends when nobody connected their own email: the platform relay,
+        # with replies routed to the drafting agent (commands_api).
+        "platform_sender": (os.getenv("ORACLE_SMTP_FROM_EMAIL") or os.getenv("ORACLE_SMTP_USERNAME") or "").strip() or None,
         "channels": {
             # A connected Google account no longer implies email works — that
             # grant is calendar-only now, so only real senders count here.
@@ -1357,6 +1379,43 @@ async def validate_provider(provider: str, account_label: str, ctx: TenantContex
             _canonical(capabilities),
         )
     return {"provider": provider, "account_label": account_label, "validation_status": validation_status, "capabilities": capabilities, "error": error, "credential_exposed": False}
+
+
+@router.post("/providers/smtp/{account_label}/test-send")
+async def send_test_email(account_label: str, ctx: TenantContext = Depends(require_context)) -> dict[str, Any]:
+    """Send one test message through a saved mail server, to that server's own
+    from address — never anyone else. Validate only proves the login; this
+    proves the mail actually arrives, from the address the agent expects."""
+    _require_own_credential_or_broker(ctx, "smtp", account_label, action="test")
+    raw = await _load_provider_credential(ctx, "smtp", account_label=account_label, exact=True)
+    if not raw:
+        raise HTTPException(status_code=404, detail="Active provider credential not found.")
+    try:
+        credentials = json.loads(raw)
+        if not isinstance(credentials, dict):
+            raise ValueError
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=409, detail="Stored provider credential is invalid.")
+    import smtp_mailer
+
+    def _send() -> str:
+        recipient = smtp_mailer.resolve_settings(credentials)["sender"]
+        smtp_mailer.send(
+            recipient=recipient,
+            subject="Neoh test email: your email is connected",
+            text=("This is a test from Neoh. Your email is connected: emails you approve in Neoh "
+                  f"will be sent from {recipient}, and replies will come back to this inbox.\n\n"
+                  "You can delete this message."),
+            credentials=credentials,
+        )
+        return recipient
+
+    try:
+        recipient = await asyncio.wait_for(asyncio.to_thread(_send), timeout=30.0)
+    except Exception as exc:  # noqa: BLE001 — the reason is the useful part
+        raise HTTPException(status_code=422,
+                            detail=(str(exc).strip() or exc.__class__.__name__)[:500]) from None
+    return {"sent": True, "sent_to": recipient, "credential_exposed": False}
 
 
 @router.delete("/providers/{provider}/{account_label}")
