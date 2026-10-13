@@ -1,48 +1,103 @@
-# Claude implementation prompt 08: Durable AI missions, task graphs, autonomy, events and recovery
+# 08 — Durable missions, task graphs and recovery
 
-> Repository: `ydngemini/oracle-cinematic` shipping FastAPI + React/Vite. Goal: full-feature browser SaaS, one brokerage and **20 agents**, with a separately accounted owner, not a cut-down MVP.
-> This is a specification and task prompt, NOT evidence of completed code, production deployment, provider licensing or tested results.
+> **Scope:** Let Neoh coordinate multi-step work (CRM, property research, drafts, communications, showings, approvals) as a typed task graph with durable execution, recoverable partial failure and truthful progress, with no unsafe autonomous contact or purchase. This is an engineering assignment, not a claim that anything is implemented, configured or verified.
 
-## Claude: implementation assignment
+**Depends on:** 03, 05, 06, 07 · **Unblocks:** 10, 13, 14, 20 · **Ledger:** [L08](LEDGER.md#l08) · **Contract:** [CONTRACT.md](CONTRACT.md) (binding)
 
-Act as principal architect and hands-on engineering owner. Read `CLAUDE.md`, `README.md` in this prompt folder, the existing platform audit, and the actual current source. Pin main SHA and inspect path:line, tests, migrations, configurations and provider state before coding. Prioritize verifiable full vertical slices rather than replacing entire systems with unproven frameworks.
+## 1. Read first
 
-**Inspect first:** backend/missions/planner.py; backend/missions/executor.py; backend/missions/evaluator.py; backend/missions/simulator.py; backend/missions/policy.py; backend/missions/learning.py; backend/automation_jobs.py; backend/commands_api.py; backend/outcome_memory.py; oracle-app/src/neoh/MissionBuilder.jsx
+- Missions: `backend/missions/planner.py`, `backend/missions/executor.py`, `backend/missions/policy.py`, `backend/missions/simulator.py`, `backend/missions/evaluator.py`, `backend/missions/learning.py`, `backend/missions/costs.py`, `backend/missions/drafter.py`, `backend/missions/digest.py`
+- API and UI: `backend/missions_api.py`, `oracle-app/src/neoh/MissionBuilder.jsx`, `oracle-app/src/neoh/missionModel.js`
+- Schema: `backend/db/migrations/0100_missions.sql`, `backend/db/migrations/0027_real_estate_intelligence_platform.sql` (`command_executions`)
+- Execution path: `backend/automation_jobs.py`, `backend/commands_api.py` (`stage_command`, `release_command`), `backend/approval_service.py`, `backend/autonomy.py`, `backend/outreach_compliance.py`, `backend/outcome_memory.py`
+- Switches: `.env.example` (Missions block), `infra/digitalocean/app.yaml`
+- Tests: `backend/tests/test_missions_executor.py`, `backend/tests/test_missions_planner.py`, `backend/tests/test_missions_policy.py`, `backend/tests/test_missions_schema.py`
+- Open work: PR #11, branch `feat/mission-internal-tasks-executable` (read-only: `git show 55ac99c --stat`)
+- Sibling prompts: [05](05-semantic-language-intent.md), [06](06-evidence-retrieval-memory.md), [07](07-ai-gateway-model-tool-governance.md)
 
-## Work program
+## 2. Current verified state (at `745f2fa`, 2026-10-12)
 
-### Mission
-Neoh coordinates multi-step work across CRM, property research, drafts, communications, showings and approvals while ensuring durable execution, recoverable partial failures and accurate progress. No unsafe fully autonomous contact or purchase.
+- **Missions are off by two switches.** `enabled` (`backend/missions/executor.py:45`) defaults `Feature.MISSIONS` off; `.env.example:316-322` documents `ORACLE_FEATURE_MISSIONS` and `ORACLE_MISSIONS_ENABLED`; `infra/digitalocean/app.yaml:412-413` sets `ORACLE_MISSIONS_ENABLED` to "0".
+- **The API has create, list, get, simulate, launch, pause and progress.** `missions_api.py:32` (prefix `/api/missions`), routes at `:66`, `:110`, `:119`, `:139`, `:175`, `:222`, `:238`.
+- **Nothing in mission code writes `cancelled`.** The status is allowed (`0100_missions.sql:77-79`) but only read (`missions_api.py:185`, `backend/missions/digest.py:123`).
+- **Action states are fixed by a CHECK.** `0100_missions.sql:180-182`: `planned`, `would_have_done`, `staged`, `approved`, `executed`, `blocked`, `skipped`, `failed`.
+- **The model chooses candidates by index only.** `backend/missions/planner.py:1-21` (module docstring); `CHANNELS` (`:47`) includes `task`; an unparseable plan raises `PlanUnavailable` (`:60`).
+- **The executor skips every `task` action.** `_work_one` (`backend/missions/executor.py:142`) sets `skipped` with "task actions are not executed yet — no internal task surface" (`:165-174`). Open PR #11 (not merged) addresses this.
+- **A mission may release its own approval under a consented grant.** `evaluate_action` (`backend/missions/policy.py:209`) sets `may_release` when the channel is in `auto_channels` and `consent_at` is set (`:257-261`), or when the autonomy dial allows it (`:262-264`). `_release` (`backend/missions/executor.py:297`) then calls `release_command` (`commands_api.py:1806`).
+- **Commands have their own state ladder.** `command_executions.state` allows `draft` … `succeeded`, `failed`, `cancelled`, `reconciliation_required` (`0027_real_estate_intelligence_platform.sql:291-294`).
+- **Jobs are leased with SKIP LOCKED and a lease token.** `automation_jobs.py:1-7` (module docstring), `claim_next_job` (`:230`), `_reap_exhausted_leases` (`:314`), `_LEASE_SECONDS` (`:36`), `max_attempts` default 5 (`:147`).
+- **The builder UI calls create, simulate and launch.** `MissionBuilder.jsx:85`, `:101`, `:116`.
 
-### Program
-1. Inspect mission request model, planner, simulator, policy evaluator, executor, user-facing builder, command ledger and background jobs. Map transitions, lease claims, retry/backoff, job priority, callback races, cancellation, timeouts, cost and user-visible status. Reuse existing job infrastructure; don't add another workflow engine blindly.
-2. Define typed TaskGraph: graph ID, initiating actor/tenant, intent constraints, immutable step IDs, dependency edges, read/write/external effect, required evidence, permission and consent snapshot references, approval gate, deadline, retry policy, idempotency identity, verifier, compensator, time/financial/token budget.
-3. Model plan feasibility before approval: every proposed step must map to a registered currently available tool with supported schema and permissions; inspect noted mission executor path that skips unsupported internal task actions. Do not produce plans that claim tools exist when they do not.
-4. Parallelize independent safe reads only; serialize dependent writes and protect provider rate limits. Batch/compress context where possible; cancellation and approval changes invalidate later decisions, not persisted facts.
-5. Model states DRAFT, PLANNED, AWAITING_APPROVAL, QUEUED, LEASED, EXECUTING, VERIFYING, COMPLETED, DEGRADED, FAILED, COMPENSATING, CANCELED, EXPIRED, and UNKNOWN_EXTERNAL_RESULT with explicit allowed transitions. Do not count a staged command as sent, or API acceptance as delivered.
-6. Ensure at-least-once worker delivery can produce effectively once externally by durable idempotency keys when providers support them; otherwise reconcile provider receipts and tolerate unknown outcomes rather than falsely promising universal exactly-once side effects.
-7. Design safe recovery after crashes at each boundary: before approval, after DB commit before outbox publish, after carrier accepted call/text, before callback, before verification, after user's access revoked. Store receipts and next reconciliation step.
-8. Use policy/authorization check at plan and at execution, including current membership, private record grants, provider credentials, no-contact consent, credit/card budget and legal/financial approval. Do not let model edit the plan to weaken policy after human approval.
-9. For irreversible external effects (email, SMS, call), offer compensation only when actually possible; otherwise visible incident and operator reconciliation. Retry only transient errors; permission failure is terminal/reapproval.
-10. Expose a clear agent/owner mission timeline: task graph, source evidence, estimated time/cost with uncertainty, pending human steps, actual external status, cancellation, progress when measured and audit receipts. Disallow fabricated completion percentages.
-11. Integrate actor-visible shared brokerage missions vs personal missions through explicit ACL, and include delegation and role transfer with audited scope. A team leader cannot see private mission contents by being on same tenant.
-12. Collect learning data without claiming causal lift: completed task types, durable receipts, time saved with manual baseline, human corrections, false positives and failed steps. Use offline scenario tests to evaluate policy improvements before shipping.
+## 3. Goal
 
-### Test cases
-20 agents schedule overlapping missions; duplicate webhook; multi-worker claim; dropped Redis; DB restart; LLM timeout; provider 429; provider success but local timeout; owner revokes agent; reassignment halfway through mission; partial approvals; quota exhaustion; external API returns ambiguous state; GDPR/DPDPA erasure with queued tasks.
-### Done
-Task graph real, demonstrated durability, bounded cost, truthful status, replay protection, clear owner/agent authority, tested failure recoveries, and instrumented meaningful business outcomes.
+A mission is a typed task graph. Each step maps to a tool that exists and is permitted now. Effects are staged, approved, accepted, delivered and responded to as separate, recorded stages ([C6](CONTRACT.md#c6-truth-vocabulary-use-these-words-exactly)). Crashes, duplicates and revocations never repeat an effect or hide one. Agents and the owner see true status, never invented progress.
 
-## Global acceptance discipline
+## 4. Engineering tasks
 
-- **All pages in scope**, including nested Work, Deals, Properties, Sales, AI, settings and public capability routes. Available page does not imply working external integration; implement or truthfully surface setup required, no false “live.”
-- Enforce tenant/agent/team/owner permissions at database, API, AI context, jobs, media, search and caches. Do not treat the model as authorization, or legal/financial/property inference as verified evidence.
-- Preserve current human approval before external sends, calls, publishing, calendar writes, financial and legal decisions; verify final provider events; use durable idempotency for effectful actions.
-- Preserve product tech decisions: PostgreSQL RLS, FastAPI, React/Vite, PlayCanvas/gsplat for tours, browser-only spatial capture, existing workflows and endpoint names unless planned backwards-compatible migration is tested.
-- Require tests: unit/contracts, real Postgres/RLS, UI/Playwright, load/failure-injection, provider sandbox/live *only with approved synthetic destinations*, cross-brokerage access, 20-account end-to-end. No unapproved production deployment, charges, sending or real customer calls.
-- Distinguish proposal vs code change, mocked vs real benchmark, verified vs inferred, staged vs delivered, deployment staging vs production. Add p50/p95 and cost evidence where relevant.
-- Emit source-linked baseline, concrete implementation sequence, tested commits, schema/rollout plan, role/privacy matrix, outcome receipts, blockers and verification reports. Never report completion without executing the relevant tests.
+- **T08.01 Review open PR #11, then merge or rework it.** Branch `feat/mission-internal-tasks-executable`, commits `55ac99c` and `0b52fbf`. Check:
+  - it rebases onto current `main`, and migration 0129 still follows the latest migration;
+  - the `client_tasks` link is tenant-scoped under RLS, with grants;
+  - created tasks are recorded as executed internal work, never as an outbound command;
+  - `0b52fbf`'s direct-assignment rule matches 03's sharing model;
+  - its tests run, with command and result.
 
-## Final response expected from Claude
+  Pushing to `main` deploys staging; get approval first ([C4.4](CONTRACT.md#c4-external-actions-and-approvals)).
+- **T08.02 Map the mission system.** Request model, planner, simulator, policy, executor, builder, command ledger and jobs: transitions, lease claims, retry and backoff, priority, callback races, cancellation, timeouts, cost and user-visible status. Reuse the job queue; add no workflow engine ([C7.2](CONTRACT.md#c7-reuse-the-architecture)).
+- **T08.03 Define a typed `TaskGraph`.** Graph ID, initiating actor and tenant, 05 frame constraints, immutable step IDs, dependency edges, read / write / external effect, required evidence (06), permission and consent snapshot references, approval gate, deadline, retry policy, idempotency key, verifier, compensator, and time, money and token budgets.
+- **T08.04 Check plan feasibility before approval.** Every step maps to a registered, available tool in 07's `ToolCapability` registry with its schema and permissions. The planner offers `task` today while the executor skips it; no plan claims a tool that does not exist.
+- **T08.05 Parallelize only safe reads.** Serialize dependent writes and respect provider rate limits. Batch context. Cancellation or approval changes invalidate later decisions, not persisted facts.
+- **T08.06 One state machine with allowed transitions.** Cover the old target states: draft, planned, awaiting approval, queued, leased, executing, verifying, completed, `degraded`, failed, compensating, cancelled, expired, unknown external result. Map them onto the existing mission, action, command and job states and onto C6; add missing states only by additive migration. A staged command is never "sent"; provider acceptance is never "delivered".
+- **T08.07 Effectively once, not "exactly once".** Use durable idempotency keys where providers support them; otherwise reconcile receipts and hold an unknown outcome (`reconciliation_required`) instead of guessing ([C4.5](CONTRACT.md#c4-external-actions-and-approvals)).
+- **T08.08 Recover at every boundary.** Before approval; after DB commit, before outbox publish; after a carrier accepts a call or text; before the callback; before verification; after the actor's access is revoked. Store receipts and the next reconciliation step.
+- **T08.09 Check policy at plan time and at execution.** Membership, private record grants, provider credentials, do-not-contact and consent, spend budget and legal or financial approval ([C3.4](CONTRACT.md#c3-tenancy-roles-and-authorization)). The model cannot edit an approved plan to weaken policy.
+- **T08.10 Handle irreversible effects honestly.** Offer compensation only where it is real; otherwise raise a visible incident for operator reconciliation. Retry only transient errors. A permission failure is terminal and needs re-approval.
+- **T08.11 Show a truthful mission timeline.** Task graph, evidence, time and cost estimates with uncertainty, pending human steps, real external status, cancellation, measured progress only, and receipts. No invented completion percentages. Works at phone width.
+- **T08.12 Personal vs shared missions.** Explicit access lists, audited delegation and role transfer. A team leader does not see a private mission by being in the same tenant.
+- **T08.13 Collect learning data without causal claims.** Task types, receipts, time saved against a manual baseline, human corrections, false positives and failed steps (`backend/missions/learning.py`, `outcome_memory.py`). Test policy changes on offline scenarios before shipping.
+- **T08.14 Run the failure scenarios.** 20 agents with overlapping missions; duplicate webhook; multi-worker claim; dropped Redis; DB restart; LLM timeout; provider 429; provider success with local timeout; owner revokes an agent; reassignment mid-mission; partial approvals; quota exhaustion; ambiguous provider state; erasure with queued tasks.
+- **T08.15 Verify whether** any path cancels a mission or expires its actions, and add one if not (§2: nothing writes `cancelled`).
 
-Files changed with exact references; tests and their outputs; measured performance where possible; residual known failures; release gate status; recommended next vertical slice. Update the category tracking matrix and existing docs, avoiding parallel contradictory sources of truth.
+## 5. Failure and adversarial cases
+
+- **F08.01 Silent skip.** A plan is presented as feasible, and its steps are then recorded as `skipped`.
+- **F08.02 Duplicate effect.** A duplicate webhook, a second worker claim or a crash repeats a send.
+- **F08.03 Stage reported as outcome.** A staged or accepted command is counted as sent or delivered.
+- **F08.04 Unknown result guessed.** A provider timeout is retried as a failure (sending twice) or shown as success.
+- **F08.05 Stale authority.** An agent is revoked or a client reassigned, and the mission keeps acting.
+- **F08.06 Policy weakened after approval.** A re-plan changes a step's recipient, channel or content after a human approved it.
+- **F08.07 Private mission exposed.** A team leader or another agent reads a private mission's contents.
+- **F08.08 Invented progress.** The timeline shows a percentage nobody measured.
+- **F08.09 Erasure ignored.** Queued tasks still contact or process an erased person.
+- **F08.10 Runaway cost.** A mission exceeds its money, token or provider quota.
+
+## 6. Acceptance criteria
+
+- **AC08.01 PR #11 is resolved.** Merged with its tests run (command, exit code, counts), or a rework is recorded in L08. Evidence: PR review and test output. Covers: T08.01.
+- **AC08.02 Plans are feasible or refused.** A step without an available tool is rejected at plan time with a named reason; no feasible-looking plan is later `skipped`. Evidence: planner and executor tests against the 07 registry. Covers: T08.02, T08.04, F08.01.
+- **AC08.03 Graph and states are typed.** `TaskGraph` has a schema version; illegal transitions are refused; a mapping table links every state to C6. Evidence: schema and transition tests. Covers: T08.03, T08.06, F08.03.
+- **AC08.04 Effects happen at most once, and unknowns are held.** Evidence: failure-injection tests for each T08.08 boundary, duplicate webhooks and two-worker claims, asserting one provider call and `reconciliation_required` on ambiguity. Covers: T08.07, T08.08, F08.02, F08.04.
+- **AC08.05 Authority is rechecked at execution.** Revocation, reassignment, withdrawn consent, erasure and post-approval edits each block the effect. Evidence: real-PostgreSQL tests under the application role, across two agents and two brokerages. Covers: T08.09, T08.12, F08.05, F08.06, F08.07, F08.09.
+- **AC08.06 Irreversible effects are honest.** Evidence: tests that a permission failure is terminal, a transient error retries within budget, and a non-compensable effect raises an incident. Covers: T08.10.
+- **AC08.07 The timeline tells the truth.** No percentage without a measurement; every external status comes from a receipt. Evidence: component test and Playwright at desktop and phone width. Covers: T08.11, F08.08.
+- **AC08.08 The scenario suite passes with bounded cost.** The T08.14 scenarios run with 20 agents, with p50/p95 and cost recorded. Evidence: committed scenario command and result with conditions. Covers: T08.05, T08.14, F08.10.
+- **AC08.09 Learning makes no causal claim.** Evidence: test that learning output carries sample sizes and intervals, plus an offline policy-evaluation run. Covers: T08.13.
+- **AC08.10 Missions can be cancelled.** Evidence: route and state test showing pending actions stop and no new effect starts. Covers: T08.15.
+
+## 7. Out of scope, owner decisions, category-specific rules
+
+- **Missions stay off by default.** Do not flip `ORACLE_FEATURE_MISSIONS` or `ORACLE_MISSIONS_ENABLED` on any shared environment without owner approval.
+- **No autonomous purchase, charge or contact of real people** in any session ([C4.3](CONTRACT.md#c4-external-actions-and-approvals)).
+- **Shared contract with 05, 06 and 07.** Same IDs, the same execution-time consent and permission check, and C6 words. 08 owns `TaskGraph` and the state mapping.
+- **No new workflow engine or broker;** extend `automation_jobs.py`.
+- **Owner question:** does a mission's consented grant (`policy.py:257-261`) count as "explicit, current human approval" under C4.1 and C4.2, given it releases content the human never saw?
+
+## 8. Deliverables, first slice, ledger update
+
+- **Deliverables:**
+  - the PR #11 review and outcome;
+  - the `TaskGraph` schema and state-mapping table;
+  - feasibility checks against the 07 registry;
+  - recovery and idempotency tests; the cancel path;
+  - the mission timeline UI; the scenario-suite results.
+- **First slice:** T08.01 + AC08.01 (resolve PR #11), then T08.04 + AC08.02.
+- **Ledger:** update L08 with the PR #11 outcome, then add L08-01 onward, per [C10](CONTRACT.md#c10-ledger-update-rule).

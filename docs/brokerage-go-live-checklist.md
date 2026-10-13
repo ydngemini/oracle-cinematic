@@ -8,7 +8,7 @@ backed by:
 - `GET /api/admin/brokerages`
 - `/api/admin/brokerages/{id}/diagnostics`
 - `/api/admin/billing/exceptions`
-- `/api/admin/mls/feeds`
+- `/api/admin/mls/feeds` (legacy: MLS out of scope, D-2026-10-12-01)
 - `/api/admin/comms`
 - `/api/admin/ai`
 - `/api/admin/pilot-metrics`
@@ -33,7 +33,7 @@ Brokerage: ____________  Tenant id: ____________  Owner: ____________  Date: ___
 | 5 | **Phone identity configured** | Setup `phone` = READY: business number assigned, and caller ID and forwarding set. Operator console → Communications shows voice "configured" and no routing error | operator | ☐ |
 | 6 | **Messaging capability verified** | Operator console → Communications: messaging "configured", and the sender/10DLC verification is **not** pending. If pending, texting stays off. See [`telnyx-hosted-sms-runbook.md`](telnyx-hosted-sms-runbook.md) | operator | ☐ |
 | 7 | **Email / calendar status** | Setup `email_calendar` (optional) is READY, or deliberately skipped. If connected, the agent's calendar shows in Work. Platform email (invites, resets) works: item 3 proves it | owner | ☐ |
-| 8 | **MLS authorization status** | Setup `mls`. Operator console → MLS feeds shows the board, **licensed vs test**, last sync and freshness, and this tenant as entitled. If the brokerage does not need MLS yet, record "not required" (a WARN, never a blocker) | operator | ☐ |
+| 8 | **MLS authorization status** — *legacy: MLS is out of scope (D-2026-10-12-01, `docs/claude-prompts/LEDGER.md`); record "not required". A property-sources check replaces this item (prompt 11 T11.01).* | Setup `mls`. Operator console → MLS feeds shows the board, **licensed vs test**, last sync and freshness, and this tenant as entitled. If the brokerage does not need MLS yet, record "not required" (a WARN, never a blocker) | operator | ☐ |
 | 9 | **Contacts imported** | Setup `contact_import` (optional). Work → People shows the brokerage's contacts, with the count matching the source file. Spot-check 3 records for name, phone and email | owner | ☐ |
 | 10 | **Consent rules understood** | The owner confirms which contacts may be called or texted, and how opt-outs (STOP) work. Neoh blocks texting a contact who opted out (TCPA gate). Record who explained it | operator + owner | ☐ |
 | 11 | **Neoh autonomy level confirmed** | Profile sheet → AI controls: each capability set to *observe*, *assist* or *autopilot* (`GET /api/autonomy`). Default to **assist**: Neoh prepares, a person releases. Some categories can never reach autopilot | owner | ☐ |

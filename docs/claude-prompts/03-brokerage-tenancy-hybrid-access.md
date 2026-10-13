@@ -1,56 +1,99 @@
-# Claude implementation prompt 03: One brokerage, twenty agents, sharing, teams and owner administration
+# 03 — Brokerage tenancy, teams, hybrid sharing and owner administration
 
-> Working repository: `ydngemini/oracle-cinematic` (shipping FastAPI backend and React/Vite browser app).
-> Scope: all-pages, fully functional Neoh for **one brokerage + 20 participating agents** (plus explicit owner/admin seats).
-> This is an INSTRUCTION and acceptance specification, not a declaration of implemented features, existing provider permissions, tested production, or code already changed.
+> **Scope:** Turn the brokerage-wide tenant wall into the hybrid model in [C3.1](CONTRACT.md#c3-tenancy-roles-and-authorization): 20 agents, per-record assignment, explicit sharing, scoped team oversight and owner administration, enforced the same way in every layer. This is an engineering assignment, not a claim that anything is implemented, configured or verified.
 
-## Claude: your assignment
+**Depends on:** 01 · **Unblocks:** 04, 06, 07, 08, 10, 11, 12, 13, 17, 18, 20 · **Ledger:** [L03](LEDGER.md#l03) · **Contract:** [CONTRACT.md](CONTRACT.md) (binding)
 
-Act as principal engineer, security reviewer and implementation owner. Start by reading root `CLAUDE.md`, `docs/neoh-full-platform-source-audit-2026-10-08.md`, the [master prompt index](README.md), and relevant category specifications. Inspect current HEAD and reference actual source lines before assuming older audit findings still apply. Implement in bounded, reviewable slices. **Do not stop at outlining plans** when code/test work is possible. Preserve authentic, accessible product behavior, responsible budgets, explicit user consent, no unauthorized external side effects, reproducible tests and durable provider receipts.
+## 1. Read first
 
-**Initial source paths (verify current reachability):** backend/tenancy.py; backend/auth.py; backend/brokerage_onboarding.py; backend/contacts_api.py; backend/crm.py; backend/lead_routing_api.py; backend/db/migrations/0027_real_estate_intelligence_platform.sql; backend/db/migrations/0054_agent_contacts_and_intake.sql; backend/db/migrations/0059_contact_search_and_assignment_integrity.sql; oracle-app/src/components/BrokerageSetupPanel.jsx
+- Identity and context: `backend/tenancy.py` (`Role`, `TenantContext`, `apply_rls_context`, `require_role`), `backend/auth.py`
+- Brokerage administration: `backend/brokerage_onboarding.py`, `backend/privacy_api.py` (`offboard`), `oracle-app/src/components/BrokerageSetupPanel.jsx`
+- Records and routing: `backend/contacts_api.py`, `backend/crm.py`, `backend/lead_routing_api.py`, `backend/search_api.py`, `backend/ai_chat_store.py`
+- Migrations: `0001_init_tenancy.sql`, `0002_listing_grants.sql`, `0019_client_enterprise.sql`, `0027_real_estate_intelligence_platform.sql`, `0036_private_ai_chat.sql`, `0054_agent_contacts_and_intake.sql`, `0059_contact_search_and_assignment_integrity.sql`, `0113_app_visible_tenants.sql`, `0120_platform_admin_is_a_role.sql`
+- RLS tests: `backend/tests/rls_brokerage.sql`, `backend/tests/test_tenancy.py`, `backend/tests/test_rls_enforcement_guard.py`
 
-## Detailed engineering tasks
+## 2. Current verified state (at `745f2fa`, 2026-10-12)
 
-### Contract
-One brokerage tenant; 20 named agent accounts and a separately counted owner seat when needed. User sees assigned clients, explicitly shared resources and approved organization listings/knowledge. Team leads have scoped oversight. Owner gets organization controls and aggregate reporting without unrestricted private agent memories. Platform admin is different from owner.
+- **There are three roles and no team-lead role.** `tenancy.py:71-74` `Role`: `platform_admin`, `broker_owner`, `agent`; `users.role` has the same CHECK (`0001_init_tenancy.sql:65`).
+- **A request context carries tenant, role and a text agent id.** `tenancy.py:76-95` `TenantContext` (`agent_id: str`, `user_id` optional).
+- **RLS context is three session settings.** `tenancy.py:167-196` `apply_rls_context` sets `app.current_tenant`, `app.current_role` and `app.current_agent`, or calls `app_begin_session` when the session must be re-checked.
+- **Platform admin needs both the role setting and a database role membership.** `0120_platform_admin_is_a_role.sql:46-48` `app_is_platform_admin()` (`pg_has_role`).
+- **Clients and leads are walled per brokerage, not per agent.** `0001_init_tenancy.sql:134-140` `clients_tenant_isolation` and `leads_tenant_isolation`: `app_is_platform_admin() OR tenant_id = app_current_tenant()`. `tenancy.py:113-115` `can_read_private` mirrors it.
+- **Contacts and their intake tables use the same tenant-wide policy.** `0054_agent_contacts_and_intake.sql:299-319` (DO loop over `agent_contacts` and four related tables, FORCE RLS).
+- **AI chat messages already use an agent-scoped policy.** `0036_private_ai_chat.sql:126-132` `ai_chat_messages_tenant_isolation` adds `user_id = app_current_agent()`.
+- **Assignments are text agent ids, not user UUIDs.** `agent_contacts.assigned_agent_id text` (`0054_agent_contacts_and_intake.sql:12`); `clients.assignee_id text` (`0019_client_enterprise.sql:17`); `users.id` is the UUID and `users.agent_id` the text key (`0001_init_tenancy.sql:62-64`).
+- **Assignment input is matched case-insensitively to `users.agent_id`.** `contacts_api.py:161-175` `_canonical_assignee` (`lower(agent_id)=lower($2)`).
+- **The client list filters by assignee only when the caller asks.** `crm.py:702-715` `list_clients` (optional `assignee` filter); contact search has no assignment predicate (`contacts_api.py:117-141` `search_contact_rows`).
+- **Teams are one free-text name per user.** `0027_real_estate_intelligence_platform.sql:610-628` `team_memberships`: `team_name text`, `member_role` in agent/team_lead/broker, `UNIQUE (tenant_id,user_id)`. No backend Python outside tests mentions `team_lead` (`grep -rn team_lead backend --include=*.py | grep -v tests`).
+- **The only grant table is tenant-to-tenant listing sharing.** `0002_listing_grants.sql:14` `listing_grants`; no per-user or per-record share table exists (grep of `CREATE TABLE` names in migrations).
+- **Owner actions are gated to broker owner or platform admin.** `brokerage_onboarding.py:659-765` (invitations) and `:812`, `:885` (suspend, reinstate) call `require_role(ctx, Role.BROKER_OWNER, Role.PLATFORM_ADMIN)`.
+- **Suspension deactivates the account and bumps its session epoch.** `brokerage_onboarding.py:812-830` `suspend_member` (docstring: records stay with the brokerage).
+- **Most policies still use the OR form, which defeats tenant indexes.** `0113_app_visible_tenants.sql:1-21` (comment: "Rewriting 123 isolation predicates" left for review) and `app_visible_tenants()` (`:24-27`).
+- **CI runs the brokerage RLS test as the application role.** `.github/workflows/ci.yml:233` runs `rls_brokerage.sql`, which does `SET LOCAL ROLE oracle_app` (`rls_brokerage.sql:35`).
 
-### Implement in order
-1. Inventory actual auth roles (agent, broker_owner, platform_admin) and team_memberships semantics, and existing users.id versus agent_id identifiers. Do not bolt on a competing user/team database. Introduce stable team ID and membership relations with existing migration compatibility.
-2. Canonicalize assignments onto immutable user UUID. Current agent_contacts.assigned_agent_id and clients.assignee_id plus AI tools and lead routing may use different representations. Add backwards compatible adapters and prohibit string/UUID mismatch.
-3. Build a policy decision service for actor, tenant, active user, action, resource kind/id, permission revision, membership, assignment, team scope, explicit share, field sensitivity and consent. Result must include allow/deny and private reason code for audit. Default deny for unknown scope.
-4. Resource grants: per-user/per-team read/edit/collaborate/manage rights, expiration, revocation, grantor, delegated authority, resource ID, version, immutable audit. Grantor cannot exceed own rights or convert private data to brokerage-wide by mistake. Protect privilege escalation/race cases.
-5. Enforce Postgres RLS on agent_contacts and clients and related notes/communications/deals/media in conjunction with API guards. **IMPORTANT:** old policies grant tenant-level access and permissive RLS policies OR together; do not assume adding a narrower policy restricts broad old SELECT. Test policy composition with app DB role and live current session variables.
-6. Apply same authorization to search_api, ai_chat_store/tool resolver, documents/media, signed URLs, export, caches/embeddings, outbox workers, telephony, calendar and notifications. API must return safe inaccessible status without leaking record existence.
-7. Reassignment: validate successor membership and consent, transactionally change authoritative responsibility, produce outbox events, invalidate caches, revoke grants as policy requires, reauthorize or cancel pending calls/messages/missions, retain audit and history. Suspension must block live sessions and unsent work.
-8. Owner workspace for 20 agents: invitation batch and acceptance, teams and team leads, assignment workload, agent status, explicit sharing, billing/seats, autonomy permissions, integration health, audit and support. Owner-level exceptional private access requires short-lived reason-coded privilege and visible audit where lawful.
-9. Brokerage-shared knowledge includes approved policies, templates, listings and integrations; agent-private preferences and transcripts remain separately scoped. Do not combine memories into a universally visible vector store.
-10. Run privacy/consent reviews for caller ID, downloaded client files, shared notes and agent offboarding. Never silently promote imported contacts to brokerage-public if legacy ACL semantics were broad.
-11. Load-test assignment changes, many grants, pagination, overlapping team membership and RLS query plans to prevent tenant-wide sequential scans.
+## 3. Goal
 
-### Required tests
-Agent A assigned; Agent B unassigned; Agent C explicitly shared; team lead in/outside team; owner; platform admin; separate brokerage. Exercise read/write/search/AI/tool/media/export/cached response/queued action. Negative tests for grant privilege escalation, suspended user, expired grants, revoked provider credential, stale cache and race with side-effect delivery. RLS runs as app DB role. No unintentional cross-agent/cross-tenant disclosures.
+One brokerage with 20 named agents works the way [C3.1](CONTRACT.md#c3-tenancy-roles-and-authorization) describes. Each agent sees assigned records, records explicitly shared with them, and approved brokerage knowledge. Team leads see their team. The owner administers the brokerage and its aggregate reporting without reading agents' private memories. Every layer makes the same decision.
 
-### Definition of done
-20 real invitations supported, owner controls working, clear assignee responsibilities, all cross-layer access decisions match, reassignment is durable, no broad RLS bypass, no duplicated canonical identity and a reproducible security/test matrix.
+## 4. Engineering tasks
 
-## Required engineering workflow
+- **T03.01 Inventory roles and identifiers.** Map `Role`, `team_memberships`, `users.id` versus `users.agent_id`, and every column, tool and job that stores an agent reference. Do not add a competing user or team store.
+- **T03.02 Add stable team IDs and memberships.** Keep migration compatibility with `team_name`. Decide (owner question) whether a user may belong to more than one team.
+- **T03.03 Canonicalize assignments onto the user UUID.** Cover `agent_contacts.assigned_agent_id`, `clients.assignee_id`, AI tools and lead routing. Add backward-compatible adapters and reject string or UUID mismatches.
+- **T03.04 Build one policy decision service.** Inputs: actor, tenant, active user, action, resource kind and id, permission revision, membership, assignment, team scope, explicit share, field sensitivity and consent. Output: allow or deny plus a private reason code for audit. Unknown scope is denied.
+- **T03.05 Add resource grants.** Per-user and per-team read, edit, collaborate and manage rights, with expiry, revocation, grantor, delegated authority, resource id, version and immutable audit. A grantor cannot exceed their own rights or make a private record brokerage-wide by mistake.
+- **T03.06 Enforce agent scope in RLS together with API guards.** Cover `agent_contacts`, `clients` and their notes, communications, deals and media. Test policy composition as the application role with live session settings.
+- **T03.07 Apply the same decision everywhere.** Search, AI chat store and tool resolver, documents and media, signed URLs, export, caches and embeddings, outbox workers, telephony, calendar and notifications. A denial never reveals that the record exists.
+- **T03.08 Make reassignment and suspension durable.** Check the successor's membership and consent; change responsibility in one transaction; emit outbox events; invalidate caches; revoke grants as policy says; re-authorize or cancel pending calls, messages and missions; keep history. Suspension blocks live sessions and unsent work.
+- **T03.09 Build the owner workspace for 20 agents.** Batch invitations and acceptance, teams and leads, assignment workload, agent status, sharing, seats and billing (with 18), autonomy permissions, integration health, audit and support.
+- **T03.10 Add exceptional owner access to private data.** Short-lived, reason-coded, visibly audited, and only where lawful.
+- **T03.11 Separate brokerage knowledge from agent-private memory.** Approved policies, templates, listings and integrations are shared; agent preferences and transcripts stay private. No universally visible vector store.
+- **T03.12 Review privacy and consent for sharing paths.** Caller ID, downloaded client files, shared notes and agent offboarding. Imported contacts are never promoted to brokerage-wide silently.
+- **T03.13 Load-test the access model.** Assignment changes, many grants, pagination, overlapping teams, and RLS query plans with no tenant-wide sequential scans.
+- **T03.14 Verify whether any API layer limits an agent to assigned records today.** Start from `list_clients`, `search_contact_rows`, search and AI tools.
+- **T03.15 Verify whether `can_read_private` and the other Python mirrors still match the policies.** `tenancy.py:106-109` says they must stay in lockstep.
+- **T03.16 Verify whether suspension cancels queued work.** Calls, messages, missions and nurture jobs owned by the suspended user.
 
-1. Map concrete sources and call graph; document code paths, schema, external connections, permissions, failure states, test setup and observed baseline. Keep a table of **existing verified**, **proposed**, **implemented**, **tested** and **blocked**; never merge categories.
-2. Implement one vertical slice including frontend, API, storage/RLS, provider/worker, customer-visible error/retry, tests and telemetry where appropriate. Use additive migrations and backwards-compatible API changes; preserve former route aliases and workflows.
-3. Add unit and contract tests plus real PostgreSQL/RLS, React component, Playwright, concurrency, permission or live/sandbox provider testing as applicable. Do not contact real customers, send external communications, purchase services, deploy live or execute real financial transactions without explicit authorized approvals.
-4. Run and report commands and exit codes, separate simulated and actual provider tests, measure p50/p95 where applicable, inspect logs for PII, and verify no regressed authorized page.
-5. Commit focused code changes with changelog, migration notes, rollback/recovery instructions, exact acceptance evidence and remaining issues. Never use “done” or “A+” for untested paths; record external contractual, legal, licensing, operational or device blockers.
+## 5. Failure and adversarial cases
 
-## Cross-cutting rules
+- **F03.01 Permissive policies OR together.** A narrower new policy is added, but the old tenant-wide policy still grants the row.
+- **F03.02 Grant escalation.** A grantor shares more than they hold, or turns a private record brokerage-wide.
+- **F03.03 Identity mismatch.** Case or format differences between text agent ids and user UUIDs route a record to the wrong person.
+- **F03.04 Existence leak.** A deny response, count or timing reveals that a record exists.
+- **F03.05 Suspended user keeps acting.** A suspended or offboarded agent keeps a live session, or their queued call, message or mission still runs.
+- **F03.06 Stale cache.** A cache, search index or embedding still serves a record after revocation or reassignment.
+- **F03.07 Reassignment race.** Reassignment happens while a side effect is being delivered.
+- **F03.08 Owner overreach.** An owner reads private agent memory or transcripts without reason-coded access.
+- **F03.09 Expired authority honoured.** An expired grant or a revoked provider credential still works.
+- **F03.10 Tenant-wide scans.** An agent-scoped query falls back to scanning every tenant's rows.
 
-- **All pages remain in launch scope**; honest setup-required gates are allowed when a customer must grant an external license/credential, but absent advertised functionality remains unfinished.
-- **Hybrid brokerage access:** tenant boundary, agent assignments, explicit shares and team privileges must apply to DB, API, search, AI, jobs and browser caches.
-- **Truthfulness:** missing facts, timed-out sources, non-verified 3D geometry and provisional model estimates are not verified outcomes.
-- **Approval:** model suggestions are never authorization. Legal instruments, outreach, publishing, calendar writes, spend and high-impact changes require their established approvals.
-- **Efficiency:** reuse FastAPI/Postgres/React/PlayCanvas and current job/tool architecture. Avoid duplicate frameworks or microservices unless benchmarks prove benefit.
-- **Launch:** 20 agents concurrently plus owner/operator, actual iOS/Android browser tests, production-shaped deployment, cost and reliability measurement.
+## 6. Acceptance criteria
 
-## Output format
+- **AC03.01 The actor matrix passes as the application role.** Actors: agent A (assigned), agent B (unassigned), agent C (shared), team lead inside and outside the team, owner, platform admin, another brokerage. Operations: read, write, search, AI, tool, media, export, cached response, queued action. Evidence: `backend/tests/test_brokerage_access_matrix_live.py` (proposed) on real PostgreSQL. Covers: T03.04, T03.06, T03.07, T03.14, F03.01, F03.04.
+- **AC03.02 Policy composition is proven.** A test reads `pg_policies` for each scoped table and asserts no permissive policy is wider than intended; the Python mirrors match. Evidence: SQL test run by CI next to `rls_brokerage.sql`. Covers: T03.06, T03.15, F03.01.
+- **AC03.03 There is one canonical identity.** Assignment columns reference `users.id`; mismatched strings are rejected; adapters keep old callers working. Evidence: migration plus contract tests. Covers: T03.01, T03.03, F03.03.
+- **AC03.04 Teams have stable IDs and scoped leads.** A team lead sees only their team's records. Evidence: live RLS test. Covers: T03.02.
+- **AC03.05 Grants cannot escalate or outlive expiry.** Evidence: negative tests for escalation, expiry, revocation and audit. Covers: T03.05, F03.02, F03.09.
+- **AC03.06 Reassignment and suspension are durable.** Pending work is re-authorized or cancelled, caches are invalidated, and a race with delivery does not double-send. Evidence: concurrency and failure-injection tests. Covers: T03.08, T03.16, F03.05, F03.06, F03.07.
+- **AC03.07 The owner can run 20 agents.** 20 real invitations (target, not measured) are issued and accepted; exceptional access is reason-coded and visible to the agent. Evidence: Playwright owner journey plus audit-row assertions. Covers: T03.09, T03.10, F03.08.
+- **AC03.08 Private memory stays private.** Brokerage retrieval never returns agent-private memories or transcripts, and imports are not made brokerage-wide. Evidence: retrieval tests with private and shared fixtures. Covers: T03.11, T03.12.
+- **AC03.09 Plans stay indexed.** `EXPLAIN` as the application role shows index use and no tenant-wide sequential scan at realistic volume. Evidence: committed plan check with its data volume. Covers: T03.13, F03.10.
 
-Return a concise source-linked baseline, chosen vertical slice, completed files and migrations, tests run with results, measurable before/after where available, next dependent tasks, and blockers requiring human approvals. Update the master category matrix rather than duplicating contradictory backlogs.
+## 7. Out of scope, owner decisions, category-specific rules
+
+- **Permissive policies OR together.** Adding a narrower policy does not narrow access while a broad policy remains. Replace or restrict the broad policy, then prove it.
+- **Default deny.** An unknown resource kind or scope is denied, never allowed.
+- **No second identity system.** Extend `users` and `team_memberships`; do not add a parallel user or team database.
+- **Legacy MLS entitlement routes are out of scope** (D-2026-10-12-01): `brokerage_onboarding.py:923-985`. Gating them belongs to prompt 11.
+- **Owner questions:** may an agent belong to several teams; may a team lead edit, or only read, team records.
+
+## 8. Deliverables, first slice, ledger update
+
+- **Deliverables:**
+  - the policy decision service with its reason codes;
+  - migrations for team IDs, grants and UUID assignment, with rollback notes;
+  - the actor matrix test and the policy-composition test;
+  - the owner workspace;
+  - the security and test matrix, linked from L03.
+- **First slice:** read-only T03.01 + T03.14 + T03.15 alongside 02's matrix (README). Then T03.03 + AC03.03, which every sharing feature builds on.
+- **Ledger:** add L03-01 onward per slice, per [C10](CONTRACT.md#c10-ledger-update-rule).

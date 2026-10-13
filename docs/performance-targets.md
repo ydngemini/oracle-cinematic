@@ -28,9 +28,9 @@ without being arbitrary.
 | Item read | `GET /api/crm/clients/{id}` | < 300 ms | `read_load.js` `kind:item` |
 | List read | Home command center, contacts | < 500 ms | `read_load.js` `kind:list` |
 | Work list | `GET /api/crm/clients` (the heaviest list) | < 800 ms | `read_load.js` `kind:worklist` |
-| Search | CRM `?q=`, MLS search page 1 | < 800 ms | `read_load.js`/`mls_search.js` `kind:search` |
-| Deep page | MLS page 10/50 | < 1,200 ms | `mls_search.js` `kind:deep_page` |
-| Listing detail + buyer match | `GET /api/mls/listings/{id}` | < 1,500 ms | `mls_search.js` `kind:detail` |
+| Search | CRM `?q=` (the MLS search page 1 half is legacy: MLS out of scope, D-2026-10-12-01) | < 800 ms | `read_load.js`/`mls_search.js` `kind:search` |
+| Deep page *(legacy, MLS out of scope — D-2026-10-12-01)* | MLS page 10/50 | < 1,200 ms | `mls_search.js` `kind:deep_page` |
+| Listing detail + buyer match *(legacy, MLS out of scope — D-2026-10-12-01)* | `GET /api/mls/listings/{id}` | < 1,500 ms | `mls_search.js` `kind:detail` |
 | Write | create/update client, note, task, stage | < 800 ms | `write_load.js` `kind:write` |
 | Read-back after write | same | < 500 ms | `write_load.js` `kind:readback` |
 | Login | `POST /auth/login` (scrypt) | < 1,000 ms | `auth_storm.js` |
@@ -60,7 +60,7 @@ with a fixed latency; the real provider's latency is recorded separately
 |---|---|
 | Durable job duplicate executions | **0** (hard) |
 | Oldest queued job, first-10 workload | < 60 s |
-| MLS ingestion while agents search | search thresholds still met |
+| MLS ingestion while agents search *(legacy, MLS out of scope — D-2026-10-12-01)* | search thresholds still met |
 | Provider webhooks (Telnyx/Plivo/Stripe) | p95 < 500 ms (answer webhook < 1 s), 0 rejected, 0 duplicate rows |
 
 ## Correctness (not negotiable at any load)

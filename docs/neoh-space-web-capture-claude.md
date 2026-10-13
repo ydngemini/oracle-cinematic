@@ -1,9 +1,11 @@
-# Neoh Space — Web-Only Intelligent Capture and A+ Reconstruction Plan
+# Neoh Space — Web-Only Intelligent Capture and Photoreal Reconstruction Plan
 
 > Implementation brief for Claude Code. Updated 2026-10-08.
-> **Status: design and acceptance criteria, NOT a claim of implemented functionality or proven A+ quality.**
+> **Status: design and acceptance criteria, NOT a claim of implemented functionality or proven real-house quality.**
 > **Owner decision: 100% browser-based. No native iOS/Android app, Swift, ARKit, RoomPlan, private Apple APIs, or raw LiDAR dependence.**
 > Existing Neoh Space lives **inside Property View** and the property tour; do not invent a separate product or standalone app.
+>
+> **Re-checked 2026-10-12 at `745f2fa`:** claims about existing code and docs in §2 and §8 were verified against the source; test paths in §10 were corrected. Every number in this document is a **target, not measured**, unless it cites a measurement in `docs/neoh-space-quality.md` or `docs/neoh-space-baselines.md`. Engineering prompt: [12](claude-prompts/12-neoh-space-browser-capture-reconstruction.md); live status: [ledger L12](claude-prompts/LEDGER.md#l12).
 
 ## Four approved priority workstreams (2026-10-08)
 
@@ -11,7 +13,7 @@
 
 ### Workstream A — Reliable camera registration and whole-house room connectivity (P0 investigation → P1 pipeline)
 
-**Why:** some real phone-walkthrough tests have registered approximately 18–37% of frames, while the 150-image sequential mapping path can strand poorly connected rooms. A visually beautiful partial room is not a usable whole-house experience.
+**Why:** some real phone-walkthrough tests have registered approximately 18–37% of frames (measured; recorded in `docs/neoh-space-quality.md`, "The gate"), while the 150-image sequential mapping path (`POD_SEQUENTIAL_IMAGES` in `backend/reconstruction_providers.py`) can strand poorly connected rooms. A visually beautiful partial room is not a usable whole-house experience.
 
 **Build:**
 1. Instrument per-room and doorway feature tracking: selected frames, matched pairs, camera registration, track lengths, reprojection errors, camera graph connected components, loop-closure candidates, and unmatched passages. Evaluate within the actual budget of worker CPU and GPU.
@@ -22,6 +24,8 @@
 
 **Evidence/acceptance:** reproducible A/B report of registered camera fraction, number/size of connected components, room-to-room edges verified, mean/reprojection distributions, recovery of difficult phone captures, preflight false positives/negatives, time/cost, and regression tests. Do not set a hard registration percentage without calibrating on real homes. No published “whole-house coverage” claim when important rooms are disconnected.
 
+**Measurement protocol (A):** the same set of real phone captures (at least the existing failed walkthroughs plus new multiroom captures), processed by the current selector and the candidate selector on the same pod type; report per capture and in aggregate, with commit SHA, matcher and frame budget.
+
 ### Workstream B — Mobile web Capture Studio + intelligent guide (P0 → P1)
 
 **Build:** full-screen responsive rear-camera preview, user-initiated permission request, recording format negotiation, high-resolution still capture fallback, room/floor labeling, doorway markers, live quality worker and optional speech/haptics. Prioritize **one instruction at a time**, explain uncertainty, and keep actual source recording independent of AI analysis. Implement resumable per-chunk upload with server-verified receipts and safe interrupted-session recovery; existing property upload/build flows remain supported.
@@ -29,6 +33,8 @@
 **Guidance progression:** pixel checks (blur, light, duplicates) → overlap / optical-flow cues → reasoned room/doorway connectivity hints → server-verified repair prompts. Never draw a trustworthy coverage heatmap from time spent scanning. Provisional local evidence is a suggestion, not verified geometry.
 
 **Evidence/acceptance:** capture and resume **three connected rooms** on real mobile Safari and Android Chrome; preserve original media, show actionable warnings, avoid data loss across tested interruptions, maintain a smooth camera preview with bounded worker queues, and operate with camera or advanced AI feature unavailable using fallbacks. See §3–6 and §9–10.
+
+**Measurement protocol (B):** one named iPhone (Safari) and one named Android phone (Chrome), three physically connected rooms, scripted interruptions (tab switch, network loss, incoming call, low storage); compare server chunk receipts with local hashes and record preview FPS on the device. Headless or emulated browsers do not count.
 
 ### Workstream C — High-fidelity photorealism and fast mobile tour delivery (P1 experiments → P2 pilot)
 
@@ -41,6 +47,8 @@
 - **Progressive/streamed 3D detail:** validate the exact supported PlayCanvas + SOG streaming/LOD integration and delivery/security changes; measure load, steady FPS, memory, thermal behavior and visual quality.
 
 **Evidence/acceptance:** blind held-out image evaluation per actual property/room (PSNR, SSIM, LPIPS under a declared policy), visible artifact review, connected navigation/collision, mobile Safari and Android Chrome actual-device test matrix; report median and worst-case quality, not the best room only. Stretch metrics in §7 are pilot hypotheses, not guarantees.
+
+**Measurement protocol (C):** held-out views withheld from training for every room of every pilot house, one evaluation resolution and colour policy declared in the report, the same renderer as `docs/neoh-space-quality.md` round-trips; device matrix as in §10 with cold load time, steady FPS over a fixed walk path, and memory.
 
 ### Workstream D — Live Reconstruction Readiness Engine (P0 model → P1 server verification → P2 property certificate)
 
@@ -101,9 +109,11 @@ type PropertyReadiness = {
 };
 ```
 
-**Implementation seams:** propose `oracle-app/src/lib/tour/captureReadiness.ts` (pure evidence/state derivation), `oracle-app/src/components/CaptureReadinessPanel.jsx` (accessible UI), a server preflight service `backend/capture_preflight.py` or appropriate existing module, and read endpoints attached to the current tenant-scoped capture session. **Names/contracts are proposals**, never assume the database or API already implements them. Backend must be authoritative for server-verified labels. Handle stale server results against newer edits/uploads; version snapshots and keep verification states honest.
+**Implementation seams (proposed; none of these files exist at `745f2fa`):** `oracle-app/src/lib/tour/captureReadiness.ts` (proposed; pure evidence/state derivation), `oracle-app/src/components/CaptureReadinessPanel.jsx` (proposed; accessible UI), a server preflight service `backend/capture_preflight.py` (proposed) or appropriate existing module, and read endpoints attached to the current tenant-scoped capture session. **Names/contracts are proposals**, never assume the database or API already implements them. Backend must be authoritative for server-verified labels. Handle stale server results against newer edits/uploads; version snapshots and keep verification states honest.
 
 **Acceptance tests:** deterministic readiness transitions; no “verified” state from client-only data; incomplete-room/doorway repair reasons supported by actual frame IDs; missing metrics become `unable_to_verify` or `awaiting_verification` rather than success; a disconnected two-room test never becomes whole-house ready; late upload cannot quietly invalidate a completed proof; reconstruction quality and scale caveats persist into final UI; recovery and permissions are safe.
+
+**Measurement protocol (D):** deterministic unit tests over recorded evidence fixtures (no live capture needed) for every state transition, plus one real disconnected two-room capture run through server preflight. Note: today `recon_quality.assess` returns `quality_unverified` without blocking, and the tour badge in `backend/tour_api.py` (`_TIER_BADGE`) does not read the verdict (audit A03).
 
 ### How to execute the four together
 
@@ -147,7 +157,7 @@ When asked to implement this initiative:
 
 **Out of scope:** native app, ARKit/RoomPlan/LiDAR direct access, bypassing OS security, guaranteed 3D from missing observations, whole-home measured dimensions without calibration, live full-quality neural reconstruction on phone, and equating research benchmarks with validated real listings.
 
-## 2. Verified starting point (2026-10-08 code inspection)
+## 2. Verified starting point (2026-10-08 code inspection; re-checked 2026-10-12 at `745f2fa`)
 
 Existing components/modules to extend, **not rewrite blindly**:
 - `oracle-app/src/components/PropertyViewTab.jsx`: property-linked photo/video upload, source categorization, per-file flow, capture/build integration.
@@ -158,12 +168,12 @@ Existing components/modules to extend, **not rewrite blindly**:
 - `oracle-app/src/lib/tour/deviceCapability.ts` and `renderQuality.ts`: device assessment + tour renderer FPS governor; **this does not govern capture inference**.
 - `backend/capture_quality.py`: server-side post-upload pixel quality gate (darkness, blur, duplicates, resolution, unusable captures).
 - `backend/frame_selection.py`: existing sharpness-based temporal frame selection.
-- `backend/reconstruction_worker.py`, `reconstruction_providers.py`, `recon_pod_tools.py`, `recon_quality.py`, `capture_sidecars.py`, `scene_manifest.py`, `tour_api.py`.
+- `backend/reconstruction_worker.py`, `backend/reconstruction_providers.py`, `backend/recon_pod_tools.py`, `backend/recon_quality.py`, `backend/capture_sidecars.py`, `backend/scene_manifest.py`, `backend/tour_api.py`.
 - `backend/db/migrations/0073_capture_sessions.sql`: capture attempts with metadata and media association (confirm actual current schema/routes before assuming active use).
 
-Current documented pipeline: media → ffmpeg video frame extraction (about 2 fps) → pixel quality gate → frame thinning (150-image current pod path) → COLMAP sequential registration → gsplat training (30k steps) → `.sog` + sidecars → scene/quality → publish. Documented benchmark: 2026-10-06 mip-NeRF 360 `room`, a **real-photograph benchmark**, not a real property agent's full-house walkthrough: PSNR 28.82 dB, SSIM 0.890, LPIPS 0.086 (held out), with 150/150 registration. Other phone capture experiments registered far fewer frames (roughly 18–37%). Headless Chrome/Iris 540 viewer results are **not actual iPhone Safari tests**. Review latest baselines for changes.
+Current documented pipeline (re-checked in code: `_VIDEO_SAMPLE_FPS` and `_assess_quality` in `backend/reconstruction_worker.py`; `POD_SEQUENTIAL_IMAGES` and `RECON_POD_STEPS` in `backend/reconstruction_providers.py`): media → ffmpeg video frame extraction (about 2 fps) → pixel quality gate → frame thinning (150-image current pod path) → COLMAP sequential registration → gsplat training (30k steps) → `.sog` + sidecars → scene/quality → publish. Documented benchmark: 2026-10-06 mip-NeRF 360 `room`, a **real-photograph benchmark**, not a real property agent's full-house walkthrough: PSNR 28.82 dB, SSIM 0.890, LPIPS 0.086 (held out), with 150/150 registration (measured; `docs/neoh-space-quality.md`, "Proof runs", 2026-10-06 run 2). Other phone capture experiments registered far fewer frames (roughly 18–37%). Headless Chrome/Iris 540 viewer results (`docs/neoh-space-baselines.md`, "Browser") are **not actual iPhone Safari tests**; that doc records iOS Safari as not measured. Review latest baselines for changes.
 
-A+ on several real houses is **not yet proven**. Registration, missing ceiling/room coverage, camera transition links, metric-scale uncertainty, and mobile playback are bigger blockers than inflating Gaussian counts.
+The real-house quality bar on several real houses is **not yet proven** (no house-level measurement exists in either doc). Registration, missing ceiling/room coverage, camera transition links, metric-scale uncertainty, and mobile playback are bigger blockers than inflating Gaussian counts.
 
 ## 3. User journeys and mobile UI design
 
@@ -219,12 +229,14 @@ Simplify mobile navigation: tap-to-move toward **verified navigable positions** 
 Default architecture:
 1. **Unblocked camera pipeline:** stream preview and source media independently of AI. Request 1080p/30; record actual settings; optional precision high-res still mode.
 2. **Single in-flight analyzer per model:** sample most recent frame, use bounded 1-item queue, skip stale samples, never build a processing backlog.
-3. **Two-resolution policy:** downsized frames (e.g., 320–640 px edge) for real-time quality/tracking; original pixels saved for downstream reconstruction.
+3. **Two-resolution policy:** downsized frames (e.g., 320–640 px edge; design target, not measured) for real-time quality/tracking; original pixels saved for downstream reconstruction.
 4. **Budget governor:** measure rolling per-stage time, time-to-next-guidance, preview dropped-frame indicators (where observable), worker queue age, GPU/CPU inference memory failures, and long-task responsiveness. Reduce inference frequency, image dimensions or heavy-model usage first; don't sacrifice source recording.
 5. **Hysteresis and cooldown:** debounce quality warnings, only change tiers after sustained pressure/recovery; do not flicker instructions every frame.
 6. **Stop unnecessary work** when backgrounded, paused, out of battery according to permitted signals, camera ended, or upload constrained; gracefully resume with recovery hint.
 
-Initial acceptance targets to **measure on real phones**: ~30 fps preview during a 10-minute capture, simple guidance every 100–200 ms where supported, complex useful prompts within ~1 s, no growing queues, no large thermal degradation, no recording interruptions or lost chunks. Targets are not guaranteed across all devices; publish capability-specific results and fallback behaviors.
+Initial acceptance targets (targets, not measured) to **measure on real phones**: ~30 fps preview during a 10-minute capture, simple guidance every 100–200 ms where supported, complex useful prompts within ~1 s, no growing queues, no large thermal degradation, no recording interruptions or lost chunks. Targets are not guaranteed across all devices; publish capability-specific results and fallback behaviors.
+
+**Measurement protocol (§5):** each device in the §10 matrix, 10-minute Guided Video capture through three or more rooms, on-device trace of preview frame times, analyzer latency p50/p95, queue age and dropped samples; record device model, OS and browser version, thermal state at start and end, and algorithm version.
 
 Suggested output events:
 ```ts
@@ -256,7 +268,7 @@ Treat `coverage_hint` as provisional until supported by geometric registration, 
 
 **Priority logic:** `camera_unavailable > unsaved_data > severe_blur > lost_overlap > low_light > missing_evidence > nice_to_have`; surface one actionable prompt, debounce transient noise, let the agent override advice. Privacy mask people/pets in server-side reconstruction when available; consider reflections/glass handling with careful validation.
 
-## 7. Reconstruction upgrades for real-house A+ candidates
+## 7. Reconstruction upgrades for real-house quality candidates
 
 Sequence by measured bottleneck, not benchmark optics:
 - Fix **camera registration success / scene connectivity** first. Current sequential COLMAP and 150-frame job budget are poor fits for whole houses. Experiment with room-aware grouping, stronger feature matching, overlap-aware keyframes, robust camera intrinsics, loop closure, pose graphs and verified learned geometry **only under commercial licenses**. Verify compatibility and compare against baseline.
@@ -269,21 +281,23 @@ Sequence by measured bottleneck, not benchmark optics:
 
 ### Proof, not marketing
 
-The 2026-10-06 benchmark (mip-NeRF 360 `room`) is a useful baseline but not independent proof for houses. Assemble a **minimum 10-house engineering pilot** with coverage of small/large, low-light, reflective, occupied, and multistory homes; expand to **20–30 or more** independent homes for broader reliability claims. Hold out unseen captured photos; assess novel-view fidelity with PSNR, SSIM, LPIPS under consistent camera/resolution/evaluation policy. Candidate pilot stretch targets: PSNR >= 27 dB, SSIM >= 0.88, LPIPS <= 0.12, ≥30 mobile tour FPS on specified devices, **all required rooms represented**, reliable transitions/collision and no severe visible artifacts. These are provisional internal goals, not universal state-of-the-art thresholds. Benchmark against contemporary competitors/methods before claiming SOTA, and assess per-house distributions not only best case.
+The 2026-10-06 benchmark (mip-NeRF 360 `room`) is a useful baseline but not independent proof for houses. Assemble a **minimum 10-house engineering pilot** with coverage of small/large, low-light, reflective, occupied, and multistory homes; expand to **20–30 or more** independent homes for broader reliability claims. Hold out unseen captured photos; assess novel-view fidelity with PSNR, SSIM, LPIPS under consistent camera/resolution/evaluation policy. Candidate pilot stretch targets (targets, not measured): PSNR >= 27 dB, SSIM >= 0.88, LPIPS <= 0.12, ≥30 mobile tour FPS on specified devices, **all required rooms represented**, reliable transitions/collision and no severe visible artifacts. These are provisional internal goals, not universal state-of-the-art thresholds. Benchmark against contemporary competitors/methods before claiming SOTA, and assess per-house distributions not only best case.
+
+**Measurement protocol (§7):** the pilot houses listed by name and capture ID, held-out photos chosen before training, one declared evaluation resolution and colour policy, human artifact review by a named reviewer, mobile FPS measured on the §10 devices over a fixed walk path; report median and worst house.
 
 ## 8. Suggested modules and integration points
 
-**Proposals, not existing files:**
-- `oracle-app/src/components/CaptureStudio.jsx` + CSS module: full-screen mobile entry, preparation/capture/review/recovery.
-- `oracle-app/src/hooks/useWebCamera.ts`: permission negotiation, actual settings, lifecycle and track recovery.
-- `oracle-app/src/workers/captureAnalysis.worker.ts`: downscaled pixel checks, bounded queues, transferables and fallback.
-- `oracle-app/src/lib/tour/keyframeSelector.ts`: pure frame scoring and candidates; deterministic unit tests.
-- `oracle-app/src/lib/tour/coverageTracker.ts`: provisional room/doorway evidence graph and confidence.
-- Extend `oracle-app/src/lib/tour/captureGuide.ts` to versioned, deterministic guidance policy with accessibility copy.
-- Extend existing `PropertyViewTab.jsx` and `CaptureSessionPanel.jsx` to launch/cancel/resume capture and consume upload receipts/review. Do not duplicate competing uploader implementations.
+**Proposals, not existing files** (re-checked 2026-10-12 at `745f2fa`: none of the five new files below exists; `oracle-app/src/hooks/` exists, `oracle-app/src/workers/` does not):
+- `oracle-app/src/components/CaptureStudio.jsx` (proposed) + CSS module: full-screen mobile entry, preparation/capture/review/recovery.
+- `oracle-app/src/hooks/useWebCamera.ts` (proposed): permission negotiation, actual settings, lifecycle and track recovery.
+- `oracle-app/src/workers/captureAnalysis.worker.ts` (proposed): downscaled pixel checks, bounded queues, transferables and fallback.
+- `oracle-app/src/lib/tour/keyframeSelector.ts` (proposed): pure frame scoring and candidates; deterministic unit tests.
+- `oracle-app/src/lib/tour/coverageTracker.ts` (proposed): provisional room/doorway evidence graph and confidence.
+- Extend existing `oracle-app/src/lib/tour/captureGuide.ts` (today: five static `CAPTURE_STEPS`) to versioned, deterministic guidance policy with accessibility copy.
+- Extend existing `oracle-app/src/components/PropertyViewTab.jsx` and `oracle-app/src/components/CaptureSessionPanel.jsx` (both exist) to launch/cancel/resume capture and consume upload receipts/review. Do not duplicate competing uploader implementations.
 - Extend backend upload APIs and `capture_sessions` via a **new forward-only migration**, scoped by tenancy, for room segments, recording chunks, actual media frame IDs, guidance version, and verification result. Confirm RLS, NOT NULL requirements, upload-size limits, CSRF/auth, signed storage, and per-property association before changes.
 - Extend `backend/capture_quality.py` and related provider preflight for connected feature tracks / pose registration **before GPU leasing**, returning detailed yet safe customer reasons. Preserve provider/operator-only diagnostics boundary.
-- Extend `PropertyTourViewer.tsx` with optional room nav / safe tap-to-move, validated floors and actual LOD capability; preserve orbit/walk, WebGL loss recovery and fallbacks.
+- Extend existing `oracle-app/src/components/PropertyTourViewer.tsx` (its scene type declares `limitations` but does not render them) with optional room nav / safe tap-to-move, validated floors and actual LOD capability; preserve orbit/walk, WebGL loss recovery and fallbacks.
 
 ### Suggested contracts (version before shipping)
 
@@ -324,22 +338,26 @@ The specific API route shapes are TBD; match actual CRM patterns and tenant auth
 - Durable chunks and server-confirmed upload receipts; resume after tab interruption where possible.
 - Feature, accessibility and mobile tests including denial/background/storage exhaustion.
 - **Done:** a real agent can scan three connected rooms in mobile Safari/Chrome and safely upload source material with honest UI; existing build path still works.
+- **Measurement protocol:** as workstream B above (named iPhone Safari + Android Chrome, three connected rooms, scripted interruptions, receipts vs local hashes), plus the existing build path run once on the same property.
 
 ### Phase P1: Smart capture and geometric repair
 - Quality/keyframe selection; robust visual overlap checks and room graph evidence.
 - Server preflight COLMAP feasibility/registration, room-specific failure reasons.
 - Repair-only rescan workflow, avoiding re-uploading good segments.
 - **Done:** real failed samples yield specific actionable recapture guidance, and preflight catches meaningful failures before pod spend.
+- **Measurement protocol:** a labelled set of real captures (known good and known failed); report preflight true/false positives and negatives against the full GPU result, and pod spend avoided.
 
 ### Phase P2: Photoreal + validated whole-house tour
 - Improve registration across 1–multi floor real homes; improve lighting/detail/masking.
 - Per-room independent image metrics, verified connected navigation, structural caveats, mobile LOD/streaming experiments.
 - **Done:** measured property pilot, actual iOS Safari/Android Chrome metrics, reproducible quality report with failures and caveats.
+- **Measurement protocol:** as §7 (named pilot houses, held-out photos, declared evaluation policy, §10 devices).
 
 ### Phase P3: Professional quality certification
 - Define draft vs verified publication policy, monitored regressions and human review.
-- Expand pilot and compare with leading published methods/competitors; do not use “A+ / SOTA” as automatic quality labels.
+- Expand pilot and compare with leading published methods/competitors; do not use “best-in-class / SOTA” as automatic quality labels.
 - **Done:** audit trail (originals, pose tracks, model version, metrics, manual reviewer), objective acceptance reports per home.
+- **Measurement protocol:** for each certified home, a report linking capture ID, commit SHA, metrics, reviewer and date; a test proves a home with any missing metric cannot reach the certified state.
 
 ## 10. Testing and observability checklist
 
@@ -353,7 +371,7 @@ The specific API route shapes are TBD; match actual CRM patterns and tenant auth
 
 **Test commands (verify repo state):**
 - `cd oracle-app && npm run lint && npm run typecheck && npm run test && npm run build`
-- Backend tests: invoke the focused `tests/test_recon_quality.py`, `tests/test_recon_pod_tools.py`, `tests/test_neoh_space_pipeline.py` and newly added capture tests via the project's supported runner.
+- Backend tests: invoke the focused `backend/tests/test_recon_quality.py`, `backend/tests/test_recon_pod_tools.py`, `backend/tests/test_neoh_space_pipeline.py` (and `backend/tests/test_pod_pipeline_dry_run.py`) plus newly added capture tests. CI runs them from `backend/` (`cd backend && python -m pytest tests/test_recon_quality.py …`).
 - Record pass/fail and limitations; don't invent test runs.
 
 ## 11. Non-negotiable safety and product boundaries

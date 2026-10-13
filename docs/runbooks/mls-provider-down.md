@@ -1,5 +1,7 @@
 # Runbook: MLS feed (Bridge / RESO) failing
 
+> **Legacy.** MLS is out of scope (D-2026-10-12-01, `docs/claude-prompts/LEDGER.md`). This runbook applies only while the legacy MLS code is still mounted; prompt 11 T11.01 gates it off.
+
 **You see:** the `mls` component STALE, AUTH_FAILED or RATE_LIMITED, and search showing "Listing data may be out of date."
 
 **What Neoh does:**
