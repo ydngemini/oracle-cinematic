@@ -364,3 +364,18 @@ def test_signed_provider_webhooks_are_not_held_to_the_anonymous_limit(path):
     import rate_limit_middleware as rlm
     assert rlm._get_bucket_for_path(path) in rlm.WEBHOOK_PATH_PREFIXES
     assert rlm._get_limit_for_path(path) >= 3000
+
+
+def test_signed_in_chat_reads_do_not_spend_the_chat_action_bucket():
+    """GET /api/ai/chat/status is polled by every page; at 20/min it answered
+    429 to ordinary browsing (all-pages crawl, 2026-10-13). Chat turns keep
+    their own per-agent limiter (rate_limiter); writes keep 20/min here."""
+    import inspect
+
+    assert rl._read_uses_general_bucket("/api/ai/chat", "GET")
+    assert rl._read_uses_general_bucket("/api/ai/chat", "HEAD")
+    assert not rl._read_uses_general_bucket("/api/ai/chat", "POST")
+    assert not rl._read_uses_general_bucket("/api/crm/tour", "GET"), "only buckets listed for read relief"
+    src = inspect.getsource(rl.RateLimitMiddleware) if hasattr(rl, "RateLimitMiddleware") else inspect.getsource(rl)
+    assert "_read_uses_general_bucket(bucket, request.method)" in src
+    assert rl.AUTHENTICATED_API_RATE_LIMIT >= 100

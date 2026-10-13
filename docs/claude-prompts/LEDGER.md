@@ -119,6 +119,24 @@ next_task: "T02.11 crawl with safe fixtures; per-page verdicts into all-pages-ve
 updated: 2026-10-13
 ```
 
+#### L02-04 Ordinary browsing no longer trips the chat rate limit (found by the crawl)
+```yaml
+id: L02-04
+status: tests_pass
+env: local
+evidence_shas: [129176c]   # found on staging; fix in the commit that adds _read_uses_general_bucket
+files: [backend/rate_limit_middleware.py, backend/tests/test_rate_limit_buckets.py, scripts/crawl-all-pages.py]
+tests_run:
+  - {cmd: "scripts/crawl-all-pages.py --only <8 pages> (staging, owner+agent, desktop+phone)", result: "25 x 429 on GET /api/ai/chat/status: every page polls it and the 20/min /api/ai/chat prefix bucket counted it", date: 2026-10-13}
+  - {cmd: "pytest backend/tests/test_rate_limit_buckets.py + security tests", result: "113 passed: signed-in GET/HEAD under /api/ai/chat use the 600/min general bucket; writes keep 20/min; chat turns keep the per-agent limiter in rate_limiter", date: 2026-10-13}
+authz_checked: anonymous callers unchanged (IP identity, 20/min)
+blockers: [{type: verification, note: "Re-crawl on staging after deploy."}]
+audit_refs: []
+decision_refs: []
+next_task: "Full crawl (T02.11) after deploy."
+updated: 2026-10-13
+```
+
 ### L03
 Brokerage tenancy and hybrid access.
 

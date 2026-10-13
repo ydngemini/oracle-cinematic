@@ -221,6 +221,19 @@ def _get_limit_for_path(path: str) -> int:
     return RATE_LIMITS["/api/"]
 
 
+# Reads under a tight per-path bucket that belong in the general one. The
+# 20/min "/api/ai/chat" entry exists for actions that cost money; chat TURNS
+# are already capped per agent in rate_limiter (distributed_rate_limiter). But
+# a prefix match also charged GET /api/ai/chat/status, which every page polls,
+# so ordinary browsing (20+ page loads a minute, measured by the all-pages
+# crawl, prompt 02 T02.11) answered 429 and the shell showed Neoh offline.
+READ_RELIEVED_BUCKETS = ("/api/ai/chat",)
+
+
+def _read_uses_general_bucket(bucket: str, method: str) -> bool:
+    return bucket in READ_RELIEVED_BUCKETS and method in ("GET", "HEAD")
+
+
 def _get_bucket_for_path(path: str) -> str:
     for endpoint in RATE_LIMITS:
         if path.startswith(endpoint):
@@ -451,6 +464,8 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                 principal = _authenticated_principal(request)
                 if principal:
                     identity = principal
+                    if _read_uses_general_bucket(bucket, request.method):
+                        bucket = "/api/"
                     if bucket == "/api/":
                         # The catch-all exists as a ceiling for unattributed
                         # traffic; a caller we can name gets the higher
