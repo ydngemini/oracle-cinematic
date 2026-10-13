@@ -26,9 +26,11 @@ const nameOf = (people, agentId) => {
 };
 
 /** Header cell: the assignee, and the assignment moves this caller may make. */
-export function AssigneeControl({ state, assigneeId, onAssign }) {
+export function AssigneeControl({ state, assigneeId: fromRecord, onAssign }) {
   const { access, colleagues, me, isOwner, loading } = state;
   if (loading && !access) return <span className={styles.accessNote}>…</span>;
+  // The drawer's seed card may not carry the assignee yet; /access always does.
+  const assigneeId = fromRecord ?? access?.assignee_id ?? null;
   const current = nameOf(colleagues, assigneeId);
   if (isOwner) {
     return (
@@ -76,6 +78,7 @@ export default function ClientSharing({ clientId, state, assigneeId, onChanged }
   if (!access) return null;
 
   const mine = me && assigneeId && me.agent_id?.toLowerCase() === String(assigneeId).toLowerCase();
+  const sharer = nameOf(colleagues, assigneeId || access.assignee_id);
   const sharedWithMe = !access.pool && !access.can_manage_shares && !mine;
   const candidates = colleagues.filter((p) => p.role === 'agent' && !p.is_me
     && p.agent_id?.toLowerCase() !== String(assigneeId || '').toLowerCase());
@@ -110,14 +113,13 @@ export default function ClientSharing({ clientId, state, assigneeId, onChanged }
       )}
       {sharedWithMe && (
         <p className={styles.accessNote} data-access={access.access}>
-          {access.access === 'edit'
-            ? `Shared with you by ${nameOf(colleagues, assigneeId)}: you can edit.`
-            : `Shared with you by ${nameOf(colleagues, assigneeId)}: view only.`}
+          {/* The drawer's seed card may not carry the assignee yet; /access does. */}
+          {`Shared with you${sharer ? ` by ${sharer}` : ''}: ${access.access === 'edit' ? 'you can edit' : 'view only'}.`}
         </p>
       )}
       {access.can_manage_shares && !access.pool && (
         <>
-          <p className={styles.accessNote}>{nameOf(colleagues, assigneeId)} and the broker owner{access.shares.length ? ', plus:' : '. Nobody else.'}</p>
+          <p className={styles.accessNote}>{sharer ? `${sharer} and the broker owner` : 'The assigned agent and the broker owner'}{access.shares.length ? ', plus:' : '. Nobody else.'}</p>
           {access.shares.length > 0 && (
             <ul className={styles.shareList}>
               {access.shares.map((s) => (

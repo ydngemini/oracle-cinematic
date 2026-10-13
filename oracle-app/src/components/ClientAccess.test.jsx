@@ -46,6 +46,11 @@ describe('client access (D-2026-10-13-01)', () => {
     respond({ access: 'view', pool: false, can_manage_shares: false, shares: [] }, as('u-b'));
     render(<Harness assigneeId="AVERY@nb.test" />);
     expect(await screen.findByText('Shared with you by Avery Chen: view only.')).toBeTruthy();
+    cleanup();
+    // Before the drawer's record has loaded its assignee, /access still names the sharer — never "null".
+    respond({ access: 'view', pool: false, can_manage_shares: false, shares: [], assignee_id: 'avery@nb.test' }, as('u-b'));
+    render(<Harness assigneeId={undefined} />);
+    expect(await screen.findByText('Shared with you by Avery Chen: view only.')).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Share' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Take it' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Return to pool' })).toBeNull();

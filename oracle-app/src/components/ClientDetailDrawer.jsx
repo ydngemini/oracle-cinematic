@@ -93,6 +93,10 @@ export default function ClientDetailDrawer({ card, onClose, onClientChanged, rea
   // returned by GET /clients/{id}, so a tag change has to re-read it.
   const [detailKey, setDetailKey] = useState(0);
   const accessState = useClientAccess(clientId);
+  // Shared view-only (0131): the server refuses every edit with a 403, so the
+  // controls say so up front instead of looking live. <fieldset disabled> with
+  // display: contents disables every control inside without moving the layout.
+  const readOnly = accessState.access?.access === 'view';
   const sheetRef = useRef(null);
   const scoreTimer = useRef(null);
   const onCloseRef = useRef(onClose);
@@ -299,6 +303,7 @@ export default function ClientDetailDrawer({ card, onClose, onClientChanged, rea
           <div className={styles.idRow}>
             <Avatar name={detail?.full_name} type={type} size="lg" />
             <div className={styles.idMain}>
+              <fieldset className={styles.readOnlyScope} disabled={readOnly}>
               <span className={styles.nameLine}>
                 <span className={styles.name}>
                   <InlineEdit value={detail?.full_name} placeholder="Unnamed" ariaLabel="name" onCommit={(v) => v && applyPatch({ full_name: v })} />
@@ -315,6 +320,7 @@ export default function ClientDetailDrawer({ card, onClose, onClientChanged, rea
                 {detail?.phone && <span className={styles.subBit}>{GLYPHS.phone}{detail.phone}</span>}
                 {!detail?.email && !detail?.phone && <span className={styles.subGhost}>No contact on file</span>}
               </span>
+              </fieldset>
             </div>
             <button type="button" className={styles.closeBtn} onClick={onClose} aria-label="Close">{GLYPHS.close}</button>
           </div>
@@ -322,6 +328,7 @@ export default function ClientDetailDrawer({ card, onClose, onClientChanged, rea
           {/* Neoh's read, when the sheet that opened this drawer has one. */}
           {read}
 
+          <fieldset className={styles.readOnlyScope} disabled={readOnly}>
           <div className={styles.automationBar} aria-live="polite">
             <span className={styles.automationIdentity}>
               <span className={styles.automationDot} data-status={automationStatus} aria-hidden="true" />
@@ -392,6 +399,7 @@ export default function ClientDetailDrawer({ card, onClose, onClientChanged, rea
             </div>
           </div>
 
+          </fieldset>
         </header>
 
         {toast && (
@@ -431,6 +439,7 @@ export default function ClientDetailDrawer({ card, onClose, onClientChanged, rea
               onChanged={bumpTimeline}
             />
           )}
+          <fieldset className={styles.readOnlyScope} disabled={readOnly}>
           {tab === 'overview' && (
             <OverviewPane
               detail={detail}
@@ -443,12 +452,14 @@ export default function ClientDetailDrawer({ card, onClose, onClientChanged, rea
               onTagsChanged={reloadDetail}
             />
           )}
+          </fieldset>
           {tab === 'intelligence' && (
             <Suspense fallback={null}>
               <RelationshipIntelligence clientId={clientId} />
             </Suspense>
           )}
           {tab === 'timeline' && <ClientTimeline clientId={clientId} reloadKey={tlKey} />}
+          <fieldset className={styles.readOnlyScope} disabled={readOnly}>
           {tab === 'tasks' && <ClientTaskList clientId={clientId} onChange={bumpTimeline} />}
           {tab === 'notes' && <ClientNotes clientId={clientId} onChange={bumpTimeline} />}
           {tab === 'documents' && (
@@ -464,6 +475,7 @@ export default function ClientDetailDrawer({ card, onClose, onClientChanged, rea
               <ShowingLogger clientId={clientId} houses={houses} onLogged={reloadDetail} />
             </>
           )}
+          </fieldset>
         </div>
       </div>
     </div>

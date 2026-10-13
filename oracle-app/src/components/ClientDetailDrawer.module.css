@@ -789,3 +789,6 @@
 .shareForm { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); gap: var(--space-3); align-items: end; }
 .shareForm .logBtn { grid-column: 1 / -1; margin-top: 0; }
 @media (max-width: 480px) { .shareForm { grid-template-columns: 1fr; } }
+/* Wraps controls a view-only share cannot use; layout-neutral. */
+.readOnlyScope { display: contents; border: 0; margin: 0; padding: 0; min-width: 0; }
+.readOnlyScope:disabled button, .readOnlyScope:disabled input, .readOnlyScope:disabled select, .readOnlyScope:disabled textarea { cursor: not-allowed; opacity: 0.55; }
