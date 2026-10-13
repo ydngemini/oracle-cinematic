@@ -1,21 +1,17 @@
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { useSubscription } from '../state/useSubscription';
-import { apiPost, ApiError } from '../lib/apiClient';
+import { apiGet, apiPost, ApiError } from '../lib/apiClient';
 import { formatApiError } from '../lib/errorMessages';
+import { formatPlanPrice } from '../lib/planPrice';
 import styles from './BillingOverlay.module.css';
 
 /**
- * Displayed monthly price.
- *
- * WARNING: this is a LABEL, not the amount charged. Checkout bills whatever the
- * Stripe Price object in STRIPE_PRICE_ID says (backend/billing.py:147 puts it
- * straight into line_items), and Stripe Prices are immutable — changing an
- * amount means creating a NEW Price and repointing STRIPE_PRICE_ID at it.
- *
- * So editing this number alone makes the page advertise one figure while the
- * card is charged another. If you change it here, change the Stripe Price too.
+ * The price shown is read from the backend (GET /billing/plan), which reads the
+ * Stripe Price that checkout actually bills. This file holds no figure: it used
+ * to hard-code a solo-plan price while checkout charged whatever
+ * STRIPE_PRICE_ID said. When the price can't be read, the page says so instead
+ * of guessing (prompt 18 T18.03; pricing is undecided, D-2026-10-12-02).
  */
-const PLAN_PRICE_USD = 199;
 
 
 const FEATURES = [
@@ -25,26 +21,26 @@ const FEATURES = [
   { id: 'voice',     label: 'Inbound AI Voice',    detail: 'One routed voice line with transcript and handoff' },
   { id: 'contracts', label: 'Contract Vault',      detail: 'Your brokerage’s templates, approvals, and documents' },
   { id: 'property',  label: 'Property View',       detail: 'Address lookup, exterior and interior capture, client upload links' },
-  { id: 'user',      label: 'One Named User',      detail: 'Full export, monthly billing, no setup fee' },
+  { id: 'export',    label: 'Your data, exportable', detail: 'Full export at any time' },
 ];
 
-const DIALOG_COPY = {
+const dialogCopy = (planName) => ({
   checking: {
-    kicker: 'Neoh Solo Premium — Access Check',
+    kicker: `${planName} — Access check`,
     title: 'Verifying your workspace',
     description: 'Please wait while Neoh confirms this workspace\u2019s billing status.',
   },
   error: {
-    kicker: 'Neoh Solo Premium — Billing Unavailable',
+    kicker: `${planName} — Billing unavailable`,
     title: 'Workspace verification unavailable',
     description: 'The workspace remains locked until billing status can be confirmed.',
   },
   purchase: {
-    kicker: 'Premium CRM for Independent Agents',
-    title: 'Neoh Solo Premium',
+    kicker: 'For real-estate brokerages',
+    title: planName,
     description: 'Run relationships, transactions, local marketing, voice, and protected AI from one quiet workspace.',
   },
-};
+});
 
 const FOCUSABLE_SELECTOR = [
   'a[href]',
@@ -89,7 +85,19 @@ export function BillingOverlay({ onLockedChange } = {}) {
   );
   const mode = subLoading ? 'checking' : (verificationError ? 'error' : 'purchase');
   const isVisible = !active;
-  const copy = DIALOG_COPY[mode];
+  const [plan, setPlan] = useState(null);
+  useEffect(() => {
+    if (mode !== 'purchase' || plan) return undefined;
+    let live = true;
+    apiGet('/billing/plan').then(
+      (data) => { if (live) setPlan(data || { source: 'unavailable' }); },
+      () => { if (live) setPlan({ source: 'unavailable' }); },
+    );
+    return () => { live = false; };
+  }, [mode, plan]);
+  const planName = plan?.name || 'Neoh';
+  const price = formatPlanPrice(plan);
+  const copy = dialogCopy(planName)[mode];
 
   useEffect(() => { onLockedChange?.(isVisible); }, [isVisible, onLockedChange]);
 
@@ -235,11 +243,15 @@ export function BillingOverlay({ onLockedChange } = {}) {
 
         {mode === 'purchase' ? (
           <>
-            <div className={styles.priceBlock}>
-              <span className={styles.srOnly}>${PLAN_PRICE_USD} per month</span>
-              <span className={styles.currency} aria-hidden="true">$</span>
-              <span className={styles.price} aria-hidden="true">{PLAN_PRICE_USD}</span>
-              <span className={styles.period} aria-hidden="true">/mo</span>
+            <div className={styles.priceBlock} data-price-source={plan?.source || 'loading'}>
+              {price ? (
+                <>
+                  <span className={styles.price}>{price.amount}</span>
+                  {price.period ? <span className={styles.period}>{price.period}</span> : null}
+                </>
+              ) : (
+                <span className={styles.period}>{plan ? 'Price shown at secure checkout' : 'Loading price…'}</span>
+              )}
             </div>
 
             <ul className={styles.featureList}>
@@ -270,7 +282,7 @@ export function BillingOverlay({ onLockedChange } = {}) {
                     <span>Opening secure checkout…</span>
                   </>
                 ) : (
-                  'Start Neoh Solo Premium'
+                  `Start ${planName}`
                 )}
               </button>
 
@@ -286,7 +298,7 @@ export function BillingOverlay({ onLockedChange } = {}) {
               ) : null}
 
               <p className={styles.fine}>
-                Billed monthly. Cancel anytime. No setup fee. Extra named users are $39/month; telecom, model, e-sign, and ad spend remain transparent usage charges.
+                Billed by Stripe at the price above{price?.period ? `, ${price.period}` : ''}. Telecom, model, e-sign and ad spend are separate usage charges.
               </p>
             </div>
           </>

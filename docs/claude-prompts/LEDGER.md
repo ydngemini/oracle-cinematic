@@ -676,22 +676,23 @@ next_task: "T18.06 + AC18.04"
 updated: 2026-10-12
 ```
 
-#### L18-03 Billing UI shows a solo plan that does not match the backend
+#### L18-03 Billing screen shows the price checkout bills (fixed: no hard-coded plan)
 ```yaml
 id: L18-03
-status: source_verified
+status: tests_pass
 env: local
-evidence_shas: [745f2fa]
-files: [oracle-app/src/components/BillingOverlay.jsx, backend/billing_usage.py, backend/brokerage_onboarding.py]
+evidence_shas: [745f2fa]   # finding; fix in the commit that adds GET /billing/plan
+files: [backend/billing.py, backend/billing_usage.py, oracle-app/src/components/BillingOverlay.jsx, oracle-app/src/lib/planPrice.js, .env.example]
 tests_run:
-  - {cmd: "grep -n 199 oracle-app/src/components/BillingOverlay.jsx; grep -n 299 backend/billing_usage.py", result: "the UI hard-codes a $199 Solo Premium / One Named User plan (:18, :28, :44) while billing_usage.py:66 says a flat $299 plan; invitations have no seat limit", date: 2026-10-12}
-authz_checked: n/a
-blockers: 
-  - {type: owner, note: "Pricing undecided; should the UI stop showing a hard-coded price now?"}
+  - {cmd: "grep -n 199 oracle-app/src/components/BillingOverlay.jsx (at 745f2fa)", result: "UI hard-coded $199 Solo Premium / One Named User / $39 while billing_usage.py said a flat $299 plan", date: 2026-10-12}
+  - {cmd: "pytest backend/tests/test_billing_plan.py + billing tests", result: "42 passed: price read from the Stripe Price, cached; misconfigured or failing Stripe -> unavailable", date: 2026-10-13}
+  - {cmd: "vitest src/components/BillingOverlay.test.jsx", result: "4 passed: shows backend price; never guesses; no price/solo literal in the component", date: 2026-10-13}
+authz_checked: GET /billing/plan requires a signed-in user
+blockers: [{type: owner, note: "Pricing and seat terms undecided (D-2026-10-12-02); seat enforcement is T18.04."}]
 audit_refs: []
 decision_refs: [D-2026-10-12-02]
-next_task: "T18.03 + T18.04"
-updated: 2026-10-12
+next_task: "T18.06 (A05) and T18.04 (seats) per prompt 18 first slice."
+updated: 2026-10-13
 ```
 
 ### L19

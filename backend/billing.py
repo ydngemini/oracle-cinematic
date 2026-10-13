@@ -6,7 +6,7 @@ import recovery_mode
 from datetime import datetime, timezone
 import asyncio
 import time
-from typing import Optional
+from typing import Any, Optional
 
 import stripe
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -397,6 +397,64 @@ async def create_portal_session(
         )
 
     return JSONResponse(content={"url": session.url})
+
+
+# ---------------------------------------------------------------------------
+# GET /billing/plan — what checkout will actually charge
+# ---------------------------------------------------------------------------
+class PlanInfo(BaseModel):
+    name: str
+    amount_cents: int | None = None
+    currency: str | None = None
+    interval: str | None = None
+    interval_count: int | None = None
+    # 'stripe' = read from the Price checkout bills; 'unavailable' = not
+    # configured or not reachable, so the UI must not show a figure.
+    source: str
+
+
+_PLAN_CACHE: dict[str, Any] = {}
+_PLAN_TTL_S = 600.0
+
+
+def _plan_name() -> str:
+    return (os.getenv("ORACLE_PLAN_NAME") or "").strip() or "Neoh"
+
+
+async def _stripe_plan() -> PlanInfo:
+    """Read the configured Stripe Price. The UI used to hard-code "$199 Solo
+    Premium" while checkout billed whatever STRIPE_PRICE_ID says (and the
+    backend described a flat $299 plan): the page advertised one figure and
+    the card could be charged another. Now the figure shown IS the Price."""
+    name = _plan_name()
+    if _price_misconfigured() or not STRIPE_SECRET_KEY:
+        return PlanInfo(name=name, source="unavailable")
+    cached = _PLAN_CACHE.get(STRIPE_PRICE_ID)
+    if cached and time.monotonic() - cached[0] < _PLAN_TTL_S:
+        return cached[1]
+    try:
+        price = await asyncio.wait_for(
+            asyncio.to_thread(stripe.Price.retrieve, STRIPE_PRICE_ID), timeout=10)
+    except Exception:  # noqa: BLE001 — unknown price is shown as unknown, never guessed
+        logger.warning("Stripe price lookup failed for the plan display", exc_info=True)
+        return PlanInfo(name=name, source="unavailable")
+    recurring = price.get("recurring") or {}
+    info = PlanInfo(
+        name=name,
+        amount_cents=price.get("unit_amount"),
+        currency=(price.get("currency") or "").lower() or None,
+        interval=recurring.get("interval"),
+        interval_count=recurring.get("interval_count"),
+        source="stripe" if price.get("unit_amount") is not None else "unavailable",
+    )
+    _PLAN_CACHE[STRIPE_PRICE_ID] = (time.monotonic(), info)
+    return info
+
+
+@router.get("/plan", response_model=PlanInfo)
+async def plan_info(ctx: TenantContext = Depends(require_context)) -> PlanInfo:
+    del ctx  # any signed-in user may see the price they would be charged
+    return await _stripe_plan()
 
 
 # ---------------------------------------------------------------------------

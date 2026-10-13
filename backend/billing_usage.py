@@ -63,7 +63,7 @@ METRICS = frozenset({
     # decides whether a prompt or an answer is the expensive half.
     #
     # Requests were already capped (20/min/agent in rate_limiter) but SPEND was
-    # not, and nothing recorded it — so on a flat $299 plan the first sign of a
+    # not, and nothing recorded it — so on a flat-price plan the first sign of a
     # runaway conversation would have been the provider invoice. Recording it
     # while metered_billing_enabled is false is the point: the history has to
     # exist before the pricing question can be answered honestly.
