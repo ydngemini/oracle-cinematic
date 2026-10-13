@@ -11,6 +11,10 @@ Lifecycle (provider_purchases.state):
     released  → given back to the provider (superseded or orphaned)
 
 The next connect attempt reuses a `confirmed` number instead of buying again.
+
+A hosted-messaging order (kind 'hosted_messaging_order', provider 'telnyx',
+0136) uses the same lifecycle and the same one-in-flight index, so racing
+connects submit at most one order per route (messaging_data.connect_messaging).
 """
 
 from __future__ import annotations
@@ -20,6 +24,10 @@ from typing import Any, Optional
 
 from db.connection import tenant_tx
 from tenancy import TenantContext
+
+
+PHONE_NUMBER = "phone_number"
+HOSTED_MESSAGING_ORDER = "hosted_messaging_order"
 
 
 class PurchaseInFlight(RuntimeError):

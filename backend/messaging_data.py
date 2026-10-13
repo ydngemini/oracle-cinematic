@@ -97,17 +97,23 @@ async def get_messaging_route(ctx: TenantContext) -> Optional[dict[str, Any]]:
 
 async def ensure_messaging_route(ctx: TenantContext, *, provider: str, provider_account_id: str) -> dict[str, Any]:
     """Idempotent: create the route row on first use, otherwise return it
-    unchanged. Never overwrites an existing row's provider — switching
-    messaging providers is a disconnect+reconnect, not an implicit update."""
+    unchanged. Never overwrites an existing row's provider or provider
+    account — switching messaging providers is a disconnect+reconnect, not an
+    implicit update (audit A07, L10-06).
+
+    Race-safe: racing first uses all insert, the first commit wins, and every
+    caller gets that one row back. The losers' INSERT waits on the winner's
+    unique key, does nothing, and the statement after it (READ COMMITTED: a
+    fresh snapshot) reads the committed row."""
     existing = await get_messaging_route(ctx)
     if existing is not None:
-        return existing
+        return _kept(existing, provider, provider_account_id)
     async with tenant_tx(ctx) as conn:
         row = await conn.fetchrow(
             f"""
             INSERT INTO messaging_routes (tenant_id,agent_id,provider,provider_account_id)
                  VALUES ($1::uuid,$2,$3,$4)
-            ON CONFLICT (tenant_id,agent_id) DO UPDATE SET provider_account_id=EXCLUDED.provider_account_id
+            ON CONFLICT (tenant_id,agent_id) DO NOTHING
             RETURNING {_ROUTE_COLUMNS},created_at,updated_at
             """,
             ctx.tenant_id,
@@ -115,7 +121,28 @@ async def ensure_messaging_route(ctx: TenantContext, *, provider: str, provider_
             provider,
             provider_account_id,
         )
-    return dict(row)
+        if row is not None:
+            return dict(row)
+        row = await conn.fetchrow(
+            f"""
+            SELECT {_ROUTE_COLUMNS},created_at,updated_at
+              FROM messaging_routes
+             WHERE tenant_id=$1::uuid AND agent_id=$2
+            """,
+            ctx.tenant_id,
+            ctx.agent_id,
+        )
+    if row is None:
+        # The conflicting row is not visible to this context: never guess.
+        raise MessagingDataError("Text-message setup is unavailable for this account right now")
+    return _kept(dict(row), provider, provider_account_id)
+
+
+def _kept(route: dict[str, Any], provider: str, provider_account_id: str) -> dict[str, Any]:
+    if (route.get("provider"), route.get("provider_account_id")) != (provider, provider_account_id):
+        # Expected after a race or a provider change in config; never applied.
+        logger.info("messaging route %s kept its provider/account (asked for another)", route.get("id"))
+    return route
 
 
 async def _set_route_columns(ctx: TenantContext, columns: Mapping[str, Any]) -> Optional[dict[str, Any]]:
@@ -190,8 +217,12 @@ async def connect_messaging(
 ) -> dict[str, Any]:
     """Submit the hosted-messaging order and start OTP ownership verification.
 
-    Idempotent: reuses an existing hosted_order_id rather than submitting a
-    second order for the same route.
+    At most once per route, however many requests race (audit A07, L10-06):
+    the order goes through the provider side-effect ledger (provider_purchases,
+    kind 'hosted_messaging_order', 0136). The intent is written before the
+    provider is asked and only one may be in flight per route; the caller that
+    attaches the order to the route is the only one that sends the
+    verification text. A route that already has an order is returned as is.
     """
     from messaging_provider import ELIGIBILITY_ELIGIBLE, get_messaging_provider
 
@@ -207,25 +238,161 @@ async def connect_messaging(
         return existing
 
     provider_name = str(existing.get("provider") or _default_provider())
+    route, purchase_id, order_ref = await _claim_hosted_order(ctx, provider_name)
+    if purchase_id is None:
+        return route  # another request attached an order meanwhile
     adapter = get_messaging_provider(provider_name)
+    if order_ref is None:
+        order_ref = await _submit_hosted_order(
+            ctx, adapter, purchase_id, number,
+            messaging_profile_id=route.get("messaging_profile_id"), credentials=credentials,
+        )
 
-    profile_id = existing.get("messaging_profile_id")
-    order = await adapter.begin_hosted_messaging(
-        number, messaging_profile_id=profile_id, credentials=credentials
-    )
-    updates: dict[str, Any] = {
-        "hosted_order_id": order.reference,
-        "hosted_order_status": "pending_verification",
-        "verification_method": "sms",
-    }
+    attached = await _attach_hosted_order(ctx, purchase_id, order_ref)
+    if attached is None:
+        return await get_messaging_route(ctx) or route
     try:
         await adapter.start_ownership_verification(
-            order.reference, number, method="sms", credentials=credentials
+            order_ref, number, method="sms", credentials=credentials
         )
     except Exception as exc:
-        updates["hosted_order_status"] = "manual_action_required"
-        updates["hosted_order_failure_reason"] = str(exc)[:500]
-    return await _set_route_columns(ctx, updates) or existing
+        return await _set_route_columns(
+            ctx,
+            {"hosted_order_status": "manual_action_required", "hosted_order_failure_reason": str(exc)[:500]},
+        ) or attached
+    return attached
+
+
+async def _claim_hosted_order(
+    ctx: TenantContext, provider: str
+) -> tuple[dict[str, Any], Optional[str], Optional[str]]:
+    """(route, purchase_id, reusable_order_ref) under the route's row lock.
+
+    purchase_id None: the route already has an order. reusable_order_ref set:
+    an earlier attempt's order was accepted but never reached the route (a
+    crash in between), so it is attached instead of submitting another.
+    Raises MessagingDataError while another submission is in flight or its
+    outcome is unknown — the ledger's partial unique index decides that.
+    """
+    import asyncpg
+
+    import provider_purchases
+
+    try:
+        async with tenant_tx(ctx) as conn:
+            # The lock orders this claim after any attach already committing,
+            # so a claim never starts beside an order that just landed.
+            route = await conn.fetchrow(
+                f"""
+                SELECT {_ROUTE_COLUMNS},created_at,updated_at
+                  FROM messaging_routes
+                 WHERE tenant_id=$1::uuid AND agent_id=$2
+                   FOR UPDATE
+                """,
+                ctx.tenant_id,
+                ctx.agent_id,
+            )
+            if route is None:
+                raise MessagingDataError("Check number eligibility before connecting text messages")
+            if route["hosted_order_id"]:
+                return dict(route), None, None
+            reusable = await conn.fetchrow(
+                "SELECT id, provider_ref FROM provider_purchases WHERE tenant_id=$1::uuid "
+                "AND lower(agent_id)=lower($2) AND provider=$3 AND kind=$4 AND state='confirmed' "
+                "ORDER BY created_at DESC LIMIT 1",
+                ctx.tenant_id,
+                ctx.agent_id,
+                provider,
+                provider_purchases.HOSTED_MESSAGING_ORDER,
+            )
+            if reusable is not None and reusable["provider_ref"]:
+                return dict(route), str(reusable["id"]), str(reusable["provider_ref"])
+            purchase_id = await conn.fetchval(
+                "INSERT INTO provider_purchases (tenant_id, agent_id, provider, kind) "
+                "VALUES ($1::uuid,$2,$3,$4) RETURNING id",
+                ctx.tenant_id,
+                ctx.agent_id,
+                provider,
+                provider_purchases.HOSTED_MESSAGING_ORDER,
+            )
+    except asyncpg.exceptions.UniqueViolationError as exc:
+        raise MessagingDataError(
+            "Text messages for this number are already being connected, or the last attempt is "
+            "still being checked. Nothing new was submitted — try again in a few minutes."
+        ) from exc
+    return dict(route), str(purchase_id), None
+
+
+async def _submit_hosted_order(
+    ctx: TenantContext,
+    adapter: Any,
+    purchase_id: str,
+    number: str,
+    *,
+    messaging_profile_id: Optional[str],
+    credentials: Mapping[str, Any],
+) -> str:
+    """Ask the provider once and record the outcome on the ledger row.
+
+    A definite refusal frees the route for a retry. Anything ambiguous (a
+    timeout, a lost or malformed answer) leaves the row `unknown`, which
+    blocks another submission until an operator checks the provider."""
+    import provider_purchases
+    import recovery_mode
+    from command_providers import ProviderConfigurationError, ProviderRejectedError
+    from messaging_provider import MessagingProviderError
+
+    try:
+        order = await adapter.begin_hosted_messaging(
+            number, messaging_profile_id=messaging_profile_id, credentials=credentials
+        )
+    except (
+        ProviderConfigurationError,
+        ProviderRejectedError,
+        MessagingProviderError,
+        NotImplementedError,
+        recovery_mode.RecoveryModeBlocked,
+    ) as exc:
+        await provider_purchases.failed(ctx, purchase_id, f"{type(exc).__name__}: {exc}")
+        raise
+    except BaseException as exc:
+        await provider_purchases.unknown(ctx, purchase_id, f"{type(exc).__name__}: {exc}"[:500])
+        if not isinstance(exc, Exception):
+            raise
+        raise MessagingDataError(
+            "We could not confirm the text-message order with the provider. Nothing more will be "
+            "submitted for this number until it has been checked."
+        ) from exc
+    await provider_purchases.confirmed(ctx, purchase_id, order.reference, number)
+    return str(order.reference)
+
+
+async def _attach_hosted_order(ctx: TenantContext, purchase_id: str, order_ref: str) -> Optional[dict[str, Any]]:
+    """Put the order on the route and close its ledger row in one transaction.
+    None if the route already carries an order (the ledger row is left
+    `confirmed` for an operator rather than claimed by the wrong route)."""
+    async with tenant_tx(ctx) as conn:
+        row = await conn.fetchrow(
+            f"""
+            UPDATE messaging_routes
+               SET hosted_order_id=$3, hosted_order_status='pending_verification',
+                   verification_method='sms', hosted_order_failure_reason=NULL, updated_at=now()
+             WHERE tenant_id=$1::uuid AND agent_id=$2 AND hosted_order_id IS NULL
+             RETURNING {_ROUTE_COLUMNS},created_at,updated_at
+            """,
+            ctx.tenant_id,
+            ctx.agent_id,
+            order_ref,
+        )
+        if row is None:
+            logger.warning("hosted order %s not attached: route already has an order", purchase_id)
+            return None
+        await conn.execute(
+            "UPDATE provider_purchases SET state='attached', provider_ref=$2, updated_at=now() WHERE id=$1::uuid",
+            purchase_id,
+            order_ref,
+        )
+    return dict(row)
 
 
 async def complete_messaging_verification(

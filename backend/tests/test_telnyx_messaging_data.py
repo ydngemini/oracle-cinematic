@@ -17,6 +17,7 @@ import pytest
 
 import messaging_data
 import messaging_provider
+import provider_purchases
 from command_providers import ProviderResult
 from tenancy import Role, TenantContext
 
@@ -29,6 +30,7 @@ TENANT_B = "44444444-4444-4444-8444-444444444444"
 AGENT_B = "agent-b@example.test"
 
 _SET_COL_RE = re.compile(r"(\w+)\s*=\s*\$(\d+)")
+_SET_LITERAL_RE = re.compile(r"(\w+)\s*=\s*(?:'([^']*)'|(NULL))")
 
 
 class FakeTelephonyConn:
@@ -47,11 +49,15 @@ class FakeMessagingRouteConn:
     def __init__(self, initial: dict[str, Any] | None = None):
         self.row: dict[str, Any] | None = dict(initial) if initial else None
         self.inserts = 0
+        self.ledger: list[dict[str, Any]] = []  # provider_purchases (0136)
 
     async def fetchrow(self, query: str, *args: Any):
         q = " ".join(query.split())
         if q.startswith("SELECT") and "FROM messaging_routes" in q:
             return dict(self.row) if self.row else None
+        if q.startswith("SELECT") and "FROM provider_purchases" in q:
+            confirmed = [r for r in self.ledger if r["state"] == "confirmed" and r["kind"] == args[3]]
+            return {"id": confirmed[-1]["id"], "provider_ref": confirmed[-1]["provider_ref"]} if confirmed else None
         if q.startswith("INSERT INTO messaging_routes"):
             self.inserts += 1
             if self.row is None:
@@ -79,13 +85,34 @@ class FakeMessagingRouteConn:
                 }
             return dict(self.row)
         if q.startswith("UPDATE messaging_routes"):
-            set_clause = q.split(" SET ", 1)[1].split(" WHERE ", 1)[0]
+            set_clause, where = q.split(" SET ", 1)[1].split(" WHERE ", 1)
+            if "hosted_order_id IS NULL" in where and self.row and self.row.get("hosted_order_id"):
+                return None
             row = dict(self.row) if self.row else {}
             for name, idx in _SET_COL_RE.findall(set_clause):
                 row[name] = args[int(idx) - 1]
+            for name, literal, null in _SET_LITERAL_RE.findall(set_clause):
+                row[name] = None if null else literal
             self.row = row
             return dict(row)
         raise AssertionError(f"unexpected query: {q}")
+
+    async def fetchval(self, query: str, *args: Any):
+        q = " ".join(query.split())
+        assert q.startswith("INSERT INTO provider_purchases"), q
+        row = {"id": f"purchase-{len(self.ledger) + 1}", "provider": args[2], "kind": args[3],
+               "state": "intended", "provider_ref": None}
+        self.ledger.append(row)
+        return row["id"]
+
+    async def execute(self, query: str, *args: Any):
+        q = " ".join(query.split())
+        assert q.startswith("UPDATE provider_purchases"), q
+        row = next(r for r in self.ledger if r["id"] == args[0])
+        row["state"] = args[1] if "SET state=$2" in q else re.search(r"state='(\w+)'", q).group(1)
+        if "provider_ref" in q:
+            row["provider_ref"] = args[2] if "SET state=$2" in q else args[1]
+        return "UPDATE 1"
 
 
 def _patch_tx_sequence(monkeypatch, conns: list[Any]):
@@ -276,6 +303,7 @@ def test_connect_messaging_submits_order_and_starts_sms_verification(monkeypatch
         yield telephony_conn if call_count["n"] == 1 else route_conn
 
     monkeypatch.setattr(messaging_data, "tenant_tx", fake_tx)
+    monkeypatch.setattr(provider_purchases, "tenant_tx", fake_tx)
     adapter = FakeTelnyxAdapter()
     monkeypatch.setattr(messaging_provider, "get_messaging_provider", lambda name: adapter)
 
@@ -285,6 +313,46 @@ def test_connect_messaging_submits_order_and_starts_sms_verification(monkeypatch
     assert adapter.order_calls == 1
     assert len(adapter.verify_start_calls) == 1
     assert adapter.verify_start_calls[0]["method"] == "sms"
+    # The order went through the provider side-effect ledger (A07, 0136).
+    assert [(r["kind"], r["state"], r["provider_ref"]) for r in route_conn.ledger] == [
+        ("hosted_messaging_order", "attached", "order-uuid-1")]
+
+
+def test_connect_messaging_records_an_ambiguous_order_as_unknown(monkeypatch):
+    telephony_conn = FakeTelephonyConn(_voice_route_row())
+    route_conn = FakeMessagingRouteConn({
+        "id": "aaaaaaaa-1111-4111-8111-111111111111",
+        "tenant_id": TENANT_A,
+        "agent_id": AGENT_A,
+        "provider": "telnyx",
+        "eligibility_status": messaging_provider.ELIGIBILITY_ELIGIBLE,
+        "hosted_order_id": None,
+        "hosted_order_status": "not_started",
+        "messaging_profile_id": None,
+    })
+
+    call_count = {"n": 0}
+
+    @asynccontextmanager
+    async def fake_tx(_ctx):
+        call_count["n"] += 1
+        yield telephony_conn if call_count["n"] == 1 else route_conn
+
+    class TimingOut(FakeTelnyxAdapter):
+        async def begin_hosted_messaging(self, phone_number, *, messaging_profile_id=None, credentials=None):
+            self.order_calls += 1
+            raise asyncio.TimeoutError()
+
+    monkeypatch.setattr(messaging_data, "tenant_tx", fake_tx)
+    monkeypatch.setattr(provider_purchases, "tenant_tx", fake_tx)
+    adapter = TimingOut()
+    monkeypatch.setattr(messaging_provider, "get_messaging_provider", lambda name: adapter)
+
+    with pytest.raises(messaging_data.MessagingDataError):
+        asyncio.run(messaging_data.connect_messaging(CTX, provider_account_id="acct", credentials={}))
+    assert [r["state"] for r in route_conn.ledger] == ["unknown"]
+    assert route_conn.row["hosted_order_id"] is None
+    assert adapter.verify_start_calls == []
 
 
 def test_connect_messaging_is_idempotent_on_existing_order(monkeypatch):

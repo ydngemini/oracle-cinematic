@@ -42,7 +42,7 @@ Listed weakest to strongest:
 | 07 | AI gateway and governed tools | [07](07-ai-gateway-model-tool-governance.md) | `source_verified` | local | `745f2fa` | A09 | L07-01 |
 | 08 | Durable missions and workflows | [08](08-durable-missions-workflow-orchestration.md) | `source_verified` | local | `745f2fa` | PR #11 review; grant-release decision | L08-01 |
 | 09 | Real-time voice | [09](09-realtime-voice-speech-latency.md) | `source_verified` | staging | `9c3463a` | Call-note broadcast (L09-03); phone check (L09-02) | L09-03 |
-| 10 | Communications and calendars | [10](10-communications-calendar-provider-integrations.md) | `source_verified` | staging | `75c6ba6` (local) | Google OAuth client; 10DLC; deploy approval; A07 | L10-01 |
+| 10 | Communications and calendars | [10](10-communications-calendar-provider-integrations.md) | `source_verified` | staging | `75c6ba6` (local) | Google OAuth client; 10DLC; deploy approval; A07 fixed locally, 0136 undeployed (L10-06) | L10-01 |
 | 11 | Property and market intelligence (non-MLS) | [11](11-property-market-intelligence.md) | `tests_pass` | staging (L11-01), local (L11-02) | `90372f2`; `d934b2e` (L11-02) | Deploy 0135; live-DB test owed; staging catalog empty | Apply 0135 on staging; then T11.02 provenance |
 | 12 | Neoh Space capture, 3D, tours | [12](12-neoh-space-browser-capture-reconstruction.md) | `source_verified` | local | `745f2fa` | A03 | Capture Studio first slice |
 | 13 | Deals, documents, compliance | [13](13-transactions-contract-vault-compliance.md) | `source_verified` | local | `745f2fa` | Owner: e-sign, commissions | L13-01 |
@@ -496,18 +496,25 @@ updated: 2026-10-12
 #### L10-06 Concurrent messaging route initialization (A07)
 ```yaml
 id: L10-06
-status: source_verified
+status: tests_pass
 env: local
-evidence_shas: [745f2fa]
-files: [backend/messaging_data.py]
+evidence_shas: [745f2fa, c52b4dc]
+files: [backend/messaging_data.py, backend/provider_purchases.py, backend/reconciliation.py, backend/privacy_data_map.py, backend/db/migrations/0136_hosted_messaging_order_ledger.sql, backend/tests/test_messaging_route_race_live.py, backend/tests/test_telnyx_messaging_data.py, .github/workflows/ci.yml, docs/provider-failure-matrix.md]
 tests_run:
   - {cmd: "sed -n 96,117p backend/messaging_data.py", result: "ensure_messaging_route ON CONFLICT ... DO UPDATE SET provider_account_id still present (:108)", date: 2026-10-12}
-authz_checked: n/a
-blockers: []
+  - {cmd: "livetest.sh python -m pytest -q -p no:cacheprovider tests/test_messaging_route_race_live.py (real PostgreSQL 16, FORCE RLS, app role; code at 3bcab84, BEFORE the fix)", result: "6 failed. (1) first route held uncommitted, 6 racers blocked behind it (pg_stat_activity): the committed route's provider_account_id ended as a racer's (acct-racer-3), not the first creator's (acct-first). (2) 6 unsynchronised first uses: one row, but callers were handed 4 different provider_account_id values. (3) 6 racing connect_messaging: 6 hosted orders submitted to the (mock) provider for one route. (4) a timed-out order left no record (a retry would submit again).", date: 2026-10-13}
+  - {cmd: "livetest.sh migrate; livetest.sh python -m pytest -q -p no:cacheprovider tests/test_messaging_route_race_live.py (after the fix, 0136 applied to the local dev DB; run 4 times)", result: "6 passed each run: first committed route wins and no racer changes provider or account; all racers return the same row; 6 racing connects = 1 hosted order + 1 verification text, the others get 'already being connected'; ledger row telnyx/hosted_messaging_order/attached; timeout = unknown and blocks resubmission; confirmed-but-unattached order is reused (0 new orders); a definite rejection = failed and can be retried", date: 2026-10-13}
+  - {cmd: "livetest.sh python -m pytest -q -p no:cacheprovider tests/test_reconciliation_live.py tests/test_on_conflict_targets_live.py; livetest.sh env ORACLE_AUDIT_SQLITE=/tmp/audit_logs.db python -m pytest -q tests/test_privacy_lifecycle_live.py", result: "4 passed; 1 passed (privacy lifecycle needs a writable audit sqlite path when the source is bind-mounted from a worktree; unrelated to this change)", date: 2026-10-13}
+  - {cmd: "cd backend && ORACLE_SKIP_DOTENV=1 python -m pytest -q -p no:cacheprovider tests/", result: "exit 0: 3248 passed, 16 skipped (live-DB tests skipped without ORACLE_LIVE_DB_ADMIN_DSN)", date: 2026-10-13}
+authz_checked: "No route or RLS change. ensure_messaging_route and the hosted-order claim run in the caller's tenant_tx (brokerage_scope from 0131 kept); messaging_routes and provider_purchases keep their 0108/0123 tenant policies and grants; 0136 only widens two CHECK constraints (no new function, table or column). Cross-tenant overwrite is impossible by the (tenant_id, agent_id) key; the live test uses throwaway tenants under the app role."
+blockers:
+  - {type: deploy, note: "Migration 0136 must apply before this code runs (connect_messaging writes provider 'telnyx' / kind 'hosted_messaging_order'). Applied only to the local dev DB."}
+  - {type: provider, note: "An `unknown` hosted order has no automatic resolver: reconciliation.py turns a stale `intended` into `unknown` but does not ask Telnyx. Operator resolves it (docs/provider-failure-matrix.md row 'Hosted SMS order timeout')."}
 audit_refs: [A07]
 decision_refs: []
-next_task: "T10.13"
-updated: 2026-10-12
+next_task: "Owner: confirm the invariant (first committed route wins; a provider/account switch only by disconnect + an explicit reconnect, which does not exist yet). Then: register_brand/register_campaign (messaging_api.py) create a NEW provider brand/campaign on every PUT, racing or not (see notes); give them the same ledger guard under T10.13/T10.14."
+notes: "Invariant chosen (T10.13): first committed creation wins; nothing changes provider or provider_account_id implicitly. ensure_messaging_route is now INSERT ... ON CONFLICT DO NOTHING, then a re-read in the same transaction (messaging_data.py ensure_messaging_route). connect_messaging claims the order under the route's FOR UPDATE lock through provider_purchases (_claim_hosted_order), asks the provider once (_submit_hosted_order: definite refusal = failed, anything ambiguous = unknown), and attaches the order to the route and closes the ledger row in one transaction (_attach_hosted_order); only the attaching caller sends the verification text. reconciliation._reconcile_purchases now selects kind='phone_number' only, so a Twilio number search can never adopt a hosted order. Found, NOT changed (same audit theme, other routes): messaging_api.register_brand calls adapter.create_brand on every PUT and then overwrites provider_brand_id (ON CONFLICT DO UPDATE), so a double-click or a correction creates a second 10DLC brand at Telnyx and orphans the first; register_campaign inserts a new campaign row and provider campaign every call. assign_campaign_number has no ledger but is the same number to the same campaign. Residual: a crash between attaching the order and sending the verification text leaves 'pending_verification' with no text sent and no resend path; disconnect keeps hosted_order_id, so reconnecting after a disconnect returns the old route (pre-existing). connect_messaging's provider_account_id argument is unused and check_eligibility stores the VOICE provider name as provider_account_id (pre-existing; meaning of the column needs an owner/engineer decision)."
+updated: 2026-10-13
 ```
 
 #### L10-07 Nothing reads an inbox yet
@@ -1030,7 +1037,7 @@ From [neoh-full-platform-source-audit-2026-10-08.md](../neoh-full-platform-sourc
 | A04 | Production readiness not established by staging CI | P0 | open (no production app) | `.github/workflows/ci.yml:606` (`promote` manual only) | 19 | L19-02 |
 | A05 | Usage event counted before approved/delivered outreach | P1 | fixed in code (`a8bff54`), `tests_pass` local (2026-10-13), not deployed: metered only at delivered (0133); owner to confirm the billable stage | was `backend/speed_to_lead.py:387-389`; now `backend/outreach_lifecycle.py` (`BILLABLE_ENGAGEMENT_STAGE`), `backend/billing_usage.py` (`record_lead_engagement`, `BILLABLE_PREDICATE`) | 18 | L18-02, L04-01 |
 | A06 | Customer names in failure logs | P1 | open. 2026-10-13: fixed with a source guard, local (L17-04); addresses and agent emails not covered | `backend/client_ai_automation.py:701-703` logs `full_name` | 17 | L17-04 |
-| A07 | Concurrent messaging route initialization | P1 | open | `backend/messaging_data.py:108` (`ON CONFLICT … DO UPDATE SET provider_account_id`) | 10 | L10-06 |
+| A07 | Concurrent messaging route initialization | P1 | fixed in code at `c52b4dc`, local real-PostgreSQL race test only (2026-10-13, L10-06); not deployed, migration 0136 unapplied outside the local dev DB; 10DLC brand/campaign re-submission still open | was `backend/messaging_data.py:108` (`ON CONFLICT … DO UPDATE SET provider_account_id`); now `ON CONFLICT … DO NOTHING` + re-read, and the hosted order goes through `provider_purchases` (`_claim_hosted_order`) | 10 | L10-06 |
 | A08 | Heuristic valuation targets in model training | P1 | open in code | `backend/ml_forge/edge_forge/train_lora.py:207` (`_COUNTY_PPSF`), `:209` (`_MAO_RULE = 0.70`) | 11 | — |
 | A09 | AI capability descriptions exceed executable tooling | P1 | allowlist re-verified; UI and persona wording not re-verified | allowlist at `backend/ai_chat_store.py:605`, `:646`; 126 catalogued vs 57 allowlisted tools (L07-01) | 07 | L07-01 |
 | A10 | Local capacity test is not target-production evidence | P1 | open | `docs/capacity-plan.md:129` (nothing measured on DigitalOcean) | 16 | L16-01, L19-02 |
