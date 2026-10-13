@@ -39,7 +39,7 @@ Listed weakest to strongest:
 | 04 | CRM, contacts, leads, relationships | [04](04-crm-contact-leads-relationships.md) | `source_verified` | local | `745f2fa` | A05 | L04-01 |
 | 05 | Semantic intent | [05](05-semantic-language-intent.md) | `source_verified` | local | `745f2fa` | — | L05-01 |
 | 06 | Evidence retrieval and memory | [06](06-evidence-retrieval-memory.md) | `source_verified` | local | `745f2fa` | A01, A02 | L06-01 |
-| 07 | AI gateway and governed tools | [07](07-ai-gateway-model-tool-governance.md) | `tests_pass` | local | `3bcab84` base (L07-01) | Playwright check owed (L07-01); owner: archive_client | T07.02 + AC07.01 |
+| 07 | AI gateway and governed tools | [07](07-ai-gateway-model-tool-governance.md) | `tests_pass` | local | `071d65d` (L07-01) | Playwright check owed (L07-01); owner: archive_client | T07.02 + AC07.01 |
 | 08 | Durable missions and workflows | [08](08-durable-missions-workflow-orchestration.md) | `source_verified` | local | `745f2fa` | PR #11 review; grant-release decision | L08-01 |
 | 09 | Real-time voice | [09](09-realtime-voice-speech-latency.md) | `source_verified` | staging | `9c3463a` | Call-note broadcast (L09-03); phone check (L09-02) | L09-03 |
 | 10 | Communications and calendars | [10](10-communications-calendar-provider-integrations.md) | `source_verified` | staging | `75c6ba6` (local) | Google OAuth client; 10DLC; deploy approval; A07 | L10-01 |
@@ -290,7 +290,7 @@ Artifact: the capability registry [`backend/ai_capabilities.py`](../../backend/a
 id: L07-01
 status: tests_pass
 env: local
-evidence_shas: [745f2fa, 3bcab84]
+evidence_shas: [745f2fa, 3bcab84, 071d65d]
 files: [backend/ai_capabilities.py, backend/ai_chat_agent.py, backend/ai_chat_api.py, backend/ai_tools_read.py, backend/neoh_persona.py, backend/NEOH_SYSTEM_KNOWLEDGE.md, backend/tests/test_ai_capabilities.py, backend/tests/test_neoh_persona.py, backend/tests/test_ai_chat.py, oracle-app/src/components/AssistantCapabilities.jsx, oracle-app/src/components/AssistantCapabilities.module.css, oracle-app/src/components/AssistantCapabilities.test.jsx, oracle-app/src/components/PersonalAITab.jsx, oracle-app/src/components/OurAITab.jsx, oracle-app/src/components/ProductTour.jsx, oracle-app/src/lib/assistantCapabilities.js, oracle-app/src/lib/assistantCapabilities.json, oracle-app/src/lib/assistantCapabilities.test.js, oracle-app/src/lib/capabilityOrder.js]
 tests_run:
   - {cmd: "grep counts over TOOLS, TOOL_RISK and the allowlists", result: "126 tools catalogued, 126 risk-classed, 57 allowlisted; unoffered tools are refused at execution", date: 2026-10-12}
