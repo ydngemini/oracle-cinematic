@@ -21,6 +21,10 @@ both the market norm and the defensible posture when the message is going to a
 consumer under TCPA. Turning this into autonomous send is a product decision with
 legal weight, not a constant to flip in here.
 
+**Staging is not engagement.** The ledger row this job writes is ``staged``;
+``outreach_lifecycle`` moves it to approved, accepted and delivered as the
+command does, and meters ``lead_engaged`` only at delivered.
+
 **A block is an outcome, not an error.** When ``guard_outreach`` denies the
 attempt (calling window closed, prior opt-out, missing consent) the ledger
 records ``disposition='blocked'`` with the reason and the job *succeeds*. A
@@ -40,7 +44,6 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 
 from automation_jobs import ActionRisk, enqueue_job, register_handler
-from billing_usage import record_usage
 from db.connection import tenant_tx
 from outreach_compliance import Channel, VoiceMode, guard_outreach
 from platform_policy import Feature, feature_enabled
@@ -381,15 +384,11 @@ async def _speed_to_lead_job(payload: dict[str, Any], reporter: Any) -> dict[str
         command_id=command_id, **ledger,
     )
 
-    # Meter the engagement, not the arrival. A lead we were blocked from
-    # contacting consumed no billable work, so metering on intake would charge
-    # for leads the compliance gate correctly refused to touch.
-    await record_usage(
-        worker_ctx,
-        metric="lead_engaged",
-        quantity=1,
-        idempotency_key=f"lead-engaged:{intake_event_id or contact['id']}",
-    )
+    # Nothing is metered here. A staged draft is not an engagement: no human
+    # has approved it and no provider has seen it (audit A05 — this is where
+    # lead_engaged used to be recorded). The engagement is metered once, by
+    # outreach_lifecycle, when this command's message is approved, accepted
+    # by the provider AND delivered (BILLABLE_ENGAGEMENT_STAGE).
 
     latency = (datetime.now(timezone.utc) - lead_created_at).total_seconds()
     logger.info(

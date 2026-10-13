@@ -15,6 +15,10 @@ States (email_outbox.status):
     failed   → refused, or not configured (error says which)
 The claim is a single UPDATE … WHERE status='queued', so two workers can never
 send the same row.
+
+In the shared lifecycle vocabulary (outreach_lifecycle.EMAIL_OUTBOX_STAGE) a
+`sent` row is ACCEPTED, never DELIVERED: SMTP gives no delivery receipt, so
+nothing here meters an engagement or claims delivery.
 """
 
 from __future__ import annotations

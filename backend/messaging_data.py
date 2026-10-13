@@ -624,6 +624,17 @@ async def record_delivery_update(*, provider: str, provider_message_id: str, sta
             status,
             error_reason,
         )
+        import outreach_lifecycle
+
+        if outreach_lifecycle.SMS_STATUS_STAGE.get(status) is outreach_lifecycle.Stage.DELIVERED:
+            # The carrier's receipt is a text's delivery (outreach_lifecycle):
+            # the only point a speed-to-lead text meters lead_engaged. Run on
+            # every 'delivered' receipt, including a duplicate, because it is
+            # idempotent and a redelivery heals a first attempt that failed.
+            # SAVEPOINTed inside; it cannot fail this status update.
+            await outreach_lifecycle.record_sms_delivered(
+                conn, provider=provider, provider_message_id=provider_message_id,
+            )
         if str(result).endswith(" 0"):
             exists = await conn.fetchval(
                 "SELECT 1 FROM sms_messages WHERE provider=$1 AND provider_message_id=$2",

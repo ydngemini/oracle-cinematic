@@ -1665,7 +1665,7 @@ async def _get_billing_status(conn, ctx: TenantContext, tool_input: dict) -> dic
     denied = _require_ops_role(ctx, "get_billing_status")
     if denied:
         return denied
-    from billing_usage import metering_configured
+    from billing_usage import BILLABLE_PREDICATE, metering_configured
 
     subscription = await conn.fetchrow(
         """SELECT status,plan,current_period_end,
@@ -1678,7 +1678,8 @@ async def _get_billing_status(conn, ctx: TenantContext, tool_input: dict) -> dic
         """SELECT count(*)::int AS n,
                   count(*) FILTER (WHERE report_error IS NOT NULL)::int AS failed
              FROM billing_usage_events
-            WHERE tenant_id=$1::uuid AND reported_at IS NULL""",
+            WHERE tenant_id=$1::uuid AND reported_at IS NULL
+              AND """ + BILLABLE_PREDICATE,
         ctx.tenant_id,
     )
     return _ok(
@@ -1714,6 +1715,8 @@ async def _list_billing_invoices(conn, ctx: TenantContext, tool_input: dict) -> 
     denied = _require_ops_role(ctx, "list_billing_invoices")
     if denied:
         return denied
+    from billing_usage import BILLABLE_PREDICATE
+
     rows = await conn.fetch(
         """SELECT metric,
                   sum(quantity)::numeric AS quantity,
@@ -1722,6 +1725,7 @@ async def _list_billing_invoices(conn, ctx: TenantContext, tool_input: dict) -> 
                   max(occurred_at) AS last_occurred_at
              FROM billing_usage_events
             WHERE tenant_id=$1::uuid AND reported_at IS NULL
+              AND """ + BILLABLE_PREDICATE + """
             GROUP BY metric ORDER BY metric""",
         ctx.tenant_id,
     )

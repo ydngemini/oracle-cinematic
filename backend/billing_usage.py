@@ -54,7 +54,7 @@ STRIPE_METER_EVENT_NAME = os.getenv("STRIPE_METER_EVENT_NAME", "oracle_lead_enga
 # fails at the call site with a clear error instead of as a constraint violation
 # 500 several frames away.
 METRICS = frozenset({
-    "lead_engaged",        # a first-response touch was staged for an inbound lead
+    "lead_engaged",        # a speed-to-lead first response was approved AND delivered (0133)
     "ai_voice_minute",     # AI-handled call minutes
     "transaction_closed",  # a deal reached closed — the outcome-pricing unit
     "media_capture",       # a property capture landed (photo/video/splat/floorplan)
@@ -74,6 +74,27 @@ METRICS = frozenset({
 # Only one metric maps to a Stripe meter today. The others accrue locally until a
 # pricing decision is made — see the module docstring.
 _STRIPE_REPORTED = frozenset({"lead_engaged"})
+
+# Metrics that may only be written at a named lifecycle stage, by their own
+# writer — never through the generic record_usage. lead_engaged was metered when
+# a draft was merely STAGED (audit A05); it is now written only by
+# record_lead_engagement, at outreach_lifecycle.BILLABLE_ENGAGEMENT_STAGE.
+_STAGE_BOUND = frozenset({"lead_engaged"})
+
+# The rows that may be reported to a meter. A lead_engaged row is billable only
+# when it names the delivered event it bills for (0133 CHECK); rows written by
+# the pre-0133 code at the staged step have no stage and are never reported.
+# Every query that counts "pending billing" must use this, or a legacy staged
+# row reads as a bill that is waiting to go out.
+# IS NOT DISTINCT FROM, not =: a legacy row's NULL stage must make this FALSE,
+# never NULL, or "NOT billable" would silently drop it from a count too.
+def billable_predicate(alias: str = "") -> str:
+    col = f"{alias}." if alias else ""
+    return (f"({col}metric <> 'lead_engaged'"
+            f" OR {col}lifecycle_stage IS NOT DISTINCT FROM 'delivered')")
+
+
+BILLABLE_PREDICATE = billable_predicate()
 
 
 def metering_configured() -> bool:
@@ -143,6 +164,12 @@ async def record_usage(
     if metric not in METRICS:
         logger.warning("Refusing to record unknown usage metric %r", metric)
         return False
+    if metric in _STAGE_BOUND:
+        logger.warning(
+            "Refusing to record %s outside its lifecycle stage; use record_lead_engagement",
+            metric,
+        )
+        return False
     if quantity is None or Decimal(str(quantity)) < 0:
         logger.warning("Refusing to record negative usage: metric=%s qty=%r", metric, quantity)
         return False
@@ -174,6 +201,97 @@ async def record_usage(
             "Usage record deferred: metric=%s key=%s", metric, idempotency_key, exc_info=True,
         )
         return False
+
+
+async def record_lead_engagement(
+    ctx: TenantContext,
+    *,
+    conn: Any,
+    idempotency_key: str,
+    command_id: str,
+    occurred_at: Optional[datetime] = None,
+) -> bool:
+    """Meter one billable lead engagement. Returns True for a NEW billable row.
+
+    Called only by outreach_lifecycle.meter_delivered_engagement, after it has
+    re-read that the command was approved and accepted and its first response
+    delivered. The row names that command (source_id), which is what the 0133
+    CHECK demands of a billable lead_engaged row.
+
+    The key is the pre-0133 one, so a lead the old code metered at the staged
+    step already has a row. That row is PROMOTED — given its delivered stage and
+    source — instead of a second row being written; one engagement per lead,
+    ever. A legacy row already reported to Stripe is left alone (it shows up in
+    reconcile_lead_engagements for a human), and so is a row that is already
+    billable, which is what makes a redelivered receipt count zero times.
+    """
+    sql = """
+        INSERT INTO billing_usage_events (
+            tenant_id,metric,quantity,occurred_at,idempotency_key,
+            lifecycle_stage,source_table,source_id
+        ) VALUES ($1::uuid,'lead_engaged',1,$2,$3,'delivered','command_executions',$4::uuid)
+        ON CONFLICT (tenant_id,idempotency_key) DO UPDATE
+           SET lifecycle_stage='delivered', source_table='command_executions',
+               source_id=EXCLUDED.source_id, occurred_at=EXCLUDED.occurred_at
+         WHERE billing_usage_events.metric='lead_engaged'
+           AND billing_usage_events.lifecycle_stage IS NULL
+           AND billing_usage_events.reported_at IS NULL
+        RETURNING id
+    """
+    try:
+        async with conn.transaction():
+            row = await conn.fetchrow(
+                sql, ctx.tenant_id, occurred_at or datetime.now(timezone.utc),
+                idempotency_key[:240], str(command_id),
+            )
+        return row is not None
+    except Exception:  # noqa: BLE001 — same contract as record_usage
+        logger.warning(
+            "Engagement record deferred: key=%s command=%s", idempotency_key, command_id,
+            exc_info=True,
+        )
+        return False
+
+
+async def reconcile_lead_engagements(ctx: TenantContext, *, limit: int = 200) -> list[dict[str, Any]]:
+    """Usage rows that do not reconcile to a delivered event (AC18.04).
+
+    Two kinds, both for a human to resolve, neither fixed automatically:
+      * ``billable_without_delivery`` — a billable lead_engaged row whose
+        command is not succeeded, or whose first response is not delivered.
+        The 0133 CHECK and the writer make this impossible; this proves it.
+      * ``reported_before_delivery`` — a pre-0133 row metered at the staged
+        step that a drain already pushed to Stripe. If any exist, those
+        customers were billed for drafts; the meter event has to be credited.
+    """
+    async with tenant_tx(ctx) as conn:
+        rows = await conn.fetch(
+            """
+            SELECT u.id, u.idempotency_key, u.occurred_at, u.reported_at,
+                   u.lifecycle_stage, u.source_id, c.state AS command_state,
+                   r.disposition,
+                   CASE WHEN u.lifecycle_stage = 'delivered'
+                        THEN 'billable_without_delivery'
+                        ELSE 'reported_before_delivery' END AS problem
+              FROM billing_usage_events u
+              LEFT JOIN command_executions c
+                ON c.id = u.source_id AND c.tenant_id = u.tenant_id
+              LEFT JOIN lead_response_events r
+                ON r.command_id = u.source_id AND r.tenant_id = u.tenant_id
+             WHERE u.tenant_id = $1::uuid AND u.metric = 'lead_engaged'
+               AND (
+                    (u.lifecycle_stage = 'delivered'
+                     AND (c.state IS DISTINCT FROM 'succeeded'
+                          OR r.disposition IS DISTINCT FROM 'delivered'))
+                 OR (u.lifecycle_stage IS NULL AND u.reported_at IS NOT NULL)
+               )
+             ORDER BY u.occurred_at
+             LIMIT $2
+            """,
+            ctx.tenant_id,
+            max(1, min(1000, int(limit))),
+        )
+    return [dict(row) for row in rows]
 
 
 async def drain_usage_to_stripe(ctx: TenantContext, *, limit: int = 200) -> dict[str, Any]:
@@ -212,6 +330,7 @@ async def drain_usage_to_stripe(ctx: TenantContext, *, limit: int = 200) -> dict
               FROM billing_usage_events
              WHERE tenant_id=$3::uuid
                AND reported_at IS NULL AND metric = ANY($1::text[])
+               AND """ + BILLABLE_PREDICATE + """
              ORDER BY occurred_at ASC
              LIMIT $2
             """,
@@ -292,6 +411,7 @@ async def drain_all_tenants(
             SELECT tenant_id, count(*)::int AS pending
               FROM billing_usage_events
              WHERE reported_at IS NULL AND metric = ANY($1::text[])
+               AND """ + BILLABLE_PREDICATE + """
              GROUP BY tenant_id
              ORDER BY min(occurred_at) ASC
              LIMIT $2
@@ -361,10 +481,18 @@ async def usage_summary(
             -- `app_is_platform_admin() OR tenant_id = app_current_tenant()`,
             -- i.e. wide open: without this predicate an admin's own usage panel
             -- reports the sum of EVERY tenant's activity as its own.
+            -- Counts are of BILLABLE rows only (BILLABLE_PREDICATE): a
+            -- lead_engaged row the pre-0133 code wrote at the staged step
+            -- names no delivered event, so it is reported apart as
+            -- not_billable_events rather than as consumption or as a bill
+            -- waiting to go out.
             SELECT metric,
-                   sum(quantity)::numeric AS quantity,
-                   count(*)::int AS events,
-                   count(*) FILTER (WHERE reported_at IS NOT NULL)::int AS reported,
+                   coalesce(sum(quantity) FILTER (WHERE """ + BILLABLE_PREDICATE + """), 0)::numeric
+                       AS quantity,
+                   count(*) FILTER (WHERE """ + BILLABLE_PREDICATE + """)::int AS events,
+                   count(*) FILTER (WHERE reported_at IS NOT NULL
+                                      AND """ + BILLABLE_PREDICATE + """)::int AS reported,
+                   count(*) FILTER (WHERE NOT """ + BILLABLE_PREDICATE + """)::int AS not_billable,
                    max(occurred_at) AS last_at
               FROM billing_usage_events
              WHERE tenant_id = $2::uuid
@@ -382,6 +510,7 @@ async def usage_summary(
                 "quantity": float(r["quantity"] or 0),
                 "events": r["events"],
                 "reported_to_stripe": r["reported"],
+                "not_billable_events": r["not_billable"],
                 "last_at": r["last_at"].isoformat() if r["last_at"] else None,
             }
             for r in rows

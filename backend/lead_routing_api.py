@@ -26,6 +26,7 @@ from contact_truth import (
     seal_json,
 )
 from db.connection import tenant_tx
+from outreach_lifecycle import ACCEPTED_DISPOSITIONS
 from platform_policy import Feature, feature_enabled
 from speed_to_lead import enqueue_speed_to_lead
 from tenancy import Role, TenantContext, apply_rls_context, require_context, require_role
@@ -531,27 +532,44 @@ async def routing_metrics(
         # average past the point of meaning), and the industry claim this feature
         # is chasing is stated as a threshold, so p50/p90 and the under-90s share
         # are what actually answer "are we hitting it?".
+        #
+        # Stages are never merged (C6, AC04.05). A staged draft has reached
+        # nobody, so it is counted as staged and NOT as a response; latency is
+        # measured to the moment a provider accepted the approved message
+        # (accepted_at, 0133), never to when the draft was written. A row
+        # accepted before 0133 whose acceptance time could not be recovered is
+        # counted as accepted but left out of the percentiles (accepted_untimed).
         response = await conn.fetchrow(
             """
             SELECT count(*)::int AS attempts,
-                   count(*) FILTER (WHERE disposition IN ('staged','sent'))::int AS responded,
+                   count(*) FILTER (WHERE disposition='staged')::int AS staged,
+                   count(*) FILTER (WHERE disposition='approved')::int AS approved,
+                   count(*) FILTER (WHERE disposition = ANY($2::text[]))::int AS accepted,
+                   count(*) FILTER (WHERE disposition='delivered')::int AS delivered,
+                   count(*) FILTER (WHERE disposition='cancelled')::int AS cancelled,
                    count(*) FILTER (WHERE disposition='blocked')::int AS blocked,
                    count(*) FILTER (WHERE disposition='skipped')::int AS skipped,
                    count(*) FILTER (WHERE disposition='failed')::int AS failed,
-                   percentile_disc(0.5) WITHIN GROUP (
-                       ORDER BY extract(epoch FROM (responded_at - lead_created_at))
-                   ) FILTER (WHERE disposition IN ('staged','sent')) AS p50_seconds,
-                   percentile_disc(0.9) WITHIN GROUP (
-                       ORDER BY extract(epoch FROM (responded_at - lead_created_at))
-                   ) FILTER (WHERE disposition IN ('staged','sent')) AS p90_seconds,
                    count(*) FILTER (
-                       WHERE disposition IN ('staged','sent')
-                         AND responded_at - lead_created_at <= interval '90 seconds'
+                       WHERE disposition = ANY($2::text[]) AND accepted_at IS NULL
+                   )::int AS accepted_untimed,
+                   percentile_disc(0.5) WITHIN GROUP (
+                       ORDER BY extract(epoch FROM (accepted_at - lead_created_at))
+                   ) FILTER (WHERE disposition = ANY($2::text[]) AND accepted_at IS NOT NULL)
+                       AS p50_seconds,
+                   percentile_disc(0.9) WITHIN GROUP (
+                       ORDER BY extract(epoch FROM (accepted_at - lead_created_at))
+                   ) FILTER (WHERE disposition = ANY($2::text[]) AND accepted_at IS NOT NULL)
+                       AS p90_seconds,
+                   count(*) FILTER (
+                       WHERE disposition = ANY($2::text[]) AND accepted_at IS NOT NULL
+                         AND accepted_at - lead_created_at <= interval '90 seconds'
                    )::int AS under_90s
               FROM lead_response_events
              WHERE responded_at >= now() - ($1::int * interval '1 day')
             """,
             days,
+            list(ACCEPTED_DISPOSITIONS),
         )
     total_json = _row_json(totals)
     received = int(total_json.get("received") or 0)
@@ -559,13 +577,15 @@ async def routing_metrics(
     total_json["routing_rate"] = round(routed / received, 4) if received else 0.0
 
     resp_json = _row_json(response)
-    responded = int(resp_json.get("responded") or 0)
+    timed = int(resp_json.get("accepted") or 0) - int(resp_json.get("accepted_untimed") or 0)
     for key in ("p50_seconds", "p90_seconds"):
         raw = resp_json.get(key)
         resp_json[key] = round(float(raw), 1) if raw is not None else None
     resp_json["under_90s_rate"] = (
-        round(int(resp_json.get("under_90s") or 0) / responded, 4) if responded else 0.0
+        round(int(resp_json.get("under_90s") or 0) / timed, 4) if timed > 0 else 0.0
     )
+    # What the latency numbers measure, so nobody reads them as time-to-draft.
+    resp_json["latency_measured_to"] = "accepted"
     # Leads that arrived but produced no response row at all. Without this the
     # latency numbers describe only the leads the automation reached — the same
     # survivorship bias the ledger's 'blocked' rows exist to avoid.
