@@ -203,3 +203,56 @@ def _main():
 
 if __name__ == "__main__":
     sys.exit(_main())
+
+
+# ── 0131: agent scope on clients (D-2026-10-13-01) ─────────────────────────
+
+def test_client_access_mirror_pool_assignee_share_owner():
+    from tenancy import client_access
+
+    agent = TenantContext(agent_id="a@x.test", tenant_id=TENANT_A, role=Role.AGENT)
+    mine = {"tenant_id": TENANT_A, "id": "c1", "assignee_user_id": "u-a"}
+    theirs = {"tenant_id": TENANT_A, "id": "c2", "assignee_user_id": "u-b"}
+    pool = {"tenant_id": TENANT_A, "id": "c3", "assignee_user_id": None}
+    assert client_access(agent, mine, "u-a") == "edit"
+    assert client_access(agent, pool, "u-a") == "edit"           # the brokerage pool
+    assert client_access(agent, theirs, "u-a") is None             # a colleague's client
+    assert client_access(agent, theirs, "u-a", {"c2": "view"}) == "view"
+    assert client_access(agent, theirs, "u-a", {"c2": "edit"}) == "edit"
+    assert client_access(agent, theirs, None, {"c2": "edit"}) is None   # nobody, no shares
+    assert client_access(CTX_A, theirs, None) == "edit"            # the broker owner
+    assert client_access(CTX_B, theirs, None) is None              # another brokerage
+    assert client_access(CTX_ADMIN, theirs, None) == "edit"
+
+
+def test_brokerage_scope_never_reaches_a_user_session():
+    from tenancy import brokerage_scope, client_access
+
+    theirs = {"tenant_id": TENANT_A, "id": "c2", "assignee_user_id": "u-b"}
+    pipeline = brokerage_scope(TenantContext(agent_id="portal:p1", tenant_id=TENANT_A, role=Role.AGENT))
+    user = brokerage_scope(TenantContext(agent_id="a@x.test", tenant_id=TENANT_A, role=Role.AGENT,
+                                         verify_session=True, user_id="u-a"))
+    assert client_access(pipeline, theirs, None) == "edit"
+    assert client_access(user, theirs, "u-a") is None
+
+
+def test_apply_rls_context_sets_record_scope():
+    import asyncio
+    import uuid
+
+    from tenancy import apply_rls_context, brokerage_scope
+
+    calls = []
+
+    class Conn:
+        async def execute(self, sql, *args):
+            calls.append((sql, args))
+
+    pipeline = brokerage_scope(TenantContext(agent_id="portal:p1", tenant_id=TENANT_A, role=Role.AGENT))
+    user = brokerage_scope(TenantContext(agent_id="a@x.test", tenant_id=TENANT_A, role=Role.AGENT,
+                                         verify_session=True, user_id=str(uuid.uuid4())))
+    asyncio.run(apply_rls_context(Conn(), pipeline))
+    asyncio.run(apply_rls_context(Conn(), user))
+    assert "app.record_scope" in calls[0][0] and calls[0][1][-1] == "brokerage"
+    assert "set_config('app.record_scope', 'actor', true)" in calls[1][0]
+    assert "brokerage" not in calls[1][1]

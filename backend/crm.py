@@ -34,6 +34,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from db.connection import tenant_tx
+from record_access import require_client_edit, resolve_assignment
 from tenancy import TenantContext, require_context
 from outreach_compliance import Channel, enforce_outreach
 from client_ai_automation import enqueue_client_reconcile
@@ -917,10 +918,13 @@ async def update_client(
     # Column names come from the ClientPatch model's declared fields — never
     # from raw client input — so this f-string assembly is injection-safe.
     sets, args = [], []
+    assignee_pos = None
     for col in ("full_name", "email", "phone", "client_type",
                 "stage", "lead_score", "assignee_id", "company", "source"):
         if col not in fields:
             continue
+        if col == "assignee_id":
+            assignee_pos = len(args)
         sets.append(f"{col} = ${len(args) + 1}")
         args.append(fields[col])
     if "preferences" in fields:
@@ -941,6 +945,11 @@ async def update_client(
             )
             if current is None:
                 raise HTTPException(status.HTTP_404_NOT_FOUND, "client not found")
+            # Who may change this client, and to whom it may be assigned (0131).
+            if assignee_pos is not None:
+                args[assignee_pos] = await resolve_assignment(conn, ctx, client_id, fields["assignee_id"])
+            else:
+                await require_client_edit(conn, client_id)
 
             row = await conn.fetchrow(
                 f"""
@@ -1040,6 +1049,7 @@ async def link_client_house(
             )
             if client is None:
                 raise HTTPException(status.HTTP_404_NOT_FOUND, "client not found")
+            await require_client_edit(conn, client_id)
 
             created = False
             if body.lead_id is not None or body.public_record_id is not None:
@@ -1386,6 +1396,7 @@ async def send_message(
             )
             if client is None:
                 raise HTTPException(status.HTTP_404_NOT_FOUND, "client not found")
+            await require_client_edit(conn, client_id)
             if stored_channel == "email" and outbound and not client["email"]:
                 raise HTTPException(
                     status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -1577,8 +1588,7 @@ async def create_showing(
         async with tenant_tx(ctx) as conn:
             # Pre-flight existence checks under RLS — clean 404s instead of
             # FK-violation 500s (FK checks bypass RLS; these don't).
-            if await conn.fetchval("SELECT 1 FROM clients WHERE id = $1", body.client_id) is None:
-                raise HTTPException(status.HTTP_404_NOT_FOUND, "client not found")
+            await require_client_edit(conn, body.client_id)
             if body.listing_id and await conn.fetchval(
                 "SELECT 1 FROM listings WHERE id = $1", body.listing_id
             ) is None:

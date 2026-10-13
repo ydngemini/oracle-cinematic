@@ -33,6 +33,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field, field_validator
 
 from db.connection import tenant_tx
+from record_access import client_access_level, require_client_edit, resolve_assignment
 from tenancy import TenantContext, require_context
 from client_ai_automation import automation_state_json
 
@@ -381,7 +382,7 @@ async def bulk_clients(
         else:
             archived = bool(value)
 
-    updated = 0
+    updated = skipped = 0
     updated_ids: list[str] = []
     try:
         async with tenant_tx(ctx) as conn:
@@ -397,9 +398,19 @@ async def bulk_clients(
                     raise HTTPException(422, "Assign to an active member of this brokerage.")
                 assign_val = canonical
             for cid in body.ids:
-                # RLS makes a missing / cross-tenant id invisible — skip it.
-                if await conn.fetchval("SELECT 1 FROM clients WHERE id = $1", cid) is None:
+                # RLS makes a missing / cross-tenant / colleague's id invisible,
+                # and a view-only share is not editable — skip both (0131).
+                if await client_access_level(conn, cid) != "edit":
+                    skipped += 1
                     continue
+                if action == "assign":
+                    try:
+                        await resolve_assignment(conn, ctx, cid, assign_val)
+                    except HTTPException as exc:
+                        if exc.status_code != status.HTTP_403_FORBIDDEN:
+                            raise
+                        skipped += 1
+                        continue
 
                 if action == "tag":
                     await conn.execute(
@@ -461,7 +472,7 @@ async def bulk_clients(
                 action, updated, len(body.ids), ctx.tenant_id, ctx.agent_id)
     for cid in updated_ids:
         await _queue_client_ai(ctx, cid, f"bulk_{action}")
-    return {"updated": updated}
+    return {"updated": updated, "skipped": skipped}
 
 
 # ---------------------------------------------------------------------------
@@ -912,8 +923,7 @@ async def add_tag(
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "tag cannot be blank")
     try:
         async with tenant_tx(ctx) as conn:
-            if await conn.fetchval("SELECT 1 FROM clients WHERE id = $1", client_id) is None:
-                raise HTTPException(status.HTTP_404_NOT_FOUND, "client not found")
+            await require_client_edit(conn, client_id)
             inserted = await conn.fetchval(
                 "INSERT INTO client_tags (tenant_id, client_id, tag) "
                 "VALUES ($1, $2, $3) ON CONFLICT DO NOTHING RETURNING id",
@@ -941,8 +951,7 @@ async def remove_tag(
     _require_uuid(client_id, "client_id")
     try:
         async with tenant_tx(ctx) as conn:
-            if await conn.fetchval("SELECT 1 FROM clients WHERE id = $1", client_id) is None:
-                raise HTTPException(status.HTTP_404_NOT_FOUND, "client not found")
+            await require_client_edit(conn, client_id)
             removed = await conn.fetchval(
                 "DELETE FROM client_tags WHERE client_id = $1 AND lower(tag) = lower($2) RETURNING id",
                 client_id, tag,
@@ -991,8 +1000,7 @@ async def create_note(
     _require_uuid(client_id, "client_id")
     try:
         async with tenant_tx(ctx) as conn:
-            if await conn.fetchval("SELECT 1 FROM clients WHERE id = $1", client_id) is None:
-                raise HTTPException(status.HTTP_404_NOT_FOUND, "client not found")
+            await require_client_edit(conn, client_id)
             row = await conn.fetchrow(
                 """
                 INSERT INTO client_notes (tenant_id, client_id, body, author_id, pinned)
@@ -1035,6 +1043,7 @@ async def update_note(
 
     try:
         async with tenant_tx(ctx) as conn:
+            await require_client_edit(conn, client_id)
             row = await conn.fetchrow(
                 f"""
                 UPDATE client_notes
@@ -1068,6 +1077,7 @@ async def approve_note(
     _require_uuid(note_id, "note_id")
     try:
         async with tenant_tx(ctx) as conn:
+            await require_client_edit(conn, client_id)
             row = await conn.fetchrow(
                 """
                 UPDATE client_notes
@@ -1130,6 +1140,7 @@ async def delete_note(
     _require_uuid(note_id, "note_id")
     try:
         async with tenant_tx(ctx) as conn:
+            await require_client_edit(conn, client_id)
             deleted = await conn.fetchval(
                 "DELETE FROM client_notes WHERE id = $1 AND client_id = $2 RETURNING id",
                 note_id, client_id,
@@ -1154,6 +1165,7 @@ async def create_client_task(
     due_at = _norm_dt(body.due_at)
     try:
         async with tenant_tx(ctx) as conn:
+            await require_client_edit(conn, client_id)
             crow = await conn.fetchrow("SELECT full_name FROM clients WHERE id = $1", client_id)
             if crow is None:
                 raise HTTPException(status.HTTP_404_NOT_FOUND, "client not found")

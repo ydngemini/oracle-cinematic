@@ -66,6 +66,7 @@ TABLES: dict[str, TableEntry] = {
     "client_tasks": TableEntry(C.BUSINESS_CRM, E),
     "client_activities": TableEntry(C.BUSINESS_CRM, E),
     "client_tags": TableEntry(C.BUSINESS_CRM, E),
+    "record_shares": TableEntry(C.BUSINESS_CRM, E, "per-client view/edit grants (0131); revoked rows kept as history"),
     "client_segments": TableEntry(C.BUSINESS_CRM, E),
     "showings": TableEntry(C.BUSINESS_CRM, E),
     "listings": TableEntry(C.BUSINESS_CRM, E),

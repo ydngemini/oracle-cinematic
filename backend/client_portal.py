@@ -32,7 +32,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from auth import ALGORITHM, SECRET_KEY
 from db.connection import get_pool, tenant_tx
 from approval_service import decide_approval
-from tenancy import Role, TenantContext, require_context
+from tenancy import Role, TenantContext, brokerage_scope, require_context
 
 log = logging.getLogger("oracle.client_portal")
 
@@ -492,11 +492,11 @@ async def record_activity(
     must not be able to break the page they came to read.
     """
     claims = _portal_session_claims(authorization)
-    ctx = TenantContext(
+    ctx = brokerage_scope(TenantContext(
         agent_id=f"portal:{claims['portal_id']}",
         tenant_id=str(claims["tenant_id"]),
         role=Role.AGENT,
-    )
+    ))
     try:
         async with tenant_tx(ctx) as conn:
             live = await conn.fetchval(
@@ -613,11 +613,11 @@ async def read_scoped_media(
       the whole house are different decisions.
     """
     claims = _portal_session_claims(authorization)
-    ctx = TenantContext(
+    ctx = brokerage_scope(TenantContext(
         agent_id=f"portal:{claims['portal_id']}",
         tenant_id=str(claims["tenant_id"]),
         role=Role.AGENT,
-    )
+    ))
     async with tenant_tx(ctx) as conn:
         portal = await conn.fetchrow(
             """
@@ -673,11 +673,11 @@ async def read_scoped_media(
 async def read_scoped_dossier(authorization: Optional[str] = Header(default=None)):
     """Return only the fields granted by a still-live, revocable portal row."""
     claims = _portal_session_claims(authorization)
-    ctx = TenantContext(
+    ctx = brokerage_scope(TenantContext(
         agent_id=f"portal:{claims['portal_id']}",
         tenant_id=str(claims["tenant_id"]),
         role=Role.AGENT,
-    )
+    ))
     async with tenant_tx(ctx) as conn:
         portal = await conn.fetchrow(
             """

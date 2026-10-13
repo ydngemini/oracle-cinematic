@@ -23,7 +23,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from automation_jobs import JobReporter, enqueue_job, register_handler
 from db.connection import tenant_tx
 from platform_policy import ActionRisk, enforce_public_property_data
-from tenancy import Role, TenantContext, require_context
+from tenancy import Role, TenantContext, brokerage_scope, require_context
 
 logger = logging.getLogger("oracle.client_ai")
 
@@ -1030,7 +1030,8 @@ async def handle_client_reconcile_job(payload: dict[str, Any], reporter: JobRepo
     uuid.UUID(tenant_id)
     uuid.UUID(client_id)
     requested_by = str(payload.get("requested_by") or "client-ai")[:160]
-    ctx = TenantContext(agent_id=requested_by, tenant_id=tenant_id, role=Role.AGENT)
+    # The steward maintains the record for the brokerage, whoever asked (0131).
+    ctx = brokerage_scope(TenantContext(agent_id=requested_by, tenant_id=tenant_id, role=Role.AGENT))
     await reporter.progress(10, "Loading verified CRM facts")
     try:
         result = await reconcile_client(ctx, client_id, force=bool(payload.get("force")))
@@ -1187,9 +1188,9 @@ async def enqueue_stale_clients(limit: int = 500) -> dict[str, Any]:
         )
     queued = 0
     for row in rows:
-        tenant_ctx = TenantContext(
+        tenant_ctx = brokerage_scope(TenantContext(
             agent_id="client-ai-sweeper", tenant_id=str(row["tenant_id"]), role=Role.AGENT,
-        )
+        ))
         result = await enqueue_client_reconcile(
             tenant_ctx, str(row["id"]), reason="nightly_catchup",
         )

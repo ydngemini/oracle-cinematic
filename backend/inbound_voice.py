@@ -28,7 +28,7 @@ from contact_truth import (
 )
 from db.connection import tenant_tx
 from outreach_compliance import AI_VOICE_DISCLOSURE, STOP_KEYWORDS
-from tenancy import Role, TenantContext
+from tenancy import Role, TenantContext, brokerage_scope
 
 INTAKE_ROUTING_QUESTION = "Are you calling about buying a home or selling a property?"
 
@@ -120,11 +120,13 @@ def _platform_context() -> TenantContext:
 
 
 def _tenant_context(tenant_id: str, agent_id: str) -> TenantContext:
-    return TenantContext(
+    # Matching a phone number to a client is a brokerage function: the message
+    # or call belongs on the client's record whoever's line it came in on (0131).
+    return brokerage_scope(TenantContext(
         agent_id=agent_id,
         tenant_id=tenant_id,
         role=Role.AGENT,
-    )
+    ))
 
 
 def _tenant_key(tenant_id: str) -> str:

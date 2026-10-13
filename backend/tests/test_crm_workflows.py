@@ -51,6 +51,8 @@ class _MessageConn:
 
     async def fetchrow(self, query, *args):
         self.fetchrow_calls.append((query, args))
+        if "app_client_access" in query:  # record_access edit check (0131)
+            return {"can_edit": True}
         if "SELECT id, full_name, email, phone, client_type FROM clients" in query:
             return self.client
         if "INSERT INTO interaction_logs" in query:
@@ -137,6 +139,8 @@ class _HouseConn:
 
     async def fetchrow(self, query, *args):
         self.fetchrow_calls.append((query, args))
+        if "app_client_access" in query:  # record_access edit check (0131)
+            return {"can_edit": True}
         if "SELECT id, full_name FROM clients" in query:
             return {"id": CLIENT_ID, "full_name": "Client One"}
         if "FROM leads" in query:
@@ -177,6 +181,8 @@ class _PublicCatalogHouseConn(_HouseConn):
 
     async def fetchrow(self, query, *args):
         self.fetchrow_calls.append((query, args))
+        if "app_client_access" in query:  # record_access edit check (0131)
+            return {"can_edit": True}
         if "SELECT id, full_name FROM clients" in query:
             return {"id": CLIENT_ID, "full_name": "Client One"}
         if "FROM public_property_records" in query:

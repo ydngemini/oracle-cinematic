@@ -1531,23 +1531,17 @@ async def _execute_safe_tool(
             assignee = str(tool_input.get("agent_id") or "").strip()
             if not assignee or len(assignee) > 160:
                 return {"ok": False, "error": "agent_id must be 1-160 characters."}
-            # The reason this was a flat refusal is the reason it needs a check
-            # rather than a ban: assignee_id is a free-text column, so without
-            # this an assistant could route a client to a string that is nobody.
-            # It is not a permission boundary — the RLS policy on clients is
-            # tenant-only — so reassignment stays an INTERNAL_EDIT.
-            if not await conn.fetchval(
-                """SELECT 1 FROM team_memberships
-                    WHERE tenant_id=$1::uuid AND user_id=$2 AND status='active'""",
-                ctx.tenant_id, assignee,
-            ):
-                return {
-                    "ok": False,
-                    "error": (
-                        f"{assignee!r} is not an active member of this workspace, "
-                        f"so the client would be assigned to nobody."
-                    ),
-                }
+            # The same rules as the CRM route (0131, D-2026-10-13-01): an active
+            # member only, written canonically; an agent takes a client or
+            # hands it back, and only the owner gives it to a colleague.
+            from fastapi import HTTPException
+
+            from record_access import resolve_assignment
+
+            try:
+                assignee = await resolve_assignment(conn, ctx, id_field, assignee)
+            except HTTPException as exc:
+                return {"ok": False, "error": str(exc.detail)}
             fields = {"assignee_id": assignee}
             table, permitted = "clients", ("assignee_id",)
         elif tool_name == "score_client_lead":
@@ -1747,6 +1741,11 @@ async def _execute_safe_tool(
             return {"ok": False, "error": "The requested field is approval-gated."}
 
         live_record_clause = " AND archived_at IS NULL" if table == "clients" else ""
+        if table == "clients":
+            from record_access import client_access_level
+
+            if await client_access_level(conn, id_field) == "view":
+                return {"ok": False, "error": "This client is shared with you to view only."}
         current = await conn.fetchrow(
             f"SELECT {','.join(permitted)},updated_at FROM {table} "
             f"WHERE id=$1::uuid AND tenant_id=$2::uuid{live_record_clause} FOR UPDATE",

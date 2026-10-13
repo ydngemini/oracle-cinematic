@@ -96,6 +96,9 @@ class AuditCategory(str, Enum):
     # Platform administration
     ADMIN_ACTION      = "ADMIN_ACTION"       # any platform_admin operation
 
+    # Record access
+    ACCESS_GRANT      = "ACCESS_GRANT"       # a client shared, re-permissioned or unshared (0131)
+
 
 # ---------------------------------------------------------------------------
 # Hash-chain helpers — deterministic over the canonical block string.

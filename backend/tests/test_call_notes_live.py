@@ -60,6 +60,10 @@ async def _scenario():
     try:
         await admin.execute("INSERT INTO tenants (id, slug, name) VALUES ($1,$2,'Call notes test')",
                             tenant, f"notes-{tenant[:8]}")
+        # The assignee must be a member (0131 rejects an assignee who is nobody).
+        await admin.execute(
+            "INSERT INTO users (id, tenant_id, agent_id, role, email, password_hash) "
+            "VALUES ($1,$2,'agent-b','agent','agent-b','scrypt$x$y')", uuid.uuid4(), tenant)
         await admin.execute(
             "INSERT INTO clients (id, tenant_id, full_name, assignee_id) VALUES ($1,$2,'Sarah','agent-b')",
             client, tenant)

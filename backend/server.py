@@ -59,6 +59,7 @@ from cma_generator import router as cma_router
 from crm import router as crm_router
 from contacts_api import router as contacts_router
 from client_enterprise import router as client_enterprise_router
+from record_access import router as record_access_router
 from client_ai_automation import router as client_ai_router
 from telephony_api import router as telephony_router
 from messaging_api import router as messaging_router
@@ -310,6 +311,33 @@ async def _value_error(request: Request, exc: Exception):
     return JSONResponse(status_code=500, content={"detail": "Internal server error."})
 
 
+@app.exception_handler(asyncpg.exceptions.InsufficientPrivilegeError)
+async def _row_security_denied(request: Request, exc: Exception):
+    """A write the agent-scope policies (0131) refused: a view-only share, or a
+    client that belongs to someone else. Routes check first and answer with a
+    specific reason; this is the net under the ones that do not. Any OTHER
+    42501 is a missing GRANT — a server bug — and stays a logged 500."""
+    if "row-level security" in str(exc):
+        logger.warning("Row security refused %s %s", request.method, request.url.path)
+        return JSONResponse(status_code=403, content={"detail": "You don't have edit access to this record."})
+    logger.error("Unhandled %s on %s %s", type(exc).__name__, request.method, request.url.path,
+                 exc_info=(type(exc), exc, exc.__traceback__))
+    return JSONResponse(status_code=500, content={"detail": "Internal server error."})
+
+
+@app.exception_handler(asyncpg.exceptions.ForeignKeyViolationError)
+async def _foreign_key_violation(request: Request, exc: Exception):
+    """The 0131 trigger rejects an assignee who is not a member of the
+    brokerage (routes validate first; this covers the rest). Any other FK
+    violation stays a logged 500."""
+    if "assignee is not a member" in str(exc):
+        return JSONResponse(status_code=422,
+                            content={"detail": "That person is not an active member of this brokerage."})
+    logger.error("Unhandled %s on %s %s", type(exc).__name__, request.method, request.url.path,
+                 exc_info=(type(exc), exc, exc.__traceback__))
+    return JSONResponse(status_code=500, content={"detail": "Internal server error."})
+
+
 @app.exception_handler(asyncpg.exceptions.InvalidAuthorizationSpecificationError)
 async def _session_no_longer_valid(request: Request, exc: Exception):
     # Raised by app_begin_session (0117) when a token's account was deactivated,
@@ -404,6 +432,7 @@ app.include_router(lead_dossier_router)
 app.include_router(cma_router)
 app.include_router(crm_router)
 app.include_router(contacts_router)
+app.include_router(record_access_router)
 app.include_router(client_enterprise_router)
 app.include_router(client_ai_router)
 app.include_router(telephony_router)

@@ -94,6 +94,13 @@ class TenantContext:
     auth_time: Optional[int] = field(default=None, compare=False)
     # Token expiry (epoch seconds). Long-lived sockets close when it passes.
     expires_at: Optional[float] = field(default=None, compare=False)
+    # Which clients an AGENT context reads (0131, D-2026-10-13-01): "actor" =
+    # their own, the unassigned pool and what is shared with them; "brokerage"
+    # = every client of the tenant, for system pipelines that act for the
+    # brokerage (client portal, inbound SMS/voice matching, the client-AI
+    # steward). Never "brokerage" for a verified user session — see
+    # apply_rls_context and brokerage_scope().
+    record_scope: str = field(default="actor", compare=False)
 
     @property
     def is_platform_admin(self) -> bool:
@@ -111,8 +118,52 @@ class TenantContext:
 # ---------------------------------------------------------------------------
 
 def can_read_private(ctx: TenantContext, row: dict) -> bool:
-    """clients / leads — hard wall, no sharing."""
+    """clients / leads — the tenant wall (clients_tenant_isolation). For clients
+    the agent scope narrows it further: see client_access()."""
     return ctx.is_platform_admin or row.get("tenant_id") == ctx.tenant_id
+
+
+RECORD_SCOPES = ("actor", "brokerage")
+
+
+def brokerage_scope(ctx: TenantContext) -> TenantContext:
+    """The same identity, reading every client of its brokerage (0131).
+
+    For server-built pipeline contexts only. A verified user session keeps its
+    own scope: apply_rls_context ignores this flag when verify_session is set."""
+    from dataclasses import replace
+
+    return replace(ctx, record_scope="brokerage")
+
+
+def client_access(
+    ctx: TenantContext,
+    row: dict,
+    actor_user_id: Optional[str],
+    shares: dict | None = None,
+) -> Optional[str]:
+    """Mirror of app_client_access() (0131): None, "view" or "edit".
+
+    `row` carries tenant_id, id and assignee_user_id; `actor_user_id` is the
+    caller's users.id (app_current_user_id()); `shares` maps client id →
+    permission of the caller's ACTIVE shares. Brokerage-wide identities edit
+    everything in their tenant; otherwise the pool and the assignee edit, and a
+    share grants exactly its permission."""
+    if not can_read_private(ctx, row):
+        return None
+    if (
+        ctx.is_platform_admin
+        or ctx.is_broker_owner
+        or (ctx.record_scope == "brokerage" and not ctx.verify_session)
+    ):
+        return "edit"
+    assignee = row.get("assignee_user_id")
+    if assignee is None or (actor_user_id is not None and str(assignee) == str(actor_user_id)):
+        return "edit"
+    if actor_user_id is None:
+        return None
+    granted = (shares or {}).get(str(row.get("id")))
+    return granted if granted in ("view", "edit") else None
 
 
 def can_read_listing(
@@ -171,8 +222,10 @@ async def apply_rls_context(conn, ctx: TenantContext) -> None:
         # Same three GUCs, plus the account check that makes revocation real:
         # a token issued before a password change, reset, demotion or removal
         # fails here (SQLSTATE 28000 → 401) on its next tenant transaction.
+        # A user session always reads as itself (0131): record_scope 'actor'.
         await conn.execute(
-            "SELECT app_begin_session($1, $2, $3, true, $4::uuid, $5)",
+            "SELECT app_begin_session($1, $2, $3, true, $4::uuid, $5),"
+            "       set_config('app.record_scope', 'actor', true)",
             ctx.tenant_id,
             ctx.role.value,
             ctx.agent_id,
@@ -180,13 +233,16 @@ async def apply_rls_context(conn, ctx: TenantContext) -> None:
             ctx.session_epoch,
         )
     else:
+        scope = ctx.record_scope if ctx.record_scope in RECORD_SCOPES else "actor"
         await conn.execute(
             "SELECT set_config('app.current_tenant', $1, true),"
             "       set_config('app.current_role',   $2, true),"
-            "       set_config('app.current_agent',  $3, true)",
+            "       set_config('app.current_agent',  $3, true),"
+            "       set_config('app.record_scope',   $4, true)",
             ctx.tenant_id,
             ctx.role.value,
             ctx.agent_id,
+            scope,
         )
     log.debug(
         "RLS context applied: tenant_id=%r role=%r agent_id=%r.",

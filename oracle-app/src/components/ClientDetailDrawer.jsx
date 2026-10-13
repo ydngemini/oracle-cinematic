@@ -15,6 +15,8 @@ import ClientTaskList from './ClientTaskList';
 // showing history while nothing in the product could add to it.
 import ShowingLogger from './ShowingLogger';
 import ClientNotes from './ClientNotes';
+import ClientSharing, { AssigneeControl } from './ClientAccess';
+import { useClientAccess } from '../state/useClientAccess';
 import StateDocumentChecklist from './StateDocumentChecklist';
 import { useAssistantRecord } from './AssistantContext';
 // Lazy: the relationship view pulls two endpoints and its own stylesheet, and
@@ -23,7 +25,7 @@ const RelationshipIntelligence = lazy(() =>
   import('./RelationshipIntelligence').then((m) => ({ default: m.RelationshipIntelligence })));
 
 import styles from './ClientDetailDrawer.module.css';
-import { friendlyError } from '../lib/errorMessages';
+import { friendlyError, isHumanMessage } from '../lib/errorMessages';
 
 const SUBTABS = [
   { id: 'overview', label: 'Overview' },
@@ -90,6 +92,7 @@ export default function ClientDetailDrawer({ card, onClose, onClientChanged, rea
   // Re-fetch trigger for the detail record, same idiom as tlKey above. Tags are
   // returned by GET /clients/{id}, so a tag change has to re-read it.
   const [detailKey, setDetailKey] = useState(0);
+  const accessState = useClientAccess(clientId);
   const sheetRef = useRef(null);
   const scoreTimer = useRef(null);
   const onCloseRef = useRef(onClose);
@@ -192,7 +195,7 @@ export default function ClientDetailDrawer({ card, onClose, onClientChanged, rea
   const reloadDetail = useCallback(() => setDetailKey((k) => k + 1), []);
 
   // Optimistic PATCH /clients/{id}; revert on failure, bubble the merged card up.
-  const applyPatch = useCallback((patchBody) => {
+  const applyPatch = useCallback((patchBody, after) => {
     if (!clientId) return;
     const prev = detail;
     const automationPatch = { ...(detail?.automation || {}) };
@@ -214,11 +217,14 @@ export default function ClientDetailDrawer({ card, onClose, onClientChanged, rea
           onClientChanged?.(merged);
         }
         bumpTimeline();
+        after?.();
       },
       (err) => {
         setDetail(prev);
         onClientChanged?.(prev);
-        flashToast(errMessage(err, 'client'));
+        // A 403 here says why (view-only share, or an assignment only the
+        // owner may make); the generic "no access" sentence would hide it.
+        flashToast(err?.status === 403 && isHumanMessage(err.message) ? err.message.trim() : errMessage(err, 'client'));
       }
     );
   }, [clientId, detail, onClientChanged, bumpTimeline]);
@@ -378,7 +384,11 @@ export default function ClientDetailDrawer({ card, onClose, onClientChanged, rea
             </div>
             <div className={styles.metaCell}>
               <span className={styles.cellLabel}>Assignee</span>
-              <InlineAssignee value={detail?.assignee_id} onCommit={(v) => applyPatch({ assignee_id: v || null })} />
+              <AssigneeControl
+                state={accessState}
+                assigneeId={detail?.assignee_id}
+                onAssign={(v) => applyPatch({ assignee_id: v || null }, accessState.reload)}
+              />
             </div>
           </div>
 
@@ -413,6 +423,14 @@ export default function ClientDetailDrawer({ card, onClose, onClientChanged, rea
 
         {/* ── Body ───────────────────────────────────────────────────────── */}
         <div className={styles.body}>
+          {tab === 'overview' && (
+            <ClientSharing
+              clientId={clientId}
+              state={accessState}
+              assigneeId={detail?.assignee_id}
+              onChanged={bumpTimeline}
+            />
+          )}
           {tab === 'overview' && (
             <OverviewPane
               detail={detail}
@@ -580,26 +598,6 @@ function DossierLinksPane({ detail, houses, automation }) {
         )}
       </section>
     </div>
-  );
-}
-
-// Assignee inline field — separate so it owns its own draft state.
-function InlineAssignee({ value, onCommit }) {
-  const [draft, setDraft] = useState(value || '');
-  // Re-sync the draft when the committed value changes — render-phase, the
-  // documented alternative to a setState-in-effect (which the linter flags).
-  const [prevValue, setPrevValue] = useState(value);
-  if (value !== prevValue) { setPrevValue(value); setDraft(value || ''); }
-  return (
-    <input
-      className={styles.assigneeInput}
-      value={draft}
-      onChange={(e) => setDraft(e.target.value)}
-      onBlur={() => { if ((draft.trim() || null) !== (value || null)) onCommit(draft.trim()); }}
-      onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur(); }}
-      placeholder="Unassigned"
-      aria-label="Assignee id"
-    />
   );
 }
 

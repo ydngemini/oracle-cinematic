@@ -473,6 +473,14 @@ async def _offboard_in_tx(conn, ctx: TenantContext, departing: str, successor: s
         "DELETE FROM hyperlocal_site_collaborators WHERE tenant_id=$1 AND lower(agent_id)=lower($2)",
         ctx.tenant_id, a["agent_id"])
     reassign["hyperlocal_site_collaborators_removed"] = _rowcount(collaborators)
+    # Shares TO the departing agent end now (0131); shares they granted stay —
+    # the successor inherits the clients, and the colleagues keep their access.
+    shares = await conn.execute(
+        "UPDATE record_shares SET revoked_at=now(), revoked_by=$3 "
+        "WHERE tenant_id=$1 AND revoked_at IS NULL AND grantee_user_id IN "
+        "(SELECT id FROM users WHERE tenant_id=$1 AND lower(agent_id)=lower($2))",
+        ctx.tenant_id, a["agent_id"], ctx.agent_id)
+    reassign["record_shares_revoked"] = _rowcount(shares)
     if reassign.get("hyperlocal_sites"):
         warnings.append("Published sites still present the departing agent until republished.")
     # 5. phone and text routes: the number belongs to the brokerage's

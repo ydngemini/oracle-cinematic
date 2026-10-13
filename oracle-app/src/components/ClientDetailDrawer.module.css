@@ -765,3 +765,27 @@
 @media (max-width: 719px) {
   .showingRow { grid-template-columns: 1fr; }
 }
+
+/* Assignment and sharing (0131, D-2026-10-13-01) */
+.assigneeRow { display: flex; align-items: center; gap: var(--space-2); min-height: 30px; flex-wrap: wrap; }
+.assigneeName { font-family: var(--font-display); font-size: var(--text-sm); color: var(--oracle-text); min-width: 0; overflow-wrap: anywhere; }
+.smallBtn {
+  min-height: 30px;
+  padding: 0 var(--space-2);
+  border: 1px solid var(--oracle-border-bright);
+  border-radius: var(--radius-sm);
+  color: var(--oracle-text-dim);
+  font-family: var(--font-display);
+  font-size: var(--text-xs);
+  letter-spacing: var(--tracking-wide);
+}
+.smallBtn:hover:not(:disabled) { color: var(--oracle-accent-ink); border-color: var(--oracle-amber-dim); }
+.smallBtn:disabled { opacity: 0.5; cursor: default; }
+.accessNote { margin: 0; font-size: var(--text-sm); color: var(--oracle-text-dim); line-height: 1.5; }
+.accessNote[data-access='view'] { color: var(--oracle-accent-ink); }
+.shareList { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--space-2); }
+.shareRow { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: var(--space-3); font-size: var(--text-sm); }
+.shareRow > span:first-child { min-width: 0; overflow-wrap: anywhere; }
+.shareForm { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); gap: var(--space-3); align-items: end; }
+.shareForm .logBtn { grid-column: 1 / -1; margin-top: 0; }
+@media (max-width: 480px) { .shareForm { grid-template-columns: 1fr; } }

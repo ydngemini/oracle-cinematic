@@ -21,7 +21,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Mapping, Optional, Sequence
 
 from db.connection import tenant_tx
-from tenancy import Role, TenantContext
+from tenancy import Role, TenantContext, brokerage_scope
 
 logger = logging.getLogger("oracle.messaging_data")
 
@@ -51,7 +51,9 @@ def _platform_context() -> TenantContext:
 
 
 def _tenant_context(tenant_id: str, agent_id: str) -> TenantContext:
-    return TenantContext(agent_id=agent_id, tenant_id=tenant_id, role=Role.AGENT)
+    # Matching a phone number to a client is a brokerage function: the message
+    # or call belongs on the client's record whoever's line it came in on (0131).
+    return brokerage_scope(TenantContext(agent_id=agent_id, tenant_id=tenant_id, role=Role.AGENT))
 
 
 async def get_public_business_number(ctx: TenantContext) -> Optional[dict[str, Any]]:
