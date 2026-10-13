@@ -783,7 +783,7 @@ updated: 2026-10-12
 id: L17-03
 status: tests_pass
 env: local
-evidence_shas: [745f2fa]   # + the commit that adds migration 0132 (follow-up)
+evidence_shas: [745f2fa, e125e51]
 files: [backend/db/migrations/0132_client_note_body_sealed.sql, backend/client_note_crypto.py, backend/backfill_client_notes.py, backend/commands_api.py, backend/client_enterprise.py, backend/ai_chat_store.py, backend/client_ai_automation.py, backend/privacy_export.py, backend/privacy_data_map.py, backend/tests/test_client_note_sealing.py, backend/tests/test_client_note_sealing_live.py, backend/tests/test_call_notes_live.py, docs/privacy-data-map.md, docs/operator-scripts.md]
 tests_run:
   - {cmd: "sed -n 2301,2345p backend/commands_api.py; grep -n client_notes backend/privacy_data_map.py", result: "deliver_call_notes inserts into client_notes.body, a plain text column (:2335); the data map classifies client_notes as business CRM only (:65)", date: 2026-10-12}
@@ -806,7 +806,7 @@ updated: 2026-10-13
 id: L17-04
 status: tests_pass
 env: local
-evidence_shas: [745f2fa]   # + the commit that adds migration 0132 (follow-up)
+evidence_shas: [745f2fa, e125e51]
 files: [backend/client_ai_automation.py, backend/outreach_compliance.py, backend/commands_api.py, backend/neoh_intents.py, backend/lead_dossier.py, backend/disposition_enforcer.py, backend/crm.py, backend/auth.py, backend/brokerage_onboarding.py, backend/tests/test_log_pii_guard.py, docs/privacy-data-map.md]
 tests_run:
   - {cmd: "sed -n 676,710p backend/client_ai_automation.py", result: "_property_candidates_bounded logs full_name on failure (:701-703)", date: 2026-10-12}
