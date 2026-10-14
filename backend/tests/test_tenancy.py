@@ -258,7 +258,10 @@ def test_brokerage_scope_never_reaches_a_user_session():
 
 def test_apply_rls_context_sets_record_scope():
     import asyncio
+    import asyncio
     import uuid
+
+    from tenancy import apply_rls_context
 
     from tenancy import apply_rls_context, brokerage_scope
 
@@ -276,3 +279,27 @@ def test_apply_rls_context_sets_record_scope():
     assert "app.record_scope" in calls[0][0] and calls[0][1][-1] == "brokerage"
     assert "set_config('app.record_scope', 'actor', true)" in calls[1][0]
     assert "brokerage" not in calls[1][1]
+
+
+def test_rls_context_turns_jit_off_for_the_transaction():
+    # The agent-scope policies are costed per row, so JIT compiled for seconds
+    # to return a few rows (L03-06, L16-03). Both context paths switch it off
+    # locally (is_local=true, so it reverts at commit or rollback).
+    import asyncio
+    import uuid
+
+    from tenancy import apply_rls_context
+
+    calls = []
+
+    class Conn:
+        async def execute(self, sql, *args):
+            calls.append((sql, args))
+
+    pipeline = TenantContext(agent_id="portal:p1", tenant_id=TENANT_A, role=Role.AGENT)
+    user = TenantContext(agent_id="a@x.test", tenant_id=TENANT_A, role=Role.AGENT,
+                         verify_session=True, user_id=str(uuid.uuid4()))
+    asyncio.run(apply_rls_context(Conn(), pipeline))
+    asyncio.run(apply_rls_context(Conn(), user))
+    for sql, _ in calls:
+        assert "set_config('jit'" in sql and "'off', true)" in sql

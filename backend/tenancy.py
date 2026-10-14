@@ -241,7 +241,12 @@ def require_role(ctx: TenantContext, *allowed: Role) -> None:
 
 async def apply_rls_context(conn, ctx: TenantContext) -> None:
     """SET LOCAL the session context on an asyncpg/psycopg connection so the
-    schema.sql RLS policies evaluate against this request's identity."""
+    schema.sql RLS policies evaluate against this request's identity.
+
+    JIT is off for the transaction too. The agent-scope policies (0131-0142)
+    are costed as one lookup per row, so a scan of a few thousand rows crosses
+    jit_above_cost and compiled for 1.5-3 s to return a handful of rows
+    (L03-06, L16-03). Request transactions are short OLTP reads."""
     if ctx.verify_session:
         # Same three GUCs, plus the account check that makes revocation real:
         # a token issued before a password change, reset, demotion or removal
@@ -249,7 +254,8 @@ async def apply_rls_context(conn, ctx: TenantContext) -> None:
         # A user session always reads as itself (0131): record_scope 'actor'.
         await conn.execute(
             "SELECT app_begin_session($1, $2, $3, true, $4::uuid, $5),"
-            "       set_config('app.record_scope', 'actor', true)",
+            "       set_config('app.record_scope', 'actor', true),"
+            "       set_config('jit', 'off', true)",
             ctx.tenant_id,
             ctx.role.value,
             ctx.agent_id,
@@ -262,7 +268,8 @@ async def apply_rls_context(conn, ctx: TenantContext) -> None:
             "SELECT set_config('app.current_tenant', $1, true),"
             "       set_config('app.current_role',   $2, true),"
             "       set_config('app.current_agent',  $3, true),"
-            "       set_config('app.record_scope',   $4, true)",
+            "       set_config('app.record_scope',   $4, true),"
+            "       set_config('jit',                'off', true)",
             ctx.tenant_id,
             ctx.role.value,
             ctx.agent_id,
