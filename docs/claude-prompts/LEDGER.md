@@ -284,7 +284,7 @@ How it works: restrictive `<t>_linked_read/_insert/_update/_delete` policies, in
 ```yaml
 id: L03-06
 status: tests_pass
-env: local
+env: staging
 evidence_shas: []  # this slice's commit on branch worktree-agent-a7df430df0144db4c, unpushed (SHA in the session report)
 files: [backend/db/migrations/0142_drafts_follow_the_record.sql, backend/commands_api.py, backend/approval_service.py, backend/record_access.py, backend/policy_contract.py, backend/privacy_data_map.py, docs/privacy-data-map.md, backend/tests/test_command_drafts_access_live.py, .github/workflows/ci.yml]
 tests_run:
@@ -295,6 +295,7 @@ tests_run:
   - {cmd: "full backend suite (ORACLE_SKIP_DOTENV=1 python -m pytest -q -p no:cacheprovider tests/)", result: "3471 passed, 32 skipped, 0 failed", date: 2026-10-14}
   - {cmd: "CI live list locally (17 files incl. the new one)", result: "39 passed, 2 failed, both environmental: test_migration_precheck (the dev DB holds other sessions' 0143-0145) and the brokerage matrix composition (0143's interaction_logs lead policies)", date: 2026-10-14}
   - {cmd: "rls_security_review / rls_brokerage / platform_rls_test / privacy_lifecycle / rls_tenant_wall .sql on the local dev DB; bandit with the CI flags and baseline", result: "all PASS (exit 0); bandit exit 0", date: 2026-10-14}
+  - {cmd: "staging after 0a76a72 (CI run 38535851793 green; PRE_DEPLOY applied 0142-0145 as doadmin; rehearsed first as a NOSUPERUSER BYPASSRLS owner), real API as the demo owner and agent (scratchpad smoke.py + smoke_r3.py)", result: "Policy v5 served and accepted; clients 6 / contacts 6 (pool) for both; GET /api/commands owner 2, agent 2 (pool drafts readable); /api/commands/approvals owner 2, agent 0 (own requests only); property records 200; MLS 404; each route 157-185 ms", date: 2026-10-14}
 authz_checked: "command_executions + action_approvals under FORCE RLS as oracle_app; commands_api detail/list/edit/approve/reject/stage; approval_service.list_approvals; the command worker's execution-time requester check"
 blockers:
   - {type: design, note: "JIT: PostgreSQL costs the 0140/0142 EXISTS policies as a per-row lookup (the correlated alternative of the hashed sub-plan it then runs), ~22-34 cost units per row, so a scan of a few thousand rows on these tables crosses jit_above_cost and compiles for 0.1-2.3 s. The two agent lists set jit off locally; operator/health counts over command_executions (operator_api, component_health) and 0140's tables are still exposed. Taken at merge: tenancy.apply_rls_context sets jit off for every request transaction (set_config is_local, both context paths; tests/test_tenancy.py::test_rls_context_turns_jit_off_for_the_transaction)."}
@@ -310,7 +311,7 @@ How it works: `client_id`/`contact_id` (tenant-bound FKs, ON DELETE SET NULL of 
 ```yaml
 id: L03-08
 status: tests_pass
-env: local
+env: staging
 evidence_shas: [91b7e38]  # branch worktree-agent-a5563e55e5fb840d8, unpushed
 files: [backend/db/migrations/0145_realtime_audience_and_number_assignment.sql, backend/ws_hub.py, backend/record_access.py, backend/commands_api.py, backend/voice_intel.py, backend/tests/test_realtime_fanout_scope.py, backend/tests/test_realtime_record_scope_live.py, backend/tests/test_call_note_review.py, backend/tests/test_call_notes_live.py, .github/workflows/ci.yml]
 tests_run:
@@ -322,6 +323,7 @@ tests_run:
   - {cmd: "non-superuser rehearsal: scratch DB, migrations <= 0141 as a throwaway superuser, REASSIGN OWNED to a NOSUPERUSER BYPASSRLS CREATEROLE owner, run_migrations.py as that owner (scratchpad rehearse0145.sh; DB and roles dropped)", result: "0145 applied (1 processed); function owned by the owner, EXECUTE granted to oracle_app, proconfig only search_path; kind CHECK widened", date: 2026-10-14}
   - {cmd: "rls_security_review / rls_brokerage / platform_rls_test / privacy_lifecycle / rls_tenant_wall .sql on the local dev DB", result: "all exit 0", date: 2026-10-14}
   - {cmd: "cd backend && ORACLE_SKIP_DOTENV=1 python -m pytest -q -p no:cacheprovider tests/", result: "3481 passed, 35 skipped, 0 failed (live-DB tests skipped without ORACLE_LIVE_DB_ADMIN_DSN); bandit (CI flags, baseline) exit 0", date: 2026-10-14}
+  - {cmd: "staging after 0a76a72 (CI run 38535851793 green; PRE_DEPLOY applied 0142-0145 as doadmin; rehearsed first as a NOSUPERUSER BYPASSRLS owner), real API as the demo owner and agent (scratchpad smoke.py + smoke_r3.py)", result: "Policy v5 served and accepted; clients 6 / contacts 6 (pool) for both; GET /api/commands owner 2, agent 2 (pool drafts readable); /api/commands/approvals owner 2, agent 0 (own requests only); property records 200; MLS 404; each route 157-185 ms", date: 2026-10-14}
 authz_checked: "Delivery rule = app_linked_access for read, per member (0140), computed by app_record_audience in a brokerage-scope pipeline context of the record's tenant (SECURITY INVOKER, explicit GRANT to oracle_app, no app.* SET clause). Verified under FORCE RLS as oracle_app."
 blockers:
   - {type: design, note: "Voice-session stream sockets (/ws/voice-telemetry/{id}) are admitted under RLS at connect and are not re-checked per frame: a share revoked mid-call keeps receiving that one call's stream until the socket closes. The main /ws frames are re-checked per frame."}
@@ -339,7 +341,7 @@ How it works: `ws_hub.broadcast_record(tenant, frame, client_id=, contact_id=, a
 ```yaml
 id: L03-07
 status: tests_pass
-env: local
+env: staging
 evidence_shas: []  # this commit, branch worktree-agent-aff8b0bd0b8d151a9, unpushed
 files: [backend/db/migrations/0143_leads_follow_the_record.sql, backend/record_access.py, backend/lead_dossier.py, backend/disposition_enforcer.py, backend/media_api.py, backend/property_view_api.py, backend/tour_api.py, backend/crm.py, backend/ai_chat_store.py, backend/admin_ops.py, backend/db/connection.py, oracle-app/src/state/useOracleWebSocket.js, backend/tests/test_lead_record_access_live.py, backend/tests/test_brokerage_access_matrix_live.py, backend/tests/test_media_delete.py, .github/workflows/ci.yml]
 tests_run:
@@ -351,6 +353,7 @@ tests_run:
   - {cmd: "same, the one index-only path: admin_ops /overview count(*) FROM leads per tenant", result: "0143 makes leads queries read seller_client_id, so a count can no longer be index-only: 35.3 s -> 48.7 s for the 10.46M-lead tenant — but the route has a 5 s statement_timeout, so it already answered 503 before 0143 (pre-existing). Now reads lead_pipeline_counts (the 0038 rollup the pipeline and AI tools already treat as the authority): 0.2 ms", date: 2026-10-14}
   - {cmd: "non-superuser rehearsal (scratchpad l0307/rehearse0143.sh): scratch DB, 0001-0141 as a throwaway superuser, REASSIGN OWNED to a NOSUPERUSER BYPASSRLS CREATEROLE owner, run_migrations.py as that owner", result: "0143 applied; 4 policies on each of leads, lead_intake_events, interaction_logs, property_media; scratch DB and roles dropped", date: 2026-10-14}
   - {cmd: "full backend suite; bandit as CI runs it; vitest + eslint + build", result: "backend 3473 passed, 32 skipped, 0 failed (the first run caught 13: test_migration_ledger wanted a probeable object, so leads' four policies are now literal CREATE POLICY; and route fakes that only knew the old existence check); bandit (CI flags, baseline) clean; vitest 768 passed; eslint clean; vite build ok; bundle within budget", date: 2026-10-14}
+  - {cmd: "staging after 0a76a72 (CI run 38535851793 green; PRE_DEPLOY applied 0142-0145 as doadmin; rehearsed first as a NOSUPERUSER BYPASSRLS owner), real API as the demo owner and agent (scratchpad smoke.py + smoke_r3.py)", result: "Policy v5 served and accepted; clients 6 / contacts 6 (pool) for both; GET /api/commands owner 2, agent 2 (pool drafts readable); /api/commands/approvals owner 2, agent 0 (own requests only); property records 200; MLS 404; each route 157-185 ms", date: 2026-10-14}
 authz_checked: "leads, lead_intake_events, interaction_logs (lead link), property_media (lead link) under FORCE RLS as oracle_app; listings, listing-only media and lead_pipeline_counts verified unchanged"
 blockers:
   - {type: decided, note: "Owner 2026-10-14: Platform Use Policy v5 wording approved (neoh-platform-use-policy-2026-10-14-v5; section 2 paragraph on property records linked to a client and on drafts; POLICY_COVERAGE rows for 0142 and 0143)."}
@@ -731,12 +734,13 @@ updated: 2026-10-13
 ```yaml
 id: L10-10
 status: tests_pass
-env: local
+env: staging
 evidence_shas: [91b7e38]  # branch worktree-agent-a5563e55e5fb840d8, unpushed
 files: [backend/messaging_data.py, backend/messaging_api.py, backend/provider_purchases.py, backend/db/migrations/0145_realtime_audience_and_number_assignment.sql, backend/tests/test_messaging_registration_race_live.py, docs/provider-failure-matrix.md]
 tests_run:
   - {cmd: "livetest.sh python -m pytest -q -p no:cacheprovider tests/test_messaging_registration_race_live.py -k racing_number with messaging_api.py at e3ea107 (BEFORE; mock adapter that counts calls)", result: "1 failed: 6 concurrent assign-number POSTs from one broker owner = 6 assign_number_to_campaign calls at the (mock) provider for one number and one campaign", date: 2026-10-14}
   - {cmd: "livetest.sh migrate (0145) + livetest.sh python -m pytest -q -p no:cacheprovider tests/test_messaging_registration_race_live.py (AFTER; real PostgreSQL, FORCE RLS, app role)", result: "11 passed (7 L10-09 + 4 new): 6 racing assignments = 1 provider call, 1 x 200 + 5 x 409, ledger telnyx/10dlc_number_assignment/attached, route.campaign_id set; a later click = 200 already_assigned with 0 calls and no new ledger row; timeout = 502 'until an operator has checked it', ledger unknown, the next click 409 (operator) with 0 calls, route untouched, GET /business/registration open_submissions = number_assignment/unconfirmed; a definite rejection = failed, the retry assigns once; a confirmed-but-unrecorded assignment is attached with 0 calls", date: 2026-10-14}
+  - {cmd: "staging after 0a76a72 (CI run 38535851793 green; PRE_DEPLOY applied 0142-0145 as doadmin; rehearsed first as a NOSUPERUSER BYPASSRLS owner), real API as the demo owner and agent (scratchpad smoke.py + smoke_r3.py)", result: "Policy v5 served and accepted; clients 6 / contacts 6 (pool) for both; GET /api/commands owner 2, agent 2 (pool drafts readable); /api/commands/approvals owner 2, agent 0 (own requests only); property records 200; MLS 404; each route 157-185 ms", date: 2026-10-14}
 authz_checked: "No route, role or RLS change: still BROKER_OWNER + active subscription; the claim, outcome and attach run in the caller's tenant_tx; provider_purchases keeps its 0123 tenant policy and grants; 0145 only widens its kind CHECK. No real provider was called (mock adapter)."
 blockers:
   - {type: deploy, note: "0145 must apply before this code runs (it writes kind 10dlc_number_assignment). Applied only to the local dev DB."}
@@ -975,7 +979,7 @@ updated: 2026-10-14
 ```yaml
 id: L16-03
 status: tests_pass   # local only; unpushed branch. 0144 undeployed
-env: local
+env: staging
 evidence_shas: []   # the commit that adds backend/db/migrations/0144_drop_duplicate_tenant_policies.sql and tests/test_tenant_wall_plans_live.py
 files: [backend/crm.py, backend/server.py, backend/db/migrations/0144_drop_duplicate_tenant_policies.sql, backend/tests/test_tenant_wall_plans_live.py,
         backend/tests/test_client_list_query_shape.py, backend/tests/test_migration_ledger.py, backend/tests/rls_tenant_wall.sql, .github/workflows/ci.yml]
@@ -989,6 +993,7 @@ tests_run:
   - {cmd: "livetest.sh python -m pytest -q -p no:cacheprovider <the 17 live files in ci.yml>", result: "39 passed, 2 failed, both environmental on the shared dev DB: test_migration_precheck (foreign ledger rows 0106/0142/0143/0145) and test_brokerage_access_matrix_live::test_policy_composition_cannot_widen (interaction_logs_lead_* policies from another branch's 0143); judge on merged main", date: 2026-10-14}
   - {cmd: "python -m pytest -q -p no:cacheprovider tests/ (backend, ORACLE_SKIP_DOTENV=1); bandit as in ci.yml", result: "3472 passed, 32 skipped; bandit exit 0 against .bandit-baseline.json", date: 2026-10-14}
   - {cmd: "T16.04 inventory: EXPLAIN (ANALYZE, BUFFERS) as oracle_app_login of client detail (notes, tasks, timeline, last touch), client page, task queue, approvals (agent own / owner pending / all), latest SMS (local dev DB; small tables: approvals 21k rows over 8 tenants, tasks 4.4k, sms 37k, record_shares 0)", result: "Client detail reads are child-by-client_id index scans, 0.3-2.0 ms. Every hot list uses a tenant index. Findings, no index added: (1) JIT. jit is on (jit_above_cost 100000) and RLS-inflated estimates cross it on small results: an agent's own approvals (3 rows) 3,022 ms of which ~2.8 s JIT compile and 98 ms execution (seq scan of a 203 MB, 268k-dead-tuple dev table); owner approvals 389-466 ms; the platform-admin pipeline page ~1.2 s of JIT (its ORDER BY updated_at does not match idx_leads_pipeline_rank's created_at, so the estimate is a 10.9M-row sort). EXPLAIN with COSTS OFF hides the JIT section. (2) Child-table read policies (0131) for a broker owner hash every client of the brokerage: task queue 135 ms for 2,536 tasks of a 21,268-client brokerage (17 ms building the hash, rest per row) — the owner/brokerage short-circuit that 0140's linked_read policies have is missing there. (3) record_shares is seq-scanned inside every agent-scope policy; it is empty here, idx_record_shares_grantee exists and is chosen once seq scan is off — re-check when shares exist", date: 2026-10-14}
+  - {cmd: "staging after 0a76a72 (CI run 38535851793 green; PRE_DEPLOY applied 0142-0145 as doadmin; rehearsed first as a NOSUPERUSER BYPASSRLS owner), real API as the demo owner and agent (scratchpad smoke.py + smoke_r3.py)", result: "Policy v5 served and accepted; clients 6 / contacts 6 (pool) for both; GET /api/commands owner 2, agent 2 (pool drafts readable); /api/commands/approvals owner 2, agent 0 (own requests only); property records 200; MLS 404; each route 157-185 ms", date: 2026-10-14}
 authz_checked: "visibility unchanged for every non-admin context (live test + D/E); the platform admin may additionally see rows whose tenant row is gone, as under the policy itself; write checks untouched (WITH CHECK identical on the dropped twins)"
 blockers:
   - {type: owner, note: "Local only: unpushed branch; pushing to main deploys staging (CONTRACT C4.4). 0144 on staging (doadmin, fresh chain) drops agent_licenses.tenant_isolation only; ACCESS EXCLUSIVE on that table briefly."}
