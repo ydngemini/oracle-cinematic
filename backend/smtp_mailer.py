@@ -22,6 +22,7 @@ import recovery_mode
 import smtplib
 import socket
 import ssl
+from email import policy as email_policy
 from email.message import EmailMessage
 from email.utils import formataddr, make_msgid, parseaddr
 from typing import Any, Mapping, Optional
@@ -165,11 +166,19 @@ def build_message(
     text: str,
     html: Optional[str] = None,
     reply_to: Optional[str] = None,
+    list_unsubscribe_url: Optional[str] = None,
 ) -> EmailMessage:
     if not recipient or "@" not in parseaddr(recipient)[1]:
         raise SmtpConfigurationError("recipient address is invalid")
 
-    message = EmailMessage()
+    unsubscribe = _list_unsubscribe_url(list_unsubscribe_url)
+    # The default policy folds every header at 78 columns, and a header with
+    # no whitespace to fold at — an unsubscribe URL — is rewritten as RFC 2047
+    # encoded words (=?utf-8?q?=3Chttps=3A//...), which no mailbox provider
+    # reads as a List-Unsubscribe URI. RFC 5322's hard limit is 998, so commercial
+    # mail is generated with that; transactional mail keeps the default.
+    message = (EmailMessage(policy=email_policy.default.clone(max_line_length=998))
+               if unsubscribe else EmailMessage())
     message["From"] = formataddr((sender_name, sender)) if sender_name else sender
     message["To"] = recipient
     message["Subject"] = subject
@@ -181,10 +190,23 @@ def build_message(
     # A stable domain-anchored Message-ID reads better to spam filters than the
     # local hostname smtplib would otherwise invent inside a container.
     message["Message-ID"] = make_msgid(domain=sender.rsplit("@", 1)[-1])
+    if unsubscribe:
+        # RFC 2369 + RFC 8058 one-click (commercial_email.list_unsubscribe_headers).
+        message["List-Unsubscribe"] = f"<{unsubscribe}>"
+        message["List-Unsubscribe-Post"] = "List-Unsubscribe=One-Click"
     message.set_content(text)
     if html:
         message.add_alternative(html, subtype="html")
     return message
+
+
+def _list_unsubscribe_url(url: Optional[str]) -> Optional[str]:
+    url = _clean(url)
+    if not url:
+        return None
+    if not url.startswith(("https://", "http://")) or any(c in url for c in " <>\r\n\t\"'"):
+        raise SmtpConfigurationError("unsubscribe URL is not a plain absolute URL")
+    return url
 
 
 class _PinnedSMTP(smtplib.SMTP):
@@ -259,6 +281,7 @@ def send(
     reply_to: Optional[str] = None,
     credentials: Optional[Mapping[str, Any]] = None,
     timeout: float = DEFAULT_TIMEOUT,
+    list_unsubscribe_url: Optional[str] = None,
 ) -> str:
     """Send one message. Returns its Message-ID.
 
@@ -275,6 +298,7 @@ def send(
         text=text,
         html=html,
         reply_to=reply_to,
+        list_unsubscribe_url=list_unsubscribe_url,
     )
 
     # Phase 1 — connect, STARTTLS, login. Nothing has been handed over yet,

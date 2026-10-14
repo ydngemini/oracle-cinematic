@@ -90,6 +90,7 @@ async def send_smtp_email(
     *,
     credentials: Optional[Mapping[str, Any]] = None,
     reply_to: Optional[str] = None,
+    list_unsubscribe_url: Optional[str] = None,
 ) -> ProviderResult:
     """Send one previously-approved email over SMTP.
 
@@ -99,7 +100,9 @@ async def send_smtp_email(
     no tenant credential it falls back to the platform SMTP environment.
     `reply_to` is the drafting agent's own address (user_profiles.public_email)
     — the send still goes out through the one platform/tenant relay, but
-    replies land with the agent who worked the lead, not the relay mailbox."""
+    replies land with the agent who worked the lead, not the relay mailbox.
+    `list_unsubscribe_url` (commercial_email.prepare) adds the RFC 8058
+    one-click headers; the caller has already footered the body."""
     recovery_mode.guard("send an approved email")
     credentials = dict(credentials or {})
     recipient = str((draft.get("target") or {}).get("email") or "").strip()
@@ -120,6 +123,7 @@ async def send_smtp_email(
                 text=body_text,
                 reply_to=reply_to,
                 credentials=credentials,
+                list_unsubscribe_url=list_unsubscribe_url,
             )
         except smtp_mailer.SmtpConfigurationError as exc:
             raise ProviderConfigurationError(str(exc)[:500]) from exc

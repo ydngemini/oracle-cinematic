@@ -93,7 +93,7 @@ _INTERNAL: frozenset[str] = frozenset(
         "AWS_OBS_MAX_ASG_DESIRED_CAPACITY", "ACS_STALE_CALL_TTL",
         "ORACLE_VOICE_POLL_SECONDS", "RECON_POLL_SECONDS", "ORACLE_SESSION_REGISTRY_MAX",
         "ORACLE_INTERACTIVE_JOB_WORKERS", "ORACLE_INTERACTIVE_JOB_POLL_SECONDS",
-        "ORACLE_LOGIN_IP_RATE_LIMIT", "ORACLE_WEBHOOK_RATE_LIMIT",
+        "ORACLE_LOGIN_IP_RATE_LIMIT", "ORACLE_WEBHOOK_RATE_LIMIT", "ORACLE_UNSUBSCRIBE_RATE_LIMIT",
     }
     # Model and endpoint selection. Which model answers is a product decision
     # made in code; the credentials that reach it ARE documented.

@@ -34,6 +34,7 @@ relationship with the brokerage: the accounts, billing and security logs.
 Counts are from the dev database. They show shape, not production volume.
 
 **Account** (Neoh is controller): `users` (email, name, password hash), `user_profiles` (phone, licence number, bio, LLM-written profile summary), `team_memberships`, `agent_licenses`, `agent_ce_log`, `agent_ai_settings`, `autonomy_preferences`, `agent_routing_state`, `brokerage_invitations`, `user_policy_acceptances`, `account_security_acceptances`.
+`tenants.postal_address` (0146) is the brokerage's mailing address, printed in the footer of every commercial email it sends (CAN-SPAM). Plaintext because it is published by design; for an independent agent it can be a home address, so erasure scrubs it with the name and website.
 **`agent_id` is the user's email address**, so every text actor column (`created_by`, `author_id`, `assignee_id`, `requested_by`, …) is personal data.
 
 **Contact PII**:
@@ -62,7 +63,7 @@ Counts are from the dev database. They show shape, not production volume.
 
 **Consent / suppression**:
 - `outreach_consent`: proof text and IP, plaintext contact.
-- `outreach_suppression`, `outreach_attempt_log`.
+- `outreach_suppression`, `outreach_attempt_log`. An email unsubscribe (the footer link or RFC 8058 one-click, `email_unsubscribe_api.py`) adds an `outreach_suppression` row (channel `email`). The link itself carries no readable personal data: the token is an AES-GCM ciphertext of brokerage + address (`commercial_email.py`), and it is masked in access logs.
 - `suppression_tombstones` (new): keyed hash only.
 
 **AI**:

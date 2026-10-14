@@ -12,9 +12,12 @@ States (email_outbox.status):
                row is never resent automatically: error says so, and a human
                decides. Unknown is a valid state.
     sent     → the server accepted it (provider_message_id = Message-ID)
-    failed   → refused, or not configured (error says which)
+    failed   → refused, not configured, or blocked at send time by the
+               compliance gate — e.g. the person unsubscribed after it was
+               queued (error says which; 'blocked: …' is never retried)
 The claim is a single UPDATE … WHERE status='queued', so two workers can never
-send the same row.
+send the same row. Every send carries the commercial footer and one-click
+List-Unsubscribe headers (commercial_email.py).
 
 In the shared lifecycle vocabulary (outreach_lifecycle.EMAIL_OUTBOX_STAGE) a
 `sent` row is ACCEPTED, never DELIVERED: SMTP gives no delivery receipt, so
@@ -27,6 +30,8 @@ import json
 import logging
 from typing import Any
 
+import commercial_email
+import outreach_compliance
 import recovery_mode
 from db.connection import tenant_tx
 from tenancy import Role, TenantContext
@@ -66,15 +71,37 @@ async def deliver(tenant_id: str, outbox_id: str) -> dict[str, Any]:
 
     drafting = TenantContext(agent_id=str(row["created_by"] or "email-outbox"), tenant_id=tenant_id,
                              role=Role.PLATFORM_ADMIN)
+    # Revalidate at execution (CONTRACT C3.4). crm.send_message checked the
+    # opt-out list when the row was queued; a person who unsubscribed since —
+    # from any agent's email — must not get this one. Brokerage-wide read
+    # (outreach_suppression is not narrowed to an agent), and the footer is
+    # built here too, both before the send so a failure is a definite "not sent".
+    try:
+        decision = await outreach_compliance.guard_outreach(
+            worker_ctx, channel=outreach_compliance.Channel.EMAIL, contact=str(row["to_email"]),
+            state_code=None)
+        commercial = None
+        if decision.allowed:
+            commercial = await commercial_email.prepare(tenant_id, recipient=str(row["to_email"]),
+                                                        body=str(row["body_text"] or ""))
+    except Exception as exc:  # noqa: BLE001 - nothing was sent; the job retries
+        await _finish(tenant_id, outbox_id, "queued", error=f"held: pre-send check failed ({type(exc).__name__})")
+        raise
+    if not decision.allowed:
+        await _finish(tenant_id, outbox_id, "failed",
+                      error=("blocked: " + "; ".join(decision.blockers))[:500])
+        return {"status": "blocked"}
+
     try:
         sender, credential_key = _resolve_email_provider()
         raw = await _load_provider_credential(drafting, credential_key, account_label=drafting.agent_id)
         identity = await load_agent_identity(drafting)
         credentials = json.loads(raw) if raw else None
         result = await sender(
-            {"target": {"email": row["to_email"]}, "subject": row["subject"], "body": row["body_text"]},
+            {"target": {"email": row["to_email"]}, "subject": row["subject"], "body": commercial.body},
             credentials=credentials,
             reply_to=str(identity.get("public_email") or "").strip() or None,
+            list_unsubscribe_url=commercial.unsubscribe_url,
         )
     except recovery_mode.RecoveryModeBlocked as exc:
         # Refused before any network call: definitely not sent. Back in the

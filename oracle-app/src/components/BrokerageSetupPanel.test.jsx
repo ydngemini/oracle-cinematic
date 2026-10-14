@@ -181,6 +181,41 @@ describe('BrokerageSetupPanel', () => {
     expect(payload).not.toHaveProperty('id');
   });
 
+  it('says when the postal address the email footer needs is missing', async () => {
+    api.crmGet.mockImplementation((path) => Promise.resolve(path.includes('/team') ? TEAM : {
+      ...SETUP,
+      commercial_email: {
+        status: 'NEEDS_ACTION', postal_address_configured: false, unsubscribe: 'one_click',
+        message: 'Add your brokerage\'s postal mailing address.',
+      },
+    }));
+    render(<BrokerageSetupPanel />);
+    expect(await screen.findByText(/Setup required: postal address/)).toBeTruthy();
+  });
+
+  it('says nothing about the address once the backend reports it set', async () => {
+    api.crmGet.mockImplementation((path) => Promise.resolve(path.includes('/team') ? TEAM : {
+      ...SETUP,
+      brokerage: { ...SETUP.brokerage, postal_address: '1 Loockerman St, Dover, DE 19901' },
+      commercial_email: { status: 'READY', postal_address_configured: true, unsubscribe: 'one_click', message: null },
+    }));
+    render(<BrokerageSetupPanel />);
+    expect(await screen.findByText('1 Loockerman St, Dover, DE 19901')).toBeTruthy();
+    expect(screen.queryByText(/Setup required: postal address/)).toBeNull();
+  });
+
+  it('sends the postal address with the business profile', async () => {
+    api.crmPatch.mockResolvedValue(SETUP);
+    render(<BrokerageSetupPanel />);
+    await screen.findByText('Lockwood Realty');
+    fireEvent.click(screen.getByRole('button', { name: 'Edit business details' }));
+    fireEvent.change(screen.getByLabelText(/Postal mailing address/),
+      { target: { value: '1 Loockerman St\nDover, DE 19901' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(api.crmPatch).toHaveBeenCalled());
+    expect(api.crmPatch.mock.calls[0][1].postal_address).toBe('1 Loockerman St\nDover, DE 19901');
+  });
+
   it('reloads from the server after a change rather than patching local state', async () => {
     api.crmPost.mockResolvedValue({ created: [{ id: 'x' }], skipped: [] });
     render(<BrokerageSetupPanel />);

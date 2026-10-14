@@ -2837,6 +2837,16 @@ async def _execute_command_job(payload: dict[str, Any], reporter) -> dict[str, A
             )
             if not decision.allowed:
                 raise RuntimeError("Outreach blocked: " + "; ".join(decision.blockers))
+            # Commercial email basics (CAN-SPAM, RFC 8058): the approved body
+            # goes out unchanged, followed by a fixed footer the draft cannot
+            # edit — the brokerage's postal address (when set) and an
+            # unsubscribe link — plus the one-click List-Unsubscribe headers.
+            # Built before submission so a failure here is a definite "not sent".
+            import commercial_email
+
+            commercial = await commercial_email.prepare(
+                tenant_id, recipient=str(target["email"]), body=str(draft.get("body") or "")
+            )
             await reporter.progress(45, "submitting approved email")
             submission_started = True
             # One sender, chosen by configuration. SMTP is the default, so mail
@@ -2872,7 +2882,10 @@ async def _execute_command_job(payload: dict[str, Any], reporter) -> dict[str, A
                     raise ProviderConfigurationError(malformed)
             reply_to = str(identity.get("public_email") or "").strip() or None
             provider_result = await sender(
-                {**draft, "target": target}, credentials=credentials, reply_to=reply_to
+                {**draft, "target": target, "body": commercial.body},
+                credentials=credentials,
+                reply_to=reply_to,
+                list_unsubscribe_url=commercial.unsubscribe_url,
             )
         elif command_type is CommandType.SMS:
             decision = await guard_outreach(

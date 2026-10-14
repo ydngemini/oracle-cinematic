@@ -38,6 +38,15 @@
   font-size: var(--text-sm);
 }
 
+.setupRequired {
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--oracle-border-subtle);
+  border-radius: var(--radius-md);
+  color: var(--oracle-text);
+  font-size: var(--text-sm);
+}
+
 /* ── Identity ─────────────────────────────────────────────────────────── */
 
 .identity { display: flex; flex-direction: column; gap: 2px; align-items: flex-start; }
@@ -99,6 +108,7 @@
 
 .field input,
 .field select,
+.field textarea,
 .invites {
   padding: var(--space-2) var(--space-3);
   border: 1px solid var(--oracle-border-subtle);

@@ -474,6 +474,39 @@ def test_profile_update_targets_the_session_tenant_only(monkeypatch):
     assert "tenant_id" not in bo.BrokerageProfileUpdate.model_fields
 
 
+def test_a_missing_postal_address_is_setup_required_but_not_a_readiness_blocker():
+    """L17-08: the commercial email footer needs it (CAN-SPAM); whether its
+    absence should hold client email is an owner question, so readiness is
+    unchanged and the state is reported on its own."""
+    missing = asyncio.run(bo.compute_setup_state(_setup_conn(), OWNER))
+    assert missing["commercial_email"]["status"] == "NEEDS_ACTION"
+    assert missing["commercial_email"]["postal_address_configured"] is False
+    assert "CAN-SPAM" in missing["commercial_email"]["message"]
+    assert "commercial_email" not in missing["capabilities"]
+    present = asyncio.run(bo.compute_setup_state(
+        _setup_conn(tenant={"postal_address": "1 Loockerman St, Dover, DE 19901"}), OWNER))
+    assert present["commercial_email"] == {"status": "READY", "postal_address_configured": True,
+                                           "unsubscribe": "one_click", "message": None}
+    assert present["brokerage"]["postal_address"] == "1 Loockerman St, Dover, DE 19901"
+
+
+def test_the_postal_address_is_tidied_and_must_look_like_an_address(monkeypatch):
+    from pydantic import ValidationError
+
+    body = bo.BrokerageProfileUpdate(postal_address="  1 Loockerman  St \r\n\r\n Dover, DE 19901  ")
+    assert body.postal_address == "1 Loockerman St\nDover, DE 19901"
+    with pytest.raises(ValidationError):
+        bo.BrokerageProfileUpdate(postal_address=" \n ")
+    with pytest.raises(ValidationError):
+        bo.BrokerageProfileUpdate(postal_address="x" * 301)
+    conn = _setup_conn()
+    conn.rows["UPDATE tenants"] = {"id": TENANT_A}
+    _patch_tx(monkeypatch, conn)
+    asyncio.run(bo.update_profile(body, OWNER))
+    stmt, args = [(q, a) for q, a in conn.statements if "UPDATE tenants" in q][0]
+    assert "postal_address = $2" in stmt and args[1] == "1 Loockerman St\nDover, DE 19901"
+
+
 def test_profile_rejects_unknown_fields():
     from pydantic import ValidationError
     with pytest.raises(ValidationError):

@@ -1149,7 +1149,7 @@ async def _phase_tenant_row(ctx, op_id, tenant_id, progress) -> dict:
             """
             UPDATE tenants
                SET name = 'Erased brokerage', slug = 'erased-' || left(id::text, 8) || '-' || left(md5(random()::text), 6),
-                   website = NULL, closure_reason = NULL, closure_requested_by = NULL,
+                   website = NULL, postal_address = NULL, closure_reason = NULL, closure_requested_by = NULL,
                    lifecycle_state = 'erased', erased_at = now(), updated_at = now()
              WHERE id = $1
             """, tenant_id)
