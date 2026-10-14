@@ -18,6 +18,8 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
+import semantic_language as lang_
+
 #: The whole vocabulary. A primitive the registry cannot draw is a bug here,
 #: not a blank panel there — the frontend logs an unknown primitive and skips
 #: it, and this list is what the two sides agree on.
@@ -70,8 +72,14 @@ _SOURCE_NOUNS = {
 }
 
 
+def _source_noun(kind: str, lang: Optional[str]) -> str:
+    key = f"source.{kind}"
+    return lang_.t(key, lang) if key in lang_.MESSAGES else _SOURCE_NOUNS.get(kind, kind)
+
+
 def sources_failed(
     intent: str, query: str, statuses: dict[str, dict[str, Any]],
+    lang: Optional[str] = None,
 ) -> dict[str, Any]:
     """A search the answer depended on did not answer (CONTRACT C6, T05.11).
 
@@ -86,21 +94,23 @@ def sources_failed(
         if (v or {}).get("status") in ("timed_out", "unavailable")
     }
     def how(entry: dict[str, Any]) -> str:
-        return "timed out" if entry.get("status") == "timed_out" else "is unavailable"
+        status = "timed_out" if entry.get("status") == "timed_out" else "unavailable"
+        return lang_.t(f"failed.how.{status}", lang)
 
-    names = [_SOURCE_NOUNS.get(k, k) for k in failed]
+    names = [_source_noun(k, lang) for k in failed]
     if len(failed) == 1:
         (kind, entry), = failed.items()
-        lead = f"I couldn't search {names[0]} for “{query}”: the search {how(entry)}."
+        lead = lang_.t("failed.one", lang, source=names[0], query=query, how=how(entry))
     else:
-        lead = f"I couldn't search {', '.join(names)} for “{query}”: those searches failed."
+        lead = lang_.t("failed.many", lang, sources=", ".join(names), query=query)
     return {
         "intent": intent,
-        "spoken": lead + " This is not a “no match” — nothing was checked. Try again in a moment.",
+        "spoken": lead + lang_.t("failed.tail", lang),
         "blocks": [block("evidence", items=[
             {
-                "label": f"{_SOURCE_NOUNS.get(k, k).capitalize()} search {how(v)}",
-                "detail": "Not checked, so an empty result here is not a verified miss.",
+                "label": lang_.t("failed.label", lang, Source=_source_noun(k, lang).capitalize(),
+                                 source=_source_noun(k, lang), how=how(v)),
+                "detail": lang_.t("failed.detail", lang),
             }
             for k, v in failed.items()
         ])],
@@ -110,11 +120,17 @@ def sources_failed(
     }
 
 
+def no_match(intent: str, query: str, lang: Optional[str] = None) -> dict[str, Any]:
+    """A VERIFIED miss: every leg the answer rests on was `checked`. The
+    caller attaches the per-source status that proves it."""
+    return answer(intent, lang_.t(f"miss.{intent}", lang, query=query), [])
+
+
 # ---------------------------------------------------------------------------
 # Intent renderers
 # ---------------------------------------------------------------------------
 
-def who_to_call(briefing: dict[str, Any]) -> dict[str, Any]:
+def who_to_call(briefing: dict[str, Any], lang: Optional[str] = None) -> dict[str, Any]:
     """The product's core question, rendered as a queue rather than a paragraph.
 
     Ordering is the briefing's own expected-value ordering — the same numbers
@@ -133,7 +149,7 @@ def who_to_call(briefing: dict[str, Any]) -> dict[str, Any]:
     if not queue:
         return answer(
             "who_to_call",
-            _nobody_sentence(briefing),
+            _nobody_sentence(briefing, lang),
             [block("metric", **_portfolio_metric(attention))] if attention.get("portfolio") else [],
         )
 
@@ -181,16 +197,17 @@ def person(record: dict[str, Any], intent: Optional[dict[str, Any]],
     return answer("show_person", summary or f"{name}.", blocks)
 
 
-def person_choices(matches: list[dict[str, Any]], query: str) -> dict[str, Any]:
+def person_choices(matches: list[dict[str, Any]], query: str,
+                   lang: Optional[str] = None) -> dict[str, Any]:
     """More than one match is a question, not a guess."""
     # The count is of what MATCHED; the list is capped. Saying "6 match" above
     # five cards without a word about the sixth is a small lie of arrangement.
     shown = len(matches[:MAX_QUEUE])
-    more = "" if shown == len(matches) else f" Showing the first {shown}."
+    more = "" if shown == len(matches) else lang_.t("choices.more", lang, shown=shown)
     return answer(
         "show_person",
-        f"{len(matches)} people match “{query}”.{more}",
-        [block("comparison", title="Which one?", options=[
+        lang_.t("choices.people", lang, n=len(matches), query=query, more=more),
+        [block("comparison", title=lang_.t("choices.which", lang), options=[
             {
                 "id": str(m.get("id")),
                 "label": m.get("label") or m.get("full_name") or "Unnamed",
@@ -202,7 +219,8 @@ def person_choices(matches: list[dict[str, Any]], query: str) -> dict[str, Any]:
     )
 
 
-def properties_found(matches: list[dict[str, Any]], query: str) -> dict[str, Any]:
+def properties_found(matches: list[dict[str, Any]], query: str,
+                     lang: Optional[str] = None) -> dict[str, Any]:
     """"Show 412 Delaware" is a property question wearing a person's grammar.
 
     The same words open a person or a house depending on what exists, so the
@@ -224,8 +242,8 @@ def properties_found(matches: list[dict[str, Any]], query: str) -> dict[str, Any
         )
     return answer(
         "show_property",
-        f"{len(matches)} properties match “{query}”.",
-        [block("comparison", title="Which one?", options=[
+        lang_.t("choices.properties", lang, n=len(matches), query=query),
+        [block("comparison", title=lang_.t("choices.which", lang), options=[
             {
                 "id": str(m.get("id")),
                 "label": m.get("label"),
@@ -239,6 +257,7 @@ def properties_found(matches: list[dict[str, Any]], query: str) -> dict[str, Any
 
 def properties_for(
     name: str, candidates: list[dict[str, Any]], lookup: Optional[dict[str, Any]] = None,
+    lang: Optional[str] = None,
 ) -> dict[str, Any]:
     """Candidates the automation already maintains — not a new matcher.
 
@@ -254,28 +273,17 @@ def properties_for(
     status = lookup.get("status") if lookup is not None else "checked"
     if not candidates and status in ("timed_out", "unavailable"):
         last = lookup.get("last_checked_at")
+        how = lang_.t("shortlist.how." + ("timed_out" if status == "timed_out" else "failed"), lang)
         return answer(
             "properties_for",
-            f"I couldn't check public records for {name}: the last lookup "
-            f"{'timed out' if status == 'timed_out' else 'failed'}, so this is not "
-            f"a 'no matches'. It retries on the next reconciliation."
-            + (f" The last successful check was {str(last)[:10]}." if last else ""),
+            lang_.t("shortlist.failed", lang, name=name, how=how)
+            + (lang_.t("shortlist.last", lang, date=str(last)[:10]) if last else ""),
             [],
         )
     if not candidates and status not in ("checked", "not_applicable"):
-        return answer(
-            "properties_for",
-            f"{name}'s record has not been checked against public records yet, "
-            f"so an empty shortlist here is not a 'no matches'.",
-            [],
-        )
+        return answer("properties_for", lang_.t("shortlist.unchecked", lang, name=name), [])
     if not candidates:
-        return answer(
-            "properties_for",
-            f"Nothing is on {name}'s shortlist yet. It fills in as they browse "
-            f"and as the criteria on their record get specific enough to match on.",
-            [],
-        )
+        return answer("properties_for", lang_.t("shortlist.empty", lang, name=name), [])
     shown = candidates[:MAX_COMPARISON]
     return answer(
         "properties_for",
@@ -379,23 +387,17 @@ def _portfolio_metric(attention: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _nobody_sentence(briefing: dict[str, Any]) -> str:
+def _nobody_sentence(briefing: dict[str, Any], lang: Optional[str] = None) -> str:
     """An empty queue has three different causes and they must not read alike."""
     suppressed = briefing.get("suppressed_low_confidence") or 0
     failed = briefing.get("detectors_failed") or []
     if failed:
-        return (
-            f"No one to call — but {len(failed)} detector"
-            f"{'s' if len(failed) != 1 else ''} failed this pass, so this is "
-            f"an incomplete answer rather than a quiet day."
-        )
+        key = "nobody.failed_one" if len(failed) == 1 else "nobody.failed_many"
+        return lang_.t(key, lang, n=len(failed))
     if suppressed:
-        return (
-            f"No one worth calling yet. {suppressed} possibilit"
-            f"{'ies were' if suppressed != 1 else 'y was'} found but held back "
-            f"as too uncertain to put a name to."
-        )
-    return "No one to call right now. Nothing in the book is asking for you today."
+        key = "nobody.suppressed_one" if suppressed == 1 else "nobody.suppressed_many"
+        return lang_.t(key, lang, n=suppressed)
+    return lang_.t("nobody.quiet", lang)
 
 
 def _property_detail(candidate: dict[str, Any]) -> Optional[str]:
