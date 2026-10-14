@@ -28,6 +28,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from db.connection import tenant_tx
+from record_access import require_lead_edit
 from tenancy import TenantContext, require_context
 
 log = logging.getLogger("oracle.floorplan_api")
@@ -451,6 +452,10 @@ async def save_floorplan(
 
     async with tenant_tx(ctx) as conn:
         await _assert_subject_exists(conn, lead_id, listing_id)
+        if lead_id is not None:
+            # The plan follows its lead (0151): a client's house shared
+            # view-only answers 403, not a refused write.
+            await require_lead_edit(conn, lead_id)
         floorplan_id, next_revision = await persist_floorplan(
             conn, ctx, doc,
             lead_id=lead_id, listing_id=listing_id,

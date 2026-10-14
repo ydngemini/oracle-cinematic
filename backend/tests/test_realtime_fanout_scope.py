@@ -30,20 +30,12 @@ BACKEND = Path(__file__).resolve().parents[1]
 # Every call in backend/ (outside ws_hub.py and tests) that fans a frame out to
 # a WHOLE tenant group, with why that is allowed. Record-content frames about
 # clients/contacts use ws_hub.broadcast_record; private ones broadcast_user.
+# Lead frames (VOICE_NOTE_LOGGED, DOSSIER_MOVED, CONTRACT_EXPIRED/DANGER,
+# SPLAT_READY, VIDEO_READY) use broadcast_record(lead_id=...) since 0151
+# (test_lead_frames_follow_the_lead).
 TENANT_WIDE = {
-    ("voice_intel.py", "_process", "broadcast"):
-        "VOICE_NOTE_LOGGED: a walkthrough note on a LEAD; leads are brokerage-wide (L03-03)",
-    ("reconstruction_worker.py", "_process", "broadcast"):
-        "SPLAT_READY: a lead/listing's captured space; property media is brokerage-wide",
     ("automation_jobs.py", "JobReporter.progress", "broadcast"):
         "JOB_PROGRESS: job id, type, percent and a fixed stage message; no record content",
-    ("video_studio.py", "_process_job", "broadcast"):
-        "VIDEO_READY: job and media ids of a property video; property media is brokerage-wide",
-    ("disposition_enforcer.py", "sweep_once", "broadcast"):
-        "CONTRACT_EXPIRED / CONTRACT_DANGER: a LEAD's contract clock (address, parcel); "
-        "leads are brokerage-wide",
-    ("lead_dossier.py", "move_dossier", "broadcast"):
-        "DOSSIER_MOVED: a LEAD's pipeline stage; leads are brokerage-wide",
     ("server.py", "websocket_endpoint._publish_to_tenant", "deliver_local"):
         "workflow-engine ambient frames: public-record review candidates, simulated demo transcript",
 }
@@ -101,6 +93,47 @@ def test_call_and_voice_frames_follow_the_record():
         src = inspect.getsource(fn)
         assert "ws_hub.broadcast_record(" in src, fn.__name__
         assert "ws_hub.broadcast(" not in src, f"{fn.__name__} fans a record's content out tenant-wide"
+
+
+def test_lead_frames_follow_the_lead():
+    """A frame about a lead, or a row hanging off one, is delivered by the
+    lead's audience (0151): broadcast_record(..., lead_id=...)."""
+    import inspect
+
+    import disposition_enforcer
+    import lead_dossier
+    import reconstruction_worker
+    import video_studio
+    import voice_intel
+
+    for module, frame in ((voice_intel, "VOICE_NOTE_LOGGED"), (reconstruction_worker, "SPLAT_READY"),
+                          (video_studio, "VIDEO_READY"), (disposition_enforcer, "CONTRACT_EXPIRED"),
+                          (disposition_enforcer, "CONTRACT_DANGER"), (lead_dossier, "DOSSIER_MOVED")):
+        src = inspect.getsource(module)
+        at = src.index(f'"type": "{frame}"')
+        call = src.rfind("broadcast", 0, at)
+        assert src[call:call + len("broadcast_record(")] == "broadcast_record(", (module.__name__, frame)
+        assert "lead_id=" in src[at:src.index("\n\n", at)], (module.__name__, frame)
+
+
+def test_a_lead_frame_goes_to_the_lead_audience(hub, monkeypatch):
+    """broadcast_record(lead_id=) asks for the lead's audience, and a lead with
+    no client (None) still reaches the whole brokerage."""
+    import record_access
+
+    asked = []
+
+    async def audience(tenant_id, client_id, contact_id, lead_id=None):
+        asked.append((client_id, contact_id, lead_id))
+        return ["agent-a@x.test"] if lead_id == "private" else None
+
+    monkeypatch.setattr(record_access, "linked_audience", audience)
+    tenant, socks = hub
+    asyncio.run(ws_hub.broadcast_record(tenant, {"type": "SPLAT_READY"}, lead_id="private"))
+    asyncio.run(ws_hub.broadcast_record(tenant, {"type": "SPLAT_READY"}, lead_id="prospect"))
+    assert len(socks["agent-a"].frames) == 2, "the client's agent gets both"
+    assert len(socks["agent-b"].frames) == 1 and len(socks["anon"].frames) == 1, "only the prospect's"
+    assert asked == [(None, None, "private"), (None, None, "prospect")]
 
 
 # ── the hub ────────────────────────────────────────────────────────────────

@@ -125,10 +125,16 @@ async def require_contact_visible(conn, contact_id: str) -> str:
 # ── rows that follow a client and/or contact (0140) ────────────────────────
 # Each table's link columns, as SQL expressions over the row alias `r`. Every
 # identifier here is fixed; none comes from input.
+_LEAD_CLIENT = "(SELECT l.seller_client_id FROM public.leads l WHERE l.id = r.lead_id)"
+_VIDEO_LEAD = ("CASE WHEN r.source ->> 'lead_id' ~* "
+               "'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' "
+               "THEN (r.source ->> 'lead_id')::uuid END")
 _LINKED: dict[str, tuple[str, str]] = {
     "sms_messages": ("r.client_id", "r.contact_id"),
-    "email_outbox": ("r.client_id", "NULL::uuid"),
-    "live_call_sessions": ("r.client_id", "r.contact_id"),
+    "email_outbox": ("r.client_id", "NULL::uuid"),  # client_id is NOT NULL
+    # 0151: a call with no client and no contact follows its lead's client.
+    "live_call_sessions": ("COALESCE(r.client_id, CASE WHEN r.contact_id IS NULL THEN " + _LEAD_CLIENT + " END)",
+                           "r.contact_id"),
     "inbound_voice_calls": ("r.client_id", "r.contact_id"),
     "contract_synthesis_artifacts": ("r.client_id", "NULL::uuid"),
     "smart_plan_enrollments": ("NULL::uuid", "r.contact_id"),
@@ -139,8 +145,15 @@ _LINKED: dict[str, tuple[str, str]] = {
     # 0143: a lead follows its seller client; media on a lead follows the lead;
     # an intake event follows its contact.
     "leads": ("r.seller_client_id", "NULL::uuid"),
-    "property_media": ("(SELECT l.seller_client_id FROM public.leads l WHERE l.id = r.lead_id)", "NULL::uuid"),
+    "property_media": (_LEAD_CLIENT, "NULL::uuid"),
     "lead_intake_events": ("NULL::uuid", "r.contact_id"),
+    # 0151: the other rows hanging off a lead follow it (its seller client).
+    **{t: (_LEAD_CLIENT, "NULL::uuid") for t in (
+        "client_portals", "contract_documents", "property_floorplans", "property_pano_scenes",
+        "property_view_upload_links", "reconstruction_jobs", "spatial_tour_variants",
+        "capture_sessions", "voice_walkthrough_jobs")},
+    "video_studio_jobs": ("(SELECT l.seller_client_id FROM public.leads l WHERE l.id = " + _VIDEO_LEAD + ")",
+                          "NULL::uuid"),
 }
 LINKED_VIEW_ONLY = "The client or contact this belongs to is shared with you to view only."
 
@@ -170,27 +183,50 @@ async def require_linked_edit(conn, table: str, record_id: str, not_found: str) 
 
 
 _AUDIENCE_SQL = "SELECT app_record_audience($1::uuid, $2::uuid)"
+# A frame about a lead: the audience of the client whose house it is (0143) —
+# NULL (every member) for a harvested prospect or a lead that no longer exists.
+_LEAD_AUDIENCE_SQL = ("SELECT app_record_audience("
+                      "(SELECT l.seller_client_id FROM leads l WHERE l.id = $1::uuid), NULL::uuid)")
 
 
-async def linked_audience(tenant_id: str, client_id: Any, contact_id: Any) -> Optional[list[str]]:
+async def linked_audience(tenant_id: str, client_id: Any, contact_id: Any,
+                          lead_id: Any = None) -> Optional[list[str]]:
     """Who may receive a live frame about this client and/or contact
     (CONTRACT C3.6): None = every member of the brokerage (no link, or the
     record is in the pool), else the agent ids of the members who may read it
     — app_record_audience() (0145), the per-member form of
     app_linked_access(), read once per frame so the fan-out never restates
     the rule. Run as a brokerage-scope pipeline of the record's tenant, so the
-    answer does not depend on who produced the frame."""
-    if client_id is None and contact_id is None:
+    answer does not depend on who produced the frame.
+
+    `lead_id` alone (no client, no contact): a frame about a lead, or about a
+    row hanging off one (a 3D build, a video, a contract clock; 0151), goes to
+    whoever may read the lead's seller client."""
+    if client_id is None and contact_id is None and lead_id is None:
         return None
     pipeline = brokerage_scope(TenantContext(agent_id="system:ws-audience", tenant_id=str(tenant_id),
                                              role=Role.AGENT))
     async with tenant_tx(pipeline) as conn:
-        audience = await conn.fetchval(
-            _AUDIENCE_SQL,
-            str(client_id) if client_id is not None else None,
-            str(contact_id) if contact_id is not None else None,
-        )
+        if client_id is None and contact_id is None:
+            audience = await conn.fetchval(_LEAD_AUDIENCE_SQL, str(lead_id))
+        else:
+            audience = await conn.fetchval(
+                _AUDIENCE_SQL,
+                str(client_id) if client_id is not None else None,
+                str(contact_id) if contact_id is not None else None,
+            )
     return None if audience is None else [str(a) for a in audience]
+
+
+async def pipeline_count(tenant_id: str, sql: str, *args: Any) -> Any:
+    """A cost-guard count over a whole brokerage (a queue backlog, a daily
+    quota) that must not shrink to the rows the caller may read (0151): run as
+    a brokerage-scope pipeline of the caller's tenant. `sql` is a fixed
+    constant of the caller, never input; it returns one number, no rows."""
+    pipeline = brokerage_scope(TenantContext(agent_id="system:cost-guard", tenant_id=str(tenant_id),
+                                             role=Role.AGENT))
+    async with tenant_tx(pipeline) as conn:
+        return await conn.fetchval(sql, *args) or 0
 
 
 async def require_lead_edit(conn, lead_id, not_found: str = "Lead not found.") -> None:

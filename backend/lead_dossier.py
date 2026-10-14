@@ -295,11 +295,11 @@ async def move_dossier(
             prop = {}
     address = (prop or {}).get("address") or row["parcel_id"]
 
-    # The frame goes to every session in the brokerage. A lead that is a
-    # client's house (0143) is visible only to those who can see the client,
-    # so its frame names no property.
+    # A lead that is a client's house (0143) is visible only to those who can
+    # see the client: its frame goes only to them (0151) and names no property
+    # (a pool client's still reaches every session in the brokerage).
     private = row["seller_client_id"] is not None
-    await ws_hub.broadcast(ctx.tenant_id, {
+    await ws_hub.broadcast_record(ctx.tenant_id, {
         "type": "DOSSIER_MOVED",
         "lead_id": lead_id,
         "parcel_id": None if private else row["parcel_id"],
@@ -307,7 +307,7 @@ async def move_dossier(
         "status": row["dossier_status"],
         "contract_expires_at": row["contract_expires_at"].isoformat()
             if row["contract_expires_at"] else None,
-    })
+    }, lead_id=lead_id, actor=ctx.agent_id)
 
     logger.info(
         "Dossier move: lead=%s → %s (tenant=%s, agent=%s)",

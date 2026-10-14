@@ -43,7 +43,7 @@ from uuid import UUID, uuid4
 
 import media_storage
 from db.connection import tenant_tx
-from tenancy import Role, TenantContext
+from tenancy import Role, TenantContext, brokerage_scope
 
 logger = logging.getLogger("oracle.video_studio")
 
@@ -624,12 +624,18 @@ def _platform_context(worker_id: str) -> TenantContext:
 
 def _job_ctx(row: dict[str, Any]) -> TenantContext:
     """A tenant-scoped context for a claimed job row (RLS applies to all its
-    subsequent reads/writes — image fetch, quota, media storage)."""
-    return TenantContext(
+    subsequent reads/writes — image fetch, quota, media storage).
+
+    A brokerage-scope pipeline: the job was authorized when it was created
+    (the creator could edit the lead and see every photo), and the quota it
+    checks is the brokerage's. As a plain agent identity with no user it could
+    not see a client's house (0143) or its own job row (0151), so a video of a
+    client's home failed after the provider had been paid."""
+    return brokerage_scope(TenantContext(
         agent_id="video-studio-worker",
         tenant_id=row["tenant_id"],
         role=Role.AGENT,
-    )
+    ))
 
 
 async def _claim_next_job(worker_id: str) -> Optional[dict[str, Any]]:
@@ -933,14 +939,20 @@ async def _process_job(row: dict[str, Any], worker_id: str) -> None:
         shutil.rmtree(clips_dir, ignore_errors=True)
 
     try:
-        from ws_hub import broadcast
+        import ws_hub
 
-        await broadcast(ctx.tenant_id, {
+        # A video of a client's house goes to whoever may read that client
+        # (0151); a prospect's or a listing's to the whole brokerage.
+        try:
+            lead_id = str(UUID(str(source.get("lead_id")))) if source.get("lead_id") else None
+        except ValueError:
+            lead_id = None
+        await ws_hub.broadcast_record(ctx.tenant_id, {
             "type": "VIDEO_READY",
             "jobId": job_id,
             "mediaId": media_id,
             "kind": kind,
-        })
+        }, lead_id=lead_id)
     except Exception:  # noqa: BLE001 — broadcast is best-effort; the row is the source of truth
         logger.debug("VIDEO_READY broadcast failed for job %s", job_id)
     logger.info("Video studio job completed: job=%s media=%s kind=%s clips=%d",

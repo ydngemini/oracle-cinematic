@@ -1316,14 +1316,16 @@ async def _process(job: ReconstructionJob) -> None:
         job, session_id, status="succeeded", counts=counts, result_media_id=media_id
     )
     try:
-        await ws_hub.broadcast(job.ctx.tenant_id, {
+        # A client's house's space goes to whoever may read that client (0151);
+        # a prospect's or a listing's to the whole brokerage, as before.
+        await ws_hub.broadcast_record(job.ctx.tenant_id, {
             "type": "SPLAT_READY",
             "splatUrl": url,
             "leadId": job.lead_id,
             "listingId": job.listing_id,
             "jobId": job.job_id,
             "disclosure": SPATIAL_AI_DISCLOSURE,
-        })
+        }, lead_id=job.lead_id, actor=job.ctx.agent_id)
     except Exception:  # noqa: BLE001 — broadcast is best-effort; the row is the source of truth
         logger.debug("SPLAT_READY broadcast failed for job %s", job.job_id)
     logger.info("Reconstruction succeeded: job=%s media=%s provider=%s", job.job_id, media_id, provider.name)

@@ -29,8 +29,9 @@ from pydantic import BaseModel, ConfigDict
 
 from audit_middleware import AuditCategory, audit_now
 from db.connection import tenant_tx
-from record_access import require_lead_edit
-from tenancy import Role, TenantContext, require_context
+import record_access
+from record_access import require_lead_edit, require_linked_edit
+from tenancy import Role, TenantContext, brokerage_scope, require_context
 from billing import require_active_subscription
 from reconstruction_providers import SPATIAL_AI_DISCLOSURE, get_provider
 from reconstruction_worker import QUEUE_MAX as RECON_QUEUE_MAX, ReconstructionJob, enqueue
@@ -820,8 +821,10 @@ async def enqueue_reconstruction(
         # reconstruction_jobs FKs (lead_id->leads, listing_id->listings) would
         # otherwise raise ForeignKeyViolation -> unhandled 500 on a bogus or
         # cross-tenant id. RLS scopes these SELECTs to the caller's tenant.
-        if lead_id is not None and not await conn.fetchval("SELECT 1 FROM leads WHERE id = $1", lead_id):
-            raise HTTPException(status.HTTP_404_NOT_FOUND, "Lead not found.")
+        # A build is a write on the house: 403 for a client's house shared
+        # view-only, before any GPU is rented (0151, C3.4).
+        if lead_id is not None:
+            await require_lead_edit(conn, lead_id)
         if listing_id is not None and not await conn.fetchval("SELECT 1 FROM listings WHERE id = $1", listing_id):
             raise HTTPException(status.HTTP_404_NOT_FOUND, "Listing not found.")
 
@@ -869,18 +872,18 @@ async def enqueue_reconstruction(
                 headers={"Retry-After": "3600"},
             )
 
-        # Backpressure: a bounded backlog per brokerage, counted from the rows
-        # that ARE the queue (RLS scopes the count to this tenant). One
-        # brokerage cannot bury every other one's captures behind its own.
-        backlog = await conn.fetchval(
-            "SELECT count(*) FROM reconstruction_jobs WHERE status = 'queued'"
+    # Backpressure: a bounded backlog per brokerage, counted from the rows
+    # that ARE the queue — every build of this tenant, not only the ones this
+    # agent may read (0151). One brokerage cannot bury every other one's
+    # captures behind its own.
+    backlog = await record_access.pipeline_count(
+        ctx.tenant_id, "SELECT count(*) FROM reconstruction_jobs WHERE status = 'queued'")
+    if backlog >= RECON_QUEUE_MAX:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "Many spaces are being built right now — try again shortly.",
+            headers={"Retry-After": "60"},
         )
-        if backlog >= RECON_QUEUE_MAX:
-            raise HTTPException(
-                status.HTTP_503_SERVICE_UNAVAILABLE,
-                "Many spaces are being built right now — try again shortly.",
-                headers={"Retry-After": "60"},
-            )
     # Platform-wide bound, read across tenants (count only, nothing returned).
     async with tenant_tx(_platform_ctx()) as pconn:
         everyone = await pconn.fetchval(
@@ -977,6 +980,8 @@ async def retry_reconstruction(
     The failed job is never mutated; the retry is a new row that names it.
     """
     async with tenant_tx(ctx) as conn:
+        # 404 invisible / 403 a client's house shared view-only (0151).
+        await require_linked_edit(conn, "reconstruction_jobs", str(job_id), "Job not found.")
         old = await conn.fetchrow(
             f"SELECT {_JOB_COLUMNS}, lead_id, listing_id FROM reconstruction_jobs WHERE id = $1",
             job_id,
@@ -1095,6 +1100,9 @@ async def put_scene_override(
     import json as _json
 
     async with tenant_tx(ctx) as conn:
+        # A view-only share used to read as "Space not found" (the UPDATE
+        # matched no row it could write); now a clear 403 (0143/0151).
+        await require_linked_edit(conn, "property_media", str(media_id), "Space not found.")
         updated = await conn.fetchval(
             "UPDATE property_media SET scene_override = $2::jsonb "
             "WHERE id = $1 AND kind = 'splat' RETURNING id",
@@ -1197,7 +1205,11 @@ async def signed_space_asset(
         tenant = str(UUID(t))
     except ValueError:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Not found.")
-    ctx = TenantContext(agent_id="space-asset", tenant_id=tenant, role=Role.AGENT)
+    # A brokerage-scope pipeline: the signature is the authorization (minted
+    # only inside an authorized read of this row). As a plain agent identity
+    # with no user, a client's house's space (0143) answered 404 to the very
+    # viewer the URL was minted for.
+    ctx = brokerage_scope(TenantContext(agent_id="space-asset", tenant_id=tenant, role=Role.AGENT))
     async with tenant_tx(ctx) as conn:
         key = await conn.fetchval(
             "SELECT s3_key FROM property_media "

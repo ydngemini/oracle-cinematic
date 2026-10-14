@@ -30,6 +30,7 @@ from automation_jobs import (
 )
 from crypto import CryptoError, decrypt_pii, derive_tenant_key, encrypt_pii
 from db.connection import tenant_tx
+import record_access
 from ml_forge.synthetic_lawyer import (
     BUILTIN_CONTRACT_TEMPLATES,
     defensive_redline,
@@ -1678,6 +1679,10 @@ async def draft_document(
     key = _tenant_key(ctx)
     explicit_anchors = _document_draft_anchors(body)
     async with tenant_tx(ctx) as conn:
+        if body.lead_id:
+            # The document follows its lead (0151): a client's house shared
+            # view-only answers 403 before anything is rendered or stored.
+            await record_access.require_lead_edit(conn, str(body.lead_id), _DRAFT_ANCHOR_NOT_FOUND)
         template = await _get_template(conn, ctx, str(body.template_id), approved=True)
         await _validate_draft_anchors(conn, ctx, explicit_anchors, body.inputs)
         result = _render_document(template, body.inputs)
@@ -1814,6 +1819,10 @@ async def edit_document(
         raise HTTPException(status_code=422, detail="Draft contains unsupported PDF characters.") from exc
     content_sha = hashlib.sha256(body.revised_text.encode("utf-8")).hexdigest()
     async with tenant_tx(ctx) as conn:
+        # 404 invisible / 403 a client's house shared view-only (0151) —
+        # before the locking read, which would hide a view-only row as 404.
+        await record_access.require_linked_edit(conn, "contract_documents", str(document_id),
+                                                "Contract document not found.")
         row = await conn.fetchrow(
             """
             SELECT * FROM contract_documents
