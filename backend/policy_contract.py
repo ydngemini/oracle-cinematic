@@ -6,7 +6,7 @@ from __future__ import annotations
 # Bump this identifier whenever the policy text changes materially. Each user
 # acceptance record is tied to this value so prior acknowledgement remains
 # auditable rather than being silently reinterpreted under new wording.
-PLATFORM_POLICY_VERSION = "neoh-platform-use-policy-2026-10-14-v6"
+PLATFORM_POLICY_VERSION = "neoh-platform-use-policy-2026-10-14-v7"
 
 PLATFORM_POLICY_DOCUMENT = {
     "title": "NEOH™ Platform Use Policy",
@@ -51,6 +51,7 @@ PLATFORM_POLICY_DOCUMENT = {
                 "NEOH™ does not provide legal, tax, investment, appraisal, lending, title, or compliance advice. Obtain qualified professional review whenever your workflow, client, brokerage, or law requires it.",
                 "Neoh takes notes on a call only after the person on the call agrees. Unless you choose to save them directly, those notes wait for your review, and Neoh does not rely on them until you approve them. Check AI call notes before you act on or share them.",
                 "Neoh never asks for, repeats or keeps payment card details. If a card number or security code is spoken on a call or written in a text, email, note or chat, Neoh removes it before anything is stored. Take payments only through a secure payment link.",
+                "When you tell Neoh not to send something, to prepare drafts only, to wait for approval, not to act before a time, or not to contact someone, Neoh records that instruction and the platform refuses any action that would break it, telling you what it did not do and why. These limits last for the rest of the conversation (up to 30 minutes) or the life of a mission, and Neoh still never sends anything without your approval.",
             ],
         },
         {
@@ -146,6 +147,10 @@ POLICY_COVERAGE: tuple[dict[str, str], ...] = (
      "evidence": "user_mfa.py",
      "section": "1. Account authority and responsible use",
      "phrase": "you may not use the platform until it is set up"},
+    {"capability": "stated constraints (no send, drafts only, approval, not before, do not contact) enforced at the tool and mission boundary (L05-03)",
+     "evidence": "frame_constraints.py",
+     "section": "4. AI-assisted work and professional judgment",
+     "phrase": "the platform refuses any action that would break it"},
 )
 
 # Separate account-security addendum for onboarding diagnostics.  This is a

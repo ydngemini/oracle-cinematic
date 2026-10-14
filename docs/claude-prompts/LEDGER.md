@@ -499,6 +499,7 @@ tests_run:
   - {cmd: "cd oracle-app && npx vitest run && npx eslint . && npm run build && node scripts/check-bundle-budget.mjs", result: "vitest 748 passed (80 files, incl. assistantCapabilities.test.js and AssistantCapabilities.test.jsx); eslint exit 0; build ok; within budget (largest chunk 577.7 KB gzip)", date: 2026-10-13}
 authz_checked: "GET /api/ai/chat/capabilities requires a session (require_context) and reads no tenant data; it reports the nine broker-owner tools (ai_tools_read.OPS_ROLE_TOOLS, checked against every _require_ops_role call) as role_limited for agents. No RLS, migration or grant change."
 blockers:
+  - {type: decided, note: "Owner 2026-10-14: semantic frame ON by default; Platform Use Policy v7 (neoh-platform-use-policy-2026-10-14-v7) s4 sentence approved as drafted (POLICY_COVERAGE row -> frame_constraints.py). Launch languages: English + Spanish (Spanish slice L05-04)."}
   - {type: test, note: "AC07.02 asks for a Playwright check; not run (no browser session here). Unit and component tests cover the four surfaces; a real-browser look at Personal AI → 'What Neoh can do in chat' on desktop and phone is still owed."}
   - {type: owner, note: "archive_client: the persona said 'Never delete or archive data' while archive_client was an offered, undoable edit. Resolved toward the tool surface ('Never delete data. Archive a client only when explicitly asked'); two tests that pinned the old sentence now pin the new one. Owner to confirm, or say to take archive_client off the offer instead."}
 audit_refs: [A09]
