@@ -230,7 +230,7 @@ jobs:
       - name: RLS, revocation and privilege proofs
         working-directory: backend
         run: |
-          for f in tests/rls_security_review.sql tests/rls_brokerage.sql tests/platform_rls_test.sql tests/privacy_lifecycle.sql; do
+          for f in tests/rls_security_review.sql tests/rls_brokerage.sql tests/platform_rls_test.sql tests/privacy_lifecycle.sql tests/rls_tenant_wall.sql; do
             echo "::group::$f"
             psql -h localhost -U postgres -d oracle -v ON_ERROR_STOP=1 -q -f "$f"
             echo "::endgroup::"

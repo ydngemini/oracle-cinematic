@@ -48,7 +48,7 @@ Listed weakest to strongest:
 | 13 | Deals, documents, compliance | [13](13-transactions-contract-vault-compliance.md) | `source_verified` | local | `745f2fa` | Owner: e-sign, commissions | L13-01 |
 | 14 | Sites, social, ads, client portal | [14](14-websites-social-ads-growth-client-portal.md) | `source_verified` | local | `745f2fa` | Owner: networks, listings on sites | L14-01 |
 | 15 | Neoh mascot animation | [15](15-neoh-avatar-skeletal-character-animation.md) | `source_verified` | local | `745f2fa` | Owner: rig author | L15-01 |
-| 16 | Performance, indexes, cache | [16](16-performance-indexes-mobile-cache.md) | `source_verified` | local | `745f2fa` | A10; no production target | L16-01 |
+| 16 | Performance, indexes, cache | [16](16-performance-indexes-mobile-cache.md) | `tests_pass` | local | `745f2fa`; 0141 tenant wall (L16-01, 2026-10-13) | A10 capacity on production-shaped infra; no production target; 0141 undeployed | Drop the 0113 restated predicates; then T16.04 |
 | 17 | Security, privacy, data lifecycle | [17](17-security-privacy-compliance-data-lifecycle.md) | `source_verified` | staging | `0739563` | A01, A06 | Read-only review with 02 |
 | 18 | Billing, seats, analytics | [18](18-brokerage-billing-seat-plans-analytics.md) | `source_verified` | local | `a8bff54` (L18-02 `tests_pass`) | D-2026-10-12-02 (billable stage) | T18.04 + AC18.02 (seats) |
 | 19 | Production operations | [19](19-infrastructure-deploy-observability-recovery.md) | `source_verified` | staging | `745f2fa` | No production app; A04 | L19-03 |
@@ -838,19 +838,29 @@ Performance, indexes and cache.
 #### L16-01 Performance baseline is local only
 ```yaml
 id: L16-01
-status: source_verified
+status: tests_pass   # the 0141 tenant-wall slice, local only; A10 production-shaped capacity stays open (blocker below)
 env: local
-evidence_shas: [745f2fa]
-files: [backend/db/connection.py, backend/crm.py, backend/search_api.py, oracle-app/src/sw-oracle.js, oracle-app/src/neoh/UniversalWorkspace.jsx, docs/capacity-plan.md]
+evidence_shas: [745f2fa]   # finding; the fix is the commit that adds backend/db/migrations/0141_indexable_tenant_wall.sql (branch worktree-agent-a6f0278f657dfc229, unpushed)
+files: [backend/db/connection.py, backend/crm.py, backend/search_api.py, oracle-app/src/sw-oracle.js, oracle-app/src/neoh/UniversalWorkspace.jsx, docs/capacity-plan.md,
+        backend/db/migrations/0141_indexable_tenant_wall.sql, backend/tests/rls_tenant_wall.sql, backend/tests/privacy_lifecycle.sql, performance/rls_tenant_wall_plans.sh, .github/workflows/ci.yml]
 tests_run:
   - {cmd: "grep -n AbortController oracle-app/src/neoh/UniversalWorkspace.jsx; sed -n 127,134p docs/capacity-plan.md", result: "Work search has no request cancellation; cached splats are served without a rights check until logout (sw-oracle.js:268); nothing measured on DigitalOcean", date: 2026-10-12}
-authz_checked: n/a
-blockers: 
-  - {type: owner, note: "No production-shaped target exists yet (L19-02)."}
+  - {cmd: "livetest.sh migrate (shared local dev DB)", result: "0141 applied: 128 permissive tenant policies rewritten in place (names kept) to USING (tenant_id >= app_tenant_floor() AND tenant_id <= app_tenant_ceiling()); WITH CHECK kept verbatim; 3 left on the OR form (audit_ledger: nullable tenant_id; user_interactions/user_profiles: text tenant_id); policies of other shapes untouched", date: 2026-10-13}
+  - {cmd: "psql -U postgres -d oracle -v ON_ERROR_STOP=1 -f tests/rls_tenant_wall.sql (local dev DB, 52+2 tenants, 9.05M leads)", result: "exit 0, twice. A: 128 policies, one canonical expression, all on uuid NOT NULL, write checks unchanged, no eligible table left on the OR form, bounds STABLE invoker plpgsql granted to oracle_app only. B: 0 mismatches old vs new over 57 tenant ids (incl. an id with no tenant row and both uuid extremes) in 7 contexts: agent A, owner A, agent B, platform admin on oracle_platform_login, forged platform_admin GUC on oracle_app_login (sees 1 tenant, as before), agent role on the platform login, no context. C: client count, client page, phone-hash lookup use an index (custom + forced generic) for agent, owner and forged-GUC contexts. D: 124 tables x 7 contexts identical visible rows (count + ctid hash) under the new policies and, flipped back in the same REPEATABLE READ transaction, the old ones (leads restricted to the seeded brokerages)", date: 2026-10-13}
+  - {cmd: "psql -f tests/rls_security_review.sql; rls_brokerage.sql; platform_rls_test.sql; privacy_lifecycle.sql (local dev DB, 0141 applied)", result: "all exit 0. privacy_lifecycle's RLS-coverage check now also accepts the exact 0141 wall (it matched the text app_is_platform_admin()); it passes before and after 0141", date: 2026-10-13}
+  - {cmd: "livetest.sh python -m pytest -q -p no:cacheprovider <the 14 live files in ci.yml>", result: "29 passed, 1 failed: test_migration_precheck refuses the shared dev DB because it records 0106 (abandoned), 0139 and 0140 that this branch does not contain — environmental, unrelated to 0141; access matrices (brokerage + contact) pass", date: 2026-10-13}
+  - {cmd: "python -m pytest -q -p no:cacheprovider tests/ (backend, ORACLE_SKIP_DOTENV=1)", result: "3421 passed, 21 skipped, exit 0", date: 2026-10-13}
+  - {cmd: "performance/rls_tenant_wall_plans.sh (local dev DB; EXPLAIN ANALYZE as oracle_app_login / oracle_platform_login; throwaway 21,000-contact brokerage beside a 253-client one; one run, single machine shared with other work, no concurrency)", result: "pre-0141 -> 0141. Small agent (253 clients): client count 14.8 -> 2.1 ms (seq scan of 35,961 -> bitmap index); client page 14.4 -> 0.9 ms; phone-hash lookup 3.0 -> 0.1 ms, generic plan 54.8 -> 0.2 ms (seq -> index); leads pipeline page >5 s (cancelled) -> 1.3 ms; generic client count 30.9 -> 0.8 ms. Big owner (21,268 clients): count 65.0 -> 15.4 ms, page 56.0 -> 15.9 ms, generic count 62.7 -> 14.9 ms. Forged admin GUC: same as the small agent (count 22.0 -> 1.1 ms; leads >5 s -> 0.2 ms). Platform admin: count 57.1 -> 22.2 ms. Unchanged: child rows by client_id 0.3-0.5 ms, client by id 0.1-0.2 ms. Regressions: big agent/owner leads page 0.2-0.6 -> 2.5-6.4 ms (tenant index + sort instead of the global ranking index; bounded by the brokerage's size, not the platform's); per-row policy cost on a forced seq scan 43-58 -> 115-120 ms for 36k rows (two plpgsql calls, ~2 us/row) for owner/admin, unchanged for agents", date: 2026-10-13}
+  - {cmd: "EXPLAIN ANALYZE x3 of crm.list_clients page selection with/without the 0113 predicate, pre-0141 vs 0141", result: "with the predicate (current code): big owner 58-80 -> 28-42 ms, small agent 3.2-4.0 -> 3.7-4.9 ms; without it on 0141: 27-30 ms and 1.6-1.8 ms — the restated predicate is now redundant and costs ~2-3 ms", date: 2026-10-13}
+authz_checked: "tenant isolation proven equivalent per policy and context (B, D above), incl. a forged platform_admin GUC on the request login; restrictive agent-scope policies (0131/0134) unchanged and still AND"
+blockers:
+  - {type: owner, note: "No production-shaped target exists yet (L19-02). A10 (capacity on production-shaped infrastructure) stays open: these are local single-run plans, not capacity evidence."}
+  - {type: owner, note: "0141 is local only: unpushed branch; pushing to main deploys staging (CONTRACT C4.4). On staging it runs as doadmin (table owner), one transaction, lock_timeout 5 s, ACCESS EXCLUSIVE per table briefly."}
+  - {type: scope, note: "Not rewritten: audit_ledger (nullable tenant_id), user_interactions/user_profiles (text tenant_id), the 5 tenant+user policies (ai_chat_messages, ai_chat_actions, ai_tool_operations, agent_decisions, autonomy_preferences) and other non-canonical shapes. tenant_id = ANY (app_visible_tenants()) (0113, still used by crm.list_clients and server.push_deal_pipeline) hides rows whose tenant row is gone from a platform admin; the dev DB has such rows (15 lead_pipeline_counts, 120 tenant_contract_template_registrations)."}
 audit_refs: [A10]
 decision_refs: []
-next_task: "T16.04 + T16.05"
-updated: 2026-10-12
+next_task: "Drop the now-redundant 0113 predicates in crm.list_clients and server.push_deal_pipeline (and replace their shape tests with the rls_tenant_wall.sql plan check); then T16.04 index inventory; T16.10 protocol on staging once 0141 is deployed."
+updated: 2026-10-13
 ```
 
 #### L16-02 A prefetched splat is served only after the server re-confirms access
@@ -1156,4 +1166,4 @@ From [neoh-full-platform-source-audit-2026-10-08.md](../neoh-full-platform-sourc
 | A07 | Concurrent messaging route initialization | P1 | fixed in code at `c52b4dc`, local real-PostgreSQL race test only (2026-10-13, L10-06); not deployed, migration 0136 unapplied outside the local dev DB; 10DLC brand/campaign re-submission fixed in code at `00f94f8`, local real-PostgreSQL race test only (L10-09, 0139 unapplied outside the local dev DB) | was `backend/messaging_data.py:108` (`ON CONFLICT … DO UPDATE SET provider_account_id`); now `ON CONFLICT … DO NOTHING` + re-read, and the hosted order goes through `provider_purchases` (`_claim_hosted_order`) | 10 | L10-06 |
 | A08 | Heuristic valuation targets in model training | P1 | open in code | `backend/ml_forge/edge_forge/train_lora.py:207` (`_COUNTY_PPSF`), `:209` (`_MAO_RULE = 0.70`) | 11 | — |
 | A09 | AI capability descriptions exceed executable tooling | P1 | allowlist re-verified; UI and persona wording not re-verified. **2026-10-13 (base `3bcab84`): fixed locally, `tests_pass` (L07-01)** — one registry derived from the allowlist drives the persona, the API and the Personal AI page; a guard test fails on any unbacked claim. Playwright check still owed | allowlist at `backend/ai_chat_store.py:605`, `:646`; 126 catalogued vs 57 allowlisted tools (L07-01); registry `backend/ai_capabilities.py`, guard `backend/tests/test_ai_capabilities.py` | 07 | L07-01 |
-| A10 | Local capacity test is not target-production evidence | P1 | open | `docs/capacity-plan.md:129` (nothing measured on DigitalOcean) | 16 | L16-01, L19-02 |
+| A10 | Local capacity test is not target-production evidence | P1 | open. 2026-10-13: the tenant-isolation policies are now index conditions (0141, `tests_pass` local, L16-01; undeployed) — that removes a platform-sized scan from ordinary requests but is not capacity evidence; nothing is measured on production-shaped infrastructure | `docs/capacity-plan.md:129` (nothing measured on DigitalOcean); `backend/db/migrations/0141_indexable_tenant_wall.sql` | 16 | L16-01, L19-02 |

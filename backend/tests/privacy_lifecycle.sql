@@ -233,8 +233,12 @@ RESET SESSION AUTHORIZATION;
 -- it is a superuser. Every erasable tenant table therefore needs a permissive
 -- policy that admits a platform session for DELETE and for SELECT (the
 -- verification count), or erasure would report "clean" over surviving rows.
+-- That is the old OR form (app_is_platform_admin() OR …) or 0141's tenant wall,
+-- which admits every row to a platform admin (tests/rls_tenant_wall.sql).
 DO $$
-DECLARE bad text;
+DECLARE
+  bad text;
+  wall text := '((tenant_id >= app_tenant_floor()) AND (tenant_id <= app_tenant_ceiling()))';
 BEGIN
   WITH t AS (
     SELECT c.oid, c.relname FROM pg_class c
@@ -245,10 +249,12 @@ BEGIN
   SELECT string_agg(t.relname, ', ') INTO bad FROM t
    WHERE NOT EXISTS (SELECT 1 FROM pg_policy p WHERE p.polrelid = t.oid AND p.polpermissive
                       AND p.polcmd IN ('*','d')
-                      AND pg_get_expr(p.polqual, p.polrelid) LIKE '%app_is_platform_admin()%')
+                      AND (pg_get_expr(p.polqual, p.polrelid) LIKE '%app_is_platform_admin()%'
+                           OR pg_get_expr(p.polqual, p.polrelid) = wall))
       OR NOT EXISTS (SELECT 1 FROM pg_policy p WHERE p.polrelid = t.oid AND p.polpermissive
                       AND p.polcmd IN ('*','r')
-                      AND pg_get_expr(p.polqual, p.polrelid) LIKE '%app_is_platform_admin()%');
+                      AND (pg_get_expr(p.polqual, p.polrelid) LIKE '%app_is_platform_admin()%'
+                           OR pg_get_expr(p.polqual, p.polrelid) = wall));
   IF bad IS NOT NULL THEN
     RAISE EXCEPTION 'erasable tables a platform session cannot delete or count: %', bad;
   END IF;
