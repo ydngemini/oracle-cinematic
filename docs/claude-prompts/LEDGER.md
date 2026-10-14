@@ -49,7 +49,7 @@ Listed weakest to strongest:
 | 14 | Sites, social, ads, client portal | [14](14-websites-social-ads-growth-client-portal.md) | `source_verified` | local | `745f2fa` | Owner: networks, listings on sites | L14-01 |
 | 15 | Neoh mascot animation | [15](15-neoh-avatar-skeletal-character-animation.md) | `source_verified` | local | `745f2fa` | Owner: rig author | L15-01 |
 | 16 | Performance, indexes, cache | [16](16-performance-indexes-mobile-cache.md) | `tests_pass` | local | `745f2fa`; 0141 tenant wall (L16-01, 2026-10-13); 0113 predicates dropped + 0144 (L16-03, 2026-10-14) | A10 capacity on production-shaped infra; no production target; 0141/0144 undeployed | JIT on request queries (L16-03); then T16.05 |
-| 17 | Security, privacy, data lifecycle | [17](17-security-privacy-compliance-data-lifecycle.md) | `source_verified` | staging | `0739563` | A01, A06 | Read-only review with 02 |
+| 17 | Security, privacy, data lifecycle | [17](17-security-privacy-compliance-data-lifecycle.md) | `source_verified` | staging | `0739563`; L17-19 two-step sign-in (0150) + L17-20 security.txt, local 2026-10-14 | A01, A06; owner: ESA wording for two-step (L17-19), security@/privacy@ mailboxes (L17-20) | Read-only review with 02 |
 | 18 | Billing, seats, analytics | [18](18-brokerage-billing-seat-plans-analytics.md) | `source_verified` | local | `a8bff54` (L18-02 `tests_pass`) | D-2026-10-12-02 (billable stage) | T18.04 + AC18.02 (seats) |
 | 19 | Production operations | [19](19-infrastructure-deploy-observability-recovery.md) | `source_verified` | staging | `745f2fa` | No production app; A04 | L19-03 |
 | 20 | 20-agent launch certification | [20](20-twenty-agent-full-feature-launch-e2e-evaluation.md) | `source_verified` | local | `745f2fa` | Every row above | Last |
@@ -1146,6 +1146,54 @@ decision_refs: []
 next_task: "Code gaps in flight: L17-07 card-number redaction, L17-08 CAN-SPAM unsubscribe, L17-09..13 privileged-activity alerts / HOOK-3 / log-PII / audit fallback + verify_chain / access review, L17-14..18 demo-login boot guard / password hashing / dependency audit + Dependabot / admin read logging / DR drill in CI. Then: tenant-user MFA (owner decision), field encryption of remaining PII (A01), scheduled off-host backups, log forwarding."
 updated: 2026-10-14
 ```
+
+#### L17-19 Two-step sign-in (TOTP) for tenant users
+```yaml
+id: L17-19
+status: tests_pass
+env: local
+evidence_shas: [e25f3e0]
+branch: worktree-agent-a25105adfe3fa71c4
+files: [backend/db/migrations/0150_tenant_user_mfa.sql, backend/user_mfa.py, backend/mfa_api.py, backend/qr_code.py, backend/auth.py, backend/tenancy.py, backend/policy_acceptance.py, backend/brokerage_onboarding.py, backend/operator_api.py, backend/server.py, backend/privacy_data_map.py, backend/tests/test_tenant_user_mfa.py, backend/tests/test_tenant_user_mfa_live.py, docs/privacy-data-map.md, oracle-app/src/components/TwoStepSetup.jsx, oracle-app/src/components/TwoStepGate.jsx, oracle-app/src/components/TwoStepSettings.jsx, oracle-app/src/components/LoginVault.jsx, oracle-app/src/components/BrokerageSetupPanel.jsx, oracle-app/src/components/MyProfileTab.jsx, oracle-app/src/App.jsx, oracle-app/src/lib/apiClient.js, oracle-app/src/components/TwoStep.test.jsx, oracle-app/bundle-budget.json, scripts/demo_tenant_common.py, scripts/seed-demo-tenant.py, scripts/demo-preflight.py, scripts/crawl-all-pages.py, scripts/test-killer-demo-playwright.py, tests/golden/golden_e2e.py, .github/workflows/ci.yml]
+tests_run:
+  - {cmd: "cd backend && ORACLE_SKIP_DOTENV=1 python -m pytest -q -p no:cacheprovider tests/test_tenant_user_mfa.py", result: "exit 0; 38 passed (QR decodes with OpenCV v1-v20; enrolment-only gate; claim carried through policy renewal; who must enrol; recovery codes; security.txt)", date: 2026-10-14}
+  - {cmd: "livetest.sh migrate; livetest.sh python -m pytest -q tests/test_tenant_user_mfa_live.py", result: "applied 0150; exit 0; 1 passed (app + platform roles, FORCE RLS): enrolment-only session, sealed secret, brokerage context reads 0 factor rows, wrong/replayed code refused, recovery code single use, lockout 429 after 5, reset link needs the code, owner resets agent / cannot reach owner, operator resets owner, brokerage switch, audit rows", date: 2026-10-14}
+  - {cmd: "cd backend && ORACLE_SKIP_DOTENV=1 python -m pytest -q -p no:cacheprovider tests/", result: "exit 0; 3524 passed, 42 skipped; bandit (CI flags, baseline) exit 0", date: 2026-10-14}
+  - {cmd: "livetest.sh python -m pytest -q <the ci.yml live list, now 21 files>", result: "50 passed, 1 failed: tests/test_migration_precheck.py only, because the shared dev DB records 0106, 0146 and 0148 from other branches (environmental)", date: 2026-10-14}
+  - {cmd: "cd oracle-app && npx vitest run && npm run lint && npm run build && npm run bundle:check", result: "83 files, 787 passed; lint clean; build ok; total-JS ceiling raised +17.3 KB raw / +5.9 KB gzip for the two-step UI (lazy chunks TwoStepSetup 6.2 KB, TwoStepSettings 6.4 KB)", date: 2026-10-14}
+  - {cmd: "rls_security_review.sql, rls_brokerage.sql, platform_rls_test.sql, privacy_lifecycle.sql, rls_tenant_wall.sql on the local dev DB", result: "all exit 0", date: 2026-10-14}
+  - {cmd: "non-superuser rehearsal: scratch DB, 0001-0145 as superuser, REASSIGN OWNED to NOSUPERUSER BYPASSRLS CREATEROLE owner, run_migrations.py as that owner", result: "0150 applied by the NOSUPERUSER owner (rolsuper f, rolbypassrls t, rolcreaterole t); both tables RLS + FORCE, owned by it, policy app_is_platform_admin() only; oracle_app SELECT/DELETE yes, TRUNCATE no, PUBLIC none; tenants.require_mfa boolean NOT NULL DEFAULT false; scratch DB and roles dropped", date: 2026-10-14}
+authz_checked: "factor tables admit only the platform login (app_is_platform_admin, 0120): a broker-owner request context reads 0 rows (live test). Owner resets agents of their own brokerage only (RLS finds the target); owner-on-owner needs a platform admin; agents cannot reset. Codes are checked only after the password matched."
+blockers:
+  - {type: owner, note: "Account Security ESA / Platform Use Policy §1 wording for two-step sign-in drafted in the round-3 report; not applied, versions not bumped (CONTRACT C5.7)."}
+  - {type: scope, note: "Not deployed. After deploy, the staging owner ydngemini@gmail.com and the demo owner are asked to enrol at next sign-in (intended). The demo owner's secret is created by the first demo tool run (scripts/demo_tenant_common.py) and kept in the gitignored credentials file."}
+  - {type: scope, note: "scripts/test-mission3-journeys-playwright.py (signup journey in a browser) now meets the setup screen after signup; not updated. No WebAuthn/passkeys; TOTP only."}
+audit_refs: []
+decision_refs: [D-2026-10-14 owner MFA decision (a)]
+next_task: "Owner approves the ESA wording; deploy with approval; enrol the demo owner by running scripts/demo-preflight.py once against staging."
+updated: 2026-10-14
+```
+Owner decision 2026-10-14 (a): authenticator-app codes for every tenant user, required for broker owners at their next sign-in, optional for agents, a brokerage-wide switch for owners (built: `PUT /api/brokerage/security`). ISO 27001 A.8.5 gap #2 (`docs/compliance/iso27001/annex-a-assessment.md`). Reuses `totp.py` (RFC 6238, ±1 step), the 0121 rule (a code is accepted once; five wrong codes retire it), the per-account login rate limit and the session epoch (0117: turning it on/off or a reset ends other sessions). An account that owes setup signs in to an enrolment-only session: every route except the policy routes, `/auth/mfa/*`, logout, CSRF and the session probe answers 403 `mfa_enrolment_required`, and every token renewal carries the claim. No bypass flag exists.
+
+#### L17-20 Public security and privacy contacts (security.txt)
+```yaml
+id: L17-20
+status: external_configuration_required
+env: local
+evidence_shas: [e25f3e0]
+branch: worktree-agent-a25105adfe3fa71c4
+files: [backend/security_contact.py, backend/privacy_api.py, backend/server.py, infra/digitalocean/app.yaml, oracle-app/nginx.conf, oracle-app/vite.config.js, oracle-app/src/devProxy.test.js, .env.example, .env.prod.example, backend/tests/test_tenant_user_mfa.py]
+tests_run:
+  - {cmd: "cd backend && ORACLE_SKIP_DOTENV=1 python -m pytest -q -p no:cacheprovider tests/test_tenant_user_mfa.py -k 'security_txt or privacy_contact or edge'", result: "exit 0; 404 until ORACLE_SECURITY_CONTACT is set; RFC 9116 fields (Contact, Expires ≤ 365 days computed per request, Preferred-Languages, Canonical only on https); a newline in the value cannot add a field; ingress routes the file to the API before the static site; nginx answers 404 rather than the SPA", date: 2026-10-14}
+authz_checked: "public, read-only, no data"
+blockers:
+  - {type: owner, note: "Owner creates security@ and privacy@ on Neoh's domain, then sets ORACLE_SECURITY_CONTACT and ORACLE_PRIVACY_CONTACT on the api component. Until then nothing is published (404 / field omitted)."}
+audit_refs: []
+decision_refs: [D-2026-10-14 owner contacts decision (b)]
+next_task: "After the mailboxes exist: set both env vars on staging, check https://<staging>/.well-known/security.txt."
+updated: 2026-10-14
+```
+`ORACLE_PRIVACY_CONTACT` is returned as `privacy_contact` by `POST /api/privacy/requests`, the one place the app tells a brokerage about a data-subject request (no other privacy contact is shown anywhere in the app). No `Policy:` field: there is no disclosure page yet (ISO A.6.8 also asks for one).
 
 ### L18
 Billing, seats and analytics.

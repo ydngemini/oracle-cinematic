@@ -6,6 +6,9 @@ import { useNetwork } from '../context/useNetwork';
 const TITLES = { login: 'Sign in', signup: 'Create your account', forgot: 'Reset your password', reset: 'Set a new password' };
 const BAD_CREDENTIALS = 'That email and password don’t match. Try again, or reset your password.';
 const CTAS = { login: 'Sign in', signup: 'Create account', forgot: 'Send reset link', reset: 'Set password & sign in' };
+const OTP_CODES = new Set(['OTP_REQUIRED', 'OTP_INVALID', 'MFA_LOCKED']);
+// A recovery code is 16 characters (shown as XXXX-XXXX-XXXX-XXXX).
+const recoveryLength = (value) => value.replace(/[^0-9a-z]/gi, '').length;
 
 /**
  * LoginVault — full-screen auth gate. Supports four modes:
@@ -26,10 +29,14 @@ export function LoginVault({ onAuthenticated }) {
 
   const [agentId, setAgentId] = useState('');
   const [passphrase, setPassphrase] = useState('');
-  // The operator account's second factor: shown only after the server answers
-  // OTP_REQUIRED for a correct passphrase.
+  // The second factor: shown only after the server answers OTP_REQUIRED for a
+  // correct password. `factor` is 'totp' for an authenticator app (any account
+  // with two-step sign-in, L17-19) or 'email' for the operator's emailed code.
   const [otp, setOtp] = useState('');
   const [otpRequired, setOtpRequired] = useState(false);
+  const [otpFactor, setOtpFactor] = useState('email');
+  const [recoveryAllowed, setRecoveryAllowed] = useState(false);
+  const [useRecovery, setUseRecovery] = useState(false);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [fullName, setFullName] = useState('');
@@ -76,15 +83,22 @@ export function LoginVault({ onAuthenticated }) {
         setLoading(false);
         setNotice(body.detail ?? 'If that email has an account, a reset link is on its way.');
       } else {
-        const body = await apiPost('/auth/reset', { token: resetToken, new_password: password }, { retries: 0 });
+        const payload = otpRequired && otp
+          ? { token: resetToken, new_password: password, otp }
+          : { token: resetToken, new_password: password };
+        const body = await apiPost('/auth/reset', payload, { retries: 0 });
         finishAuth(body);
       }
     } catch (err) {
       setLoading(false);
-      if (err instanceof ApiError && (err.code === 'OTP_REQUIRED' || err.code === 'OTP_INVALID')) {
+      if (err instanceof ApiError && OTP_CODES.has(err.code)) {
         setOtpRequired(true);
+        if (err.code === 'OTP_REQUIRED') {
+          setOtpFactor(err.detail?.factor === 'totp' ? 'totp' : 'email');
+          setRecoveryAllowed(err.detail?.recovery === true);
+        }
         setOtp('');
-        setError(err.code === 'OTP_INVALID' ? err.message : '');
+        setError(err.code === 'OTP_REQUIRED' ? '' : err.message);
         setNotice(err.code === 'OTP_REQUIRED' ? err.message : '');
       } else if (err instanceof ApiError && mode === 'login' && err.status === 401) {
         // A wrong password is not an ended session; the generic 401 copy told
@@ -112,13 +126,15 @@ export function LoginVault({ onAuthenticated }) {
   };
 
   const busy = loading || fading;
+  const otpIncomplete = otpRequired && (useRecovery ? recoveryLength(otp) !== 16 : otp.length !== 6);
   const disabled = busy
-    || (mode === 'login' && (!agentId || !passphrase || (otpRequired && otp.length !== 6)))
+    || (mode === 'login' && (!agentId || !passphrase || otpIncomplete))
     || (mode === 'signup' && (!email || password.length < 10))
     || (mode === 'forgot' && !email)
-    || (mode === 'reset' && password.length < 10);
+    || (mode === 'reset' && (password.length < 10 || otpIncomplete));
 
-  const switchTo = (m) => () => { setMode(m); setError(''); setNotice(''); };
+  const switchTo = (m) => () => { setMode(m); setError(''); setNotice(''); setOtpRequired(false); setOtp(''); setUseRecovery(false); };
+
   const navLink = (to, label) => <button type="button" className={styles.linkBtn} onClick={switchTo(to)}>{label}</button>;
 
   const field = (id, label, value, set, type, auto, ph) => (
@@ -127,6 +143,21 @@ export function LoginVault({ onAuthenticated }) {
       <input id={id} className={styles.input} type={type} autoComplete={auto} spellCheck={false}
         value={value} onChange={(e) => set(e.target.value)} disabled={busy} placeholder={ph} />
     </div>
+  );
+
+  const otpField = otpRequired && (
+    <>
+      {useRecovery
+        ? field('otp', 'Recovery code', otp, (v) => setOtp(v.replace(/[^0-9a-z-]/gi, '').toUpperCase().slice(0, 19)), 'text', 'off', 'XXXX-XXXX-XXXX-XXXX')
+        : field('otp', otpFactor === 'totp' ? 'Authenticator code' : 'Sign-in code', otp, (v) => setOtp(v.replace(/\D/g, '').slice(0, 6)), 'text', 'one-time-code', '123456')}
+      {recoveryAllowed && (
+        <button type="button" className={styles.linkBtn} disabled={busy}
+          onClick={() => { setUseRecovery((v) => !v); setOtp(''); setError(''); }}>
+          {useRecovery ? 'Use the code from your app' : 'Lost your phone? Use a recovery code'}
+        </button>
+      )}
+      {otpFactor === 'email' && <button type="button" className={styles.linkBtn} onClick={resendCode} disabled={busy}>Send a new code</button>}
+    </>
   );
 
   return (
@@ -142,8 +173,7 @@ export function LoginVault({ onAuthenticated }) {
             <>
               {field('agent-id', 'Email or Agent ID', agentId, setAgentId, 'text', 'username', 'you@brokerage.com')}
               {field('passphrase', 'Password', passphrase, setPassphrase, 'password', 'current-password', '••••••••')}
-              {otpRequired && field('otp', 'Sign-in code', otp, (v) => setOtp(v.replace(/\D/g, '').slice(0, 6)), 'text', 'one-time-code', '123456')}
-              {otpRequired && <button type="button" className={styles.linkBtn} onClick={resendCode} disabled={busy}>Send a new code</button>}
+              {otpField}
             </>
           )}
           {mode === 'signup' && (
@@ -156,6 +186,7 @@ export function LoginVault({ onAuthenticated }) {
           )}
           {mode === 'forgot' && field('email', 'Email', email, setEmail, 'email', 'username', 'you@brokerage.com')}
           {mode === 'reset' && field('password', 'New password (10+ chars)', password, setPassword, 'password', 'new-password', '••••••••••')}
+          {mode === 'reset' && otpField}
 
           {error && <p className={styles.errorMsg} role="alert">{error}</p>}
           {notice && <p className={styles.noticeMsg} role="status">{notice}</p>}

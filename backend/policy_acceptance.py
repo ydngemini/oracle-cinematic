@@ -170,6 +170,8 @@ async def policy_acceptance_status(
             ctx.agent_id, ctx.tenant_id, ctx.role.value,
             user_id=ctx.user_id or str(user["id"]), session_epoch=ctx.session_epoch,
             auth_time=ctx.auth_time,
+            # Still owed two-step setup (L17-19): a renewal must not lift it.
+            mfa_enrolment=ctx.mfa_enrolment_pending,
         )
         if token:
             _set_session_cookie(response, token)
@@ -236,6 +238,7 @@ async def accept_policy(
         ctx.agent_id, ctx.tenant_id, ctx.role.value,
         user_id=ctx.user_id or str(user["id"]), session_epoch=ctx.session_epoch,
         auth_time=ctx.auth_time,
+        mfa_enrolment=ctx.mfa_enrolment_pending,
     )
     _set_session_cookie(response, token)
     return PolicyAcceptanceResult(

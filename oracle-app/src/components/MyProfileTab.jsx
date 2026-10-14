@@ -12,6 +12,8 @@ import { friendlyError } from '../lib/errorMessages';
 
 // Owner-only and opened rarely: kept out of the main bundle.
 const AccountDataPanel = lazy(() => import('./AccountDataPanel'));
+// Two-step sign-in settings (L17-19): its own chunk, like the data panel.
+const TwoStepSettings = lazy(() => import('./TwoStepSettings'));
 
 // Inline stroke glyphs — same idiom as TabBar GLYPHS, zero icon deps.
 const GLYPHS = {
@@ -485,6 +487,10 @@ export default function MyProfileTab() {
           </div>
         </form>
           </section>
+
+          <Suspense fallback={null}>
+            <TwoStepSettings isOwner={sessionStorage.getItem('oracle_role') === 'broker_owner'} />
+          </Suspense>
 
           {/* ── Account & data — export, retention, closure (owners) ──────── */}
           {sessionStorage.getItem('oracle_role') === 'broker_owner' && (

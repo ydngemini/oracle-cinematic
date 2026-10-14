@@ -292,8 +292,23 @@ export function BrokerageSetupPanel() {
               <span className={styles.memberName}>{m.full_name || m.email}</span>
               <span className={styles.memberRole}>{m.role === 'broker_owner' ? 'Owner' : 'Agent'}</span>
               <span className={styles.memberState} data-state={m.status}>{m.status === 'active' ? 'Active' : 'Suspended'}</span>
+              {typeof m.mfa_enabled === 'boolean' && (
+                <span className={styles.memberState} data-state={m.mfa_enabled ? 'active' : 'pending'}>
+                  {m.mfa_enabled ? 'Two-step on' : 'Two-step off'}
+                </span>
+              )}
               {isOwner && m.role === 'agent' && (m.agent_id || '').toLowerCase() !== me && (
                 <span className={styles.rowActions}>
+                  {m.mfa_enabled === true && (
+                    <button
+                      type="button" className={styles.link} disabled={busy}
+                      onClick={() => act(() => crmPost(`/api/brokerage/team/${m.id}/mfa/reset`,
+                        { reason: 'Two-step sign-in reset by an owner from Settings' }),
+                      'Two-step sign-in reset. Their sessions ended; they set it up again when they next sign in.')}
+                    >
+                      Reset two-step
+                    </button>
+                  )}
                   {m.status === 'active' ? (
                     <button
                       type="button" className={styles.link} disabled={busy}

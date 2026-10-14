@@ -187,6 +187,9 @@ TABLES: dict[str, TableEntry] = {
     "lead_source_connectors": TableEntry(C.SECRET, E),
     "oauth_authorization_states": TableEntry(C.CAPABILITY_TOKEN, E),
     "password_reset_tokens": TableEntry(C.CAPABILITY_TOKEN, E),
+    "user_mfa_factors": TableEntry(C.SECRET, E, "TOTP secret sealed with the tenant key "
+                                   "(totp_secret_ciphertext, 0150); platform context only; never exported"),
+    "user_mfa_recovery_codes": TableEntry(C.SECRET, E, "SHA-256 of one-time recovery codes (0150); never exported"),
     "client_portals": TableEntry(C.CAPABILITY_TOKEN, E),
     # ── operational ──────────────────────────────────────────────────────
     "automation_jobs": TableEntry(C.OPERATIONAL, E),

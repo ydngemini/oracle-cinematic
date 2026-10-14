@@ -134,6 +134,9 @@ def run(args, results: dict) -> dict:
                            check=True, stdout=subprocess.DEVNULL)
 
     creds = common.load_or_create_credentials()
+    # Jordan must use two-step sign-in (L17-19): enrol through the API if owed,
+    # then the form below types the code computed from the credentials file.
+    common.prepare_demo_logins(args.base_url, creds, accounts=(common.OWNER,))
     shots = OUT / "e2e" / args.label
     shots.mkdir(parents=True, exist_ok=True)
     obs = results["observations"]
@@ -154,6 +157,10 @@ def run(args, results: dict) -> dict:
             page.fill("#passphrase", creds[common.OWNER["email"]])
             t0 = time.time()
             page.get_by_role("button", name="Sign in").click()
+            page.locator("#otp").or_(page.get_by_text("May fit Sarah Johnson")).first.wait_for(timeout=45_000)
+            if page.locator("#otp").count() and common.totp_secret(creds, common.OWNER["email"]):
+                page.fill("#otp", common.next_totp_code(common.totp_secret(creds, common.OWNER["email"])))
+                page.get_by_role("button", name="Sign in").click()
             page.get_by_text("May fit Sarah Johnson").wait_for(timeout=45_000)
             obs["home_load_s"] = round(time.time() - t0, 2)
             page.keyboard.press("Escape")  # the first-visit walkthrough

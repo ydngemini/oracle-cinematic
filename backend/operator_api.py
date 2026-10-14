@@ -50,6 +50,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from pydantic import BaseModel, ConfigDict, Field
 
 from admin_ops import require_platform_admin
 from db.connection import tenant_tx
@@ -1092,6 +1093,26 @@ async def _release(conn) -> dict[str, Any]:
         },
         "warnings": warnings,
     }
+
+
+class MfaResetBody(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    reason: str = Field(min_length=3, max_length=500)
+
+
+@router.post("/users/{user_id}/mfa/reset")
+async def reset_user_two_step(
+    user_id: uuid.UUID,
+    body: MfaResetBody,
+    ctx: TenantContext = Depends(require_platform_admin),
+) -> dict[str, Any]:
+    """Reset any account's two-step sign-in, broker owners included — the
+    one reset a broker owner cannot do for another owner (L17-19). The
+    account's sessions end; recorded in the audit chain as an admin action.
+    The person sets it up again at their next sign-in."""
+    from mfa_api import reset_member_mfa
+
+    return await reset_member_mfa(ctx, user_id, body.reason)
 
 
 @router.get("/release")

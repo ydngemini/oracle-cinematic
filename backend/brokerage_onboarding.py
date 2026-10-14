@@ -638,23 +638,38 @@ async def get_team(ctx: TenantContext = Depends(require_context)) -> dict[str, A
             " ORDER BY created_at DESC",
             ctx.tenant_id,
         )
-        return {
-            "members": [
-                {
-                    "id": str(m["id"]),
-                    "agent_id": m["agent_id"],
-                    "email": m["email"] or m["agent_id"],
-                    "full_name": m["full_name"],
-                    "role": m["role"],
-                    "title": m["title"],
-                    "status": "active" if m["is_active"] else "suspended",
-                    "membership_status": m["membership_status"],
-                    "joined_at": m["created_at"],
-                }
-                for m in members
-            ],
-            "pending_invitations": [_invite_row(r) for r in invites],
-        }
+    # Who has two-step sign-in on (L17-19) — shown to the people who can
+    # reset it. The factor tables admit only the platform context (0150), and
+    # only these booleans leave it.
+    with_mfa: Optional[set[str]] = None
+    if ctx.is_broker_owner or ctx.is_platform_admin:
+        import user_mfa
+        from auth import _admin_ctx
+
+        try:
+            async with tenant_tx(_admin_ctx()) as conn:
+                with_mfa = await user_mfa.enabled_among(conn, [m["id"] for m in members])
+        except Exception:  # noqa: BLE001 — unknown is shown as unknown, never as "off"
+            log.warning("two-step status for the roster could not be read")
+            with_mfa = None
+    return {
+        "members": [
+            {
+                "id": str(m["id"]),
+                "agent_id": m["agent_id"],
+                "email": m["email"] or m["agent_id"],
+                "full_name": m["full_name"],
+                "role": m["role"],
+                "title": m["title"],
+                "status": "active" if m["is_active"] else "suspended",
+                "membership_status": m["membership_status"],
+                "joined_at": m["created_at"],
+                **({"mfa_enabled": str(m["id"]) in with_mfa} if with_mfa is not None else {}),
+            }
+            for m in members
+        ],
+        "pending_invitations": [_invite_row(r) for r in invites],
+    }
 
 
 @router.get("/invitations")
@@ -881,6 +896,62 @@ async def suspend_member(
     await _record_member_change(ctx, "team.member.suspended", row, body.reason)
     return {"id": str(row["id"]), "agent_id": row["agent_id"], "status": "suspended",
             "cancelled": {k: v for k, v in cancelled.items() if v}}
+
+
+@router.post("/team/{user_id}/mfa/reset")
+async def reset_member_two_step(
+    user_id: UUID,
+    body: MemberStatusChange,
+    ctx: TenantContext = Depends(require_context),
+) -> dict[str, Any]:
+    """A broker owner resets an agent's two-step sign-in (a lost phone, no
+    recovery codes). Another owner's reset takes a platform admin
+    (POST /api/admin/users/{id}/mfa/reset). Their sessions end; audited."""
+    from mfa_api import reset_member_mfa
+
+    require_role(ctx, Role.BROKER_OWNER, Role.PLATFORM_ADMIN)
+    return await reset_member_mfa(ctx, user_id, body.reason)
+
+
+class SecuritySettings(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    require_mfa: bool
+
+
+@router.get("/security")
+async def get_security_settings(ctx: TenantContext = Depends(require_context)) -> dict[str, Any]:
+    """The brokerage's sign-in rules (L17-19): broker owners always use
+    two-step sign-in; `require_mfa` extends it to every member."""
+    async with tenant_tx(ctx) as conn:
+        required = await conn.fetchval("SELECT require_mfa FROM tenants WHERE id = $1::uuid", ctx.tenant_id)
+    return {"require_mfa": bool(required), "owners_always_required": True}
+
+
+@router.put("/security")
+async def put_security_settings(
+    body: SecuritySettings,
+    ctx: TenantContext = Depends(require_context),
+) -> dict[str, Any]:
+    """Require two-step sign-in for every member of this brokerage. Members
+    without it are held on the setup screen at their next sign-in; sessions
+    already open are not ended."""
+    require_role(ctx, Role.BROKER_OWNER)
+    async with tenant_tx(ctx) as conn:
+        before = await conn.fetchval("SELECT require_mfa FROM tenants WHERE id = $1::uuid", ctx.tenant_id)
+        await conn.execute("UPDATE tenants SET require_mfa = $2 WHERE id = $1::uuid",
+                           ctx.tenant_id, body.require_mfa)
+    if bool(before) != body.require_mfa:
+        from audit_ledger import AuditCategory, ledger
+
+        try:
+            await ledger.record(
+                AuditCategory.USER_STATE_CHANGE, "brokerage.mfa_policy.changed",
+                tenant_id=ctx.tenant_id, user_id=ctx.agent_id, target_id=ctx.tenant_id,
+                metadata={"require_mfa": body.require_mfa},
+            )
+        except Exception:  # noqa: BLE001 — the setting already committed
+            log.exception("audit record for brokerage.mfa_policy.changed failed")
+    return {"require_mfa": body.require_mfa, "owners_always_required": True}
 
 
 @router.post("/team/{user_id}/reinstate")

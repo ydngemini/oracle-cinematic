@@ -198,12 +198,20 @@ async def subject_request(body: SubjectRequest, ctx: TenantContext = Depends(req
     if body.kind == "dsr_delete" and not body.preview:
         await confirm_password(ctx, body.password or "")
     try:
-        return await handle_subject_request(
+        result = await handle_subject_request(
             ctx, kind=body.kind, email=body.email, phone=body.phone, reason=body.reason, preview=body.preview,
             contact_id=_uuid(body.contact_id) if body.contact_id else None,
             client_id=_uuid(body.client_id) if body.client_id else None)
     except Exception as exc:  # noqa: BLE001
         _raise(exc)
+    # How to reach Neoh (the processor) about this request — only once the
+    # owner has configured the mailbox (ORACLE_PRIVACY_CONTACT, L17-20).
+    from security_contact import privacy_contact
+
+    contact = privacy_contact()
+    if contact and isinstance(result, dict):
+        result = {**result, "privacy_contact": contact}
+    return result
 
 
 # ── Platform operators ─────────────────────────────────────────────────────

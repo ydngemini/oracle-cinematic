@@ -103,12 +103,10 @@ def _target(row: dict, ids: dict) -> tuple[str | None, tuple | None]:
     return path, None
 
 
-def _sign_in(page, base, email, password):
-    page.goto(base + "/", wait_until="domcontentloaded")
-    page.fill("#agent-id", email)
-    page.fill("#passphrase", password)
-    page.get_by_role("button", name="Sign in").click()
-    page.wait_for_selector('[aria-label="Open agent profile and settings"]', timeout=45_000)
+def _sign_in(page, base, email, creds):
+    # Types the owner's two-step code when asked (demo_tenant_common.ui_sign_in).
+    common.ui_sign_in(page, base, email, creds,
+                      ready_selector='[aria-label="Open agent profile and settings"]')
     page.keyboard.press("Escape")   # the first-visit walkthrough
 
 
@@ -200,6 +198,9 @@ def main(argv=None) -> int:
     shots = REPO / "performance/out/crawl" / run_id
     shots.mkdir(parents=True, exist_ok=True)
     creds = common.load_or_create_credentials()
+    # Owed two-step setup is done through the API before the read-only browser
+    # run (whose guard blocks writes), so the UI only meets the code prompt.
+    common.prepare_demo_logins(base, creds)
     blocked: list[str] = []
 
     def guard(route):
@@ -222,7 +223,7 @@ def main(argv=None) -> int:
                     ctx = browser.new_context(viewport=vp, is_mobile=vp_name == "phone", has_touch=vp_name == "phone")
                     ctx.route("**/*", guard)
                     page = ctx.new_page()
-                    _sign_in(page, base, account["email"], creds[account["email"]])
+                    _sign_in(page, base, account["email"], creds)
                     ids = _ids(page, base)
                     for row in pages:
                         if row["family"] == "Outside the signed-in shell" and row["id"] != "public:site-preview":

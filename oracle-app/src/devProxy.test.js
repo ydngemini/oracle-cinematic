@@ -16,7 +16,7 @@ function productionApiPrefixes() {
   for (const line of ingress.split('\n')) {
     const name = line.match(/component:\s*\{\s*name:\s*(\w+)/)
     if (name) component = name[1]
-    const prefix = line.match(/prefix:\s*(\/[\w-]*)/)
+    const prefix = line.match(/prefix:\s*(\/[\w./-]*)/)
     if (prefix && component === 'api') prefixes.push(prefix[1])
   }
   return prefixes

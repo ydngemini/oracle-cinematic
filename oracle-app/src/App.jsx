@@ -5,6 +5,7 @@ import { useOracleWebSocket } from './state';
 import { CrmShell } from './components/CrmShell';
 import { LoginVault } from './components/LoginVault';
 import { PolicyAcceptanceGate } from './components/PolicyAcceptanceGate';
+import { TwoStepGate } from './components/TwoStepGate';
 import { NetworkProvider } from './context/NetworkContext';
 import { apiPost } from './lib/apiClient';
 import { ReelExperience } from './components/ReelExperience';
@@ -29,13 +30,17 @@ function ReadyCrm() {
 
 function AuthedApp({ onSignOut }) {
   const [policyReady, setPolicyReady] = useState(false);
+  const [twoStepReady, setTwoStepReady] = useState(false);
   const markPolicyReady = useCallback(() => setPolicyReady(true), []);
+  const markTwoStepReady = useCallback(() => setTwoStepReady(true), []);
 
-  // The agent CRM opens directly to the source-backed Houses workspace.
+  // Policy first, then two-step setup if the account owes it (L17-19); the
+  // agent CRM opens directly to the source-backed Houses workspace.
   return (
     <>
-      {policyReady ? <ReadyCrm /> : null}
+      {policyReady && twoStepReady ? <ReadyCrm /> : null}
       <PolicyAcceptanceGate onReady={markPolicyReady} onSignOut={onSignOut} />
+      {policyReady ? <TwoStepGate onReady={markTwoStepReady} onSignOut={onSignOut} /> : null}
     </>
   );
 }

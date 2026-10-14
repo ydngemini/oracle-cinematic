@@ -201,7 +201,7 @@ def _is_reserved_identity(agent_id: str) -> bool:
     return any(wanted == known.strip().lower() for known in DEMO_CREDENTIALS)
 
 
-_OTP_REQUIRED = {"code": "OTP_REQUIRED",
+_OTP_REQUIRED = {"code": "OTP_REQUIRED", "factor": "totp",
                  "message": "Enter the 6-digit code from your authenticator app."}
 _OTP_INVALID = {"code": "OTP_INVALID",
                 "message": "That code is not valid or has expired. Try again."}
@@ -277,6 +277,7 @@ async def _require_operator_email_otp(agent_id: str, otp: Optional[str]) -> None
                                     "The sign-in code could not be sent. Try again shortly.") from None
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, {
             "code": "OTP_REQUIRED",
+            "factor": "email",
             "message": f"We emailed a 6-digit sign-in code to {_mask_email(_ADMIN_OTP_EMAIL)}.",
         })
 
@@ -327,6 +328,76 @@ async def _require_operator_otp(agent_id: str, otp: Optional[str]) -> None:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, _OTP_INVALID)
 
 
+def _row_value(row, key: str, default=None):
+    """A column of a users lookup row; test doubles may predate the column."""
+    try:
+        return row[key]
+    except (KeyError, IndexError, TypeError):
+        return default
+
+
+_USER_OTP_REQUIRED = {
+    "code": "OTP_REQUIRED",
+    "factor": "totp",
+    "recovery": True,
+    "message": "Enter the 6-digit code from your authenticator app, or one of your recovery codes.",
+}
+
+
+async def _audit_mfa(action: str, *, tenant_id, actor: str, target_user_id, metadata: Optional[dict] = None,
+                     admin: bool = False) -> None:
+    """Two-step sign-in events in the audit chain (L17-19). Never undoes the
+    change over a logging failure; never records a code or a secret."""
+    try:
+        from audit_ledger import AuditCategory, ledger
+
+        await ledger.record(
+            AuditCategory.ADMIN_ACTION if admin else AuditCategory.USER_STATE_CHANGE,
+            action, tenant_id=str(tenant_id), user_id=actor, target_id=str(target_user_id),
+            metadata=metadata or {},
+        )
+    except Exception:  # noqa: BLE001
+        log.exception("audit record for %s failed", action)
+
+
+async def _require_user_second_factor(row, otp: Optional[str]) -> str:
+    """The second factor for a users-table account with two-step sign-in on.
+    Called only after the password matched. Returns "totp" or "recovery";
+    raises 401 OTP_REQUIRED / OTP_INVALID, 429 MFA_LOCKED or 503."""
+    import user_mfa
+    from db.connection import tenant_tx
+
+    if not otp:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, dict(_USER_OTP_REQUIRED))
+    try:
+        async with tenant_tx(_admin_ctx()) as conn:
+            result = await user_mfa.verify(conn, user_id=row["id"], code=otp)
+    except user_mfa.MfaError as exc:
+        raise HTTPException(exc.status_code, exc.detail) from None
+    if result.ok:
+        if result.method == "recovery":
+            log.info("Two-step sign-in used a recovery code (user_id=%s)", row["id"])
+            await _audit_mfa("auth.mfa.recovery_code_used", tenant_id=row["tenant_id"],
+                             actor=str(row["agent_id"]), target_user_id=row["id"])
+        return str(result.method)
+    log.info("Two-step sign-in code refused (user_id=%s, locked=%s)", row["id"],
+             result.locked or result.just_locked)
+    if result.just_locked:
+        await _audit_mfa("auth.mfa.locked", tenant_id=row["tenant_id"], actor=str(row["agent_id"]),
+                         target_user_id=row["id"], metadata={"lock_seconds": user_mfa.LOCK_SECONDS})
+    error = result.error()
+    raise HTTPException(error.status_code, error.detail)
+
+
+def _mfa_enrolment_owed(row) -> bool:
+    """Signed in without the second factor this account must use."""
+    import user_mfa
+
+    if bool(_row_value(row, "mfa_enabled", False)):
+        return False
+    return user_mfa.required_reason(row["role"], _row_value(row, "tenant_requires_mfa", False)) is not None
+
+
 def _slugify(text: str) -> str:
     base = "".join(c if c.isalnum() else "-" for c in (text or "").lower()).strip("-")[:40] or "tenant"
     return "%s-%s" % (base, secrets.token_hex(3))
@@ -347,6 +418,7 @@ def _issue_jwt(
     user_id: Optional[str] = None,
     session_epoch: int = 0,
     auth_time: Optional[float] = None,
+    mfa_enrolment: bool = False,
 ) -> str:
     """Sign a session (or purpose) token.
 
@@ -355,7 +427,9 @@ def _issue_jwt(
     transaction, so bumping the epoch ends the session. Environment identities
     (operator/demo) have no row and pass neither. `auth_time` is when the
     password was last proven; renewals carry it forward, capped by
-    MAX_SESSION_AGE_SECONDS."""
+    MAX_SESSION_AGE_SECONDS. `mfa_enrolment` marks a session that signed in
+    without the two-step sign-in its account must use (L17-19): tenancy lets
+    it reach only the policy and setup routes, and every renewal passes it on."""
     now = time.time()
     payload: dict = {
         "sub": sub,
@@ -369,6 +443,8 @@ def _issue_jwt(
     }
     if user_id:
         payload["uid"] = str(user_id)
+    if mfa_enrolment:
+        payload["mfa_enrol"] = True
     if extra:
         payload.update(extra)
     if _JWT_ISSUER:
@@ -395,7 +471,12 @@ async def _lookup_user(agent_id: str):
             "users.policy_acceptance_required, users.session_epoch, "
             "EXISTS (SELECT 1 FROM user_policy_acceptances AS acceptance "
             "WHERE acceptance.user_id = users.id AND acceptance.policy_version = $2) "
-            "AS has_current_policy_acceptance "
+            "AS has_current_policy_acceptance, "
+            # Two-step sign-in (0150, L17-19): on, and whether the brokerage requires it.
+            "EXISTS (SELECT 1 FROM user_mfa_factors AS factor "
+            "WHERE factor.user_id = users.id AND factor.confirmed_at IS NOT NULL) AS mfa_enabled, "
+            "COALESCE((SELECT brokerage.require_mfa FROM tenants AS brokerage "
+            "WHERE brokerage.id = users.tenant_id), false) AS tenant_requires_mfa "
             "FROM users WHERE lower(users.agent_id) = lower($1) AND users.is_active",
             agent_id,
             PLATFORM_POLICY_VERSION,
@@ -604,8 +685,9 @@ def _apply_rl_headers(response: Response, limit: int, remaining: int, reset: int
 class LoginRequest(BaseModel):
     agent_id: str
     passphrase: str
-    # The operator's second factor (totp.py); ignored for every other account.
-    otp: Optional[str] = Field(default=None, max_length=12)
+    # The second factor: the operator's (totp.py / emailed code), or a tenant
+    # user's authenticator or recovery code (user_mfa.py, L17-19).
+    otp: Optional[str] = Field(default=None, max_length=32)
 
 
 class RegisterRequest(BaseModel):
@@ -622,6 +704,9 @@ class ForgotRequest(BaseModel):
 class ResetRequest(BaseModel):
     token: str
     new_password: str
+    # Required when the account has two-step sign-in on: a reset link alone
+    # (one mailbox) must not take an account the code protects.
+    otp: Optional[str] = Field(default=None, max_length=32)
 
 
 class ChangePasswordRequest(BaseModel):
@@ -638,6 +723,8 @@ class LoginResponse(BaseModel):
     tenant_id: str
     role: str
     policy_acceptance_required: bool = False
+    # Signed in, but only the two-step setup screens open until it is done.
+    mfa_enrolment_required: bool = False
 
 
 class VerifyResponse(BaseModel):
@@ -655,6 +742,7 @@ class SessionStatusResponse(BaseModel):
     role: Optional[str] = None
     issued_at: Optional[float] = None
     expires_at: Optional[float] = None
+    mfa_enrolment_required: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -857,6 +945,7 @@ async def session_status(request: Request, response: Response) -> SessionStatusR
         role=payload.get("role"),
         issued_at=payload["iat"],
         expires_at=payload["exp"],
+        mfa_enrolment_required=payload.get("mfa_enrol") is True,
     )
 
 
@@ -895,6 +984,7 @@ async def login(body: LoginRequest, response: Response, request: Request = None)
     policy_acceptance_required = False
     session_user_id: Optional[str] = None
     session_epoch = 0
+    mfa_enrolment = False
     if credentials_ok:
         tenant_id, role = DEMO_TENANCY.get(body.agent_id, (body.agent_id, "agent"))
         if body.agent_id == _ADMIN_ID:
@@ -929,6 +1019,12 @@ async def login(body: LoginRequest, response: Response, request: Request = None)
                 bool(row["policy_acceptance_required"])
                 or not bool(row["has_current_policy_acceptance"])
             )
+            # Two-step sign-in (L17-19), only after the password matched, so
+            # the code prompt confirms nothing to a password guesser.
+            if bool(_row_value(row, "mfa_enabled", False)):
+                await _require_user_second_factor(row, body.otp)
+            else:
+                mfa_enrolment = _mfa_enrolment_owed(row)
 
     if not credentials_ok:
         # Don't distinguish "unknown agent" from "wrong passphrase" — prevents
@@ -947,6 +1043,7 @@ async def login(body: LoginRequest, response: Response, request: Request = None)
         extra={"policy_pending": True} if policy_acceptance_required else None,
         user_id=session_user_id,
         session_epoch=session_epoch,
+        mfa_enrolment=mfa_enrolment,
     )
 
     _register_session(agent_identity)
@@ -967,6 +1064,7 @@ async def login(body: LoginRequest, response: Response, request: Request = None)
         tenant_id=tenant_id,
         role=role,
         policy_acceptance_required=policy_acceptance_required,
+        mfa_enrolment_required=mfa_enrolment,
     )
 
 
@@ -1011,9 +1109,12 @@ async def register(body: RegisterRequest, response: Response) -> LoginResponse:
             status.HTTP_409_CONFLICT, "An account with that email already exists."
         ) from None
     tenant_id = str(trow["id"])
+    # A broker owner must use two-step sign-in (L17-19); signing up is a
+    # sign-in, so the new session opens on the setup screen.
     token = _issue_jwt(
         email, tenant_id, "broker_owner", extra={"policy_pending": True},
         user_id=str(new_user["id"]) if new_user else None,
+        mfa_enrolment=True,
     )
     _set_session_cookie(response, token)
     _register_session(email)
@@ -1025,6 +1126,7 @@ async def register(body: RegisterRequest, response: Response) -> LoginResponse:
         tenant_id=tenant_id,
         role="broker_owner",
         policy_acceptance_required=True,
+        mfa_enrolment_required=True,
     )
 
 
@@ -1113,6 +1215,26 @@ async def reset_password(body: ResetRequest, response: Response) -> LoginRespons
         raise HTTPException(status.HTTP_400_BAD_REQUEST, _RESET_ERROR_DETAIL)
 
     from db.connection import tenant_tx
+
+    # Two-step sign-in (L17-19): an account with it on also needs a current
+    # code (or a recovery code), checked BEFORE the link is spent and only for
+    # a link that is still live — so a used or expired link cannot be turned
+    # into a code-guessing oracle, and a wrong code leaves the link usable.
+    account = await _lookup_user(agent_id)
+    if account is not None and str(account["tenant_id"]) != tenant_id:
+        account = None
+    if account is not None and bool(_row_value(account, "mfa_enabled", False)):
+        async with tenant_tx(_admin_ctx()) as conn:
+            live = await conn.fetchval(
+                "SELECT 1 FROM password_reset_tokens WHERE jti_hash = $1 AND consumed_at IS NULL "
+                "AND expires_at > now() AND user_id = $2",
+                _hash_reset_jti(jti), account["id"],
+            )
+        if not live:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, _RESET_ERROR_DETAIL)
+        await _require_user_second_factor(account, body.otp)
+    mfa_enrolment = account is not None and _mfa_enrolment_owed(account)
+
     pw_hash = _hash_pw(body.new_password)
     async with tenant_tx(_admin_ctx()) as conn:
         row = await conn.fetchrow(
@@ -1180,6 +1302,7 @@ async def reset_password(body: ResetRequest, response: Response) -> LoginRespons
         extra={"policy_pending": True} if policy_acceptance_required else None,
         user_id=str(row["id"]),
         session_epoch=int(row["session_epoch"]),
+        mfa_enrolment=mfa_enrolment,
     )
     _register_session(current_agent_id)
     _set_session_cookie(response, token)
@@ -1191,6 +1314,7 @@ async def reset_password(body: ResetRequest, response: Response) -> LoginRespons
         tenant_id=tenant_id,
         role=role,
         policy_acceptance_required=policy_acceptance_required,
+        mfa_enrolment_required=mfa_enrolment,
     )
 
 
@@ -1287,6 +1411,7 @@ async def change_password(
         _set_session_cookie(response, _issue_jwt(
             str(updated["agent_id"]), str(updated["tenant_id"]), str(updated["role"]),
             user_id=str(updated["id"]), session_epoch=int(updated["session_epoch"]),
+            mfa_enrolment=claims.get("mfa_enrol") is True,
         ))
     return {"status": "ok", "detail": "Password updated. Other sessions were signed out."}
 
@@ -1470,7 +1595,8 @@ async def accept_invite(body: AcceptInviteRequest, response: Response) -> LoginR
         # The roster row. 0027 reserved status 'invited' for a flow that was
         # never built; this is that flow, and the member is active the moment
         # they accept — a broker who sent the invitation has already approved.
-        tenant_row = await conn.fetchrow("SELECT name FROM tenants WHERE id = $1::uuid", tenant_id)
+        tenant_row = await conn.fetchrow(
+            "SELECT name, require_mfa FROM tenants WHERE id = $1::uuid", tenant_id)
         await conn.execute(
             "INSERT INTO team_memberships (tenant_id, user_id, team_name, member_role, status) "
             "VALUES ($1::uuid, $2, $3, $4, 'active') "
@@ -1479,9 +1605,13 @@ async def accept_invite(body: AcceptInviteRequest, response: Response) -> LoginR
             "broker" if invited_role == "broker_owner" else "agent",
         )
 
+    import user_mfa
+
+    mfa_enrolment = user_mfa.required_reason(
+        invited_role, (tenant_row or {}).get("require_mfa")) is not None
     token = _issue_jwt(
         email, tenant_id, invited_role, extra={"policy_pending": True},
-        user_id=str(user["id"]),
+        user_id=str(user["id"]), mfa_enrolment=mfa_enrolment,
     )
     _set_session_cookie(response, token)
     _register_session(email)
@@ -1493,4 +1623,5 @@ async def accept_invite(body: AcceptInviteRequest, response: Response) -> LoginR
         tenant_id=tenant_id,
         role=invited_role,
         policy_acceptance_required=True,
+        mfa_enrolment_required=mfa_enrolment,
     )

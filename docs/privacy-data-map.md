@@ -83,7 +83,7 @@ Counts are from the dev database. They show shape, not production volume.
 
 **Audit / security** (Neoh is controller): `audit_ledger` (hash-chained; email, IP, path), `audit_anomaly_alerts` (actor, source IP), `audit_chain_checkpoints` (new), `api_rate_limit_windows` (unsalted SHA-256 of IP; minutes), `process_heartbeats`.
 
-**Secrets / capability tokens**: `provider_credentials` (encrypted Google/SMTP tokens), `lead_source_connectors` (encrypted webhook secret), `oauth_authorization_states`, `password_reset_tokens`, `client_portals`, `property_view_upload_links`, and invitations (all hashed tokens).
+**Secrets / capability tokens**: `provider_credentials` (encrypted Google/SMTP tokens), `lead_source_connectors` (encrypted webhook secret), `oauth_authorization_states`, `password_reset_tokens`, `client_portals`, `property_view_upload_links`, and invitations (all hashed tokens). Two-step sign-in (0150, L17-19): `user_mfa_factors.totp_secret_ciphertext` is the authenticator secret sealed with the brokerage key (pgcrypto, per-tenant HKDF, never plaintext); `user_mfa_recovery_codes.code_hash` is the SHA-256 of each one-time recovery code. Both tables admit only the platform context (RLS), are erased with the brokerage (and with the user, by cascade) and are never exported.
 
 **Billing** (Neoh is controller): `subscriptions` (Stripe ids), `billing_usage_events`, `stripe_webhook_events` (event ids only).
 

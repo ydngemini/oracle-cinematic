@@ -285,3 +285,38 @@ describe('BrokerageSetupPanel — MLS honesty', () => {
     expect(screen.getByRole('button', { name: 'Resend' })).toBeTruthy();
   });
 });
+
+describe('BrokerageSetupPanel two-step sign-in (L17-19)', () => {
+  const OWNER_VIEW = {
+    members: [
+      { ...TEAM.members[0], mfa_enabled: true },
+      { id: 'u2', agent_id: 'avery@lockwood.test', email: 'avery@lockwood.test', full_name: 'Avery',
+        role: 'agent', title: null, status: 'active', membership_status: 'active',
+        joined_at: '2026-09-02T00:00:00Z', mfa_enabled: true },
+      { id: 'u3', agent_id: 'sam@lockwood.test', email: 'sam@lockwood.test', full_name: 'Sam',
+        role: 'agent', title: null, status: 'active', membership_status: 'active',
+        joined_at: '2026-09-03T00:00:00Z', mfa_enabled: false },
+    ],
+    pending_invitations: [],
+  };
+
+  beforeEach(() => {
+    sessionStorage.setItem('oracle_role', 'broker_owner');
+    localStorage.setItem('oracle_user_id', 'nat@lockwood.test');
+    api.crmGet.mockImplementation((path) => Promise.resolve(path.includes('/team') ? OWNER_VIEW : SETUP));
+  });
+  afterEach(() => { sessionStorage.clear(); localStorage.clear(); });
+
+  it('shows who has two-step on and lets the owner reset an agent who has it', async () => {
+    api.crmPost.mockResolvedValueOnce({ id: 'u2', mfa_enabled: false });
+    render(<BrokerageSetupPanel />);
+    await screen.findByText('Avery');
+    expect(screen.getAllByText('Two-step on')).toHaveLength(2);
+    expect(screen.getAllByText('Two-step off')).toHaveLength(1);
+    const resets = screen.getAllByRole('button', { name: 'Reset two-step' });
+    expect(resets).toHaveLength(1); // Avery only: Sam has none, the owner is not reset from here
+    fireEvent.click(resets[0]);
+    await waitFor(() => expect(api.crmPost).toHaveBeenCalledWith(
+      '/api/brokerage/team/u2/mfa/reset', { reason: 'Two-step sign-in reset by an owner from Settings' }));
+  });
+});

@@ -200,6 +200,10 @@ export async function fetchWithRetry(path, options = {}) {
         if (res.status === 401) {
           window.dispatchEvent(new CustomEvent('auth:expired', { detail: error }));
         }
+        // Signed in, but two-step setup is owed (L17-19): TwoStepGate reopens.
+        if (res.status === 403 && error.code === 'mfa_enrolment_required') {
+          window.dispatchEvent(new CustomEvent('auth:mfa-enrolment-required', { detail: error }));
+        }
 
         if (isRetryable(error) && attempt < allowedRetries) {
           // A 429 says when to come back. Retrying sooner cannot succeed and

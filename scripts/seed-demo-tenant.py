@@ -147,8 +147,12 @@ async def seed(base_url: str, execute: bool, *, with_space: bool = True,
         # ── 2. sign in as Jordan, the way the browser does ──────────────────
         if not execute:
             return state
-        api.login(OWNER["email"], creds[OWNER["email"]])
+        # Jordan is a broker owner: two-step sign-in is required (L17-19). The
+        # first run enrols a TOTP secret into the credentials file; later runs
+        # compute the code from it.
+        api.login(OWNER["email"], creds[OWNER["email"]], creds=creds)
         api.accept_policies()
+        api.ensure_two_step(OWNER["email"], creds[OWNER["email"]], creds)
         api.request("PATCH", "/api/brokerage/profile", json_body={
             "name": TENANT_NAME, "org_type": "brokerage", "primary_state": "DE",
         })

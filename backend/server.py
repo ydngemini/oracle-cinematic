@@ -30,6 +30,8 @@ from cors_config import get_allowed_origins
 from graph_engine import PropertyGraph
 from auth import router as auth_router
 from policy_acceptance import router as policy_acceptance_router
+from mfa_api import router as mfa_router
+from security_contact import router as security_contact_router
 from billing import router as billing_router
 from billing_usage import router as billing_usage_router
 from audit_ledger import router as audit_router, ledger, AuditCategory
@@ -414,6 +416,8 @@ app.add_middleware(
 
 app.include_router(auth_router)
 app.include_router(policy_acceptance_router)
+app.include_router(mfa_router)
+app.include_router(security_contact_router)
 app.include_router(billing_router)
 app.include_router(billing_usage_router)
 app.include_router(audit_router)

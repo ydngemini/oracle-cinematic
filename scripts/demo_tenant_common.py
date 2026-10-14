@@ -8,6 +8,14 @@ is refused outright, by ORACLE_ENV and by hostname.
 
 Nothing in this module prints a secret. Credentials for the demo logins are
 generated once into a gitignored file under performance/out/.
+
+Two-step sign-in (L17-19): Jordan is a broker owner, so the product requires
+an authenticator code. There is no bypass, here or in the product. The first
+tool that signs Jordan in enrols a TOTP secret through the product's own
+setup routes and keeps it in the same 0600 credentials file (`"totp"`), with
+the one-time recovery codes (`"recovery"`); every later sign-in computes the
+current code from it (backend/totp.py). Lose the file and the operator resets
+the factor (POST /api/admin/users/{id}/mfa/reset); the next run enrols again.
 """
 
 from __future__ import annotations
@@ -17,6 +25,7 @@ import os
 import secrets
 import ssl
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
@@ -241,6 +250,47 @@ def load_or_create_credentials(path: Path = DEFAULT_CREDENTIALS) -> dict[str, st
     return creds
 
 
+def save_credentials(creds: dict, path: Path = DEFAULT_CREDENTIALS) -> None:
+    """Atomic, owner-only — the file now also holds a TOTP secret."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(creds, indent=2))
+    os.chmod(tmp, 0o600)
+    tmp.replace(path)
+
+
+# ── two-step sign-in (TOTP) for the demo logins ─────────────────────────────
+
+_LAST_STEP: dict[str, int] = {}
+
+
+def totp_secret(creds: dict, email: str) -> Optional[str]:
+    return (creds.get("totp") or {}).get(email)
+
+
+def next_totp_code(secret: str) -> str:
+    """A code the server has not seen from this process yet. It accepts the
+    current step ±1 and each step once (replay guard), so a second sign-in in
+    the same 30 s uses the next step instead of waiting."""
+    backend_on_path()
+    import totp
+
+    current = int(time.time() // totp.STEP_SECONDS)
+    step = max(current, _LAST_STEP.get(secret, current - 1) + 1)
+    while step > int(time.time() // totp.STEP_SECONDS) + totp.WINDOW:
+        time.sleep(1)
+    _LAST_STEP[secret] = step
+    return totp.code_at(secret, step)
+
+
+def _error_code(err: "ApiError") -> str:
+    try:
+        detail = json.loads(err.detail).get("detail")
+    except (ValueError, AttributeError):
+        return ""
+    return detail.get("code", "") if isinstance(detail, dict) else ""
+
+
 def save_state(state: dict, path: Path = DEFAULT_STATE) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".tmp")
@@ -345,11 +395,45 @@ class Api:
     def post(self, path: str, body: Any = None, **kw) -> Any:
         return self.request("POST", path, json_body=body, **kw)
 
-    def login(self, email: str, password: str) -> dict:
+    def login(self, email: str, password: str, *, creds: Optional[dict] = None,
+              creds_path: Path = DEFAULT_CREDENTIALS) -> dict:
+        """Sign in the way the browser does. With `creds` (the credentials
+        file), a two-step code is computed when asked for, and an account
+        that must enrol is enrolled through the product's setup routes."""
         self.http.cookies.clear()
         self.csrf = ""
-        return self.request("POST", "/auth/login",
-                            json_body={"agent_id": email, "passphrase": password})
+        body: dict[str, Any] = {"agent_id": email, "passphrase": password}
+        secret = totp_secret(creds or {}, email)
+        for attempt in range(3):
+            try:
+                result = self.request("POST", "/auth/login", json_body=body)
+                break
+            except ApiError as err:
+                code = _error_code(err)
+                if err.status != 401 or code not in ("OTP_REQUIRED", "OTP_INVALID") or not secret or attempt == 2:
+                    raise
+                body["otp"] = next_totp_code(secret)  # OTP_INVALID: that step was spent elsewhere
+        if creds is not None and result.get("mfa_enrolment_required"):
+            self.accept_policies()
+            self.ensure_two_step(email, password, creds, creds_path)
+        return result
+
+    def ensure_two_step(self, email: str, password: str, creds: dict,
+                        creds_path: Path = DEFAULT_CREDENTIALS) -> dict:
+        """Enrol a TOTP factor for a signed-in demo account that must have one,
+        storing the secret in the credentials file BEFORE confirming (a crash
+        between the two leaves a secret the next run simply replaces)."""
+        status = self.get("/auth/mfa")
+        if not status.get("available") or status.get("enabled") or not status.get("required"):
+            return status
+        setup = self.post("/auth/mfa/totp/setup", {"password": password})
+        secret = "".join(setup["secret"].split())
+        creds.setdefault("totp", {})[email] = secret
+        save_credentials(creds, creds_path)
+        confirmed = self.post("/auth/mfa/totp/confirm", {"code": next_totp_code(secret)})
+        creds.setdefault("recovery", {})[email] = confirmed.get("recovery_codes", [])
+        save_credentials(creds, creds_path)
+        return self.get("/auth/mfa")
 
     def accept_policies(self) -> None:
         status = self.get("/auth/policy-acceptance")
@@ -358,6 +442,33 @@ class Api:
                 "policy_version": status["policy_version"],
                 "account_security_version": status["account_security_version"],
             })
+
+
+def prepare_demo_logins(base_url: str, creds: dict, accounts=(OWNER, AGENT)) -> None:
+    """Before a browser run: sign each demo account in once through the API
+    so any owed two-step setup is done, and the UI sign-in only ever meets
+    the code prompt (ui_sign_in fills it)."""
+    for account in accounts:
+        api = Api(base_url)
+        try:
+            api.login(account["email"], creds[account["email"]], creds=creds)
+            api.accept_policies()
+        finally:
+            api.close()
+
+
+def ui_sign_in(page, base_url: str, email: str, creds: dict, *, ready_selector: str,
+               timeout_ms: int = 45_000) -> None:
+    """Sign in through the real form; type the authenticator code if asked."""
+    page.goto(base_url.rstrip("/") + "/", wait_until="domcontentloaded")
+    page.fill("#agent-id", email)
+    page.fill("#passphrase", creds[email])
+    page.get_by_role("button", name="Sign in").click()
+    page.wait_for_selector(f"#otp, {ready_selector}", timeout=timeout_ms)
+    if page.locator("#otp").count() and totp_secret(creds, email):
+        page.fill("#otp", next_totp_code(totp_secret(creds, email)))
+        page.get_by_role("button", name="Sign in").click()
+    page.wait_for_selector(ready_selector, timeout=timeout_ms)
 
 
 def backend_on_path() -> None:
