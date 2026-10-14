@@ -397,13 +397,14 @@ Semantic intent.
 ```yaml
 id: L05-01
 status: tests_pass
-env: local
+env: staging
 evidence_shas: [745f2fa, 2fef2e5]
 files: [backend/neoh_intents.py, backend/neoh_render.py, backend/search_api.py, backend/source_status.py, backend/tests/test_neoh_intents.py, backend/tests/test_search_api.py]
 tests_run:
   - {cmd: "grep -n degraded backend/neoh_intents.py; sed -n 351,384p backend/search_api.py", result: "the fast path ignores degraded search legs and shows Nothing matches", date: 2026-10-12}
   - {cmd: "cd backend && ORACLE_SKIP_DOTENV=1 pytest -q -p no:cacheprovider tests/test_neoh_intents.py tests/test_search_api.py", result: "35 passed, exit 0 (8 new forced-failure cases run the real search_api.search with one leg raising)", date: 2026-10-14}
   - {cmd: "cd backend && ORACLE_SKIP_DOTENV=1 pytest -q -p no:cacheprovider tests/", result: "3527 passed, 42 skipped, exit 0", date: 2026-10-14}
+  - {cmd: "staging after a7fcaab (CI run 38549337342 green incl. full-history secret scan; PRE_DEPLOY applied 0146/0148/0150 as doadmin, each rehearsed first as a NOSUPERUSER BYPASSRLS owner); real API + system Chrome (Playwright) as the demo owner and agent", result: "Policy v6 + ESA v2 served and accepted. Demo owner enrolled two-step through the product routes (secret in the 0600 credentials file); a password-only sign-in then answers 401 OTP_REQUIRED, password + code signs in, and the sign-in form shows the authenticator-code step at 1440 and 390 px with no page errors (performance/out/mfa17/). Agent: two-step not required. Clients 6 / contacts 6 for both; drafts owner 2 / agent 2, approvals owner 2 / agent 0; /api/brokerage/setup commercial_email NEEDS_ACTION (no postal address yet, so client email is held); /.well-known/security.txt 404 (contact not configured); a forged unsubscribe token 404; routes 86-286 ms", date: 2026-10-14}
 authz_checked: "no access change: every leg still runs in the caller's tenant_tx; the status entries carry no exception text"
 blockers: []
 audit_refs: [A02]
@@ -417,13 +418,14 @@ AC05.07 evidence. `search_api.search` now returns `source_status: {kind: entry}`
 ```yaml
 id: L05-02
 status: tests_pass
-env: local
+env: staging
 evidence_shas: [2fef2e5]
 files: [backend/semantic_frame.py, backend/tests/test_semantic_frame.py, backend/tests/test_semantic_frame_access_live.py, .github/workflows/ci.yml]
 tests_run:
   - {cmd: "cd backend && ORACLE_SKIP_DOTENV=1 pytest -q -p no:cacheprovider tests/test_semantic_frame.py", result: "31 passed, exit 0 (fake gateway; no model called)", date: 2026-10-14}
   - {cmd: "livetest (real PostgreSQL, app + platform roles, FORCE RLS): pytest tests/test_semantic_frame_access_live.py", result: "1 passed: agents A/B, C with a view share, broker owner, platform admin and agent D of another brokerage each keep exactly the candidates they may open (client, contact, lead, deal); a nonexistent id is dropped for all; a brokerage-scope context is refused; revoking C's share drops B's records on re-authorisation", date: 2026-10-14}
   - {cmd: "cd backend && bandit -q -r . -x ./tests,./venv,./ml_forge,./node_modules,./scripts --severity-level medium --confidence-level medium -b .bandit-baseline.json", result: "exit 0", date: 2026-10-14}
+  - {cmd: "staging after a7fcaab (CI run 38549337342 green incl. full-history secret scan; PRE_DEPLOY applied 0146/0148/0150 as doadmin, each rehearsed first as a NOSUPERUSER BYPASSRLS owner); real API + system Chrome (Playwright) as the demo owner and agent", result: "Policy v6 + ESA v2 served and accepted. Demo owner enrolled two-step through the product routes (secret in the 0600 credentials file); a password-only sign-in then answers 401 OTP_REQUIRED, password + code signs in, and the sign-in form shows the authenticator-code step at 1440 and 390 px with no page errors (performance/out/mfa17/). Agent: two-step not required. Clients 6 / contacts 6 for both; drafts owner 2 / agent 2, approvals owner 2 / agent 0; /api/brokerage/setup commercial_email NEEDS_ACTION (no postal address yet, so client email is held); /.well-known/security.txt 404 (contact not configured); a forged unsubscribe token 404; routes 86-286 ms", date: 2026-10-14}
 authz_checked: "candidates re-read through record_access (app_client_access / app_contact_access / app_linked_access) and RLS on transactions, in the requesting person's own tenant_tx; brokerage_scope contexts refused"
 blockers: ["owner: which languages the semantic layer must support at launch", "a scored extraction run (AC05.08) needs model-spend approval"]
 audit_refs: []
@@ -972,7 +974,7 @@ updated: 2026-10-14
 ```yaml
 id: L15-02
 status: tests_pass
-env: local
+env: staging
 evidence_shas: [2fef2e5]   # base; the change is the commit that adds oracle-app/src/neoh/animationEvent.js (branch worktree-agent-aa7960aed530bd89b, unpushed)
 files: [oracle-app/src/neoh/animationEvent.js, oracle-app/src/neoh/avatarFacts.js, oracle-app/src/neoh/useNeohAvatarState.js, oracle-app/src/neoh/avatarPresence.js,
         oracle-app/src/neoh/cornerPose.js, oracle-app/src/neoh/pageVisibility.js, oracle-app/src/neoh/NeohCorner.jsx, oracle-app/src/neoh/NeohCorner3D.jsx,
@@ -987,6 +989,7 @@ tests_run:
   - {cmd: "npx vitest run (oracle-app, all)", result: "88 files, 837 passed, exit 0; NeohAvatar.test.jsx unchanged and passing (AC15.01: props kept)", date: 2026-10-14}
   - {cmd: "npm run lint; npm run build; npm run bundle:check", result: "lint 0 problems; build ok; budget re-pinned with --update: total +14.1 KB raw / +5.2 KB gzip vs a base build of 2fef2e5 (4088.0 -> 4101.7 KB raw). Entry chunk +0.76 KB raw / +0.22 KB gzip (arrival and status stamps); statechart +9.2 KB raw in the lazy useNeohAvatarState chunk; NeohCorner3D lazy chunk 6,107 -> 7,723 B; largest chunk unchanged (2271.2 KB). Within budget", date: 2026-10-14}
   - {cmd: "headless Chromium 145 (Playwright, SwiftShader software GL), throwaway harness page rendering the real NeohCorner3D for each state", result: "ready, 0 runtime errors; canvas data-state matched all nine; per-state screenshots show a distinct hue and eye pose. 120 rAF intervals per state: p50 16.7-33.3 ms, p95 16.7-100.1 ms. NOT a device measurement (AC15.07 stays open)", date: 2026-10-14}
+  - {cmd: "staging after a7fcaab (CI run 38549337342 green incl. full-history secret scan; PRE_DEPLOY applied 0146/0148/0150 as doadmin, each rehearsed first as a NOSUPERUSER BYPASSRLS owner); real API + system Chrome (Playwright) as the demo owner and agent", result: "Policy v6 + ESA v2 served and accepted. Demo owner enrolled two-step through the product routes (secret in the 0600 credentials file); a password-only sign-in then answers 401 OTP_REQUIRED, password + code signs in, and the sign-in form shows the authenticator-code step at 1440 and 390 px with no page errors (performance/out/mfa17/). Agent: two-step not required. Clients 6 / contacts 6 for both; drafts owner 2 / agent 2, approvals owner 2 / agent 0; /api/brokerage/setup commercial_email NEEDS_ACTION (no postal address yet, so client email is held); /.well-known/security.txt 404 (contact not configured); a forged unsubscribe token 404; routes 86-286 ms", date: 2026-10-14}
 authz_checked: n/a (no data access or permission change; presents state the user already receives)
 blockers:
   - {type: verification, note: "No device measurements (iPhone Safari, Android Chrome): AC15.07 open. No speaking source exists in the browser (T15.14), so speaking stays unreachable. The backend folds its 90 s turn-deadline timeout into AI_RESPONSE_UNAVAILABLE (ai_chat_agent.py), so the browser cannot yet show 'timeout' for a chat turn; the mapping is ready for a distinct code (category 07)."}
@@ -1222,7 +1225,7 @@ next_task: "Code gaps in flight: L17-07 card-number redaction, L17-08 CAN-SPAM u
 ```yaml
 id: L17-08
 status: tests_pass
-env: local
+env: staging
 evidence_shas: [475f40c]   # baseline; the fix is the commit that adds backend/commercial_email.py
 files: [backend/commercial_email.py, backend/email_unsubscribe_api.py, backend/db/migrations/0146_brokerage_postal_address.sql, backend/email_outbox.py, backend/commands_api.py, backend/command_providers.py, backend/smtp_mailer.py, backend/brokerage_onboarding.py, backend/server.py, backend/csrf_middleware.py, backend/rate_limit_middleware.py, backend/log_redaction.py, backend/privacy_lifecycle.py, backend/privacy_data_map.py, backend/tests/test_commercial_email.py, backend/tests/test_email_unsubscribe_live.py, backend/tests/test_email_outbox.py, backend/tests/test_brokerage_onboarding.py, backend/tests/test_env_documentation.py, oracle-app/src/components/BrokerageSetupPanel.jsx, oracle-app/src/components/BrokerageSetupPanel.module.css, oracle-app/src/components/BrokerageSetupPanel.test.jsx, docs/privacy-data-map.md, docs/compliance/framework-crosswalk.md, .env.example, .github/workflows/ci.yml]
 tests_run:
@@ -1233,6 +1236,7 @@ tests_run:
   - {cmd: "psql -f tests/{rls_security_review,rls_brokerage,platform_rls_test,privacy_lifecycle,rls_tenant_wall}.sql", result: "all 5 PASS", date: 2026-10-14}
   - {cmd: "non-superuser rehearsal: scratch DB, 0001-0145 as superuser, REASSIGN OWNED + DB owner to a NOSUPERUSER BYPASSRLS CREATEROLE role, run_migrations.py as that role", result: "applied 0146, exit 0; scratch DB and roles dropped", date: 2026-10-14}
   - {cmd: "bandit (CI flags) -b .bandit-baseline.json; npx vitest run; npm run lint; npm run build", result: "bandit exit 0; vitest 771 passed (82 files); lint clean; build ok", date: 2026-10-14}
+  - {cmd: "staging after a7fcaab (CI run 38549337342 green incl. full-history secret scan; PRE_DEPLOY applied 0146/0148/0150 as doadmin, each rehearsed first as a NOSUPERUSER BYPASSRLS owner); real API + system Chrome (Playwright) as the demo owner and agent", result: "Policy v6 + ESA v2 served and accepted. Demo owner enrolled two-step through the product routes (secret in the 0600 credentials file); a password-only sign-in then answers 401 OTP_REQUIRED, password + code signs in, and the sign-in form shows the authenticator-code step at 1440 and 390 px with no page errors (performance/out/mfa17/). Agent: two-step not required. Clients 6 / contacts 6 for both; drafts owner 2 / agent 2, approvals owner 2 / agent 0; /api/brokerage/setup commercial_email NEEDS_ACTION (no postal address yet, so client email is held); /.well-known/security.txt 404 (contact not configured); a forged unsubscribe token 404; routes 86-286 ms", date: 2026-10-14}
 authz_checked: "the unsubscribe writes outreach_suppression (tenant wall only, no agent narrowing, 0140) as a worker context; the live test proves agent B, who cannot see agent A's client, is blocked from emailing the same person after an unsubscribe from A's email (queued-before send blocked at delivery, new send 451, command gate denies), and that another brokerage is not bound"
 blockers:
   - {type: decided, note: "Owner 2026-10-14: Platform Use Policy v6 (neoh-platform-use-policy-2026-10-14-v6) and Account Security ESA v2 (neoh-account-security-esa-2026-10-14-v2) approved as drafted: unsubscribe + postal address (s6), payment cards never asked for or kept (s4), operator views audited (s2), two-step sign-in (s1 + ESA s2). POLICY_COVERAGE rows added. No postal address = client email held (409 at queue time, refused at send)."}
@@ -1250,7 +1254,7 @@ updated: 2026-10-14
 ```yaml
 id: L17-07
 status: tests_pass
-env: local
+env: staging
 evidence_shas: [0a76a72]
 files: [backend/pan_redaction.py, backend/audit_ledger.py, backend/server.py, backend/client_note_crypto.py, backend/commands_api.py, backend/voice_intel.py, backend/messaging_data.py, backend/outreach_compliance.py, backend/crm.py, backend/intelligence_os_api.py, backend/client_portal.py, backend/ai_chat_store.py, backend/ai_chat_agent.py, backend/memory_core/session_manager.py, backend/inbound_voice.py, backend/contacts_api.py, backend/elevenlabs_realtime.py, backend/neoh_persona.py, backend/qwen_omni_realtime.py, backend/qwen_voice_agent.py, backend/tests/test_pan_redaction.py, backend/tests/test_pan_redaction_paths.py, backend/tests/test_pan_redaction_live.py, backend/tests/test_neoh_persona.py, .github/workflows/ci.yml, docs/compliance/pci-saq-a.md]
 tests_run:
@@ -1259,6 +1263,7 @@ tests_run:
   - {cmd: "livetest.sh python -m pytest -q tests/test_pan_redaction_live.py + the ci.yml live list", result: "51 passed incl. the new live test (AI call note, inbound text, agent note under the app role; PCI_REDACTION audit rows hold counts only); tests/test_migration_precheck.py fails locally only because the shared dev DB records 0106 (no branch) and another agent's 0146", date: 2026-10-14}
   - {cmd: "bandit (CI flags: medium/medium, baseline)", result: "exit 0, no new findings", date: 2026-10-14}
   - {cmd: "cd backend && ORACLE_SKIP_DOTENV=1 python -m pytest -q -p no:cacheprovider tests/", result: "exit 0; 3596 passed, 42 skipped. tests/test_neoh_persona.py::test_compact_is_substantially_smaller now measures the knowledge part (the whole-prompt ratio sat at 3.02 vs a bound of 3, so any rule both densities must carry failed it); held to 10x, measured ~20x", date: 2026-10-14}
+  - {cmd: "staging after a7fcaab (CI run 38549337342 green incl. full-history secret scan; PRE_DEPLOY applied 0146/0148/0150 as doadmin, each rehearsed first as a NOSUPERUSER BYPASSRLS owner); real API + system Chrome (Playwright) as the demo owner and agent", result: "Policy v6 + ESA v2 served and accepted. Demo owner enrolled two-step through the product routes (secret in the 0600 credentials file); a password-only sign-in then answers 401 OTP_REQUIRED, password + code signs in, and the sign-in form shows the authenticator-code step at 1440 and 390 px with no page errors (performance/out/mfa17/). Agent: two-step not required. Clients 6 / contacts 6 for both; drafts owner 2 / agent 2, approvals owner 2 / agent 0; /api/brokerage/setup commercial_email NEEDS_ACTION (no postal address yet, so client email is held); /.well-known/security.txt 404 (contact not configured); a forged unsubscribe token 404; routes 86-286 ms", date: 2026-10-14}
 authz_checked: "no access rule changed; the live test writes as the platform pipeline (call notes, inbound SMS) and as the app role under FORCE RLS (note route)"
 blockers:
   - {type: decided, note: "Owner 2026-10-14: Platform Use Policy v6 (neoh-platform-use-policy-2026-10-14-v6) and Account Security ESA v2 (neoh-account-security-esa-2026-10-14-v2) approved as drafted: unsubscribe + postal address (s6), payment cards never asked for or kept (s4), operator views audited (s2), two-step sign-in (s1 + ESA s2). POLICY_COVERAGE rows added. No postal address = client email held (409 at queue time, refused at send)."}
@@ -1277,7 +1282,7 @@ A card number arriving through any channel other than Stripe (a caller reading i
 ```yaml
 id: L17-09
 status: tests_pass
-env: local
+env: staging
 evidence_shas: [0a76a72]   # base; the alerts land in the commit that adds backend/security_alerts.py
 files: [backend/security_alerts.py, backend/ops_alerts.py, backend/auth.py, backend/admin_ops.py, backend/server.py, backend/tests/test_security_alerts.py, .env.example, docs/privacy-data-map.md]
 tests_run:
@@ -1285,6 +1290,7 @@ tests_run:
   - {cmd: "cd backend && ORACLE_SKIP_DOTENV=1 python -m pytest -q -p no:cacheprovider tests/test_security_alerts.py", result: "9 passed (send mocked): operator sign-in alert carries id+IP+UTC time and no passphrase/code/seed; log line has actor_ref, no id/IP; 5 wrong passphrases -> 1 email (not per guess); DB platform_admin counted, agent not; rejected second factor alerts at once; 429 on the operator alerts once; role change + new owner (signup, owner invitation) alert; factor re-provisioned or switched totp->email alerts, baseline does not; secret never stored or sent; ORACLE_SECURITY_ALERTS_ENABLED=0 silences", date: 2026-10-14}
   - {cmd: "cd backend && ORACLE_SKIP_DOTENV=1 python -m pytest -q -p no:cacheprovider tests/ (covers L17-09..13)", result: "exit 0; 3514 passed, 43 skipped", date: 2026-10-14}
   - {cmd: "bandit -q -r backend (CI flags) -b .bandit-baseline.json; tests/rls_security_review.sql, rls_brokerage.sql, platform_rls_test.sql, privacy_lifecycle.sql, rls_tenant_wall.sql on the local dev DB with 0148", result: "bandit exit 0; all five SQL proofs exit 0", date: 2026-10-14}
+  - {cmd: "staging after a7fcaab (CI run 38549337342 green incl. full-history secret scan; PRE_DEPLOY applied 0146/0148/0150 as doadmin, each rehearsed first as a NOSUPERUSER BYPASSRLS owner); real API + system Chrome (Playwright) as the demo owner and agent", result: "Policy v6 + ESA v2 served and accepted. Demo owner enrolled two-step through the product routes (secret in the 0600 credentials file); a password-only sign-in then answers 401 OTP_REQUIRED, password + code signs in, and the sign-in form shows the authenticator-code step at 1440 and 390 px with no page errors (performance/out/mfa17/). Agent: two-step not required. Clients 6 / contacts 6 for both; drafts owner 2 / agent 2, approvals owner 2 / agent 0; /api/brokerage/setup commercial_email NEEDS_ACTION (no postal address yet, so client email is held); /.well-known/security.txt 404 (contact not configured); a forged unsubscribe token 404; routes 86-286 ms", date: 2026-10-14}
 authz_checked: "alerts are side outputs only; no authorization decision reads them"
 blockers:
   - {type: owner, note: "Self-serve signups create a broker owner and now alert too (one email per new brokerage). Keep, or alert only on role changes inside an existing brokerage?"}
@@ -1300,13 +1306,14 @@ updated: 2026-10-14
 ```yaml
 id: L17-10
 status: tests_pass
-env: local
+env: staging
 evidence_shas: [0a76a72]   # base; fix in the commit that adds backend/webhook_auth.py
 files: [backend/webhook_auth.py, backend/commands_api.py, backend/command_providers.py, backend/acs_call_handler.py, backend/log_redaction.py, backend/tests/test_webhook_auth.py, backend/tests/test_log_pii_guard.py, .env.example, docs/security-launch-review.md]
 tests_run:
   - {cmd: "sed -n 130,136p backend/commands_api.py; sed -n 277,289p backend/acs_call_handler.py; sed -n 45,52p backend/command_providers.py (base)", result: "both webhooks compared ?token= with the static secret; both callback URL builders put the secret itself in the query string", date: 2026-10-14}
   - {cmd: "read uvicorn 0.49.0 protocols/websockets/websockets_impl.py:263", result: "WebSocket handshake lines go to uvicorn.error with the path as the SECOND argument; log_redaction rewrote only the third argument on uvicorn.access, so ?bridge_token= (commands_api Plivo media bridge) reached the log", date: 2026-10-14}
   - {cmd: "pytest tests/test_webhook_auth.py tests/test_recovery_security.py tests/test_acs_call_handler.py tests/test_security_launch_review.py", result: "95 passed: header token, body HMAC (body- and time-bound, 5 min), expiring path-bound signed URL (expired/other route/bad sig -> 403); Neoh's callback URLs carry no secret and no token=; old ?token= accepted with a deprecation warning that names the env var, not the secret; ORACLE_WEBHOOK_QUERY_TOKEN_COMPAT=0 refuses it", date: 2026-10-14}
+  - {cmd: "staging after a7fcaab (CI run 38549337342 green incl. full-history secret scan; PRE_DEPLOY applied 0146/0148/0150 as doadmin, each rehearsed first as a NOSUPERUSER BYPASSRLS owner); real API + system Chrome (Playwright) as the demo owner and agent", result: "Policy v6 + ESA v2 served and accepted. Demo owner enrolled two-step through the product routes (secret in the 0600 credentials file); a password-only sign-in then answers 401 OTP_REQUIRED, password + code signs in, and the sign-in form shows the authenticator-code step at 1440 and 390 px with no page errors (performance/out/mfa17/). Agent: two-step not required. Clients 6 / contacts 6 for both; drafts owner 2 / agent 2, approvals owner 2 / agent 0; /api/brokerage/setup commercial_email NEEDS_ACTION (no postal address yet, so client email is held); /.well-known/security.txt 404 (contact not configured); a forged unsubscribe token 404; routes 86-286 ms", date: 2026-10-14}
 authz_checked: "no secret -> 503 as before; any failed method -> 403"
 blockers:
   - {type: operator, note: "Before the compat path is removed: point the ACS Event Grid subscription at the X-Neoh-Webhook-Token delivery header (or rely on the signed URL Neoh now hands ACS per call) and any custom-call provider at the header or X-Neoh-Signature. Calls placed by the previous release keep their ?token= URL until they end."}
@@ -1321,13 +1328,14 @@ updated: 2026-10-14
 ```yaml
 id: L17-11
 status: tests_pass
-env: local
+env: staging
 evidence_shas: [0a76a72]   # base; fix in the commit that adds log_redaction.actor_ref
 files: [backend/log_redaction.py, backend/server.py, backend/tests/test_log_pii_guard.py, backend/audit_ledger.py, backend/auth.py, backend/tenancy.py, backend/crm.py, backend/client_enterprise.py, backend/client_portal.py, backend/agent_profile.py, backend/aws_observability.py, backend/lead_dossier.py, backend/media_api.py, backend/agent_mind/mind_service.py, docs/privacy-data-map.md]
 tests_run:
   - {cmd: "AST scan of every backend logging call with agent_id/agent_identity/current_agent_id added to the PII names (base)", result: "25 sites in 11 files logged the account id (= the user's email): login success/failure, password reset/change, session registry, RLS context, CRM create/link/log, portal mint, bulk actions, AWS actions, crypto ACCESS_PII", date: 2026-10-14}
   - {cmd: "AST scan: logging calls inside `except E as x` that interpolate x", result: "201 sites in 60+ files; str() of a real asyncpg error from local PostgreSQL 16 quotes row values: 'DETAIL:  Key (email)=(jane@example.test) already exists.' and 'Failing row contains (bob@example.test, x)'", date: 2026-10-14}
   - {cmd: "pytest tests/test_log_pii_guard.py", result: "10 passed: guard now includes account ids (actor_ref() is the safe wrapper); 22 sites fixed; the PIIScrubFilter on the root and uvicorn.error handlers removes emails, phones and PG row values from messages AND tracebacks while keeping uuids, timestamps, IPs and counts; server._configure_logging installs it; WebSocket handshake query strings redacted", date: 2026-10-14}
+  - {cmd: "staging after a7fcaab (CI run 38549337342 green incl. full-history secret scan; PRE_DEPLOY applied 0146/0148/0150 as doadmin, each rehearsed first as a NOSUPERUSER BYPASSRLS owner); real API + system Chrome (Playwright) as the demo owner and agent", result: "Policy v6 + ESA v2 served and accepted. Demo owner enrolled two-step through the product routes (secret in the 0600 credentials file); a password-only sign-in then answers 401 OTP_REQUIRED, password + code signs in, and the sign-in form shows the authenticator-code step at 1440 and 390 px with no page errors (performance/out/mfa17/). Agent: two-step not required. Clients 6 / contacts 6 for both; drafts owner 2 / agent 2, approvals owner 2 / agent 0; /api/brokerage/setup commercial_email NEEDS_ACTION (no postal address yet, so client email is held); /.well-known/security.txt 404 (contact not configured); a forged unsubscribe token 404; routes 86-286 ms", date: 2026-10-14}
 authz_checked: n/a
 blockers:
   - {type: scope, note: "crypto.py's three agent_id sites (pii_context, access_pii_field) are exempted by name in the guard (_ACCOUNT_ID_DEFERRED) because a parallel slice owns crypto.py today; remove the entry when that slice merges. The scrub is pattern-based: a name or street address inside an exception message is not recognised. The 201 exception sites were not rewritten one by one."}
@@ -1341,7 +1349,7 @@ updated: 2026-10-14
 ```yaml
 id: L17-12
 status: tests_pass
-env: local
+env: staging
 evidence_shas: [0a76a72]   # base; fix in the commit that adds 0148
 files: [backend/audit_ledger.py, backend/db/migrations/0148_audit_chain_verification.sql, backend/data_integrations/periodic.py, backend/server.py, backend/privacy_data_map.py, backend/tests/test_audit_fallback_lifecycle.py, backend/tests/test_audit_fallback_drain_live.py, .github/workflows/ci.yml, .env.example, docs/privacy-data-map.md]
 tests_run:
@@ -1350,6 +1358,7 @@ tests_run:
   - {cmd: "livetest.sh sh -c 'cd /app/backend && python -m pytest -q tests/test_audit_fallback_drain_live.py' (local dev PostgreSQL, throwaway roles)", result: "1 passed: 3 SQLite rows appended to the PG chain in order with original time/content and _fallback provenance (a non-uuid tenant kept in provenance), deleted locally; re-append adds nothing; the verifier checks exactly the 3 links from a cursor, then catches a forged row once (alert once) in a rolled-back transaction; via the platform pool it is bounded and persisted; a request connection sees 0 rows and UPDATE 0", date: 2026-10-14}
   - {cmd: "verify_chain_segment(max_rows=50000) over the whole local dev chain (platform pool)", result: "38,338 rows, intact, one pass in 3.06 s (local DinD PostgreSQL 16; not a staging number)", date: 2026-10-14}
   - {cmd: "rehearse_0148.sh: scratch DB, 0001-0147 as superuser, REASSIGN OWNED to NOSUPERUSER BYPASSRLS CREATEROLE, run_migrations.py as that owner", result: "0148 applied; table owned by the owner, RLS+FORCE, policy (SELECT app_is_platform_admin()); oracle_app SELECT/UPDATE yes, DELETE no; scratch DB and roles dropped", date: 2026-10-14}
+  - {cmd: "staging after a7fcaab (CI run 38549337342 green incl. full-history secret scan; PRE_DEPLOY applied 0146/0148/0150 as doadmin, each rehearsed first as a NOSUPERUSER BYPASSRLS owner); real API + system Chrome (Playwright) as the demo owner and agent", result: "Policy v6 + ESA v2 served and accepted. Demo owner enrolled two-step through the product routes (secret in the 0600 credentials file); a password-only sign-in then answers 401 OTP_REQUIRED, password + code signs in, and the sign-in form shows the authenticator-code step at 1440 and 390 px with no page errors (performance/out/mfa17/). Agent: two-step not required. Clients 6 / contacts 6 for both; drafts owner 2 / agent 2, approvals owner 2 / agent 0; /api/brokerage/setup commercial_email NEEDS_ACTION (no postal address yet, so client email is held); /.well-known/security.txt 404 (contact not configured); a forged unsubscribe token 404; routes 86-286 ms", date: 2026-10-14}
 authz_checked: "audit_chain_verification readable/writable only in a platform-admin context (0120 login membership); request connection proved blind in the live test"
 blockers:
   - {type: scope, note: "Staging runs ORACLE_RECOVERY_MODE, so no periodic job (this verifier included) runs there (see L17-03). The drain runs in every process at boot and on the first good write regardless. A container that dies before Postgres returns still loses its fallback rows (ephemeral disk)."}
@@ -1363,12 +1372,13 @@ updated: 2026-10-14
 ```yaml
 id: L17-13
 status: tests_pass
-env: local
+env: staging
 evidence_shas: [0a76a72]   # base; script in the commit that adds scripts/access_review.py
 files: [scripts/access_review.py, backend/tests/test_access_review_live.py, .github/workflows/ci.yml]
 tests_run:
   - {cmd: "ls scripts/ | grep -i access (base)", result: "no access-review listing existed", date: 2026-10-14}
   - {cmd: "livetest.sh sh -c 'cd /app/backend && python -m pytest -q tests/test_access_review_live.py'", result: "1 passed: one READ ONLY transaction, no INSERT/UPDATE/DELETE sent; postgres rolsuper, oracle_app neither super nor BYPASSRLS, oracle_platform_login member of platform_admin_role, no pg_* roles; broker owners per tenant (active/suspended ids) match a direct count; platform admins = env operator + users rows; operator factor reported without the seed; markdown and CSV render", date: 2026-10-14}
+  - {cmd: "staging after a7fcaab (CI run 38549337342 green incl. full-history secret scan; PRE_DEPLOY applied 0146/0148/0150 as doadmin, each rehearsed first as a NOSUPERUSER BYPASSRLS owner); real API + system Chrome (Playwright) as the demo owner and agent", result: "Policy v6 + ESA v2 served and accepted. Demo owner enrolled two-step through the product routes (secret in the 0600 credentials file); a password-only sign-in then answers 401 OTP_REQUIRED, password + code signs in, and the sign-in form shows the authenticator-code step at 1440 and 390 px with no page errors (performance/out/mfa17/). Agent: two-step not required. Clients 6 / contacts 6 for both; drafts owner 2 / agent 2, approvals owner 2 / agent 0; /api/brokerage/setup commercial_email NEEDS_ACTION (no postal address yet, so client email is held); /.well-known/security.txt 404 (contact not configured); a forged unsubscribe token 404; routes 86-286 ms", date: 2026-10-14}
 authz_checked: "runs on the platform login inside a read-only transaction; the output names people and is personal data (docstring)"
 blockers:
   - {type: operator, note: "GitHub, DigitalOcean, Stripe, registrar and provider account listings are a manual checklist in the script's docstring; no API calls are made."}
@@ -1382,11 +1392,12 @@ updated: 2026-10-14
 ```yaml
 id: L17-14
 status: tests_pass
-env: local
+env: staging
 evidence_shas: [5bc4494]
 files: [backend/config.py, backend/auth.py, backend/tests/test_config_demo_logins.py]
 tests_run:
   - {cmd: "pytest tests/test_config_demo_logins.py tests/test_config_weak_secrets.py", result: "46 passed", date: 2026-10-14}
+  - {cmd: "staging after a7fcaab (CI run 38549337342 green incl. full-history secret scan; PRE_DEPLOY applied 0146/0148/0150 as doadmin, each rehearsed first as a NOSUPERUSER BYPASSRLS owner); real API + system Chrome (Playwright) as the demo owner and agent", result: "Policy v6 + ESA v2 served and accepted. Demo owner enrolled two-step through the product routes (secret in the 0600 credentials file); a password-only sign-in then answers 401 OTP_REQUIRED, password + code signs in, and the sign-in form shows the authenticator-code step at 1440 and 390 px with no page errors (performance/out/mfa17/). Agent: two-step not required. Clients 6 / contacts 6 for both; drafts owner 2 / agent 2, approvals owner 2 / agent 0; /api/brokerage/setup commercial_email NEEDS_ACTION (no postal address yet, so client email is held); /.well-known/security.txt 404 (contact not configured); a forged unsubscribe token 404; routes 86-286 ms", date: 2026-10-14}
 authz_checked: "ORACLE_ENABLE_DEMO_LOGINS set (any value but empty/0/false/no/off) with ORACLE_ENV outside {dev, development, local, staging} — prod, production, unset, test, ci — refuses the boot; message names the setting, never the credential. auth.py also ignores the flag outside those envs (a process that imports auth without the lifespan)."
 blockers: []
 audit_refs: []
@@ -1399,12 +1410,13 @@ updated: 2026-10-14
 ```yaml
 id: L17-15
 status: tests_pass
-env: local
+env: staging
 evidence_shas: [5bc4494]
 files: [backend/auth.py, backend/common_passwords.txt, backend/tests/test_password_hashing.py]
 tests_run:
   - {cmd: "pytest tests/test_password_hashing.py + auth/password/invite suites", result: "24 passed; 116 passed", date: 2026-10-14}
   - {cmd: "timing on the dev laptop (i5-6360U, idle), median/max of 7", result: "N=2^14/8/1 (old) 56 ms; N=2^15/8/3 (new) verify 531/599 ms, hash 659/1076 ms; N=2^17/8/1 618/840 ms; 4 concurrent verifies 1.1 s wall (2-thread pool)", date: 2026-10-14}
+  - {cmd: "staging after a7fcaab (CI run 38549337342 green incl. full-history secret scan; PRE_DEPLOY applied 0146/0148/0150 as doadmin, each rehearsed first as a NOSUPERUSER BYPASSRLS owner); real API + system Chrome (Playwright) as the demo owner and agent", result: "Policy v6 + ESA v2 served and accepted. Demo owner enrolled two-step through the product routes (secret in the 0600 credentials file); a password-only sign-in then answers 401 OTP_REQUIRED, password + code signs in, and the sign-in form shows the authenticator-code step at 1440 and 390 px with no page errors (performance/out/mfa17/). Agent: two-step not required. Clients 6 / contacts 6 for both; drafts owner 2 / agent 2, approvals owner 2 / agent 0; /api/brokerage/setup commercial_email NEEDS_ACTION (no postal address yet, so client email is held); /.well-known/security.txt 404 (contact not configured); a forged unsubscribe token 404; routes 86-286 ms", date: 2026-10-14}
 authz_checked: "Wrong password never rewrites; rehash is compare-and-swap on the old hash; stored parameters are bounded (log2 N <= 17, 128*N*r <= 128 MiB) so a planted row cannot allocate gigabytes; a legacy-hash wrong password pays the dummy verify too, so it is not faster than an unknown account (AUTH-4)."
 blockers: []
 audit_refs: []
@@ -1418,7 +1430,7 @@ Parameters: N=2^15, r=8, p=3 — one of the five settings OWASP's Password Stora
 ```yaml
 id: L17-16
 status: tests_pass
-env: local
+env: staging
 evidence_shas: [5bc4494]
 files: [.github/workflows/ci.yml, .github/dependabot.yml, backend/tests/test_ci_security_gates.py]
 tests_run:
@@ -1426,6 +1438,7 @@ tests_run:
   - {cmd: "npm audit (including dev)", result: "8 in the build/test toolchain (5 high: brace-expansion, browserslist, nanoid, source-map-js, undici; 3 moderate: vitest, @vitest/mocker, baseline-browser-mapping), all transitive except vitest, all fixable by npm audit fix; none ships to the browser", date: 2026-10-14}
   - {cmd: "python -m pip_audit --strict --skip-editable -r backend/requirements.txt", result: "No known vulnerabilities found", date: 2026-10-14}
   - {cmd: "pytest tests/test_ci_security_gates.py + CI wiring tests", result: "126 passed (with test_backup_restore_scripts, test_ci_deploy_wiring, test_ci_build_contexts, test_release_immutability)", date: 2026-10-14}
+  - {cmd: "staging after a7fcaab (CI run 38549337342 green incl. full-history secret scan; PRE_DEPLOY applied 0146/0148/0150 as doadmin, each rehearsed first as a NOSUPERUSER BYPASSRLS owner); real API + system Chrome (Playwright) as the demo owner and agent", result: "Policy v6 + ESA v2 served and accepted. Demo owner enrolled two-step through the product routes (secret in the 0600 credentials file); a password-only sign-in then answers 401 OTP_REQUIRED, password + code signs in, and the sign-in form shows the authenticator-code step at 1440 and 390 px with no page errors (performance/out/mfa17/). Agent: two-step not required. Clients 6 / contacts 6 for both; drafts owner 2 / agent 2, approvals owner 2 / agent 0; /api/brokerage/setup commercial_email NEEDS_ACTION (no postal address yet, so client email is held); /.well-known/security.txt 404 (contact not configured); a forged unsubscribe token 404; routes 86-286 ms", date: 2026-10-14}
 authz_checked: n/a
 blockers:
   - {type: owner, note: "Turn on Dependabot alerts and security updates in the GitHub repository settings; the config file cannot."}
@@ -1440,11 +1453,12 @@ pip-audit already ran on every push (`ci.yml` backend job) before this row; the 
 ```yaml
 id: L17-17
 status: tests_pass
-env: local
+env: staging
 evidence_shas: [5bc4494]
 files: [backend/audit_middleware.py, backend/tests/test_platform_admin_read_audit.py]
 tests_run:
   - {cmd: "pytest tests/test_platform_admin_read_audit.py tests/test_security_launch_review.py", result: "72 passed", date: 2026-10-14}
+  - {cmd: "staging after a7fcaab (CI run 38549337342 green incl. full-history secret scan; PRE_DEPLOY applied 0146/0148/0150 as doadmin, each rehearsed first as a NOSUPERUSER BYPASSRLS owner); real API + system Chrome (Playwright) as the demo owner and agent", result: "Policy v6 + ESA v2 served and accepted. Demo owner enrolled two-step through the product routes (secret in the 0600 credentials file); a password-only sign-in then answers 401 OTP_REQUIRED, password + code signs in, and the sign-in form shows the authenticator-code step at 1440 and 390 px with no page errors (performance/out/mfa17/). Agent: two-step not required. Clients 6 / contacts 6 for both; drafts owner 2 / agent 2, approvals owner 2 / agent 0; /api/brokerage/setup commercial_email NEEDS_ACTION (no postal address yet, so client email is held); /.well-known/security.txt 404 (contact not configured); a forged unsubscribe token 404; routes 86-286 ms", date: 2026-10-14}
 authz_checked: "Only a token whose role is platform_admin; tenant users' reads are not recorded; sign-in/session/policy/ws paths skipped. Row: ADMIN_ACTION 'platform_read GET <path>', actor, route template, path, target_tenant_id (the tenant the route or ?tenant_id names, else 'all'), status, time, client IP. No query string, no response content."
 blockers: []
 audit_refs: []
@@ -1458,11 +1472,12 @@ Bounded: one row per request, never per record. The same actor reading the same 
 ```yaml
 id: L17-18
 status: tests_pass
-env: local
+env: staging
 evidence_shas: [5bc4494]
 files: [.github/workflows/ci.yml, scripts/dr-drill.sh, backend/tests/test_ci_security_gates.py]
 tests_run:
   - {cmd: "scripts/dr-drill.sh against a schema/ledger/roles export of the local dev DB (head 0146), DinD, ORACLE_DRILL_PG_IMAGE=local postgres:16-alpine + bash (DinD cannot pull postgres:16)", result: "before the readiness fix: 42 passed, 1 FAILED ('target already has  tables'); after: 43/43 twice, 41 s and 51 s, backup 2 s, restore 8-13 s, no containers left", date: 2026-10-14}
+  - {cmd: "staging after a7fcaab (CI run 38549337342 green incl. full-history secret scan; PRE_DEPLOY applied 0146/0148/0150 as doadmin, each rehearsed first as a NOSUPERUSER BYPASSRLS owner); real API + system Chrome (Playwright) as the demo owner and agent", result: "Policy v6 + ESA v2 served and accepted. Demo owner enrolled two-step through the product routes (secret in the 0600 credentials file); a password-only sign-in then answers 401 OTP_REQUIRED, password + code signs in, and the sign-in form shows the authenticator-code step at 1440 and 390 px with no page errors (performance/out/mfa17/). Agent: two-step not required. Clients 6 / contacts 6 for both; drafts owner 2 / agent 2, approvals owner 2 / agent 0; /api/brokerage/setup commercial_email NEEDS_ACTION (no postal address yet, so client email is held); /.well-known/security.txt 404 (contact not configured); a forged unsubscribe token 404; routes 86-286 ms", date: 2026-10-14}
 authz_checked: "Roles exported with --no-role-passwords; drill isolation is proven as oracle_app_login."
 blockers: []
 audit_refs: [A04]
@@ -1476,7 +1491,7 @@ New step at the end of the `rls` job: export schema, migration ledger and roles 
 ```yaml
 id: L17-19
 status: tests_pass
-env: local
+env: staging
 evidence_shas: [e25f3e0]
 branch: worktree-agent-a25105adfe3fa71c4
 files: [backend/db/migrations/0150_tenant_user_mfa.sql, backend/user_mfa.py, backend/mfa_api.py, backend/qr_code.py, backend/auth.py, backend/tenancy.py, backend/policy_acceptance.py, backend/brokerage_onboarding.py, backend/operator_api.py, backend/server.py, backend/privacy_data_map.py, backend/tests/test_tenant_user_mfa.py, backend/tests/test_tenant_user_mfa_live.py, docs/privacy-data-map.md, oracle-app/src/components/TwoStepSetup.jsx, oracle-app/src/components/TwoStepGate.jsx, oracle-app/src/components/TwoStepSettings.jsx, oracle-app/src/components/LoginVault.jsx, oracle-app/src/components/BrokerageSetupPanel.jsx, oracle-app/src/components/MyProfileTab.jsx, oracle-app/src/App.jsx, oracle-app/src/lib/apiClient.js, oracle-app/src/components/TwoStep.test.jsx, oracle-app/bundle-budget.json, scripts/demo_tenant_common.py, scripts/seed-demo-tenant.py, scripts/demo-preflight.py, scripts/crawl-all-pages.py, scripts/test-killer-demo-playwright.py, tests/golden/golden_e2e.py, .github/workflows/ci.yml]
@@ -1488,6 +1503,7 @@ tests_run:
   - {cmd: "cd oracle-app && npx vitest run && npm run lint && npm run build && npm run bundle:check", result: "83 files, 787 passed; lint clean; build ok; total-JS ceiling raised +17.3 KB raw / +5.9 KB gzip for the two-step UI (lazy chunks TwoStepSetup 6.2 KB, TwoStepSettings 6.4 KB)", date: 2026-10-14}
   - {cmd: "rls_security_review.sql, rls_brokerage.sql, platform_rls_test.sql, privacy_lifecycle.sql, rls_tenant_wall.sql on the local dev DB", result: "all exit 0", date: 2026-10-14}
   - {cmd: "non-superuser rehearsal: scratch DB, 0001-0145 as superuser, REASSIGN OWNED to NOSUPERUSER BYPASSRLS CREATEROLE owner, run_migrations.py as that owner", result: "0150 applied by the NOSUPERUSER owner (rolsuper f, rolbypassrls t, rolcreaterole t); both tables RLS + FORCE, owned by it, policy app_is_platform_admin() only; oracle_app SELECT/DELETE yes, TRUNCATE no, PUBLIC none; tenants.require_mfa boolean NOT NULL DEFAULT false; scratch DB and roles dropped", date: 2026-10-14}
+  - {cmd: "staging after a7fcaab (CI run 38549337342 green incl. full-history secret scan; PRE_DEPLOY applied 0146/0148/0150 as doadmin, each rehearsed first as a NOSUPERUSER BYPASSRLS owner); real API + system Chrome (Playwright) as the demo owner and agent", result: "Policy v6 + ESA v2 served and accepted. Demo owner enrolled two-step through the product routes (secret in the 0600 credentials file); a password-only sign-in then answers 401 OTP_REQUIRED, password + code signs in, and the sign-in form shows the authenticator-code step at 1440 and 390 px with no page errors (performance/out/mfa17/). Agent: two-step not required. Clients 6 / contacts 6 for both; drafts owner 2 / agent 2, approvals owner 2 / agent 0; /api/brokerage/setup commercial_email NEEDS_ACTION (no postal address yet, so client email is held); /.well-known/security.txt 404 (contact not configured); a forged unsubscribe token 404; routes 86-286 ms", date: 2026-10-14}
 authz_checked: "factor tables admit only the platform login (app_is_platform_admin, 0120): a broker-owner request context reads 0 rows (live test). Owner resets agents of their own brokerage only (RLS finds the target); owner-on-owner needs a platform admin; agents cannot reset. Codes are checked only after the password matched."
 blockers:
   - {type: decided, note: "Owner 2026-10-14: Platform Use Policy v6 (neoh-platform-use-policy-2026-10-14-v6) and Account Security ESA v2 (neoh-account-security-esa-2026-10-14-v2) approved as drafted: unsubscribe + postal address (s6), payment cards never asked for or kept (s4), operator views audited (s2), two-step sign-in (s1 + ESA s2). POLICY_COVERAGE rows added. No postal address = client email held (409 at queue time, refused at send)."}
@@ -1506,12 +1522,13 @@ Owner decision 2026-10-14 (a): authenticator-app codes for every tenant user, re
 ```yaml
 id: L17-20
 status: external_configuration_required
-env: local
+env: staging
 evidence_shas: [e25f3e0]
 branch: worktree-agent-a25105adfe3fa71c4
 files: [backend/security_contact.py, backend/privacy_api.py, backend/server.py, infra/digitalocean/app.yaml, oracle-app/nginx.conf, oracle-app/vite.config.js, oracle-app/src/devProxy.test.js, .env.example, .env.prod.example, backend/tests/test_tenant_user_mfa.py]
 tests_run:
   - {cmd: "cd backend && ORACLE_SKIP_DOTENV=1 python -m pytest -q -p no:cacheprovider tests/test_tenant_user_mfa.py -k 'security_txt or privacy_contact or edge'", result: "exit 0; 404 until ORACLE_SECURITY_CONTACT is set; RFC 9116 fields (Contact, Expires ≤ 365 days computed per request, Preferred-Languages, Canonical only on https); a newline in the value cannot add a field; ingress routes the file to the API before the static site; nginx answers 404 rather than the SPA", date: 2026-10-14}
+  - {cmd: "staging after a7fcaab (CI run 38549337342 green incl. full-history secret scan; PRE_DEPLOY applied 0146/0148/0150 as doadmin, each rehearsed first as a NOSUPERUSER BYPASSRLS owner); real API + system Chrome (Playwright) as the demo owner and agent", result: "Policy v6 + ESA v2 served and accepted. Demo owner enrolled two-step through the product routes (secret in the 0600 credentials file); a password-only sign-in then answers 401 OTP_REQUIRED, password + code signs in, and the sign-in form shows the authenticator-code step at 1440 and 390 px with no page errors (performance/out/mfa17/). Agent: two-step not required. Clients 6 / contacts 6 for both; drafts owner 2 / agent 2, approvals owner 2 / agent 0; /api/brokerage/setup commercial_email NEEDS_ACTION (no postal address yet, so client email is held); /.well-known/security.txt 404 (contact not configured); a forged unsubscribe token 404; routes 86-286 ms", date: 2026-10-14}
 authz_checked: "public, read-only, no data"
 blockers:
   - {type: owner, note: "Owner creates security@ and privacy@ on Neoh's domain, then sets ORACLE_SECURITY_CONTACT and ORACLE_PRIVACY_CONTACT on the api component. Until then nothing is published (404 / field omitted)."}
