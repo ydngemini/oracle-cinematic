@@ -72,7 +72,14 @@ class _Conn:
 @pytest.fixture
 def wire(monkeypatch):
     def _install(script):
-        conn = _Conn(script)
+        # record_access.require_lead_edit / require_linked_edit (0151): the
+        # caller may edit the house; the fakes below decide everything else.
+        conn = _Conn([*script, ("app_linked_access", {"can_edit": True})])
+
+        async def _pipeline_count(tenant_id, sql, *args):  # the brokerage-wide backlog
+            return conn._answer(sql, "val") or 0
+
+        monkeypatch.setattr(tour_api.record_access, "pipeline_count", _pipeline_count)
 
         class _Tx:
             def __init__(self, ctx):

@@ -39,13 +39,16 @@ KINDS = ("a", "b", "pool", "harvest")  # harvest = no client
 def test_leads_follow_their_client(monkeypatch):
     frames: list[dict] = []
 
-    async def capture(tenant_id, payload):
+    async def capture(tenant_id, payload, **audience):
         frames.append(payload)
         return 0
 
     import ws_hub
 
     monkeypatch.setattr(ws_hub, "broadcast", capture)
+    # Lead frames follow the lead since 0151 (test_lead_children_access_live
+    # proves who the audience is); what the frame says is checked here.
+    monkeypatch.setattr(ws_hub, "broadcast_record", capture)
     asyncio.run(_scenario(frames))
 
 
