@@ -103,6 +103,9 @@ class TenantContext:
     # "brokerage" for a verified user session — see apply_rls_context and
     # brokerage_scope().
     record_scope: str = field(default="actor", compare=False)
+    # The session was signed in without the second factor its account must
+    # use (L17-19): only the policy and two-step-setup routes accept it.
+    mfa_enrolment_pending: bool = field(default=False, compare=False)
 
     @property
     def is_platform_admin(self) -> bool:
@@ -294,6 +297,7 @@ def _context_from_authorization(
     *,
     allow_policy_pending: bool,
     allow_stale_policy: bool,
+    allow_mfa_enrolment: bool = False,
 ) -> TenantContext:
     from auth import decode_token  # lazy: auth imports nothing from tenancy
 
@@ -315,6 +319,19 @@ def _context_from_authorization(
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Accept the platform policy to continue.",
+        )
+
+    mfa_enrolment = payload.get("mfa_enrol", False)
+    if not isinstance(mfa_enrolment, bool):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token.")
+    if mfa_enrolment and not allow_mfa_enrolment:
+        # A broker owner (or a member of a brokerage that requires it) signed
+        # in without two-step sign-in set up. Until it is, the session can
+        # reach the policy routes, logout, CSRF and the setup routes only.
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={"code": "mfa_enrolment_required",
+                    "message": "Set up two-step sign-in to continue."},
         )
 
     if payload.get("policy_version") != PLATFORM_POLICY_VERSION and not allow_stale_policy:
@@ -392,6 +409,7 @@ def _context_from_authorization(
         session_epoch=epoch,
         auth_time=int(auth_time),
         expires_at=float(payload["exp"]) if isinstance(payload.get("exp"), (int, float)) else None,
+        mfa_enrolment_pending=mfa_enrolment,
     )
     log.debug(
         "Tenant context established: agent_id=%r tenant_id=%r role=%r.",
@@ -464,9 +482,27 @@ def require_policy_context(
     request: Request,
     authorization: Optional[str] = Header(default=None),
 ) -> TenantContext:
-    """Permit the policy endpoints to renew stale or pending signed sessions."""
+    """Permit the policy endpoints to renew stale or pending signed sessions.
+
+    A session waiting for two-step setup (L17-19) may accept the policy too;
+    every re-mint carries its `mfa_enrol` claim forward."""
     return _context_from_authorization(
         _request_authorization(request, authorization),
         allow_policy_pending=True,
         allow_stale_policy=True,
+        allow_mfa_enrolment=True,
+    )
+
+
+def require_mfa_context(
+    request: Request,
+    authorization: Optional[str] = Header(default=None),
+) -> TenantContext:
+    """The two-step sign-in routes (mfa_api.py): reachable while setup is still
+    owed, never with a pending or stale policy (the policy gate comes first)."""
+    return _context_from_authorization(
+        _request_authorization(request, authorization),
+        allow_policy_pending=False,
+        allow_stale_policy=False,
+        allow_mfa_enrolment=True,
     )

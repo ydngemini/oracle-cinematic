@@ -70,6 +70,7 @@ class Session:
         self.csrf: Optional[str] = None
         self.tenant_id: Optional[str] = None
         self.agent_id: Optional[str] = None
+        self.totp_secret: Optional[str] = None
 
     def request(self, method: str, path: str, body: Any = None,
                 *, expect: Optional[int] = None) -> tuple[int, Any]:
@@ -119,6 +120,26 @@ class Session:
         if status == 200 and payload.get("token"):
             self.token = payload["token"]
 
+    def enrol_two_step(self) -> Optional[str]:
+        """A broker owner must set up two-step sign-in (L17-19) before any
+        other route answers. Enrol through the product's own routes and return
+        the TOTP secret so a later sign-in can compute its code."""
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "backend"))
+        import totp
+
+        status, setup = self.post("/auth/mfa/totp/setup", {"password": PASSWORD})
+        if status != 200:
+            raise SystemExit(f"two-step setup failed: {status} {setup}")
+        secret = "".join(setup["secret"].split())
+        status, done = self.post("/auth/mfa/totp/confirm",
+                                 {"code": totp.code_at(secret, int(time.time() // 30))})
+        if status != 200 or not done.get("enabled"):
+            raise SystemExit(f"two-step confirm failed: {status} {done}")
+        if done.get("token"):
+            self.token = done["token"]
+        self.totp_secret = secret
+        return secret
+
 
 def sql(query: str) -> str:
     """Assertions the API cannot make — and the cleanup."""
@@ -145,6 +166,7 @@ def register(base: str, label: str) -> Session:
     s.tenant_id = payload["tenant_id"]
     s.agent_id = payload["agent_id"]
     s.accept_policy()
+    s.enrol_two_step()
     return s
 
 
@@ -354,7 +376,15 @@ def journey(base: str) -> None:
     # A fresh session is a fresh pool connection: anything held only in process
     # memory disappears here.
     fresh = Session(base)
-    status, login = fresh.post("/auth/login", {"agent_id": a.agent_id, "passphrase": PASSWORD})
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "backend"))
+    import totp
+
+    # The owner signs in with a two-step code; the next step, because the
+    # setup code's step is spent (the server accepts each step once).
+    status, login = fresh.post("/auth/login", {
+        "agent_id": a.agent_id, "passphrase": PASSWORD,
+        "otp": totp.code_at(a.totp_secret, int(time.time() // 30) + 1),
+    })
     if status == 200:
         fresh.token = login["token"]
         fresh.accept_policy()

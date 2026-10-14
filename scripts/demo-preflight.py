@@ -268,7 +268,7 @@ async def run(base_url: str, tenant_id: str, expected_sha: str, *, chat_check: b
     creds = common.load_or_create_credentials()
     api = common.Api(base_url)
     try:
-        api.login(common.OWNER["email"], creds[common.OWNER["email"]])
+        api.login(common.OWNER["email"], creds[common.OWNER["email"]], creds=creds)
         brief = api.get("/api/command-center")
         cards = (brief.get("attention") or {}).get("opportunities") or []
         hit = next((c for c in cards if c.get("headline") == "May fit Sarah Johnson"), None)

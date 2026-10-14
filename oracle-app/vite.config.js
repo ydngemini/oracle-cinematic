@@ -28,6 +28,7 @@ const PRODUCTION_CSP = [
 // so the dev server reaches the same endpoints the deployed app does.
 export const DEV_PROXY_PREFIXES = Object.freeze([
   '/api', '/auth', '/billing', '/admin', '/portal', '/ws', '/health', '/version',
+  '/.well-known/security.txt',
 ])
 
 export default defineConfig({
