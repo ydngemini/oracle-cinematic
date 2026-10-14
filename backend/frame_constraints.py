@@ -49,6 +49,7 @@ from typing import Any, Iterable, Literal, Optional, Sequence
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
+import semantic_language as lang_
 from ai_tool_policy import READ_ONLY_TOOLS, TOOL_RISK
 from platform_policy import ActionRisk, requires_approval
 
@@ -148,12 +149,12 @@ class Refusal:
         }
 
 
-def _who(c: ActiveConstraint) -> str:
+def _who(c: ActiveConstraint, lang: Optional[str] = None) -> str:
     if c.unresolved:
-        return "the person you meant (I could not tell who, so all contact is held)"
+        return lang_.t("who.unresolved", lang)
     if c.records is None:
-        return "anyone"
-    return "this person"
+        return lang_.t("who.anyone", lang)
+    return lang_.t("who.this", lang)
 
 
 def _when(t: datetime) -> str:
@@ -272,6 +273,70 @@ def _dedupe(items: Sequence[ActiveConstraint]) -> list[ActiveConstraint]:
 
 
 # ---------------------------------------------------------------------------
+# The deterministic backstop (L05-04)
+# ---------------------------------------------------------------------------
+
+#: A cue is already covered when the frame states one of these kinds. Kind,
+#: not scope: the parser's scoping is to candidates authorize_frame kept, and
+#: "no le mandes nada" (to HER) must not widen into "send nobody anything".
+_COVERED_BY: dict[str, frozenset[str]] = {
+    "no_send": frozenset({"no_send", "do_not_contact"}),
+    "do_not_contact": frozenset({"do_not_contact", "no_send"}),
+    "draft_only": frozenset({"draft_only", "no_send"}),
+    "approval_required": frozenset({"approval_required"}),
+    "not_before": frozenset({"not_before"}),
+}
+
+
+def strict(*, origin: str, stated_at: datetime) -> list[ActiveConstraint]:
+    """The fail-closed pair: nothing sent, nothing applied without approval.
+    The same pair an unreadable stored list becomes (`load`)."""
+    return [
+        ActiveConstraint(kind="no_send", origin=origin[:64], stated_at=stated_at),
+        ActiveConstraint(kind="approval_required", origin=origin[:64], stated_at=stated_at),
+    ]
+
+
+def reinforce(
+    own: Sequence[ActiveConstraint],
+    cues: Iterable[Any],
+    *,
+    origin: str,
+    stated_at: datetime,
+) -> tuple[list[ActiveConstraint], list[str]]:
+    """Add what the request plainly says and the parser's frame did not carry.
+
+    `cues` are `semantic_language.Cue`s (or anything with `.kind`). A cue the
+    frame already covers adds nothing. One it does not cover is added
+    UNSCOPED (a cue cannot say who; do_not_contact is marked unresolved, so
+    it holds everyone). A `not_before` cue carries no time the server can
+    trust, so it becomes the strict pair instead: the parser was in doubt, so
+    nothing is sent and nothing applies without approval until the person
+    says otherwise or the turn's constraints expire.
+
+    Returns (constraints, kinds added). Only ever adds.
+    """
+    out = list(own)
+    added: list[str] = []
+    have = {c.kind for c in own}
+    for cue in cues:
+        kind = getattr(cue, "kind", None)
+        if kind not in _COVERED_BY or have & _COVERED_BY[kind]:
+            continue
+        if kind == "not_before":
+            new = strict(origin=origin, stated_at=stated_at)
+        else:
+            new = [ActiveConstraint(kind=kind, unresolved=(kind == "do_not_contact"),
+                                    origin=origin[:64], stated_at=stated_at)]
+        for c in new:
+            if c.kind not in have:
+                out.append(c)
+                have.add(c.kind)
+                added.append(c.kind)
+    return _dedupe(out), added
+
+
+# ---------------------------------------------------------------------------
 # Storage shape
 # ---------------------------------------------------------------------------
 
@@ -327,8 +392,13 @@ def check_tool(
     *,
     targets: frozenset[str],
     now: datetime,
+    lang: Optional[str] = None,
 ) -> Optional[Refusal]:
-    """None if the call may run; otherwise the first constraint it breaks."""
+    """None if the call may run; otherwise the first constraint it breaks.
+
+    `lang` (en/es, English when unknown) is the language of the person's
+    request; the refusal they read is written in it. The code is the same in
+    every language."""
     if not constraints or tool_name in READ_ONLY_TOOLS:
         return None
     risk = TOOL_RISK.get(tool_name)
@@ -344,27 +414,18 @@ def check_tool(
             continue
         if c.kind == "do_not_contact" and contacts:
             return Refusal(c.kind, "FRAME_DO_NOT_CONTACT",
-                           f"You asked me not to contact {_who(c)}, so I did not "
-                           f"prepare this. Nothing was drafted or sent.")
+                           lang_.t("refuse.do_not_contact", lang, who=_who(c, lang)))
         if c.kind == "no_send" and contacts:
-            return Refusal(c.kind, "FRAME_NO_SEND",
-                           "You asked me not to send anything yet, so I did not "
-                           "prepare this message or request. Tell me when it "
-                           "should go and I will draft it for your approval.")
+            return Refusal(c.kind, "FRAME_NO_SEND", lang_.t("refuse.no_send", lang))
         if c.kind == "draft_only" and gated and tool_name not in DRAFT_TOOLS:
-            return Refusal(c.kind, "FRAME_DRAFT_ONLY",
-                           "You asked for drafts only. This would request an "
-                           "action rather than a draft, so I did not stage it.")
+            return Refusal(c.kind, "FRAME_DRAFT_ONLY", lang_.t("refuse.draft_only", lang))
         if c.kind == "approval_required" and not gated:
             return Refusal(c.kind, "FRAME_APPROVAL_REQUIRED",
-                           "You asked for this to wait for approval. This change "
-                           "would apply immediately, so I did not make it.")
+                           lang_.t("refuse.approval_required", lang))
         if (c.kind == "not_before" and c.not_before is not None
                 and now < c.not_before):
             return Refusal(c.kind, "FRAME_NOT_BEFORE",
-                           f"You asked me not to do this before "
-                           f"{_when(c.not_before)}, so nothing was changed or "
-                           f"staged. Ask me again then.")
+                           lang_.t("refuse.not_before", lang, t=_when(c.not_before)))
     return None
 
 
@@ -387,6 +448,7 @@ def check_mission_step(
     *,
     subject_ids: frozenset[str],
     now: datetime,
+    lang: Optional[str] = None,
 ) -> StepGate:
     outbound = channel in OUTBOUND_CHANNELS
     no_release: Optional[str] = None
@@ -396,17 +458,16 @@ def check_mission_step(
         if not c.applies_to(subject_ids):
             continue
         if c.kind == "do_not_contact" and outbound:
-            return StepGate(withhold=f"stated constraint: do not contact {_who(c)}",
+            return StepGate(withhold=lang_.t("step.do_not_contact", lang, who=_who(c, lang)),
                             kind=c.kind)
         if c.kind == "no_send" and outbound:
-            return StepGate(withhold="stated constraint: no sends", kind=c.kind)
+            return StepGate(withhold=lang_.t("step.no_send", lang), kind=c.kind)
         if c.kind == "draft_only" and outbound:
             if channel not in DRAFT_CHANNELS:
-                return StepGate(withhold="stated constraint: drafts only (a call is not a draft)",
-                                kind=c.kind)
-            no_release, no_release_kind = "stated constraint: drafts only", c.kind
+                return StepGate(withhold=lang_.t("step.draft_only_call", lang), kind=c.kind)
+            no_release, no_release_kind = lang_.t("step.draft_only", lang), c.kind
         if c.kind == "approval_required" and no_release is None:
-            no_release, no_release_kind = "stated constraint: approval required", c.kind
+            no_release, no_release_kind = lang_.t("step.approval_required", lang), c.kind
         if (c.kind == "not_before" and c.not_before is not None
                 and now < c.not_before):
             defer = max(defer, c.not_before) if defer else c.not_before
@@ -428,10 +489,11 @@ _PLAIN = {
 }
 
 
-def prompt_block(constraints: Sequence[ActiveConstraint]) -> str:
+def prompt_block(constraints: Sequence[ActiveConstraint], lang: Optional[str] = None) -> str:
     """A short, PII-free note for the system prompt."""
     if not constraints:
         return ""
+    reply_in = lang_.t("prompt.reply_in", lang)
     lines = []
     for c in constraints:
         text = _PLAIN[c.kind].format(t=_when(c.not_before) if c.not_before else "")
@@ -442,4 +504,5 @@ def prompt_block(constraints: Sequence[ActiveConstraint]) -> str:
         "The person set these limits in this conversation. Tool calls that break "
         "one are refused by the server whatever you request, so do not attempt "
         "them; say plainly what you did not do and why.\n" + "\n".join(lines)
+        + (f"\n{reply_in}" if reply_in else "")
     )
