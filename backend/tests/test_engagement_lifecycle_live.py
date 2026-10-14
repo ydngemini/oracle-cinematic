@@ -37,7 +37,9 @@ DSN = os.getenv("ORACLE_LIVE_DB_ADMIN_DSN", "")
 pytestmark = pytest.mark.skipif(not DSN, reason="needs ORACLE_LIVE_DB_ADMIN_DSN (real PostgreSQL)")
 
 
-def test_lead_engagement_is_metered_at_delivery_exactly_once():
+def test_lead_engagement_is_metered_at_delivery_exactly_once(monkeypatch):
+    # Text bodies are sealed at rest (0152, L17-21): a send needs a master key.
+    monkeypatch.setenv("ORACLE_ENCRYPTION_MASTER_KEY", "live-test-engagement-master-key-0123456789")
     asyncio.run(_scenario())
 
 
