@@ -174,6 +174,85 @@ async def _deliver_user_local(tenant_id: str, user_id: str, payload: dict) -> in
     return await _send_user(tenant_id, user_id, payload)
 
 
+def firehose_stub(payload: dict, tenant_id: str) -> dict:
+    """What the platform OPS firehose sees of a record-scoped frame: that it
+    happened, never its content (the counter offer, a transcript line)."""
+    return {"type": payload.get("type"), "scoped": True, "source_tenant": tenant_id}
+
+
+async def _send_users(tenant_id: str, user_ids: list[str], payload: dict) -> int:
+    """Send one frame to the live sockets of these agents of one tenant.
+
+    Agent ids compare case-insensitively (the token carries the canonical
+    users.agent_id, but a legacy/dev identity may differ in case), and a
+    socket registered without a user is never a recipient."""
+    wanted = {u.lower() for u in user_ids if u}
+    if not wanted:
+        return 0
+    targets: list[tuple[str, WebSocket]] = [
+        (user, ws)
+        for (tenant, user), socks in list(_user_sockets.items())
+        if tenant == tenant_id and user.lower() in wanted
+        for ws in list(socks)
+    ]
+    if not targets:
+        return 0
+    text = json.dumps(payload)
+    delivered = 0
+    for user, ws in targets:
+        try:
+            await ws.send_text(text)
+            delivered += 1
+        except Exception:  # noqa: BLE001
+            unregister(tenant_id, ws, user)
+    return delivered
+
+
+async def _deliver_scoped_local(
+    group: str, user_ids: Optional[list[str]], payload: dict, *, mirror: bool
+) -> int:
+    """This replica's half of a scoped frame: the named agents of `group`
+    (or every socket of `group` when user_ids is None — a group admitted per
+    record, such as a voice session), plus a content-free firehose stub."""
+    if user_ids is None:
+        delivered = await _send_group(group, payload)
+    else:
+        delivered = await _send_users(group, user_ids, payload)
+    if mirror and group != FIREHOSE_TENANT_ID and FIREHOSE_TENANT_ID in _sockets:
+        await _send_group(FIREHOSE_TENANT_ID, firehose_stub(payload, group))
+    return delivered
+
+
+async def _publish_scoped(
+    group: str, user_ids: Optional[list[str]], payload: dict, *, mirror: bool
+) -> None:
+    if _pool is None or not _listener_started:
+        return
+    envelope = json.dumps(
+        {
+            "origin": _instance_id,
+            "tenant_id": group,
+            "user_ids": user_ids,
+            "mirror": mirror,
+            "scoped_payload": payload,
+        },
+        separators=(",", ":"),
+        default=str,
+    )
+    if len(envelope.encode("utf-8")) > _MAX_NOTIFY_BYTES:
+        logger.error(
+            "Scoped WebSocket event too large for cross-replica delivery (group=%s bytes=%d)",
+            group.split(":", 1)[0],
+            len(envelope.encode("utf-8")),
+        )
+        return
+    try:
+        async with _pool.acquire() as conn:
+            await conn.execute("SELECT pg_notify($1, $2)", _CHANNEL, envelope)
+    except Exception as exc:  # noqa: BLE001 - local delivery remains available
+        logger.warning("WebSocket cross-replica publish failed: %s", exc)
+
+
 async def _publish(tenant_id: str, payload: dict, user_id: Optional[str] = None) -> None:
     # Publishing does not need this replica's own listener — other replicas
     # still deserve the frame while ours is reconnecting.
@@ -204,24 +283,48 @@ async def _publish(tenant_id: str, payload: dict, user_id: Optional[str] = None)
 
 
 async def _receive_notification(raw: str) -> None:
+    scoped = None
     try:
         envelope = json.loads(raw)
         if envelope.get("origin") == _instance_id:
             return
-        tenant_id = str(envelope["tenant_id"])
-        user_id = envelope.get("user_id")
-        if user_id is not None and not isinstance(user_id, str):
-            raise TypeError("user_id is not a string")
-        payload = envelope["payload"]
-        if not isinstance(payload, dict):
-            raise TypeError("payload is not an object")
+        if "scoped_payload" in envelope:
+            # v2 (record-scoped) envelope. It carries no "payload" key on
+            # purpose: a replica still running the previous release reads it
+            # as malformed and drops it, rather than delivering a scoped frame
+            # to the whole brokerage during a rolling deploy.
+            scoped = _parse_scoped(envelope)
+        else:
+            tenant_id = str(envelope["tenant_id"])
+            user_id = envelope.get("user_id")
+            if user_id is not None and not isinstance(user_id, str):
+                raise TypeError("user_id is not a string")
+            payload = envelope["payload"]
+            if not isinstance(payload, dict):
+                raise TypeError("payload is not an object")
     except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
         logger.warning("Ignoring malformed WebSocket notification: %s", exc)
         return
-    if user_id:
+    if scoped is not None:
+        group, user_ids, payload, mirror = scoped
+        await _deliver_scoped_local(group, user_ids, payload, mirror=mirror)
+    elif user_id:
         await _deliver_user_local(tenant_id, user_id, payload)
     else:
         await _deliver_local(tenant_id, payload)
+
+
+def _parse_scoped(envelope: dict) -> tuple[str, Optional[list[str]], dict, bool]:
+    group = str(envelope["tenant_id"])
+    user_ids = envelope.get("user_ids")
+    if user_ids is not None and (
+        not isinstance(user_ids, list) or not all(isinstance(u, str) for u in user_ids)
+    ):
+        raise TypeError("user_ids is not a list of strings")
+    payload = envelope["scoped_payload"]
+    if not isinstance(payload, dict):
+        raise TypeError("scoped_payload is not an object")
+    return group, user_ids, payload, bool(envelope.get("mirror"))
 
 
 def _notification_callback(
@@ -397,3 +500,65 @@ async def broadcast_user(tenant_id: str, user_id: str, payload: dict) -> int:
     delivered = await _deliver_user_local(tenant_id, user_id, payload)
     await _publish(tenant_id, payload, user_id)
     return delivered
+
+
+async def broadcast_users(tenant_id: str, user_ids: list[str], payload: dict) -> int:
+    """Deliver one frame, across replicas, to these agents of one tenant only
+    (one NOTIFY for all of them). The platform firehose gets a content-free
+    stub. An empty list reaches nobody."""
+    recipients = sorted({u for u in user_ids if u}, key=str.lower)
+    if not recipients:
+        return 0
+    delivered = await _deliver_scoped_local(tenant_id, recipients, payload, mirror=True)
+    await _publish_scoped(tenant_id, recipients, payload, mirror=True)
+    return delivered
+
+
+async def broadcast_group(group: str, payload: dict) -> int:
+    """Deliver to every socket of a group whose members were admitted per
+    record (the voice-session stream, server.voice_telemetry_websocket), never
+    mirrored to the firehose — `broadcast()` would copy its content there."""
+    delivered = await _deliver_scoped_local(group, None, payload, mirror=False)
+    await _publish_scoped(group, None, payload, mirror=False)
+    return delivered
+
+
+async def broadcast_record(
+    tenant_id: str,
+    payload: dict,
+    *,
+    client_id: Any = None,
+    contact_id: Any = None,
+    actor: Optional[str] = None,
+    only: Optional[list[str]] = None,
+) -> int:
+    """Deliver a frame that carries a client's or contact's content (a call,
+    a text, a note) only to the members who may read that record (CONTRACT
+    C3.6; app_record_audience, 0145): broker owners, the assignee and share
+    holders — or everyone when the record is in the brokerage pool or the
+    frame links no client or contact (as `broadcast()` did).
+
+    The audience is computed ONCE per frame (one query), then delivered to
+    those agents' sockets on every replica. `only` narrows it further (the
+    call-notes frame goes to the requester and the assignee, among those who
+    may still read the client). If the audience cannot be computed, the frame
+    goes only to `actor` — the user whose request produced it, who has just
+    been authorized for the record — and otherwise to nobody (fail closed)."""
+    import record_access
+
+    try:
+        audience = await record_access.linked_audience(tenant_id, client_id, contact_id)
+    except Exception as exc:  # noqa: BLE001 — never widen on failure
+        logger.warning("Record audience unavailable (%s); frame %s sent to the actor only",
+                       type(exc).__name__, payload.get("type"))
+        audience = [actor] if actor else []
+    if audience is None:
+        if only is None:
+            return await broadcast(tenant_id, payload)
+        recipients = list(only)
+    elif only is None:
+        recipients = audience
+    else:
+        allowed = {u.lower() for u in audience}
+        recipients = [u for u in only if u and u.lower() in allowed]
+    return await broadcast_users(tenant_id, recipients, payload)

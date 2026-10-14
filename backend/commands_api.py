@@ -1961,7 +1961,10 @@ async def call_telemetry(
         "event_id": event["id"],
         **guidance,
     }
-    await ws_hub.broadcast(ctx.tenant_id, frame)
+    # The counter offer, ARV and MAO belong to the call's client/contact: only
+    # members who may read that record receive them (C3.6, 0145).
+    await ws_hub.broadcast_record(ctx.tenant_id, frame, client_id=call["client_id"],
+                                  contact_id=call["contact_id"], actor=ctx.agent_id)
     return frame
 
 
@@ -1983,7 +1986,7 @@ async def record_call_consent(
                    transcript_status=CASE WHEN $2 THEN 'active' ELSE 'complete' END,
                    ended_at=CASE WHEN $2 THEN ended_at ELSE COALESCE(ended_at,now()) END
              WHERE id=$1::uuid
-            RETURNING id
+            RETURNING id, client_id, contact_id
             """,
             call_session_id,
             body.consent_recorded,
@@ -2016,7 +2019,8 @@ async def record_call_consent(
         "event_id": event["id"],
         "consent_recorded": body.consent_recorded,
     }
-    await ws_hub.broadcast(ctx.tenant_id, frame)
+    await ws_hub.broadcast_record(ctx.tenant_id, frame, client_id=call["client_id"],
+                                  contact_id=call["contact_id"], actor=ctx.agent_id)
     return frame
 
 
@@ -2356,8 +2360,9 @@ async def deliver_call_notes(provider_call_id: str, notes: list[str],
     (call_note_settings, owner decision D-2026-10-12-03): 'review' saves it
     *proposed* for the agent to approve, edit or discard; 'direct' saves it
     approved. The live frame carries customer content, so it goes only to the
-    agent who requested the call and the client's assigned agent
-    (CONTRACT C3.6). It used to go to every session in the brokerage.
+    agent who requested the call and the client's assigned agent, and only if
+    they may still read the client (CONTRACT C3.6, ws_hub.broadcast_record).
+    It used to go to every session in the brokerage.
     """
     import call_note_settings
     import client_note_crypto
@@ -2368,7 +2373,7 @@ async def deliver_call_notes(provider_call_id: str, notes: list[str],
     body = format_call_notes(clean)
     async with tenant_tx(_call_platform_ctx(AI_CALL_NOTE_AUTHOR)) as conn:
         session = await conn.fetchrow(
-            """SELECT s.id, s.tenant_id, s.client_id, s.lead_id, s.command_id, s.consent_recorded,
+            """SELECT s.id, s.tenant_id, s.client_id, s.contact_id, s.lead_id, s.command_id, s.consent_recorded,
                       s.created_by, c.created_by AS command_created_by
                  FROM live_call_sessions s
                  LEFT JOIN command_executions c ON c.id = s.command_id
@@ -2427,11 +2432,14 @@ async def deliver_call_notes(provider_call_id: str, notes: list[str],
         "command_id": str(session["command_id"]) if session["command_id"] else None,
         "note_id": str(note["id"]), "notes": clean, "review_state": review_state,
     }
-    for recipient in call_note_recipients(requester, assignee):
-        try:
-            await ws_hub.broadcast_user(str(session["tenant_id"]), recipient, frame)
-        except Exception:  # noqa: BLE001 — the note is saved; the live frame is extra
-            logger.warning("CALL_NOTES frame not sent: %s", provider_call_id, exc_info=True)
+    # Among the requester and the assignee, only those who may still read the
+    # client (a revoked share, a reassignment) — C3.4/C3.6, 0145.
+    try:
+        await ws_hub.broadcast_record(
+            str(session["tenant_id"]), frame, client_id=session["client_id"],
+            contact_id=session["contact_id"], only=call_note_recipients(requester, assignee))
+    except Exception:  # noqa: BLE001 — the note is saved; the live frame is extra
+        logger.warning("CALL_NOTES frame not sent: %s", provider_call_id, exc_info=True)
     return str(note["id"])
 
 

@@ -20,6 +20,11 @@ A 10DLC brand or campaign (kinds '10dlc_brand' / '10dlc_campaign', 0139) is
 brokerage-wide: its intent is claimed under the brokerage's brand-row lock and
 checked against every agent's open rows, so racing broker owners register at
 most one of each (messaging_data.register_messaging_brand / _campaign).
+
+Assigning the business number to that campaign (kind '10dlc_number_assignment',
+0145) is claimed under the campaign row's lock, per number + campaign: racing
+or repeated assignments reach the provider once; an `unknown` one waits for an
+operator (messaging_data.assign_campaign_number).
 """
 
 from __future__ import annotations
@@ -35,6 +40,7 @@ PHONE_NUMBER = "phone_number"
 HOSTED_MESSAGING_ORDER = "hosted_messaging_order"
 BRAND_10DLC = "10dlc_brand"
 CAMPAIGN_10DLC = "10dlc_campaign"
+NUMBER_ASSIGNMENT_10DLC = "10dlc_number_assignment"
 
 
 class PurchaseInFlight(RuntimeError):

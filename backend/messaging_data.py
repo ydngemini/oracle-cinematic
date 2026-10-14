@@ -628,7 +628,9 @@ async def _claim_registration(
     return str(purchase_id), None, dict(detail)
 
 
-async def _ask_registration(ctx: TenantContext, purchase_id: str, call: Any, what: str) -> tuple[str, Any]:
+async def _ask_registration(
+    ctx: TenantContext, purchase_id: str, call: Any, what: str, *, unconfirmed: Optional[str] = None
+) -> tuple[str, Any]:
     """Ask the provider once and record the outcome on the ledger row. A
     definite refusal is re-raised as is (the row is `failed`, so a retry may
     follow); anything ambiguous leaves it `unknown` and raises
@@ -653,7 +655,7 @@ async def _ask_registration(ctx: TenantContext, purchase_id: str, call: Any, wha
         await provider_purchases.unknown(ctx, purchase_id, f"{type(exc).__name__}: {exc}"[:500])
         if not isinstance(exc, Exception):
             raise
-        raise RegistrationUnconfirmed(_REGISTRATION_UNCONFIRMED.format(what=what)) from exc
+        raise RegistrationUnconfirmed(unconfirmed or _REGISTRATION_UNCONFIRMED.format(what=what)) from exc
     await provider_purchases.confirmed_ref(ctx, purchase_id, str(result.reference), {"status": result.status})
     return str(result.reference), result.status
 
@@ -811,6 +813,113 @@ async def register_messaging_campaign(
     return {"campaign_id": str(row["id"]), "provider_campaign_id": ref, "status": row["status"]}
 
 
+NO_APPROVED_CAMPAIGN = "No approved Campaign to assign this number to."
+_ASSIGNMENT_IN_FLIGHT = (
+    "This number is already being assigned to your campaign. Nothing new was submitted — "
+    "try again in a few minutes."
+)
+_ASSIGNMENT_UNCONFIRMED = (
+    "We could not confirm that this number was assigned to your campaign. Nothing more will be "
+    "submitted for it until an operator has checked it with the provider."
+)
+_CAMPAIGN_FOR_ASSIGNMENT_SQL = """
+    SELECT c.id, c.provider_campaign_id
+      FROM tenant_messaging_campaigns c
+      JOIN tenant_messaging_brands b ON b.id = c.brand_id
+     WHERE c.tenant_id = $1::uuid AND c.status = 'approved'
+     ORDER BY c.created_at DESC
+     LIMIT 1
+       FOR UPDATE OF c"""
+_ASSIGNMENT_ROWS_SQL = """
+    SELECT id, state, provider_ref
+      FROM provider_purchases
+     WHERE tenant_id = $1::uuid AND provider = $2 AND kind = $3
+       AND detail->>'campaign_id' = $4 AND detail->>'phone_number' = $5
+       AND state IN ('intended','unknown','confirmed','attached')
+     ORDER BY created_at DESC"""
+
+
+async def assign_campaign_number(
+    ctx: TenantContext, *, phone_number: str, provider: str, credentials: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Assign the business number to the brokerage's approved 10DLC campaign
+    at most once at the provider (L10-10; same ledger as the brand and
+    campaign, L10-09).
+
+    Under the campaign row's lock (which serialises every broker owner of the
+    brokerage), for this number + campaign: an in-flight or `unknown`
+    assignment is a 409 and reaches no provider — `unknown` (timeout, lost
+    answer) waits for an operator, never a retry; an `attached` one is
+    already done (no provider call); a `confirmed` one that never reached the
+    route is reused. Otherwise the intent is recorded first, the provider is
+    asked once outside the transaction, and the route and the ledger row are
+    updated together. A definite refusal is `failed` and may be retried."""
+    import json
+
+    import asyncpg
+
+    import provider_purchases
+    from messaging_provider import get_messaging_provider
+
+    async with tenant_tx(ctx) as conn:
+        # The brokerage's own campaign, also for a platform admin acting for it
+        # (the same tenant filter the neighbouring 10DLC queries use).
+        campaign = await conn.fetchrow(_CAMPAIGN_FOR_ASSIGNMENT_SQL, ctx.tenant_id)
+        if campaign is None or not campaign["provider_campaign_id"]:
+            raise RegistrationConflict(NO_APPROVED_CAMPAIGN)
+        provider_campaign = str(campaign["provider_campaign_id"])
+        rows = await conn.fetch(
+            _ASSIGNMENT_ROWS_SQL, ctx.tenant_id, provider, provider_purchases.NUMBER_ASSIGNMENT_10DLC,
+            provider_campaign, phone_number,
+        )
+        if any(r["state"] == "unknown" for r in rows):
+            raise RegistrationConflict(_ASSIGNMENT_UNCONFIRMED)
+        if any(r["state"] == "intended" for r in rows):
+            raise RegistrationConflict(_ASSIGNMENT_IN_FLIGHT)
+        done = next((r for r in rows if r["state"] == "attached"), None)
+        reuse = next((r for r in rows if r["state"] == "confirmed"), None)
+        purchase_id: Optional[str] = str(reuse["id"]) if reuse else None
+        if done is None and reuse is None:
+            try:
+                purchase_id = str(await conn.fetchval(
+                    "INSERT INTO provider_purchases (tenant_id, agent_id, provider, kind, detail) "
+                    "VALUES ($1::uuid,$2,$3,$4,$5::jsonb) RETURNING id",
+                    ctx.tenant_id,
+                    ctx.agent_id,
+                    provider,
+                    provider_purchases.NUMBER_ASSIGNMENT_10DLC,
+                    json.dumps({"campaign_id": provider_campaign, "phone_number": phone_number}),
+                ))
+            except asyncpg.exceptions.UniqueViolationError as exc:
+                # This owner has another 10DLC assignment unresolved.
+                raise RegistrationConflict(_ASSIGNMENT_IN_FLIGHT) from exc
+
+    if done is None and reuse is None:
+        adapter = get_messaging_provider(provider)
+        await _ask_registration(
+            ctx,
+            purchase_id,
+            lambda: adapter.assign_number_to_campaign(provider_campaign, phone_number, credentials=credentials),
+            "number assignment",
+            unconfirmed=_ASSIGNMENT_UNCONFIRMED,
+        )
+
+    route = await get_messaging_route(ctx)
+    async with tenant_tx(ctx) as conn:
+        if route is not None:
+            await conn.execute(
+                "UPDATE messaging_routes SET campaign_id=$2::uuid, updated_at=now() WHERE id=$1::uuid",
+                route["id"],
+                campaign["id"],
+            )
+        if done is None:
+            await conn.execute(
+                "UPDATE provider_purchases SET state='attached', updated_at=now() WHERE id=$1::uuid",
+                purchase_id,
+            )
+    return {"campaign_id": str(campaign["id"]), "assigned": True, "already_assigned": done is not None}
+
+
 async def open_registration_submissions(ctx: TenantContext) -> list[dict[str, Any]]:
     """10DLC submissions whose outcome is not on the brand/campaign yet."""
     import provider_purchases
@@ -820,10 +929,13 @@ async def open_registration_submissions(ctx: TenantContext) -> list[dict[str, An
             "SELECT kind, state, updated_at FROM provider_purchases WHERE tenant_id=$1::uuid "
             "AND kind = ANY($2::text[]) AND state IN ('intended','unknown','confirmed') ORDER BY created_at",
             ctx.tenant_id,
-            [provider_purchases.BRAND_10DLC, provider_purchases.CAMPAIGN_10DLC],
+            [provider_purchases.BRAND_10DLC, provider_purchases.CAMPAIGN_10DLC,
+             provider_purchases.NUMBER_ASSIGNMENT_10DLC],
         )
+    kinds = {provider_purchases.BRAND_10DLC: "brand", provider_purchases.CAMPAIGN_10DLC: "campaign",
+             provider_purchases.NUMBER_ASSIGNMENT_10DLC: "number_assignment"}
     return [
-        {"kind": "brand" if r["kind"] == provider_purchases.BRAND_10DLC else "campaign",
+        {"kind": kinds[r["kind"]],
          "state": "unconfirmed" if r["state"] == "unknown" else "in_progress",
          "since": r["updated_at"].isoformat()}
         for r in rows

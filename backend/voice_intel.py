@@ -10,7 +10,8 @@ Flow:
         → Bedrock extraction via the existing ml_forge client
         → interaction_logs INSERT through tenant_tx (RLS live, append-only —
           this is the dossier stream from migration 0008, NOT mutated lead rows)
-        → ws_hub.broadcast VOICE_NOTE_LOGGED to the tenant's dashboards
+        → ws_hub.broadcast VOICE_NOTE_LOGGED to the tenant's dashboards (a
+          lead's note: leads are still brokerage-wide, ledger L03-03/L03-08)
 
 Degradation: if Bedrock is down or returns garbage, the raw transcript is still
 logged to interaction_logs and broadcast — the field note is never lost just
@@ -216,9 +217,16 @@ def voice_session_group(tenant_id: str, session_id: str) -> str:
     return f"voice:{tenant_id}:{session_id}"
 
 
-async def _broadcast_voice(ctx: TenantContext, session_id: str, frame: dict[str, Any]) -> None:
-    await ws_hub.broadcast(ctx.tenant_id, frame)
-    await ws_hub.broadcast(voice_session_group(ctx.tenant_id, session_id), frame)
+async def _broadcast_voice(
+    ctx: TenantContext, session_id: str, frame: dict[str, Any], *, client_id: Any, contact_id: Any
+) -> None:
+    """A call's live frames carry what the customer said and the offer math:
+    the dashboards of members who may read the call's client/contact (C3.6,
+    0145), and the session's own stream, whose sockets were admitted under
+    RLS for this session (server.voice_telemetry_websocket)."""
+    await ws_hub.broadcast_record(ctx.tenant_id, frame, client_id=client_id,
+                                  contact_id=contact_id, actor=ctx.agent_id)
+    await ws_hub.broadcast_group(voice_session_group(ctx.tenant_id, session_id), frame)
 
 
 @dataclass(frozen=True)
@@ -418,7 +426,7 @@ async def create_voice_session(
         "started_at": session["started_at"].isoformat(),
         "event_id": consent_event["id"],
     }
-    await _broadcast_voice(ctx, str(session["id"]), frame)
+    await _broadcast_voice(ctx, str(session["id"]), frame, client_id=client_id, contact_id=None)
     await ledger.record(
         category=AuditCategory.USER_STATE_CHANGE,
         action="voice_session_created",
@@ -445,7 +453,7 @@ async def ingest_voice_telemetry(
             conn, "live_call_sessions", str(body.session_id), "Voice session not found.")
         call = await conn.fetchrow(
             """
-            SELECT session.id,session.client_id,session.lead_id,
+            SELECT session.id,session.client_id,session.contact_id,session.lead_id,
                    session.consent_recorded,session.transcript_status,
                    lead.underwriting,lead.payload
               FROM live_call_sessions AS session
@@ -550,7 +558,8 @@ async def ingest_voice_telemetry(
         "formula": "MAO = ARV * 0.70 - Rehab",
         "requires_agent_approval": True,
     }
-    await _broadcast_voice(ctx, str(body.session_id), frame)
+    await _broadcast_voice(ctx, str(body.session_id), frame,
+                           client_id=call["client_id"], contact_id=call["contact_id"])
     return frame
 
 

@@ -110,7 +110,7 @@ TABLES: dict[str, TableEntry] = {
     "negotiation_events": TableEntry(C.CALL_TRANSCRIPT, E),
     "command_executions": TableEntry(C.COMMUNICATION_CONTENT, E, "outbound drafts"),
     "telephony_routes": TableEntry(C.COMMUNICATION_METADATA, E, "numbers released first"),
-    "provider_purchases": TableEntry(C.FINANCIAL_BILLING, E, "number purchase, hosted-SMS order and 10DLC brand/campaign intents; numbers released first"),
+    "provider_purchases": TableEntry(C.FINANCIAL_BILLING, E, "number purchase, hosted-SMS order, 10DLC brand/campaign and number-to-campaign assignment intents (the brokerage's own business number); numbers released first"),
     "messaging_routes": TableEntry(C.COMMUNICATION_METADATA, E, "hosted SMS disconnected first"),
     "messaging_hosted_documents": TableEntry(C.DOCUMENT, E, "LOA/invoice objects deleted"),
     "tenant_messaging_brands": TableEntry(C.CONTACT_PII, E, "EIN, address"),

@@ -19,7 +19,9 @@ def test_the_frame_goes_to_the_requester_and_the_assignee_once_each():
 
 def test_delivery_never_broadcasts_note_text_tenant_wide():
     src = inspect.getsource(commands_api.deliver_call_notes)
-    assert "ws_hub.broadcast_user(" in src
+    # The requester and the assignee, among the members who may still read the
+    # client (L03-08: broadcast_record re-checks the record, 0145).
+    assert "ws_hub.broadcast_record(" in src and "only=call_note_recipients(" in src
     assert "ws_hub.broadcast(" not in src, "CALL_NOTES carries customer content (CONTRACT C3.6)"
 
 

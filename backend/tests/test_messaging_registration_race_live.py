@@ -379,3 +379,158 @@ def test_a_rejected_campaign_can_be_retried(monkeypatch):
             await _teardown(admin, tenant)
 
     _run(scenario)
+
+
+# ── campaign number assignment (L10-10, 0145) ──────────────────────────────
+
+
+class AssigningAdapter(CountingAdapter):
+    """The same deterministic race, for assign_number_to_campaign."""
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.assign_calls: list[tuple[str, str]] = []
+
+    async def assign_number_to_campaign(self, campaign_id, phone_number, *, credentials=None):
+        from command_providers import ProviderResult
+
+        self.assign_calls.append((campaign_id, phone_number))
+        await self._hold(len(self.assign_calls))
+        return ProviderResult("telnyx_number_campaign", phone_number, "assigned", {"campaign_id": campaign_id})
+
+
+async def _approved_campaign(admin, tenant: str, owner: str, number: str, ref: str = "campaign-approved") -> str:
+    """A registered brand, an approved campaign, the owner's verified business
+    number and messaging route — everything assign-number needs."""
+    await _registered_brand(admin, tenant)
+    brand = await admin.fetchval("SELECT id FROM tenant_messaging_brands WHERE tenant_id=$1", uuid.UUID(tenant))
+    campaign = await admin.fetchval(
+        "INSERT INTO tenant_messaging_campaigns (tenant_id, brand_id, provider, provider_campaign_id, status, "
+        "usecase, description, submitted_at) VALUES ($1,$2,'telnyx',$3,'approved','MIXED','Replies.',now()) "
+        "RETURNING id::text", tenant, brand, ref)
+    await admin.execute(
+        "INSERT INTO telephony_routes (tenant_id, agent_id, inbound_did, voice_caller_id_e164, "
+        "voice_caller_id_verified, outbound_verification_status, provider, provider_account_id, "
+        "forward_on_request, forward_when_ai_unavailable) "
+        "VALUES ($1,$2,$3,$3,true,'verified','plivo','plivo-live-test',false,false)", tenant, owner, number)
+    await admin.execute(
+        "INSERT INTO messaging_routes (tenant_id, agent_id, provider, provider_account_id, eligibility_status) "
+        "VALUES ($1,$2,'telnyx','acct-1','eligible')", tenant, owner)
+    return campaign
+
+
+def test_racing_number_assignments_reach_the_provider_once(monkeypatch):
+    async def scenario(admin):
+        import messaging_api
+
+        owner = f"tdlc-h-{uuid.uuid4().hex[:8]}@live.test"
+        tenant = await _setup(admin, agents=[owner])
+        try:
+            campaign = await _approved_campaign(admin, tenant, owner, "+13025550190")
+            adapter = AssigningAdapter(expect=RACERS)
+            _patch(monkeypatch, adapter)
+            # One broker owner, six clicks at once.
+            outcomes = await asyncio.gather(*(
+                messaging_api.assign_campaign_number(_ctx(tenant, owner)) for _ in range(RACERS)),
+                return_exceptions=True)
+
+            assert adapter.assign_calls == [("campaign-approved", "+13025550190")], adapter.assign_calls
+            statuses = sorted(_status(o) for o in outcomes)
+            assert statuses == [200] + [409] * (RACERS - 1), statuses
+            assert await _ledger(admin, tenant) == [
+                ("telnyx", "10dlc_number_assignment", "attached", "+13025550190")]
+            assert str(await admin.fetchval(
+                "SELECT campaign_id FROM messaging_routes WHERE tenant_id=$1", uuid.UUID(tenant))) == campaign
+
+            # A later click is answered from the ledger: nothing reaches the provider.
+            again = await messaging_api.assign_campaign_number(_ctx(tenant, owner))
+            assert again == {"campaign_id": campaign, "assigned": True, "already_assigned": True}
+            assert len(adapter.assign_calls) == 1
+            assert len(await _ledger(admin, tenant)) == 1
+        finally:
+            await _teardown(admin, tenant)
+
+    _run(scenario)
+
+
+def test_an_unconfirmed_assignment_waits_for_an_operator(monkeypatch):
+    async def scenario(admin):
+        import messaging_api
+
+        owner = f"tdlc-i-{uuid.uuid4().hex[:8]}@live.test"
+        tenant = await _setup(admin, agents=[owner])
+        try:
+            await _approved_campaign(admin, tenant, owner, "+13025550191")
+            adapter = AssigningAdapter(fail_with=asyncio.TimeoutError())
+            _patch(monkeypatch, adapter)
+            with pytest.raises(Exception) as first:
+                await messaging_api.assign_campaign_number(_ctx(tenant, owner))
+            assert _status(first.value) == 502
+            assert "until an operator has checked it" in first.value.detail
+            assert await _ledger(admin, tenant) == [("telnyx", "10dlc_number_assignment", "unknown", None)]
+            with pytest.raises(Exception) as again:
+                await messaging_api.assign_campaign_number(_ctx(tenant, owner))
+            assert _status(again.value) == 409 and "operator" in again.value.detail
+            assert len(adapter.assign_calls) == 1, "a possibly-made assignment was submitted again"
+            assert await admin.fetchval(
+                "SELECT campaign_id FROM messaging_routes WHERE tenant_id=$1", uuid.UUID(tenant)) is None
+            registration = await messaging_api.get_business_registration(_ctx(tenant, owner))
+            assert [(s["kind"], s["state"]) for s in registration["open_submissions"]] == [
+                ("number_assignment", "unconfirmed")]
+        finally:
+            await _teardown(admin, tenant)
+
+    _run(scenario)
+
+
+def test_a_rejected_assignment_can_be_retried(monkeypatch):
+    async def scenario(admin):
+        import messaging_api
+        from command_providers import ProviderRejectedError
+
+        owner = f"tdlc-j-{uuid.uuid4().hex[:8]}@live.test"
+        tenant = await _setup(admin, agents=[owner])
+        try:
+            await _approved_campaign(admin, tenant, owner, "+13025550192")
+            _patch(monkeypatch, AssigningAdapter(fail_with=ProviderRejectedError("number not 10DLC-capable")))
+            with pytest.raises(Exception) as first:
+                await messaging_api.assign_campaign_number(_ctx(tenant, owner))
+            assert _status(first.value) == 502
+            accepting = AssigningAdapter()
+            _patch(monkeypatch, accepting)
+            result = await messaging_api.assign_campaign_number(_ctx(tenant, owner))
+            assert result["assigned"] and not result["already_assigned"] and len(accepting.assign_calls) == 1
+            assert [s for _, _, s, _ in await _ledger(admin, tenant)] == ["failed", "attached"]
+        finally:
+            await _teardown(admin, tenant)
+
+    _run(scenario)
+
+
+def test_a_confirmed_but_unrecorded_assignment_is_reused(monkeypatch):
+    async def scenario(admin):
+        import json as _json
+
+        import messaging_api
+
+        owner = f"tdlc-k-{uuid.uuid4().hex[:8]}@live.test"
+        tenant = await _setup(admin, agents=[owner])
+        try:
+            campaign = await _approved_campaign(admin, tenant, owner, "+13025550193")
+            # A crash after the provider answered, before the route was updated.
+            await admin.execute(
+                "INSERT INTO provider_purchases (tenant_id, agent_id, provider, kind, state, provider_ref, detail) "
+                "VALUES ($1,$2,'telnyx','10dlc_number_assignment','confirmed','+13025550193',$3::jsonb)",
+                tenant, owner, _json.dumps({"campaign_id": "campaign-approved", "phone_number": "+13025550193"}))
+            adapter = AssigningAdapter()
+            _patch(monkeypatch, adapter)
+            result = await messaging_api.assign_campaign_number(_ctx(tenant, owner))
+            assert adapter.assign_calls == [] and result["campaign_id"] == campaign
+            assert await _ledger(admin, tenant) == [
+                ("telnyx", "10dlc_number_assignment", "attached", "+13025550193")]
+            assert str(await admin.fetchval(
+                "SELECT campaign_id FROM messaging_routes WHERE tenant_id=$1", uuid.UUID(tenant))) == campaign
+        finally:
+            await _teardown(admin, tenant)
+
+    _run(scenario)

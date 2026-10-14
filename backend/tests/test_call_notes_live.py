@@ -9,7 +9,8 @@ Also proves (D-2026-10-12-03, prompt 09 T09.12/T09.14):
 - the note lands 'proposed' by default and 'approved' for an agent who chose
   direct;
 - the live frame goes only to the requesting and the assigned agent, never
-  tenant-wide;
+  tenant-wide, and only while they may read the client (L03-08: a requester
+  with no access to the client gets nothing);
 - an agent approves a proposed note through the real route, under RLS;
 - the note text is sealed at rest (0132, audit A01): body is empty, the
   ciphertext opens under the brokerage's key, and the routes return the text.
@@ -62,8 +63,15 @@ async def _scenario():
         tenant_wide.append(payload)
         return 1
 
+    async def fake_users_push(tenant_id, user_ids, payload):
+        for user_id in user_ids:
+            pushes.append((tenant_id, user_id, payload))
+        return len(user_ids)
+
     real_user_push, real_tenant_push = ws_hub.broadcast_user, ws_hub.broadcast
+    real_users_push = ws_hub.broadcast_users
     ws_hub.broadcast_user, ws_hub.broadcast = fake_user_push, fake_tenant_push
+    ws_hub.broadcast_users = fake_users_push
     try:
         await admin.execute("INSERT INTO tenants (id, slug, name) VALUES ($1,$2,'Call notes test')",
                             tenant, f"notes-{tenant[:8]}")
@@ -74,6 +82,14 @@ async def _scenario():
         await admin.execute(
             "INSERT INTO clients (id, tenant_id, full_name, assignee_id) VALUES ($1,$2,'Sarah','agent-b')",
             client, tenant)
+        # The requester of the first call works the client through an edit share.
+        agent_a_id = uuid.uuid4()
+        await admin.execute(
+            "INSERT INTO users (id, tenant_id, agent_id, role, email, password_hash) "
+            "VALUES ($1,$2,'agent-a','agent','agent-a','scrypt$x$y')", agent_a_id, tenant)
+        await admin.execute(
+            "INSERT INTO record_shares (tenant_id, resource_kind, resource_id, grantee_user_id, permission, "
+            "granted_by) VALUES ($1,'client',$2,$3,'edit','owner')", tenant, client, agent_a_id)
         await admin.execute(
             "INSERT INTO users (id, tenant_id, agent_id, role, email, password_hash) "
             "VALUES ($1,$2,$3,'agent',$3,'scrypt$x$y')", uuid.uuid4(), tenant, agent_c)
@@ -130,7 +146,11 @@ async def _scenario():
             assert await call_note_settings.write_mode(conn, tenant, agent_c, "direct") == "direct"
             assert await call_note_settings.read_mode(conn, tenant, agent_c.upper()) == "direct"
         assert await commands_api.record_call_note_consent(direct_ref, True) is True
+        pushes.clear()
         direct_id = await commands_api.deliver_call_notes(direct_ref, ["Call back Friday"])
+        # agent_c requested the call but cannot read the client (no share, not
+        # the assignee): only the assignee is told live.
+        assert [user for _, user, _ in pushes] == ["agent-b"] and tenant_wide == []
         assert await admin.fetchval("SELECT review_state FROM client_notes WHERE id=$1",
                                     uuid.UUID(direct_id)) == "approved"
         session = await admin.fetchrow(
@@ -147,6 +167,7 @@ async def _scenario():
         assert tuple(declined) == (False, "declined_on_ai_call")
     finally:
         ws_hub.broadcast_user, ws_hub.broadcast = real_user_push, real_tenant_push
+        ws_hub.broadcast_users = real_users_push
         await admin.execute("SET session_replication_role = replica")
         try:
             # Every row the throwaway brokerage owns, whichever table (approving a
