@@ -504,3 +504,14 @@ def test_resolve_messaging_route_rejects_malformed_number(monkeypatch):
 
     monkeypatch.setattr(messaging_data, "tenant_tx", fake_tx)
     assert asyncio.run(messaging_data.resolve_messaging_route_by_number("not-a-number")) is None
+
+
+def test_record_brand_intent_matches_the_field_list():
+    """The literal brand-intent UPDATE names _BRAND_FIELDS as $3.. in order."""
+    import re
+
+    import messaging_data
+
+    pairs = re.findall(r"(\w+)=\$(\d+)", messaging_data._RECORD_BRAND_INTENT_SQL)
+    by_pos = {int(n): name for name, n in pairs if int(n) >= 3}
+    assert [by_pos[i] for i in sorted(by_pos)] == list(messaging_data._BRAND_FIELDS)

@@ -554,6 +554,15 @@ _BRAND_FIELDS = (
     "display_name", "company_name", "ein", "entity_type", "vertical", "email", "phone",
     "street", "city", "state", "postal_code", "country", "website",
 )
+# The fields above, in that order, as $3..$15 (a literal statement: no SQL is
+# assembled at run time; test_record_brand_intent_matches_the_field_list pins it).
+_RECORD_BRAND_INTENT_SQL = """
+    UPDATE tenant_messaging_brands
+       SET provider=$2, status='not_started', failure_reason=NULL,
+           display_name=$3, company_name=$4, ein=$5, entity_type=$6, vertical=$7,
+           email=$8, phone=$9, street=$10, city=$11, state=$12, postal_code=$13,
+           country=$14, website=$15
+     WHERE tenant_id=$1::uuid"""
 _BRAND_STATUSES = frozenset({"pending", "unverified", "verified", "failed"})
 _CAMPAIGN_STATUSES = frozenset({"pending", "approved", "rejected", "failed"})
 
@@ -675,10 +684,8 @@ async def register_messaging_brand(
         if reuse_ref is None:
             # What is about to be sent is recorded before it is sent; a reused
             # registration keeps the fields its own attempt recorded.
-            assignments = ",".join(f"{name}=${i}" for i, name in enumerate(_BRAND_FIELDS, start=3))
             await conn.execute(
-                f"UPDATE tenant_messaging_brands SET provider=$2,status='not_started',failure_reason=NULL,"
-                f"{assignments} WHERE tenant_id=$1::uuid",
+                _RECORD_BRAND_INTENT_SQL,
                 ctx.tenant_id,
                 provider,
                 *(fields.get(name) for name in _BRAND_FIELDS),
