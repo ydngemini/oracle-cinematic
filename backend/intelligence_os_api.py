@@ -28,6 +28,7 @@ import command_center
 import intent_states
 import living_state
 import neoh_intents
+import pan_redaction
 from db.connection import tenant_tx
 from platform_policy import Feature, require_feature
 from tenancy import TenantContext, require_context
@@ -146,7 +147,9 @@ async def capture_events(
                 """,
                 event.client_id, event.lead_id, event.actor_role,
                 event.interaction_type,
-                json.dumps(event.payload), event.occurred_at,
+                json.dumps(pan_redaction.scrub_obj(event.payload, "perception_event",
+                                                   tenant_id=ctx.tenant_id)),
+                event.occurred_at,
             )
             inserted += 1
     return {"captured": inserted}

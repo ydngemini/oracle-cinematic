@@ -22,6 +22,7 @@ from ai_tools_gated import TOOLS_HANDLED as _GATED_TOOL_NAMES, execute as _execu
 from ai_tools_read import TOOLS_HANDLED as _READ_TOOL_NAMES, execute as _execute_read_tool
 from record_json import clean as _clean, json_value as _json
 import client_note_crypto
+import pan_redaction
 from crypto import derive_tenant_key
 from db.connection import tenant_tx
 from rate_limiter import distributed_rate_limiter
@@ -144,6 +145,9 @@ async def create_chat_request(
     attachment_ids: list[str],
 ) -> dict:
     key = tenant_key(ctx)
+    # The stored message is what the model later reads (load_response_bundle):
+    # a card number typed into the chat reaches neither (PCI DSS SAQ A).
+    content = pan_redaction.scrub(content, "ai_chat_user_message", tenant_id=ctx.tenant_id)
     slot_reserved = False
     redis_request_claimed = False
     try:
@@ -572,6 +576,8 @@ async def update_assistant(
     model_id: Optional[str] = None, error_code: Optional[str] = None,
 ) -> None:
     key = tenant_key(ctx)
+    content = pan_redaction.scrub(content, "ai_chat_assistant_message",
+                                  tenant_id=ctx.tenant_id, target_id=assistant_id)
     async with tenant_tx(ctx) as conn:
         ciphertext = await _encrypt_text(conn, content, key)
         await conn.execute(
@@ -1343,6 +1349,8 @@ async def _execute_safe_tool(
             note = str(tool_input.get("note", "")).strip()
             if not note or len(note) > 8000:
                 return {"ok": False, "error": "Note must be 1-8000 characters."}
+            note = pan_redaction.scrub(note, "ai_chat_client_note",
+                                       tenant_id=ctx.tenant_id, target_id=target_id)
             if not await conn.fetchval(
                 """SELECT 1 FROM clients
                     WHERE id=$1::uuid AND tenant_id=$2::uuid

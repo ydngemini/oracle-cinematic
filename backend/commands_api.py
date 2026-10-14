@@ -35,6 +35,7 @@ from fastapi import (
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from starlette.responses import RedirectResponse, Response
 
+import pan_redaction
 import record_access
 import ws_hub
 from agent_profile import load_agent_identity
@@ -1352,6 +1353,10 @@ async def stage_command(
     still said "an admin must approve before the call is placed".
     """
     require_feature(Feature.AUTOMATION)
+    # A card number is removed BEFORE the draft is hashed into its approval
+    # (C4.2: the approved content is what is sent), so the text a person
+    # approves, the stored draft and the message sent all lack it (SAQ A).
+    draft = pan_redaction.scrub_obj(draft, "outreach_draft", tenant_id=ctx.tenant_id)
     _validate_command_payload(command_type, target, draft)
     enforce_public_property_data(context)
     async with tenant_tx(ctx) as conn:
@@ -1826,6 +1831,9 @@ async def edit_command(
     ctx: TenantContext = Depends(require_context),
 ):
     require_feature(Feature.AUTOMATION)
+    # The edited draft is what gets approved and sent: no card number in it.
+    body.draft = pan_redaction.scrub_obj(body.draft, "outreach_draft",
+                                         tenant_id=ctx.tenant_id, target_id=command_id)
     async with tenant_tx(ctx) as conn:
         # Before the FOR UPDATE: a row the caller may only view is filtered
         # out of a locking read, which would answer 404 instead of 403.
@@ -2044,7 +2052,9 @@ async def call_telemetry(
             """,
             ctx.tenant_id,
             call_session_id,
-            body.transcript_excerpt,
+            # Never a card number a caller read out (PCI DSS SAQ A).
+            pan_redaction.scrub(body.transcript_excerpt, "call_transcript_excerpt",
+                                tenant_id=ctx.tenant_id, target_id=call_session_id),
             guidance["counter_offer"],
             body.arv,
             body.rehab,
@@ -2469,6 +2479,10 @@ async def deliver_call_notes(provider_call_id: str, notes: list[str],
     clean = [str(n).strip()[:_MAX_CALL_NOTE_CHARS] for n in notes if str(n).strip()][:_MAX_CALL_NOTES]
     if not provider_call_id or not clean:
         return None
+    # A card number the callee read out never becomes a note, a timeline
+    # entry or a CALL_NOTES frame (PCI DSS SAQ A). seal_body checks again.
+    redactions = [pan_redaction.redact(n) for n in clean]
+    clean = [r.text for r in redactions]
     body = format_call_notes(clean)
     async with tenant_tx(_call_platform_ctx(AI_CALL_NOTE_AUTHOR)) as conn:
         session = await conn.fetchrow(
@@ -2479,6 +2493,10 @@ async def deliver_call_notes(provider_call_id: str, notes: list[str],
                 WHERE s.provider_call_id=$1 FOR UPDATE OF s""",
             provider_call_id,
         )
+        pan_redaction.report(
+            "ai_call_note", sum(r.cards for r in redactions), sum(r.codes for r in redactions),
+            tenant_id=session["tenant_id"] if session else None,
+            target_id=session["client_id"] if session else None)
         if session is None or not session["consent_recorded"]:
             logger.warning("call notes dropped — no consented session: %s", provider_call_id)
             return None
@@ -2501,7 +2519,8 @@ async def deliver_call_notes(provider_call_id: str, notes: list[str],
         review_state = "proposed" if mode == "review" else "approved"
         # What the customer said is sealed at rest under the brokerage's key,
         # never a plaintext body (0132, audit A01; the database refuses one).
-        sealed = await client_note_crypto.seal_body(conn, session["tenant_id"], body)
+        sealed = await client_note_crypto.seal_body(conn, session["tenant_id"], body,
+                                                    surface="ai_call_note")
         note = await conn.fetchrow(
             """INSERT INTO client_notes (tenant_id, client_id, body, body_ciphertext, author_id,
                                          pinned, review_state)

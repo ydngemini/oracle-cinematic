@@ -273,9 +273,12 @@ class SessionManager:
     async def record_interaction(self, user_id: str, role: str, content: str) -> None:
         """Append one chat turn for the user. Callers log the operator's message
         and the engine's reply here; summarize_rolling_memory() later folds the
-        tail away once it grows past the threshold."""
+        tail away once it grows past the threshold. A payment card number or
+        security code in the turn is removed first (pan_redaction, SAQ A)."""
         from db.connection import tenant_tx  # lazy
+        import pan_redaction
 
+        content = pan_redaction.scrub(content, f"chat_memory_{role}", tenant_id=self.ctx.tenant_id)
         async with tenant_tx(self.ctx) as conn:
             await conn.execute(
                 """

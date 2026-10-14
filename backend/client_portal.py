@@ -29,6 +29,7 @@ import jwt
 from fastapi import APIRouter, Depends, Header, HTTPException, Response
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+import pan_redaction
 from auth import ALGORITHM, SECRET_KEY
 from db.connection import get_pool, tenant_tx
 from approval_service import decide_approval
@@ -398,7 +399,8 @@ def _clean_portal_payload(payload: Optional[dict]) -> dict:
     for key in _PORTAL_PAYLOAD_KEYS:
         value = payload.get(key)
         if isinstance(value, (str, int, float, bool)):
-            out[key] = str(value)[:120]
+            # Card data removed before the cap, so a cut can't leave half a number.
+            out[key] = pan_redaction.scrub(str(value), "portal_activity")[:120]
     return out
 
 

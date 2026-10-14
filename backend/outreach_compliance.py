@@ -416,6 +416,12 @@ class ConsentLedger:
         ctx: TenantContext, *, contact: str, channel: str, reason: str,
         source_text: Optional[str] = None,
     ) -> None:
+        if source_text:
+            # The opt-out message is kept as proof; a card number in it is not.
+            import pan_redaction
+
+            source_text = pan_redaction.scrub(source_text, "opt_out_source_text",
+                                              tenant_id=ctx.tenant_id)
         async with tenant_tx(ctx) as conn:
             await conn.execute(
                 """INSERT INTO outreach_suppression (tenant_id, contact, channel, reason, source_text)

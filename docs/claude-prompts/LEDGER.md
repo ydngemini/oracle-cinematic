@@ -49,7 +49,7 @@ Listed weakest to strongest:
 | 14 | Sites, social, ads, client portal | [14](14-websites-social-ads-growth-client-portal.md) | `source_verified` | local | `745f2fa` | Owner: networks, listings on sites | L14-01 |
 | 15 | Neoh mascot animation | [15](15-neoh-avatar-skeletal-character-animation.md) | `source_verified` | local | `745f2fa` | Owner: rig author | L15-01 |
 | 16 | Performance, indexes, cache | [16](16-performance-indexes-mobile-cache.md) | `tests_pass` | local | `745f2fa`; 0141 tenant wall (L16-01, 2026-10-13); 0113 predicates dropped + 0144 (L16-03, 2026-10-14) | A10 capacity on production-shaped infra; no production target; 0141/0144 undeployed | JIT on request queries (L16-03); then T16.05 |
-| 17 | Security, privacy, data lifecycle | [17](17-security-privacy-compliance-data-lifecycle.md) | `source_verified` | staging | `0739563` | A01, A06 | Read-only review with 02 |
+| 17 | Security, privacy, data lifecycle | [17](17-security-privacy-compliance-data-lifecycle.md) | `source_verified` | staging | `0739563`; card-number redaction / SAQ A (L17-07, local, 2026-10-14) | A01, A06; owner: policy wording for the AI payment-card rule (L17-07) | Read-only review with 02 |
 | 18 | Billing, seats, analytics | [18](18-brokerage-billing-seat-plans-analytics.md) | `source_verified` | local | `a8bff54` (L18-02 `tests_pass`) | D-2026-10-12-02 (billable stage) | T18.04 + AC18.02 (seats) |
 | 19 | Production operations | [19](19-infrastructure-deploy-observability-recovery.md) | `source_verified` | staging | `745f2fa` | No production app; A04 | L19-03 |
 | 20 | 20-agent launch certification | [20](20-twenty-agent-full-feature-launch-e2e-evaluation.md) | `source_verified` | local | `745f2fa` | Every row above | Last |
@@ -1120,6 +1120,32 @@ next_task: "After deploy every user re-accepts once (v2); re-accept for the two 
 updated: 2026-10-13
 ```
 The owner asked for the policy to be kept current. v2 (wording approved by the owner 2026-10-13) adds three paragraphs: per-record visibility and sharing (§2), AI call notes need consent and wait for review (§4), and the AI-voice disclosure must not be removed (§6). `POLICY_COVERAGE` ties each to the file that proves the capability; the test fails if the words go while the capability stays. CONTRACT C5.7 makes it a standing rule.
+
+#### L17-07 PCI DSS SAQ A scope: no card data outside Stripe
+```yaml
+id: L17-07
+status: tests_pass
+env: local
+evidence_shas: [0a76a72]
+files: [backend/pan_redaction.py, backend/audit_ledger.py, backend/server.py, backend/client_note_crypto.py, backend/commands_api.py, backend/voice_intel.py, backend/messaging_data.py, backend/outreach_compliance.py, backend/crm.py, backend/intelligence_os_api.py, backend/client_portal.py, backend/ai_chat_store.py, backend/ai_chat_agent.py, backend/memory_core/session_manager.py, backend/inbound_voice.py, backend/contacts_api.py, backend/elevenlabs_realtime.py, backend/neoh_persona.py, backend/qwen_omni_realtime.py, backend/qwen_voice_agent.py, backend/tests/test_pan_redaction.py, backend/tests/test_pan_redaction_paths.py, backend/tests/test_pan_redaction_live.py, backend/tests/test_neoh_persona.py, .github/workflows/ci.yml, docs/compliance/pci-saq-a.md]
+tests_run:
+  - {cmd: "grep billing.py / BillingOverlay.jsx / nginx.conf CSP at 0a76a72", result: "payment only via Stripe-hosted Checkout (stripe.checkout.Session.create → window.location.href) and the Stripe portal; no Stripe.js/Elements, CSP script-src has no js.stripe.com; billing.py stores no card fields. Nothing detected a card number arriving by call, text, email, note or chat.", date: 2026-10-14}
+  - {cmd: "cd backend && ORACLE_SKIP_DOTENV=1 python -m pytest -q -p no:cacheprovider tests/test_pan_redaction.py tests/test_pan_redaction_paths.py", result: "exit 0; 91 + 19 passed. With the redactor disabled all 19 path tests fail (mutation check).", date: 2026-10-14}
+  - {cmd: "livetest.sh python -m pytest -q tests/test_pan_redaction_live.py + the ci.yml live list", result: "51 passed incl. the new live test (AI call note, inbound text, agent note under the app role; PCI_REDACTION audit rows hold counts only); tests/test_migration_precheck.py fails locally only because the shared dev DB records 0106 (no branch) and another agent's 0146", date: 2026-10-14}
+  - {cmd: "bandit (CI flags: medium/medium, baseline)", result: "exit 0, no new findings", date: 2026-10-14}
+  - {cmd: "cd backend && ORACLE_SKIP_DOTENV=1 python -m pytest -q -p no:cacheprovider tests/", result: "exit 0; 3596 passed, 42 skipped. tests/test_neoh_persona.py::test_compact_is_substantially_smaller now measures the knowledge part (the whole-prompt ratio sat at 3.02 vs a bound of 3, so any rule both densities must carry failed it); held to 10x, measured ~20x", date: 2026-10-14}
+authz_checked: "no access rule changed; the live test writes as the platform pipeline (call notes, inbound SMS) and as the app role under FORCE RLS (note route)"
+blockers:
+  - {type: scope, note: "Not redacted: uploaded files/images/PDFs and chat attachments, call audio (recording is off), free text outside the docs/compliance/pci-saq-a.md table (tasks, deal/showing notes, documents, leads.payload), rows written before this change (no backfill), and provider-side copies (Telnyx, ElevenLabs/ASR)."}
+  - {type: scope, note: "Detection limits: spoken forms other than single digit words, dictated 13/14/19-digit cards, a card split across messages or turns. Known false positive: two phone numbers dictated digit by digit with nothing between (~1-2%, test bound < 3%)."}
+  - {type: owner, note: "Platform Use Policy wording for the AI payment-card rule (drafted in the L17-07 report; policy not edited, version not bumped)."}
+  - {type: operator, note: "The SAQ A itself is completed and signed by the operator; no QSA or acquirer review."}
+audit_refs: [A01]
+decision_refs: []
+next_task: "Owner approves the policy sentence (then v-bump + POLICY_COVERAGE row for pan_redaction.PAYMENT_CARD_RULE); decide whether to scan existing rows (notes, sms_messages, transcripts) for historical card numbers."
+updated: 2026-10-14
+```
+A card number arriving through any channel other than Stripe (a caller reading it to the AI, a text, an email, a note, a chat message) would put Neoh in SAQ D scope once stored, even encrypted. `pan_redaction.scrub` removes card numbers and security codes on every listed write path before storage, the model or a live frame. Logs are filtered on every handler. Each removal is recorded only as surface plus counts. Every voice and chat persona carries `PAYMENT_CARD_RULE`. Scope boundary, what keeps us in SAQ A and what would break it: [docs/compliance/pci-saq-a.md](../compliance/pci-saq-a.md).
 
 ### L18
 Billing, seats and analytics.
