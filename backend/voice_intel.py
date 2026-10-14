@@ -39,6 +39,7 @@ from agent_profile import load_agent_identity
 from audit_ledger import AuditCategory, ledger
 import pan_redaction
 import record_access
+import sealed_text
 from db.connection import tenant_tx
 from intelligence_engine import IntelligenceInputError, negotiation_guidance
 from ml_forge.bedrock_client import invoke_bedrock_model, PRIMARY_MODEL, SECONDARY_MODEL
@@ -517,11 +518,12 @@ async def ingest_voice_telemetry(
         event = await conn.fetchrow(
             """
             INSERT INTO negotiation_events (
-                tenant_id,call_session_id,event_type,transcript_excerpt,
+                tenant_id,call_session_id,event_type,transcript_excerpt,transcript_ciphertext,
                 counter_offer,arv,rehab,mao,threshold,payload,
                 model_version,created_by
             ) VALUES (
-                $1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,
+                $1::uuid,$2,$3,NULL,pgp_sym_encrypt(NULLIF($4::text,''),$12::text),
+                $5,$6,$7,$8,$9,$10::jsonb,
                 'objective-voice-telemetry-2026.07',$11
             ) RETURNING id,created_at
             """,
@@ -536,6 +538,8 @@ async def ingest_voice_telemetry(
             (guidance or {}).get("threshold"),
             json.dumps(event_payload, default=str),
             ctx.agent_id,
+            # Sealed at rest (0152, A01): what was said on the call.
+            sealed_text.key_for(ctx.tenant_id),
         )
         await conn.execute(
             """
@@ -570,6 +574,26 @@ async def ingest_voice_telemetry(
     return frame
 
 
+async def load_session_events(conn: Any, session_id: str, *, limit: int = 100) -> list[dict]:
+    """The latest `limit` events of one call, newest first, with each
+    transcript excerpt opened (sealed at rest since 0152, A01). The voice
+    WebSocket hydrate (server.py) reads through here."""
+    rows = await conn.fetch(
+        """
+        SELECT id,event_type,transcript_excerpt,counter_offer,mao,
+               threshold,payload,created_at,
+               transcript_ciphertext, tenant_id AS transcript_ciphertext_tenant_id
+          FROM negotiation_events
+         WHERE call_session_id=$1::uuid
+         ORDER BY created_at DESC
+         LIMIT $2
+        """,
+        session_id,
+        limit,
+    )
+    return await sealed_text.open_rows(conn, rows, sealed_text.TRANSCRIPT)
+
+
 @router.get("/telemetry")
 async def read_voice_telemetry(
     session_id: Optional[uuid.UUID] = None,
@@ -599,7 +623,8 @@ async def read_voice_telemetry(
         rows = await conn.fetch(
             """
             SELECT id,event_type,transcript_excerpt,counter_offer,arv,rehab,mao,
-                   threshold,payload,created_at
+                   threshold,payload,created_at,
+                   transcript_ciphertext, tenant_id AS transcript_ciphertext_tenant_id
               FROM negotiation_events
              WHERE call_session_id=$1 AND id>$2
              ORDER BY id ASC
@@ -609,6 +634,7 @@ async def read_voice_telemetry(
             after_event_id,
             limit,
         )
+        rows = await sealed_text.open_rows(conn, rows, sealed_text.TRANSCRIPT)
 
     events = []
     for row in rows:

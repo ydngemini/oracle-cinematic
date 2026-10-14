@@ -102,12 +102,16 @@ TABLES: dict[str, TableEntry] = {
     "tenant_contract_template_registrations": TableEntry(C.BUSINESS_CRM, E),
     "lead_pipeline_counts": TableEntry(C.DERIVED, E),
     # ── communication ────────────────────────────────────────────────────
-    "sms_messages": TableEntry(C.COMMUNICATION_CONTENT, E, "bodies plaintext"),
+    "sms_messages": TableEntry(C.COMMUNICATION_CONTENT, E,
+                               "body sealed in body_ciphertext since 0152 (L17-21); pre-0152 bodies "
+                               "plaintext until backfill_sealed_text.py; numbers plaintext"),
     "email_outbox": TableEntry(C.COMMUNICATION_CONTENT, E),
     "interaction_logs": TableEntry(C.COMMUNICATION_CONTENT, E),
     "inbound_voice_calls": TableEntry(C.CALL_TRANSCRIPT, E, "transcript encrypted"),
     "contact_intake_sessions": TableEntry(C.CALL_TRANSCRIPT, E),
-    "negotiation_events": TableEntry(C.CALL_TRANSCRIPT, E),
+    "negotiation_events": TableEntry(C.CALL_TRANSCRIPT, E,
+                                     "transcript_excerpt sealed in transcript_ciphertext since 0152; "
+                                     "pre-0152 rows plaintext until backfill_sealed_text.py"),
     "command_executions": TableEntry(C.COMMUNICATION_CONTENT, E,
                                      "outbound drafts; client_id/contact_id (0142) = link to the record, no PII"),
     "telephony_routes": TableEntry(C.COMMUNICATION_METADATA, E, "numbers released first"),
@@ -139,7 +143,9 @@ TABLES: dict[str, TableEntry] = {
     "ai_chat_actions": TableEntry(C.AI_CHAT, E),
     "ai_chat_message_attachments": TableEntry(C.AI_CHAT, E),
     "ai_tool_operations": TableEntry(C.AI_CHAT, E),
-    "user_interactions": TableEntry(C.AI_CHAT, E, "raw chat turns plaintext; tenant_id text"),
+    "user_interactions": TableEntry(C.AI_CHAT, E,
+                                    "raw chat turns sealed in content_ciphertext since 0152; pre-0152 "
+                                    "rows plaintext until backfill_sealed_text.py; tenant_id text"),
     "ai_decision_traces": TableEntry(C.DERIVED, E),
     "agent_decisions": TableEntry(C.DERIVED, E),
     "beliefs": TableEntry(C.AI_MEMORY, E),

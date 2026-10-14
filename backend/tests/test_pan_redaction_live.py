@@ -99,8 +99,12 @@ async def _scenario():
             tenant_id=tenant, agent_id="agent-a", provider="telnyx",
             provider_message_id=f"pan-{uuid.uuid4()}", from_e164="+13025550100",
             to_e164="+13025550199", text=f"here is my card {PAN} exp 12/27", media=[], opted_out=False)
-        body = await admin.fetchval("SELECT body FROM sms_messages WHERE id=$1", uuid.UUID(message_id))
-        assert body == f"here is my card {pan_redaction.PAN_PLACEHOLDER} exp 12/27"
+        # Sealed at rest since 0152 (L17-21): body is NULL, the text is in body_ciphertext.
+        stored = await admin.fetchrow(
+            "SELECT body, pgp_sym_decrypt(body_ciphertext, $2) AS opened FROM sms_messages WHERE id=$1",
+            uuid.UUID(message_id), key)
+        assert stored["body"] is None
+        assert stored["opened"] == f"here is my card {pan_redaction.PAN_PLACEHOLDER} exp 12/27"
 
         # 3. An agent's note through the real route, as the app role under RLS.
         agent = TenantContext(agent_id="agent-a", tenant_id=tenant, role=Role.AGENT)
@@ -114,9 +118,10 @@ async def _scenario():
 
         # Nothing anywhere in this brokerage's rows holds either number.
         for table, column in (("client_activities", "meta::text"), ("client_activities", "summary"),
-                              ("sms_messages", "body")):
+                              ("sms_messages", "body"), ("sms_messages", "pgp_sym_decrypt(body_ciphertext, $2)")):
             rows = await admin.fetch(
-                f"SELECT {column} AS v FROM {table} WHERE tenant_id=$1", uuid.UUID(tenant))
+                f"SELECT {column} AS v FROM {table} WHERE tenant_id=$1"
+                + (" AND $2::text IS NOT NULL" if "$2" not in column else ""), uuid.UUID(tenant), key)
             assert all(PAN not in _digits(r["v"]) for r in rows), (table, column)
 
         # The removals were recorded, with counts and no text.

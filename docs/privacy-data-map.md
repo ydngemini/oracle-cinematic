@@ -47,12 +47,12 @@ Counts are from the dev database. They show shape, not production volume.
 **Business CRM**: notes (`client_notes.body` is communication content — AI call notes are what a customer said on a call; since 0132 every app write seals it in `body_ciphertext` under the tenant key, and pre-0132 rows stay plaintext until `backend/backfill_client_notes.py` runs), tasks, activities, tags, segments, showings, listings, transactions, offers, milestones, checklists, buyer requests, marketplace, smart plans (revisions immutable), missions, hyperlocal sites, studio campaigns.
 
 **Communication content**:
-- `sms_messages`: bodies and numbers **in plaintext**.
+- `sms_messages`: numbers **in plaintext**. Since 0152 (L17-21) every app write seals the body in `body_ciphertext` under the tenant key and leaves `body` NULL; pre-0152 bodies stay plaintext until `backend/backfill_sealed_text.py` runs.
 - `email_outbox`: recipients, subjects and bodies.
 - `interaction_logs`.
 - `inbound_voice_calls`: caller, transcript, summary and intake answers, all encrypted.
 - `contact_intake_sessions` (encrypted).
-- `negotiation_events.transcript_excerpt` (plaintext).
+- `negotiation_events.transcript_excerpt`: sealed in `transcript_ciphertext` for every app write since 0152; pre-0152 excerpts plaintext until the backfill. Retention (`purge_expired_platform_data`) clears both columns.
 - `command_executions.draft`: outbound drafts (and the same draft inside `action_approvals.draft_payload`). Since 0142 both rows carry `client_id`/`contact_id` links (no PII) and are visible only to those who can see that client or contact.
 
 **Communication metadata**:
@@ -70,7 +70,7 @@ Counts are from the dev database. They show shape, not production volume.
 **AI**:
 - `ai_chat_messages` (encrypted).
 - `ai_tool_operations.result`: tool outputs, plaintext.
-- `user_interactions.content`: raw chat turns, **plaintext**, with a text `tenant_id` and no FK.
+- `user_interactions.content`: raw chat turns, sealed in `content_ciphertext` for every app write since 0152 (content `''`); pre-0152 turns plaintext until the backfill. Text `tenant_id`, no FK.
 - `beliefs.source_quote`, `client_ai_state` (summaries), `agent_decisions`, `ai_decision_traces`.
 - `style_training_examples`: redacted.
 - Model registry, training runs and evaluations.
@@ -141,7 +141,8 @@ Spaces versioning is off, so a deleted object is gone.
 
 | Gap | Risk | Status |
 |---|---|---|
-| `clients` name/email/phone and `leads.payload` plaintext; `sms_messages.body` plaintext | DB read access exposes contacts | open — column encryption migration is a separate project (known limitation in security review) |
+| `clients` name/email/phone and `leads.payload` plaintext | DB read access exposes contacts | open — designed in L17-21 (blind index for clients; batched backfill plan for leads), not built |
+| `sms_messages.body`, `negotiation_events.transcript_excerpt`, `user_interactions.content` plaintext | DB read access exposes what people wrote and said | new writes sealed since 0152 (L17-21, local); old rows plaintext until `backfill_sealed_text.py` runs in each environment; refusing plaintext is a later contract migration |
 | `client_notes.body` (AI call notes) plaintext | DB read access exposes what customers said | new writes sealed since 0132 (L17-03); old rows plaintext until `backfill_client_notes.py` runs in each environment |
 | Per-tenant keys are *derived* (HKDF of the master key), not stored | No crypto-shredding of one tenant | accepted; erasure deletes rows instead |
 | `recon-inputs/` staging copies carry no tenant | Orphaned photo copies | orphan audit finds them; worker should record the prefix (follow-up) |

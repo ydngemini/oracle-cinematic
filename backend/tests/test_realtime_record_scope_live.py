@@ -40,7 +40,9 @@ class Socket:
         return [f.get("type") for f in self.frames]
 
 
-def test_live_frames_follow_the_record():
+def test_live_frames_follow_the_record(monkeypatch):
+    # Call and voice telemetry seal the transcript (0152, L17-21): writes need the key.
+    monkeypatch.setenv("ORACLE_ENCRYPTION_MASTER_KEY", "live-test-realtime-scope-master-key-0123456789")
     asyncio.run(_scenario())
 
 

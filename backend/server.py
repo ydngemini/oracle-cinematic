@@ -1273,17 +1273,10 @@ async def voice_telemetry_websocket(websocket: WebSocket, session_id: str):
             if session is None:
                 await websocket.close(code=4404)
                 return
-            events = await conn.fetch(
-                """
-                SELECT id,event_type,transcript_excerpt,counter_offer,mao,
-                       threshold,payload,created_at
-                  FROM negotiation_events
-                 WHERE call_session_id=$1::uuid
-                 ORDER BY created_at DESC
-                 LIMIT 100
-                """,
-                session_uuid,
-            )
+            # 0152 (A01): transcripts are sealed at rest; this opens both shapes.
+            from voice_intel import load_session_events
+
+            events = await load_session_events(conn, session_uuid, limit=100)
     except Exception:
         logger.exception("Voice telemetry WebSocket admission failed session=%s", session_uuid)
         await websocket.close(code=1011)

@@ -15,6 +15,12 @@ import pytest
 import commands_api as ca
 import messaging_data
 
+@pytest.fixture(autouse=True)
+def _sealing_key(monkeypatch):
+    """Message bodies are sealed at write (0152, L17-21)."""
+    monkeypatch.setenv("ORACLE_ENCRYPTION_MASTER_KEY", "unit-master")
+
+
 TENANT_ID = "55555555-5555-4555-8555-555555555555"
 AGENT_ID = "agent@example.test"
 
@@ -37,8 +43,8 @@ class FakeInboundMessageConn:
             self.insert_attempts += 1
             (
                 tenant_id, agent_id, contact_id, client_id, provider,
-                provider_message_id, from_e164, to_e164, body, media, opt_out,
-            ) = args
+                provider_message_id, from_e164, to_e164, body, media, opt_out, _seal_key,
+            ) = args  # body is sealed in SQL under _seal_key (0152)
             key = (provider, provider_message_id)
             if key in self.messages:
                 return None  # ON CONFLICT DO NOTHING

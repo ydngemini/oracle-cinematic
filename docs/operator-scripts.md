@@ -127,6 +127,66 @@ ids, never note text.
 the code back to before 0132). Drop `trg_client_notes_before_write` first, as
 the 0132 header describes: it refuses plaintext AI call notes.
 
+## `backend/backfill_sealed_text.py` — seal SMS bodies, call transcripts and chat turns written before 0152
+
+### When this is needed
+
+Migration `0152_sealed_communication_text.sql` (audit A01, ledger L17-21) made
+every app write store `sms_messages.body`, `negotiation_events.transcript_excerpt`
+and `user_interactions.content` only in their new `*_ciphertext` column, under
+the tenant key. Rows written before the 0152 code served keep their
+**plaintext** until this script seals them; they still read correctly
+meanwhile (`backend/sealed_text.py` opens both shapes). It is an operator
+script, not a periodic job: staging runs `ORACLE_RECOVERY_MODE`, where no
+periodic job runs (L17-03). **Run it only after the 0152 code serves** — the
+previous release writes plaintext and cannot read a sealed row.
+
+### Check whether you need it
+
+```bash
+docker compose run --rm --no-deps backend python /app/backfill_sealed_text.py --count
+```
+
+or in SQL:
+
+```sql
+SELECT count(*) FROM sms_messages WHERE body_ciphertext IS NULL AND COALESCE(body, '') <> '';
+SELECT count(*) FROM negotiation_events WHERE transcript_ciphertext IS NULL AND COALESCE(transcript_excerpt, '') <> '';
+SELECT count(*) FROM user_interactions WHERE content_ciphertext IS NULL AND content <> '';
+```
+
+### Running it
+
+Requires `ORACLE_ENCRYPTION_MASTER_KEY` plus the usual `ORACLE_DB_*` vars
+(including `ORACLE_DB_PLATFORM_USER`: it runs in the platform context).
+
+```bash
+docker compose run --rm --no-deps \
+  -e ORACLE_ENCRYPTION_MASTER_KEY="$ORACLE_ENCRYPTION_MASTER_KEY" \
+  backend python /app/backfill_sealed_text.py [--field sms|transcript|interaction] [--max-rows N]
+```
+
+Optional: `ORACLE_SEALED_TEXT_BACKFILL_BATCH` (default `500`, range 1–5000).
+
+### What to expect
+
+Bounded and restart-safe: each batch commits on its own, selects only rows
+still in plaintext with `FOR UPDATE ... SKIP LOCKED`, and prints its row count
+and time, never the text. A second run changes nothing. `negotiation_events`
+and `user_interactions` are append-only to the app role, so their batches go
+through the 0152 `SECURITY DEFINER` functions, which only move a row's own
+text between its two columns. Measured cost (dev, 2026-10-14): about 0.5 ms of
+pgcrypto per row, so 10,000 rows take about 5 s.
+
+| Exit | Meaning |
+|---|---|
+| `0` | No plaintext row remains (or `--count` / `--max-rows` was given). |
+| `1` | Rows were skipped (locked by a writer, or a `user_interactions.tenant_id` that is not a UUID); run it again. |
+| `2` | Refused to start — missing `ORACLE_ENCRYPTION_MASTER_KEY`, or an out-of-range batch size. |
+
+**Rollback:** `--unseal` writes the plaintext back. Run it before rolling the
+code back to a release older than 0152.
+
 ## `backfill_property_coordinates.py` — geocode public property records
 
 **Why:** 8.59M `public_property_records` carry an address (93.8%) and an owner
