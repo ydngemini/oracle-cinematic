@@ -21,6 +21,7 @@ from messaging_data import (
     MessagingDataError,
     RegistrationConflict,
     RegistrationUnconfirmed,
+    assign_campaign_number as assign_messaging_campaign_number,
     check_eligibility,
     complete_messaging_verification,
     connect_messaging,
@@ -370,50 +371,32 @@ async def register_campaign(
 
 @router.post("/business/registration/campaign/assign-number", dependencies=[Depends(require_active_subscription)])
 async def assign_campaign_number(ctx: TenantContext = Depends(require_context)) -> dict[str, Any]:
+    """Assign the owner's verified business number to the approved campaign —
+    at most once at the provider per number + campaign (L10-10): a repeat is
+    answered from the ledger, a racing or unresolved one is a 409, an
+    ambiguous provider answer is a 502 that waits for an operator."""
     require_role(ctx, Role.BROKER_OWNER)
-    from db.connection import tenant_tx
-    from messaging_provider import get_messaging_provider, messaging_provider_name
+    from messaging_provider import messaging_provider_name
 
     business_number = await get_public_business_number(ctx)
     if business_number is None:
         raise HTTPException(status_code=409, detail="Connect and verify your business number first.")
-    async with tenant_tx(ctx) as conn:
-        campaign = await conn.fetchrow(
-            """
-            SELECT c.id,c.provider_campaign_id
-              FROM tenant_messaging_campaigns c
-              JOIN tenant_messaging_brands b ON b.id=c.brand_id
-             WHERE c.tenant_id=$1::uuid AND c.status='approved'
-             ORDER BY c.created_at DESC LIMIT 1
-            """,
-            ctx.tenant_id,
-        )
-    if campaign is None or not campaign["provider_campaign_id"]:
-        raise HTTPException(status_code=409, detail="No approved Campaign to assign this number to.")
-
     credentials = await _telnyx_credentials(ctx)
-    adapter = get_messaging_provider(messaging_provider_name())
     try:
-        await adapter.assign_number_to_campaign(
-            str(campaign["provider_campaign_id"]),
-            str(business_number["voice_caller_id_e164"]),
+        return await assign_messaging_campaign_number(
+            ctx,
+            phone_number=str(business_number["voice_caller_id_e164"]),
+            provider=messaging_provider_name(),
             credentials=credentials,
         )
+    except RegistrationConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except RegistrationUnconfirmed as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    except MessagingDataError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Telnyx rejected the number assignment: {exc}") from exc
-
-    route = await get_messaging_route(ctx)
-    if route is not None:
-        from db.connection import tenant_tx as _tx
-
-        async with _tx(ctx) as conn:
-            await conn.execute(
-                "UPDATE messaging_routes SET campaign_id=$2::uuid, updated_at=now() WHERE tenant_id=$1::uuid AND id=$3::uuid",
-                ctx.tenant_id,
-                campaign["id"],
-                route["id"],
-            )
-    return {"campaign_id": str(campaign["id"]), "assigned": True}
 
 
 # ── Telnyx webhooks (signed, tenant-safe, idempotent) ───────────────────────

@@ -34,7 +34,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, ConfigDict, Field
 
 from db.connection import DatabaseUnavailable, tenant_tx
-from tenancy import Role, TenantContext, require_context
+from tenancy import Role, TenantContext, brokerage_scope, require_context
 
 log = logging.getLogger("oracle.record_access")
 
@@ -159,6 +159,30 @@ async def require_linked_edit(conn, table: str, record_id: str, not_found: str) 
         raise HTTPException(status.HTTP_404_NOT_FOUND, not_found)
     if level != "edit":
         raise HTTPException(status.HTTP_403_FORBIDDEN, LINKED_VIEW_ONLY)
+
+
+_AUDIENCE_SQL = "SELECT app_record_audience($1::uuid, $2::uuid)"
+
+
+async def linked_audience(tenant_id: str, client_id: Any, contact_id: Any) -> Optional[list[str]]:
+    """Who may receive a live frame about this client and/or contact
+    (CONTRACT C3.6): None = every member of the brokerage (no link, or the
+    record is in the pool), else the agent ids of the members who may read it
+    — app_record_audience() (0145), the per-member form of
+    app_linked_access(), read once per frame so the fan-out never restates
+    the rule. Run as a brokerage-scope pipeline of the record's tenant, so the
+    answer does not depend on who produced the frame."""
+    if client_id is None and contact_id is None:
+        return None
+    pipeline = brokerage_scope(TenantContext(agent_id="system:ws-audience", tenant_id=str(tenant_id),
+                                             role=Role.AGENT))
+    async with tenant_tx(pipeline) as conn:
+        audience = await conn.fetchval(
+            _AUDIENCE_SQL,
+            str(client_id) if client_id is not None else None,
+            str(contact_id) if contact_id is not None else None,
+        )
+    return None if audience is None else [str(a) for a in audience]
 
 
 async def _actor_user_id(conn) -> Optional[str]:
