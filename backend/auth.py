@@ -25,6 +25,7 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException, Header, Request, 
 from pydantic import BaseModel, ConfigDict, Field
 
 from policy_contract import PLATFORM_POLICY_VERSION
+from log_redaction import actor_ref
 
 # ---------------------------------------------------------------------------
 # Logging — never log secrets or token strings at any level.
@@ -501,7 +502,7 @@ def _register_session(agent_id: str) -> None:
         "issued_at": time.time(),
         "agent_id": agent_id,
     }
-    log.debug("Session registered for agent_id=%r.", agent_id)
+    log.debug("Session registered for agent_id=%r.", actor_ref(agent_id))
 
 
 def active_sessions() -> list[dict]:
@@ -880,10 +881,19 @@ async def login(body: LoginRequest, response: Response, request: Request = None)
     from rate_limit_middleware import _get_client_ip
 
     client = _get_client_ip(request) if isinstance(request, Request) else None
-    limit, remaining, reset = await _check_rate_limit(body.agent_id, client)
+    import security_alerts
+
+    is_operator = bool(_ADMIN_ID) and body.agent_id.strip().lower() == _ADMIN_ID.strip().lower()
+    try:
+        limit, remaining, reset = await _check_rate_limit(body.agent_id, client)
+    except HTTPException as exc:
+        if exc.status_code == status.HTTP_429_TOO_MANY_REQUESTS and is_operator:
+            security_alerts.privileged_sign_in_failed(_ADMIN_ID, client, "rate_limited")
+        raise
     # The operator/demo dict is an exact-match lookup, so what was typed already
     # IS the canonical spelling there; only the DB path needs correcting.
     agent_identity = body.agent_id
+    privileged_target = is_operator
 
     # --- Credential validation -----------------------------------------------
     # 1) operator/demo dict (constant-time). 2) DB-backed users (self-serve signups).
@@ -899,12 +909,20 @@ async def login(body: LoginRequest, response: Response, request: Request = None)
         tenant_id, role = DEMO_TENANCY.get(body.agent_id, (body.agent_id, "agent"))
         if body.agent_id == _ADMIN_ID:
             factor = _operator_second_factor()
-            if factor == "totp":
-                await _require_operator_otp(body.agent_id, body.otp)
-            elif factor == "email":
-                await _require_operator_email_otp(body.agent_id, body.otp)
+            try:
+                if factor == "totp":
+                    await _require_operator_otp(body.agent_id, body.otp)
+                elif factor == "email":
+                    await _require_operator_email_otp(body.agent_id, body.otp)
+            except HTTPException as exc:
+                # OTP_REQUIRED is step one of a normal sign-in; OTP_INVALID
+                # means whoever is typing knows the passphrase (L17-09).
+                if isinstance(exc.detail, dict) and exc.detail.get("code") == "OTP_INVALID":
+                    security_alerts.privileged_sign_in_failed(_ADMIN_ID, client, "second_factor")
+                raise
     else:
         row = await _lookup_user(body.agent_id)
+        privileged_target = privileged_target or bool(row and row.get("role") == "platform_admin")
         # Always pay for one scrypt, account or not: skipping it for unknown
         # addresses made "no such account" answer ~200x faster than "wrong
         # password", which enumerates accounts by timing alone (AUTH-4).
@@ -933,7 +951,9 @@ async def login(body: LoginRequest, response: Response, request: Request = None)
     if not credentials_ok:
         # Don't distinguish "unknown agent" from "wrong passphrase" — prevents
         # user enumeration via timing or error messages.
-        log.debug("Failed login attempt for agent_id=%r.", body.agent_id)
+        log.debug("Failed login attempt for agent_id=%r.", actor_ref(body.agent_id))
+        if privileged_target:
+            security_alerts.privileged_sign_in_failed(body.agent_id, client, "passphrase")
         _apply_rl_headers(response, limit, remaining - 1 if remaining else 0, reset)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -950,7 +970,9 @@ async def login(body: LoginRequest, response: Response, request: Request = None)
     )
 
     _register_session(agent_identity)
-    log.info("Successful login for agent_id=%r, tenant_id=%r.", agent_identity, tenant_id)
+    log.info("Successful login for agent_id=%r, tenant_id=%r.", actor_ref(agent_identity), tenant_id)
+    if role == "platform_admin":
+        security_alerts.privileged_sign_in(agent_identity, client, role)
 
     _set_session_cookie(response, token)
 
@@ -970,8 +992,18 @@ async def login(body: LoginRequest, response: Response, request: Request = None)
     )
 
 
+def _alert_new_owner(email: str, tenant_id: str, request: Optional[Request], *, via: str) -> None:
+    """A broker-owner account came into being: a security alert (L17-09)."""
+    import security_alerts
+    from rate_limit_middleware import _get_client_ip
+
+    security_alerts.role_changed(
+        account=email, prior_role=None, new_role="broker_owner", changed_by=None,
+        tenant_id=tenant_id, ip=_get_client_ip(request) if isinstance(request, Request) else None, via=via)
+
+
 @router.post("/register", response_model=LoginResponse, status_code=status.HTTP_201_CREATED)
-async def register(body: RegisterRequest, response: Response) -> LoginResponse:
+async def register(body: RegisterRequest, response: Response, request: Request = None) -> LoginResponse:
     """Self-serve broker signup: create a fresh tenant + a broker_owner user, then
     log them in. agent_id (the JWT sub) is the normalized email."""
     email = body.email.strip().lower()
@@ -1018,6 +1050,7 @@ async def register(body: RegisterRequest, response: Response) -> LoginResponse:
     _set_session_cookie(response, token)
     _register_session(email)
     log.info("New signup: user_id=%s tenant_id=%r", new_user["id"] if new_user else None, tenant_id)
+    _alert_new_owner(email, tenant_id, request, via="self-serve signup (new brokerage)")
     return LoginResponse(
         token=_browser_token(token),
         agent_id=email,
@@ -1183,7 +1216,7 @@ async def reset_password(body: ResetRequest, response: Response) -> LoginRespons
     )
     _register_session(current_agent_id)
     _set_session_cookie(response, token)
-    log.info("Password reset for agent_id=%r", current_agent_id)
+    log.info("Password reset for agent_id=%r", actor_ref(current_agent_id))
     return LoginResponse(
         token=_browser_token(token),
         agent_id=current_agent_id,
@@ -1280,7 +1313,7 @@ async def change_password(
         )
     log.info(
         "Password changed (self-service) for agent_id=%r; outstanding reset links revoked (%s)",
-        agent_id, revoked,
+        actor_ref(agent_id), revoked,
     )
     # This device stays signed in on the new epoch; every other session ended.
     if updated:
@@ -1376,7 +1409,7 @@ async def invitation_preview(token: str) -> dict:
 
 
 @router.post("/accept-invite", response_model=LoginResponse, status_code=status.HTTP_201_CREATED)
-async def accept_invite(body: AcceptInviteRequest, response: Response) -> LoginResponse:
+async def accept_invite(body: AcceptInviteRequest, response: Response, request: Request = None) -> LoginResponse:
     """Create the invitee's account inside the inviting brokerage, and sign
     them in — one transaction, no tenant id ever typed by a human.
 
@@ -1486,6 +1519,8 @@ async def accept_invite(body: AcceptInviteRequest, response: Response) -> LoginR
     _set_session_cookie(response, token)
     _register_session(email)
     log.info("Invitation accepted: user_id=%s tenant_id=%r", user["id"], tenant_id)
+    if invited_role == "broker_owner":
+        _alert_new_owner(email, tenant_id, request, via="owner invitation accepted")
     return LoginResponse(
         token=_browser_token(token),
         agent_id=email,

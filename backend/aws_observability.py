@@ -23,6 +23,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from tenancy import require_context, require_role, Role, TenantContext
+from log_redaction import actor_ref
 
 # Roles allowed to read AWS infra observability (mirrors the REST route gates).
 _OBS_ALLOWED_ROLES = {"platform_admin", "broker_owner"}
@@ -1054,7 +1055,7 @@ async def api_scale_asg(
             "ASG desired capacity changed: group=%s desired=%d actor=%s",
             group_name,
             request.desired_capacity,
-            ctx.agent_id,
+            actor_ref(ctx.agent_id),
         )
         return JSONResponse({"success": True, "group": group_name, "desired_capacity": request.desired_capacity})
     except (ClientError, BotoCoreError) as e:
@@ -1079,7 +1080,7 @@ async def api_restart_ec2(
             None,
             lambda: ec2.reboot_instances(InstanceIds=[instance_id])
         )
-        log.info("EC2 reboot requested: instance=%s actor=%s", instance_id, ctx.agent_id)
+        log.info("EC2 reboot requested: instance=%s actor=%s", instance_id, actor_ref(ctx.agent_id))
         return JSONResponse({"success": True, "instance_id": instance_id, "action": "reboot"})
     except (ClientError, BotoCoreError) as e:
         log.error("EC2 reboot error: %s", e)

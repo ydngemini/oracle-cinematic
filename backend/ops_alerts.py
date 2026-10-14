@@ -127,7 +127,14 @@ def _body(name: str, comp: dict) -> str:
 async def _notify(subject: str, body: str) -> Optional[str]:
     """Log always; email when configured. Returns an error string or None."""
     log.error(json.dumps({"alert": subject, "body": body[:500]}))
-    to = os.getenv("ORACLE_ALERT_EMAIL", "").strip()
+    return await send_email(subject, body)
+
+
+async def send_email(subject: str, body: str, *, to: Optional[str] = None) -> Optional[str]:
+    """Email an alert without logging its body (security_alerts.py sends
+    account ids and IP addresses here that must not reach the log). `to`
+    defaults to ORACLE_ALERT_EMAIL. Returns an error name or None; never raises."""
+    to = (to if to is not None else os.getenv("ORACLE_ALERT_EMAIL", "")).strip()
     if not to:
         return None
     try:

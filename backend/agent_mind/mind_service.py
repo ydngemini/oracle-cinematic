@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 import aiohttp
+from log_redaction import actor_ref
 
 # Endpoint of the local llama.cpp server (Llama 3.2 1B Instruct). Defaults to
 # the host loopback for bare-metal runs; override with LLAMA_SERVER_URL when the
@@ -402,7 +403,7 @@ class MindService:
         except llm_gateway.LLMUnavailable as exc:
             # Ambient flavour, so a failure is not worth surfacing to the user —
             # but it is worth recording, which the old silent except was not.
-            log.warning("monologue stream unavailable for %s: %s", agent_id, exc)
+            log.warning("monologue stream unavailable for %s: %s", actor_ref(agent_id), exc)
             return
 
         if full_text.strip():

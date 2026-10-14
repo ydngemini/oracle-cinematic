@@ -26,6 +26,7 @@ from typing import Any, Optional
 from fastapi import Header, HTTPException, Request, status
 
 from policy_contract import PLATFORM_POLICY_VERSION
+from log_redaction import actor_ref
 
 # ---------------------------------------------------------------------------
 # Logging — never log token strings or raw passphrase material.
@@ -279,7 +280,7 @@ async def apply_rls_context(conn, ctx: TenantContext) -> None:
         "RLS context applied: tenant_id=%r role=%r agent_id=%r.",
         ctx.tenant_id,
         ctx.role.value,
-        ctx.agent_id,
+        actor_ref(ctx.agent_id),
     )
 
 
@@ -394,7 +395,7 @@ def _context_from_authorization(
     )
     log.debug(
         "Tenant context established: agent_id=%r tenant_id=%r role=%r.",
-        ctx.agent_id,
+        actor_ref(ctx.agent_id),
         ctx.tenant_id,
         ctx.role.value,
     )

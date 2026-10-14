@@ -1199,6 +1199,111 @@ updated: 2026-10-14
 ```
 A card number arriving through any channel other than Stripe (a caller reading it to the AI, a text, an email, a note, a chat message) would put Neoh in SAQ D scope once stored, even encrypted. `pan_redaction.scrub` removes card numbers and security codes on every listed write path before storage, the model or a live frame. Logs are filtered on every handler. Each removal is recorded only as surface plus counts. Every voice and chat persona carries `PAYMENT_CARD_RULE`. Scope boundary, what keeps us in SAQ A and what would break it: [docs/compliance/pci-saq-a.md](../compliance/pci-saq-a.md).
 
+#### L17-09 Security alerts for privileged activity (SoD compensation)
+```yaml
+id: L17-09
+status: tests_pass
+env: local
+evidence_shas: [0a76a72]   # base; the alerts land in the commit that adds backend/security_alerts.py
+files: [backend/security_alerts.py, backend/ops_alerts.py, backend/auth.py, backend/admin_ops.py, backend/server.py, backend/tests/test_security_alerts.py, .env.example, docs/privacy-data-map.md]
+tests_run:
+  - {cmd: "grep -n 'Successful login\\|ops_alerts\\|_notify' backend/auth.py backend/admin_ops.py (base 0a76a72)", result: "no alert on any sign-in, failure, role change or factor change; ops_alerts.py only alerted component health; the success log line printed agent_id (an email)", date: 2026-10-14}
+  - {cmd: "cd backend && ORACLE_SKIP_DOTENV=1 python -m pytest -q -p no:cacheprovider tests/test_security_alerts.py", result: "9 passed (send mocked): operator sign-in alert carries id+IP+UTC time and no passphrase/code/seed; log line has actor_ref, no id/IP; 5 wrong passphrases -> 1 email (not per guess); DB platform_admin counted, agent not; rejected second factor alerts at once; 429 on the operator alerts once; role change + new owner (signup, owner invitation) alert; factor re-provisioned or switched totp->email alerts, baseline does not; secret never stored or sent; ORACLE_SECURITY_ALERTS_ENABLED=0 silences", date: 2026-10-14}
+  - {cmd: "cd backend && ORACLE_SKIP_DOTENV=1 python -m pytest -q -p no:cacheprovider tests/ (covers L17-09..13)", result: "exit 0; 3514 passed, 43 skipped", date: 2026-10-14}
+  - {cmd: "bandit -q -r backend (CI flags) -b .bandit-baseline.json; tests/rls_security_review.sql, rls_brokerage.sql, platform_rls_test.sql, privacy_lifecycle.sql, rls_tenant_wall.sql on the local dev DB with 0148", result: "bandit exit 0; all five SQL proofs exit 0", date: 2026-10-14}
+authz_checked: "alerts are side outputs only; no authorization decision reads them"
+blockers:
+  - {type: owner, note: "Self-serve signups create a broker owner and now alert too (one email per new brokerage). Keep, or alert only on role changes inside an existing brokerage?"}
+  - {type: scope, note: "Failure counting is per process (no shared store): N replicas allow N x threshold guesses before the first alert. No user MFA exists (AUTH-12: broker-owner MFA open), so 'MFA reset' covers only the operator's env-provisioned factor; a future reset route must call security_alerts. Platform-admin rows can be created only by SQL (no API) and are listed by scripts/access_review.py, not alerted."}
+  - {type: operator, note: "No alert is delivered until ORACLE_SECURITY_ALERT_EMAIL or ORACLE_ALERT_EMAIL is set and SMTP works in that environment; not exercised on staging."}
+audit_refs: []
+decision_refs: []
+next_task: "Set ORACLE_SECURITY_ALERT_EMAIL on staging after deploy and sign in once as the operator to see one real email."
+updated: 2026-10-14
+```
+
+#### L17-10 HOOK-3: no static webhook secret in callback URLs
+```yaml
+id: L17-10
+status: tests_pass
+env: local
+evidence_shas: [0a76a72]   # base; fix in the commit that adds backend/webhook_auth.py
+files: [backend/webhook_auth.py, backend/commands_api.py, backend/command_providers.py, backend/acs_call_handler.py, backend/log_redaction.py, backend/tests/test_webhook_auth.py, backend/tests/test_log_pii_guard.py, .env.example, docs/security-launch-review.md]
+tests_run:
+  - {cmd: "sed -n 130,136p backend/commands_api.py; sed -n 277,289p backend/acs_call_handler.py; sed -n 45,52p backend/command_providers.py (base)", result: "both webhooks compared ?token= with the static secret; both callback URL builders put the secret itself in the query string", date: 2026-10-14}
+  - {cmd: "read uvicorn 0.49.0 protocols/websockets/websockets_impl.py:263", result: "WebSocket handshake lines go to uvicorn.error with the path as the SECOND argument; log_redaction rewrote only the third argument on uvicorn.access, so ?bridge_token= (commands_api Plivo media bridge) reached the log", date: 2026-10-14}
+  - {cmd: "pytest tests/test_webhook_auth.py tests/test_recovery_security.py tests/test_acs_call_handler.py tests/test_security_launch_review.py", result: "95 passed: header token, body HMAC (body- and time-bound, 5 min), expiring path-bound signed URL (expired/other route/bad sig -> 403); Neoh's callback URLs carry no secret and no token=; old ?token= accepted with a deprecation warning that names the env var, not the secret; ORACLE_WEBHOOK_QUERY_TOKEN_COMPAT=0 refuses it", date: 2026-10-14}
+authz_checked: "no secret -> 503 as before; any failed method -> 403"
+blockers:
+  - {type: operator, note: "Before the compat path is removed: point the ACS Event Grid subscription at the X-Neoh-Webhook-Token delivery header (or rely on the signed URL Neoh now hands ACS per call) and any custom-call provider at the header or X-Neoh-Signature. Calls placed by the previous release keep their ?token= URL until they end."}
+  - {type: scope, note: "The Plivo media bridge still takes a per-call bridge_token in the WebSocket query (a per-call capability, not the static secret); it is now redacted from both uvicorn loggers. Edge/CDN logs outside the app are not controlled here."}
+audit_refs: []
+decision_refs: []
+next_task: "Next release: delete the ?token= branch in webhook_auth.verify_webhook and ORACLE_WEBHOOK_QUERY_TOKEN_COMPAT."
+updated: 2026-10-14
+```
+
+#### L17-11 Log-PII guard: account ids and exception text
+```yaml
+id: L17-11
+status: tests_pass
+env: local
+evidence_shas: [0a76a72]   # base; fix in the commit that adds log_redaction.actor_ref
+files: [backend/log_redaction.py, backend/server.py, backend/tests/test_log_pii_guard.py, backend/audit_ledger.py, backend/auth.py, backend/tenancy.py, backend/crm.py, backend/client_enterprise.py, backend/client_portal.py, backend/agent_profile.py, backend/aws_observability.py, backend/lead_dossier.py, backend/media_api.py, backend/agent_mind/mind_service.py, docs/privacy-data-map.md]
+tests_run:
+  - {cmd: "AST scan of every backend logging call with agent_id/agent_identity/current_agent_id added to the PII names (base)", result: "25 sites in 11 files logged the account id (= the user's email): login success/failure, password reset/change, session registry, RLS context, CRM create/link/log, portal mint, bulk actions, AWS actions, crypto ACCESS_PII", date: 2026-10-14}
+  - {cmd: "AST scan: logging calls inside `except E as x` that interpolate x", result: "201 sites in 60+ files; str() of a real asyncpg error from local PostgreSQL 16 quotes row values: 'DETAIL:  Key (email)=(jane@example.test) already exists.' and 'Failing row contains (bob@example.test, x)'", date: 2026-10-14}
+  - {cmd: "pytest tests/test_log_pii_guard.py", result: "10 passed: guard now includes account ids (actor_ref() is the safe wrapper); 22 sites fixed; the PIIScrubFilter on the root and uvicorn.error handlers removes emails, phones and PG row values from messages AND tracebacks while keeping uuids, timestamps, IPs and counts; server._configure_logging installs it; WebSocket handshake query strings redacted", date: 2026-10-14}
+authz_checked: n/a
+blockers:
+  - {type: scope, note: "crypto.py's three agent_id sites (pii_context, access_pii_field) are exempted by name in the guard (_ACCOUNT_ID_DEFERRED) because a parallel slice owns crypto.py today; remove the entry when that slice merges. The scrub is pattern-based: a name or street address inside an exception message is not recognised. The 201 exception sites were not rewritten one by one."}
+audit_refs: [A06]
+decision_refs: []
+next_task: "Drop the crypto.py deferral at merge; review a staging log sample (AC17.05)."
+updated: 2026-10-14
+```
+
+#### L17-12 Audit ledger: fallback drained and capped, chain verified on a schedule
+```yaml
+id: L17-12
+status: tests_pass
+env: local
+evidence_shas: [0a76a72]   # base; fix in the commit that adds 0148
+files: [backend/audit_ledger.py, backend/db/migrations/0148_audit_chain_verification.sql, backend/data_integrations/periodic.py, backend/server.py, backend/privacy_data_map.py, backend/tests/test_audit_fallback_lifecycle.py, backend/tests/test_audit_fallback_drain_live.py, .github/workflows/ci.yml, .env.example, docs/privacy-data-map.md]
+tests_run:
+  - {cmd: "grep -n 'verify_chain\\|_sqlite' backend/ (base)", result: "verify_chain had no scheduled caller; nothing read the SQLite fallback back, deleted it or bounded it (docs/privacy-data-map.md §7 'never purged')", date: 2026-10-14}
+  - {cmd: "pytest tests/test_audit_fallback_lifecycle.py", result: "8 passed: no pool -> SQLite and pending; cap refuses + alerts; >30-day rows purged with an alert and the rest still verify from the stored anchor; empty fallback restarts from the anchor and VACUUMs; tampered row detected; PG failure logs the error type, not its DETAIL; audit_chain_verify registered", date: 2026-10-14}
+  - {cmd: "livetest.sh sh -c 'cd /app/backend && python -m pytest -q tests/test_audit_fallback_drain_live.py' (local dev PostgreSQL, throwaway roles)", result: "1 passed: 3 SQLite rows appended to the PG chain in order with original time/content and _fallback provenance (a non-uuid tenant kept in provenance), deleted locally; re-append adds nothing; the verifier checks exactly the 3 links from a cursor, then catches a forged row once (alert once) in a rolled-back transaction; via the platform pool it is bounded and persisted; a request connection sees 0 rows and UPDATE 0", date: 2026-10-14}
+  - {cmd: "verify_chain_segment(max_rows=50000) over the whole local dev chain (platform pool)", result: "38,338 rows, intact, one pass in 3.06 s (local DinD PostgreSQL 16; not a staging number)", date: 2026-10-14}
+  - {cmd: "rehearse_0148.sh: scratch DB, 0001-0147 as superuser, REASSIGN OWNED to NOSUPERUSER BYPASSRLS CREATEROLE, run_migrations.py as that owner", result: "0148 applied; table owned by the owner, RLS+FORCE, policy (SELECT app_is_platform_admin()); oracle_app SELECT/UPDATE yes, DELETE no; scratch DB and roles dropped", date: 2026-10-14}
+authz_checked: "audit_chain_verification readable/writable only in a platform-admin context (0120 login membership); request connection proved blind in the live test"
+blockers:
+  - {type: scope, note: "Staging runs ORACLE_RECOVERY_MODE, so no periodic job (this verifier included) runs there (see L17-03). The drain runs in every process at boot and on the first good write regardless. A container that dies before Postgres returns still loses its fallback rows (ephemeral disk)."}
+audit_refs: []
+decision_refs: []
+next_task: "Run the verifier once on staging by hand (or enable periodic jobs) after deploy; record the pass time on real data."
+updated: 2026-10-14
+```
+
+#### L17-13 Quarterly access-review export
+```yaml
+id: L17-13
+status: tests_pass
+env: local
+evidence_shas: [0a76a72]   # base; script in the commit that adds scripts/access_review.py
+files: [scripts/access_review.py, backend/tests/test_access_review_live.py, .github/workflows/ci.yml]
+tests_run:
+  - {cmd: "ls scripts/ | grep -i access (base)", result: "no access-review listing existed", date: 2026-10-14}
+  - {cmd: "livetest.sh sh -c 'cd /app/backend && python -m pytest -q tests/test_access_review_live.py'", result: "1 passed: one READ ONLY transaction, no INSERT/UPDATE/DELETE sent; postgres rolsuper, oracle_app neither super nor BYPASSRLS, oracle_platform_login member of platform_admin_role, no pg_* roles; broker owners per tenant (active/suspended ids) match a direct count; platform admins = env operator + users rows; operator factor reported without the seed; markdown and CSV render", date: 2026-10-14}
+authz_checked: "runs on the platform login inside a read-only transaction; the output names people and is personal data (docstring)"
+blockers:
+  - {type: operator, note: "GitHub, DigitalOcean, Stripe, registrar and provider account listings are a manual checklist in the script's docstring; no API calls are made."}
+audit_refs: []
+decision_refs: []
+next_task: "Run it for the first quarterly review against staging (read-only, via the db-access window) and file the result with the review record."
+updated: 2026-10-14
+```
+
 ### L18
 Billing, seats and analytics.
 
@@ -1378,7 +1483,7 @@ From [neoh-full-platform-source-audit-2026-10-08.md](../neoh-full-platform-sourc
 | A03 | Professional 3D certification without verified evidence | P0 | partly fixed: labels bound to the verdict (L12-02); certification state not built | `backend/recon_quality.py:83`, `:101`; `backend/reconstruction_worker.py:581`; badge `backend/tour_api.py:41`, `:335` ignores the verdict | 12 | L12-01 |
 | A04 | Production readiness not established by staging CI | P0 | open (no production app) | `.github/workflows/ci.yml:606` (`promote` manual only) | 19 | L19-02 |
 | A05 | Usage event counted before approved/delivered outreach | P1 | fixed in code (`a8bff54`), `tests_pass` local (2026-10-13), not deployed: metered only at delivered (0133); owner to confirm the billable stage | was `backend/speed_to_lead.py:387-389`; now `backend/outreach_lifecycle.py` (`BILLABLE_ENGAGEMENT_STAGE`), `backend/billing_usage.py` (`record_lead_engagement`, `BILLABLE_PREDICATE`) | 18 | L18-02, L04-01 |
-| A06 | Customer names in failure logs | P1 | open. 2026-10-13: fixed with a source guard, local (L17-04); addresses and agent emails not covered | `backend/client_ai_automation.py:701-703` logs `full_name` | 17 | L17-04 |
+| A06 | Customer names in failure logs | P1 | open. 2026-10-13: fixed with a source guard, local (L17-04); addresses added 2026-10-14; agent emails (actor_ref) and exception text (handler scrub) added 2026-10-14, local (L17-11) | `backend/client_ai_automation.py:701-703` logs `full_name` | 17 | L17-04 |
 | A07 | Concurrent messaging route initialization | P1 | fixed in code at `c52b4dc`, local real-PostgreSQL race test only (2026-10-13, L10-06); not deployed, migration 0136 unapplied outside the local dev DB; 10DLC brand/campaign re-submission fixed in code at `00f94f8`, local real-PostgreSQL race test only (L10-09, 0139 unapplied outside the local dev DB); campaign number assignment fixed in code, local real-PostgreSQL race test only (L10-10, 0145 unapplied outside the local dev DB) | was `backend/messaging_data.py:108` (`ON CONFLICT … DO UPDATE SET provider_account_id`); now `ON CONFLICT … DO NOTHING` + re-read, and the hosted order goes through `provider_purchases` (`_claim_hosted_order`) | 10 | L10-06 |
 | A08 | Heuristic valuation targets in model training | P1 | open in code | `backend/ml_forge/edge_forge/train_lora.py:207` (`_COUNTY_PPSF`), `:209` (`_MAO_RULE = 0.70`) | 11 | — |
 | A09 | AI capability descriptions exceed executable tooling | P1 | allowlist re-verified; UI and persona wording not re-verified. **2026-10-13 (base `3bcab84`): fixed locally, `tests_pass` (L07-01)** — one registry derived from the allowlist drives the persona, the API and the Personal AI page; a guard test fails on any unbacked claim. Playwright check still owed | allowlist at `backend/ai_chat_store.py:605`, `:646`; 126 catalogued vs 57 allowlisted tools (L07-01); registry `backend/ai_capabilities.py`, guard `backend/tests/test_ai_capabilities.py` | 07 | L07-01 |

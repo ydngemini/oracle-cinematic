@@ -177,6 +177,7 @@ TABLES: dict[str, TableEntry] = {
     "audit_ledger": TableEntry(C.AUDIT_SECURITY, R, "hash chain; expires by age, not by closure"),
     "audit_anomaly_alerts": TableEntry(C.AUDIT_SECURITY, R),
     "audit_chain_checkpoints": TableEntry(C.AUDIT_SECURITY, G, "hash anchors of expired audit rows; no customer data"),
+    "audit_chain_verification": TableEntry(C.AUDIT_SECURITY, G, "scheduled chain-verifier cursor (0148); seq numbers and hashes, no customer data"),
     "api_rate_limit_windows": TableEntry(C.OPERATIONAL, G, "minutes-long windows"),
     "process_heartbeats": TableEntry(C.OPERATIONAL, G),
     "ops_alerts": TableEntry(C.OPERATIONAL, G, "component incidents; no customer data"),

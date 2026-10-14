@@ -410,6 +410,20 @@ async def _client_note_seal_task() -> dict:
     )
 
 
+async def _audit_chain_verify_task() -> dict:
+    """Walk the audit hash chain in a bounded segment (L17-12, migration 0148).
+
+    verify_chain() had no scheduled caller, so a tampered or broken chain was
+    found only if someone asked. Each run checks at most
+    ORACLE_AUDIT_CHAIN_VERIFY_MAX_ROWS links from where the last run stopped;
+    a full pass re-checks every row. A break alerts once through ops_alerts.
+    """
+    from audit_ledger import ledger
+
+    return await ledger.verify_chain_segment(
+        max_rows=max(1_000, min(500_000, int(os.getenv("ORACLE_AUDIT_CHAIN_VERIFY_MAX_ROWS", "50000")))))
+
+
 async def _property_coordinate_backfill_task() -> dict:
     """Resolve coordinates for public records that have an address and no point.
 
@@ -1084,6 +1098,16 @@ def build_default_scheduler() -> PeriodicScheduler:
         ),
         run=_client_note_seal_task,
         enabled=os.getenv("ORACLE_CLIENT_NOTE_SEAL_ENABLED", "1") == "1",
+    ))
+    # Hourly by default; each run is bounded (MAX_ROWS links), so a pass over a
+    # large chain spreads across runs instead of one long scan (L17-12).
+    sched.register(PeriodicTask(
+        name="audit_chain_verify",
+        interval_s=max(
+            300.0, float(os.getenv("ORACLE_AUDIT_CHAIN_VERIFY_INTERVAL_MIN", "60")) * 60,
+        ),
+        run=_audit_chain_verify_task,
+        enabled=os.getenv("ORACLE_AUDIT_CHAIN_VERIFY_ENABLED", "1") == "1",
     ))
     sched.register(PeriodicTask(
         name="chat_decision_sweep",

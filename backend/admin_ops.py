@@ -39,7 +39,7 @@ from datetime import datetime, timezone
 from typing import Literal, Optional
 
 import stripe
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, ConfigDict, Field
 
 import ws_hub
@@ -627,6 +627,7 @@ async def execute_role_change(
     approval_id: uuid.UUID,
     body: RoleChangeDecision,
     ctx: TenantContext = Depends(require_broker_owner_or_admin),
+    request: Request = None,
 ):
     async with tenant_tx(ctx) as conn:
         approval_row = await conn.fetchrow(
@@ -706,6 +707,16 @@ async def execute_role_change(
             "reason": draft["business_reason"],
         },
     )
+    # Out-of-band notice of every executed role change (L17-09). The business
+    # reason stays in the ledger: it is free text and may name people.
+    import security_alerts
+    from rate_limit_middleware import _get_client_ip
+
+    security_alerts.role_changed(
+        account=target["agent_id"], prior_role=draft["prior_role"], new_role=draft["new_role"],
+        changed_by=ctx.agent_id, tenant_id=str(target["tenant_id"]),
+        ip=_get_client_ip(request) if isinstance(request, Request) else None,
+        via="two-person role change executed")
     return {
         "user_id": draft["user_id"],
         "role": target["role"],
