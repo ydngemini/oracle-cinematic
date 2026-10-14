@@ -32,6 +32,7 @@ Certification is issued only by an accredited certification body after a Stage 1
 | [`iso27001/statement-of-applicability.md`](iso27001/statement-of-applicability.md) | 6.1.3 d | Applicability and justification per control | separate workstream |
 | [`framework-crosswalk.md`](framework-crosswalk.md) | — | ISO 27001 ↔ SOC 2 ↔ GDPR/CCPA ↔ HIPAA ↔ PCI DSS | separate workstream |
 | [`certification-roadmap.md`](certification-roadmap.md) | — | Fastest honest route to a certificate, timeline estimate, owner actions | this set |
+| [`saas-checklist-map.md`](saas-checklist-map.md) | — | The owner's Zylo SaaS checklist (10 items) mapped to evidence; PIPEDA/LGPD/SOX/FedRAMP applicability; TLS verified on staging | 2026-10-14 |
 
 ## Status vocabulary (every control and requirement)
 

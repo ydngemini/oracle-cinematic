@@ -1126,6 +1126,27 @@ updated: 2026-10-13
 ```
 The owner asked for the policy to be kept current. v2 (wording approved by the owner 2026-10-13) adds three paragraphs: per-record visibility and sharing (§2), AI call notes need consent and wait for review (§4), and the AI-voice disclosure must not be removed (§6). `POLICY_COVERAGE` ties each to the file that proves the capability; the test fails if the words go while the capability stays. CONTRACT C5.7 makes it a standing rule.
 
+#### L17-06 ISO 27001 ISMS documentation, Annex A assessment and framework crosswalk (draft)
+```yaml
+id: L17-06
+status: source_verified
+env: local
+evidence_shas: [d02e87d, b719fef, b693fbe]
+files: [docs/compliance/README.md, docs/compliance/iso27001/01-scope-and-context.md, docs/compliance/iso27001/02-leadership-and-policy.md, docs/compliance/iso27001/03-risk-methodology-and-register.md, docs/compliance/iso27001/04-objectives-and-support.md, docs/compliance/iso27001/05-operation-evaluation-improvement.md, docs/compliance/iso27001/annex-a-assessment.md, docs/compliance/iso27001/statement-of-applicability.md, docs/compliance/framework-crosswalk.md, docs/compliance/certification-roadmap.md, docs/compliance/saas-checklist-map.md]
+tests_run:
+  - {cmd: "grep/read of every cited path:line at e3ea107 (three parallel reviews); lsblk; .env key-prefix count only", result: "Annex A 93 controls: 16 implemented, 43 partial, 5 gap, 14 inherited, 2 not_applicable, 13 owner_action. Risk register R01-R31 (5 critical: plaintext PII, single operator + unescrowed master key, scheduled controls off on staging (recovery mode), unencrypted workstation, sub-processors without DPAs). Applicability: PCI SAQ A (Stripe-hosted Checkout/Portal), HIPAA n/a, GDPR conditional (US-only hosting), CCPA/state laws conditional (leads-data role needs counsel)", date: 2026-10-14}
+  - {cmd: "openssl s_client -tls1|-tls1_1|-tls1_2|-tls1_3 against staging; curl -I", result: "TLS 1.0/1.1 refused; 1.2 ECDHE-ECDSA-AES128-GCM-SHA256 and 1.3 TLS_AES_256_GCM_SHA384 accepted; HSTS max-age=31536000; includeSubDomains; strict CSP", date: 2026-10-14}
+  - {cmd: "chmod 600 on the workstation's .env, three .env backups and oracle-app/.env (were 0644/0664; .env holds a live Stripe key — counted by prefix, never printed)", result: "owner-only; docker compose reads them as the same user", date: 2026-10-14}
+authz_checked: n/a
+blockers:
+  - {type: owner, note: "Certification is issued only by an accredited certification body after Stage 1 + Stage 2 audits of an ISMS that has operated with records (about 3 months minimum). Nothing in the repo is, or may be described as, ISO 27001 / SOC 2 compliant or certified (C12)."}
+  - {type: owner, note: "Approve the drafts (policy, scope, risk acceptance criteria, SoA); create production (L19-02); escrow the master key; MFA + screenshots on GitHub/DO/Stripe/registrar; DPAs and replacing consumer Gmail SMTP; workstation full-disk encryption; rotate the live Stripe key out of dev; counsel (privacy notice, breach matrix, leads-data role); external pentest; certification-body quotes. Order and estimates: docs/compliance/certification-roadmap.md."}
+audit_refs: [A01, A04, A06]
+decision_refs: []
+next_task: "Code gaps in flight: L17-07 card-number redaction, L17-08 CAN-SPAM unsubscribe, L17-09..13 privileged-activity alerts / HOOK-3 / log-PII / audit fallback + verify_chain / access review, L17-14..18 demo-login boot guard / password hashing / dependency audit + Dependabot / admin read logging / DR drill in CI. Then: tenant-user MFA (owner decision), field encryption of remaining PII (A01), scheduled off-host backups, log forwarding."
+updated: 2026-10-14
+```
+
 ### L18
 Billing, seats and analytics.
 
