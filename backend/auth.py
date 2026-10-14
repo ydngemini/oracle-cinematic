@@ -10,6 +10,7 @@ runs work without a static secret in source.
 
 import asyncio
 import base64
+import concurrent.futures
 import hashlib
 import hmac
 import logging
@@ -126,7 +127,12 @@ _DEMO_USER = os.environ.get("ORACLE_DEMO_USER", "")
 _DEMO_PASS = os.environ.get("ORACLE_DEMO_PASS", "")
 _DEMO_ROLE = os.environ.get("ORACLE_DEMO_ROLE", "agent")
 _DEMO_TENANT = os.environ.get("ORACLE_DEMO_TENANT", APEX_TENANT_ID)
-if os.environ.get("ORACLE_ENABLE_DEMO_LOGINS", "").lower() in ("1", "true", "yes"):
+# Only in dev and staging (config.DEMO_LOGIN_ENVS; config.validate_or_die refuses
+# the boot elsewhere). Checked here too, so a process that imports auth without
+# the server's lifespan never loads a demo password on production (A.8.9).
+_DEMO_LOGIN_ENVS = ("dev", "development", "local", "staging")
+if (os.environ.get("ORACLE_ENABLE_DEMO_LOGINS", "").lower() in ("1", "true", "yes")
+        and os.environ.get("ORACLE_ENV", "").strip().lower() in _DEMO_LOGIN_ENVS):
     if _DEMO_USER and _DEMO_PASS:
         DEMO_CREDENTIALS[_DEMO_USER] = _DEMO_PASS
         DEMO_TENANCY[_DEMO_USER] = (_DEMO_TENANT, _DEMO_ROLE)
@@ -154,7 +160,26 @@ if _ADMIN_ID and _ADMIN_PASSPHRASE:
 # as the platform-admin fallback; everyone else is a users-table lookup. Password
 # hashing uses stdlib scrypt (no extra dependency).
 # ---------------------------------------------------------------------------
-_SCRYPT_N, _SCRYPT_R, _SCRYPT_P = 2 ** 14, 8, 1
+#
+# Cost (ISO 27001 A.5.17, L17-15). OWASP's Password Storage Cheat Sheet lists
+# five scrypt settings it calls equivalent: N=2^17/r=8/p=1 (128 MiB),
+# 2^16/8/2 (64 MiB), 2^15/8/3 (32 MiB), 2^14/8/5 (16 MiB), 2^13/8/10 (8 MiB).
+# 2^15/8/3 is the one that fits: measured on the dev laptop (i5-6360U) a verify
+# takes ~0.4-0.53 s, against ~0.62 s and 128 MiB for 2^17 — and a staging api
+# instance is 1 GiB with 255-561 MiB already resident. At most
+# _PW_HASH_WORKERS hashes run at once per process (64 MiB peak), on their own
+# threads, so a burst of logins neither blocks the event loop nor runs the
+# instance out of memory. The old setting (2^14/8/1) still verifies; a
+# successful login rewrites it at today's cost (_upgrade_password_hash).
+_SCRYPT_N, _SCRYPT_R, _SCRYPT_P = 2 ** 15, 8, 3
+_LEGACY_SCRYPT = (2 ** 14, 8, 1)  # the stored form "scrypt$<salt>$<dk>" carries no parameters
+# Bounds on parameters read back from the database, so a planted or corrupt row
+# cannot make one login allocate gigabytes.
+_SCRYPT_MAX_LOG2_N, _SCRYPT_MAX_R, _SCRYPT_MAX_P = 17, 16, 16
+_SCRYPT_MAX_MEMORY = 128 * 2 ** 20
+_PW_HASH_WORKERS = 2
+_PW_HASH_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
+    max_workers=_PW_HASH_WORKERS, thread_name_prefix="pwhash")
 _RESET_TTL_SECONDS = 1800  # password-reset link valid 30 min
 _RESET_JTI_BYTES = 32
 _RESET_PURPOSE = "pwreset"
@@ -167,25 +192,125 @@ _FORGOT_RESPONSE = {
 MIN_PASSWORD_LEN = 10
 
 
+def _scrypt(password: str, salt: bytes, n: int, r: int, p: int, dklen: int) -> bytes:
+    # OpenSSL's default ceiling is 32 MiB, which N=2^15/r=8 already exceeds by
+    # its working buffers; the bound is the parameter check, not this number.
+    return hashlib.scrypt(password.encode(), salt=salt, n=n, r=r, p=p, dklen=dklen,
+                          maxmem=128 * r * (n + p + 2) + 2 ** 20)
+
+
 def _hash_pw(password: str) -> str:
+    """Stored form: scrypt$ln=<log2 N>,r=<r>,p=<p>$<salt b64>$<key b64>."""
     salt = secrets.token_bytes(16)
-    dk = hashlib.scrypt(password.encode(), salt=salt, n=_SCRYPT_N, r=_SCRYPT_R, p=_SCRYPT_P, dklen=32)
-    return "scrypt$%s$%s" % (base64.b64encode(salt).decode(), base64.b64encode(dk).decode())
+    dk = _scrypt(password, salt, _SCRYPT_N, _SCRYPT_R, _SCRYPT_P, 32)
+    return "scrypt$ln=%d,r=%d,p=%d$%s$%s" % (
+        _SCRYPT_N.bit_length() - 1, _SCRYPT_R, _SCRYPT_P,
+        base64.b64encode(salt).decode(), base64.b64encode(dk).decode())
+
+
+def _parse_pw_hash(stored: str) -> tuple[int, int, int, bytes, bytes]:
+    """(n, r, p, salt, key) of a stored hash; ValueError when it is not one."""
+    parts = stored.split("$")
+    if parts[0] != "scrypt":
+        raise ValueError("not an scrypt hash")
+    if len(parts) == 3:  # written before L17-15: no parameters, always 2^14/8/1
+        n, r, p = _LEGACY_SCRYPT
+        salt_b64, dk_b64 = parts[1], parts[2]
+    elif len(parts) == 4:
+        fields = dict(item.split("=", 1) for item in parts[1].split(","))
+        if set(fields) != {"ln", "r", "p"}:
+            raise ValueError("unexpected scrypt parameters")
+        log2_n, r, p = int(fields["ln"]), int(fields["r"]), int(fields["p"])
+        if not (1 <= log2_n <= _SCRYPT_MAX_LOG2_N and 1 <= r <= _SCRYPT_MAX_R
+                and 1 <= p <= _SCRYPT_MAX_P and 128 * r * 2 ** log2_n <= _SCRYPT_MAX_MEMORY):
+            raise ValueError("scrypt parameters out of bounds")
+        n = 2 ** log2_n
+        salt_b64, dk_b64 = parts[2], parts[3]
+    else:
+        raise ValueError("malformed scrypt hash")
+    return n, r, p, base64.b64decode(salt_b64), base64.b64decode(dk_b64)
 
 
 def _verify_pw(password: str, stored: Optional[str]) -> bool:
     if not stored:
         return False
     try:
-        scheme, salt_b64, dk_b64 = stored.split("$")
-        if scheme != "scrypt":
+        n, r, p, salt, expected = _parse_pw_hash(stored)
+        if not 16 <= len(expected) <= 64:
             return False
-        salt = base64.b64decode(salt_b64)
-        expected = base64.b64decode(dk_b64)
-        dk = hashlib.scrypt(password.encode(), salt=salt, n=_SCRYPT_N, r=_SCRYPT_R, p=_SCRYPT_P, dklen=len(expected))
+        dk = _scrypt(password, salt, n, r, p, len(expected))
         return hmac.compare_digest(dk, expected)
     except Exception:  # noqa: BLE001 — any parse/format error == invalid
         return False
+
+
+def _pw_hash_is_current(stored: Optional[str]) -> bool:
+    """False for a hash written at a weaker cost than today's (rehash it)."""
+    try:
+        n, r, p, _salt, _dk = _parse_pw_hash(stored or "")
+    except Exception:  # noqa: BLE001 — unparseable is not ours to rewrite
+        return True
+    return (n, r, p) == (_SCRYPT_N, _SCRYPT_R, _SCRYPT_P)
+
+
+async def _hash_pw_async(password: str) -> str:
+    """_hash_pw off the event loop, at most _PW_HASH_WORKERS at a time.
+
+    A hash costs ~0.4 s of CPU; run inline it froze every request and
+    WebSocket on the worker for that long. scrypt releases the GIL, so the
+    pool runs it in parallel with the loop.
+    """
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(_PW_HASH_EXECUTOR, lambda: _hash_pw(password))
+
+
+async def _verify_pw_async(password: str, stored: Optional[str]) -> bool:
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(_PW_HASH_EXECUTOR, lambda: _verify_pw(password, stored))
+
+
+def _load_common_passwords() -> frozenset[str]:
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "common_passwords.txt")
+    with open(path, encoding="utf-8") as handle:
+        return frozenset(line.strip().lower() for line in handle
+                         if line.strip() and not line.startswith("#"))
+
+
+_COMMON_PASSWORDS = _load_common_passwords()
+_COMMON_PASSWORD_DETAIL = ("That password is one of the most commonly used passwords. "
+                           "Choose a different one.")
+
+
+def _check_new_password(password: str, *, label: str = "Password") -> None:
+    """The rules a password must meet when it is set or reset (A.5.17).
+
+    Length, then the bundled common-password list (case-insensitive, local
+    only). Login never applies them: an existing password keeps working.
+    """
+    if not (MIN_PASSWORD_LEN <= len(password) <= _MAX_PASSPHRASE_LEN):
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY,
+                            f"{label} must be at least {MIN_PASSWORD_LEN} characters.")
+    if password.strip().lower() in _COMMON_PASSWORDS:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, _COMMON_PASSWORD_DETAIL)
+
+
+async def _upgrade_password_hash(user_id, old_hash: str, password: str) -> None:
+    """Rewrite a weaker-cost hash at today's cost, after a successful login.
+
+    Compare-and-swap on the old hash, so a password change that lands in the
+    same instant is never overwritten with the old password. Best effort: a
+    failure leaves the old (still valid) hash and is retried next login.
+    """
+    try:
+        new_hash = await _hash_pw_async(password)
+        from db.connection import tenant_tx
+        async with tenant_tx(_admin_ctx()) as conn:
+            await conn.execute(
+                "UPDATE users SET password_hash = $1 WHERE id = $2 AND password_hash = $3",
+                new_hash, user_id, old_hash,
+            )
+    except Exception as exc:  # noqa: BLE001 — never fail a good login over this
+        log.warning("Password hash upgrade skipped: %s", type(exc).__name__)
 
 
 # Verified against when no account matches, so an unknown address costs the
@@ -926,12 +1051,18 @@ async def login(body: LoginRequest, response: Response, request: Request = None)
         # Always pay for one scrypt, account or not: skipping it for unknown
         # addresses made "no such account" answer ~200x faster than "wrong
         # password", which enumerates accounts by timing alone (AUTH-4).
-        password_ok = _verify_pw(
-            body.passphrase,
-            row["password_hash"] if row and row["password_hash"] else _DUMMY_PASSWORD_HASH,
-        )
+        stored_hash = row["password_hash"] if row and row["password_hash"] else _DUMMY_PASSWORD_HASH
+        password_ok = await _verify_pw_async(body.passphrase, stored_hash)
+        hash_is_current = _pw_hash_is_current(stored_hash)
+        if not password_ok and not hash_is_current:
+            # A pre-L17-15 hash verifies at a quarter of today's cost. Pay the
+            # difference, so "wrong password on an old account" is not
+            # distinguishable by timing from "no such account" (AUTH-4).
+            await _verify_pw_async(body.passphrase, _DUMMY_PASSWORD_HASH)
         if row and row["password_hash"] and password_ok:
             credentials_ok = True
+            if not hash_is_current:
+                await _upgrade_password_hash(row["id"], row["password_hash"], body.passphrase)
             # Identity is the row's agent_id, not what was typed. _lookup_user
             # matches on lower(agent_id), so "Me@x.com" and "me@x.com" are one
             # account — but signing the typed spelling into the JWT made them
@@ -1009,8 +1140,7 @@ async def register(body: RegisterRequest, response: Response, request: Request =
     email = body.email.strip().lower()
     if "@" not in email or "." not in email.split("@")[-1] or len(email) > _MAX_AGENT_ID_LEN:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Enter a valid email address.")
-    if not (MIN_PASSWORD_LEN <= len(body.password) <= _MAX_PASSPHRASE_LEN):
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, f"Password must be at least {MIN_PASSWORD_LEN} characters.")
+    _check_new_password(body.password)
 
     from db.connection import tenant_tx
     import asyncpg
@@ -1018,7 +1148,7 @@ async def register(body: RegisterRequest, response: Response, request: Request =
     if _is_reserved_identity(email):
         # The same answer as an existing account: a reserved address is taken.
         raise HTTPException(status.HTTP_409_CONFLICT, "An account with that email already exists.")
-    pw_hash = _hash_pw(body.password)
+    pw_hash = await _hash_pw_async(body.password)
     company = (body.company or "").strip()
     try:
         async with tenant_tx(_admin_ctx()) as conn:
@@ -1120,8 +1250,7 @@ async def _issue_password_reset(email: str) -> None:
 @router.post("/reset", response_model=LoginResponse)
 async def reset_password(body: ResetRequest, response: Response) -> LoginResponse:
     """Atomically consume a reset token, set the new password, and log in."""
-    if not (MIN_PASSWORD_LEN <= len(body.new_password) <= _MAX_PASSPHRASE_LEN):
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, f"Password must be at least {MIN_PASSWORD_LEN} characters.")
+    _check_new_password(body.new_password)
     try:
         claims = decode_token(body.token)  # validates signature + expiry
     except HTTPException:
@@ -1146,7 +1275,7 @@ async def reset_password(body: ResetRequest, response: Response) -> LoginRespons
         raise HTTPException(status.HTTP_400_BAD_REQUEST, _RESET_ERROR_DETAIL)
 
     from db.connection import tenant_tx
-    pw_hash = _hash_pw(body.new_password)
+    pw_hash = await _hash_pw_async(body.new_password)
     async with tenant_tx(_admin_ctx()) as conn:
         row = await conn.fetchrow(
             "WITH consumed_reset AS ("
@@ -1238,7 +1367,7 @@ async def confirm_password(ctx, password: str) -> None:
     row = await _lookup_user(ctx.agent_id)
     if not row or not row["password_hash"] or str(row["tenant_id"]) != str(ctx.tenant_id):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Confirm your password to continue.")
-    if not _verify_pw(password, row["password_hash"]):
+    if not await _verify_pw_async(password, row["password_hash"]):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Password is incorrect.")
 
 
@@ -1267,8 +1396,7 @@ async def change_password(
     # Guessing the current password from a stolen session was bounded only by
     # the generic per-IP /auth/ bucket; the login account limit applies (AUTH-13).
     await _check_rate_limit(agent_id)
-    if not (MIN_PASSWORD_LEN <= len(body.new_password) <= _MAX_PASSPHRASE_LEN):
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, f"New password must be at least {MIN_PASSWORD_LEN} characters.")
+    _check_new_password(body.new_password, label="New password")
     row = await _lookup_user(agent_id)
     if not row or not row["password_hash"]:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "This account's password is managed by your administrator, not self-service.")
@@ -1281,11 +1409,11 @@ async def change_password(
         or (claims.get("uid") and str(claims.get("uid")) != str(row["id"]))
     ):
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Your session has ended. Sign in again.")
-    if not _verify_pw(body.current_password, row["password_hash"]):
+    if not await _verify_pw_async(body.current_password, row["password_hash"]):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Current password is incorrect.")
 
     from db.connection import tenant_tx
-    new_hash = _hash_pw(body.new_password)
+    new_hash = await _hash_pw_async(body.new_password)
     async with tenant_tx(_admin_ctx()) as conn:
         # Bumping session_epoch ends every other session this account has —
         # someone changes a password because they think it is compromised.
@@ -1423,8 +1551,9 @@ async def accept_invite(body: AcceptInviteRequest, response: Response, request: 
     from db.connection import tenant_tx
     import asyncpg
 
+    _check_new_password(body.password)
     token_hash = hash_invitation_token(body.token)
-    pw_hash = _hash_pw(body.password)
+    pw_hash = await _hash_pw_async(body.password)
 
     async with tenant_tx(_admin_ctx()) as conn:
         preview = await conn.fetchrow(

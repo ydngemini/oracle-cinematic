@@ -10,7 +10,9 @@ Three primitives for mandatory mutation logging:
   2. AuditMiddleware
        Starlette BaseHTTPMiddleware that auto-logs every POST/PUT/DELETE/PATCH
        request.  Skips /health and /docs.  Categorises /admin/* paths as
-       ADMIN_ACTION; everything else as USER_STATE_CHANGE.
+       ADMIN_ACTION; everything else as USER_STATE_CHANGE.  Also records the
+       READS a platform_admin makes (one ADMIN_ACTION row per request, see
+       _platform_read_metadata), because that role bypasses tenant isolation.
 
   3. audit_now(ctx, category, action, target_id, metadata)
        Thin async helper for explicit audit calls inside endpoint bodies.
@@ -43,6 +45,7 @@ import functools
 import hashlib
 import json
 import logging
+import re
 import time
 from collections import defaultdict, deque
 from typing import Callable, Optional
@@ -142,6 +145,79 @@ _denial_last_alert: dict[tuple[str, str], float] = {}
 _DENIAL_WINDOW_SECONDS = 300.0
 _DENIAL_THRESHOLD = 5
 _MAX_ANOMALY_KEYS = 5_000
+
+
+# ---------------------------------------------------------------------------
+# Platform-admin reads (ISO 27001 A.8.2 / A.8.15, L17-17)
+#
+# platform_admin bypasses tenant isolation (tenancy.py Role.PLATFORM_ADMIN;
+# RLS `app_is_platform_admin()`), so every read it makes can return another
+# brokerage's records — and none of those reads were logged: the middleware
+# recorded mutations only. Now each platform_admin GET/HEAD writes one ledger
+# row: who, which tenant (when the route names one; otherwise "all", because
+# the platform scope spans every tenant), which route and path, the status,
+# and when. Never the query string (search terms can be names or phone
+# numbers) and never any response content.
+#
+# Bounded: one row per request, never per record returned, and an identical
+# read (same actor, same path) repeated within _PLATFORM_READ_WINDOW_SECONDS
+# is coalesced into the first row — the operator console polls every 60 s.
+# A read of a DIFFERENT record is a different path and is always recorded.
+# ---------------------------------------------------------------------------
+
+_READ_METHODS: frozenset[str] = frozenset({"GET", "HEAD"})
+# Signing in, reading one's own session and the policy text touch no tenant data.
+_PLATFORM_READ_SKIP_PREFIXES: tuple[str, ...] = (
+    "/auth/", "/api/auth/", "/api/policy", "/ws",
+)
+_PLATFORM_READ_WINDOW_SECONDS = 60.0
+_platform_read_last: dict[tuple[str, str], float] = {}
+_PLATFORM_ROLE = "platform_admin"
+
+
+_UUID_RE = re.compile(
+    r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
+
+
+def _is_uuid(value: object) -> bool:
+    return isinstance(value, str) and _UUID_RE.fullmatch(value) is not None
+
+
+def _platform_read_is_new(actor: str, path: str, now: float) -> bool:
+    """False for a repeat of the same read inside the coalescing window."""
+    key = (actor, path)
+    last = _platform_read_last.get(key)
+    if last is not None and now - last < _PLATFORM_READ_WINDOW_SECONDS:
+        return False
+    if len(_platform_read_last) >= _MAX_ANOMALY_KEYS:
+        cutoff = now - _PLATFORM_READ_WINDOW_SECONDS
+        for stale in [k for k, seen in _platform_read_last.items() if seen < cutoff]:
+            _platform_read_last.pop(stale, None)
+        if len(_platform_read_last) >= _MAX_ANOMALY_KEYS:
+            # Still full of live keys: drop the oldest. Losing coalescing state
+            # only means an extra row, never a missing one.
+            oldest = min(_platform_read_last, key=_platform_read_last.get)
+            _platform_read_last.pop(oldest, None)
+    _platform_read_last[key] = now
+    return True
+
+
+def _platform_read_metadata(request: Request, path: str, status_code: int,
+                            elapsed_ms: float, client_ip: str) -> dict:
+    """What a platform-admin read row carries. Identifiers only, no content."""
+    path_params = request.scope.get("path_params") or {}
+    named = path_params.get("tenant_id") or request.query_params.get("tenant_id")
+    route = request.scope.get("route")
+    return {
+        "method": request.method,
+        "path": path,
+        "route": getattr(route, "path", None),
+        "target_tenant_id": named if _is_uuid(named) else "all",
+        "status_code": status_code,
+        "response_time_ms": elapsed_ms,
+        "client_ip": client_ip,
+        "coalesce_window_seconds": int(_PLATFORM_READ_WINDOW_SECONDS),
+    }
 
 
 async def _record_anomaly_safe(
@@ -381,7 +457,7 @@ class AuditMiddleware(BaseHTTPMiddleware):
         # Attribute the mutation from the Bearer JWT when one is present.
         # decode_token is the same validation path the endpoints use, so a
         # forged token attributes nothing (entry still records, unattributed).
-        tenant_id = user_id = None
+        tenant_id = user_id = role = None
         auth_header = request.headers.get("authorization", "")
         # Production browsers authenticate with the HttpOnly session cookie and
         # send no Authorization header, so reading only the header left every
@@ -400,6 +476,7 @@ class AuditMiddleware(BaseHTTPMiddleware):
                     raise ValueError("purpose token")  # reset/portal tokens attribute nothing
                 tenant_id = claims.get("tenant_id")
                 user_id = claims.get("sub")
+                role = claims.get("role")
             except Exception as exc:  # noqa: BLE001 — invalid/expired token
                 # An expired token here is routine and must not be noisy. But
                 # this also catches a broken signing key or an import failure,
@@ -430,6 +507,21 @@ class AuditMiddleware(BaseHTTPMiddleware):
                 tenant_id=tenant_id,
                 user_id=user_id,
                 metadata=meta,
+            )
+        elif (
+            role == _PLATFORM_ROLE
+            and user_id
+            and request.method in _READ_METHODS
+            and not path.startswith(_PLATFORM_READ_SKIP_PREFIXES)
+            and _platform_read_is_new(str(user_id), path, time.monotonic())
+        ):
+            _spawn_record(
+                category=AuditCategory.ADMIN_ACTION,
+                action=f"platform_read {request.method} {path}",
+                tenant_id=tenant_id,
+                user_id=user_id,
+                metadata=_platform_read_metadata(
+                    request, path, response.status_code, elapsed_ms, client_ip),
             )
 
         if response.status_code in {401, 403}:
