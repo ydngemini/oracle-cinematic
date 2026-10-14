@@ -3,7 +3,7 @@ import { apiGet, apiPost, ApiError } from '../lib/apiClient';
 import { formatApiError } from '../lib/errorMessages';
 import styles from './PolicyAcceptanceGate.module.css';
 
-const FALLBACK_POLICY_VERSION = 'neoh-platform-use-policy-2026-10-14-v4';
+const FALLBACK_POLICY_VERSION = 'neoh-platform-use-policy-2026-10-14-v5';
 const FALLBACK_ESA_VERSION = 'neoh-account-security-esa-2026-07-18-v1';
 const ESA_ACK_KEY = 'oracle_account_security_esa_ack';
 const FALLBACK_ESA_AGREEMENT = {

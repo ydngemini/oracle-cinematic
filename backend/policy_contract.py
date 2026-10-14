@@ -6,7 +6,7 @@ from __future__ import annotations
 # Bump this identifier whenever the policy text changes materially. Each user
 # acceptance record is tied to this value so prior acknowledgement remains
 # auditable rather than being silently reinterpreted under new wording.
-PLATFORM_POLICY_VERSION = "neoh-platform-use-policy-2026-10-14-v4"
+PLATFORM_POLICY_VERSION = "neoh-platform-use-policy-2026-10-14-v5"
 
 PLATFORM_POLICY_DOCUMENT = {
     "title": "NEOH™ Platform Use Policy",
@@ -32,6 +32,7 @@ PLATFORM_POLICY_DOCUMENT = {
                 "Protect confidential information and limit access to people with a legitimate business need. Do not submit authentication secrets, government identification numbers, payment-card data, bank credentials, or other sensitive information that is not necessary for the intended workflow.",
                 "Each client and contact record is visible to the agent assigned to it, to your broker owner, and to anyone they share it with; a record with no assigned agent is visible to every agent in your brokerage. A contact you add for an assigned client stays with that client's agent. Share a record only with a colleague who has a legitimate business need, give edit access only when they need to change it, and remove access when the need ends.",
                 "Texts, emails, calls, call notes and transcripts, generated documents, nurture plans and the outcome history linked to a client or contact follow that record: you see them only while you can see the record, and sending, calling, enrolling or generating a document for someone needs edit access, not a view-only share. Opt-outs, consent and contact-frequency limits always apply across your whole brokerage, whichever colleague's record they came from: if a person asks any of your agents to stop, every agent is blocked from contacting them.",
+                "A property record linked to a client, such as the client's own home, follows that client together with its photos and activity: you see it only while you can see the client, and changing it needs edit access. Property records from public sources that are not linked to a client stay visible to every agent in your brokerage, and brokerage-wide alerts never name a client's property. Drafts waiting for approval follow the same rule; only the person who asked for a draft, or your broker owner, can change or approve it.",
             ],
         },
         {
@@ -109,12 +110,14 @@ POLICY_COVERAGE: tuple[dict[str, str], ...] = (
      "evidence": "db/migrations/0140_communications_follow_the_record.sql",
      "section": "2. Authorized data and confidentiality",
      "phrase": "if a person asks any of your agents to stop, every agent is blocked from contacting them"},
-    # 0142 needs no new wording: a staged text, email or call is one of the
-    # "texts, emails, calls" above, and sending one needs edit access.
     {"capability": "staged drafts and approvals follow the record (D-2026-10-13-01, 0142)",
      "evidence": "db/migrations/0142_drafts_follow_the_record.sql",
      "section": "2. Authorized data and confidentiality",
-     "phrase": "sending, calling, enrolling or generating a document for someone needs edit access"},
+     "phrase": "only the person who asked for a draft, or your broker owner, can change or approve it"},
+    {"capability": "a lead linked to a client follows that client (D-2026-10-13-01, 0143)",
+     "evidence": "db/migrations/0143_leads_follow_the_record.sql",
+     "section": "2. Authorized data and confidentiality",
+     "phrase": "A property record linked to a client, such as the client's own home, follows that client"},
     {"capability": "AI call notes: consent, review by default (D-2026-10-12-03)",
      "evidence": "call_note_settings.py",
      "section": "4. AI-assisted work and professional judgment",
