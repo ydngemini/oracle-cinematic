@@ -37,7 +37,7 @@ Listed weakest to strongest:
 | 02 | All pages, routes, mobile UI | [02](02-all-pages-mobile-ui.md) | `source_verified` | staging | `90372f2` crawl | — | Per-page verdicts |
 | 03 | Brokerage tenancy and hybrid access | [03](03-brokerage-tenancy-hybrid-access.md) | `source_verified` | staging | 0131 (L03-02), 0134+0137 (L03-04) staging; 0140 (L03-05) local; 0142 drafts (L03-06), 0143 leads (L03-07), 0145 live frames (L03-08) local | Owner: team leads (L03-03); Platform Use Policy wording for 0143 (L03-07); lead assignee / listings (L03-07) | Owner approves the 0143 policy wording; then the remaining lead_id children (L03-03) |
 | 04 | CRM, contacts, leads, relationships | [04](04-crm-contact-leads-relationships.md) | `tests_pass` | local | `a8bff54` (L04-01) | — | T04.01 + T04.13 (L04-01 next) |
-| 05 | Semantic intent | [05](05-semantic-language-intent.md) | `source_verified` | local | `745f2fa` | — | L05-01 |
+| 05 | Semantic intent | [05](05-semantic-language-intent.md) | `tests_pass` | local | base `2fef2e5` (L05-01, L05-02) | Owner: launch languages (L05-02); a scored extraction run needs model-spend approval | T05.04 + T05.07 + AC05.04 (L05-02 next) |
 | 06 | Evidence retrieval and memory | [06](06-evidence-retrieval-memory.md) | `source_verified` | local | `745f2fa` | A01, A02 | L06-01 |
 | 07 | AI gateway and governed tools | [07](07-ai-gateway-model-tool-governance.md) | `tests_pass` | local | `071d65d` (L07-01) | Playwright check owed (L07-01); owner: archive_client | T07.02 + AC07.01 |
 | 08 | Durable missions and workflows | [08](08-durable-missions-workflow-orchestration.md) | `source_verified` | local | `745f2fa` | PR #11 review; grant-release decision | L08-01 |
@@ -396,19 +396,42 @@ Semantic intent.
 #### L05-01 Fast-path intent hides failed searches
 ```yaml
 id: L05-01
-status: source_verified
+status: tests_pass
 env: local
-evidence_shas: [745f2fa]
-files: [backend/neoh_intents.py, backend/search_api.py, oracle-app/src/neoh/useNeohComposer.js]
+evidence_shas: [745f2fa, 2fef2e5]
+files: [backend/neoh_intents.py, backend/neoh_render.py, backend/search_api.py, backend/source_status.py, backend/tests/test_neoh_intents.py, backend/tests/test_search_api.py]
 tests_run:
   - {cmd: "grep -n degraded backend/neoh_intents.py; sed -n 351,384p backend/search_api.py", result: "the fast path ignores degraded search legs and shows Nothing matches", date: 2026-10-12}
-authz_checked: n/a
+  - {cmd: "cd backend && ORACLE_SKIP_DOTENV=1 pytest -q -p no:cacheprovider tests/test_neoh_intents.py tests/test_search_api.py", result: "35 passed, exit 0 (8 new forced-failure cases run the real search_api.search with one leg raising)", date: 2026-10-14}
+  - {cmd: "cd backend && ORACLE_SKIP_DOTENV=1 pytest -q -p no:cacheprovider tests/", result: "3527 passed, 42 skipped, exit 0", date: 2026-10-14}
+authz_checked: "no access change: every leg still runs in the caller's tenant_tx; the status entries carry no exception text"
 blockers: []
-audit_refs: []
+audit_refs: [A02]
 decision_refs: []
-next_task: "T05.11 + AC05.07"
-updated: 2026-10-12
+next_task: "Extend the same per-source status to the chat model's own lookup tools (06/07)"
+updated: 2026-10-14
 ```
+AC05.07 evidence. `search_api.search` now returns `source_status: {kind: entry}` in the C6 vocabulary (`source_status.py`: `checked` with `matched`, `timed_out`, `unavailable`, `not_applicable` with reason `query_too_short`) beside the existing `degraded` list, which is unchanged for its frontend readers. The ⌘K resolvers (`neoh_intents._show_person`, `_properties_for`, `_deal_blocker`, and the address fallback) read the status of each leg they used (`_leg_status`). A failed leg returns `neoh_render.sources_failed`: "I couldn't search people for … the search timed out. This is not a “no match”", plus an `evidence` block naming each failed source, with `degraded: true` and the per-source status. It is drawn on screen, not passed to chat. A leg named in `degraded`, or one with no status at all (`status_missing`), counts as failed. "Nothing matches" now appears only beside a `checked` leg, and every search-backed answer carries `degraded` and `source_status`. Not done: the chat model's tools (`ai_tools*.py`) do not use `search_api`, and their failure reporting is not covered here.
+
+#### L05-02 SemanticFrame v1: typed, validated, authorised as the caller
+```yaml
+id: L05-02
+status: tests_pass
+env: local
+evidence_shas: [2fef2e5]
+files: [backend/semantic_frame.py, backend/tests/test_semantic_frame.py, backend/tests/test_semantic_frame_access_live.py, .github/workflows/ci.yml]
+tests_run:
+  - {cmd: "cd backend && ORACLE_SKIP_DOTENV=1 pytest -q -p no:cacheprovider tests/test_semantic_frame.py", result: "31 passed, exit 0 (fake gateway; no model called)", date: 2026-10-14}
+  - {cmd: "livetest (real PostgreSQL, app + platform roles, FORCE RLS): pytest tests/test_semantic_frame_access_live.py", result: "1 passed: agents A/B, C with a view share, broker owner, platform admin and agent D of another brokerage each keep exactly the candidates they may open (client, contact, lead, deal); a nonexistent id is dropped for all; a brokerage-scope context is refused; revoking C's share drops B's records on re-authorisation", date: 2026-10-14}
+  - {cmd: "cd backend && bandit -q -r . -x ./tests,./venv,./ml_forge,./node_modules,./scripts --severity-level medium --confidence-level medium -b .bandit-baseline.json", result: "exit 0", date: 2026-10-14}
+authz_checked: "candidates re-read through record_access (app_client_access / app_contact_access / app_linked_access) and RLS on transactions, in the requesting person's own tenant_tx; brokerage_scope contexts refused"
+blockers: ["owner: which languages the semantic layer must support at launch", "a scored extraction run (AC05.08) needs model-spend approval"]
+audit_refs: []
+decision_refs: [D-2026-10-13-01]
+next_task: "T05.04 + T05.07 + AC05.04: carry frame constraints into 07 tool calls and 08 mission steps; then wire extract_frame behind the fast path (T05.05)"
+updated: 2026-10-14
+```
+AC05.02 and AC05.03 evidence. `backend/semantic_frame.py` defines `SemanticFrame` `schema_version: 1`, with goals (a closed label set, each with a minimum effect class), entity mentions with candidate ids, times with an IANA zone and offset-aware datetimes, constraints (`no_send`, `draft_only`, `approval_required`, `not_before`, `do_not_contact`), scope, required data, an effect class (`read` / `internal_edit` / `external_effect`, mapped from `ActionRisk` by `effect_for_risk`), unfilled slots, ambiguities and verbatim evidence. `validate_frame` rejects an unknown version, extra fields, a "don't send" beside a live send (F05.03), an effect that does not match the goals, a time without an offset, and dangling indexes. It also strips every server-decided field (`authorized`, candidate `access`, ambiguity choices), so authorisation is never deserialised. `admit_for_planning` re-validates the frame and requires it to be authorised with nothing left to ask. `extract_frame` makes one `llm_gateway.complete(task="fast", response_format=strict json_schema)` call, retried once. The model sees records only by number and never sees an id; it is refused for a reference outside the list, for writing ids, or for evidence not quoted from the request. `authorize_frame` re-reads every candidate as the caller, drops the ones the caller cannot see (it reports only a count), and turns 0 or 2+ survivors into one question. Not wired into any route yet: nothing calls `extract_frame` in production. No model-scored run has been made.
 
 ### L06
 Evidence retrieval and memory.
@@ -1323,7 +1346,7 @@ From [neoh-full-platform-source-audit-2026-10-08.md](../neoh-full-platform-sourc
 | ID | Finding | Severity | Status at HEAD `745f2fa` (2026-10-12) | Evidence at HEAD | Owning category | Ledger |
 |---|---|---|---|---|---|---|
 | A01 | Customer PII and communications in plaintext | P0 | open; the audit missed the AI call notes (`aec14c4` predates its pin). 2026-10-13: client notes sealed for new writes (0132, L17-03, local); old rows await the backfill; the other fields stay open | `docs/privacy-data-map.md:40`, `:42`, `:48`, `:71`; `backend/commands_api.py:2335` (`deliver_call_notes` → `client_notes.body`) | 17 | L17-03, L09-02, L09-03 |
-| A02 | Failed property lookup reads as zero matches | P0 | fixed in code at `d934b2e`, local tests only (2026-10-13, L11-02); not deployed, migration 0135 unapplied. 2026-10-13: the non-property sites listed in L11-02 (geocoders, eviction, enrich-property, market-snapshot, AVM, building footprints) fixed locally, `tests_pass` (L11-03, unpushed branch, no migration); staging check owed | was `backend/client_ai_automation.py:700`, `:704`; now `_property_candidates_bounded` returns per-source status (`:727`) and a failed lookup degrades the reconcile (`:1079`) | 11 | L11-02, L11-03, L06-01 |
+| A02 | Failed property lookup reads as zero matches | P0 | fixed in code at `d934b2e`, local tests only (2026-10-13, L11-02); not deployed, migration 0135 unapplied. 2026-10-13: the non-property sites listed in L11-02 (geocoders, eviction, enrich-property, market-snapshot, AVM, building footprints) fixed locally, `tests_pass` (L11-03, unpushed branch, no migration); staging check owed | was `backend/client_ai_automation.py:700`, `:704`; now `_property_candidates_bounded` returns per-source status (`:727`) and a failed lookup degrades the reconcile (`:1079`) | 11 | L11-02, L11-03, L06-01, L05-01 |
 | A03 | Professional 3D certification without verified evidence | P0 | partly fixed: labels bound to the verdict (L12-02); certification state not built | `backend/recon_quality.py:83`, `:101`; `backend/reconstruction_worker.py:581`; badge `backend/tour_api.py:41`, `:335` ignores the verdict | 12 | L12-01 |
 | A04 | Production readiness not established by staging CI | P0 | open (no production app) | `.github/workflows/ci.yml:606` (`promote` manual only) | 19 | L19-02 |
 | A05 | Usage event counted before approved/delivered outreach | P1 | fixed in code (`a8bff54`), `tests_pass` local (2026-10-13), not deployed: metered only at delivered (0133); owner to confirm the billable stage | was `backend/speed_to_lead.py:387-389`; now `backend/outreach_lifecycle.py` (`BILLABLE_ENGAGEMENT_STAGE`), `backend/billing_usage.py` (`record_lead_engagement`, `BILLABLE_PREDICATE`) | 18 | L18-02, L04-01 |

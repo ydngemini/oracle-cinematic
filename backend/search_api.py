@@ -9,7 +9,9 @@ round trip, with two properties the six filters never had:
 
 **Every leg runs, and a failed leg is named.** `asyncio.gather` with
 `return_exceptions=True`, and the response carries `degraded: [kind, ...]`
-for any leg that raised. A search that silently returns three of four kinds
+for any leg that raised, plus `source_status: {kind: entry}` in the CONTRACT
+C6 vocabulary (`source_status.py`: checked | timed_out | unavailable |
+not_applicable). A search that silently returns three of four kinds
 is a lie about the corpus; an agent who cannot find a deal needs to know
 whether it is absent or whether the deals leg fell over.
 
@@ -34,6 +36,7 @@ from typing import Any, Awaitable, Callable, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
+import source_status as ss
 from db.connection import tenant_tx
 from tenancy import TenantContext, require_context
 
@@ -359,7 +362,11 @@ async def search(ctx: TenantContext, q: str, kinds: list[str], limit: int) -> di
             kinds.append("records")
 
     if len(q) < 2:
-        return {"query": q, "results": [], "counts": {k: 0 for k in kinds}, "degraded": []}
+        return {
+            "query": q, "results": [], "counts": {k: 0 for k in kinds}, "degraded": [],
+            # Not asked, so not a verified miss either.
+            "source_status": {k: ss.not_applicable(ss.QUERY_TOO_SHORT) for k in kinds},
+        }
 
     outcomes = await asyncio.gather(
         *(LEGS[k](ctx, q, limit) for k in kinds), return_exceptions=True,
@@ -368,20 +375,30 @@ async def search(ctx: TenantContext, q: str, kinds: list[str], limit: int) -> di
     results: list[dict[str, Any]] = []
     counts: dict[str, int] = {}
     degraded: list[str] = []
+    # One C6 status per leg (source_status.py). `degraded` stays as the list
+    # of failed kinds for the callers that already read it; `source_status`
+    # says HOW each failed (timed_out vs unavailable) and that an empty leg
+    # beside it was `checked` — a verified miss rather than a silent one.
+    statuses: dict[str, dict[str, Any]] = {}
     for kind, outcome in zip(kinds, outcomes):
         if isinstance(outcome, BaseException):
             logger.warning("search leg %s failed", kind, exc_info=outcome)
             degraded.append(kind)
             counts[kind] = 0
+            statuses[kind] = ss.failure(outcome)
             continue
         counts[kind] = len(outcome)
+        statuses[kind] = ss.checked(matched=len(outcome))
         results.extend(outcome)
 
     # Score first, then kind order as a stable tiebreak, so the same query
     # always renders the same list.
     order = {k: i for i, k in enumerate(KINDS)}
     results.sort(key=lambda h: (-h["score"], order.get(h["kind"], 99), h["label"]))
-    return {"query": q, "results": results, "counts": counts, "degraded": degraded}
+    return {
+        "query": q, "results": results, "counts": counts, "degraded": degraded,
+        "source_status": statuses,
+    }
 
 
 # ---------------------------------------------------------------------------

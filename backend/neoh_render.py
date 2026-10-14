@@ -60,6 +60,56 @@ def fallthrough(reason: str) -> dict[str, Any]:
     return {"intent": None, "spoken": "", "blocks": [], "fallthrough": True, "reason": reason}
 
 
+#: What a person reads for each search leg that could not be asked.
+_SOURCE_NOUNS = {
+    "people": "people",
+    "properties": "properties",
+    "deals": "deals",
+    "conversations": "conversations",
+    "records": "public records",
+}
+
+
+def sources_failed(
+    intent: str, query: str, statuses: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    """A search the answer depended on did not answer (CONTRACT C6, T05.11).
+
+    A failed leg is not "Nothing matches": that sentence is a verified miss,
+    and nothing was verified. The answer names each source that failed and
+    how (timed out vs unavailable), carries the per-source status as data,
+    and has an evidence block so the surface renders it instead of passing
+    the question on as if the lookup had been clean.
+    """
+    failed = {
+        k: v for k, v in statuses.items()
+        if (v or {}).get("status") in ("timed_out", "unavailable")
+    }
+    def how(entry: dict[str, Any]) -> str:
+        return "timed out" if entry.get("status") == "timed_out" else "is unavailable"
+
+    names = [_SOURCE_NOUNS.get(k, k) for k in failed]
+    if len(failed) == 1:
+        (kind, entry), = failed.items()
+        lead = f"I couldn't search {names[0]} for “{query}”: the search {how(entry)}."
+    else:
+        lead = f"I couldn't search {', '.join(names)} for “{query}”: those searches failed."
+    return {
+        "intent": intent,
+        "spoken": lead + " This is not a “no match” — nothing was checked. Try again in a moment.",
+        "blocks": [block("evidence", items=[
+            {
+                "label": f"{_SOURCE_NOUNS.get(k, k).capitalize()} search {how(v)}",
+                "detail": "Not checked, so an empty result here is not a verified miss.",
+            }
+            for k, v in failed.items()
+        ])],
+        "fallthrough": False,
+        "degraded": True,
+        "source_status": statuses,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Intent renderers
 # ---------------------------------------------------------------------------
