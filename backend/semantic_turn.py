@@ -26,6 +26,17 @@ names or addresses (C5.4). It lives and is erased with the chat message
 (privacy_data_map: ai_chat_messages). A chat constraint applies for
 `frame_constraints.DISCOURSE_TTL` after the turn that stated it, within the 24
 messages a turn already loads; a mission's applies for the mission's life.
+
+Languages (L05-04; owner, 2026-10-14: English and Spanish at launch). The
+parser reads English, Spanish and a mix of both. Behind it, a deterministic
+bilingual lexicon (`semantic_language.cues`) is a backstop: a restriction the
+request plainly states and the parser's frame does not carry — or that a
+failed parser never produced — is added anyway (`frame_constraints.
+reinforce`). A request in a language neither layer can vouch for (not
+English, not Spanish) still goes to the parser; when the parser cannot
+answer, the turn takes the strict pair (no sends, approval required) instead
+of acting as if nothing had been said. Refusals use the request's language
+(en or es; English by default; no user language setting exists to read).
 """
 
 from __future__ import annotations
@@ -43,6 +54,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import frame_constraints as fc
 import semantic_frame as sf
+import semantic_language as lang_
 from tenancy import TenantContext
 
 logger = logging.getLogger(__name__)
@@ -80,9 +92,10 @@ def default_timezone() -> str:
 #: (tests/conftest.py installs one that has no model at all).
 GATEWAY: Any = None
 
-#: (assistant_id, constraints) for the turn running in this task. Keyed by the
-#: turn so a tool call from any other turn never reads these constraints.
-_TURN: contextvars.ContextVar[Optional[tuple[str, tuple[fc.ActiveConstraint, ...]]]] = (
+#: (assistant_id, constraints, reply language) for the turn running in this
+#: task. Keyed by the turn so a tool call from any other turn never reads
+#: these constraints.
+_TURN: contextvars.ContextVar[Optional[tuple[str, tuple[fc.ActiveConstraint, ...], str]]] = (
     contextvars.ContextVar("semantic_turn", default=None)
 )
 
@@ -95,6 +108,12 @@ class TurnFrame:
     own: list[fc.ActiveConstraint] = field(default_factory=list)
     active: list[fc.ActiveConstraint] = field(default_factory=list)
     extract_ms: Optional[int] = None
+    #: The language answers are written in (en | es).
+    lang: str = lang_.DEFAULT_LANG
+    #: What `semantic_language.detect` read: en | es | mixed | other | undetermined.
+    detected: str = "undetermined"
+    #: Constraint kinds the deterministic backstop added (the frame lacked them).
+    backstop: list[str] = field(default_factory=list)
 
     def summary(self) -> dict[str, Any]:
         """What is stored. Ids, labels, kinds and times — no words."""
@@ -118,23 +137,28 @@ class TurnFrame:
             "dropped_candidates": f.dropped_candidates if f else 0,
             "own": fc.dump(self.own),
             "active": fc.dump(self.active),
+            "lang": self.lang,
+            "detected": self.detected,
+            "backstop": list(self.backstop),
         }
 
     def prompt_block(self) -> str:
-        return fc.prompt_block(self.active)
+        return fc.prompt_block(self.active, self.lang)
 
 
 # ---------------------------------------------------------------------------
 # The binding the tool chokepoint reads
 # ---------------------------------------------------------------------------
 
-def bind(assistant_id: str, constraints: Sequence[fc.ActiveConstraint]) -> None:
-    """Bind this turn's constraints to the running task.
+def bind(assistant_id: str, constraints: Sequence[fc.ActiveConstraint],
+         lang: str = lang_.DEFAULT_LANG) -> None:
+    """Bind this turn's constraints (and the language its refusals are
+    written in) to the running task.
 
     `_generate` runs inside its own task (asyncio.wait_for), so the binding
     ends with the turn without a reset.
     """
-    _TURN.set((str(assistant_id), tuple(constraints)))
+    _TURN.set((str(assistant_id), tuple(constraints), lang_.lang_or_default(lang)))
 
 
 def constraints_for(message_id: str) -> tuple[fc.ActiveConstraint, ...]:
@@ -146,6 +170,14 @@ def constraints_for(message_id: str) -> tuple[fc.ActiveConstraint, ...]:
     if bound is None or bound[0] != str(message_id):
         return ()
     return bound[1]
+
+
+def language_for(message_id: str) -> str:
+    """The language the turn `message_id` answers in (English when unbound)."""
+    bound = _TURN.get()
+    if bound is None or bound[0] != str(message_id):
+        return lang_.DEFAULT_LANG
+    return bound[2]
 
 
 # ---------------------------------------------------------------------------
@@ -165,17 +197,30 @@ def _metadata(message: dict) -> dict:
 def standing_from_bundle(bundle: dict) -> tuple[list[fc.ActiveConstraint], list[dict]]:
     """The latest stored frame summary among the loaded messages: its active
     constraints (cumulative) and the records it resolved."""
+    summary, message = _latest_summary(bundle)
+    if summary is None:
+        return [], []
+    active = fc.load(summary.get("active"), origin=str(message.get("id") or "unreadable"))
+    refs = [r for m in (summary.get("mentions") or []) if isinstance(m, dict)
+            for r in (m.get("records") or []) if isinstance(r, dict)]
+    return active, refs
+
+
+def _latest_summary(bundle: dict) -> tuple[Optional[dict], dict]:
     for message in reversed(bundle.get("messages") or []):
         if message.get("role") != "assistant":
             continue
         summary = _metadata(message).get("semantic_frame")
-        if not isinstance(summary, dict):
-            continue
-        active = fc.load(summary.get("active"), origin=str(message.get("id") or "unreadable"))
-        refs = [r for m in (summary.get("mentions") or []) if isinstance(m, dict)
-                for r in (m.get("records") or []) if isinstance(r, dict)]
-        return active, refs
-    return [], []
+        if isinstance(summary, dict):
+            return summary, message
+    return None, {}
+
+
+def previous_language(bundle: dict) -> Optional[str]:
+    """The language the conversation last answered in, if one was stored."""
+    summary, _ = _latest_summary(bundle)
+    value = (summary or {}).get("lang")
+    return value if value in lang_.LANGS else None
 
 
 def _last_user_text(bundle: dict) -> str:
@@ -295,12 +340,18 @@ async def prepare_turn(
         known = await _known_records(ctx, bundle, refs)
         frame, status, reason, elapsed = await _parse(ctx, text, known=known, now=now)
         turn = TurnFrame(status=status, reason=reason, frame=frame, extract_ms=elapsed)
+        turn.detected = lang_.detect(text).lang
+    turn.lang = lang_.reply_language(text, previous_language(bundle))
 
     if turn.frame is not None:
         turn.own = fc.from_frame(turn.frame, origin=str(assistant_id), stated_at=now)
-    turn.active = fc.merge(
-        standing, turn.own, lifted_for=fc.lifts(turn.frame), now=now,
+    turn.own, turn.backstop = apply_backstop(
+        text, turn.frame, turn.own, detected=turn.detected,
+        origin=str(assistant_id), now=now,
     )
+    # A turn that states a restriction is never also a lift of one.
+    lifted = fc.lifts(turn.frame) if not turn.backstop else None
+    turn.active = fc.merge(standing, turn.own, lifted_for=lifted, now=now)
 
     if turn.frame is not None or turn.active or standing:
         try:
@@ -310,6 +361,31 @@ async def prepare_turn(
                 raise RuntimeError("stated constraints could not be stored") from exc
             logger.warning("semantic turn: frame summary not stored (%s)", type(exc).__name__)
     return turn
+
+
+def apply_backstop(
+    text: str, frame: Optional[sf.SemanticFrame], own: list[fc.ActiveConstraint], *,
+    detected: str, origin: str, now: datetime,
+) -> tuple[list[fc.ActiveConstraint], list[str]]:
+    """The deterministic layer behind the parser (L05-04). Only ever adds.
+
+    * English / Spanish / mixed / too short to tell: the bilingual cue
+      lexicon adds a restriction the request states and the frame lacks (or
+      that a failed parser never produced).
+    * Any other language: nothing deterministic can read it. With a frame,
+      the parser's reading stands, as in English. With NO frame (parser
+      unavailable, timed out, rejected) the turn is in doubt and takes the
+      strict pair rather than acting as if nothing was said.
+    """
+    if not (text or "").strip():
+        return own, []
+    if detected == "other":
+        if frame is not None:
+            return own, []
+        have = {c.kind for c in own}
+        strict = [c for c in fc.strict(origin=origin, stated_at=now) if c.kind not in have]
+        return own + strict, [c.kind for c in strict]
+    return fc.reinforce(own, lang_.cues(text), origin=origin, stated_at=now)
 
 
 # ---------------------------------------------------------------------------
@@ -331,6 +407,9 @@ async def mission_constraints(
     now = now or datetime.now(timezone.utc)
     frame, status, reason, elapsed = await _parse(ctx, objective_text, known=(), now=now)
     own = fc.from_frame(frame, origin="mission", stated_at=now) if frame else []
+    detected = lang_.detect(objective_text).lang
+    own, backstop = apply_backstop(objective_text, frame, own, detected=detected,
+                              origin="mission", now=now)
     return {"semantic_frame": {
         "v": SUMMARY_VERSION,
         "schema_version": sf.SCHEMA_VERSION,
@@ -339,6 +418,9 @@ async def mission_constraints(
         "extract_ms": elapsed,
         "goals": [{"label": g.label, "negated": g.negated} for g in (frame.goals if frame else [])],
         "active": fc.dump(own),
+        "lang": lang_.reply_language(objective_text),
+        "detected": detected,
+        "backstop": backstop,
     }}
 
 
@@ -358,3 +440,16 @@ def mission_active(mission: dict[str, Any]) -> list[fc.ActiveConstraint]:
     if not isinstance(summary, dict):
         return fc.load("unreadable", origin="mission")
     return fc.load(summary.get("active"), origin="mission")
+
+
+def mission_language(mission: dict[str, Any]) -> str:
+    """The language a mission's stated-constraint reasons are written in."""
+    raw = mission.get("constraints")
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except ValueError:
+            return lang_.DEFAULT_LANG
+    summary = raw.get("semantic_frame") if isinstance(raw, dict) else None
+    value = summary.get("lang") if isinstance(summary, dict) else None
+    return lang_.lang_or_default(value)

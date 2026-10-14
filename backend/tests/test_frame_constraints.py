@@ -378,9 +378,21 @@ class TestTurn:
     def test_a_parser_failure_is_a_frame_less_turn(self, chat, monkeypatch, failure, status):
         answers = [failure, failure] if isinstance(failure, str) else [failure]
         monkeypatch.setattr(semantic_turn, "GATEWAY", FakeGateway(*answers))
-        turn = asyncio.run(semantic_turn.prepare_turn(CTX, _bundle(DONT_MESSAGE), ASSISTANT, now=NOW))
+        turn = asyncio.run(semantic_turn.prepare_turn(
+            CTX, _bundle("What did she say about the kitchen?"), ASSISTANT, now=NOW))
         assert turn.status == status and turn.frame is None and turn.active == []
         assert _stored(chat) is None  # nothing to store, no write
+
+    @pytest.mark.parametrize("failure", [sf.FrameUnavailable("x"), "not json"])
+    def test_a_parser_failure_still_keeps_a_stated_restriction(self, chat, monkeypatch, failure):
+        """L05-04: the deterministic backstop reads "Don't message her yet"
+        when the parser cannot (before L05-04 this turn was frame-less)."""
+        answers = [failure, failure] if isinstance(failure, str) else [failure]
+        monkeypatch.setattr(semantic_turn, "GATEWAY", FakeGateway(*answers))
+        turn = asyncio.run(semantic_turn.prepare_turn(CTX, _bundle(DONT_MESSAGE), ASSISTANT, now=NOW))
+        assert turn.status == "unavailable" and turn.frame is None
+        assert [c.kind for c in turn.active] == ["no_send"] and turn.backstop == ["no_send"]
+        assert _stored(chat)["backstop"] == ["no_send"]
 
     def test_the_parser_is_bounded_by_its_budget(self, chat, monkeypatch):
         monkeypatch.setattr(semantic_turn, "FRAME_BUDGET_S", 0.2)
@@ -388,7 +400,8 @@ class TestTurn:
         started = time.perf_counter()
         turn = asyncio.run(semantic_turn.prepare_turn(CTX, _bundle(DONT_MESSAGE), ASSISTANT, now=NOW))
         assert time.perf_counter() - started < 1.0
-        assert turn.status == "timed_out" and turn.active == []
+        # Timed out: the parser's frame is lost, the backstop's no_send is not.
+        assert turn.status == "timed_out" and [c.kind for c in turn.active] == ["no_send"]
 
     def test_constraints_from_earlier_turns_survive_a_parser_outage(self, chat, monkeypatch):
         earlier = {"id": str(uuid.uuid4()), "role": "assistant", "content": "ok",

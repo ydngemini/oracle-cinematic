@@ -1878,6 +1878,7 @@ async def execute_safe_tool(
             stated, tool_name,
             targets=frame_constraints.tool_targets(tool_input, context_type, context_id),
             now=datetime.now(timezone.utc),
+            lang=semantic_turn.language_for(message_id),
         )
         if refusal is not None:
             # The tool name and code only: the arguments can name a customer.

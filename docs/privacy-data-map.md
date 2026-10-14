@@ -68,7 +68,7 @@ Counts are from the dev database. They show shape, not production volume.
 - `suppression_tombstones` (new): keyed hash only.
 
 **AI**:
-- `ai_chat_messages` (encrypted). `metadata.semantic_frame` (prompt 05, plaintext jsonb on the assistant row): goal labels, authorised record ids, stated constraint kinds and times — never the person's words, names or addresses. It is the discourse context the next turn reads (constraints apply for 30 minutes) and is erased with the message.
+- `ai_chat_messages` (encrypted). `metadata.semantic_frame` (prompt 05, plaintext jsonb on the assistant row): goal labels, authorised record ids, stated constraint kinds and times, and language codes (`lang` en/es, `detected`, the kinds the deterministic backstop added; L05-04) — never the person's words, names or addresses. It is the discourse context the next turn reads (constraints apply for 30 minutes) and is erased with the message.
 - `missions.constraints.semantic_frame` (prompt 05): the same machine-readable constraints parsed from the objective, kept for the mission's life.
 - `ai_tool_operations.result`: tool outputs, plaintext.
 - `user_interactions.content`: raw chat turns, sealed in `content_ciphertext` for every app write since 0152 (content `''`); pre-0152 turns plaintext until the backfill. Text `tenant_id`, no FK.

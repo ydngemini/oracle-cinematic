@@ -1187,7 +1187,7 @@ async def _generate(ctx: TenantContext, bundle: dict, assistant_id: str) -> tupl
     # lets the model explain — it is not the control.
     turn = await frame_task if frame_task is not None else None
     if turn is not None:
-        semantic_turn.bind(assistant_id, turn.active)
+        semantic_turn.bind(assistant_id, turn.active, turn.lang)
         constraint_block = turn.prompt_block()
         if constraint_block:
             system_prompt += "\n\n" + constraint_block

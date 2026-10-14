@@ -42,6 +42,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
+import semantic_language as _lang
 from platform_policy import ActionRisk, requires_approval
 from tenancy import TenantContext
 
@@ -567,6 +568,14 @@ SYSTEM = (
     "internal_edit for drafts, record updates and reminders; external_effect "
     "for sending, calling or scheduling.\n"
     "- Times are ISO 8601 with an offset, in the time zone you are given.\n"
+    "- The request may be in English, in Spanish, or in a mix of both. The "
+    "labels, kinds and meanings are the same in every language: \"no le "
+    "mandes nada todavía\" is no_send; \"solo borradores\" is draft_only; "
+    "\"espera mi aprobación\" or \"cuando el gerente lo apruebe\" is "
+    "approval_required; \"no antes del viernes\" is not_before; \"no "
+    "contactes a …\" or \"no la llames\" is do_not_contact.\n"
+    "- Quote in the request's own language and spelling, accents included. "
+    "Never translate a quote. Slot names are lowercase ASCII snake_case.\n"
     "- When something the request needs was not said, add an unfilled slot "
     "instead of guessing. Never infer anything about a protected characteristic."
 )
@@ -585,11 +594,24 @@ def _prompt(text: str, known: Sequence[KnownRecord], now: datetime, timezone: st
     return "\n".join(lines)
 
 
+def _canon(text: str) -> str:
+    """Case, whitespace and Unicode form are not part of the words.
+
+    NFC + casefold, so "todavía" quoted from a request typed with a
+    decomposed í still matches, and "’" equals "'" (phone keyboards). Accents
+    are NOT removed: a quote that drops them ("todavia" for "todavía") or
+    translates the request is not verbatim and is refused.
+    """
+    return " ".join(_lang.nfc(text).casefold().split())
+
+
 def _grounded(quote: str, source: str, text: str, known: Sequence[KnownRecord]) -> bool:
-    q = " ".join(quote.lower().split())
+    q = _canon(quote)
+    if not q:
+        return False
     if source == "utterance":
-        return q in " ".join(text.lower().split())
-    return any(q in " ".join(k.label.lower().split()) for k in known)
+        return q in _canon(text)
+    return any(q in _canon(k.label) for k in known)
 
 
 def frame_from_model(raw: str, text: str, known: Sequence[KnownRecord] = ()) -> SemanticFrame:
@@ -659,7 +681,7 @@ async def extract_frame(
     if gateway is None:
         import llm_gateway as gateway  # noqa: PLC0415 — keep import-time light
 
-    cleaned = " ".join((text or "").split())[:MAX_UTTERANCE]
+    cleaned = " ".join(_lang.nfc(text or "").split())[:MAX_UTTERANCE]
     if not cleaned:
         raise FrameRejected("empty_request")
     if now.utcoffset() is None:

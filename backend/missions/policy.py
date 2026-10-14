@@ -371,6 +371,7 @@ def _stated_gate(mission: dict[str, Any], channel: str, subject_id: Optional[str
         stated, channel,
         subject_ids=frozenset({str(subject_id)}) if subject_id else frozenset(),
         now=now,
+        lang=semantic_turn.mission_language(mission),
     )
 
 
