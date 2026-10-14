@@ -19,14 +19,19 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from commands_api import _load_provider_credential
 from messaging_data import (
     MessagingDataError,
+    RegistrationConflict,
+    RegistrationUnconfirmed,
     check_eligibility,
     complete_messaging_verification,
     connect_messaging,
     disconnect_messaging,
     get_messaging_route,
     get_public_business_number,
+    open_registration_submissions,
     record_hosted_document,
     refresh_hosted_order_status,
+    register_messaging_brand,
+    register_messaging_campaign,
 )
 from tenancy import Role, TenantContext, require_context, require_role
 from billing import require_active_subscription
@@ -299,6 +304,8 @@ async def get_business_registration(ctx: TenantContext = Depends(require_context
     return {
         "brand": {**dict(brand), "id": str(brand["id"])} if brand else None,
         "campaign": {**dict(campaign), "id": str(campaign["id"])} if campaign else None,
+        # A submission the provider has not (or not provably) answered yet.
+        "open_submissions": await open_registration_submissions(ctx),
     }
 
 
@@ -308,66 +315,27 @@ async def register_brand(
     ctx: TenantContext = Depends(require_context),
 ) -> dict[str, Any]:
     """10DLC Brand registration — one per tenant/brokerage. Neoh is the ISV;
-    each brokerage gets its own end-user Brand, never a shared generic one."""
+    each brokerage gets its own end-user Brand, never a shared generic one.
+
+    Registered at most once at the provider (L10-09): a PUT when a brand
+    exists, or while a submission is unresolved, is a 409 and reaches no
+    provider — no adapter can update a brand in place yet."""
     require_role(ctx, Role.BROKER_OWNER)
-    from db.connection import tenant_tx
-    from messaging_provider import get_messaging_provider, messaging_provider_name
+    from messaging_provider import messaging_provider_name
 
     credentials = await _telnyx_credentials(ctx)
-    adapter = get_messaging_provider(messaging_provider_name())
-    fields = body.model_dump(exclude_none=True)
     try:
-        result = await adapter.create_brand(fields, credentials=credentials)
+        return await register_messaging_brand(
+            ctx, body.model_dump(exclude_none=True), provider=messaging_provider_name(), credentials=credentials
+        )
+    except RegistrationConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except RegistrationUnconfirmed as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    except MessagingDataError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Telnyx rejected the brand registration: {exc}") from exc
-
-    async with tenant_tx(ctx) as conn:
-        row = await conn.fetchrow(
-            """
-            INSERT INTO tenant_messaging_brands (
-                tenant_id,provider,provider_brand_id,status,display_name,company_name,
-                ein,entity_type,vertical,email,phone,street,city,state,postal_code,
-                country,website,submitted_at
-            ) VALUES (
-                $1::uuid,'telnyx',$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,now()
-            )
-            ON CONFLICT (tenant_id) DO UPDATE SET
-                provider_brand_id=EXCLUDED.provider_brand_id,
-                status=EXCLUDED.status,
-                display_name=EXCLUDED.display_name,
-                company_name=EXCLUDED.company_name,
-                ein=EXCLUDED.ein,
-                entity_type=EXCLUDED.entity_type,
-                vertical=EXCLUDED.vertical,
-                email=EXCLUDED.email,
-                phone=EXCLUDED.phone,
-                street=EXCLUDED.street,
-                city=EXCLUDED.city,
-                state=EXCLUDED.state,
-                postal_code=EXCLUDED.postal_code,
-                country=EXCLUDED.country,
-                website=EXCLUDED.website,
-                submitted_at=now()
-            RETURNING id,status
-            """,
-            ctx.tenant_id,
-            result.reference,
-            result.status,
-            body.display_name,
-            body.company_name,
-            body.ein,
-            body.entity_type,
-            body.vertical,
-            body.email,
-            body.phone,
-            body.street,
-            body.city,
-            body.state,
-            body.postal_code,
-            body.country,
-            body.website,
-        )
-    return {"brand_id": str(row["id"]), "provider_brand_id": result.reference, "status": row["status"]}
 
 
 @router.put("/business/registration/campaign", dependencies=[Depends(require_active_subscription)])
@@ -375,48 +343,29 @@ async def register_campaign(
     body: CampaignRegister,
     ctx: TenantContext = Depends(require_context),
 ) -> dict[str, Any]:
+    """10DLC Campaign — one per brokerage at the provider (L10-09), same
+    guards as register_brand."""
     require_role(ctx, Role.BROKER_OWNER)
-    from db.connection import tenant_tx
-    from messaging_provider import get_messaging_provider, messaging_provider_name
-
-    async with tenant_tx(ctx) as conn:
-        brand = await conn.fetchrow(
-            "SELECT id,provider_brand_id,status FROM tenant_messaging_brands WHERE tenant_id=$1::uuid",
-            ctx.tenant_id,
-        )
-    if brand is None or not brand["provider_brand_id"]:
-        raise HTTPException(status_code=409, detail="Register a Brand before submitting a Campaign.")
+    from messaging_provider import messaging_provider_name
 
     credentials = await _telnyx_credentials(ctx)
-    adapter = get_messaging_provider(messaging_provider_name())
-    extra = body.model_dump(exclude={"description", "usecase"}, exclude_none=True)
     try:
-        result = await adapter.submit_campaign(
-            brand_id=str(brand["provider_brand_id"]),
+        return await register_messaging_campaign(
+            ctx,
             description=body.description,
             usecase=body.usecase,
+            extra=body.model_dump(exclude={"description", "usecase"}, exclude_none=True),
+            provider=messaging_provider_name(),
             credentials=credentials,
-            **extra,
         )
+    except RegistrationConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except RegistrationUnconfirmed as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    except MessagingDataError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Telnyx rejected the campaign submission: {exc}") from exc
-
-    async with tenant_tx(ctx) as conn:
-        row = await conn.fetchrow(
-            """
-            INSERT INTO tenant_messaging_campaigns
-                (tenant_id,brand_id,provider,provider_campaign_id,status,usecase,description,submitted_at)
-            VALUES ($1::uuid,$2::uuid,'telnyx',$3,$4,$5,$6,now())
-            RETURNING id,status
-            """,
-            ctx.tenant_id,
-            brand["id"],
-            result.reference,
-            result.status,
-            body.usecase,
-            body.description,
-        )
-    return {"campaign_id": str(row["id"]), "provider_campaign_id": result.reference, "status": row["status"]}
 
 
 @router.post("/business/registration/campaign/assign-number", dependencies=[Depends(require_active_subscription)])
