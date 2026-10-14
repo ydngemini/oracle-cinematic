@@ -65,7 +65,9 @@ def test_internal_edits_are_distinct_but_do_not_bypass_high_risk_policy():
     assert requires_approval(ActionRisk.OUTREACH)
     assert requires_approval(ActionRisk.FINANCIAL)
     assert requires_approval(ActionRisk.LEGAL_DOCUMENT)
-    assert "Never delete or archive" in BASE_SYSTEM_PROMPT
+    # A09: archive_client is an offered, undoable edit, so the rule is "never
+    # delete; archive only on an explicit request" (was "never archive").
+    assert "Never delete data." in BASE_SYSTEM_PROMPT
 
 
 def test_history_compaction_keeps_newest_turns_within_budget():

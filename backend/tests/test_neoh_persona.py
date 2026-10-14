@@ -57,7 +57,12 @@ def test_every_rule_layer_survives_both_densities(compact):
 @pytest.mark.parametrize("compact", [False, True])
 def test_authority_rules_are_present(compact):
     prompt = persona.build_system_prompt(compact=compact)
-    assert "Never delete or archive data." in prompt
+    # Was "Never delete or archive data." while archive_client was on the
+    # offered tool list (an undoable P11 edit): the persona and the tool
+    # surface contradicted each other (A09, L07-01). Deletion stays forbidden;
+    # archiving is allowed only on an explicit request.
+    assert "Never delete data." in prompt
+    assert "Archive a client only when explicitly asked" in prompt
     assert "Undo is available" in prompt
 
 

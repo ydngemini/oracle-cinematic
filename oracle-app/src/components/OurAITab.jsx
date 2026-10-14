@@ -207,7 +207,7 @@ function ActionPanel({ id, eyebrow, title, description, actions, onPrompt, onNav
           );
         })}
       </div>
-      <p className={styles.approvalNote}><ShieldCheck aria-hidden="true" /> Prompts open as drafts. Outreach and record-changing actions still require review.</p>
+      <p className={styles.approvalNote}><ShieldCheck aria-hidden="true" /> Prompts open as drafts. Outreach waits for your approval; record edits apply with an Undo.</p>
     </section>
   );
 }
@@ -503,7 +503,7 @@ export default function OurAITab({
     },
     {
       name: 'Social Ads',
-      detail: 'Sphere, dynamic MLS, behavioral, and retargeting campaigns need Meta advertising authorization and spend controls.',
+      detail: 'Sphere, dynamic listing, behavioral, and retargeting campaigns need Meta advertising authorization and spend controls.',
       status: STATUS.setup,
       Icon: Share2,
     },
@@ -592,15 +592,15 @@ export default function OurAITab({
 
   const coworkActions = [
     { label: 'Run today’s revenue brief', detail: 'Rank the next five actions using live CRM evidence.', prompt: 'Build my revenue brief for today. Rank the five highest-value actions using current CRM, conversation, deal, and deadline evidence. Cite the records used and do not send anything.', Icon: Sparkles },
-    { label: 'Research a property', detail: 'Use public and authorized property sources with citations.', prompt: 'Help me research a property using public or authorized sources only. Ask me for the address, then return cited facts, unknowns, and the next verification step.', Icon: Search },
-    { label: 'Review pending actions', detail: `${data.pendingCommands.length} command drafts currently need review.`, prompt: 'Summarize my pending AI approvals by risk and urgency. Do not execute, send, call, schedule, or approve anything.', Icon: ShieldCheck },
+    { label: 'Research a property', detail: 'Your own listing records, recorded nearby sales and web search, with citations.', prompt: 'Help me research a property. Ask me for the address, then use my listing records, recorded nearby sales and web search. Cite each fact, name what you could not check (public-record lookups such as flood zone, permits and liens are not available in chat yet), and suggest the next verification step.', Icon: Search },
+    { label: 'Review pending actions', detail: `${data.pendingCommands.length} command drafts currently need review.`, destination: 'automations', Icon: ShieldCheck },
     { label: 'Open transactions', detail: 'Go directly to offers, milestones, contracts, and closings.', destination: 'deals', Icon: BriefcaseBusiness },
   ];
 
   const salesActions = [
     { label: 'Build a call list', detail: 'Prioritize contacts from CRM evidence and explain the ranking.', prompt: 'Build a prioritized call list from my current CRM. Include the reason, last touch, likely intent, and a suggested opening for each person. Do not place calls.', Icon: PhoneCall },
-    { label: 'Draft an outreach sequence', detail: 'Prepare text, email, and call steps for approval.', prompt: 'Draft a concise multi-channel follow-up sequence for my highest-priority unresponsive leads. Personalize from verified CRM facts and stage every outbound step for approval.', Icon: Mail },
-    { label: 'Find unanswered conversations', detail: `${data.threads.length} conversation threads are available to inspect.`, prompt: 'Review current conversation threads and identify the highest-priority unanswered or stalled conversations. Explain why each needs attention and draft replies without sending.', Icon: MessageSquare },
+    { label: 'Draft a follow-up', detail: 'Prepare an email, text or call request for one client, for approval.', prompt: 'Help me follow up with one client. Ask which client, and ask me to open their record if it is not open. Then draft one email or text from verified CRM facts and stage it for my approval. Do not send anything.', Icon: Mail },
+    { label: 'Find unanswered conversations', detail: `${data.threads.length} conversation threads are available to inspect.`, destination: 'conversations', Icon: MessageSquare },
     { label: 'Open people', detail: 'Review contacts, opportunities, AI stewardship, and intake.', destination: 'people', Icon: Users },
   ];
 
@@ -611,9 +611,9 @@ export default function OurAITab({
   ];
 
   const homeownerActions = [
-    { label: 'Find seller intent', detail: 'Rank possible seller signals and show the evidence.', prompt: 'Analyze my homeowner and seller records for likely intent signals. Rank opportunities, cite the CRM and public-property evidence, state uncertainty, and do not contact anyone.', Icon: House },
-    { label: 'Prepare equity reviews', detail: 'Draft a useful homeowner check-in for approval.', prompt: 'Identify homeowners who may benefit from an annual property and equity review. Draft a factual, low-pressure check-in for each and do not send it.', Icon: FileCheck2 },
-    { label: 'Audit nurture gaps', detail: `${data.segments.length} saved audience segments are available.`, prompt: 'Audit my seller and homeowner nurture coverage. Identify records without a clear next action, missing facts, stale follow-up, or automation gaps. Do not change records.', Icon: Workflow },
+    { label: 'Find seller intent', detail: 'Rank possible seller signals and show the evidence.', prompt: 'Analyze my homeowner and seller records for likely intent signals. Rank opportunities, cite the CRM records used, state uncertainty, and do not contact anyone.', Icon: House },
+    { label: 'Draft homeowner check-ins', detail: 'Draft a useful homeowner check-in for review.', prompt: 'Identify homeowners in my CRM who have not been contacted recently. Draft a factual, low-pressure check-in for each. Mortgage and equity data are not available, so do not estimate equity, and do not send anything.', Icon: FileCheck2 },
+    { label: 'Audit nurture gaps', detail: `${data.segments.length} saved audience segments are available.`, prompt: 'Audit my seller and homeowner nurture coverage. Identify records without a clear next action, missing facts, or stale follow-up. Do not change records.', Icon: Workflow },
     { label: 'Open opportunities', detail: 'Inspect AI score, stage, evidence, next action, and candidates.', destination: 'people', Icon: Users },
   ];
 
@@ -623,7 +623,7 @@ export default function OurAITab({
         <div>
           <span className={styles.kicker}>In Work</span>
           <h1 id="our-ai-title">Neoh tools</h1>
-          <p>Sales, social, homeowner, automation and website tools, each with its real connection state. Nothing reaches a client without your approval.</p>
+          <p>Sales, social, homeowner, automation and website tools, each with its real connection state. Outreach Neoh prepares here waits for your approval.</p>
           <div className={styles.readiness} aria-label="AI readiness summary">
             <span data-tone={data.assistantEnabled ? 'good' : 'neutral'}><Bot aria-hidden="true" /> {data.assistantEnabled ? 'Neoh online' : 'Neoh not set up'}</span>
             <span data-tone={sourceErrors.length ? 'warn' : 'good'}><CheckCircle2 aria-hidden="true" /> {liveSourceCount}/{visibleSourceCount} sources</span>

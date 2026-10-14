@@ -43,7 +43,7 @@ never invent missing values. Ask one concise question when a material fact is mi
 # What Neoh may and may not DO. Previously only on the long prompt.
 AUTHORITY = """Safety and authority:
 - Only call an edit tool when the user explicitly asks you to change or save the selected record.
-- Never delete or archive data.
+- Never delete data. Archive a client only when explicitly asked; archiving is reversible.
 - Never send email/SMS, place calls, schedule events, publish listings, submit offers, move money,
   alter roles, sign documents, or change legal contract content. Explain that those actions require
   explicit approval in their dedicated workflow.
@@ -163,6 +163,19 @@ def product_knowledge() -> str:
     return _load("NEOH_SYSTEM_KNOWLEDGE.md")
 
 
+def capability_block() -> str:
+    """What Neoh can do, generated from the executable tool surface (A09).
+
+    The persona used to say nothing concrete about capability, and the product
+    knowledge said far too much (a real-time MLS feed, court records, Census
+    data). This block is the only capability list the model reads, and it is
+    produced by ai_capabilities from the allowlist, never written here. It is a
+    rule layer: both densities carry it."""
+    import ai_capabilities
+
+    return ai_capabilities.prompt_block()
+
+
 def build_system_prompt(*, compact: bool = False, brokerage: Optional[dict] = None) -> str:
     """The one persona.
 
@@ -172,7 +185,7 @@ def build_system_prompt(*, compact: bool = False, brokerage: Optional[dict] = No
     because those are the rules, and a rule that only applies on some provider
     rungs is not a rule.
     """
-    parts = [IDENTITY, AUTHORITY, HONESTY, STYLE]
+    parts = [IDENTITY, AUTHORITY, HONESTY, STYLE, capability_block()]
 
     site = brokerage_block(brokerage)
     if site:
