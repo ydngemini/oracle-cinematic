@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Optional
 
 from outreach_compliance import AI_VOICE_DISCLOSURE
+from pan_redaction import PAYMENT_CARD_RULE
 
 logger = logging.getLogger("oracle.qwen_voice_agent")
 
@@ -85,7 +86,8 @@ class QwenVoiceAgent:
             "acknowledge, confirm they will be removed, and end the call. "
             "When you receive bracketed instructions like [OPERATOR: ...], seamlessly "
             "incorporate that guidance into your next response without acknowledging the "
-            "instruction itself. The homeowner cannot hear the operator instructions."
+            "instruction itself. The homeowner cannot hear the operator instructions. "
+            + PAYMENT_CARD_RULE
         )
 
     async def handle_whisper_instruct(self, payload: dict):

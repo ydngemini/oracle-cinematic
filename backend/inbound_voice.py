@@ -28,6 +28,7 @@ from contact_truth import (
 )
 from db.connection import tenant_tx
 from outreach_compliance import AI_VOICE_DISCLOSURE, STOP_KEYWORDS
+from pan_redaction import PAYMENT_CARD_RULE, redact as _redact_pan, report as _report_pan
 from tenancy import Role, TenantContext, brokerage_scope
 
 INTAKE_ROUTING_QUESTION = "Are you calling about buying a home or selling a property?"
@@ -175,6 +176,7 @@ def build_inbound_intake_instructions(state: Mapping[str, Any]) -> str:
         "at a time and accept the caller's answer without adding qualification "
         "questions. If the caller says stop, remove me, do not contact me, or similar, "
         "acknowledge immediately, say the request will be honored, and end the call. "
+        + PAYMENT_CARD_RULE + " "
     )
     buyer = " Then ask exactly these three buyer questions, verbatim and in order: " + " | ".join(
         BUYER_INTAKE_QUESTIONS
@@ -437,9 +439,16 @@ async def prepare_inbound_call(
 
 def _clean_transcript(
     transcript: Sequence[Mapping[str, Any]],
+    *,
+    tenant_id: Optional[str] = None,
 ) -> list[dict[str, str]]:
+    """Bounded transcript turns, with any payment card number or security code
+    a caller read out removed (pan_redaction, PCI DSS SAQ A). Sealing a card
+    number would still be storing it; the answers derived from these turns
+    and the callback task inherit the removal."""
     cleaned: list[dict[str, str]] = []
     total = 0
+    cards = codes = 0
     for item in transcript[:_MAX_TRANSCRIPT_ITEMS]:
         role = str(item.get("role") or "").lower()
         if role not in {"caller", "assistant"}:
@@ -447,6 +456,8 @@ def _clean_transcript(
         text = re.sub(r"\s+", " ", str(item.get("text") or "")).strip()
         if not text:
             continue
+        redaction = _redact_pan(text)
+        text, cards, codes = redaction.text, cards + redaction.cards, codes + redaction.codes
         text = text[:_MAX_TRANSCRIPT_ITEM_CHARS]
         remaining = _MAX_TRANSCRIPT_TOTAL_CHARS - total
         if remaining <= 0:
@@ -454,6 +465,7 @@ def _clean_transcript(
         text = text[:remaining]
         cleaned.append({"role": role, "text": text})
         total += len(text)
+    _report_pan("inbound_call_transcript", cards, codes, tenant_id=tenant_id)
     return cleaned
 
 
@@ -738,7 +750,7 @@ async def finalize_inbound_voice_call(
     if not agent_id:
         return
 
-    cleaned = _clean_transcript(transcript)
+    cleaned = _clean_transcript(transcript, tenant_id=tenant_id)
     opted_out = _requested_opt_out(cleaned)
     ctx = _tenant_context(tenant_id, agent_id)
     key = _tenant_key(tenant_id)

@@ -208,6 +208,9 @@ class PlivoElevenLabsBridge:
         #: that the call's session row recorded.
         self.notes_consent: Optional[bool] = None
         self.notes: list[str] = []
+        #: Card numbers/codes removed from save_note calls (counts only).
+        self.pan_cards = 0
+        self.pan_codes = 0
 
     # ── instructions ────────────────────────────────────────────────────
     def _instructions(self) -> tuple[str, Optional[str]]:
@@ -359,12 +362,28 @@ class PlivoElevenLabsBridge:
         if name == TOOL_SAVE_NOTE:
             if self.notes_consent is not True:
                 return "The caller has not agreed to notes. " + refuse, True
-            note = str(params.get("note") or "").strip()[:300]
+            from pan_redaction import CVV_PLACEHOLDER, PAN_PLACEHOLDER, redact, report
+
+            redaction = redact(str(params.get("note") or "").strip())
+            note = redaction.text.strip()[:300]
             if not note:
                 return "Empty note — nothing saved.", True
+            if redaction.changed:
+                # Counted, never kept: the in-call note list never holds the
+                # number (PCI DSS SAQ A).
+                self.pan_cards += redaction.cards
+                self.pan_codes += redaction.codes
+                report("ai_call_save_note", redaction.cards, redaction.codes)
+                rest = note.replace(PAN_PLACEHOLDER, "").replace(CVV_PLACEHOLDER, "")
+                if not any(ch.isalnum() for ch in rest):
+                    return ("Card details are never kept and nothing was saved. Do not repeat "
+                            "them; any payment is made only through a secure payment link."), True
             if len(self.notes) >= _MAX_NOTES:
                 return "The note limit for this call is reached; nothing more was saved.", True
             self.notes.append(note)
+            if redaction.changed:
+                return ("Saved for their agent without the card details, which are never kept. "
+                        "Do not repeat them; any payment is made only through a secure payment link."), False
             return "Saved for their agent.", False
         return f"Unknown tool {name!r}.", True
 

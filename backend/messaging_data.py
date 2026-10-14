@@ -20,6 +20,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Mapping, Optional, Sequence
 
+import pan_redaction
 from db.connection import tenant_tx
 from tenancy import Role, TenantContext, brokerage_scope
 
@@ -1055,6 +1056,9 @@ async def record_inbound_message(
     ctx = _tenant_context(tenant_id, agent_id)
     normalized_from = normalize_phone(from_e164) or from_e164
     lookup_digest = lookup_hash(tenant_id, "phone", normalized_from)
+    # A client who texts a card number does not put it in our database (PCI
+    # DSS SAQ A); the body keeps "[card number removed]" in its place.
+    text = pan_redaction.scrub(text, "sms_inbound", tenant_id=tenant_id)
     async with tenant_tx(ctx) as conn:
         contact_id, client_id = await _match_contact(conn, tenant_id=tenant_id, lookup_digest=lookup_digest)
         row = await conn.fetchrow(
@@ -1133,6 +1137,9 @@ async def record_outbound_message(
     body: str,
 ) -> None:
     ctx = _tenant_context(tenant_id, agent_id)
+    # The approved draft was already cleaned (stage_command); this guards the
+    # log row against any other caller.
+    body = pan_redaction.scrub(body, "sms_outbound", tenant_id=tenant_id)
     async with tenant_tx(ctx) as conn:
         row = await conn.fetchrow(
             """

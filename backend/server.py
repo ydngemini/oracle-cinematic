@@ -98,6 +98,11 @@ def _configure_logging() -> None:
     from log_redaction import install_access_log_redaction
 
     install_access_log_redaction()
+    # A card number never reaches the log stream either, whichever logger
+    # wrote it (pan_redaction, PCI DSS SAQ A; docs/compliance/pci-saq-a.md).
+    from pan_redaction import install_log_redaction
+
+    install_log_redaction()
 
 
 _configure_logging()

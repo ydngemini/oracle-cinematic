@@ -33,6 +33,7 @@ from typing import Literal, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+import pan_redaction
 from db.connection import tenant_tx
 from record_access import require_client_edit, resolve_assignment
 from tenancy import TenantContext, require_context
@@ -1391,6 +1392,13 @@ async def send_message(
     Threads continue the latest stored channel thread or start a fresh one.
     """
     _require_uuid(client_id, "client_id")
+    # Logged and queued text never holds a card number, in either direction:
+    # the interaction row, the email outbox and the email itself (SAQ A).
+    body.body = pan_redaction.scrub(body.body, f"crm_message_{body.channel}",
+                                    tenant_id=ctx.tenant_id, target_id=client_id)
+    if body.subject:
+        body.subject = pan_redaction.scrub(body.subject, f"crm_message_{body.channel}",
+                                           tenant_id=ctx.tenant_id, target_id=client_id)
     public_channel = "note" if body.channel in INTERNAL_MESSAGE_CHANNELS else body.channel
     stored_channel = _storage_message_channel(body.channel)
     is_internal = stored_channel == "message"

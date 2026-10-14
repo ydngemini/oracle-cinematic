@@ -99,6 +99,9 @@ class AuditCategory(str, Enum):
     # Record access
     ACCESS_GRANT      = "ACCESS_GRANT"       # a client shared, re-permissioned or unshared (0131)
 
+    # Payment card scope (PCI DSS SAQ A)
+    PCI_REDACTION     = "PCI_REDACTION"      # a card number/code removed before storage; counts only (pan_redaction.py)
+
 
 # ---------------------------------------------------------------------------
 # Hash-chain helpers — deterministic over the canonical block string.

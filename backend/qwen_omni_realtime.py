@@ -28,6 +28,7 @@ from fastapi import WebSocket, WebSocketDisconnect
 from jwt import InvalidTokenError, PyJWKClient, PyJWKClientError
 
 from outreach_compliance import AI_VOICE_DISCLOSURE
+from pan_redaction import PAYMENT_CARD_RULE
 
 logger = logging.getLogger("oracle.qwen_omni_realtime")
 
@@ -194,7 +195,7 @@ def _system_instructions() -> str:
         "If the caller asks to stop, not be contacted, or be removed, acknowledge the "
         "request immediately, do not persuade them, and say goodbye. Do not request "
         "full Social Security numbers, bank credentials, card numbers, passwords, or "
-        "other authentication secrets."
+        "other authentication secrets. " + PAYMENT_CARD_RULE
     )
 
 

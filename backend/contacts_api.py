@@ -36,6 +36,7 @@ from contact_truth import (
     questions_for,
     seal_json,
 )
+import pan_redaction
 from db.connection import tenant_tx
 from record_access import (
     contact_access_level,
@@ -916,6 +917,12 @@ async def create_intake(
     except ValueError as exc:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc))
     questions = questions_for(body.persona)
+    # Sealed is still stored: no card number in the answers or the transcript.
+    body.answers = pan_redaction.scrub_obj(body.answers, "contact_intake", tenant_id=ctx.tenant_id,
+                                           target_id=contact_id)
+    if body.transcript:
+        body.transcript = pan_redaction.scrub(body.transcript, "contact_intake",
+                                              tenant_id=ctx.tenant_id, target_id=contact_id)
     normalized = normalize_intake_answers(body.persona, body.answers)
     transcript = body.transcript or "\n".join(
         f"Q: {question}\nA: {answer}"

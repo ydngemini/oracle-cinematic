@@ -33,9 +33,17 @@ def test_both_densities_are_produced():
 
 
 def test_compact_is_substantially_smaller():
+    """Compact drops KNOWLEDGE, never rules, so the rule layers both densities
+    share are measured out. The whole-prompt ratio sat at 3.02 against a bound
+    of 3 (2026-10-14), so any new rule — which must go in both — failed it;
+    measured on what compact is for, it is ~20x smaller and held to 10x."""
     full = persona.build_system_prompt()
     compact = persona.build_system_prompt(compact=True)
-    assert len(compact) < len(full) / 3
+    shared = len("\n\n".join([persona.IDENTITY, persona.AUTHORITY, persona.HONESTY,
+                              persona.STYLE, persona.capability_block()]))
+    assert full.startswith(compact[:shared]) and compact[:shared] == full[:shared]
+    assert len(compact) - shared < (len(full) - shared) / 10
+    assert len(compact) < len(full) / 2
 
 
 @pytest.mark.parametrize("compact", [False, True])

@@ -37,6 +37,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from agent_profile import load_agent_identity
 from audit_ledger import AuditCategory, ledger
+import pan_redaction
 import record_access
 from db.connection import tenant_tx
 from intelligence_engine import IntelligenceInputError, negotiation_guidance
@@ -448,6 +449,12 @@ async def ingest_voice_telemetry(
     ctx: TenantContext = Depends(require_context),
 ):
     """Persist a consented transcript chunk and calculate live MAO when applicable."""
+    # A card number the caller read out is removed before anything reads the
+    # chunk — the counter-offer parser, the event row and the live frame
+    # (pan_redaction, PCI DSS SAQ A).
+    body.transcript_chunk = pan_redaction.scrub(
+        body.transcript_chunk, "voice_transcript_chunk",
+        tenant_id=ctx.tenant_id, target_id=body.session_id)
     async with tenant_tx(ctx) as conn:
         await record_access.require_linked_edit(
             conn, "live_call_sessions", str(body.session_id), "Voice session not found.")
@@ -756,6 +763,9 @@ async def _extract(transcript: str) -> Optional[dict]:
 async def _process(job: VoiceJob) -> None:
     try:
         transcript = await asyncio.to_thread(_transcribe, job.staged_path)
+        # Before the extraction model or the dossier sees it (PCI DSS SAQ A).
+        transcript = pan_redaction.scrub(transcript, "voice_note_transcript",
+                                         tenant_id=job.ctx.tenant_id)
         if not transcript:
             logger.warning("Empty transcript for lead %s — nothing to log.", job.lead_id)
             return

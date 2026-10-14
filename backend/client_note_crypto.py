@@ -23,6 +23,7 @@ import os
 from typing import Any, Iterable
 
 from crypto import CryptoError, derive_tenant_key, encrypt_pii
+from pan_redaction import scrub as _scrub_pan
 
 #: Append to any SELECT / RETURNING list that reads `body`; `open_rows` consumes
 #: (and removes) both columns.
@@ -43,8 +44,14 @@ def _key(tenant_id: Any) -> str:
         raise NoteSealError("client note encryption could not be initialized") from exc
 
 
-async def seal_body(conn: Any, tenant_id: Any, body: str) -> bytes:
-    """Ciphertext for a note body, under `tenant_id`'s key."""
+async def seal_body(conn: Any, tenant_id: Any, body: str, *, surface: str = "client_note") -> bytes:
+    """Ciphertext for a note body, under `tenant_id`'s key.
+
+    A payment card number or security code in the text is removed first
+    (pan_redaction, PCI DSS SAQ A): an encrypted card number is still a stored
+    one. Every note write path seals through here.
+    """
+    body = _scrub_pan(body, surface, tenant_id=tenant_id)
     try:
         return await encrypt_pii(conn, body, _key(tenant_id))
     except CryptoError as exc:

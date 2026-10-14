@@ -14,6 +14,7 @@ from typing import Any, Optional
 import httpx
 
 import ws_hub
+from pan_redaction import PAYMENT_CARD_RULE, scrub as _scrub_pan
 from ai_tool_policy import READ_ONLY_TOOLS
 from ai_chat_store import (
     execute_safe_tool,
@@ -1430,6 +1431,7 @@ RULES:
 - Never mention you're an AI beyond the initial disclosure.
 - Stay in character as a helpful brokerage receptionist.
 - If the caller is upset or says STOP, say "I understand. Goodbye."
+- """ + PAYMENT_CARD_RULE + """
 
 CALLER: {text}
 
@@ -1456,7 +1458,11 @@ async def _generate_voice_reply(caller_id: str, speech_text: str) -> str:
     tier first — which is the better response to a reasoning model that spent its
     budget thinking — so by the time this raises, every tier has failed and the
     stall line is the honest answer rather than blaming the caller's diction.
+
+    A card number the caller reads out never reaches the model provider: it is
+    removed here, before either path (pan_redaction, PCI DSS SAQ A).
     """
+    speech_text = _scrub_pan(speech_text, "voice_call_speech")
     if not _gateway_chat_providers():
         # No gateway on this deployment: the original ladder still answers
         # callers rather than leaving them with a stall line on every turn.
