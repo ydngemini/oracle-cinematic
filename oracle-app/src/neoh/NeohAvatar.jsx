@@ -1,8 +1,9 @@
-import { lazy, Suspense, useEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { lazy, Suspense, useState, useSyncExternalStore } from 'react';
 import { Calendar, Home, MessageSquare, Phone, Save, Search, Share2, Sparkles } from 'lucide-react';
 
 import { getIdleGaze, getIdleGazeServer, subscribeIdleGaze, subscribeNothing } from './idleGaze';
 import { useMotionPolicy } from './motion';
+import { usePageHidden } from './pageVisibility';
 import { NeohCharacter } from './NeohCharacter';
 import { eyeExpression } from './eyeSystem';
 import styles from './NeohAvatar.module.css';
@@ -132,25 +133,6 @@ export function NeohAvatar({
       ) : null}
     </span>
   );
-}
-
-/** True while the tab is hidden, so nothing animates off-screen. */
-function usePageHidden() {
-  const [hidden, setHidden] = useState(() => (typeof document === 'undefined' ? false : document.hidden));
-  const frame = useRef(0);
-  useEffect(() => {
-    if (typeof document === 'undefined') return undefined;
-    const onChange = () => {
-      window.cancelAnimationFrame(frame.current);
-      frame.current = window.requestAnimationFrame(() => setHidden(document.hidden));
-    };
-    document.addEventListener('visibilitychange', onChange);
-    return () => {
-      window.cancelAnimationFrame(frame.current);
-      document.removeEventListener('visibilitychange', onChange);
-    };
-  }, []);
-  return hidden;
 }
 
 export default NeohAvatar;

@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react';
 
-import { buildLights, buildNeoh } from './neohModel3d';
+import { cornerPose } from './cornerPose';
+import { buildLights, buildNeoh, GLOW_INTENSITY } from './neohModel3d';
 
 /**
  * The 3D corner Neoh — the heavy half.
@@ -14,14 +15,31 @@ import { buildLights, buildNeoh } from './neohModel3d';
  * It reports failure upward instead of rendering an empty box. A machine with
  * no WebGL, a lost context, or a chunk that failed to fetch should fall back
  * to the flat mascot, not to a hole in the corner.
+ *
+ * It shows the same product state as the flat mascot (T15.13): the corner
+ * hands it the shared, already-resolved avatar state, and the pose comes
+ * from cornerPose(state), which is derived from the same eye expressions the
+ * SVG wears. The state lands in a ref the frame loop reads — a state change
+ * never re-creates the engine, and React is never updated per frame.
  */
 
 const YAW_RANGE = 26;   // degrees the head turns left/right at full deflection
 const PITCH_RANGE = 15; // and up/down
 const BLINK_EVERY = [2_600, 7_400]; // ms, randomised inside this window
+/** Longest frame step the motion integrates; a tab waking from a stall must
+ *  not fling the head across its whole range in one frame. */
+const MAX_STEP_S = 0.1;
 
-export function NeohCorner3D({ onFailure, onReady }) {
+export function NeohCorner3D({
+  onFailure, onReady, state = 'idle', actionType = 'generic', attentionLevel = 0, still = false,
+}) {
   const canvasRef = useRef(null);
+  // What to show, read by the frame loop. Synced in an effect (not during
+  // render) for the same reason as the callbacks below.
+  const poseRef = useRef({ pose: cornerPose(state), still });
+  useEffect(() => {
+    poseRef.current = { pose: cornerPose(state), still };
+  }, [state, still]);
   // Callbacks live in a ref so a parent re-render cannot tear down the engine
   // — depending on them directly would rebuild the whole scene on any render.
   // Synced in an effect rather than during render: writing a ref while
@@ -81,7 +99,7 @@ export function NeohCorner3D({ onFailure, onReady }) {
       camera.setLocalPosition(0, 0.34, 13.2);
       app.root.addChild(camera);
 
-      const { root, head, eyes } = buildNeoh(pc, app);
+      const { root, head, eyes, glow } = buildNeoh(pc, app);
       app.root.addChild(root);
       buildLights(pc, app.root);
       // A touch of ambient so the shadowed side is soft grey, not black.
@@ -106,40 +124,65 @@ export function NeohCorner3D({ onFailure, onReady }) {
       // silently resizes them on the first blink and never restores.
       const eyeRest = eyes.map((e) => e.getLocalScale().clone());
 
-      app.on('update', (dt) => {
-        elapsed += dt * 1000;
+      // The lights change colour only when the state does — a material
+      // update per frame would cost more than the whole pose.
+      let litState = '';
+      const light = (pose) => {
+        const [r, g, b] = pose.light;
+        glow.diffuse = new pc.Color(r, g, b);
+        glow.emissive = new pc.Color(r, g, b);
+        glow.emissiveIntensity = GLOW_INTENSITY * pose.glow;
+        glow.update();
+        litState = pose.state;
+      };
+      // Eye shape eases toward the state's expression rather than snapping.
+      const eye = { open: 1, width: 1 };
+
+      app.on('update', (rawDt) => {
+        const dt = Math.min(MAX_STEP_S, Math.max(0, rawDt));
+        const { pose, still: holding } = poseRef.current;
+        if (pose.state !== litState) light(pose);
+
+        // Held still (hidden tab): the state's pose, no drift, no blink.
+        if (!holding) elapsed += dt * 1000;
+        const drift = holding ? 0 : pose.drift;
+        const ease = holding ? 1 : Math.min(1, dt * 1.6);
 
         // Where he has decided to look, and the eased approach to it. The lag
         // is the point — an instant snap reads as a twitch, not attention.
-        target.x = Math.sin(elapsed / 11_000) * 0.55 + Math.sin(elapsed / 7_000) * 0.2;
-        target.y = Math.sin(elapsed / 9_400) * 0.28;
-        current.x += (target.x - current.x) * Math.min(1, dt * 1.6);
-        current.y += (target.y - current.y) * Math.min(1, dt * 1.6);
+        target.x = (Math.sin(elapsed / 11_000) * 0.55 + Math.sin(elapsed / 7_000) * 0.2) * drift - pose.gazeX;
+        // Signs: a positive x yaws him to the viewer's left and a positive y
+        // pitches him down, while the eye table's gaze is +x right, -y up.
+        target.y = Math.sin(elapsed / 9_400) * 0.28 * drift + pose.gazeY;
+        current.x += (target.x - current.x) * ease;
+        current.y += (target.y - current.y) * ease;
 
-        const breathe = Math.sin(elapsed / 1_450) * 0.055;
-        const sway = Math.sin(elapsed / 2_900) * 2.2;
+        const breathe = holding ? 0 : Math.sin(elapsed / 1_450) * 0.055;
+        const sway = holding ? 0 : Math.sin(elapsed / 2_900) * 2.2 * Math.max(0.3, drift);
 
         root.setLocalPosition(0, breathe, 0);
         root.setLocalEulerAngles(0, sway * 0.4, 0);
         head.setLocalEulerAngles(
-          current.y * PITCH_RANGE,
+          current.y * PITCH_RANGE + pose.pitch,
           current.x * -YAW_RANGE + sway,
           current.x * -2.4,
         );
 
-        // Blink: squash the eyes on Y for a few frames, then restore.
-        if (elapsed > blinkAt) {
+        // Blink: squash the eyes on Y for a few frames, then restore. The
+        // expression's own openness multiplies underneath it.
+        if (!holding && elapsed > blinkAt) {
           blinkPhase = 1;
           blinkAt = elapsed + BLINK_EVERY[0] + Math.random() * (BLINK_EVERY[1] - BLINK_EVERY[0]);
         }
-        if (blinkPhase > 0) {
-          blinkPhase = Math.max(0, blinkPhase - dt * 9);
-          const open = 1 - Math.sin(blinkPhase * Math.PI) * 0.92;
-          eyes.forEach((eye, i) => {
-            const rest = eyeRest[i];
-            eye.setLocalScale(rest.x, rest.y * open, rest.z);
-          });
-        }
+        if (blinkPhase > 0) blinkPhase = holding ? 0 : Math.max(0, blinkPhase - dt * 9);
+        const shape = holding ? 1 : Math.min(1, dt * 8);
+        eye.open += (pose.eyeOpen - eye.open) * shape;
+        eye.width += (pose.eyeWidth - eye.width) * shape;
+        const blink = 1 - Math.sin(blinkPhase * Math.PI) * 0.92;
+        eyes.forEach((e, i) => {
+          const rest = eyeRest[i];
+          e.setLocalScale(rest.x * eye.width, rest.y * eye.open * blink, rest.z);
+        });
       });
 
       // ── Sizing ─────────────────────────────────────────────────────────
@@ -189,7 +232,16 @@ export function NeohCorner3D({ onFailure, onReady }) {
 
   // aria-hidden for the same reason the flat mascot is: this is decoration,
   // and the surface already says what Neoh is doing in words.
-  return <canvas ref={canvasRef} aria-hidden="true" />;
+  return (
+    <canvas
+      ref={canvasRef}
+      aria-hidden="true"
+      data-state={cornerPose(state).state}
+      data-action={state === 'acting' ? actionType : undefined}
+      data-attention={attentionLevel ? 'true' : 'false'}
+      data-still={still ? 'true' : 'false'}
+    />
+  );
 }
 
 export default NeohCorner3D;

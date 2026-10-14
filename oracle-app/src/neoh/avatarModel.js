@@ -49,7 +49,7 @@ export const ACTION_TYPES = Object.freeze([
  * true statement about the channel, and pretending to think while the socket
  * is down is exactly the fake activity this file exists to prevent.
  */
-const PRECEDENCE = Object.freeze([
+export const PRECEDENCE = Object.freeze([
   'error',
   'needs_attention',
   'disconnected',

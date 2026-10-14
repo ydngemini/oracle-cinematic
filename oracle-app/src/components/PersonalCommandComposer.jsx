@@ -46,6 +46,17 @@ export function PersonalCommandComposer({
   const inputRef = useRef(null);
   const modalRef = useRef(null);
 
+  // A draft left open when this box unmounts (the person navigated away) is
+  // not waiting for anyone any more: nothing was staged on the server. Clear
+  // the shared status so Neoh does not ask for an approval that cannot come.
+  const awaitingApproval = useRef(false);
+  useEffect(() => {
+    awaitingApproval.current = Boolean(proposal) && !proposal.readOnly;
+  }, [proposal]);
+  useEffect(() => () => {
+    if (awaitingApproval.current) setCommandStatus({ state: 'idle', message: 'Assistant ready', detail: '' });
+  }, [setCommandStatus]);
+
   const resolvedClientId = commandRequest?.clientId || clientId;
   const resolvedPropertyId = commandRequest?.propertyId || propertyId;
 
@@ -188,6 +199,9 @@ export function PersonalCommandComposer({
         state: completed ? 'completed' : 'queued',
         message: completed ? 'Authorized document secured in the vault' : 'Authorized action queued',
         detail: result?.command?.command_type || proposal.intent,
+        // The execute call's own confirmation. Only this may light Neoh's
+        // success pose; "analysis complete" and "queued" are not receipts.
+        receipt: completed,
       });
     } catch (reason) {
       const message = errorText(reason);

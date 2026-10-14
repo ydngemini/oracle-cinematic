@@ -15,6 +15,8 @@ import { crmGet, crmPost } from '../state/useCrmApi';
 import { resetNeohChannelCache } from './useNeohChannel';
 import { resetCommandReceiptCache } from './useCommandReceipts';
 import { NeohSurface } from './NeohSurface';
+import { NeohCorner } from './NeohCorner';
+import { getSharedAvatar, resetAvatarPresence } from './avatarPresence';
 // Warm the lazily-loaded open half so findBy* is not racing a cold transform.
 import './NeohSurfacePanel';
 
@@ -67,6 +69,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  resetAvatarPresence();
   delete window.SpeechRecognition;
 });
 
@@ -117,5 +120,37 @@ describe('NeohSurface', () => {
     await new Promise((resolve) => setTimeout(resolve, 30));
     expect(globalThis.__assistant.clearCommandRequest).not.toHaveBeenCalled();
     expect(screen.getByRole('textbox', { name: 'Message Neoh' }).value).toBe('');
+  });
+
+  // F15.09: the pill and the Home corner are two mascots on one screen. The
+  // corner shows what the surface resolved — never a state of its own.
+  it('shares its resolved state with the Home corner, so the two never disagree', async () => {
+    window.matchMedia = (query) => ({ matches: false, media: query, addEventListener() {}, removeEventListener() {} });
+    globalThis.__assistant.open = false;
+    globalThis.__oracle.state = {
+      ...globalThis.__oracle.state,
+      aiChatConnection: 'online',
+      aiChatMessages: [{
+        id: 'local-assistant-r1', request_id: 'r1', role: 'assistant', status: 'pending',
+        content: '', created_at: new Date().toISOString(), observed_at: Date.now(), local: true,
+      }],
+    };
+    const { container } = render(<><NeohSurface /><NeohCorner /></>);
+    await screen.findByRole('button', { name: /Press slash or command K/ });
+    await act(() => new Promise((resolve) => { setTimeout(resolve, 200); }));
+    const states = [...container.querySelectorAll('[data-state][data-variant]')].map((n) => n.getAttribute('data-state'));
+    expect(states).toEqual(['thinking', 'thinking']);
+    expect(getSharedAvatar().state).toBe('thinking');
+  });
+
+  it('keeps the corner at rest when Neoh is switched off for the workspace', async () => {
+    window.matchMedia = (query) => ({ matches: false, media: query, addEventListener() {}, removeEventListener() {} });
+    crmGet.mockImplementation((path) => (path === '/api/ai/chat/status'
+      ? Promise.resolve({ enabled: false }) : Promise.resolve({})));
+    globalThis.__oracle.state = { ...globalThis.__oracle.state, aiChatConnection: 'offline' };
+    const { container } = render(<><NeohSurface /><NeohCorner /></>);
+    await act(() => new Promise((resolve) => { setTimeout(resolve, 50); }));
+    expect(container.querySelector('[data-state]').getAttribute('data-state')).toBe('idle');
+    expect(getSharedAvatar().state).toBe('idle');
   });
 });

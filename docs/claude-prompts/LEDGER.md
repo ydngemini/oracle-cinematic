@@ -47,7 +47,7 @@ Listed weakest to strongest:
 | 12 | Neoh Space capture, 3D, tours | [12](12-neoh-space-browser-capture-reconstruction.md) | `source_verified` | local | `745f2fa` | A03 | Capture Studio first slice |
 | 13 | Deals, documents, compliance | [13](13-transactions-contract-vault-compliance.md) | `source_verified` | local | `745f2fa` | Owner: e-sign, commissions | L13-01 |
 | 14 | Sites, social, ads, client portal | [14](14-websites-social-ads-growth-client-portal.md) | `source_verified` | local | `745f2fa` | Owner: networks, listings on sites | L14-01 |
-| 15 | Neoh mascot animation | [15](15-neoh-avatar-skeletal-character-animation.md) | `source_verified` | local | `745f2fa` | Owner: rig author | L15-01 |
+| 15 | Neoh mascot animation | [15](15-neoh-avatar-skeletal-character-animation.md) | `source_verified` | local | truth slice (L15-02) + rig spec (L15-03) local, on `2fef2e5` | Owner: Rive vs 3D, rig author and licence (L15-03); no device measurements (AC15.07) | Owner decides L15-03; then T15.04 layers and the AC15.07 device protocol |
 | 16 | Performance, indexes, cache | [16](16-performance-indexes-mobile-cache.md) | `tests_pass` | local | `745f2fa`; 0141 tenant wall (L16-01, 2026-10-13); 0113 predicates dropped + 0144 (L16-03, 2026-10-14) | A10 capacity on production-shaped infra; no production target; 0141/0144 undeployed | JIT on request queries (L16-03); then T16.05 |
 | 17 | Security, privacy, data lifecycle | [17](17-security-privacy-compliance-data-lifecycle.md) | `source_verified` | staging | `0739563` | A01, A06 | Read-only review with 02 |
 | 18 | Billing, seats, analytics | [18](18-brokerage-billing-seat-plans-analytics.md) | `source_verified` | local | `a8bff54` (L18-02 `tests_pass`) | D-2026-10-12-02 (billable stage) | T18.04 + AC18.02 (seats) |
@@ -935,13 +935,62 @@ evidence_shas: [745f2fa]
 files: [oracle-app/src/neoh/avatarModel.js, oracle-app/src/neoh/NeohAvatarRive.jsx, oracle-app/src/neoh/NeohCorner3D.jsx, oracle-app/src/neoh/NeohSurface.jsx]
 tests_run:
   - {cmd: "git ls-files | grep -iE '.riv$|.glb$'; grep -n rive oracle-app/package.json", result: "no rig or .riv asset; no Rive runtime; nothing supplies speaking/audioLevel; the 3D corner receives no product state", date: 2026-10-12}
+  - {cmd: "re-verified at 2fef2e5: git log -1 0c7fcce; git ls-files | grep -ciE '.riv$|.glb$|.gltf$'; grep -c rive oracle-app/package.json; grep -n 'layoutId=\"neoh-avatar\"' oracle-app/src/neoh/*.jsx", result: "mascot commit 0c7fcce present; 0 assets; 0 rive deps; pill (NeohSurface.jsx:173) and bar (NeohSurfacePanel.jsx:111) share layoutId neoh-avatar; Rive stub still fails over (NeohAvatarRive.jsx:34). The rig is still not started. The 3D-corner and speaking findings are addressed in L15-02", date: 2026-10-14}
 authz_checked: n/a
 blockers: 
-  - {type: owner, note: "Who authors the rig / .riv asset, and under what licence?"}
+  - {type: owner, note: "Who authors the rig / .riv asset, and under what licence? (evidence now in L15-03)"}
 audit_refs: []
 decision_refs: []
-next_task: "T15.02 + T15.05 + T15.13"
-updated: 2026-10-12
+next_task: "Done in L15-02 (T15.02 + T15.05 + T15.13) and L15-03 (T15.08 evidence). The rig itself waits on the owner (L15-03)."
+updated: 2026-10-14
+```
+
+#### L15-02 Neoh shows a state only when a validated event supports it; the 3D corner shows the same state
+```yaml
+id: L15-02
+status: tests_pass
+env: local
+evidence_shas: [2fef2e5]   # base; the change is the commit that adds oracle-app/src/neoh/animationEvent.js (branch worktree-agent-aa7960aed530bd89b, unpushed)
+files: [oracle-app/src/neoh/animationEvent.js, oracle-app/src/neoh/avatarFacts.js, oracle-app/src/neoh/useNeohAvatarState.js, oracle-app/src/neoh/avatarPresence.js,
+        oracle-app/src/neoh/cornerPose.js, oracle-app/src/neoh/pageVisibility.js, oracle-app/src/neoh/NeohCorner.jsx, oracle-app/src/neoh/NeohCorner3D.jsx,
+        oracle-app/src/neoh/neohModel3d.js, oracle-app/src/neoh/NeohSurface.jsx, oracle-app/src/neoh/NeohAvatar.jsx, oracle-app/src/neoh/avatarModel.js,
+        oracle-app/src/neoh/useNeohChannel.js, oracle-app/src/state/oracleReducer.js, oracle-app/src/state/useOracleWebSocket.js,
+        oracle-app/src/components/AssistantContext.jsx, oracle-app/src/components/PersonalCommandComposer.jsx, oracle-app/bundle-budget.json]
+tests_run:
+  - {cmd: "npx vitest run src/neoh/animationEvent.test.js", result: "25 passed (AC15.02): rejects success/speaking/listening/thinking/needs_attention/disconnected/acting from a source that cannot know them, unknown sources/origins/stages, 16 coordinate/pose keys, unknown and nested fields, missing/NaN/string/negative/future timestamps, expired events, over-long success/error/thinking windows, misplaced amplitude/urgency/actionType; 3,000-case fuzz never throws and accepts only well-formed events; out-of-order and tie ordering; an ended stream refuses a late replay; a 30 ms storm never leaves idle; a 2,000-step random storm never shows a state without a live event and stays within 64 streams; barge-in; cancellation is idle with a reason", date: 2026-10-14}
+  - {cmd: "npx vitest run src/neoh/useNeohAvatarState.test.jsx src/neoh/avatarFacts.test.js", result: "27 + 10 passed (AC15.03): thinking only for a fresh in-flight turn (stale history, no timestamp, cleared turn and >120 s without activity -> idle; ends with no hold); success only for an applied, not-undone receipt (chat) or the execute receipt (command), clears after SUCCESS_HOLD_MS, never on mount for an old receipt, never for 'analysis complete' or 'queued'; failures show as error with a reason (interrupted, unavailable, timeout, failed, send_refused) for ERROR_HOLD_MS; approval holds while true; listening only while the mic captures; speaking only while playback is flagged, stopping on barge-in; 40 toggles at 20 ms never flicker. Mutation check: removing the receipt and undone checks fails 2 tests", date: 2026-10-14}
+  - {cmd: "npx vitest run src/neoh/NeohCorner.test.jsx src/neoh/NeohCorner3D.test.jsx src/neoh/cornerPose.test.js src/neoh/NeohSurface.test.jsx", result: "7 + 3 + 4 + 6 passed (AC15.09): the flat corner shows each of the nine states; it follows the state the surface shares and rests at idle without one; the 3D corner receives the same state for all nine, and the flat fallback after a context loss keeps it; the real NeohCorner3D reports its state and reports chunk failure and no-WebGL; cornerPose wears eyeExpression(state) for all nine; surface + corner rendered together both show thinking for a live turn; the corner stays idle when Neoh is off", date: 2026-10-14}
+  - {cmd: "npx vitest run src/components/PersonalCommandComposer.test.jsx src/state/oracleReducer.aiChat.test.js", result: "4 + 4 passed: command statuses stamped (at, seq); only a confirmed execute is a receipt; an abandoned draft clears awaiting_approval on unmount; chat frames keep their local arrival time across the history re-fetch", date: 2026-10-14}
+  - {cmd: "npx vitest run (oracle-app, all)", result: "88 files, 837 passed, exit 0; NeohAvatar.test.jsx unchanged and passing (AC15.01: props kept)", date: 2026-10-14}
+  - {cmd: "npm run lint; npm run build; npm run bundle:check", result: "lint 0 problems; build ok; budget re-pinned with --update: total +14.1 KB raw / +5.2 KB gzip vs a base build of 2fef2e5 (4088.0 -> 4101.7 KB raw). Entry chunk +0.76 KB raw / +0.22 KB gzip (arrival and status stamps); statechart +9.2 KB raw in the lazy useNeohAvatarState chunk; NeohCorner3D lazy chunk 6,107 -> 7,723 B; largest chunk unchanged (2271.2 KB). Within budget", date: 2026-10-14}
+  - {cmd: "headless Chromium 145 (Playwright, SwiftShader software GL), throwaway harness page rendering the real NeohCorner3D for each state", result: "ready, 0 runtime errors; canvas data-state matched all nine; per-state screenshots show a distinct hue and eye pose. 120 rAF intervals per state: p50 16.7-33.3 ms, p95 16.7-100.1 ms. NOT a device measurement (AC15.07 stays open)", date: 2026-10-14}
+authz_checked: n/a (no data access or permission change; presents state the user already receives)
+blockers:
+  - {type: verification, note: "No device measurements (iPhone Safari, Android Chrome): AC15.07 open. No speaking source exists in the browser (T15.14), so speaking stays unreachable. The backend folds its 90 s turn-deadline timeout into AI_RESPONSE_UNAVAILABLE (ai_chat_agent.py), so the browser cannot yet show 'timeout' for a chat turn; the mapping is ready for a distinct code (category 07)."}
+audit_refs: [A02]
+decision_refs: []
+next_task: "T15.04 layer blending + AC15.04 hero-sequence review; T15.11/AC15.07 device protocol on real phones; T15.10 approvals from command receipts (useCommandReceipts) as an approval_pending source."
+updated: 2026-10-14
+```
+
+#### L15-03 Rig and delivery spec; Rive vs 3D evidence for the owner
+```yaml
+id: L15-03
+status: blocked   # owner decision
+env: local
+evidence_shas: [2fef2e5]   # base; doc added in the same commit as L15-02
+files: [docs/neoh-avatar-rig-spec.md]
+tests_run:
+  - {cmd: "npm pack @rive-app/canvas@2.44.2 @rive-app/canvas-lite @rive-app/react-canvas@4.36.0 into an isolated scratch dir (not installed); stat + gzip -9", result: "all MIT. canvas: rive.js 570,043 / 124,659 gz, rive.wasm 2,057,365 / 848,969 gz; canvas-lite: rive.js 489,769 / 109,204, rive.wasm 772,160 / 314,730; react-canvas wrapper 21,951 / 5,959. rive.js defaults its wasm URL to https://unpkg.com/", date: 2026-10-14}
+  - {cmd: "grep Content-Security-Policy oracle-app/nginx.conf", result: "script-src has no 'wasm-unsafe-eval' and connect-src has no unpkg.com: Rive's wasm would be refused under the production CSP as configured", date: 2026-10-14}
+  - {cmd: "grep deviceTypes node_modules/playcanvas/build/playcanvas/src/platform/graphics/graphics-device-create.js (playcanvas 2.21.3, MIT)", result: "PlayCanvas adds WEBGL2 then NULL: the 3D path needs WebGL2; it is already a dependency", date: 2026-10-14}
+authz_checked: n/a
+blockers:
+  - {type: owner, note: "Rive (a new ~0.98 MB gzip runtime that needs 'wasm-unsafe-eval' + self-hosted wasm) vs a glTF rig on the existing PlayCanvas engine (no new runtime). The doc recommends the PlayCanvas rig with the SVG fallback everywhere. Who authors the asset, and under what licence?"}
+audit_refs: []
+decision_refs: []
+next_task: "Owner decision; then commission the asset against §2-§3 of docs/neoh-avatar-rig-spec.md."
+updated: 2026-10-14
 ```
 
 ### L16

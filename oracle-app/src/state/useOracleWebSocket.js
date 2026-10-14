@@ -35,6 +35,15 @@ function buildWsUrl() {
 }
 const MAX_DELAY = 60000;
 
+/**
+ * Stamp a chat frame with the local time it arrived. Neoh's mascot uses it to
+ * tell a turn that is live from one left over in history (avatarFacts.js);
+ * the browser's own clock avoids trusting server/client clock agreement.
+ */
+function observed(msg) {
+  return { ...msg, observed_at: Date.now() };
+}
+
 export function useOracleWebSocket() {
   const { dispatch, wsRef } = useOracleDispatch();
   const retryCount = useRef(0);
@@ -269,27 +278,27 @@ export function useOracleWebSocket() {
           break;
 
         case 'AI_CHAT_ACCEPTED':
-          dispatch({ type: ACTIONS.AI_CHAT_ACCEPTED, payload: msg });
+          dispatch({ type: ACTIONS.AI_CHAT_ACCEPTED, payload: observed(msg) });
           break;
 
         case 'AI_CHAT_START':
-          dispatch({ type: ACTIONS.AI_CHAT_START, payload: msg });
+          dispatch({ type: ACTIONS.AI_CHAT_START, payload: observed(msg) });
           break;
 
         case 'AI_CHAT_DELTA':
-          dispatch({ type: ACTIONS.AI_CHAT_DELTA, payload: msg });
+          dispatch({ type: ACTIONS.AI_CHAT_DELTA, payload: observed(msg) });
           break;
 
         case 'AI_CHAT_COMPLETE':
-          dispatch({ type: ACTIONS.AI_CHAT_COMPLETE, payload: msg });
+          dispatch({ type: ACTIONS.AI_CHAT_COMPLETE, payload: observed(msg) });
           break;
 
         case 'AI_CHAT_ERROR':
-          dispatch({ type: ACTIONS.AI_CHAT_ERROR, payload: msg });
+          dispatch({ type: ACTIONS.AI_CHAT_ERROR, payload: observed(msg) });
           break;
 
         case 'AI_CHAT_REJECTED':
-          dispatch({ type: ACTIONS.AI_CHAT_REJECTED, payload: msg });
+          dispatch({ type: ACTIONS.AI_CHAT_REJECTED, payload: observed(msg) });
           break;
 
         case 'NEGOTIATION_TELEMETRY':
