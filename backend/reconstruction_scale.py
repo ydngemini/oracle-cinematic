@@ -122,7 +122,7 @@ async def resolve_anchor(conn, *, lead_id=None, listing_id=None) -> Optional[Sca
 
             candidates = await building_footprint.resolve_footprints(address=address)
         except Exception:  # noqa: BLE001 - an outage here must not fail the job
-            logger.info("Footprint lookup failed for %r; falling back", address[:80])
+            logger.info("Footprint lookup failed; falling back")
             candidates = []
         for candidate in candidates:
             area = float(getattr(candidate, "area_sqm", 0) or 0)
@@ -140,8 +140,8 @@ async def resolve_anchor(conn, *, lead_id=None, listing_id=None) -> Optional[Sca
                     ),
                 )
             logger.info(
-                "Ignoring %s footprint of %.0f m² for %r — outside %g-%g m²",
-                getattr(candidate, "source", "?"), area, address[:60],
+                "Ignoring %s footprint of %.0f m² — outside %g-%g m²",
+                getattr(candidate, "source", "?"), area,
                 MIN_PLAUSIBLE_FOOTPRINT_M2, MAX_PLAUSIBLE_FOOTPRINT_M2,
             )
 

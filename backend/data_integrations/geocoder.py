@@ -41,7 +41,7 @@ class _CensusGeocoder(DataSource):
             matches = data.get("result", {}).get("addressMatches", [])
             return matches[0] if matches else None
         except Exception as e:
-            self._log.debug("Census geocoder failed for '%s': %s", address, e)
+            self._log.debug("Census geocoder failed: %s", type(e).__name__)
             return None
 
     def normalize(self, raw: dict) -> dict:
@@ -91,7 +91,7 @@ class _NominatimGeocoder(DataSource):
             results = await self._get_json(f"{self._URL}?{params}", timeout=10)
             return results[0] if results else None
         except Exception as e:
-            self._log.debug("Nominatim failed for '%s': %s", address, e)
+            self._log.debug("Nominatim failed: %s", type(e).__name__)
             return None
 
     def normalize(self, raw: dict) -> dict:

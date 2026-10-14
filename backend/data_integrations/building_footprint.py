@@ -317,5 +317,5 @@ async def resolve_footprints(
         candidates.extend(await osm_footprints(lat, lon, radius_m))
 
     if not candidates:
-        logger.info("No building footprint found for address=%r lat=%s lon=%s", address, lat, lon)
+        logger.info("No building footprint found (lat/lon given: %s)", lat is not None and lon is not None)
     return candidates[:MAX_CANDIDATES]

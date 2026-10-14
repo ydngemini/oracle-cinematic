@@ -134,7 +134,7 @@ async def _rentcast_avm(session: aiohttp.ClientSession, subject: dict) -> Option
                 _mark_credential_rejected("RentCast", resp.status)
                 return None
             if resp.status != 200:
-                logger.warning("RentCast AVM: HTTP %s for %s", resp.status, address)
+                logger.warning("RentCast AVM: HTTP %s", resp.status)
                 return None
             data = await resp.json()
     except Exception as e:  # noqa: BLE001 — provider is best-effort
@@ -186,7 +186,7 @@ async def _attom_avm(session: aiohttp.ClientSession, subject: dict) -> Optional[
                 _mark_credential_rejected("ATTOM", resp.status)
                 return None
             if resp.status != 200:
-                logger.warning("ATTOM AVM: HTTP %s for %s", resp.status, address)
+                logger.warning("ATTOM AVM: HTTP %s", resp.status)
                 return None
             data = await resp.json()
     except Exception as e:  # noqa: BLE001

@@ -216,7 +216,7 @@ class CensusGeocoder(DataSource):
             m["_input"] = address
             return m
         except Exception as e:  # noqa: BLE001 — graceful degradation, never crash
-            self._log.warning("Census geocode failed for '%s': %s", address, e)
+            self._log.warning("Census geocode failed: %s", type(e).__name__)  # never the address (A06)
             return None
 
     def normalize(self, raw: dict) -> dict:

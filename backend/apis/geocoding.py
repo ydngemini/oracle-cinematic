@@ -76,7 +76,7 @@ async def geocode(address: str) -> Optional[dict]:
             "address_parts": r.get("address", {}),
         }
     except Exception as e:
-        logger.warning("Geocode failed for '%s': %s", address, e)
+        logger.warning("Geocode failed: %s", type(e).__name__)  # never the address (A06)
         return None
 
 

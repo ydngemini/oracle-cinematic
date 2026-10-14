@@ -49,11 +49,13 @@ def _ctx(tenant_id: str) -> TenantContext:
     return TenantContext(agent_id=_ACTOR, tenant_id=tenant_id, role=Role.PLATFORM_ADMIN)
 
 
-async def backfill_tenant(tenant_id: str, *, batch_size: int, unseal: bool = False) -> int:
-    """Seal (or unseal) one tenant's notes; return how many rows changed."""
+async def backfill_tenant(tenant_id: str, *, batch_size: int, unseal: bool = False,
+                          max_rows: int | None = None) -> int:
+    """Seal (or unseal) one tenant's notes; return how many rows changed.
+    `max_rows` stops after about that many (whole batches), for the periodic pass."""
     key = _key(tenant_id)
     changed = 0
-    while True:
+    while max_rows is None or changed < max_rows:
         async with tenant_tx(_ctx(tenant_id)) as conn:
             await conn.execute("SELECT set_config('app.client_note_reseal', 'on', true)")
             rows = await conn.fetch(_UNSEAL if unseal else _SEAL, tenant_id, key, batch_size)
@@ -61,6 +63,35 @@ async def backfill_tenant(tenant_id: str, *, batch_size: int, unseal: bool = Fal
             return changed
         changed += len(rows)
         print(f"tenant {tenant_id}: {'unsealed' if unseal else 'sealed'} {changed} note(s)", flush=True)
+    return changed
+
+
+async def seal_pending(*, batch_size: int = 200, max_rows: int = 2_000,
+                       only_tenants: list[str] | None = None) -> dict:
+    """One bounded sealing pass over every tenant that still has plaintext notes.
+
+    The worker runs this on a schedule (data_integrations/periodic.py,
+    `client_note_seal`) because the master key lives only in the app's own
+    environment: nobody has to copy it out to run the script. Returns counts and
+    tenant ids, never note text. Unsealing stays a deliberate operator action.
+    """
+    async with tenant_tx(_ctx("00000000-0000-0000-0000-000000000000")) as conn:
+        tenant_ids = [str(r["tenant_id"]) for r in await conn.fetch(
+            "SELECT DISTINCT tenant_id FROM client_notes "
+            "WHERE body_ciphertext IS NULL AND body <> '' ORDER BY tenant_id")]
+    if only_tenants is not None:
+        tenant_ids = [t for t in tenant_ids if t in set(only_tenants)]
+    sealed, budget = 0, max_rows
+    for tenant_id in tenant_ids:
+        if budget <= 0:
+            break
+        done = await backfill_tenant(tenant_id, batch_size=min(batch_size, budget), max_rows=budget)
+        sealed += done
+        budget -= done
+    left = 0
+    for tenant_id in tenant_ids:
+        left += await remaining(tenant_id)
+    return {"sealed": sealed, "tenants": len(tenant_ids), "remaining": left}
 
 
 async def remaining(tenant_id: str) -> int:

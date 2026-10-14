@@ -683,8 +683,8 @@ async def auto_dimensions(
             located = await CascadingGeocoder().geocode(address)
             if located:
                 lat, lon = located.get("lat"), located.get("lng")
-        except Exception:  # noqa: BLE001 — degrade to address-only resolution
-            log.warning("auto-dimensions: geocode failed for %r", address, exc_info=True)
+        except Exception as exc:  # noqa: BLE001 — degrade to address-only resolution
+            log.warning("auto-dimensions: geocode failed: %s", type(exc).__name__)
 
     from data_integrations.building_footprint import resolve_footprints
     from floorplan_pipeline.dimensions import complete_dimensions

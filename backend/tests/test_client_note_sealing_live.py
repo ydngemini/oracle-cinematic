@@ -132,8 +132,14 @@ async def _scenario():
         assert await admin.fetchval("SELECT body FROM client_notes WHERE id=$1", legacy_id) == "Legacy plaintext note"
         assert await admin.fetchval("SELECT updated_at FROM client_notes WHERE id=$1", legacy_id) == legacy_updated
 
+        # The worker's periodic pass reseals them, a bounded number per run.
+        first = await backfill_client_notes.seal_pending(batch_size=1, max_rows=2, only_tenants=[tenant])
+        assert first == {"sealed": 2, "tenants": 1, "remaining": 1}, first
+        second = await backfill_client_notes.seal_pending(batch_size=10, max_rows=10, only_tenants=[tenant])
+        assert second["sealed"] == 1 and second["remaining"] == 0, second
+        assert (await backfill_client_notes.seal_pending(only_tenants=[tenant]))["sealed"] == 0
+
         # A sealed row without its key fails closed instead of reading as empty.
-        await backfill_client_notes.backfill_tenant(tenant, batch_size=10)
         os.environ.pop("ORACLE_ENCRYPTION_MASTER_KEY")
         try:
             async with connection.tenant_tx(agent) as conn:

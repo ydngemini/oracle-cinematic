@@ -27,6 +27,8 @@ _PII_NAMES = {
     "email", "to_email", "from_email", "recipient_email",
     "phone", "phone_number", "from_number", "to_number", "caller_phone", "callee_phone",
     "contact", "note", "notes", "transcript", "speech_text",
+    # A property address identifies a homeowner as surely as a name (A06, owner 2026-10-14).
+    "address", "street", "street_address", "address_line", "full_address", "addr", "situs_address",
 }
 # Wrapping a value in one of these logs a fact about it, not the value.
 _SAFE_WRAPPERS = {"len", "bool", "type", "id"}

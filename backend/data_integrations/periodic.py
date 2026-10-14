@@ -391,6 +391,25 @@ async def _source_health_probe_task() -> dict:
     return outcome
 
 
+async def _client_note_seal_task() -> dict:
+    """Seal client notes still stored as plaintext (audit A01, migration 0132).
+
+    Every app write has sealed note text since 0132; rows written before it keep
+    their plaintext `body` until sealed. The master key exists only in the app's
+    environment, so the worker does it here in small restart-safe batches (the
+    same statements as backend/backfill_client_notes.py) instead of anyone
+    copying the key out. Once nothing is left a pass is one cheap count.
+    """
+    if not os.getenv("ORACLE_ENCRYPTION_MASTER_KEY", "").strip():
+        return {"skipped": "ORACLE_ENCRYPTION_MASTER_KEY is not set"}
+    from backfill_client_notes import seal_pending
+
+    return await seal_pending(
+        batch_size=max(1, min(5_000, int(os.getenv("ORACLE_CLIENT_NOTE_BACKFILL_BATCH", "200")))),
+        max_rows=max(1, min(50_000, int(os.getenv("ORACLE_CLIENT_NOTE_SEAL_MAX_PER_RUN", "2000")))),
+    )
+
+
 async def _property_coordinate_backfill_task() -> dict:
     """Resolve coordinates for public records that have an address and no point.
 
@@ -1058,6 +1077,14 @@ def build_default_scheduler() -> PeriodicScheduler:
     # becomes decidable a day after it is applied; a quarter-hour cadence would
     # just re-scan the same not-yet-settled rows. Idempotent — record_decision
     # upserts on (tenant, source_table, source_id) — so replica overlap is safe.
+    sched.register(PeriodicTask(
+        name="client_note_seal",
+        interval_s=max(
+            300.0, float(os.getenv("ORACLE_CLIENT_NOTE_SEAL_INTERVAL_MIN", "30")) * 60,
+        ),
+        run=_client_note_seal_task,
+        enabled=os.getenv("ORACLE_CLIENT_NOTE_SEAL_ENABLED", "1") == "1",
+    ))
     sched.register(PeriodicTask(
         name="chat_decision_sweep",
         interval_s=max(
