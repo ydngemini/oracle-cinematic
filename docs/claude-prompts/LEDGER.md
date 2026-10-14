@@ -1262,7 +1262,7 @@ authz_checked: n/a
 blockers: [{type: owner, note: "Creating production needs owner approval and budget."}]
 audit_refs: [A04, A10]
 decision_refs: []
-next_task: "Owner decision on production creation."
+next_task: "Owner 2026-10-14: production deferred (\"wait later\"); staging stays as is. Create production about 3-4 months before the ISO Stage 2 audit (L17-06). A copy sized like staging is about $105/month at list price (estimate)."
 updated: 2026-10-12
 ```
 
