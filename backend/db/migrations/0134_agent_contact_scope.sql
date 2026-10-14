@@ -317,20 +317,34 @@ BEGIN
 END $$;
 
 -- 6. Compliance and brokerage reads that are not "seeing the contact" ---------
--- SET app.record_scope applies only while the function runs (PostgreSQL
--- restores it on exit), so the caller's own scope is unchanged afterwards.
+-- Each sets app.record_scope = 'brokerage' for its own query and puts the
+-- caller's value back before returning, so the caller's scope is unchanged
+-- afterwards. (Not a `SET app.record_scope` clause on the function: on managed
+-- PostgreSQL the migrating role is not a superuser, and PostgreSQL refuses a
+-- function SET clause for an unregistered custom parameter from a
+-- non-superuser — 42501, which is what failed this migration on staging.)
+-- If the query raises, the transaction or the caller's savepoint rolls the
+-- set_config back with it.
 CREATE OR REPLACE FUNCTION app_client_contact_place(p_client uuid)
     RETURNS TABLE (state_code char(2), timezone text)
-    LANGUAGE sql STABLE
-    SET search_path = pg_catalog, public
-    SET app.record_scope = 'brokerage' AS
-$$ SELECT ac.state_code, ac.timezone
-     FROM public.agent_contacts ac
-    WHERE ac.deleted_at IS NULL
-      AND (ac.legacy_client_id = p_client
-           OR ac.id = (SELECT c.contact_id FROM public.clients c WHERE c.id = p_client))
-    ORDER BY (ac.state_code IS NOT NULL) DESC, ac.updated_at DESC
-    LIMIT 1 $$;
+    LANGUAGE plpgsql VOLATILE
+    SET search_path = pg_catalog, public AS
+$$
+DECLARE
+    v_prev text := COALESCE(current_setting('app.record_scope', true), '');
+BEGIN
+    PERFORM set_config('app.record_scope', 'brokerage', true);
+    RETURN QUERY
+        SELECT ac.state_code, ac.timezone
+          FROM public.agent_contacts ac
+         WHERE ac.deleted_at IS NULL
+           AND (ac.legacy_client_id = p_client
+                OR ac.id = (SELECT c.contact_id FROM public.clients c WHERE c.id = p_client))
+         ORDER BY (ac.state_code IS NOT NULL) DESC, ac.updated_at DESC
+         LIMIT 1;
+    PERFORM set_config('app.record_scope', v_prev, true);
+END
+$$;
 REVOKE ALL ON FUNCTION app_client_contact_place(uuid) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION app_client_contact_place(uuid) TO oracle_app;
 COMMENT ON FUNCTION app_client_contact_place(uuid) IS
@@ -338,13 +352,21 @@ COMMENT ON FUNCTION app_client_contact_place(uuid) IS
 
 CREATE OR REPLACE FUNCTION app_open_contact_counts()
     RETURNS TABLE (assigned_user_id uuid, open_contacts integer)
-    LANGUAGE sql STABLE
-    SET search_path = pg_catalog, public
-    SET app.record_scope = 'brokerage' AS
-$$ SELECT ac.assigned_user_id, count(*)::int
-     FROM public.agent_contacts ac
-    WHERE ac.deleted_at IS NULL AND ac.assigned_user_id IS NOT NULL
-    GROUP BY ac.assigned_user_id $$;
+    LANGUAGE plpgsql VOLATILE
+    SET search_path = pg_catalog, public AS
+$$
+DECLARE
+    v_prev text := COALESCE(current_setting('app.record_scope', true), '');
+BEGIN
+    PERFORM set_config('app.record_scope', 'brokerage', true);
+    RETURN QUERY
+        SELECT ac.assigned_user_id, count(*)::int
+          FROM public.agent_contacts ac
+         WHERE ac.deleted_at IS NULL AND ac.assigned_user_id IS NOT NULL
+         GROUP BY ac.assigned_user_id;
+    PERFORM set_config('app.record_scope', v_prev, true);
+END
+$$;
 REVOKE ALL ON FUNCTION app_open_contact_counts() FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION app_open_contact_counts() TO oracle_app;
 COMMENT ON FUNCTION app_open_contact_counts() IS
