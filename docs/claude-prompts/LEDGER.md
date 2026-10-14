@@ -283,7 +283,7 @@ How it works: restrictive `<t>_linked_read/_insert/_update/_delete` policies, in
 id: L03-08
 status: tests_pass
 env: local
-evidence_shas: [SHA_PLACEHOLDER]  # branch worktree-agent-a5563e55e5fb840d8, unpushed
+evidence_shas: [91b7e38]  # branch worktree-agent-a5563e55e5fb840d8, unpushed
 files: [backend/db/migrations/0145_realtime_audience_and_number_assignment.sql, backend/ws_hub.py, backend/record_access.py, backend/commands_api.py, backend/voice_intel.py, backend/tests/test_realtime_fanout_scope.py, backend/tests/test_realtime_record_scope_live.py, backend/tests/test_call_note_review.py, backend/tests/test_call_notes_live.py, .github/workflows/ci.yml]
 tests_run:
   - {cmd: "grep/AST inventory of every ws_hub / WebSocket send in backend/ (tests/test_realtime_fanout_scope.py::test_every_tenant_wide_fanout_is_classified)", result: "client/contact content sent tenant-wide at e3ea107: NEGOTIATION_TELEMETRY (commands_api.call_telemetry: counter offer, ARV, rehab, MAO), CALL_CONSENT (record_call_consent), VOICE_SESSION and VOICE_TELEMETRY (voice_intel: the transcript line, offer math, objection draft) — each also mirrored IN FULL to the platform firehose, and the voice-session group mirrored there too. Already scoped: CALL_NOTES (broadcast_user to requester + assignee), AI chat and JOB_PROGRESS of ai_chat jobs (broadcast_user). Tenant-wide by classification (8 call sites pinned with reasons): lead frames VOICE_NOTE_LOGGED, DOSSIER_MOVED, CONTRACT_EXPIRED/DANGER (leads are brokerage-wide, L03-03), SPLAT_READY and VIDEO_READY (property media), JOB_PROGRESS (ids + stage text), workflow-engine ambient frames (public records, simulated transcript). Platform-admin-only sockets (audit trail, surge, AWS observability) are global by design. No SSE endpoint exists.", date: 2026-10-14}
@@ -674,7 +674,7 @@ updated: 2026-10-13
 id: L10-10
 status: tests_pass
 env: local
-evidence_shas: [SHA_PLACEHOLDER]  # branch worktree-agent-a5563e55e5fb840d8, unpushed
+evidence_shas: [91b7e38]  # branch worktree-agent-a5563e55e5fb840d8, unpushed
 files: [backend/messaging_data.py, backend/messaging_api.py, backend/provider_purchases.py, backend/db/migrations/0145_realtime_audience_and_number_assignment.sql, backend/tests/test_messaging_registration_race_live.py, docs/provider-failure-matrix.md]
 tests_run:
   - {cmd: "livetest.sh python -m pytest -q -p no:cacheprovider tests/test_messaging_registration_race_live.py -k racing_number with messaging_api.py at e3ea107 (BEFORE; mock adapter that counts calls)", result: "1 failed: 6 concurrent assign-number POSTs from one broker owner = 6 assign_number_to_campaign calls at the (mock) provider for one number and one campaign", date: 2026-10-14}
