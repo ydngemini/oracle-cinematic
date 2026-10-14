@@ -121,6 +121,21 @@ class BrokerageProfileUpdate(BaseModel):
     org_type: Optional[Literal["brokerage", "team", "independent_agent"]] = None
     primary_state: Optional[str] = Field(default=None, pattern=r"^[A-Za-z]{2}$")
     website: Optional[str] = Field(default=None, max_length=300)
+    # Printed in the footer of every commercial email (CAN-SPAM; 0146,
+    # commercial_email.py). Never inferred from anything else.
+    postal_address: Optional[str] = Field(default=None, max_length=300)
+
+    @field_validator("postal_address")
+    @classmethod
+    def _tidy_postal_address(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        from commercial_email import clean_postal_address
+
+        cleaned = clean_postal_address(value)
+        if cleaned is None or len(cleaned) < 5:
+            raise ValueError("Enter the full postal address: street or PO box, city, state and ZIP.")
+        return cleaned
 
 
 class InviteCreate(BaseModel):
@@ -277,10 +292,22 @@ async def _invites_status(conn, tenant_id: str) -> tuple[Status, dict]:
     return "NEEDS_ACTION", summary
 
 
+def _commercial_email_state(tenant: dict) -> dict[str, Any]:
+    from commercial_email import SETUP_REQUIRED_MESSAGE
+
+    configured = bool(tenant.get("postal_address"))
+    return {
+        "status": "READY" if configured else "NEEDS_ACTION",
+        "postal_address_configured": configured,
+        "unsubscribe": "one_click",  # every client email carries the link + RFC 8058 headers
+        "message": None if configured else SETUP_REQUIRED_MESSAGE,
+    }
+
+
 async def compute_setup_state(conn, ctx: TenantContext) -> dict[str, Any]:
     """The one place that answers "what can this brokerage use right now?"."""
     tenant = await conn.fetchrow(
-        "SELECT id, slug, name, org_type, primary_state, website, profile_completed_at "
+        "SELECT id, slug, name, org_type, primary_state, website, postal_address, profile_completed_at "
         "  FROM tenants WHERE id = $1::uuid",
         ctx.tenant_id,
     )
@@ -344,8 +371,14 @@ async def compute_setup_state(conn, ctx: TenantContext) -> dict[str, Any]:
             "org_type": tenant["org_type"],
             "primary_state": tenant["primary_state"],
             "website": tenant["website"],
+            "postal_address": tenant.get("postal_address"),
             "profile_completed_at": tenant["profile_completed_at"],
         },
+        # Commercial email (CAN-SPAM). A separate block, not a capability: it
+        # does not change `readiness` (whether a missing address should block
+        # client email is an open owner question, L17-08). Sending is not held
+        # up today; the footer simply has no address until one is set.
+        "commercial_email": _commercial_email_state(tenant),
         "capabilities": capabilities,
         "recommended_next": recommended,
         "team": team_summary,

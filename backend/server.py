@@ -543,6 +543,8 @@ app.include_router(lead_routing_router)
 app.include_router(lead_intake_router)
 from public_sites_api import router as public_sites_router  # noqa: E402 — published sites, no auth
 app.include_router(public_sites_router)
+from email_unsubscribe_api import router as email_unsubscribe_router  # noqa: E402 — one-click unsubscribe, no auth
+app.include_router(email_unsubscribe_router)
 app.include_router(missions_router)
 app.include_router(sites_router)
 app.include_router(spatial_intelligence_router)

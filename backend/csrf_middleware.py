@@ -66,6 +66,14 @@ CSRF_EXEMPT_PATHS = {
     # its protection.
     "/portal/activity",
     "/billing/webhook",
+    # Email unsubscribe (email_unsubscribe_api.py): the link in a commercial
+    # email footer and the RFC 8058 one-click target. The route reads no
+    # cookie or session — the token in the path is the whole capability — so
+    # there is no ambient credential for a cross-site page to ride, which is
+    # the only thing CSRF defends against. Mailbox providers POST it from their
+    # own servers and can never carry a CSRF token. Prefix with the trailing
+    # slash: exactly the tokenized route, nothing else under /api/public/email.
+    "/api/public/email/unsubscribe/",
 }
 
 

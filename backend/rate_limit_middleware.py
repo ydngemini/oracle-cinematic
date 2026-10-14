@@ -47,6 +47,11 @@ RATE_LIMITS = {
     "/auth/": 120,
     "/api/ai/chat": 20,
     "/api/public/lead-intake/": 30,
+    # Public unsubscribe (email_unsubscribe_api.py). Per source IP. One-click
+    # POSTs come from a mailbox provider's few shared egress addresses (the
+    # webhook lesson above), so the ceiling is above the anonymous default; an
+    # unsubscribe is one indexed insert, idempotent.
+    "/api/public/email/unsubscribe/": int(os.getenv("ORACLE_UNSUBSCRIBE_RATE_LIMIT", "120")),
     **{prefix: int(os.getenv("ORACLE_WEBHOOK_RATE_LIMIT", "6000")) for prefix in WEBHOOK_PATH_PREFIXES},
     "/api/crm/tour": 5,
     # AI tour generation. Previously enforced by a module-level list in

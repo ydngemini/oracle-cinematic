@@ -17,6 +17,9 @@ import logging
 # Path prefixes whose NEXT segment is a bearer capability.
 _CAPABILITY_PREFIXES: tuple[str, ...] = (
     "/api/public/property-upload/",
+    # The unsubscribe token: a capability (anyone holding it can opt that
+    # address out) and an encrypted address. Masked like the others.
+    "/api/public/email/unsubscribe/",
     "/portal/session/",
     "/vault/secure-access/",
     "/api/commands/webhooks/twilio/tts/",

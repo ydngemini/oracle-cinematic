@@ -98,7 +98,9 @@ export function BrokerageSetupPanel() {
   const [inviteText, setInviteText] = useState('');
   const [editingProfile, setEditingProfile] = useState(false);
   const [offboarding, setOffboarding] = useState(null);
-  const [profileForm, setProfileForm] = useState({ name: '', org_type: 'brokerage', primary_state: '', website: '' });
+  const [profileForm, setProfileForm] = useState({
+    name: '', org_type: 'brokerage', primary_state: '', website: '', postal_address: '',
+  });
 
   // Not an async function, deliberately: React 19's lint rejects setState
   // called synchronously from an effect, and a promise chain keeps every
@@ -113,6 +115,7 @@ export function BrokerageSetupPanel() {
           org_type: state.brokerage.org_type || 'brokerage',
           primary_state: state.brokerage.primary_state || '',
           website: state.brokerage.website || '',
+          postal_address: state.brokerage.postal_address || '',
         });
         setError('');
       })
@@ -175,6 +178,7 @@ export function BrokerageSetupPanel() {
     const payload = { name: profileForm.name, org_type: profileForm.org_type };
     if (profileForm.primary_state) payload.primary_state = profileForm.primary_state;
     if (profileForm.website) payload.website = profileForm.website;
+    if (profileForm.postal_address.trim()) payload.postal_address = profileForm.postal_address;
     const next = await crmPatch('/api/brokerage/profile', payload);
     setSetup(next);
     setEditingProfile(false);
@@ -233,6 +237,17 @@ export function BrokerageSetupPanel() {
               maxLength={300}
             />
           </label>
+          <label className={styles.field}>
+            <span>Postal mailing address</span>
+            <textarea
+              value={profileForm.postal_address}
+              onChange={(e) => setProfileForm((f) => ({ ...f, postal_address: e.target.value }))}
+              placeholder={'123 Main St\nDover, DE 19901'}
+              maxLength={300}
+              rows={2}
+            />
+            <em className={styles.muted}>Shown at the bottom of every email your agents send to clients (required by CAN-SPAM).</em>
+          </label>
           <div className={styles.actions}>
             <button type="button" className={styles.primary} onClick={saveProfile} disabled={busy || !profileForm.name.trim()}>
               Save
@@ -249,11 +264,22 @@ export function BrokerageSetupPanel() {
             {ORG_TYPE_LABELS[brokerage.org_type] || brokerage.org_type}
             {brokerage.primary_state ? ` · ${brokerage.primary_state}` : ''}
           </p>
+          {brokerage.postal_address ? (
+            <p className={styles.muted}>{brokerage.postal_address}</p>
+          ) : null}
           <button type="button" className={styles.ghost} onClick={() => setEditingProfile(true)}>
             {brokerage.profile_completed_at ? 'Edit business details' : 'Add business details'}
           </button>
         </div>
       )}
+
+      {/* Commercial email footer: the backend decides; this only says what it said. */}
+      {setup.commercial_email && setup.commercial_email.status !== 'READY' ? (
+        <p className={styles.setupRequired} role="status">
+          <strong>Setup required: postal address.</strong>{' '}
+          {setup.commercial_email.message}
+        </p>
+      ) : null}
 
       {/* ── Capabilities ─────────────────────────────────────────────── */}
       <ul className={styles.capabilities}>

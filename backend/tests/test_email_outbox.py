@@ -46,7 +46,25 @@ def env(monkeypatch):
 
     monkeypatch.setattr(commands_api, "_load_provider_credential", no_cred)
     monkeypatch.setattr(commands_api, "load_agent_identity", identity)
+    _gate(monkeypatch, allowed=True)
     return conn
+
+
+def _gate(monkeypatch, *, allowed):
+    """The send-time compliance re-check and the commercial footer (no DB)."""
+    from commercial_email import PreparedEmail
+    from outreach_compliance import OutreachDecision
+
+    async def guard(ctx, **kw):
+        return OutreachDecision(allowed=allowed, channel="email", contact=kw["contact"], state_code=None,
+                                blockers=() if allowed else ("contact is on the do-not-contact / opt-out list",))
+
+    async def prepare(tenant_id, *, recipient, body):
+        return PreparedEmail(body=body + "\n--\nfooter", unsubscribe_url="https://neoh.test/u",
+                             headers={}, postal_address_configured=True)
+
+    monkeypatch.setattr(email_outbox.outreach_compliance, "guard_outreach", guard)
+    monkeypatch.setattr(email_outbox.commercial_email, "prepare", prepare)
 
 
 def _sender(monkeypatch, behaviour):
@@ -54,8 +72,8 @@ def _sender(monkeypatch, behaviour):
 
     calls = []
 
-    async def send(draft, credentials=None, reply_to=None):
-        calls.append(draft)
+    async def send(draft, credentials=None, reply_to=None, list_unsubscribe_url=None):
+        calls.append({**draft, "list_unsubscribe_url": list_unsubscribe_url})
         if isinstance(behaviour, Exception):
             raise behaviour
         return ProviderResult("smtp", "<mid@b.test>", "submitted", {})
@@ -114,3 +132,36 @@ def test_recovery_mode_block_is_not_sent_and_not_unknown(env, monkeypatch):
     with pytest.raises(recovery_mode.RecoveryModeBlocked):
         asyncio.run(email_outbox.deliver(T, "o1"))
     assert _statuses(env) == ["queued"]
+
+
+def test_an_opt_out_after_queueing_blocks_the_send(env, monkeypatch):
+    """CONTRACT C3.4: crm.send_message checked the opt-out list when the row was
+    queued; deliver re-checks at execution, so an unsubscribe in between (from
+    any agent's email) stops this one. Blocked is final, never retried."""
+    calls = _sender(monkeypatch, None)
+    _gate(monkeypatch, allowed=False)
+    assert asyncio.run(email_outbox.deliver(T, "o1")) == {"status": "blocked"}
+    assert calls == []
+    assert _statuses(env) == ["failed"]
+    error = next(args[3] for sql, args in env.executed if "SET status=$3" in sql)
+    assert error.startswith("blocked: ")
+    assert not any("last_contacted_at" in sql for sql, _ in env.executed)
+
+
+def test_a_failed_pre_send_check_requeues_without_sending(env, monkeypatch):
+    calls = _sender(monkeypatch, None)
+
+    async def broken(ctx, **kw):
+        raise ConnectionError("db down")
+
+    monkeypatch.setattr(email_outbox.outreach_compliance, "guard_outreach", broken)
+    with pytest.raises(ConnectionError):
+        asyncio.run(email_outbox.deliver(T, "o1"))
+    assert calls == [] and _statuses(env) == ["queued"]
+
+
+def test_the_sent_email_carries_the_footer_and_the_one_click_url(env, monkeypatch):
+    calls = _sender(monkeypatch, None)
+    assert asyncio.run(email_outbox.deliver(T, "o1")) == {"status": "sent"}
+    assert calls[0]["body"].endswith("footer")
+    assert calls[0]["list_unsubscribe_url"] == "https://neoh.test/u"

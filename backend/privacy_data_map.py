@@ -41,7 +41,7 @@ E, VP, R, T, G = (Disposition.ERASE, Disposition.VIA_PARENT, Disposition.RETAIN,
 TABLES: dict[str, TableEntry] = {
     # ── account ──────────────────────────────────────────────────────────
     "tenants": TableEntry(C.ACCOUNT, Disposition.TENANT_ROW,
-                          "name/slug/website scrubbed; the row anchors receipts"),
+                          "name/slug/website/postal_address scrubbed; the row anchors receipts"),
     "users": TableEntry(C.ACCOUNT, E, "agent_id is the user's email"),
     "user_profiles": TableEntry(C.ACCOUNT, E, "tenant_id is text; no FK"),
     "team_memberships": TableEntry(C.ACCOUNT, E),

@@ -1145,6 +1145,31 @@ blockers:
 audit_refs: [A01, A04, A06]
 decision_refs: []
 next_task: "Code gaps in flight: L17-07 card-number redaction, L17-08 CAN-SPAM unsubscribe, L17-09..13 privileged-activity alerts / HOOK-3 / log-PII / audit fallback + verify_chain / access review, L17-14..18 demo-login boot guard / password hashing / dependency audit + Dependabot / admin read logging / DR drill in CI. Then: tenant-user MFA (owner decision), field encryption of remaining PII (A01), scheduled off-host backups, log forwarding."
+
+#### L17-08 Commercial email: unsubscribe link, RFC 8058 one-click, postal address (crosswalk T-CS-1)
+```yaml
+id: L17-08
+status: tests_pass
+env: local
+evidence_shas: [475f40c]   # baseline; the fix is the commit that adds backend/commercial_email.py
+files: [backend/commercial_email.py, backend/email_unsubscribe_api.py, backend/db/migrations/0146_brokerage_postal_address.sql, backend/email_outbox.py, backend/commands_api.py, backend/command_providers.py, backend/smtp_mailer.py, backend/brokerage_onboarding.py, backend/server.py, backend/csrf_middleware.py, backend/rate_limit_middleware.py, backend/log_redaction.py, backend/privacy_lifecycle.py, backend/privacy_data_map.py, backend/tests/test_commercial_email.py, backend/tests/test_email_unsubscribe_live.py, backend/tests/test_email_outbox.py, backend/tests/test_brokerage_onboarding.py, backend/tests/test_env_documentation.py, oracle-app/src/components/BrokerageSetupPanel.jsx, oracle-app/src/components/BrokerageSetupPanel.module.css, oracle-app/src/components/BrokerageSetupPanel.test.jsx, docs/privacy-data-map.md, docs/compliance/framework-crosswalk.md, .env.example, .github/workflows/ci.yml]
+tests_run:
+  - {cmd: "grep -rni 'unsubscribe|list-unsub|postal' backend/*.py; read email_outbox.deliver, commands_api._execute_command_job (EMAIL), smtp_mailer.build_message at 475f40c", result: "baseline confirmed: no unsubscribe link, no List-Unsubscribe header, no postal address; tenants has no address column; email_outbox.deliver did NOT re-check the opt-out list at send time (only crm.send_message at queue time)", date: 2026-10-14}
+  - {cmd: "cd backend && ORACLE_SKIP_DOTENV=1 python -m pytest -q -p no:cacheprovider tests/", result: "exit 0; 3520 passed, 42 skipped", date: 2026-10-14}
+  - {cmd: "pytest tests/test_commercial_email.py tests/test_email_outbox.py", result: "29 + 8 passed: token round trip / tamper / foreign key / no PII in URL; raw-bytes header format; footer with and without address; every direct smtp_mailer.send caller classified; GET changes nothing, POST without login or CSRF token records, forged token 404, failed write 503; outbox blocked at send time after an opt-out", date: 2026-10-14}
+  - {cmd: "livetest.sh migrate; livetest.sh python -m pytest -q tests/test_email_unsubscribe_live.py + the ci.yml live list", result: "applied 0146; 50 passed, 1 failed: test_migration_precheck (environmental: the shared dev DB records 0106_brokerage_setup.sql, a file in no branch)", date: 2026-10-14}
+  - {cmd: "psql -f tests/{rls_security_review,rls_brokerage,platform_rls_test,privacy_lifecycle,rls_tenant_wall}.sql", result: "all 5 PASS", date: 2026-10-14}
+  - {cmd: "non-superuser rehearsal: scratch DB, 0001-0145 as superuser, REASSIGN OWNED + DB owner to a NOSUPERUSER BYPASSRLS CREATEROLE role, run_migrations.py as that role", result: "applied 0146, exit 0; scratch DB and roles dropped", date: 2026-10-14}
+  - {cmd: "bandit (CI flags) -b .bandit-baseline.json; npx vitest run; npm run lint; npm run build", result: "bandit exit 0; vitest 771 passed (82 files); lint clean; build ok", date: 2026-10-14}
+authz_checked: "the unsubscribe writes outreach_suppression (tenant wall only, no agent narrowing, 0140) as a worker context; the live test proves agent B, who cannot see agent A's client, is blocked from emailing the same person after an unsubscribe from A's email (queued-before send blocked at delivery, new send 451, command gate denies), and that another brokerage is not bound"
+blockers:
+  - {type: owner, note: "Should client email be held while the brokerage has no postal address? Today it sends with the unsubscribe link and no address, and setup shows 'setup required' (commercial_email block of /api/brokerage/setup). No address is inferred; the 10DLC brand address (0108) is not reused without the owner's say."}
+  - {type: owner, note: "Every client/lead email is treated as commercial (footer + headers), including deal updates; an email unsubscribe therefore also stops relationship email to an active client from every agent. Confirm, or name a transactional class."}
+  - {type: operator, note: "Gmail/Yahoo require the List-Unsubscribe headers to be covered by the sender's DKIM signature; that is the SMTP relay's configuration (platform or brokerage), not verified. ydnhft.com SPF/DMARC were already missing (memory: Neoh Email & DNS)."}
+  - {type: scope, note: "Rotating ORACLE_SECRET_KEY invalidates every unsubscribe link already sent (documented in .env.example); the page then asks the person to reply. The approval preview does not yet show the footer that is appended after the approved body."}
+audit_refs: []
+decision_refs: [D-2026-10-13-01]
+next_task: "Owner answers the two questions; show the footer in the approval preview; after deploy, send one test email to the operator's own address and check the headers and DKIM in Gmail's 'show original'."
 updated: 2026-10-14
 ```
 
