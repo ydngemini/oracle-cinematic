@@ -145,6 +145,8 @@ def test_every_migration_on_disk_parses_without_error():
             "GRANT only — restores EXECUTE 0003 revoked from pgcrypto/earthdistance",
         "0092_grant_earthdistance_extension.sql":
             "GRANT only — same, by extension membership rather than by name",
+        "0144_drop_duplicate_tenant_policies.sql":
+            "DROPs a duplicate permissive policy — a removal leaves no object to probe",
     }
 
     files = sorted((BACKEND / "db" / "migrations").glob("*.sql"))

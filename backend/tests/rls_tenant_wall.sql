@@ -16,8 +16,11 @@
 --   D. Rows: for every rewritten table and context, the rows visible through
 --      RLS are the same set under the new policies and, flipped back inside
 --      this transaction, under the old ones.
+--   E. Duplicates (0144, L16-03): no table carries two identical permissive
+--      policies, and recreating the dropped twin on agent_licenses and
+--      transactions changes no visible row in any context.
 --
--- Run as superuser against a database with migrations through 0141 applied:
+-- Run as superuser against a database with migrations through 0144 applied:
 --     psql -U postgres -d oracle -v ON_ERROR_STOP=1 -f tests/rls_tenant_wall.sql
 -- It seeds, asserts, and rolls everything back. Any failure raises and stops.
 
@@ -80,6 +83,17 @@ BEGIN
                        AND pg_get_expr(p.polqual, p.polrelid) LIKE '%app_tenant_floor()%');
   IF bad IS NOT NULL THEN RAISE EXCEPTION 'hot tables without the tenant wall: %', bad; END IF;
 
+  -- No table carries the same permissive policy twice (0144). Permissive
+  -- policies OR together: a twin is either a widening or dead weight.
+  SELECT string_agg(rel || ' x' || cnt, ', ') INTO bad FROM (
+    SELECT c.relname AS rel, count(*) AS cnt
+      FROM pg_policy p JOIN pg_class c ON c.oid = p.polrelid
+     WHERE c.relnamespace = 'public'::regnamespace AND p.polpermissive
+     GROUP BY c.relname, p.polcmd, p.polroles, pg_get_expr(p.polqual, p.polrelid),
+              pg_get_expr(p.polwithcheck, p.polrelid)
+    HAVING count(*) > 1) d;
+  IF bad IS NOT NULL THEN RAISE EXCEPTION 'duplicate permissive policies: %', bad; END IF;
+
   -- The bounds: STABLE invoker-rights plpgsql, no SET clause, executable by both logins.
   SELECT string_agg(f, ', ') INTO bad
     FROM unnest(ARRAY['app_tenant_floor()', 'app_tenant_ceiling()']) f
@@ -110,6 +124,14 @@ INSERT INTO agent_contacts (tenant_id, phone_lookup_hash)
 INSERT INTO leads (id, tenant_id, parcel_id, state, motivation_score) VALUES
   ('a1410000-1111-4000-8000-00000000000a', 'a1410000-0000-4000-8000-00000000000a', 'WALL-A', 'DE', 1),
   ('b1410000-1111-4000-8000-00000000000b', 'b1410000-0000-4000-8000-00000000000b', 'WALL-B', 'DE', 2);
+INSERT INTO agent_licenses (tenant_id, agent_id, license_number, state_code)
+  SELECT t, 'wall-agent-' || g, 'WALL-' || g, 'DE'
+    FROM unnest(ARRAY['a1410000-0000-4000-8000-00000000000a', 'b1410000-0000-4000-8000-00000000000b']::uuid[]) t,
+         generate_series(1, 3) g;
+INSERT INTO transactions (tenant_id, state_code, created_by)
+  SELECT t, 'DE', 'wall-a-agent'
+    FROM unnest(ARRAY['a1410000-0000-4000-8000-00000000000a', 'b1410000-0000-4000-8000-00000000000b']::uuid[]) t,
+         generate_series(1, 3) g;
 ANALYZE clients;
 ANALYZE agent_contacts;
 
@@ -276,6 +298,59 @@ BEGIN
      OR (seen->('3|clients')->>0)::bigint < 20000 OR (seen->('7|clients')->>0)::bigint <> 0 THEN
     RAISE EXCEPTION 'D: unexpected client visibility %', seen->('1|clients');
   END IF;
+END $$;
+
+-- ── E. The dropped twin policies (0144) changed no visible row ─────────────
+DO $$
+DECLARE
+  t text;
+  x record;
+  k record;
+  phase text;
+  n bigint; h bigint;
+  seen jsonb := '{}';
+  key text;
+  diffs int := 0;
+BEGIN
+  FOREACH phase IN ARRAY ARRAY['without twin', 'with twin'] LOOP
+    IF phase = 'with twin' THEN
+      FOREACH t IN ARRAY ARRAY['agent_licenses', 'transactions'] LOOP
+        SELECT pg_get_expr(polqual, polrelid) AS q, pg_get_expr(polwithcheck, polrelid) AS c INTO k
+          FROM pg_policy WHERE polrelid = t::regclass AND polname = t || '_tenant_isolation';
+        IF NOT FOUND THEN RAISE EXCEPTION 'E: %_tenant_isolation is missing', t; END IF;
+        IF EXISTS (SELECT 1 FROM pg_policy WHERE polrelid = t::regclass AND polname = 'tenant_isolation') THEN
+          RAISE EXCEPTION 'E: %.tenant_isolation still exists (0144 not applied?)', t;
+        END IF;
+        EXECUTE format('CREATE POLICY tenant_isolation ON %I USING (%s) WITH CHECK (%s)', t, k.q, k.c);
+      END LOOP;
+    END IF;
+    FOR x IN SELECT * FROM wall_contexts ORDER BY ord LOOP
+      EXECUTE format('SET LOCAL SESSION AUTHORIZATION %I', x.login);
+      PERFORM set_config('app.current_tenant', x.tenant, true),
+              set_config('app.current_role', x.role, true),
+              set_config('app.current_agent', x.agent, true),
+              set_config('app.record_scope', 'actor', true);
+      FOREACH t IN ARRAY ARRAY['agent_licenses', 'transactions'] LOOP
+        EXECUTE format('SELECT count(*), COALESCE(sum(hashtext(ctid::text)), 0) FROM %I', t) INTO n, h;
+        key := x.ord || '|' || t;
+        IF phase = 'without twin' THEN
+          seen := seen || jsonb_build_object(key, jsonb_build_array(n, h));
+        ELSIF seen->key <> jsonb_build_array(n, h) THEN
+          diffs := diffs + 1;
+          RAISE WARNING 'E [%] %: % rows without the twin vs % with it (or a different set)', x.label, t, seen->key->0, n;
+        END IF;
+      END LOOP;
+      EXECUTE 'RESET SESSION AUTHORIZATION';
+    END LOOP;
+  END LOOP;
+  IF diffs > 0 THEN RAISE EXCEPTION 'E: % (context, table) pairs see different rows with the twin', diffs; END IF;
+  -- Sanity: agent of A sees A's 3 + 3, admin sees at least both brokerages', no context sees none.
+  IF (seen->('1|agent_licenses')->>0)::bigint <> 3 OR (seen->('1|transactions')->>0)::bigint <> 3
+     OR (seen->('4|agent_licenses')->>0)::bigint < 6 OR (seen->('7|transactions')->>0)::bigint <> 0 THEN
+    RAISE EXCEPTION 'E: unexpected visibility %', seen;
+  END IF;
+  RAISE NOTICE 'E: agent_licenses and transactions: identical visible rows with and without the twin in % contexts',
+    (SELECT count(*) FROM wall_contexts);
 END $$;
 
 ROLLBACK;

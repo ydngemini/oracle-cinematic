@@ -40,10 +40,22 @@ def test_every_filter_and_sort_key_is_a_clients_column():
             assert term.strip().startswith("c."), expr
 
 
-def test_page_selection_has_an_indexable_tenant_condition():
-    # The RLS policy's OR (admin OR tenant) is not indexable; without this the
-    # Work list scanned every tenant's clients (migration 0113).
-    assert "c.tenant_id = ANY (app_visible_tenants())" in _sql()
+def _restated_tenant_predicates(src: str) -> list[str]:
+    """Tenant predicates in the code and SQL, ignoring comments and docstrings."""
+    if src.lstrip().startswith(("async def", "def")) and '"""' in src:
+        head, _, rest = src.partition('"""')
+        src = head + rest.partition('"""')[2]
+    code = "\n".join(line.split("#")[0].split("--")[0] for line in src.splitlines())
+    return [m for m in ("app_visible_tenants", "app_current_tenant()", "tenant_id =", "tenant_id=")
+            if m in code]
+
+
+def test_page_selection_does_not_restate_the_tenant_wall():
+    # RLS scopes the rows; since 0141 the wall is itself an index condition.
+    # The 0113 restatement `tenant_id = ANY (app_visible_tenants())` was
+    # redundant, cost ~2-3 ms and hid orphan-tenant rows from a platform admin
+    # (L16-03). The plan proof is tests/test_tenant_wall_plans_live.py.
+    assert _restated_tenant_predicates(_sql()) == []
 
 
 def test_visible_tenants_never_narrows_a_platform_admin():
@@ -54,10 +66,20 @@ def test_visible_tenants_never_narrows_a_platform_admin():
     assert "GRANT EXECUTE ON FUNCTION app_visible_tenants() TO oracle_app" in sql
 
 
-def test_deal_pipeline_has_an_indexable_tenant_condition():
-    # Runs on every WebSocket connect. Without the condition the RLS OR forced a
-    # walk of every tenant's leads (1.2 s → 1.7 ms measured, Mission 8).
-    import inspect
+def test_deal_pipeline_does_not_restate_the_tenant_wall():
+    # Runs on every WebSocket connect. Under the old OR policy it needed the
+    # 0113 restatement (1.2 s -> 1.7 ms, Mission 8); under 0141 it does not
+    # (L16-03). The leads page query is the `where` block; the rollup count
+    # and the coverage lookup below it are not part of this check.
     import server
     src = inspect.getsource(server.push_deal_pipeline)
-    assert "WHERE tenant_id = ANY (app_visible_tenants())" in src
+    where = src[src.index('where = """'):src.index('cursor = options["cursor"]')]
+    assert "AND ($1::text IS NULL OR state=$1)" not in where  # first filter leads now
+    assert "WHERE ($1::text IS NULL OR state=$1)" in where
+    assert _restated_tenant_predicates(where) == []
+
+
+def test_the_plan_proof_exercises_both_queries():
+    import pathlib
+    live = (pathlib.Path(__file__).resolve().parent / "test_tenant_wall_plans_live.py").read_text()
+    assert "crm.list_clients" in live and "server.push_deal_pipeline" in live
