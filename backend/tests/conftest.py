@@ -72,3 +72,29 @@ def _no_real_email(monkeypatch):
     monkeypatch.setattr(smtplib, "SMTP_SSL", _NoNetworkSMTP)
     for key in ("ORACLE_SMTP_HOST", "ORACLE_SMTP_USERNAME", "ORACLE_SMTP_PASSWORD"):
         monkeypatch.delenv(key, raising=False)
+
+
+class _NoSemanticModel:
+    """The semantic-frame parser's gateway in tests: no model at all.
+
+    ORACLE_SEMANTIC_FRAME_ENABLED is ON by default, so every chat turn a test
+    drives would otherwise reach llm_gateway — and a CI box with a provider key
+    in its environment would make a real model call. This answers exactly as a
+    deployment with no structured-output provider does. Tests that want a frame
+    set `semantic_turn.GATEWAY` to their own fake.
+    """
+
+    calls = 0
+
+    async def complete(self, *_args, **_kwargs):
+        import llm_gateway
+
+        type(self).calls += 1
+        raise llm_gateway.LLMUnavailable("tests: no semantic-frame model")
+
+
+@pytest.fixture(autouse=True)
+def _no_real_semantic_model(monkeypatch):
+    import semantic_turn
+
+    monkeypatch.setattr(semantic_turn, "GATEWAY", _NoSemanticModel())

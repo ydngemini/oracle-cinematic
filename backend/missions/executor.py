@@ -143,9 +143,22 @@ async def _work_one(
     ctx: TenantContext, mission: dict[str, Any], action: dict[str, Any],
 ) -> str:
     """Evaluate one action and record what happened. Returns a result key."""
-    contact, state_code = await _contact_for(ctx, action)
+    context = await _candidate_context(ctx, action)
+    contact, state_code = _contact_from(context, action["channel"])
     verdict = await policy.evaluate_action(
-        ctx, mission, action, contact=contact, state_code=state_code)
+        ctx, mission, action, contact=contact, state_code=state_code,
+        subject_id=context.get("subject_id") if context else None)
+
+    if verdict.defer_until is not None:
+        # A stated "not before" (prompt 05): not refused, moved. Pushing due_at
+        # past now takes it out of _due_actions, so this journals once.
+        await _defer(ctx, action["id"], verdict.defer_until)
+        await _journal(ctx, mission["id"], "action_deferred", {
+            "action_id": str(action["id"]),
+            "until": verdict.defer_until.isoformat(),
+            "constraint": verdict.constraint,
+        })
+        return "deferred"
 
     if not verdict.may_stage:
         # Enriched in place — never a second row. The count of actions stays
@@ -488,11 +501,29 @@ async def _contact_for(
     ctx: TenantContext, action: dict[str, Any],
 ) -> tuple[Optional[str], Optional[str]]:
     """The address this action would reach, and the state whose rules apply."""
-    context = await _candidate_context(ctx, action)
+    return _contact_from(await _candidate_context(ctx, action), action["channel"])
+
+
+def _contact_from(
+    context: dict[str, Any], channel: str,
+) -> tuple[Optional[str], Optional[str]]:
     if not context:
         return None, None
-    contact = context["email"] if action["channel"] == "email" else context["phone"]
+    contact = context["email"] if channel == "email" else context["phone"]
     return contact or None, context["state_code"]
+
+
+async def _defer(ctx: TenantContext, action_id: Any, until: datetime) -> None:
+    from db.connection import tenant_tx
+
+    async with tenant_tx(ctx) as conn:
+        await conn.execute(
+            """UPDATE mission_actions
+                  SET due_at = greatest(coalesce(due_at, $2::timestamptz), $2::timestamptz),
+                      updated_at = now()
+                WHERE id = $1::uuid AND state = 'planned'""",
+            action_id, until,
+        )
 
 
 def _target_for(context: dict[str, Any], channel: str) -> dict[str, Any]:

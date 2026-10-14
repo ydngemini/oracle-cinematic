@@ -1,0 +1,360 @@
+"""semantic_turn — the semantic-parser tier of a chat turn and of a mission.
+
+Prompt 05, T05.05 (route by task) and T05.04 (short-lived discourse context).
+The order is: the deterministic ⌘K fast path (`neoh_intents`) first and
+untouched; on a miss the text becomes a chat turn, and the chat turn runs the
+semantic parser (`semantic_frame.extract_frame` + `authorize_frame`) before the
+model plans or calls a tool. What the frame says must not happen is carried to
+the tool chokepoint (`ai_chat_store.execute_safe_tool`) and, for missions, to
+every step (`missions.policy.evaluate_action`); `frame_constraints` enforces it.
+
+Switch: `ORACLE_SEMANTIC_FRAME_ENABLED`, ON unless set to 0/false/off/no
+(owner, 2026-10-14). Off means no parser call, nothing stored, nothing
+enforced — exactly the behaviour before this module.
+
+Cost and failure. One `fast`-tier structured call per chat turn, bounded by
+`ORACLE_SEMANTIC_FRAME_TIMEOUT_SECONDS` (wall clock, retries included) and run
+concurrently with the turn's other grounding reads. No provider, a timeout, a
+rejected answer or any other parser failure leaves the turn exactly as it was
+before this module — except that constraints stated in EARLIER turns still
+apply: they are stored, so a parser outage cannot forget them.
+
+Discourse store and retention. The turn's frame summary is written to its own
+assistant row, `ai_chat_messages.metadata.semantic_frame` (no new table): goal
+labels, authorised record ids, constraint kinds and times — never the words,
+names or addresses (C5.4). It lives and is erased with the chat message
+(privacy_data_map: ai_chat_messages). A chat constraint applies for
+`frame_constraints.DISCOURSE_TTL` after the turn that stated it, within the 24
+messages a turn already loads; a mission's applies for the mission's life.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import contextvars
+import json
+import logging
+import os
+import time
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from typing import Any, Optional, Sequence
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+import frame_constraints as fc
+import semantic_frame as sf
+from tenancy import TenantContext
+
+logger = logging.getLogger(__name__)
+
+SUMMARY_VERSION = 1
+
+
+def _float_env(name: str, default: float) -> float:
+    try:
+        value = float(os.getenv(name, "") or default)
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
+#: Wall clock for the parser in one turn, retries included. A target that
+#: keeps the added delay small, not a measurement of any provider.
+FRAME_BUDGET_S = min(_float_env("ORACLE_SEMANTIC_FRAME_TIMEOUT_SECONDS", 3.0),
+                     sf.FRAME_TIMEOUT_S)
+
+
+def default_timezone() -> str:
+    """The zone "tomorrow" and "Monday" are read in. No per-agent zone is
+    stored yet, so this is a deployment default (documented in .env.example)."""
+    name = (os.getenv("ORACLE_SEMANTIC_FRAME_TIMEZONE") or "America/New_York").strip()
+    try:
+        ZoneInfo(name)
+    except (ZoneInfoNotFoundError, ValueError):
+        logger.warning("ORACLE_SEMANTIC_FRAME_TIMEZONE is not a known zone; using UTC")
+        return "UTC"
+    return name
+
+
+#: The gateway the parser calls; None means llm_gateway. Tests set a fake
+#: (tests/conftest.py installs one that has no model at all).
+GATEWAY: Any = None
+
+#: (assistant_id, constraints) for the turn running in this task. Keyed by the
+#: turn so a tool call from any other turn never reads these constraints.
+_TURN: contextvars.ContextVar[Optional[tuple[str, tuple[fc.ActiveConstraint, ...]]]] = (
+    contextvars.ContextVar("semantic_turn", default=None)
+)
+
+
+@dataclass
+class TurnFrame:
+    status: str            # parsed | unavailable | timed_out | rejected | no_request
+    reason: str = ""
+    frame: Optional[sf.SemanticFrame] = None
+    own: list[fc.ActiveConstraint] = field(default_factory=list)
+    active: list[fc.ActiveConstraint] = field(default_factory=list)
+    extract_ms: Optional[int] = None
+
+    def summary(self) -> dict[str, Any]:
+        """What is stored. Ids, labels, kinds and times — no words."""
+        f = self.frame
+        return {
+            "v": SUMMARY_VERSION,
+            "schema_version": sf.SCHEMA_VERSION,
+            "status": self.status,
+            "reason": self.reason[:60],
+            "extract_ms": self.extract_ms,
+            "authorized": bool(f and f.authorized),
+            "goals": [{"label": g.label, "negated": g.negated} for g in (f.goals if f else [])],
+            "mentions": [
+                {"kind": m.kind, "records": [
+                    {"type": c.record_type, "id": str(c.id), "access": c.access}
+                    for c in m.candidates if c.access is not None
+                ]}
+                for m in (f.mentions if f else [])
+            ],
+            "needs_clarification": bool(f and (f.ambiguities or f.unfilled_slots)),
+            "dropped_candidates": f.dropped_candidates if f else 0,
+            "own": fc.dump(self.own),
+            "active": fc.dump(self.active),
+        }
+
+    def prompt_block(self) -> str:
+        return fc.prompt_block(self.active)
+
+
+# ---------------------------------------------------------------------------
+# The binding the tool chokepoint reads
+# ---------------------------------------------------------------------------
+
+def bind(assistant_id: str, constraints: Sequence[fc.ActiveConstraint]) -> None:
+    """Bind this turn's constraints to the running task.
+
+    `_generate` runs inside its own task (asyncio.wait_for), so the binding
+    ends with the turn without a reset.
+    """
+    _TURN.set((str(assistant_id), tuple(constraints)))
+
+
+def constraints_for(message_id: str) -> tuple[fc.ActiveConstraint, ...]:
+    """The constraints of the turn `message_id`, or none. Empty when the
+    switch is off, so the chokepoint behaves exactly as before."""
+    if not fc.enabled():
+        return ()
+    bound = _TURN.get()
+    if bound is None or bound[0] != str(message_id):
+        return ()
+    return bound[1]
+
+
+# ---------------------------------------------------------------------------
+# Discourse context
+# ---------------------------------------------------------------------------
+
+def _metadata(message: dict) -> dict:
+    raw = message.get("metadata")
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except ValueError:
+            return {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def standing_from_bundle(bundle: dict) -> tuple[list[fc.ActiveConstraint], list[dict]]:
+    """The latest stored frame summary among the loaded messages: its active
+    constraints (cumulative) and the records it resolved."""
+    for message in reversed(bundle.get("messages") or []):
+        if message.get("role") != "assistant":
+            continue
+        summary = _metadata(message).get("semantic_frame")
+        if not isinstance(summary, dict):
+            continue
+        active = fc.load(summary.get("active"), origin=str(message.get("id") or "unreadable"))
+        refs = [r for m in (summary.get("mentions") or []) if isinstance(m, dict)
+                for r in (m.get("records") or []) if isinstance(r, dict)]
+        return active, refs
+    return [], []
+
+
+def _last_user_text(bundle: dict) -> str:
+    messages = bundle.get("messages") or []
+    if messages and messages[-1].get("role") == "user":
+        return str(messages[-1].get("content") or "")
+    return ""
+
+
+async def _known_records(ctx: TenantContext, bundle: dict, refs: list[dict]) -> list[sf.KnownRecord]:
+    """What the parser may refer to by number: the selected record, then the
+    records the previous turn resolved (re-read as the caller, so a record
+    the caller lost access to since is not offered)."""
+    known: list[sf.KnownRecord] = []
+    assistant = bundle.get("assistant") or {}
+    ctype, cid = assistant.get("context_type"), assistant.get("context_id")
+    record = bundle.get("record") or {}
+    if ctype in ("client", "lead") and cid and record.get("label"):
+        known.append(sf.KnownRecord(ctype, str(cid), str(record["label"])))
+    wanted = []
+    for r in refs:
+        if r.get("type") in ("client", "lead") and r.get("id") and str(r["id"]) != str(cid):
+            wanted.append((r["type"], str(r["id"])))
+    wanted = list(dict.fromkeys(wanted))[:5]
+    if not wanted:
+        return known
+    try:
+        from ai_chat_store import resolve_record
+        from db.connection import tenant_tx
+
+        async with tenant_tx(ctx) as conn:
+            for rtype, rid in wanted:
+                try:
+                    row = await resolve_record(conn, ctx, rtype, rid)
+                except Exception:  # noqa: BLE001 — not visible any more: not offered
+                    continue
+                if row.get("label"):
+                    known.append(sf.KnownRecord(rtype, rid, str(row["label"])))
+    except Exception as exc:  # noqa: BLE001 — discourse is a help, not a dependency
+        logger.info("semantic turn: previous records not re-read (%s)", type(exc).__name__)
+    return known
+
+
+_PERSIST_SQL = """
+    UPDATE ai_chat_messages
+       SET metadata = metadata || jsonb_build_object('semantic_frame', $2::jsonb)
+     WHERE id = $1::uuid AND role = 'assistant'
+"""
+
+
+async def _persist(ctx: TenantContext, assistant_id: str, summary: dict) -> None:
+    from db.connection import tenant_tx
+
+    async with tenant_tx(ctx) as conn:
+        await conn.execute(_PERSIST_SQL, assistant_id, json.dumps(summary, default=str))
+
+
+# ---------------------------------------------------------------------------
+# One parse, bounded
+# ---------------------------------------------------------------------------
+
+async def _parse(
+    ctx: TenantContext, text: str, *, known: Sequence[sf.KnownRecord], now: datetime,
+) -> tuple[Optional[sf.SemanticFrame], str, str, int]:
+    """(authorised frame or None, status, reason, elapsed ms). Never raises."""
+    zone = default_timezone()
+    started = time.perf_counter()
+    frame: Optional[sf.SemanticFrame] = None
+    status, reason = "parsed", ""
+    try:
+        frame = await asyncio.wait_for(
+            sf.extract_frame(
+                text, now=now.astimezone(ZoneInfo(zone)), timezone=zone,
+                known=known, gateway=GATEWAY,
+            ),
+            timeout=FRAME_BUDGET_S,
+        )
+    except asyncio.TimeoutError:
+        status = "timed_out"
+    except sf.FrameUnavailable:
+        status = "unavailable"
+    except sf.FrameRejected as exc:
+        status, reason = "rejected", exc.reason
+    except Exception as exc:  # noqa: BLE001 — the parser never breaks the turn
+        status, reason = "unavailable", type(exc).__name__
+    elapsed = int((time.perf_counter() - started) * 1000)
+    if frame is not None:
+        try:
+            frame = await sf.authorize_frame(ctx, frame)
+        except Exception as exc:  # noqa: BLE001
+            # Keep the unauthorised frame: its constraints still count, but
+            # unscoped (from_frame never scopes to an unchecked identity).
+            reason = f"authorization_failed:{type(exc).__name__}"
+    if status != "parsed":
+        logger.info("semantic turn: parser %s (%s) in %d ms", status, reason or "-", elapsed)
+    return frame, status, reason, elapsed
+
+
+async def prepare_turn(
+    ctx: TenantContext, bundle: dict, assistant_id: str, *, now: Optional[datetime] = None,
+) -> Optional[TurnFrame]:
+    """Parse this turn, amend the standing constraints, store the result.
+
+    Returns None when the switch is off. Raises only when constraints are in
+    force and cannot be stored: a turn must not act under restrictions the
+    next turn would not see (fail closed — the turn fails honestly instead).
+    """
+    if not fc.enabled():
+        return None
+    now = now or datetime.now(timezone.utc)
+    standing, refs = standing_from_bundle(bundle)
+    text = _last_user_text(bundle)
+
+    if not text.strip():
+        turn = TurnFrame(status="no_request")
+    else:
+        known = await _known_records(ctx, bundle, refs)
+        frame, status, reason, elapsed = await _parse(ctx, text, known=known, now=now)
+        turn = TurnFrame(status=status, reason=reason, frame=frame, extract_ms=elapsed)
+
+    if turn.frame is not None:
+        turn.own = fc.from_frame(turn.frame, origin=str(assistant_id), stated_at=now)
+    turn.active = fc.merge(
+        standing, turn.own, lifted_for=fc.lifts(turn.frame), now=now,
+    )
+
+    if turn.frame is not None or turn.active or standing:
+        try:
+            await _persist(ctx, assistant_id, turn.summary())
+        except Exception as exc:  # noqa: BLE001
+            if turn.active:
+                raise RuntimeError("stated constraints could not be stored") from exc
+            logger.warning("semantic turn: frame summary not stored (%s)", type(exc).__name__)
+    return turn
+
+
+# ---------------------------------------------------------------------------
+# Missions (08)
+# ---------------------------------------------------------------------------
+
+async def mission_constraints(
+    ctx: TenantContext, objective_text: str, *, now: Optional[datetime] = None,
+) -> dict[str, Any]:
+    """The `missions.constraints` value for a new mission ({} when off).
+
+    The objective is parsed once, as the person creating it, and what it says
+    must not happen is stored on the mission and checked at every step. A
+    parser failure is recorded, not hidden: the mission keeps every gate it
+    had before (approval, shadow mode, compliance).
+    """
+    if not fc.enabled():
+        return {}
+    now = now or datetime.now(timezone.utc)
+    frame, status, reason, elapsed = await _parse(ctx, objective_text, known=(), now=now)
+    own = fc.from_frame(frame, origin="mission", stated_at=now) if frame else []
+    return {"semantic_frame": {
+        "v": SUMMARY_VERSION,
+        "schema_version": sf.SCHEMA_VERSION,
+        "status": status,
+        "reason": reason[:60],
+        "extract_ms": elapsed,
+        "goals": [{"label": g.label, "negated": g.negated} for g in (frame.goals if frame else [])],
+        "active": fc.dump(own),
+    }}
+
+
+def mission_active(mission: dict[str, Any]) -> list[fc.ActiveConstraint]:
+    """The stated constraints a mission row carries (fail closed on garbage)."""
+    raw = mission.get("constraints")
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except ValueError:
+            return fc.load("unreadable", origin="mission")
+    if not isinstance(raw, dict):
+        return []
+    summary = raw.get("semantic_frame")
+    if summary is None:
+        return []
+    if not isinstance(summary, dict):
+        return fc.load("unreadable", origin="mission")
+    return fc.load(summary.get("active"), origin="mission")

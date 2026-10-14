@@ -97,9 +97,16 @@ class Verdict:
     release_authority: str = ""
     missing: tuple[str, ...] = ()
     disclosures: tuple[str, ...] = ()
+    #: A stated not_before constraint (prompt 05): the step is not refused, it
+    #: is moved to this time. Only ever set together with may_stage=False.
+    defer_until: Optional[datetime] = None
+    #: The stated constraint kind that shaped this verdict, if any.
+    constraint: Optional[str] = None
 
     def as_dict(self) -> dict[str, Any]:
         return {
+            "defer_until": self.defer_until.isoformat() if self.defer_until else None,
+            "constraint": self.constraint,
             "may_stage": self.may_stage,
             "may_release": self.may_release,
             "reason": self.reason,
@@ -214,8 +221,14 @@ async def evaluate_action(
     contact: Optional[str] = None,
     state_code: Optional[str] = None,
     now: Optional[datetime] = None,
+    subject_id: Optional[str] = None,
 ) -> Verdict:
-    """The whole gate, in order. Never sends; only decides."""
+    """The whole gate, in order. Never sends; only decides.
+
+    `subject_id` is the candidate's record id, for a stated constraint about
+    one person ("don't contact the Hendersons"). None counts as possibly
+    that person (frame_constraints fails closed).
+    """
     import autonomy
     from missions import costs
 
@@ -231,6 +244,18 @@ async def evaluate_action(
     deadline = mission.get("deadline")
     if deadline and _as_datetime(deadline) and _as_datetime(deadline) < now:
         return _withheld("the mission's deadline has passed")
+
+    # 1b. What the person said must not happen, in the objective they wrote
+    #     (prompt 05, T05.07). Read from the mission row, decided here, never
+    #     by the planner or drafter model. Nothing when the switch is off.
+    gate = _stated_gate(mission, channel, subject_id, now)
+    if gate is not None and gate.withhold:
+        return Verdict(may_stage=False, may_release=False, reason=gate.withhold,
+                       blocked_reason=gate.withhold, constraint=gate.kind)
+    if gate is not None and gate.defer_until is not None:
+        return Verdict(may_stage=False, may_release=False,
+                       reason=f"stated constraint: not before {gate.defer_until.isoformat()}",
+                       defer_until=gate.defer_until, constraint=gate.kind)
 
     # 2. Budget: the mission's own, then the tenant's ceiling above it.
     cost = costs.unit_cost_cents(channel)
@@ -306,6 +331,17 @@ async def evaluate_action(
             release_authority=authority, disclosures=disclosures,
         )
 
+    if gate is not None and gate.no_release:
+        # Drafts only / approval required: it may wait in the approval queue,
+        # but no grant and no dial releases it. A person does.
+        return Verdict(
+            may_stage=True, may_release=False,
+            reason=f"staged for approval — {gate.no_release}",
+            dial_allowed=dial_allowed, dial_reason=dial_reason,
+            release_authority="", disclosures=disclosures,
+            constraint=gate.kind,
+        )
+
     return Verdict(
         may_stage=True,
         may_release=may_release,
@@ -317,6 +353,24 @@ async def evaluate_action(
         dial_reason=dial_reason,
         release_authority=authority,
         disclosures=disclosures,
+    )
+
+
+def _stated_gate(mission: dict[str, Any], channel: str, subject_id: Optional[str],
+                 now: datetime):
+    """frame_constraints' verdict on this step, or None when nothing applies."""
+    import frame_constraints
+    import semantic_turn
+
+    if not frame_constraints.enabled():
+        return None
+    stated = semantic_turn.mission_active(mission)
+    if not stated:
+        return None
+    return frame_constraints.check_mission_step(
+        stated, channel,
+        subject_ids=frozenset({str(subject_id)}) if subject_id else frozenset(),
+        now=now,
     )
 
 

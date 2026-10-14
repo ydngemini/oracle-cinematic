@@ -84,24 +84,32 @@ async def create_mission(
         )
 
     snapshot = await _autonomy_snapshot(ctx)
+    # What the objective says must not happen ("drafts only", "don't contact
+    # the Hendersons", "not before Monday"), parsed once as the person creating
+    # it and checked at every step (missions.policy). {} when
+    # ORACLE_SEMANTIC_FRAME_ENABLED is off — the column's own default.
+    import semantic_turn
+
+    stated = await semantic_turn.mission_constraints(ctx, body.objective_text.strip())
     async with tenant_tx(ctx) as conn:
         row = await conn.fetchrow(
             """INSERT INTO missions
                    (tenant_id, objective_kind, objective_text, target_count,
                     deadline, budget_cents, allowed_channels, auto_channels,
                     consent_at, consent_by, consent_text, autonomy_snapshot,
-                    created_by)
+                    created_by, constraints)
                VALUES ($1::uuid, $2, $3, $4, $5::timestamptz, $6, $7::text[],
                        $8::text[],
                        CASE WHEN $8::text[] = '{}'::text[] THEN NULL ELSE now() END,
                        CASE WHEN $8::text[] = '{}'::text[] THEN NULL ELSE $9 END,
                        CASE WHEN $8::text[] = '{}'::text[] THEN NULL ELSE $10 END,
-                       $11::jsonb, $9)
+                       $11::jsonb, $9, $12::jsonb)
                RETURNING *""",
             ctx.tenant_id, body.objective_kind, body.objective_text.strip(),
             body.target_count, body.deadline, body.budget_cents,
             body.allowed_channels, body.auto_channels, ctx.agent_id,
             (body.consent_text or "").strip() or None, json.dumps(snapshot),
+            json.dumps(stated, default=str),
         )
     await _journal(ctx, row["id"], "created", {"objective": body.objective_text})
     return {"mission": _mission_json(row)}
@@ -319,12 +327,22 @@ def _mission_json(row: Any) -> dict[str, Any]:
         "consent_text": data.get("consent_text"),
         "consent_at": _iso(data.get("consent_at")),
         "consent_by": data.get("consent_by"),
+        # The machine-readable limits the objective stated (prompt 05), so a
+        # confirmation screen can show them. Kinds, ids and times only.
+        "stated_constraints": _stated(data.get("constraints")),
         "status": data["status"],
         "mode": data["mode"],
         "simulated_at": _iso(data.get("simulated_at")),
         "launched_at": _iso(data.get("launched_at")),
         "created_at": _iso(data.get("created_at")),
     }
+
+
+def _stated(raw: Any) -> dict[str, Any]:
+    summary = _decode(raw).get("semantic_frame") if isinstance(_decode(raw), dict) else None
+    if not isinstance(summary, dict):
+        return {"status": "not_parsed", "active": []}
+    return {"status": summary.get("status"), "active": summary.get("active") or []}
 
 
 def _iso(value: Any) -> Optional[str]:

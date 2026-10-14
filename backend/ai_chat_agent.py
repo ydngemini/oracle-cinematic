@@ -28,6 +28,8 @@ from memory_core.session_manager import SessionManager
 from billing_usage import record_inference
 from tenancy import Role, TenantContext
 import neoh_persona
+import frame_constraints
+import semantic_turn
 
 logger = logging.getLogger("oracle.ai_chat")
 # One Foundry model round may not take longer than this (the turn has several).
@@ -1122,6 +1124,14 @@ async def _resolve_brokerage_context(ctx: TenantContext) -> Optional[dict]:
 
 
 async def _generate(ctx: TenantContext, bundle: dict, assistant_id: str) -> tuple[str, list[dict], str]:
+    # The semantic parser tier (prompt 05, T05.05): one bounded `fast` call,
+    # started first so it overlaps the grounding reads below. None when
+    # ORACLE_SEMANTIC_FRAME_ENABLED is off; a parser failure is a frame-less
+    # turn, never a failed one (semantic_turn.prepare_turn).
+    frame_task = (
+        asyncio.ensure_future(semantic_turn.prepare_turn(ctx, bundle, assistant_id))
+        if frame_constraints.enabled() else None
+    )
     memory = SessionManager(ctx)
     brokerage = await _resolve_brokerage_context(ctx)
     base = neoh_persona.build_system_prompt(brokerage=brokerage)
@@ -1172,6 +1182,16 @@ async def _generate(ctx: TenantContext, bundle: dict, assistant_id: str) -> tupl
     site = neoh_persona.brokerage_block(brokerage)
     if site:
         runtime_context = (site + "\n\n" + runtime_context).strip()
+    # Stated constraints are bound to this turn BEFORE any provider can call a
+    # tool; execute_safe_tool refuses what they forbid. The prompt block only
+    # lets the model explain — it is not the control.
+    turn = await frame_task if frame_task is not None else None
+    if turn is not None:
+        semantic_turn.bind(assistant_id, turn.active)
+        constraint_block = turn.prompt_block()
+        if constraint_block:
+            system_prompt += "\n\n" + constraint_block
+            runtime_context = (runtime_context + "\n\n" + constraint_block).strip()
     # Hosted chat runs through llm_gateway: one place that knows which
     # providers exist, one call counter, one deadline. The loop, the tool
     # execution and the receipts are unchanged — only the transport moved.
