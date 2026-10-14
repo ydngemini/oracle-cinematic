@@ -55,7 +55,9 @@ def test_communications_follow_the_record(monkeypatch):
     asyncio.run(_scenario())
 
 
-def test_communications_policy_composition_cannot_widen():
+def test_communications_policy_composition_cannot_widen(monkeypatch):
+    # Call telemetry seals the transcript (0152, L17-21): writes need the key.
+    monkeypatch.setenv("ORACLE_ENCRYPTION_MASTER_KEY", MASTER)
     asyncio.run(_policy_composition())
 
 

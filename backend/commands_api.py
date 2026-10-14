@@ -37,6 +37,7 @@ from starlette.responses import RedirectResponse, Response
 
 import pan_redaction
 import record_access
+import sealed_text
 import ws_hub
 from agent_profile import load_agent_identity
 from approval_service import create_approval, decide_approval, list_approvals, require_decider
@@ -2050,11 +2051,12 @@ async def call_telemetry(
         event = await conn.fetchrow(
             """
             INSERT INTO negotiation_events (
-                tenant_id, call_session_id, event_type, transcript_excerpt,
+                tenant_id, call_session_id, event_type, transcript_excerpt, transcript_ciphertext,
                 counter_offer, arv, rehab, mao, threshold, payload,
                 model_version, created_by
             ) VALUES (
-                $1::uuid,$2::uuid,'counter_offer',$3,$4,$5,$6,$7,$8,$9::jsonb,
+                $1::uuid,$2::uuid,'counter_offer',NULL,
+                pgp_sym_encrypt(NULLIF($3::text,''),$11::text),$4,$5,$6,$7,$8,$9::jsonb,
                 'objective-negotiation-2026.07',$10
             ) RETURNING id, created_at
             """,
@@ -2070,6 +2072,8 @@ async def call_telemetry(
             guidance["threshold"],
             json.dumps(guidance),
             ctx.agent_id,
+            # Sealed at rest (0152, A01): what the caller said.
+            sealed_text.key_for(ctx.tenant_id),
         )
     frame = {
         "type": "NEGOTIATION_TELEMETRY",

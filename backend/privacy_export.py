@@ -61,6 +61,12 @@ DECRYPT: dict[str, dict[str, str]] = {
     # 0132: a sealed note's text; `body` is '' on those rows and still holds
     # the text on rows the backfill has not sealed yet.
     "client_notes": {"body_ciphertext": "sealed_body"},
+    # 0152 (A01, L17-21): the same shape for message bodies, call transcript
+    # excerpts and memory-core chat turns: the plaintext column is empty on a
+    # sealed row and still holds the text on rows the backfill has not reached.
+    "sms_messages": {"body_ciphertext": "sealed_body"},
+    "negotiation_events": {"transcript_ciphertext": "sealed_transcript_excerpt"},
+    "user_interactions": {"content_ciphertext": "sealed_content"},
 }
 _MAX_MEDIA_BYTES = int(os.getenv("ORACLE_EXPORT_MAX_MEDIA_BYTES", str(2 * 1024 ** 3)))
 

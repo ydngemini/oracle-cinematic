@@ -241,7 +241,9 @@ async def _access_bundle(conn, tenant_id: str, ids: dict[str, list]) -> dict[str
         if os.getenv("ORACLE_ENCRYPTION_MASTER_KEY") else None
     queries = {
         "clients": "SELECT id, full_name, email, phone, company, notes, preferences, created_at FROM clients",
-        "sms_messages": "SELECT id, direction, from_e164, to_e164, body, created_at FROM sms_messages",
+        # 0152 (A01): a body is sealed at rest; opened below, never silently dropped.
+        "sms_messages": "SELECT id, direction, from_e164, to_e164, body, created_at, "
+                        "body_ciphertext, tenant_id AS body_ciphertext_tenant_id FROM sms_messages",
         "email_outbox": "SELECT id, to_email, subject, body_text, status, sent_at, created_at FROM email_outbox",
         "outreach_consent": "SELECT id, contact, channel, consent_type, proof_source, created_at, revoked_at FROM outreach_consent",
         "outreach_suppression": "SELECT id, contact, channel, reason, created_at, lifted_at FROM outreach_suppression",
@@ -253,6 +255,12 @@ async def _access_bundle(conn, tenant_id: str, ids: dict[str, list]) -> dict[str
                                         tenant_id, ids[table])
             except Exception:  # noqa: BLE001 - a column renamed must not hide the rest
                 rows = []
+            if table == "sms_messages":
+                import sealed_text
+
+                # Outside the try: a body that cannot be opened fails the
+                # request instead of leaving the person's texts out of it.
+                rows = await sealed_text.open_rows(conn, rows, sealed_text.SMS_BODY)
             out[table] = [json.loads(json.dumps(dict(r), default=str)) for r in rows]
     if ids.get("agent_contacts") and key:
         rows = await conn.fetch(

@@ -21,6 +21,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Mapping, Optional, Sequence
 
 import pan_redaction
+import sealed_text
 from db.connection import tenant_tx
 from tenancy import Role, TenantContext, brokerage_scope
 
@@ -1066,10 +1067,10 @@ async def record_inbound_message(
             INSERT INTO sms_messages (
                 tenant_id,agent_id,contact_id,client_id,direction,provider,
                 provider_message_id,provider_status,status,from_e164,to_e164,
-                body,media,opt_out_event
+                body,body_ciphertext,media,opt_out_event
             ) VALUES (
                 $1::uuid,$2,$3::uuid,$4::uuid,'inbound',$5,$6,'received','delivered',
-                $7,$8,$9,$10::jsonb,$11
+                $7,$8,NULL,pgp_sym_encrypt(NULLIF($9::text,''),$12::text),$10::jsonb,$11
             )
             ON CONFLICT (provider,provider_message_id) DO NOTHING
             RETURNING id,activity_id
@@ -1085,6 +1086,7 @@ async def record_inbound_message(
             text[:4_000],
             _json_media(media),
             opted_out,
+            sealed_text.key_for(tenant_id),
         )
         if row is None:
             existing = await conn.fetchrow(
@@ -1145,8 +1147,9 @@ async def record_outbound_message(
             """
             INSERT INTO sms_messages (
                 tenant_id,agent_id,contact_id,client_id,direction,provider,
-                provider_message_id,status,from_e164,to_e164,body
-            ) VALUES ($1::uuid,$2,$3::uuid,$4::uuid,'outbound',$5,$6,'queued',$7,$8,$9)
+                provider_message_id,status,from_e164,to_e164,body,body_ciphertext
+            ) VALUES ($1::uuid,$2,$3::uuid,$4::uuid,'outbound',$5,$6,'queued',$7,$8,
+                      NULL,pgp_sym_encrypt(NULLIF($9::text,''),$10::text))
             ON CONFLICT (provider,provider_message_id) DO NOTHING
             RETURNING id
             """,
@@ -1159,6 +1162,7 @@ async def record_outbound_message(
             from_e164,
             to_e164,
             body[:4_000],
+            sealed_text.key_for(tenant_id),
         )
         if row is not None and client_id:
             activity = await conn.fetchrow(

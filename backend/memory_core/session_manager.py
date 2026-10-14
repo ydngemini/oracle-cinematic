@@ -115,6 +115,7 @@ class SessionManager:
         Returns a plain dict ready for inject_jit_prompt(). Missing profile →
         sane defaults so a brand-new operator still gets a coherent prompt."""
         from db.connection import tenant_tx  # lazy: avoids requiring a live DB on import
+        import sealed_text  # lazy: crypto pulls in tenancy
 
         async with tenant_tx(self.ctx) as conn:
             profile = await conn.fetchrow(
@@ -128,7 +129,8 @@ class SessionManager:
             )
             recent = await conn.fetch(
                 """
-                SELECT role, content, token_estimate, created_at
+                SELECT role, content, token_estimate, created_at,
+                       content_ciphertext, tenant_id AS content_ciphertext_tenant_id
                   FROM user_interactions
                  WHERE user_id = $1
                  ORDER BY created_at DESC
@@ -137,6 +139,8 @@ class SessionManager:
                 user_id,
                 self.keep_recent,
             )
+            # 0152 (A01): chat turns are sealed at rest; open both shapes.
+            recent = await sealed_text.open_rows(conn, recent, sealed_text.INTERACTION)
 
         params = _profile_to_dict(profile)
         # Re-order to chronological for prompt readability.
@@ -218,17 +222,20 @@ class SessionManager:
         engine hold 100 operators without their histories ballooning the prompt
         (VRAM) or the interactions table (disk)."""
         from db.connection import tenant_tx  # lazy
+        import sealed_text  # lazy: crypto pulls in tenancy
 
         async with tenant_tx(self.ctx) as conn:
             rows = await conn.fetch(
                 """
-                SELECT id, role, content, token_estimate, created_at
+                SELECT id, role, content, token_estimate, created_at,
+                       content_ciphertext, tenant_id AS content_ciphertext_tenant_id
                   FROM user_interactions
                  WHERE user_id = $1
                  ORDER BY created_at ASC
                 """,
                 user_id,
             )
+            rows = await sealed_text.open_rows(conn, rows, sealed_text.INTERACTION)
 
             total_tokens = sum(r["token_estimate"] for r in rows)
             if total_tokens <= self.token_threshold or len(rows) <= self.keep_recent:
@@ -276,21 +283,25 @@ class SessionManager:
         tail away once it grows past the threshold. A payment card number or
         security code in the turn is removed first (pan_redaction, SAQ A)."""
         from db.connection import tenant_tx  # lazy
+        import sealed_text  # lazy: crypto pulls in tenancy
         import pan_redaction
 
         content = pan_redaction.scrub(content, f"chat_memory_{role}", tenant_id=self.ctx.tenant_id)
+        # 0152 (A01): the turn is stored only sealed, under the tenant's key.
+        key = sealed_text.key_for(self.ctx.tenant_id)
         async with tenant_tx(self.ctx) as conn:
             await conn.execute(
                 """
                 INSERT INTO user_interactions
-                       (user_id, tenant_id, role, content, token_estimate)
-                VALUES ($1, $2, $3, $4, $5)
+                       (user_id, tenant_id, role, content, content_ciphertext, token_estimate)
+                VALUES ($1, $2, $3, '', pgp_sym_encrypt(NULLIF($4::text, ''), $6::text), $5)
                 """,
                 user_id,
                 self.ctx.tenant_id,
                 role,
                 content,
                 estimate_tokens(content),
+                key,
             )
 
 

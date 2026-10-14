@@ -46,6 +46,12 @@ def _assert_no_pan(*values: Any) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _sealing_key(monkeypatch):
+    """Texts, transcripts and chat turns are sealed at write (0152, L17-21)."""
+    monkeypatch.setenv("ORACLE_ENCRYPTION_MASTER_KEY", "unit-master")
+
+
+@pytest.fixture(autouse=True)
 def _no_audit_writes(monkeypatch):
     """report() schedules an audit-ledger write; record it instead."""
     events = []
