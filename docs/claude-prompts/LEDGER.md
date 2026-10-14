@@ -265,6 +265,7 @@ tests_run:
   - {cmd: "rls_security_review / rls_brokerage / platform_rls_test / privacy_lifecycle .sql on the local dev DB", result: "all PASS (exit 0)", date: 2026-10-14}
   - {cmd: "full backend suite (ORACLE_SKIP_DOTENV=1 python -m pytest -q -p no:cacheprovider tests/)", result: "3421 passed, 23 skipped, 0 failed", date: 2026-10-14}
   - {cmd: "CI live list locally (15 files incl. the new one)", result: "31 passed, 1 failed: test_migration_precheck (the shared dev DB holds other sessions' 0139/0141, not in this branch) — environmental, as in L03-04", date: 2026-10-14}
+  - {cmd: "owner decisions 2026-10-14", result: "Platform Use Policy v4 paragraph approved as drafted (neoh-platform-use-policy-2026-10-14-v4, POLICY_COVERAGE row for 0140); messages on an agent's own line from a colleague's client stay hidden from the line owner (consistent with the record rule)", date: 2026-10-14}
 authz_checked: "sms_messages, email_outbox, live_call_sessions, negotiation_events, inbound_voice_calls, contract_synthesis_artifacts, smart_plan_enrollments, smart_plan_step_runs, agent_call_intents, lead_response_events, outcome_events, mission_candidates under FORCE RLS as oracle_app; outreach_consent/_suppression/_attempt_log/suppression_tombstones verified unchanged"
 blockers:
   - {type: owner, note: "Platform Use Policy wording for 0140 drafted in the session report, not applied (CONTRACT C5.7 asks for it in the same change; the owner approves wording and the version bump)."}

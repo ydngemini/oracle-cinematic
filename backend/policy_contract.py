@@ -6,12 +6,12 @@ from __future__ import annotations
 # Bump this identifier whenever the policy text changes materially. Each user
 # acceptance record is tied to this value so prior acknowledgement remains
 # auditable rather than being silently reinterpreted under new wording.
-PLATFORM_POLICY_VERSION = "neoh-platform-use-policy-2026-10-13-v3"
+PLATFORM_POLICY_VERSION = "neoh-platform-use-policy-2026-10-14-v4"
 
 PLATFORM_POLICY_DOCUMENT = {
     "title": "NEOH™ Platform Use Policy",
     "operator": "NEOH™ is operated by YDN LLC.",
-    "effective_date": "October 13, 2026",
+    "effective_date": "October 14, 2026",
     "introduction": (
         "This policy governs use of the NEOH™ platform. It is a platform-use "
         "policy, not legal, tax, financial, licensing, privacy, or fair-housing advice. "
@@ -31,6 +31,7 @@ PLATFORM_POLICY_DOCUMENT = {
                 "Enter, import, or connect only data you are entitled to access and use. Obtain any consent, notice, or authorization required for client, customer, lead, vendor, or teammate information.",
                 "Protect confidential information and limit access to people with a legitimate business need. Do not submit authentication secrets, government identification numbers, payment-card data, bank credentials, or other sensitive information that is not necessary for the intended workflow.",
                 "Each client and contact record is visible to the agent assigned to it, to your broker owner, and to anyone they share it with; a record with no assigned agent is visible to every agent in your brokerage. A contact you add for an assigned client stays with that client's agent. Share a record only with a colleague who has a legitimate business need, give edit access only when they need to change it, and remove access when the need ends.",
+                "Texts, emails, calls, call notes and transcripts, generated documents, nurture plans and the outcome history linked to a client or contact follow that record: you see them only while you can see the record, and sending, calling, enrolling or generating a document for someone needs edit access, not a view-only share. Opt-outs, consent and contact-frequency limits always apply across your whole brokerage, whichever colleague's record they came from: if a person asks any of your agents to stop, every agent is blocked from contacting them.",
             ],
         },
         {
@@ -104,6 +105,10 @@ POLICY_COVERAGE: tuple[dict[str, str], ...] = (
      "evidence": "db/migrations/0134_agent_contact_scope.sql",
      "section": "2. Authorized data and confidentiality",
      "phrase": "Each client and contact record is visible to the agent assigned to it"},
+    {"capability": "communications follow the record; opt-outs brokerage-wide (D-2026-10-13-01, 0140)",
+     "evidence": "db/migrations/0140_communications_follow_the_record.sql",
+     "section": "2. Authorized data and confidentiality",
+     "phrase": "if a person asks any of your agents to stop, every agent is blocked from contacting them"},
     {"capability": "AI call notes: consent, review by default (D-2026-10-12-03)",
      "evidence": "call_note_settings.py",
      "section": "4. AI-assisted work and professional judgment",
