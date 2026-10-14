@@ -2536,7 +2536,8 @@ async def deliver_call_notes(provider_call_id: str, notes: list[str],
     try:
         await ws_hub.broadcast_record(
             str(session["tenant_id"]), frame, client_id=session["client_id"],
-            contact_id=session["contact_id"], only=call_note_recipients(requester, assignee))
+            contact_id=session["contact_id"], only=call_note_recipients(requester, assignee),
+            mirror=False)  # private to its recipients, as broadcast_user was
     except Exception:  # noqa: BLE001 — the note is saved; the live frame is extra
         logger.warning("CALL_NOTES frame not sent: %s", provider_call_id, exc_info=True)
     return str(note["id"])

@@ -174,10 +174,11 @@ async def _deliver_user_local(tenant_id: str, user_id: str, payload: dict) -> in
     return await _send_user(tenant_id, user_id, payload)
 
 
-def firehose_stub(payload: dict, tenant_id: str) -> dict:
-    """What the platform OPS firehose sees of a record-scoped frame: that it
-    happened, never its content (the counter offer, a transcript line)."""
-    return {"type": payload.get("type"), "scoped": True, "source_tenant": tenant_id}
+def firehose_copy(payload: dict, tenant_id: str) -> dict:
+    """What the platform OPS firehose sees of a record-scoped frame: the full
+    frame, annotated like every other mirrored frame (owner 2026-10-14: the
+    ops console keeps its full copy; the firehose is platform-admin only)."""
+    return {**payload, "source_tenant": tenant_id}
 
 
 async def _send_users(tenant_id: str, user_ids: list[str], payload: dict) -> int:
@@ -213,13 +214,13 @@ async def _deliver_scoped_local(
 ) -> int:
     """This replica's half of a scoped frame: the named agents of `group`
     (or every socket of `group` when user_ids is None — a group admitted per
-    record, such as a voice session), plus a content-free firehose stub."""
+    record, such as a voice session), plus the firehose copy when mirrored."""
     if user_ids is None:
         delivered = await _send_group(group, payload)
     else:
         delivered = await _send_users(group, user_ids, payload)
     if mirror and group != FIREHOSE_TENANT_ID and FIREHOSE_TENANT_ID in _sockets:
-        await _send_group(FIREHOSE_TENANT_ID, firehose_stub(payload, group))
+        await _send_group(FIREHOSE_TENANT_ID, firehose_copy(payload, group))
     return delivered
 
 
@@ -502,22 +503,26 @@ async def broadcast_user(tenant_id: str, user_id: str, payload: dict) -> int:
     return delivered
 
 
-async def broadcast_users(tenant_id: str, user_ids: list[str], payload: dict) -> int:
+async def broadcast_users(
+    tenant_id: str, user_ids: list[str], payload: dict, *, mirror: bool = True
+) -> int:
     """Deliver one frame, across replicas, to these agents of one tenant only
-    (one NOTIFY for all of them). The platform firehose gets a content-free
-    stub. An empty list reaches nobody."""
+    (one NOTIFY for all of them). The platform firehose gets a full copy
+    unless mirror=False (private content, like broadcast_user). An empty list
+    reaches nobody."""
     recipients = sorted({u for u in user_ids if u}, key=str.lower)
     if not recipients:
         return 0
-    delivered = await _deliver_scoped_local(tenant_id, recipients, payload, mirror=True)
-    await _publish_scoped(tenant_id, recipients, payload, mirror=True)
+    delivered = await _deliver_scoped_local(tenant_id, recipients, payload, mirror=mirror)
+    await _publish_scoped(tenant_id, recipients, payload, mirror=mirror)
     return delivered
 
 
 async def broadcast_group(group: str, payload: dict) -> int:
     """Deliver to every socket of a group whose members were admitted per
     record (the voice-session stream, server.voice_telemetry_websocket), never
-    mirrored to the firehose — `broadcast()` would copy its content there."""
+    mirrored to the firehose: the same frame already reaches it once through
+    broadcast_record, and `broadcast()` would also fan it out tenant-wide."""
     delivered = await _deliver_scoped_local(group, None, payload, mirror=False)
     await _publish_scoped(group, None, payload, mirror=False)
     return delivered
@@ -531,6 +536,7 @@ async def broadcast_record(
     contact_id: Any = None,
     actor: Optional[str] = None,
     only: Optional[list[str]] = None,
+    mirror: bool = True,
 ) -> int:
     """Deliver a frame that carries a client's or contact's content (a call,
     a text, a note) only to the members who may read that record (CONTRACT
@@ -543,7 +549,8 @@ async def broadcast_record(
     call-notes frame goes to the requester and the assignee, among those who
     may still read the client). If the audience cannot be computed, the frame
     goes only to `actor` — the user whose request produced it, who has just
-    been authorized for the record — and otherwise to nobody (fail closed)."""
+    been authorized for the record — and otherwise to nobody (fail closed).
+    The platform firehose gets a full copy unless mirror=False."""
     import record_access
 
     try:
@@ -553,12 +560,16 @@ async def broadcast_record(
                        type(exc).__name__, payload.get("type"))
         audience = [actor] if actor else []
     if audience is None:
-        if only is None:
+        if only is None and mirror:
             return await broadcast(tenant_id, payload)
-        recipients = list(only)
+        recipients = list(only) if only is not None else None
     elif only is None:
         recipients = audience
     else:
         allowed = {u.lower() for u in audience}
         recipients = [u for u in only if u and u.lower() in allowed]
-    return await broadcast_users(tenant_id, recipients, payload)
+    if recipients is None:  # the pool, unmirrored
+        delivered = await _deliver_scoped_local(tenant_id, None, payload, mirror=False)
+        await _publish_scoped(tenant_id, None, payload, mirror=False)
+        return delivered
+    return await broadcast_users(tenant_id, recipients, payload, mirror=mirror)

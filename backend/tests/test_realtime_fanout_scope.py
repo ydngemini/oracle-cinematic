@@ -3,7 +3,8 @@ L03-08): a frame that carries a client's or contact's content goes only to the
 members who may read that record, never to the whole brokerage.
 
 Unit level (no database): the hub delivers a scoped frame to exactly the
-named agents, mirrors only a content-free stub to the platform firehose,
+named agents, mirrors one full copy to the platform-admin firehose (owner
+2026-10-14) but never the call-notes frame or the voice-session stream,
 crosses replicas in an envelope a previous-release replica drops instead of
 fanning out, and fails closed when the audience cannot be computed. The
 inventory test pins every tenant-wide fan-out in the backend to a reviewed
@@ -157,9 +158,8 @@ def test_a_private_clients_frame_reaches_only_its_audience(hub, monkeypatch):
     assert socks["owner"].frames == [FRAME]
     assert socks["agent-b"].frames == [] and socks["anon"].frames == []
     assert socks["other"].frames == [], "another brokerage's agent with the same id"
-    assert socks["firehose"].frames == [
-        {"type": "NEGOTIATION_TELEMETRY", "scoped": True, "source_tenant": tenant}
-    ], "the firehose sees that it happened, never the offer"
+    assert socks["firehose"].frames == [{**FRAME, "source_tenant": tenant}], \
+        "the platform-admin firehose keeps its full copy (owner 2026-10-14)"
 
 
 def test_a_pool_frame_still_reaches_everyone(hub, monkeypatch):
@@ -252,7 +252,7 @@ def test_scoped_frames_cross_replicas_to_the_named_agents_only(hub, monkeypatch)
     asyncio.run(ws_hub._receive_notification(json.dumps({**envelope, "origin": "other-replica"})))
     assert socks["agent-a"].frames == [FRAME]
     assert socks["agent-b"].frames == [] and socks["owner"].frames == [] and socks["anon"].frames == []
-    assert socks["firehose"].frames == [{"type": FRAME["type"], "scoped": True, "source_tenant": tenant}]
+    assert socks["firehose"].frames == [{**FRAME, "source_tenant": tenant}]
 
 
 def test_malformed_scoped_envelopes_are_ignored(hub):
@@ -262,3 +262,19 @@ def test_malformed_scoped_envelopes_are_ignored(hub):
                 {"tenant_id": tenant, "user_ids": None, "scoped_payload": "x"}):
         asyncio.run(ws_hub._receive_notification(json.dumps({"origin": "o", **bad})))
     assert all(s.frames == [] for s in socks.values())
+
+
+def test_an_unmirrored_record_frame_never_reaches_the_firehose(hub, monkeypatch):
+    # CALL_NOTES (mirror=False) was broadcast_user before 0145: private to its
+    # recipients, never copied to the ops console. Pool or not.
+    tenant, socks = hub
+    _audience(monkeypatch, ["agent-a@x.test"])
+    asyncio.run(ws_hub.broadcast_record(tenant, FRAME, client_id="c1",
+                                        only=["agent-a@x.test"], mirror=False))
+    assert socks["agent-a"].frames == [FRAME] and socks["firehose"].frames == []
+    socks["agent-a"].frames.clear()
+    _audience(monkeypatch, None)
+    asyncio.run(ws_hub.broadcast_record(tenant, FRAME, client_id="pool",
+                                        only=["agent-a@x.test"], mirror=False))
+    assert socks["agent-a"].frames == [FRAME] and socks["agent-b"].frames == []
+    assert socks["firehose"].frames == []

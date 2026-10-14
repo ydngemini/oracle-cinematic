@@ -12,8 +12,8 @@ Two halves:
    no provider, no network): agent B's socket does not receive agent A's
    private-client NEGOTIATION_TELEMETRY / CALL_CONSENT / VOICE_TELEMETRY while
    the broker owner's and the view-share holder's do; the same frames about a
-   pool client still reach everyone; the firehose sees only that a scoped
-   frame happened.
+   pool client still reach everyone; the platform-admin firehose gets one
+   full copy of each (owner 2026-10-14), the voice-session stream none.
 """
 
 from __future__ import annotations
@@ -159,9 +159,8 @@ async def _scenario():  # noqa: C901 — one scenario, read top to bottom
                 for who in ("owner", "a", "c"):
                     assert socks[who].types() == expected, (who, socks[who].types())
                 assert socks["b"].frames == [], "agent B received a colleague's private-client call"
-                assert socks["firehose"].frames == [
-                    {"type": t, "scoped": True, "source_tenant": tenant} for t in expected
-                ], "the firehose received call content"
+                assert [f["type"] for f in socks["firehose"].frames] == expected
+                assert all(f["source_tenant"] == tenant for f in socks["firehose"].frames)
                 negotiation = socks["owner"].frames[0]
                 assert negotiation["counter_offer"] == 250000 and negotiation["call_session_id"] == calls["a"]
                 assert socks["c"].frames[2]["transcript"]["text"] == "Call me after five."
@@ -193,7 +192,8 @@ async def _scenario():  # noqa: C901 — one scenario, read top to bottom
         finally:
             ws_hub.unregister(group, watcher)
         assert watcher.types() == ["VOICE_TELEMETRY"]
-        assert all(f.get("scoped") for f in socks["firehose"].frames), socks["firehose"].frames
+        # One full copy (through broadcast_record), not a second from the stream.
+        assert [f["type"] for f in socks["firehose"].frames] == ["VOICE_TELEMETRY"], socks["firehose"].frames
     finally:
         ws_hub._sockets, ws_hub._user_sockets = saved
         await admin.execute("SET session_replication_role = replica")
