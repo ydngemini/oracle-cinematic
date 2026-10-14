@@ -97,6 +97,10 @@ export function BillingOverlay({ onLockedChange } = {}) {
   }, [mode, plan]);
   const planName = plan?.name || 'Neoh';
   const price = formatPlanPrice(plan);
+  // No key or price on this deployment: checkout cannot work, and saying
+  // "temporarily unavailable" would send people to retry something that is not
+  // set up. A Stripe outage (reason 'lookup_failed') keeps the button.
+  const notConfigured = plan?.reason === 'not_configured';
   const copy = dialogCopy(planName)[mode];
 
   useEffect(() => { onLockedChange?.(isVisible); }, [isVisible, onLockedChange]);
@@ -250,7 +254,9 @@ export function BillingOverlay({ onLockedChange } = {}) {
                   {price.period ? <span className={styles.period}>{price.period}</span> : null}
                 </>
               ) : (
-                <span className={styles.period}>{plan ? 'Price shown at secure checkout' : 'Loading price…'}</span>
+                <span className={styles.period}>
+                  {notConfigured ? 'Billing isn\'t set up on this deployment yet' : plan ? 'Price shown at secure checkout' : 'Loading price…'}
+                </span>
               )}
             </div>
 
@@ -268,12 +274,17 @@ export function BillingOverlay({ onLockedChange } = {}) {
               {actionError ? (
                 <p className={styles.errorMsg} role="alert">{actionError}</p>
               ) : null}
+              {notConfigured ? (
+                <p className={styles.errorMsg} role="status">
+                  Checkout can&apos;t start until billing is connected on this deployment. Ask your Neoh administrator.
+                </p>
+              ) : null}
 
               <button
                 className={styles.cta}
                 type="button"
                 onClick={handleSubscribe}
-                disabled={checkoutLoading || portalLoading}
+                disabled={checkoutLoading || portalLoading || notConfigured}
                 data-loading={checkoutLoading}
               >
                 {checkoutLoading ? (

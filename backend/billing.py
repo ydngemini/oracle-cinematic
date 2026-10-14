@@ -411,6 +411,12 @@ class PlanInfo(BaseModel):
     # 'stripe' = read from the Price checkout bills; 'unavailable' = not
     # configured or not reachable, so the UI must not show a figure.
     source: str
+    # Why it is unavailable — the two are not the same thing to a customer:
+    # 'not_configured' (no key or price on this deployment: checkout cannot
+    # work, so the UI says billing isn't set up) vs 'lookup_failed' (Stripe did
+    # not answer the price read; checkout itself may still work). None when
+    # source is 'stripe'.
+    reason: str | None = None
 
 
 _PLAN_CACHE: dict[str, Any] = {}
@@ -428,7 +434,7 @@ async def _stripe_plan() -> PlanInfo:
     the card could be charged another. Now the figure shown IS the Price."""
     name = _plan_name()
     if _price_misconfigured() or not STRIPE_SECRET_KEY:
-        return PlanInfo(name=name, source="unavailable")
+        return PlanInfo(name=name, source="unavailable", reason="not_configured")
     cached = _PLAN_CACHE.get(STRIPE_PRICE_ID)
     if cached and time.monotonic() - cached[0] < _PLAN_TTL_S:
         return cached[1]
@@ -437,7 +443,7 @@ async def _stripe_plan() -> PlanInfo:
             asyncio.to_thread(stripe.Price.retrieve, STRIPE_PRICE_ID), timeout=10)
     except Exception:  # noqa: BLE001 — unknown price is shown as unknown, never guessed
         logger.warning("Stripe price lookup failed for the plan display", exc_info=True)
-        return PlanInfo(name=name, source="unavailable")
+        return PlanInfo(name=name, source="unavailable", reason="lookup_failed")
     recurring = price.get("recurring") or {}
     info = PlanInfo(
         name=name,
@@ -446,6 +452,7 @@ async def _stripe_plan() -> PlanInfo:
         interval=recurring.get("interval"),
         interval_count=recurring.get("interval_count"),
         source="stripe" if price.get("unit_amount") is not None else "unavailable",
+        reason=None if price.get("unit_amount") is not None else "lookup_failed",
     )
     _PLAN_CACHE[STRIPE_PRICE_ID] = (time.monotonic(), info)
     return info

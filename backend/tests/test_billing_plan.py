@@ -34,6 +34,13 @@ def test_a_misconfigured_price_is_unavailable_not_guessed(monkeypatch):
     _fresh(monkeypatch, price_id="price_REPLACE_ME")
     info = asyncio.run(billing._stripe_plan())
     assert info.source == "unavailable" and info.amount_cents is None
+    assert info.reason == "not_configured"
+
+
+def test_no_secret_key_is_not_configured(monkeypatch):
+    _fresh(monkeypatch, key="")
+    info = asyncio.run(billing._stripe_plan())
+    assert (info.source, info.reason) == ("unavailable", "not_configured")
 
 
 def test_a_stripe_failure_is_unavailable_not_guessed(monkeypatch):
@@ -45,3 +52,4 @@ def test_a_stripe_failure_is_unavailable_not_guessed(monkeypatch):
     monkeypatch.setattr(billing.stripe.Price, "retrieve", boom)
     info = asyncio.run(billing._stripe_plan())
     assert info.source == "unavailable" and info.amount_cents is None
+    assert info.reason == "lookup_failed", "an outage is not 'not set up'"

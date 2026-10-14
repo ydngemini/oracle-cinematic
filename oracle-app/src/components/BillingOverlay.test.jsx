@@ -34,6 +34,21 @@ describe('BillingOverlay plan price', () => {
     expect(document.body.textContent).not.toMatch(/\$\d/);
   });
 
+  it('says billing is not set up, and does not offer checkout, when the deployment has no price', async () => {
+    api.apiGet.mockResolvedValueOnce({ name: 'Neoh', source: 'unavailable', reason: 'not_configured' });
+    render(<BillingOverlay />);
+    expect(await screen.findByText("Billing isn't set up on this deployment yet")).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Start Neoh' }).disabled).toBe(true);
+    expect(document.body.textContent).not.toMatch(/temporarily/i);
+  });
+
+  it('keeps checkout available when only the price lookup failed', async () => {
+    api.apiGet.mockResolvedValueOnce({ name: 'Neoh', source: 'unavailable', reason: 'lookup_failed' });
+    render(<BillingOverlay />);
+    expect(await screen.findByText('Price shown at secure checkout')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Start Neoh' }).disabled).toBe(false);
+  });
+
   it('formats intervals and odd cents', () => {
     expect(formatPlanPrice({ source: 'stripe', amount_cents: 29950, currency: 'usd', interval: 'year', interval_count: 1 }))
       .toEqual({ amount: '$299.50', period: 'per year' });

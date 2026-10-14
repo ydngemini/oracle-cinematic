@@ -967,12 +967,13 @@ evidence_shas: [6719298]
 files: [backend/billing.py, oracle-app/src/components/BillingOverlay.jsx]
 tests_run:
   - {cmd: "owner signed in on staging with their own brokerage (2026-10-13)", result: "/billing/plan source 'unavailable' (no Stripe price on staging); 'Start Neoh' -> create-checkout-session fails -> 'Neoh is temporarily unavailable'; /billing/status active=false", date: 2026-10-13}
+  - {cmd: "billing._stripe_plan reason field + BillingOverlay (tests/test_billing_plan.py, BillingOverlay.test.jsx)", result: "/billing/plan now says why it is unavailable: not_configured (no key/price: the overlay says billing isn't set up on this deployment and disables Start, never 'temporarily unavailable') vs lookup_failed (Stripe did not answer: checkout stays available)", date: 2026-10-14}
 authz_checked: n/a
 blockers:
-  - {type: external, note: "Staging has no Stripe test-mode price/webhook, so checkout can never succeed there. The message also says 'temporarily' for a configuration that is absent."}
+  - {type: external, note: "Root cause (staging api boot log, 2026-10-14): STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET and STRIPE_PRICE_ID are named in the app spec but have NO values. Needs the owner's Stripe test-mode secret key, a test-mode recurring Price and the webhook signing secret set on the app."}
 audit_refs: []
 decision_refs: [D-2026-10-12-02]
-next_task: "Configure a Stripe test-mode price + webhook on staging (owner), or make the overlay say checkout is not set up on this deployment."
+next_task: "Owner: set the Stripe test-mode secret key, Price id and webhook secret on the staging app; then run one test-mode checkout."
 updated: 2026-10-13
 ```
 Owner-approved workaround (2026-10-13): a staging-only subscription row for the owner's own brokerage (`staging_comp_sub_2dd07d9c`, active to 2027-10-13), written the way the demo brokerage is entitled. It also opens the spend-gated routes for that tenant on staging.
