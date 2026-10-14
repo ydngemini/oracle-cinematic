@@ -103,3 +103,8 @@
 .intakeSubmit:disabled { background: var(--oracle-surface-sunken); color: var(--oracle-text-ghost); }
 .intakeSubmit:focus-visible, .intakeCancel:focus-visible { outline: none; box-shadow: var(--ring-focus); }
 .intakeCancel { min-height: 44px; padding: 0 var(--space-2); color: var(--oracle-accent-ink); font: 500 var(--text-sm) / 1 var(--font-sans); }
+
+/* A view-only share (0134): read-only fields read as text, not as inputs to type into. */
+.contactBook input[readonly] { border-color: transparent; background: transparent; box-shadow: none; cursor: default; padding-left: 0; }
+.contactBook input[readonly]:focus-visible { border-color: var(--oracle-border-subtle); }
+.contactBook select:disabled { border-color: transparent; background: transparent; opacity: 1; cursor: default; }
