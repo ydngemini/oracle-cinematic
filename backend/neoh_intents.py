@@ -28,6 +28,7 @@ import re
 from typing import Any, Awaitable, Callable, Optional
 
 import neoh_render as render
+import source_status as ss
 from tenancy import TenantContext
 
 logger = logging.getLogger(__name__)
@@ -47,6 +48,39 @@ class Intent:
         self.name = name
         self.pattern = re.compile(pattern, re.IGNORECASE)
         self.resolve = resolve
+
+
+# ---------------------------------------------------------------------------
+# Search legs: a failed leg is reported, never read as "nothing matches"
+# ---------------------------------------------------------------------------
+
+def _leg_status(found: dict[str, Any], kind: str) -> dict[str, Any]:
+    """The C6 status of one search leg (search_api.search `source_status`).
+
+    A leg named in `degraded`, or one with no recognisable status at all, is
+    a failure: an answer that cannot show the leg was `checked` must not say
+    the leg found nothing (T05.11, AC05.07).
+    """
+    entry = (found.get("source_status") or {}).get(kind)
+    if kind in (found.get("degraded") or []) and not ss.is_failed(entry):
+        return ss.unavailable(ss.UPSTREAM_ERROR)
+    if not isinstance(entry, dict) or entry.get("status") not in ss.STATUSES:
+        return ss.unavailable(ss.STATUS_MISSING)
+    return dict(entry)
+
+
+def _with_status(out: dict[str, Any], statuses: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    """Attach the per-source status the answer rests on."""
+    return {**out, "degraded": ss.degraded(statuses), "source_status": statuses}
+
+
+async def _search(ctx: TenantContext, query: str, kind: str) -> tuple[list[dict], dict[str, Any]]:
+    """One leg's hits and its status. Runs in the caller's own RLS context."""
+    import search_api
+
+    found = await search_api.search(ctx, query, [kind], NAME_MATCH_LIMIT)
+    hits = [hit for hit in found.get("results", []) if hit.get("kind") == kind]
+    return hits, _leg_status(found, kind)
 
 
 # ---------------------------------------------------------------------------
@@ -73,22 +107,27 @@ async def _show_person(ctx: TenantContext, match: re.Match) -> dict[str, Any]:
     if len(query) < 2:
         return render.fallthrough("name too short to resolve")
 
-    found = await search_api.search(ctx, query, ["people"], NAME_MATCH_LIMIT)
-    matches = [hit for hit in found.get("results", []) if hit.get("kind") == "people"]
+    matches, people = await _search(ctx, query, "people")
+    statuses = {"people": people}
+    if ss.is_failed(people):
+        return render.sources_failed("show_person", query, statuses)
     if not matches:
         # "Show 412 Delaware" is the same grammar pointing at a house. People
         # come first because a person named like a street is still a person;
         # this only runs when nobody matched AND the text reads as an address.
         if search_api.looks_like_address(query):
-            hits = await search_api.search(ctx, query, ["properties"], NAME_MATCH_LIMIT)
-            properties = [h for h in hits.get("results", []) if h.get("kind") == "properties"]
+            properties, prop_status = await _search(ctx, query, "properties")
+            statuses["properties"] = prop_status
+            if ss.is_failed(prop_status):
+                return render.sources_failed("show_person", query, statuses)
             if properties:
-                return render.properties_found(properties, query)
-        return render.answer(
+                return _with_status(render.properties_found(properties, query), statuses)
+        # Every leg asked was `checked`: this is a verified miss.
+        return _with_status(render.answer(
             "show_person", f"Nothing matches “{query}”.", [],
-        )
+        ), statuses)
     if len(matches) > 1:
-        return render.person_choices(matches, query)
+        return _with_status(render.person_choices(matches, query), statuses)
 
     client_id = matches[0].get("id")
     record, intent, timeline = await _person_detail(ctx, client_id)
@@ -101,41 +140,45 @@ async def _show_person(ctx: TenantContext, match: re.Match) -> dict[str, Any]:
             f"record yet, so there is nothing to read from.",
             [],
         )
-    return render.person(record, intent, timeline)
+    return _with_status(render.person(record, intent, timeline), statuses)
 
 
 async def _properties_for(ctx: TenantContext, match: re.Match) -> dict[str, Any]:
-    import search_api
-
     query = (match.group("name") or "").strip()
     if len(query) < 2:
         return render.fallthrough("name too short to resolve")
 
-    found = await search_api.search(ctx, query, ["people"], NAME_MATCH_LIMIT)
-    matches = [hit for hit in found.get("results", []) if hit.get("kind") == "people"]
+    matches, people = await _search(ctx, query, "people")
+    statuses = {"people": people}
+    if ss.is_failed(people):
+        return render.sources_failed("properties_for", query, statuses)
     if not matches:
-        return render.answer("properties_for", f"No one matches “{query}”.", [])
+        return _with_status(
+            render.answer("properties_for", f"No one matches “{query}”.", []), statuses,
+        )
     if len(matches) > 1:
-        return render.person_choices(matches, query)
+        return _with_status(render.person_choices(matches, query), statuses)
 
     name = matches[0].get("label") or query
     candidates, lookup = await _candidates_for(ctx, matches[0].get("id"))
-    return render.properties_for(name, candidates, lookup)
+    return _with_status(render.properties_for(name, candidates, lookup), statuses)
 
 
 async def _deal_blocker(ctx: TenantContext, match: re.Match) -> dict[str, Any]:
-    import search_api
-
     query = (match.group("deal") or "").strip()
     if len(query) < 2:
         return render.fallthrough("no deal named")
 
-    found = await search_api.search(ctx, query, ["deals"], NAME_MATCH_LIMIT)
-    matches = [hit for hit in found.get("results", []) if hit.get("kind") == "deals"]
+    matches, deals = await _search(ctx, query, "deals")
+    statuses = {"deals": deals}
+    if ss.is_failed(deals):
+        return render.sources_failed("deal_blocker", query, statuses)
     if not matches:
-        return render.answer("deal_blocker", f"No deal matches “{query}”.", [])
+        return _with_status(
+            render.answer("deal_blocker", f"No deal matches “{query}”.", []), statuses,
+        )
     if len(matches) > 1:
-        return render.answer(
+        return _with_status(render.answer(
             "deal_blocker",
             f"{len(matches)} deals match “{query}”.",
             [render.block("comparison", title="Which deal?", options=[
@@ -147,12 +190,12 @@ async def _deal_blocker(ctx: TenantContext, match: re.Match) -> dict[str, Any]:
                 }
                 for m in matches
             ])],
-        )
+        ), statuses)
 
     transaction, milestones = await _deal_detail(ctx, matches[0].get("id"))
     if transaction is None:
-        return render.answer("deal_blocker", f"That deal could not be loaded.", [])
-    return render.deal_blocker(transaction, milestones)
+        return render.answer("deal_blocker", "That deal could not be loaded.", [])
+    return _with_status(render.deal_blocker(transaction, milestones), statuses)
 
 
 # ---------------------------------------------------------------------------

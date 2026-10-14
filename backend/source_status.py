@@ -46,10 +46,15 @@ NO_COORDINATES = "no_coordinates"
 NO_ADDRESS = "no_address"
 UNKNOWN_AREA = "unknown_area"
 SCORE_PENDING = "score_pending"
+#: A search term too short to run (search_api: under two characters).
+QUERY_TOO_SHORT = "query_too_short"
+#: The caller returned no status for a source it was asked about.
+STATUS_MISSING = "status_missing"
 REASONS = frozenset({
     NOT_CONFIGURED, CREDENTIAL_REJECTED, CREDENTIAL_EXPIRED, RATE_LIMITED,
     UPSTREAM_TIMEOUT, UPSTREAM_ERROR, UPSTREAM_HTTP_ERROR, BAD_RESPONSE,
     CACHE_UNAVAILABLE, NO_COORDINATES, NO_ADDRESS, UNKNOWN_AREA, SCORE_PENDING,
+    QUERY_TOO_SHORT, STATUS_MISSING,
 })
 
 # 57014 query_canceled is what a `SET LOCAL statement_timeout` expiry raises.

@@ -11,6 +11,7 @@ import inspect
 
 import neoh_intents as intents
 import neoh_render as render
+import source_status as ss
 from tenancy import Role, TenantContext
 
 CTX = TenantContext(
@@ -18,6 +19,18 @@ CTX = TenantContext(
     tenant_id="11111111-1111-1111-1111-111111111111",
     role=Role.AGENT,
 )
+
+
+def _found(kinds, results=()):
+    """What search_api.search returns when every leg asked was checked."""
+    results = list(results)
+    return {
+        "results": results,
+        "degraded": [],
+        "source_status": {
+            k: ss.checked(matched=sum(1 for r in results if r.get("kind") == k)) for k in kinds
+        },
+    }
 
 
 def _route(text):
@@ -109,8 +122,8 @@ class TestOpenRecord:
     def test_record_aware_intents_still_answer_with_a_record_open(self, monkeypatch):
         import search_api
 
-        async def nothing(*_args, **_kwargs):
-            return {"results": []}
+        async def nothing(_ctx, _q, kinds, _limit):
+            return _found(kinds)
 
         monkeypatch.setattr(search_api, "search", nothing)
         out = asyncio.run(intents.ask(CTX, "show Zebediah Nobody", has_record=True))
@@ -147,11 +160,11 @@ class TestResolvers:
     def test_an_ambiguous_name_asks_instead_of_guessing(self, monkeypatch):
         import search_api
 
-        async def two_sarahs(_ctx, _q, _kinds, _limit):
-            return {"results": [
+        async def two_sarahs(_ctx, _q, kinds, _limit):
+            return _found(kinds, [
                 {"kind": "people", "id": "a", "label": "Sarah Chen", "sublabel": "buyer"},
                 {"kind": "people", "id": "b", "label": "Sarah Chen", "sublabel": "seller"},
-            ]}
+            ])
 
         monkeypatch.setattr(search_api, "search", two_sarahs)
         out = asyncio.run(intents.ask(CTX, "show Sarah Chen"))
@@ -164,11 +177,11 @@ class TestResolvers:
 
         async def by_kind(_ctx, _q, kinds, _limit):
             if kinds == ["people"]:
-                return {"results": []}
-            return {"results": [
+                return _found(kinds)
+            return _found(kinds, [
                 {"kind": "properties", "id": "p1", "label": "412 Delaware Ave",
                  "sublabel": "Wilmington, DE", "href": "/property/p1"},
-            ]}
+            ])
 
         monkeypatch.setattr(search_api, "search", by_kind)
         out = asyncio.run(intents.ask(CTX, "show 412 Delaware Ave"))
@@ -178,11 +191,124 @@ class TestResolvers:
     def test_a_name_that_matches_nothing_says_so(self, monkeypatch):
         import search_api
 
-        async def nothing(_ctx, _q, _kinds, _limit):
-            return {"results": []}
+        async def nothing(_ctx, _q, kinds, _limit):
+            return _found(kinds)
 
         monkeypatch.setattr(search_api, "search", nothing)
         out = asyncio.run(intents.ask(CTX, "show Zebediah Nobody"))
         assert out["fallthrough"] is False
         assert "Nothing matches" in out["spoken"]
         assert out["blocks"] == []
+        # A verified miss says so: the leg it rests on was checked.
+        assert out["degraded"] is False
+        assert out["source_status"]["people"]["status"] == ss.CHECKED
+
+
+class TestFailedLegsAreNotNoResults:
+    """T05.11 / AC05.07: a search leg that raised is reported as a failure,
+    in the C6 vocabulary, and never as "Nothing matches".
+
+    These run the REAL search_api.search with one leg forced to raise, so the
+    status is the one search produces, not a hand-written fake of it.
+    """
+
+    @staticmethod
+    def _leg(monkeypatch, kind, exc):
+        import search_api
+
+        async def boom(_ctx, _q, _limit):
+            raise exc
+
+        monkeypatch.setitem(search_api.LEGS, kind, boom)
+
+    def _assert_failed(self, out, kind, status):
+        assert out["fallthrough"] is False
+        assert out["degraded"] is True
+        assert out["source_status"][kind]["status"] == status
+        assert out["source_status"][kind]["checked_at"] is None
+        for phrase in ("Nothing matches", "No one matches", "No deal matches"):
+            assert phrase not in out["spoken"], out["spoken"]
+        assert "not a “no match”" in out["spoken"]
+        # The surface only draws answers with blocks; a failure must be drawn,
+        # not handed to the model as if the lookup had been clean.
+        assert out["blocks"] and out["blocks"][0]["primitive"] == "evidence"
+
+    def test_show_person_with_a_timed_out_people_leg(self, monkeypatch):
+        self._leg(monkeypatch, "people", asyncio.TimeoutError())
+        out = asyncio.run(intents.ask(CTX, "show Sarah Chen"))
+        self._assert_failed(out, "people", ss.TIMED_OUT)
+        assert out["source_status"]["people"]["reason"] == ss.UPSTREAM_TIMEOUT
+        assert "timed out" in out["spoken"]
+
+    def test_show_person_with_an_erroring_people_leg(self, monkeypatch):
+        self._leg(monkeypatch, "people", RuntimeError("clients table on fire"))
+        out = asyncio.run(intents.ask(CTX, "show Sarah Chen"))
+        self._assert_failed(out, "people", ss.UNAVAILABLE)
+        # Exception text never reaches the answer (it can carry SQL or a name).
+        assert "on fire" not in str(out)
+
+    def test_a_statement_timeout_reads_as_timed_out(self, monkeypatch):
+        class QueryCanceled(Exception):
+            sqlstate = "57014"
+
+        self._leg(monkeypatch, "deals", QueryCanceled("canceling statement due to statement timeout"))
+        out = asyncio.run(intents.ask(CTX, "what is holding up 155 Main"))
+        self._assert_failed(out, "deals", ss.TIMED_OUT)
+
+    def test_properties_for_with_a_failed_people_leg(self, monkeypatch):
+        self._leg(monkeypatch, "people", RuntimeError("down"))
+        out = asyncio.run(intents.ask(CTX, "find homes for Sarah Chen"))
+        assert out["intent"] == "properties_for"
+        self._assert_failed(out, "people", ss.UNAVAILABLE)
+
+    def test_address_fallback_with_a_failed_properties_leg(self, monkeypatch):
+        import search_api
+
+        async def nobody(_ctx, _q, _limit):
+            return []
+
+        monkeypatch.setitem(search_api.LEGS, "people", nobody)
+        self._leg(monkeypatch, "properties", asyncio.TimeoutError())
+        out = asyncio.run(intents.ask(CTX, "show 412 Delaware Ave"))
+        self._assert_failed(out, "properties", ss.TIMED_OUT)
+        # The people leg answered: it is reported as checked beside the failure.
+        assert out["source_status"]["people"]["status"] == ss.CHECKED
+
+    def test_a_clean_miss_through_the_real_search_is_checked(self, monkeypatch):
+        import search_api
+
+        async def nobody(_ctx, _q, _limit):
+            return []
+
+        monkeypatch.setitem(search_api.LEGS, "deals", nobody)
+        out = asyncio.run(intents.ask(CTX, "what is holding up 155 Main"))
+        assert "No deal matches" in out["spoken"]
+        assert out["degraded"] is False
+        assert out["source_status"]["deals"]["status"] == ss.CHECKED
+        assert out["source_status"]["deals"]["matched"] == 0
+
+    def test_a_search_answer_without_status_is_not_a_verified_miss(self, monkeypatch):
+        """A caller that returns hits but no status cannot be read as checked."""
+        import search_api
+
+        async def legacy(_ctx, _q, _kinds, _limit):
+            return {"results": []}
+
+        monkeypatch.setattr(search_api, "search", legacy)
+        out = asyncio.run(intents.ask(CTX, "show Sarah Chen"))
+        assert out["degraded"] is True
+        assert out["source_status"]["people"]["reason"] == ss.STATUS_MISSING
+        assert "Nothing matches" not in out["spoken"]
+
+    def test_degraded_list_wins_over_a_stale_checked_status(self, monkeypatch):
+        import search_api
+
+        async def contradictory(_ctx, _q, kinds, _limit):
+            out = _found(kinds)
+            out["degraded"] = ["people"]
+            return out
+
+        monkeypatch.setattr(search_api, "search", contradictory)
+        out = asyncio.run(intents.ask(CTX, "show Sarah Chen"))
+        assert out["degraded"] is True
+        assert out["source_status"]["people"]["status"] == ss.UNAVAILABLE

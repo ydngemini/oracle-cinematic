@@ -178,3 +178,37 @@ def test_the_big_corpus_is_not_sorted_before_limit():
     source = inspect.getsource(sa._records)
     records_query = source.split("FROM public_property_records")[1].split('"""')[0]
     assert "ORDER BY" not in records_query
+
+
+def test_each_leg_reports_a_c6_status(monkeypatch):
+    """`source_status` names how each leg ended (CONTRACT C6, T05.11)."""
+    import source_status as ss
+
+    async def ok(ctx, q, limit):
+        return []
+
+    async def slow(ctx, q, limit):
+        raise asyncio.TimeoutError()
+
+    async def boom(ctx, q, limit):
+        raise RuntimeError("leg exploded")
+
+    monkeypatch.setitem(sa.LEGS, "people", ok)
+    monkeypatch.setitem(sa.LEGS, "deals", slow)
+    monkeypatch.setitem(sa.LEGS, "conversations", boom)
+    out = _run(sa.search(CTX, "sarah", ["people", "deals", "conversations"], 10))
+    st = out["source_status"]
+    assert st["people"]["status"] == ss.CHECKED and st["people"]["matched"] == 0
+    assert st["deals"]["status"] == ss.TIMED_OUT and st["deals"]["reason"] == ss.UPSTREAM_TIMEOUT
+    assert st["conversations"]["status"] == ss.UNAVAILABLE
+    assert "exploded" not in str(st)
+    assert out["degraded"] == ["deals", "conversations"]
+    assert ss.degraded(st) is True
+
+
+def test_a_too_short_query_is_not_applicable_not_checked():
+    import source_status as ss
+
+    out = _run(sa.search(CTX, "s", ["people"], 10))
+    assert out["source_status"]["people"]["status"] == ss.NOT_APPLICABLE
+    assert out["source_status"]["people"]["reason"] == ss.QUERY_TOO_SHORT
