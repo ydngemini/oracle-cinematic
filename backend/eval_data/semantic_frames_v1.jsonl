@@ -1,0 +1,94 @@
+{"id": "en-001", "split": "dev", "lang": "en", "category": "dont_constraint", "text": "Don't message her yet", "expect": {"constraints": ["no_send"], "goals": ["!send_message"]}}
+{"id": "en-002", "split": "dev", "lang": "en", "category": "dont_constraint", "text": "Don't send Sarah anything yet", "expect": {"constraints": ["no_send"], "goals": ["!send_message"]}}
+{"id": "en-003", "split": "dev", "lang": "en", "category": "draft_only", "text": "Just draft it", "expect": {"constraints": ["draft_only"], "goals": ["draft_message"]}}
+{"id": "en-004", "split": "dev", "lang": "en", "category": "draft_only", "text": "Drafts only for now", "expect": {"constraints": ["draft_only"], "goals": ["draft_message"]}}
+{"id": "en-005", "split": "dev", "lang": "en", "category": "draft_only", "text": "Draft the email but don't send it", "expect": {"constraints": ["draft_only"], "goals": ["draft_message", "!send_message"]}}
+{"id": "en-006", "split": "dev", "lang": "en", "category": "approval", "text": "Wait for my approval", "expect": {"constraints": ["approval_required"], "goals": ["question"]}}
+{"id": "en-007", "split": "dev", "lang": "en", "category": "approval", "text": "Do it after the manager signs off", "expect": {"constraints": ["approval_required"], "goals": ["question"]}}
+{"id": "en-008", "split": "dev", "lang": "en", "category": "approval", "text": "Don't send anything until I approve", "expect": {"constraints": ["approval_required"], "goals": ["send_message"]}}
+{"id": "en-009", "split": "dev", "lang": "en", "category": "not_before", "text": "Not before Friday", "expect": {"constraints": ["not_before"], "goals": ["question"]}}
+{"id": "en-010", "split": "dev", "lang": "en", "category": "not_before", "text": "Don't call him before 10am", "expect": {"constraints": ["not_before"], "goals": ["call"]}}
+{"id": "en-011", "split": "dev", "lang": "en", "category": "not_before", "text": "Wait until Monday to text her", "expect": {"constraints": ["not_before"], "goals": ["send_message"]}}
+{"id": "en-012", "split": "dev", "lang": "en", "category": "do_not_contact", "text": "Don't contact the Hendersons", "expect": {"constraints": ["do_not_contact"], "goals": ["!send_message"]}}
+{"id": "en-013", "split": "dev", "lang": "en", "category": "do_not_contact", "text": "Do not call Marcus", "expect": {"constraints": ["do_not_contact"], "goals": ["!call"]}}
+{"id": "en-014", "split": "dev", "lang": "en", "category": "no_constraint", "text": "Text Sarah now", "expect": {"constraints": [], "goals": ["send_message"]}}
+{"id": "en-015", "split": "dev", "lang": "en", "category": "no_constraint", "text": "Why don't you send her the listing?", "expect": {"constraints": [], "goals": ["send_message"]}}
+{"id": "en-016", "split": "dev", "lang": "en", "category": "no_constraint", "text": "Find homes for Sarah Chen", "expect": {"constraints": [], "goals": ["find_properties"]}}
+{"id": "en-017", "split": "dev", "lang": "en", "category": "no_constraint", "text": "Who should I call today?", "expect": {"constraints": [], "goals": ["who_to_call"]}}
+{"id": "en-018", "split": "dev", "lang": "en", "category": "no_constraint", "text": "Draft an email to Sarah about the inspection", "expect": {"constraints": [], "goals": ["draft_message"]}}
+{"id": "en-019", "split": "dev", "lang": "en", "category": "no_constraint", "text": "I don't know which houses she likes", "expect": {"constraints": [], "goals": ["question"]}}
+{"id": "en-020", "split": "dev", "lang": "en", "category": "not_before", "text": "Send it after Monday", "expect": {"constraints": ["not_before"], "goals": ["send_message"]}}
+{"id": "en-021", "split": "dev", "lang": "en", "category": "dont_constraint", "text": "Hold off on sending anything", "expect": {"constraints": ["no_send"], "goals": ["!send_message"]}}
+{"id": "es-001", "split": "dev", "lang": "es", "category": "dont_constraint", "text": "No le mandes nada todavía", "expect": {"constraints": ["no_send"], "goals": ["!send_message"]}}
+{"id": "es-002", "split": "dev", "lang": "es", "category": "dont_constraint", "text": "No le mandes nada a Sarah todavía", "expect": {"constraints": ["no_send"], "goals": ["!send_message"]}}
+{"id": "es-003", "split": "dev", "lang": "es", "category": "dont_constraint", "text": "Todavía no le envíes el correo", "expect": {"constraints": ["no_send"], "goals": ["!send_message"]}}
+{"id": "es-004", "split": "dev", "lang": "es", "category": "approval", "text": "No envíes nada hasta que yo lo revise", "expect": {"constraints": ["approval_required"], "goals": ["send_message"]}}
+{"id": "es-005", "split": "dev", "lang": "es", "category": "draft_only", "text": "Prepara el correo pero no lo mandes", "expect": {"constraints": ["draft_only"], "goals": ["draft_message", "!send_message"]}}
+{"id": "es-006", "split": "dev", "lang": "es", "category": "draft_only", "text": "Solo borradores, por favor", "expect": {"constraints": ["draft_only"], "goals": ["draft_message"]}}
+{"id": "es-007", "split": "dev", "lang": "es", "category": "draft_only", "text": "Hazme solo un borrador para Sarah", "expect": {"constraints": ["draft_only"], "goals": ["draft_message"]}}
+{"id": "es-008", "split": "dev", "lang": "es", "category": "draft_only", "text": "Redáctalo como borrador nada más", "expect": {"constraints": ["draft_only"], "goals": ["draft_message"]}}
+{"id": "es-009", "split": "dev", "lang": "es", "category": "draft_only", "text": "Déjalo en borrador", "expect": {"constraints": ["draft_only"], "goals": ["draft_message"]}}
+{"id": "es-010", "split": "dev", "lang": "es", "category": "draft_only", "text": "Solo prepara el mensaje, no lo envíes", "expect": {"constraints": ["draft_only"], "goals": ["draft_message", "!send_message"]}}
+{"id": "es-011", "split": "dev", "lang": "es", "category": "approval", "text": "Espera mi aprobación", "expect": {"constraints": ["approval_required"], "goals": ["question"]}}
+{"id": "es-012", "split": "dev", "lang": "es", "category": "approval", "text": "Espera mi aprobación antes de enviar el correo", "expect": {"constraints": ["approval_required"], "goals": ["send_message"]}}
+{"id": "es-013", "split": "dev", "lang": "es", "category": "approval", "text": "No hagas nada sin mi aprobación", "expect": {"constraints": ["approval_required"], "goals": ["question"]}}
+{"id": "es-014", "split": "dev", "lang": "es", "category": "approval", "text": "Cuando el gerente lo apruebe, mándale la oferta", "expect": {"constraints": ["approval_required"], "goals": ["send_message"]}}
+{"id": "es-015", "split": "dev", "lang": "es", "category": "approval", "text": "Necesita la aprobación de mi jefa", "expect": {"constraints": ["approval_required"], "goals": ["question"]}}
+{"id": "es-016", "split": "dev", "lang": "es", "category": "approval", "text": "Hasta que yo lo apruebe, no cambies nada", "expect": {"constraints": ["approval_required"], "goals": ["!update_record"]}}
+{"id": "es-017", "split": "dev", "lang": "es", "category": "approval", "text": "Prepáralo para mi aprobación", "expect": {"constraints": ["approval_required"], "goals": ["draft_message"]}}
+{"id": "es-018", "split": "dev", "lang": "es", "category": "not_before", "text": "No antes del viernes", "expect": {"constraints": ["not_before"], "goals": ["question"]}}
+{"id": "es-019", "split": "dev", "lang": "es", "category": "not_before", "text": "No le escribas antes del lunes", "expect": {"constraints": ["not_before"], "goals": ["send_message"]}}
+{"id": "es-020", "split": "dev", "lang": "es", "category": "not_before", "text": "No le mandes nada hasta el lunes", "expect": {"constraints": ["not_before"], "goals": ["send_message"]}}
+{"id": "es-021", "split": "dev", "lang": "es", "category": "not_before", "text": "Espera hasta el martes para llamarla", "expect": {"constraints": ["not_before"], "goals": ["call"]}}
+{"id": "es-022", "split": "dev", "lang": "es", "category": "not_before", "text": "A partir del jueves puedes enviarle la oferta", "expect": {"constraints": ["not_before"], "goals": ["send_message"]}}
+{"id": "es-023", "split": "dev", "lang": "es", "category": "not_before", "text": "No la llames antes de las 10", "expect": {"constraints": ["not_before"], "goals": ["call"]}}
+{"id": "es-024", "split": "dev", "lang": "es", "category": "do_not_contact", "text": "No contactes a los Henderson", "expect": {"constraints": ["do_not_contact"], "goals": ["!send_message"]}}
+{"id": "es-025", "split": "dev", "lang": "es", "category": "do_not_contact", "text": "No la llames", "expect": {"constraints": ["do_not_contact"], "goals": ["!call"]}}
+{"id": "es-026", "split": "dev", "lang": "es", "category": "do_not_contact", "text": "No llames a Marcus", "expect": {"constraints": ["do_not_contact"], "goals": ["!call"]}}
+{"id": "es-027", "split": "dev", "lang": "es", "category": "do_not_contact", "text": "Por favor, no contactes a Sarah Chen", "expect": {"constraints": ["do_not_contact"], "goals": ["!send_message"]}}
+{"id": "es-028", "split": "dev", "lang": "es", "category": "do_not_contact", "text": "Deja en paz a los García por ahora", "expect": {"constraints": ["do_not_contact"], "goals": ["!send_message"]}}
+{"id": "es-029", "split": "dev", "lang": "es", "category": "do_not_contact", "text": "Ni la llames ni le escribas", "expect": {"constraints": ["do_not_contact"], "goals": ["!call", "!send_message"]}}
+{"id": "es-030", "split": "dev", "lang": "es", "category": "do_not_contact", "text": "No te pongas en contacto con el vendedor", "expect": {"constraints": ["do_not_contact"], "goals": ["!send_message"]}}
+{"id": "es-031", "split": "dev", "lang": "es", "category": "no_constraint", "text": "Mándale un mensaje a Sarah", "expect": {"constraints": [], "goals": ["send_message"]}}
+{"id": "es-032", "split": "dev", "lang": "es", "category": "no_constraint", "text": "¿Por qué no le mandas las casas a Sarah?", "expect": {"constraints": [], "goals": ["send_message"]}}
+{"id": "es-033", "split": "dev", "lang": "es", "category": "no_constraint", "text": "Busca casas para Sarah Chen", "expect": {"constraints": [], "goals": ["find_properties"]}}
+{"id": "es-034", "split": "dev", "lang": "es", "category": "no_constraint", "text": "¿Qué está frenando el trato de Delaware?", "expect": {"constraints": [], "goals": ["deal_status"]}}
+{"id": "es-035", "split": "dev", "lang": "es", "category": "no_constraint", "text": "Envíale el correo a Dana ahora", "expect": {"constraints": [], "goals": ["send_message"]}}
+{"id": "es-036", "split": "dev", "lang": "es", "category": "no_constraint", "text": "¿No le mandaste nada a Marcus?", "expect": {"constraints": [], "goals": ["question"]}}
+{"id": "es-037", "split": "dev", "lang": "es", "category": "no_constraint", "text": "No sé qué casas le gustan a Sarah", "expect": {"constraints": [], "goals": ["question"]}}
+{"id": "es-038", "split": "dev", "lang": "es", "category": "no_constraint", "text": "Llámala mañana a las 10", "expect": {"constraints": [], "goals": ["call"]}}
+{"id": "es-039", "split": "dev", "lang": "es", "category": "no_constraint", "text": "Redacta un correo para Sarah sobre la inspección", "expect": {"constraints": [], "goals": ["draft_message"]}}
+{"id": "es-040", "split": "dev", "lang": "es", "category": "no_constraint", "text": "¿A quién debo llamar hoy?", "expect": {"constraints": [], "goals": ["who_to_call"]}}
+{"id": "es-041", "split": "dev", "lang": "es", "category": "no_constraint", "text": "No hay prisa, pero prepárale un borrador", "expect": {"constraints": [], "goals": ["draft_message"]}}
+{"id": "es-042", "split": "dev", "lang": "es", "category": "no_constraint", "text": "Dile que sí y mándale el contrato", "expect": {"constraints": [], "goals": ["send_message"]}}
+{"id": "es-043", "split": "dev", "lang": "es", "category": "no_constraint", "text": "No olvides llamar a Dana", "expect": {"constraints": [], "goals": ["remind"]}}
+{"id": "es-044", "split": "dev", "lang": "es", "category": "no_constraint", "text": "No tengo tiempo, llama tú a Marcus", "expect": {"constraints": [], "goals": ["call"]}}
+{"id": "es-045", "split": "dev", "lang": "es", "category": "dont_constraint", "text": "Sin enviar nada, dime qué le dirías", "expect": {"constraints": ["no_send"], "goals": ["question", "!send_message"]}}
+{"id": "es-046", "split": "dev", "lang": "es", "category": "dont_constraint", "text": "Aún no se envía nada a los clientes", "expect": {"constraints": ["no_send"], "goals": ["!send_message"]}}
+{"id": "es-047", "split": "dev", "lang": "es", "category": "not_before", "text": "Programa la llamada con Bob pero no antes del viernes", "expect": {"constraints": ["not_before"], "goals": ["schedule"]}}
+{"id": "es-048", "split": "dev", "lang": "es", "category": "compound", "text": "Solo borradores hasta que el gerente lo apruebe", "expect": {"constraints": ["draft_only", "approval_required"], "goals": ["draft_message"]}}
+{"id": "es-049", "split": "dev", "lang": "es", "category": "approval", "text": "No le mandes nada a nadie sin mi aprobación", "expect": {"constraints": ["approval_required"], "goals": ["send_message"]}}
+{"id": "es-050", "split": "dev", "lang": "es", "category": "not_before", "text": "Puedes mandarle la oferta después del lunes", "expect": {"constraints": ["not_before"], "goals": ["send_message"]}}
+{"id": "mx-001", "split": "dev", "lang": "mixed", "category": "dont_constraint", "text": "No le mandes nada yet", "expect": {"constraints": ["no_send"], "goals": ["!send_message"]}}
+{"id": "mx-002", "split": "dev", "lang": "mixed", "category": "dont_constraint", "text": "Don't send nada todavía", "expect": {"constraints": ["no_send"], "goals": ["!send_message"]}}
+{"id": "mx-003", "split": "dev", "lang": "mixed", "category": "draft_only", "text": "Just draft it, no lo mandes", "expect": {"constraints": ["draft_only"], "goals": ["draft_message", "!send_message"]}}
+{"id": "mx-004", "split": "dev", "lang": "mixed", "category": "draft_only", "text": "Solo borradores for now", "expect": {"constraints": ["draft_only"], "goals": ["draft_message"]}}
+{"id": "mx-005", "split": "dev", "lang": "mixed", "category": "approval", "text": "Wait for my approval antes de enviar", "expect": {"constraints": ["approval_required"], "goals": ["send_message"]}}
+{"id": "mx-006", "split": "dev", "lang": "mixed", "category": "approval", "text": "Espera mi approval antes de mandarlo", "expect": {"constraints": ["approval_required"], "goals": ["send_message"]}}
+{"id": "mx-007", "split": "dev", "lang": "mixed", "category": "not_before", "text": "Not before Friday, ¿ok?", "expect": {"constraints": ["not_before"], "goals": ["question"]}}
+{"id": "mx-008", "split": "dev", "lang": "mixed", "category": "not_before", "text": "No antes del Friday, please", "expect": {"constraints": ["not_before"], "goals": ["question"]}}
+{"id": "mx-009", "split": "dev", "lang": "mixed", "category": "do_not_contact", "text": "Don't contact a los Henderson", "expect": {"constraints": ["do_not_contact"], "goals": ["!send_message"]}}
+{"id": "mx-010", "split": "dev", "lang": "mixed", "category": "do_not_contact", "text": "No contactes a Sarah, she's on vacation", "expect": {"constraints": ["do_not_contact"], "goals": ["!send_message"]}}
+{"id": "mx-011", "split": "dev", "lang": "mixed", "category": "no_constraint", "text": "Busca homes para Sarah", "expect": {"constraints": [], "goals": ["find_properties"]}}
+{"id": "mx-012", "split": "dev", "lang": "mixed", "category": "no_constraint", "text": "Send el email a Dana ahora", "expect": {"constraints": [], "goals": ["send_message"]}}
+{"id": "mx-013", "split": "dev", "lang": "mixed", "category": "no_constraint", "text": "Show me las casas de Marcus", "expect": {"constraints": [], "goals": ["find_properties"]}}
+{"id": "mx-014", "split": "dev", "lang": "mixed", "category": "no_constraint", "text": "Mándale the listing a Sarah", "expect": {"constraints": [], "goals": ["send_message"]}}
+{"id": "mx-015", "split": "dev", "lang": "mixed", "category": "draft_only", "text": "Draft un correo para Sarah pero don't send it", "expect": {"constraints": ["draft_only"], "goals": ["draft_message", "!send_message"]}}
+{"id": "mx-016", "split": "dev", "lang": "mixed", "category": "not_before", "text": "Hold off until Monday, ¿vale?", "expect": {"constraints": ["not_before"], "goals": ["question"]}}
+{"id": "mx-017", "split": "dev", "lang": "mixed", "category": "approval", "text": "No llames a Marcus until I approve", "expect": {"constraints": ["approval_required"], "goals": ["call"]}}
+{"id": "mx-018", "split": "dev", "lang": "mixed", "category": "not_before", "text": "Send it to Sarah después del lunes", "expect": {"constraints": ["not_before"], "goals": ["send_message"]}}
+{"id": "mx-019", "split": "dev", "lang": "mixed", "category": "correction", "text": "Can you llamar a Dana? No, wait, no la llames", "expect": {"constraints": ["do_not_contact"], "goals": ["!call"]}}
+{"id": "mx-020", "split": "dev", "lang": "mixed", "category": "no_constraint", "text": "Okay, mándale el texto now", "expect": {"constraints": [], "goals": ["send_message"]}}
+{"id": "mx-021", "split": "dev", "lang": "mixed", "category": "approval", "text": "Prepare the offer, pero espera mi aprobación", "expect": {"constraints": ["approval_required"], "goals": ["draft_message"]}}
+{"id": "mx-022", "split": "dev", "lang": "mixed", "category": "draft_only", "text": "Drafts only, por favor", "expect": {"constraints": ["draft_only"], "goals": ["draft_message"]}}
+{"id": "mx-023", "split": "dev", "lang": "mixed", "category": "no_constraint", "text": "Who should I call, ¿a quién primero?", "expect": {"constraints": [], "goals": ["who_to_call"]}}

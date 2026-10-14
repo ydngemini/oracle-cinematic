@@ -345,7 +345,7 @@ async def prepare_turn(
 
     if turn.frame is not None:
         turn.own = fc.from_frame(turn.frame, origin=str(assistant_id), stated_at=now)
-    turn.own, turn.backstop = _backstop(
+    turn.own, turn.backstop = apply_backstop(
         text, turn.frame, turn.own, detected=turn.detected,
         origin=str(assistant_id), now=now,
     )
@@ -363,7 +363,7 @@ async def prepare_turn(
     return turn
 
 
-def _backstop(
+def apply_backstop(
     text: str, frame: Optional[sf.SemanticFrame], own: list[fc.ActiveConstraint], *,
     detected: str, origin: str, now: datetime,
 ) -> tuple[list[fc.ActiveConstraint], list[str]]:
@@ -408,7 +408,7 @@ async def mission_constraints(
     frame, status, reason, elapsed = await _parse(ctx, objective_text, known=(), now=now)
     own = fc.from_frame(frame, origin="mission", stated_at=now) if frame else []
     detected = lang_.detect(objective_text).lang
-    own, backstop = _backstop(objective_text, frame, own, detected=detected,
+    own, backstop = apply_backstop(objective_text, frame, own, detected=detected,
                               origin="mission", now=now)
     return {"semantic_frame": {
         "v": SUMMARY_VERSION,

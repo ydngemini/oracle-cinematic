@@ -229,6 +229,8 @@ _ES_TIME = _alt(
     r"(?:el\s+)?fin\s+de\s+semana", "mediodia", r"las?\s+\d{1,2}(?::\d{2})?",
     r"(?:el\s+)?\d{1,2}(?:\s+de\s+[a-z]+)?",
 )
+#: People mix languages inside one phrase ("no antes del Friday").
+_ANY_TIME = _alt(_ES_TIME, _EN_TIME)
 # Spanish clitics between "no" and the verb: "no le", "no se lo", "no me".
 _CL = r"(?:(?:le|les|la|las|lo|los|me|nos|te|se)\s+){0,2}"
 # "por qué no le mandas …" is a suggestion, not a restriction.
@@ -265,7 +267,7 @@ _LEXICON: tuple[tuple[str, str, str], ...] = (
                                 r"(?:signs?\s+off|approves?|okays?|oks?)\b"),
     ("en", "approval_required", r"\b(?:after|once|until|unless)\s+i\s+(?:approve|sign\s+off|say\s+so|ok\s+it|okay\s+it)\b"),
     ("en", "approval_required", r"\b(?:needs?|requires?|without|pending)\s+(?:my\s+|the\s+manager'?s?\s+|the\s+broker'?s?\s+)?approval\b"),
-    ("es", "approval_required", r"\bespera(?:r|s)?\s+(?:a\s+)?(?:mi|la|su|tu)\s+(?:aprobacion|autorizacion|visto\s+bueno|ok)\b"),
+    ("es", "approval_required", r"\bespera(?:r|s)?\s+(?:a\s+)?(?:mi|la|su|tu)\s+(?:aprobacion|autorizacion|visto\s+bueno|ok|approval|sign[- ]?off)\b"),
     ("es", "approval_required", r"\b(?:con|sin)\s+(?:mi|la|su|tu)\s+(?:aprobacion|autorizacion|visto\s+bueno)\b"),
     ("es", "approval_required", r"\bhasta\s+que\s+(?:yo\s+)?(?:lo\s+|la\s+|los\s+|las\s+)?(?:apruebe|autorice|revise)\b"),
     ("es", "approval_required", r"\b(?:cuando|despues\s+de\s+que|hasta\s+que)\s+(?:el|la|mi)\s+(?:gerente|manager|broker|jefe|jefa|"
@@ -278,10 +280,11 @@ _LEXICON: tuple[tuple[str, str, str], ...] = (
     ("en", "not_before", rf"\b(?:wait|hold\s+off)\s+(?:until|till)\s+(?:the\s+)?{_EN_TIME}\b"),
     ("en", "not_before", rf"\bno\s+earlier\s+than\s+{_EN_TIME}\b"),
     ("en", "not_before", rf"\b{_DONT}\s+\w+(?:\s+\w+){{0,3}}?\s+(?:before|until|till)\s+{_EN_TIME}\b"),
-    ("es", "not_before", rf"\bno\s+(?:\w+\s+){{0,4}}?antes\s+de(?:l|\s+el|\s+la|\s+las)?\s+{_ES_TIME}\b"),
-    ("es", "not_before", rf"\bno\s+(?:\w+\s+){{0,4}}?hasta\s+(?:el\s+)?{_ES_TIME}\b"),
-    ("es", "not_before", rf"\bespera(?:r|te)?\s+(?:hasta|al)\s+(?:el\s+)?{_ES_TIME}\b"),
-    ("es", "not_before", rf"\ba\s+partir\s+de(?:l|\s+el|\s+la|\s+las)?\s+{_ES_TIME}\b"),
+    ("en", "not_before", rf"\b(?:after|starting)\s+(?:the\s+)?{_EN_TIME}\b"),
+    ("es", "not_before", rf"\bno\s+(?:\w+\s+){{0,4}}?antes\s+de(?:l|\s+el|\s+la|\s+las)?\s+{_ANY_TIME}\b"),
+    ("es", "not_before", rf"\bno\s+(?:\w+\s+){{0,4}}?hasta\s+(?:el\s+)?{_ANY_TIME}\b"),
+    ("es", "not_before", rf"\bespera(?:r|te)?\s+(?:hasta|al)\s+(?:el\s+)?{_ANY_TIME}\b"),
+    ("es", "not_before", rf"\b(?:a\s+partir|despues)\s+de(?:l|\s+el|\s+la|\s+las)?\s+{_ANY_TIME}\b"),
     # ── do_not_contact ─────────────────────────────────────────────────────
     ("en", "do_not_contact", _NOT_WHY_EN + rf"\b{_DONT}\s+(?:contact|call|phone|ring|reach\s+out\s+to|reach|bother|"
                              r"get\s+in\s+touch\s+with)\b"),
@@ -291,27 +294,64 @@ _LEXICON: tuple[tuple[str, str, str], ...] = (
     ("es", "do_not_contact", r"\bno\s+(?:te\s+)?(?:comuniques|comunicar|pongas\s+en\s+contacto)\b"),
     ("es", "do_not_contact", r"\bni\s+(?:le\s+|la\s+|lo\s+)?(?:llames|contactes|escribas)\b"),
     ("es", "do_not_contact", r"\bsin\s+contactar(?:la|lo|le|los|las)?\b"),
-    ("es", "do_not_contact", r"\bdeja(?:la|lo|los|las)\s+en\s+paz\b"),
+    ("es", "do_not_contact", r"\bdeja(?:la|lo|los|las)?\s+en\s+paz\b"),
 )
 
 _COMPILED = tuple((lang, kind, re.compile(p)) for lang, kind, p in _LEXICON)
+
+
+#: Someone asked for a draft: "prepara el correo", "draft the email". Not
+#: when the verb is itself negated ("no le prepares nada").
+_DRAFT_REQUEST = re.compile(
+    r"(?<!no )(?<!no le )(?<!no lo )(?<!don't )(?<!do not )"
+    r"\b(?:draft|write\s+up|prepare|redacta(?:le|lo|la|los|las)?|prepara(?:le|lo|la|los|las)?|"
+    r"(?:haz|hazme)\s+un\s+borrador)\b"
+)
+_CLAUSE_BREAK = re.compile(r"[.;!?]|,\s*(?:y|pero|and|but)?\s")
+_BLOCKING_CUES = frozenset({"no_send", "do_not_contact"})
+_QUALIFIER_CUES = frozenset({"not_before", "approval_required"})
 
 
 def cues(text: str) -> tuple[Cue, ...]:
     """Every restriction the lexicon reads in `text`, at most one per kind.
 
     Quotes are spans of `nfc(text)` — verbatim, accents and all.
+
+    Two readings keep the backstop from over-reaching:
+
+    * A "don't send / don't call" QUALIFIED in the same clause by a time or
+      an approval ("no le mandes nada hasta el lunes", "don't send anything
+      until I approve") means "not before" / "approval required", not "never"
+      — the qualifier's constraint is kept and the blanket one dropped.
+    * "Prepara el correo pero no lo mandes" asks for a draft and forbids the
+      send: that is draft_only, not a no_send that would refuse the draft.
     """
     raw = nfc(text)
     folded = fold(raw)
-    found: dict[str, Cue] = {}
+    found: dict[str, tuple[Cue, int, int]] = {}
     for lang, kind, pattern in _COMPILED:
         if kind in found:
             continue
         m = pattern.search(folded)
         if m:
-            found[kind] = Cue(kind, raw[m.start():m.end()], lang)
-    return tuple(found.values())
+            found[kind] = (Cue(kind, raw[m.start():m.end()], lang), m.start(), m.end())
+
+    for blocking in _BLOCKING_CUES & set(found):
+        _, b_start, b_end = found[blocking]
+        for qualifier in _QUALIFIER_CUES & set(found):
+            _, q_start, q_end = found[qualifier]
+            inside = q_start <= b_start and b_end <= q_end
+            gap = folded[b_end:q_start] if q_start >= b_end else None
+            same_clause = gap is not None and len(gap) <= 40 and not _CLAUSE_BREAK.search(gap)
+            if inside or same_clause:
+                found.pop(blocking)
+                break
+
+    if "no_send" in found and _DRAFT_REQUEST.search(folded):
+        cue, start, end = found.pop("no_send")
+        found.setdefault("draft_only", (Cue("draft_only", cue.quote, cue.lang), start, end))
+
+    return tuple(entry[0] for entry in sorted(found.values(), key=lambda e: e[1]))
 
 
 # ---------------------------------------------------------------------------
