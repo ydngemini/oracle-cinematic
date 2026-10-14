@@ -553,7 +553,7 @@ from privacy_api import admin_router as privacy_admin_router, router as privacy_
 app.include_router(privacy_router)
 app.include_router(privacy_admin_router)
 
-from apis.geocoding import geocode, reverse_geocode
+from apis.geocoding import geocode_checked, reverse_geocode
 from apis.census import get_demographics_by_zip
 from apis.property_data import enrich_property, get_flood_zone
 from apis.market_data import get_market_snapshot
@@ -770,10 +770,27 @@ async def api_generate_tour(
 
 @app.get("/api/geocode")
 async def api_geocode(address: str, ctx: TenantContext = Depends(require_context)) -> JSONResponse:
-    """Geocode an address to lat/lng coordinates (free, via OpenStreetMap)."""
-    result = await geocode(address)
+    """Geocode an address to lat/lng coordinates (free, via OpenStreetMap).
+
+    404 only for a verified miss. When the geocoder timed out or failed the
+    address was not checked: 502 with `lookup_status`, never "address not
+    found" (audit A02, ledger L11-03)."""
+    result, lookup = await geocode_checked(address)
     if not result:
-        return JSONResponse({"error": "address not found"}, status_code=404)
+        if lookup.get("status") in ("timed_out", "unavailable"):
+            return JSONResponse(
+                {
+                    "error": "geocoder unavailable; the address was not checked",
+                    "code": "GEOCODER_UNAVAILABLE",
+                    "lookup_status": lookup["status"],
+                    "lookup_reason": lookup.get("reason"),
+                },
+                status_code=502,
+            )
+        return JSONResponse(
+            {"error": "address not found", "code": "ADDRESS_NOT_FOUND", "lookup_status": lookup.get("status")},
+            status_code=404,
+        )
     return JSONResponse(result)
 
 

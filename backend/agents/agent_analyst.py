@@ -306,6 +306,20 @@ class AnalystAgent:
             return None
 
         if result.verdict == "UNAVAILABLE" or result.estimated_value <= 0:
+            # Say which UNAVAILABLE this is: a provider that answered "no
+            # estimate" and a provider that was down are different facts
+            # (audit A02, ledger L11-03). Unconfigured stays silent, as before.
+            lookup = getattr(result, "lookup_status", "")
+            reasons = {(s or {}).get("reason") for s in (getattr(result, "source_status", {}) or {}).values()}
+            if lookup in ("timed_out", "unavailable") and reasons != {"not_configured"}:
+                await self._emit_status(
+                    f"AGENT ANALYST — external AVM {lookup.replace('_', ' ')}; "
+                    "value NOT checked there, falling back to comps"
+                )
+            elif lookup == "checked":
+                await self._emit_status(
+                    "AGENT ANALYST — AVM providers answered with no estimate; falling back to comps"
+                )
             return None
 
         src = "+".join(result.sources) or "avm"

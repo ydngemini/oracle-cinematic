@@ -628,9 +628,10 @@ async def footprint_candidates(
     async with tenant_tx(ctx) as conn:
         await _assert_subject_exists(conn, lead_id, listing_id)
 
-    from data_integrations.building_footprint import resolve_footprints
+    from data_integrations.building_footprint import footprint_lookup, resolve_footprints_checked
+    import source_status as ss
 
-    candidates = await resolve_footprints(
+    candidates, statuses = await resolve_footprints_checked(
         address=body.address,
         lat=body.latitude,
         lon=body.longitude,
@@ -638,9 +639,16 @@ async def footprint_candidates(
     )
     return {
         "candidates": [candidate.to_dict() for candidate in candidates],
-        # An empty list is a real answer, not an error. Rural OSM coverage is
-        # patchy and not every address matches a licensed building record.
         "count": len(candidates),
+        # An empty list is a real answer ONLY when `lookup` is "none_found":
+        # rural OSM coverage is patchy and not every address matches a
+        # licensed building record. "incomplete" / "not_checked" mean a source
+        # failed or none could be asked (an expired Regrid token, an Overpass
+        # timeout, no coordinates) — never "this address has no building"
+        # (audit A02, ledger L11-03).
+        "lookup": footprint_lookup(candidates, statuses),
+        "source_status": statuses,
+        "degraded": ss.degraded(statuses),
     }
 
 
@@ -673,23 +681,44 @@ async def auto_dimensions(
         )
     address = (row["address"] if row else "") or ""
 
+    import source_status as ss
+
     # Geocode is best-effort: without coordinates OSM cannot answer, but Regrid
     # matches on the address string and the default plate needs neither.
+    #
+    # The keyless, public-domain Census geocoder through the mandatory
+    # IntegrationCache. This used CascadingGeocoder() with no cache, which
+    # raises before any request — so this route never had coordinates, OSM was
+    # never asked, and "no footprint found" was reported without a lookup.
     lat = lon = None
+    geocode_status = ss.not_applicable(ss.NO_ADDRESS)
     if address:
         try:
-            from data_integrations.geocoder import CascadingGeocoder
+            from data_integrations.cache import get_integration_cache
+            from data_integrations.census_geocoder import CensusGeocoder
 
-            located = await CascadingGeocoder().geocode(address)
+            geocoder = CensusGeocoder(cache=await get_integration_cache())
+            located, geocode_status = await geocoder.geocode_checked(address)
             if located:
                 lat, lon = located.get("lat"), located.get("lng")
         except Exception as exc:  # noqa: BLE001 — degrade to address-only resolution
-            log.warning("auto-dimensions: geocode failed: %s", type(exc).__name__)
+            geocode_status = ss.failure(exc)
+            # Never the address in the log (CONTRACT C5.4).
+            log.warning(
+                "auto-dimensions: geocode %s (%s): %s",
+                geocode_status["status"], geocode_status["reason"], type(exc).__name__,
+            )
 
-    from data_integrations.building_footprint import resolve_footprints
+    from data_integrations.building_footprint import footprint_lookup, resolve_footprints_checked
     from floorplan_pipeline.dimensions import complete_dimensions
 
-    candidates = await resolve_footprints(address=address, lat=lat, lon=lon)
+    candidates, footprint_statuses = await resolve_footprints_checked(address=address, lat=lat, lon=lon)
+    if geocode_status["status"] in ss.FAILED and "openstreetmap" in footprint_statuses:
+        # OSM was skipped because the geocoder failed, not because the
+        # subject has no location: that is a failed source, not "not applicable".
+        footprint_statuses["openstreetmap"] = ss.entry(
+            geocode_status["status"], reason=geocode_status["reason"],
+        )
     best = candidates[0] if candidates else None
 
     document, manifest = complete_dimensions(
@@ -713,9 +742,16 @@ async def auto_dimensions(
             "licence": best.licence if best else None,
             "attribution": best.attribution if best else None,
             "candidates": len(candidates),
+            # found / none_found / incomplete / not_checked: `found: false`
+            # alone cannot say whether the default plate replaced a verified
+            # miss or a lookup that never ran (audit A02, ledger L11-03).
+            "lookup": footprint_lookup(candidates, footprint_statuses),
+            "source_status": footprint_statuses,
+            "degraded": ss.degraded(footprint_statuses),
         },
         "address": address,
         "geocoded": lat is not None,
+        "geocode_status": geocode_status,
     }
 
 

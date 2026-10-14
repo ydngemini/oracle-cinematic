@@ -30,6 +30,8 @@ from typing import Optional
 
 import aiohttp
 
+import source_status as ss
+
 logger = logging.getLogger("oracle.avm")
 
 RENTCAST_BASE = "https://api.rentcast.io/v1"
@@ -68,6 +70,17 @@ class AVMResult:
     sources: list = field(default_factory=list)
     checks: dict = field(default_factory=dict)
     comps_used: int = 0
+    # CONTRACT C6, added so UNAVAILABLE stops covering two different facts
+    # (audit A02, ledger L11-03). With estimated_value 0:
+    #   lookup_status "checked"                  -> every configured provider
+    #                                               answered and none has an estimate;
+    #   lookup_status "timed_out"/"unavailable"  -> a provider failed, nothing verified;
+    #   lookup_status "not_applicable"           -> nothing could be asked (no address).
+    # `source_status` has one entry per provider. Rows cached before these
+    # fields existed are successes, so the defaults are right for them.
+    lookup_status: str = "checked"
+    source_status: dict = field(default_factory=dict)
+    degraded: bool = False
 
 
 # ── Providers ────────────────────────────────────────────────────────────────
@@ -105,14 +118,32 @@ def _mark_credential_rejected(provider: str, status: int) -> None:
 
 
 async def _rentcast_avm(session: aiohttp.ClientSession, subject: dict) -> Optional[AVMEstimate]:
+    estimate, _status = await _rentcast_avm_checked(session, subject)
+    return estimate
+
+
+def _http_status_entry(provider: str, status: int) -> dict:
+    """A non-200 provider answer. Only 404 ("no record for this address") is a
+    verified miss; everything else is a failure, never "no estimate"."""
+    if status == 404:
+        return ss.checked(matched=0)
+    if status == 429:
+        return ss.unavailable(ss.RATE_LIMITED)
+    logger.warning("%s AVM: HTTP %s", provider, status)  # never the address (C5.4)
+    return ss.unavailable(ss.UPSTREAM_HTTP_ERROR)
+
+
+async def _rentcast_avm_checked(
+    session: aiohttp.ClientSession, subject: dict,
+) -> tuple[Optional[AVMEstimate], dict]:
     key = os.environ.get("RENTCAST_API_KEY", "")
     if not key:
-        return None
+        return None, ss.not_applicable(ss.NOT_CONFIGURED, required=False)
     if _credential_down("RentCast"):
-        return None
+        return None, ss.unavailable(ss.CREDENTIAL_REJECTED)
     address = subject.get("address") or ""
     if not address:
-        return None
+        return None, ss.not_applicable(ss.NO_ADDRESS)
     params = {"address": address}
     # Optional hints improve the estimate; only send what we actually have.
     if subject.get("bedrooms"):
@@ -132,18 +163,21 @@ async def _rentcast_avm(session: aiohttp.ClientSession, subject: dict) -> Option
                 # plan-suspended key — the live failure that motivated the
                 # cooldown was a 403 stream.
                 _mark_credential_rejected("RentCast", resp.status)
-                return None
+                return None, ss.unavailable(ss.CREDENTIAL_REJECTED)
             if resp.status != 200:
-                logger.warning("RentCast AVM: HTTP %s", resp.status)
-                return None
+                return None, _http_status_entry("RentCast", resp.status)
             data = await resp.json()
     except Exception as e:  # noqa: BLE001 — provider is best-effort
-        logger.warning("RentCast AVM request failed: %s", e)
-        return None
+        status, reason = ss.classify(e)
+        logger.warning("RentCast AVM request %s (%s): %s", status, reason, type(e).__name__)
+        return None, ss.entry(status, reason=reason)
 
-    price = int(data.get("price") or 0)
+    try:
+        price = int(data.get("price") or 0)
+    except (AttributeError, TypeError, ValueError):
+        return None, ss.unavailable(ss.BAD_RESPONSE)
     if price <= 0:
-        return None
+        return None, ss.checked(matched=0)
     comps = []
     for c in (data.get("comparables") or []):
         comps.append({
@@ -159,19 +193,26 @@ async def _rentcast_avm(session: aiohttp.ClientSession, subject: dict) -> Option
         low=int(data.get("priceRangeLow") or price),
         high=int(data.get("priceRangeHigh") or price),
         comps=comps,
-    )
+    ), ss.checked(matched=1)
 
 
 async def _attom_avm(session: aiohttp.ClientSession, subject: dict) -> Optional[AVMEstimate]:
     """Second source for cross-validation. Inert unless ATTOM_API_KEY is set."""
+    estimate, _status = await _attom_avm_checked(session, subject)
+    return estimate
+
+
+async def _attom_avm_checked(
+    session: aiohttp.ClientSession, subject: dict,
+) -> tuple[Optional[AVMEstimate], dict]:
     key = os.environ.get("ATTOM_API_KEY", "")
     if not key:
-        return None
+        return None, ss.not_applicable(ss.NOT_CONFIGURED, required=False)
     if _credential_down("ATTOM"):
-        return None
+        return None, ss.unavailable(ss.CREDENTIAL_REJECTED)
     address = subject.get("address") or ""
     if not address:
-        return None
+        return None, ss.not_applicable(ss.NO_ADDRESS)
     # ATTOM splits the address: "<street>, <city, ST zip>".
     parts = address.split(",", 1)
     address1 = parts[0].strip()
@@ -184,29 +225,32 @@ async def _attom_avm(session: aiohttp.ClientSession, subject: dict) -> Optional[
         ) as resp:
             if resp.status in (401, 403):
                 _mark_credential_rejected("ATTOM", resp.status)
-                return None
+                return None, ss.unavailable(ss.CREDENTIAL_REJECTED)
             if resp.status != 200:
-                logger.warning("ATTOM AVM: HTTP %s", resp.status)
-                return None
+                return None, _http_status_entry("ATTOM", resp.status)
             data = await resp.json()
     except Exception as e:  # noqa: BLE001
-        logger.warning("ATTOM AVM request failed: %s", e)
-        return None
+        status, reason = ss.classify(e)
+        logger.warning("ATTOM AVM request %s (%s): %s", status, reason, type(e).__name__)
+        return None, ss.entry(status, reason=reason)
 
+    if isinstance(data, dict) and data.get("property") == []:
+        return None, ss.checked(matched=0)
     try:
         amount = data["property"][0]["avm"]["amount"]
         value = int(amount.get("value") or 0)
-    except (KeyError, IndexError, TypeError):
-        return None
+    except (KeyError, IndexError, TypeError, AttributeError, ValueError):
+        # A shape we cannot read is not "ATTOM has no estimate".
+        return None, ss.unavailable(ss.BAD_RESPONSE)
     if value <= 0:
-        return None
+        return None, ss.checked(matched=0)
     return AVMEstimate(
         source="attom",
         value=value,
         low=int(amount.get("low") or value),
         high=int(amount.get("high") or value),
         comps=[],
-    )
+    ), ss.checked(matched=1)
 
 
 # ── Fact-check / reconciliation ──────────────────────────────────────────────
@@ -364,14 +408,44 @@ class _NoAVMEstimate(RuntimeError):
         self.result = result
 
 
+def _with_source_status(result: AVMResult, statuses: dict) -> AVMResult:
+    """Say what an UNAVAILABLE means: a verified "no estimate" only when every
+    configured provider answered (audit A02, ledger L11-03)."""
+    asked = {k: v for k, v in statuses.items() if v.get("status") != ss.NOT_APPLICABLE}
+    failed = [v for v in asked.values() if ss.is_failed(v)]
+    result.source_status = statuses
+    result.degraded = ss.degraded(statuses)
+    if result.estimated_value > 0:
+        result.lookup_status = ss.CHECKED
+    elif failed:
+        result.lookup_status = ss.worst(*failed)["status"]
+        result.checks = {**result.checks, "reason": "provider unavailable; not checked"}
+    elif asked:
+        result.lookup_status = ss.CHECKED
+        result.checks = {**result.checks, "reason": "no provider returned a value"}
+    else:
+        result.lookup_status = ss.NOT_APPLICABLE
+    return result
+
+
 async def _value_property_uncached(subject: dict) -> AVMResult:
     """Hit all configured providers concurrently and reconcile — no caching."""
     async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=REQUEST_TIMEOUT)) as session:
-        rc, at = await asyncio.gather(
-            _rentcast_avm(session, subject),
-            _attom_avm(session, subject),
+        outcomes = await asyncio.gather(
+            _rentcast_avm_checked(session, subject),
+            _attom_avm_checked(session, subject),
+            return_exceptions=True,
         )
-    return reconcile([rc, at], int(subject.get("assessed_value") or 0), int(subject.get("sqft") or 0))
+    estimates, statuses = [], {}
+    for provider, outcome in zip(("rentcast", "attom"), outcomes):
+        if isinstance(outcome, BaseException):
+            estimates.append(None)
+            statuses[provider] = ss.failure(outcome)
+        else:
+            estimates.append(outcome[0])
+            statuses[provider] = outcome[1]
+    result = reconcile(estimates, int(subject.get("assessed_value") or 0), int(subject.get("sqft") or 0))
+    return _with_source_status(result, statuses)
 
 
 async def value_property(subject: dict) -> AVMResult:
@@ -386,12 +460,22 @@ async def value_property(subject: dict) -> AVMResult:
     UNAVAILABLE would let one transient provider failure/429 poison a property
     for a week, and we never launder a stale failure into a confident answer."""
     if not (os.environ.get("RENTCAST_API_KEY") or os.environ.get("ATTOM_API_KEY")):
-        return AVMResult(0, 0, 0, 0.0, "UNAVAILABLE", 0.0, [], {"reason": "no AVM provider configured"})
+        not_configured = {
+            "rentcast": ss.unavailable(ss.NOT_CONFIGURED),
+            "attom": ss.unavailable(ss.NOT_CONFIGURED),
+        }
+        return AVMResult(
+            0, 0, 0, 0.0, "UNAVAILABLE", 0.0, [], {"reason": "no AVM provider configured"},
+            lookup_status=ss.UNAVAILABLE, source_status=not_configured, degraded=True,
+        )
 
     key = _avm_cache_key(subject)
     if not key:
         return AVMResult(
-            0, 0, 0, 0.0, "UNAVAILABLE", 0.0, [], {"reason": "property address is required"}
+            0, 0, 0, 0.0, "UNAVAILABLE", 0.0, [], {"reason": "property address is required"},
+            lookup_status=ss.NOT_APPLICABLE,
+            source_status={"rentcast": ss.not_applicable(ss.NO_ADDRESS),
+                           "attom": ss.not_applicable(ss.NO_ADDRESS)},
         )
 
     memo = _INPROC.get(key)

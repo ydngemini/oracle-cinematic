@@ -18,6 +18,8 @@ import urllib.request
 import json
 from typing import Optional
 
+import source_status as ss
+
 logger = logging.getLogger("oracle.apis.geocoding")
 
 _NOMINATIM_URL = "https://nominatim.openstreetmap.org"
@@ -28,8 +30,17 @@ _last_request_time = 0.0
 async def geocode(address: str) -> Optional[dict]:
     """Forward geocode an address to coordinates.
 
-    Returns: { lat, lng, display_name, boundingbox, place_id, type }
+    Returns: { lat, lng, display_name, boundingbox, place_id, type }, or None
+    for a miss AND for a failure — `geocode_checked` tells them apart.
     """
+    result, _status = await geocode_checked(address)
+    return result
+
+
+async def geocode_checked(address: str) -> tuple[Optional[dict], dict]:
+    """(result or None, CONTRACT C6 source status). None + `checked` is a
+    verified "address not found"; None + `timed_out` / `unavailable` means the
+    geocoder was not read and the address was NOT checked (audit A02)."""
     global _last_request_time
     now = time.monotonic()
     wait = max(0, 1.0 - (now - _last_request_time))
@@ -61,9 +72,11 @@ async def geocode(address: str) -> Optional[dict]:
             fetch_upstream,
             ttl=90 * 86_400,
         )
-        results = payload.get("results") or []
+        results = payload.get("results")
+        if not isinstance(results, list):
+            return None, ss.unavailable(ss.BAD_RESPONSE)
         if not results:
-            return None
+            return None, ss.checked(matched=0)
 
         r = results[0]
         return {
@@ -74,10 +87,12 @@ async def geocode(address: str) -> Optional[dict]:
             "place_id": r.get("place_id"),
             "type": r.get("type", ""),
             "address_parts": r.get("address", {}),
-        }
-    except Exception as e:
-        logger.warning("Geocode failed: %s", type(e).__name__)  # never the address (A06)
-        return None
+        }, ss.checked(matched=1)
+    except Exception as e:  # noqa: BLE001 — reported as a status, never "not found"
+        status, reason = ss.classify(e)
+        # Never the address in the log (CONTRACT C5.4).
+        logger.warning("Geocode %s (%s): %s", status, reason, type(e).__name__)
+        return None, ss.entry(status, reason=reason)
 
 
 async def reverse_geocode(lat: float, lng: float) -> Optional[dict]:

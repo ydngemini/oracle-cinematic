@@ -6,6 +6,7 @@ import CaptureSessionPanel from './CaptureSessionPanel';
 import { crmGet, crmPost, crmDelete, crmUpload } from '../state/useCrmApi';
 import { useTour } from '../state/useTour';
 import { tourOffer } from '../lib/tour/tourOffer';
+import { factText } from '../lib/sourceStatus';
 import styles from './PropertyViewTab.module.css';
 
 // Same entry point HouseWorkspace uses, so both surfaces pick the engine
@@ -53,6 +54,27 @@ function fmtMoney(v) {
 function fmtNum(v, suffix = '') {
   if (v === null || v === undefined || Number.isNaN(Number(v))) return '—';
   return `${Number(v).toLocaleString('en-US')}${suffix}`;
+}
+
+// The backend key is `flood`; `flood_zone` is read too so an older response
+// still renders. `mapped: false` is FEMA's real answer ("no NFHL coverage"),
+// which is not a low-risk zone and not a failed lookup either.
+function floodText(enrich) {
+  const flood = enrich?.flood ?? enrich?.flood_zone;
+  return factText(
+    enrich?.source_status?.flood,
+    Boolean(flood),
+    () => (flood.mapped === false ? 'Not mapped by FEMA' : flood.zone || '—'),
+  );
+}
+
+function geocodeErrorText(err) {
+  if (err?.status === 404) return 'That address could not be located. Try adding city and state.';
+  if (err?.isNetworkError || [502, 503, 504].includes(err?.status)) {
+    return 'The address lookup service is unavailable right now, so this address was not checked '
+      + '(this is not a "not found"). Try again shortly.';
+  }
+  return err?.message || 'Address lookup failed.';
 }
 
 export default function PropertyViewTab() {
@@ -158,7 +180,7 @@ export default function PropertyViewTab() {
     } catch (err) {
       if (seq !== lookupSeq.current) return;
       setLookupState('error');
-      setLookupError(err?.message || 'Address lookup failed.');
+      setLookupError(geocodeErrorText(err));
     }
   }, [query]);
 
@@ -397,12 +419,51 @@ export default function PropertyViewTab() {
           </div>
 
           {enrich ? (
-            <dl className={styles.facts}>
-              <div><dt>Flood zone</dt><dd>{enrich.flood_zone?.zone || '—'}</dd></div>
-              <div><dt>Walk Score</dt><dd>{fmtNum(enrich.walkscore?.walkscore)}</dd></div>
-              <div><dt>Est. value</dt><dd>{fmtMoney(enrich.valuation?.estimatedValue)}</dd></div>
-              <div><dt>Nearby POIs</dt><dd>{fmtNum(enrich.pois?.length)}</dd></div>
-            </dl>
+            <>
+              {/* Each cell reads its source's status: a blank next to a
+                  failed source is "Couldn't check", never "none" (A02). */}
+              <dl className={styles.facts}>
+                <div><dt>Flood zone</dt><dd>{floodText(enrich)}</dd></div>
+                <div>
+                  <dt>Walk Score</dt>
+                  <dd>
+                    {factText(
+                      enrich.source_status?.walkscore,
+                      enrich.walkscore?.walkscore != null,
+                      () => fmtNum(enrich.walkscore.walkscore),
+                      'No score',
+                    )}
+                  </dd>
+                </div>
+                <div>
+                  <dt>Est. value</dt>
+                  <dd>
+                    {factText(
+                      enrich.source_status?.valuation,
+                      enrich.valuation?.estimatedValue != null,
+                      () => fmtMoney(enrich.valuation.estimatedValue),
+                    )}
+                  </dd>
+                </div>
+                <div>
+                  <dt>Nearby POIs</dt>
+                  <dd>
+                    {factText(
+                      enrich.source_status?.pois,
+                      typeof enrich.pois?.total_pois === 'number',
+                      () => fmtNum(enrich.pois.total_pois),
+                      '0',
+                    )}
+                  </dd>
+                </div>
+              </dl>
+              {enrich.degraded ? (
+                <p className={styles.muted} role="status">
+                  Some public sources couldn&apos;t be checked just now. &ldquo;Couldn&apos;t check&rdquo;
+                  is not a &ldquo;none&rdquo; — look again later.
+                </p>
+              ) : null}
+            </>
           ) : (
             <p className={styles.muted}>
               Public-record enrichment is unavailable for this address right now.
