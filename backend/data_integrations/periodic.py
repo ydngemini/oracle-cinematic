@@ -75,6 +75,10 @@ class PeriodicTask:
     interval_s: float
     run: Callable[[], Awaitable[dict]]
     enabled: bool = True
+    # Touches only this database: no provider, network, message or meter.
+    # The only tasks a recovery-mode copy runs (owner 2026-10-14): protecting
+    # data at rest is safe on stale data, contacting anyone is not.
+    internal_only: bool = False
     # mutable runtime state
     next_due: float = 0.0           # monotonic deadline; 0 = due immediately
     last_run_wall: Optional[float] = None   # epoch seconds (for status display)
@@ -104,6 +108,7 @@ class PeriodicScheduler:
         self._loop_task: Optional[asyncio.Task] = None
         self._running = False
         self._ticks = 0
+        self._internal_only = False
 
     def register(self, task: PeriodicTask) -> None:
         if task.interval_s < 6 * 3600 and "harvest" in task.name:
@@ -176,13 +181,24 @@ class PeriodicScheduler:
         # scheduler is the worst case in this whole file: every task here acts
         # on the world — harvesting, syncing, emailing digests, draining usage
         # meters — using data that may be hours stale.
+        # Only internal_only tasks (sealing plaintext at rest, verifying the
+        # audit chain) still run there: they read and write this database and
+        # nothing else, so a stale copy cannot contact anyone through them.
         import recovery_mode
         if recovery_mode.is_recovery_mode():
+            internal = [t.name for t in self._tasks.values() if t.internal_only and t.enabled]
+            if not internal:
+                logger.warning(
+                    "PeriodicScheduler NOT started: %s is set. This instance is a "
+                    "restored or non-production copy.", recovery_mode.ENV_VAR,
+                )
+                return
             logger.warning(
-                "PeriodicScheduler NOT started: %s is set. This instance is a "
-                "restored or non-production copy.", recovery_mode.ENV_VAR,
+                "PeriodicScheduler in internal-only mode: %s is set, so only %s run "
+                "(no task that contacts a person or an outside service).",
+                recovery_mode.ENV_VAR, ", ".join(internal),
             )
-            return
+            self._internal_only = True
         if not SCHEDULER_ENABLED:
             logger.info("PeriodicScheduler disabled (set ORACLE_SCHEDULER_ENABLED=1 to enable).")
             return
@@ -217,7 +233,8 @@ class PeriodicScheduler:
         while self._running:
             self._ticks += 1
             now = time.monotonic()
-            due = [t for t in self._tasks.values() if t.is_due(now)]
+            due = [t for t in self._tasks.values()
+                   if t.is_due(now) and (t.internal_only or not self._internal_only)]
             for task in due:
                 await self._run_task(task)
             await _scheduler_beat(self.tick_s)
@@ -408,6 +425,28 @@ async def _client_note_seal_task() -> dict:
         batch_size=max(1, min(5_000, int(os.getenv("ORACLE_CLIENT_NOTE_BACKFILL_BATCH", "200")))),
         max_rows=max(1, min(50_000, int(os.getenv("ORACLE_CLIENT_NOTE_SEAL_MAX_PER_RUN", "2000")))),
     )
+
+
+async def _sealed_text_seal_task() -> dict:
+    """Seal SMS bodies, call transcript excerpts and chat turns still stored as
+    plaintext (audit A01, migration 0152) — the periodic twin of
+    backend/backfill_sealed_text.py, for the same reason as _client_note_seal_task:
+    the master key exists only in the app's environment. Bounded per field per
+    run; once nothing is left a pass is three cheap counts.
+    """
+    if not os.getenv("ORACLE_ENCRYPTION_MASTER_KEY", "").strip():
+        return {"skipped": "ORACLE_ENCRYPTION_MASTER_KEY is not set"}
+    import backfill_sealed_text
+
+    batch = max(1, min(5_000, int(os.getenv("ORACLE_SEALED_TEXT_BACKFILL_BATCH", "200"))))
+    cap = max(1, min(50_000, int(os.getenv("ORACLE_SEALED_TEXT_SEAL_MAX_PER_RUN", "2000"))))
+    results = {}
+    for field in backfill_sealed_text.FIELDS:
+        if await backfill_sealed_text.remaining(field):
+            results[field] = await backfill_sealed_text.backfill_field(field, batch_size=batch, max_rows=cap)
+        else:
+            results[field] = {"field": field, "changed": 0}
+    return {"sealed": {f: r.get("changed", 0) for f, r in results.items()}}
 
 
 async def _audit_chain_verify_task() -> dict:
@@ -1098,6 +1137,16 @@ def build_default_scheduler() -> PeriodicScheduler:
         ),
         run=_client_note_seal_task,
         enabled=os.getenv("ORACLE_CLIENT_NOTE_SEAL_ENABLED", "1") == "1",
+        internal_only=True,
+    ))
+    sched.register(PeriodicTask(
+        name="sealed_text_seal",
+        interval_s=max(
+            300.0, float(os.getenv("ORACLE_SEALED_TEXT_SEAL_INTERVAL_MIN", "30")) * 60,
+        ),
+        run=_sealed_text_seal_task,
+        enabled=os.getenv("ORACLE_SEALED_TEXT_SEAL_ENABLED", "1") == "1",
+        internal_only=True,
     ))
     # Hourly by default; each run is bounded (MAX_ROWS links), so a pass over a
     # large chain spreads across runs instead of one long scan (L17-12).
@@ -1108,6 +1157,7 @@ def build_default_scheduler() -> PeriodicScheduler:
         ),
         run=_audit_chain_verify_task,
         enabled=os.getenv("ORACLE_AUDIT_CHAIN_VERIFY_ENABLED", "1") == "1",
+        internal_only=True,
     ))
     sched.register(PeriodicTask(
         name="chat_decision_sweep",
