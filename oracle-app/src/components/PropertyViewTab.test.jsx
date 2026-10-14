@@ -230,6 +230,78 @@ describe('a large capture upload survives a dropped file (Neoh Space §45)', () 
   });
 });
 
+describe('Property View never shows a failed source as "none" (A02)', () => {
+  it('says "Couldn\'t check" for sources that timed out or failed', async () => {
+    useTour.mockReturnValue({ tour: null });
+    crmGet.mockImplementation((url) => {
+      if (url.startsWith('/api/enrich-property')) {
+        return Promise.resolve({
+          pois: { radius_m: 1000, total_pois: null, error: 'upstream_timeout', lookup_status: 'timed_out' },
+          flood: null,
+          walkscore: null,
+          source_status: {
+            pois: { status: 'timed_out', reason: 'upstream_timeout', required: true },
+            flood: { status: 'unavailable', reason: 'upstream_error', required: true },
+            walkscore: { status: 'unavailable', reason: 'not_configured', required: false },
+          },
+          degraded: true,
+        });
+      }
+      return routeGet(url);
+    });
+    await lookUpAProperty();
+    const facts = document.querySelector('dl');
+    expect(facts.textContent).toMatch(/Flood zone\s*Couldn't check/);
+    expect(facts.textContent).toMatch(/Nearby POIs\s*Couldn't check/);
+    expect(facts.textContent).toMatch(/Walk Score\s*Not configured/);
+    expect(facts.textContent).not.toMatch(/POIs\s*0/);
+    expect(screen.getByText(/couldn.t be checked just now/i)).toBeTruthy();
+  });
+
+  it('shows verified answers as answers', async () => {
+    useTour.mockReturnValue({ tour: null });
+    crmGet.mockImplementation((url) => {
+      if (url.startsWith('/api/enrich-property')) {
+        return Promise.resolve({
+          pois: { radius_m: 1000, total_pois: 12, lookup_status: 'checked' },
+          flood: { zone: 'UNKNOWN', mapped: false, lookup_status: 'checked' },
+          walkscore: { walkscore: 71, lookup_status: 'checked' },
+          source_status: {
+            pois: { status: 'checked' }, flood: { status: 'checked' }, walkscore: { status: 'checked' },
+          },
+          degraded: false,
+        });
+      }
+      return routeGet(url);
+    });
+    await lookUpAProperty();
+    const facts = document.querySelector('dl');
+    expect(facts.textContent).toMatch(/Flood zone\s*Not mapped by FEMA/);
+    expect(facts.textContent).toMatch(/Walk Score\s*71/);
+    expect(facts.textContent).toMatch(/Nearby POIs\s*12/);
+    expect(facts.textContent).toMatch(/Est\. value\s*Not checked/);
+    expect(screen.queryByText(/couldn.t be checked just now/i)).toBeNull();
+  });
+
+  it('a geocoder outage is not "address not found"', async () => {
+    useTour.mockReturnValue({ tour: null });
+    crmGet.mockImplementation((url) => {
+      if (url.startsWith('/api/geocode')) {
+        const err = new Error('geocoder unavailable; the address was not checked');
+        err.status = 502;
+        return Promise.reject(err);
+      }
+      return routeGet(url);
+    });
+    render(<PropertyViewTab />);
+    fireEvent.change(screen.getByLabelText(/property address/i), { target: { value: '1 Main St, Dover, DE' } });
+    fireEvent.submit(screen.getByLabelText(/property address/i).closest('form'));
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toMatch(/was not checked/);
+    expect(alert.textContent).not.toMatch(/could not be located/);
+  });
+});
+
 describe('Property View upload control', () => {
   it('keeps the hidden file input out of the tab order; the visible button opens it', async () => {
     useTour.mockReturnValue({ tour: null });

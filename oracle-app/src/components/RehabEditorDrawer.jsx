@@ -4,6 +4,7 @@ import { crmGet, crmPost, crmPut, crmUpload } from '../state/useCrmApi';
 import { useFloorplanEditor } from '../lib/floorplan/useFloorplanEditor';
 import { EMPTY_FLOORPLAN } from '../lib/floorplan/protocol';
 import { useRehabCalculator } from '../hooks/useRehabCalculator';
+import { footprintLookupView } from '../lib/sourceStatus';
 import { FloorplanCanvas } from './FloorplanCanvas';
 import styles from './RehabEditorDrawer.module.css';
 
@@ -166,9 +167,14 @@ export function RehabEditorDrawer({ leadId, listingId, onClose, onSaved }) {
       setManifest(result.manifest ?? null);
       setScaffoldSha256(result.scaffold_sha256 ?? null);
       const estimated = result.estimated_fields?.length ?? 0;
+      // `found: false` alone cannot say whether the default plate replaced a
+      // verified miss or a lookup that never ran (A02): read `lookup` too.
+      const lookup = result.footprint?.lookup;
       const source = result.footprint?.found
         ? `footprint from ${result.footprint.source}`
-        : 'no footprint found — default plate used';
+        : (lookup === 'not_checked' || lookup === 'incomplete')
+          ? "footprint couldn't be checked (a source was unavailable) — default plate used"
+          : 'no footprint found — default plate used';
       setNotice({
         tone: 'ok',
         text: `Auto-filled ${source}; ${estimated} value${estimated === 1 ? '' : 's'} estimated — review before saving.`,
@@ -325,6 +331,7 @@ export function RehabEditorDrawer({ leadId, listingId, onClose, onSaved }) {
   const [footprintOpen, setFootprintOpen] = useState(false);
   const [footprintAddress, setFootprintAddress] = useState('');
   const [footprintCandidates, setFootprintCandidates] = useState(null);
+  const [footprintLookup, setFootprintLookup] = useState(null); // { lookup, source_status }
   const [footprintSearching, setFootprintSearching] = useState(false);
   const [footprintApplyingIndex, setFootprintApplyingIndex] = useState(null);
 
@@ -332,12 +339,14 @@ export function RehabEditorDrawer({ leadId, listingId, onClose, onSaved }) {
     if (!footprintAddress.trim()) return;
     setFootprintSearching(true);
     setFootprintCandidates(null);
+    setFootprintLookup(null);
     setNotice(null);
     try {
       const result = await crmPost(`/api/crm/floorplan/footprint-candidates?${subjectQs}`, {
         address: footprintAddress.trim(),
       });
       setFootprintCandidates(result.candidates ?? []);
+      setFootprintLookup({ lookup: result.lookup ?? null, source_status: result.source_status ?? null });
     } catch (err) {
       setNotice({ tone: 'error', text: err?.message || 'Footprint search failed.' });
     } finally {
@@ -376,6 +385,9 @@ export function RehabEditorDrawer({ leadId, listingId, onClose, onSaved }) {
   }, [subjectQs, load]);
 
   const deltaLabel = signed(rehab.previewDelta);
+  const footprintEmptyView = footprintCandidates && footprintCandidates.length === 0
+    ? footprintLookupView(footprintLookup?.lookup, footprintLookup?.source_status)
+    : null;
 
   return (
     <div className={styles.overlay} role="dialog" aria-modal="true" aria-label="Floor plan and rehab estimate">
@@ -556,10 +568,11 @@ export function RehabEditorDrawer({ leadId, listingId, onClose, onSaved }) {
               {footprintSearching ? 'Searching…' : 'Search'}
             </button>
 
-            {footprintCandidates && footprintCandidates.length === 0 ? (
-              <p className={styles.muted}>
-                No building outline found for this address — rural OSM coverage is
-                patchy and not every address matches a licensed record.
+            {/* An empty list is "no footprint" only when the sources were
+                read; an expired licence or an Overpass timeout says so (A02). */}
+            {footprintEmptyView ? (
+              <p className={footprintEmptyView.failed ? styles.error : styles.muted}>
+                {footprintEmptyView.text}
               </p>
             ) : null}
 

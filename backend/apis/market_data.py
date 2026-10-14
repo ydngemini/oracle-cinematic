@@ -20,7 +20,9 @@ import json
 import logging
 import os
 import urllib.request
-from typing import Optional
+from typing import Any, Optional
+
+import source_status as ss
 
 logger = logging.getLogger("oracle.apis.market_data")
 
@@ -45,10 +47,18 @@ async def get_fred_latest(series_id: str) -> Optional[dict]:
 
     Free tier: 120 req/min with API key.
     Without key: works but may be rate-limited aggressively.
+
+    None for a failure AND for "not configured"; `_fred_latest_checked` says
+    which (audit A02, ledger L11-03).
     """
+    result, _status = await _fred_latest_checked(series_id)
+    return result
+
+
+async def _fred_latest_checked(series_id: str) -> tuple[Optional[dict], dict]:
     if not _FRED_API_KEY:
         logger.debug("FRED_API_KEY not set — skipping %s", series_id)
-        return None
+        return None, ss.unavailable(ss.NOT_CONFIGURED)
 
     params = (
         f"?series_id={series_id}"
@@ -67,7 +77,12 @@ async def get_fred_latest(series_id: str) -> Optional[dict]:
             raw = await asyncio.to_thread(
                 lambda: urllib.request.urlopen(req, timeout=10).read().decode()
             )
-            return {"data": json.loads(raw)}
+            parsed = json.loads(raw)
+            if not isinstance(parsed, dict) or not parsed.get("observations"):
+                # Not cached: a series with no latest observation is a broken
+                # answer, not "there is no rate".
+                raise ss.SourceFailure(ss.UNAVAILABLE, ss.BAD_RESPONSE)
+            return {"data": parsed}
 
         payload = await cached_external(
             "fred",
@@ -78,31 +93,51 @@ async def get_fred_latest(series_id: str) -> Optional[dict]:
         data = payload.get("data") or {}
         obs = data.get("observations", [])
         if not obs:
-            return None
+            # Only a row cached before this fix can get here.
+            return None, ss.unavailable(ss.BAD_RESPONSE)
         return {
             "series": series_id,
             "date": obs[0]["date"],
             "value": float(obs[0]["value"]) if obs[0]["value"] != "." else None,
-        }
-    except Exception as e:
-        logger.warning("FRED API failed for %s: %s", series_id, e)
-        return None
+        }, ss.checked(matched=1)
+    except Exception as e:  # noqa: BLE001 — reported as a status, never as a null rate
+        # The type only: the request URL carries the API key.
+        status, reason = ss.classify(e)
+        logger.warning("FRED %s %s (%s): %s", series_id, status, reason, type(e).__name__)
+        return None, ss.entry(status, reason=reason)
+
+
+def _settled(outcome: Any) -> tuple[Optional[dict], dict]:
+    if isinstance(outcome, BaseException):
+        return None, ss.failure(outcome)
+    value, status = outcome
+    return (value if isinstance(value, dict) else None), status
+
+
+async def _mortgage_rates_checked() -> tuple[dict, dict[str, dict]]:
+    outcomes = await asyncio.gather(
+        _fred_latest_checked(SERIES["mortgage_30yr"]),
+        _fred_latest_checked(SERIES["mortgage_15yr"]),
+        return_exceptions=True,
+    )
+    (rate_30, status_30), (rate_15, status_15) = (_settled(o) for o in outcomes)
+    statuses = {"fred_mortgage_30yr": status_30, "fred_mortgage_15yr": status_15}
+    return {
+        "mortgage_30yr": rate_30.get("value") if rate_30 else None,
+        "mortgage_15yr": rate_15.get("value") if rate_15 else None,
+        "as_of": rate_30.get("date") if rate_30 else None,
+        "source": "fred",
+        # Added fields: a null rate next to a failed source means "not read",
+        # not "no rate" (audit A02, ledger L11-03).
+        "lookup_status": ss.worst(status_30, status_15)["status"],
+        "source_status": statuses,
+    }, statuses
 
 
 async def get_current_mortgage_rates() -> dict:
     """Get current 30yr and 15yr mortgage rates from FRED."""
-    rate_30, rate_15 = await asyncio.gather(
-        get_fred_latest(SERIES["mortgage_30yr"]),
-        get_fred_latest(SERIES["mortgage_15yr"]),
-        return_exceptions=True,
-    )
-
-    return {
-        "mortgage_30yr": rate_30.get("value") if isinstance(rate_30, dict) else None,
-        "mortgage_15yr": rate_15.get("value") if isinstance(rate_15, dict) else None,
-        "as_of": rate_30.get("date") if isinstance(rate_30, dict) else None,
-        "source": "fred",
-    }
+    rates, _statuses = await _mortgage_rates_checked()
+    return rates
 
 
 # ---------------------------------------------------------------------------
@@ -255,6 +290,11 @@ async def get_local_unemployment(
 
 async def get_treasury_rates() -> Optional[dict]:
     """Get current US Treasury rates from treasury.gov XML feed (no key needed)."""
+    result, _status = await _treasury_rates_checked()
+    return result
+
+
+async def _treasury_rates_checked() -> tuple[Optional[dict], dict]:
     url = "https://home.treasury.gov/resource-center/data-chart-center/interest-rates/daily-treasury-rates.csv/all/2026?type=daily_treasury_yield_curve&field_tdr_date_value=2026&page&_format=json"
 
     try:
@@ -265,7 +305,13 @@ async def get_treasury_rates() -> Optional[dict]:
             raw = await asyncio.to_thread(
                 lambda: urllib.request.urlopen(req, timeout=10).read().decode()
             )
-            return {"data": json.loads(raw)}
+            parsed = json.loads(raw)
+            if not isinstance(parsed, list) or not parsed:
+                # The yield curve publishes every business day: an empty or
+                # non-list answer is a broken feed, and caching it would serve
+                # "no rates" for a day.
+                raise ss.SourceFailure(ss.UNAVAILABLE, ss.BAD_RESPONSE)
+            return {"data": parsed}
 
         payload = await cached_external(
             "treasury",
@@ -274,11 +320,9 @@ async def get_treasury_rates() -> Optional[dict]:
             ttl=24 * 3_600,
         )
         data = payload.get("data") or []
-        if not data:
-            return None
-        latest = data[-1] if isinstance(data, list) else None
-        if not latest:
-            return None
+        latest = data[-1] if isinstance(data, list) and data else None
+        if not latest or not isinstance(latest, dict):
+            return None, ss.unavailable(ss.BAD_RESPONSE)
         return {
             "date": latest.get("field_tdr_date_value", ""),
             "1mo": _safe_float(latest.get("field_bc_1month")),
@@ -287,23 +331,41 @@ async def get_treasury_rates() -> Optional[dict]:
             "10yr": _safe_float(latest.get("field_bc_10year")),
             "30yr": _safe_float(latest.get("field_bc_30year")),
             "source": "treasury.gov",
-        }
-    except Exception as e:
-        logger.warning("Treasury rates fetch failed: %s", e)
-        return None
+            "lookup_status": ss.CHECKED,
+        }, ss.checked(matched=1)
+    except Exception as e:  # noqa: BLE001 — reported as a status, never as null rates
+        status, reason = ss.classify(e)
+        logger.warning("Treasury rates %s (%s): %s", status, reason, type(e).__name__)
+        return None, ss.entry(status, reason=reason)
 
 
 async def get_market_snapshot() -> dict:
-    """Aggregate market data from all free sources."""
+    """Aggregate market data from all free sources.
+
+    `mortgage_rates` and `treasury_rates` keep their shapes. `source_status`
+    says per source whether a null was read or never fetched, and `degraded`
+    is true when any of them was not checked (audit A02, ledger L11-03).
+    """
     mortgage, treasury = await asyncio.gather(
-        get_current_mortgage_rates(),
-        get_treasury_rates(),
+        _mortgage_rates_checked(),
+        _treasury_rates_checked(),
         return_exceptions=True,
     )
+    if isinstance(mortgage, BaseException):
+        fred_failure = ss.failure(mortgage)
+        mortgage_rates = None
+        statuses = {"fred_mortgage_30yr": fred_failure, "fred_mortgage_15yr": fred_failure}
+    else:
+        mortgage_rates, statuses = mortgage
+        statuses = dict(statuses)
+    treasury_rates, treasury_status = _settled(treasury)
+    statuses["treasury"] = treasury_status
 
     return {
-        "mortgage_rates": mortgage if isinstance(mortgage, dict) else None,
-        "treasury_rates": treasury if isinstance(treasury, dict) else None,
+        "mortgage_rates": mortgage_rates,
+        "treasury_rates": treasury_rates,
+        "source_status": statuses,
+        "degraded": ss.degraded(statuses),
     }
 
 

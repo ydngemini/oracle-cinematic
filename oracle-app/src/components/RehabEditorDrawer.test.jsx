@@ -165,6 +165,25 @@ describe('RehabEditorDrawer dimension provenance', () => {
     await waitFor(() => expect(screen.queryByText('Dimension provenance')).toBeTruthy());
     expect(screen.queryByText('Storey height')).toBeTruthy();
   });
+
+  it('auto-fill does not call an unchecked footprint "not found" (A02)', async () => {
+    useFloorplanEditor.mockReturnValue(editorState());
+    crmGet.mockResolvedValue({ document: EMPTY_FLOORPLAN, dimension_manifest: null, scaffold_sha256: null });
+    crmPost.mockResolvedValue({
+      document: EMPTY_FLOORPLAN,
+      manifest: MANIFEST,
+      scaffold_sha256: 'd'.repeat(64),
+      estimated_fields: ['storey_height_m'],
+      footprint: { found: false, lookup: 'not_checked', degraded: true },
+    });
+
+    render(<RehabEditorDrawer leadId="lead-1" onClose={() => {}} />);
+    await waitFor(() => expect(screen.getByText('Auto-fill').disabled).toBe(false));
+    screen.getByText('Auto-fill').click();
+
+    await waitFor(() => expect(screen.queryByText(/footprint couldn't be checked/)).toBeTruthy());
+    expect(screen.queryByText(/no footprint found/)).toBeNull();
+  });
 });
 
 describe('RehabEditorDrawer revision history', () => {
@@ -413,6 +432,30 @@ describe('RehabEditorDrawer footprint picker', () => {
     screen.getByText('Search').click();
 
     await waitFor(() => expect(screen.queryByText(/No building outline found/)).toBeTruthy());
+  });
+
+  it('an empty result from sources that were never read says "couldn\'t check" (A02)', async () => {
+    await openFootprintPanel();
+    crmPost.mockResolvedValue({
+      candidates: [],
+      count: 0,
+      lookup: 'not_checked',
+      source_status: {
+        regrid: { status: 'unavailable', reason: 'credential_expired' },
+        openstreetmap: { status: 'not_applicable', reason: 'no_coordinates' },
+      },
+      degraded: true,
+    });
+
+    const addressInput = screen.getByPlaceholderText('123 Main St, Dover, DE');
+    Object.defineProperty(addressInput, 'value', { value: '123 Main St', configurable: true });
+    addressInput.dispatchEvent(new Event('input', { bubbles: true }));
+    await waitFor(() => expect(screen.getByText('Search').disabled).toBe(false));
+    screen.getByText('Search').click();
+
+    await waitFor(() => expect(screen.queryByText(/Couldn't check for a building outline/)).toBeTruthy());
+    expect(screen.queryByText(/credential expired/)).toBeTruthy();
+    expect(screen.queryByText(/No building outline found/)).toBeNull();
   });
 
   it('choosing a candidate extracts the exterior shell and clears any stale manifest', async () => {

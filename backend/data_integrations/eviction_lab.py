@@ -39,6 +39,18 @@ import urllib.error
 import urllib.request
 from typing import Optional
 
+from source_status import (
+    BAD_RESPONSE,
+    CHECKED,
+    UNAVAILABLE,
+    UNKNOWN_AREA,
+    SourceFailure,
+    checked,
+    classify,
+    entry,
+    not_applicable,
+)
+
 from .base import DataSource, RateLimiter, RetryConfig, RetryableError, _parse_retry_after
 from .cache import IntegrationCache
 
@@ -149,9 +161,15 @@ class EvictionLabSource(DataSource):
         url = self._url(geography, postal)
         try:
             rows = await self._get_csv_rows(url)
-        except Exception as e:  # noqa: BLE001 — graceful degradation
-            self._log.warning("Eviction Lab fetch failed (%s): %s", url, e)
-            return None
+        except Exception as e:  # noqa: BLE001 — reported as a status, never a miss
+            # Raised, not returned as None: DataSource.get caches a None as an
+            # empty slice, which replayed an S3 outage as "no Eviction Lab data
+            # for this area" (audit A02, L11-03).
+            status, reason = classify(e)
+            self._log.warning(
+                "Eviction Lab fetch %s (%s, %s): %s", status, reason, geography, type(e).__name__,
+            )
+            raise SourceFailure(status, reason) from e
         return {"rows": rows, "geography": geography, "postal": postal}
 
     def normalize(self, raw: dict) -> dict:
@@ -202,30 +220,50 @@ class EvictionLabSource(DataSource):
     async def by_fips(self, fips: str) -> Optional[dict]:
         """Eviction-rate overlay for a state/county/tract/block-group FIPS.
 
-        Returns a matched-envelope dict (or None if the FIPS maps to no known
-        state file / the upstream is unavailable). NEVER a parcel lead.
+        Returns a matched-envelope dict, or None if the FIPS maps to no known
+        state file or the upstream is unavailable. NEVER a parcel lead.
+        Callers that must tell those two apart use by_fips_checked.
+        """
+        data, _status = await self.by_fips_checked(fips)
+        return data
+
+    async def by_fips_checked(self, fips: str) -> tuple[Optional[dict], dict]:
+        """(envelope or None, source status).
+
+        `matched: false` inside an envelope is a verified miss (the slice was
+        read and holds no row for this GEOID). None + `not_applicable` means
+        the FIPS names no state Eviction Lab publishes; None + `timed_out` /
+        `unavailable` means the slice could not be read and nothing was checked.
         """
         digits = re.sub(r"\D", "", fips or "")
         geography = _GEOG_BY_LEN.get(len(digits))
         if geography is None:
-            return None
+            return None, not_applicable(UNKNOWN_AREA)
 
         if geography == "states":
             postal = _FIPS_TO_POSTAL.get(digits)
             if postal is None:
-                return None
+                return None, not_applicable(UNKNOWN_AREA)
             cache_key = "eviction:states"
         else:
             postal = _FIPS_TO_POSTAL.get(digits[:2])
             if postal is None:
-                return None
+                return None, not_applicable(UNKNOWN_AREA)
             cache_key = f"eviction:{geography}:{postal}"
 
-        slice_ = await self.get(cache_key, geography=geography, postal=postal)
+        try:
+            slice_ = await self.get(cache_key, geography=geography, postal=postal)
+        except Exception as exc:  # noqa: BLE001 — a failure is a status, not a miss
+            status, reason = classify(exc)
+            if not isinstance(exc, SourceFailure):
+                self._log.warning("Eviction Lab %s (%s): %s", status, reason, type(exc).__name__)
+            return None, entry(status, reason=reason)
         if slice_ is None:
-            return None
+            # Only an empty-cache marker written before this fix can get here.
+            return None, entry(UNAVAILABLE, reason=BAD_RESPONSE)
 
         rec = slice_.get("by_geoid", {}).get(digits)
+        status = checked(matched=1 if rec is not None else 0)
         return {
             "matched": rec is not None,
             "fips": digits,
@@ -239,4 +277,8 @@ class EvictionLabSource(DataSource):
             "license": "ODC-BY 1.0",
             "attribution": "Eviction Lab at Princeton University, evictionlab.org",
             "source": "eviction_lab_legacy",
-        }
+            "lookup_status": CHECKED,
+            "lookup_reason": None,
+            "source_status": {"eviction_lab": status},
+            "degraded": False,
+        }, status

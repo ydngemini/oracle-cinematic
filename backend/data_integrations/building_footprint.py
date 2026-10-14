@@ -19,6 +19,12 @@ an agent deciding whether to trust a footprint needs to know where it came from.
 Deliberately NOT here: scraping listing portals. Their photos and geometry are
 someone else's copyright, their terms forbid it, and the pipeline downstream is
 built to refuse rather than guess — which only works if its inputs are clean.
+
+An empty list is only "no footprint" when the sources were actually read. The
+`_checked` functions return a CONTRACT C6 status per source, and
+`footprint_lookup` turns them into found / none_found / incomplete /
+not_checked, so an expired Regrid token or an Overpass timeout is never shown
+as "this address has no building" (audit A02, ledger L11-03).
 """
 
 from __future__ import annotations
@@ -30,9 +36,17 @@ import os
 import urllib.error
 import urllib.parse
 from dataclasses import asdict, dataclass, field
-from typing import Any, Optional
+from typing import Any, Mapping, Optional
+
+import source_status as ss
 
 logger = logging.getLogger("oracle.building_footprint")
+
+# Overall answer of a footprint lookup, derived from the per-source statuses.
+LOOKUP_FOUND = "found"            # at least one candidate
+LOOKUP_NONE_FOUND = "none_found"  # every source asked answered, none had one
+LOOKUP_INCOMPLETE = "incomplete"  # none found, but a required source failed
+LOOKUP_NOT_CHECKED = "not_checked"  # no source could be read at all
 
 OVERPASS_URL = os.getenv("ORACLE_OVERPASS_URL", "https://overpass-api.de/api/interpreter")
 # Buildings sit within a few tens of metres of their geocoded point. Wider than
@@ -173,17 +187,45 @@ def _levels(tags: dict[str, Any]) -> Optional[int]:
     return value if 1 <= value <= 100 else None
 
 
+def _overpass_remark_failure(payload: Any) -> Optional[tuple[str, str]]:
+    """Overpass reports a failed query as HTTP 200 + `remark` with no (or
+    partial) elements — an outage that otherwise reads as "no buildings"."""
+    remark = str(payload.get("remark") or "").lower() if isinstance(payload, dict) else ""
+    if "timed out" in remark or "timeout" in remark:
+        return ss.TIMED_OUT, ss.UPSTREAM_TIMEOUT
+    if "error" in remark or "out of memory" in remark:
+        return ss.UNAVAILABLE, ss.UPSTREAM_ERROR
+    return None
+
+
 async def osm_footprints(
     lat: float, lon: float, radius_m: int = DEFAULT_RADIUS_M
 ) -> list[FootprintCandidate]:
-    """Building outlines around a point, from OpenStreetMap."""
+    """Building outlines around a point, from OpenStreetMap.
+
+    [] for a miss AND a failure; `osm_footprints_checked` tells them apart."""
+    candidates, _status = await osm_footprints_checked(lat, lon, radius_m)
+    return candidates
+
+
+async def osm_footprints_checked(
+    lat: float, lon: float, radius_m: int = DEFAULT_RADIUS_M
+) -> tuple[list[FootprintCandidate], dict]:
     radius_m = max(5, min(int(radius_m), MAX_RADIUS_M))
     query = _overpass_query(lat, lon, radius_m).encode("utf-8")
     try:
         payload = await _fetch_json(OVERPASS_URL, data=query)
     except Exception as exc:  # noqa: BLE001 — one source failing is not fatal
-        logger.warning("Overpass footprint lookup failed: %s", exc)
-        return []
+        status, reason = ss.classify(exc)
+        logger.warning("Overpass footprint lookup %s (%s): %s", status, reason, type(exc).__name__)
+        return [], ss.entry(status, reason=reason)
+    if not isinstance(payload, dict):
+        return [], ss.unavailable(ss.BAD_RESPONSE)
+    remark_failure = _overpass_remark_failure(payload)
+    if remark_failure is not None:
+        status, reason = remark_failure
+        logger.warning("Overpass footprint query %s (%s)", status, reason)
+        return [], ss.entry(status, reason=reason)
 
     candidates: list[FootprintCandidate] = []
     for element in payload.get("elements", []):
@@ -215,7 +257,8 @@ async def osm_footprints(
         )
 
     candidates.sort(key=lambda c: (c.distance_m if c.distance_m is not None else 1e9))
-    return candidates[:MAX_CANDIDATES]
+    candidates = candidates[:MAX_CANDIDATES]
+    return candidates, ss.checked(matched=len(candidates))
 
 
 # --- Regrid -------------------------------------------------------------------
@@ -224,10 +267,19 @@ async def regrid_footprints(address: str) -> list[FootprintCandidate]:
     """Matched building outlines from the licensed Regrid dataset.
 
     Returns [] rather than raising when unconfigured, so the open source can
-    still answer."""
+    still answer. [] also covers a failure; `regrid_footprints_checked` says
+    which."""
+    candidates, _status = await regrid_footprints_checked(address)
+    return candidates
+
+
+async def regrid_footprints_checked(address: str) -> tuple[list[FootprintCandidate], dict]:
     token = os.getenv("REGRID_API_TOKEN", "").strip()
-    if not token or not address.strip():
-        return []
+    if not token:
+        # Optional licensed source: its absence does not degrade an OSM answer.
+        return [], ss.not_applicable(ss.NOT_CONFIGURED, required=False)
+    if not address.strip():
+        return [], ss.not_applicable(ss.NO_ADDRESS, required=False)
 
     # An expired token is worth one loud line. Returning [] silently is right for
     # "unconfigured" — the open source still answers — but a credential that
@@ -243,7 +295,7 @@ async def regrid_footprints(address: str) -> list[FootprintCandidate]:
             "falling back to OpenStreetMap.",
             probe.token_expiry_note(),
         )
-        return []
+        return [], ss.unavailable(ss.CREDENTIAL_EXPIRED)
 
     params = {
         "query": address,
@@ -264,12 +316,15 @@ async def regrid_footprints(address: str) -> list[FootprintCandidate]:
                 "rotate REGRID_API_TOKEN; falling back to OpenStreetMap.",
                 exc.code,
             )
-        else:
-            logger.warning("Regrid footprint lookup failed (HTTP %s)", exc.code)
-        return []
+            return [], ss.unavailable(ss.CREDENTIAL_REJECTED)
+        logger.warning("Regrid footprint lookup failed (HTTP %s)", exc.code)
+        return [], ss.failure(exc)
     except Exception as exc:  # noqa: BLE001
-        logger.warning("Regrid footprint lookup failed: %s", exc)
-        return []
+        status, reason = ss.classify(exc)
+        logger.warning("Regrid footprint lookup %s (%s): %s", status, reason, type(exc).__name__)
+        return [], ss.entry(status, reason=reason)
+    if not isinstance(payload, dict):
+        return [], ss.unavailable(ss.BAD_RESPONSE)
 
     candidates: list[FootprintCandidate] = []
     for feature in (payload.get("parcels") or {}).get("features", []) or []:
@@ -291,7 +346,8 @@ async def regrid_footprints(address: str) -> list[FootprintCandidate]:
                     tags={},
                 )
             )
-    return candidates[:MAX_CANDIDATES]
+    candidates = candidates[:MAX_CANDIDATES]
+    return candidates, ss.checked(matched=len(candidates))
 
 
 # --- resolver -----------------------------------------------------------------
@@ -307,15 +363,53 @@ async def resolve_footprints(
 
     Licensed data leads because it is address-matched rather than
     proximity-matched; OSM follows and fills the gaps. Nothing is invented: an
-    empty list means say so, not fall back to a guess."""
-    candidates: list[FootprintCandidate] = []
+    empty list means say so, not fall back to a guess — and anything shown to
+    a person uses `resolve_footprints_checked`, because [] here also covers
+    "no source could be read"."""
+    candidates, _statuses = await resolve_footprints_checked(
+        address=address, lat=lat, lon=lon, radius_m=radius_m,
+    )
+    return candidates
 
-    if address:
-        candidates.extend(await regrid_footprints(address))
+
+async def resolve_footprints_checked(
+    *,
+    address: str = "",
+    lat: Optional[float] = None,
+    lon: Optional[float] = None,
+    radius_m: int = DEFAULT_RADIUS_M,
+) -> tuple[list[FootprintCandidate], dict[str, dict]]:
+    """(candidates, {"regrid": status, "openstreetmap": status})."""
+    candidates: list[FootprintCandidate] = []
+    statuses: dict[str, dict] = {}
+
+    found, statuses["regrid"] = await regrid_footprints_checked(address or "")
+    candidates.extend(found)
 
     if lat is not None and lon is not None:
-        candidates.extend(await osm_footprints(lat, lon, radius_m))
+        found, statuses["openstreetmap"] = await osm_footprints_checked(lat, lon, radius_m)
+        candidates.extend(found)
+    else:
+        # OSM matches by proximity; without coordinates it cannot be asked.
+        statuses["openstreetmap"] = ss.not_applicable(ss.NO_COORDINATES)
 
     if not candidates:
-        logger.info("No building footprint found for address=%r lat=%s lon=%s", address, lat, lon)
-    return candidates[:MAX_CANDIDATES]
+        # Counts and statuses only: never the address (CONTRACT C5.4).
+        logger.info(
+            "No building footprint: lookup=%s regrid=%s osm=%s",
+            footprint_lookup(candidates, statuses),
+            statuses["regrid"]["status"], statuses["openstreetmap"]["status"],
+        )
+    return candidates[:MAX_CANDIDATES], statuses
+
+
+def footprint_lookup(candidates: list, statuses: Mapping[str, Mapping[str, Any]]) -> str:
+    """found | none_found | incomplete | not_checked (see the LOOKUP_* constants)."""
+    if candidates:
+        return LOOKUP_FOUND
+    values = list((statuses or {}).values())
+    if not any(v.get("status") == ss.CHECKED for v in values):
+        return LOOKUP_NOT_CHECKED
+    if ss.degraded(statuses):
+        return LOOKUP_INCOMPLETE
+    return LOOKUP_NONE_FOUND

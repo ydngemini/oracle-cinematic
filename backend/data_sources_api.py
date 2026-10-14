@@ -35,8 +35,10 @@ from datetime import date
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
+import source_status as ss
 from tenancy import TenantContext, require_context
 
 log = logging.getLogger("oracle.data_sources_api")
@@ -187,12 +189,30 @@ async def geocode(
     address: str = Query(..., min_length=3, max_length=400),
     ctx: TenantContext = Depends(require_context),
 ) -> dict:
-    """Single-address geocode → lat/lng + state/county/tract/block (Census)."""
-    result = await (await _get_geocoder()).geocode(address)
+    """Single-address geocode → lat/lng + state/county/tract/block (Census).
+
+    `matched: false` with `lookup_status: checked` is a verified miss. When
+    Census timed out or failed the address was NOT checked: the same envelope
+    comes back with `lookup_status` timed_out / unavailable, `degraded: true`
+    and HTTP 502 (like the FEMA and EPA routes), never as a 200 "no match"
+    (audit A02, ledger L11-03).
+    """
+    result, src = await (await _get_geocoder()).geocode_checked(address)
+    statuses = {"census_geocoder": src}
     if result is None:
-        # No match (or upstream hiccup) — return a clean unmatched envelope.
-        return {"matched": False, "input_address": address, "source": "census_geocoder"}
-    return result
+        body = {
+            "matched": False,
+            "input_address": address,
+            "source": "census_geocoder",
+            "lookup_status": src["status"],
+            "lookup_reason": src["reason"],
+            "source_status": statuses,
+            "degraded": ss.degraded(statuses),
+        }
+        if ss.is_failed(src):
+            return JSONResponse(body, status_code=status.HTTP_502_BAD_GATEWAY)
+        return body
+    return {**result, "source_status": statuses, "degraded": False}
 
 
 @router.post("/geocode/batch")
@@ -206,7 +226,28 @@ async def geocode_batch(
     except ValueError as e:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(e))
     matched = sum(1 for r in results if r.get("matched"))
-    return {"requested": len(body.addresses), "matched": matched, "results": results}
+    # Rows Census never answered for are counted apart from verified misses:
+    # `requested - matched` is NOT the number of addresses Census could not find.
+    failed_rows = [r for r in results if r.get("lookup_status") in ss.FAILED]
+    unchecked = len(failed_rows)
+    src = ss.worst(*(
+        ss.entry(r["lookup_status"], reason=r.get("lookup_reason") or ss.UPSTREAM_ERROR)
+        for r in failed_rows
+    )) if failed_rows else ss.checked(matched=matched)
+    statuses = {"census_geocoder": src}
+    payload = {
+        "requested": len(body.addresses),
+        "matched": matched,
+        "unmatched_checked": len(results) - matched - unchecked,
+        "unchecked": unchecked,
+        "degraded": ss.degraded(statuses),
+        "source_status": statuses,
+        "results": results,
+    }
+    if results and unchecked == len(results):
+        # Nothing was checked at all: an outage, not a batch of misses.
+        return JSONResponse(payload, status_code=status.HTTP_502_BAD_GATEWAY)
+    return payload
 
 
 @router.get("/fema/disasters")
@@ -259,16 +300,31 @@ async def eviction(
             status.HTTP_422_UNPROCESSABLE_ENTITY,
             "fips must be 2 (state), 5 (county), 11 (tract) or 12 (block-group) digits",
         )
-    data = await (await _get_eviction()).by_fips(digits)
+    data, src = await (await _get_eviction()).by_fips_checked(digits)
     if data is None:
-        return {
+        statuses = {"eviction_lab": src}
+        failed = ss.is_failed(src)
+        body = {
             "matched": False,
             "fips": digits,
             "overlay": True,
             "is_parcel_lead": False,
-            "note": "no Eviction Lab slice for this FIPS (unknown state or upstream unavailable)",
+            "note": (
+                "Eviction Lab could not be reached; this FIPS was NOT checked "
+                "(not a 'no data' result)."
+                if failed else
+                "no Eviction Lab slice for this FIPS (state not published)"
+            ),
             "source": "eviction_lab_legacy",
+            "lookup_status": src["status"],
+            "lookup_reason": src["reason"],
+            "source_status": statuses,
+            "degraded": ss.degraded(statuses),
         }
+        if failed:
+            # A miss and an outage used to be the same 200 (audit A02, L11-03).
+            return JSONResponse(body, status_code=status.HTTP_502_BAD_GATEWAY)
+        return body
     return data
 
 

@@ -30,6 +30,19 @@ import urllib.request
 import uuid
 from typing import Optional
 
+from source_status import (
+    BAD_RESPONSE,
+    CHECKED,
+    FAILED,
+    NO_ADDRESS,
+    UNAVAILABLE,
+    SourceFailure,
+    checked,
+    classify,
+    entry,
+    not_applicable,
+)
+
 from .base import DataSource, RateLimiter, RetryConfig
 from .cache import IntegrationCache
 
@@ -167,7 +180,10 @@ def _split_oneline(address: str) -> tuple[str, str, str, str]:
     return ", ".join(street_parts), chunks[-1], state, postal
 
 
-def _empty(address: str) -> dict:
+def _empty(address: str, *, lookup_status: str = CHECKED, reason: str | None = None) -> dict:
+    """An unmatched row. `lookup_status` says whether that is a verified miss
+    (`checked`) or a row Census never answered for (`timed_out` /
+    `unavailable`) — the two used to be the same dict (audit A02, L11-03)."""
     return {
         "matched": False,
         "lat": None,
@@ -181,6 +197,8 @@ def _empty(address: str) -> dict:
         "block": "",
         "input_address": address,
         "source": "census_geocoder",
+        "lookup_status": lookup_status,
+        "lookup_reason": reason,
     }
 
 
@@ -210,14 +228,19 @@ class CensusGeocoder(DataSource):
         try:
             data = await self._get_json(f"{_SINGLE_URL}?{params}", timeout=15)
             matches = (data.get("result", {}) or {}).get("addressMatches", [])
-            if not matches:
-                return None
-            m = dict(matches[0])
-            m["_input"] = address
-            return m
-        except Exception as e:  # noqa: BLE001 — graceful degradation, never crash
-            self._log.warning("Census geocode failed for '%s': %s", address, e)
+        except Exception as e:  # noqa: BLE001 — reported as a status, never a miss
+            # Raised, not returned as None: DataSource.get caches a None as a
+            # verified "no match", so swallowing the outage here replayed it to
+            # every caller as "address not found". The address stays out of
+            # the log (CONTRACT C5.4).
+            status, reason = classify(e)
+            self._log.warning("Census geocode %s (%s): %s", status, reason, type(e).__name__)
+            raise SourceFailure(status, reason) from e
+        if not matches:
             return None
+        m = dict(matches[0])
+        m["_input"] = address
+        return m
 
     def normalize(self, raw: dict) -> dict:
         coords = raw.get("coordinates", {}) or {}
@@ -239,14 +262,32 @@ class CensusGeocoder(DataSource):
             "block": b0.get("BLOCK") or "",
             "input_address": raw.get("_input", ""),
             "source": "census_geocoder",
+            "lookup_status": CHECKED,
+            "lookup_reason": None,
         }
 
-    async def geocode(self, address: str) -> Optional[dict]:
+    async def geocode_checked(self, address: str) -> tuple[Optional[dict], dict]:
+        """(result or None, source status). None + `checked` is a verified miss;
+        None + `timed_out` / `unavailable` means Census was not asked
+        successfully and the address was NOT checked."""
         addr = (address or "").strip()
         if not addr:
-            return None
+            return None, not_applicable(NO_ADDRESS)
         key = f"geocode:census:{urllib.parse.quote(addr.upper())}"
-        return await self.get(key, address=addr)
+        try:
+            result = await self.get(key, address=addr)
+        except Exception as exc:  # noqa: BLE001 — a failure is a status, not a miss
+            status, reason = classify(exc)
+            if not isinstance(exc, SourceFailure):
+                self._log.warning("Census geocode %s (%s): %s", status, reason, type(exc).__name__)
+            return None, entry(status, reason=reason)
+        return result, checked(matched=1 if result else 0)
+
+    async def geocode(self, address: str) -> Optional[dict]:
+        """Back-compatible form: None for a miss AND for a failure. Callers that
+        must tell them apart (anything shown to a person) use geocode_checked."""
+        result, _status = await self.geocode_checked(address)
+        return result
 
     # ── batch (POST multipart, canonical IntegrationCache request) ──────────
     async def geocode_batch(self, addresses: list[str]) -> list[dict]:
@@ -254,7 +295,11 @@ class CensusGeocoder(DataSource):
 
         Returns one result dict per input address (input order preserved),
         each shaped like normalize()'s output. Never raises — on transport
-        failure every row degrades to an unmatched result.
+        failure a row degrades to an unmatched result whose `lookup_status` is
+        `timed_out` / `unavailable`, so it is never counted as a verified miss.
+        A row stays unverified if ANY pass it was sent to failed: the retry
+        shapes recover a real share of the residue, so skipping one is not a
+        full check.
         """
         rows = [(str(a or "").strip()) for a in (addresses or [])]
         if not rows:
@@ -304,6 +349,9 @@ class CensusGeocoder(DataSource):
             for slot, rec in zip(retry, recovered):
                 if rec.get("matched"):
                     results[slot] = rec
+                elif (rec.get("lookup_status") in FAILED
+                      and results[slot].get("lookup_status") not in FAILED):
+                    results[slot] = rec
         return results
 
     async def _batch_pass(
@@ -352,8 +400,12 @@ class CensusGeocoder(DataSource):
             )
             text = str(payload.get("csv") or "")
         except Exception as e:  # noqa: BLE001
-            self._log.warning("Census batch geocode failed (%d rows): %s", len(rows), e)
-            return [_empty(a) for a in rows]
+            status, reason = classify(e)
+            self._log.warning(
+                "Census batch geocode %s (%s, %d rows, shape=%s): %s",
+                status, reason, len(rows), shape, type(e).__name__,
+            )
+            return [_empty(a, lookup_status=status, reason=reason) for a in rows]
 
         return self._parse_batch_csv(text, rows)
 
@@ -447,6 +499,12 @@ class CensusGeocoder(DataSource):
                 "block": cols[11],
                 "input_address": input_addr,
                 "source": "census_geocoder",
+                "lookup_status": CHECKED,
+                "lookup_reason": None,
             }
 
-        return [by_id.get(i, _empty(inputs[i])) for i in range(len(inputs))]
+        # A row Census left out of its answer was not checked; it is not a miss.
+        return [
+            by_id.get(i) or _empty(inputs[i], lookup_status=UNAVAILABLE, reason=BAD_RESPONSE)
+            for i in range(len(inputs))
+        ]
