@@ -30,6 +30,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Response
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 import pan_redaction
+import record_access
 from auth import ALGORITHM, SECRET_KEY
 from db.connection import get_pool, tenant_tx
 from approval_service import decide_approval
@@ -130,10 +131,10 @@ async def create_portal_link(
     )
 
     async with tenant_tx(ctx) as conn:
-        # RLS scopes this lookup — a foreign lead_id reads as nonexistent.
-        lead = await conn.fetchrow("SELECT id FROM leads WHERE id = $1", body.lead_id)
-        if lead is None:
-            raise HTTPException(status_code=404, detail="Lead not found.")
+        # RLS scopes this lookup — a foreign lead_id reads as nonexistent; a
+        # client's house shared view-only answers 403: a portal link is a
+        # write on the house (0151).
+        await record_access.require_lead_edit(conn, body.lead_id)
 
         row = await conn.fetchrow(
             """
@@ -217,6 +218,9 @@ async def revoke_portal_link(
 ):
     """Kill a link immediately. RLS confines the UPDATE to this tenant."""
     async with tenant_tx(ctx) as conn:
+        # 404 invisible / 403 a client's house shared view-only (0151).
+        await record_access.require_linked_edit(conn, "client_portals", str(portal_id),
+                                                "Portal link not found.")
         row = await conn.fetchrow(
             """
             UPDATE client_portals
@@ -562,6 +566,14 @@ async def decide_tour_link(
         row = await conn.fetchrow(
             "SELECT * FROM action_approvals WHERE id=$1::uuid", str(approval_id)
         )
+        if row is not None and row["action_type"] == "portal.tour_link":
+            # The link is a write on the house: refuse before the decision is
+            # recorded, not after (0151, C3.4).
+            draft = row["draft_payload"]
+            if isinstance(draft, str):
+                draft = json.loads(draft)
+            if body.decision == "approved" and (draft or {}).get("lead_id"):
+                await record_access.require_lead_edit(conn, UUID(str(draft["lead_id"])))
     if row is None or row["action_type"] != "portal.tour_link":
         raise HTTPException(status_code=404, detail="Tour link request not found.")
 

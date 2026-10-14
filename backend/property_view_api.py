@@ -39,7 +39,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 import media_storage
 from db.connection import tenant_tx
-from record_access import require_lead_edit
+from record_access import require_lead_edit, require_linked_edit
 from tenancy import Role, TenantContext, require_context
 
 log = logging.getLogger("oracle.property_view")
@@ -971,6 +971,9 @@ async def revoke_upload_link(
     ctx: TenantContext = Depends(require_context),
 ):
     async with tenant_tx(ctx) as conn:
+        # 404 invisible / 403 a client's house shared view-only (0151).
+        await require_linked_edit(conn, "property_view_upload_links", str(link_id),
+                                  "Link not found or already revoked.")
         updated = await conn.fetchval(
             """
             UPDATE property_view_upload_links

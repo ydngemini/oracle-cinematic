@@ -119,7 +119,9 @@ async def sweep_once() -> None:
         async with tenant_tx(SYSTEM_CTX) as conn:
             expired = await conn.fetch("SELECT id, tenant_id, parcel_id, payload FROM expire_stale_contracts()")
             # A client's house is visible only to those who can see the client
-            # (0143); the brokerage-wide frame names none.
+            # (0143): its frame goes only to them (0151), and still names no
+            # property — a pool client's reaches the whole brokerage, and
+            # brokerage-wide alerts never name a client's property (policy s2).
             private = {r["id"] for r in await conn.fetch(
                 "SELECT id FROM leads WHERE id = ANY($1::uuid[]) AND seller_client_id IS NOT NULL",
                 [row["id"] for row in expired],
@@ -127,12 +129,12 @@ async def sweep_once() -> None:
         for row in expired:
             prop = _loads(row["payload"])
             hidden = row["id"] in private
-            await ws_hub.broadcast(str(row["tenant_id"]), {
+            await ws_hub.broadcast_record(str(row["tenant_id"]), {
                 "type": "CONTRACT_EXPIRED",
                 "lead_id": str(row["id"]),
                 "parcel_id": None if hidden else row["parcel_id"],
                 "address": None if hidden else prop.get("address", ""),
-            })
+            }, lead_id=str(row["id"]))
         if expired:
             logger.warning("Disposition sweep: %d contract(s) expired.", len(expired))
     except Exception:  # noqa: BLE001
@@ -197,17 +199,18 @@ async def sweep_once() -> None:
 
         # Alert fires either way — a bleeding clock the agent doesn't know
         # about is the exact failure mode this worker exists to prevent.
-        # Every session in the brokerage gets this frame; a client's house is
-        # visible only to those who can see the client (0143), so name none.
+        # A client's house is visible only to those who can see the client
+        # (0143): its frame goes only to them (0151) and names no property (a
+        # pool client's still reaches the whole brokerage).
         private = row["seller_client_id"] is not None
-        await ws_hub.broadcast(lead["tenant_id"], {
+        await ws_hub.broadcast_record(lead["tenant_id"], {
             "type": "CONTRACT_DANGER",
             "lead_id": lead["id"],
             "parcel_id": None if private else lead["parcel_id"],
             "address": None if private else address,
             "days_remaining": days,
             "assets_ready": bool(assets),
-        })
+        }, lead_id=str(lead["id"]))
 
 
 async def _enforcer_loop() -> None:

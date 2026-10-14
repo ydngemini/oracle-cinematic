@@ -74,6 +74,8 @@ class _FakeConn:
 
     async def fetchrow(self, query, *args):
         self.queries.append(("fetchrow", query, args))
+        if "app_linked_access" in query:  # record_access.require_lead_edit (0151)
+            return {"can_edit": True}
         if "SUM(quota_consumed_units)" in query:
             return {"consumed": self.quota_consumed}
         if "SELECT id, status FROM video_studio_jobs" in query:
@@ -520,13 +522,18 @@ def test_process_job_text_end_to_end(monkeypatch):
     import ws_hub
 
     broadcasts = []
-    monkeypatch.setattr(ws_hub, "broadcast", lambda tenant, frame: broadcasts.append((tenant, frame)))
+
+    async def capture(tenant, frame, **kw):
+        broadcasts.append((tenant, frame, kw))
+
+    monkeypatch.setattr(ws_hub, "broadcast_record", capture)
 
     asyncio.run(studio._process_job(_job_row(), "vs-0"))
 
     statuses = [args[1] for _, query, args in conn.queries if "UPDATE video_studio_jobs" in query]
     assert "ready" in statuses
     assert broadcasts and broadcasts[0][1]["type"] == "VIDEO_READY"
+    assert broadcasts[0][2]["lead_id"] == LEAD_ID, "the frame follows the lead (0151)"
 
 
 def test_process_job_voiceover_extends_prompts(monkeypatch):

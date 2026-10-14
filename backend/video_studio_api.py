@@ -30,7 +30,8 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from audit_ledger import AuditCategory, ledger
 from db.connection import tenant_tx
-from tenancy import TenantContext, require_context
+import record_access
+from tenancy import Role, TenantContext, brokerage_scope, require_context
 from billing import require_active_subscription
 
 import video_providers
@@ -172,8 +173,18 @@ async def create_video_job(
     except video_providers.VideoProviderError as exc:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
 
+    if body.lead_id:
+        # The job follows its lead (0151): 404 invisible, 403 a client's house
+        # shared view-only — before any quota is reserved.
+        async with tenant_tx(ctx) as conn:
+            await record_access.require_lead_edit(conn, str(body.lead_id))
+    # The daily quota is the brokerage's: count every job of the tenant, not
+    # only the ones this agent may read (0151).
+    quota_ctx = brokerage_scope(TenantContext(agent_id="system:video-quota", tenant_id=ctx.tenant_id,
+                                              role=Role.AGENT))
+    async with tenant_tx(quota_ctx) as qconn:
+        consumed = await studio._quota_consumed_today(quota_ctx, qconn)
     async with tenant_tx(ctx) as conn:
-        consumed = await studio._quota_consumed_today(ctx, conn)
         clip_seconds = studio.CLIP_SECONDS
         estimated = max(1, len(body.images)) * clip_seconds
         if consumed + estimated > studio.DAILY_QUOTA_SECONDS:
@@ -282,6 +293,9 @@ async def regenerate_script(
     """Draft a fresh script for the job's property data (does not re-run
     generation; a new job is required to re-render)."""
     async with tenant_tx(ctx) as conn:
+        # 404 invisible / 403 a client's house shared view-only, before the
+        # model is called (0151).
+        await record_access.require_linked_edit(conn, "video_studio_jobs", str(job_id), "Video job not found.")
         row = await conn.fetchrow(
             """
             SELECT id, status FROM video_studio_jobs
@@ -321,6 +335,7 @@ async def cancel_video_job(
 ):
     """Cancel a job that has not started generating."""
     async with tenant_tx(ctx) as conn:
+        await record_access.require_linked_edit(conn, "video_studio_jobs", str(job_id), "Video job not found.")
         row = await conn.fetchrow(
             """
             UPDATE video_studio_jobs
@@ -355,6 +370,7 @@ async def delete_video_job(
     """Remove a job record. Completed videos referenced by other tenants'
     property_media rows are never deleted; a ready job keeps its media."""
     async with tenant_tx(ctx) as conn:
+        await record_access.require_linked_edit(conn, "video_studio_jobs", str(job_id), "Video job not found.")
         row = await conn.fetchrow(
             """
             DELETE FROM video_studio_jobs

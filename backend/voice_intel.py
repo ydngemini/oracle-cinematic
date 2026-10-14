@@ -298,6 +298,13 @@ async def log_walkthrough(
             f"unsupported audio format {suffix or '(none)'} — expected one of {sorted(ALLOWED_SUFFIXES)}",
         )
 
+    # The note becomes the lead's log row: 404 for a lead the caller cannot
+    # see, 403 for a client's house shared view-only — before the audio is
+    # staged or transcribed (0151, C3.4). It used to be checked by nobody: any
+    # id was queued and the worker failed on it after transcribing.
+    async with tenant_tx(ctx) as conn:
+        await record_access.require_lead_edit(conn, lead_id)
+
     if not _transcription_available():
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -320,17 +327,17 @@ async def log_walkthrough(
     finally:
         staged.unlink(missing_ok=True)
 
-    async with tenant_tx(ctx) as conn:
-        # Backpressure per brokerage, counted from the rows that are the queue.
-        backlog = await conn.fetchval(
-            "SELECT count(*) FROM voice_walkthrough_jobs WHERE status = 'queued'"
+    # Backpressure per brokerage, counted from the rows that are the queue —
+    # all of them, not only the ones this agent may read (0151).
+    backlog = await record_access.pipeline_count(
+        ctx.tenant_id, "SELECT count(*) FROM voice_walkthrough_jobs WHERE status = 'queued'")
+    if backlog >= QUEUE_MAX:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "voice processing queue is full — retry shortly",
+            headers={"Retry-After": "30"},
         )
-        if backlog >= QUEUE_MAX:
-            raise HTTPException(
-                status.HTTP_503_SERVICE_UNAVAILABLE,
-                "voice processing queue is full — retry shortly",
-                headers={"Retry-After": "30"},
-            )
+    async with tenant_tx(ctx) as conn:
         job_id = await conn.fetchval(
             """
             INSERT INTO voice_walkthrough_jobs
@@ -383,6 +390,10 @@ async def create_voice_session(
                     status.HTTP_409_CONFLICT,
                     "Voice telemetry requires a lead-backed property.",
                 )
+            if not client_id:
+                # A session with no client follows its lead (0151): a
+                # client's house shared view-only answers 403 here, not later.
+                await record_access.require_lead_edit(conn, lead_id)
 
         session = await conn.fetchrow(
             """
@@ -828,7 +839,9 @@ async def _process(job: VoiceJob) -> None:
                 json.dumps(payload),
             )
 
-        reached = await ws_hub.broadcast(
+        # The note's summary is the house's content: a client's house's goes
+        # only to whoever may read that client (0151), a prospect's to all.
+        reached = await ws_hub.broadcast_record(
             job.ctx.tenant_id,
             {
                 "type": "VOICE_NOTE_LOGGED",
@@ -837,6 +850,7 @@ async def _process(job: VoiceJob) -> None:
                 "sentiment": sentiment,
                 "price_adjustment": (extracted or {}).get("price_adjustment"),
             },
+            lead_id=job.lead_id, actor=job.ctx.agent_id,
         )
         logger.info(
             "Voice note logged: lead=%s sentiment=%r broadcast→%d socket(s)",

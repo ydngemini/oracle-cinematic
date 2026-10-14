@@ -534,6 +534,7 @@ async def broadcast_record(
     *,
     client_id: Any = None,
     contact_id: Any = None,
+    lead_id: Any = None,
     actor: Optional[str] = None,
     only: Optional[list[str]] = None,
     mirror: bool = True,
@@ -542,7 +543,9 @@ async def broadcast_record(
     a text, a note) only to the members who may read that record (CONTRACT
     C3.6; app_record_audience, 0145): broker owners, the assignee and share
     holders — or everyone when the record is in the brokerage pool or the
-    frame links no client or contact (as `broadcast()` did).
+    frame links no client or contact (as `broadcast()` did). A frame about a
+    lead (`lead_id`, with no client or contact) follows the client whose house
+    it is (0143/0151); a harvested prospect's goes to everyone.
 
     The audience is computed ONCE per frame (one query), then delivered to
     those agents' sockets on every replica. `only` narrows it further (the
@@ -554,7 +557,10 @@ async def broadcast_record(
     import record_access
 
     try:
-        audience = await record_access.linked_audience(tenant_id, client_id, contact_id)
+        if lead_id is not None and client_id is None and contact_id is None:
+            audience = await record_access.linked_audience(tenant_id, None, None, lead_id=lead_id)
+        else:
+            audience = await record_access.linked_audience(tenant_id, client_id, contact_id)
     except Exception as exc:  # noqa: BLE001 — never widen on failure
         logger.warning("Record audience unavailable (%s); frame %s sent to the actor only",
                        type(exc).__name__, payload.get("type"))

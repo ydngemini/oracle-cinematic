@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from automation_jobs import enqueue_job, register_handler
 from db.connection import tenant_tx
+import record_access
 from intelligence_api import AnalysisBase, _respond, _source_ids, _verified_citations
 from platform_policy import EvidenceStatus, Feature, enforce_public_property_data, require_feature
 from property_inference import (
@@ -227,6 +228,10 @@ async def create_tour_variant(
     except InferenceInputError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     async with tenant_tx(ctx) as conn:
+        if body.lead_id:
+            # The variant follows its lead (0151): 404 invisible, 403 a
+            # client's house shared view-only, before it is stored or queued.
+            await record_access.require_lead_edit(conn, str(body.lead_id))
         media_count = await conn.fetchval(
             """
             SELECT count(*) FROM property_media

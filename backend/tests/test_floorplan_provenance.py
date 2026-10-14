@@ -103,6 +103,8 @@ class _FakeConn:
 
     async def fetchrow(self, query, *args):
         q = " ".join(query.split())
+        if "app_linked_access" in q:  # record_access.require_lead_edit (0151)
+            return {"can_edit": True}
         if "FROM property_floorplans" in q and "FOR UPDATE" in q:
             return {"id": FLOORPLAN_ID} if self.head else None
         if "FROM property_floorplans" in q:
