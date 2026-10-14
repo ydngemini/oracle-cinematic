@@ -23,11 +23,13 @@ from tenancy import Role, TenantContext
 CTX = TenantContext(agent_id="agent@x.test", tenant_id="00000000-0000-0000-0000-0000000000aa", role=Role.AGENT)
 
 
-def _setup(monkeypatch, row, *, configured=True, failed=0):
+def _setup(monkeypatch, row, *, configured=True, failed=0, can_edit=True):
     state = {"deleted_rows": 0, "deleted_keys": []}
 
     class Conn:
         async def fetchrow(self, sql, _media_id):
+            if sql.startswith("SELECT app_linked_access"):  # record_access read-back (0143)
+                return None if row is None else {"can_edit": can_edit}
             if sql.startswith("SELECT"):
                 return row
             if row is None:
@@ -87,3 +89,14 @@ def test_unknown_media_is_404(monkeypatch):
     with pytest.raises(HTTPException) as err:
         asyncio.run(media_api.delete_media(uuid4(), CTX))
     assert err.value.status_code == 404
+
+
+def test_view_only_media_is_403_and_no_file_is_removed(monkeypatch):
+    """0143: RLS would refuse the row DELETE for a view-only share, but the
+    files go first, so the route must refuse before touching storage."""
+    mid = uuid4()
+    state = _setup(monkeypatch, {"id": mid, "kind": "photo", "s3_key": "media/t/p.jpg"}, can_edit=False)
+    with pytest.raises(HTTPException) as err:
+        asyncio.run(media_api.delete_media(mid, CTX))
+    assert err.value.status_code == 403
+    assert state["deleted_keys"] == [] and state["deleted_rows"] == 0

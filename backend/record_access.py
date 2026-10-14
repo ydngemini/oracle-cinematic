@@ -136,6 +136,11 @@ _LINKED: dict[str, tuple[str, str]] = {
     # 0142: staged drafts and their approvals (links derived from the target).
     "command_executions": ("r.client_id", "r.contact_id"),
     "action_approvals": ("r.client_id", "r.contact_id"),
+    # 0143: a lead follows its seller client; media on a lead follows the lead;
+    # an intake event follows its contact.
+    "leads": ("r.seller_client_id", "NULL::uuid"),
+    "property_media": ("(SELECT l.seller_client_id FROM public.leads l WHERE l.id = r.lead_id)", "NULL::uuid"),
+    "lead_intake_events": ("NULL::uuid", "r.contact_id"),
 }
 LINKED_VIEW_ONLY = "The client or contact this belongs to is shared with you to view only."
 
@@ -186,6 +191,13 @@ async def linked_audience(tenant_id: str, client_id: Any, contact_id: Any) -> Op
             str(contact_id) if contact_id is not None else None,
         )
     return None if audience is None else [str(a) for a in audience]
+
+
+async def require_lead_edit(conn, lead_id, not_found: str = "Lead not found.") -> None:
+    """404 when the lead is invisible (or missing), 403 when the client whose
+    house it is (leads.seller_client_id) is shared with the caller view-only
+    (0143). A lead with no client is the brokerage pool: always editable."""
+    await require_linked_edit(conn, "leads", str(lead_id), not_found)
 
 
 async def _actor_user_id(conn) -> Optional[str]:

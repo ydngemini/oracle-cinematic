@@ -239,7 +239,10 @@ async def overview(ctx: TenantContext = Depends(require_platform_admin)):
                (SELECT count(*) FROM listings  l WHERE l.tenant_id = t.id)::int AS listings,
                (SELECT count(*) FROM clients   c WHERE c.tenant_id = t.id
                                                   AND c.archived_at IS NULL)::int AS clients,
-               (SELECT count(*) FROM leads     d WHERE d.tenant_id = t.id)::int AS leads,
+               -- The trigger-maintained rollup (0038), not count(*): a 10.5M-lead
+               -- brokerage took 33 s here, past this route's 5 s timeout (L03-07).
+               (SELECT coalesce(sum(d.row_count), 0) FROM lead_pipeline_counts d
+                 WHERE d.tenant_id = t.id)::int AS leads,
                (SELECT count(*) FROM showings  s WHERE s.tenant_id = t.id)::int AS showings,
                (SELECT count(*) FROM user_profiles p
                  WHERE p.tenant_id = t.id::text)::int AS agents,  -- user_profiles ids are TEXT

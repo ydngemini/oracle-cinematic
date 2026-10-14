@@ -1174,6 +1174,13 @@ async def link_client_house(
                                 public_record["parcel_id"],
                                 public_record["state"],
                             )
+                            if lead is None:
+                                # The conflicting copy exists but is hidden: it
+                                # is a colleague's client's house (0143).
+                                raise HTTPException(
+                                    status.HTTP_409_CONFLICT,
+                                    "property is already linked to another client",
+                                )
                     lead_id = str(lead["id"]) if lead is not None else None
                 else:
                     lead = await conn.fetchrow(

@@ -29,6 +29,7 @@ from pydantic import BaseModel, ConfigDict
 
 from audit_middleware import AuditCategory, audit_now
 from db.connection import tenant_tx
+from record_access import require_lead_edit
 from tenancy import Role, TenantContext, require_context
 from billing import require_active_subscription
 from reconstruction_providers import SPATIAL_AI_DISCLOSURE, get_provider
@@ -1125,6 +1126,10 @@ async def delete_space(
     import space_assets
 
     async with tenant_tx(ctx) as conn:
+        if lead_id is not None:
+            # Before any object is removed: RLS refuses the row DELETE for a
+            # view-only share (0143), but the files would already be gone.
+            await require_lead_edit(conn, lead_id)
         active = await _active_job(conn, lead_id, listing_id)
         if active is not None:
             raise HTTPException(status.HTTP_409_CONFLICT,

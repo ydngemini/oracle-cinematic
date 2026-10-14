@@ -227,7 +227,7 @@ export function useOracleWebSocket() {
           feed({
             actor: 'agent',
             actorName: 'Field Agent',
-            text: `moved ${msg.address || msg.parcel_id} to ${label}`,
+            text: `moved ${msg.address || msg.parcel_id || 'a client’s property'} to ${label}`,
             tag: label.toUpperCase(),
           });
           break;
@@ -239,8 +239,8 @@ export function useOracleWebSocket() {
             actor: 'ai',
             actorName: 'Disposition Engine',
             text: msg.assets_ready
-              ? `contract window critical for ${msg.address || msg.parcel_id} — fire-sale marketing assets generated`
-              : `contract window critical for ${msg.address || msg.parcel_id} — asset generation queued`,
+              ? `contract window critical for ${msg.address || msg.parcel_id || 'a client’s property'} — fire-sale marketing assets generated`
+              : `contract window critical for ${msg.address || msg.parcel_id || 'a client’s property'} — asset generation queued`,
             tag: 'URGENT DISPOSITION',
             metric: `${msg.days_remaining}d left`,
           });
@@ -250,7 +250,7 @@ export function useOracleWebSocket() {
           feed({
             actor: 'ai',
             actorName: 'Disposition Engine',
-            text: `assignment window expired for ${msg.address || msg.parcel_id} — dossier moved to expired`,
+            text: `assignment window expired for ${msg.address || msg.parcel_id || 'a client’s property'} — dossier moved to expired`,
             tag: 'EXPIRED',
           });
           break;
