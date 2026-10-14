@@ -236,10 +236,11 @@ tests_run:
   - {cmd: "full backend suite (ORACLE_SKIP_DOTENV=1 python -m pytest -q -p no:cacheprovider tests/)", result: "3232 passed, 12 skipped, 0 failed", date: 2026-10-13}
   - {cmd: "CI live list locally (10 files)", result: "19 passed, 2 failed, both from OTHER sessions' migrations in the shared dev DB: test_migration_precheck (DB holds 0106/0132/0133/0135, not in this branch) and test_call_notes_live (0132 requires sealed call notes)", date: 2026-10-13}
   - {cmd: "vitest (ContactDetailPanel.test.jsx + ClientAccess.test.jsx + full) + eslint + vite build + bundle budget", result: "721 passed; lint clean; within budget", date: 2026-10-13}
+  - {cmd: "livetest.sh migrate (0137) + pytest tests/test_contact_follows_client_live.py", result: "1 passed: owner move, return to pool and take all carry the contact; a colleague's drifted contact and an inactive assignee are skipped without failing the client update", date: 2026-10-13}
 authz_checked: "agent_contacts + contact_property_relationships, contact_intake_sessions, intake_handoff_tasks, contact_nurture_jobs under FORCE RLS as oracle_app; clients reassignment guard"
 blockers:
-  - {type: owner, note: "A contact and its linked client can name different assignees (a client moved in the CRM never moved its contact). 0134 counts them (NOTICE) and changes nothing. Should reassigning a client move its contact?"}
-  - {type: owner, note: "Platform Use Policy v3 wording ('Each client and contact record is visible to ...') is drafted for approval; the version bump makes every user re-accept."}
+  - {type: decided, note: "Owner 2026-10-13: reassigning a client moves its linked contact. 0137 (trigger clients_carry_contact_assignee) does it in the same transaction through app_may_reassign, skipping (never failing) a contact the caller may not move or an inactive assignee; tests/test_contact_follows_client_live.py."}
+  - {type: decided, note: "Owner 2026-10-13: Platform Use Policy v3 wording approved as drafted."}
 audit_refs: []
 decision_refs: [D-2026-10-13-01]
 next_task: "Deploy 0131+0134 together; verify in a real browser on staging (People: owner assigns, agent shares view-only, colleague sees it read-only)."
