@@ -38,7 +38,7 @@ Counts are from the dev database. They show shape, not production volume.
 
 **Contact PII**:
 - `clients` holds name, email, phone and notes **in plaintext**. Its `encrypted_contact` column exists but is unused.
-- `agent_contacts` keeps PII encrypted with pgcrypto under a per-tenant key, with HMAC lookup hashes.
+- `agent_contacts` keeps PII encrypted with pgcrypto under a per-tenant key, with HMAC lookup hashes. `assigned_user_id` (0134) is the canonical assignee (a `users.id`, no PII); who may read a contact follows it, the brokerage pool and `record_shares` rows of kind `contact` (D-2026-10-13-01).
 - `leads` has 10.4M rows in dev. `payload` holds owner names **in plaintext**, and `encrypted_payload` is unused.
 - Also in this category: `transaction_parties` (encrypted), `contact_property_relationships`, `buyer_profiles` and `lead_intake_events` (encrypted payload).
 

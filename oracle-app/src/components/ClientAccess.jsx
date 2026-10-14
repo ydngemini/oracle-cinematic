@@ -4,11 +4,11 @@ import { friendlyError, isHumanMessage } from '../lib/errorMessages';
 import styles from './ClientDetailDrawer.module.css';
 
 /*
- * Who sees and changes a client (owner decision D-2026-10-13-01):
+ * Who sees and changes a client or a contact (owner decision D-2026-10-13-01):
  *   - no assignee = the brokerage pool, which every agent sees and edits;
  *   - the assignee and the broker owner see it, and anyone it is shared with;
  *   - a share is "view only" or "can edit", chosen per share.
- * The server decides (RLS + /api/crm/clients/{id}/access); this only shows it
+ * The server decides (RLS + /api/crm/{clients,contacts}/{id}/access); this only shows it
  * and offers the moves the server allows.
  */
 
@@ -26,7 +26,7 @@ const nameOf = (people, agentId) => {
 };
 
 /** Header cell: the assignee, and the assignment moves this caller may make. */
-export function AssigneeControl({ state, assigneeId: fromRecord, onAssign }) {
+export function AssigneeControl({ state, assigneeId: fromRecord, onAssign, noun = 'client' }) {
   const { access, colleagues, me, isOwner, loading } = state;
   if (loading && !access) return <span className={styles.accessNote}>…</span>;
   // The drawer's seed card may not carry the assignee yet; /access always does.
@@ -38,7 +38,7 @@ export function AssigneeControl({ state, assigneeId: fromRecord, onAssign }) {
         className={styles.assigneeInput}
         value={colleagues.find((p) => p.agent_id?.toLowerCase() === String(assigneeId || '').toLowerCase())?.agent_id || ''}
         onChange={(e) => onAssign(e.target.value || null)}
-        aria-label="Assign this client"
+        aria-label={`Assign this ${noun}`}
       >
         <option value="">Brokerage pool (unassigned)</option>
         {colleagues.map((p) => <option key={p.user_id} value={p.agent_id}>{p.is_me ? `${p.name} (you)` : p.name}</option>)}
@@ -59,8 +59,8 @@ export function AssigneeControl({ state, assigneeId: fromRecord, onAssign }) {
   );
 }
 
-/** Overview section: who else can see this client, and sharing it. */
-export default function ClientSharing({ clientId, state, assigneeId, onChanged }) {
+/** Who else can see this record, and sharing it. `kind` is the API collection. */
+export function RecordSharing({ kind = 'clients', noun = 'client', recordId, state, assigneeId, onChanged }) {
   const { access, colleagues, me, error, reload } = state;
   const [grantee, setGrantee] = useState('');
   const [permission, setPermission] = useState('view');
@@ -70,7 +70,7 @@ export default function ClientSharing({ clientId, state, assigneeId, onChanged }
   if (error) {
     return (
       <section className={styles.section} aria-label="Sharing">
-        <span className={styles.sectionLabel}>Who can see this client</span>
+        <span className={styles.sectionLabel}>{`Who can see this ${noun}`}</span>
         <p className={styles.accessNote} role="alert">{friendlyError(error, { fallback: 'Sharing could not be loaded.' })}</p>
       </section>
     );
@@ -88,17 +88,17 @@ export default function ClientSharing({ clientId, state, assigneeId, onChanged }
     if (!grantee) return;
     setBusy('share'); setMessage('');
     try {
-      await crmPost(`/api/crm/clients/${clientId}/shares`, { grantee, permission });
+      await crmPost(`/api/crm/${kind}/${recordId}/shares`, { grantee, permission });
       setGrantee('');
       reload(); onChanged?.();
     } catch (err) {
-      setMessage(accessError(err, 'The client could not be shared.'));
+      setMessage(accessError(err, `The ${noun} could not be shared.`));
     } finally { setBusy(''); }
   };
   const revoke = async (shareId) => {
     setBusy(shareId); setMessage('');
     try {
-      await crmDelete(`/api/crm/clients/${clientId}/shares/${shareId}`);
+      await crmDelete(`/api/crm/${kind}/${recordId}/shares/${shareId}`);
       reload(); onChanged?.();
     } catch (err) {
       setMessage(accessError(err, 'Sharing could not be stopped.'));
@@ -107,9 +107,9 @@ export default function ClientSharing({ clientId, state, assigneeId, onChanged }
 
   return (
     <section className={styles.section} aria-label="Sharing">
-      <span className={styles.sectionLabel}>Who can see this client</span>
+      <span className={styles.sectionLabel}>{`Who can see this ${noun}`}</span>
       {access.pool && (
-        <p className={styles.accessNote}>In the brokerage pool: everyone in the brokerage can see and edit this client. Assign it to share it with specific people.</p>
+        <p className={styles.accessNote}>{`In the brokerage pool: everyone in the brokerage can see and edit this ${noun}. Assign it to share it with specific people.`}</p>
       )}
       {sharedWithMe && (
         <p className={styles.accessNote} data-access={access.access}>
@@ -160,4 +160,9 @@ export default function ClientSharing({ clientId, state, assigneeId, onChanged }
       {message && <p className={styles.accessNote} role="alert">{message}</p>}
     </section>
   );
+}
+
+/** The client drawer's Overview section (0131). */
+export default function ClientSharing({ clientId, ...rest }) {
+  return <RecordSharing kind="clients" noun="client" recordId={clientId} {...rest} />;
 }

@@ -6,7 +6,7 @@ from __future__ import annotations
 # Bump this identifier whenever the policy text changes materially. Each user
 # acceptance record is tied to this value so prior acknowledgement remains
 # auditable rather than being silently reinterpreted under new wording.
-PLATFORM_POLICY_VERSION = "neoh-platform-use-policy-2026-10-13-v2"
+PLATFORM_POLICY_VERSION = "neoh-platform-use-policy-2026-10-13-v3"
 
 PLATFORM_POLICY_DOCUMENT = {
     "title": "NEOH™ Platform Use Policy",
@@ -30,7 +30,7 @@ PLATFORM_POLICY_DOCUMENT = {
             "paragraphs": [
                 "Enter, import, or connect only data you are entitled to access and use. Obtain any consent, notice, or authorization required for client, customer, lead, vendor, or teammate information.",
                 "Protect confidential information and limit access to people with a legitimate business need. Do not submit authentication secrets, government identification numbers, payment-card data, bank credentials, or other sensitive information that is not necessary for the intended workflow.",
-                "Each client record is visible to the agent assigned to it, to your broker owner, and to anyone they share it with; a client with no assigned agent is visible to every agent in your brokerage. Share a record only with a colleague who has a legitimate business need, give edit access only when they need to change it, and remove access when the need ends.",
+                "Each client and contact record is visible to the agent assigned to it, to your broker owner, and to anyone they share it with; a record with no assigned agent is visible to every agent in your brokerage. A contact you add for an assigned client stays with that client's agent. Share a record only with a colleague who has a legitimate business need, give edit access only when they need to change it, and remove access when the need ends.",
             ],
         },
         {
@@ -100,6 +100,10 @@ POLICY_COVERAGE: tuple[dict[str, str], ...] = (
      "evidence": "db/migrations/0131_agent_record_scope.sql",
      "section": "2. Authorized data and confidentiality",
      "phrase": "anyone they share it with"},
+    {"capability": "per-record contact visibility and sharing (D-2026-10-13-01, 0134)",
+     "evidence": "db/migrations/0134_agent_contact_scope.sql",
+     "section": "2. Authorized data and confidentiality",
+     "phrase": "Each client and contact record is visible to the agent assigned to it"},
     {"capability": "AI call notes: consent, review by default (D-2026-10-12-03)",
      "evidence": "call_note_settings.py",
      "section": "4. AI-assisted work and professional judgment",

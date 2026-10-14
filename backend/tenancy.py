@@ -21,7 +21,7 @@ import re
 import time
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Optional
+from typing import Any, Optional
 
 from fastapi import Header, HTTPException, Request, status
 
@@ -94,12 +94,13 @@ class TenantContext:
     auth_time: Optional[int] = field(default=None, compare=False)
     # Token expiry (epoch seconds). Long-lived sockets close when it passes.
     expires_at: Optional[float] = field(default=None, compare=False)
-    # Which clients an AGENT context reads (0131, D-2026-10-13-01): "actor" =
-    # their own, the unassigned pool and what is shared with them; "brokerage"
-    # = every client of the tenant, for system pipelines that act for the
-    # brokerage (client portal, inbound SMS/voice matching, the client-AI
-    # steward). Never "brokerage" for a verified user session — see
-    # apply_rls_context and brokerage_scope().
+    # Which clients and contacts an AGENT context reads (0131/0134,
+    # D-2026-10-13-01): "actor" = their own, the unassigned pool and what is
+    # shared with them; "brokerage" = every client and contact of the tenant,
+    # for system pipelines that act for the brokerage (client portal, inbound
+    # SMS/voice matching and intake, the client-AI steward). Never
+    # "brokerage" for a verified user session — see apply_rls_context and
+    # brokerage_scope().
     record_scope: str = field(default="actor", compare=False)
 
     @property
@@ -119,7 +120,8 @@ class TenantContext:
 
 def can_read_private(ctx: TenantContext, row: dict) -> bool:
     """clients / leads — the tenant wall (clients_tenant_isolation). For clients
-    the agent scope narrows it further: see client_access()."""
+    and contacts the agent scope narrows it further: see client_access() and
+    contact_access()."""
     return ctx.is_platform_admin or row.get("tenant_id") == ctx.tenant_id
 
 
@@ -127,7 +129,8 @@ RECORD_SCOPES = ("actor", "brokerage")
 
 
 def brokerage_scope(ctx: TenantContext) -> TenantContext:
-    """The same identity, reading every client of its brokerage (0131).
+    """The same identity, reading every client and contact of its brokerage
+    (0131, 0134).
 
     For server-built pipeline contexts only. A verified user session keeps its
     own scope: apply_rls_context ignores this flag when verify_session is set."""
@@ -149,6 +152,28 @@ def client_access(
     permission of the caller's ACTIVE shares. Brokerage-wide identities edit
     everything in their tenant; otherwise the pool and the assignee edit, and a
     share grants exactly its permission."""
+    return _record_access(ctx, row, row.get("assignee_user_id"), actor_user_id, shares)
+
+
+def contact_access(
+    ctx: TenantContext,
+    row: dict,
+    actor_user_id: Optional[str],
+    shares: dict | None = None,
+) -> Optional[str]:
+    """Mirror of app_contact_access() (0134): the same rule as client_access,
+    on agent_contacts.assigned_user_id; `shares` maps contact id → permission
+    of the caller's ACTIVE 'contact' shares."""
+    return _record_access(ctx, row, row.get("assigned_user_id"), actor_user_id, shares)
+
+
+def _record_access(
+    ctx: TenantContext,
+    row: dict,
+    assignee: Any,
+    actor_user_id: Optional[str],
+    shares: dict | None,
+) -> Optional[str]:
     if not can_read_private(ctx, row):
         return None
     if (
@@ -157,7 +182,6 @@ def client_access(
         or (ctx.record_scope == "brokerage" and not ctx.verify_session)
     ):
         return "edit"
-    assignee = row.get("assignee_user_id")
     if assignee is None or (actor_user_id is not None and str(assignee) == str(actor_user_id)):
         return "edit"
     if actor_user_id is None:

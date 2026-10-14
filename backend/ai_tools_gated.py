@@ -107,16 +107,13 @@ async def _outreach_target(conn, ctx: TenantContext, client_id: str):
     # record (agent_contacts, linked by legacy_client_id / clients.contact_id)
     # carries the person's own state and IANA timezone; the timezone also
     # lets quiet hours use where they actually are.
+    # A compliance input, so read brokerage-wide (0134): the contact may be
+    # assigned to someone other than this client's agent, and quiet hours must
+    # still know where the person is. The function returns only state and
+    # timezone, for the client just read above under the caller's own scope.
     contact_place = await conn.fetchrow(
-        """SELECT ac.state_code, ac.timezone
-             FROM agent_contacts ac
-            WHERE ac.tenant_id=$2::uuid AND ac.deleted_at IS NULL
-              AND (ac.legacy_client_id=$1::uuid
-                   OR ac.id=(SELECT contact_id FROM clients
-                              WHERE id=$1::uuid AND tenant_id=$2::uuid))
-            ORDER BY (ac.state_code IS NOT NULL) DESC, ac.updated_at DESC
-            LIMIT 1""",
-        client_id, ctx.tenant_id,
+        "SELECT state_code, timezone FROM app_client_contact_place($1::uuid)",
+        client_id,
     )
     if not state_code and contact_place and contact_place.get("state_code"):
         state_code = contact_place.get("state_code")

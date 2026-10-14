@@ -225,6 +225,26 @@ def test_client_access_mirror_pool_assignee_share_owner():
     assert client_access(CTX_ADMIN, theirs, None) == "edit"
 
 
+def test_contact_access_mirror_reads_the_contact_assignee():
+    """0134: contacts follow the same rule, on agent_contacts.assigned_user_id."""
+    from tenancy import brokerage_scope, contact_access
+
+    agent = TenantContext(agent_id="a@x.test", tenant_id=TENANT_A, role=Role.AGENT)
+    mine = {"tenant_id": TENANT_A, "id": "k1", "assigned_user_id": "u-a"}
+    theirs = {"tenant_id": TENANT_A, "id": "k2", "assigned_user_id": "u-b"}
+    pool = {"tenant_id": TENANT_A, "id": "k3", "assigned_user_id": None}
+    assert contact_access(agent, mine, "u-a") == "edit"
+    assert contact_access(agent, pool, "u-a") == "edit"
+    assert contact_access(agent, theirs, "u-a") is None
+    assert contact_access(agent, theirs, "u-a", {"k2": "view"}) == "view"
+    # A client-shaped row (assignee_user_id) is not read as a contact assignee.
+    assert contact_access(agent, {"tenant_id": TENANT_A, "id": "k4", "assignee_user_id": "u-b",
+                                  "assigned_user_id": "u-b"}, "u-a") is None
+    assert contact_access(CTX_A, theirs, None) == "edit"
+    assert contact_access(CTX_B, theirs, None) is None
+    assert contact_access(brokerage_scope(agent), theirs, "u-a") == "edit"
+
+
 def test_brokerage_scope_never_reaches_a_user_session():
     from tenancy import brokerage_scope, client_access
 
