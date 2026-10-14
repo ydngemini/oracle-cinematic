@@ -54,6 +54,7 @@ from crm import (
     _queue_client_ai,
     _require_uuid,
 )
+from log_redaction import actor_ref
 
 logger = logging.getLogger("oracle.crm.enterprise")
 
@@ -471,7 +472,7 @@ async def bulk_clients(
         )
 
     logger.info("Bulk %s applied to %d/%d clients (tenant=%s, agent=%s)",
-                action, updated, len(body.ids), ctx.tenant_id, ctx.agent_id)
+                action, updated, len(body.ids), ctx.tenant_id, actor_ref(ctx.agent_id))
     for cid in updated_ids:
         await _queue_client_ai(ctx, cid, f"bulk_{action}")
     return {"updated": updated, "skipped": skipped}

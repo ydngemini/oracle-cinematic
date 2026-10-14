@@ -49,7 +49,10 @@ def _authenticated_callback_url(path: str, secret_env: str) -> str:
         raise ProviderConfigurationError("ORACLE_PUBLIC_BASE_URL is not set — callback URL required")
     if not secret:
         raise ProviderConfigurationError(f"{secret_env} is not configured")
-    return f"{base}{path}?token={urllib.parse.quote(secret, safe='')}"
+    # An expiring signature, never the static secret, in the URL (HOOK-3).
+    import webhook_auth
+
+    return webhook_auth.signed_callback_url(base, path, secret)
 
 
 @dataclass(frozen=True)

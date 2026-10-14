@@ -67,6 +67,7 @@ import media_storage
 import record_access
 from db.connection import tenant_tx
 from tenancy import Role, TenantContext, require_context
+from log_redaction import actor_ref
 
 log = logging.getLogger("oracle.media_api")
 
@@ -847,7 +848,7 @@ async def generate_assignment_contract(
         client_id,
         result["document_id"],
         ctx.tenant_id,
-        ctx.agent_id,
+        actor_ref(ctx.agent_id),
     )
     return {
         "status": "SUCCESS",

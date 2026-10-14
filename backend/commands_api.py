@@ -127,13 +127,12 @@ async def _run_sync_in_executor(
     return await asyncio.wait_for(asyncio.to_thread(fn, *args), timeout=timeout_seconds)
 
 
-def _require_webhook_secret(request: Request, env_name: str) -> None:
-    expected = os.getenv(env_name, "").strip()
-    supplied = request.query_params.get("token", "")
-    if not expected:
-        raise HTTPException(status_code=503, detail="Webhook authentication is not configured.")
-    if not supplied or not hmac.compare_digest(expected, supplied):
-        raise HTTPException(status_code=403, detail="Invalid webhook credential.")
+async def _require_webhook_secret(request: Request, env_name: str) -> str:
+    """Header, body signature or signed callback URL; the old `?token=` static
+    secret only for one release, with a deprecation log (HOOK-3, webhook_auth)."""
+    import webhook_auth
+
+    return await webhook_auth.verify_webhook(request, env_name)
 
 
 def _twilio_webhook_url(request: Request, suffix: str) -> str:
@@ -2125,7 +2124,7 @@ async def record_call_consent(
 
 @router.post("/webhooks/acs", include_in_schema=False)
 async def acs_webhook(request: Request):
-    _require_webhook_secret(request, "ORACLE_ACS_WEBHOOK_SECRET")
+    await _require_webhook_secret(request, "ORACLE_ACS_WEBHOOK_SECRET")
     body = await request.json()
     events = body if isinstance(body, list) else [body]
     for event in events:
@@ -3638,7 +3637,7 @@ async def custom_call_webhook(request: Request):
       speech / speech_text / transcript
       Responses are returned inline. Caller-selected outbound URLs are rejected.
     """
-    _require_webhook_secret(request, "ORACLE_CUSTOM_CALL_WEBHOOK_SECRET")
+    await _require_webhook_secret(request, "ORACLE_CUSTOM_CALL_WEBHOOK_SECRET")
     payload = await request.json()
     if not isinstance(payload, dict):
         return {"accepted": False, "error": "invalid payload"}

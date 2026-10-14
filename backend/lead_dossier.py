@@ -27,6 +27,7 @@ from record_access import require_lead_edit
 from tenancy import TenantContext, require_context
 import ws_hub
 from mls_enrichment import MLS_OVERLAY_SELECT, clean_mls_overlay
+from log_redaction import actor_ref
 
 logger = logging.getLogger("oracle.lead_dossier")
 
@@ -310,7 +311,7 @@ async def move_dossier(
 
     logger.info(
         "Dossier move: lead=%s → %s (tenant=%s, agent=%s)",
-        lead_id, body.status, ctx.tenant_id, ctx.agent_id,
+        lead_id, body.status, ctx.tenant_id, actor_ref(ctx.agent_id),
     )
     return {
         "status": "moved",

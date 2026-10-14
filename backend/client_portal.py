@@ -33,6 +33,7 @@ from auth import ALGORITHM, SECRET_KEY
 from db.connection import get_pool, tenant_tx
 from approval_service import decide_approval
 from tenancy import Role, TenantContext, brokerage_scope, require_context
+from log_redaction import actor_ref
 
 log = logging.getLogger("oracle.client_portal")
 
@@ -151,7 +152,7 @@ async def create_portal_link(
 
     log.info(
         "Portal link minted: portal_id=%s lead_id=%s tenant_id=%s by agent=%s",
-        row["id"], body.lead_id, ctx.tenant_id, ctx.agent_id,
+        row["id"], body.lead_id, ctx.tenant_id, actor_ref(ctx.agent_id),
     )
     return PortalLinkResponse(
         portal_id=str(row["id"]),

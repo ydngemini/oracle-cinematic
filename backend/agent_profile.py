@@ -23,6 +23,7 @@ from approval_service import create_approval, decide_approval
 from db.connection import tenant_tx
 from platform_policy import ActionRisk, communication_preferences
 from tenancy import Role, TenantContext, require_context, require_role
+from log_redaction import actor_ref
 
 logger = logging.getLogger("oracle.agent_profile")
 
@@ -193,7 +194,7 @@ async def save_onboarding_profile(
 
     logger.info(
         "Onboarding profile saved: agent=%s tenant=%s zips=%d level=%s volume=%s",
-        ctx.agent_id, ctx.tenant_id,
+        actor_ref(ctx.agent_id), ctx.tenant_id,
         len(body.target_zips), body.experience_level, body.monthly_deal_target,
     )
     return {

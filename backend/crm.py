@@ -38,6 +38,7 @@ from record_access import require_client_edit, resolve_assignment
 from tenancy import TenantContext, require_context
 from outreach_compliance import Channel, enforce_outreach
 from client_ai_automation import enqueue_client_reconcile
+from log_redaction import actor_ref
 
 logger = logging.getLogger("oracle.crm")
 
@@ -633,7 +634,7 @@ async def create_listing(
 
     logger.info(
         "Listing created: id=%s seller=%s lead=%s (tenant=%s, agent=%s)",
-        listing["id"], seller_id, lead_id, ctx.tenant_id, ctx.agent_id,
+        listing["id"], seller_id, lead_id, ctx.tenant_id, actor_ref(ctx.agent_id),
     )
     return {
         "listing": {
@@ -896,7 +897,7 @@ async def create_client(
 
     logger.info(
         "Client created: id=%s type=%s stage=%s (tenant=%s, agent=%s)",
-        row["id"], body.client_type, stage, ctx.tenant_id, ctx.agent_id,
+        row["id"], body.client_type, stage, ctx.tenant_id, actor_ref(ctx.agent_id),
     )
     await _queue_client_ai(ctx, str(row["id"]), "client_created")
     return {"client": _client_json(row, [], None, tags=tags)}
@@ -1340,7 +1341,7 @@ async def link_client_house(
         house["source"],
         created,
         ctx.tenant_id,
-        ctx.agent_id,
+        actor_ref(ctx.agent_id),
     )
     await _queue_client_ai(ctx, client_id, "property_linked")
     return {"house": house, "created": created}
@@ -1557,7 +1558,7 @@ async def send_message(
     logger.info(
         "Message logged: client=%s channel=%s direction=%s delivery=%s queued_email=%s (tenant=%s, agent=%s)",
         client_id, public_channel, direction, delivery_status, queued_email_id,
-        ctx.tenant_id, ctx.agent_id,
+        ctx.tenant_id, actor_ref(ctx.agent_id),
     )
     if queued_email_id:
         import email_outbox
@@ -1630,7 +1631,7 @@ async def create_showing(
 
     logger.info(
         "Showing logged: client=%s listing=%s lead=%s outcome=%s (tenant=%s, agent=%s)",
-        body.client_id, body.listing_id, body.lead_id, body.outcome, ctx.tenant_id, ctx.agent_id,
+        body.client_id, body.listing_id, body.lead_id, body.outcome, ctx.tenant_id, actor_ref(ctx.agent_id),
     )
     # A showing logged with its result already known is a result. Its own
     # transaction has committed by here; record_outcome opens its own.
@@ -1751,7 +1752,7 @@ async def update_showing(
 
     logger.info(
         "Showing resolved: id=%s outcome=%s (tenant=%s, agent=%s)",
-        showing_id, body.outcome, ctx.tenant_id, ctx.agent_id,
+        showing_id, body.outcome, ctx.tenant_id, actor_ref(ctx.agent_id),
     )
     await _record_showing_outcomes(ctx, row)
     await _queue_client_ai(ctx, str(row["client_id"]), "showing_resolved")
@@ -1905,6 +1906,6 @@ async def put_profile(
 
     logger.info(
         "Profile updated: agent=%s fields=%s (tenant=%s)",
-        ctx.agent_id, sorted(fields.keys()), ctx.tenant_id,
+        actor_ref(ctx.agent_id), sorted(fields.keys()), ctx.tenant_id,
     )
     return {"profile": _profile_json(row)}

@@ -95,9 +95,12 @@ def _configure_logging() -> None:
         logging.getLogger(noisy).setLevel(logging.WARNING)
     # Capability links and webhook secrets travel in URLs; the access log must
     # not keep them (log_redaction.py).
-    from log_redaction import install_access_log_redaction
+    from log_redaction import install_access_log_redaction, install_pii_scrub
 
     install_access_log_redaction()
+    # Exception text can quote a refused row (asyncpg DETAIL) or an echoed
+    # request body; the handlers scrub emails, phones and row values (L17-11).
+    install_pii_scrub()
 
 
 _configure_logging()
@@ -163,6 +166,13 @@ async def lifespan(app: FastAPI):
 
     if get_pool() is not None:
         ops_alerts.start()
+        # Alert if the operator's second factor changed since the last boot
+        # (an advisory lock picks one replica), and push any audit rows this
+        # container wrote to its SQLite fallback back into Postgres (L17-09/12).
+        import security_alerts
+
+        security_alerts.start_boot_checks()
+        ledger.start_fallback_drain()
     from data_integrations.periodic import start_periodic_scheduler, stop_periodic_scheduler
     from automation_jobs import start_job_workers, stop_job_workers
     # Importing periodic registers every job handler regardless of role, so a
@@ -210,6 +220,12 @@ async def lifespan(app: FastAPI):
                 from video_studio import stop_video_studio_workers
                 await stop_video_studio_workers()
         await drain_pending()
+        try:
+            import security_alerts
+
+            await asyncio.wait_for(security_alerts.drain(), timeout=10)
+        except Exception:  # noqa: BLE001 - shutdown continues; the alert was best-effort
+            logger.warning("security alerts still in flight at shutdown were dropped")
         await mind_service.stop()
         import ops_alerts
 

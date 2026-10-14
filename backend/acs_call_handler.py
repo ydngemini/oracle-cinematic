@@ -284,10 +284,10 @@ def _get_callback_url() -> str:
     secret = os.getenv("ORACLE_ACS_WEBHOOK_SECRET", "").strip()
     if not secret:
         raise RuntimeError("ORACLE_ACS_WEBHOOK_SECRET is not configured")
-    return (
-        f"{base}/api/commands/webhooks/acs"
-        f"?token={urllib.parse.quote(secret, safe='')}"
-    )
+    # An expiring signature, never the static secret, in the URL (HOOK-3).
+    import webhook_auth
+
+    return webhook_auth.signed_callback_url(base, "/api/commands/webhooks/acs", secret)
 
 
 def qwen_realtime_enabled(state: Optional[Mapping[str, Any]] = None) -> bool:
