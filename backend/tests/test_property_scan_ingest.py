@@ -70,6 +70,11 @@ class _Conn:
         self._exists = exists
         self.inserted: list = []
 
+    async def fetchrow(self, query, *args):
+        # record_access.require_lead_edit's read-back (0143): an editable lead.
+        assert query.startswith("SELECT app_linked_access"), query
+        return {"can_edit": True} if self._exists else None
+
     async def fetchval(self, query, *args):
         if "SELECT 1 FROM" in query:
             return 1 if self._exists else None

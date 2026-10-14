@@ -23,6 +23,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field, field_validator
 
 from db.connection import tenant_tx
+from record_access import require_lead_edit
 from tenancy import TenantContext, require_context
 import ws_hub
 from mls_enrichment import MLS_OVERLAY_SELECT, clean_mls_overlay
@@ -216,6 +217,8 @@ async def set_acquisition_entity(
     }
     try:
         async with tenant_tx(ctx) as conn:
+            # 404 when invisible; 403 when its client is shared view-only (0143).
+            await require_lead_edit(conn, lead_id, "lead not found")
             row = await conn.fetchrow(
                 """
                 UPDATE leads
@@ -256,6 +259,7 @@ async def move_dossier(
 
     try:
         async with tenant_tx(ctx) as conn:
+            await require_lead_edit(conn, lead_id, "lead not found")
             row = await conn.fetchrow(
                 """
                 UPDATE leads
@@ -266,7 +270,7 @@ async def move_dossier(
                            ELSE contract_execution_date
                        END
                  WHERE id = $2
-             RETURNING parcel_id, payload, dossier_status, contract_expires_at
+             RETURNING parcel_id, payload, dossier_status, contract_expires_at, seller_client_id
                 """,
                 body.status,
                 lead_id,
@@ -290,11 +294,15 @@ async def move_dossier(
             prop = {}
     address = (prop or {}).get("address") or row["parcel_id"]
 
+    # The frame goes to every session in the brokerage. A lead that is a
+    # client's house (0143) is visible only to those who can see the client,
+    # so its frame names no property.
+    private = row["seller_client_id"] is not None
     await ws_hub.broadcast(ctx.tenant_id, {
         "type": "DOSSIER_MOVED",
         "lead_id": lead_id,
-        "parcel_id": row["parcel_id"],
-        "address": address,
+        "parcel_id": None if private else row["parcel_id"],
+        "address": None if private else address,
         "status": row["dossier_status"],
         "contract_expires_at": row["contract_expires_at"].isoformat()
             if row["contract_expires_at"] else None,

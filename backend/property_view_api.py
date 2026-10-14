@@ -39,6 +39,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 import media_storage
 from db.connection import tenant_tx
+from record_access import require_lead_edit
 from tenancy import Role, TenantContext, require_context
 
 log = logging.getLogger("oracle.property_view")
@@ -385,10 +386,23 @@ async def create_subject(
             """
             INSERT INTO leads (tenant_id, parcel_id, state, motivation_score, address)
             VALUES ($1, $2, $3, 0, $4)
+            ON CONFLICT (tenant_id, parcel_id) DO NOTHING
             RETURNING id
             """,
             ctx.tenant_id, parcel_id, body.state, address,
         )
+        if lead_id is None:
+            # A concurrent create of the same address wins the race.
+            existing = await conn.fetchval(
+                "SELECT id FROM leads WHERE tenant_id = $2::uuid AND parcel_id = $1", parcel_id, ctx.tenant_id,
+            )
+            if existing is not None:
+                return {"lead_id": str(existing), "created": False}
+    if lead_id is None:
+        # The row exists but RLS hides it: the address is a colleague's
+        # client's house (0143). Neither attach to it nor fail with a 500.
+        raise HTTPException(status.HTTP_409_CONFLICT,
+                            "This address is already a client's property in your brokerage.")
     return {"lead_id": str(lead_id), "created": True}
 
 
@@ -430,8 +444,9 @@ async def agent_upload_media(
     created: list[dict[str, Any]] = []
 
     async with tenant_tx(ctx) as conn:
-        if lead_id is not None and not await conn.fetchval("SELECT 1 FROM leads WHERE id = $1", lead_id):
-            raise HTTPException(status.HTTP_404_NOT_FOUND, "Lead not found.")
+        if lead_id is not None:
+            # 404 when invisible; 403 when its client is shared view-only (0143).
+            await require_lead_edit(conn, lead_id)
         if listing_id is not None and not await conn.fetchval("SELECT 1 FROM listings WHERE id = $1", listing_id):
             raise HTTPException(status.HTTP_404_NOT_FOUND, "Listing not found.")
 
@@ -628,10 +643,9 @@ async def import_licensed_imagery(
                 "exterior_only": True}
 
     async with tenant_tx(ctx) as conn:
-        if lead_id is not None and not await conn.fetchval(
-            "SELECT 1 FROM leads WHERE id = $1", lead_id
-        ):
-            raise HTTPException(status.HTTP_404_NOT_FOUND, "Lead not found.")
+        if lead_id is not None:
+            # 404 when invisible; 403 when its client is shared view-only (0143).
+            await require_lead_edit(conn, lead_id)
         if listing_id is not None and not await conn.fetchval(
             "SELECT 1 FROM listings WHERE id = $1", listing_id
         ):
@@ -783,10 +797,9 @@ async def upload_property_scan(
 
     async with tenant_tx(ctx) as conn:
         # RLS scopes these, so a hit proves the property is visible to the caller.
-        if lead_id is not None and not await conn.fetchval(
-            "SELECT 1 FROM leads WHERE id = $1", lead_id
-        ):
-            raise HTTPException(status.HTTP_404_NOT_FOUND, "Lead not found.")
+        if lead_id is not None:
+            # 404 when invisible; 403 when its client is shared view-only (0143).
+            await require_lead_edit(conn, lead_id)
         if listing_id is not None and not await conn.fetchval(
             "SELECT 1 FROM listings WHERE id = $1", listing_id
         ):
@@ -918,8 +931,9 @@ async def create_upload_link(
     expires_at = datetime.now(timezone.utc) + timedelta(hours=body.ttl_hours)
 
     async with tenant_tx(ctx) as conn:
-        if lead_id is not None and not await conn.fetchval("SELECT 1 FROM leads WHERE id = $1", lead_id):
-            raise HTTPException(status.HTTP_404_NOT_FOUND, "Lead not found.")
+        if lead_id is not None:
+            # 404 when invisible; 403 when its client is shared view-only (0143).
+            await require_lead_edit(conn, lead_id)
         if listing_id is not None and not await conn.fetchval("SELECT 1 FROM listings WHERE id = $1", listing_id):
             raise HTTPException(status.HTTP_404_NOT_FOUND, "Listing not found.")
 

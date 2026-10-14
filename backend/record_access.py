@@ -133,6 +133,11 @@ _LINKED: dict[str, tuple[str, str]] = {
     "contract_synthesis_artifacts": ("r.client_id", "NULL::uuid"),
     "smart_plan_enrollments": ("NULL::uuid", "r.contact_id"),
     "agent_call_intents": ("NULL::uuid", "r.contact_id"),
+    # 0143: a lead follows its seller client; media on a lead follows the lead;
+    # an intake event follows its contact.
+    "leads": ("r.seller_client_id", "NULL::uuid"),
+    "property_media": ("(SELECT l.seller_client_id FROM public.leads l WHERE l.id = r.lead_id)", "NULL::uuid"),
+    "lead_intake_events": ("NULL::uuid", "r.contact_id"),
 }
 LINKED_VIEW_ONLY = "The client or contact this belongs to is shared with you to view only."
 
@@ -159,6 +164,13 @@ async def require_linked_edit(conn, table: str, record_id: str, not_found: str) 
         raise HTTPException(status.HTTP_404_NOT_FOUND, not_found)
     if level != "edit":
         raise HTTPException(status.HTTP_403_FORBIDDEN, LINKED_VIEW_ONLY)
+
+
+async def require_lead_edit(conn, lead_id, not_found: str = "Lead not found.") -> None:
+    """404 when the lead is invisible (or missing), 403 when the client whose
+    house it is (leads.seller_client_id) is shared with the caller view-only
+    (0143). A lead with no client is the brokerage pool: always editable."""
+    await require_linked_edit(conn, "leads", str(lead_id), not_found)
 
 
 async def _actor_user_id(conn) -> Optional[str]:

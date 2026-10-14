@@ -288,8 +288,8 @@ async def upload_lead_media(
     """Attach one or more photos to a lead (the primary property record — 257k
     leads vs few listings). Returns the created media rows."""
     async with tenant_tx(ctx) as conn:
-        if not await conn.fetchval("SELECT 1 FROM leads WHERE id = $1", lead_id):
-            raise HTTPException(status.HTTP_404_NOT_FOUND, "Lead not found.")
+        # 404 when invisible; 403 when its client is shared view-only (0143).
+        await record_access.require_lead_edit(conn, lead_id)
         created = await _persist(
             conn, tenant_id=ctx.tenant_id, lead_id=lead_id, listing_id=None, files=files
         )
@@ -376,6 +376,9 @@ async def delete_media(
     import space_assets
 
     async with tenant_tx(ctx) as conn:
+        # Before any object is removed: the DELETE below is refused by RLS for a
+        # view-only share (0143), but the storage files would already be gone.
+        await record_access.require_linked_edit(conn, "property_media", str(media_id), "Media not found.")
         row = await conn.fetchrow(
             "SELECT id, kind, s3_key FROM property_media WHERE id = $1", media_id
         )

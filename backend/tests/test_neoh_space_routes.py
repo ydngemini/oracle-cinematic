@@ -217,6 +217,7 @@ def test_deleting_a_space_removes_every_derived_object_and_keeps_photos(wire, mo
     monkeypatch.setattr(space_assets, "delete_objects",
                         lambda keys: (deleted.extend(keys), {"deleted": len(keys), "failed": 0})[1])
     conn = wire([
+        ("SELECT app_linked_access", {"can_edit": True}),   # the caller may edit the lead (0143)
         ("SELECT id, s3_key FROM property_media", [{"id": uuid.uuid4(), "s3_key": "splats/t/a.sog"}]),
         ("SELECT raw_output_key", [{"raw_output_key": "splats/t/raw/j.ply"}]),
     ])
@@ -233,7 +234,8 @@ def test_deleting_a_space_removes_every_derived_object_and_keeps_photos(wire, mo
 
 def test_a_failed_object_delete_keeps_the_rows(wire, monkeypatch):
     monkeypatch.setattr(space_assets, "delete_objects", lambda keys: {"deleted": 0, "failed": 1})
-    conn = wire([("SELECT id, s3_key FROM property_media", [{"id": uuid.uuid4(), "s3_key": "k.sog"}])])
+    conn = wire([("SELECT app_linked_access", {"can_edit": True}),
+                 ("SELECT id, s3_key FROM property_media", [{"id": uuid.uuid4(), "s3_key": "k.sog"}])])
     with pytest.raises(HTTPException) as err:
         asyncio.run(tour_api.delete_space(lead_id=LEAD, listing_id=None, confirm=True, ctx=_ctx()))
     assert err.value.status_code == 503
@@ -304,3 +306,16 @@ def test_the_newest_current_capture_is_the_one_opened():
     ]
     tour = tour_api.build_tour(rows, [], None)
     assert tour["splat_url"] == "/api/media/b"
+
+
+def test_a_view_only_lead_keeps_its_space(wire, monkeypatch):
+    """0143: RLS refuses the row DELETE for a view-only share, but the files go
+    first — so the route refuses before touching storage."""
+    deleted = []
+    monkeypatch.setattr(space_assets, "delete_objects",
+                        lambda keys: (deleted.extend(keys), {"deleted": len(keys), "failed": 0})[1])
+    wire([("SELECT app_linked_access", {"can_edit": False}),
+          ("SELECT id, s3_key FROM property_media", [{"id": uuid.uuid4(), "s3_key": "k.sog"}])])
+    with pytest.raises(HTTPException) as err:
+        asyncio.run(tour_api.delete_space(lead_id=LEAD, listing_id=None, confirm=True, ctx=_ctx()))
+    assert err.value.status_code == 403 and deleted == []

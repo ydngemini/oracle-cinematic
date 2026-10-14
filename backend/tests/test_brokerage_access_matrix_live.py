@@ -62,8 +62,12 @@ async def _policy_composition():
     }, clients
     for t in CHILD_TABLES:
         restrictive = {(r["policyname"], r["cmd"]) for r in by_table[t] if r["permissive"] == "RESTRICTIVE"}
-        assert restrictive == {(f"{t}_client_read", "SELECT"), (f"{t}_client_insert", "INSERT"),
-                               (f"{t}_client_update", "UPDATE"), (f"{t}_client_delete", "DELETE")}, (t, restrictive)
+        expected = {(f"{t}_client_read", "SELECT"), (f"{t}_client_insert", "INSERT"),
+                    (f"{t}_client_update", "UPDATE"), (f"{t}_client_delete", "DELETE")}
+        if t == "interaction_logs":  # its lead_id link follows the lead too (0143)
+            expected |= {(f"{t}_lead_read", "SELECT"), (f"{t}_lead_insert", "INSERT"),
+                         (f"{t}_lead_update", "UPDATE"), (f"{t}_lead_delete", "DELETE")}
+        assert restrictive == expected, (t, restrictive)
 
 
 async def _scenario():

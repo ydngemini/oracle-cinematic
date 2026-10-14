@@ -515,7 +515,13 @@ async def close_pool():
 # pages that never touched the locked table failed too (db_lock drill,
 # 2026-10-02). The waiter gets a 503 "busy, try again".
 LOCK_TIMEOUT = os.getenv("ORACLE_DB_LOCK_TIMEOUT", "5s")
-_SERVER_SETTINGS = {"lock_timeout": LOCK_TIMEOUT}
+# JIT off: this is an OLTP workload, and RLS policies make every lead query's
+# estimated cost cross jit_above_cost, so PostgreSQL compiled ~50 functions per
+# query before running it. Measured on the 10.5M-lead dev DB as an agent
+# (L03-07): the pipeline page took 1,324 ms with jit=on, 1,099 ms of it JIT
+# compile time, and 34 ms with jit=off. The capped search count took 3,580 ms
+# on and 2,118 ms off. 0140 saw the same thing (L03-05).
+_SERVER_SETTINGS = {"lock_timeout": LOCK_TIMEOUT, "jit": "off"}
 
 
 class DatabaseUnavailable(RuntimeError):

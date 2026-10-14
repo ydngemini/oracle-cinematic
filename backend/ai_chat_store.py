@@ -1676,6 +1676,11 @@ async def _execute_safe_tool(
                     "ok": False,
                     "error": "That stage is not a durable pipeline state. Use draft, under_contract, marketing, assigned, closed, expired, or dead.",
                 }
+            from record_access import LINKED_VIEW_ONLY, linked_access_level
+
+            # A client's house shared view-only cannot be moved (0143).
+            if await linked_access_level(conn, "leads", deal_id) == "view":
+                return {"ok": False, "error": LINKED_VIEW_ONLY}
             previous = await conn.fetchrow(
                 """SELECT dossier_status,contract_execution_date FROM leads
                     WHERE id=$1::uuid AND tenant_id=$2::uuid FOR UPDATE""",
