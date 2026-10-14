@@ -109,6 +109,12 @@ POLICY_COVERAGE: tuple[dict[str, str], ...] = (
      "evidence": "db/migrations/0140_communications_follow_the_record.sql",
      "section": "2. Authorized data and confidentiality",
      "phrase": "if a person asks any of your agents to stop, every agent is blocked from contacting them"},
+    # 0142 needs no new wording: a staged text, email or call is one of the
+    # "texts, emails, calls" above, and sending one needs edit access.
+    {"capability": "staged drafts and approvals follow the record (D-2026-10-13-01, 0142)",
+     "evidence": "db/migrations/0142_drafts_follow_the_record.sql",
+     "section": "2. Authorized data and confidentiality",
+     "phrase": "sending, calling, enrolling or generating a document for someone needs edit access"},
     {"capability": "AI call notes: consent, review by default (D-2026-10-12-03)",
      "evidence": "call_note_settings.py",
      "section": "4. AI-assisted work and professional judgment",

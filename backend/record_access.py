@@ -133,6 +133,9 @@ _LINKED: dict[str, tuple[str, str]] = {
     "contract_synthesis_artifacts": ("r.client_id", "NULL::uuid"),
     "smart_plan_enrollments": ("NULL::uuid", "r.contact_id"),
     "agent_call_intents": ("NULL::uuid", "r.contact_id"),
+    # 0142: staged drafts and their approvals (links derived from the target).
+    "command_executions": ("r.client_id", "r.contact_id"),
+    "action_approvals": ("r.client_id", "r.contact_id"),
 }
 LINKED_VIEW_ONLY = "The client or contact this belongs to is shared with you to view only."
 

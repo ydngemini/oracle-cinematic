@@ -38,7 +38,7 @@ from starlette.responses import RedirectResponse, Response
 import record_access
 import ws_hub
 from agent_profile import load_agent_identity
-from approval_service import create_approval, decide_approval, list_approvals
+from approval_service import create_approval, decide_approval, list_approvals, require_decider
 from audit_ledger import AuditCategory, ledger
 from automation_jobs import enqueue_job, register_handler
 from command_providers import (
@@ -743,6 +743,75 @@ async def _get_command(ctx: TenantContext, command_id: str, *, lock: bool = Fals
     return row
 
 
+_COMMAND_NOT_FOUND = "Command not found."
+
+
+async def _require_target_editable(conn: Any, target: dict[str, Any]) -> None:
+    """A draft goes only to a record the caller may contact (0142, CONTRACT
+    C3.4): 404 when they cannot see the client/contact it names, 403 when it is
+    shared with them to view only. The database refuses the same row
+    (command_executions_linked_insert); this answers it as an HTTP status
+    instead of a 500. A value that is not a UUID links nothing (the 0142
+    trigger ignores it) and is left to _validate_command_payload."""
+    for key, require in (("client_id", record_access.require_client_edit),
+                         ("contact_id", record_access.require_contact_edit)):
+        value = target.get(key)
+        if not value:
+            continue
+        try:
+            uuid.UUID(str(value))
+        except (ValueError, TypeError, AttributeError):
+            continue
+        await require(conn, str(value))
+
+
+async def _require_command_edit(ctx: TenantContext, command_id: str) -> None:
+    """404 when the draft is invisible to the caller (its client or contact
+    is), 403 when that record is shared with them to view only (0142)."""
+    async with tenant_tx(ctx) as conn:
+        await record_access.require_linked_edit(conn, "command_executions", command_id, _COMMAND_NOT_FOUND)
+
+
+async def _requester_may_contact(tenant_id: str, command: Any) -> bool:
+    """Re-check, at execution, that the person who asked for this send may
+    still contact the record it is about (CONTRACT C3.4, 0142).
+
+    Approval happens hours or days before a scheduled send; in between the
+    client can be reassigned to a colleague or a share revoked. The worker runs
+    as platform admin, which sees everything, so the check is made as the
+    requester: the approval's requested_by (the agent the AI, a mission or a
+    Smart Plan acted for), in their own role. A requester who is not a member
+    (a system pipeline such as speed-to-lead) is checked as an agent with that
+    id, which is exactly what it could stage: pool records only."""
+    client_id, contact_id = command.get("client_id"), command.get("contact_id")
+    if client_id is None and contact_id is None:
+        return True
+    platform = TenantContext(agent_id="command-worker", tenant_id=tenant_id, role=Role.PLATFORM_ADMIN)
+    async with tenant_tx(platform) as conn:
+        requested_by = None
+        if command.get("approval_id") is not None:
+            requested_by = await conn.fetchval(
+                "SELECT requested_by FROM action_approvals WHERE id=$1::uuid", command["approval_id"]
+            )
+        requested_by = str(requested_by or command.get("created_by") or "")
+        member = await record_access.find_member(conn, tenant_id, requested_by)
+    role = Role.AGENT
+    if member is not None:
+        try:
+            role = Role(member["role"])
+        except ValueError:
+            role = Role.AGENT
+    actor = TenantContext(
+        agent_id=str(member["agent_id"]) if member else requested_by,
+        tenant_id=tenant_id,
+        role=role,
+    )
+    async with tenant_tx(actor) as conn:
+        return bool(await conn.fetchval(
+            "SELECT app_linked_access($1::uuid, $2::uuid, true)", client_id, contact_id,
+        ))
+
+
 # "text" is an ordinary English noun as often as it is a verb — "email her the
 # text of the counteroffer", "call him about their last text". Left in place
 # those readings win the SMS pattern below (it is tested before CALL and EMAIL)
@@ -1294,6 +1363,8 @@ async def stage_command(
             ctx.tenant_id,
             idempotency_key,
         )
+        if not existing:
+            await _require_target_editable(conn, target)
     if existing:
         return {"command": _command_dict(existing), "created": False}
 
@@ -1371,19 +1442,29 @@ async def commands(
     ctx: TenantContext = Depends(require_context),
 ):
     require_feature(Feature.AUTOMATION)
+    # RLS decides which drafts the caller sees (0142: those about records they
+    # can see). Ordered by tenant_id first so idx_command_executions_tenant_created
+    # serves the order under the 0141 tenant-wall range and the LIMIT stops the
+    # scan; for one brokerage it is exactly newest first. Ordered by created_at
+    # alone, every visible row was sorted, and the 0142 policies' estimated cost
+    # crossed jit_above_cost: 1.7-2.4 s for an agent in a 21,000-draft brokerage
+    # (local dev DB), 22-54 ms this way. JIT off as in list_approvals: a
+    # selective state filter makes the planner expect a long scan, and the
+    # policies are costed per row.
     async with tenant_tx(ctx) as conn:
+        await conn.execute("SET LOCAL jit = off")
         if state_filter:
             rows = await conn.fetch(
                 """
                 SELECT * FROM command_executions
-                WHERE state=$1 ORDER BY created_at DESC LIMIT $2
+                WHERE state=$1 ORDER BY tenant_id, created_at DESC LIMIT $2
                 """,
                 state_filter,
                 limit,
             )
         else:
             rows = await conn.fetch(
-                "SELECT * FROM command_executions ORDER BY created_at DESC LIMIT $1",
+                "SELECT * FROM command_executions ORDER BY tenant_id, created_at DESC LIMIT $1",
                 limit,
             )
     return {"commands": [_command_dict(row) for row in rows]}
@@ -1746,18 +1827,34 @@ async def edit_command(
 ):
     require_feature(Feature.AUTOMATION)
     async with tenant_tx(ctx) as conn:
+        # Before the FOR UPDATE: a row the caller may only view is filtered
+        # out of a locking read, which would answer 404 instead of 403.
+        await record_access.require_linked_edit(conn, "command_executions", command_id, _COMMAND_NOT_FOUND)
         row = await conn.fetchrow(
             "SELECT * FROM command_executions WHERE id=$1::uuid FOR UPDATE", command_id
         )
         if not row:
-            raise HTTPException(status_code=404, detail="Command not found.")
+            raise HTTPException(status_code=404, detail=_COMMAND_NOT_FOUND)
         if row["state"] not in {"draft", "awaiting_approval"}:
             raise HTTPException(status_code=409, detail="Command can no longer be edited.")
+        # An edit replaces the approval with one requested by the editor, so
+        # only someone who may decide the current one may edit (0142): before,
+        # any agent who could see a colleague's draft could edit it into their
+        # own request and approve it.
+        current = await conn.fetchrow(
+            "SELECT requested_by, risk_class, action_type FROM action_approvals WHERE id=$1::uuid",
+            row["approval_id"],
+        ) if row["approval_id"] is not None else None
+        if current is not None:
+            require_decider(ctx, current)
+        elif not (ctx.is_platform_admin or ctx.is_broker_owner):
+            raise HTTPException(status_code=403, detail="Only a broker owner can change this command.")
         command_type = CommandType(row["command_type"])
         try:
             _validate_command_payload(command_type, body.target, body.draft)
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
+        await _require_target_editable(conn, body.target)
         await conn.execute(
             """
             UPDATE action_approvals
@@ -1869,9 +1966,10 @@ async def approve_command(
     ctx: TenantContext = Depends(require_context),
 ):
     require_feature(Feature.AUTOMATION)
+    await _require_command_edit(ctx, command_id)
     row = await _get_command(ctx, command_id)
     if not row:
-        raise HTTPException(status_code=404, detail="Command not found.")
+        raise HTTPException(status_code=404, detail=_COMMAND_NOT_FOUND)
     if row["state"] != "awaiting_approval":
         raise HTTPException(status_code=409, detail=f"Command is {row['state']}.")
     return await release_command(ctx, row, reason=body.reason)
@@ -1883,9 +1981,10 @@ async def reject_command(
     body: ApprovalDecision,
     ctx: TenantContext = Depends(require_context),
 ):
+    await _require_command_edit(ctx, command_id)
     row = await _get_command(ctx, command_id)
     if not row:
-        raise HTTPException(status_code=404, detail="Command not found.")
+        raise HTTPException(status_code=404, detail=_COMMAND_NOT_FOUND)
     approval = await decide_approval(
         ctx, str(row["approval_id"]), decision="rejected", reason=body.reason
     )
@@ -2714,6 +2813,12 @@ async def _execute_command_job(payload: dict[str, Any], reporter) -> dict[str, A
     await reporter.progress(15, "compliance check")
     submission_started = False
     try:
+        if not await _requester_may_contact(tenant_id, command):
+            raise RuntimeError(
+                "Not sent: the person who asked for this can no longer contact this "
+                "client or contact (reassigned, or access removed since it was approved). "
+                "Stage it again if it should still go out."
+            )
         if command_type is CommandType.EMAIL:
             decision = await guard_outreach(
                 ctx,

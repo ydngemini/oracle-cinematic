@@ -51,7 +51,7 @@ Counts are from the dev database. They show shape, not production volume.
 - `inbound_voice_calls`: caller, transcript, summary and intake answers, all encrypted.
 - `contact_intake_sessions` (encrypted).
 - `negotiation_events.transcript_excerpt` (plaintext).
-- `command_executions.draft`: outbound drafts.
+- `command_executions.draft`: outbound drafts (and the same draft inside `action_approvals.draft_payload`). Since 0142 both rows carry `client_id`/`contact_id` links (no PII) and are visible only to those who can see that client or contact.
 
 **Communication metadata**:
 - `telephony_routes`: numbers, including the agent's personal hand-off phone.
