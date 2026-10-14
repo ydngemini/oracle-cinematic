@@ -2124,7 +2124,7 @@ async def call_telemetry(
                 model_version, created_by
             ) VALUES (
                 $1::uuid,$2::uuid,'counter_offer',NULL,
-                pgp_sym_encrypt(NULLIF($3::text,''),$11::text),$4,$5,$6,$7,$8,$9::jsonb,
+                pgp_sym_encrypt(NULLIF($3::text,''),$11::text,'s2k-mode=1'),$4,$5,$6,$7,$8,$9::jsonb,
                 'objective-negotiation-2026.07',$10
             ) RETURNING id, created_at
             """,

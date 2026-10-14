@@ -42,7 +42,7 @@ _PLATFORM_TENANT = "00000000-0000-0000-0000-000000000000"
 # Literal statements only (bandit B608). $1 tenant, $2 key, $3 batch size.
 _SMS_SEAL = """
     UPDATE sms_messages
-       SET body_ciphertext = pgp_sym_encrypt(body, $2::text), body = NULL
+       SET body_ciphertext = pgp_sym_encrypt(body, $2::text, 's2k-mode=1'), body = NULL
      WHERE id IN (SELECT id FROM sms_messages
                    WHERE tenant_id = $1::uuid AND body_ciphertext IS NULL
                      AND COALESCE(body, '') <> ''

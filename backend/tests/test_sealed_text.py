@@ -174,7 +174,7 @@ def test_outbound_sms_stores_no_plaintext(monkeypatch):
         provider_message_id="m-1", from_e164="+15550000001", to_e164="+15550000002",
         body="Gate code is 4411"))
     query, args = next((q, a) for q, a in seen if "INSERT INTO sms_messages" in q)
-    assert "NULL,pgp_sym_encrypt(NULLIF($9::text,''),$10::text)" in query
+    assert "NULL,pgp_sym_encrypt(NULLIF($9::text,''),$10::text,'s2k-mode=1')" in query
     assert args[-1] == derive_tenant_key(TENANT, "unit-master")
 
 
@@ -198,7 +198,7 @@ def test_inbound_sms_stores_no_plaintext(monkeypatch):
         from_e164="+15550000002", to_e164="+15550000001", text="Call me after five",
         media=[], opted_out=False))
     query, args = next((q, a) for q, a in seen if "INSERT INTO sms_messages" in q)
-    assert "$7,$8,NULL,pgp_sym_encrypt(NULLIF($9::text,''),$12::text)" in query
+    assert "$7,$8,NULL,pgp_sym_encrypt(NULLIF($9::text,''),$12::text,'s2k-mode=1')" in query
     assert args[-1] == derive_tenant_key(TENANT, "unit-master")
 
 
@@ -218,7 +218,7 @@ def test_a_chat_turn_stores_no_plaintext(monkeypatch):
     ctx = TenantContext(agent_id="agent-a", tenant_id=TENANT, role=Role.AGENT)
     asyncio.run(SessionManager(ctx).record_interaction("agent-a", "user", "Seller is going through probate"))
     query, args = seen[-1]
-    assert "VALUES ($1, $2, $3, '', pgp_sym_encrypt(NULLIF($4::text, ''), $6::text), $5)" in query
+    assert "VALUES ($1, $2, $3, '', pgp_sym_encrypt(NULLIF($4::text, ''), $6::text, 's2k-mode=1'), $5)" in query
     assert args[-1] == derive_tenant_key(TENANT, "unit-master")
 
 
@@ -250,3 +250,24 @@ def test_the_migration_is_expand_only():
     assert "DROP COLUMN" not in sql.upper()
     for check in re.findall(r"CHECK\s*\((.*?)\);", sql, re.S):
         assert re.match(r"\s*\w+_ciphertext IS NULL OR", check), check
+
+
+def test_every_app_pgp_sym_encrypt_uses_single_pass_s2k():
+    # Keys are 32-byte HKDF outputs, not passwords: the iterated default S2K
+    # cost ~0.5 ms per row each way for no strength (0153). A new encrypt
+    # site must pass 's2k-mode=1' too. Docstrings/comments are ignored.
+    import pathlib
+    import re
+
+    root = pathlib.Path(__file__).resolve().parents[1]
+    offenders = []
+    for path in root.rglob("*.py"):
+        rel = path.relative_to(root).as_posix()
+        if rel.startswith(("tests/", "venv/", "ml_forge/", "scripts/")):
+            continue
+        for lineno, line in enumerate(path.read_text(encoding="utf-8", errors="ignore").splitlines(), 1):
+            code = line.split("#", 1)[0]
+            if re.search(r"pgp_sym_encrypt\(\$|pgp_sym_encrypt\((NULLIF|body|content|transcript)", code) \
+                    and "s2k-mode=1" not in code:
+                offenders.append(f"{rel}:{lineno}")
+    assert not offenders, offenders

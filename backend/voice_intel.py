@@ -533,7 +533,7 @@ async def ingest_voice_telemetry(
                 counter_offer,arv,rehab,mao,threshold,payload,
                 model_version,created_by
             ) VALUES (
-                $1::uuid,$2,$3,NULL,pgp_sym_encrypt(NULLIF($4::text,''),$12::text),
+                $1::uuid,$2,$3,NULL,pgp_sym_encrypt(NULLIF($4::text,''),$12::text,'s2k-mode=1'),
                 $5,$6,$7,$8,$9,$10::jsonb,
                 'objective-voice-telemetry-2026.07',$11
             ) RETURNING id,created_at

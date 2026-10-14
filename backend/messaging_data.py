@@ -1070,7 +1070,7 @@ async def record_inbound_message(
                 body,body_ciphertext,media,opt_out_event
             ) VALUES (
                 $1::uuid,$2,$3::uuid,$4::uuid,'inbound',$5,$6,'received','delivered',
-                $7,$8,NULL,pgp_sym_encrypt(NULLIF($9::text,''),$12::text),$10::jsonb,$11
+                $7,$8,NULL,pgp_sym_encrypt(NULLIF($9::text,''),$12::text,'s2k-mode=1'),$10::jsonb,$11
             )
             ON CONFLICT (provider,provider_message_id) DO NOTHING
             RETURNING id,activity_id
@@ -1149,7 +1149,7 @@ async def record_outbound_message(
                 tenant_id,agent_id,contact_id,client_id,direction,provider,
                 provider_message_id,status,from_e164,to_e164,body,body_ciphertext
             ) VALUES ($1::uuid,$2,$3::uuid,$4::uuid,'outbound',$5,$6,'queued',$7,$8,
-                      NULL,pgp_sym_encrypt(NULLIF($9::text,''),$10::text))
+                      NULL,pgp_sym_encrypt(NULLIF($9::text,''),$10::text,'s2k-mode=1'))
             ON CONFLICT (provider,provider_message_id) DO NOTHING
             RETURNING id
             """,

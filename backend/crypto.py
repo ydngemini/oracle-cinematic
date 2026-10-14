@@ -151,7 +151,7 @@ async def encrypt_pii(conn, plaintext: str, tenant_key: str) -> bytes:
 
     try:
         row = await conn.fetchrow(
-            "SELECT pgp_sym_encrypt($1::text, $2::text) AS ct",
+            "SELECT pgp_sym_encrypt($1::text, $2::text, 's2k-mode=1') AS ct",
             plaintext,
             tenant_key,
         )

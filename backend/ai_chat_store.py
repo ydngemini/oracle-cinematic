@@ -39,7 +39,7 @@ def tenant_key(ctx: TenantContext) -> str:
 
 
 async def _encrypt_text(conn, value: str, key: str) -> bytes:
-    return await conn.fetchval("SELECT pgp_sym_encrypt($1::text, $2::text)", value, key)
+    return await conn.fetchval("SELECT pgp_sym_encrypt($1::text, $2::text, 's2k-mode=1')", value, key)
 
 
 async def _decrypt_text(conn, value: bytes, key: str) -> str:

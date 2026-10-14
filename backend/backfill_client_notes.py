@@ -26,7 +26,7 @@ _ACTOR = "client-note-seal-backfill"
 
 _SEAL = """
     UPDATE client_notes
-       SET body_ciphertext = pgp_sym_encrypt(body, $2::text), body = ''
+       SET body_ciphertext = pgp_sym_encrypt(body, $2::text, 's2k-mode=1'), body = ''
      WHERE id IN (SELECT id FROM client_notes
                    WHERE tenant_id = $1::uuid AND body_ciphertext IS NULL AND body <> ''
                    ORDER BY id LIMIT $3

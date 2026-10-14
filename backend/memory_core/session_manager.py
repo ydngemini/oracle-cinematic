@@ -294,7 +294,7 @@ class SessionManager:
                 """
                 INSERT INTO user_interactions
                        (user_id, tenant_id, role, content, content_ciphertext, token_estimate)
-                VALUES ($1, $2, $3, '', pgp_sym_encrypt(NULLIF($4::text, ''), $6::text), $5)
+                VALUES ($1, $2, $3, '', pgp_sym_encrypt(NULLIF($4::text, ''), $6::text, 's2k-mode=1'), $5)
                 """,
                 user_id,
                 self.ctx.tenant_id,
