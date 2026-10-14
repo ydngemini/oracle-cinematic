@@ -352,6 +352,11 @@ async def _scenario():
         await admin.execute("UPDATE agent_contacts SET state_code='DE', timezone='America/New_York' WHERE id=$1",
                             uuid.UUID(linked["contact"]["id"]))
         await admin.execute("UPDATE clients SET assignee_id=NULL WHERE id=$1", uuid.UUID(client_a))  # to the pool
+        # 0137 carried the contact to the pool with its client; put it back with
+        # A so the client is visible to C while its contact is not (the drift
+        # app_client_contact_place exists for).
+        await admin.execute("UPDATE agent_contacts SET assigned_agent_id=$2 WHERE id=$1",
+                            uuid.UUID(linked["contact"]["id"]), agent["a"])
         async with connection.tenant_tx(ctx("c")) as conn:
             assert await conn.fetchval("SELECT count(*) FROM agent_contacts WHERE id=$1",
                                        uuid.UUID(linked["contact"]["id"])) == 0
