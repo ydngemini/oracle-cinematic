@@ -167,6 +167,42 @@ _STAGE_COLUMN = {
 }
 
 
+# One literal statement per stage (no SQL is assembled at run time). Accepted
+# and delivered are claims about a provider: neither is recorded unless the
+# command itself says a provider took it, so a stray or forged signal for a
+# command that failed or was cancelled moves nothing.
+_ADVANCE_SQL = {
+    Stage.APPROVED: """
+        UPDATE lead_response_events
+           SET disposition = $3, approved_at = COALESCE(approved_at, $5), updated_at = now()
+         WHERE tenant_id = $1::uuid AND command_id = $2::uuid
+           AND disposition = ANY($4::text[])""",
+    Stage.ACCEPTED: """
+        UPDATE lead_response_events
+           SET disposition = $3, accepted_at = COALESCE(accepted_at, $5), updated_at = now()
+         WHERE tenant_id = $1::uuid AND command_id = $2::uuid
+           AND disposition = ANY($4::text[])
+           AND EXISTS (SELECT 1 FROM command_executions c
+                        WHERE c.id = lead_response_events.command_id
+                          AND c.tenant_id = lead_response_events.tenant_id
+                          AND c.state = 'succeeded')""",
+    Stage.DELIVERED: """
+        UPDATE lead_response_events
+           SET disposition = $3, delivered_at = COALESCE(delivered_at, $5), updated_at = now()
+         WHERE tenant_id = $1::uuid AND command_id = $2::uuid
+           AND disposition = ANY($4::text[])
+           AND EXISTS (SELECT 1 FROM command_executions c
+                        WHERE c.id = lead_response_events.command_id
+                          AND c.tenant_id = lead_response_events.tenant_id
+                          AND c.state = 'succeeded')""",
+    Stage.CANCELLED: """
+        UPDATE lead_response_events
+           SET disposition = $3, updated_at = now()
+         WHERE tenant_id = $1::uuid AND command_id = $2::uuid
+           AND disposition = ANY($4::text[])""",
+}
+
+
 async def advance_first_response(
     conn: Any,
     *,
@@ -191,28 +227,11 @@ async def advance_first_response(
         raise ValueError(f"the first-response ledger does not record {stage.value!r}")
     at = occurred_at or datetime.now(timezone.utc)
     column = _STAGE_COLUMN.get(stage)
-    stamp = f", {column} = COALESCE({column}, $5)" if column else ""
-    # Accepted and delivered are claims about a provider. Neither is recorded
-    # unless the command itself says a provider took it — a stray or forged
-    # signal for a command that failed or was cancelled moves nothing.
-    provider_took_it = (
-        """
-                   AND EXISTS (SELECT 1 FROM command_executions c
-                                WHERE c.id = lead_response_events.command_id
-                                  AND c.tenant_id = lead_response_events.tenant_id
-                                  AND c.state = 'succeeded')"""
-        if stage in (Stage.ACCEPTED, Stage.DELIVERED) else ""
-    )
     moved = False
     try:
         async with conn.transaction():
             result = await conn.execute(
-                f"""
-                UPDATE lead_response_events
-                   SET disposition = $3{stamp}, updated_at = now()
-                 WHERE tenant_id = $1::uuid AND command_id = $2::uuid
-                   AND disposition = ANY($4::text[]){provider_took_it}
-                """,
+                _ADVANCE_SQL[stage],
                 str(tenant_id), str(command_id), stage.value,
                 _earlier_dispositions(stage), *((at,) if column else ()),
             )
