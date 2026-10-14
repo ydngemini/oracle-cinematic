@@ -132,6 +132,8 @@ def _preserved(expected: Iterable[str], enforced: frozenset[str]) -> bool:
             continue  # the strict pair stands in for an unplaced time
         if kind == "no_send" and "do_not_contact" in enforced:
             continue
+        if kind == "draft_only" and "no_send" in enforced:
+            continue  # stricter than stated: nothing goes out, not even a draft
         if kind == "do_not_contact" and "no_send" in enforced:
             continue
         return False
