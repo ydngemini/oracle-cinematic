@@ -981,16 +981,17 @@ async def push_deal_pipeline(
         "filters": {key: value for key, value in options.items() if key != "cursor"},
         "market_coverage": {},
     }
-    # tenant_id = ANY(app_visible_tenants()) restates the RLS policy as an
-    # INDEXABLE condition (migration 0113). Without it the policy's OR made the
-    # planner walk the global motivation-score index across all ~10M leads and
-    # filter each through RLS: 1.2 s for a 250-lead tenant, 20 s+ under
-    # concurrency — and this runs on EVERY WebSocket connect (Mission 8: the
-    # first server frame took a median 14 s at 100 sockets). With it: 1.7 ms.
-    # ANDed with RLS, so it only narrows; a platform admin still sees all.
+    # No tenant predicate here: RLS scopes the rows. This runs on EVERY
+    # WebSocket connect, and under the old OR policy the planner walked the
+    # global motivation-score index across all ~10M leads (1.2 s for a
+    # 250-lead tenant, 20 s+ under concurrency; Mission 8), so 0113 restated
+    # the policy as `tenant_id = ANY (app_visible_tenants())`. Since 0141 the
+    # tenant wall is itself an index condition; the restatement was redundant
+    # and hid rows whose tenant row is gone from a platform admin, so it is
+    # gone (L16-03). tests/test_tenant_wall_plans_live.py proves this page
+    # still plans on a tenant index.
     where = """
-        WHERE tenant_id = ANY (app_visible_tenants())
-          AND ($1::text IS NULL OR state=$1)
+        WHERE ($1::text IS NULL OR state=$1)
           AND ($2='all' OR
                ($2='statewide' AND payload->'provenance'->>'coverage_scope'='statewide' AND state<>'VA') OR
                ($2='county' AND payload->'provenance'->>'coverage_scope' LIKE 'county:%') OR

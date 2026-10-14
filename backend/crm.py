@@ -696,11 +696,13 @@ async def list_clients(
 
     # Dynamic WHERE — every fragment references a model/whitelist-derived column
     # with a positional placeholder, so this assembly is injection-safe.
-    # tenant_id = ANY(app_visible_tenants()) restates the RLS policy as an
-    # INDEXABLE condition (migration 0113). Without it the policy's OR forced a
-    # scan of every tenant's clients on each request. It is ANDed with RLS, so
-    # it cannot widen visibility, and a platform admin still sees all tenants.
-    where = ["c.archived_at IS NULL", "c.tenant_id = ANY (app_visible_tenants())"]
+    # No tenant predicate here: RLS scopes the rows, and since 0141 the tenant
+    # wall is itself an index condition. The 0113 restatement
+    # `tenant_id = ANY (app_visible_tenants())` is gone (L16-03): it had become
+    # redundant, cost ~2-3 ms, and hid rows whose tenant row is gone from a
+    # platform admin. tests/test_tenant_wall_plans_live.py proves this page
+    # still plans on a tenant index.
+    where = ["c.archived_at IS NULL"]
     args: list = []
     if type != "all":
         args.append(type)
