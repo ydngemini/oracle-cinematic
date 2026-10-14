@@ -522,11 +522,12 @@ jobs:
         run: |
           set -euo pipefail
           doctl apps list-deployments "${DIGITALOCEAN_APP_ID}" -o json > /tmp/deployments.staging.json
+          doctl apps get "${DIGITALOCEAN_APP_ID}" -o json > /tmp/app.staging.json
           python3 scripts/carry-secrets.py --env staging \
-            --deployments /tmp/deployments.staging.json \
+            --deployments /tmp/deployments.staging.json --app /tmp/app.staging.json \
             --inject-from-env PLIVO_AUTH_ID,PLIVO_AUTH_TOKEN,TELNYX_API_KEY,TELNYX_PUBLIC_KEY,TWILIO_ACCOUNT_SID,TWILIO_AUTH_TOKEN,ORACLE_FIREWORKS_API_KEY,ORACLE_DEMO_RECIPIENT_ALLOWLIST,ORACLE_DB_ADMIN_PASSWORD,ORACLE_DB_PLATFORM_PASSWORD,ELEVENLABS_API_KEY,ELEVENLABS_AGENT_ID \
             --rendered /tmp/app.staging.yaml --out /tmp/app.staging.deploy.yaml
-          rm -f /tmp/deployments.staging.json
+          rm -f /tmp/deployments.staging.json /tmp/app.staging.json
 
       # App Platform's own schema check, BEFORE migrations touch the database.
       # The first real bring-up found a spec the renderer accepted and DO
@@ -799,11 +800,12 @@ jobs:
         run: |
           set -euo pipefail
           doctl apps list-deployments "${DIGITALOCEAN_APP_ID}" -o json > /tmp/deployments.production.json
+          doctl apps get "${DIGITALOCEAN_APP_ID}" -o json > /tmp/app.production.json
           python3 scripts/carry-secrets.py --env production \
-            --deployments /tmp/deployments.production.json \
+            --deployments /tmp/deployments.production.json --app /tmp/app.production.json \
             --inject-from-env PLIVO_AUTH_ID,PLIVO_AUTH_TOKEN,TELNYX_API_KEY,TELNYX_PUBLIC_KEY,TWILIO_ACCOUNT_SID,TWILIO_AUTH_TOKEN,ORACLE_FIREWORKS_API_KEY,ORACLE_DB_ADMIN_PASSWORD,ORACLE_DB_PLATFORM_PASSWORD,ELEVENLABS_API_KEY,ELEVENLABS_AGENT_ID \
             --rendered /tmp/app.production.yaml --out /tmp/app.production.deploy.yaml
-          rm -f /tmp/deployments.production.json
+          rm -f /tmp/deployments.production.json /tmp/app.production.json
 
       - name: Validate the production spec with App Platform
         # Validate the RENDERED spec: App Platform's validate (propose) endpoint

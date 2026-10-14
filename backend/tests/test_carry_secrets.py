@@ -137,6 +137,33 @@ def test_no_active_deployment_refuses():
         cs.active_deployment_spec([{"id": "x", "phase": "ERROR", "spec": {}}])
 
 
+def test_a_failed_deploy_and_failed_rollback_carries_from_the_serving_deployment():
+    """neoh-staging, 2026-10-14: a deploy failed in its migration job and the
+    automated rollback failed the migration precheck. The last good deployment
+    kept serving but was labelled SUPERSEDED, so nothing was ACTIVE and every
+    later release refused. The app record's active_deployment names it."""
+    good = {"services": [{"name": "api", "envs": [{"key": "K", "type": "SECRET", "value": "EV[good]"}]}]}
+    bad = {"services": [{"name": "api", "envs": [{"key": "K", "type": "SECRET", "value": "EV[empty]"}]}]}
+    deps = [
+        {"id": "rollback", "phase": "ERROR", "created_at": "2026-10-14T01:21:57Z", "spec": bad},
+        {"id": "failed", "phase": "ERROR", "created_at": "2026-10-14T01:20:53Z", "spec": bad},
+        {"id": "serving", "phase": "SUPERSEDED", "created_at": "2026-10-13T10:20:35Z", "spec": good},
+        {"id": "older", "phase": "SUPERSEDED", "created_at": "2026-10-13T09:48:46Z", "spec": bad},
+    ]
+    app = [{"id": "app", "active_deployment": {"id": "serving", "phase": "SUPERSEDED"}}]
+    spec, dep_id = cs.active_deployment_spec(deps, cs.serving_deployment_id(app))
+    assert dep_id == "serving" and spec is good
+    # Without the app record nothing is guessed; a serving id that names a
+    # failed deployment is refused too.
+    with pytest.raises(cs.CarryError, match="no ACTIVE deployment"):
+        cs.active_deployment_spec(deps)
+    with pytest.raises(cs.CarryError, match="no ACTIVE deployment"):
+        cs.active_deployment_spec(deps, "failed")
+    # An ACTIVE deployment, when there is one, still wins over the app record.
+    deps.append({"id": "active", "phase": "ACTIVE", "created_at": "2026-10-14T02:00:00Z", "spec": good})
+    assert cs.active_deployment_spec(deps, "serving")[1] == "active"
+
+
 def test_cli_never_prints_a_value(tmp_path, capsys):
     rendered = _rendered()
     deps = [{"id": "dep-1", "phase": "ACTIVE", "created_at": "2026-10-03T20:00:00Z",

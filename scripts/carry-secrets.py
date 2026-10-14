@@ -174,12 +174,31 @@ def carry(running: Optional[dict], rendered: dict, env: str = "", *,
     return rendered, report
 
 
-def active_deployment_spec(deployments) -> tuple[dict, str]:
+def serving_deployment_id(app) -> str:
+    """The deployment the app record says is serving (`doctl apps get <app> -o
+    json` → active_deployment.id), or "" when it names none."""
+    if isinstance(app, list):
+        app = app[0] if app else {}
+    return str(((app or {}).get("active_deployment") or {}).get("id") or "")
+
+
+def active_deployment_spec(deployments, serving_id: str = "") -> tuple[dict, str]:
     """(spec, deployment id) of the newest ACTIVE deployment in
-    `doctl apps list-deployments <app> -o json` output."""
+    `doctl apps list-deployments <app> -o json` output.
+
+    After a failed deployment whose automated rollback also failed, App
+    Platform keeps serving the last good deployment but labels it SUPERSEDED,
+    so no deployment is ACTIVE (neoh-staging, 2026-10-14). `serving_id` — the
+    app record's active_deployment.id — then names it. It is still the
+    deployment that is actually serving, so its values are the ones that
+    booted; the app spec is still never used."""
     if isinstance(deployments, dict):           # a single deployment, or {"deployments": [...]}
         deployments = deployments.get("deployments") or [deployments]
-    active = [d for d in deployments or [] if str(d.get("phase", "")).upper() == "ACTIVE" and d.get("spec")]
+    with_spec = [d for d in deployments or [] if d.get("spec")]
+    active = [d for d in with_spec if str(d.get("phase", "")).upper() == "ACTIVE"]
+    if not active and serving_id:
+        active = [d for d in with_spec if str(d.get("id", "")) == serving_id
+                  and str(d.get("phase", "")).upper() in ("ACTIVE", "SUPERSEDED")]
     if not active:
         raise CarryError("no ACTIVE deployment with a spec — nothing safe to carry from (first deploy? "
                          "then set the secrets with `doctl apps create`, docs/staging-setup.md step 8)")
@@ -191,6 +210,9 @@ def main(argv: Optional[list] = None) -> int:
     ap = argparse.ArgumentParser(description="Carry encrypted secrets from the app's ACTIVE deployment.")
     ap.add_argument("--deployments", required=True,
                     help="`doctl apps list-deployments <app-id> -o json` output (the ACTIVE one is used)")
+    ap.add_argument("--app", default="",
+                    help="`doctl apps get <app-id> -o json` output; names the serving deployment when "
+                         "none is labelled ACTIVE (a failed deploy whose rollback also failed)")
     ap.add_argument("--rendered", required=True, help="spec from scripts/render-app-spec.py")
     ap.add_argument("--out", required=True, help="spec to apply (holds EV[…] ciphertexts — never upload it)")
     ap.add_argument("--env", default="", choices=["", "production", "staging"])
@@ -214,7 +236,11 @@ def main(argv: Optional[list] = None) -> int:
             deployments = yaml.safe_load(f)   # JSON is YAML
         with open(args.rendered, encoding="utf-8") as f:
             rendered = yaml.safe_load(f)
-        running, dep_id = active_deployment_spec(deployments)
+        serving = ""
+        if args.app:
+            with open(args.app, encoding="utf-8") as f:
+                serving = serving_deployment_id(yaml.safe_load(f))
+        running, dep_id = active_deployment_spec(deployments, serving)
         if not _components(running):
             raise CarryError("the ACTIVE deployment's spec has no components — refusing to guess")
         spec, report = carry(running, rendered, args.env, inject=inject, override=overrides)
