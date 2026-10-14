@@ -543,6 +543,10 @@ async def load_response_bundle(ctx: TenantContext, assistant_id: str) -> dict:
             messages.append({
                 "id": str(row["id"]), "role": row["role"],
                 "content": await _decrypt_text(conn, row["content_ciphertext"], key),
+                # The discourse context (semantic_turn): ids, kinds and times
+                # only. Never sent to a model — _compact_history keeps only
+                # role and content.
+                "metadata": row.get("metadata") if hasattr(row, "get") else None,
             })
         record = None
         if assistant["context_type"]:
@@ -1860,6 +1864,26 @@ async def execute_safe_tool(
                 ctx, user_id, message_id, call_index, tool_name,
                 arguments_hash, code,
             )
+
+    # What the person said must NOT happen (prompt 05, T05.07): checked here,
+    # at the one chokepoint every provider loop uses, never left to the model.
+    # Empty when ORACLE_SEMANTIC_FRAME_ENABLED is off or no frame was bound to
+    # this turn, so this is exactly the previous path then.
+    import frame_constraints
+    import semantic_turn
+
+    stated = semantic_turn.constraints_for(message_id)
+    if stated:
+        refusal = frame_constraints.check_tool(
+            stated, tool_name,
+            targets=frame_constraints.tool_targets(tool_input, context_type, context_id),
+            now=datetime.now(timezone.utc),
+        )
+        if refusal is not None:
+            # The tool name and code only: the arguments can name a customer.
+            logger.info("Tool %s refused by a stated constraint (%s)", tool_name, refusal.code)
+            await _failed(refusal.code)
+            return refusal.receipt()
 
     try:
         receipt = await _execute_safe_tool(
