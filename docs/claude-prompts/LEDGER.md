@@ -493,7 +493,7 @@ AC05.04 evidence (local). **Switch:** `ORACLE_SEMANTIC_FRAME_ENABLED`, **ON by d
 ```yaml
 id: L05-04
 status: tests_pass
-env: local
+env: staging
 evidence_shas: [012f655]
 files: [backend/semantic_language.py, backend/semantic_frame.py, backend/semantic_turn.py, backend/frame_constraints.py, backend/ai_chat_agent.py, backend/ai_chat_store.py, backend/missions/policy.py, backend/neoh_intents.py, backend/neoh_render.py, backend/commands_api.py, backend/semantic_eval.py, backend/scripts/eval_semantic_frame.py, backend/eval_data/semantic_frames_v1.jsonl, backend/privacy_data_map.py, docs/privacy-data-map.md, backend/tests/test_semantic_language.py, backend/tests/test_frame_constraints.py]
 tests_run:
@@ -505,6 +505,7 @@ tests_run:
   - {cmd: "python scripts/eval_semantic_frame.py --split held_out  (no --approve-spend)", result: "exit 2, refused: 'scoring the model parser spends model tokens'. The model parser has NOT been scored in any language.", date: 2026-10-14}
   - {cmd: "bench: semantic_language.cues + detect, local laptop, n=2000", result: "82 chars p50 0.24 ms / p95 0.25 ms; 576 chars p50 1.1 ms / p95 2.5 ms", date: 2026-10-14}
   - {cmd: "cd backend && bandit -q -r . -x ./tests,./venv,./ml_forge,./node_modules,./scripts --severity-level medium --confidence-level medium -b .bandit-baseline.json", result: "exit 0", date: 2026-10-14}
+  - {cmd: "staging after 12e4c34 (CI run 38629541376 green), POST /api/neoh/ask as the demo agent, read-only", result: "'muéstrame propiedades para Sarah' -> intent properties_for, answered in Spanish ('Todavía no hay nada en la lista de Sarah Johnson…'); its English twin -> same intent, English answer. '¿qué está frenando 123 Main?' -> intent deal_blocker (understood) but the answer is still English — the known gap (fast-path success answers not yet translated). Neither fell through to chat.", date: 2026-10-14}
 authz_checked: "no access change: the backstop only ADDS restrictions (unscoped; do_not_contact marked unresolved = everyone), never scopes one to an unchecked identity and never lifts one; a turn whose backstop added a restriction cannot also lift; check_tool / check_mission_step decide exactly as before, only the sentence changes language. No migration, no grant."
 blockers: ["owner: model-spend approval to score the parser per language (scripts/eval_semantic_frame.py --approve-spend) and to measure real parser latency in Spanish", "owner/linguist: an independent Spanish (and mixed) held-out set; the current one is author-written"]
 audit_refs: []
