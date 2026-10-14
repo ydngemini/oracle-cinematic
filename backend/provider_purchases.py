@@ -15,6 +15,11 @@ The next connect attempt reuses a `confirmed` number instead of buying again.
 A hosted-messaging order (kind 'hosted_messaging_order', provider 'telnyx',
 0136) uses the same lifecycle and the same one-in-flight index, so racing
 connects submit at most one order per route (messaging_data.connect_messaging).
+
+A 10DLC brand or campaign (kinds '10dlc_brand' / '10dlc_campaign', 0139) is
+brokerage-wide: its intent is claimed under the brokerage's brand-row lock and
+checked against every agent's open rows, so racing broker owners register at
+most one of each (messaging_data.register_messaging_brand / _campaign).
 """
 
 from __future__ import annotations
@@ -28,6 +33,8 @@ from tenancy import TenantContext
 
 PHONE_NUMBER = "phone_number"
 HOSTED_MESSAGING_ORDER = "hosted_messaging_order"
+BRAND_10DLC = "10dlc_brand"
+CAMPAIGN_10DLC = "10dlc_campaign"
 
 
 class PurchaseInFlight(RuntimeError):
@@ -68,6 +75,11 @@ async def _set(ctx: TenantContext, purchase_id: str, state: str, *, ref: Optiona
 
 async def confirmed(ctx, purchase_id: str, ref: str, phone_number: str) -> None:
     await _set(ctx, purchase_id, "confirmed", ref=ref, detail={"phone_number": phone_number})
+
+
+async def confirmed_ref(ctx, purchase_id: str, ref: str, detail: Optional[dict] = None) -> None:
+    """The provider accepted a non-number side effect and returned its id."""
+    await _set(ctx, purchase_id, "confirmed", ref=ref, detail=detail)
 
 
 async def attached(ctx, purchase_id: Optional[str]) -> None:

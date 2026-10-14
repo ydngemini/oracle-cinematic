@@ -530,6 +530,299 @@ async def disconnect_messaging(ctx: TenantContext, *, credentials: Mapping[str, 
     return {**updated, "provider_release": provider_status}
 
 
+# ── 10DLC registration: one brand and one campaign per brokerage ───────────
+#
+# Each registration costs money at the carrier, and no adapter can update a
+# brand or campaign in place yet, so (L10-09): a submission when one already
+# exists at the provider is refused; racing submissions — from one broker
+# owner or several — reach the provider once (the intent is claimed under the
+# brokerage's brand-row lock, through provider_purchases, 0139); an ambiguous
+# outcome is `unknown` and blocks resubmission until checked; a definite
+# refusal allows a retry; an accepted-but-unrecorded one is reused.
+
+BRAND_ALREADY_REGISTERED = "A brand is already registered for this number; contact support to change it."
+CAMPAIGN_ALREADY_REGISTERED = "A campaign is already registered for this number; contact support to change it."
+_REGISTRATION_IN_FLIGHT = (
+    "A {what} registration for your brokerage is already being submitted, or the last attempt is "
+    "still being checked. Nothing new was submitted — try again in a few minutes."
+)
+_REGISTRATION_UNCONFIRMED = (
+    "We could not confirm the {what} registration with the provider. Nothing more will be "
+    "submitted for your brokerage until it has been checked."
+)
+_BRAND_FIELDS = (
+    "display_name", "company_name", "ein", "entity_type", "vertical", "email", "phone",
+    "street", "city", "state", "postal_code", "country", "website",
+)
+_BRAND_STATUSES = frozenset({"pending", "unverified", "verified", "failed"})
+_CAMPAIGN_STATUSES = frozenset({"pending", "approved", "rejected", "failed"})
+
+
+class RegistrationConflict(MessagingDataError):
+    """A brand/campaign already exists at the provider, or a submission is unresolved."""
+
+
+class RegistrationUnconfirmed(MessagingDataError):
+    """The provider may have registered it; nothing more is submitted until checked."""
+
+
+def _registration_status(raw: Any, allowed: frozenset[str]) -> str:
+    """The provider's status if it is one this schema knows, else 'pending' —
+    never a guess upward (an unrecognised value is not 'verified')."""
+    value = str(raw or "").strip().lower()
+    return value if value in allowed else "pending"
+
+
+def _json_detail(raw: Any) -> dict[str, Any]:
+    import json
+
+    if isinstance(raw, str):
+        return json.loads(raw or "{}")
+    return dict(raw or {})
+
+
+async def _claim_registration(
+    conn: Any, ctx: TenantContext, provider: str, kind: str, what: str, detail: Mapping[str, Any]
+) -> tuple[str, Optional[str], dict[str, Any]]:
+    """(purchase_id, reusable_ref, detail). The caller holds the brand row's
+    lock, which serialises claims across every agent of the brokerage; the
+    open rows are read brokerage-wide for that reason (the ledger's unique
+    in-flight index is per agent)."""
+    import json
+
+    import asyncpg
+
+    open_rows = await conn.fetch(
+        "SELECT id, state, provider_ref, detail FROM provider_purchases WHERE tenant_id=$1::uuid "
+        "AND provider=$2 AND kind=$3 AND state IN ('intended','unknown','confirmed') ORDER BY created_at DESC",
+        ctx.tenant_id,
+        provider,
+        kind,
+    )
+    if any(row["state"] != "confirmed" or not row["provider_ref"] for row in open_rows):
+        raise RegistrationConflict(_REGISTRATION_IN_FLIGHT.format(what=what))
+    if open_rows:
+        row = open_rows[0]
+        return str(row["id"]), str(row["provider_ref"]), _json_detail(row["detail"])
+    try:
+        purchase_id = await conn.fetchval(
+            "INSERT INTO provider_purchases (tenant_id, agent_id, provider, kind, detail) "
+            "VALUES ($1::uuid,$2,$3,$4,$5::jsonb) RETURNING id",
+            ctx.tenant_id,
+            ctx.agent_id,
+            provider,
+            kind,
+            json.dumps(dict(detail)),
+        )
+    except asyncpg.exceptions.UniqueViolationError as exc:
+        raise RegistrationConflict(_REGISTRATION_IN_FLIGHT.format(what=what)) from exc
+    return str(purchase_id), None, dict(detail)
+
+
+async def _ask_registration(ctx: TenantContext, purchase_id: str, call: Any, what: str) -> tuple[str, Any]:
+    """Ask the provider once and record the outcome on the ledger row. A
+    definite refusal is re-raised as is (the row is `failed`, so a retry may
+    follow); anything ambiguous leaves it `unknown` and raises
+    RegistrationUnconfirmed."""
+    import provider_purchases
+    import recovery_mode
+    from command_providers import ProviderConfigurationError, ProviderRejectedError
+    from messaging_provider import MessagingProviderError
+
+    try:
+        result = await call()
+    except (
+        ProviderConfigurationError,
+        ProviderRejectedError,
+        MessagingProviderError,
+        NotImplementedError,
+        recovery_mode.RecoveryModeBlocked,
+    ) as exc:
+        await provider_purchases.failed(ctx, purchase_id, f"{type(exc).__name__}: {exc}")
+        raise
+    except BaseException as exc:
+        await provider_purchases.unknown(ctx, purchase_id, f"{type(exc).__name__}: {exc}"[:500])
+        if not isinstance(exc, Exception):
+            raise
+        raise RegistrationUnconfirmed(_REGISTRATION_UNCONFIRMED.format(what=what)) from exc
+    await provider_purchases.confirmed_ref(ctx, purchase_id, str(result.reference), {"status": result.status})
+    return str(result.reference), result.status
+
+
+async def register_messaging_brand(
+    ctx: TenantContext, fields: Mapping[str, Any], *, provider: str, credentials: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Register the brokerage's 10DLC brand at most once (see the section note)."""
+    import provider_purchases
+    from messaging_provider import get_messaging_provider
+
+    async with tenant_tx(ctx) as conn:
+        await conn.execute(
+            "INSERT INTO tenant_messaging_brands (tenant_id, provider) VALUES ($1::uuid,$2) "
+            "ON CONFLICT (tenant_id) DO NOTHING",
+            ctx.tenant_id,
+            provider,
+        )
+        brand = await conn.fetchrow(
+            "SELECT id, provider_brand_id FROM tenant_messaging_brands WHERE tenant_id=$1::uuid FOR UPDATE",
+            ctx.tenant_id,
+        )
+        if brand["provider_brand_id"]:
+            raise RegistrationConflict(BRAND_ALREADY_REGISTERED)
+        purchase_id, reuse_ref, detail = await _claim_registration(
+            conn, ctx, provider, provider_purchases.BRAND_10DLC, "brand", {}
+        )
+        if reuse_ref is None:
+            # What is about to be sent is recorded before it is sent; a reused
+            # registration keeps the fields its own attempt recorded.
+            assignments = ",".join(f"{name}=${i}" for i, name in enumerate(_BRAND_FIELDS, start=3))
+            await conn.execute(
+                f"UPDATE tenant_messaging_brands SET provider=$2,status='not_started',failure_reason=NULL,"
+                f"{assignments} WHERE tenant_id=$1::uuid",
+                ctx.tenant_id,
+                provider,
+                *(fields.get(name) for name in _BRAND_FIELDS),
+            )
+
+    if reuse_ref is None:
+        adapter = get_messaging_provider(provider)
+        try:
+            ref, status = await _ask_registration(
+                ctx, purchase_id, lambda: adapter.create_brand(dict(fields), credentials=credentials), "brand"
+            )
+        except RegistrationUnconfirmed:
+            raise
+        except Exception as exc:
+            async with tenant_tx(ctx) as conn:
+                await conn.execute(
+                    "UPDATE tenant_messaging_brands SET status='failed', failure_reason=$2 "
+                    "WHERE tenant_id=$1::uuid AND provider_brand_id IS NULL",
+                    ctx.tenant_id,
+                    str(exc)[:500],
+                )
+            raise
+    else:
+        ref, status = reuse_ref, detail.get("status")
+
+    async with tenant_tx(ctx) as conn:
+        row = await conn.fetchrow(
+            """
+            UPDATE tenant_messaging_brands
+               SET provider_brand_id=$2, status=$3, failure_reason=NULL, submitted_at=now()
+             WHERE tenant_id=$1::uuid AND provider_brand_id IS NULL
+             RETURNING id, status
+            """,
+            ctx.tenant_id,
+            ref,
+            _registration_status(status, _BRAND_STATUSES),
+        )
+        if row is None:
+            # Left `confirmed` for an operator rather than attached to the wrong brand.
+            logger.warning("10DLC brand %s not attached: the brokerage already has a brand", purchase_id)
+            raise RegistrationConflict(BRAND_ALREADY_REGISTERED)
+        await conn.execute(
+            "UPDATE provider_purchases SET state='attached', provider_ref=$2, updated_at=now() WHERE id=$1::uuid",
+            purchase_id,
+            ref,
+        )
+    return {"brand_id": str(row["id"]), "provider_brand_id": ref, "status": row["status"]}
+
+
+async def register_messaging_campaign(
+    ctx: TenantContext,
+    *,
+    description: str,
+    usecase: str,
+    extra: Mapping[str, Any],
+    provider: str,
+    credentials: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Submit the brokerage's 10DLC campaign at most once (see the section note)."""
+    import provider_purchases
+    from messaging_provider import get_messaging_provider
+
+    brand_sql = (
+        "SELECT id, provider_brand_id FROM tenant_messaging_brands WHERE tenant_id=$1::uuid FOR UPDATE"
+    )
+    existing_sql = (
+        "SELECT 1 FROM tenant_messaging_campaigns WHERE tenant_id=$1::uuid "
+        "AND provider_campaign_id IS NOT NULL LIMIT 1"
+    )
+    async with tenant_tx(ctx) as conn:
+        brand = await conn.fetchrow(brand_sql, ctx.tenant_id)
+        if brand is None or not brand["provider_brand_id"]:
+            raise RegistrationConflict("Register a Brand before submitting a Campaign.")
+        if await conn.fetchval(existing_sql, ctx.tenant_id):
+            raise RegistrationConflict(CAMPAIGN_ALREADY_REGISTERED)
+        purchase_id, reuse_ref, detail = await _claim_registration(
+            conn, ctx, provider, provider_purchases.CAMPAIGN_10DLC, "campaign",
+            {"usecase": usecase, "description": description},
+        )
+
+    if reuse_ref is None:
+        adapter = get_messaging_provider(provider)
+        ref, status = await _ask_registration(
+            ctx,
+            purchase_id,
+            lambda: adapter.submit_campaign(
+                brand_id=str(brand["provider_brand_id"]),
+                description=description,
+                usecase=usecase,
+                credentials=credentials,
+                **dict(extra),
+            ),
+            "campaign",
+        )
+    else:
+        ref, status = reuse_ref, detail.get("status")
+
+    async with tenant_tx(ctx) as conn:
+        brand = await conn.fetchrow(brand_sql, ctx.tenant_id)
+        if await conn.fetchval(existing_sql, ctx.tenant_id):
+            logger.warning("10DLC campaign %s not attached: the brokerage already has a campaign", purchase_id)
+            raise RegistrationConflict(CAMPAIGN_ALREADY_REGISTERED)
+        row = await conn.fetchrow(
+            """
+            INSERT INTO tenant_messaging_campaigns
+                (tenant_id,brand_id,provider,provider_campaign_id,status,usecase,description,submitted_at)
+            VALUES ($1::uuid,$2::uuid,$3,$4,$5,$6,$7,now())
+            RETURNING id,status
+            """,
+            ctx.tenant_id,
+            brand["id"],
+            provider,
+            ref,
+            _registration_status(status, _CAMPAIGN_STATUSES),
+            detail.get("usecase", usecase),
+            detail.get("description", description),
+        )
+        await conn.execute(
+            "UPDATE provider_purchases SET state='attached', provider_ref=$2, updated_at=now() WHERE id=$1::uuid",
+            purchase_id,
+            ref,
+        )
+    return {"campaign_id": str(row["id"]), "provider_campaign_id": ref, "status": row["status"]}
+
+
+async def open_registration_submissions(ctx: TenantContext) -> list[dict[str, Any]]:
+    """10DLC submissions whose outcome is not on the brand/campaign yet."""
+    import provider_purchases
+
+    async with tenant_tx(ctx) as conn:
+        rows = await conn.fetch(
+            "SELECT kind, state, updated_at FROM provider_purchases WHERE tenant_id=$1::uuid "
+            "AND kind = ANY($2::text[]) AND state IN ('intended','unknown','confirmed') ORDER BY created_at",
+            ctx.tenant_id,
+            [provider_purchases.BRAND_10DLC, provider_purchases.CAMPAIGN_10DLC],
+        )
+    return [
+        {"kind": "brand" if r["kind"] == provider_purchases.BRAND_10DLC else "campaign",
+         "state": "unconfirmed" if r["state"] == "unknown" else "in_progress",
+         "since": r["updated_at"].isoformat()}
+        for r in rows
+    ]
+
+
 # ── Inbound routing: never trust a caller-supplied tenant/agent ────────────
 
 
