@@ -1152,7 +1152,7 @@ updated: 2026-10-14
 id: L17-14
 status: tests_pass
 env: local
-evidence_shas: []
+evidence_shas: [5bc4494]
 files: [backend/config.py, backend/auth.py, backend/tests/test_config_demo_logins.py]
 tests_run:
   - {cmd: "pytest tests/test_config_demo_logins.py tests/test_config_weak_secrets.py", result: "46 passed", date: 2026-10-14}
@@ -1169,7 +1169,7 @@ updated: 2026-10-14
 id: L17-15
 status: tests_pass
 env: local
-evidence_shas: []
+evidence_shas: [5bc4494]
 files: [backend/auth.py, backend/common_passwords.txt, backend/tests/test_password_hashing.py]
 tests_run:
   - {cmd: "pytest tests/test_password_hashing.py + auth/password/invite suites", result: "24 passed; 116 passed", date: 2026-10-14}
@@ -1188,7 +1188,7 @@ Parameters: N=2^15, r=8, p=3 — one of the five settings OWASP's Password Stora
 id: L17-16
 status: tests_pass
 env: local
-evidence_shas: []
+evidence_shas: [5bc4494]
 files: [.github/workflows/ci.yml, .github/dependabot.yml, backend/tests/test_ci_security_gates.py]
 tests_run:
   - {cmd: "npm audit --omit=dev --audit-level=high (oracle-app)", result: "found 0 vulnerabilities (19 runtime packages)", date: 2026-10-14}
@@ -1210,7 +1210,7 @@ pip-audit already ran on every push (`ci.yml` backend job) before this row; the 
 id: L17-17
 status: tests_pass
 env: local
-evidence_shas: []
+evidence_shas: [5bc4494]
 files: [backend/audit_middleware.py, backend/tests/test_platform_admin_read_audit.py]
 tests_run:
   - {cmd: "pytest tests/test_platform_admin_read_audit.py tests/test_security_launch_review.py", result: "72 passed", date: 2026-10-14}
@@ -1228,7 +1228,7 @@ Bounded: one row per request, never per record. The same actor reading the same 
 id: L17-18
 status: tests_pass
 env: local
-evidence_shas: []
+evidence_shas: [5bc4494]
 files: [.github/workflows/ci.yml, scripts/dr-drill.sh, backend/tests/test_ci_security_gates.py]
 tests_run:
   - {cmd: "scripts/dr-drill.sh against a schema/ledger/roles export of the local dev DB (head 0146), DinD, ORACLE_DRILL_PG_IMAGE=local postgres:16-alpine + bash (DinD cannot pull postgres:16)", result: "before the readiness fix: 42 passed, 1 FAILED ('target already has  tables'); after: 43/43 twice, 41 s and 51 s, backup 2 s, restore 8-13 s, no containers left", date: 2026-10-14}
