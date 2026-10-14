@@ -6,7 +6,7 @@ from __future__ import annotations
 # Bump this identifier whenever the policy text changes materially. Each user
 # acceptance record is tied to this value so prior acknowledgement remains
 # auditable rather than being silently reinterpreted under new wording.
-PLATFORM_POLICY_VERSION = "neoh-platform-use-policy-2026-10-14-v5"
+PLATFORM_POLICY_VERSION = "neoh-platform-use-policy-2026-10-14-v6"
 
 PLATFORM_POLICY_DOCUMENT = {
     "title": "NEOH™ Platform Use Policy",
@@ -23,6 +23,7 @@ PLATFORM_POLICY_DOCUMENT = {
             "paragraphs": [
                 "Use NEOH™ only for lawful, professional real-estate work and only when you are authorized to act for your organization or client. You are responsible for activity performed through your account.",
                 "Keep your account details accurate. Do not share credentials, use another person’s account, bypass access controls, or allow an unauthorized person to operate the platform on your behalf.",
+                "Where two-step sign-in is required for your role or by your brokerage, you may not use the platform until it is set up.",
             ],
         },
         {
@@ -33,6 +34,7 @@ PLATFORM_POLICY_DOCUMENT = {
                 "Each client and contact record is visible to the agent assigned to it, to your broker owner, and to anyone they share it with; a record with no assigned agent is visible to every agent in your brokerage. A contact you add for an assigned client stays with that client's agent. Share a record only with a colleague who has a legitimate business need, give edit access only when they need to change it, and remove access when the need ends.",
                 "Texts, emails, calls, call notes and transcripts, generated documents, nurture plans and the outcome history linked to a client or contact follow that record: you see them only while you can see the record, and sending, calling, enrolling or generating a document for someone needs edit access, not a view-only share. Opt-outs, consent and contact-frequency limits always apply across your whole brokerage, whichever colleague's record they came from: if a person asks any of your agents to stop, every agent is blocked from contacting them.",
                 "A property record linked to a client, such as the client's own home, follows that client together with its photos and activity: you see it only while you can see the client, and changing it needs edit access. Property records from public sources that are not linked to a client stay visible to every agent in your brokerage, and brokerage-wide alerts never name a client's property. Drafts waiting for approval follow the same rule; only the person who asked for a draft, or your broker owner, can change or approve it.",
+                "Neoh's platform operators view brokerage data only to run and support the service. Every such view is recorded in an audit trail showing who viewed it, which brokerage's records and when, never the content viewed.",
             ],
         },
         {
@@ -48,6 +50,7 @@ PLATFORM_POLICY_DOCUMENT = {
                 "AI-generated material is assistive and may be incomplete, inaccurate, or unsuitable for a particular transaction. Verify important facts against authoritative sources before relying on or communicating them.",
                 "NEOH™ does not provide legal, tax, investment, appraisal, lending, title, or compliance advice. Obtain qualified professional review whenever your workflow, client, brokerage, or law requires it.",
                 "Neoh takes notes on a call only after the person on the call agrees. Unless you choose to save them directly, those notes wait for your review, and Neoh does not rely on them until you approve them. Check AI call notes before you act on or share them.",
+                "Neoh never asks for, repeats or keeps payment card details. If a card number or security code is spoken on a call or written in a text, email, note or chat, Neoh removes it before anything is stored. Take payments only through a secure payment link.",
             ],
         },
         {
@@ -63,6 +66,7 @@ PLATFORM_POLICY_DOCUMENT = {
                 "Use email, calling, messaging, task, and automation features only with the permissions, consent, disclosures, opt-out handling, and supervision required for the recipient and jurisdiction.",
                 "Do not use NEOH™ to send deceptive, abusive, discriminatory, unsolicited, or unlawful communications, to impersonate another person, or to make an autonomous commitment for a client or brokerage.",
                 "Do not remove, shorten, or talk over the disclosure Neoh gives at the start of an AI voice call, and do not tell the person they are speaking with a human.",
+                "Every email Neoh sends to a client, lead or contact carries an unsubscribe link and your brokerage's postal address. Keep the address current in setup and do not remove either. When someone unsubscribes, no agent in your brokerage can email them through Neoh.",
             ],
         },
         {
@@ -126,6 +130,22 @@ POLICY_COVERAGE: tuple[dict[str, str], ...] = (
      "evidence": "outreach_compliance.py",
      "section": "6. Communications and automation",
      "phrase": "disclosure Neoh gives at the start of an AI voice call"},
+    {"capability": "commercial email: unsubscribe link, postal address, brokerage-wide opt-out (L17-08, 0146)",
+     "evidence": "commercial_email.py",
+     "section": "6. Communications and automation",
+     "phrase": "carries an unsubscribe link and your brokerage's postal address"},
+    {"capability": "payment card details removed before storage; AI never asks for cards (L17-07, PCI SAQ A)",
+     "evidence": "pan_redaction.py",
+     "section": "4. AI-assisted work and professional judgment",
+     "phrase": "Neoh never asks for, repeats or keeps payment card details"},
+    {"capability": "platform-operator reads of brokerage data are audited (L17-17)",
+     "evidence": "audit_middleware.py",
+     "section": "2. Authorized data and confidentiality",
+     "phrase": "Every such view is recorded in an audit trail"},
+    {"capability": "two-step sign-in required for broker owners or by brokerage (L17-19, 0150)",
+     "evidence": "user_mfa.py",
+     "section": "1. Account authority and responsible use",
+     "phrase": "you may not use the platform until it is set up"},
 )
 
 # Separate account-security addendum for onboarding diagnostics.  This is a
@@ -133,7 +153,7 @@ POLICY_COVERAGE: tuple[dict[str, str], ...] = (
 # controls, and incident reporting.  The PolicyAcceptanceGate renders this when the
 # policy status endpoint is unavailable so agents can still review account security
 # obligations before retrying or signing out.
-ACCOUNT_SECURITY_ESA_VERSION = "neoh-account-security-esa-2026-07-18-v1"
+ACCOUNT_SECURITY_ESA_VERSION = "neoh-account-security-esa-2026-10-14-v2"
 
 ACCOUNT_SECURITY_ESA_DOCUMENT = {
     "title": "NEOH™ Account Security Agreement (ESA)",
@@ -158,6 +178,7 @@ ACCOUNT_SECURITY_ESA_DOCUMENT = {
             "paragraphs": [
                 "Keep authentication material confidential. Use a unique, manager-approved password and rotate it immediately after suspected compromise.",
                 "Use session controls on shared devices: lock the device, sign out on public terminals, and review active sessions when practical.",
+                "Use two-step sign-in. Broker owners, and every member of a brokerage that requires it, sign in with their password and a code from an authenticator app. Keep the setup key and recovery codes private; each recovery code works once. If you lose your phone, ask your broker owner to reset two-step sign-in (an owner asks Neoh). Never share a sign-in code, even with someone claiming to be Neoh.",
             ],
         },
         {
