@@ -345,6 +345,7 @@ def test_opt_out_finalization_creates_compliance_task_and_suppresses_voice(monke
                     "callback_task_id": None,
                     "contact_intake_session_id": None,
                     "intake_handoff_task_id": None,
+                    "caller_phone_ciphertext": b"caller-ct",
                 }
             if "INSERT INTO client_tasks" in query:
                 inserted_task.extend(args)
@@ -364,9 +365,14 @@ def test_opt_out_finalization_creates_compliance_task_and_suppresses_voice(monke
     async def fake_encrypt(_conn, _plaintext, _key):
         return b"encrypted"
 
+    async def fake_decrypt(_conn, ciphertext, _key):
+        assert ciphertext == b"caller-ct"
+        return "(302) 407-8981"
+
     monkeypatch.setenv("ORACLE_ENCRYPTION_MASTER_KEY", "test-master-key")
     monkeypatch.setattr(inbound_voice, "tenant_tx", fake_tx)
     monkeypatch.setattr(inbound_voice, "encrypt_pii", fake_encrypt)
+    monkeypatch.setattr(inbound_voice, "decrypt_pii", fake_decrypt)
     asyncio.run(
         inbound_voice.finalize_inbound_voice_call(
             CALL_SID,
@@ -381,6 +387,10 @@ def test_opt_out_finalization_creates_compliance_task_and_suppresses_voice(monke
 
     assert "Process inbound do-not-contact request" in inserted_task
     assert any("UPDATE agent_contacts" in query for query, _ in executed)
+    # The outreach gate's own list (0140 review): every send path, every
+    # record with this number, not only this contact's nurture.
+    suppress = next(args for query, args in executed if "INSERT INTO outreach_suppression" in query)
+    assert suppress == (TENANT_ID, "+13024078981")
     call_update = next(args for query, args in executed if "UPDATE inbound_voice_calls" in query)
     assert call_update[8] is True
     assert "do_not_contact" in call_update

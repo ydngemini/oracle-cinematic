@@ -388,15 +388,18 @@ async def _refresh_candidates(
             subject_id = opportunity.get("subject_id")
             if not subject_id:
                 continue
+            subject_type = opportunity.get("subject_type") or "client"
             row = await conn.fetchrow(
                 """INSERT INTO mission_candidates
-                       (tenant_id, mission_id, subject_type, subject_id, score, evidence, state)
-                   VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6::jsonb, 'selected')
+                       (tenant_id, mission_id, subject_type, subject_id, client_id, score, evidence, state)
+                   VALUES ($1::uuid, $2::uuid, $3, $4, $5::uuid, $6, $7::jsonb, 'selected')
                    ON CONFLICT (mission_id, subject_type, subject_id) DO UPDATE
                        SET score = EXCLUDED.score, updated_at = now()
                    RETURNING *""",
                 ctx.tenant_id, mission["id"],
-                opportunity.get("subject_type") or "client", str(subject_id),
+                subject_type, str(subject_id),
+                # The candidate follows its client's visibility (0140).
+                _client_uuid(subject_type, subject_id),
                 opportunity.get("confidence"),
                 _json(opportunity),
             )
@@ -412,6 +415,18 @@ async def _refresh_candidates(
 def _json(value: Any) -> str:
     import json
     return json.dumps(value, default=str)
+
+
+def _client_uuid(subject_type: str, subject_id: Any) -> Optional[str]:
+    """mission_candidates.client_id for a client subject, else None."""
+    import uuid
+
+    if subject_type != "client":
+        return None
+    try:
+        return str(uuid.UUID(str(subject_id)))
+    except (TypeError, ValueError, AttributeError):
+        return None
 
 
 async def _candidate_context(

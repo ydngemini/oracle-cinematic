@@ -122,6 +122,45 @@ async def require_contact_visible(conn, contact_id: str) -> str:
     return await _require_visible(conn, CONTACT, contact_id)
 
 
+# ── rows that follow a client and/or contact (0140) ────────────────────────
+# Each table's link columns, as SQL expressions over the row alias `r`. Every
+# identifier here is fixed; none comes from input.
+_LINKED: dict[str, tuple[str, str]] = {
+    "sms_messages": ("r.client_id", "r.contact_id"),
+    "email_outbox": ("r.client_id", "NULL::uuid"),
+    "live_call_sessions": ("r.client_id", "r.contact_id"),
+    "inbound_voice_calls": ("r.client_id", "r.contact_id"),
+    "contract_synthesis_artifacts": ("r.client_id", "NULL::uuid"),
+    "smart_plan_enrollments": ("NULL::uuid", "r.contact_id"),
+    "agent_call_intents": ("NULL::uuid", "r.contact_id"),
+}
+LINKED_VIEW_ONLY = "The client or contact this belongs to is shared with you to view only."
+
+
+async def linked_access_level(conn, table: str, record_id: str) -> Optional[str]:
+    """None when the caller cannot see the row (or it does not exist), else
+    'edit' or 'view' — app_linked_access() (0140), read back so the API never
+    restates the rule."""
+    client_expr, contact_expr = _LINKED[table]
+    row = await conn.fetchrow(
+        f"SELECT app_linked_access({client_expr}, {contact_expr}, true) AS can_edit "
+        f"FROM {table} r WHERE r.id = $1::uuid",
+        record_id,
+    )
+    if row is None:
+        return None
+    return "edit" if row["can_edit"] else "view"
+
+
+async def require_linked_edit(conn, table: str, record_id: str, not_found: str) -> None:
+    """404 when the row is invisible, 403 when its client/contact is view-only."""
+    level = await linked_access_level(conn, table, record_id)
+    if level is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, not_found)
+    if level != "edit":
+        raise HTTPException(status.HTTP_403_FORBIDDEN, LINKED_VIEW_ONLY)
+
+
 async def _actor_user_id(conn) -> Optional[str]:
     value = await conn.fetchval("SELECT app_current_user_id()")
     return str(value) if value else None

@@ -36,6 +36,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from agent_profile import load_agent_identity
 from audit_ledger import AuditCategory, ledger
+import record_access
 from db.connection import tenant_tx
 from intelligence_engine import IntelligenceInputError, negotiation_guidance
 from ml_forge.bedrock_client import invoke_bedrock_model, PRIMARY_MODEL, SECONDARY_MODEL
@@ -348,12 +349,13 @@ async def create_voice_session(
     async with tenant_tx(ctx) as conn:
         client_id = body.client_id
         if client_id:
-            client_exists = await conn.fetchval(
-                "SELECT EXISTS(SELECT 1 FROM clients WHERE id=$1)",
-                client_id,
-            )
-            if not client_exists:
+            # 404 for a client the caller cannot see; 403 for one shared with
+            # them to view only (the session row is a write on that client, 0140).
+            level = await record_access.client_access_level(conn, str(client_id))
+            if level is None:
                 raise HTTPException(status.HTTP_404_NOT_FOUND, "Client not found.")
+            if level != "edit":
+                raise HTTPException(status.HTTP_403_FORBIDDEN, record_access.VIEW_ONLY)
 
         lead_id = None
         if body.property_id:
@@ -439,6 +441,8 @@ async def ingest_voice_telemetry(
 ):
     """Persist a consented transcript chunk and calculate live MAO when applicable."""
     async with tenant_tx(ctx) as conn:
+        await record_access.require_linked_edit(
+            conn, "live_call_sessions", str(body.session_id), "Voice session not found.")
         call = await conn.fetchrow(
             """
             SELECT session.id,session.client_id,session.lead_id,
