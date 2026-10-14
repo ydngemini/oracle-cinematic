@@ -1,0 +1,64 @@
+# Dependency update PRs (ISO 27001 A.8.8, L17-16).
+#
+# Covers what ships: the backend's pinned Python requirements, the frontend's
+# npm lockfile, the pinned GitHub Actions, and the two production Dockerfiles'
+# base images (pinned by digest). Weekly, grouped, and capped, so updates
+# arrive as a few reviewable PRs instead of one per package. Security updates
+# are raised by Dependabot as soon as an advisory lands, outside this weekly
+# schedule, when "Dependabot security updates" is on in the repository's
+# settings (an owner action — this file cannot turn it on).
+#
+# Every PR still has to pass CI, including `pip_audit --strict` and
+# `npm audit --omit=dev --audit-level=high`. Nothing here merges anything.
+version: 2
+updates:
+  - package-ecosystem: pip
+    directory: /backend
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 3
+    groups:
+      python-minor-and-patch:
+        update-types: [minor, patch]
+
+  - package-ecosystem: npm
+    directory: /oracle-app
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 3
+    groups:
+      npm-runtime:
+        dependency-type: production
+        update-types: [minor, patch]
+      npm-tooling:
+        dependency-type: development
+        update-types: [minor, patch]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 2
+    groups:
+      actions:
+        patterns: ["*"]
+
+  - package-ecosystem: docker
+    directory: /backend
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 1
+
+  - package-ecosystem: docker
+    directory: /oracle-app
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 1
+    groups:
+      frontend-images:
+        patterns: ["*"]

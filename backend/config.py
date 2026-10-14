@@ -56,6 +56,26 @@ IS_DEV: bool = ORACLE_ENV in _DEV_VALUES
 # or absent value fails safe instead of inheriting production's privileges.
 IS_PROD: bool = ORACLE_ENV in _PROD_VALUES
 
+# Where the env-dictionary demo login (auth.py, ORACLE_ENABLE_DEMO_LOGINS) may
+# run: a developer's machine and staging. The rule is an allowlist, so
+# production — and an unset or unrecognised ORACLE_ENV, which validate_or_die
+# already treats as production — refuses (ISO 27001 A.8.9, L17-14). Staging's
+# demo brokerage does not need it: its logins are ordinary `users` rows
+# (scripts/demo_tenant_common.py), and the rendered spec never sets the flag.
+# auth.py keeps its own copy of this set (it does not import config).
+DEMO_LOGIN_ENVS = frozenset(_DEV_VALUES | {"staging"})
+_OFF_VALUES = frozenset({"", "0", "false", "no", "off"})
+
+
+def demo_logins_requested() -> bool:
+    """True when ORACLE_ENABLE_DEMO_LOGINS carries anything but an off value.
+
+    Broader than auth.py's enable test ("1"/"true"/"yes") on purpose: a value
+    such as "on" that someone meant as yes must not slip past the guard just
+    because auth.py happens to ignore it today.
+    """
+    return os.environ.get("ORACLE_ENABLE_DEMO_LOGINS", "").strip().lower() not in _OFF_VALUES
+
 
 def flag(name: str, default: bool = False) -> bool:
     """Parse a boolean env var ('1'/'true'/'yes'/'on' → True)."""
@@ -271,6 +291,15 @@ def validate_or_die() -> None:
     # must stop the boot, not a warning someone reads after a client's phone
     # rings. recovery_mode also ignores it unless ORACLE_ENV is explicitly
     # non-production — this check is the loud half of the same rule.
+    # Demo logins are a plaintext password in an environment dictionary, with a
+    # role and tenant chosen by whoever edits the env. They belong on a
+    # developer's machine or on staging, never on production (A.8.9).
+    if demo_logins_requested() and ORACLE_ENV not in DEMO_LOGIN_ENVS:
+        raise RuntimeError(
+            "Refusing to start: ORACLE_ENABLE_DEMO_LOGINS is set while ORACLE_ENV=%r. "
+            "Demo logins are allowed only in dev and staging; unset it or set it to 0."
+            % (ORACLE_ENV or "(unset)")
+        )
     if IS_PROD and os.environ.get("ORACLE_DEMO_RECIPIENT_ALLOWLIST", "").strip():
         raise RuntimeError(
             "Refusing to start: ORACLE_DEMO_RECIPIENT_ALLOWLIST is set on a "

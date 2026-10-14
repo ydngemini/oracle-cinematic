@@ -1147,6 +1147,100 @@ next_task: "Code gaps in flight: L17-07 card-number redaction, L17-08 CAN-SPAM u
 updated: 2026-10-14
 ```
 
+#### L17-14 Demo logins refuse to boot on production (ISO A.8.9)
+```yaml
+id: L17-14
+status: tests_pass
+env: local
+evidence_shas: []
+files: [backend/config.py, backend/auth.py, backend/tests/test_config_demo_logins.py]
+tests_run:
+  - {cmd: "pytest tests/test_config_demo_logins.py tests/test_config_weak_secrets.py", result: "46 passed", date: 2026-10-14}
+authz_checked: "ORACLE_ENABLE_DEMO_LOGINS set (any value but empty/0/false/no/off) with ORACLE_ENV outside {dev, development, local, staging} — prod, production, unset, test, ci — refuses the boot; message names the setting, never the credential. auth.py also ignores the flag outside those envs (a process that imports auth without the lifespan)."
+blockers: []
+audit_refs: []
+decision_refs: []
+next_task: "None. Staging is unaffected: the rendered spec never sets the flag (ORACLE_ENV=staging there) and the demo brokerage logs in as ordinary users rows (scripts/demo_tenant_common.py)."
+updated: 2026-10-14
+```
+
+#### L17-15 Password hashing at OWASP cost, rehash on login, common-password check (ISO A.5.17)
+```yaml
+id: L17-15
+status: tests_pass
+env: local
+evidence_shas: []
+files: [backend/auth.py, backend/common_passwords.txt, backend/tests/test_password_hashing.py]
+tests_run:
+  - {cmd: "pytest tests/test_password_hashing.py + auth/password/invite suites", result: "24 passed; 116 passed", date: 2026-10-14}
+  - {cmd: "timing on the dev laptop (i5-6360U, idle), median/max of 7", result: "N=2^14/8/1 (old) 56 ms; N=2^15/8/3 (new) verify 531/599 ms, hash 659/1076 ms; N=2^17/8/1 618/840 ms; 4 concurrent verifies 1.1 s wall (2-thread pool)", date: 2026-10-14}
+authz_checked: "Wrong password never rewrites; rehash is compare-and-swap on the old hash; stored parameters are bounded (log2 N <= 17, 128*N*r <= 128 MiB) so a planted row cannot allocate gigabytes; a legacy-hash wrong password pays the dummy verify too, so it is not faster than an unknown account (AUTH-4)."
+blockers: []
+audit_refs: []
+decision_refs: []
+next_task: "Measure a verify on a real App Platform apps-s-1vcpu-1gb instance after deploy; if it exceeds ~0.8 s, step down to the OWASP-equivalent N=2^14/r=8/p=5 (16 MiB)."
+updated: 2026-10-14
+```
+Parameters: N=2^15, r=8, p=3 — one of the five settings OWASP's Password Storage Cheat Sheet lists as equivalent to its N=2^17/r=8/p=1 minimum. Not 2^17 because that costs 128 MiB per hash, and a staging api instance has 1 GiB with 255-561 MiB already resident; 2^15/8/3 needs 32 MiB, and at most two hashes run at once per process (64 MiB peak). Hashing used to run on the event loop and froze every request on the worker for its duration; it now runs on a dedicated two-thread pool (scrypt releases the GIL). The hash now records its parameters (`scrypt$ln=15,r=8,p=3$salt$key`); the old three-part form still verifies as 2^14/8/1 and is rewritten after the next good login. Register, reset, change-password and accept-invite refuse the 1,000 most common passwords of 10+ characters (bundled, 12 KB, zxcvbn's list, MIT; no network).
+
+#### L17-16 Dependency scanning on every push + Dependabot (ISO A.8.8)
+```yaml
+id: L17-16
+status: tests_pass
+env: local
+evidence_shas: []
+files: [.github/workflows/ci.yml, .github/dependabot.yml, backend/tests/test_ci_security_gates.py]
+tests_run:
+  - {cmd: "npm audit --omit=dev --audit-level=high (oracle-app)", result: "found 0 vulnerabilities (19 runtime packages)", date: 2026-10-14}
+  - {cmd: "npm audit (including dev)", result: "8 in the build/test toolchain (5 high: brace-expansion, browserslist, nanoid, source-map-js, undici; 3 moderate: vitest, @vitest/mocker, baseline-browser-mapping), all transitive except vitest, all fixable by npm audit fix; none ships to the browser", date: 2026-10-14}
+  - {cmd: "python -m pip_audit --strict --skip-editable -r backend/requirements.txt", result: "No known vulnerabilities found", date: 2026-10-14}
+  - {cmd: "pytest tests/test_ci_security_gates.py + CI wiring tests", result: "126 passed (with test_backup_restore_scripts, test_ci_deploy_wiring, test_ci_build_contexts, test_release_immutability)", date: 2026-10-14}
+authz_checked: n/a
+blockers:
+  - {type: owner, note: "Turn on Dependabot alerts and security updates in the GitHub repository settings; the config file cannot."}
+audit_refs: []
+decision_refs: []
+next_task: "Fix the toolchain advisories in one PR (npm audit fix, then lint, vitest, build, bundle budget) — not done here because oracle-app/node_modules is shared with the main checkout."
+updated: 2026-10-14
+```
+pip-audit already ran on every push (`ci.yml` backend job) before this row; the frontend job now runs `npm audit --omit=dev --audit-level=high` right after `npm ci` and fails on a HIGH or CRITICAL runtime advisory. Dependabot: pip (/backend), npm (/oracle-app; runtime and tooling groups), github-actions, docker (/backend, /oracle-app); weekly, grouped minor+patch, 1-3 open PRs per ecosystem.
+
+#### L17-17 Platform-admin reads of tenant data are audited (ISO A.8.2, A.8.15)
+```yaml
+id: L17-17
+status: tests_pass
+env: local
+evidence_shas: []
+files: [backend/audit_middleware.py, backend/tests/test_platform_admin_read_audit.py]
+tests_run:
+  - {cmd: "pytest tests/test_platform_admin_read_audit.py tests/test_security_launch_review.py", result: "72 passed", date: 2026-10-14}
+authz_checked: "Only a token whose role is platform_admin; tenant users' reads are not recorded; sign-in/session/policy/ws paths skipped. Row: ADMIN_ACTION 'platform_read GET <path>', actor, route template, path, target_tenant_id (the tenant the route or ?tenant_id names, else 'all'), status, time, client IP. No query string, no response content."
+blockers: []
+audit_refs: []
+decision_refs: []
+next_task: "Route decrypts through crypto.access_pii_field (still no caller) once field encryption (A01) lands; platform-admin WebSocket subscriptions are not covered (BaseHTTPMiddleware does not see them)."
+updated: 2026-10-14
+```
+Bounded: one row per request, never per record. The same actor reading the same path again within 60 s is coalesced into the first row (the operator console polls every 60 s); a read of a different record is a different path and is always recorded. The coalescing map is capped at 5,000 keys. Writes go through `ledger.record` via the existing tracked background task; `audit_ledger.py` is unchanged.
+
+#### L17-18 The DR drill runs in CI (ISO A.8.13)
+```yaml
+id: L17-18
+status: tests_pass
+env: local
+evidence_shas: []
+files: [.github/workflows/ci.yml, scripts/dr-drill.sh, backend/tests/test_ci_security_gates.py]
+tests_run:
+  - {cmd: "scripts/dr-drill.sh against a schema/ledger/roles export of the local dev DB (head 0146), DinD, ORACLE_DRILL_PG_IMAGE=local postgres:16-alpine + bash (DinD cannot pull postgres:16)", result: "before the readiness fix: 42 passed, 1 FAILED ('target already has  tables'); after: 43/43 twice, 41 s and 51 s, backup 2 s, restore 8-13 s, no containers left", date: 2026-10-14}
+authz_checked: "Roles exported with --no-role-passwords; drill isolation is proven as oracle_app_login."
+blockers: []
+audit_refs: [A04]
+decision_refs: []
+next_task: "Confirm the first CI run of the rls job (pulls postgres:16; never run on GitHub yet). Remaining DR blockers are unchanged: scheduled, encrypted, off-host backups (docs/dr-drill-report.md)."
+updated: 2026-10-14
+```
+New step at the end of the `rls` job: export schema, migration ledger and roles from the CI database that was just built from every migration (`pg_dump`/`pg_dumpall` from a `postgres:16` container on the host network), then run the real drill. Job timeout 15 → 20 min. Defect found: both readiness loops used a socket-only `pg_isready`, which answers during initdb's temporary server, so the next query could land in the restart gap. They now wait for TCP (`pg_isready -h 127.0.0.1`). The drill's image is now `ORACLE_DRILL_PG_IMAGE` (default `postgres:16`).
+
 ### L18
 Billing, seats and analytics.
 

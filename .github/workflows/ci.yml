@@ -101,6 +101,15 @@ jobs:
         working-directory: oracle-app
         run: npm ci --no-audit --no-fund
 
+      # The frontend's half of the backend's pip_audit step (A.8.8, L17-16):
+      # fails on any HIGH or CRITICAL advisory in what ships to the browser.
+      # --omit=dev because the build and test toolchain (vite, vitest, eslint)
+      # never reaches a customer; its advisories are reported by Dependabot
+      # (.github/dependabot.yml) and `npm audit` without the flag.
+      - name: Dependency vulnerabilities (runtime)
+        working-directory: oracle-app
+        run: npm audit --omit=dev --audit-level=high
+
       # Two lint extensions were attempted here and both are blocked upstream,
       # verified 2026-08-11 — don't re-attempt without checking these first:
       #
@@ -197,7 +206,7 @@ jobs:
     # privileges and SECURITY DEFINER safety are the database's properties and
     # are proved here against PostgreSQL built from every migration.
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     services:
       postgres:
         image: postgres:16-alpine
@@ -246,6 +255,26 @@ jobs:
         run: |
           pip install --quiet -r requirements.txt -r requirements-test.txt
           python -m pytest -q -p no:cacheprovider tests/test_privacy_lifecycle_live.py tests/test_reconciliation_live.py tests/test_stripe_webhook_live.py tests/test_job_claim_aging_live.py tests/test_on_conflict_targets_live.py tests/test_migration_precheck.py tests/test_call_notes_live.py tests/test_public_sites_live.py tests/test_brokerage_access_matrix_live.py tests/test_client_note_sealing_live.py tests/test_engagement_lifecycle_live.py tests/test_messaging_route_race_live.py tests/test_messaging_registration_race_live.py tests/test_contact_access_matrix_live.py tests/test_contact_follows_client_live.py tests/test_communications_access_matrix_live.py tests/test_realtime_record_scope_live.py tests/test_tenant_wall_plans_live.py tests/test_command_drafts_access_live.py tests/test_lead_record_access_live.py
+
+      # The disaster-recovery drill on every push (A.8.13, L17-18;
+      # docs/dr-drill-report.md "every merge to main"). It runs the REAL
+      # backup-postgres.sh, restore-postgres.sh and verify-restore.sh in two
+      # throwaway postgres:16 containers: seed two brokerages, back up, destroy,
+      # restore into a clean cluster, validate, and prove isolation as
+      # oracle_app_login. The schema it drills is the one this job just built
+      # from every migration, so a migration that breaks restore fails here.
+      # ~45 s; no secret, no provider, no network beyond the image pull.
+      - name: Disaster-recovery drill (backup, destroy, restore, verify)
+        env:
+          ORACLE_DRILL_DIR: ${{ runner.temp }}/neoh-drill
+          ORACLE_DRILL_PG_IMAGE: postgres:16
+        run: |
+          mkdir -p "$ORACLE_DRILL_DIR"
+          pgtool() { docker run --rm --network host -e PGPASSWORD=postgres "$ORACLE_DRILL_PG_IMAGE" "$@"; }
+          pgtool pg_dump -h localhost -U postgres -d oracle --schema-only --no-owner > "$ORACLE_DRILL_DIR/schema.sql"
+          pgtool pg_dump -h localhost -U postgres -d oracle --data-only --table=schema_migrations > "$ORACLE_DRILL_DIR/ledger.sql"
+          pgtool pg_dumpall -h localhost -U postgres --roles-only --no-role-passwords > "$ORACLE_DRILL_DIR/roles.sql"
+          scripts/dr-drill.sh
 
   release:
     name: build release → staging

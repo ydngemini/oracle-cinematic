@@ -26,6 +26,9 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$HERE/.." && pwd)"
 WORK="${ORACLE_DRILL_DIR:-/tmp/neoh-drill}"
 BACKUPS="$WORK/backups"
+# The disposable clusters. Must ship bash (the real scripts run inside them via
+# `bash -s`) and pg_dump/pg_restore of the production major version.
+PG_IMAGE="${ORACLE_DRILL_PG_IMAGE:-postgres:16}"
 
 SRC=neoh-dr-source
 DST=neoh-dr-restored
@@ -80,14 +83,28 @@ if [ "$FAIL" -gt 0 ]; then
   echo; echo "  Prerequisites missing. Stopping rather than drilling a fiction."; exit 1
 fi
 
+# Ready means the REAL server, over TCP. The image's first start runs initdb
+# under a temporary server that listens on the Unix socket only, then restarts
+# it — so a socket-only pg_isready says "ready" during init, and the very next
+# query lands in the restart gap and comes back empty. That made step 6 report
+# "target already has  tables" on a genuinely empty target (found 2026-10-14
+# making the drill a CI job, L17-18).
+wait_ready() {
+  for _ in $(seq 1 45); do
+    docker exec "$1" pg_isready -h 127.0.0.1 -U postgres -q 2>/dev/null && return 0
+    sleep 2
+  done
+  return 1
+}
+
 # ── 2. Disposable source ───────────────────────────────────────────────────
 
 phase "2. Build the disposable source"
 mkdir -p "$BACKUPS"
 docker rm -fv "$SRC" "$DST" >/dev/null 2>&1
 docker run -d --name "$SRC" -p "$SRC_PORT:5432" -v "$BACKUPS:/backups" \
-  -e POSTGRES_PASSWORD="$PGPW" -e POSTGRES_DB=neoh_src postgres:16 >/dev/null
-for _ in $(seq 1 45); do docker exec "$SRC" pg_isready -U postgres -q 2>/dev/null && break; sleep 2; done
+  -e POSTGRES_PASSWORD="$PGPW" -e POSTGRES_DB=neoh_src "$PG_IMAGE" >/dev/null
+wait_ready "$SRC"
 
 if [ ! -f "$WORK/schema.sql" ]; then
   bad "no schema at $WORK/schema.sql — export one from a Neoh database first:
@@ -217,8 +234,8 @@ note "the source is now damaged; it is never restored over"
 
 phase "6. Restore into a clean database"
 docker run -d --name "$DST" -p "$DST_PORT:5432" -v "$BACKUPS:/backups" \
-  -e POSTGRES_PASSWORD="$PGPW" -e POSTGRES_DB=neoh_restore postgres:16 >/dev/null
-for _ in $(seq 1 45); do docker exec "$DST" pg_isready -U postgres -q 2>/dev/null && break; sleep 2; done
+  -e POSTGRES_PASSWORD="$PGPW" -e POSTGRES_DB=neoh_restore "$PG_IMAGE" >/dev/null
+wait_ready "$DST"
 
 EMPTY="$(dq "SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relkind='r';")"
 [ "${EMPTY:-1}" = "0" ] && ok "target is genuinely empty" || bad "target already has $EMPTY tables"
