@@ -126,6 +126,18 @@ def _require_decider(ctx: TenantContext, existing: Mapping[str, Any]) -> None:
         )
 
 
+def require_decider(ctx: TenantContext, approval: Mapping[str, Any]) -> None:
+    """403 unless the caller may decide this approval — and so change what it
+    approves. Editing a staged draft replaces its approval with one requested
+    by the editor, so an edit is a decision too (0142): seeing a colleague's
+    draft about a pool client must not let you edit it into your own request
+    and then approve it."""
+    if approval["risk_class"] == ActionRisk.ROLE_OVERRIDE.value:
+        require_role(ctx, Role.BROKER_OWNER)
+        return
+    _require_decider(ctx, approval)
+
+
 async def decide_approval(
     ctx: TenantContext,
     approval_id: str,
@@ -240,6 +252,23 @@ async def decide_approval(
     return approval
 
 
+# Both lists are ordered by tenant_id first so idx_action_approvals_tenant_requested
+# (0142) serves the order under the 0141 tenant-wall range and the LIMIT stops
+# the scan; within one brokerage it is exactly newest first. JIT is off for the
+# list: the 0142 policies are costed as a per-row lookup (PostgreSQL costs the
+# correlated EXISTS alternative, then runs the hashed one), so a scan over a few
+# thousand rows crosses jit_above_cost and compiles for 1.5-2.3 s to save
+# nothing. Measured as oracle_app, 21,000 approvals, local dev DB.
+_LIST_OWN_SQL = (
+    "SELECT * FROM action_approvals WHERE lower(requested_by) = lower($1) "
+    "AND ($2::text IS NULL OR status = $2) ORDER BY tenant_id, requested_at DESC LIMIT $3"
+)
+_LIST_ALL_SQL = (
+    "SELECT * FROM action_approvals WHERE ($1::text IS NULL OR status = $1) "
+    "ORDER BY tenant_id, requested_at DESC LIMIT $2"
+)
+
+
 async def list_approvals(
     ctx: TenantContext,
     *,
@@ -247,30 +276,14 @@ async def list_approvals(
     limit: int = 100,
 ) -> list[dict[str, Any]]:
     limit = max(1, min(200, limit))
-    if not (ctx.is_platform_admin or ctx.is_broker_owner):
-        # An agent sees their own requests. The full list carries every
-        # draft_payload in the brokerage — role-override targets, onboarding
-        # licence data, other agents' drafts (review TEN-2).
-        async with tenant_tx(ctx) as conn:
-            rows = await conn.fetch(
-                "SELECT * FROM action_approvals WHERE lower(requested_by) = lower($1) "
-                "AND ($2::text IS NULL OR status = $2) ORDER BY requested_at DESC LIMIT $3",
-                ctx.agent_id, status_filter, limit,
-            )
-        return [approval_dict(row) for row in rows]
     async with tenant_tx(ctx) as conn:
-        if status_filter:
-            rows = await conn.fetch(
-                """
-                SELECT * FROM action_approvals
-                WHERE status=$1 ORDER BY requested_at DESC LIMIT $2
-                """,
-                status_filter,
-                limit,
-            )
+        await conn.execute("SET LOCAL jit = off")
+        if not (ctx.is_platform_admin or ctx.is_broker_owner):
+            # An agent sees their own requests. The full list carries every
+            # draft_payload in the brokerage — role-override targets, onboarding
+            # licence data, other agents' drafts (review TEN-2). RLS (0142)
+            # further hides a request about a record they can no longer see.
+            rows = await conn.fetch(_LIST_OWN_SQL, ctx.agent_id, status_filter, limit)
         else:
-            rows = await conn.fetch(
-                "SELECT * FROM action_approvals ORDER BY requested_at DESC LIMIT $1",
-                limit,
-            )
+            rows = await conn.fetch(_LIST_ALL_SQL, status_filter, limit)
     return [approval_dict(row) for row in rows]
