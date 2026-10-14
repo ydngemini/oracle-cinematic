@@ -92,4 +92,4 @@ numpy>=1.26,<3                 # opencv's array interface; pinned major-open
 # ── Config ─────────────────────────────────────────────────────────────────────
 python-dotenv==1.2.2           # Load .env in local dev; no-op in prod (env already set)
 # GPU reconstruction via OnCompute operator-key signing (OnComputeProvider)
-eth-account>=0.13
+eth-account>=0.14.0
