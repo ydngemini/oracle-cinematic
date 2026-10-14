@@ -123,7 +123,7 @@ async def _scenario(monkeypatch):  # noqa: C901 — one scenario, read top to bo
 
     try:
         for t, slug in ((tenant, "drafts"), (other_tenant, "drafts-other")):
-            await admin.execute("INSERT INTO tenants (id, slug, name) VALUES ($1,$2,'Drafts matrix')",
+            await admin.execute("INSERT INTO tenants (id, slug, name, postal_address) VALUES ($1,$2,'Drafts matrix','1 Main St, Dover, DE 19901')",
                                 t, f"{slug}-{tag}")
         for who, uid in users.items():
             await admin.execute(
