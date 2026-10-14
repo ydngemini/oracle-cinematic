@@ -79,8 +79,12 @@ async def _policy_composition():
         permissive = [r for r in by_table[t] if r["permissive"] == "PERMISSIVE"]
         assert len(permissive) == 1 and permissive[0]["cmd"] == "ALL", (t, permissive)
         restrictive = {(r["policyname"], r["cmd"]) for r in by_table[t] if r["permissive"] == "RESTRICTIVE"}
-        assert restrictive == {(f"{t}_linked_read", "SELECT"), (f"{t}_linked_insert", "INSERT"),
-                               (f"{t}_linked_update", "UPDATE"), (f"{t}_linked_delete", "DELETE")}, (t, restrictive)
+        want = {(f"{t}_linked_read", "SELECT"), (f"{t}_linked_insert", "INSERT"),
+                (f"{t}_linked_update", "UPDATE"), (f"{t}_linked_delete", "DELETE")}
+        if t == "live_call_sessions":  # 0151: a call linked only to a lead follows the lead
+            want |= {(f"{t}_lead_read", "SELECT"), (f"{t}_lead_insert", "INSERT"),
+                     (f"{t}_lead_update", "UPDATE"), (f"{t}_lead_delete", "DELETE")}
+        assert restrictive == want, (t, restrictive)
     for t in COMPLIANCE:
         assert {(r["policyname"], r["permissive"]) for r in by_table[t]} == {(TENANT_WALL[t], "PERMISSIVE")}, (
             t, by_table[t])
