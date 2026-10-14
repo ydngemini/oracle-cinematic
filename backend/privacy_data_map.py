@@ -90,7 +90,7 @@ TABLES: dict[str, TableEntry] = {
     "smart_plan_step_runs": TableEntry(C.BUSINESS_CRM, E),
     "missions": TableEntry(C.BUSINESS_CRM, E,
                            "objective_text plaintext; constraints.semantic_frame (05) = "
-                           "record ids, constraint kinds/times only"),
+                           "record ids, constraint kinds/times, language code only"),
     "mission_candidates": TableEntry(C.BUSINESS_CRM, E),
     "mission_actions": TableEntry(C.BUSINESS_CRM, E),
     "mission_events": TableEntry(C.BUSINESS_CRM, E),
@@ -139,7 +139,8 @@ TABLES: dict[str, TableEntry] = {
     # ── AI ───────────────────────────────────────────────────────────────
     "ai_chat_messages": TableEntry(C.AI_CHAT, E,
                                    "content encrypted; metadata.semantic_frame (05) = goal labels, "
-                                   "record ids, constraint kinds/times only, no words"),
+                                   "record ids, constraint kinds/times, language codes (en/es) only, "
+                                   "no words"),
     "ai_chat_actions": TableEntry(C.AI_CHAT, E),
     "ai_chat_message_attachments": TableEntry(C.AI_CHAT, E),
     "ai_tool_operations": TableEntry(C.AI_CHAT, E),
