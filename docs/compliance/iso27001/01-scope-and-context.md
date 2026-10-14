@@ -2,8 +2,8 @@
 
 | | |
 |---|---|
-| Status | **DRAFT, needs owner approval** |
-| Version | 0.1 |
+| Status | **Approved by the owner, 2026-10-14 (v1.0)** |
+| Version | 1.0 |
 | Date | 2026-10-14 |
 | Document owner | Owner (sole director, ISMS owner) |
 | Evidence basis | repository at `e3ea107` |

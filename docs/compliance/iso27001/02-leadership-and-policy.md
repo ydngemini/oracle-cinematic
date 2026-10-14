@@ -2,8 +2,8 @@
 
 | | |
 |---|---|
-| Status | **DRAFT, needs owner approval** |
-| Version | 0.1 |
+| Status | **Approved by the owner, 2026-10-14 (v1.0)** |
+| Version | 1.0 |
 | Date | 2026-10-14 |
 | Document owner | Owner |
 | Evidence basis | repository at `e3ea107` |
@@ -25,7 +25,7 @@ One person is top management. Each 5.1 duty is listed below with the record that
 
 ## 5.2 Information security policy (DRAFT)
 
-> **Neoh information security policy, v0.1, 2026-10-14, DRAFT, needs owner approval.**
+> **Neoh information security policy, v1.0, approved by the owner 2026-10-14.**
 >
 > 1. **Purpose.** Neoh holds brokerages' client, deal, document, communication and billing data. We protect its confidentiality, integrity and availability. We never make security or compliance claims the evidence does not support.
 > 2. **Scope.** As defined in ISMS 01 §4.3.

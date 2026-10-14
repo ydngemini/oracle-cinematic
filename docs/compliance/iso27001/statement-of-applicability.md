@@ -1,6 +1,6 @@
 # Statement of Applicability (ISO/IEC 27001:2022 Annex A)
 
-> **DRAFT, needs owner approval.** Version 0.1, 2026-10-14. Pinned at `e3ea107`.
+> **Approved by the owner, 2026-10-14 (v1.0)**. Version 1.0, 2026-10-14. Pinned at `e3ea107`.
 > **Approval:** owner ______ (name, signature, date). Not approved until it is signed. Review: yearly, and whenever the scope or a risk changes.
 > This SoA records which Annex A controls apply to the Neoh ISMS and why, and how far each has been implemented. **It is not evidence of certification or conformity** (CONTRACT C12). Its status values come from [annex-a-assessment.md](annex-a-assessment.md), which holds the evidence and the gaps behind each row.
 

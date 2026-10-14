@@ -2,8 +2,8 @@
 
 | | |
 |---|---|
-| Status | **DRAFT, needs owner approval** (methodology, acceptance criteria and every acceptance) |
-| Version | 0.1 |
+| Status | **Approved by the owner, 2026-10-14 (v1.0)**: methodology and acceptance criteria. Scores and treatments are the living register, reviewed at each management review |
+| Version | 1.0 |
 | Date | 2026-10-14 |
 | Risk owner | Owner (holds every risk; see [`02`](02-leadership-and-policy.md) §5.3) |
 | Evidence basis | repository at `e3ea107` |
@@ -63,7 +63,7 @@ This is the **first** risk assessment. No earlier one exists. The register is se
 
 **Score = L × I (1–25).**
 
-| Band | Score | Acceptance criteria (draft, **owner approves**) |
+| Band | Score | Acceptance criteria (approved by the owner 2026-10-14) |
 |---|---|---|
 | Low | 1–4 | The owner may accept. Review annually |
 | Medium | 5–9 | Accept only with a named treatment or a written rationale. Review at each management review |
@@ -140,10 +140,11 @@ Total: 31 risks. R03 is High by score (12) but comes first in the treatment plan
 | 9 | R19 | Hash-locked Python lock | code | S | — |
 | 10 | R09, R21–R25, R12 | Stripe test values; 10DLC; deploy the local fixes; capacity on production; log guard | mixed | M | L18-04, L10-04, L11-02, L16-01, L17-04 |
 
-**Risk acceptance (6.1.3 f):** no residual risk has been accepted yet. The owner signs below per risk, or per band.
+**Risk acceptance (6.1.3 f):** the owner records each acceptance below, per risk or per band.
 
 | Risk(s) | Accepted residual score | Expiry | Owner signature | Date |
 |---|---|---|---|---|
+| R18 (workstation: unencrypted disk; live Stripe key in local `.env`) | 15 (Critical), retained as-is. The owner declined the treatment on 2026-10-14 ("not 6"). Partial mitigation: `.env` and its backups made owner-only (0600) the same day | Until production go-live, and reviewed by 2027-01-12 (90 days). Under the approved criteria a Critical risk is **not acceptable for go-live with real customer data**, so R18 must be treated, or re-scored with new controls, before go-live | Owner (recorded from the owner's chat instruction, 2026-10-14) | 2026-10-14 |
 | | | | | |
 
 **Statement of Applicability (6.1.3 d):** see [`statement-of-applicability.md`](statement-of-applicability.md). Every Annex A control named in this register must appear there as applicable.

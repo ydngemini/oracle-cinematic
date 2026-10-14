@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Status | **DRAFT, needs owner approval** (every document in this folder is a draft) |
+| Status | Approved by the owner 2026-10-14 (v1.0): the scope (01), the information security policy and roles (02), the risk methodology and acceptance criteria (03), and the Statement of Applicability. Every other document in this folder is a working draft |
 | Version | 0.1 |
 | Date | 2026-10-14 |
 | Owner | Owner (sole director, ISMS owner) |
