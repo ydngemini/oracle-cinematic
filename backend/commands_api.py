@@ -37,6 +37,7 @@ from starlette.responses import RedirectResponse, Response
 
 import pan_redaction
 import record_access
+import semantic_language
 import ws_hub
 from agent_profile import load_agent_identity
 from approval_service import create_approval, decide_approval, list_approvals, require_decider
@@ -837,20 +838,38 @@ _TEXT_AS_NOUN_RE = re.compile(
 # it sits at the front: "email the seller the inspection text and my notes" is
 # unambiguously an email no matter what nouns follow. Anchoring on it settles
 # the SMS-before-EMAIL ordering below before the noun heuristics have to.
+#
+# Spanish (L05-04, owner 2026-10-14: English and Spanish at launch). Matched
+# on `semantic_language.fold`ed text — lower case, accents removed — so
+# "Envíale un correo" and "enviale un correo" are one command. Each Spanish
+# phrase names its channel as explicitly as its English twin: "mándale un
+# texto" is SMS, "llámala" is CALL, "escríbele un correo" is EMAIL. A bare
+# "mensaje" names no channel (it can be a text, an email or a WhatsApp), so,
+# like the English "message her", it is not a channel verb.
+_ES_EMAIL_VERB = r"(?:envia|manda|escribe)(?:le|les)?\s+(?:un\s+|el\s+)?(?:correo|e-?mail|mail)"
+_ES_SMS_VERB = (r"(?:envia|manda)(?:le|les)?\s+(?:un\s+|el\s+)?(?:sms|texto|mensaje\s+de\s+texto)"
+                r"|textea(?:le|les)?")
+_ES_CALL_VERB = r"llam(?:a|ar)(?:le|la|lo|les|los|las)?|telefonea(?:r)?(?:le|la|lo)?"
 _LEADING_VERB_INTENT = (
-    (r"e-?mail", "EMAIL"),
-    (r"sms|text", "SMS"),
-    (r"call|phone|dial", "CALL"),
+    (rf"e-?mail|{_ES_EMAIL_VERB}", "EMAIL"),
+    (rf"sms|text|{_ES_SMS_VERB}", "SMS"),
+    (rf"call|phone|dial|{_ES_CALL_VERB}", "CALL"),
 )
 _LEADING_VERB_RE = re.compile(
-    r"^(?:please\s+|can\s+you\s+|could\s+you\s+|pls\s+)*"
-    r"(?P<verb>e-?mail|sms|text|call|phone|dial)\b"
+    r"^(?:please\s+|can\s+you\s+|could\s+you\s+|pls\s+|por\s+favor\s+|puedes\s+|podrias\s+)*"
+    rf"(?P<verb>e-?mail|sms|text|call|phone|dial|{_ES_EMAIL_VERB}|{_ES_SMS_VERB}|{_ES_CALL_VERB})\b"
+)
+# "el texto de la contraoferta" is the Spanish noun, as "the text of" is.
+_TEXTO_AS_NOUN_RE = re.compile(
+    r"\b(?:el|los|este|estos|ese|esos|aquel|su|sus|mi|mis|tu|tus|nuestro|nuestros)\s+textos?\b"
+    r"|\btextos?\s+del?\b"
 )
 
 
 def _parse_intent(raw_text: str) -> ParsedIntent:
-    normalized = " ".join(raw_text.lower().split())
-    text = _TEXT_AS_NOUN_RE.sub(" ", normalized)
+    # fold = lower case with accents removed: English is unchanged by it.
+    normalized = " ".join(semantic_language.fold(raw_text).split())
+    text = _TEXTO_AS_NOUN_RE.sub(" ", _TEXT_AS_NOUN_RE.sub(" ", normalized))
 
     # These outrank the comms channels and keep their existing precedence:
     # "call to schedule a meeting with Bob" is CALENDAR, not CALL.
@@ -861,9 +880,13 @@ def _parse_intent(raw_text: str) -> ParsedIntent:
     # between a determiner and "text", so "send the assignment text to Maria"
     # became "send to maria" and 422'd a command that used to route to CONTRACT.
     for intent, pattern in (
-        (ParsedIntent.MAO_CALC, r"\b(?:mao|max(?:imum)? allowable offer|offer ceiling)\b"),
-        (ParsedIntent.CONTRACT, r"\b(?:contract|agreement|assignment)\b"),
-        (ParsedIntent.CALENDAR, r"\b(?:calendar|schedule|book|meeting|appointment)\b"),
+        (ParsedIntent.MAO_CALC, r"\b(?:mao|max(?:imum)? allowable offer|offer ceiling"
+                                r"|oferta maxima(?: permitida)?)\b"),
+        # "de acuerdo" is "OK", not an agreement.
+        (ParsedIntent.CONTRACT, r"\b(?:contract|agreement|assignment|contrato|cesion|(?<!de )acuerdo)\b"),
+        (ParsedIntent.CALENDAR, r"\b(?:calendar|schedule|book|meeting|appointment"
+                                r"|calendario|reunion|cita|agendar|agenda(?:le|la|lo)?\s+(?:una?|la|el)"
+                                r"|(?:programa|reserva)(?:r)?\s+(?:una\s+)?(?:llamada|visita|reunion|cita))\b"),
     ):
         if re.search(pattern, normalized):
             return intent
@@ -881,9 +904,9 @@ def _parse_intent(raw_text: str) -> ParsedIntent:
     channels = (
         # SMS stays before CALL: misrouting a text into the LIVE_CALL risk class
         # is the more expensive error of the two.
-        (ParsedIntent.SMS, r"\b(?:sms|text message|text)\b"),
-        (ParsedIntent.CALL, r"\b(?:call|phone|dial)\b"),
-        (ParsedIntent.EMAIL, r"\b(?:email|e-mail|mail)\b"),
+        (ParsedIntent.SMS, r"\b(?:sms|text message|text|mensaje de texto|texto)\b"),
+        (ParsedIntent.CALL, r"\b(?:call|phone|dial|llamale|llamala|llamalo|llama|llamar|telefonea|telefonear)\b"),
+        (ParsedIntent.EMAIL, r"\b(?:email|e-mail|mail|correo)\b"),
     )
     for intent, pattern in channels:
         if re.search(pattern, text):
@@ -908,7 +931,36 @@ def _name_hint(raw_text: str, intent: ParsedIntent) -> str:
         raw_text,
         re.IGNORECASE,
     )
-    return " ".join(match.group(1).split()) if match else ""
+    if match:
+        return " ".join(match.group(1).split())
+    return _name_hint_es(raw_text, intent)
+
+
+_ES_NAME_VERB = {
+    ParsedIntent.EMAIL: _ES_EMAIL_VERB + r"(?:\s+electronico)?",
+    ParsedIntent.SMS: _ES_SMS_VERB,
+    ParsedIntent.CALL: _ES_CALL_VERB,
+    ParsedIntent.CALENDAR: r"(?:agenda|programa|organiza)(?:r)?\s+(?:una\s+)?(?:reunion|cita|llamada|visita)\s+con",
+    ParsedIntent.CONTRACT: r"(?:contrato|acuerdo)(?:\s+de\s+[a-z]+)?\s+para",
+    ParsedIntent.MAO_CALC: r"(?:oferta maxima(?:\s+permitida)?)(?:\s+(?:para|de))?",
+}
+
+
+def _name_hint_es(raw_text: str, intent: ParsedIntent) -> str:
+    """The Spanish twin of `_name_hint`: "llama a José Pérez sobre la oferta"
+    names José Pérez. Matched on folded text, quoted from the original (the
+    fold keeps positions), so accents in the name survive."""
+    original = semantic_language.nfc(raw_text)
+    folded = semantic_language.fold(original)
+    match = re.search(
+        rf"\b(?:{_ES_NAME_VERB[intent]})\s+(?:a\s+|al\s+|para\s+)?"
+        r"([^\W\d_](?:[^\W\d_]|[' -]){0,79}?)"
+        r"(?=\s+(?:y|sobre|acerca|para|por|a|al|en|con|que|hoy|manana)\b|[,.;?!]|$)",
+        folded,
+    )
+    if not match:
+        return ""
+    return " ".join(original[match.start(1):match.end(1)].split())
 
 
 def _money_hint(raw_text: str) -> Optional[str]:
@@ -1298,26 +1350,42 @@ async def execute_personal_command(
     return await approve_command(command_id, ApprovalDecision(reason=body.reason), ctx)
 
 
+#: The explicit command verbs /classify accepts, English and Spanish (L05-04).
+#: Matched at the START of the folded text (lower case, no accents).
+_EXPLICIT_VERBS: tuple[tuple[CommandType, str], ...] = (
+    (CommandType.EMAIL, r"^(?:email|e-mail|send (?:an )?email"
+                        r"|(?:envia|manda|escribe)(?:le|les)? (?:un |el )?(?:correo|e-?mail|mail)"
+                        r"|correo(?: electronico)?)\b"),
+    (CommandType.SMS, r"^(?:sms|text|send (?:a )?text"
+                      r"|(?:envia|manda)(?:le|les)? (?:un |el )?(?:sms|texto|mensaje de texto)"
+                      r"|textea(?:le|les)?)\b"),
+    (CommandType.CALL, r"^(?:call|phone|dial|llam(?:a|ar)(?:le|la|lo|les|los|las)?"
+                       r"|telefonea(?:r)?(?:le|la|lo)?)\b"),
+    (CommandType.CALENDAR, r"^(?:calendar|schedule|book|set up (?:a )?meeting"
+                           r"|calendario|agendar|agenda(?:le|la|lo)? (?:una?|la|el)"
+                           r"|(?:programa|organiza|reserva)(?:r)? (?:una )?(?:reunion|cita|llamada|visita))\b"),
+)
+
+
+def _classify_explicit(raw: str) -> CommandType:
+    """The channel a command names with its leading verb, or 422."""
+    text = " ".join(semantic_language.fold(raw.strip()).split())
+    for command_type, pattern in _EXPLICIT_VERBS:
+        if re.match(pattern, text):
+            return command_type
+    raise HTTPException(
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        detail="Command must explicitly request EMAIL, SMS, CALL, or CALENDAR.",
+    )
+
+
 @router.post("/classify")
 async def classify_command(
     body: ClassificationRequest,
     ctx: TenantContext = Depends(require_context),
 ):
     require_feature(Feature.AUTOMATION)
-    text = body.text.strip().lower()
-    if re.match(r"^(email|e-mail|send (an )?email)\b", text):
-        command_type = CommandType.EMAIL
-    elif re.match(r"^(sms|text|send (a )?text)\b", text):
-        command_type = CommandType.SMS
-    elif re.match(r"^(call|phone|dial)\b", text):
-        command_type = CommandType.CALL
-    elif re.match(r"^(calendar|schedule|book|set up (a )?meeting)\b", text):
-        command_type = CommandType.CALENDAR
-    else:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="Command must explicitly request EMAIL, SMS, CALL, or CALENDAR.",
-        )
+    command_type = _classify_explicit(body.text)
     return {
         "command_type": command_type.value,
         "risk_class": _RISK[command_type].value,
