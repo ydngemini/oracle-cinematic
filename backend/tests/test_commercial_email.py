@@ -337,3 +337,31 @@ def test_record_unsubscribe_writes_the_brokerage_wide_email_suppression(monkeypa
 def test_the_tenant_id_round_trips_as_a_uuid():
     tid = str(uuid.uuid4())
     assert ce.read_token(ce.make_token(tid, "a@b.co"))[0] == tid
+
+
+def test_no_postal_address_holds_commercial_email(monkeypatch):
+    # Owner 2026-10-14: no postal address, no client email (CAN-SPAM). The
+    # sender refuses before any provider call; system mail is not affected.
+    import asyncio
+
+    import commercial_email
+
+    async def no_address(_tenant_id):
+        return {"name": "Northstar", "postal_address": None}
+
+    monkeypatch.setattr(commercial_email, "_sender", no_address)
+    with pytest.raises(commercial_email.PostalAddressRequired) as held:
+        asyncio.run(commercial_email.prepare("00000000-0000-0000-0000-0000000000a1",
+                                             recipient="x@example.test", body="Hi"))
+    assert "postal mailing address" in str(held.value)
+    with pytest.raises(commercial_email.PostalAddressRequired):
+        asyncio.run(commercial_email.require_postal_address("00000000-0000-0000-0000-0000000000a1"))
+
+    async def with_address(_tenant_id):
+        return {"name": "Northstar", "postal_address": "1 Main St, Dover, DE 19901"}
+
+    monkeypatch.setattr(commercial_email, "_sender", with_address)
+    asyncio.run(commercial_email.require_postal_address("00000000-0000-0000-0000-0000000000a1"))
+    prepared = asyncio.run(commercial_email.prepare("00000000-0000-0000-0000-0000000000a1",
+                                                    recipient="x@example.test", body="Hi"))
+    assert "1 Main St" in prepared.body

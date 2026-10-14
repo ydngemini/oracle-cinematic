@@ -260,6 +260,12 @@ def test_an_opt_out_kept_as_proof_holds_no_card(monkeypatch):
 # ── CRM messages and email ─────────────────────────────────────────────────
 
 def test_a_logged_email_and_its_outbox_row_hold_no_card(monkeypatch):
+    import commercial_email
+
+    async def _has_address(_tenant_id):
+        return None
+
+    monkeypatch.setattr(commercial_email, "require_postal_address", _has_address)
     import crm
     import email_outbox
     from tests.test_crm_workflows import CLIENT_ID, _MessageConn, _fake_tenant_tx
@@ -298,6 +304,12 @@ def test_a_logged_note_or_text_holds_no_card(monkeypatch, channel):
 # ── outreach drafts: removed before the approval hash ──────────────────────
 
 def test_an_outreach_draft_is_cleaned_before_it_is_approved(monkeypatch):
+    import commercial_email
+
+    async def _has_address(_tenant_id):
+        return None
+
+    monkeypatch.setattr(commercial_email, "require_postal_address", _has_address)
     import commands_api
 
     captured = {}

@@ -1405,6 +1405,13 @@ async def send_message(
     is_internal = stored_channel == "message"
     direction = None if is_internal else body.direction
     outbound = direction == "outbound"
+    if stored_channel == "email" and outbound:
+        import commercial_email
+
+        try:
+            await commercial_email.require_postal_address(ctx.tenant_id)
+        except commercial_email.PostalAddressRequired as exc:
+            raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
 
     try:
         async with tenant_tx(ctx) as conn:

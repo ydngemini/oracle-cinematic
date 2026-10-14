@@ -1357,6 +1357,15 @@ async def stage_command(
     # approves, the stored draft and the message sent all lack it (SAQ A).
     draft = pan_redaction.scrub_obj(draft, "outreach_draft", tenant_id=ctx.tenant_id)
     _validate_command_payload(command_type, target, draft)
+    if command_type is CommandType.EMAIL:
+        # No postal address, no client email (CAN-SPAM; owner 2026-10-14):
+        # refuse now rather than approve a draft the worker must hold.
+        import commercial_email
+
+        try:
+            await commercial_email.require_postal_address(ctx.tenant_id)
+        except commercial_email.PostalAddressRequired as exc:
+            raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
     enforce_public_property_data(context)
     async with tenant_tx(ctx) as conn:
         existing = await conn.fetchrow(

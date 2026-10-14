@@ -286,6 +286,12 @@ def test_sms_requires_a_client_phone_even_for_log_only_entry(monkeypatch):
 
 
 def test_email_still_uses_compliance_gate_and_durable_outbox(monkeypatch):
+    import commercial_email
+
+    async def _has_address(_tenant_id):
+        return None
+
+    monkeypatch.setattr(commercial_email, "require_postal_address", _has_address)
     conn = _MessageConn()
     compliance_calls = []
 

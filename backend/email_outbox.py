@@ -84,6 +84,10 @@ async def deliver(tenant_id: str, outbox_id: str) -> dict[str, Any]:
         if decision.allowed:
             commercial = await commercial_email.prepare(tenant_id, recipient=str(row["to_email"]),
                                                         body=str(row["body_text"] or ""))
+    except commercial_email.PostalAddressRequired as exc:
+        # Nothing was sent, and retrying cannot help until setup changes.
+        await _finish(tenant_id, outbox_id, "failed", error=str(exc)[:500])
+        return {"status": "blocked"}
     except Exception as exc:  # noqa: BLE001 - nothing was sent; the job retries
         await _finish(tenant_id, outbox_id, "queued", error=f"held: pre-send check failed ({type(exc).__name__})")
         raise

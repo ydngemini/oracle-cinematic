@@ -92,9 +92,24 @@ EXEMPT_SENDERS = frozenset({
 
 SETUP_REQUIRED_MESSAGE = (
     "Add your brokerage's postal mailing address. U.S. law (CAN-SPAM) requires "
-    "it in commercial email. Until it is added, client emails go out with an "
-    "unsubscribe link but no postal address."
+    "it in commercial email. Until it is added, Neoh holds every email to "
+    "clients, leads and contacts."
 )
+
+# Owner 2026-10-14: no postal address, no client email. Refused when queued
+# (crm.send_message, stage_command) and again at send, so a brokerage that
+# clears its address mid-queue sends nothing either. System mail is exempt.
+HOLD_MESSAGE = (
+    "Not sent: add your brokerage's postal mailing address in setup first. "
+    "U.S. law (CAN-SPAM) requires it in every email to clients, leads and contacts."
+)
+
+
+class PostalAddressRequired(RuntimeError):
+    """The brokerage has no postal address: commercial email is held."""
+
+    def __init__(self) -> None:
+        super().__init__(HOLD_MESSAGE)
 
 
 class UnsubscribeTokenError(ValueError):
@@ -201,23 +216,38 @@ def compose(*, tenant_id: str, recipient: str, body: str, brokerage_name: str,
 _SENDER_SQL = "SELECT name, postal_address FROM tenants WHERE id = $1::uuid"
 
 
-async def prepare(tenant_id: str, *, recipient: str, body: str) -> PreparedEmail:
-    """The footered body and list headers for one commercial email. Reads the
-    brokerage's name and postal address as a worker (the tenants policy lets a
-    platform-admin context read its own tenant row)."""
+async def _sender(tenant_id: str):
+    """The brokerage's name and postal address, read as a worker (the tenants
+    policy lets a platform-admin context read its own tenant row)."""
     from db.connection import tenant_tx
     from tenancy import Role, TenantContext
 
     ctx = TenantContext(agent_id="commercial-email", tenant_id=str(tenant_id), role=Role.PLATFORM_ADMIN)
     async with tenant_tx(ctx) as conn:
-        row = await conn.fetchrow(_SENDER_SQL, str(tenant_id))
+        return await conn.fetchrow(_SENDER_SQL, str(tenant_id))
+
+
+async def require_postal_address(tenant_id: str) -> None:
+    """Raise PostalAddressRequired unless the brokerage has a postal address."""
+    row = await _sender(tenant_id)
+    if not clean_postal_address(row["postal_address"] if row else None):
+        # Ids only (log-PII guard). The setup screen shows the same state.
+        log.warning("commercial email for tenant %s held: no postal address (setup required)", tenant_id)
+        raise PostalAddressRequired()
+
+
+async def prepare(tenant_id: str, *, recipient: str, body: str) -> PreparedEmail:
+    """The footered body and list headers for one commercial email. Raises
+    PostalAddressRequired when the brokerage has no postal address: nothing
+    is sent (owner 2026-10-14)."""
+    row = await _sender(tenant_id)
     name = row["name"] if row else ""
     address = row["postal_address"] if row else None
     prepared = compose(tenant_id=str(tenant_id), recipient=recipient, body=body,
                        brokerage_name=name, postal_address=address)
     if not prepared.postal_address_configured:
-        # Ids only (log-PII guard). The setup screen shows the same state.
-        log.warning("commercial email for tenant %s sent without a postal address: setup required", tenant_id)
+        log.warning("commercial email for tenant %s held: no postal address (setup required)", tenant_id)
+        raise PostalAddressRequired()
     return prepared
 
 
