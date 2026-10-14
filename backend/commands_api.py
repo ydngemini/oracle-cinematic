@@ -35,6 +35,7 @@ from fastapi import (
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from starlette.responses import RedirectResponse, Response
 
+import record_access
 import ws_hub
 from agent_profile import load_agent_identity
 from approval_service import create_approval, decide_approval, list_approvals
@@ -1919,6 +1920,10 @@ async def call_telemetry(
         amber_tolerance=body.amber_tolerance,
     )
     async with tenant_tx(ctx) as conn:
+        # 0140: 404 for a call on a record the caller cannot see, 403 when it
+        # is shared view-only (FOR SHARE alone would read both as missing).
+        await record_access.require_linked_edit(
+            conn, "live_call_sessions", call_session_id, "Call session not found.")
         call = await conn.fetchrow(
             "SELECT * FROM live_call_sessions WHERE id=$1::uuid FOR SHARE",
             call_session_id,
@@ -1969,6 +1974,8 @@ async def record_call_consent(
     """Record or withdraw explicit transcription consent before telemetry."""
     require_feature(Feature.AUTOMATION)
     async with tenant_tx(ctx) as conn:
+        await record_access.require_linked_edit(
+            conn, "live_call_sessions", call_session_id, "Call session not found.")
         call = await conn.fetchrow(
             """
             UPDATE live_call_sessions

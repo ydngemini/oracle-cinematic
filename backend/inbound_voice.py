@@ -697,6 +697,27 @@ async def mark_inbound_streaming(call_sid: str) -> None:
         )
 
 
+async def _record_voice_opt_out(conn: Any, tenant_id: str, caller_ciphertext: Any, key: str) -> None:
+    """Suppress the caller's number brokerage-wide in the caller's transaction.
+    Recorded as 'stop_keyword' (0015's consumer-initiated opt-out; a spoken
+    "stop calling me" is the same request by another reasonable method), with
+    the source saying it came from a call. Raises when the number cannot be
+    read: an opt-out that is not recorded must fail the finalize (and its
+    retry), never pass silently."""
+    from outreach_compliance import Channel, normalize_contact
+
+    caller = await decrypt_pii(conn, caller_ciphertext, key) if caller_ciphertext else None
+    contact = normalize_contact(str(caller or ""), Channel.VOICE)
+    if not contact:
+        raise CryptoError("inbound opt-out: caller number unavailable")
+    await conn.execute(
+        """INSERT INTO outreach_suppression (tenant_id, contact, channel, reason, source_text)
+           VALUES ($1::uuid, $2, '*', 'stop_keyword', 'inbound call: caller asked not to be contacted')
+           ON CONFLICT (tenant_id, contact, channel) WHERE lifted_at IS NULL DO NOTHING""",
+        tenant_id, contact,
+    )
+
+
 async def finalize_inbound_voice_call(
     call_sid: str,
     transcript: Sequence[Mapping[str, Any]],
@@ -725,7 +746,8 @@ async def finalize_inbound_voice_call(
         row = await conn.fetchrow(
             """
             SELECT id,client_id,contact_id,intake_mode,callback_task_id,
-                   contact_intake_session_id,intake_handoff_task_id
+                   contact_intake_session_id,intake_handoff_task_id,
+                   caller_phone_ciphertext
               FROM inbound_voice_calls
              WHERE tenant_id=$1::uuid AND provider_call_sid=$2
              FOR UPDATE
@@ -872,6 +894,13 @@ async def finalize_inbound_voice_call(
             )
             task_id = task["id"]
 
+        if opted_out:
+            # The opt-out the outreach gate reads (outreach_compliance.
+            # gather_state). The contact flag below only reached that one
+            # contact's nurture; every other send path — a colleague's record
+            # with the same number, a lead, a mission — went on calling. All
+            # channels, as a STOP text does.
+            await _record_voice_opt_out(conn, tenant_id, row["caller_phone_ciphertext"], key)
         if opted_out and row["contact_id"]:
             await conn.execute(
                 """

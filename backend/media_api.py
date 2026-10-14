@@ -64,6 +64,7 @@ from audit_ledger import AuditCategory, ledger
 from billing_usage import record_usage
 from contract_vault import SovereignVault, VaultUploadError
 import media_storage
+import record_access
 from db.connection import tenant_tx
 from tenancy import Role, TenantContext, require_context
 
@@ -463,6 +464,9 @@ async def synthesize_contract(
     )
 
     async with tenant_tx(ctx) as conn:
+        # The document lands on the client's file: 404 when the caller cannot
+        # see the client, 403 when it is shared with them to view only (0140).
+        await record_access.require_client_edit(conn, str(body.client_id))
         template = await conn.fetchrow(
             """
             SELECT id,template_key,version,document_type,jurisdiction,
@@ -661,6 +665,19 @@ async def synthesize_contract(
     }
 
 
+def _metadata(row: Any) -> dict[str, Any]:
+    """jsonb arrives as text (the pool registers no json codec); the listing
+    called .get() on that string and answered 500 for any stored artifact
+    (found by the 0140 live test)."""
+    value = row["metadata"]
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except ValueError:
+            value = None
+    return value if isinstance(value, dict) else {}
+
+
 @router.get("/contracts/synthesis-artifacts")
 async def list_contract_synthesis_artifacts(
     client_id: UUID,
@@ -670,6 +687,8 @@ async def list_contract_synthesis_artifacts(
     """List generated document state for one tenant-owned client."""
     normalized_state = state_code.upper() if state_code else None
     async with tenant_tx(ctx) as conn:
+        # A client the caller cannot see is 404, not an empty list (0140).
+        await record_access.require_client_visible(conn, str(client_id))
         rows = await conn.fetch(
             """
             SELECT id,client_id,doc_id,state_code,status,pdf_sha256,encryption,
@@ -694,8 +713,8 @@ async def list_contract_synthesis_artifacts(
                 "pdf_sha256": row["pdf_sha256"],
                 "encryption": row["encryption"],
                 "expires_at": row["expires_at"].isoformat() if row["expires_at"] else None,
-                "template_key": (row["metadata"] or {}).get("template_key"),
-                "document_type": (row["metadata"] or {}).get("document_type"),
+                "template_key": _metadata(row).get("template_key"),
+                "document_type": _metadata(row).get("document_type"),
                 "created_at": row["created_at"].isoformat(),
                 "updated_at": row["updated_at"].isoformat(),
             }

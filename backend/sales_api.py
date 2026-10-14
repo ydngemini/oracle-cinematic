@@ -37,6 +37,7 @@ from contacts_api import _CONTACT_SELECT, _contact_json, search_contact_rows
 from db.connection import tenant_tx
 from outreach_compliance import Channel, VoiceMode, guard_outreach
 from platform_policy import ActionRisk, Feature, feature_enabled, require_feature
+import record_access
 from tenancy import Role, TenantContext, require_context, require_role
 
 
@@ -1161,6 +1162,10 @@ async def enroll_plan(plan_id: str, body: EnrollmentCreate, ctx: TenantContext =
         definition = PlanDefinition.model_validate(_json(revision["definition"], {}))
         enrollment_rows: list[Any] = []
         run_rows: list[Any] = []
+        # A plan contacts the person: it needs edit on the contact, not a view
+        # share (404 when invisible, 403 when view-only; 0140).
+        for contact_id in body.contact_ids:
+            await record_access.require_contact_edit(conn, contact_id)
         for contact_id in body.contact_ids:
             enrollment = await conn.fetchrow(
                 """
@@ -1216,10 +1221,14 @@ async def enroll_plan(plan_id: str, body: EnrollmentCreate, ctx: TenantContext =
 async def _set_enrollment_state(ctx: TenantContext, enrollment_id: str, action: str) -> dict[str, Any]:
     enrollment_id = _uuid(enrollment_id, "enrollment_id")
     async with tenant_tx(ctx) as conn:
+        owner_of = await conn.fetchval("SELECT created_by FROM smart_plan_enrollments WHERE id=$1::uuid", enrollment_id)
+        if owner_of is None or (not (ctx.is_platform_admin or ctx.is_broker_owner) and owner_of != ctx.agent_id):
+            raise HTTPException(status_code=404, detail="Enrollment not found.")
+        # The creator may still only view the contact now (a view share): 403,
+        # not the 404 FOR UPDATE alone would give (0140).
+        await record_access.require_linked_edit(conn, "smart_plan_enrollments", enrollment_id, "Enrollment not found.")
         enrollment = await conn.fetchrow("SELECT * FROM smart_plan_enrollments WHERE id=$1::uuid FOR UPDATE", enrollment_id)
         if enrollment is None:
-            raise HTTPException(status_code=404, detail="Enrollment not found.")
-        if not (ctx.is_platform_admin or ctx.is_broker_owner) and enrollment["created_by"] != ctx.agent_id:
             raise HTTPException(status_code=404, detail="Enrollment not found.")
         if action == "pause":
             if enrollment["status"] != "active":

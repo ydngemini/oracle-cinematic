@@ -42,7 +42,8 @@ from contacts_api import _CONTACT_SELECT, _contact_json
 from db.connection import tenant_tx
 from outreach_compliance import Channel, VoiceMode, guard_outreach
 from platform_policy import Feature, require_feature
-from tenancy import Role, TenantContext, require_context, require_role
+from tenancy import Role, TenantContext, brokerage_scope, require_context, require_role
+import record_access
 from billing import require_active_subscription
 from twilio_call_handler import (
     TwilioCallStateUnavailable,
@@ -850,6 +851,8 @@ async def prepare_agent_call(
         )
         if contact_row is None:
             raise HTTPException(status_code=404, detail="Contact not found.")
+        # Calling the person needs edit on the contact, not a view share (0140).
+        await record_access.require_contact_edit(conn, body.contact_id)
         contact = await _contact_json(conn, ctx, contact_row)
         route = await conn.fetchrow(
             """
@@ -1083,7 +1086,11 @@ async def twilio_agent_status(request: Request) -> Response:
     }.get(call_status)
     if mapped:
         terminal = mapped in {"completed", "failed", "cancelled"}
-        async with tenant_tx(tenant_ctx) as conn:
+        # A carrier receipt for a call already placed is recorded whatever has
+        # happened to the contact since (C4.5): a brokerage pipeline write, not
+        # the agent re-deciding — 0140 would otherwise drop it silently once
+        # the contact moved to a colleague.
+        async with tenant_tx(brokerage_scope(tenant_ctx)) as conn:
             await conn.execute(
                 """
                 UPDATE agent_call_intents
