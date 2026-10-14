@@ -1,18 +1,28 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useLayoutEffect, useState, useSyncExternalStore } from 'react';
 
-import { avatarState, SUCCESS_HOLD_MS } from './avatarModel';
+import { createAvatarStore } from './avatarFacts';
 
 /**
  * useNeohAvatarState — one derived truth for Neoh's face.
  *
- * Everything the avatar shows comes from facts the app already has. There is
- * no timer anywhere in here that pretends Neoh is busy: if the face says
- * thinking, a message really is pending; if it says acting, an action really
- * is executing; if it says success, the backend really confirmed something.
+ * Everything the avatar shows comes from facts the app already has, turned
+ * into validated NeohAnimationEvents (avatarFacts.js) and resolved by the
+ * statechart (animationEvent.js):
  *
- * The one timer that does exist holds a SUCCESS acknowledgement for a beat
- * so it can be seen before it settles — it can only ever shorten a state
- * that already happened, never invent one.
+ *   · thinking only while a request is in flight and recently active;
+ *   · acting only while a command request is executing;
+ *   · success only for a backend receipt of an applied action, held for
+ *     SUCCESS_HOLD_MS from when that receipt arrived — never on mount for an
+ *     old one, never for "analysis complete";
+ *   · listening only while the browser recogniser is capturing;
+ *   · speaking only while audio is actually playing (nothing in the browser
+ *     plays Neoh's voice today, so callers never pass it);
+ *   · error for a real failure, with a reason (timeout, unavailable,
+ *     interrupted, rejected, failed, send_refused); cancellation is idle with
+ *     reason "cancelled", not an error.
+ *
+ * Timers exist only to END states (an expiry, the end of a hysteresis wait).
+ * No timer can start one, and nothing runs per frame.
  *
  * Callers pass real state in rather than this hook reaching into five
  * contexts itself, so it stays pure enough to test and impossible to wire
@@ -20,20 +30,24 @@ import { avatarState, SUCCESS_HOLD_MS } from './avatarModel';
  *
  * @param {object} facts
  * @param {string}  [facts.connection]  channel connection ('online' | …)
- * @param {Array}   [facts.messages]    conversation
+ * @param {Array}   [facts.messages]    conversation (assistant turns carry status + timestamps)
  * @param {boolean} [facts.asking]      deterministic ask path in flight
- * @param {boolean} [facts.micActive]   person is speaking to Neoh
- * @param {boolean} [facts.speaking]    assistant audio is playing
+ * @param {boolean} [facts.micActive]   the browser recogniser is capturing
+ * @param {boolean} [facts.speaking]    an audio element is PLAYING Neoh's voice
  * @param {number}  [facts.audioLevel]  0..1 smoothed amplitude
- * @param {object}  [facts.commandStatus] AssistantContext command status
+ * @param {object}  [facts.commandStatus] AssistantContext command status (stamped `at`)
  * @param {string}  [facts.actionName]  executing tool/action
- * @param {boolean} [facts.attention]   something needs the person
- * @param {boolean} [facts.failed]      a genuine failure
+ * @param {boolean} [facts.attention]   something is waiting for the person's approval
+ * @param {boolean} [facts.failed]      a message could not be sent
+ * @returns {{state: string, actionType: string, reason: string|null, audioLevel: number, attentionLevel: number}}
  */
 export function useNeohAvatarState(facts = {}) {
+  const [store] = useState(createAvatarStore);
+  const view = useSyncExternalStore(store.subscribe, store.getView, store.getView);
+
   const {
     connection = 'online',
-    messages = [],
+    messages = EMPTY,
     asking = false,
     micActive = false,
     speaking = false,
@@ -44,64 +58,19 @@ export function useNeohAvatarState(facts = {}) {
     failed = false,
   } = facts;
 
-  // A command that the backend has confirmed done is the only thing that may
-  // light SUCCESS. A clicked button is not a success; a receipt is.
-  const commandState = String(commandStatus?.state || '').toLowerCase();
-  const confirmedSuccess = commandState === 'completed' || commandState === 'succeeded';
-  const commandFailed = commandState === 'failed' || commandState === 'error';
-  const commandNeedsPerson = commandState === 'awaiting_approval' || commandState === 'needs_approval';
-  const commandRunning = commandState === 'running' || commandState === 'executing';
-
-  const [successHeld, setSuccessHeld] = useState(false);
-  const lastConfirmed = useRef(false);
-
-  // Latch a confirmed success briefly so it is visible, then let it go.
-  useEffect(() => {
-    if (confirmedSuccess && !lastConfirmed.current) {
-      setSuccessHeld(true);
-      const timer = window.setTimeout(() => setSuccessHeld(false), SUCCESS_HOLD_MS);
-      lastConfirmed.current = true;
-      return () => window.clearTimeout(timer);
-    }
-    if (!confirmedSuccess) lastConfirmed.current = false;
-    return undefined;
-  }, [confirmedSuccess]);
-
-  return useMemo(() => {
-    const resolvedAction = actionName || (commandRunning ? commandStatus?.detail || 'generic' : '');
-    const { state, actionType } = avatarState({
-      connection,
-      messages,
-      asking,
-      micActive,
-      speaking,
-      attention: attention || commandNeedsPerson,
-      failed: failed || commandFailed,
-      actionName: resolvedAction,
-      succeeded: successHeld,
+  // Layout effect: the resolved state is in place before the browser paints,
+  // so a state that just ended is never shown for a frame.
+  useLayoutEffect(() => {
+    store.observe({
+      connection, messages, asking, micActive, speaking, audioLevel, commandStatus, actionName, attention, failed,
     });
-    return {
-      state,
-      actionType,
-      audioLevel: state === 'listening' || state === 'speaking' ? audioLevel : 0,
-      attentionLevel: state === 'needs_attention' ? 1 : 0,
-    };
-  }, [
-    actionName,
-    asking,
-    attention,
-    audioLevel,
-    commandFailed,
-    commandNeedsPerson,
-    commandRunning,
-    commandStatus,
-    connection,
-    failed,
-    messages,
-    micActive,
-    speaking,
-    successHeld,
-  ]);
+  }, [store, connection, messages, asking, micActive, speaking, audioLevel, commandStatus, actionName, attention, failed]);
+
+  useLayoutEffect(() => () => store.dispose(), [store]);
+
+  return view;
 }
+
+const EMPTY = Object.freeze([]);
 
 export default useNeohAvatarState;

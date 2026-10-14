@@ -1,7 +1,9 @@
 import { Suspense, lazy, useEffect, useState } from 'react';
 
+import { useSharedAvatar } from './avatarPresence';
 import { NeohAvatar } from './NeohAvatar';
 import { useMotionPolicy } from './motion';
+import { usePageHidden } from './pageVisibility';
 import styles from './NeohCorner.module.css';
 
 /**
@@ -27,6 +29,10 @@ import styles from './NeohCorner.module.css';
  *
  * Reduced motion means do not animate. It has never meant hide the character,
  * so the fallback is the real mascot at corner scale, held still.
+ *
+ * Both renderers show the SAME state: the one the Neoh surface resolved and
+ * shared through avatarPresence (or, in tests, the `avatar` prop). The corner
+ * never derives a state of its own, so flat and 3D can never disagree.
  */
 
 const NeohCorner3D = lazy(() => import('./NeohCorner3D.jsx'));
@@ -110,15 +116,27 @@ function useDwell(eligible) {
   return awake;
 }
 
-function FlatNeoh() {
+function FlatNeoh({ avatar }) {
   return (
     <span className={styles.flat}>
-      <NeohAvatar state="idle" />
+      <NeohAvatar
+        state={avatar.state}
+        actionType={avatar.actionType}
+        audioLevel={avatar.audioLevel}
+        attentionLevel={avatar.attentionLevel}
+      />
     </span>
   );
 }
 
-export function NeohCorner() {
+/**
+ * @param {object} [props]
+ * @param {object} [props.avatar] a resolved avatar view; defaults to the shared one
+ */
+export function NeohCorner({ avatar: avatarProp } = {}) {
+  const shared = useSharedAvatar();
+  const avatar = avatarProp || shared;
+  const hidden = usePageHidden();
   const policy = useMotionPolicy();
   const [failed, setFailed] = useState(false);
   // Decided once at mount: whether this visit could ever earn the 3D Neoh.
@@ -132,11 +150,17 @@ export function NeohCorner() {
   return (
     <div className={styles.corner} aria-hidden="true">
       {wants3D ? (
-        <Suspense fallback={<FlatNeoh />}>
-          <NeohCorner3D onFailure={() => setFailed(true)} />
+        <Suspense fallback={<FlatNeoh avatar={avatar} />}>
+          <NeohCorner3D
+            state={avatar.state}
+            actionType={avatar.actionType}
+            attentionLevel={avatar.attentionLevel}
+            still={policy.reduced || hidden}
+            onFailure={() => setFailed(true)}
+          />
         </Suspense>
       ) : (
-        <FlatNeoh />
+        <FlatNeoh avatar={avatar} />
       )}
     </div>
   );

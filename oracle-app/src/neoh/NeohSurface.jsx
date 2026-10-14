@@ -1,7 +1,8 @@
 import { AnimatePresence, motion } from 'framer-motion';
-import { Suspense, lazy, useCallback, useEffect, useRef, useState } from 'react';
+import { Suspense, lazy, useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 
 import { useAssistant } from '../components/AssistantContext';
+import { publishAvatar, withdrawAvatar } from './avatarPresence';
 import { useMotionPolicy } from './motion';
 import { NeohAvatar } from './NeohAvatar';
 import { useNeohAvatarState } from './useNeohAvatarState';
@@ -61,11 +62,23 @@ export function NeohSurface({ entityOpen = false, onOpenEntity, onExpand, onNavi
     messages: channel.messages,
     asking: activity.asking,
     // The browser recogniser actually capturing is a real source for
-    // "listening". Nothing yet is a source for "speaking" — there is no TTS.
+    // "listening". Nothing yet is a source for "speaking" — no browser
+    // surface plays Neoh's voice (T15.14), so `speaking` is never passed.
     micActive: activity.listening,
     commandStatus,
     failed: Boolean(channel.notice) && channel.connection !== 'online',
   });
+
+  // Share the resolved state with the Home corner so the corner mascot (flat
+  // or 3D) shows exactly this, in the same frame. Only while Neoh is
+  // available here — a workspace without Neoh keeps the corner at rest.
+  const presenceId = useId();
+  const available = channel.available === true;
+  useLayoutEffect(() => {
+    if (available) publishAvatar(presenceId, avatar);
+    else withdrawAvatar(presenceId);
+  }, [available, avatar, presenceId]);
+  useLayoutEffect(() => () => withdrawAvatar(presenceId), [presenceId]);
 
   // Voice gives Neoh room to be expressive: while the person is talking to
   // Neoh the face in the bar grows into a bust, and shrinks back after.

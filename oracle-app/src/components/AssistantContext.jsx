@@ -2,14 +2,31 @@ import { createContext, useCallback, useContext, useEffect, useId, useMemo, useS
 
 const AssistantContext = createContext(null);
 
+let commandStatusSeq = 0;
+
 export function AssistantProvider({ children }) {
   const [open, setOpen] = useState(false);
   const [record, setRecord] = useState(null);
-  const [commandStatus, setCommandStatus] = useState({
+  const [commandStatus, setRawCommandStatus] = useState({
     state: 'idle',
     message: 'Assistant ready',
     detail: '',
+    at: 0,
+    seq: 0,
   });
+  // Every status is stamped with when it was set, so the mascot can tell a
+  // receipt that just arrived from one left over from minutes ago (a success
+  // must never replay on remount). `seq` orders two statuses set in the same
+  // millisecond.
+  const setCommandStatus = useCallback((next) => {
+    const at = Date.now();
+    commandStatusSeq += 1;
+    const seq = commandStatusSeq;
+    setRawCommandStatus((previous) => {
+      const value = typeof next === 'function' ? next(previous) : next;
+      return value ? { ...value, at, seq } : value;
+    });
+  }, []);
   const [commandRequest, setCommandRequest] = useState(null);
 
   const registerRecord = useCallback((next, owner = 'manual') => {
@@ -49,6 +66,7 @@ export function AssistantProvider({ children }) {
     record,
     registerRecord,
     requestCommand,
+    setCommandStatus,
   ]);
 
   return <AssistantContext.Provider value={value}>{children}</AssistantContext.Provider>;

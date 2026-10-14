@@ -150,7 +150,8 @@ export function useNeohChannel({ open = false } = {}) {
     }
     const context = wireContext(record);
     const requestId = crypto.randomUUID();
-    const now = new Date().toISOString();
+    const sentAt = Date.now();
+    const now = new Date(sentAt).toISOString();
     dispatch({
       type: ACTIONS.AI_CHAT_SEND_LOCAL,
       payload: {
@@ -161,6 +162,7 @@ export function useNeohChannel({ open = false } = {}) {
         assistant: {
           id: `local-assistant-${requestId}`, request_id: requestId, role: 'assistant',
           content: '', status: 'pending', context: record, actions: [], created_at: now, local: true,
+          observed_at: sentAt,
         },
       },
     });

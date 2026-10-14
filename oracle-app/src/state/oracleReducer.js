@@ -78,7 +78,18 @@ export function oracleReducer(state, action) {
           return true;
         });
       });
-      return { ...state, aiChatMessages: [...incoming, ...pending] };
+      // Saved rows replace the live ones, but keep the local arrival time of
+      // the last frame each turn received (see observedAt).
+      const seen = new Map();
+      for (const message of state.aiChatMessages) {
+        if (typeof message.observed_at !== 'number') continue;
+        seen.set(`${message.request_id}:${message.role}`, message.observed_at);
+      }
+      const saved = incoming.map((message) => {
+        const at = seen.get(`${message?.request_id}:${message?.role}`);
+        return at === undefined ? message : { ...message, observed_at: at };
+      });
+      return { ...state, aiChatMessages: [...saved, ...pending] };
     }
 
     case ACTIONS.AI_CHAT_SEND_LOCAL:
@@ -98,7 +109,10 @@ export function oracleReducer(state, action) {
         aiChatMessages: state.aiChatMessages.map((message) => {
           if (message.request_id !== action.payload.request_id) return message;
           if (message.role === 'assistant') {
-            return { ...message, id: action.payload.message_id, status: action.payload.status || 'pending', local: false };
+            return {
+              ...message, ...observedAt(action.payload),
+              id: action.payload.message_id, status: action.payload.status || 'pending', local: false,
+            };
           }
           if (message.role === 'user' && action.payload.user_message_id) {
             return { ...message, id: action.payload.user_message_id, local: false };
@@ -111,7 +125,7 @@ export function oracleReducer(state, action) {
       return {
         ...state,
         aiChatMessages: upsertAssistant(state.aiChatMessages, action.payload, {
-          status: 'streaming', content: '', local: false,
+          status: 'streaming', content: '', local: false, ...observedAt(action.payload),
         }),
       };
 
@@ -120,6 +134,7 @@ export function oracleReducer(state, action) {
         ...state,
         aiChatMessages: upsertAssistant(state.aiChatMessages, action.payload, (message) => ({
           status: 'streaming', content: `${message.content || ''}${action.payload.delta || ''}`, local: false,
+          ...observedAt(action.payload),
         })),
       };
 
@@ -129,6 +144,7 @@ export function oracleReducer(state, action) {
         aiChatRevision: state.aiChatRevision + 1,
         aiChatMessages: upsertAssistant(state.aiChatMessages, action.payload, {
           status: 'completed', actions: action.payload.actions || [], model_id: action.payload.model_id,
+          ...observedAt(action.payload),
         }),
       };
 
@@ -138,7 +154,7 @@ export function oracleReducer(state, action) {
         aiChatRevision: state.aiChatRevision + 1,
         aiChatMessages: upsertAssistant(state.aiChatMessages, action.payload, {
           status: 'failed', content: action.payload.message || 'The assistant is unavailable.',
-          error_code: action.payload.code,
+          error_code: action.payload.code, ...observedAt(action.payload),
         }),
       };
 
@@ -147,7 +163,10 @@ export function oracleReducer(state, action) {
         ...state,
         aiChatMessages: state.aiChatMessages.map((message) =>
           message.request_id === action.payload.request_id && message.role === 'assistant'
-            ? { ...message, status: 'failed', content: action.payload.message || 'Message was not accepted.' }
+            ? {
+              ...message, status: 'failed', content: action.payload.message || 'Message was not accepted.',
+              error_code: action.payload.code || 'AI_CHAT_REJECTED', ...observedAt(action.payload),
+            }
             : message
         ),
       };
@@ -251,6 +270,11 @@ export function oracleReducer(state, action) {
     default:
       return state;
   }
+}
+
+/** The local arrival time of a frame, when the socket stamped one. */
+function observedAt(payload) {
+  return typeof payload?.observed_at === 'number' ? { observed_at: payload.observed_at } : {};
 }
 
 function upsertAssistant(messages, payload, patch) {

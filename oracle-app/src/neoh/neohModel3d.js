@@ -29,6 +29,9 @@ export const PALETTE = Object.freeze({
 
 const col = (pc, [r, g, b]) => new pc.Color(r, g, b);
 
+/** Rest emissive intensity of the eyes, rings and emblem. */
+export const GLOW_INTENSITY = 1.8;
+
 /**
  * A glossy opaque material. `useMetalness` off keeps the toy-plastic look of
  * the reference; the metalness workflow makes white shells read as grey.
@@ -83,7 +86,10 @@ function meshEntity(pc, app, mesh, material, { name, pos, rot, scale }) {
  * turns the head into about thirty pixels, and the head is the part that
  * carries the character.
  *
- * @returns {{root: object, head: object, eyes: object[], rings: object[], emblem: object}}
+ * `glow` is the one shared self-lit material (eyes, ear rings, emblem), so the
+ * corner can recolour every light for a state with a single update.
+ *
+ * @returns {{root: object, head: object, eyes: object[], rings: object[], emblem: object, glow: object}}
  */
 export function buildNeoh(pc, app) {
   const device = app.graphicsDevice;
@@ -92,7 +98,7 @@ export function buildNeoh(pc, app) {
   const shellLow = shellMaterial(pc, PALETTE.shellShadow, { gloss: 0.6 });
   const visorMat = shellMaterial(pc, PALETTE.visor, { gloss: 0.94 });
   const jointMat = shellMaterial(pc, PALETTE.joint, { gloss: 0.5 });
-  const glowMat = glowMaterial(pc, PALETTE.glow, 1.8);
+  const glowMat = glowMaterial(pc, PALETTE.glow, GLOW_INTENSITY);
   const ridgeMat = outlineMaterial(pc, PALETTE.roofEdge);
 
   const sphere = pc.createSphere(device, { radius: 0.5, latitudeBands: 24, longitudeBands: 24 });
@@ -210,7 +216,7 @@ export function buildNeoh(pc, app) {
     }));
   }
 
-  return { root, head, eyes, rings, emblem };
+  return { root, head, eyes, rings, emblem, glow: glowMat };
 }
 
 /**
