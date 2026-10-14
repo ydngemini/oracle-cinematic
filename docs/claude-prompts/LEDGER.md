@@ -35,7 +35,7 @@ Listed weakest to strongest:
 |---|---|---|---|---|---|---|---|
 | 01 | Repository source audit | [01](01-repository-source-audit.md) | `not_inspected` | — | — | — | Run the 01 inventory |
 | 02 | All pages, routes, mobile UI | [02](02-all-pages-mobile-ui.md) | `source_verified` | staging | `90372f2` crawl | — | Per-page verdicts |
-| 03 | Brokerage tenancy and hybrid access | [03](03-brokerage-tenancy-hybrid-access.md) | `source_verified` | staging | 0131 (L03-02) staging, 0134 (L03-04) local | Owner: team leads, contact-vs-client assignee drift (L03-03, L03-04) | Deploy 0131+0134; browser check; then the communications tables |
+| 03 | Brokerage tenancy and hybrid access | [03](03-brokerage-tenancy-hybrid-access.md) | `source_verified` | staging | 0131 (L03-02), 0134+0137 (L03-04) staging | Owner: team leads, contact-vs-client assignee drift (L03-03, L03-04) | Deploy 0131+0134; browser check; then the communications tables |
 | 04 | CRM, contacts, leads, relationships | [04](04-crm-contact-leads-relationships.md) | `tests_pass` | local | `a8bff54` (L04-01) | — | T04.01 + T04.13 (L04-01 next) |
 | 05 | Semantic intent | [05](05-semantic-language-intent.md) | `source_verified` | local | `745f2fa` | — | L05-01 |
 | 06 | Evidence retrieval and memory | [06](06-evidence-retrieval-memory.md) | `source_verified` | local | `745f2fa` | A01, A02 | L06-01 |
@@ -226,8 +226,8 @@ updated: 2026-10-13
 ```yaml
 id: L03-04
 status: tests_pass
-env: local
-evidence_shas: [631b786]
+env: staging
+evidence_shas: [631b786, 86c9cb7, e99446f, b3518eb]
 files: [backend/db/migrations/0134_agent_contact_scope.sql, backend/record_access.py, backend/contacts_api.py, backend/tenancy.py, backend/ai_tools_gated.py, backend/lead_routing_api.py, backend/privacy_data_map.py, backend/policy_contract.py, docs/privacy-data-map.md, oracle-app/src/components/ContactDetailPanel.jsx, oracle-app/src/components/ClientAccess.jsx, oracle-app/src/state/useClientAccess.js, .github/workflows/ci.yml]
 tests_run:
   - {cmd: "livetest: pytest tests/test_contact_access_matrix_live.py tests/test_brokerage_access_matrix_live.py (real PostgreSQL 16.14, app role, local dev DB)", result: "4 passed: agent A / B / C(shared) / owner / platform admin / other brokerage / brokerage pipeline / user session asking for brokerage scope; intake tables inherit; view share refused at the DB and as 403 on PATCH, intake, nurture and property routes; edit share cannot re-share or take the record (contacts AND clients, F03.02); expired share and a CLIENT share grant nothing on a contact; agent-created contact lands in the pool, a linked client's contact stays with its agent; agent cannot create or reassign to a colleague (API 403, DB 42501); unknown/other-brokerage/inactive assignee 23503; policy == app_contact_access() == tenancy.contact_access for every actor; pg_policies composition; workload counts and quiet-hours inputs stay brokerage-wide without widening the caller", date: 2026-10-13}
@@ -238,13 +238,14 @@ tests_run:
   - {cmd: "vitest (ContactDetailPanel.test.jsx + ClientAccess.test.jsx + full) + eslint + vite build + bundle budget", result: "721 passed; lint clean; within budget", date: 2026-10-13}
   - {cmd: "staging PRE_DEPLOY of a62bcc2/e44aa78 (DigitalOcean managed PostgreSQL, non-superuser doadmin)", result: "FAILED at 0134 (42501 permission denied to set parameter app.record_scope): a function SET clause for a custom parameter needs superuser; local and CI migrate as superuser so neither caught it. 0132 and 0133 had applied, so staging briefly ran ef526bd code on a 0133 schema (0132 refuses that code's plaintext AI call notes). Fixed: the two brokerage-scope functions set and restore the scope with set_config() in plpgsql; verified as a NOSUPERUSER role locally (old form reproduces the exact error, new form succeeds); guard tests/test_migrations_managed_postgres.py", date: 2026-10-14}
   - {cmd: "livetest.sh migrate (0137) + pytest tests/test_contact_follows_client_live.py", result: "1 passed: owner move, return to pool and take all carry the contact; a colleague's drifted contact and an inactive assignee are skipped without failing the client update", date: 2026-10-13}
+  - {cmd: "staging after b3518eb (migration head 0137), real API as the demo owner and agent", result: "demo contacts were seeded assigned to the owner while their clients are in the pool (the drift 0137 now prevents); moved to the pool with their clients (owner PATCH, 6 contacts) so the agent sees them again. Owner assigns Sarah to self -> her contact follows (0137) -> agent GET 404; owner shares the contact view-only -> agent sees it, /access = view, PATCH -> 403 'shared with you to view only'; share revoked, Sarah and contact back in the pool", date: 2026-10-14}
 authz_checked: "agent_contacts + contact_property_relationships, contact_intake_sessions, intake_handoff_tasks, contact_nurture_jobs under FORCE RLS as oracle_app; clients reassignment guard"
 blockers:
   - {type: decided, note: "Owner 2026-10-13: reassigning a client moves its linked contact. 0137 (trigger clients_carry_contact_assignee) does it in the same transaction through app_may_reassign, skipping (never failing) a contact the caller may not move or an inactive assignee; tests/test_contact_follows_client_live.py."}
   - {type: decided, note: "Owner 2026-10-13: Platform Use Policy v3 wording approved as drafted."}
 audit_refs: []
 decision_refs: [D-2026-10-13-01]
-next_task: "Deploy 0131+0134 together; verify in a real browser on staging (People: owner assigns, agent shares view-only, colleague sees it read-only)."
+next_task: "Real-browser check of the contact panel on staging; then leads and the communications tables (L03-03)."
 updated: 2026-10-13
 ```
 How it works: the 0131 pattern on `agent_contacts`. `assigned_user_id` is derived from `assigned_agent_id` by a trigger that also replaces 0059's (active members only, 23503 → 422). Four restrictive policies, inline; the intake tables inherit. `record_shares` takes `resource_kind='contact'`; `/api/crm/contacts/{id}/access|shares` mirror the client routes. An agent-created contact is not auto-assigned; one created for an assigned client stays with that client's agent, so a private client's details never land in the pool. Reads that are compliance or brokerage functions, not "seeing the contact", go through a function that sets `app.record_scope='brokerage'` only while it runs and returns no PII: quiet-hours state/timezone (`app_client_contact_place`) and lead-routing workload (`app_open_contact_counts`). Consent, opt-out and frequency (`outreach_*`) are untouched and stay brokerage-wide. Inbound SMS/voice matching and intake already ran as `brokerage_scope`, lead intake as the owner, speed-to-lead and smart-plan workers as platform admin, privacy flows as the owner; the outbound-call webhook and the smart-plan step act as the agent, so a reassigned contact is refused at execution (C3.4). Also fixed (F03.02): an edit share let its holder assign a colleague's client to themselves; `app_may_reassign()` now guards both triggers and `record_access` refuses it first.
