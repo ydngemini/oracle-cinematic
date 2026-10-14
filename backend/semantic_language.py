@@ -224,7 +224,7 @@ _EN_TIME = _alt(
     r"(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.?\s+\d{1,2}",
 )
 _ES_TIME = _alt(
-    "lunes", "martes", "miercoles", "jueves", "viernes", "sabado", "domingo",
+    r"(?:(?:el\s+)?(?:proximo|siguiente)\s+)?(?:lunes|martes|miercoles|jueves|viernes|sabado|domingo)",
     r"pasado\s+manana", "manana", r"la\s+(?:proxima\s+semana|semana\s+que\s+viene)",
     r"(?:el\s+)?fin\s+de\s+semana", "mediodia", r"las?\s+\d{1,2}(?::\d{2})?",
     r"(?:el\s+)?\d{1,2}(?:\s+de\s+[a-z]+)?",
@@ -241,7 +241,8 @@ _DONT = r"(?:don'?t|do\s+not|dont|never)"
 
 _LEXICON: tuple[tuple[str, str, str], ...] = (
     # ── no_send ────────────────────────────────────────────────────────────
-    ("en", "no_send", _NOT_WHY_EN + rf"\b{_DONT}\s+(?:send|message|text|email|e-mail|mail|forward)\b"),
+    ("en", "no_send", _NOT_WHY_EN + rf"\b{_DONT}\s+(?:send|message|text|email|e-mail|mail|forward|"
+                      r"mandes|mandar|envies|enviar|escribas)\b"),
     ("en", "no_send", r"\bhold\s+off\s+on\s+(?:sending|messaging|texting|emailing)\b"),
     ("en", "no_send", r"\b(?:nothing|no\s+(?:message|text|email)s?)\s+(?:goes|go|gets\s+sent|is\s+sent)\s+out\b"),
     ("en", "no_send", r"\bno\s+(?:sends|sending)\b"),
@@ -256,13 +257,13 @@ _LEXICON: tuple[tuple[str, str, str], ...] = (
     ("en", "draft_only", r"\b(?:just|only)\s+(?:a\s+|the\s+)?drafts?\b"),
     ("en", "draft_only", r"\bdrafts?\s+only\b"),
     ("en", "draft_only", r"\bleave\s+(?:it|them)\s+(?:as\s+a\s+|in\s+)?drafts?\b"),
-    ("es", "draft_only", r"\b(?:solo|solamente|unicamente|nada\s+mas)\s+(?:como\s+|en\s+)?(?:un\s+|el\s+|los\s+|unos\s+)?borradore?s?\b"),
+    ("es", "draft_only", r"\b(?:solo|solamente|unicamente|nada\s+mas)\s+(?:como\s+|en\s+)?(?:un\s+|el\s+|los\s+|unos\s+)?(?:borradore?s?|drafts?)\b"),
     ("es", "draft_only", r"\b(?:solo|solamente|unicamente)\s+(?:redacta|redactalo|redactala|redactalos|prepara|preparalo|preparala)\b"),
     ("es", "draft_only", r"\b(?:como|en)\s+borrador(?:es)?\s+(?:nada\s+mas|solamente|solo|y\s+ya)\b"),
     ("es", "draft_only", r"\bdeja(?:lo|la|los|las)?\s+(?:como|en)\s+borrador(?:es)?\b"),
     # ── approval_required ─────────────────────────────────────────────────
-    ("en", "approval_required", r"\b(?:wait|hold)\s+(?:for|on)\s+(?:my|the\s+manager'?s?|the\s+broker'?s?|his|her|their)\s+"
-                                r"(?:approval|sign[- ]?off|ok|okay|go[- ]ahead)\b"),
+    ("en", "approval_required", r"\b(?:wait|hold)\s+(?:for|on)\s+(?:my|the\s+manager'?s?|the\s+broker'?s?|his|her|their|mi|la|su)\s+"
+                                r"(?:approval|sign[- ]?off|ok|okay|go[- ]ahead|aprobacion|autorizacion)\b"),
     ("en", "approval_required", r"\b(?:after|once|when|until)\s+(?:the|my)\s+(?:manager|broker|boss|team\s+lead)\s+"
                                 r"(?:signs?\s+off|approves?|okays?|oks?)\b"),
     ("en", "approval_required", r"\b(?:after|once|until|unless)\s+i\s+(?:approve|sign\s+off|say\s+so|ok\s+it|okay\s+it)\b"),
@@ -279,7 +280,7 @@ _LEXICON: tuple[tuple[str, str, str], ...] = (
     ("en", "not_before", rf"\bnot\s+(?:before|until|till)\s+(?:the\s+)?{_EN_TIME}\b"),
     ("en", "not_before", rf"\b(?:wait|hold\s+off)\s+(?:until|till)\s+(?:the\s+)?{_EN_TIME}\b"),
     ("en", "not_before", rf"\bno\s+earlier\s+than\s+{_EN_TIME}\b"),
-    ("en", "not_before", rf"\b{_DONT}\s+\w+(?:\s+\w+){{0,3}}?\s+(?:before|until|till)\s+{_EN_TIME}\b"),
+    ("en", "not_before", rf"\b{_DONT}\s+\w+(?:\s+\w+){{0,3}}?\s+(?:before|until|till|hasta(?:\s+el)?|antes\s+del?)\s+{_ANY_TIME}\b"),
     ("en", "not_before", rf"\b(?:after|starting)\s+(?:the\s+)?{_EN_TIME}\b"),
     ("es", "not_before", rf"\bno\s+(?:\w+\s+){{0,4}}?antes\s+de(?:l|\s+el|\s+la|\s+las)?\s+{_ANY_TIME}\b"),
     ("es", "not_before", rf"\bno\s+(?:\w+\s+){{0,4}}?hasta\s+(?:el\s+)?{_ANY_TIME}\b"),
@@ -287,7 +288,7 @@ _LEXICON: tuple[tuple[str, str, str], ...] = (
     ("es", "not_before", rf"\b(?:a\s+partir|despues)\s+de(?:l|\s+el|\s+la|\s+las)?\s+{_ANY_TIME}\b"),
     # ── do_not_contact ─────────────────────────────────────────────────────
     ("en", "do_not_contact", _NOT_WHY_EN + rf"\b{_DONT}\s+(?:contact|call|phone|ring|reach\s+out\s+to|reach|bother|"
-                             r"get\s+in\s+touch\s+with)\b"),
+                             r"get\s+in\s+touch\s+with|llames|llamar|contactes|contactar|molestes)\b"),
     ("en", "do_not_contact", r"\bno\s+(?:contact|outreach)\s+(?:with|to)\b"),
     ("es", "do_not_contact", _NOT_WHY_ES + rf"\bno\s+{_CL}(?:contactes|contacte|contacten|contactar|llames|llame|llamen|llamar|"
                              r"molestes|moleste|molestar|hables|hable|hablar|busques|telefonees)\b"),
