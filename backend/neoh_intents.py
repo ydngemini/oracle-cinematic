@@ -112,7 +112,7 @@ async def _who_to_call(ctx: TenantContext, _match: re.Match, lang: str = "en") -
     """
     import command_center
 
-    briefing = await command_center.briefing(ctx)
+    briefing = await command_center.briefing(ctx, lang=lang)
     return render.who_to_call(briefing, lang)
 
 

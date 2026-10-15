@@ -95,11 +95,29 @@ LISTING_ROWS = [{"listing_id": "li-1", "lead_id": "l-20"}, {"listing_id": "li-2"
                 {"listing_id": "li-3", "lead_id": "l-22"}]
 
 
+#: buyer_matching's key and values behind each fixture note (L05-06).
+_DETAIL = {
+    "looking in 19901": {"key": "location", "params": {"where": "19901"}},
+    "looking in 19958": {"key": "location", "params": {"where": "19958"}},
+    "looking in Dover": {"key": "location", "params": {"where": "Dover"}},
+    "looking in Lewes": {"key": "location", "params": {"where": "Lewes"}},
+    "budget up to $450,000": {"key": "budget_max", "params": {"budget": "$450,000"}},
+    "budget up to $300,000": {"key": "budget_max", "params": {"budget": "$300,000"}},
+    "budget up to $900,000": {"key": "budget_max", "params": {"budget": "$900,000"}},
+    "$310,000 is 3% over their $300,000 budget": {
+        "key": "budget_stretch", "params": {"price": "$310,000", "over": "3%", "budget": "$300,000"}},
+    "wants 3+ bedrooms, this has 3": {"key": "beds", "params": {"wants": 3, "has": 3}},
+    "wants 2+ bedrooms, this has 4": {"key": "beds", "params": {"wants": 2, "has": 4}},
+    "wants 3+ bedrooms, this has 4": {"key": "beds", "params": {"wants": 3, "has": 4}},
+    "wants condo": {"key": "property_type", "params": {"type": "condo"}},
+}
+
+
 def _match(name: Optional[str], criteria: list[tuple[str, str]], **kw) -> dict[str, Any]:
     return {
         "client_id": "c-9", "name": name, "verdict": "strong",
         "matched_criteria": [note for _dim, note in criteria],
-        "matched_dimensions": [dim for dim, _note in criteria],
+        "matched_detail": [{"dimension": dim, **_DETAIL[note]} for dim, note in criteria],
         "unknown": [], "matched_signals": len(criteria),
         "stated_needs": kw.get("needs", []), "recent_showings": kw.get("showings", []),
     }
