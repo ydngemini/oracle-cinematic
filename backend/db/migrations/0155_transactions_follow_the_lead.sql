@@ -87,23 +87,16 @@ BEGIN
     END LOOP;
 
     -- 1. transactions with no client follow their lead.
-    readable := wide
-        || ' OR transactions.client_id IS NOT NULL'
-        || ' OR transactions.lead_id IS NULL'
-        || ' OR lower(transactions.created_by) = lower(app_current_agent())'
-        || ' OR EXISTS (SELECT 1 FROM public.leads l WHERE l.id = transactions.lead_id)';
     writable := wide
         || ' OR transactions.client_id IS NOT NULL'
         || ' OR transactions.lead_id IS NULL'
         || ' OR lower(transactions.created_by) = lower(app_current_agent())'
         || ' OR EXISTS (SELECT 1 FROM public.leads l WHERE l.id = transactions.lead_id AND '
         || lead_client_edit || ')';
-    DROP POLICY IF EXISTS transactions_lead_read ON transactions;
+    -- (transactions_lead_read is written out below the block.)
     DROP POLICY IF EXISTS transactions_lead_insert ON transactions;
     DROP POLICY IF EXISTS transactions_lead_update ON transactions;
     DROP POLICY IF EXISTS transactions_lead_delete ON transactions;
-    EXECUTE format('CREATE POLICY transactions_lead_read ON transactions AS RESTRICTIVE FOR SELECT USING (%s)',
-                   readable);
     EXECUTE format('CREATE POLICY transactions_lead_insert ON transactions AS RESTRICTIVE FOR INSERT WITH CHECK (%s)',
                    writable);
     EXECUTE format('CREATE POLICY transactions_lead_update ON transactions AS RESTRICTIVE FOR UPDATE'
@@ -137,6 +130,19 @@ BEGIN
                        t || '_deal_delete', t, writable);
     END LOOP;
 END $$;
+
+-- 3. The read rule on transactions, written out so it reads plainly and
+-- run_migrations --reconcile can probe this file by name (the 0151 pattern).
+-- The same text as section 1's `readable`.
+DROP POLICY IF EXISTS transactions_lead_read ON transactions;
+CREATE POLICY transactions_lead_read ON transactions AS RESTRICTIVE FOR SELECT USING (
+    (SELECT app_is_platform_admin())
+    OR (SELECT app_current_role()) = 'broker_owner'
+    OR (SELECT COALESCE(current_setting('app.record_scope', true), '')) = 'brokerage'
+    OR transactions.client_id IS NOT NULL
+    OR transactions.lead_id IS NULL
+    OR lower(transactions.created_by) = lower(app_current_agent())
+    OR EXISTS (SELECT 1 FROM public.leads l WHERE l.id = transactions.lead_id));
 
 COMMENT ON POLICY transactions_lead_read ON transactions IS
     '0155: a deal with no client is visible when its lead is (0143), or to the agent who opened it; a deal with a client follows the client (0131).';
