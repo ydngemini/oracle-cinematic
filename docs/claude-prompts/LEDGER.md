@@ -2144,7 +2144,7 @@ updated: 2026-10-12
 id: L19-04
 status: tests_pass
 env: local
-evidence_shas: []   # filled with the commit SHA on push
+evidence_shas: [8339a3b]
 files: [backend/component_health.py, backend/tests/test_component_health.py, backend/tests/test_component_health_live.py, oracle-app/src/components/admin/operatorModel.js, .github/workflows/ci.yml]
 tests_run:
   - {cmd: "read component_health.py; \\d harvest_sources, state_market_stats; grep avm_client for RentCast/ATTOM (at c2eae55)", result: "health had a legacy MLS component (NOT_CONFIGURED since MLS is off) and nothing for the sources property answers come from (L19-03). harvest_sources records enabled, schedule, last success, failures and circuit state; state_market_stats carries updated_at (market_research task, daily by default); RentCast/ATTOM call outcomes are recorded nowhere", date: 2026-10-15}
