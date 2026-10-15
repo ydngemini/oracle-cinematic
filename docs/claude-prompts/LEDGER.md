@@ -451,7 +451,7 @@ One vocabulary for every outbound store: `backend/outreach_lifecycle.py` (`Stage
 id: L04-02
 status: tests_pass
 env: local
-evidence_shas: []   # filled with the commit SHA on push
+evidence_shas: [6ca87c2]
 files: [backend/outreach_lifecycle.py, backend/messaging_data.py, backend/tests/test_outreach_lifecycle.py, backend/tests/test_engagement_lifecycle_live.py]
 tests_run:
   - {cmd: "read messaging_data.record_delivery_update, outreach_lifecycle (at e725553)", result: "a carrier 'failed' / 'undelivered' receipt updated sms_messages only; the first-response ledger kept 'accepted' (L04-01 'Not done'), so routing_metrics counted a text the lead never received as an accepted response and inside the speed-to-lead percentiles. The 0133 CHECK already allows disposition 'failed' and routing_metrics already counts it; nothing wrote it for a text", date: 2026-10-15}
