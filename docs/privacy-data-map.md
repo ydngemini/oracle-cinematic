@@ -40,6 +40,7 @@ Counts are from the dev database. They show shape, not production volume.
 
 **Contact PII**:
 - `clients` holds name, email, phone and notes **in plaintext**. Its `encrypted_contact` column exists but is unused.
+- `client_contact_index` (0156) holds, per client, HMAC-SHA-256 lookup hashes of the normalised email and phone and keyed word-prefix name tokens, under the tenant key (the `agent_contacts` scheme). No plaintext; not reversible without the master key. Filled by `client_contact_index.py` (periodic, internal-only); goes with its client. Nothing searches it yet (L17-23).
 - `agent_contacts` keeps PII encrypted with pgcrypto under a per-tenant key, with HMAC lookup hashes. `assigned_user_id` (0134) is the canonical assignee (a `users.id`, no PII); who may read a contact follows it, the brokerage pool and `record_shares` rows of kind `contact` (D-2026-10-13-01).
 - `leads` has 10.4M rows in dev. `payload` holds owner names **in plaintext**, and `encrypted_payload` is unused.
 - Also in this category: `transaction_parties` (encrypted), `contact_property_relationships`, `buyer_profiles` and `lead_intake_events` (encrypted payload).
@@ -142,7 +143,7 @@ Spaces versioning is off, so a deleted object is gone.
 
 | Gap | Risk | Status |
 |---|---|---|
-| `clients` name/email/phone and `leads.payload` plaintext | DB read access exposes contacts | open — designed in L17-21 (blind index for clients; batched backfill plan for leads), not built |
+| `clients` name/email/phone and `leads.payload` plaintext | DB read access exposes contacts | open — designed in L17-21; clients slice (a) built in L17-23 (0156: hashes and tokens kept current, not yet searched); plaintext not yet sealed; leads not started |
 | `sms_messages.body`, `negotiation_events.transcript_excerpt`, `user_interactions.content` plaintext | DB read access exposes what people wrote and said | new writes sealed since 0152 (L17-21, local); old rows plaintext until `backfill_sealed_text.py` runs in each environment; refusing plaintext is a later contract migration |
 | `email_outbox` subject/body, `interaction_logs` subject/text, `ai_tool_operations.result`, `beliefs.source_quote`, `user_profiles.profile_summary` plaintext | DB read access exposes what people wrote, what the AI returned and what it remembers | new writes sealed since 0154 (L17-22, local); old rows plaintext until `backfill_sealed_text.py` / `sealed_text_seal` runs in each environment; refusing plaintext is a later contract migration |
 | `client_notes.body` (AI call notes) plaintext | DB read access exposes what customers said | new writes sealed since 0132 (L17-03); old rows plaintext until `backfill_client_notes.py` runs in each environment |

@@ -451,6 +451,24 @@ async def _sealed_text_seal_task() -> dict:
     return {"sealed": {f: r.get("changed", 0) for f, r in results.items()}}
 
 
+async def _client_contact_index_task() -> dict:
+    """Fill client_contact_index (0156, audit A01, L17-23): keyed email/phone
+    lookup hashes and name tokens for clients with no index row or a stale
+    one — the periodic twin of backend/client_contact_index.py. The key is
+    derived from the master key, which exists only in the app's environment.
+    Bounded per run; once nothing is pending a pass is one cheap count."""
+    if not os.getenv("ORACLE_ENCRYPTION_MASTER_KEY", "").strip():
+        return {"skipped": "ORACLE_ENCRYPTION_MASTER_KEY is not set"}
+    import client_contact_index
+
+    if not await client_contact_index.remaining():
+        return {"indexed": 0}
+    cap = max(1, min(50_000, int(os.getenv("ORACLE_CLIENT_CONTACT_INDEX_MAX_PER_RUN", "5000"))))
+    result = await client_contact_index.fill(
+        batch_size=client_contact_index.batch_size_from_env(), max_rows=cap)
+    return {k: result[k] for k in ("indexed", "email_unusable", "phone_unusable")}
+
+
 async def _audit_chain_verify_task() -> dict:
     """Walk the audit hash chain in a bounded segment (L17-12, migration 0148).
 
@@ -1148,6 +1166,15 @@ def build_default_scheduler() -> PeriodicScheduler:
         ),
         run=_sealed_text_seal_task,
         enabled=os.getenv("ORACLE_SEALED_TEXT_SEAL_ENABLED", "1") == "1",
+        internal_only=True,
+    ))
+    sched.register(PeriodicTask(
+        name="client_contact_index",
+        interval_s=max(
+            300.0, float(os.getenv("ORACLE_CLIENT_CONTACT_INDEX_INTERVAL_MIN", "15")) * 60,
+        ),
+        run=_client_contact_index_task,
+        enabled=os.getenv("ORACLE_CLIENT_CONTACT_INDEX_ENABLED", "1") == "1",
         internal_only=True,
     ))
     # Hourly by default; each run is bounded (MAX_ROWS links), so a pass over a

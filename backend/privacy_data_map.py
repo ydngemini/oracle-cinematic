@@ -57,6 +57,8 @@ TABLES: dict[str, TableEntry] = {
     "account_security_acceptances": TableEntry(C.ACCOUNT, E),
     # ── contact PII / CRM ────────────────────────────────────────────────
     "clients": TableEntry(C.CONTACT_PII, E, "name/email/phone plaintext"),
+    "client_contact_index": TableEntry(C.CONTACT_PII, E, "keyed email/phone lookup hashes and name tokens "
+                                                         "(0156, L17-23); goes with its client (FK cascade)"),
     "agent_contacts": TableEntry(C.CONTACT_PII, E,
                                  "PII encrypted; HMAC lookups; assigned_user_id (0134) = canonical assignee, no PII"),
     "leads": TableEntry(C.BUSINESS_CRM, E, "payload holds owner names"),
