@@ -144,7 +144,7 @@ async def _show_person(ctx: TenantContext, match: re.Match, lang: str = "en") ->
         return _with_status(render.person_choices(matches, query, lang), statuses)
 
     client_id = matches[0].get("id")
-    record, intent, timeline = await _person_detail(ctx, client_id)
+    record, intent, timeline = await _person_detail(ctx, client_id, lang)
     if record is None:
         # A search hit that will not load is a contact, not a client record —
         # say so rather than rendering an empty person card.
@@ -153,7 +153,7 @@ async def _show_person(ctx: TenantContext, match: re.Match, lang: str = "en") ->
             lang_.t("person.contact_only", lang, label=matches[0].get("label")),
             [],
         )
-    return _with_status(render.person(record, intent, timeline), statuses)
+    return _with_status(render.person(record, intent, timeline, lang), statuses)
 
 
 async def _properties_for(ctx: TenantContext, match: re.Match, lang: str = "en") -> dict[str, Any]:
@@ -204,7 +204,7 @@ async def _deal_blocker(ctx: TenantContext, match: re.Match, lang: str = "en") -
     transaction, milestones = await _deal_detail(ctx, matches[0].get("id"))
     if transaction is None:
         return render.answer("deal_blocker", lang_.t("deal.not_loaded", lang), [])
-    return _with_status(render.deal_blocker(transaction, milestones), statuses)
+    return _with_status(render.deal_blocker(transaction, milestones, lang), statuses)
 
 
 # ---------------------------------------------------------------------------
@@ -311,7 +311,8 @@ INTENTS: tuple[Intent, ...] = (
 RECORD_AGNOSTIC = frozenset({"who_to_call"})
 
 
-async def ask(ctx: TenantContext, text: str, *, has_record: bool = False) -> dict[str, Any]:
+async def ask(ctx: TenantContext, text: str, *, has_record: bool = False,
+              lang_hint: Optional[str] = None) -> dict[str, Any]:
     """Classify, resolve, render. Never raises; a failure falls through.
 
     A resolver that breaks must not cost the person their question: the text
@@ -320,6 +321,12 @@ async def ask(ctx: TenantContext, text: str, *, has_record: bool = False) -> dic
 
     `has_record`: a record (property, client, ...) is open. Intents that would
     answer without it fall through to the model, which is given the record.
+
+    `lang_hint`: the language a spoken question was recognised in (L05-05).
+    It never overrides the answer language here: a pattern only matches words
+    of its own language, so the pattern that matched is already conclusive
+    text evidence, and the text wins when it is confident. The hint matters on
+    the chat path, for turns too short to tell (semantic_turn.prepare_turn).
     """
     cleaned = (text or "").strip()[:MAX_TEXT]
     if not cleaned:
@@ -345,8 +352,18 @@ async def ask(ctx: TenantContext, text: str, *, has_record: bool = False) -> dic
 # pure and testable without a database.
 # ---------------------------------------------------------------------------
 
+def _interaction_word(kind: Optional[str], lang: str) -> str:
+    """A timeline row's type, shown when it has no subject line: the stored
+    machine name in English (as always), its Spanish name where one exists."""
+    raw = (kind or "").replace("_", " ")
+    key = f"interaction.{kind}"
+    if lang_.lang_or_default(lang) == "en" or key not in lang_.MESSAGES:
+        return raw
+    return lang_.t(key, lang)
+
+
 async def _person_detail(
-    ctx: TenantContext, client_id: Optional[str],
+    ctx: TenantContext, client_id: Optional[str], lang: str = "en",
 ) -> tuple[Optional[dict], Optional[dict], list[dict]]:
     import intent_states
     from db.connection import tenant_tx
@@ -383,7 +400,7 @@ async def _person_detail(
             # a call note); the type is the honest fallback. There is no
             # `summary` column and no `occurred_at` — this table records when
             # it was written, in `created_at`.
-            "label": (r["subject"] or (r["interaction_type"] or "").replace("_", " ")),
+            "label": (r["subject"] or _interaction_word(r["interaction_type"], lang)),
             "at": r["created_at"].isoformat() if r["created_at"] else None,
             "direction": r["direction"],
             "done": True,

@@ -4,6 +4,9 @@ import { crmPost } from '../state/useCrmApi';
 import { isBusy } from './surfaceModel';
 import { wireContext } from './useNeohChannel';
 import { useSpeechInput } from './useSpeechInput';
+import {
+  hintFor, readSpeechLanguage, recognitionTag, saveSpeechLanguage,
+} from './speechLanguage';
 
 /**
  * useNeohComposer — one way to ask Neoh, shared by every place you can.
@@ -18,6 +21,12 @@ import { useSpeechInput } from './useSpeechInput';
  * answering no longer fires a second turn on top of the first. The words go
  * into the field, where they can be read and sent — the microphone stays
  * usable while Neoh thinks, it just does not talk over it.
+ *
+ * Voice language (L05-05): the microphone listens in the language chosen
+ * next to it (`speechLanguage.js`; English, or Spanish when the browser is),
+ * remembered on this device. A SPOKEN turn tells the server which language
+ * it was recognised in (`lang`), as a hint for the answer language; a typed
+ * turn sends nothing new, so typing behaves exactly as before.
  */
 
 export const MAX_DRAFT = 8_000;
@@ -34,17 +43,24 @@ export function useNeohComposer({ channel, record, onSettled, draftState }) {
   const busyRef = useRef(busy);
   useEffect(() => { busyRef.current = busy; });
 
+  const [speechLanguage, setSpeechLanguageState] = useState(() => readSpeechLanguage());
+  const setSpeechLanguage = useCallback((lang) => {
+    setSpeechLanguageState(lang);
+    saveSpeechLanguage(lang);
+  }, []);
+
   const speech = useSpeechInput({
-    onFinal: (text) => {
+    lang: recognitionTag(speechLanguage),
+    onFinal: (text, tag) => {
       if (busyRef.current) {
         setDraft((current) => `${current.trim() ? `${current.trim()} ` : ''}${text}`.slice(0, MAX_DRAFT));
         return;
       }
-      void submitRef.current?.(text);
+      void submitRef.current?.(text, { lang: hintFor(tag) });
     },
   });
 
-  const submit = async (override) => {
+  const submit = async (override, { lang = null } = {}) => {
     const spoken = typeof override === 'string';
     const text = (spoken ? override : draft).trim();
     if (!text) return null;
@@ -57,7 +73,10 @@ export function useNeohComposer({ channel, record, onSettled, draftState }) {
     // The open record rides along: "who should I call about this?" asked on
     // a property is about that property, and only the model has it.
     const context = wireContext(record);
-    const answer = await crmPost('/api/neoh/ask', context ? { text, context } : { text }).catch(() => null);
+    // Only a spoken turn carries the language it was recognised in.
+    const hint = spoken && lang ? { lang } : {};
+    const answer = await crmPost('/api/neoh/ask', context ? { text, context, ...hint } : { text, ...hint })
+      .catch(() => null);
     setAsking(false);
     if (answer && !answer.fallthrough && (answer.blocks || []).length > 0) {
       setRendered({ ...answer, question: text });
@@ -65,7 +84,7 @@ export function useNeohComposer({ channel, record, onSettled, draftState }) {
       return 'rendered';
     }
     setRendered(null);
-    if (!channel.send(text, record)) {
+    if (!channel.send(text, record, [], hint)) {
       // Refused (reconnecting): put the text back rather than silently eating
       // it — but never over a draft the person is still typing.
       setDraft((current) => (current.trim() ? current : text));
@@ -103,6 +122,8 @@ export function useNeohComposer({ channel, record, onSettled, draftState }) {
     asking,
     busy,
     speech,
+    speechLanguage,
+    setSpeechLanguage,
     submit,
     onKeyDown,
     toggleMic,

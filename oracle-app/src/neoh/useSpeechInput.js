@@ -21,6 +21,9 @@ import { useCallback, useEffect, useRef, useState } from 'react';
  * does not exist would be a lie the UI tells every time it renders.
  */
 
+/** English unless the composer says otherwise. */
+const DEFAULT_LANG = 'en-US';
+
 /** @typedef {'unsupported'|'idle'|'requesting'|'listening'|'error'} SpeechState */
 
 function recogniser() {
@@ -51,10 +54,13 @@ export function speechErrorMessage(code) {
 
 /**
  * @param {object} opts
- * @param {(text: string) => void} opts.onFinal  a completed utterance
+ * @param {(text: string, lang: string) => void} opts.onFinal  a completed utterance, with
+ *   the BCP 47 tag it was recognised in
  * @param {boolean} [opts.disabled]
+ * @param {string} [opts.lang]  BCP 47 recognition language (default en-US). Read when a
+ *   session STARTS: changing it never tears down a session already listening.
  */
-export function useSpeechInput({ onFinal, disabled = false } = {}) {
+export function useSpeechInput({ onFinal, disabled = false, lang = DEFAULT_LANG } = {}) {
   const supported = isSpeechInputSupported();
   const [state, setState] = useState(() => (supported ? 'idle' : 'unsupported'));
   const [interim, setInterim] = useState('');
@@ -86,7 +92,8 @@ export function useSpeechInput({ onFinal, disabled = false } = {}) {
     const rec = new Ctor();
     rec.continuous = false;       // one utterance per press, like a turn
     rec.interimResults = true;    // so the composer can show it forming
-    rec.lang = 'en-US';
+    // The recogniser must know the language before it listens (L05-05).
+    rec.lang = lang || DEFAULT_LANG;
 
     rec.onstart = () => {
       setState('listening');
@@ -104,7 +111,7 @@ export function useSpeechInput({ onFinal, disabled = false } = {}) {
       if (live) setInterim(live);
       if (done.trim()) {
         setInterim('');
-        onFinalRef.current?.(done.trim());
+        onFinalRef.current?.(done.trim(), rec.lang);
       }
     };
 
@@ -132,7 +139,7 @@ export function useSpeechInput({ onFinal, disabled = false } = {}) {
       setState('error');
       setError('Could not start the microphone.');
     }
-  }, [disabled, stop]);
+  }, [disabled, lang, stop]);
 
   const clearError = useCallback(() => {
     setError('');

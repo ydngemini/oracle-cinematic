@@ -274,6 +274,22 @@ def value_of(
     )
 
 
+def portfolio_caveat(calibrated: bool, outcomes: int, lang: Optional[str] = None) -> str:
+    """The sentence that travels with the portfolio total, in en | es (L05-05).
+
+    The words live in the semantic_language catalogue; the counts are the
+    same in both languages."""
+    import semantic_language as lang_
+
+    if calibrated:
+        return lang_.t("portfolio.caveat.fitted", lang, outcomes=outcomes)
+    if outcomes:
+        key = "portfolio.caveat.some_one" if outcomes == 1 else "portfolio.caveat.some_many"
+        return lang_.t(key, lang, outcomes=outcomes,
+                       needed=max(0, MIN_OUTCOMES_FOR_PORTFOLIO - outcomes))
+    return lang_.t("portfolio.caveat.none", lang)
+
+
 def portfolio(
     valued: list[ValuedAction], *, calibration: Optional[Calibration] = None,
 ) -> dict[str, Any]:
@@ -290,27 +306,7 @@ def portfolio(
     all_fitted = bool(positives) and all(v.calibrated for v in positives)
     calibrated = outcomes >= MIN_OUTCOMES_FOR_PORTFOLIO and all_fitted
 
-    if calibrated:
-        caveat = (
-            f"Fitted from {outcomes} of this brokerage's own outcomes. The uplifts are "
-            f"differences in rates against the organic base rate, not causal "
-            f"estimates; use the ordering, and read the amounts as expectations "
-            f"with the intervals each card shows."
-        )
-    elif outcomes:
-        caveat = (
-            f"Modelled from stated priors. {outcomes} outcome"
-            f"{'' if outcomes == 1 else 's'} recorded so far — "
-            f"{max(0, MIN_OUTCOMES_FOR_PORTFOLIO - outcomes)} more before the "
-            f"portfolio figure is fitted rather than assumed. Use the ordering; "
-            f"treat the dollar amounts as relative, not forecast."
-        )
-    else:
-        caveat = (
-            "Modelled from stated priors, not fitted to this brokerage's own "
-            "closed deals — no outcomes have been recorded yet. Use the ordering; "
-            "treat the dollar amounts as relative, not forecast."
-        )
+    caveat = portfolio_caveat(calibrated, outcomes)
     return {
         "total_expected_value": round(total, 2),
         "opportunity_count": len(positives),

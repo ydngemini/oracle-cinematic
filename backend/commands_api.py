@@ -991,6 +991,12 @@ def _state_hint(raw_text: str) -> str:
     return ""
 
 
+def _assignment_requested(raw_text: str) -> bool:
+    """An assignment contract was asked for: "assign…" or the Spanish
+    "cesión" (L05-05; "contrato de cesión" used to fall to seller_purchase)."""
+    return "assign" in raw_text.lower() or "cesion" in semantic_language.fold(raw_text)
+
+
 def _fallback_draft(
     intent: ParsedIntent,
     raw_text: str,
@@ -999,27 +1005,40 @@ def _fallback_draft(
     client: Optional[dict[str, Any]],
     property_context: Optional[dict[str, Any]],
 ) -> dict[str, Any]:
-    name = str((client or {}).get("full_name") or "there").strip()
-    first_name = name.split()[0] if name else "there"
+    # The draft is written in the language the agent wrote the command in
+    # (L05-05): "Envíale un correo a Sarah" drafts Spanish. Only the product's
+    # own words change; the client's name, the address, the agent's
+    # signature and the request itself are used as stored.
+    lang = semantic_language.reply_language(raw_text)
+
+    def say(key: str, **values: Any) -> str:
+        return semantic_language.t(key, lang, **values)
+
+    name = str((client or {}).get("full_name") or "").strip()
+    first_name = name.split()[0] if name else ""
     signature = str(profile.get("signature") or "").strip()
     price = _money_hint(raw_text)
     property_address = str((property_context or {}).get("address") or "").strip()
-    subject_context = property_address or "your real estate plans"
+    subject_context = property_address or say("draft.plans")
 
     if intent is ParsedIntent.EMAIL:
-        proposal = f" I would like to discuss a proposed amount of ${Decimal(price):,.2f}." if price else ""
-        body = f"Hi {first_name},\n\nI’m following up regarding {subject_context}.{proposal}"
+        proposal = say("draft.email_proposal", amount=f"${Decimal(price):,.2f}") if price else ""
+        greeting = say("draft.greeting", first_name=first_name) if first_name else say("draft.greeting_bare")
+        body = f"{greeting}\n\n{say('draft.email_line', about=subject_context, proposal=proposal)}"
         if signature:
             body = f"{body}\n\n{signature}"
-        return {"subject": f"Following up about {subject_context}", "body": body}
+        return {"subject": say("draft.email_subject", about=subject_context), "body": body}
     if intent is ParsedIntent.SMS:
-        body = f"Hi {first_name}, I’m following up regarding {subject_context}."
+        body = (say("draft.sms", first_name=first_name, about=subject_context) if first_name
+                else say("draft.sms_bare", about=subject_context))
         if signature:
             body = f"{body} {signature}"
         return {"body": body[:1_600]}
     if intent is ParsedIntent.CALL:
+        agent = profile.get("name") or say("draft.call_agent")
         return {
-            "opening": f"Hi {first_name}, this is {profile.get('name') or 'your real estate agent'}.",
+            "opening": (say("draft.call_opening", first_name=first_name, agent=agent) if first_name
+                        else say("draft.call_opening_bare", agent=agent)),
             "objective": raw_text,
             "property_address": property_address or None,
             "agent_phone": profile.get("phone_number") or None,
@@ -1027,14 +1046,15 @@ def _fallback_draft(
     if intent is ParsedIntent.CALENDAR:
         return {
             "event": {
-                "summary": f"Follow-up with {name}",
+                "summary": (say("draft.event_summary", name=name) if name
+                            else say("draft.event_summary_bare")),
                 "start": None,
                 "end": None,
                 "description": raw_text,
             }
         }
     if intent is ParsedIntent.CONTRACT:
-        assignment = "assign" in raw_text.lower()
+        assignment = _assignment_requested(raw_text)
         return {
             "document_type": "assignment" if assignment else "seller_purchase",
             "doc_id": "assignment-standard" if assignment else "seller-purchase-standard",
@@ -1213,7 +1233,7 @@ async def parse_personal_command(
         if not event.get("start") or not event.get("end"):
             missing_fields.extend(["event.start", "event.end"])
     if intent is ParsedIntent.CONTRACT:
-        assignment_requested = "assign" in body.raw_text.lower()
+        assignment_requested = _assignment_requested(body.raw_text)
         draft_payload.setdefault(
             "document_type",
             "assignment" if assignment_requested else "seller_purchase",

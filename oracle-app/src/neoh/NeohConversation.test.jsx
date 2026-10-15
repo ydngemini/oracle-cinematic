@@ -288,3 +288,79 @@ describe('NeohConversation', () => {
     expect(screen.getByRole('button', { name: 'Go to Work' })).toBeTruthy();
   });
 });
+
+describe('voice language (L05-05)', () => {
+  function speak(text) {
+    act(() => {
+      FakeRecognition.last.onresult?.({
+        resultIndex: 0,
+        results: [Object.assign([{ transcript: text }], { isFinal: true })],
+      });
+    });
+  }
+
+  beforeEach(() => {
+    try { window.localStorage.clear(); } catch { /* jsdom always has it */ }
+  });
+
+  it('has no language switch where the browser cannot do speech', async () => {
+    renderTab();
+    await screen.findByRole('textbox', { name: 'Message Neoh' });
+    expect(screen.queryByRole('button', { name: /Voice language/ })).toBeNull();
+    expect(screen.getByRole('button', { name: /Voice input isn't available/ })).toBeTruthy();
+  });
+
+  it('listens in English by default, and a spoken turn says so to the server', async () => {
+    window.SpeechRecognition = FakeRecognition;
+    renderTab();
+    expect(await screen.findByRole('button', { name: 'Voice language: English. Switch to Spanish' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Talk to Neoh' }));
+    expect(FakeRecognition.last.lang).toBe('en-US');
+    speak('who should I call');
+    await waitFor(() => expect(crmPost).toHaveBeenCalledWith('/api/neoh/ask', { text: 'who should I call', lang: 'en' }));
+  });
+
+  it('switching to Spanish is remembered, sets the recogniser and rides with the turn', async () => {
+    window.SpeechRecognition = FakeRecognition;
+    renderTab();
+    fireEvent.click(await screen.findByRole('button', { name: 'Voice language: English. Switch to Spanish' }));
+    expect(screen.getByRole('button', { name: 'Voice language: Spanish. Switch to English' }).textContent).toBe('ES');
+    expect(window.localStorage.getItem('neoh.speechLanguage')).toBe('es');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Talk to Neoh' }));
+    expect(FakeRecognition.last.lang).toBe('es-US');
+    speak('¿qué está frenando 123 Main?');
+    await waitFor(() => expect(crmPost).toHaveBeenCalledWith(
+      '/api/neoh/ask', { text: '¿qué está frenando 123 Main?', lang: 'es' },
+    ));
+    // The fast path fell through: the same hint reaches the chat channel.
+    await waitFor(() => expect(globalThis.__oracle.socket.send).toHaveBeenCalled());
+    const frame = JSON.parse(globalThis.__oracle.socket.send.mock.calls[0][0]);
+    expect(frame).toMatchObject({ type: 'AI_CHAT_SEND', content: '¿qué está frenando 123 Main?', lang: 'es' });
+  });
+
+  it('a Spanish browser starts in Spanish; a saved choice wins over it', async () => {
+    window.SpeechRecognition = FakeRecognition;
+    const language = vi.spyOn(window.navigator, 'language', 'get').mockReturnValue('es-MX');
+    const first = renderTab();
+    fireEvent.click(await screen.findByRole('button', { name: 'Talk to Neoh' }));
+    expect(FakeRecognition.last.lang).toBe('es-MX');
+    first.unmount();
+
+    window.localStorage.setItem('neoh.speechLanguage', 'en');
+    renderTab();
+    expect(await screen.findByRole('button', { name: 'Voice language: English. Switch to Spanish' })).toBeTruthy();
+    language.mockRestore();
+  });
+
+  it('a typed turn sends no language hint, exactly as before', async () => {
+    window.SpeechRecognition = FakeRecognition;
+    renderTab();
+    const field = await screen.findByRole('textbox', { name: 'Message Neoh' });
+    fireEvent.change(field, { target: { value: 'Sarah' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+    await waitFor(() => expect(crmPost).toHaveBeenCalledWith('/api/neoh/ask', { text: 'Sarah' }));
+    await waitFor(() => expect(globalThis.__oracle.socket.send).toHaveBeenCalled());
+    expect(JSON.parse(globalThis.__oracle.socket.send.mock.calls[0][0])).not.toHaveProperty('lang');
+  });
+});

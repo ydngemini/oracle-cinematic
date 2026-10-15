@@ -30,6 +30,7 @@ import living_state
 import neoh_intents
 import pan_redaction
 import sealed_text
+import semantic_language
 from db.connection import tenant_tx
 from platform_policy import Feature, require_feature
 from tenancy import TenantContext, require_context
@@ -66,6 +67,10 @@ class NeohAsk(BaseModel):
     #: channel's context). Only its presence is used here: a question asked
     #: about the property on screen must reach the model, which has the record.
     context: Optional[dict[str, str]] = None
+    #: The language a SPOKEN question was recognised in ("en" / "es", or a
+    #: BCP 47 tag such as "es-MX"; L05-05). A hint only: anything else is
+    #: ignored, and the text decides whenever it is conclusive.
+    lang: Optional[str] = Field(default=None, max_length=16)
 
 
 @router.post("/neoh/ask")
@@ -80,7 +85,10 @@ async def neoh_ask(body: NeohAsk, ctx: TenantContext = Depends(require_context))
     than a limit on what can be asked.
     """
     require_feature(Feature.PREDICTIVE_INTELLIGENCE)
-    return await neoh_intents.ask(ctx, body.text, has_record=bool(body.context))
+    return await neoh_intents.ask(
+        ctx, body.text, has_record=bool(body.context),
+        lang_hint=semantic_language.normalise_hint(body.lang),
+    )
 
 
 # ---------------------------------------------------------------------------

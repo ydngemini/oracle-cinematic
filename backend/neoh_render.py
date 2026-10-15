@@ -150,37 +150,47 @@ def who_to_call(briefing: dict[str, Any], lang: Optional[str] = None) -> dict[st
         return answer(
             "who_to_call",
             _nobody_sentence(briefing, lang),
-            [block("metric", **_portfolio_metric(attention))] if attention.get("portfolio") else [],
+            [block("metric", **_portfolio_metric(attention, lang))] if attention.get("portfolio") else [],
         )
 
     spoken = (
-        f"{queue[0]['subject']} first."
+        lang_.t("queue.first_one", lang, subject=queue[0]["subject"])
         if len(queue) == 1
-        else f"{queue[0]['subject']} first, then {len(queue) - 1} more."
+        else lang_.t("queue.first_many", lang, subject=queue[0]["subject"], more=len(queue) - 1)
     )
     return answer(
         "who_to_call",
         spoken,
         [
             block("call_queue", items=[_queue_item(o, i) for i, o in enumerate(queue)]),
-            block("metric", **_portfolio_metric(attention)),
+            block("metric", **_portfolio_metric(attention, lang)),
         ],
     )
 
 
 def person(record: dict[str, Any], intent: Optional[dict[str, Any]],
-           timeline: list[dict[str, Any]]) -> dict[str, Any]:
-    """One person: who they are, what Neoh reads, what actually happened."""
-    name = record.get("full_name") or "This person"
+           timeline: list[dict[str, Any]], lang: Optional[str] = None) -> dict[str, Any]:
+    """One person: who they are, what Neoh reads, what actually happened.
+
+    In Spanish the reading and the dispute questions are re-rendered from
+    their structured parts (verdict and scores; the two beliefs), and the
+    client type and stage use their Spanish names. The person's name, the
+    recorded values and the timeline's own lines are record content and are
+    shown as stored."""
+    name = record.get("full_name") or lang_.t("person.unnamed", lang)
     latent = (intent or {}).get("latent") or {}
-    summary = latent.get("summary")
+    summary = _intent_summary(intent, lang)
     disputes = (intent or {}).get("disputes") or []
 
     blocks = [block(
         "person",
         id=str(record.get("id")),
         name=name,
-        subtitle=" · ".join(x for x in (record.get("client_type"), record.get("stage")) if x),
+        subtitle=" · ".join(
+            _enum_word(prefix, record.get(field), lang)
+            for prefix, field in (("client_type", "client_type"), ("stage", "stage"))
+            if record.get(field)
+        ),
         read=summary,
         confidence=latent.get("confidence"),
         href=f"/p/{record.get('id')}",
@@ -191,10 +201,41 @@ def person(record: dict[str, Any], intent: Optional[dict[str, Any]],
         # A contradiction is the most useful thing on this panel: it is the one
         # item a single phone call can resolve.
         blocks.append(block("evidence", items=[
-            {"label": d.get("question") or "Two records disagree", "detail": d.get("predicate")}
+            {"label": _dispute_label(d, lang), "detail": d.get("predicate")}
             for d in disputes[:3]
         ]))
     return answer("show_person", summary or f"{name}.", blocks)
+
+
+def _enum_word(prefix: str, value: Any, lang: Optional[str]) -> str:
+    """A client_type / stage value: as stored in English, named in Spanish."""
+    key = f"{prefix}.{value}"
+    if lang_.lang_or_default(lang) == "en" or key not in lang_.MESSAGES:
+        return str(value)
+    return lang_.t(key, lang)
+
+
+def _intent_summary(intent: Optional[dict[str, Any]], lang: Optional[str]) -> Optional[str]:
+    """The reading as stored (English), or re-rendered in Spanish from its
+    verdict and scores. An unknown verdict keeps the stored sentence."""
+    latent = (intent or {}).get("latent") or {}
+    summary = latent.get("summary")
+    if lang_.lang_or_default(lang) == "en" or not summary:
+        return summary
+    import intent_states
+
+    declared = ((intent or {}).get("declared") or {}).get("score")
+    observed = ((intent or {}).get("observed") or {}).get("score")
+    return intent_states.reconcile_summary(
+        str(latent.get("verdict")), declared, observed, lang) or summary
+
+
+def _dispute_label(dispute: dict[str, Any], lang: Optional[str]) -> str:
+    if lang_.lang_or_default(lang) == "en":
+        return dispute.get("question") or lang_.t("dispute.fallback", lang)
+    import belief_store
+
+    return belief_store.dispute_question(dispute, lang) or lang_.t("dispute.fallback", lang)
 
 
 def person_choices(matches: list[dict[str, Any]], query: str,
@@ -210,7 +251,7 @@ def person_choices(matches: list[dict[str, Any]], query: str,
         [block("comparison", title=lang_.t("choices.which", lang), options=[
             {
                 "id": str(m.get("id")),
-                "label": m.get("label") or m.get("full_name") or "Unnamed",
+                "label": m.get("label") or m.get("full_name") or lang_.t("choices.unnamed", lang),
                 "detail": m.get("sublabel"),
                 "href": m.get("href") or f"/p/{m.get('id')}",
             }
@@ -287,12 +328,12 @@ def properties_for(
     shown = candidates[:MAX_COMPARISON]
     return answer(
         "properties_for",
-        f"{len(shown)} on {name}'s shortlist.",
-        [block("comparison", title=f"For {name}", options=[
+        lang_.t("shortlist.count", lang, n=len(shown), name=name),
+        [block("comparison", title=lang_.t("shortlist.title", lang, name=name), options=[
             {
                 "id": str(c.get("id") or c.get("property_id") or ""),
-                "label": c.get("address") or "Address unavailable",
-                "detail": _property_detail(c),
+                "label": c.get("address") or lang_.t("shortlist.no_address", lang),
+                "detail": _property_detail(c, lang),
                 "href": f"/property/{c.get('id') or c.get('property_id')}" if (c.get("id") or c.get("property_id")) else None,
             }
             for c in shown
@@ -300,9 +341,16 @@ def properties_for(
     )
 
 
-def deal_blocker(transaction: dict[str, Any], milestones: list[dict[str, Any]]) -> dict[str, Any]:
-    """What is holding a deal up is a fact on a row, not an opinion."""
-    address = transaction.get("property_address") or "This deal"
+def deal_blocker(transaction: dict[str, Any], milestones: list[dict[str, Any]],
+                 lang: Optional[str] = None) -> dict[str, Any]:
+    """What is holding a deal up is a fact on a row, not an opinion.
+
+    The milestone titles and types are the brokerage's own words (free text
+    on the row) and are never translated; only the sentence around them is."""
+    stored = transaction.get("property_address")
+    address = stored or lang_.t("deal.this", lang)
+    # Inside a Spanish sentence the fallback is lower case ("en este trato").
+    inline = stored or lang_.t("deal.this_inline", lang)
     open_ones = [
         m for m in milestones
         if not m.get("completed_at") and m.get("status") not in ("completed", "skipped")
@@ -310,16 +358,14 @@ def deal_blocker(transaction: dict[str, Any], milestones: list[dict[str, Any]]) 
     open_ones.sort(key=lambda m: (m.get("due_at") or "9999"))
 
     if not milestones:
-        spoken = (
-            f"{address} has no milestones recorded, so nothing here can say what "
-            f"is next. That is a gap in the file, not a clear runway."
-        )
+        spoken = lang_.t("deal.no_milestones", lang, address=inline, Address=address)
     elif not open_ones:
-        spoken = f"Nothing is holding {address} up — every milestone is done."
+        spoken = lang_.t("deal.all_done", lang, address=inline)
     else:
         nxt = open_ones[0]
-        title = nxt.get("title") or (nxt.get("milestone_type") or "").replace("_", " ") or "the next milestone"
-        spoken = f"{title.strip().capitalize()} is the earliest thing still open on {address}."
+        title = (nxt.get("title") or (nxt.get("milestone_type") or "").replace("_", " ")
+                 or lang_.t("deal.next_milestone", lang))
+        spoken = lang_.t("deal.next_open", lang, title=title.strip().capitalize(), address=inline)
 
     blocks = [block(
         "deal",
@@ -373,18 +419,33 @@ def _queue_item(opportunity: dict[str, Any], index: int) -> dict[str, Any]:
     }
 
 
-def _portfolio_metric(attention: dict[str, Any]) -> dict[str, Any]:
+def _portfolio_metric(attention: dict[str, Any], lang: Optional[str] = None) -> dict[str, Any]:
     portfolio = attention.get("portfolio") or {}
     return {
-        "label": "Expected value of acting on all of it",
+        "label": lang_.t("queue.portfolio_label", lang),
         "value": portfolio.get("total"),
         "unit": "currency",
         # The caveat travels as a prop so it cannot be dropped in rendering.
         # A number this uncertain shown bare is the false precision the
         # expected-value module exists to refuse.
-        "caveat": portfolio.get("caveat"),
+        "caveat": _portfolio_caveat(portfolio, lang),
         "calibrated": portfolio.get("calibrated", False),
     }
+
+
+def _portfolio_caveat(portfolio: dict[str, Any], lang: Optional[str]) -> Optional[str]:
+    """expected_value.portfolio's caveat: as given in English, re-rendered in
+    Spanish from the same counts. Without the counts the given text stands —
+    a caveat is never dropped for want of a translation."""
+    caveat = portfolio.get("caveat")
+    if lang_.lang_or_default(lang) == "en" or not caveat:
+        return caveat
+    import expected_value
+
+    outcomes = portfolio.get("outcomes_observed")
+    if not isinstance(outcomes, int):
+        return caveat
+    return expected_value.portfolio_caveat(bool(portfolio.get("calibrated")), outcomes, lang)
 
 
 def _nobody_sentence(briefing: dict[str, Any], lang: Optional[str] = None) -> str:
@@ -400,7 +461,7 @@ def _nobody_sentence(briefing: dict[str, Any], lang: Optional[str] = None) -> st
     return lang_.t("nobody.quiet", lang)
 
 
-def _property_detail(candidate: dict[str, Any]) -> Optional[str]:
+def _property_detail(candidate: dict[str, Any], lang: Optional[str] = None) -> Optional[str]:
     bits = []
     price = candidate.get("price") or candidate.get("list_price")
     if price:
@@ -410,7 +471,7 @@ def _property_detail(candidate: dict[str, Any]) -> Optional[str]:
             pass
     for key in ("beds", "baths"):
         if candidate.get(key):
-            bits.append(f"{candidate[key]} {key}")
+            bits.append(lang_.t(f"detail.{key}", lang, n=candidate[key]))
     if candidate.get("match_reason"):
         bits.append(str(candidate["match_reason"]))
     return " · ".join(bits) or None

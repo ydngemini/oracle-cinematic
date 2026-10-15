@@ -140,8 +140,9 @@ export function useNeohChannel({ open = false } = {}) {
   }, [aiChatRevision, available, dispatch, open]);
 
   /** Send one message. `record` is the selected record or null; attachments
-   *  are ids already saved on that record. Returns false when nothing went. */
-  const send = useCallback((text, record = null, attachmentIds = []) => {
+   *  are ids already saved on that record. `lang` ('en' | 'es') rides along
+   *  only for a spoken turn (L05-05). Returns false when nothing went. */
+  const send = useCallback((text, record = null, attachmentIds = [], { lang = null } = {}) => {
     const content = (text || '').trim();
     if (!content && attachmentIds.length === 0) return false;
     if (wsRef.current?.readyState !== WebSocket.OPEN) {
@@ -170,6 +171,7 @@ export function useNeohChannel({ open = false } = {}) {
       type: 'AI_CHAT_SEND', version: 1, request_id: requestId, content,
       context,
       attachment_ids: attachmentIds,
+      ...(lang ? { lang } : {}),
     }));
     setNotice('');
     return true;
