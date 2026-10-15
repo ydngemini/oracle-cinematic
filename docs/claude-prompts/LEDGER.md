@@ -1691,7 +1691,7 @@ updated: 2026-10-15
 id: L17-22
 status: tests_pass
 env: local
-evidence_shas: [cef0006, 1528459]
+evidence_shas: [cef0006, 1528459, a5caaca]
 branch: worktree-agent-a67b64a862bbe3928
 files: [backend/db/migrations/0154_sealed_text_slice_two.sql, backend/sealed_text.py, backend/backfill_sealed_text.py, backend/data_integrations/periodic.py, backend/crm.py, backend/email_outbox.py, backend/commands_api.py, backend/voice_intel.py, backend/intelligence_os_api.py, backend/client_portal.py, backend/client_enterprise.py, backend/client_ai_automation.py, backend/lead_dossier.py, backend/neoh_intents.py, backend/admin_ops.py, backend/ai_chat_store.py, backend/belief_store.py, backend/memory_core/session_manager.py, backend/privacy_requests.py, backend/privacy_export.py, backend/privacy_data_map.py, backend/tests/test_sealed_text.py, backend/tests/test_sealed_text_two_live.py, backend/tests/test_sealed_text_live.py, backend/tests/test_crm_workflows.py, backend/tests/test_email_unsubscribe_live.py, .github/workflows/ci.yml, docs/privacy-data-map.md, docs/operator-scripts.md]
 tests_run:
