@@ -165,6 +165,41 @@ async def _scenario():
             "SELECT consent_recorded, consent_basis FROM live_call_sessions WHERE provider_call_id=$1",
             declined_ref)
         assert tuple(declined) == (False, "declined_on_ai_call")
+
+        # ── Lead-only calls (L09-06, T09.17) ─────────────────────────────────
+        # A lead that is the client's own house: its notes reach that client.
+        house, prospect = uuid.uuid4(), uuid.uuid4()
+        await admin.execute(
+            "INSERT INTO leads (id, tenant_id, parcel_id, state, motivation_score, seller_client_id, address) "
+            "VALUES ($1,$2,$3,'DE',50,$4,'1 House Rd')", house, tenant, f"HOUSE-{house.hex[:6]}", uuid.UUID(client))
+        await admin.execute(
+            "INSERT INTO leads (id, tenant_id, parcel_id, state, motivation_score, address) "
+            "VALUES ($1,$2,$3,'DE',50,'2 Prospect Ln')", prospect, tenant, f"PROS-{prospect.hex[:6]}")
+        house_ref, prospect_ref = f"house-{uuid.uuid4()}", f"prospect-{uuid.uuid4()}"
+        for provider_ref, lead_id in ((house_ref, house), (prospect_ref, prospect)):
+            await admin.execute(
+                """INSERT INTO live_call_sessions (tenant_id, lead_id, consent_recorded, consent_basis,
+                                                   transcript_status, provider_call_id, created_by)
+                   VALUES ($1,$2,true,'consented_on_ai_call','pending',$3,'agent-a')""",
+                tenant, lead_id, provider_ref)
+        house_note = await commands_api.deliver_call_notes(house_ref, ["Roof replaced in 2019"])
+        assert house_note, "a lead-only call on a client's house dropped its notes"
+        row = await admin.fetchrow("SELECT client_id FROM client_notes WHERE id=$1", uuid.UUID(house_note))
+        assert str(row["client_id"]) == client
+        assert await commands_api.deliver_call_notes(house_ref, ["Roof replaced in 2019"]) is None, "twice"
+
+        # A prospect with no client: nothing kept, the requester is told, once.
+        before = await admin.fetchval("SELECT count(*) FROM client_notes WHERE tenant_id=$1", uuid.UUID(tenant))
+        for _ in range(2):
+            assert await commands_api.deliver_call_notes(prospect_ref, ["Wants to sell in spring"]) is None
+        assert await admin.fetchval(
+            "SELECT count(*) FROM client_notes WHERE tenant_id=$1", uuid.UUID(tenant)) == before
+        tasks = await admin.fetch(
+            "SELECT client_id, title, details, assignee_id, status FROM client_tasks "
+            "WHERE tenant_id=$1 AND created_by='neoh-ai-call'", uuid.UUID(tenant))
+        assert len(tasks) == 1 and tasks[0]["client_id"] is None and tasks[0]["assignee_id"] == "agent-a"
+        assert tasks[0]["title"] == "Call notes were not kept: this lead has no client record"
+        assert "Wants to sell" not in tasks[0]["details"], "the task must carry no note content"
     finally:
         ws_hub.broadcast_user, ws_hub.broadcast = real_user_push, real_tenant_push
         ws_hub.broadcast_users = real_users_push

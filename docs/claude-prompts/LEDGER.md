@@ -41,7 +41,7 @@ Listed weakest to strongest:
 | 06 | Evidence retrieval and memory | [06](06-evidence-retrieval-memory.md) | `source_verified` | local | `745f2fa` | A01, A02 | L06-01 |
 | 07 | AI gateway and governed tools | [07](07-ai-gateway-model-tool-governance.md) | `tests_pass` | local | `071d65d` (L07-01) | Playwright check owed (L07-01); owner: archive_client | T07.02 + AC07.01 |
 | 08 | Durable missions and workflows | [08](08-durable-missions-workflow-orchestration.md) | `source_verified` | local | `745f2fa`; L08-02 deferral journal (0159, local) | Owner: does a mission's standing grant count as approval (C4.1)?; PR #11 needs a rebuild (L08-01 review) | Rebuild PR #11's internal tasks on current main after the owner answers |
-| 09 | Real-time voice | [09](09-realtime-voice-speech-latency.md) | `source_verified` | staging | `9c3463a`; L09-05 outbound spoken opt-out (local) | Call-note broadcast (L09-03); phone check (L09-02) | L09-03 |
+| 09 | Real-time voice | [09](09-realtime-voice-speech-latency.md) | `source_verified` | staging | `9c3463a`; L09-05 outbound spoken opt-out, L09-06 lead-only call notes (local) | Call-note broadcast (L09-03); phone check (L09-02) | L09-03 |
 | 10 | Communications and calendars | [10](10-communications-calendar-provider-integrations.md) | `source_verified` | staging | `75c6ba6` (local) | Google OAuth client; 10DLC; deploy approval; A07 fixed locally, 0136 + 0139 + 0145 undeployed (L10-06, L10-09, L10-10); owner: one-brand rule (L10-09) | L10-01 |
 | 11 | Property and market intelligence (non-MLS) | [11](11-property-market-intelligence.md) | `tests_pass` | staging (L11-01), local (L11-02, L11-03) | `90372f2`; `d934b2e` (L11-02); L11-03 on branch `worktree-agent-a59f5c8799a673f68` (base `2804f47`) | Deploy 0135; live-DB test owed; staging catalog empty; L11-03 not deployed | Apply 0135 on staging; push L11-03 with approval; then T11.02 provenance |
 | 12 | Neoh Space capture, 3D, tours | [12](12-neoh-space-browser-capture-reconstruction.md) | `source_verified` | local | `745f2fa` | A03 | Capture Studio first slice |
@@ -830,7 +830,28 @@ blockers:
   - "Not deployed (C4.4)."
 audit_refs: []
 decision_refs: []
-next_task: "T09.17 (lead-only call notes) or the owner-approved real-call check (T09.18)."
+next_task: "T09.17 done in L09-06. Then the owner-approved real-call check (T09.18)."
+updated: 2026-10-15
+```
+
+#### L09-06 Notes from a lead-only AI call are kept or the agent is told (T09.17)
+```yaml
+id: L09-06
+status: tests_pass
+env: local
+evidence_shas: []   # filled with the commit SHA on push
+files: [backend/commands_api.py, backend/tests/test_call_notes_live.py]
+tests_run:
+  - {cmd: "read commands_api.deliver_call_notes (at 3969b18)", result: "a consented call with no client_id (chk_call_anchor allows a lead-only call) logged 'call notes not attached — lead-only call' and returned None: the notes the callee agreed to share were dropped and nobody was told", date: 2026-10-15}
+  - {cmd: "pytest -q tests/test_call_notes_live.py (real PostgreSQL) with the change stashed, then applied", result: "before: failed ('a lead-only call on a client's house dropped its notes'); after: 1 passed — a lead-only call on a lead whose seller_client_id is a client puts the sealed note on that client (once); a call on a prospect with no client keeps no note and creates one task for the requesting agent ('Call notes were not kept: this lead has no client record', no note content), once across retries", date: 2026-10-15}
+  - {cmd: "every CI rls-job live test; cd backend && pytest -q tests compliance_engine/tests (clean env); bandit", result: "68 passed; unit 5206 passed, 65 skipped, 2 failed (test_media_storage + test_object_storage: container runs as root, identical without the change); bandit exit 0", date: 2026-10-15}
+authz_checked: "Runs in the same platform context as before for the call's own tenant. A house lead's notes reach its seller client, whose audience 0143 already defines (requester + assignee who may still read it, broadcast_record); the not-kept task carries no customer content."
+blockers:
+  - "Not proven on a real call (T09.18, owner approval)."
+  - "Not deployed (C4.4)."
+audit_refs: []
+decision_refs: ["D-2026-10-12-03 (review/direct note mode applies to house-lead notes as to client notes)"]
+next_task: "T09.18 with owner approval."
 updated: 2026-10-15
 ```
 
