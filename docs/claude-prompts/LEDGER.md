@@ -1247,7 +1247,7 @@ updated: 2026-10-13
 id: L14-03
 status: tests_pass
 env: local
-evidence_shas: []   # filled with the commit SHA on push
+evidence_shas: [9ac4bdb]
 files: [oracle-app/src/components/OurAITab.jsx, oracle-app/src/components/OurAITab.test.jsx]
 tests_run:
   - {cmd: "read OurAITab.jsx sourceState (at 13bf381)", result: "sourceState(sourceId) returns 'Live' whenever the endpoint answered; the 'Hyperlocal Website' card called it with no condition, so a brokerage with only draft sites (or none) saw 'Live' (L14-01 finding, OurAITab.jsx:338)", date: 2026-10-15}
