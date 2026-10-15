@@ -1,0 +1,847 @@
+{
+ "ask.deal_blocker.done": {
+  "blocks": [
+   {
+    "primitive": "deal",
+    "props": {
+     "address": "123 Main St",
+     "href": "/deal/33333333-3333-3333-3333-333333333333",
+     "id": "33333333-3333-3333-3333-333333333333",
+     "open_count": 0,
+     "status": "under_contract",
+     "total_count": 1
+    }
+   },
+   {
+    "primitive": "timeline",
+    "props": {
+     "items": [
+      {
+       "at": "2026-10-01",
+       "done": true,
+       "label": "Inspection"
+      }
+     ]
+    }
+   }
+  ],
+  "degraded": false,
+  "fallthrough": false,
+  "intent": "deal_blocker",
+  "source_status": {
+   "deals": {
+    "checked_at": "2026-10-15T09:46:54.327662+00:00",
+    "matched": 1,
+    "reason": null,
+    "required": true,
+    "status": "checked"
+   }
+  },
+  "spoken": "Nothing is holding 123 Main St up — every milestone is done."
+ },
+ "ask.deal_blocker.empty": {
+  "blocks": [
+   {
+    "primitive": "deal",
+    "props": {
+     "address": "123 Main St",
+     "href": "/deal/33333333-3333-3333-3333-333333333333",
+     "id": "33333333-3333-3333-3333-333333333333",
+     "open_count": 0,
+     "status": "under_contract",
+     "total_count": 0
+    }
+   }
+  ],
+  "degraded": false,
+  "fallthrough": false,
+  "intent": "deal_blocker",
+  "source_status": {
+   "deals": {
+    "checked_at": "2026-10-15T09:46:54.327994+00:00",
+    "matched": 1,
+    "reason": null,
+    "required": true,
+    "status": "checked"
+   }
+  },
+  "spoken": "123 Main St has no milestones recorded, so nothing here can say what is next. That is a gap in the file, not a clear runway."
+ },
+ "ask.deal_blocker.open": {
+  "blocks": [
+   {
+    "primitive": "deal",
+    "props": {
+     "address": "123 Main St",
+     "href": "/deal/33333333-3333-3333-3333-333333333333",
+     "id": "33333333-3333-3333-3333-333333333333",
+     "open_count": 1,
+     "status": "under_contract",
+     "total_count": 2
+    }
+   },
+   {
+    "primitive": "timeline",
+    "props": {
+     "items": [
+      {
+       "at": "2026-10-20",
+       "done": false,
+       "label": "appraisal report due"
+      }
+     ]
+    }
+   }
+  ],
+  "degraded": false,
+  "fallthrough": false,
+  "intent": "deal_blocker",
+  "source_status": {
+   "deals": {
+    "checked_at": "2026-10-15T09:46:54.326960+00:00",
+    "matched": 1,
+    "reason": null,
+    "required": true,
+    "status": "checked"
+   }
+  },
+  "spoken": "Appraisal report due is the earliest thing still open on 123 Main St."
+ },
+ "ask.deal_blocker.typed": {
+  "blocks": [
+   {
+    "primitive": "deal",
+    "props": {
+     "address": "This deal",
+     "href": "/deal/33333333-3333-3333-3333-333333333333",
+     "id": "33333333-3333-3333-3333-333333333333",
+     "open_count": 1,
+     "status": "under_contract",
+     "total_count": 1
+    }
+   },
+   {
+    "primitive": "timeline",
+    "props": {
+     "items": [
+      {
+       "at": "2026-10-25",
+       "done": false,
+       "label": "loan commitment"
+      }
+     ]
+    }
+   }
+  ],
+  "degraded": false,
+  "fallthrough": false,
+  "intent": "deal_blocker",
+  "source_status": {
+   "deals": {
+    "checked_at": "2026-10-15T09:46:54.327303+00:00",
+    "matched": 1,
+    "reason": null,
+    "required": true,
+    "status": "checked"
+   }
+  },
+  "spoken": "Loan commitment is the earliest thing still open on This deal."
+ },
+ "ask.properties_for.shortlist": {
+  "blocks": [
+   {
+    "primitive": "comparison",
+    "props": {
+     "options": [
+      {
+       "detail": "$425,000 · 3 beds · 2 baths · inside the stated budget",
+       "href": "/property/44444444-4444-4444-4444-444444444444",
+       "id": "44444444-4444-4444-4444-444444444444",
+       "label": "12 Oak St"
+      },
+      {
+       "detail": "$389,000",
+       "href": "/property/44444444-4444-4444-4444-444444444444",
+       "id": "44444444-4444-4444-4444-444444444444",
+       "label": "Address unavailable"
+      },
+      {
+       "detail": null,
+       "href": null,
+       "id": "",
+       "label": "9 Elm Ave"
+      }
+     ],
+     "title": "For Sarah Johnson"
+    }
+   }
+  ],
+  "degraded": false,
+  "fallthrough": false,
+  "intent": "properties_for",
+  "source_status": {
+   "people": {
+    "checked_at": "2026-10-15T09:46:54.326602+00:00",
+    "matched": 1,
+    "reason": null,
+    "required": true,
+    "status": "checked"
+   }
+  },
+  "spoken": "3 on Sarah Johnson's shortlist."
+ },
+ "ask.show_person.card": {
+  "blocks": [
+   {
+    "primitive": "person",
+    "props": {
+     "confidence": 0.6,
+     "href": "/p/22222222-2222-2222-2222-222222222222",
+     "id": "22222222-2222-2222-2222-222222222222",
+     "name": "Sarah Johnson",
+     "read": "Acting well ahead of what they said. Declared position reads 30%; behaviour reads 82%. Treat the timeline they gave as conservative.",
+     "subtitle": "buyer · active"
+    }
+   },
+   {
+    "primitive": "timeline",
+    "props": {
+     "items": [
+      {
+       "at": "2026-10-10T15:00:00+00:00",
+       "direction": "outbound",
+       "done": true,
+       "label": "Called about the offer"
+      },
+      {
+       "at": "2026-10-09T15:00:00+00:00",
+       "direction": "inbound",
+       "done": true,
+       "label": "sms"
+      }
+     ]
+    }
+   }
+  ],
+  "degraded": false,
+  "fallthrough": false,
+  "intent": "show_person",
+  "source_status": {
+   "people": {
+    "checked_at": "2026-10-15T09:46:54.324479+00:00",
+    "matched": 1,
+    "reason": null,
+    "required": true,
+    "status": "checked"
+   }
+  },
+  "spoken": "Acting well ahead of what they said. Declared position reads 30%; behaviour reads 82%. Treat the timeline they gave as conservative."
+ },
+ "ask.show_person.choices": {
+  "blocks": [
+   {
+    "primitive": "comparison",
+    "props": {
+     "options": [
+      {
+       "detail": null,
+       "href": "/p/22222222-2222-2222-2222-222222222222",
+       "id": "22222222-2222-2222-2222-222222222222",
+       "label": "Sarah Johnson"
+      },
+      {
+       "detail": null,
+       "href": "/p/55555555-5555-5555-5555-555555555555",
+       "id": "55555555-5555-5555-5555-555555555555",
+       "label": "Unnamed"
+      }
+     ],
+     "title": "Which one?"
+    }
+   }
+  ],
+  "degraded": false,
+  "fallthrough": false,
+  "intent": "show_person",
+  "source_status": {
+   "people": {
+    "checked_at": "2026-10-15T09:46:54.325780+00:00",
+    "matched": 2,
+    "reason": null,
+    "required": true,
+    "status": "checked"
+   }
+  },
+  "spoken": "2 people match “Sarah”."
+ },
+ "ask.show_person.dispute": {
+  "blocks": [
+   {
+    "primitive": "person",
+    "props": {
+     "confidence": 0.75,
+     "href": "/p/22222222-2222-2222-2222-222222222222",
+     "id": "22222222-2222-2222-2222-222222222222",
+     "name": "Sarah Johnson",
+     "read": "What they say and what they do agree, which makes both more trustworthy than either alone.",
+     "subtitle": "buyer · active"
+    }
+   },
+   {
+    "primitive": "timeline",
+    "props": {
+     "items": [
+      {
+       "at": "2026-10-10T15:00:00+00:00",
+       "direction": "outbound",
+       "done": true,
+       "label": "Called about the offer"
+      },
+      {
+       "at": "2026-10-09T15:00:00+00:00",
+       "direction": "inbound",
+       "done": true,
+       "label": "sms"
+      }
+     ]
+    }
+   },
+   {
+    "primitive": "evidence",
+    "props": {
+     "items": [
+      {
+       "detail": "move_timeline",
+       "label": "Recorded move timeline as \"6 months\" (40 days ago, call_note), but \"30 days\" (3 days ago, web_form). Worth confirming which still holds."
+      },
+      {
+       "detail": "budget",
+       "label": "Two records disagree"
+      }
+     ]
+    }
+   }
+  ],
+  "degraded": false,
+  "fallthrough": false,
+  "intent": "show_person",
+  "source_status": {
+   "people": {
+    "checked_at": "2026-10-15T09:46:54.325434+00:00",
+    "matched": 1,
+    "reason": null,
+    "required": true,
+    "status": "checked"
+   }
+  },
+  "spoken": "What they say and what they do agree, which makes both more trustworthy than either alone."
+ },
+ "ask.show_person.no_intent": {
+  "blocks": [
+   {
+    "primitive": "person",
+    "props": {
+     "confidence": null,
+     "href": "/p/22222222-2222-2222-2222-222222222222",
+     "id": "22222222-2222-2222-2222-222222222222",
+     "name": "This person",
+     "read": null,
+     "subtitle": "buyer · active"
+    }
+   }
+  ],
+  "degraded": false,
+  "fallthrough": false,
+  "intent": "show_person",
+  "source_status": {
+   "people": {
+    "checked_at": "2026-10-15T09:46:54.325027+00:00",
+    "matched": 1,
+    "reason": null,
+    "required": true,
+    "status": "checked"
+   }
+  },
+  "spoken": "This person."
+ },
+ "ask.show_property.one": {
+  "blocks": [
+   {
+    "primitive": "property",
+    "props": {
+     "address": "412 Delaware Ave",
+     "detail": "Wilmington, DE",
+     "href": "/property/44444444-4444-4444-4444-444444444444",
+     "id": "44444444-4444-4444-4444-444444444444"
+    }
+   }
+  ],
+  "degraded": false,
+  "fallthrough": false,
+  "intent": "show_property",
+  "source_status": {
+   "people": {
+    "checked_at": "2026-10-15T09:46:54.326125+00:00",
+    "matched": 0,
+    "reason": null,
+    "required": true,
+    "status": "checked"
+   },
+   "properties": {
+    "checked_at": "2026-10-15T09:46:54.326255+00:00",
+    "matched": 1,
+    "reason": null,
+    "required": true,
+    "status": "checked"
+   }
+  },
+  "spoken": "412 Delaware Ave"
+ },
+ "ask.who_to_call.many": {
+  "blocks": [
+   {
+    "primitive": "call_queue",
+    "props": {
+     "items": [
+      {
+       "action": "Confirm the closing timeline with all parties today.",
+       "action_type": "call",
+       "confidence": 0.7,
+       "deadline": null,
+       "headline": "Contract expires in 3 days",
+       "href": "/p/22222222-2222-2222-2222-222222222222",
+       "kind": "contract_expiry",
+       "rank": 1,
+       "subject": "Sarah Johnson",
+       "subject_id": "22222222-2222-2222-2222-222222222222",
+       "subject_type": "client",
+       "why": "Because."
+      },
+      {
+       "action": "Confirm the closing timeline with all parties today.",
+       "action_type": "call",
+       "confidence": 0.7,
+       "deadline": null,
+       "headline": "Contract expires in 3 days",
+       "href": "/p/22222222-2222-2222-2222-222222222222",
+       "kind": "contract_expiry",
+       "rank": 2,
+       "subject": "Marcus Lee",
+       "subject_id": "22222222-2222-2222-2222-222222222222",
+       "subject_type": "client",
+       "why": "Because."
+      },
+      {
+       "action": "Confirm the closing timeline with all parties today.",
+       "action_type": "call",
+       "confidence": 0.7,
+       "deadline": null,
+       "headline": "Contract expires in 3 days",
+       "href": "/p/22222222-2222-2222-2222-222222222222",
+       "kind": "contract_expiry",
+       "rank": 3,
+       "subject": "Dana Ortiz",
+       "subject_id": "22222222-2222-2222-2222-222222222222",
+       "subject_type": "client",
+       "why": "Because."
+      }
+     ]
+    }
+   },
+   {
+    "primitive": "metric",
+    "props": {
+     "calibrated": false,
+     "caveat": "Uncalibrated priors.",
+     "label": "Expected value of acting on all of it",
+     "unit": "currency",
+     "value": 12500.0
+    }
+   }
+  ],
+  "fallthrough": false,
+  "intent": "who_to_call",
+  "spoken": "Sarah Johnson first, then 2 more."
+ },
+ "ask.who_to_call.one": {
+  "blocks": [
+   {
+    "primitive": "call_queue",
+    "props": {
+     "items": [
+      {
+       "action": "Confirm the closing timeline with all parties today.",
+       "action_type": "call",
+       "confidence": 0.7,
+       "deadline": null,
+       "headline": "Contract expires in 3 days",
+       "href": "/p/22222222-2222-2222-2222-222222222222",
+       "kind": "contract_expiry",
+       "rank": 1,
+       "subject": "Sarah Johnson",
+       "subject_id": "22222222-2222-2222-2222-222222222222",
+       "subject_type": "client",
+       "why": "Because."
+      }
+     ]
+    }
+   },
+   {
+    "primitive": "metric",
+    "props": {
+     "calibrated": false,
+     "caveat": "Uncalibrated priors.",
+     "label": "Expected value of acting on all of it",
+     "unit": "currency",
+     "value": 12500.0
+    }
+   }
+  ],
+  "fallthrough": false,
+  "intent": "who_to_call",
+  "spoken": "Sarah Johnson first."
+ },
+ "deal.bare": {
+  "blocks": [
+   {
+    "primitive": "deal",
+    "props": {
+     "address": "123 Main St",
+     "href": "/deal/33333333-3333-3333-3333-333333333333",
+     "id": "33333333-3333-3333-3333-333333333333",
+     "open_count": 1,
+     "status": "under_contract",
+     "total_count": 1
+    }
+   },
+   {
+    "primitive": "timeline",
+    "props": {
+     "items": [
+      {
+       "at": null,
+       "done": false,
+       "label": ""
+      }
+     ]
+    }
+   }
+  ],
+  "fallthrough": false,
+  "intent": "deal_blocker",
+  "spoken": "The next milestone is the earliest thing still open on 123 Main St."
+ },
+ "draft.calendar.bare": {
+  "event": {
+   "description": "Schedule a meeting with Sarah",
+   "end": null,
+   "start": null,
+   "summary": "Follow-up with there"
+  }
+ },
+ "draft.calendar.full": {
+  "event": {
+   "description": "Schedule a meeting with Sarah",
+   "end": null,
+   "start": null,
+   "summary": "Follow-up with Sarah Johnson"
+  }
+ },
+ "draft.call.bare": {
+  "agent_phone": null,
+  "objective": "Call Sarah about the offer",
+  "opening": "Hi there, this is your real estate agent.",
+  "property_address": null
+ },
+ "draft.call.full": {
+  "agent_phone": "+15550101",
+  "objective": "Call Sarah about the offer",
+  "opening": "Hi Sarah, this is Alex Agent.",
+  "property_address": "12 Oak St"
+ },
+ "draft.contract.bare": {
+  "client_id": null,
+  "doc_id": "assignment-standard",
+  "document_type": "assignment",
+  "instructions": "Draft an assignment contract for Sarah",
+  "property_id": null,
+  "state": ""
+ },
+ "draft.contract.full": {
+  "client_id": "22222222-2222-2222-2222-222222222222",
+  "doc_id": "assignment-standard",
+  "document_type": "assignment",
+  "instructions": "Draft an assignment contract for Sarah",
+  "property_id": "44444444-4444-4444-4444-444444444444",
+  "state": "DE"
+ },
+ "draft.email.bare": {
+  "body": "Hi there,\n\nI’m following up regarding your real estate plans. I would like to discuss a proposed amount of $425,000.00.",
+  "subject": "Following up about your real estate plans"
+ },
+ "draft.email.full": {
+  "body": "Hi Sarah,\n\nI’m following up regarding 12 Oak St. I would like to discuss a proposed amount of $425,000.00.\n\nAlex Agent, Neoh Realty",
+  "subject": "Following up about 12 Oak St"
+ },
+ "draft.mao.bare": {
+  "formula": "ARV * 0.70 - Rehab",
+  "property": {}
+ },
+ "draft.mao.full": {
+  "formula": "ARV * 0.70 - Rehab",
+  "property": {
+   "address": "12 Oak St",
+   "id": "44444444-4444-4444-4444-444444444444",
+   "payload": {
+    "state_code": "de"
+   }
+  }
+ },
+ "draft.sms.bare": {
+  "body": "Hi there, I’m following up regarding your real estate plans."
+ },
+ "draft.sms.full": {
+  "body": "Hi Sarah, I’m following up regarding 12 Oak St. Alex Agent, Neoh Realty"
+ },
+ "person.bare": {
+  "blocks": [
+   {
+    "primitive": "person",
+    "props": {
+     "confidence": null,
+     "href": "/p/22222222-2222-2222-2222-222222222222",
+     "id": "22222222-2222-2222-2222-222222222222",
+     "name": "This person",
+     "read": null,
+     "subtitle": ""
+    }
+   }
+  ],
+  "fallthrough": false,
+  "intent": "show_person",
+  "spoken": "This person."
+ },
+ "person.behaviour_ahead": {
+  "blocks": [
+   {
+    "primitive": "person",
+    "props": {
+     "confidence": 0.6,
+     "href": "/p/22222222-2222-2222-2222-222222222222",
+     "id": "22222222-2222-2222-2222-222222222222",
+     "name": "Sarah Johnson",
+     "read": "Acting well ahead of what they said. Declared position reads 30%; behaviour reads 82%. Treat the timeline they gave as conservative.",
+     "subtitle": "buyer · active"
+    }
+   },
+   {
+    "primitive": "timeline",
+    "props": {
+     "items": [
+      {
+       "at": "2026-10-10T15:00:00+00:00",
+       "direction": "outbound",
+       "done": true,
+       "label": "Called about the offer"
+      },
+      {
+       "at": "2026-10-09T15:00:00+00:00",
+       "direction": "inbound",
+       "done": true,
+       "label": "sms"
+      }
+     ]
+    }
+   }
+  ],
+  "fallthrough": false,
+  "intent": "show_person",
+  "spoken": "Acting well ahead of what they said. Declared position reads 30%; behaviour reads 82%. Treat the timeline they gave as conservative."
+ },
+ "person.behaviour_behind": {
+  "blocks": [
+   {
+    "primitive": "person",
+    "props": {
+     "confidence": 0.6,
+     "href": "/p/22222222-2222-2222-2222-222222222222",
+     "id": "22222222-2222-2222-2222-222222222222",
+     "name": "Sarah Johnson",
+     "read": "Stated intent is not showing up in behaviour (80% declared vs 35% observed). Either something changed, or the plan was aspirational.",
+     "subtitle": "buyer · active"
+    }
+   },
+   {
+    "primitive": "timeline",
+    "props": {
+     "items": [
+      {
+       "at": "2026-10-10T15:00:00+00:00",
+       "direction": "outbound",
+       "done": true,
+       "label": "Called about the offer"
+      },
+      {
+       "at": "2026-10-09T15:00:00+00:00",
+       "direction": "inbound",
+       "done": true,
+       "label": "sms"
+      }
+     ]
+    }
+   }
+  ],
+  "fallthrough": false,
+  "intent": "show_person",
+  "spoken": "Stated intent is not showing up in behaviour (80% declared vs 35% observed). Either something changed, or the plan was aspirational."
+ },
+ "person.behaviour_only": {
+  "blocks": [
+   {
+    "primitive": "person",
+    "props": {
+     "confidence": 0.5,
+     "href": "/p/22222222-2222-2222-2222-222222222222",
+     "id": "22222222-2222-2222-2222-222222222222",
+     "name": "Sarah Johnson",
+     "read": "Behaviour is visible but they have never stated a timeline. Worth asking, so the two can be compared.",
+     "subtitle": "buyer · active"
+    }
+   },
+   {
+    "primitive": "timeline",
+    "props": {
+     "items": [
+      {
+       "at": "2026-10-10T15:00:00+00:00",
+       "direction": "outbound",
+       "done": true,
+       "label": "Called about the offer"
+      },
+      {
+       "at": "2026-10-09T15:00:00+00:00",
+       "direction": "inbound",
+       "done": true,
+       "label": "sms"
+      }
+     ]
+    }
+   }
+  ],
+  "fallthrough": false,
+  "intent": "show_person",
+  "spoken": "Behaviour is visible but they have never stated a timeline. Worth asking, so the two can be compared."
+ },
+ "person.cannot_compare": {
+  "blocks": [
+   {
+    "primitive": "person",
+    "props": {
+     "confidence": 0.3,
+     "href": "/p/22222222-2222-2222-2222-222222222222",
+     "id": "22222222-2222-2222-2222-222222222222",
+     "name": "Sarah Johnson",
+     "read": "Only their declared position is available — nothing they do is visible to us yet, so there is nothing to check it against.",
+     "subtitle": "buyer · active"
+    }
+   },
+   {
+    "primitive": "timeline",
+    "props": {
+     "items": [
+      {
+       "at": "2026-10-10T15:00:00+00:00",
+       "direction": "outbound",
+       "done": true,
+       "label": "Called about the offer"
+      },
+      {
+       "at": "2026-10-09T15:00:00+00:00",
+       "direction": "inbound",
+       "done": true,
+       "label": "sms"
+      }
+     ]
+    }
+   }
+  ],
+  "fallthrough": false,
+  "intent": "show_person",
+  "spoken": "Only their declared position is available — nothing they do is visible to us yet, so there is nothing to check it against."
+ },
+ "person.consistent": {
+  "blocks": [
+   {
+    "primitive": "person",
+    "props": {
+     "confidence": 0.75,
+     "href": "/p/22222222-2222-2222-2222-222222222222",
+     "id": "22222222-2222-2222-2222-222222222222",
+     "name": "Sarah Johnson",
+     "read": "What they say and what they do agree, which makes both more trustworthy than either alone.",
+     "subtitle": "buyer · active"
+    }
+   },
+   {
+    "primitive": "timeline",
+    "props": {
+     "items": [
+      {
+       "at": "2026-10-10T15:00:00+00:00",
+       "direction": "outbound",
+       "done": true,
+       "label": "Called about the offer"
+      },
+      {
+       "at": "2026-10-09T15:00:00+00:00",
+       "direction": "inbound",
+       "done": true,
+       "label": "sms"
+      }
+     ]
+    }
+   }
+  ],
+  "fallthrough": false,
+  "intent": "show_person",
+  "spoken": "What they say and what they do agree, which makes both more trustworthy than either alone."
+ },
+ "queue.empty_portfolio": {
+  "blocks": [
+   {
+    "primitive": "metric",
+    "props": {
+     "calibrated": false,
+     "caveat": null,
+     "label": "Expected value of acting on all of it",
+     "unit": "currency",
+     "value": 0
+    }
+   }
+  ],
+  "fallthrough": false,
+  "intent": "who_to_call",
+  "spoken": "No one to call right now. Nothing in the book is asking for you today."
+ },
+ "shortlist.one": {
+  "blocks": [
+   {
+    "primitive": "comparison",
+    "props": {
+     "options": [
+      {
+       "detail": "$425,000 · 3 beds · 2 baths · inside the stated budget",
+       "href": "/property/44444444-4444-4444-4444-444444444444",
+       "id": "44444444-4444-4444-4444-444444444444",
+       "label": "12 Oak St"
+      }
+     ],
+     "title": "For Sarah Johnson"
+    }
+   }
+  ],
+  "fallthrough": false,
+  "intent": "properties_for",
+  "spoken": "1 on Sarah Johnson's shortlist."
+ }
+}
