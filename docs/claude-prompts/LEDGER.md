@@ -1828,7 +1828,7 @@ Why a side table: see the first tests_run entry. Freshness: the index may be mis
 id: L17-24
 status: tests_pass
 env: local
-evidence_shas: []   # filled with the commit SHA on push
+evidence_shas: [0944dc4]
 files: [backend/db/migrations/0157_sealing_batches_bounded.sql, backend/backfill_client_notes.py, backend/backfill_sealed_text.py, backend/tests/test_sealing_batches_bounded_live.py, .github/workflows/ci.yml]
 tests_run:
   - {cmd: "every CI rls-job live test after L17-23 (local PostgreSQL 16)", result: "test_client_note_sealing_live failed twice in a row, only after test_client_contact_index_live: seal_pending(batch_size=1, max_rows=2) sealed 3 notes in ONE batch (log: 'sealed 3 note(s)'); alone it passes", date: 2026-10-15}
