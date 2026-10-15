@@ -37,7 +37,17 @@ ROLE = {
     "database": "core", "realtime_fanout": "core", "workers": "core", "scheduler": "core",
     "job_queue": "core", "valkey": "important", "mls": "important", "ai": "important",
     "outbound_side_effects": "important", "email_outbox": "important",
+    # Property data (L19-04, T19.07 / AC19.07): what the brokerage's property
+    # and market answers are built from now that MLS is off (D-2026-10-12-01).
+    "property_harvesters": "optional", "market_data": "optional", "valuation_providers": "optional",
 }
+
+#: The components read from Postgres in _db_components, in one place (the
+#: unknown/unavailable fallbacks used to repeat this list three times).
+_DB_KEYS: tuple[str, ...] = (
+    "workers", "scheduler", "job_queue", "mls", "ai", "outbound_side_effects", "email_outbox",
+    "property_harvesters", "market_data",
+)
 
 
 def _c(state: str, summary: str, **detail: Any) -> dict:
@@ -107,8 +117,7 @@ async def _db_components() -> dict[str, dict]:
     pool = get_pool()
     out: dict[str, dict] = {}
     if pool is None:
-        return {k: _c(UNKNOWN, "database unavailable") for k in
-                ("workers", "scheduler", "job_queue", "mls", "ai", "outbound_side_effects", "email_outbox")}
+        return {k: _c(UNKNOWN, "database unavailable") for k in _DB_KEYS}
     from db.connection import tenant_tx
     from tenancy import Role, TenantContext
 
@@ -146,6 +155,17 @@ async def _db_components() -> dict[str, dict]:
             "SELECT count(*) FILTER (WHERE status='sending' AND error LIKE 'delivery_unknown%') AS unknown, "
             "count(*) FILTER (WHERE status='queued' AND updated_at < now() - interval '15 minutes') AS stuck "
             "FROM email_outbox WHERE status IN ('sending','queued')")
+        harvest = await conn.fetchrow(
+            """
+            SELECT count(*) FILTER (WHERE enabled) AS enabled,
+                   count(*) FILTER (WHERE enabled AND circuit_state <> 'closed') AS open_circuits,
+                   count(*) FILTER (WHERE enabled AND (last_succeeded_at IS NULL OR last_succeeded_at
+                       < now() - make_interval(secs => schedule_seconds * 2 + 3600))) AS overdue
+              FROM harvest_sources
+            """)
+        market = await conn.fetchrow(
+            "SELECT count(*) AS states, EXTRACT(EPOCH FROM now() - max(updated_at))::int AS age_s "
+            "FROM state_market_stats")
     workers = [b for b in beats if b["role"] in ("worker", "all")]
     from process_heartbeat import STALE_AFTER  # same bound as /health/workers (4 missed beats)
 
@@ -181,7 +201,65 @@ async def _db_components() -> dict[str, dict]:
     unknown, stuck = int(mail["unknown"] or 0), int(mail["stuck"] or 0)
     out["email_outbox"] = (_c(DEGRADED, "emails waiting or with unknown delivery", unknown=unknown, stuck=stuck)
                            if unknown or stuck else _c(HEALTHY, "email outbox draining"))
+    out["property_harvesters"] = _property_harvesters(dict(harvest))
+    out["market_data"] = _market_data(dict(market))
     return out
+
+
+def _syncs_paused() -> bool:
+    """Recovery mode stops every non-internal periodic task (L17-03), so data
+    those tasks refresh goes stale by design: reported, not paged."""
+    from recovery_mode import is_recovery_mode
+
+    return is_recovery_mode()
+
+
+def _property_harvesters(row: dict) -> dict:
+    """Public-record harvesters (harvest_sources): counts only, never a source
+    name or its error text."""
+    enabled = int(row.get("enabled") or 0)
+    open_circuits, overdue = int(row.get("open_circuits") or 0), int(row.get("overdue") or 0)
+    if not enabled:
+        return _c(NOT_CONFIGURED, "no public-record harvester enabled")
+    if open_circuits:
+        return _c(DEGRADED, f"{open_circuits} public-record source(s) paused after repeated failures",
+                  sources=enabled, open_circuits=open_circuits, overdue=overdue)
+    if overdue:
+        if _syncs_paused():
+            return _c(NOT_CONFIGURED, "public-record syncs are paused (recovery mode)",
+                      sources=enabled, overdue=overdue)
+        return _c(STALE, f"{overdue} public-record source(s) have not refreshed on schedule",
+                  sources=enabled, overdue=overdue)
+    return _c(HEALTHY, "public-record sources refreshing on schedule", sources=enabled)
+
+
+def _market_data(row: dict) -> dict:
+    """State market statistics (state_market_stats, refreshed by the
+    market_research task). Stale after three missed refreshes."""
+    states, age = int(row.get("states") or 0), row.get("age_s")
+    if not states:
+        return _c(NOT_CONFIGURED, "no market statistics loaded")
+    interval_h = max(6.0, float(os.getenv("ORACLE_MARKET_RESEARCH_INTERVAL_HOURS", "24")))
+    limit = int(interval_h * 3600 * 3)
+    if age is not None and int(age) > limit:
+        if _syncs_paused():
+            return _c(NOT_CONFIGURED, "market refresh is paused (recovery mode)", states=states, age_s=int(age))
+        return _c(STALE, "market statistics have not refreshed on schedule",
+                  states=states, age_s=int(age), limit_s=limit)
+    return _c(HEALTHY, "market statistics current", states=states, age_s=int(age or 0))
+
+
+def _valuation_providers() -> dict:
+    """RentCast / ATTOM (avm_client). Their call outcomes are not recorded
+    anywhere this process can read, so a configured provider is UNKNOWN —
+    never HEALTHY on the strength of a key being set (AC19.07 needs a recorded
+    outcome first)."""
+    configured = [name for name, var in (("RentCast", "RENTCAST_API_KEY"), ("ATTOM", "ATTOM_API_KEY"))
+                  if os.getenv(var, "").strip()]
+    if not configured:
+        return _c(NOT_CONFIGURED, "no valuation provider key set")
+    return _c(UNKNOWN, "valuation provider configured; call outcomes are not recorded, so health is not observed",
+              configured=len(configured))
 
 
 def _mls(rows: list[dict]) -> dict:
@@ -226,16 +304,19 @@ async def _snapshot() -> dict:
             rest = await asyncio.wait_for(_db_components(), timeout=4.0)
         except Exception as exc:  # noqa: BLE001
             rest = {k: _c(UNKNOWN, "health query did not answer", reason=type(exc).__name__)
-                    for k in ("workers", "scheduler", "job_queue", "mls", "ai", "outbound_side_effects", "email_outbox")}
+                    for k in _DB_KEYS}
     else:
-        rest = {k: _c(UNKNOWN, "database unavailable")
-                for k in ("workers", "scheduler", "job_queue", "mls", "ai", "outbound_side_effects", "email_outbox")}
-    components = {"database": db, "realtime_fanout": realtime, "valkey": valkey, **rest}
+        rest = {k: _c(UNKNOWN, "database unavailable") for k in _DB_KEYS}
+    components = {"database": db, "realtime_fanout": realtime, "valkey": valkey, **rest,
+                  "valuation_providers": _valuation_providers()}
     for name, comp in components.items():
         comp["role"] = ROLE.get(name, "optional")
     core_bad = [n for n, c in components.items() if c["role"] == "core" and c["state"] in (UNAVAILABLE, STALE)]
+    # An optional component that cannot be observed (valuation providers keep
+    # no outcome record) is reported, not counted against the whole system.
+    counted = [c for c in components.values() if not (c["role"] == "optional" and c["state"] == UNKNOWN)]
     overall = UNAVAILABLE if components["database"]["state"] == UNAVAILABLE else (
-        DEGRADED if core_bad or any(c["state"] not in (HEALTHY, NOT_CONFIGURED) for c in components.values())
+        DEGRADED if core_bad or any(c["state"] not in (HEALTHY, NOT_CONFIGURED) for c in counted)
         else HEALTHY)
     return {"state": overall, "checked_at": time.time(), "components": components}
 

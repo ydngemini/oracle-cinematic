@@ -51,7 +51,7 @@ Listed weakest to strongest:
 | 16 | Performance, indexes, cache | [16](16-performance-indexes-mobile-cache.md) | `tests_pass` | staging | `745f2fa`; 0141 tenant wall (L16-01); 0113 predicates dropped + 0144 (L16-03); JIT off for request transactions (0e29f5a) — all on staging 0a76a72 | A10 capacity on production-shaped infra; no production target | T16.05 |
 | 17 | Security, privacy, data lifecycle | [17](17-security-privacy-compliance-data-lifecycle.md) | `source_verified` | staging | `0739563`; ISO 27001 set (L17-06, v1.0 approved); L17-07..20 local 2026-10-14 (card redaction, unsubscribe 0146, alerts, HOOK-3, log-PII, audit drain 0148, access review, demo-login guard, hashing, dep audit, admin-read audit, DR drill in CI, two-step sign-in 0150, security.txt); L17-21 local (SMS/transcript/chat-turn sealing 0152, clients + leads design); L17-22 (email subject/body, interaction-log subject/text, AI tool receipts, belief quotes, profile summaries sealing 0154, on staging); L17-23 local (clients lookup hashes + name tokens kept current, 0156, not yet searched); L17-24 local (sealing batches bounded, 0157) | A01, A06; owner: security@/privacy@ mailboxes (L17-20); certification body, pentest, DPAs (L17-06) | Owner: name/email search semantics, then clients slice (b) (L17-23); scheduled off-host backups; log forwarding |
 | 18 | Billing, seats, analytics | [18](18-brokerage-billing-seat-plans-analytics.md) | `source_verified` | local | `a8bff54` (L18-02 `tests_pass`) | D-2026-10-12-02 (billable stage) | T18.04 + AC18.02 (seats) |
-| 19 | Production operations | [19](19-infrastructure-deploy-observability-recovery.md) | `source_verified` | staging | `745f2fa` | No production app; A04 | L19-03 |
+| 19 | Production operations | [19](19-infrastructure-deploy-observability-recovery.md) | `source_verified` | staging | `745f2fa`; L19-04 property-data health (local) | No production app; A04 | L19-03 |
 | 20 | 20-agent launch certification | [20](20-twenty-agent-full-feature-launch-e2e-evaluation.md) | `source_verified` | local | `745f2fa` | Every row above | Last |
 
 Rollup is the weakest row. A category holding `external_configuration_required` or `blocked` rows shows them under "Open blockers" instead of hiding them in an average (L09 and L10 also hold `tests_pass` rows; see below).
@@ -2137,6 +2137,29 @@ audit_refs: []
 decision_refs: [D-2026-10-12-01]
 next_task: "T19.07"
 updated: 2026-10-12
+```
+
+#### L19-04 Health reports the real property sources (T19.07 / AC19.07, part)
+```yaml
+id: L19-04
+status: tests_pass
+env: local
+evidence_shas: []   # filled with the commit SHA on push
+files: [backend/component_health.py, backend/tests/test_component_health.py, backend/tests/test_component_health_live.py, oracle-app/src/components/admin/operatorModel.js, .github/workflows/ci.yml]
+tests_run:
+  - {cmd: "read component_health.py; \\d harvest_sources, state_market_stats; grep avm_client for RentCast/ATTOM (at c2eae55)", result: "health had a legacy MLS component (NOT_CONFIGURED since MLS is off) and nothing for the sources property answers come from (L19-03). harvest_sources records enabled, schedule, last success, failures and circuit state; state_market_stats carries updated_at (market_research task, daily by default); RentCast/ATTOM call outcomes are recorded nowhere", date: 2026-10-15}
+  - {cmd: "cd backend && pytest -q tests/test_component_health.py tests/test_health_readiness.py", result: "16 passed: harvesters — none enabled NOT_CONFIGURED, open circuit DEGRADED, overdue (> 2x schedule + 1 h) STALE; market data — none NOT_CONFIGURED, older than 3 refresh intervals STALE; in recovery mode overdue/stale report 'paused (recovery mode)' as NOT_CONFIGURED (no page) but a tripped circuit stays DEGRADED; a valuation key alone is UNKNOWN, never HEALTHY, counts only; an UNKNOWN optional component does not degrade the overall state, a STALE one does; no database -> UNKNOWN", date: 2026-10-15}
+  - {cmd: "pytest -q tests/test_component_health_live.py (real PostgreSQL, platform role)", result: "1 passed: the new queries run on the real schema; an enabled source with an open circuit makes property_harvesters DEGRADED", date: 2026-10-15}
+  - {cmd: "every CI rls-job live test; cd backend && pytest -q tests compliance_engine/tests (clean env); bandit; cd oracle-app && npx vitest run src/components/admin && npm run lint", result: "69 passed; unit 5213 passed, 66 skipped, 2 failed (test_media_storage + test_object_storage: container runs as root, identical without the change); bandit exit 0; admin vitest 12 passed; eslint exit 0", date: 2026-10-15}
+authz_checked: "Aggregates only (counts and ages) in the platform health context, as the other components; no source names, error text or customer data in the detail."
+blockers:
+  - "AC19.07 is not met for RentCast/ATTOM: their 401/503 outcomes are not recorded, so health says UNKNOWN; recording provider outcomes (and a failure-injection test per provider) is the next step."
+  - "AC19.06 (an alert per SLO that reaches a named person) is not done: these components page through the existing ops_alerts path only when STALE/DEGRADED; SLO targets are an owner decision."
+  - "Not deployed (C4.4)."
+audit_refs: [A04]
+decision_refs: [D-2026-10-12-01]
+next_task: "Record valuation-provider call outcomes (avm_client) so their health is observed; then the remaining T19.07 SLOs with owner targets."
+updated: 2026-10-15
 ```
 
 ### L20

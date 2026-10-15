@@ -65,6 +65,8 @@ const COMPONENT_LABELS = {
   database: 'Database', realtime_fanout: 'Live updates', valkey: 'Valkey', workers: 'Background workers',
   scheduler: 'Scheduler', job_queue: 'Job queue', mls: 'MLS feeds', ai: 'Neoh AI',
   outbound_side_effects: 'Calls, texts & emails', email_outbox: 'Email outbox',
+  property_harvesters: 'Public-record harvesters', market_data: 'Market statistics',
+  valuation_providers: 'Valuation providers (RentCast, ATTOM)',
 };
 
 export function componentLabel(name) {

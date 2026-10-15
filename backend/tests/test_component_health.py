@@ -134,3 +134,81 @@ def test_unknown_never_closes_an_incident():
 def test_only_a_positively_healthy_component_closes_it():
     resolved, _ = _record_with(ch.HEALTHY)
     assert resolved == ["mls"]
+
+
+# ── Property data (L19-04, T19.07 / AC19.07) ─────────────────────────────────
+
+def test_harvesters_report_open_circuits_and_overdue_sources(monkeypatch):
+    monkeypatch.delenv("ORACLE_RECOVERY_MODE", raising=False)
+    assert ch._property_harvesters({"enabled": 0})["state"] == ch.NOT_CONFIGURED
+    assert ch._property_harvesters({"enabled": 3, "open_circuits": 0, "overdue": 0})["state"] == ch.HEALTHY
+    degraded = ch._property_harvesters({"enabled": 3, "open_circuits": 1, "overdue": 2})
+    assert degraded["state"] == ch.DEGRADED and degraded["detail"] == {"sources": 3, "open_circuits": 1, "overdue": 2}
+    assert ch._property_harvesters({"enabled": 3, "open_circuits": 0, "overdue": 2})["state"] == ch.STALE
+
+
+def test_market_data_goes_stale_after_three_missed_refreshes(monkeypatch):
+    monkeypatch.delenv("ORACLE_RECOVERY_MODE", raising=False)
+    monkeypatch.setenv("ORACLE_MARKET_RESEARCH_INTERVAL_HOURS", "24")
+    assert ch._market_data({"states": 0})["state"] == ch.NOT_CONFIGURED
+    assert ch._market_data({"states": 50, "age_s": 3600})["state"] == ch.HEALTHY
+    stale = ch._market_data({"states": 50, "age_s": 4 * 86400})
+    assert stale["state"] == ch.STALE and stale["detail"]["limit_s"] == 3 * 86400
+
+
+def test_paused_syncs_in_recovery_mode_are_reported_not_paged(monkeypatch):
+    monkeypatch.setenv("ORACLE_RECOVERY_MODE", "1")
+    harvest = ch._property_harvesters({"enabled": 3, "open_circuits": 0, "overdue": 3})
+    market = ch._market_data({"states": 50, "age_s": 30 * 86400})
+    for comp in (harvest, market):
+        assert comp["state"] == ch.NOT_CONFIGURED and "recovery mode" in comp["summary"]
+        assert comp["state"] not in ch.ALERTING
+    # A tripped circuit is a real failure even in recovery mode.
+    assert ch._property_harvesters({"enabled": 3, "open_circuits": 1, "overdue": 3})["state"] == ch.DEGRADED
+
+
+def test_a_valuation_key_alone_is_never_reported_healthy(monkeypatch):
+    monkeypatch.delenv("RENTCAST_API_KEY", raising=False)
+    monkeypatch.delenv("ATTOM_API_KEY", raising=False)
+    assert ch._valuation_providers()["state"] == ch.NOT_CONFIGURED
+    monkeypatch.setenv("RENTCAST_API_KEY", "k")
+    comp = ch._valuation_providers()
+    assert comp["state"] == ch.UNKNOWN and comp["detail"] == {"configured": 1}
+    assert "rentcast" not in str(comp).lower(), "counts only, no provider names in detail"
+
+
+def test_an_unobserved_optional_component_does_not_degrade_the_system(monkeypatch):
+    from db import connection
+
+    monkeypatch.setenv("RENTCAST_API_KEY", "k")
+
+    async def healthy(*_a, **_k):
+        return ch._c(ch.HEALTHY, "ok")
+
+    async def rest():
+        return {k: ch._c(ch.HEALTHY, "ok") for k in ch._DB_KEYS}
+
+    monkeypatch.setattr(ch, "_database", healthy)
+    monkeypatch.setattr(ch, "_realtime", healthy)
+    monkeypatch.setattr(ch, "_valkey", healthy)
+    monkeypatch.setattr(ch, "_db_components", rest)
+    snap = asyncio.run(ch.snapshot(fresh=True))
+    assert snap["components"]["valuation_providers"]["state"] == ch.UNKNOWN
+    assert snap["state"] == ch.HEALTHY
+    # A stale optional component still counts.
+    async def stale_rest():
+        out = await rest()
+        out["market_data"] = ch._c(ch.STALE, "stale")
+        return out
+
+    monkeypatch.setattr(ch, "_db_components", stale_rest)
+    assert asyncio.run(ch.snapshot(fresh=True))["state"] == ch.DEGRADED
+
+
+def test_no_database_leaves_the_property_components_unknown(monkeypatch):
+    from db import connection
+
+    monkeypatch.setattr(connection, "get_pool", lambda: None)
+    snap = asyncio.run(ch.snapshot(fresh=True))
+    for name in ("property_harvesters", "market_data"):
+        assert snap["components"][name]["state"] == ch.UNKNOWN, name
