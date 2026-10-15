@@ -1187,7 +1187,7 @@ updated: 2026-10-12
 id: L13-02
 status: tests_pass
 env: local
-evidence_shas: []   # filled with the commit SHA on push
+evidence_shas: [0d5ce47]
 files: [backend/portfolio_api.py, backend/tests/test_transaction_workflow.py]
 tests_run:
   - {cmd: "read portfolio_api._property_anchor and create_transaction; grep oracle-app/src for property_source (at 95c4ce5)", result: "POST /transactions accepted property_source='mls' and read oracle_mls_listings to anchor a new deal regardless of mls_switch (L13-01 finding); the only UI caller sends 'pipeline' (DossierPanel)", date: 2026-10-15}
