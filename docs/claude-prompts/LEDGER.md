@@ -815,7 +815,7 @@ updated: 2026-10-15
 id: L09-05
 status: tests_pass
 env: local
-evidence_shas: []   # filled with the commit SHA on push
+evidence_shas: [c7b2a6e]
 files: [backend/voice_opt_out.py, backend/elevenlabs_realtime.py, backend/qwen_omni_realtime.py, backend/commands_api.py, backend/tests/test_elevenlabs_realtime.py, backend/tests/test_outbound_voice_opt_out_live.py, .github/workflows/ci.yml]
 tests_run:
   - {cmd: "read elevenlabs_realtime._on_transcript, qwen_omni_realtime.QwenOmniRealtimeBridge._on_transcript_completed, commands_api Plivo/Twilio media handlers, plivo/twilio_call_handler outbound state (at 90a29c6)", result: "confirmed L09-04: outbound caller turns were counted for the turn limit only; nothing matched an opt-out or wrote a suppression, while the disclosure promises 'say stop and I'll end the call and won't contact you again'. Outbound call state carries tenant_id and callee on both carriers; the handlers hang up on the bridges' turn-limit exceptions", date: 2026-10-15}
