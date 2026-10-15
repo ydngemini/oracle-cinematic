@@ -717,7 +717,7 @@ updated: 2026-10-15
 id: L08-02
 status: tests_pass
 env: local
-evidence_shas: []   # filled with the commit SHA on push
+evidence_shas: [33e80e0]
 files: [backend/db/migrations/0159_mission_events_action_deferred.sql, backend/tests/test_mission_event_kinds.py, backend/tests/test_mission_deferral_journal_live.py, .github/workflows/ci.yml]
 tests_run:
   - {cmd: "pg_get_constraintdef(mission_events_kind_check) on a database built from every migration; grep of the kinds missions_api.py and missions/*.py write", result: "the CHECK (0100) lists 19 kinds without 'action_deferred'; executor._work_one journals 'action_deferred' since L05-03; _journal logs and swallows a refused insert, so the step's due_at moved but its journal row was never stored. Every other written kind is allowed", date: 2026-10-15}
