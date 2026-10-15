@@ -474,7 +474,7 @@ updated: 2026-10-15
 id: L04-03
 status: tests_pass
 env: local
-evidence_shas: []   # filled with the commit SHA on push
+evidence_shas: [9b851e8]
 files: [backend/db/migrations/0158_first_response_replied.sql, backend/outreach_lifecycle.py, backend/messaging_data.py, backend/lead_routing_api.py, backend/tests/test_outreach_lifecycle.py, backend/tests/test_first_response_reply_live.py, .github/workflows/ci.yml]
 tests_run:
   - {cmd: "read outreach_lifecycle, messaging_data.record_inbound_message, lead_routing_api.routing_metrics, \\d lead_response_events (at d7ace66)", result: "Stage.RESPONDED existed in PROGRESSION but nothing stored a reply; the old `responded` metric (drafts) was removed in 0133; an inbound text was stored and logged on the client's timeline only. No frontend reads first_response metrics (grep oracle-app/src)", date: 2026-10-15}
