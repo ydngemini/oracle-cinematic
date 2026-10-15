@@ -1802,7 +1802,7 @@ Base `da163ba` (staging at migration head 0153). Same scheme and rollout as L17-
 id: L17-23
 status: tests_pass
 env: local
-evidence_shas: []   # filled with the commit SHA on push
+evidence_shas: [7574a2c]
 files: [backend/db/migrations/0156_client_contact_index.sql, backend/client_contact_index.py, backend/data_integrations/periodic.py, backend/privacy_data_map.py, backend/tests/test_client_contact_index.py, backend/tests/test_client_contact_index_live.py, backend/tests/test_periodic_recovery_mode.py, .github/workflows/ci.yml, .env.example, docs/privacy-data-map.md, docs/operator-scripts.md]
 tests_run:
   - {cmd: "\\d clients, \\d agent_contacts on a local PostgreSQL 16.15 built from every migration", result: "clients has trg_clients_updated (BEFORE UPDATE, set_updated_at) on every update, so index columns ON clients would bump updated_at for every client when filled (CRM list order; client_ai_automation abandons a pass when updated_at moves). agent_contacts' scheme: char(64) email/phone lookup hashes, text[] name tokens with format CHECKs, partial btree + GIN indexes. Chosen: a side table with the same columns", date: 2026-10-15}
