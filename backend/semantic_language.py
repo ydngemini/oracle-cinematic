@@ -659,8 +659,8 @@ MESSAGES: dict[str, dict[str, str]] = {
     "draft.call_opening_bare": {"en": "Hi there, this is {agent}.", "es": "Hola, habla {agent}."},
     "draft.call_agent": {"en": "your real estate agent", "es": "tu agente inmobiliario"},
     "draft.event_summary": {"en": "Follow-up with {name}", "es": "Seguimiento con {name}"},
-    # Reproduces today's English byte for byte ("Follow-up with there"), flagged in L05-05.
-    "draft.event_summary_bare": {"en": "Follow-up with there", "es": "Seguimiento"},
+    # Was "Follow-up with there" (a broken template, flagged in L05-05).
+    "draft.event_summary_bare": {"en": "Follow-up", "es": "Seguimiento"},
     # frame_constraints.prompt_block: tells the model which language to explain in
     "prompt.reply_in": {"en": "", "es": "The person is writing in Spanish: explain what you did not do, and why, in Spanish."},
 }

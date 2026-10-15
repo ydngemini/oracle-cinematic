@@ -423,7 +423,9 @@ def _portfolio_metric(attention: dict[str, Any], lang: Optional[str] = None) -> 
     portfolio = attention.get("portfolio") or {}
     return {
         "label": lang_.t("queue.portfolio_label", lang),
-        "value": portfolio.get("total"),
+        # expected_value.portfolio names it total_expected_value; reading
+        # "total" left this figure empty on every answer (L05-05).
+        "value": portfolio.get("total_expected_value", portfolio.get("total")),
         "unit": "currency",
         # The caveat travels as a prop so it cannot be dropped in rendering.
         # A number this uncertain shown bare is the false precision the

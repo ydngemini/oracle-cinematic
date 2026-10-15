@@ -169,3 +169,12 @@ class TestFallthrough:
         out = render.fallthrough("no pattern matched")
         assert out["fallthrough"] is True
         assert out["blocks"] == [] and out["intent"] is None
+
+
+def test_portfolio_metric_reads_the_expected_value_total():
+    # expected_value.portfolio returns total_expected_value; the metric read
+    # "total" and was empty on every call-queue answer (L05-05).
+    import neoh_render
+
+    metric = neoh_render._portfolio_metric({"portfolio": {"total_expected_value": 1012.0, "calibrated": False}})
+    assert metric["value"] == 1012.0
