@@ -127,7 +127,7 @@ ids, never note text.
 the code back to before 0132). Drop `trg_client_notes_before_write` first, as
 the 0132 header describes: it refuses plaintext AI call notes.
 
-## `backend/backfill_sealed_text.py` — seal SMS bodies, call transcripts and chat turns written before 0152
+## `backend/backfill_sealed_text.py` — seal communication text written before 0152 / 0154
 
 ### When this is needed
 
@@ -141,6 +141,17 @@ script, not a periodic job: staging runs `ORACLE_RECOVERY_MODE`, where no
 periodic job runs (L17-03). **Run it only after the 0152 code serves** — the
 previous release writes plaintext and cannot read a sealed row.
 
+Migration `0154_sealed_text_slice_two.sql` (L17-22) added five more fields to
+the same script and the same rule: `email_outbox` subject and body
+(`--field email`), `interaction_logs` subject and payload text keys
+(`interaction_log`, through the 0154 `seal_interaction_logs` function),
+`ai_tool_operations.result` (`tool_result`), `beliefs.source_quote`
+(`belief_quote`) and `user_profiles.profile_summary` (`profile_summary`).
+The periodic `sealed_text_seal` task (internal-only, also in recovery mode)
+runs every field automatically. Sealing an `email_outbox` row bumps its
+`updated_at`, so a row still `queued` restarts its 10-minute reconciliation
+window once.
+
 ### Check whether you need it
 
 ```bash
@@ -153,6 +164,14 @@ or in SQL:
 SELECT count(*) FROM sms_messages WHERE body_ciphertext IS NULL AND COALESCE(body, '') <> '';
 SELECT count(*) FROM negotiation_events WHERE transcript_ciphertext IS NULL AND COALESCE(transcript_excerpt, '') <> '';
 SELECT count(*) FROM user_interactions WHERE content_ciphertext IS NULL AND content <> '';
+-- 0154
+SELECT count(*) FROM email_outbox WHERE body_html IS NULL
+   AND ((subject_ciphertext IS NULL AND subject <> '') OR (body_text_ciphertext IS NULL AND body_text <> ''));
+SELECT count(*) FROM interaction_logs WHERE (subject_ciphertext IS NULL AND COALESCE(subject, '') <> '')
+    OR (content_ciphertext IS NULL AND payload ?| ARRAY['body','text','transcript','summary','extraction']);
+SELECT count(*) FROM ai_tool_operations WHERE result_ciphertext IS NULL AND result IS NOT NULL;
+SELECT count(*) FROM beliefs WHERE source_quote_ciphertext IS NULL AND COALESCE(source_quote, '') <> '';
+SELECT count(*) FROM user_profiles WHERE profile_summary_ciphertext IS NULL AND COALESCE(profile_summary, '') <> '';
 ```
 
 ### Running it
@@ -163,7 +182,8 @@ Requires `ORACLE_ENCRYPTION_MASTER_KEY` plus the usual `ORACLE_DB_*` vars
 ```bash
 docker compose run --rm --no-deps \
   -e ORACLE_ENCRYPTION_MASTER_KEY="$ORACLE_ENCRYPTION_MASTER_KEY" \
-  backend python /app/backfill_sealed_text.py [--field sms|transcript|interaction] [--max-rows N]
+  backend python /app/backfill_sealed_text.py \
+    [--field sms|transcript|interaction|email|interaction_log|tool_result|belief_quote|profile_summary] [--max-rows N]
 ```
 
 Optional: `ORACLE_SEALED_TEXT_BACKFILL_BATCH` (default `500`, range 1–5000).
@@ -185,7 +205,7 @@ pgcrypto per row, so 10,000 rows take about 5 s.
 | `2` | Refused to start — missing `ORACLE_ENCRYPTION_MASTER_KEY`, or an out-of-range batch size. |
 
 **Rollback:** `--unseal` writes the plaintext back. Run it before rolling the
-code back to a release older than 0152.
+code back to a release older than 0152 (or 0154 for its five fields).
 
 ## `backfill_property_coordinates.py` — geocode public property records
 

@@ -1813,11 +1813,14 @@ async def comms_threads(ctx: TenantContext = Depends(require_context)):
         async with tenant_tx(ctx) as conn:
             rows = await conn.fetch(
                 """
+                -- 0154 (A01): the sealed columns are fetched only for the one
+                -- latest touch per client (the join on s), never carried
+                -- through the CTE: a materialized CTE of every touch with its
+                -- ciphertexts made this page ~6x slower on a 5,000-row bench.
                 WITH touches AS (
                     SELECT COALESCE(il.client_id, ld.seller_client_id) AS cid,
-                           il.interaction_type, il.direction, il.subject,
+                           il.id, il.interaction_type, il.direction, il.subject,
                            left(il.payload->>'body', 80) AS snippet_body,
-                           il.subject_ciphertext, il.content_ciphertext, il.tenant_id,
                            il.created_at
                       FROM interaction_logs il
                       LEFT JOIN leads ld ON ld.id = il.lead_id
@@ -1826,18 +1829,18 @@ async def comms_threads(ctx: TenantContext = Depends(require_context)):
                 SELECT c.id, c.full_name, c.email, c.phone, c.client_type,
                        t.interaction_type, t.direction, t.subject,
                        t.snippet_body, t.created_at,
-                       t.subject_ciphertext, t.tenant_id AS subject_ciphertext_tenant_id,
-                       t.content_ciphertext, t.tenant_id AS content_ciphertext_tenant_id,
+                       s.subject_ciphertext, s.tenant_id AS subject_ciphertext_tenant_id,
+                       s.content_ciphertext, s.tenant_id AS content_ciphertext_tenant_id,
                        COALESCE(n.cnt, 0) AS cnt
                   FROM clients c
                   LEFT JOIN LATERAL (
-                        SELECT interaction_type, direction, subject, snippet_body,
-                               subject_ciphertext, content_ciphertext, tenant_id, created_at
+                        SELECT id, interaction_type, direction, subject, snippet_body, created_at
                           FROM touches
                          WHERE cid = c.id
                          ORDER BY created_at DESC
                          LIMIT 1
                   ) t ON true
+                  LEFT JOIN interaction_logs s ON s.id = t.id
                   LEFT JOIN LATERAL (
                         SELECT count(*) AS cnt FROM touches WHERE cid = c.id
                   ) n ON true

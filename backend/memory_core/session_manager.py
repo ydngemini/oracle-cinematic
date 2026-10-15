@@ -260,28 +260,34 @@ class SessionManager:
             new_summary = new_summary.strip()
 
             # Upsert the dense summary and purge the rows it now represents.
-            # 0154 (A01): stored only sealed, under the tenant's key.
-            await conn.execute(
-                """
-                INSERT INTO user_profiles (user_id, tenant_id, profile_summary,
-                                           profile_summary_ciphertext, summary_updated_at)
-                     VALUES ($1, $2, '', pgp_sym_encrypt(NULLIF($3::text, ''), $4::text, 's2k-mode=1'), now())
-                ON CONFLICT (user_id) DO UPDATE
-                    SET profile_summary = '',
-                        profile_summary_ciphertext = EXCLUDED.profile_summary_ciphertext,
-                        summary_updated_at = now()
-                """,
-                user_id,
-                self.ctx.tenant_id,
-                new_summary,
-                sealed_text.key_for(self.ctx.tenant_id),
-            )
+            await self.store_profile_summary(conn, user_id, new_summary)
             await conn.execute(
                 "DELETE FROM user_interactions WHERE id = ANY($1::bigint[])",
                 archived_ids,
             )
 
         return new_summary
+
+    async def store_profile_summary(self, conn, user_id: str, summary: str) -> None:
+        """Upsert the rolling summary. 0154 (A01): stored only sealed, under
+        the tenant's key; no master key = no write."""
+        import sealed_text  # lazy: crypto pulls in tenancy
+
+        await conn.execute(
+            """
+            INSERT INTO user_profiles (user_id, tenant_id, profile_summary,
+                                       profile_summary_ciphertext, summary_updated_at)
+                 VALUES ($1, $2, '', pgp_sym_encrypt(NULLIF($3::text, ''), $4::text, 's2k-mode=1'), now())
+            ON CONFLICT (user_id) DO UPDATE
+                SET profile_summary = '',
+                    profile_summary_ciphertext = EXCLUDED.profile_summary_ciphertext,
+                    summary_updated_at = now()
+            """,
+            user_id,
+            self.ctx.tenant_id,
+            summary,
+            sealed_text.key_for(self.ctx.tenant_id),
+        )
 
     # ------------------------------------------------------------------ #
     # Convenience writer — record a turn (auto token-estimated).

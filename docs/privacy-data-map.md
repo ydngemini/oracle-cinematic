@@ -34,7 +34,7 @@ relationship with the brokerage: the accounts, billing and security logs.
 
 Counts are from the dev database. They show shape, not production volume.
 
-**Account** (Neoh is controller): `users` (email, name, password hash), `user_profiles` (phone, licence number, bio, LLM-written profile summary), `team_memberships`, `agent_licenses`, `agent_ce_log`, `agent_ai_settings`, `autonomy_preferences`, `agent_routing_state`, `brokerage_invitations`, `user_policy_acceptances`, `account_security_acceptances`.
+**Account** (Neoh is controller): `users` (email, name, password hash), `user_profiles` (phone, licence number, bio, LLM-written profile summary — sealed in `profile_summary_ciphertext` for every app write since 0154, L17-22), `team_memberships`, `agent_licenses`, `agent_ce_log`, `agent_ai_settings`, `autonomy_preferences`, `agent_routing_state`, `brokerage_invitations`, `user_policy_acceptances`, `account_security_acceptances`.
 `tenants.postal_address` (0146) is the brokerage's mailing address, printed in the footer of every commercial email it sends (CAN-SPAM). Plaintext because it is published by design; for an independent agent it can be a home address, so erasure scrubs it with the name and website.
 **`agent_id` is the user's email address**, so every text actor column (`created_by`, `author_id`, `assignee_id`, `requested_by`, …) is personal data.
 
@@ -48,8 +48,8 @@ Counts are from the dev database. They show shape, not production volume.
 
 **Communication content**:
 - `sms_messages`: numbers **in plaintext**. Since 0152 (L17-21) every app write seals the body in `body_ciphertext` under the tenant key and leaves `body` NULL; pre-0152 bodies stay plaintext until `backend/backfill_sealed_text.py` runs.
-- `email_outbox`: recipients, subjects and bodies.
-- `interaction_logs`.
+- `email_outbox`: recipients **in plaintext**. Since 0154 (L17-22) every app write seals the subject and body in `subject_ciphertext` / `body_text_ciphertext` (the plaintext columns hold `''`); `body_html` has no writer and must stay NULL on a sealed row. Pre-0154 rows stay plaintext until `backend/backfill_sealed_text.py` (or the periodic `sealed_text_seal` task) seals them. The send worker opens them at send time and logs neither.
+- `interaction_logs`: since 0154 the subject (`subject_ciphertext`) and the payload's text keys `body`, `text`, `transcript`, `summary` and `extraction` (`content_ciphertext`, one JSON object) are sealed for every app write; the behavioural keys (listing ids, link kinds, delivery status) stay plaintext so counts and filters keep working. Pre-0154 rows plaintext until the backfill.
 - `inbound_voice_calls`: caller, transcript, summary and intake answers, all encrypted.
 - `contact_intake_sessions` (encrypted).
 - `negotiation_events.transcript_excerpt`: sealed in `transcript_ciphertext` for every app write since 0152; pre-0152 excerpts plaintext until the backfill. Retention (`purge_expired_platform_data`) clears both columns.
@@ -70,9 +70,9 @@ Counts are from the dev database. They show shape, not production volume.
 **AI**:
 - `ai_chat_messages` (encrypted). `metadata.semantic_frame` (prompt 05, plaintext jsonb on the assistant row): goal labels, authorised record ids, stated constraint kinds and times, and language codes (`lang` en/es, `detected`, the kinds the deterministic backstop added; L05-04) — never the person's words, names or addresses. It is the discourse context the next turn reads (constraints apply for 30 minutes) and is erased with the message.
 - `missions.constraints.semantic_frame` (prompt 05): the same machine-readable constraints parsed from the objective, kept for the mission's life.
-- `ai_tool_operations.result`: tool outputs, plaintext.
+- `ai_tool_operations.result`: tool outputs (receipts can carry CRM values), sealed in `result_ciphertext` for every app write since 0154; pre-0154 receipts plaintext until the backfill.
 - `user_interactions.content`: raw chat turns, sealed in `content_ciphertext` for every app write since 0152 (content `''`); pre-0152 turns plaintext until the backfill. Text `tenant_id`, no FK.
-- `beliefs.source_quote`, `client_ai_state` (summaries), `agent_decisions`, `ai_decision_traces`.
+- `beliefs.source_quote` (sealed in `source_quote_ciphertext` for every app write since 0154; pre-0154 quotes plaintext until the backfill), `client_ai_state` (summaries), `agent_decisions`, `ai_decision_traces`.
 - `style_training_examples`: redacted.
 - Model registry, training runs and evaluations.
 
@@ -144,6 +144,7 @@ Spaces versioning is off, so a deleted object is gone.
 |---|---|---|
 | `clients` name/email/phone and `leads.payload` plaintext | DB read access exposes contacts | open — designed in L17-21 (blind index for clients; batched backfill plan for leads), not built |
 | `sms_messages.body`, `negotiation_events.transcript_excerpt`, `user_interactions.content` plaintext | DB read access exposes what people wrote and said | new writes sealed since 0152 (L17-21, local); old rows plaintext until `backfill_sealed_text.py` runs in each environment; refusing plaintext is a later contract migration |
+| `email_outbox` subject/body, `interaction_logs` subject/text, `ai_tool_operations.result`, `beliefs.source_quote`, `user_profiles.profile_summary` plaintext | DB read access exposes what people wrote, what the AI returned and what it remembers | new writes sealed since 0154 (L17-22, local); old rows plaintext until `backfill_sealed_text.py` / `sealed_text_seal` runs in each environment; refusing plaintext is a later contract migration |
 | `client_notes.body` (AI call notes) plaintext | DB read access exposes what customers said | new writes sealed since 0132 (L17-03); old rows plaintext until `backfill_client_notes.py` runs in each environment |
 | Per-tenant keys are *derived* (HKDF of the master key), not stored | No crypto-shredding of one tenant | accepted; erasure deletes rows instead |
 | `recon-inputs/` staging copies carry no tenant | Orphaned photo copies | orphan audit finds them; worker should record the prefix (follow-up) |
