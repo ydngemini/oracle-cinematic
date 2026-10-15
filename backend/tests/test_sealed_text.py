@@ -107,7 +107,32 @@ def _sql_literals(tree: ast.AST):
                 for part in node.values)
 
 
-@pytest.mark.parametrize("field", sealed_text.FIELDS, ids=lambda f: f.table)
+_NOT_ALIAS = r"(?!(?:WHERE|ON|JOIN|LEFT|RIGHT|INNER|ORDER|GROUP|LIMIT|SET|USING|VALUES|SELECT|RETURNING)\b)"
+
+
+def _names_text_column(text: str, field) -> bool:
+    """The statement names the field's column on ITS table: unqualified, or
+    qualified by the table or one of its aliases. `ld.payload` in a statement
+    that also reads interaction_logs is a leads column, not the sealed one."""
+    aliases = {a.lower() for a in re.findall(
+        rf"\b{field.table}\s+(?:AS\s+)?{_NOT_ALIAS}(\w+)", text, re.I)}
+    aliases.add(field.table)
+    for m in re.finditer(rf"(?:\b(\w+)\.)?\b{field.plain}\b", text):
+        if m.group(1) is None or m.group(1).lower() in aliases:
+            return True
+    return False
+
+
+def test_the_guard_tells_the_tables_columns_apart():
+    log = sealed_text.LOG_CONTENT
+    assert _names_text_column("SELECT il.payload FROM interaction_logs il", log)
+    assert _names_text_column("INSERT INTO interaction_logs (tenant_id, payload) VALUES ($1,$2)", log)
+    assert not _names_text_column(
+        "SELECT l.payload, i.created_at FROM leads l JOIN interaction_logs i ON i.lead_id = l.id", log)
+    assert _names_text_column("SELECT body FROM sms_messages WHERE id=$1", sealed_text.SMS_BODY)
+
+
+@pytest.mark.parametrize("field", sealed_text.FIELDS, ids=lambda f: f"{f.table}.{f.plain}")
 def test_every_app_statement_on_the_text_uses_the_sealed_shape(field):
     """A reader that forgets the cipher column shows a sealed message as empty;
     a writer that forgets it writes plaintext. Every SQL literal in the app that
@@ -121,7 +146,7 @@ def test_every_app_statement_on_the_text_uses_the_sealed_shape(field):
         for lineno, text in _sql_literals(ast.parse(path.read_text())):
             if not re.search(rf"\b(FROM|INTO|UPDATE|JOIN)\s+{field.table}\b", text, re.I):
                 continue
-            if not re.search(rf"\b{field.plain}\b", text):
+            if not _names_text_column(text, field):
                 continue  # ids, status, counts, deletes
             seen += 1
             if field.cipher not in text:

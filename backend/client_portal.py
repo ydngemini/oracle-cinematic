@@ -31,6 +31,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 import pan_redaction
 import record_access
+import sealed_text
 from auth import ALGORITHM, SECRET_KEY
 from db.connection import get_pool, tenant_tx
 from approval_service import decide_approval
@@ -462,15 +463,20 @@ async def _record_portal_activity(
     # depending on which code path recorded it, and intent_states reads that
     # column.
     actor_role = "buyer" if link_kind == "joint_venture" else "seller"
+    # 0154 (A01): the portal keeps only behavioural keys, so nothing is
+    # sealed today; the split keeps that true if a content key is ever added.
+    stored, sealed_content = sealed_text.split_json(_clean_portal_payload(payload), sealed_text.LOG_CONTENT)
     await conn.execute(
         """
         INSERT INTO interaction_logs
             (tenant_id, lead_id, client_id, portal_id, actor_role,
-             interaction_type, payload)
-        VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, $5, $6, $7::jsonb)
+             interaction_type, payload, content_ciphertext)
+        VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, $5, $6, $7::jsonb,
+                pgp_sym_encrypt($8::text, $9::text, 's2k-mode=1'))
         """,
         tenant_id, lead_id, client_id, portal_id, actor_role,
-        interaction_type, json.dumps(_clean_portal_payload(payload)),
+        interaction_type, json.dumps(stored),
+        sealed_content, sealed_text.key_if_needed(tenant_id, sealed_content),
     )
     return True
 

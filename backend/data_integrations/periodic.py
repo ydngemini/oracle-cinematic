@@ -428,11 +428,13 @@ async def _client_note_seal_task() -> dict:
 
 
 async def _sealed_text_seal_task() -> dict:
-    """Seal SMS bodies, call transcript excerpts and chat turns still stored as
-    plaintext (audit A01, migration 0152) — the periodic twin of
+    """Seal SMS bodies, call transcript excerpts and chat turns (0152), and
+    email subjects/bodies, interaction-log subjects/content, AI tool receipts,
+    belief quotes and profile summaries (0154), still stored as plaintext
+    (audit A01, L17-21 / L17-22) — the periodic twin of
     backend/backfill_sealed_text.py, for the same reason as _client_note_seal_task:
     the master key exists only in the app's environment. Bounded per field per
-    run; once nothing is left a pass is three cheap counts.
+    run; once nothing is left a pass is one cheap count per field.
     """
     if not os.getenv("ORACLE_ENCRYPTION_MASTER_KEY", "").strip():
         return {"skipped": "ORACLE_ENCRYPTION_MASTER_KEY is not set"}

@@ -19,6 +19,11 @@ The claim is a single UPDATE … WHERE status='queued', so two workers can never
 send the same row. Every send carries the commercial footer and one-click
 List-Unsubscribe headers (commercial_email.py).
 
+Since 0154 (A01, L17-22) the message's heading and text are sealed at rest
+under the tenant's key; the claim opens them (rows queued by the previous release are
+still plaintext) inside its own transaction, so a row that cannot be opened is
+never left claimed. The opened text goes only to the provider, never a log.
+
 In the shared lifecycle vocabulary (outreach_lifecycle.EMAIL_OUTBOX_STAGE) a
 `sent` row is ACCEPTED, never DELIVERED: SMTP gives no delivery receipt, so
 nothing here meters an engagement or claims delivery.
@@ -33,6 +38,7 @@ from typing import Any
 import commercial_email
 import outreach_compliance
 import recovery_mode
+import sealed_text
 from db.connection import tenant_tx
 from tenancy import Role, TenantContext
 
@@ -64,8 +70,14 @@ async def deliver(tenant_id: str, outbox_id: str) -> dict[str, Any]:
             """
             UPDATE email_outbox SET status='sending', updated_at=now()
              WHERE id=$1 AND tenant_id=$2 AND status='queued'
-             RETURNING id, client_id, to_email, subject, body_text, created_by
+             RETURNING id, client_id, to_email, subject, body_text, created_by,
+                       subject_ciphertext, tenant_id AS subject_ciphertext_tenant_id,
+                       body_text_ciphertext, tenant_id AS body_text_ciphertext_tenant_id
             """, outbox_id, tenant_id)
+        if row is not None:
+            # A SealError here rolls the claim back: the row stays queued.
+            row = (await sealed_text.open_fields(
+                conn, [row], sealed_text.OUTBOX_SUBJECT, sealed_text.OUTBOX_BODY))[0]
     if row is None:
         return {"status": "not_queued"}  # already sent, cancelled, or claimed
 

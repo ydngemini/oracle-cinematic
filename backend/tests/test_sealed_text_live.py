@@ -30,6 +30,7 @@ import pytest
 DSN = os.getenv("ORACLE_LIVE_DB_ADMIN_DSN", "")
 pytestmark = pytest.mark.skipif(not DSN, reason="needs ORACLE_LIVE_DB_ADMIN_DSN (real PostgreSQL)")
 MASTER = "live-test-sealed-text-master-key-0123456789"
+SLICE_ONE = ("sms", "transcript", "interaction")  # 0152's fields; 0154's: test_sealed_text_two_live.py
 
 
 def test_communication_text_is_sealed_and_still_read(monkeypatch):
@@ -199,10 +200,10 @@ async def _scenario():  # noqa: C901 - one ordered scenario
         try:
             first = await backfill.backfill_field("sms", batch_size=1, max_rows=1)
             assert first["changed"] == 1
-            for field in backfill.FIELDS:
+            for field in SLICE_ONE:
                 result = await backfill.backfill_field(field, batch_size=1)
                 assert result["changed"] == (0 if field == "sms" else 1), result
-            for field in backfill.FIELDS:
+            for field in SLICE_ONE:
                 assert (await backfill.backfill_field(field, batch_size=50))["changed"] == 0, "not idempotent"
             assert await admin.fetchval(
                 "SELECT count(*) FROM sms_messages WHERE tenant_id=$1 AND body_ciphertext IS NULL", tenant) == 0
@@ -215,14 +216,14 @@ async def _scenario():  # noqa: C901 - one ordered scenario
             assert {k: got[k] for k in want} == want, got
 
             # Rollback: plaintext back, and the old release's readers would see it.
-            for field in backfill.FIELDS:
+            for field in SLICE_ONE:
                 assert (await backfill.backfill_field(field, batch_size=2, unseal=True))["changed"] == {
                     "sms": 3, "transcript": 3, "interaction": 2}[field]
             assert sorted(r["body"] for r in await admin.fetch(
                 "SELECT body FROM sms_messages WHERE tenant_id=$1", tenant)) == want["bundle"]
             assert sorted(r["content"] for r in await admin.fetch(
                 "SELECT content FROM user_interactions WHERE tenant_id=$1", tenant)) == want["memory"]
-            for field in backfill.FIELDS:
+            for field in SLICE_ONE:
                 await backfill.backfill_field(field, batch_size=500)
         finally:
             backfill.tenants_pending = only_ours

@@ -29,6 +29,7 @@ import intent_states
 import living_state
 import neoh_intents
 import pan_redaction
+import sealed_text
 from db.connection import tenant_tx
 from platform_policy import Feature, require_feature
 from tenancy import TenantContext, require_context
@@ -137,19 +138,26 @@ async def capture_events(
             if not event.client_id and not event.lead_id:
                 raise HTTPException(
                     422, "each event needs a client_id or a lead_id to anchor to")
+            # 0154 (A01): any free text in the payload (body/text/...) is
+            # stored only sealed; behavioural keys stay queryable.
+            stored, sealed_content = sealed_text.split_json(
+                pan_redaction.scrub_obj(event.payload, "perception_event", tenant_id=ctx.tenant_id),
+                sealed_text.LOG_CONTENT)
             await conn.execute(
                 """
                 INSERT INTO interaction_logs
                     (tenant_id, client_id, lead_id, actor_role, interaction_type,
-                     payload, created_at)
+                     payload, created_at, content_ciphertext)
                 VALUES (app_current_tenant(), $1::uuid, $2::uuid, $3, $4,
-                        $5::jsonb, COALESCE($6, now()))
+                        $5::jsonb, COALESCE($6, now()),
+                        pgp_sym_encrypt($7::text, $8::text, 's2k-mode=1'))
                 """,
                 event.client_id, event.lead_id, event.actor_role,
                 event.interaction_type,
-                json.dumps(pan_redaction.scrub_obj(event.payload, "perception_event",
-                                                   tenant_id=ctx.tenant_id)),
+                json.dumps(stored),
                 event.occurred_at,
+                sealed_content,
+                sealed_text.key_if_needed(ctx.tenant_id, sealed_content),
             )
             inserted += 1
     return {"captured": inserted}

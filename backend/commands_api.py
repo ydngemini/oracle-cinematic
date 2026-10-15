@@ -2726,13 +2726,21 @@ async def _record_send_bookkeeping(
             if interaction_type and (client_id or lead_id):
                 try:
                     async with conn.transaction():
+                        # 0154 (A01): the draft subject is stored only sealed; the
+                        # payload is metadata, split the same way as every writer's.
+                        subject = draft.get("subject") if isinstance(draft, dict) else None
+                        stored, sealed_content = sealed_text.split_json({
+                            "command_id": command_id,
+                            "provider": getattr(provider_result, "provider", None),
+                        }, sealed_text.LOG_CONTENT)
                         await conn.execute(
                             """
                             INSERT INTO interaction_logs
                                 (tenant_id, client_id, lead_id, actor_role, interaction_type,
-                                 direction, subject, external_message_id, payload, thread_id)
+                                 direction, subject, external_message_id, payload, thread_id,
+                                 subject_ciphertext, content_ciphertext)
                             SELECT $1::uuid, $2::uuid, $3::uuid, 'agent', $4,
-                                   'outbound', $5, $6, $7::jsonb,
+                                   'outbound', NULL, $6, $7::jsonb,
                                    COALESCE(
                                        (SELECT thread_id FROM interaction_logs
                                          WHERE ($2::uuid IS NOT NULL AND client_id = $2::uuid
@@ -2740,7 +2748,9 @@ async def _record_send_bookkeeping(
                                            AND interaction_type = $4
                                            AND thread_id IS NOT NULL
                                          ORDER BY created_at DESC LIMIT 1),
-                                       gen_random_uuid())
+                                       gen_random_uuid()),
+                                   pgp_sym_encrypt(NULLIF($5::text, ''), $8::text, 's2k-mode=1'),
+                                   pgp_sym_encrypt($9::text, $8::text, 's2k-mode=1')
                             -- interaction_logs has no dedupe key. A retried
                             -- worker that reaches this block twice must not
                             -- write two sends for one provider reference.
@@ -2749,12 +2759,11 @@ async def _record_send_bookkeeping(
                                  WHERE external_message_id = $6 AND direction = 'outbound')
                             """,
                             ctx.tenant_id, client_id, lead_id, interaction_type,
-                            (draft.get("subject") if isinstance(draft, dict) else None),
+                            subject,
                             reference,
-                            json.dumps({
-                                "command_id": command_id,
-                                "provider": getattr(provider_result, "provider", None),
-                            }),
+                            json.dumps(stored),
+                            sealed_text.key_if_needed(ctx.tenant_id, subject, sealed_content),
+                            sealed_content,
                         )
                 except Exception:  # noqa: BLE001 — best-effort by contract
                     logger.warning("send interaction not recorded for %s", command_id, exc_info=True)

@@ -34,6 +34,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 import pan_redaction
+import sealed_text
 from db.connection import tenant_tx
 from record_access import require_client_edit, resolve_assignment
 from tenancy import TenantContext, require_context
@@ -1363,7 +1364,9 @@ async def client_interactions(
             rows = await conn.fetch(
                 """
                 SELECT id, lead_id, client_id, actor_role, interaction_type,
-                       direction, subject, payload, thread_id, created_at
+                       direction, subject, payload, thread_id, created_at,
+                       subject_ciphertext, tenant_id AS subject_ciphertext_tenant_id,
+                       content_ciphertext, tenant_id AS content_ciphertext_tenant_id
                   FROM interaction_logs
                  WHERE client_id = $1
                     OR lead_id IN (SELECT id FROM leads WHERE seller_client_id = $1)
@@ -1373,6 +1376,8 @@ async def client_interactions(
                 client_id,
                 limit,
             )
+            # 0154 (A01): subject and message text are sealed; open both shapes.
+            rows = await sealed_text.open_fields(conn, rows, sealed_text.LOG_SUBJECT, sealed_text.LOG_CONTENT)
     except RuntimeError as exc:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, f"Memory Core offline ({exc})")
 
@@ -1463,12 +1468,16 @@ async def send_message(
                 payload["delivery_reason"] = "provider_not_configured"
                 delivery_status = "not_sent"
 
+            # 0154 (A01): the subject and the message text are stored only
+            # sealed, under the tenant's key; the rest of the payload stays.
+            stored_payload, sealed_content = sealed_text.split_json(payload, sealed_text.LOG_CONTENT)
             interaction = await conn.fetchrow(
                 """
                 INSERT INTO interaction_logs
                     (tenant_id, client_id, actor_role, interaction_type,
-                     direction, subject, payload, thread_id)
-                VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb,
+                     direction, subject, payload, thread_id,
+                     subject_ciphertext, content_ciphertext)
+                VALUES ($1, $2, $3, $4, $5, NULL, $7::jsonb,
                         COALESCE(
                             (SELECT thread_id
                                FROM interaction_logs
@@ -1477,9 +1486,13 @@ async def send_message(
                                 AND thread_id IS NOT NULL
                               ORDER BY created_at DESC
                               LIMIT 1),
-                            gen_random_uuid()))
+                            gen_random_uuid()),
+                        pgp_sym_encrypt(NULLIF($6::text, ''), $9::text, 's2k-mode=1'),
+                        pgp_sym_encrypt($8::text, $9::text, 's2k-mode=1'))
              RETURNING id, lead_id, client_id, actor_role, interaction_type,
-                       direction, subject, payload, thread_id, created_at
+                       direction, subject, payload, thread_id, created_at,
+                       subject_ciphertext, tenant_id AS subject_ciphertext_tenant_id,
+                       content_ciphertext, tenant_id AS content_ciphertext_tenant_id
                 """,
                 ctx.tenant_id,
                 client_id,
@@ -1487,8 +1500,12 @@ async def send_message(
                 stored_channel,
                 direction,
                 body.subject,
-                json.dumps(payload),
+                json.dumps(stored_payload),
+                sealed_content,
+                sealed_text.key_if_needed(ctx.tenant_id, body.subject, sealed_content),
             )
+            interaction = (await sealed_text.open_fields(
+                conn, [interaction], sealed_text.LOG_SUBJECT, sealed_text.LOG_CONTENT))[0]
 
             # A reply is an outcome — but only a reply. An inbound message on a
             # thread we never opened is a cold enquiry, and scoring it as a
@@ -1523,11 +1540,15 @@ async def send_message(
 
             queued_email_id = None
             if stored_channel == "email" and outbound:
+                # 0154 (A01): subject and body sealed; the send worker opens them.
                 outbox = await conn.fetchrow(
                     """
                     INSERT INTO email_outbox
-                        (tenant_id, client_id, thread_id, to_email, subject, body_text, created_by)
-                    VALUES ($1, $2, $3, $4, $5, $6, $7)
+                        (tenant_id, client_id, thread_id, to_email, subject, body_text, created_by,
+                         subject_ciphertext, body_text_ciphertext)
+                    VALUES ($1, $2, $3, $4, '', '', $7,
+                            pgp_sym_encrypt(NULLIF($5::text, ''), $8::text, 's2k-mode=1'),
+                            pgp_sym_encrypt(NULLIF($6::text, ''), $8::text, 's2k-mode=1'))
                  RETURNING id
                     """,
                     ctx.tenant_id,
@@ -1537,6 +1558,7 @@ async def send_message(
                     body.subject or "(no subject)",
                     body.body,
                     ctx.agent_id or "agent",
+                    sealed_text.key_for(ctx.tenant_id),
                 )
                 queued_email_id = str(outbox["id"])
                 delivery_status = "queued"
@@ -1795,6 +1817,7 @@ async def comms_threads(ctx: TenantContext = Depends(require_context)):
                     SELECT COALESCE(il.client_id, ld.seller_client_id) AS cid,
                            il.interaction_type, il.direction, il.subject,
                            left(il.payload->>'body', 80) AS snippet_body,
+                           il.subject_ciphertext, il.content_ciphertext, il.tenant_id,
                            il.created_at
                       FROM interaction_logs il
                       LEFT JOIN leads ld ON ld.id = il.lead_id
@@ -1803,10 +1826,13 @@ async def comms_threads(ctx: TenantContext = Depends(require_context)):
                 SELECT c.id, c.full_name, c.email, c.phone, c.client_type,
                        t.interaction_type, t.direction, t.subject,
                        t.snippet_body, t.created_at,
+                       t.subject_ciphertext, t.tenant_id AS subject_ciphertext_tenant_id,
+                       t.content_ciphertext, t.tenant_id AS content_ciphertext_tenant_id,
                        COALESCE(n.cnt, 0) AS cnt
                   FROM clients c
                   LEFT JOIN LATERAL (
-                        SELECT interaction_type, direction, subject, snippet_body, created_at
+                        SELECT interaction_type, direction, subject, snippet_body,
+                               subject_ciphertext, content_ciphertext, tenant_id, created_at
                           FROM touches
                          WHERE cid = c.id
                          ORDER BY created_at DESC
@@ -1819,11 +1845,17 @@ async def comms_threads(ctx: TenantContext = Depends(require_context)):
                  LIMIT 200
                 """
             )
+            # 0154 (A01): the latest touch's subject and text may be sealed.
+            # The opened content lands in `payload`; its body is the snippet.
+            rows = await sealed_text.open_fields(conn, rows, sealed_text.LOG_SUBJECT, sealed_text.LOG_CONTENT)
     except RuntimeError as exc:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, f"Memory Core offline ({exc})")
 
     threads = []
     for row in rows:
+        opened = row.get("payload")
+        if not row["snippet_body"] and isinstance(opened, dict) and opened.get("body"):
+            row["snippet_body"] = str(opened["body"])[:80]
         last = None
         if row["created_at"] is not None:
             last = {

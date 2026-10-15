@@ -34,6 +34,7 @@ from pydantic import BaseModel, Field, field_validator
 
 import client_note_crypto
 from client_note_crypto import SEALED_COLUMNS as _NOTE_SEALED
+import sealed_text
 from db.connection import tenant_tx
 from record_access import client_access_level, require_client_edit, resolve_assignment
 from tenancy import TenantContext, require_context
@@ -661,7 +662,9 @@ async def comms_thread(
             rows = await conn.fetch(
                 """
                 SELECT id, interaction_type, direction, subject, payload,
-                       actor_role, created_at
+                       actor_role, created_at,
+                       subject_ciphertext, tenant_id AS subject_ciphertext_tenant_id,
+                       content_ciphertext, tenant_id AS content_ciphertext_tenant_id
                   FROM interaction_logs
                  WHERE thread_id = $1
                  ORDER BY created_at ASC
@@ -669,6 +672,8 @@ async def comms_thread(
                 """,
                 thread_id,
             )
+            # 0154 (A01): subject and message text are sealed; open both shapes.
+            rows = await sealed_text.open_fields(conn, rows, sealed_text.LOG_SUBJECT, sealed_text.LOG_CONTENT)
     except RuntimeError as exc:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, f"Memory Core offline ({exc})")
 
