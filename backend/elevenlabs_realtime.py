@@ -61,6 +61,11 @@ class ElevenLabsCallLimitReached(ElevenLabsRealtimeError):
     pass
 
 
+class ElevenLabsCallOptOut(ElevenLabsCallLimitReached):
+    """The outbound callee said "stop" (voice_opt_out, L09-05). A limit
+    subclass so the Plivo handler already ends the call on it."""
+
+
 class ElevenLabsHandoffRequested(ElevenLabsRealtimeError):
     pass
 
@@ -405,6 +410,13 @@ class PlivoElevenLabsBridge:
             self._transcript.append({"role": role, "text": text[:4_000]})
         if role != "caller":
             return
+        import voice_opt_out
+
+        if voice_opt_out.is_outbound(self._call_state) and voice_opt_out.spoken_opt_out(text):
+            # The disclosure promised it (L09-05): suppress the number, then end
+            # the call. Checked per utterance; nothing said is stored.
+            await voice_opt_out.honour(self._call_state, self.call_uuid)
+            raise ElevenLabsCallOptOut("outbound callee asked not to be contacted")
         self._turns += 1
         if await self._maybe_hand_off():
             raise ElevenLabsHandoffRequested("caller asked for a human agent")

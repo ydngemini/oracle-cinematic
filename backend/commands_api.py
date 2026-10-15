@@ -3701,8 +3701,10 @@ async def plivo_qwen_media(websocket: WebSocket):
         await bridge.run()
     except WebSocketDisconnect:
         logger.info("Plivo media socket disconnected: uuid=%s", call_uuid)
-    except (QwenCallLimitReached, ElevenLabsCallLimitReached):
-        logger.info("Qwen realtime turn limit reached: uuid=%s", call_uuid)
+    except (QwenCallLimitReached, ElevenLabsCallLimitReached) as exc:
+        # A spoken opt-out (L09-05) is a limit subclass: same hang-up.
+        logger.info("Realtime call ended (%s): uuid=%s",
+                    "callee opted out" if "opt" in type(exc).__name__.lower() else "turn limit", call_uuid)
         from voice_provider import get_voice_provider
 
         await get_voice_provider("plivo").abort_call(call_uuid)

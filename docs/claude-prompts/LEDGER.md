@@ -41,7 +41,7 @@ Listed weakest to strongest:
 | 06 | Evidence retrieval and memory | [06](06-evidence-retrieval-memory.md) | `source_verified` | local | `745f2fa` | A01, A02 | L06-01 |
 | 07 | AI gateway and governed tools | [07](07-ai-gateway-model-tool-governance.md) | `tests_pass` | local | `071d65d` (L07-01) | Playwright check owed (L07-01); owner: archive_client | T07.02 + AC07.01 |
 | 08 | Durable missions and workflows | [08](08-durable-missions-workflow-orchestration.md) | `source_verified` | local | `745f2fa`; L08-02 deferral journal (0159, local) | Owner: does a mission's standing grant count as approval (C4.1)?; PR #11 needs a rebuild (L08-01 review) | Rebuild PR #11's internal tasks on current main after the owner answers |
-| 09 | Real-time voice | [09](09-realtime-voice-speech-latency.md) | `source_verified` | staging | `9c3463a` | Call-note broadcast (L09-03); phone check (L09-02) | L09-03 |
+| 09 | Real-time voice | [09](09-realtime-voice-speech-latency.md) | `source_verified` | staging | `9c3463a`; L09-05 outbound spoken opt-out (local) | Call-note broadcast (L09-03); phone check (L09-02) | L09-03 |
 | 10 | Communications and calendars | [10](10-communications-calendar-provider-integrations.md) | `source_verified` | staging | `75c6ba6` (local) | Google OAuth client; 10DLC; deploy approval; A07 fixed locally, 0136 + 0139 + 0145 undeployed (L10-06, L10-09, L10-10); owner: one-brand rule (L10-09) | L10-01 |
 | 11 | Property and market intelligence (non-MLS) | [11](11-property-market-intelligence.md) | `tests_pass` | staging (L11-01), local (L11-02, L11-03) | `90372f2`; `d934b2e` (L11-02); L11-03 on branch `worktree-agent-a59f5c8799a673f68` (base `2804f47`) | Deploy 0135; live-DB test owed; staging catalog empty; L11-03 not deployed | Apply 0135 on staging; push L11-03 with approval; then T11.02 provenance |
 | 12 | Neoh Space capture, 3D, tours | [12](12-neoh-space-browser-capture-reconstruction.md) | `source_verified` | local | `745f2fa` | A03 | Capture Studio first slice |
@@ -806,8 +806,32 @@ authz_checked: n/a
 blockers: []
 audit_refs: []
 decision_refs: []
-next_task: "T09.15"
-updated: 2026-10-12
+next_task: "Done in L09-05 (Twilio + Plivo, Qwen + ElevenLabs). ACS outbound and a real-phone check remain."
+updated: 2026-10-15
+```
+
+#### L09-05 A spoken "stop" on an outbound AI call is honoured (T09.15, AC09.05)
+```yaml
+id: L09-05
+status: tests_pass
+env: local
+evidence_shas: []   # filled with the commit SHA on push
+files: [backend/voice_opt_out.py, backend/elevenlabs_realtime.py, backend/qwen_omni_realtime.py, backend/commands_api.py, backend/tests/test_elevenlabs_realtime.py, backend/tests/test_outbound_voice_opt_out_live.py, .github/workflows/ci.yml]
+tests_run:
+  - {cmd: "read elevenlabs_realtime._on_transcript, qwen_omni_realtime.QwenOmniRealtimeBridge._on_transcript_completed, commands_api Plivo/Twilio media handlers, plivo/twilio_call_handler outbound state (at 90a29c6)", result: "confirmed L09-04: outbound caller turns were counted for the turn limit only; nothing matched an opt-out or wrote a suppression, while the disclosure promises 'say stop and I'll end the call and won't contact you again'. Outbound call state carries tenant_id and callee on both carriers; the handlers hang up on the bridges' turn-limit exceptions", date: 2026-10-15}
+  - {cmd: "cd backend && pytest -q tests/test_elevenlabs_realtime.py tests/test_voice_opt_out.py tests/*qwen* tests/*plivo*", result: "162 passed (new: through the real ElevenLabs bridge with fake sockets, 'I'm not interested, stop.' records the suppression for the call's state and raises ElevenLabsCallOptOut, a ElevenLabsCallLimitReached the Plivo handler already hangs up on; 'stop by the house on Tuesday' does nothing and nothing said is kept; an inbound 'stop' is left to the inbound finalizer; a failed suppression still ends the call; the shared Qwen hook (Twilio + Plivo bridges) does the same and skips inbound and ACS)", date: 2026-10-15}
+  - {cmd: "pytest -q tests/test_outbound_voice_opt_out_live.py (real PostgreSQL, app role)", result: "1 passed: one outreach_suppression row (channel '*', reason stop_keyword, fixed source text, no words); idempotent; the outreach gate (ConsentLedger.gather_state) then reports suppressed for voice, SMS and email in that brokerage and not in another; a call state without a callee raises OptOutNotRecorded", date: 2026-10-15}
+  - {cmd: "every CI rls-job live test; cd backend && pytest -q tests compliance_engine/tests (clean env); bandit", result: "68 passed; unit 5206 passed, 65 skipped, 2 failed (test_media_storage + test_object_storage: container runs as root, identical without the change); bandit exit 0", date: 2026-10-15}
+authz_checked: "The suppression is written in the platform context of the call's own tenant (as the inbound path does) and only for the number the call dialled; it narrows contact, never widens access."
+blockers:
+  - "Not proven on a real phone call (T09.18 needs owner approval for a consented call). Speech-to-text quality decides what the matcher sees."
+  - "ACS (Azure) bridges carry no call state on QwenOmniRealtimeBridge, so an ACS outbound 'stop' is not handled here; ACS is not the live carrier (L09-01: Plivo)."
+  - "The call ends immediately on the opt-out (hang-up); the agent does not speak a goodbye first. The wording 'recorded line' is T09.16 (owner and counsel)."
+  - "Not deployed (C4.4)."
+audit_refs: []
+decision_refs: []
+next_task: "T09.17 (lead-only call notes) or the owner-approved real-call check (T09.18)."
+updated: 2026-10-15
 ```
 
 ### L10
