@@ -32,6 +32,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
+import semantic_language as lang_
 from db.connection import tenant_tx
 from tenancy import TenantContext
 
@@ -267,6 +268,26 @@ def _state_distribution(
     ]
 
 
+def reconcile_summary(verdict: str, declared: Optional[float], observed: Optional[float],
+                      lang: Optional[str] = None) -> Optional[str]:
+    """The reading's sentence for a verdict, in en | es (L05-05).
+
+    The words live in the semantic_language catalogue; the percentages are
+    the same numbers in both languages. None for a verdict this module does
+    not produce."""
+    if verdict not in _VERDICTS:
+        return None
+    values = {}
+    if verdict in ("behaviour_ahead", "behaviour_behind"):
+        if declared is None or observed is None:
+            return None
+        values = {"declared": f"{declared:.0%}", "observed": f"{observed:.0%}"}
+    return lang_.t(f"intent.{verdict}", lang, **values)
+
+
+_VERDICTS = ("cannot_compare", "behaviour_only", "behaviour_ahead", "behaviour_behind", "consistent")
+
+
 def _reconcile(declared: IntentReading, observed: IntentReading) -> dict[str, Any]:
     """The headline: do their words and their behaviour agree?
 
@@ -274,24 +295,21 @@ def _reconcile(declared: IntentReading, observed: IntentReading) -> dict[str, An
     Everyone can compute engagement; the useful sentence is "she says six
     months and is behaving like thirty days", and it only exists if the two
     readings were kept apart long enough to be compared.
+
+    The stored summary is English; the fast path re-renders it from the
+    verdict and the two scores when the question was Spanish.
     """
     if observed.evidence_state == "unobserved":
         return {
             "verdict": "cannot_compare",
-            "summary": (
-                "Only their declared position is available — nothing they do is "
-                "visible to us yet, so there is nothing to check it against."
-            ),
+            "summary": reconcile_summary("cannot_compare", None, None),
             "latent_score": declared.score,
             "confidence": 0.3 if declared.score is not None else 0.0,
         }
     if declared.score is None:
         return {
             "verdict": "behaviour_only",
-            "summary": (
-                "Behaviour is visible but they have never stated a timeline. "
-                "Worth asking, so the two can be compared."
-            ),
+            "summary": reconcile_summary("behaviour_only", None, None),
             "latent_score": observed.score,
             "confidence": 0.5,
         }
@@ -300,22 +318,12 @@ def _reconcile(declared: IntentReading, observed: IntentReading) -> dict[str, An
     latent = round(declared.score * 0.35 + observed.score * 0.65, 3)
 
     if gap >= 0.25:
-        verdict, summary = "behaviour_ahead", (
-            f"Acting well ahead of what they said. Declared position reads "
-            f"{declared.score:.0%}; behaviour reads {observed.score:.0%}. "
-            f"Treat the timeline they gave as conservative."
-        )
+        verdict = "behaviour_ahead"
     elif gap <= -0.25:
-        verdict, summary = "behaviour_behind", (
-            f"Stated intent is not showing up in behaviour "
-            f"({declared.score:.0%} declared vs {observed.score:.0%} observed). "
-            f"Either something changed, or the plan was aspirational."
-        )
+        verdict = "behaviour_behind"
     else:
-        verdict, summary = "consistent", (
-            "What they say and what they do agree, which makes both more "
-            "trustworthy than either alone."
-        )
+        verdict = "consistent"
+    summary = reconcile_summary(verdict, declared.score, observed.score)
 
     return {
         "verdict": verdict,

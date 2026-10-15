@@ -151,7 +151,7 @@ def data(*, people=(), properties=(), deals=(), record=RECORD, intent=None, time
     async def search(_ctx, _query, kind):
         return legs[kind], ss.checked(matched=len(legs[kind]))
 
-    async def person_detail(_ctx, _id):
+    async def person_detail(_ctx, _id, _lang="en"):
         return (dict(record) if record else None), intent, list(timeline)
 
     async def candidates_for(_ctx, _id):
@@ -244,12 +244,22 @@ def draft_cases() -> dict[str, Any]:
     return out
 
 
+def stable(value: Any) -> Any:
+    """Drop the wall-clock `checked_at` a source status carries: it is the
+    one field that differs between two runs of the same code."""
+    if isinstance(value, dict):
+        return {k: stable(v) for k, v in value.items() if k != "checked_at"}
+    if isinstance(value, list):
+        return [stable(v) for v in value]
+    return value
+
+
 def english_outputs() -> dict[str, Any]:
     out = {f"ask.{key}": ask(english, **setup) for key, english, _es, setup in ASK_TWINS}
     out.update(render_cases())
     out.update(draft_cases())
     # One JSON round trip, so datetimes compare the way the golden file stores them.
-    return json.loads(json.dumps(out, default=str, sort_keys=True))
+    return stable(json.loads(json.dumps(out, default=str, sort_keys=True)))
 
 
 if __name__ == "__main__":  # regenerate ONLY from the pre-change code

@@ -321,6 +321,8 @@ async def handle_chat_websocket(
             payload={
                 "tenant_id": ctx.tenant_id, "user_id": ctx.agent_id,
                 "request_id": str(frame.request_id), "assistant_id": created["assistant_id"],
+                # Only a spoken turn carries it; a code, never words (L05-05).
+                **({"lang_hint": frame.lang} if frame.lang else {}),
             },
             idempotency_key=f"ai-chat:{ctx.agent_id}:{frame.request_id}",
             created_by=ctx.agent_id, priority=20, max_attempts=3,

@@ -30,7 +30,6 @@
   "intent": "deal_blocker",
   "source_status": {
    "deals": {
-    "checked_at": "2026-10-15T09:46:54.327662+00:00",
     "matched": 1,
     "reason": null,
     "required": true,
@@ -58,7 +57,6 @@
   "intent": "deal_blocker",
   "source_status": {
    "deals": {
-    "checked_at": "2026-10-15T09:46:54.327994+00:00",
     "matched": 1,
     "reason": null,
     "required": true,
@@ -98,7 +96,6 @@
   "intent": "deal_blocker",
   "source_status": {
    "deals": {
-    "checked_at": "2026-10-15T09:46:54.326960+00:00",
     "matched": 1,
     "reason": null,
     "required": true,
@@ -138,7 +135,6 @@
   "intent": "deal_blocker",
   "source_status": {
    "deals": {
-    "checked_at": "2026-10-15T09:46:54.327303+00:00",
     "matched": 1,
     "reason": null,
     "required": true,
@@ -181,7 +177,6 @@
   "intent": "properties_for",
   "source_status": {
    "people": {
-    "checked_at": "2026-10-15T09:46:54.326602+00:00",
     "matched": 1,
     "reason": null,
     "required": true,
@@ -228,7 +223,6 @@
   "intent": "show_person",
   "source_status": {
    "people": {
-    "checked_at": "2026-10-15T09:46:54.324479+00:00",
     "matched": 1,
     "reason": null,
     "required": true,
@@ -265,7 +259,6 @@
   "intent": "show_person",
   "source_status": {
    "people": {
-    "checked_at": "2026-10-15T09:46:54.325780+00:00",
     "matched": 2,
     "reason": null,
     "required": true,
@@ -327,7 +320,6 @@
   "intent": "show_person",
   "source_status": {
    "people": {
-    "checked_at": "2026-10-15T09:46:54.325434+00:00",
     "matched": 1,
     "reason": null,
     "required": true,
@@ -355,7 +347,6 @@
   "intent": "show_person",
   "source_status": {
    "people": {
-    "checked_at": "2026-10-15T09:46:54.325027+00:00",
     "matched": 1,
     "reason": null,
     "required": true,
@@ -381,14 +372,12 @@
   "intent": "show_property",
   "source_status": {
    "people": {
-    "checked_at": "2026-10-15T09:46:54.326125+00:00",
     "matched": 0,
     "reason": null,
     "required": true,
     "status": "checked"
    },
    "properties": {
-    "checked_at": "2026-10-15T09:46:54.326255+00:00",
     "matched": 1,
     "reason": null,
     "required": true,

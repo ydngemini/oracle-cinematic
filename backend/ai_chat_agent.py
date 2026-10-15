@@ -1362,6 +1362,10 @@ async def handle_ai_chat_job(payload: dict, reporter: JobReporter) -> dict:
     request_id = str(payload["request_id"])
     ctx = TenantContext(agent_id=user_id, tenant_id=tenant_id, role=Role.AGENT)
     bundle = await load_response_bundle(ctx, assistant_id)
+    # A spoken turn's recognition language (L05-05): read by
+    # semantic_turn.prepare_turn only when the words cannot tell.
+    if payload.get("lang_hint"):
+        bundle["lang_hint"] = payload["lang_hint"]
     status = bundle["assistant"].get("status")
     if status == "completed":
         return {"message_id": assistant_id, "already_completed": True}

@@ -341,7 +341,7 @@ async def prepare_turn(
         frame, status, reason, elapsed = await _parse(ctx, text, known=known, now=now)
         turn = TurnFrame(status=status, reason=reason, frame=frame, extract_ms=elapsed)
         turn.detected = lang_.detect(text).lang
-    turn.lang = lang_.reply_language(text, previous_language(bundle))
+    turn.lang = lang_.reply_language(text, previous_language(bundle), bundle.get("lang_hint"))
 
     if turn.frame is not None:
         turn.own = fc.from_frame(turn.frame, origin=str(assistant_id), stated_at=now)

@@ -24,6 +24,17 @@ class ChatSendFrame(BaseModel):
     content: str = Field(default="", max_length=8_000)
     context: Optional[ChatContext] = None
     attachment_ids: list[uuid.UUID] = Field(default_factory=list, max_length=5)
+    #: The language a SPOKEN turn was recognised in (L05-05): a hint for the
+    #: answer language when the words alone cannot tell. Normalised to en | es;
+    #: anything else becomes None rather than rejecting the message.
+    lang: Optional[str] = None
+
+    @field_validator("lang", mode="before")
+    @classmethod
+    def normalise_lang(cls, value: object) -> Optional[str]:
+        import semantic_language
+
+        return semantic_language.normalise_hint(value)
 
     @field_validator("content")
     @classmethod

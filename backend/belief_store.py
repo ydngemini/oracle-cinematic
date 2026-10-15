@@ -35,6 +35,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
+import semantic_language as lang_
 from db.connection import tenant_tx
 from tenancy import TenantContext
 
@@ -297,17 +298,31 @@ async def beliefs_about(
     }
 
 
-def _dispute_question(predicate: str, ranked: list[dict[str, Any]]) -> str:
+def _dispute_question(predicate: str, ranked: list[dict[str, Any]],
+                      lang: Optional[str] = None) -> str:
+    """The question two disagreeing beliefs raise, in en | es (L05-05).
+
+    The recorded values are quoted as stored, never translated; the predicate
+    and source kind are the machine names, shown as they always were."""
     leading, challenger = ranked[0], ranked[1]
-    subject = predicate.replace("_", " ")
     older, newer = sorted((leading, challenger), key=lambda b: b["learned_at"])
-    return (
-        f"Recorded {subject} as {json.dumps(older['value'])} "
-        f"({older['age_days']:.0f} days ago, {older['source']['kind']}), "
-        f"but {json.dumps(newer['value'])} "
-        f"({newer['age_days']:.0f} days ago, {newer['source']['kind']}). "
-        f"Worth confirming which still holds."
+    return lang_.t(
+        "dispute.question", lang,
+        subject=predicate.replace("_", " "),
+        older=json.dumps(older["value"]), older_days=f"{older['age_days']:.0f}",
+        older_source=older["source"]["kind"],
+        newer=json.dumps(newer["value"]), newer_days=f"{newer['age_days']:.0f}",
+        newer_source=newer["source"]["kind"],
     )
+
+
+def dispute_question(dispute: dict[str, Any], lang: Optional[str] = None) -> Optional[str]:
+    """Re-render a dispute's question from its own beliefs; None if it lacks them."""
+    try:
+        ranked = [dispute["leading"], *dispute["challenged"]]
+        return _dispute_question(str(dispute["predicate"]), ranked, lang)
+    except (KeyError, IndexError, TypeError, ValueError):
+        return None
 
 
 async def correct_belief(

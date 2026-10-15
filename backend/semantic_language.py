@@ -10,7 +10,9 @@ that are about language rather than meaning:
    or es; English by default), and whether the request is in a language the
    deterministic layers below can read at all (`Detection.lang == "other"`).
    No per-user language setting exists (there is no locale field anywhere in
-   the schema), so the request itself is the only signal.
+   the schema), so the request itself is the main signal. A spoken turn also
+   carries the language the browser recognised it in (`normalise_hint`,
+   L05-05): it decides only when the text itself is not conclusive.
 
 2. **Constraint cues** (`cues`). A small bilingual lexicon of the phrases that
    state a restriction — "don't message her yet" / "no le mandes nada
@@ -23,8 +25,10 @@ that are about language rather than meaning:
    lifts one or authorises anything. Each cue carries its verbatim span of
    the request, so it is as checkable as a frame's evidence.
 
-3. **The catalogue** (`t`). The product sentences for refusals and failure
-   answers, in English and Spanish. One table, so a new message cannot exist
+3. **The catalogue** (`t`). The product sentences for refusals, failure
+   answers, the fast path's success answers and the command fallback drafts
+   (L05-05), in English and Spanish. Only the product's own words live here:
+   names, addresses and note text are slot values and are never translated. One table, so a new message cannot exist
    in one language only (tests/test_semantic_language.py checks it).
 
 Nothing here reads or writes the database, calls a model, or logs the words
@@ -187,10 +191,31 @@ def detect(text: str) -> Detection:
     return Detection("en" if en >= es else "es", en, es, other)
 
 
-def reply_language(text: str, previous: Optional[str] = None) -> str:
-    """en or es. A request too short to tell keeps the conversation's
-    previous language; with no history it is English."""
+def normalise_hint(value: object) -> Optional[str]:
+    """A client's language hint ("es", "es-MX", "en-US") as en | es, or None.
+
+    Only a hint: it comes from the browser (the speech-recognition language
+    the person picked), so anything else is ignored rather than refused."""
+    if not isinstance(value, str):
+        return None
+    base = value.strip().lower().replace("_", "-").split("-", 1)[0]
+    return base if base in LANGS else None
+
+
+def reply_language(text: str, previous: Optional[str] = None,
+                   hint: Optional[str] = None) -> str:
+    """en or es.
+
+    The text decides when it is conclusive: clearly English, clearly Spanish,
+    or a mix with one side ahead. Otherwise (too short, another language, an
+    even mix) a spoken turn's recognition language (`hint`) decides, then the
+    conversation's previous language; with neither it is English. Without a
+    hint this is exactly the L05-04 rule."""
     found = detect(text)
+    hint = normalise_hint(hint)
+    if hint and (found.lang in ("undetermined", "other")
+                 or (found.lang == "mixed" and found.en == found.es)):
+        return hint
     if found.lang in ("undetermined", "other") and previous in LANGS:
         return previous
     return found.reply
@@ -474,6 +499,168 @@ MESSAGES: dict[str, dict[str, str]] = {
         "en": "No one to call right now. Nothing in the book is asking for you today.",
         "es": "No hay nadie a quien llamar ahora mismo. Nada en tu cartera te necesita hoy.",
     },
+    # ── L05-05: the fast path's SUCCESS answers (neoh_render) ──────────────
+    # who_to_call
+    "queue.first_one": {"en": "{subject} first.", "es": "{subject} primero."},
+    "queue.first_many": {"en": "{subject} first, then {more} more.",
+                         "es": "{subject} primero y luego {more} más."},
+    "queue.portfolio_label": {"en": "Expected value of acting on all of it",
+                              "es": "Valor esperado de actuar en todo ello"},
+    # expected_value.portfolio: the caveat that travels with the total
+    "portfolio.caveat.fitted": {
+        "en": ("Fitted from {outcomes} of this brokerage's own outcomes. The uplifts are "
+               "differences in rates against the organic base rate, not causal "
+               "estimates; use the ordering, and read the amounts as expectations "
+               "with the intervals each card shows."),
+        "es": ("Ajustado con {outcomes} resultados propios de esta agencia. Las mejoras son "
+               "diferencias de tasas frente a la tasa base orgánica, no estimaciones "
+               "causales; usa el orden y lee los importes como expectativas "
+               "con los intervalos que muestra cada tarjeta."),
+    },
+    "portfolio.caveat.some_one": {
+        "en": ("Modelled from stated priors. {outcomes} outcome recorded so far — "
+               "{needed} more before the portfolio figure is fitted rather than assumed. "
+               "Use the ordering; treat the dollar amounts as relative, not forecast."),
+        "es": ("Modelado a partir de supuestos declarados. Hasta ahora hay {outcomes} resultado "
+               "registrado; faltan {needed} para que la cifra de la cartera se ajuste en lugar de "
+               "suponerse. Usa el orden; trata los importes en dólares como relativos, no como pronóstico."),
+    },
+    "portfolio.caveat.some_many": {
+        "en": ("Modelled from stated priors. {outcomes} outcomes recorded so far — "
+               "{needed} more before the portfolio figure is fitted rather than assumed. "
+               "Use the ordering; treat the dollar amounts as relative, not forecast."),
+        "es": ("Modelado a partir de supuestos declarados. Hasta ahora hay {outcomes} resultados "
+               "registrados; faltan {needed} para que la cifra de la cartera se ajuste en lugar de "
+               "suponerse. Usa el orden; trata los importes en dólares como relativos, no como pronóstico."),
+    },
+    "portfolio.caveat.none": {
+        "en": ("Modelled from stated priors, not fitted to this brokerage's own "
+               "closed deals — no outcomes have been recorded yet. Use the ordering; "
+               "treat the dollar amounts as relative, not forecast."),
+        "es": ("Modelado a partir de supuestos declarados, no ajustado a las operaciones cerradas "
+               "de esta agencia: todavía no se ha registrado ningún resultado. Usa el orden; "
+               "trata los importes en dólares como relativos, no como pronóstico."),
+    },
+    # show_person: the card, its reading and its disputes
+    "person.unnamed": {"en": "This person", "es": "Esta persona"},
+    "choices.unnamed": {"en": "Unnamed", "es": "Sin nombre"},
+    "client_type.seller": {"en": "seller", "es": "vendedor"},
+    "client_type.buyer": {"en": "buyer", "es": "comprador"},
+    "client_type.both": {"en": "both", "es": "comprador y vendedor"},
+    "stage.lead": {"en": "lead", "es": "prospecto"},
+    "stage.active": {"en": "active", "es": "activo"},
+    "stage.nurture": {"en": "nurture", "es": "en seguimiento"},
+    "stage.under_contract": {"en": "under_contract", "es": "bajo contrato"},
+    "stage.closed": {"en": "closed", "es": "cerrado"},
+    "stage.lost": {"en": "lost", "es": "perdido"},
+    "interaction.call": {"en": "call", "es": "llamada"},
+    "interaction.sms": {"en": "sms", "es": "SMS"},
+    "interaction.email": {"en": "email", "es": "correo"},
+    "interaction.email_open": {"en": "email open", "es": "correo abierto"},
+    "interaction.message": {"en": "message", "es": "mensaje"},
+    "interaction.note": {"en": "note", "es": "nota"},
+    "interaction.voice_note": {"en": "voice note", "es": "nota de voz"},
+    "interaction.meeting": {"en": "meeting", "es": "reunión"},
+    "interaction.showing_request": {"en": "showing request", "es": "solicitud de visita"},
+    "interaction.calculator_use": {"en": "calculator use", "es": "uso de la calculadora"},
+    "interaction.availability_view": {"en": "availability view", "es": "consulta de disponibilidad"},
+    "interaction.saved_search": {"en": "saved search", "es": "búsqueda guardada"},
+    "interaction.listing_favorite": {"en": "listing favorite", "es": "propiedad marcada como favorita"},
+    "interaction.listing_unfavorite": {"en": "listing unfavorite", "es": "propiedad quitada de favoritas"},
+    "interaction.listing_share": {"en": "listing share", "es": "propiedad compartida"},
+    "interaction.listing_view": {"en": "listing view", "es": "propiedad vista"},
+    "interaction.search": {"en": "search", "es": "búsqueda"},
+    "interaction.map_view": {"en": "map view", "es": "vista del mapa"},
+    "interaction.link_click": {"en": "link click", "es": "clic en un enlace"},
+    "interaction.portal_view": {"en": "portal view", "es": "visita al portal"},
+    # intent_states._reconcile: the reading on the person card (and its spoken line)
+    "intent.cannot_compare": {
+        "en": ("Only their declared position is available — nothing they do is "
+               "visible to us yet, so there is nothing to check it against."),
+        "es": ("Solo está disponible lo que han declarado: todavía no vemos nada de lo que "
+               "hacen, así que no hay con qué contrastarlo."),
+    },
+    "intent.behaviour_only": {
+        "en": ("Behaviour is visible but they have never stated a timeline. "
+               "Worth asking, so the two can be compared."),
+        "es": ("Su comportamiento es visible, pero nunca han indicado un plazo. "
+               "Vale la pena preguntarlo para poder comparar ambos."),
+    },
+    "intent.behaviour_ahead": {
+        "en": ("Acting well ahead of what they said. Declared position reads "
+               "{declared}; behaviour reads {observed}. "
+               "Treat the timeline they gave as conservative."),
+        "es": ("Actúan muy por delante de lo que dijeron. Lo declarado marca "
+               "{declared}; el comportamiento marca {observed}. "
+               "Toma el plazo que dieron como conservador."),
+    },
+    "intent.behaviour_behind": {
+        "en": ("Stated intent is not showing up in behaviour "
+               "({declared} declared vs {observed} observed). "
+               "Either something changed, or the plan was aspirational."),
+        "es": ("La intención declarada no se ve en su comportamiento "
+               "({declared} declarado frente a {observed} observado). "
+               "O algo cambió, o el plan era más un deseo que un plan."),
+    },
+    "intent.consistent": {
+        "en": ("What they say and what they do agree, which makes both more "
+               "trustworthy than either alone."),
+        "es": ("Lo que dicen y lo que hacen coinciden, lo que hace que ambos sean más "
+               "fiables que cada uno por separado."),
+    },
+    # belief_store._dispute_question: two records disagree
+    "dispute.question": {
+        "en": ("Recorded {subject} as {older} ({older_days} days ago, {older_source}), "
+               "but {newer} ({newer_days} days ago, {newer_source}). "
+               "Worth confirming which still holds."),
+        "es": ("Se registró {subject} como {older} (hace {older_days} días, {older_source}), "
+               "pero también {newer} (hace {newer_days} días, {newer_source}). "
+               "Conviene confirmar cuál sigue vigente."),
+    },
+    "dispute.fallback": {"en": "Two records disagree", "es": "Dos registros no coinciden"},
+    # properties_for: a shortlist that has houses on it
+    "shortlist.count": {"en": "{n} on {name}'s shortlist.", "es": "{n} en la lista de {name}."},
+    "shortlist.title": {"en": "For {name}", "es": "Para {name}"},
+    "shortlist.no_address": {"en": "Address unavailable", "es": "Dirección no disponible"},
+    "detail.beds": {"en": "{n} beds", "es": "{n} hab."},
+    "detail.baths": {"en": "{n} baths", "es": "{n} baños"},
+    # deal_blocker: the headline and the open milestones
+    "deal.this": {"en": "This deal", "es": "Este trato"},
+    "deal.this_inline": {"en": "This deal", "es": "este trato"},
+    "deal.no_milestones": {
+        "en": ("{address} has no milestones recorded, so nothing here can say what "
+               "is next. That is a gap in the file, not a clear runway."),
+        "es": ("{Address} no tiene hitos registrados, así que nada aquí puede decir qué "
+               "sigue. Es un hueco en el expediente, no vía libre."),
+    },
+    "deal.all_done": {"en": "Nothing is holding {address} up — every milestone is done.",
+                      "es": "Nada está frenando {address}: todos los hitos están completados."},
+    "deal.next_open": {"en": "{title} is the earliest thing still open on {address}.",
+                       "es": "{title} es lo más próximo que sigue abierto en {address}."},
+    "deal.next_milestone": {"en": "the next milestone", "es": "el siguiente hito"},
+    # ── L05-05: command fallback drafts (commands_api._fallback_draft) ─────
+    # Used only when no model draft came back. The draft goes to the client,
+    # in the language the agent wrote the command in. With no client name the
+    # *_bare sentence is used (English has always said "Hi there,").
+    "draft.plans": {"en": "your real estate plans", "es": "tus planes inmobiliarios"},
+    "draft.greeting": {"en": "Hi {first_name},", "es": "Hola, {first_name}:"},
+    "draft.greeting_bare": {"en": "Hi there,", "es": "Hola:"},
+    "draft.email_line": {"en": "I’m following up regarding {about}.{proposal}",
+                         "es": "Te escribo para dar seguimiento a {about}.{proposal}"},
+    "draft.email_proposal": {"en": " I would like to discuss a proposed amount of {amount}.",
+                             "es": " Me gustaría hablar de una cantidad propuesta de {amount}."},
+    "draft.email_subject": {"en": "Following up about {about}", "es": "Seguimiento sobre {about}"},
+    "draft.sms": {"en": "Hi {first_name}, I’m following up regarding {about}.",
+                  "es": "Hola, {first_name}, te escribo para dar seguimiento a {about}."},
+    "draft.sms_bare": {"en": "Hi there, I’m following up regarding {about}.",
+                       "es": "Hola, te escribo para dar seguimiento a {about}."},
+    "draft.call_opening": {"en": "Hi {first_name}, this is {agent}.",
+                           "es": "Hola, {first_name}, habla {agent}."},
+    "draft.call_opening_bare": {"en": "Hi there, this is {agent}.", "es": "Hola, habla {agent}."},
+    "draft.call_agent": {"en": "your real estate agent", "es": "tu agente inmobiliario"},
+    "draft.event_summary": {"en": "Follow-up with {name}", "es": "Seguimiento con {name}"},
+    # Reproduces today's English byte for byte ("Follow-up with there"), flagged in L05-05.
+    "draft.event_summary_bare": {"en": "Follow-up with there", "es": "Seguimiento"},
     # frame_constraints.prompt_block: tells the model which language to explain in
     "prompt.reply_in": {"en": "", "es": "The person is writing in Spanish: explain what you did not do, and why, in Spanish."},
 }
