@@ -225,6 +225,8 @@ def test_pipeline_creation_uses_only_selected_property_and_tenant_client(monkeyp
 
 
 def test_mls_creation_snapshots_normalized_source_without_client_inference(monkeypatch):
+    # Only reachable while the owner has switched legacy MLS back on (mls_switch).
+    monkeypatch.setenv("ORACLE_MLS_ENABLED", "1")
     conn = _CreateConn("mls")
     monkeypatch.setattr(portfolio_api, "tenant_tx", _fake_tenant_tx(conn))
 
@@ -243,6 +245,22 @@ def test_mls_creation_snapshots_normalized_source_without_client_inference(monke
     assert transaction["source_provenance"]["mls_number"] == "DENC2042"
     assert result["party"] is None
     assert not any("FROM clients" in query for query in conn.queries)
+
+
+def test_a_new_deal_on_an_mls_listing_is_refused_while_mls_is_off(monkeypatch):
+    """D-2026-10-12-01 (L13-02): MLS is out of scope. With the switch off (the
+    default), creating a deal from an MLS listing answers the same 404 as every
+    MLS route and reads and writes nothing."""
+    monkeypatch.delenv("ORACLE_MLS_ENABLED", raising=False)
+    import mls_switch
+
+    conn = _CreateConn("mls")
+    monkeypatch.setattr(portfolio_api, "tenant_tx", _fake_tenant_tx(conn))
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(create_transaction(
+            TransactionCreate(property_source="mls", property_id=MLS_LISTING_ID), CTX))
+    assert exc.value.status_code == 404 and exc.value.detail == mls_switch.NOT_OFFERED
+    assert not any("oracle_mls_listings" in q or "INSERT INTO transactions" in q for q in conn.queries)
 
 
 def test_unknown_or_cross_tenant_property_is_a_non_enumerating_404(monkeypatch):

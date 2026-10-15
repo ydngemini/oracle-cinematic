@@ -45,7 +45,7 @@ Listed weakest to strongest:
 | 10 | Communications and calendars | [10](10-communications-calendar-provider-integrations.md) | `source_verified` | staging | `75c6ba6` (local) | Google OAuth client; 10DLC; deploy approval; A07 fixed locally, 0136 + 0139 + 0145 undeployed (L10-06, L10-09, L10-10); owner: one-brand rule (L10-09) | L10-01 |
 | 11 | Property and market intelligence (non-MLS) | [11](11-property-market-intelligence.md) | `tests_pass` | staging (L11-01), local (L11-02, L11-03) | `90372f2`; `d934b2e` (L11-02); L11-03 on branch `worktree-agent-a59f5c8799a673f68` (base `2804f47`) | Deploy 0135; live-DB test owed; staging catalog empty; L11-03 not deployed | Apply 0135 on staging; push L11-03 with approval; then T11.02 provenance |
 | 12 | Neoh Space capture, 3D, tours | [12](12-neoh-space-browser-capture-reconstruction.md) | `source_verified` | local | `745f2fa` | A03 | Capture Studio first slice |
-| 13 | Deals, documents, compliance | [13](13-transactions-contract-vault-compliance.md) | `source_verified` | local | `745f2fa` | Owner: e-sign, commissions | L13-01 |
+| 13 | Deals, documents, compliance | [13](13-transactions-contract-vault-compliance.md) | `source_verified` | local | `745f2fa`; L13-02 no new MLS-sourced deals (local) | Owner: e-sign, commissions | L13-01 |
 | 14 | Sites, social, ads, client portal | [14](14-websites-social-ads-growth-client-portal.md) | `source_verified` | local | `745f2fa` | Owner: networks, listings on sites | L14-01 |
 | 15 | Neoh mascot animation | [15](15-neoh-avatar-skeletal-character-animation.md) | `source_verified` | local | truth slice (L15-02) + rig spec (L15-03) local, on `2fef2e5` | Owner: Rive vs 3D, rig author and licence (L15-03); no device measurements (AC15.07) | Owner decides L15-03; then T15.04 layers and the AC15.07 device protocol |
 | 16 | Performance, indexes, cache | [16](16-performance-indexes-mobile-cache.md) | `tests_pass` | staging | `745f2fa`; 0141 tenant wall (L16-01); 0113 predicates dropped + 0144 (L16-03); JIT off for request transactions (0e29f5a) — all on staging 0a76a72 | A10 capacity on production-shaped infra; no production target | T16.05 |
@@ -1180,6 +1180,27 @@ audit_refs: []
 decision_refs: [D-2026-10-12-01]
 next_task: "T13.02 + T13.14"
 updated: 2026-10-12
+```
+
+#### L13-02 A new deal cannot be opened on an MLS listing while MLS is off (D-2026-10-12-01)
+```yaml
+id: L13-02
+status: tests_pass
+env: local
+evidence_shas: []   # filled with the commit SHA on push
+files: [backend/portfolio_api.py, backend/tests/test_transaction_workflow.py]
+tests_run:
+  - {cmd: "read portfolio_api._property_anchor and create_transaction; grep oracle-app/src for property_source (at 95c4ce5)", result: "POST /transactions accepted property_source='mls' and read oracle_mls_listings to anchor a new deal regardless of mls_switch (L13-01 finding); the only UI caller sends 'pipeline' (DossierPanel)", date: 2026-10-15}
+  - {cmd: "cd backend && pytest -q tests/test_transaction_workflow.py with portfolio_api.py stashed, then restored; + tests/test_mls_switch.py", result: "before: 1 failed (an MLS-sourced deal was created with the switch off); after: 18 passed — with ORACLE_MLS_ENABLED unset the create answers 404 mls_switch.NOT_OFFERED and touches neither oracle_mls_listings nor transactions; with it on the existing MLS path is unchanged", date: 2026-10-15}
+  - {cmd: "every CI rls-job live test; cd backend && pytest -q tests compliance_engine/tests (clean env); bandit", result: "68 passed; unit 5207 passed, 65 skipped, 2 failed (test_media_storage + test_object_storage: container runs as root, identical without the change); bandit exit 0", date: 2026-10-15}
+authz_checked: "No access change; one more route honours the MLS switch."
+blockers:
+  - "Existing MLS-sourced deals stay readable and filterable (property_source=mls on the list) — nothing is deleted (D-2026-10-12-01)."
+  - "Not deployed (C4.4)."
+audit_refs: []
+decision_refs: [D-2026-10-12-01]
+next_task: "T13.02 lifecycle events (needs a migration and state machine); T13.14 tenant predicates vs RLS in portfolio_api."
+updated: 2026-10-15
 ```
 
 ### L14

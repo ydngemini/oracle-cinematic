@@ -117,7 +117,16 @@ async def _property_anchor(
     Pipeline lookup is both RLS-bound and explicitly tenant-filtered. Normalized
     MLS rows are shared reference data, so they have no tenant predicate. This
     function intentionally never consults showings or client history.
+
+    A new deal on an MLS listing is refused while legacy MLS is switched off
+    (owner decision D-2026-10-12-01, mls_switch; L13-02): the same 404 every
+    MLS route gives. Existing MLS-sourced deals stay readable — nothing is
+    deleted.
     """
+    if property_source == "mls":
+        from mls_switch import require_mls_enabled
+
+        await require_mls_enabled()
     if property_source == "pipeline":
         row = await conn.fetchrow(
             """
