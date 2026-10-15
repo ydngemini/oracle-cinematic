@@ -33,6 +33,8 @@ class _Request:
 
 def test_an_unsubscribe_blocks_the_next_send_by_another_agent(monkeypatch):
     monkeypatch.setenv("ORACLE_PUBLIC_BASE_URL", "https://app.neoh.test")
+    # 0154 (A01): email subjects and bodies are sealed at write.
+    monkeypatch.setenv("ORACLE_ENCRYPTION_MASTER_KEY", "live-test-unsubscribe-master-key-0123456789")
     monkeypatch.delenv("ORACLE_DOMAIN", raising=False)
     asyncio.run(_scenario(monkeypatch))
 

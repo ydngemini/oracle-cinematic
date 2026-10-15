@@ -572,16 +572,20 @@ async def _load_bundle(conn: Any, client_id: str) -> Optional[dict[str, Any]]:
     if client is None or client["archived_at"] is not None:
         return None
     state_row = await conn.fetchrow("SELECT * FROM client_ai_state WHERE client_id=$1::uuid", client_id)
-    interactions = await conn.fetch(
+    import client_note_crypto
+    import sealed_text
+
+    # 0154 (A01): the message text is sealed at rest; open both shapes.
+    interactions = await sealed_text.open_rows(conn, await conn.fetch(
         """
-        SELECT id,direction,interaction_type,payload,created_at
+        SELECT id,direction,interaction_type,payload,created_at,
+               content_ciphertext,tenant_id AS content_ciphertext_tenant_id
           FROM interaction_logs
          WHERE client_id=$1::uuid
          ORDER BY created_at DESC LIMIT 20
         """,
         client_id,
-    )
-    import client_note_crypto
+    ), sealed_text.LOG_CONTENT)
 
     notes = await client_note_crypto.open_rows(conn, await conn.fetch(
         f"""SELECT id,body,created_at,{client_note_crypto.SEALED_COLUMNS} FROM client_notes

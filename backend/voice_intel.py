@@ -827,16 +827,22 @@ async def _process(job: VoiceJob) -> None:
         }
         # Append-only dossier stream (migration 0008). RLS is live via tenant_tx;
         # tenant_id is still written explicitly because the column is NOT NULL.
+        # 0154 (A01): the transcript and its extraction are stored only sealed.
+        stored, sealed_content = sealed_text.split_json(payload, sealed_text.LOG_CONTENT)
+        content_key = sealed_text.key_if_needed(job.ctx.tenant_id, sealed_content)
         async with tenant_tx(job.ctx) as conn:
             await conn.execute(
                 """
                 INSERT INTO interaction_logs
-                    (tenant_id, lead_id, actor_role, interaction_type, payload)
-                VALUES ($1, $2, 'agent', 'voice_note', $3::jsonb)
+                    (tenant_id, lead_id, actor_role, interaction_type, payload, content_ciphertext)
+                VALUES ($1, $2, 'agent', 'voice_note', $3::jsonb,
+                        pgp_sym_encrypt($4::text, $5::text, 's2k-mode=1'))
                 """,
                 job.ctx.tenant_id,
                 job.lead_id,
-                json.dumps(payload),
+                json.dumps(stored),
+                sealed_content,
+                content_key,
             )
 
         # The note's summary is the house's content: a client's house's goes

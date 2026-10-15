@@ -364,14 +364,18 @@ async def _person_detail(
         )
         if record is None:
             return None, None, []
-        rows = await conn.fetch(
-            """SELECT interaction_type, direction, created_at, subject
+        import sealed_text  # lazy: crypto pulls in tenancy
+
+        # 0154 (A01): the subject is sealed at rest; open both shapes.
+        rows = await sealed_text.open_rows(conn, await conn.fetch(
+            """SELECT interaction_type, direction, created_at, subject,
+                      subject_ciphertext, tenant_id AS subject_ciphertext_tenant_id
                  FROM interaction_logs
                 WHERE client_id=$1::uuid
                 ORDER BY created_at DESC
                 LIMIT 5""",
             client_id,
-        )
+        ), sealed_text.LOG_SUBJECT)
 
     timeline = [
         {

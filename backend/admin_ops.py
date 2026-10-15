@@ -202,20 +202,31 @@ def _j(value):
     return value
 
 
+def _sealed_text():
+    import sealed_text  # lazy: crypto pulls in tenancy
+
+    return sealed_text
+
+
 def _row(record) -> dict:
     return {k: _j(v) for k, v in dict(record).items()}
 
 
-async def _fetch(ctx: TenantContext, query: str, *args) -> list[dict]:
+async def _fetch(ctx: TenantContext, query: str, *args, sealed: tuple = ()) -> list[dict]:
     """Run one read inside tenant_tx; translate a dead Memory Core into 503
-    (crm.py house style) instead of a 500 stack trace."""
+    (crm.py house style) instead of a 500 stack trace. `sealed` names the
+    sealed_text fields the query selects (cipher + tenant alias); they are
+    opened in the same transaction, each row under its own tenant's key."""
     try:
         async with tenant_tx(ctx) as conn:
             # Every admin read is fleet-wide; bound it so a slow per-tenant
             # aggregate answers 503 instead of holding a connection (and the
             # operator console) for the 30 s command timeout.
             await conn.execute("SET LOCAL statement_timeout = '5s'")
-            return [_row(r) for r in await conn.fetch(query, *args)]
+            rows = await conn.fetch(query, *args)
+            if sealed:
+                rows = await _sealed_text().open_fields(conn, rows, *sealed)
+            return [_row(r) for r in rows]
     except HTTPException:
         raise
     except Exception as exc:  # noqa: BLE001 — connection/pool failures
@@ -479,6 +490,7 @@ async def activity(
         """
         SELECT i.id, i.tenant_id, i.lead_id, i.client_id, i.actor_role,
                i.interaction_type, i.direction, i.subject, i.created_at,
+               i.subject_ciphertext, i.tenant_id AS subject_ciphertext_tenant_id,
                c.full_name AS client_name, t.name AS tenant_name
         FROM interaction_logs i
         LEFT JOIN clients c ON c.id = i.client_id
@@ -487,6 +499,7 @@ async def activity(
         LIMIT $1
         """,
         limit,
+        sealed=(_sealed_text().LOG_SUBJECT,),
     )
 
     try:
@@ -519,7 +532,8 @@ async def outbox(
             """
             SELECT e.id, e.tenant_id, t.name AS tenant_name, e.to_email, e.subject,
                    e.status, e.error, e.template_key, e.scheduled_at, e.sent_at,
-                   e.created_by, e.created_at
+                   e.created_by, e.created_at,
+                   e.subject_ciphertext, e.tenant_id AS subject_ciphertext_tenant_id
             FROM email_outbox e
             LEFT JOIN tenants t ON t.id = e.tenant_id
             WHERE e.status = $2
@@ -528,6 +542,7 @@ async def outbox(
             """,
             limit,
             status_filter,
+            sealed=(_sealed_text().OUTBOX_SUBJECT,),
         )
     else:
         rows = await _fetch(
@@ -535,13 +550,15 @@ async def outbox(
             """
             SELECT e.id, e.tenant_id, t.name AS tenant_name, e.to_email, e.subject,
                    e.status, e.error, e.template_key, e.scheduled_at, e.sent_at,
-                   e.created_by, e.created_at
+                   e.created_by, e.created_at,
+                   e.subject_ciphertext, e.tenant_id AS subject_ciphertext_tenant_id
             FROM email_outbox e
             LEFT JOIN tenants t ON t.id = e.tenant_id
             ORDER BY e.created_at DESC
             LIMIT $1
             """,
             limit,
+            sealed=(_sealed_text().OUTBOX_SUBJECT,),
         )
 
     return {"counts": {r["status"]: r["n"] for r in rollup}, "emails": rows}

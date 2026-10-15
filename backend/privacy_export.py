@@ -67,6 +67,13 @@ DECRYPT: dict[str, dict[str, str]] = {
     "sms_messages": {"body_ciphertext": "sealed_body"},
     "negotiation_events": {"transcript_ciphertext": "sealed_transcript_excerpt"},
     "user_interactions": {"content_ciphertext": "sealed_content"},
+    # 0154 (A01, L17-22): same shape. interaction_logs' sealed_content is the
+    # JSON object of the payload keys body/text/transcript/summary/extraction.
+    "email_outbox": {"subject_ciphertext": "sealed_subject", "body_text_ciphertext": "sealed_body_text"},
+    "interaction_logs": {"subject_ciphertext": "sealed_subject", "content_ciphertext": "sealed_content"},
+    "ai_tool_operations": {"result_ciphertext": "sealed_result"},
+    "beliefs": {"source_quote_ciphertext": "sealed_source_quote"},
+    "user_profiles": {"profile_summary_ciphertext": "sealed_profile_summary"},
 }
 _MAX_MEDIA_BYTES = int(os.getenv("ORACLE_EXPORT_MAX_MEDIA_BYTES", str(2 * 1024 ** 3)))
 

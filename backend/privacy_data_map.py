@@ -43,7 +43,8 @@ TABLES: dict[str, TableEntry] = {
     "tenants": TableEntry(C.ACCOUNT, Disposition.TENANT_ROW,
                           "name/slug/website/postal_address scrubbed; the row anchors receipts"),
     "users": TableEntry(C.ACCOUNT, E, "agent_id is the user's email"),
-    "user_profiles": TableEntry(C.ACCOUNT, E, "tenant_id is text; no FK"),
+    "user_profiles": TableEntry(C.ACCOUNT, E, "tenant_id is text; no FK; profile_summary sealed in "
+                                              "profile_summary_ciphertext since 0154 (L17-22)"),
     "team_memberships": TableEntry(C.ACCOUNT, E),
     "agent_licenses": TableEntry(C.ACCOUNT, E),
     "agent_ce_log": TableEntry(C.ACCOUNT, E, "no FK to tenants"),
@@ -107,8 +108,12 @@ TABLES: dict[str, TableEntry] = {
     "sms_messages": TableEntry(C.COMMUNICATION_CONTENT, E,
                                "body sealed in body_ciphertext since 0152 (L17-21); pre-0152 bodies "
                                "plaintext until backfill_sealed_text.py; numbers plaintext"),
-    "email_outbox": TableEntry(C.COMMUNICATION_CONTENT, E),
-    "interaction_logs": TableEntry(C.COMMUNICATION_CONTENT, E),
+    "email_outbox": TableEntry(C.COMMUNICATION_CONTENT, E,
+                               "subject/body_text sealed in *_ciphertext since 0154 (L17-22); pre-0154 "
+                               "rows plaintext until backfill_sealed_text.py; to_email plaintext"),
+    "interaction_logs": TableEntry(C.COMMUNICATION_CONTENT, E,
+                                   "subject + payload text keys (body/text/transcript/summary/extraction) "
+                                   "sealed since 0154 (L17-22); behavioural keys plaintext"),
     "inbound_voice_calls": TableEntry(C.CALL_TRANSCRIPT, E, "transcript encrypted"),
     "contact_intake_sessions": TableEntry(C.CALL_TRANSCRIPT, E),
     "negotiation_events": TableEntry(C.CALL_TRANSCRIPT, E,
@@ -147,13 +152,13 @@ TABLES: dict[str, TableEntry] = {
                                    "no words"),
     "ai_chat_actions": TableEntry(C.AI_CHAT, E),
     "ai_chat_message_attachments": TableEntry(C.AI_CHAT, E),
-    "ai_tool_operations": TableEntry(C.AI_CHAT, E),
+    "ai_tool_operations": TableEntry(C.AI_CHAT, E, "result sealed in result_ciphertext since 0154 (L17-22)"),
     "user_interactions": TableEntry(C.AI_CHAT, E,
                                     "raw chat turns sealed in content_ciphertext since 0152; pre-0152 "
                                     "rows plaintext until backfill_sealed_text.py; tenant_id text"),
     "ai_decision_traces": TableEntry(C.DERIVED, E),
     "agent_decisions": TableEntry(C.DERIVED, E),
-    "beliefs": TableEntry(C.AI_MEMORY, E),
+    "beliefs": TableEntry(C.AI_MEMORY, E, "source_quote sealed in source_quote_ciphertext since 0154 (L17-22)"),
     "outcome_events": TableEntry(C.DERIVED, E),
     "client_ai_state": TableEntry(C.AI_MEMORY, E),
     "style_training_examples": TableEntry(C.AI_MEMORY, E),

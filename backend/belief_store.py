@@ -35,6 +35,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
+import sealed_text
 from db.connection import tenant_tx
 from tenancy import TenantContext
 
@@ -119,7 +120,20 @@ def effective_confidence(
     return round(max(decayed, CONFIDENCE_FLOOR), 4)
 
 
+async def _opened(conn: Any, rows: list[Any]) -> list[dict]:
+    """Rows of `SELECT *` / `RETURNING *` with the source quote opened (0154,
+    A01): the quote is sealed at rest under the row's own tenant key, and a
+    pre-0154 row still holds it in plaintext."""
+    alias = sealed_text.BELIEF_QUOTE.tenant_alias
+    return await sealed_text.open_rows(
+        conn, [{**dict(r), alias: r["tenant_id"]} for r in rows if r is not None],
+        sealed_text.BELIEF_QUOTE)
+
+
 def _row_to_belief(row: Any, now: datetime) -> dict[str, Any]:
+    if dict(row).get(sealed_text.BELIEF_QUOTE.cipher) is not None:
+        # A reader that skipped _opened would show a sealed quote as empty.
+        raise sealed_text.SealError("a sealed belief was read without opening its quote")
     value = row["object_value"]
     if isinstance(value, str):
         try:
@@ -204,24 +218,30 @@ async def assert_belief(
             """,
             subject_type, subject_id, predicate,
         )
+        standing = await _opened(conn, standing)
         conflicting = [r for r in standing if r["object_value"] != encoded]
 
+        # 0154 (A01): the quote is stored only sealed, under the tenant's key.
         row = await conn.fetchrow(
             """
             INSERT INTO beliefs (
                 tenant_id, subject_type, subject_id, predicate, object_value,
                 status, confidence, source_kind, source_ref, source_quote,
-                learned_at, valid_until, revision_state
+                source_quote_ciphertext, learned_at, valid_until, revision_state
             ) VALUES (
                 app_current_tenant(), $1, $2, $3, $4::jsonb,
-                $5, $6, $7, $8, $9, $10, $11, $12
+                $5, $6, $7, $8, NULL,
+                pgp_sym_encrypt(NULLIF($9::text, ''), $13::text, 's2k-mode=1'),
+                $10, $11, $12
             ) RETURNING *
             """,
             subject_type, subject_id, predicate, encoded,
             status, confidence, source.kind, source.ref, source.quote,
             learned_at, valid_until,
             "disputed" if conflicting else "active",
+            sealed_text.key_if_needed(ctx.tenant_id, source.quote),
         )
+        row = (await _opened(conn, [row]))[0]
 
         if conflicting:
             await conn.execute(
@@ -261,6 +281,7 @@ async def beliefs_about(
             """,
             subject_type, subject_id, list(states),
         )
+        rows = await _opened(conn, rows)
 
     by_predicate: dict[str, list[dict[str, Any]]] = {}
     for row in rows:
@@ -368,6 +389,8 @@ async def correct_belief(
                 """,
                 belief_id,
             )
+        if row is not None:
+            row = (await _opened(conn, [row]))[0]
 
     if row is None:
         raise LookupError(f"belief {belief_id} not found, or already retracted")

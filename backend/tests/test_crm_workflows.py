@@ -27,6 +27,13 @@ PUBLIC_RECORD_ID = "99999999-9999-9999-9999-999999999999"
 CTX = TenantContext(agent_id="agent@example.test", tenant_id=TENANT_ID, role=Role.AGENT)
 
 
+@pytest.fixture(autouse=True)
+def _throwaway_master_key(monkeypatch):
+    # 0154 (A01): message subjects and text are sealed at write; a writer
+    # without ORACLE_ENCRYPTION_MASTER_KEY fails closed.
+    monkeypatch.setenv("ORACLE_ENCRYPTION_MASTER_KEY", "unit-test-crm-master")
+
+
 def _fake_tenant_tx(conn, seen_contexts=None):
     @asynccontextmanager
     async def tx(ctx):
@@ -246,7 +253,10 @@ def test_internal_note_is_stored_as_private_message_without_outbound_contact(mon
     assert interaction_args[2] == "agent"
     assert interaction_args[3] == "message"
     assert interaction_args[4] is None
-    assert payload == {"body": "Private", "visibility": "internal"}
+    # 0154: the text leaves the stored payload and is passed only to the
+    # in-INSERT pgp_sym_encrypt; the behavioural keys stay.
+    assert payload == {"visibility": "internal"}
+    assert json.loads(interaction_args[7]) == {"body": "Private"}
     assert result["interaction"]["channel"] == "note"
     assert result["interaction"]["direction"] is None
     assert result["delivery_status"] == "internal"

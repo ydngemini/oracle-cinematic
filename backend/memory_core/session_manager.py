@@ -121,12 +121,16 @@ class SessionManager:
             profile = await conn.fetchrow(
                 """
                 SELECT target_mao_pct, max_rehab_budget, target_markets,
-                       profile_summary, summary_updated_at
+                       profile_summary, summary_updated_at,
+                       profile_summary_ciphertext, tenant_id AS profile_summary_ciphertext_tenant_id
                   FROM user_profiles
                  WHERE user_id = $1
                 """,
                 user_id,
             )
+            if profile is not None:
+                # 0154 (A01): the summary is sealed at rest; open both shapes.
+                profile = (await sealed_text.open_rows(conn, [profile], sealed_text.PROFILE_SUMMARY))[0]
             recent = await conn.fetch(
                 """
                 SELECT role, content, token_estimate, created_at,
@@ -214,7 +218,7 @@ class SessionManager:
     async def summarize_rolling_memory(self, user_id: str) -> Optional[str]:
         """If the user's live chat history exceeds the token threshold, compress
         everything older than the last `keep_recent` messages into a dense
-        'Profile Summary' string, fold it into user_profiles.profile_summary, and
+        'Profile Summary' string, fold it into the user's profile summary, and
         delete the archived rows. Returns the new summary, or None if no roll-up
         was needed.
 
@@ -245,34 +249,45 @@ class SessionManager:
             archived_ids = [r["id"] for r in older]
             transcript = "\n".join(f"[{r['role']}] {r['content']}" for r in older)
 
-            prior = await conn.fetchval(
-                "SELECT profile_summary FROM user_profiles WHERE user_id = $1",
+            prior_rows = await sealed_text.open_rows(conn, await conn.fetch(
+                "SELECT profile_summary, profile_summary_ciphertext, "
+                "tenant_id AS profile_summary_ciphertext_tenant_id FROM user_profiles WHERE user_id = $1",
                 user_id,
-            )
+            ), sealed_text.PROFILE_SUMMARY)
+            prior = prior_rows[0]["profile_summary"] if prior_rows else ""
 
             new_summary = await self._summarize(transcript, prior or "")
             new_summary = new_summary.strip()
 
             # Upsert the dense summary and purge the rows it now represents.
-            await conn.execute(
-                """
-                INSERT INTO user_profiles (user_id, tenant_id, profile_summary,
-                                           summary_updated_at)
-                     VALUES ($1, $2, $3, now())
-                ON CONFLICT (user_id) DO UPDATE
-                    SET profile_summary = EXCLUDED.profile_summary,
-                        summary_updated_at = now()
-                """,
-                user_id,
-                self.ctx.tenant_id,
-                new_summary,
-            )
+            await self.store_profile_summary(conn, user_id, new_summary)
             await conn.execute(
                 "DELETE FROM user_interactions WHERE id = ANY($1::bigint[])",
                 archived_ids,
             )
 
         return new_summary
+
+    async def store_profile_summary(self, conn, user_id: str, summary: str) -> None:
+        """Upsert the rolling summary. 0154 (A01): stored only sealed, under
+        the tenant's key; no master key = no write."""
+        import sealed_text  # lazy: crypto pulls in tenancy
+
+        await conn.execute(
+            """
+            INSERT INTO user_profiles (user_id, tenant_id, profile_summary,
+                                       profile_summary_ciphertext, summary_updated_at)
+                 VALUES ($1, $2, '', pgp_sym_encrypt(NULLIF($3::text, ''), $4::text, 's2k-mode=1'), now())
+            ON CONFLICT (user_id) DO UPDATE
+                SET profile_summary = '',
+                    profile_summary_ciphertext = EXCLUDED.profile_summary_ciphertext,
+                    summary_updated_at = now()
+            """,
+            user_id,
+            self.ctx.tenant_id,
+            summary,
+            sealed_text.key_for(self.ctx.tenant_id),
+        )
 
     # ------------------------------------------------------------------ #
     # Convenience writer — record a turn (auto token-estimated).

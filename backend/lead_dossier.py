@@ -22,6 +22,7 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field, field_validator
 
+import sealed_text
 from db.connection import tenant_tx
 from record_access import require_lead_edit
 from tenancy import TenantContext, require_context
@@ -87,16 +88,18 @@ async def get_dossier(
             )
             if row is None:
                 raise HTTPException(status.HTTP_404_NOT_FOUND, "lead not found")
-            logs = await conn.fetch(
+            # 0154 (A01): voice-note transcripts and message text are sealed.
+            logs = await sealed_text.open_rows(conn, await conn.fetch(
                 """
-                SELECT actor_role, interaction_type, payload, created_at
+                SELECT actor_role, interaction_type, payload, created_at,
+                       content_ciphertext, tenant_id AS content_ciphertext_tenant_id
                   FROM interaction_logs
                  WHERE lead_id = $1
                  ORDER BY created_at DESC
                  LIMIT 10
                 """,
                 lead_id,
-            )
+            ), sealed_text.LOG_CONTENT)
             # A brokerage's own listing: price, status and specs live on the
             # listing and its companion lead, and the sheet showed none of
             # them — an agent opening their own listing saw a wholesaler's

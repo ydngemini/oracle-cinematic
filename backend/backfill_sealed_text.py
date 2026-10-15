@@ -1,18 +1,25 @@
 #!/usr/bin/env python3
 """Seal the plaintext message bodies, call transcript excerpts and chat turns
-written before migration 0152 (audit A01, ledger L17-21). Operator script.
+written before migration 0152 (audit A01, ledger L17-21), and the email
+subjects/bodies, interaction-log subjects/content, AI tool receipts, belief
+source quotes and profile summaries written before 0154 (L17-22). Operator
+script, and the periodic sealed_text_seal task's engine.
 
 Bounded, resumable, idempotent: each batch selects only rows still in the
 plaintext shape (at most ORACLE_SEALED_TEXT_BACKFILL_BATCH, default 500) and
 commits on its own, so an interrupted run loses nothing and the next run
 carries on; a second run over a sealed table changes nothing. Batches lock with
-SKIP LOCKED, so the app keeps writing while it runs. negotiation_events and
-user_interactions are append-only to oracle_app, so their batches go through
-the 0152 SECURITY DEFINER functions, which can only move a row's own text
-between its two columns. Prints counts, tenant ids and timings, never text.
+SKIP LOCKED, so the app keeps writing while it runs. negotiation_events,
+user_interactions and interaction_logs are append-only to oracle_app, so their
+batches go through the 0152 / 0154 SECURITY DEFINER functions, which can only
+move a row's own text between its two shapes. Prints counts, tenant ids and
+timings, never text.
 
-    python backfill_sealed_text.py                    # all three fields
-    python backfill_sealed_text.py --field sms        # one field
+Sealing an email_outbox row bumps its updated_at (trigger), so a row still
+'queued' restarts its 10-minute reconciliation window once.
+
+    python backfill_sealed_text.py                    # every field
+    python backfill_sealed_text.py --field sms        # one field (see FIELDS)
     python backfill_sealed_text.py --count            # remaining only, no writes
     python backfill_sealed_text.py --max-rows 10000   # stop after ~N rows per field
     python backfill_sealed_text.py --unseal           # rollback: plaintext back (see 0152)
@@ -61,11 +68,124 @@ _SMS_UNSEAL = """
 """
 _TRANSCRIPT = "SELECT seal_negotiation_transcripts($1::uuid, $2::text, $3::int, $4::boolean)"
 _INTERACTION = "SELECT seal_user_interactions($1::text, $2::text, $3::int, $4::boolean)"
+_INTERACTION_LOG = "SELECT seal_interaction_logs($1::uuid, $2::text, $3::int, $4::boolean)"
+
+# 0154 (L17-22). The app may UPDATE these four tables, under RLS in the
+# platform context of the row's own tenant.
+_EMAIL_SEAL = """
+    UPDATE email_outbox
+       SET subject_ciphertext = COALESCE(subject_ciphertext,
+                                         pgp_sym_encrypt(NULLIF(subject, ''), $2::text, 's2k-mode=1')),
+           subject = '',
+           body_text_ciphertext = COALESCE(body_text_ciphertext,
+                                           pgp_sym_encrypt(NULLIF(body_text, ''), $2::text, 's2k-mode=1')),
+           body_text = ''
+     WHERE id IN (SELECT id FROM email_outbox
+                   WHERE tenant_id = $1::uuid AND body_html IS NULL
+                     AND ((subject_ciphertext IS NULL AND subject <> '')
+                          OR (body_text_ciphertext IS NULL AND body_text <> ''))
+                   ORDER BY id LIMIT $3
+                   FOR UPDATE SKIP LOCKED)
+    RETURNING id
+"""
+_EMAIL_UNSEAL = """
+    UPDATE email_outbox
+       SET subject = COALESCE(pgp_sym_decrypt(subject_ciphertext, $2::text), subject),
+           subject_ciphertext = NULL,
+           body_text = COALESCE(pgp_sym_decrypt(body_text_ciphertext, $2::text), body_text),
+           body_text_ciphertext = NULL
+     WHERE id IN (SELECT id FROM email_outbox
+                   WHERE tenant_id = $1::uuid
+                     AND (subject_ciphertext IS NOT NULL OR body_text_ciphertext IS NOT NULL)
+                   ORDER BY id LIMIT $3
+                   FOR UPDATE SKIP LOCKED)
+    RETURNING id
+"""
+_TOOL_SEAL = """
+    UPDATE ai_tool_operations
+       SET result_ciphertext = pgp_sym_encrypt(result::text, $2::text, 's2k-mode=1'), result = NULL
+     WHERE id IN (SELECT id FROM ai_tool_operations
+                   WHERE tenant_id = $1::uuid AND result_ciphertext IS NULL AND result IS NOT NULL
+                   ORDER BY id LIMIT $3
+                   FOR UPDATE SKIP LOCKED)
+    RETURNING id
+"""
+_TOOL_UNSEAL = """
+    UPDATE ai_tool_operations
+       SET result = pgp_sym_decrypt(result_ciphertext, $2::text)::jsonb, result_ciphertext = NULL
+     WHERE id IN (SELECT id FROM ai_tool_operations
+                   WHERE tenant_id = $1::uuid AND result_ciphertext IS NOT NULL
+                   ORDER BY id LIMIT $3
+                   FOR UPDATE SKIP LOCKED)
+    RETURNING id
+"""
+_BELIEF_SEAL = """
+    UPDATE beliefs
+       SET source_quote_ciphertext = pgp_sym_encrypt(source_quote, $2::text, 's2k-mode=1'), source_quote = NULL
+     WHERE id IN (SELECT id FROM beliefs
+                   WHERE tenant_id = $1::uuid AND source_quote_ciphertext IS NULL
+                     AND COALESCE(source_quote, '') <> ''
+                   ORDER BY id LIMIT $3
+                   FOR UPDATE SKIP LOCKED)
+    RETURNING id
+"""
+_BELIEF_UNSEAL = """
+    UPDATE beliefs
+       SET source_quote = pgp_sym_decrypt(source_quote_ciphertext, $2::text), source_quote_ciphertext = NULL
+     WHERE id IN (SELECT id FROM beliefs
+                   WHERE tenant_id = $1::uuid AND source_quote_ciphertext IS NOT NULL
+                   ORDER BY id LIMIT $3
+                   FOR UPDATE SKIP LOCKED)
+    RETURNING id
+"""
+# user_profiles.tenant_id is text (0009); passed exactly as stored.
+_PROFILE_SEAL = """
+    UPDATE user_profiles
+       SET profile_summary_ciphertext = pgp_sym_encrypt(profile_summary, $2::text, 's2k-mode=1'),
+           profile_summary = ''
+     WHERE user_id IN (SELECT user_id FROM user_profiles
+                        WHERE tenant_id = $1::text AND profile_summary_ciphertext IS NULL
+                          AND COALESCE(profile_summary, '') <> ''
+                        ORDER BY user_id LIMIT $3
+                        FOR UPDATE SKIP LOCKED)
+    RETURNING user_id
+"""
+_PROFILE_UNSEAL = """
+    UPDATE user_profiles
+       SET profile_summary = pgp_sym_decrypt(profile_summary_ciphertext, $2::text),
+           profile_summary_ciphertext = NULL
+     WHERE user_id IN (SELECT user_id FROM user_profiles
+                        WHERE tenant_id = $1::text AND profile_summary_ciphertext IS NOT NULL
+                        ORDER BY user_id LIMIT $3
+                        FOR UPDATE SKIP LOCKED)
+    RETURNING user_id
+"""
+_DIRECT = {  # field -> (seal, unseal), plain UPDATEs the app role may run
+    "sms": (_SMS_SEAL, _SMS_UNSEAL),
+    "email": (_EMAIL_SEAL, _EMAIL_UNSEAL),
+    "tool_result": (_TOOL_SEAL, _TOOL_UNSEAL),
+    "belief_quote": (_BELIEF_SEAL, _BELIEF_UNSEAL),
+    "profile_summary": (_PROFILE_SEAL, _PROFILE_UNSEAL),
+}
+_FUNCTIONS = {"transcript": _TRANSCRIPT, "interaction": _INTERACTION, "interaction_log": _INTERACTION_LOG}
 
 # Tenants with rows to seal / to unseal.
 _SEAL_TENANTS = {
     "sms": "SELECT DISTINCT tenant_id::text AS t FROM sms_messages "
            "WHERE body_ciphertext IS NULL AND COALESCE(body, '') <> '' ORDER BY 1",
+    "email": "SELECT DISTINCT tenant_id::text AS t FROM email_outbox WHERE body_html IS NULL "
+             "AND ((subject_ciphertext IS NULL AND subject <> '') "
+             "OR (body_text_ciphertext IS NULL AND body_text <> '')) ORDER BY 1",
+    "interaction_log": "SELECT DISTINCT tenant_id::text AS t FROM interaction_logs "
+                       "WHERE (subject_ciphertext IS NULL AND COALESCE(subject, '') <> '') "
+                       "OR (content_ciphertext IS NULL "
+                       "AND payload ?| ARRAY['body','text','transcript','summary','extraction']) ORDER BY 1",
+    "tool_result": "SELECT DISTINCT tenant_id::text AS t FROM ai_tool_operations "
+                   "WHERE result_ciphertext IS NULL AND result IS NOT NULL ORDER BY 1",
+    "belief_quote": "SELECT DISTINCT tenant_id::text AS t FROM beliefs "
+                    "WHERE source_quote_ciphertext IS NULL AND COALESCE(source_quote, '') <> '' ORDER BY 1",
+    "profile_summary": "SELECT DISTINCT tenant_id AS t FROM user_profiles "
+                       "WHERE profile_summary_ciphertext IS NULL AND COALESCE(profile_summary, '') <> '' ORDER BY 1",
     "transcript": "SELECT DISTINCT tenant_id::text AS t FROM negotiation_events "
                   "WHERE transcript_ciphertext IS NULL AND COALESCE(transcript_excerpt, '') <> '' ORDER BY 1",
     "interaction": "SELECT DISTINCT tenant_id AS t FROM user_interactions "
@@ -73,6 +193,16 @@ _SEAL_TENANTS = {
 }
 _UNSEAL_TENANTS = {
     "sms": "SELECT DISTINCT tenant_id::text AS t FROM sms_messages WHERE body_ciphertext IS NOT NULL ORDER BY 1",
+    "email": "SELECT DISTINCT tenant_id::text AS t FROM email_outbox "
+             "WHERE subject_ciphertext IS NOT NULL OR body_text_ciphertext IS NOT NULL ORDER BY 1",
+    "interaction_log": "SELECT DISTINCT tenant_id::text AS t FROM interaction_logs "
+                       "WHERE subject_ciphertext IS NOT NULL OR content_ciphertext IS NOT NULL ORDER BY 1",
+    "tool_result": "SELECT DISTINCT tenant_id::text AS t FROM ai_tool_operations "
+                   "WHERE result_ciphertext IS NOT NULL ORDER BY 1",
+    "belief_quote": "SELECT DISTINCT tenant_id::text AS t FROM beliefs "
+                    "WHERE source_quote_ciphertext IS NOT NULL ORDER BY 1",
+    "profile_summary": "SELECT DISTINCT tenant_id AS t FROM user_profiles "
+                       "WHERE profile_summary_ciphertext IS NOT NULL ORDER BY 1",
     "transcript": "SELECT DISTINCT tenant_id::text AS t FROM negotiation_events "
                   "WHERE transcript_ciphertext IS NOT NULL ORDER BY 1",
     "interaction": "SELECT DISTINCT tenant_id AS t FROM user_interactions "
@@ -83,6 +213,20 @@ _REMAINING = {
     "transcript": "SELECT count(*) FROM negotiation_events "
                   "WHERE transcript_ciphertext IS NULL AND COALESCE(transcript_excerpt, '') <> ''",
     "interaction": "SELECT count(*) FROM user_interactions WHERE content_ciphertext IS NULL AND content <> ''",
+    # A row with body_html is never sealed (nothing writes one; the 0154 CHECK
+    # needs it NULL on a sealed row), so it is not counted as remaining.
+    "email": "SELECT count(*) FROM email_outbox WHERE body_html IS NULL "
+             "AND ((subject_ciphertext IS NULL AND subject <> '') "
+             "OR (body_text_ciphertext IS NULL AND body_text <> ''))",
+    "interaction_log": "SELECT count(*) FROM interaction_logs "
+                       "WHERE (subject_ciphertext IS NULL AND COALESCE(subject, '') <> '') "
+                       "OR (content_ciphertext IS NULL "
+                       "AND payload ?| ARRAY['body','text','transcript','summary','extraction'])",
+    "tool_result": "SELECT count(*) FROM ai_tool_operations WHERE result_ciphertext IS NULL AND result IS NOT NULL",
+    "belief_quote": "SELECT count(*) FROM beliefs "
+                    "WHERE source_quote_ciphertext IS NULL AND COALESCE(source_quote, '') <> ''",
+    "profile_summary": "SELECT count(*) FROM user_profiles "
+                       "WHERE profile_summary_ciphertext IS NULL AND COALESCE(profile_summary, '') <> ''",
 }
 FIELDS = tuple(_REMAINING)
 
@@ -101,10 +245,10 @@ def _is_uuid(value: str) -> bool:
 
 async def _batch(field: str, tenant_id: str, key: str, size: int, unseal: bool) -> int:
     async with tenant_tx(_ctx(tenant_id)) as conn:
-        if field == "sms":
-            return len(await conn.fetch(_SMS_UNSEAL if unseal else _SMS_SEAL, tenant_id, key, size))
-        sql = _TRANSCRIPT if field == "transcript" else _INTERACTION
-        return int(await conn.fetchval(sql, tenant_id, key, size, unseal) or 0)
+        if field in _FUNCTIONS:
+            return int(await conn.fetchval(_FUNCTIONS[field], tenant_id, key, size, unseal) or 0)
+        seal, undo = _DIRECT[field]
+        return len(await conn.fetch(undo if unseal else seal, tenant_id, key, size))
 
 
 async def tenants_pending(field: str, *, unseal: bool = False) -> list[str]:
@@ -125,7 +269,7 @@ async def backfill_field(field: str, *, batch_size: int, unseal: bool = False,
     changed, skipped = 0, []
     for tenant_id in await tenants_pending(field, unseal=unseal):
         if not _is_uuid(tenant_id):
-            skipped.append(tenant_id)  # text tenant id (user_interactions): no context can own it
+            skipped.append(tenant_id)  # text tenant id (user_interactions, user_profiles): no context can own it
             continue
         key = sealed_text.key_for(tenant_id)
         while max_rows is None or changed < max_rows:

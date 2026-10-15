@@ -1124,7 +1124,8 @@ async def _ledger_replay(
     """
     row = await conn.fetchrow(
         """
-        SELECT tool_name, arguments_hash, status, result
+        SELECT tool_name, arguments_hash, status, result,
+               result_ciphertext, tenant_id AS result_ciphertext_tenant_id
           FROM ai_tool_operations
          WHERE tenant_id=$1::uuid AND assistant_id=$2::uuid AND call_index=$3
         """,
@@ -1132,6 +1133,11 @@ async def _ledger_replay(
     )
     if row is None:
         return None
+    import sealed_text  # lazy: crypto pulls in tenancy
+
+    # 0154 (A01): the receipt is sealed at rest (it carries CRM values); a
+    # pre-0154 receipt is still plaintext jsonb. Both open to JSON text.
+    row = (await sealed_text.open_rows(conn, [row], sealed_text.TOOL_RESULT))[0]
     if row["tool_name"] != tool_name or row["arguments_hash"] != arguments_hash:
         raise ToolIdentityMismatch(
             f"call_index {call_index} of this turn was {row['tool_name']}, "
@@ -1199,16 +1205,22 @@ async def _ledger_attach_result(
     atomic would buy nothing and put the transaction that matters at risk.
     """
     try:
+        import sealed_text  # lazy: crypto pulls in tenancy
+
+        # 0154 (A01): stored only sealed, under the tenant's key. Without the
+        # key this raises and the receipt is not attached (the claim stands).
+        key = sealed_text.key_for(ctx.tenant_id)
         async with tenant_tx(ctx) as conn:
             await conn.execute(
                 """
                 UPDATE ai_tool_operations
-                   SET result=$1::jsonb, completed_at=now()
+                   SET result_ciphertext=pgp_sym_encrypt($1::text, $5::text, 's2k-mode=1'),
+                       result=NULL, completed_at=now()
                  WHERE tenant_id=$2::uuid AND assistant_id=$3::uuid
-                   AND call_index=$4 AND result IS NULL
+                   AND call_index=$4 AND result IS NULL AND result_ciphertext IS NULL
                 """,
                 json.dumps(receipt, default=str), ctx.tenant_id,
-                assistant_id, call_index,
+                assistant_id, call_index, key,
             )
     except Exception:  # noqa: BLE001 - see docstring
         logger.warning(

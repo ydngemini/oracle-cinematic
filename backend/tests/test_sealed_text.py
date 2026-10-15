@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import json
 import re
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -107,7 +108,32 @@ def _sql_literals(tree: ast.AST):
                 for part in node.values)
 
 
-@pytest.mark.parametrize("field", sealed_text.FIELDS, ids=lambda f: f.table)
+_NOT_ALIAS = r"(?!(?:WHERE|ON|JOIN|LEFT|RIGHT|INNER|ORDER|GROUP|LIMIT|SET|USING|VALUES|SELECT|RETURNING)\b)"
+
+
+def _names_text_column(text: str, field) -> bool:
+    """The statement names the field's column on ITS table: unqualified, or
+    qualified by the table or one of its aliases. `ld.payload` in a statement
+    that also reads interaction_logs is a leads column, not the sealed one."""
+    aliases = {a.lower() for a in re.findall(
+        rf"\b{field.table}\s+(?:AS\s+)?{_NOT_ALIAS}(\w+)", text, re.I)}
+    aliases.add(field.table)
+    for m in re.finditer(rf"(?:\b(\w+)\.)?\b{field.plain}\b", text):
+        if m.group(1) is None or m.group(1).lower() in aliases:
+            return True
+    return False
+
+
+def test_the_guard_tells_the_tables_columns_apart():
+    log = sealed_text.LOG_CONTENT
+    assert _names_text_column("SELECT il.payload FROM interaction_logs il", log)
+    assert _names_text_column("INSERT INTO interaction_logs (tenant_id, payload) VALUES ($1,$2)", log)
+    assert not _names_text_column(
+        "SELECT l.payload, i.created_at FROM leads l JOIN interaction_logs i ON i.lead_id = l.id", log)
+    assert _names_text_column("SELECT body FROM sms_messages WHERE id=$1", sealed_text.SMS_BODY)
+
+
+@pytest.mark.parametrize("field", sealed_text.FIELDS, ids=lambda f: f"{f.table}.{f.plain}")
 def test_every_app_statement_on_the_text_uses_the_sealed_shape(field):
     """A reader that forgets the cipher column shows a sealed message as empty;
     a writer that forgets it writes plaintext. Every SQL literal in the app that
@@ -121,7 +147,7 @@ def test_every_app_statement_on_the_text_uses_the_sealed_shape(field):
         for lineno, text in _sql_literals(ast.parse(path.read_text())):
             if not re.search(rf"\b(FROM|INTO|UPDATE|JOIN)\s+{field.table}\b", text, re.I):
                 continue
-            if not re.search(rf"\b{field.plain}\b", text):
+            if not _names_text_column(text, field):
                 continue  # ids, status, counts, deletes
             seen += 1
             if field.cipher not in text:
@@ -271,3 +297,114 @@ def test_every_app_pgp_sym_encrypt_uses_single_pass_s2k():
                     and "s2k-mode=1" not in code:
                 offenders.append(f"{rel}:{lineno}")
     assert not offenders, offenders
+
+
+# ── slice 2 (0154, L17-22) ──────────────────────────────────────────────────
+
+def test_split_json_moves_only_the_content_keys():
+    stored, sealed = sealed_text.split_json(
+        {"body": "Gate code 4411", "transcript": "roof", "delivery_status": "not_sent", "listing_id": "L1"},
+        sealed_text.LOG_CONTENT)
+    assert stored == {"delivery_status": "not_sent", "listing_id": "L1"}
+    assert json.loads(sealed) == {"body": "Gate code 4411", "transcript": "roof"}
+    assert sealed_text.split_json({"asset": "a1"}, sealed_text.LOG_CONTENT) == ({"asset": "a1"}, None)
+
+
+@pytest.mark.parametrize("stored", ['{"delivery_status": "not_sent"}', {"delivery_status": "not_sent"}])
+def test_opening_a_sealed_payload_merges_it_back_in_the_same_shape(monkeypatch, stored):
+    monkeypatch.setenv("ORACLE_ENCRYPTION_MASTER_KEY", "unit-master")
+    field = sealed_text.LOG_CONTENT
+
+    class _Conn:
+        async def fetchval(self, _query, ciphertexts, _key):
+            return ['{"body": "hello"}' for _ in ciphertexts]
+
+    rows = [{"id": 1, "payload": stored, field.cipher: b"x", field.tenant_alias: TENANT},
+            {"id": 2, "payload": '{"body": "old"}', field.cipher: None, field.tenant_alias: TENANT}]
+    out = asyncio.run(sealed_text.open_rows(_Conn(), rows, field))
+    merged = out[0]["payload"]
+    assert type(merged) is type(stored)
+    assert (json.loads(merged) if isinstance(merged, str) else merged) == {
+        "delivery_status": "not_sent", "body": "hello"}
+    assert out[1]["payload"] == '{"body": "old"}'
+
+
+def test_nothing_to_seal_needs_no_key_and_text_without_a_key_fails_closed(monkeypatch):
+    monkeypatch.delenv("ORACLE_ENCRYPTION_MASTER_KEY", raising=False)
+    assert sealed_text.key_if_needed(TENANT, None, "") is None
+    with pytest.raises(sealed_text.SealError):
+        sealed_text.key_if_needed(TENANT, None, "Offer follow-up")
+    monkeypatch.setenv("ORACLE_ENCRYPTION_MASTER_KEY", "unit-master")
+    assert sealed_text.key_if_needed(TENANT, "x") == derive_tenant_key(TENANT, "unit-master")
+
+
+def test_the_content_keys_agree_everywhere():
+    """The JSON keys sealed out of interaction_logs.payload are written in
+    four places: sealed_text, the 0154 CHECK and storage move, and the
+    backfill's counts. A key added to one and not the others would leave text
+    behind (or fail the CHECK)."""
+    import backfill_sealed_text as backfill
+
+    keys = "ARRAY[" + ",".join(f"'{k}'" for k in sealed_text.LOG_CONTENT.json_keys) + "]"
+    sql = (BACKEND / "db/migrations/0154_sealed_text_slice_two.sql").read_text()
+    assert sql.count(keys) == 2, "CHECK + seal_interaction_logs"
+    for table in (backfill._SEAL_TENANTS, backfill._REMAINING):
+        assert keys in table["interaction_log"]
+
+
+def test_slice_two_is_expand_only():
+    sql = re.sub(r"--[^\n]*", "", (BACKEND / "db/migrations/0154_sealed_text_slice_two.sql").read_text())
+    assert "CREATE TRIGGER" not in sql.upper()
+    assert "SET NOT NULL" not in sql.upper()
+    assert "DROP COLUMN" not in sql.upper()
+    checks = re.findall(r"CHECK\s*\((.*?)\);", sql, re.S)
+    assert len(checks) == 7
+    for check in checks:
+        assert re.match(r"\s*\w+_ciphertext IS NULL\s+OR", check), check
+    # The storage move cannot widen access: own tenant's platform context only.
+    assert "app_is_platform_admin() OR p_tenant IS DISTINCT FROM app_current_tenant()" in sql
+    assert "GRANT EXECUTE ON FUNCTION seal_interaction_logs(uuid, text, integer, boolean) TO oracle_app" in sql
+
+
+def test_every_slice_two_field_is_backfilled():
+    import backfill_sealed_text as backfill
+
+    tables = {f.table for f in sealed_text.FIELDS}
+    covered = " ".join(list(backfill._REMAINING.values()))
+    assert all(t in covered for t in tables), tables
+    assert set(backfill.FIELDS) == set(backfill._SEAL_TENANTS) == set(backfill._UNSEAL_TENANTS)
+
+
+def test_a_belief_read_without_opening_its_quote_fails_loudly():
+    import belief_store
+    from datetime import datetime, timezone
+
+    now = datetime.now(timezone.utc)
+    row = {"id": "b1", "object_value": '"x"', "pinned_at": None, "confidence": 0.5, "predicate": "p",
+           "learned_at": now, "valid_until": None, "subject_type": "client", "subject_id": "c",
+           "status": "reported", "source_kind": "sms", "source_ref": None, "source_quote": None,
+           "recorded_at": now, "revision_state": "active", "source_quote_ciphertext": b"sealed"}
+    with pytest.raises(sealed_text.SealError):
+        belief_store._row_to_belief(row, now)
+    row.pop("source_quote_ciphertext")
+    assert belief_store._row_to_belief(row, now)["source"]["quote"] is None
+
+
+def test_the_tool_receipt_is_attached_only_sealed(monkeypatch):
+    import ai_chat_store
+    from tenancy import Role, TenantContext
+
+    monkeypatch.setenv("ORACLE_ENCRYPTION_MASTER_KEY", "unit-master")
+    seen = []
+
+    @asynccontextmanager
+    async def tx(_ctx):
+        yield _capture_conn(seen)
+
+    monkeypatch.setattr(ai_chat_store, "tenant_tx", tx)
+    ctx = TenantContext(agent_id="agent-a", tenant_id=TENANT, role=Role.AGENT)
+    asyncio.run(ai_chat_store._ledger_attach_result(ctx, "00000000-0000-0000-0000-0000000000c3", 0,
+                                                    {"ok": True, "phone": "+15550001234"}))
+    query, args = seen[-1]
+    assert "result_ciphertext=pgp_sym_encrypt($1::text, $5::text, 's2k-mode=1')" in query
+    assert "result=NULL" in query and args[-1] == derive_tenant_key(TENANT, "unit-master")
