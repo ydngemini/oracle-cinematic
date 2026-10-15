@@ -22,7 +22,7 @@ import asyncio
 import json
 import os
 import time
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, Optional
 
 HEALTHY, DEGRADED, UNAVAILABLE = "HEALTHY", "DEGRADED", "UNAVAILABLE"
 RATE_LIMITED, AUTH_FAILED, STALE = "RATE_LIMITED", "AUTH_FAILED", "STALE"
@@ -46,7 +46,7 @@ ROLE = {
 #: unknown/unavailable fallbacks used to repeat this list three times).
 _DB_KEYS: tuple[str, ...] = (
     "workers", "scheduler", "job_queue", "mls", "ai", "outbound_side_effects", "email_outbox",
-    "property_harvesters", "market_data",
+    "property_harvesters", "market_data", "valuation_providers",
 )
 
 
@@ -166,6 +166,8 @@ async def _db_components() -> dict[str, dict]:
         market = await conn.fetchrow(
             "SELECT count(*) AS states, EXTRACT(EPOCH FROM now() - max(updated_at))::int AS age_s "
             "FROM state_market_stats")
+        providers = [dict(r) for r in await conn.fetch(
+            "SELECT provider, consecutive_failures, last_failure_kind FROM provider_health")]
     workers = [b for b in beats if b["role"] in ("worker", "all")]
     from process_heartbeat import STALE_AFTER  # same bound as /health/workers (4 missed beats)
 
@@ -203,6 +205,7 @@ async def _db_components() -> dict[str, dict]:
                            if unknown or stuck else _c(HEALTHY, "email outbox draining"))
     out["property_harvesters"] = _property_harvesters(dict(harvest))
     out["market_data"] = _market_data(dict(market))
+    out["valuation_providers"] = _valuation_providers(providers)
     return out
 
 
@@ -249,17 +252,27 @@ def _market_data(row: dict) -> dict:
     return _c(HEALTHY, "market statistics current", states=states, age_s=int(age or 0))
 
 
-def _valuation_providers() -> dict:
-    """RentCast / ATTOM (avm_client). Their call outcomes are not recorded
-    anywhere this process can read, so a configured provider is UNKNOWN —
-    never HEALTHY on the strength of a key being set (AC19.07 needs a recorded
-    outcome first)."""
-    configured = [name for name, var in (("RentCast", "RENTCAST_API_KEY"), ("ATTOM", "ATTOM_API_KEY"))
+def _valuation_providers(rows: Optional[list[dict]] = None) -> dict:
+    """RentCast / ATTOM (avm_client), from the last outcome each call recorded
+    (provider_health, 0160). A configured provider with no recorded call is
+    UNKNOWN — never HEALTHY on the strength of a key being set (AC19.07)."""
+    configured = [name for name, var in (("rentcast", "RENTCAST_API_KEY"), ("attom", "ATTOM_API_KEY"))
                   if os.getenv(var, "").strip()]
     if not configured:
         return _c(NOT_CONFIGURED, "no valuation provider key set")
-    return _c(UNKNOWN, "valuation provider configured; call outcomes are not recorded, so health is not observed",
-              configured=len(configured))
+    seen = {r["provider"]: r for r in (rows or []) if r.get("provider") in configured}
+    if not seen:
+        return _c(UNKNOWN, "valuation provider configured; no call recorded yet", configured=len(configured))
+    failing = {p: r for p, r in seen.items() if int(r.get("consecutive_failures") or 0) > 0}
+    kinds = {r.get("last_failure_kind") for r in failing.values()}
+    detail = {"configured": len(configured), "observed": len(seen), "failing": len(failing)}
+    if "credential_rejected" in kinds:
+        return _c(AUTH_FAILED, "a valuation provider rejected its credential; valuations fall back", **detail)
+    if "rate_limited" in kinds:
+        return _c(RATE_LIMITED, "a valuation provider is throttling requests", **detail)
+    if any(int(r.get("consecutive_failures") or 0) >= 3 for r in failing.values()):
+        return _c(DEGRADED, "a valuation provider is failing repeatedly", **detail)
+    return _c(HEALTHY, "valuation providers answering", **detail)
 
 
 def _mls(rows: list[dict]) -> dict:
@@ -307,8 +320,7 @@ async def _snapshot() -> dict:
                     for k in _DB_KEYS}
     else:
         rest = {k: _c(UNKNOWN, "database unavailable") for k in _DB_KEYS}
-    components = {"database": db, "realtime_fanout": realtime, "valkey": valkey, **rest,
-                  "valuation_providers": _valuation_providers()}
+    components = {"database": db, "realtime_fanout": realtime, "valkey": valkey, **rest}
     for name, comp in components.items():
         comp["role"] = ROLE.get(name, "optional")
     core_bad = [n for n, c in components.items() if c["role"] == "core" and c["state"] in (UNAVAILABLE, STALE)]

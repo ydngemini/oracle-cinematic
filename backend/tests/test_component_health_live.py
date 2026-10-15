@@ -34,12 +34,28 @@ async def _scenario():
                    schedule_seconds, enabled, circuit_state, last_succeeded_at)
                VALUES ($1,'health-open','Open circuit','DE','arcgis',86400,true,'open', now()),
                       ($1,'health-ok','Fresh','DE','arcgis',86400,true,'closed', now())""", tenant)
+        import provider_health as ph
+
+        os.environ["RENTCAST_API_KEY"] = "live-test-key"
+        await admin.execute("DELETE FROM provider_health WHERE provider='rentcast'")
+        await ph.record("rentcast", "credential_rejected")
+        await ph.record("rentcast", "credential_rejected")
+        row = await admin.fetchrow("SELECT * FROM provider_health WHERE provider='rentcast'")
+        assert row["consecutive_failures"] == 2 and row["last_failure_kind"] == "credential_rejected"
         out = await ch._db_components()
+        assert out["valuation_providers"]["state"] == ch.AUTH_FAILED, out["valuation_providers"]
+        await ph.record("rentcast", ph.OK)
+        row = await admin.fetchrow("SELECT * FROM provider_health WHERE provider='rentcast'")
+        assert row["consecutive_failures"] == 0 and row["last_ok_at"] is not None
+        out = await ch._db_components()
+        assert out["valuation_providers"]["state"] == ch.HEALTHY
         harvest = out["property_harvesters"]
         assert harvest["state"] == ch.DEGRADED and harvest["detail"]["open_circuits"] >= 1, harvest
         assert out["market_data"]["state"] in (ch.NOT_CONFIGURED, ch.HEALTHY, ch.STALE), out["market_data"]
         assert set(ch._DB_KEYS) <= set(out)
     finally:
+        os.environ.pop("RENTCAST_API_KEY", None)
+        await admin.execute("DELETE FROM provider_health WHERE provider='rentcast'")
         await admin.execute("DELETE FROM harvest_sources WHERE tenant_id=$1", tenant)
         await admin.execute("DELETE FROM tenants WHERE id=$1", tenant)
         await admin.close()

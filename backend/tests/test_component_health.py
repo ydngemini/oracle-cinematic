@@ -186,7 +186,9 @@ def test_an_unobserved_optional_component_does_not_degrade_the_system(monkeypatc
         return ch._c(ch.HEALTHY, "ok")
 
     async def rest():
-        return {k: ch._c(ch.HEALTHY, "ok") for k in ch._DB_KEYS}
+        out = {k: ch._c(ch.HEALTHY, "ok") for k in ch._DB_KEYS}
+        out["valuation_providers"] = ch._valuation_providers([])   # configured, never called
+        return out
 
     monkeypatch.setattr(ch, "_database", healthy)
     monkeypatch.setattr(ch, "_realtime", healthy)
@@ -210,5 +212,48 @@ def test_no_database_leaves_the_property_components_unknown(monkeypatch):
 
     monkeypatch.setattr(connection, "get_pool", lambda: None)
     snap = asyncio.run(ch.snapshot(fresh=True))
-    for name in ("property_harvesters", "market_data"):
+    for name in ("property_harvesters", "market_data", "valuation_providers"):
         assert snap["components"][name]["state"] == ch.UNKNOWN, name
+
+
+def test_valuation_health_follows_the_recorded_outcomes(monkeypatch):
+    monkeypatch.setenv("RENTCAST_API_KEY", "k")
+    monkeypatch.setenv("ATTOM_API_KEY", "k")
+
+    def row(provider, failures=0, kind=None):
+        return {"provider": provider, "consecutive_failures": failures, "last_failure_kind": kind}
+
+    assert ch._valuation_providers([row("rentcast")])["state"] == ch.HEALTHY
+    assert ch._valuation_providers([row("rentcast", 1, "credential_rejected")])["state"] == ch.AUTH_FAILED
+    assert ch._valuation_providers([row("attom", 1, "rate_limited")])["state"] == ch.RATE_LIMITED
+    assert ch._valuation_providers([row("rentcast", 2, "http_error")])["state"] == ch.HEALTHY
+    degraded = ch._valuation_providers([row("rentcast", 3, "timeout"), row("attom")])
+    assert degraded["state"] == ch.DEGRADED and degraded["detail"] == {"configured": 2, "observed": 2, "failing": 1}
+    monkeypatch.delenv("ATTOM_API_KEY")
+    # A provider whose key was removed is not reported from an old row.
+    assert ch._valuation_providers([row("attom", 5, "credential_rejected")])["state"] == ch.UNKNOWN
+
+
+def test_provider_outcomes_map_from_the_avm_status_entries():
+    import provider_health as ph
+    import source_status as ss
+
+    assert ph.kind_for(ss.checked(matched=1)) == ph.OK
+    assert ph.kind_for(ss.checked(matched=0)) == ph.OK
+    assert ph.kind_for(ss.unavailable(ss.CREDENTIAL_REJECTED)) == "credential_rejected"
+    assert ph.kind_for(ss.unavailable(ss.RATE_LIMITED)) == "rate_limited"
+    assert ph.kind_for(ss.unavailable(ss.UPSTREAM_HTTP_ERROR)) == "http_error"
+    assert ph.kind_for(ss.unavailable(ss.BAD_RESPONSE)) == "bad_response"
+    assert ph.kind_for(ss.not_applicable(ss.NOT_CONFIGURED, required=False)) is None
+    assert ph.kind_for(ss.not_applicable(ss.NO_ADDRESS)) is None
+    assert ph.kind_for(None) is None
+
+
+def test_recording_never_raises_without_a_database(monkeypatch):
+    import provider_health as ph
+    from db import connection
+
+    monkeypatch.setattr(connection, "get_pool", lambda: None)
+    asyncio.run(ph.record("rentcast", ph.OK))
+    asyncio.run(ph.record("rentcast", "credential_rejected"))
+    asyncio.run(ph.record("unknown-provider", ph.OK))

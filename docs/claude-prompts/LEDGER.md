@@ -51,7 +51,7 @@ Listed weakest to strongest:
 | 16 | Performance, indexes, cache | [16](16-performance-indexes-mobile-cache.md) | `tests_pass` | staging | `745f2fa`; 0141 tenant wall (L16-01); 0113 predicates dropped + 0144 (L16-03); JIT off for request transactions (0e29f5a) — all on staging 0a76a72 | A10 capacity on production-shaped infra; no production target | T16.05 |
 | 17 | Security, privacy, data lifecycle | [17](17-security-privacy-compliance-data-lifecycle.md) | `source_verified` | staging | `0739563`; ISO 27001 set (L17-06, v1.0 approved); L17-07..20 local 2026-10-14 (card redaction, unsubscribe 0146, alerts, HOOK-3, log-PII, audit drain 0148, access review, demo-login guard, hashing, dep audit, admin-read audit, DR drill in CI, two-step sign-in 0150, security.txt); L17-21 local (SMS/transcript/chat-turn sealing 0152, clients + leads design); L17-22 (email subject/body, interaction-log subject/text, AI tool receipts, belief quotes, profile summaries sealing 0154, on staging); L17-23 local (clients lookup hashes + name tokens kept current, 0156, not yet searched); L17-24 local (sealing batches bounded, 0157) | A01, A06; owner: security@/privacy@ mailboxes (L17-20); certification body, pentest, DPAs (L17-06) | Owner: name/email search semantics, then clients slice (b) (L17-23); scheduled off-host backups; log forwarding |
 | 18 | Billing, seats, analytics | [18](18-brokerage-billing-seat-plans-analytics.md) | `source_verified` | local | `a8bff54` (L18-02 `tests_pass`) | D-2026-10-12-02 (billable stage) | T18.04 + AC18.02 (seats) |
-| 19 | Production operations | [19](19-infrastructure-deploy-observability-recovery.md) | `source_verified` | staging | `745f2fa`; L19-04 property-data health (local) | No production app; A04 | L19-03 |
+| 19 | Production operations | [19](19-infrastructure-deploy-observability-recovery.md) | `source_verified` | staging | `745f2fa`; L19-04 property-data health, L19-05 valuation outcomes (0160) (local) | No production app; A04 | L19-03 |
 | 20 | 20-agent launch certification | [20](20-twenty-agent-full-feature-launch-e2e-evaluation.md) | `source_verified` | local | `745f2fa` | Every row above | Last |
 
 Rollup is the weakest row. A category holding `external_configuration_required` or `blocked` rows shows them under "Open blockers" instead of hiding them in an average (L09 and L10 also hold `tests_pass` rows; see below).
@@ -2158,7 +2158,29 @@ blockers:
   - "Not deployed (C4.4)."
 audit_refs: [A04]
 decision_refs: [D-2026-10-12-01]
-next_task: "Record valuation-provider call outcomes (avm_client) so their health is observed; then the remaining T19.07 SLOs with owner targets."
+next_task: "Done in L19-05 (valuation outcomes recorded). Then the remaining T19.07 SLOs with owner targets."
+updated: 2026-10-15
+```
+
+#### L19-05 RentCast / ATTOM outcomes are recorded, so health observes them (AC19.07 for valuation)
+```yaml
+id: L19-05
+status: tests_pass
+env: local
+evidence_shas: []   # filled with the commit SHA on push
+files: [backend/db/migrations/0160_provider_health.sql, backend/provider_health.py, backend/avm_client.py, backend/component_health.py, backend/privacy_data_map.py, backend/tests/test_component_health.py, backend/tests/test_component_health_live.py, backend/tests/test_avm_credential_cooldown.py]
+tests_run:
+  - {cmd: "cd backend && pytest -q tests/test_avm_credential_cooldown.py tests/test_component_health.py tests/test_health_readiness.py", result: "15 + 29 passed. Failure injection per provider through the real _value_property_uncached with a fake HTTP session: RentCast 401 -> recorded credential_rejected -> health AUTH_FAILED; RentCast 429 -> rate_limited -> RATE_LIMITED; RentCast 503 -> http_error -> HEALTHY after one, DEGRADED after three in a row; ATTOM 401 and 503 the same; an unconfigured provider records nothing. Mapping from every avm source_status entry; recording never raises without a database", date: 2026-10-15}
+  - {cmd: "run_migrations.py (0160) + pytest -q tests/test_component_health_live.py (real PostgreSQL)", result: "1 passed: two credential_rejected records -> consecutive_failures 2 -> valuation_providers AUTH_FAILED; one ok -> 0, last_ok_at set -> HEALTHY", date: 2026-10-15}
+  - {cmd: "every CI rls-job live test; SQL proofs; cd backend && pytest -q tests compliance_engine/tests (clean env); bandit", result: "69 passed; SQL proofs exit 0; unit: first run failed test_privacy_data_map (provider_health unclassified) — classified OPERATIONAL/global; then 44 passed for the map + migration ledger and test_privacy_lifecycle_live passed; remaining unit failures only test_media_storage + test_object_storage (container runs as root); bandit exit 0", date: 2026-10-15}
+authz_checked: "provider_health is platform reference data: a provider name, timestamps, a fixed failure kind, a counter — no tenant, address or error text (privacy_data_map: OPERATIONAL, global). Written in the platform context; oracle_app may SELECT/INSERT/UPDATE it."
+blockers:
+  - "Outcomes are recorded only for valuation calls made through avm_client._value_property_uncached (the only RentCast/ATTOM caller found). Harvester outcomes come from harvest_sources (L19-04)."
+  - "AC19.06 (each SLO alert reaching a named person) still needs owner targets and an on-call owner."
+  - "Not deployed (C4.4)."
+audit_refs: [A04, A02]
+decision_refs: []
+next_task: "Remaining T19.07 SLOs once the owner sets targets."
 updated: 2026-10-15
 ```
 

@@ -199,6 +199,8 @@ TABLES: dict[str, TableEntry] = {
     "api_rate_limit_windows": TableEntry(C.OPERATIONAL, G, "minutes-long windows"),
     "process_heartbeats": TableEntry(C.OPERATIONAL, G),
     "ops_alerts": TableEntry(C.OPERATIONAL, G, "component incidents; no customer data"),
+    "provider_health": TableEntry(C.OPERATIONAL, G, "last outcome per property-data provider (0160); "
+                                                     "no tenant, no customer data"),
     "operator_otp_challenges": TableEntry(C.SECRET, G, "operator, not customer"),
     "operator_totp_uses": TableEntry(C.SECRET, G, "operator, not customer"),
     # ── secrets & capability tokens ──────────────────────────────────────
