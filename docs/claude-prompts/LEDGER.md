@@ -401,7 +401,7 @@ How it works: 0143's lead rule, one level down. Each table gets `<t>_lead_read/_
 id: L03-10
 status: tests_pass
 env: local
-evidence_shas: []   # filled with the commit SHA on push
+evidence_shas: [20855af]
 files: [backend/db/migrations/0155_transactions_follow_the_lead.sql, backend/tests/test_deal_record_access_live.py, backend/tests/test_brokerage_access_matrix_live.py, .github/workflows/ci.yml]
 tests_run:
   - {cmd: "local PostgreSQL 16.15 built by run_migrations.py from every migration through 0154 (CI's rls-job recipe); pg_policies on transactions, transaction_offers, transaction_milestones, compliance_checklist_items, transaction_parties", result: "BEFORE: transactions had 0131's client policies only (a deal with no client was brokerage-wide); transaction_offers, transaction_milestones and compliance_checklist_items had only their tenant wall (every deal, including a colleague's private client's); transaction_parties narrowed only a party that is a client", date: 2026-10-15}
