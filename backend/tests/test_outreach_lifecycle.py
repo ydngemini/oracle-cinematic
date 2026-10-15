@@ -124,6 +124,7 @@ class _World:
                     "delivered_at": None}
         self.command = {"state": state}
         self.sms_delivered = False
+        self.sms_failed = False
         self.usage: dict[str, dict] = {}
 
 
@@ -145,7 +146,7 @@ class _Conn:
     async def execute(self, sql, *args):
         assert "UPDATE lead_response_events" in sql
         _tenant, _command, target, earlier = args[:4]
-        if target in ("accepted", "delivered"):
+        if target in ("accepted", "delivered", "failed"):
             assert "c.state = 'succeeded'" in sql
             if self.w.command["state"] != "succeeded":
                 return "UPDATE 0"
@@ -175,11 +176,18 @@ class _Conn:
             return dict(lre)
         return None
 
+    def _sms_status(self):
+        if self.w.command["state"] != "succeeded":
+            return None
+        return "delivered" if self.w.sms_delivered else ("failed" if self.w.sms_failed else None)
+
     async def fetchval(self, sql, *args):
-        return 1 if (self.w.sms_delivered and self.w.command["state"] == "succeeded") else None
+        return self._sms_status()
 
     async def fetch(self, sql, *args):
-        if self.w.sms_delivered and self.w.command["state"] == "succeeded":
+        status = self._sms_status()
+        wanted = "'delivered'" if "m.status = 'delivered'" in sql else "('failed', 'undelivered')"
+        if status and ((status == "delivered") == (wanted == "'delivered'")):
             return [{"tenant_id": TENANT, "id": COMMAND}]
         return []
 
@@ -300,6 +308,8 @@ def test_the_earlier_stage_lists_are_monotonic():
     assert set(ol._earlier_dispositions(Stage.ACCEPTED)) == {"staged", "approved"}
     assert set(ol._earlier_dispositions(Stage.DELIVERED)) == {"staged", "approved", "accepted", "sent"}
     assert ol._earlier_dispositions(Stage.CANCELLED) == ["staged", "approved"]
+    # A carrier failure: only after the provider took it, never after delivered.
+    assert ol._earlier_dispositions(Stage.FAILED) == ["approved", "accepted", "sent"]
 
 
 def test_the_engagement_writer_names_its_delivered_source():
@@ -320,7 +330,47 @@ def test_a_carrier_delivery_receipt_reaches_the_lifecycle():
 
     src = inspect.getsource(messaging_data.record_delivery_update)
     assert "outreach_lifecycle.record_sms_delivered" in src
+    assert "outreach_lifecycle.record_sms_failed" in src
     assert "SMS_STATUS_STAGE" in src
+
+
+@sync
+async def test_a_carrier_failure_marks_the_first_response_failed_and_never_meters():
+    """L04-01 gap: a text the carrier rejected used to stay 'accepted', so it
+    counted as a fast response the lead never received."""
+    world = _World(disposition="accepted", state="succeeded")
+    world.sms_failed = True
+    conn = _Conn(world)
+    assert await ol.record_sms_failed(conn, provider="telnyx", provider_message_id="m1") == 1
+    assert world.lre["disposition"] == "failed"
+    assert world.usage == {}
+    # Terminal: a duplicate failure, or a late "delivered", moves nothing.
+    assert await ol.record_sms_failed(conn, provider="telnyx", provider_message_id="m1") == 0
+    assert await _advance(conn, Stage.DELIVERED) is False
+    assert world.lre["disposition"] == "failed" and world.usage == {}
+
+
+@sync
+async def test_a_failure_never_undoes_a_delivery_or_touches_an_unaccepted_command():
+    delivered = _World(disposition="delivered", state="succeeded")
+    delivered.sms_failed = True
+    assert await _advance(_Conn(delivered), Stage.FAILED) is False
+    assert delivered.lre["disposition"] == "delivered"
+    never_taken = _World(disposition="approved", state="failed")
+    never_taken.sms_failed = True
+    assert await _advance(_Conn(never_taken), Stage.FAILED) is False
+    assert never_taken.lre["disposition"] == "approved"
+
+
+@sync
+async def test_a_failure_receipt_that_beat_the_acceptance_is_applied_at_acceptance():
+    world = _World(disposition="staged", state="succeeded")
+    world.sms_failed = True
+    conn = _Conn(world)
+    await _advance(conn, Stage.ACCEPTED)
+    assert await ol.reconcile_command_delivery(conn, tenant_id=TENANT, command_id=COMMAND) is False
+    assert world.lre["disposition"] == "failed"
+    assert world.usage == {}
 
 
 @sync

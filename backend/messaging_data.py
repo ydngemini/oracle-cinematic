@@ -1225,6 +1225,12 @@ async def record_delivery_update(*, provider: str, provider_message_id: str, sta
             await outreach_lifecycle.record_sms_delivered(
                 conn, provider=provider, provider_message_id=provider_message_id,
             )
+        elif outreach_lifecycle.SMS_STATUS_STAGE.get(status) is outreach_lifecycle.Stage.FAILED:
+            # A carrier failure: the first response reached the provider, not
+            # the lead. Idempotent and SAVEPOINTed, like the delivered path.
+            await outreach_lifecycle.record_sms_failed(
+                conn, provider=provider, provider_message_id=provider_message_id,
+            )
         if str(result).endswith(" 0"):
             exists = await conn.fetchval(
                 "SELECT 1 FROM sms_messages WHERE provider=$1 AND provider_message_id=$2",

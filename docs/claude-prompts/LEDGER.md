@@ -36,7 +36,7 @@ Listed weakest to strongest:
 | 01 | Repository source audit | [01](01-repository-source-audit.md) | `not_inspected` | — | — | — | Run the 01 inventory |
 | 02 | All pages, routes, mobile UI | [02](02-all-pages-mobile-ui.md) | `source_verified` | staging | `90372f2` crawl | — | Per-page verdicts |
 | 03 | Brokerage tenancy and hybrid access | [03](03-brokerage-tenancy-hybrid-access.md) | `source_verified` | staging | 0131 (L03-02), 0134+0137 (L03-04), 0140 (L03-05), 0142 drafts (L03-06), 0143 leads (L03-07), 0145 live frames (L03-08) all on staging (0a76a72); 0151 lead children + lead frames (L03-09); 0155 deals with no client + every deal's offers/milestones/parties/checklist (L03-10) local only; policy v6 | Owner: team leads (L03-03); lead assignee / listings / marketplace / pipeline counts (L03-07) | Push 0155 with approval (L03-10); listings / marketplace once the owner answers (L03-07) |
-| 04 | CRM, contacts, leads, relationships | [04](04-crm-contact-leads-relationships.md) | `tests_pass` | local | `a8bff54` (L04-01) | — | T04.01 + T04.13 (L04-01 next) |
+| 04 | CRM, contacts, leads, relationships | [04](04-crm-contact-leads-relationships.md) | `tests_pass` | local | `a8bff54` (L04-01); L04-02 carrier-failed texts (local) | — | Track 'responded' (inbound reply); then T04.01 + T04.13 |
 | 05 | Semantic intent | [05](05-semantic-language-intent.md) | `tests_pass` | local | base `2fef2e5` (L05-01, L05-02); `7b198cf` (L05-03, merged `444efe0`); `012f655` (L05-04, English + Spanish; staging-checked after `12e4c34`); `f8142c1` (L05-05, Spanish success answers + fallback drafts + EN/ES voice; on staging after `45a031d`); L05-06 Spanish call-queue cards (local, branch `claude/continue-n7jgwq`, golden `ae16549`) | Owner: model-spend approval for a scored parser run per language (en / es / mixed; harness built, not run) and real parser latency; an independent Spanish held-out set. Call-queue cards now Spanish except record content and model-written suggestions/summaries (L05-06); Command Center screen and horizon labels English; real-phone voice check owed. Decided 2026-10-14: policy v7 §4 (`cb2aedd`), launch languages English + Spanish (L05-04) | Push L05-06 to main with approval; scored T05.13 run once spend is approved; T05.10 + F05.04 correction cancels a staged command |
 | 06 | Evidence retrieval and memory | [06](06-evidence-retrieval-memory.md) | `source_verified` | local | `745f2fa` | A01, A02 | L06-01 |
 | 07 | AI gateway and governed tools | [07](07-ai-gateway-model-tool-governance.md) | `tests_pass` | local | `071d65d` (L07-01) | Playwright check owed (L07-01); owner: archive_client | T07.02 + AC07.01 |
@@ -441,10 +441,33 @@ authz_checked: "live test reads the metrics as the broker owner under FORCE RLS 
 blockers: []
 audit_refs: [A05]
 decision_refs: [D-2026-10-12-02]
-next_task: "Track 'responded' (inbound reply linked to the first response); mark a carrier-failed text as failed in the ledger; then T04.01 + T04.13."
+next_task: "Track 'responded' (inbound reply linked to the first response); then T04.01 + T04.13. (A carrier-failed text is now marked failed: L04-02.)"
 updated: 2026-10-13
 ```
 One vocabulary for every outbound store: `backend/outreach_lifecycle.py` (`Stage`, and maps for `command_executions.state`, `email_outbox.status`, `sms_messages.status`, carrier call statuses and `lead_response_events.disposition`; tests prove each map covers its CHECK). The first-response ledger now moves staged → approved (`commands_api.release_command`) → accepted (`_record_send_bookkeeping`, was `'sent'`) → delivered (Telnyx receipt in `messaging_data.record_delivery_update`, answered call in `commands_api.record_call_outcome`); a rejected draft becomes `cancelled`. Accepted and delivered are recorded only for a command whose state is `succeeded`. `routing_metrics` (`lead_routing_api.py:545`) no longer counts a staged draft as a response: it reports staged/approved/accepted/delivered/cancelled separately and measures p50/p90/under-90s to `accepted_at` (`latency_measured_to: "accepted"`); the `responded` key is gone (no caller). Not done: `responded` (a reply) is not tracked; a carrier-failed text stays `accepted`; email (SMTP) and Twilio texts never reach `delivered` (no receipt exists).
+
+#### L04-02 A text the carrier failed is a failed first response, not an accepted one
+```yaml
+id: L04-02
+status: tests_pass
+env: local
+evidence_shas: []   # filled with the commit SHA on push
+files: [backend/outreach_lifecycle.py, backend/messaging_data.py, backend/tests/test_outreach_lifecycle.py, backend/tests/test_engagement_lifecycle_live.py]
+tests_run:
+  - {cmd: "read messaging_data.record_delivery_update, outreach_lifecycle (at e725553)", result: "a carrier 'failed' / 'undelivered' receipt updated sms_messages only; the first-response ledger kept 'accepted' (L04-01 'Not done'), so routing_metrics counted a text the lead never received as an accepted response and inside the speed-to-lead percentiles. The 0133 CHECK already allows disposition 'failed' and routing_metrics already counts it; nothing wrote it for a text", date: 2026-10-15}
+  - {cmd: "cd backend && pytest -q tests/test_outreach_lifecycle.py tests/test_speed_to_lead.py", result: "52 passed: a failure receipt moves accepted -> failed, never meters, is terminal (a duplicate or a late 'delivered' moves nothing); it never undoes a delivery and never touches a command the provider did not take; a failure receipt that beat the acceptance is applied at acceptance (reconcile_command_delivery); FAILED moves only from approved/accepted/sent", date: 2026-10-15}
+  - {cmd: "pytest -q tests/test_engagement_lifecycle_live.py (real PostgreSQL) with the code change stashed, then applied", result: "before: failed (AssertionError: 'accepted' == 'failed'); after: 1 passed — the carrier-failed text is 'failed', a late 'delivered' receipt does not revive it, routing metrics report accepted 4 (was 5), delivered 4, cancelled 1, failed 1", date: 2026-10-15}
+  - {cmd: "every CI rls-job live test; cd backend && pytest -q tests compliance_engine/tests (clean env); bandit", result: "65 passed; unit 5196 passed, 62 skipped, 2 failed (test_media_storage + test_object_storage: container runs as root, identical without the change); bandit exit 0", date: 2026-10-15}
+authz_checked: "No access change: the receipt path runs in the platform webhook context as before; the ledger write is the same RLS-scoped UPDATE with the same 'command succeeded' guard as delivered."
+blockers:
+  - "Metric change to note: a carrier-failed text leaves the 'accepted' count and the p50/p90/under-90s latency (it reached the provider, not the lead) and is counted under 'failed'."
+  - "Email (SMTP) and Twilio texts still have no receipt, so they never reach delivered or failed (L04-01). Calls: a failed call already maps to FAILED in call_status_stage; record_call_outcome was not changed here."
+  - "Not deployed (C4.4)."
+audit_refs: [A05]
+decision_refs: [D-2026-10-12-02]
+next_task: "Track 'responded' (an inbound reply linked to the first response), then T04.01 + T04.13."
+updated: 2026-10-15
+```
 
 ### L05
 Semantic intent.
