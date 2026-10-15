@@ -17,6 +17,7 @@ test_engagement_lifecycle_live.py; here a small in-memory fake stands in.
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timezone
 import functools
 import re
 from pathlib import Path
@@ -400,3 +401,39 @@ def test_approval_and_rejection_move_the_first_response():
 
     assert "Stage.APPROVED" in inspect.getsource(ca.release_command)
     assert "Stage.CANCELLED" in inspect.getsource(ca.reject_command)
+
+
+# ── A reply is stamped on the first response (0158, L04-03) ─────────────────
+
+@sync
+async def test_a_reply_with_no_client_or_contact_links_nothing():
+    class _NoConn:
+        def transaction(self):
+            raise AssertionError("must not touch the database")
+
+    assert await ol.record_reply(_NoConn(), tenant_id=TENANT, sms_message_id="m1", client_id=None,
+                                 contact_id=None, received_at=datetime.now(timezone.utc)) is False
+
+
+def test_the_reply_statement_is_bounded_and_never_answers_a_failed_response():
+    sql = ol._REPLY_SQL
+    # One row, chosen by a scalar subquery (evaluated once, not re-run per row).
+    assert "WHERE id = (SELECT" in sql and "LIMIT 1" in sql and "IN (SELECT" not in sql
+    assert "replied_at IS NULL" in sql.split("RETURNING")[0].rsplit("LIMIT 1", 1)[1]
+    assert "disposition = ANY($6::text[])" in sql
+    assert "failed" not in ol.ACCEPTED_DISPOSITIONS and "cancelled" not in ol.ACCEPTED_DISPOSITIONS
+    assert "disposition" not in sql.split("WHERE id =")[0], "a reply never changes the disposition"
+    assert ol.REPLY_WINDOW_DAYS == 7
+
+
+def test_an_inbound_text_reaches_the_reply_after_its_own_commit():
+    import inspect
+
+    import messaging_data
+
+    src = inspect.getsource(messaging_data.record_inbound_message)
+    assert "replied = not opted_out" in src
+    call = src.index("outreach_lifecycle.record_reply")
+    agent_tx = src.index("async with tenant_tx(ctx)")
+    platform_tx = src.index("async with tenant_tx(_platform_context())")
+    assert agent_tx < platform_tx < call, "stamped in its own platform transaction, after the insert commits"

@@ -124,6 +124,11 @@ DISPOSITION_STAGE: dict[str, Stage] = {
 #: The ledger dispositions that count as "reached at least accepted".
 ACCEPTED_DISPOSITIONS: tuple[str, ...] = ("accepted", "sent", "delivered")
 
+#: How long after a first response an inbound text still counts as the
+#: lead's reply to it (0158, L04-03). A text weeks later is a new
+#: conversation, not an answer to the speed-to-lead message.
+REPLY_WINDOW_DAYS = 7
+
 
 def call_status_stage(status: str, duration_seconds: Optional[int] = None) -> Stage:
     """A carrier call status → stage. Only an answer is delivery.
@@ -410,6 +415,48 @@ async def record_sms_failed(conn: Any, *, provider: str, provider_message_id: st
         ):
             moved += 1
     return moved
+
+
+_REPLY_SQL = """
+    UPDATE lead_response_events
+       SET replied_at = $5, reply_sms_message_id = $2::uuid, updated_at = now()
+     WHERE id = (SELECT r.id FROM lead_response_events r
+                  WHERE r.tenant_id = $1::uuid AND r.replied_at IS NULL
+                    AND r.disposition = ANY($6::text[])
+                    AND (r.client_id = $3::uuid OR r.contact_id = $4::uuid)
+                    AND COALESCE(r.accepted_at, r.delivered_at) <= $5
+                    AND COALESCE(r.accepted_at, r.delivered_at) > $5 - make_interval(days => $7)
+                  ORDER BY COALESCE(r.accepted_at, r.delivered_at) DESC
+                  LIMIT 1
+                  FOR UPDATE SKIP LOCKED)
+       AND replied_at IS NULL
+    RETURNING id
+"""
+
+
+async def record_reply(conn: Any, *, tenant_id: str, sms_message_id: str,
+                       client_id: Optional[str], contact_id: Optional[str],
+                       received_at: datetime) -> bool:
+    """An inbound text from a client or contact → the newest first response
+    to them that the provider accepted (or delivered) in the last
+    REPLY_WINDOW_DAYS and that has no reply yet: stamp ``replied_at`` and the
+    message as its evidence (0158). The disposition does not change, so
+    delivered counts and metering are untouched. A failed, cancelled or
+    blocked response cannot be replied to. Written once; SAVEPOINTed and
+    never raises (the inbound message is already stored). True if stamped."""
+    if not (client_id or contact_id):
+        return False
+    try:
+        async with conn.transaction():
+            row = await conn.fetchrow(
+                _REPLY_SQL, str(tenant_id), str(sms_message_id),
+                str(client_id) if client_id else None, str(contact_id) if contact_id else None,
+                received_at, list(ACCEPTED_DISPOSITIONS), REPLY_WINDOW_DAYS,
+            )
+    except Exception:  # noqa: BLE001 — see docstring
+        logger.warning("reply not linked to a first response for message %s", sms_message_id, exc_info=True)
+        return False
+    return row is not None
 
 
 async def record_call_answered(conn: Any, *, provider_call_id: str) -> int:

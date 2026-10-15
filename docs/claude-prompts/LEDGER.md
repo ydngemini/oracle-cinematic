@@ -36,7 +36,7 @@ Listed weakest to strongest:
 | 01 | Repository source audit | [01](01-repository-source-audit.md) | `not_inspected` | — | — | — | Run the 01 inventory |
 | 02 | All pages, routes, mobile UI | [02](02-all-pages-mobile-ui.md) | `source_verified` | staging | `90372f2` crawl | — | Per-page verdicts |
 | 03 | Brokerage tenancy and hybrid access | [03](03-brokerage-tenancy-hybrid-access.md) | `source_verified` | staging | 0131 (L03-02), 0134+0137 (L03-04), 0140 (L03-05), 0142 drafts (L03-06), 0143 leads (L03-07), 0145 live frames (L03-08) all on staging (0a76a72); 0151 lead children + lead frames (L03-09); 0155 deals with no client + every deal's offers/milestones/parties/checklist (L03-10) local only; policy v6 | Owner: team leads (L03-03); lead assignee / listings / marketplace / pipeline counts (L03-07) | Push 0155 with approval (L03-10); listings / marketplace once the owner answers (L03-07) |
-| 04 | CRM, contacts, leads, relationships | [04](04-crm-contact-leads-relationships.md) | `tests_pass` | local | `a8bff54` (L04-01); L04-02 carrier-failed texts (local) | — | Track 'responded' (inbound reply); then T04.01 + T04.13 |
+| 04 | CRM, contacts, leads, relationships | [04](04-crm-contact-leads-relationships.md) | `tests_pass` | local | `a8bff54` (L04-01); L04-02 carrier-failed texts, L04-03 replies (0158) (local) | Owner: meter lead_engaged at approval, delivery or first reply (prompt 04 §7) | T04.01 + T04.13 (entity map; every channel resolves to one contact) |
 | 05 | Semantic intent | [05](05-semantic-language-intent.md) | `tests_pass` | local | base `2fef2e5` (L05-01, L05-02); `7b198cf` (L05-03, merged `444efe0`); `012f655` (L05-04, English + Spanish; staging-checked after `12e4c34`); `f8142c1` (L05-05, Spanish success answers + fallback drafts + EN/ES voice; on staging after `45a031d`); L05-06 Spanish call-queue cards (local, branch `claude/continue-n7jgwq`, golden `ae16549`) | Owner: model-spend approval for a scored parser run per language (en / es / mixed; harness built, not run) and real parser latency; an independent Spanish held-out set. Call-queue cards now Spanish except record content and model-written suggestions/summaries (L05-06); Command Center screen and horizon labels English; real-phone voice check owed. Decided 2026-10-14: policy v7 §4 (`cb2aedd`), launch languages English + Spanish (L05-04) | Push L05-06 to main with approval; scored T05.13 run once spend is approved; T05.10 + F05.04 correction cancels a staged command |
 | 06 | Evidence retrieval and memory | [06](06-evidence-retrieval-memory.md) | `source_verified` | local | `745f2fa` | A01, A02 | L06-01 |
 | 07 | AI gateway and governed tools | [07](07-ai-gateway-model-tool-governance.md) | `tests_pass` | local | `071d65d` (L07-01) | Playwright check owed (L07-01); owner: archive_client | T07.02 + AC07.01 |
@@ -465,9 +465,33 @@ blockers:
   - "Not deployed (C4.4)."
 audit_refs: [A05]
 decision_refs: [D-2026-10-12-02]
-next_task: "Track 'responded' (an inbound reply linked to the first response), then T04.01 + T04.13."
+next_task: "Done in L04-03 (replies). Then T04.01 + T04.13."
 updated: 2026-10-15
 ```
+
+#### L04-03 The lead's reply is recorded on its first response (T04.07 "responded")
+```yaml
+id: L04-03
+status: tests_pass
+env: local
+evidence_shas: []   # filled with the commit SHA on push
+files: [backend/db/migrations/0158_first_response_replied.sql, backend/outreach_lifecycle.py, backend/messaging_data.py, backend/lead_routing_api.py, backend/tests/test_outreach_lifecycle.py, backend/tests/test_first_response_reply_live.py, .github/workflows/ci.yml]
+tests_run:
+  - {cmd: "read outreach_lifecycle, messaging_data.record_inbound_message, lead_routing_api.routing_metrics, \\d lead_response_events (at d7ace66)", result: "Stage.RESPONDED existed in PROGRESSION but nothing stored a reply; the old `responded` metric (drafts) was removed in 0133; an inbound text was stored and logged on the client's timeline only. No frontend reads first_response metrics (grep oracle-app/src)", date: 2026-10-15}
+  - {cmd: "pytest -q tests/test_first_response_reply_live.py (real PostgreSQL, FORCE RLS, app role) with the code stashed (0158 applied), then with it", result: "before: failed (replied_at None); after: 1 passed — an inbound text from the client stamps replied_at and the message id on their delivered first response; disposition stays delivered; lead_engaged not metered again; a second text leaves the first stamp; an opt-out, a reply to a carrier-failed text, a reply 8 days after acceptance and a stranger's text stamp nothing; routing_metrics: replied 1, failed 1, delivered 2, no `responded` key", date: 2026-10-15}
+  - {cmd: "cd backend && pytest -q tests/test_outreach_lifecycle.py", result: "37 passed (new: no client/contact = no database call; the reply statement picks one row by a scalar subquery, never changes the disposition, only from accepted/sent/delivered; the inbound path stamps in its own platform transaction after the insert commits and skips opt-outs)", date: 2026-10-15}
+  - {cmd: "every CI rls-job live test + this one; SQL proofs; cd backend && pytest -q tests compliance_engine/tests (clean env); bandit", result: "66 passed; SQL proofs exit 0; unit 5199 passed, 63 skipped, 2 failed (test_media_storage + test_object_storage: container runs as root, identical without the change); bandit exit 0", date: 2026-10-15}
+authz_checked: "The stamp runs in the platform context (like delivery receipts) because the number's agent need not be the one who may edit the lead's record; it changes only replied_at / reply_sms_message_id / updated_at on one row of the message's own tenant, chosen by that tenant's client/contact ids. Who may read a row is unchanged."
+blockers:
+  - {type: owner, note: "Prompt 04 §7: should lead_engaged be metered at approval, at delivery or at the first reply? Unchanged: metered at delivery; a reply never meters."}
+  - {type: scope, note: "Only texts: email (no inbox reader, L10-07) and inbound calls are not linked yet. The window is 7 days (outreach_lifecycle.REPLY_WINDOW_DAYS), a product choice to confirm."}
+  - "Not deployed (C4.4)."
+audit_refs: [A05]
+decision_refs: [D-2026-10-12-02]
+next_task: "T04.01 + T04.13: the entity map and 'every channel resolves to one contact' (AC04.01)."
+updated: 2026-10-15
+```
+Stored as `replied_at` + `reply_sms_message_id` (0158), not a disposition, so a reply rides on top of the delivery: delivered counts and metering (which re-reads disposition = 'delivered') are unchanged. `outreach_lifecycle.record_reply` stamps the newest first response for the same client or contact whose disposition is accepted/sent/delivered and whose acceptance (or delivery) is within 7 days before the text, once. `routing_metrics.first_response` gains `replied` and `replied_measured_as`.
 
 ### L05
 Semantic intent.
