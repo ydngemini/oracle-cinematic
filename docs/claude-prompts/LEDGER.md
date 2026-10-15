@@ -839,7 +839,7 @@ updated: 2026-10-15
 id: L09-06
 status: tests_pass
 env: local
-evidence_shas: []   # filled with the commit SHA on push
+evidence_shas: [73acd60]
 files: [backend/commands_api.py, backend/tests/test_call_notes_live.py]
 tests_run:
   - {cmd: "read commands_api.deliver_call_notes (at 3969b18)", result: "a consented call with no client_id (chk_call_anchor allows a lead-only call) logged 'call notes not attached — lead-only call' and returned None: the notes the callee agreed to share were dropped and nobody was told", date: 2026-10-15}
