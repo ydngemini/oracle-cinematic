@@ -2167,7 +2167,7 @@ updated: 2026-10-15
 id: L19-05
 status: tests_pass
 env: local
-evidence_shas: []   # filled with the commit SHA on push
+evidence_shas: [685228b]
 files: [backend/db/migrations/0160_provider_health.sql, backend/provider_health.py, backend/avm_client.py, backend/component_health.py, backend/privacy_data_map.py, backend/tests/test_component_health.py, backend/tests/test_component_health_live.py, backend/tests/test_avm_credential_cooldown.py]
 tests_run:
   - {cmd: "cd backend && pytest -q tests/test_avm_credential_cooldown.py tests/test_component_health.py tests/test_health_readiness.py", result: "15 + 29 passed. Failure injection per provider through the real _value_property_uncached with a fake HTTP session: RentCast 401 -> recorded credential_rejected -> health AUTH_FAILED; RentCast 429 -> rate_limited -> RATE_LIMITED; RentCast 503 -> http_error -> HEALTHY after one, DEGRADED after three in a row; ATTOM 401 and 503 the same; an unconfigured provider records nothing. Mapping from every avm source_status entry; recording never raises without a database", date: 2026-10-15}
