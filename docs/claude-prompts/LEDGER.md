@@ -49,7 +49,7 @@ Listed weakest to strongest:
 | 14 | Sites, social, ads, client portal | [14](14-websites-social-ads-growth-client-portal.md) | `source_verified` | local | `745f2fa` | Owner: networks, listings on sites | L14-01 |
 | 15 | Neoh mascot animation | [15](15-neoh-avatar-skeletal-character-animation.md) | `source_verified` | local | truth slice (L15-02) + rig spec (L15-03) local, on `2fef2e5` | Owner: Rive vs 3D, rig author and licence (L15-03); no device measurements (AC15.07) | Owner decides L15-03; then T15.04 layers and the AC15.07 device protocol |
 | 16 | Performance, indexes, cache | [16](16-performance-indexes-mobile-cache.md) | `tests_pass` | staging | `745f2fa`; 0141 tenant wall (L16-01); 0113 predicates dropped + 0144 (L16-03); JIT off for request transactions (0e29f5a) — all on staging 0a76a72 | A10 capacity on production-shaped infra; no production target | T16.05 |
-| 17 | Security, privacy, data lifecycle | [17](17-security-privacy-compliance-data-lifecycle.md) | `source_verified` | staging | `0739563`; ISO 27001 set (L17-06, v1.0 approved); L17-07..20 local 2026-10-14 (card redaction, unsubscribe 0146, alerts, HOOK-3, log-PII, audit drain 0148, access review, demo-login guard, hashing, dep audit, admin-read audit, DR drill in CI, two-step sign-in 0150, security.txt); L17-21 local (SMS/transcript/chat-turn sealing 0152, clients + leads design); L17-22 (email subject/body, interaction-log subject/text, AI tool receipts, belief quotes, profile summaries sealing 0154, on staging); L17-23 local (clients lookup hashes + name tokens kept current, 0156, not yet searched) | A01, A06; owner: security@/privacy@ mailboxes (L17-20); certification body, pentest, DPAs (L17-06) | Owner: name/email search semantics, then clients slice (b) (L17-23); sealing batches bounded (L17-24); scheduled off-host backups; log forwarding |
+| 17 | Security, privacy, data lifecycle | [17](17-security-privacy-compliance-data-lifecycle.md) | `source_verified` | staging | `0739563`; ISO 27001 set (L17-06, v1.0 approved); L17-07..20 local 2026-10-14 (card redaction, unsubscribe 0146, alerts, HOOK-3, log-PII, audit drain 0148, access review, demo-login guard, hashing, dep audit, admin-read audit, DR drill in CI, two-step sign-in 0150, security.txt); L17-21 local (SMS/transcript/chat-turn sealing 0152, clients + leads design); L17-22 (email subject/body, interaction-log subject/text, AI tool receipts, belief quotes, profile summaries sealing 0154, on staging); L17-23 local (clients lookup hashes + name tokens kept current, 0156, not yet searched); L17-24 local (sealing batches bounded, 0157) | A01, A06; owner: security@/privacy@ mailboxes (L17-20); certification body, pentest, DPAs (L17-06) | Owner: name/email search semantics, then clients slice (b) (L17-23); scheduled off-host backups; log forwarding |
 | 18 | Billing, seats, analytics | [18](18-brokerage-billing-seat-plans-analytics.md) | `source_verified` | local | `a8bff54` (L18-02 `tests_pass`) | D-2026-10-12-02 (billable stage) | T18.04 + AC18.02 (seats) |
 | 19 | Production operations | [19](19-infrastructure-deploy-observability-recovery.md) | `source_verified` | staging | `745f2fa` | No production app; A04 | L19-03 |
 | 20 | 20-agent launch certification | [20](20-twenty-agent-full-feature-launch-e2e-evaluation.md) | `source_verified` | local | `745f2fa` | Every row above | Last |
@@ -1818,10 +1818,35 @@ blockers:
   - {type: scope, note: "The plaintext is not sealed yet (slices c-e). company is not indexed (agent_contacts has no equivalent)."}
 audit_refs: [A01]
 decision_refs: ["owner 2026-10-14: recovery mode runs internal-only periodic tasks that read and write only this database — client_contact_index is one (review point: test_periodic_recovery_mode)"]
-next_task: "Owner: search semantics for slice (b). Engineering meanwhile: L17-24 (bounded sealing batches)."
+next_task: "Owner: search semantics for slice (b). L17-24 (bounded sealing batches) done."
 updated: 2026-10-15
 ```
 Why a side table: see the first tests_run entry. Freshness: the index may be missing (stale) but never wrong — a new client's row is created stale by a statement-level AFTER INSERT trigger, an UPDATE OF full_name/email/phone that changes a value marks it stale (row-level), and the filler reads its batch `FOR SHARE OF c SKIP LOCKED`, so an edit of the same client waits for the fill to commit and then re-marks it. The filler is `backend/client_contact_index.py` (periodic task `client_contact_index`, internal-only, `ORACLE_CLIENT_CONTACT_INDEX_*`; operator use in docs/operator-scripts.md). Erasure: rows go with their client (FK cascade) and their brokerage (privacy_data_map: erase).
+
+#### L17-24 Sealing batches really are bounded (A01 follow-up)
+```yaml
+id: L17-24
+status: tests_pass
+env: local
+evidence_shas: []   # filled with the commit SHA on push
+files: [backend/db/migrations/0157_sealing_batches_bounded.sql, backend/backfill_client_notes.py, backend/backfill_sealed_text.py, backend/tests/test_sealing_batches_bounded_live.py, .github/workflows/ci.yml]
+tests_run:
+  - {cmd: "every CI rls-job live test after L17-23 (local PostgreSQL 16)", result: "test_client_note_sealing_live failed twice in a row, only after test_client_contact_index_live: seal_pending(batch_size=1, max_rows=2) sealed 3 notes in ONE batch (log: 'sealed 3 note(s)'); alone it passes", date: 2026-10-15}
+  - {cmd: "EXPLAIN of backfill_client_notes._SEAL on that database", result: "Update -> Nested Loop Semi Join: outer Seq Scan on client_notes, inner Subquery Scan -> Limit -> LockRows -> Sort. The locking subquery re-runs per outer row; rows this statement already updated are skipped by LockRows, so each re-run returns the next ones and the LIMIT bounds each run, not the statement. Whether it happens depends on table statistics and scan order", date: 2026-10-15}
+  - {cmd: "grep of WHERE ... IN (SELECT ... LIMIT ... FOR UPDATE SKIP LOCKED) over backend/*.py and pg_proc", result: "backfill_client_notes (2 statements), backfill_sealed_text (10), and the SECURITY DEFINER seal_negotiation_transcripts, seal_user_interactions (0153) and seal_interaction_logs (0154), whose 'at most 5,000 rows a call' bound is a stated safety property. reconciliation.py's LIMIT subqueries take no lock (a re-run reads the same snapshot), unchanged", date: 2026-10-15}
+  - {cmd: "pytest -q tests/test_sealing_batches_bounded_live.py (nested loop forced: enable_hashjoin/mergejoin/material off) BEFORE 0157", result: "failed: seal_user_interactions(tenant, key, 2) changed 12 rows (all of them); the fixed Python statements already changed exactly 2", date: 2026-10-15}
+  - {cmd: "run_migrations.py (0157) + the same test; information_schema.routine_privileges", result: "1 passed: every batch changes exactly its limit (client notes seal/unseal; seal_user_interactions and seal_interaction_logs, seal and unseal); every direct statement in backfill_sealed_text picks in a MATERIALIZED CTE with one SKIP LOCKED; EXECUTE grants unchanged (oracle_app). The old-shape control is reported, not asserted: it over-runs only when the outer scan meets rows in id order", date: 2026-10-15}
+  - {cmd: "every CI rls-job live test (3 runs); SQL proofs; cd backend && pytest -q tests compliance_engine/tests (clean env); bandit", result: "65 passed x3 (test_client_note_sealing_live passes after test_client_contact_index_live); SQL proofs exit 0; unit 5193 passed, 62 skipped, 2 failed (test_media_storage + test_object_storage: the container runs as root, identical without the change); bandit exit 0", date: 2026-10-15}
+authz_checked: "No access change. The three functions keep their signatures, SECURITY DEFINER, search_path, tenant check and 1..5000 limit check; bodies differ only in picking the batch in a MATERIALIZED CTE."
+blockers:
+  - "Not deployed: pushing to main deploys staging (C4.4). On staging the periodic sealers have already sealed everything (L17-22 counts), so the over-run had no data effect there; the fix restores the bound for future backlogs."
+  - "Not run: scripts/rehearse-migrations-nosuperuser.sh (needs the owner's docker setup). 0157 only replaces three functions the same owner already owns."
+audit_refs: [A01]
+decision_refs: []
+next_task: "Deploy with approval together with 0155-0156."
+updated: 2026-10-15
+```
+Effect of the defect: a periodic or operator sealing pass could change more rows per statement than its batch size (up to the whole tenant's backlog in one transaction), breaking the per-run bound and holding row locks longer — never a wrong value. Fix: `WITH picked AS MATERIALIZED (SELECT id ... ORDER BY id LIMIT n FOR UPDATE SKIP LOCKED) UPDATE ... WHERE id IN (SELECT id FROM picked)`; a CTE with a locking clause runs exactly once.
 
 ### L18
 Billing, seats and analytics.
