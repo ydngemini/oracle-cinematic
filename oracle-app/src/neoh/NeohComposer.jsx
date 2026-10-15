@@ -2,6 +2,7 @@ import { ArrowUp, Mic, MicOff, Square, X } from 'lucide-react';
 
 import { MAX_DRAFT } from './useNeohComposer';
 import { connectionMessage, contextLabel, inputPlaceholder, micControl } from './surfaceModel';
+import { nextSpeechLanguage, speechLanguageLabel } from './speechLanguage';
 import styles from './NeohComposer.module.css';
 
 /**
@@ -50,7 +51,40 @@ export function ComposerField({ inputRef, composer, record, label = 'Message Neo
   );
 }
 
+/**
+ * EN / ES — which language the microphone listens in (L05-05). One small
+ * toggle beside the mic, remembered on this device. Shown only where the
+ * browser can do speech at all: with no recogniser there is nothing for it
+ * to set, and the disabled mic already says why.
+ */
+export function VoiceLanguageSwitch({ composer }) {
+  const { speech, speechLanguage, setSpeechLanguage } = composer;
+  if (!speech.supported || !setSpeechLanguage) return null;
+  const label = speechLanguageLabel(speechLanguage);
+  return (
+    <button
+      type="button"
+      className={styles.lang}
+      onClick={() => setSpeechLanguage(nextSpeechLanguage(speechLanguage))}
+      aria-label={label}
+      title={label}
+      data-lang={speechLanguage}
+    >
+      <span aria-hidden="true">{speechLanguage === 'es' ? 'ES' : 'EN'}</span>
+    </button>
+  );
+}
+
 export function MicButton({ composer }) {
+  return (
+    <>
+      <VoiceLanguageSwitch composer={composer} />
+      <MicToggle composer={composer} />
+    </>
+  );
+}
+
+function MicToggle({ composer }) {
   const { speech } = composer;
   const control = micControl({ supported: speech.supported, state: speech.state });
   return (

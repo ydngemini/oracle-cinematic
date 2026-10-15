@@ -88,7 +88,7 @@ describe('useSpeechInput', () => {
     const { result } = renderHook(() => useSpeechInput({ onFinal }));
     act(() => result.current.start());
     act(() => FakeRecognition.instances.at(-1).say('  Call her.  ', true));
-    expect(onFinal).toHaveBeenCalledWith('Call her.');
+    expect(onFinal).toHaveBeenCalledWith('Call her.', 'en-US');
     expect(result.current.interim).toBe('');
   });
 
@@ -157,7 +157,7 @@ describe('useSpeechInput', () => {
     act(() => result.current.start());
     rerender({ cb: second });
     act(() => FakeRecognition.instances.at(-1).say('hello', true));
-    expect(second).toHaveBeenCalledWith('hello');
+    expect(second).toHaveBeenCalledWith('hello', 'en-US');
     expect(first).not.toHaveBeenCalled();
   });
 
@@ -170,6 +170,40 @@ describe('useSpeechInput', () => {
     expect(FakeRecognition.instances).toHaveLength(1);
     expect(FakeRecognition.instances[0].aborted).toBe(false);
     expect(result.current.state).toBe('listening');
+  });
+});
+
+describe('recognition language (L05-05)', () => {
+  it('listens in English unless told otherwise', () => {
+    const { result } = renderHook(() => useSpeechInput({ onFinal: vi.fn() }));
+    act(() => result.current.start());
+    expect(FakeRecognition.instances.at(-1).lang).toBe('en-US');
+  });
+
+  it('sets the language BEFORE listening, and reports it with the utterance', () => {
+    const onFinal = vi.fn();
+    const { result } = renderHook(() => useSpeechInput({ onFinal, lang: 'es-MX' }));
+    act(() => result.current.start());
+    const rec = FakeRecognition.instances.at(-1);
+    expect(rec.lang).toBe('es-MX');
+    act(() => rec.say('¿qué está frenando 123 Main?', true));
+    expect(onFinal).toHaveBeenCalledWith('¿qué está frenando 123 Main?', 'es-MX');
+  });
+
+  it('a language change applies to the next press, never the session already listening', () => {
+    const onFinal = vi.fn();
+    const { result, rerender } = renderHook(({ lang }) => useSpeechInput({ onFinal, lang }), {
+      initialProps: { lang: 'en-US' },
+    });
+    act(() => result.current.start());
+    rerender({ lang: 'es-US' });
+    expect(FakeRecognition.instances).toHaveLength(1);
+    expect(FakeRecognition.instances[0].aborted).toBe(false);
+    act(() => FakeRecognition.instances[0].say('call her', true));
+    expect(onFinal).toHaveBeenCalledWith('call her', 'en-US');
+    act(() => FakeRecognition.instances[0].onend());
+    act(() => result.current.start());
+    expect(FakeRecognition.instances.at(-1).lang).toBe('es-US');
   });
 });
 
