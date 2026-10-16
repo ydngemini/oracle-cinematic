@@ -108,7 +108,8 @@ async def _scenario():  # noqa: C901 — one scenario, read top to bottom
         # ── the 21st invitation acceptance is refused; the link stays usable ──
         email = f"late-{tenant[:8]}@seat.test"
         raw = await invitation(email)
-        body = auth.AcceptInviteRequest(token=raw, password="a-long-enough-pass-phrase-21", full_name="Late Agent")
+        # A throwaway account in a test brokerage that is deleted below.
+        body = auth.AcceptInviteRequest(token=raw, password=secrets.token_urlsafe(18), full_name="Late Agent")
         with pytest.raises(HTTPException) as refused:
             await auth.accept_invite(body, Response())
         assert refused.value.status_code == 409 and "every seat" in refused.value.detail
