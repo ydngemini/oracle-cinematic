@@ -35,7 +35,7 @@ Listed weakest to strongest:
 |---|---|---|---|---|---|---|---|
 | 01 | Repository source audit | [01](01-repository-source-audit.md) | `tests_pass` | local | `3083abe` inventory (L01-01) | — | T01.11 A01–A10 re-check; T01.05 migration crosswalk |
 | 02 | All pages, routes, mobile UI | [02](02-all-pages-mobile-ui.md) | `source_verified` | staging | `90372f2` crawl | — | Per-page verdicts |
-| 03 | Brokerage tenancy and hybrid access | [03](03-brokerage-tenancy-hybrid-access.md) | `source_verified` | staging | 0131 (L03-02), 0134+0137 (L03-04), 0140 (L03-05), 0142 drafts (L03-06), 0143 leads (L03-07), 0145 live frames (L03-08) all on staging (0a76a72); 0151 lead children + lead frames (L03-09); 0155 deals with no client + every deal's offers/milestones/parties/checklist (L03-10) local only; policy v6 | Owner: team leads (L03-03); lead assignee / listings / marketplace / pipeline counts (L03-07) | Push 0155 with approval (L03-10); listings / marketplace once the owner answers (L03-07) |
+| 03 | Brokerage tenancy and hybrid access | [03](03-brokerage-tenancy-hybrid-access.md) | `source_verified` | staging | 0131 (L03-02), 0134+0137 (L03-04), 0140 (L03-05), 0142 drafts (L03-06), 0143 leads (L03-07), 0145 live frames (L03-08) all on staging (0a76a72); 0151 lead children + lead frames (L03-09); 0155 deals with no client + every deal's offers/milestones/parties/checklist (L03-10) local only; L03-11 suspension cancels queued spend (local); policy v6 | Owner: team leads (L03-03); lead assignee / listings / marketplace / pipeline counts (L03-07) | Push 0155 with approval (L03-10); listings / marketplace once the owner answers (L03-07) |
 | 04 | CRM, contacts, leads, relationships | [04](04-crm-contact-leads-relationships.md) | `tests_pass` | local | `a8bff54` (L04-01); L04-02 carrier-failed texts, L04-03 replies (0158), L04-04 entity map + channel linking (local) | Owner: meter lead_engaged at approval, delivery or first reply (prompt 04 §7) | T04.03 dedup + AC04.02; remaining L04-04 gaps |
 | 05 | Semantic intent | [05](05-semantic-language-intent.md) | `tests_pass` | local | base `2fef2e5` (L05-01, L05-02); `7b198cf` (L05-03, merged `444efe0`); `012f655` (L05-04, English + Spanish; staging-checked after `12e4c34`); `f8142c1` (L05-05, Spanish success answers + fallback drafts + EN/ES voice; on staging after `45a031d`); L05-06 Spanish call-queue cards (local, branch `claude/continue-n7jgwq`, golden `ae16549`); L05-07 a correction withdraws the previous staged request (local) | Owner: model-spend approval for a scored parser run per language (en / es / mixed; harness built, not run) and real parser latency; an independent Spanish held-out set. Call-queue cards now Spanish except record content and model-written suggestions/summaries (L05-06); Command Center screen and horizon labels English; real-phone voice check owed. Decided 2026-10-14: policy v7 §4 (`cb2aedd`), launch languages English + Spanish (L05-04) | Merge PR #33 with approval; scored T05.13 run once spend is approved; T05.10 precise question |
 | 06 | Evidence retrieval and memory | [06](06-evidence-retrieval-memory.md) | `tests_pass` | local | `745f2fa`, `6c7133b`, `63ac40b` (L06-01..03) | A01, A02 | T06.03 context compiler |
@@ -444,6 +444,28 @@ audit_refs: [A01]
 decision_refs: [D-2026-10-13-01]
 next_task: "Push 0155 with approval and re-run this test in CI; then a record_access deal entry so a view-only deal edit answers 403 before any write."
 updated: 2026-10-15
+```
+
+#### L03-11 Suspension cancels the agent's queued spend; what it cancels, verified (T03.16)
+```yaml
+id: L03-11
+status: tests_pass
+env: local
+evidence_shas: [b8cd33d]
+files: [backend/privacy_lifecycle.py, backend/tests/test_suspension_cancels_spend_live.py, .github/workflows/ci.yml]
+tests_run:
+  - {cmd: "read privacy_lifecycle._PENDING / cancel_pending_side_effects and brokerage_onboarding.suspend_member at b8cd33d", result: "VERIFIED: suspension already cancels the agent's queued commands, pending approvals, automation jobs, call intents, outbox emails and OAuth states and pauses their missions and smart plans; NOT cancelled per agent: queued GPU reconstructions and voice walkthroughs (cancelled only at tenant closure although created_by records the agent), video studio jobs (no requester column), contact nurture jobs (no sender reads them yet: latent)", date: 2026-10-16}
+  - {cmd: "cd backend && python -m pytest tests/test_suspension_cancels_spend_live.py with privacy_lifecycle.py stashed, then restored", result: "before: 1 failed (reconstruction stayed queued); after: 1 passed (the suspended agent's queued reconstruction and voice walkthrough fail with the reason; a colleague's queued jobs and the agent's running job are untouched)", date: 2026-10-16}
+  - {cmd: "test_privacy_lifecycle_live.py, test_access_review_live.py; unit test_privacy*.py, test_brokerage_onboarding*.py", result: "3 passed; 109 passed", date: 2026-10-16}
+authz_checked: "Runs inside suspend_member's transaction (broker-owner or platform admin), scoped to the tenant and lower(created_by) = the suspended agent."
+blockers:
+  - "video_studio_jobs records no requester: a suspended agent's queued video still runs (closure cancels it). Needs a created_by column (migration) if per-agent cancel is wanted."
+  - "contact_nurture_jobs have no sender today; when one is built it must skip contacts whose owner is suspended."
+  - "Not deployed (C4.4)."
+audit_refs: []
+decision_refs: []
+next_task: "T03.15 Python mirrors vs policies; owner answers for L03-07 (listings / marketplace) and team leads (T03.02)."
+updated: 2026-10-16
 ```
 How it works: `transactions_lead_read/_insert/_update/_delete` (RESTRICTIVE) leave a deal with a client to 0131 and a deal with no lead as it was; a deal with no client but a lead is visible when the lead is (an EXISTS on leads under the caller's RLS, so 0143 decides) or to the agent who opened it, and writable when the lead's seller client is editable (or it has none) or by its opener. `<t>_deal_read/_insert/_update/_delete` on transaction_offers, transaction_milestones, compliance_checklist_items and transaction_parties: read = the deal is visible (an EXISTS on transactions under the caller's RLS); write = the deal is editable (opener, editable client, or — no client — editable lead client). Inline, no function (0131). Rollback is in the migration header.
 
