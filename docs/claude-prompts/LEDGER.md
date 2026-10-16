@@ -36,7 +36,7 @@ Listed weakest to strongest:
 | 01 | Repository source audit | [01](01-repository-source-audit.md) | `tests_pass` | local | `3083abe` inventory (L01-01) | — | T01.11 A01–A10 re-check; T01.05 migration crosswalk |
 | 02 | All pages, routes, mobile UI | [02](02-all-pages-mobile-ui.md) | `source_verified` | staging | `90372f2` crawl | — | Per-page verdicts |
 | 03 | Brokerage tenancy and hybrid access | [03](03-brokerage-tenancy-hybrid-access.md) | `source_verified` | staging | 0131 (L03-02), 0134+0137 (L03-04), 0140 (L03-05), 0142 drafts (L03-06), 0143 leads (L03-07), 0145 live frames (L03-08) all on staging (0a76a72); 0151 lead children + lead frames (L03-09); 0155 deals with no client + every deal's offers/milestones/parties/checklist (L03-10) local only; policy v6 | Owner: team leads (L03-03); lead assignee / listings / marketplace / pipeline counts (L03-07) | Push 0155 with approval (L03-10); listings / marketplace once the owner answers (L03-07) |
-| 04 | CRM, contacts, leads, relationships | [04](04-crm-contact-leads-relationships.md) | `tests_pass` | local | `a8bff54` (L04-01); L04-02 carrier-failed texts, L04-03 replies (0158) (local) | Owner: meter lead_engaged at approval, delivery or first reply (prompt 04 §7) | T04.01 + T04.13 (entity map; every channel resolves to one contact) |
+| 04 | CRM, contacts, leads, relationships | [04](04-crm-contact-leads-relationships.md) | `tests_pass` | local | `a8bff54` (L04-01); L04-02 carrier-failed texts, L04-03 replies (0158), L04-04 entity map + channel linking (local) | Owner: meter lead_engaged at approval, delivery or first reply (prompt 04 §7) | T04.03 dedup + AC04.02; remaining L04-04 gaps |
 | 05 | Semantic intent | [05](05-semantic-language-intent.md) | `tests_pass` | local | base `2fef2e5` (L05-01, L05-02); `7b198cf` (L05-03, merged `444efe0`); `012f655` (L05-04, English + Spanish; staging-checked after `12e4c34`); `f8142c1` (L05-05, Spanish success answers + fallback drafts + EN/ES voice; on staging after `45a031d`); L05-06 Spanish call-queue cards (local, branch `claude/continue-n7jgwq`, golden `ae16549`); L05-07 a correction withdraws the previous staged request (local) | Owner: model-spend approval for a scored parser run per language (en / es / mixed; harness built, not run) and real parser latency; an independent Spanish held-out set. Call-queue cards now Spanish except record content and model-written suggestions/summaries (L05-06); Command Center screen and horizon labels English; real-phone voice check owed. Decided 2026-10-14: policy v7 §4 (`cb2aedd`), launch languages English + Spanish (L05-04) | Merge PR #33 with approval; scored T05.13 run once spend is approved; T05.10 precise question |
 | 06 | Evidence retrieval and memory | [06](06-evidence-retrieval-memory.md) | `tests_pass` | local | `745f2fa`, `6c7133b`, `63ac40b` (L06-01..03) | A01, A02 | T06.03 context compiler |
 | 07 | AI gateway and governed tools | [07](07-ai-gateway-model-tool-governance.md) | `tests_pass` | local | `071d65d` (L07-01); L07-02 capability registry (local) | Playwright check owed (L07-01); owner: archive_client | T07.04 |
@@ -516,6 +516,30 @@ next_task: "T04.01 + T04.13: the entity map and 'every channel resolves to one c
 updated: 2026-10-15
 ```
 Stored as `replied_at` + `reply_sms_message_id` (0158), not a disposition, so a reply rides on top of the delivery: delivered counts and metering (which re-reads disposition = 'delivered') are unchanged. `outreach_lifecycle.record_reply` stamps the newest first response for the same client or contact whose disposition is accepted/sent/delivered and whose acceptance (or delivery) is within 7 days before the text, once. `routing_metrics.first_response` gains `replied` and `replied_measured_as`.
+
+#### L04-04 Entity map; texts and calls that came before the contact join it at intake (T04.01, T04.13, AC04.01 part)
+Map: [docs/crm-entity-map.md](../crm-entity-map.md).
+```yaml
+id: L04-04
+status: tests_pass
+env: local
+evidence_shas: [845bbd2]
+files: [docs/crm-entity-map.md, backend/contact_linking.py, backend/lead_routing_api.py, backend/tests/test_contact_linking_live.py, .github/workflows/ci.yml]
+tests_run:
+  - {cmd: "read-only trace of every intake channel (Explore) + spot checks of inbound_voice.py:290/:351, messaging_data._match_contact, lead_routing_api.receive_lead, sites_api.py:755, contacts_api.py:543, crm.py:846 at 845bbd2", result: "only the lead webhook creates a contact; texts and calls only link to an existing one, so a person who texted or called first kept those rows linked to nobody after the webhook created them; no public web-form route; differing match keys and tie-breaks (map committed)", date: 2026-10-16}
+  - {cmd: "cd backend && python -m pytest tests/test_contact_linking_live.py with lead_routing_api.py stashed, then restored", result: "before: 1 failed (the earlier text stayed contact_id NULL); after: 1 passed", date: 2026-10-16}
+  - {cmd: "test_contact_linking_live.py (real PostgreSQL; real messaging_data inbound path and a real signed receive_lead)", result: "text + call, then webhook: exactly 1 client and 1 new contact, and the earlier text and call carry its contact and client; a text from another number, a call already linked to someone else and another brokerage's text are untouched; a later text links on arrival; a replayed webhook creates nothing", date: 2026-10-16}
+  - {cmd: "cd backend && pytest tests/test_lead_routing*.py", result: "6 passed", date: 2026-10-16}
+authz_checked: "Linking runs inside the intake's own transaction after it switched to the resolved tenant (FORCE RLS), updates only rows with no contact, in that tenant, within 90 days; nothing logged but counts."
+blockers:
+  - "Gaps 1-6 in docs/crm-entity-map.md remain: no public web-form intake; texts/calls never create a contact; manual contact creation does not run the linking; differing match keys/tie-breaks; the call fallback's digit match; the webhook ignores contact-less clients; no unique hash constraint (AC04.02)."
+  - "Linked texts do not get back-filled client_activities timeline rows; the message itself is linked."
+  - "Not deployed (C4.4)."
+audit_refs: []
+decision_refs: []
+next_task: "Run the linking on manual contact creation; one match key and tie-break for all channels; AC04.02 dedup under race (unique hash + merge review)."
+updated: 2026-10-16
+```
 
 ### L05
 Semantic intent.

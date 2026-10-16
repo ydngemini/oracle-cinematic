@@ -862,6 +862,19 @@ async def receive_lead(
                 assigned_agent_id,
             )
 
+        if payload.phone:
+            # Texts and calls from this phone that came before the contact
+            # existed (or before it had this number) join it now (L04-04).
+            import contact_linking
+
+            linked_client = (client["id"] if not duplicate else contact["legacy_client_id"]) or await conn.fetchval(
+                "SELECT id FROM clients WHERE contact_id=$1::uuid AND archived_at IS NULL ORDER BY created_at LIMIT 1",
+                contact["id"])
+            await contact_linking.link_earlier(
+                conn, tenant_id=tenant_id, contact_id=str(contact["id"]),
+                client_id=str(linked_client) if linked_client else None,
+                phone_e164=payload.phone, phone_hash=phone_hash)
+
         if assigned_agent_id:
             await conn.execute(
                 """
