@@ -38,7 +38,7 @@ Listed weakest to strongest:
 | 03 | Brokerage tenancy and hybrid access | [03](03-brokerage-tenancy-hybrid-access.md) | `source_verified` | staging | 0131 (L03-02), 0134+0137 (L03-04), 0140 (L03-05), 0142 drafts (L03-06), 0143 leads (L03-07), 0145 live frames (L03-08) all on staging (0a76a72); 0151 lead children + lead frames (L03-09); 0155 deals with no client + every deal's offers/milestones/parties/checklist (L03-10) local only; policy v6 | Owner: team leads (L03-03); lead assignee / listings / marketplace / pipeline counts (L03-07) | Push 0155 with approval (L03-10); listings / marketplace once the owner answers (L03-07) |
 | 04 | CRM, contacts, leads, relationships | [04](04-crm-contact-leads-relationships.md) | `tests_pass` | local | `a8bff54` (L04-01); L04-02 carrier-failed texts, L04-03 replies (0158) (local) | Owner: meter lead_engaged at approval, delivery or first reply (prompt 04 §7) | T04.01 + T04.13 (entity map; every channel resolves to one contact) |
 | 05 | Semantic intent | [05](05-semantic-language-intent.md) | `tests_pass` | local | base `2fef2e5` (L05-01, L05-02); `7b198cf` (L05-03, merged `444efe0`); `012f655` (L05-04, English + Spanish; staging-checked after `12e4c34`); `f8142c1` (L05-05, Spanish success answers + fallback drafts + EN/ES voice; on staging after `45a031d`); L05-06 Spanish call-queue cards (local, branch `claude/continue-n7jgwq`, golden `ae16549`) | Owner: model-spend approval for a scored parser run per language (en / es / mixed; harness built, not run) and real parser latency; an independent Spanish held-out set. Call-queue cards now Spanish except record content and model-written suggestions/summaries (L05-06); Command Center screen and horizon labels English; real-phone voice check owed. Decided 2026-10-14: policy v7 §4 (`cb2aedd`), launch languages English + Spanish (L05-04) | Push L05-06 to main with approval; scored T05.13 run once spend is approved; T05.10 + F05.04 correction cancels a staged command |
-| 06 | Evidence retrieval and memory | [06](06-evidence-retrieval-memory.md) | `source_verified` | local | `745f2fa` | A01, A02 | L06-01 |
+| 06 | Evidence retrieval and memory | [06](06-evidence-retrieval-memory.md) | `tests_pass` | local | `745f2fa`, `aefac40` | A01, A02 | L06-01, L06-02 |
 | 07 | AI gateway and governed tools | [07](07-ai-gateway-model-tool-governance.md) | `tests_pass` | local | `071d65d` (L07-01) | Playwright check owed (L07-01); owner: archive_client | T07.02 + AC07.01 |
 | 08 | Durable missions and workflows | [08](08-durable-missions-workflow-orchestration.md) | `source_verified` | local | `745f2fa`; L08-02 deferral journal (0159, local) | Owner: does a mission's standing grant count as approval (C4.1)?; PR #11 needs a rebuild (L08-01 review) | Rebuild PR #11's internal tasks on current main after the owner answers |
 | 09 | Real-time voice | [09](09-realtime-voice-speech-latency.md) | `source_verified` | staging | `9c3463a`; L09-05 outbound spoken opt-out, L09-06 lead-only call notes (local) | Call-note broadcast (L09-03); phone check (L09-02) | L09-03 |
@@ -658,6 +658,30 @@ audit_refs: [A01, A02]
 decision_refs: []
 next_task: "T06.06 + AC06.01"
 updated: 2026-10-12
+```
+
+#### L06-02 Search legs: elapsed time, a wall-clock bound and a bundle verdict (T06.06, AC06.01)
+```yaml
+id: L06-02
+status: tests_pass
+env: local
+evidence_shas: [aefac40]
+files: [backend/search_api.py, backend/tests/test_search_api.py, oracle-app/src/neoh/searchModel.js, oracle-app/src/neoh/searchModel.test.js, oracle-app/src/neoh/UniversalWorkspace.jsx, oracle-app/bundle-budget.json]
+tests_run:
+  - {cmd: "read search_api.search at aefac40", result: "per-leg C6 source_status already existed (L05, T05.11) but no elapsed time; a leg was bounded only by SET LOCAL statement_timeout, so a stuck pool acquire or the comms rollup (no SQL budget) could hold the box open and never report timed_out; no bundle-level verdict; the Work box read only the bare `degraded` list, so a leg with no recognisable status showed as 'Nothing matches'", date: 2026-10-16}
+  - {cmd: "cd backend && python -m pytest tests/test_search_api.py with search_api.py stashed, then restored", result: "before: 2 failed (the AC06.01 bundle test and the clean/not_applicable test); after: 16 passed", date: 2026-10-16}
+  - {cmd: "cd backend && ORACLE_SKIP_DOTENV=1 python -m pytest -q tests/ (env -i)", result: "5139 passed, 66 skipped, 2 failed: test_media_storage / test_object_storage unwritable-mount cases, which fail only as root in this container (same as every earlier slice; green in CI)", date: 2026-10-16}
+  - {cmd: "cd oracle-app && npx vitest run && npx eslint . && npm run build && node scripts/check-bundle-budget.mjs", result: "896 passed; eslint exit 0; build ok; budget re-pinned (+0.1 KB for failedKinds on top of growth earlier slices had already spent from the 2 KB tolerance: 4121.4 KB raw total, largest chunk unchanged at 2271.2 KB)", date: 2026-10-16}
+authz_checked: "No access change. Every leg still runs in the caller's own tenant_tx (RLS decides); the status carries stable reason codes only, never exception text or the query."
+blockers:
+  - "Legs named in T06.06 that do not exist yet: property sources (11), deal timeline, calls, files. Not added here: each needs its own RLS-checked query; the five existing legs (people, properties, deals, conversations, records) carry the full contract."
+  - "`degraded` (the bare list) is kept one release so a client from the previous release still shows its banner; drop it once the new client is deployed."
+  - "Freshness is checked_at only: every leg reads live tables in the request, nothing is cached. When T06.08 adds caches, an entry must carry the cache's own age."
+  - "Not checked in a real browser (jsdom only). Not deployed (C4.4)."
+audit_refs: [A02]
+decision_refs: []
+next_task: "T06.02 + AC06.02 (typed EvidenceBundle with a schema version, built on this per-leg contract); 11 T11.10 reuses it for client automation."
+updated: 2026-10-16
 ```
 
 ### L07

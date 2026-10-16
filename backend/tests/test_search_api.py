@@ -212,3 +212,50 @@ def test_a_too_short_query_is_not_applicable_not_checked():
     out = _run(sa.search(CTX, "s", ["people"], 10))
     assert out["source_status"]["people"]["status"] == ss.NOT_APPLICABLE
     assert out["source_status"]["people"]["reason"] == ss.QUERY_TOO_SHORT
+
+
+def test_the_bundle_says_how_each_leg_ended_and_how_long_it_took(monkeypatch):
+    """AC06.01 / T06.06: a verified zero, a hung leg, a raised leg and a leg
+    that was not asked each keep their own C6 status and elapsed time, and a
+    required leg that is not `checked` makes the bundle degraded."""
+    import source_status as ss
+
+    async def none(ctx, q, limit):
+        return []
+
+    async def hangs(ctx, q, limit):
+        await asyncio.sleep(30)  # a stuck pool acquire or rollup, not a slow SQL statement
+        return []
+
+    async def boom(ctx, q, limit):
+        raise RuntimeError("leg exploded")
+
+    monkeypatch.setattr(sa, "LEG_WALL_CLOCK_S", 0.05)
+    monkeypatch.setitem(sa.LEGS, "people", none)
+    monkeypatch.setitem(sa.LEGS, "deals", hangs)
+    monkeypatch.setitem(sa.LEGS, "conversations", boom)
+    out = _run(sa.search(CTX, "sarah", ["people", "deals", "conversations"], 10))
+    st = out["source_status"]
+
+    assert st["people"]["status"] == ss.CHECKED and st["people"]["matched"] == 0
+    assert st["people"]["checked_at"], "a verified zero says when it was checked"
+    assert st["deals"]["status"] == ss.TIMED_OUT and st["deals"]["reason"] == ss.UPSTREAM_TIMEOUT
+    assert 40 <= st["deals"]["elapsed_ms"] < 5000, "cut off at the wall-clock bound"
+    assert st["conversations"]["status"] == ss.UNAVAILABLE and st["conversations"]["checked_at"] is None
+    assert all(isinstance(e["elapsed_ms"], int) and e["elapsed_ms"] >= 0 for e in st.values())
+    assert all(e["required"] is True for e in st.values()), "every requested leg is required"
+    assert out["bundle_degraded"] is True
+    assert out["degraded"] == ["deals", "conversations"], "legacy list kept for the previous client"
+
+
+def test_a_clean_bundle_and_a_not_applicable_one_are_not_degraded(monkeypatch):
+    async def none(ctx, q, limit):
+        return []
+
+    monkeypatch.setitem(sa.LEGS, "people", none)
+    clean = _run(sa.search(CTX, "sarah", ["people"], 10))
+    assert clean["bundle_degraded"] is False and clean["degraded"] == []
+
+    short = _run(sa.search(CTX, "s", ["people"], 10))
+    assert short["bundle_degraded"] is False
+    assert short["source_status"]["people"]["elapsed_ms"] == 0
