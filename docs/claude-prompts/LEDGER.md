@@ -43,7 +43,7 @@ Listed weakest to strongest:
 | 08 | Durable missions and workflows | [08](08-durable-missions-workflow-orchestration.md) | `source_verified` | local | `745f2fa`; L08-02 deferral journal (0159, local) | Owner: does a mission's standing grant count as approval (C4.1)?; PR #11 needs a rebuild (L08-01 review) | Rebuild PR #11's internal tasks on current main after the owner answers |
 | 09 | Real-time voice | [09](09-realtime-voice-speech-latency.md) | `source_verified` | staging | `9c3463a`; L09-05 outbound spoken opt-out, L09-06 lead-only call notes, L09-07 voice rules locked per path (local) | Phone check (L09-02); real call (T09.18) needs owner approval | T09.18; T09.10 |
 | 10 | Communications and calendars | [10](10-communications-calendar-provider-integrations.md) | `source_verified` | staging | `75c6ba6` (local) | Google OAuth client; 10DLC; deploy approval; A07 fixed locally; L10-11 email Ready only after a send (0164, local); 0136 + 0139 + 0145 undeployed (L10-06, L10-09, L10-10); owner: one-brand rule (L10-09) | L10-01 deploy + real connect; T10.09 SMS/calls |
-| 11 | Property and market intelligence (non-MLS) | [11](11-property-market-intelligence.md) | `tests_pass` | staging (L11-01), local (L11-02, L11-03) | `90372f2`; `d934b2e` (L11-02); L11-03 on branch `worktree-agent-a59f5c8799a673f68` (base `2804f47`) | Deploy 0135; live-DB test owed; staging catalog empty; L11-03 not deployed | Apply 0135 on staging; push L11-03 with approval; then T11.02 provenance |
+| 11 | Property and market intelligence (non-MLS) | [11](11-property-market-intelligence.md) | `tests_pass` | staging (L11-01), local (L11-02, L11-03) | `90372f2`; `d934b2e` (L11-02); L11-03 on branch `worktree-agent-a59f5c8799a673f68` (base `2804f47`); L11-04 source inventory (local) | Deploy 0135; live-DB test owed; staging catalog empty; L11-03 not deployed | Owner/legal: licences per source (L11-04); T11.03 |
 | 12 | Neoh Space capture, 3D, tours | [12](12-neoh-space-browser-capture-reconstruction.md) | `source_verified` | local | `745f2fa`; L12-03 Capture Studio first slice + integration map (local, jsdom only) | A03; AC12.02 real-device protocol | Server upload sessions (T12.05) |
 | 13 | Deals, documents, compliance | [13](13-transactions-contract-vault-compliance.md) | `source_verified` | local | `745f2fa`; L13-02 no new MLS-sourced deals; L13-03 status trail 0163 + T13.14 verified (local) | Owner: e-sign, commissions, fallen-through contracts | T13.02 remainder; T13.11 |
 | 14 | Sites, social, ads, client portal | [14](14-websites-social-ads-growth-client-portal.md) | `source_verified` | local | `745f2fa`; L14-03 honest website badge; L14-04 no new IDX on sites (local) | Owner: networks, listings on sites | T14.04 + AC14.04 |
@@ -178,8 +178,8 @@ blockers:
   - {type: data, note: "Staging has no state_advertising_rules dataset loaded: the Forms view now says so instead of implying none apply."}
 audit_refs: []
 decision_refs: [D-2026-10-12-01]
-next_task: "Per-page verdicts in all-pages-verdicts.json."
-updated: 2026-10-13
+next_task: "Per-page verdicts in all-pages-verdicts.json: AC02.09 asks for a signed reviewer per page, so the owner (or a named reviewer) signs them; the crawl (all-pages-crawl.json) is render evidence, not a verdict (build-all-pages-matrix.mjs:34). A fresh crawl after this branch's UI changes (Capture Studio, DealBook paging, Email card) is owed on staging once PR #33 is merged (2026-10-16: not run locally; the demo seed makes a read-only Plivo call and targets staging)."
+updated: 2026-10-16
 ```
 Findings fixed from this crawl:
 - AI hub, for agents: owner-only lead-routing metrics answered 403 on every visit, and the page showed "Lead routing is temporarily unavailable". A 403 source is now "not available to your role" and leaves the outage banner and the source count (`OurAITab.jsx`).
@@ -1306,6 +1306,28 @@ decision_refs: [D-2026-10-12-01]
 next_task: "Push with approval and verify on staging; then T11.02 provenance. Owner: should data_integrations/geocoder.py (CascadingGeocoder, Census→Nominatim, now without importers) be deleted?"
 notes: "Shared vocabulary backend/source_status.py (C6 statuses + stable reason codes; SourceFailure is raised inside cache fetchers so a failure is never stored). Response fields are ADDED, none renamed: lookup_status/lookup_reason on rows and envelopes, source_status per source, degraded. Sites: census_geocoder.geocode_checked (:269) + fetch raises (:238) + batch rows unverified when any pass failed (:408, :508); /api/data/geocode 502 on outage, 200 checked miss (data_sources_api.py:188); /api/data/geocode/batch unchecked/unmatched_checked counts, 502 when nothing was checked (:219); eviction_lab.by_fips_checked (:230) + /api/data/eviction 502 vs not_applicable vs checked (data_sources_api.py:289); apis/geocoding.geocode_checked (:40) + /api/geocode 502 vs 404 (server.py:772); property_data _nearby_pois_checked total_pois None not 0 and `error` is a reason code, not exception text (:64), _flood_zone_checked (:142), _walkscore_checked (:241), enrich_property source_status/degraded (:310); market_data _fred_latest_checked (:58), _treasury_rates_checked (:297), get_market_snapshot source_status/degraded (:342); AVMResult.lookup_status/source_status/degraded (avm_client.py:81), only HTTP 404 or a zero price is a verified 'no estimate' (:125), analyst status line says which (agents/agent_analyst.py); building_footprint *_checked + footprint_lookup found|none_found|incomplete|not_checked (:211, :276, :375, :406); floorplan footprint-candidates lookup/source_status (floorplan_api.py:649), auto-dimensions geocodes through the Census geocoder + IntegrationCache and reports geocode_status and a failed-geocode OSM as unavailable (:700, :748). UI: PropertyViewTab reads `flood` (it read a non-existent `flood_zone`, so the flood cell was always '—') and `pois.total_pois` (it read `pois.length`), and shows Couldn't check / Not configured / Not mapped by FEMA / Not checked; geocoder outage is not 'could not be located'; RehabEditorDrawer footprint picker and auto-fill notice say 'couldn't check' for not_checked/incomplete. Also removed addresses from the touched log lines (census fetch, Nominatim, AVM HTTP errors, footprint resolver, auto-dimensions). Not changed: state_compliance/routes_market flood fallback (already says 'could not be determined', but still treats a FEMA outage like 'unmapped'); reconstruction_scale.py logs a truncated address on footprint failure (category 12); data_integrations/geocoder.py keeps its swallow-and-cache fetch (no importer left)."
 updated: 2026-10-13
+```
+
+#### L11-04 Source inventory with code-backed licences and distinct identifiers (T11.02)
+Inventory: [docs/property-source-inventory.md](../property-source-inventory.md) (generated).
+```yaml
+id: L11-04
+status: tests_pass
+env: local
+evidence_shas: [e8c98bb]
+files: [backend/property_source_catalog.py, backend/tests/test_property_source_catalog.py, docs/property-source-inventory.md]
+tests_run:
+  - {cmd: "read-only sweep of every non-MLS property/market source (Explore) + spot checks of harvesters/base.py:1180-1196, market_research_agent.py:432, data_coverage.py:69/131/155 at e8c98bb", result: "no single registry: 51 parcel harvesters (firehose.REGISTRY), 2 violation feeds, county assessor (off), RentCast/ATTOM, FRED/BLS/Treasury, 5 market-research datasets, geocoders, Census, Overpass/FEMA/Walk Score, OpenFEMA, EPA, FBI, Eviction Lab, CourtListener, Regrid, footprints, NCES, imagery, broker listings and media", date: 2026-10-16}
+  - {cmd: "cd backend && python -m pytest tests/test_property_source_catalog.py", result: "6 passed: every REGISTRY harvester, market dataset and valuation provider is catalogued; ids unique, kinds and statuses valid; a stated licence cites where; base-default harvesters are default_unverified and attribution strings are never a licence; no MLS/IDX/RESO source; the committed doc equals the generator", date: 2026-10-16}
+authz_checked: "n/a: an inventory module and doc; nothing runtime reads it yet."
+blockers:
+  - {type: owner, note: "68 of 82 sources have no verified licence/terms in the repo: 54 harvesters rely on the code's unverified 'municipal-open-data' default (outreach use already off); 14 others have nothing recorded, incl. the 5 market-research files (published research CSVs, not page scraping) and FRED/BLS/Overpass/FEMA NFHL/Walk Score. Owner/legal to supply per source (T11.04 depends on it)."}
+  - "Freshness is the configured cadence/TTL from code, not observed age; observed freshness per source is health (L19-04/05)."
+  - "Read-only tables with no writer found (fema_flood_zones, county_market_stats, parcel_zoning, school_districts) are read by routes_market.py: a T11.04/F11.03 follow-up."
+audit_refs: [A02]
+decision_refs: [D-2026-10-12-01]
+next_task: "Owner/legal: licences per source; then T11.03 property identity with history."
+updated: 2026-10-16
 ```
 
 ### L12
