@@ -256,6 +256,7 @@ export default function CaptureStudio({
       {staged.length ? (
         <div className={styles.staged}>
           <h4>Waiting to upload ({staged.length}, {totalMb.toFixed(1)} MB)</h4>
+          <p className={styles.small}>Signing out discards anything not uploaded.</p>
           <ul>
             {staged.map((r) => (
               <li key={r.id}>
