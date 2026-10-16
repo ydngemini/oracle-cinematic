@@ -35,7 +35,7 @@ Listed weakest to strongest:
 |---|---|---|---|---|---|---|---|
 | 01 | Repository source audit | [01](01-repository-source-audit.md) | `tests_pass` | local | `3083abe` inventory (L01-01) | — | T01.11 A01–A10 re-check; T01.05 migration crosswalk |
 | 02 | All pages, routes, mobile UI | [02](02-all-pages-mobile-ui.md) | `source_verified` | staging | `90372f2` crawl | — | Per-page verdicts |
-| 03 | Brokerage tenancy and hybrid access | [03](03-brokerage-tenancy-hybrid-access.md) | `source_verified` | staging | 0131 (L03-02), 0134+0137 (L03-04), 0140 (L03-05), 0142 drafts (L03-06), 0143 leads (L03-07), 0145 live frames (L03-08) all on staging (0a76a72); 0151 lead children + lead frames (L03-09); 0155 deals with no client + every deal's offers/milestones/parties/checklist (L03-10) local only; L03-11 suspension cancels queued spend (local); policy v6 | Owner: team leads (L03-03); lead assignee / listings / marketplace / pipeline counts (L03-07) | Push 0155 with approval (L03-10); listings / marketplace once the owner answers (L03-07) |
+| 03 | Brokerage tenancy and hybrid access | [03](03-brokerage-tenancy-hybrid-access.md) | `source_verified` | staging | 0131 (L03-02), 0134+0137 (L03-04), 0140 (L03-05), 0142 drafts (L03-06), 0143 leads (L03-07), 0145 live frames (L03-08) all on staging (0a76a72); 0151 lead children + lead frames (L03-09); 0155 deals with no client + every deal's offers/milestones/parties/checklist (L03-10) local only; L03-11 suspension cancels queued spend (local); L03-12 Python mirrors held to the live policies (local); policy v6 | Owner: team leads (L03-03); lead assignee / listings / marketplace / pipeline counts (L03-07) | Push 0155 with approval (L03-10); listings / marketplace once the owner answers (L03-07) |
 | 04 | CRM, contacts, leads, relationships | [04](04-crm-contact-leads-relationships.md) | `tests_pass` | local | `a8bff54` (L04-01); L04-02 carrier-failed texts, L04-03 replies (0158), L04-04 entity map + channel linking (local) | Owner: meter lead_engaged at approval, delivery or first reply (prompt 04 §7) | T04.03 dedup + AC04.02; remaining L04-04 gaps |
 | 05 | Semantic intent | [05](05-semantic-language-intent.md) | `tests_pass` | local | base `2fef2e5` (L05-01, L05-02); `7b198cf` (L05-03, merged `444efe0`); `012f655` (L05-04, English + Spanish; staging-checked after `12e4c34`); `f8142c1` (L05-05, Spanish success answers + fallback drafts + EN/ES voice; on staging after `45a031d`); L05-06 Spanish call-queue cards (local, branch `claude/continue-n7jgwq`, golden `ae16549`); L05-07 a correction withdraws the previous staged request (local) | Owner: model-spend approval for a scored parser run per language (en / es / mixed; harness built, not run) and real parser latency; an independent Spanish held-out set. Call-queue cards now Spanish except record content and model-written suggestions/summaries (L05-06); Command Center screen and horizon labels English; real-phone voice check owed. Decided 2026-10-14: policy v7 §4 (`cb2aedd`), launch languages English + Spanish (L05-04) | Merge PR #33 with approval; scored T05.13 run once spend is approved; T05.10 precise question |
 | 06 | Evidence retrieval and memory | [06](06-evidence-retrieval-memory.md) | `tests_pass` | local | `745f2fa`, `6c7133b`, `63ac40b` (L06-01..03) | A01, A02 | T06.03 context compiler |
@@ -446,6 +446,8 @@ next_task: "Push 0155 with approval and re-run this test in CI; then a record_ac
 updated: 2026-10-15
 ```
 
+How it works: `transactions_lead_read/_insert/_update/_delete` (RESTRICTIVE) leave a deal with a client to 0131 and a deal with no lead as it was; a deal with no client but a lead is visible when the lead is (an EXISTS on leads under the caller's RLS, so 0143 decides) or to the agent who opened it, and writable when the lead's seller client is editable (or it has none) or by its opener. `<t>_deal_read/_insert/_update/_delete` on transaction_offers, transaction_milestones, compliance_checklist_items and transaction_parties: read = the deal is visible (an EXISTS on transactions under the caller's RLS); write = the deal is editable (opener, editable client, or — no client — editable lead client). Inline, no function (0131). Rollback is in the migration header.
+
 #### L03-11 Suspension cancels the agent's queued spend; what it cancels, verified (T03.16)
 ```yaml
 id: L03-11
@@ -464,10 +466,31 @@ blockers:
   - "Not deployed (C4.4)."
 audit_refs: []
 decision_refs: []
-next_task: "T03.15 Python mirrors vs policies; owner answers for L03-07 (listings / marketplace) and team leads (T03.02)."
+next_task: "T03.15 done in L03-12; owner answers for L03-07 (listings / marketplace) and team leads (T03.02)."
 updated: 2026-10-16
 ```
-How it works: `transactions_lead_read/_insert/_update/_delete` (RESTRICTIVE) leave a deal with a client to 0131 and a deal with no lead as it was; a deal with no client but a lead is visible when the lead is (an EXISTS on leads under the caller's RLS, so 0143 decides) or to the agent who opened it, and writable when the lead's seller client is editable (or it has none) or by its opener. `<t>_deal_read/_insert/_update/_delete` on transaction_offers, transaction_milestones, compliance_checklist_items and transaction_parties: read = the deal is visible (an EXISTS on transactions under the caller's RLS); write = the deal is editable (opener, editable client, or — no client — editable lead client). Inline, no function (0131). Rollback is in the migration header.
+
+#### L03-12 The Python visibility mirrors are held to the live policies (T03.15, AC03.02)
+```yaml
+id: L03-12
+status: tests_pass
+env: local
+evidence_shas: [dd798b9]
+files: [backend/tenancy.py, backend/tests/test_tenancy.py, backend/tests/test_tenancy_mirrors_live.py, .github/workflows/ci.yml]
+tests_run:
+  - {cmd: "read tenancy.py:118-216 and pg_policies for clients / leads / listings at dd798b9; git grep the mirrors' callers", result: "client_access / contact_access are already compared with app_client_access / app_contact_access by the access-matrix live tests. can_read_private said 'clients / leads — the tenant wall' with no lead rule, but leads_linked_* (0143) narrow leads to the seller client's audience; can_write said 'any mutation (clients, leads, listings)' — true only for listings. No production decision used the drifted mirrors (only _record_access, for the wall step), so this was a drift in the stated contract, not a live leak", date: 2026-10-16}
+  - {cmd: "livetest.sh pytest tests/test_tenancy_mirrors_live.py with lead_access = the old documented rule (tenant wall => edit)", result: "1 failed, 5 mismatches: agent A reads and edits B's client's lead (the database refuses both); agent C, holding a VIEW share of B's client, would edit B's lead (the database lets C read, not write)", date: 2026-10-16}
+  - {cmd: "livetest.sh pytest tests/test_tenancy_mirrors_live.py (6 actors x 4 leads, 2 clients, 4 listings; read via SELECT and write via UPDATE as the app login)", result: "1 passed: can_read_private never admits a row the database hides; lead_access matches leads_linked_read/_update for every actor and lead; can_read_listing matches listings_read (own, private, shared pool, co-broke grant); can_write matches listings_write", date: 2026-10-16}
+  - {cmd: "cd backend && pytest tests/test_tenancy.py", result: "16 passed (lead_access unit cases)", date: 2026-10-16}
+authz_checked: "Read-only for production paths: lead_access is a new mirror for tests and future callers; no route changed. Every comparison runs as the app login through tenant_tx, so FORCE RLS decides the database side."
+blockers:
+  - "listings_read still admits any tenant's is_shared_mls rows (the legacy MLS pool). MLS is out of scope (D-2026-10-12-01) and category 11 gates its code; changing the policy is an owner decision (L03-07 listings / marketplace), so the mirror matches the policy as it is."
+  - "Not deployed (C4.4)."
+audit_refs: []
+decision_refs: [D-2026-10-12-01]
+next_task: "T03.03 + AC03.03 sharing primitive review; owner answers for L03-07 and T03.02."
+updated: 2026-10-16
+```
 
 ### L04
 CRM, contacts, leads and relationships.
