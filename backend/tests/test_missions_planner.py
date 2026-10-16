@@ -201,3 +201,38 @@ class TestRequest:
         gateway = _Gateway(_plan())
         _run(gateway)
         assert MISSION["objective_text"] in gateway.calls[0]["prompt"]
+
+
+class TestFeasibility:
+    """T08.04 / AC08.02 (L08-03): a plan only names channels a registered,
+    available tool (07's ToolCapability registry) can carry out."""
+
+    def test_every_channel_maps_to_a_registry_tool_or_says_why_not(self):
+        feasibility = planner.channel_feasibility()
+        assert set(feasibility) == set(planner.CHANNELS)
+        assert feasibility["email"] is None and feasibility["sms"] is None and feasibility["voice"] is None
+        assert "no executable tool" in feasibility["task"]
+
+    def test_a_task_step_is_refused_at_plan_time_not_skipped_later(self):
+        gateway = _Gateway(_plan(steps=[
+            {"candidate": 0, "channel": "task", "day_offset": 0, "intent": "remind me to call"},
+            {"candidate": 1, "channel": "sms", "day_offset": 0, "intent": "text him"},
+        ]))
+        steps, dropped, _ = _run(gateway, mission={**MISSION, "allowed_channels": ["sms", "task"]})
+        assert [s["channel"] for s in steps] == ["sms"]
+        assert "no executable tool" in dropped[0]["reason"]
+        assert "task" not in gateway.calls[0]["prompt"].split("Channels you may use:")[1].splitlines()[0]
+
+    def test_a_mission_that_can_only_use_task_is_told_why_and_never_asks(self):
+        gateway = _Gateway()
+        steps, _dropped, reasoning = _run(gateway, mission={**MISSION, "allowed_channels": ["task"]})
+        assert steps == [] and gateway.calls == []
+        assert "can be carried out" in reasoning and "no executable tool" in reasoning
+
+    def test_a_tool_missing_from_the_release_makes_its_channel_infeasible(self, monkeypatch):
+        import tool_capabilities
+
+        reg = dict(tool_capabilities.registry())
+        reg.pop("draft_sms")
+        monkeypatch.setattr(tool_capabilities, "registry", lambda: reg)
+        assert "draft_sms tool" in planner.channel_feasibility()["sms"]

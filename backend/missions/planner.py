@@ -46,6 +46,33 @@ MAX_STEPS = 60
 
 CHANNELS = ("email", "sms", "voice", "task")
 
+#: The registered tool each channel's step is carried out by (07's
+#: ToolCapability registry, tool_capabilities.py). `task` has none: the
+#: executor skips it ("no internal task surface", executor.py:178; PR #11).
+#: A channel whose tool is missing or not offered is neither offered to the
+#: model nor kept in a plan (T08.04, AC08.02, ledger L08-03), so no plan looks
+#: feasible and is later `skipped`.
+CHANNEL_TOOLS: dict[str, Optional[str]] = {
+    "email": "draft_email", "sms": "draft_sms", "voice": "call_contact", "task": None,
+}
+
+
+def channel_feasibility() -> dict[str, Optional[str]]:
+    """channel -> None when executable, else the reason it is not."""
+    import tool_capabilities
+
+    registry = tool_capabilities.registry()
+    out: dict[str, Optional[str]] = {}
+    for channel in CHANNELS:
+        tool = CHANNEL_TOOLS.get(channel)
+        if tool is None:
+            out[channel] = f"{channel} steps have no executable tool yet (no internal task surface)"
+        elif tool not in registry or not registry[tool].offered:
+            out[channel] = f"{channel} steps need the {tool} tool, which is not available on this release"
+        else:
+            out[channel] = None
+    return out
+
 #: A reasoning model spends part of this budget thinking before it emits the
 #: structured answer, and a multi-candidate sequencing task with a full JSON
 #: schema reasons more than a single short draft does. 2048 was sized to the
@@ -143,9 +170,14 @@ async def propose_plan(
     if not usable:
         return [], [], "No candidates matched this objective."
 
-    allowed = _allowed_channels(mission)
-    if not allowed:
+    permitted = _allowed_channels(mission)
+    if not permitted:
         return [], [], "This mission has no channels it is allowed to use."
+    feasibility = channel_feasibility()
+    allowed = {c for c in permitted if feasibility.get(c) is None}
+    if not allowed:
+        reasons = "; ".join(sorted(str(feasibility[c]) for c in permitted))
+        return [], [], f"No channel this mission may use can be carried out: {reasons}."
 
     prompt = _prompt(mission, usable, allowed)
     plan = await _ask(llm_gateway, prompt)
@@ -155,7 +187,7 @@ async def propose_plan(
     seen: set[tuple[int, int]] = set()
 
     for index, step in enumerate(plan.steps):
-        reason = _refuse(step, usable, allowed, seen)
+        reason = _refuse(step, usable, allowed, seen, feasibility)
         if reason:
             dropped.append({"step_index": index, "reason": reason, "proposed": step.model_dump()})
             continue
@@ -185,12 +217,15 @@ def _refuse(
     candidates: list[dict[str, Any]],
     allowed: set[str],
     seen: set[tuple[int, int]],
+    feasibility: Optional[dict[str, Optional[str]]] = None,
 ) -> Optional[str]:
     """Why code will not carry this step. None means it stands."""
     if step.candidate >= len(candidates):
         # The one that matters: a number pointing at nobody. The schema stops a
         # name being invented; this stops an index being invented.
         return f"names candidate {step.candidate}, which is not in the list"
+    if feasibility and feasibility.get(step.channel):
+        return f"uses {step.channel}: {feasibility[step.channel]}"
     if step.channel not in allowed:
         return f"uses {step.channel}, which this mission is not allowed to use"
     if (step.candidate, step.day_offset) in seen:

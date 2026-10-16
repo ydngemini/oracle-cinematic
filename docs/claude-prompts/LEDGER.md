@@ -40,7 +40,7 @@ Listed weakest to strongest:
 | 05 | Semantic intent | [05](05-semantic-language-intent.md) | `tests_pass` | local | base `2fef2e5` (L05-01, L05-02); `7b198cf` (L05-03, merged `444efe0`); `012f655` (L05-04, English + Spanish; staging-checked after `12e4c34`); `f8142c1` (L05-05, Spanish success answers + fallback drafts + EN/ES voice; on staging after `45a031d`); L05-06 Spanish call-queue cards (local, branch `claude/continue-n7jgwq`, golden `ae16549`); L05-07 a correction withdraws the previous staged request (local) | Owner: model-spend approval for a scored parser run per language (en / es / mixed; harness built, not run) and real parser latency; an independent Spanish held-out set. Call-queue cards now Spanish except record content and model-written suggestions/summaries (L05-06); Command Center screen and horizon labels English; real-phone voice check owed. Decided 2026-10-14: policy v7 §4 (`cb2aedd`), launch languages English + Spanish (L05-04) | Merge PR #33 with approval; scored T05.13 run once spend is approved; T05.10 precise question |
 | 06 | Evidence retrieval and memory | [06](06-evidence-retrieval-memory.md) | `tests_pass` | local | `745f2fa`, `6c7133b`, `63ac40b` (L06-01..03) | A01, A02 | T06.03 context compiler |
 | 07 | AI gateway and governed tools | [07](07-ai-gateway-model-tool-governance.md) | `tests_pass` | local | `071d65d` (L07-01); L07-02 capability registry (local) | Playwright check owed (L07-01); owner: archive_client | T07.04 |
-| 08 | Durable missions and workflows | [08](08-durable-missions-workflow-orchestration.md) | `source_verified` | local | `745f2fa`; L08-02 deferral journal (0159, local) | Owner: does a mission's standing grant count as approval (C4.1)?; PR #11 needs a rebuild (L08-01 review) | Rebuild PR #11's internal tasks on current main after the owner answers |
+| 08 | Durable missions and workflows | [08](08-durable-missions-workflow-orchestration.md) | `source_verified` | local | `745f2fa`; L08-02 deferral journal (0159), L08-03 feasible plans (local) | Owner: does a mission's standing grant count as approval (C4.1)?; PR #11 needs a rebuild (L08-01 review) | Rebuild PR #11's internal tasks on current main after the owner answers |
 | 09 | Real-time voice | [09](09-realtime-voice-speech-latency.md) | `source_verified` | staging | `9c3463a`; L09-05 outbound spoken opt-out, L09-06 lead-only call notes, L09-07 voice rules locked per path (local) | Phone check (L09-02); real call (T09.18) needs owner approval | T09.18; T09.10 |
 | 10 | Communications and calendars | [10](10-communications-calendar-provider-integrations.md) | `source_verified` | staging | `75c6ba6` (local) | Google OAuth client; 10DLC; deploy approval; A07 fixed locally; L10-11 email Ready only after a send (0164, local); 0136 + 0139 + 0145 undeployed (L10-06, L10-09, L10-10); owner: one-brand rule (L10-09) | L10-01 deploy + real connect; T10.09 SMS/calls |
 | 11 | Property and market intelligence (non-MLS) | [11](11-property-market-intelligence.md) | `tests_pass` | staging (L11-01), local (L11-02, L11-03) | `90372f2`; `d934b2e` (L11-02); L11-03 on branch `worktree-agent-a59f5c8799a673f68` (base `2804f47`); L11-04 source inventory (local) | Deploy 0135; live-DB test owed; staging catalog empty; L11-03 not deployed | Owner/legal: licences per source (L11-04); T11.03 |
@@ -871,6 +871,26 @@ audit_refs: []
 decision_refs: []
 next_task: "See L08-01."
 updated: 2026-10-15
+```
+
+#### L08-03 Plans are feasible or refused against the tool registry (T08.04, AC08.02)
+```yaml
+id: L08-03
+status: tests_pass
+env: local
+evidence_shas: [6c44cbe]
+files: [backend/missions/planner.py, backend/tests/test_missions_planner.py]
+tests_run:
+  - {cmd: "read missions/planner.py CHANNELS and missions/executor.py:178 at 6c44cbe", result: "the planner offered task alongside email/sms/voice; the executor skips every task step ('no internal task surface'), so a plan could look feasible and then do less", date: 2026-10-16}
+  - {cmd: "cd backend && python -m pytest tests/test_missions_planner.py with missions/planner.py stashed, then restored; + tests/test_mission*.py", result: "before: 4 failed; after: 135 passed, 1 skipped (each channel maps to its registry tool or a reason; a task step is dropped at plan time with that reason and task is not offered to the model; a task-only mission is told why and never asks; a tool missing from the release makes its channel infeasible)", date: 2026-10-16}
+authz_checked: "No access change: the planner reads the registry (offered tools); approval and execution paths are unchanged."
+blockers:
+  - {type: owner, note: "Task steps stay infeasible until PR #11's internal tasks are rebuilt, which waits on the owner's answer about a mission's standing grant (L08-01)."}
+  - "The registry maps a channel to the chat tool of the same effect (draft_email, draft_sms, call_contact); the executor stages its own commands. If a deployment disables one path but not the other, the mapping should move to an executor-side capability."
+audit_refs: []
+decision_refs: []
+next_task: "Owner: standing grant (L08-01); then rebuild PR #11's task steps, which makes `task` feasible."
+updated: 2026-10-16
 ```
 
 ### L09
