@@ -2230,7 +2230,7 @@ blockers:
   - {type: scope, note: "Expand step only. The DB does not yet refuse plaintext in these columns; the contract migration comes after the code has served everywhere and the backfill reports 0 remaining. Rollback to a pre-0154 release after sealing needs --unseal first."}
   - {type: scope, note: "Not sealed, by design: email_outbox.to_email (matched by lower(to_email) in the privacy request; needs a keyed lookup hash, the clients design in L17-21 §2); interaction_logs behavioural payload keys (counted and filtered); email_outbox.body_html (no writer; a sealed row must keep it NULL); interaction_logs.payload.source_filename (voice-note upload name, left plaintext — owner question below)."}
   - {type: defect, note: "Pre-existing, not fixed here: SessionManager.summarize_rolling_memory can never commit as the app role — it DELETEs the archived user_interactions rows and 0009 grants oracle_app only SELECT/INSERT, so the whole roll-up (including the profile summary upsert) rolls back. It has no caller in the app today (grep), so profile_summary has no live writer; its sealed writer is store_profile_summary (live-tested directly). Fix needs a decision: a SECURITY DEFINER archive function, or DELETE for oracle_app (ends the append-only property 0152 relies on)."}
-  - {type: defect, note: "Pre-existing, not fixed here: crm.comms_threads scans the materialized touches CTE once per client (2 CTE scans x 200 loops); 194 ms for 200 clients x 5,000 touches on the bench, quadratic in brokerage size. A per-client index-backed lateral would fix it (category 04/16)."}
+  - {type: defect, note: "Pre-existing: crm.comms_threads scanned the materialized touches CTE once per client (2 CTE scans x 200 loops), quadratic in brokerage size. Fixed in L17-25 (one grouped pass)."}
 audit_refs: [A01]
 decision_refs: []
 next_task: "Owner/engineering: the roll-up's DELETE grant (defect above); whether voice-note source_filename should be sealed too. Then: deploy with approval; let sealed_text_seal (or the operator script) report 0 remaining for all eight fields; one contract migration for 0152 + 0154 fields; clients slice 1 (L17-21 §2)."
@@ -2286,6 +2286,28 @@ audit_refs: [A01]
 decision_refs: []
 next_task: "Deploy with approval together with 0155-0156."
 updated: 2026-10-15
+```
+
+#### L17-25 The comms rollup is one pass over the touches (L17-22 defect)
+```yaml
+id: L17-25
+status: tests_pass
+env: local
+evidence_shas: [6380735]
+files: [backend/crm.py, backend/tests/test_comms_threads_live.py, backend/tests/test_crm_workflows.py, .github/workflows/ci.yml]
+tests_run:
+  - {cmd: "read crm.comms_threads at 6380735", result: "two correlated LATERAL scans of the whole touches CTE per client (newest touch, count): quadratic in brokerage size (L17-22 defect)", date: 2026-10-16}
+  - {cmd: "cd backend && python -m pytest tests/test_comms_threads_live.py (real PostgreSQL, request login; 300 clients x 6,000 touches, 40 clients also reached through a house-lead) with crm.py stashed, then restored, then 3 more runs", result: "before: 1 failed (new ~= old: 230 vs 255 ms); after: passed every run, old control 229-257 ms vs new 39-42 ms, and identical clients, order, counts and newest touch", date: 2026-10-16}
+  - {cmd: "cd backend && pytest tests/test_crm_workflows.py and the other comms_threads unit tests + test_search_api.py", result: "27 passed (the shape test now pins the grouped LEFT JOIN that keeps untouched clients)", date: 2026-10-16}
+authz_checked: "No access change: same tables, same caller tenant_tx; sealed columns are still read only for the newest touch of the <=200 returned clients and opened by sealed_text.open_fields."
+blockers:
+  - "The timing is a local bench (C9.3 conditions: dev PostgreSQL 16, one connection, warm cache), not a staging measurement."
+  - "The rollup still groups every touch of the brokerage each call (linear now); a summary table or keyset paging is the next step if brokerages grow far past this bench."
+  - "Not deployed (C4.4)."
+audit_refs: [A01, A10]
+decision_refs: []
+next_task: "Owner: client search semantics (L17-23 slice b); the roll-up DELETE grant decision (L17-22)."
+updated: 2026-10-16
 ```
 Effect of the defect: a periodic or operator sealing pass could change more rows per statement than its batch size (up to the whole tenant's backlog in one transaction), breaking the per-run bound and holding row locks longer — never a wrong value. Fix: `WITH picked AS MATERIALIZED (SELECT id ... ORDER BY id LIMIT n FOR UPDATE SKIP LOCKED) UPDATE ... WHERE id IN (SELECT id FROM picked)`; a CTE with a locking clause runs exactly once.
 
