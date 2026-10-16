@@ -466,6 +466,41 @@ async def _provider_snapshot(ctx: TenantContext) -> dict[str, Any]:
     }
 
 
+#: The channels the assistant's tools stand behind (tool_offer.CHANNEL_TOOLS).
+CHANNELS_FOR_TOOLS = ("email", "sms", "voice", "calendar")
+
+
+async def channel_setup_gaps(ctx: TenantContext) -> dict[str, str]:
+    """Channels this actor definitively cannot use yet, each with the setup it
+    needs (T07.04, L07-03). Derived from _provider_snapshot — the truth the
+    delivery page shows — so the assistant never re-decides what is configured.
+
+    A sender that is configured but not yet proven by a send (L10-11, L10-12)
+    is NOT a gap: the first send is how it gets proven. Only "nothing could
+    carry this" counts, and the reason names what to set up."""
+    snap = await _provider_snapshot(ctx)
+    providers, route = snap["providers"], snap["route"]
+    platform = snap["platform_channel_states"]
+    gaps: dict[str, str] = {}
+    smtp = providers["smtp"]
+    if not (smtp["configured"] and (smtp.get("capabilities") or {}).get("email")) \
+            and snap["platform_sender_state"] == "not_configured":
+        gaps["email"] = ("email isn't set up: no mail server is connected for this brokerage and "
+                         "the platform has no sender. Connect one under Providers.")
+    twilio = providers["twilio"]
+    twilio_caps = twilio.get("capabilities") or {}
+    if not (route.get("sms_sender_e164") and route.get("sms_sender_type")):
+        gaps["sms"] = ("texting isn't set up: no registered text number for this agent. "
+                       "Set one up under Business number.")
+    elif not (twilio["configured"] and twilio_caps.get("sms")) and platform["sms"] == "not_configured":
+        gaps["sms"] = "texting isn't set up: no Twilio account can send texts for this brokerage."
+    if not (twilio["configured"] and twilio_caps.get("voice")) and platform["ai_call"] == "not_configured":
+        gaps["voice"] = "Neoh calls aren't set up: no Twilio voice account for this brokerage."
+    if not providers["google"]["configured"]:
+        gaps["calendar"] = "the calendar isn't connected: scheduling needs a connected Google Calendar."
+    return gaps
+
+
 @router.get("/capabilities")
 async def capabilities(ctx: TenantContext = Depends(require_context)) -> dict[str, Any]:
     provider = await _provider_snapshot(ctx)

@@ -684,14 +684,21 @@ def _foundry_tools(context_type: str | None) -> list[dict]:
 _FOUNDRY_INSTRUCTIONS = neoh_persona.build_system_prompt(compact=True)
 
 
-def _foundry_response(input_items: list[dict], context_type: str | None):
+def _foundry_response(input_items: list[dict], context_type: str | None,
+                      withheld: frozenset[str] = frozenset()):
     return _foundry_openai_client().responses.create(
         model=_FOUNDRY_MODEL,
         input=input_items,
-        tools=_foundry_tools(context_type),
+        tools=[t for t in _foundry_tools(context_type) if t.get("name") not in withheld],
         instructions=_FOUNDRY_INSTRUCTIONS,
         store=False,
     )
+
+
+def _withheld(bundle: dict) -> frozenset[str]:
+    """The tools this turn's actor is not offered (tool_offer, set by _generate)."""
+    offer = bundle.get("tool_offer") if isinstance(bundle, dict) else None
+    return frozenset(getattr(offer, "withheld", None) or ())
 
 
 async def _foundry_generate(
@@ -712,9 +719,11 @@ async def _foundry_generate(
     input_items = _foundry_inputs(bundle, runtime_context)
     context_type = bundle["assistant"].get("context_type")
     context_id = str(bundle["assistant"].get("context_id") or "") or None
+    withheld = _withheld(bundle)
     # Bounded: the SDK's own default is 600 s x 3 attempts per call.
     response = await asyncio.wait_for(
-        asyncio.to_thread(_foundry_response, input_items, context_type), timeout=_FOUNDRY_ROUND_SECONDS)
+        asyncio.to_thread(_foundry_response, input_items, context_type, withheld),
+        timeout=_FOUNDRY_ROUND_SECONDS)
     # Metered at every model call, not once per turn: a turn that runs tools
     # calls the model again for each round, and those rounds carry the whole
     # conversation plus every tool receipt so far. They are the expensive half.
@@ -755,7 +764,7 @@ async def _foundry_generate(
             item.model_dump(mode="json", exclude_none=True) for item in response.output
         ]
         response = await asyncio.wait_for(asyncio.to_thread(
-            _foundry_response, input_items + prior_output + tool_outputs, context_type
+            _foundry_response, input_items + prior_output + tool_outputs, context_type, withheld
         ), timeout=_FOUNDRY_ROUND_SECONDS)
         await record_inference(
             ctx, response, idempotency_key=f"chat:{assistant_id}:foundry:{round_index + 1}"
@@ -908,7 +917,9 @@ async def _local_fallback(
 
     context_type = bundle["assistant"].get("context_type")
     context_id = str(bundle["assistant"].get("context_id") or "") or None
-    tools = _local_tools(context_type) if ctx is not None else []
+    withheld = _withheld(bundle)
+    tools = [t for t in _local_tools(context_type)
+             if (t.get("function") or {}).get("name") not in withheld] if ctx is not None else []
     actions: list[dict] = applied if applied is not None else []
 
     payload: dict[str, Any] = {
@@ -1197,6 +1208,21 @@ async def _generate(ctx: TenantContext, bundle: dict, assistant_id: str) -> tupl
         if constraint_block:
             system_prompt += "\n\n" + constraint_block
             runtime_context = (runtime_context + "\n\n" + constraint_block).strip()
+    # What this actor is offered this turn, and why the rest is not (T07.04,
+    # L07-03): the broker-owner reads an agent may not use and the channels the
+    # brokerage has not set up are withheld from every provider's tool list
+    # below and named here, so the model says "texting needs setup" instead of
+    # staging a text that can go nowhere. execute_safe_tool refuses the same
+    # names with the same reason (tool_offer.current).
+    import tool_offer
+
+    offer = await tool_offer.for_turn(ctx, bundle["assistant"].get("context_type"))
+    bundle["tool_offer"] = offer
+    tool_offer.remember(ctx, assistant_id, offer)
+    offer_note = offer.prompt_note()
+    if offer_note:
+        system_prompt += "\n\n" + offer_note
+        runtime_context = (runtime_context + "\n\n" + offer_note).strip()
     # Hosted chat runs through llm_gateway: one place that knows which
     # providers exist, one call counter, one deadline. The loop, the tool
     # execution and the receipts are unchanged — only the transport moved.
@@ -1287,6 +1313,9 @@ async def _generate(ctx: TenantContext, bundle: dict, assistant_id: str) -> tupl
     context_type = bundle["assistant"].get("context_type")
     context_id = str(bundle["assistant"].get("context_id") or "") or None
     tool_config = _tool_config(context_type)
+    if tool_config and offer.withheld:
+        kept = [t for t in tool_config["tools"] if t["toolSpec"]["name"] not in offer.withheld]
+        tool_config = {"tools": kept} if kept else None
     actions: list[dict] = []
     try:
         response = await asyncio.to_thread(_converse, messages, system_prompt, tool_config)
@@ -1360,12 +1389,28 @@ async def _broadcast_chunks(ctx: TenantContext, assistant_id: str, request_id: s
         await asyncio.sleep(0)
 
 
+def _worker_role(value: object) -> Role:
+    """The role the chat turn runs as (T07.04, L07-03).
+
+    The turn used to run as Role.AGENT whoever asked, so a broker-owner was
+    refused their own workspace reports with "your role is agent" and the
+    offer could not name the real permission. The API now records the
+    requester's role in the job; a job without one (queued before this
+    release, or unreadable) still runs as an agent — the least the person
+    could be. A platform admin runs as the brokerage's owner: the tool loop
+    reads under RLS, and a platform-admin session there would see every
+    tenant's rows, which no chat turn should."""
+    if value == Role.BROKER_OWNER.value or value == Role.PLATFORM_ADMIN.value:
+        return Role.BROKER_OWNER
+    return Role.AGENT
+
+
 async def handle_ai_chat_job(payload: dict, reporter: JobReporter) -> dict:
     tenant_id = str(payload["tenant_id"])
     user_id = str(payload["user_id"])
     assistant_id = str(payload["assistant_id"])
     request_id = str(payload["request_id"])
-    ctx = TenantContext(agent_id=user_id, tenant_id=tenant_id, role=Role.AGENT)
+    ctx = TenantContext(agent_id=user_id, tenant_id=tenant_id, role=_worker_role(payload.get("role")))
     bundle = await load_response_bundle(ctx, assistant_id)
     # A spoken turn's recognition language (L05-05): read by
     # semantic_turn.prepare_turn only when the words cannot tell.

@@ -320,6 +320,9 @@ async def handle_chat_websocket(
             ctx, job_type="ai_chat:response",
             payload={
                 "tenant_id": ctx.tenant_id, "user_id": ctx.agent_id,
+                # The turn runs as the person who asked (L07-03), never wider
+                # than a broker-owner (ai_chat_agent._worker_role).
+                "role": ctx.role.value,
                 "request_id": str(frame.request_id), "assistant_id": created["assistant_id"],
                 # Only a spoken turn carries it; a code, never words (L05-05).
                 **({"lang_hint": frame.lang} if frame.lang else {}),

@@ -1515,11 +1515,13 @@ async def _list_contract_templates(conn, ctx: TenantContext, tool_input: dict) -
 # Ops reads
 # ---------------------------------------------------------------------------
 #
-# The allowlist decides what the model is *offered*; require_role decides what
-# this tenant may *do*. They are different questions, so the role check lives
+# The allowlist decides what the release *offers*; require_role decides what
+# this person may *do*. They are different questions, so the role check lives
 # here in the handler rather than in the allowlist: an agent asking about the
 # job queue should be told it is not their information, not silently handed a
-# model that pretends the tool does not exist.
+# model that pretends the tool does not exist. Since L07-03 (T07.04) the per-
+# turn offer (tool_offer) also withholds these nine from an agent and names
+# the reason in the system prompt; this check stays as the second line.
 
 # The tools whose handler calls _require_ops_role. Named here so the capability
 # registry (ai_capabilities) can tell an agent "broker-owner only" without

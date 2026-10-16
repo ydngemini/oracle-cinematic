@@ -406,3 +406,87 @@ def test_only_the_platform_account_records_its_own_twilio_outcome(monkeypatch, s
         with pytest.raises(command_providers.ProviderRequestError):
             go(platform)
     assert len(recorded) == 2
+
+
+# ── T07.04 / L07-03: which channels definitively need setup, and what ───────
+
+def _cred(provider, label="default", caps=None, status="valid"):
+    return {"provider": provider, "account_label": label, "expires_at": None, "last_validated_at": None,
+            "disabled_at": None, "validation_status": status, "validation_error": None,
+            "validated_capabilities": caps or {}, "updated_at": None}
+
+
+def _gaps_for(monkeypatch, rows, route=None, *, twilio_env=False, smtp_env=False, outcomes=None):
+    import asyncio
+    import json as _json
+    from contextlib import asynccontextmanager
+
+    import provider_health
+
+    for name in ("TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "TWILIO_API_KEY", "TWILIO_API_SECRET",
+                 "ORACLE_SMTP_FROM_EMAIL", "ORACLE_SMTP_USERNAME"):
+        monkeypatch.delenv(name, raising=False)
+    if twilio_env:
+        monkeypatch.setenv("TWILIO_ACCOUNT_SID", "AC" + "0" * 32)
+        monkeypatch.setenv("TWILIO_AUTH_TOKEN", "t" * 32)
+    if smtp_env:
+        monkeypatch.setenv("ORACLE_SMTP_FROM_EMAIL", "relay@neoh.test")
+
+    class Conn:
+        async def fetch(self, *_a):
+            return rows
+
+        async def fetchrow(self, *_a):
+            return route
+
+    @asynccontextmanager
+    async def tx(_ctx):
+        yield Conn()
+
+    async def load(_ctx, provider, *, account_label, exact):
+        return _json.dumps({"from_email": f"{account_label}@example.com"})
+
+    async def last(provider):
+        return (outcomes or {}).get(provider)
+
+    monkeypatch.setattr(sales_api, "tenant_tx", tx)
+    monkeypatch.setattr(sales_api, "_load_provider_credential", load)
+    monkeypatch.setattr(provider_health, "last_outcome", last)
+    ctx = TenantContext(agent_id="avery", tenant_id="00000000-0000-0000-0000-0000000000aa", role=Role.AGENT)
+    return asyncio.run(sales_api.channel_setup_gaps(ctx))
+
+
+_TEXT_ROUTE = {"sms_sender_e164": "+13025550100", "sms_sender_type": "twilio_registered",
+               "voice_caller_id_verified": False, "voice_caller_id_e164": None}
+
+
+def test_with_nothing_set_up_every_channel_names_what_it_needs(monkeypatch):
+    gaps = _gaps_for(monkeypatch, [], None)
+    assert set(gaps) == set(sales_api.CHANNELS_FOR_TOOLS)
+    assert "Providers" in gaps["email"] and "mail server" in gaps["email"]
+    assert "Business number" in gaps["sms"] and "text number" in gaps["sms"]
+    assert "Twilio" in gaps["voice"]
+    assert "Google Calendar" in gaps["calendar"]
+
+
+def test_configured_but_not_yet_proven_by_a_send_is_not_a_gap(monkeypatch):
+    # The platform Twilio account is set but has never sent (L10-12): the first
+    # text or call is how it gets proven, so the tools stay offered.
+    gaps = _gaps_for(monkeypatch, [], _TEXT_ROUTE, twilio_env=True, smtp_env=True)
+    assert "sms" not in gaps and "voice" not in gaps and "email" not in gaps
+    assert set(gaps) == {"calendar"}
+
+
+def test_a_text_number_without_any_twilio_account_is_still_a_gap(monkeypatch):
+    gaps = _gaps_for(monkeypatch, [], _TEXT_ROUTE)
+    assert "Twilio" in gaps["sms"] and "Business number" not in gaps["sms"]
+
+
+def test_the_brokerages_own_accounts_close_the_gaps(monkeypatch):
+    rows = [_cred("smtp", caps={"email": True}), _cred("twilio", caps={"sms": True, "voice": True}),
+            _cred("google")]
+    assert _gaps_for(monkeypatch, rows, _TEXT_ROUTE) == {}
+    # A Twilio account validated for texts only still cannot place Neoh calls.
+    rows = [_cred("twilio", caps={"sms": True})]
+    gaps = _gaps_for(monkeypatch, rows, _TEXT_ROUTE)
+    assert "sms" not in gaps and "Twilio voice" in gaps["voice"]

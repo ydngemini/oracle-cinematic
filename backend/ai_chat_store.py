@@ -1869,10 +1869,14 @@ async def execute_safe_tool(
     # The offered list is the authorization boundary for the model, not a hint:
     # a name the model was never shown for this context (it can still emit
     # one) used to dispatch anyway (review AI-5).
-    from ai_chat_agent import offered_tool_names
+    # What this actor was offered for this turn, with the reason for anything
+    # withheld — the role-limited reads, a channel the brokerage has not set up
+    # (tool_offer, T07.04, L07-03) — answered the way the prompt named it.
+    import tool_offer
 
-    if tool_name not in offered_tool_names(context_type):
-        return {"ok": False, "error": f"{tool_name} is not available for this conversation."}
+    refused = tool_offer.current(ctx, message_id, context_type).refusal(tool_name)
+    if refused:
+        return {"ok": False, "error": refused}
     ledgered = call_index is not None and tool_name not in _READ_ONLY_TOOLS
     arguments_hash = (
         _canonical_arguments_hash(tool_name, tool_input) if ledgered else ""

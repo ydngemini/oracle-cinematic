@@ -523,3 +523,35 @@ def test_a_staged_outreach_request_is_not_broadcast_as_an_applied_change():
 
     applied = {"ok": True, "action_id": "act-1", "undoable": True}
     assert agent._is_record_change("set_client_stage", applied) is True
+
+
+# ---------------------------------------------------------------------------
+# 8. The per-actor offer is a subset of the release offer, and says why
+#    (T07.04, AC07.01; L07-03)
+# ---------------------------------------------------------------------------
+
+def test_an_agent_is_offered_none_of_the_owner_only_tools_and_the_owner_all_of_them():
+    import tool_offer
+
+    owner = TenantContext(agent_id="owner@tenant.test", tenant_id=CTX.tenant_id, role=Role.BROKER_OWNER)
+    for context in (None, "client", "listing", "lead"):
+        release = ai_chat_agent.offered_tool_names(context)
+        agent_offer, owner_offer = tool_offer.for_actor(CTX, context), tool_offer.for_actor(owner, context)
+        assert owner_offer.offered == release
+        assert agent_offer.offered == release - ai_tools_read.OPS_ROLE_TOOLS
+        assert set(agent_offer.withheld) == release & ai_tools_read.OPS_ROLE_TOOLS
+        # Nothing is withheld silently: every name the agent is not offered has a reason.
+        assert all(agent_offer.withheld[name] for name in agent_offer.withheld)
+
+
+def test_the_three_providers_drop_exactly_the_same_withheld_names():
+    import tool_offer
+
+    offer = tool_offer.for_actor(CTX, "client", {"sms": "texting isn't set up: no registered text number."})
+    withheld = frozenset(offer.withheld)
+    bedrock = {t["toolSpec"]["name"] for t in ai_chat_agent._tool_config("client")["tools"]} - withheld
+    foundry = {t["name"] for t in ai_chat_agent._foundry_tools("client") if t["name"] not in withheld}
+    local = {t["function"]["name"] for t in ai_chat_agent._local_tools("client")
+             if t["function"]["name"] not in withheld}
+    assert bedrock == foundry == local == offer.offered
+    assert "draft_sms" not in offer.offered and "draft_email" in offer.offered
