@@ -312,3 +312,23 @@ describe('Property View upload control', () => {
     expect(screen.getByRole('button', { name: /^upload .*photos or video/i })).toBeTruthy();
   });
 });
+
+describe('Capture Studio launches from Property View (T12.03, L12-03)', () => {
+  it('opens the camera studio, which falls back to the file picker without a camera', async () => {
+    useTour.mockReturnValue({ tour: { pano_scene_count: 0, photo_count: 0 } });
+    await lookUpAProperty();
+    fireEvent.click(screen.getByRole('button', { name: /capture with camera/i }));
+    const studio = await screen.findByRole('region', { name: 'Capture with camera' });
+    expect(studio).toBeTruthy();
+    // jsdom has no camera: the studio offers the existing picker instead.
+    expect(screen.getByRole('alert').textContent).toMatch(/camera/i);
+    expect(screen.getAllByRole('button', { name: 'Choose files instead' }).length).toBeGreaterThan(0);
+  });
+
+  it('is not offered for 360° scenes, which come from a 360 camera', async () => {
+    useTour.mockReturnValue({ tour: { pano_scene_count: 0, photo_count: 0 } });
+    await lookUpAProperty();
+    fireEvent.click(screen.getByRole('radio', { name: /360/i }));
+    expect(screen.queryByRole('button', { name: /capture with camera/i })).toBeNull();
+  });
+});

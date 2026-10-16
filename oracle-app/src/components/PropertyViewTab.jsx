@@ -12,6 +12,8 @@ import styles from './PropertyViewTab.module.css';
 // Same entry point HouseWorkspace uses, so both surfaces pick the engine
 // from VITE_TOUR_ENGINE and neither can drift onto its own viewer.
 const TourViewer = lazy(() => import('./TourViewer'));
+// Camera capture loads only when opened: most visits never use it.
+const CaptureStudio = lazy(() => import('./CaptureStudio'));
 
 /**
  * Property View — one address, what public records say about it, and the media
@@ -247,6 +249,7 @@ export default function PropertyViewTab() {
     setBusy(true);
     setNotice(null);
     const failed = [];
+    const uploaded = [];
     let done = 0;
     setUploadProgress({ done: 0, total: files.length });
     for (const file of files) {
@@ -258,6 +261,7 @@ export default function PropertyViewTab() {
       try {
         await crmUpload(`/api/crm/property-view/media?${subjectQs}`, form);
         done += 1;
+        uploaded.push(file.name);
       } catch (err) {
         failed.push({ file, name: file.name, error: err?.message || 'Upload failed.', surface, capture, floor });
       }
@@ -270,7 +274,16 @@ export default function PropertyViewTab() {
     setNotice(failed.length
       ? { tone: 'error', text: `${done} of ${files.length} uploaded. ${failed.length} file${failed.length === 1 ? '' : 's'} failed — retry them below; nothing already uploaded is lost.` }
       : { tone: 'ok', text: `${done} file${done === 1 ? '' : 's'} uploaded.` });
+    // Which files the server acknowledged, by name: Capture Studio drops its
+    // on-device copy only for these.
+    return { uploaded, failed: failed.map((f) => f.name) };
   }, [subjectQs, refreshView]);
+
+  const [studioOpen, setStudioOpen] = useState(false);
+  const uploadFromStudio = useCallback(
+    (files) => uploadEach(files, { surface: activeSurface, capture: 'auto', floor: floorIndex }),
+    [uploadEach, activeSurface, floorIndex],
+  );
 
   const onPickFiles = useCallback(async (event) => {
     const files = Array.from(event.target.files || []);
@@ -594,6 +607,11 @@ export default function PropertyViewTab() {
             <button type="button" className={styles.secondary} onClick={mintLink} disabled={busy}>
               <Link2 aria-hidden="true" /> Invite client to upload
             </button>
+            {captureMode !== 'pano' ? (
+              <button type="button" className={styles.secondary} onClick={() => setStudioOpen(true)} disabled={busy || studioOpen}>
+                <Camera aria-hidden="true" /> Capture with camera
+              </button>
+            ) : null}
             <input
               ref={fileInputRef}
               type="file"
@@ -607,6 +625,17 @@ export default function PropertyViewTab() {
               aria-hidden="true"
             />
           </div>
+
+          {studioOpen ? (
+            <Suspense fallback={<p className={styles.muted}>Opening the camera…</p>}>
+              <CaptureStudio
+                subject={subjectQs}
+                onUpload={uploadFromStudio}
+                onChooseFiles={() => fileInputRef.current?.click()}
+                onClose={() => setStudioOpen(false)}
+              />
+            </Suspense>
+          ) : null}
 
           {uploadProgress ? (
             <p className={styles.ok} role="status" aria-live="polite">

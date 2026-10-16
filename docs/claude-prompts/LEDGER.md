@@ -44,7 +44,7 @@ Listed weakest to strongest:
 | 09 | Real-time voice | [09](09-realtime-voice-speech-latency.md) | `source_verified` | staging | `9c3463a`; L09-05 outbound spoken opt-out, L09-06 lead-only call notes (local) | Call-note broadcast (L09-03); phone check (L09-02) | L09-03 |
 | 10 | Communications and calendars | [10](10-communications-calendar-provider-integrations.md) | `source_verified` | staging | `75c6ba6` (local) | Google OAuth client; 10DLC; deploy approval; A07 fixed locally, 0136 + 0139 + 0145 undeployed (L10-06, L10-09, L10-10); owner: one-brand rule (L10-09) | L10-01 |
 | 11 | Property and market intelligence (non-MLS) | [11](11-property-market-intelligence.md) | `tests_pass` | staging (L11-01), local (L11-02, L11-03) | `90372f2`; `d934b2e` (L11-02); L11-03 on branch `worktree-agent-a59f5c8799a673f68` (base `2804f47`) | Deploy 0135; live-DB test owed; staging catalog empty; L11-03 not deployed | Apply 0135 on staging; push L11-03 with approval; then T11.02 provenance |
-| 12 | Neoh Space capture, 3D, tours | [12](12-neoh-space-browser-capture-reconstruction.md) | `source_verified` | local | `745f2fa` | A03 | Capture Studio first slice |
+| 12 | Neoh Space capture, 3D, tours | [12](12-neoh-space-browser-capture-reconstruction.md) | `source_verified` | local | `745f2fa`; L12-03 Capture Studio first slice + integration map (local, jsdom only) | A03; AC12.02 real-device protocol | Server upload sessions; sign-out clears staged captures |
 | 13 | Deals, documents, compliance | [13](13-transactions-contract-vault-compliance.md) | `source_verified` | local | `745f2fa`; L13-02 no new MLS-sourced deals (local) | Owner: e-sign, commissions | L13-01 |
 | 14 | Sites, social, ads, client portal | [14](14-websites-social-ads-growth-client-portal.md) | `source_verified` | local | `745f2fa`; L14-03 honest website badge (local) | Owner: networks, listings on sites | L14-01 |
 | 15 | Neoh mascot animation | [15](15-neoh-avatar-skeletal-character-animation.md) | `source_verified` | local | truth slice (L15-02) + rig spec (L15-03) local, on `2fef2e5` | Owner: Rive vs 3D, rig author and licence (L15-03); no device measurements (AC15.07) | Owner decides L15-03; then T15.04 layers and the AC15.07 device protocol |
@@ -766,10 +766,10 @@ updated: 2026-10-13
 id: L07-02
 status: tests_pass
 env: local
-evidence_shas: [8bc4bb8]
+evidence_shas: [42f0c0a]
 files: [backend/tool_capabilities.py, backend/ai_chat_store.py, backend/tests/test_tool_capabilities.py]
 tests_run:
-  - {cmd: "read ai_tool_policy.TOOL_RISK, ai_chat_agent.TOOLS/_tool, ai_chat_store._execute_safe_tool, ai_capabilities.tool_state at 8bc4bb8", result: "each property a capability needs already had one deciding source, but no per-tool record joined them; the selected-record rule lived as an inline tuple inside _execute_safe_tool", date: 2026-10-16}
+  - {cmd: "read ai_tool_policy.TOOL_RISK, ai_chat_agent.TOOLS/_tool, ai_chat_store._execute_safe_tool, ai_capabilities.tool_state at 42f0c0a", result: "each property a capability needs already had one deciding source, but no per-tool record joined them; the selected-record rule lived as an inline tuple inside _execute_safe_tool", date: 2026-10-16}
   - {cmd: "cd backend && python -m pytest tests/test_tool_capabilities.py tests/test_ai_tool_policy.py tests/test_ai_capabilities.py tests/test_ai_chat.py tests/test_ai_tools_read.py", result: "254 passed (9 new: one entry per catalog tool = TOOL_RISK; purpose and schema hash from the catalog; effect/confirmation/idempotency follow the risk class; offer, owner-only and selected-record match the runtime; every tool in one area; unmeasured fields are None; version moves with any entry)", date: 2026-10-16}
 authz_checked: "No access change. needs_selected_record() is the same rule _execute_safe_tool applied inline (moved, not changed); the registry reads the allowlist and owner-only set, it does not decide them."
 blockers:
@@ -1252,6 +1252,32 @@ audit_refs: [A03]
 decision_refs: [D-2026-10-08-01]
 next_task: "T12.09 certification state; owner question on publishing unverified spaces."
 updated: 2026-10-13
+```
+
+#### L12-03 Capture Studio first slice: camera, live hints off the main thread, on-device staging until acknowledged (T12.01, T12.03, T12.05 part)
+Integration map: [docs/neoh-space-integration-map.md](../neoh-space-integration-map.md).
+```yaml
+id: L12-03
+status: tests_pass
+env: local
+evidence_shas: [42f0c0a]
+files: [docs/neoh-space-integration-map.md, oracle-app/src/components/CaptureStudio.jsx, oracle-app/src/components/CaptureStudio.module.css, oracle-app/src/components/CaptureStudio.test.jsx, oracle-app/src/components/PropertyViewTab.jsx, oracle-app/src/components/PropertyViewTab.test.jsx, oracle-app/src/lib/capture/frameQuality.js, oracle-app/src/lib/capture/hintScheduler.js, oracle-app/src/lib/capture/qualityWorker.js, oracle-app/src/lib/capture/createQualityWorker.js, oracle-app/src/lib/capture/cameraSupport.js, oracle-app/src/lib/capture/captureStore.js, oracle-app/src/lib/capture/capture.test.js, oracle-app/bundle-budget.json]
+tests_run:
+  - {cmd: "read-only trace of capture entry, link, camera, upload, storage, worker, publish (spatial-stack-scout) + spot checks of property_view_api.py:918, reconstruction_worker.py:136/:1029, media_storage.py:45 at 42f0c0a", result: "no in-app camera, no live quality check, no resumable or offline upload: a reload lost every capture not yet uploaded; server gate, build, publish and viewer are real (map committed)", date: 2026-10-16}
+  - {cmd: "cd oracle-app && npx vitest run src/lib/capture src/components/CaptureStudio.test.jsx src/components/PropertyViewTab.test.jsx", result: "12 + 7 + 20 passed: gate thresholds mirrored (512 / 22 / 12 / 1.6); scheduler drops, never queues, and adapts to measured cost; camera errors -> state + sentence (no raw text); unsupported/denied -> 'Choose files instead'; recording staged on device, removed only on acknowledgement; failed upload keeps it and a later visit lists it; no-room -> 'in this page only'; no % and no 'verified'; launched from Property View, not for 360", date: 2026-10-16}
+  - {cmd: "cd oracle-app && npx vitest run && npx eslint . && npm run build && node scripts/check-bundle-budget.mjs", result: "917 passed; eslint exit 0; build ok, CaptureStudio (12 KB) and qualityWorker are separate lazy chunks (main chunk unchanged at 2271.2 KB); total budget re-pinned (+12.7 KB raw for the new lazy chunks)", date: 2026-10-16}
+  - {cmd: "inspect dist/assets after the first build", result: "caught: the worker had been inlined as a data: URL with its import unresolved (would fail, and CSP worker-src blocks data:) because it was constructed through a variable; fixed with createQualityWorker (the literal new Worker(new URL(...)) form); rebuilt: qualityWorker-*.js emitted same-origin with frameQuality bundled", date: 2026-10-16}
+authz_checked: "No server change. Uploads go through the existing POST /api/crm/property-view/media under the agent's own session and RLS. Staged originals stay in this browser's IndexedDB for this origin, keyed by the property, until acknowledged or discarded by the agent."
+blockers:
+  - "No real device has run this (AC12.02 open): iPhone Safari and Android Chrome, three connected rooms, scripted interruptions (tab switch, network loss, low storage). jsdom has no camera, MediaRecorder or canvas; the camera and recorder are faked in tests."
+  - "Hint parity with the server gate is by construction (same kernel, edge and thresholds), not measured on real frames; luma rounding and thumbnail resampling differ slightly (stated in frameQuality.js)."
+  - "Upload is still whole-file per request: no chunking, byte-acknowledged progress, hashes, receipts or duplicate detection (T12.05 remainder needs a server upload-session API). A staged file whose upload is interrupted mid-request is retried whole."
+  - "Staged originals on a shared device stay until uploaded or discarded; sign-out does not clear them yet (lib/clearPrivateCaches.js should be extended; 17)."
+  - "Room segments and doorway marks (T12.06) not started; owner question on publishing unverified spaces (L12-01) still open."
+audit_refs: [A03]
+decision_refs: [D-2026-10-08-01, D-2026-10-08-02]
+next_task: "Server upload sessions (chunked, hashed, idempotent receipts, byte progress) + sign-out clears staged captures; then the AC12.02 real-device protocol; then T12.09/T12.10 (A03)."
+updated: 2026-10-16
 ```
 
 ### L13
