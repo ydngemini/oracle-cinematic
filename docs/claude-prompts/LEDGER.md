@@ -701,6 +701,7 @@ tests_run:
   - {cmd: "cd backend && pytest tests/test_command*.py tests/test_ai_chat*.py tests/test_semantic*.py tests/test_frame*.py tests/test_approval*.py", result: "1253 passed, 4 skipped (reject route refactored into commands_api.withdraw_command, same behaviour)", date: 2026-10-16}
 authz_checked: "Withdrawal runs as the agent, through the same path as their Reject button (decide_approval + cancel + first-response ledger), only for commands whose created_by is that agent and still awaiting_approval; receipts are read through the sealed-result reader under the agent's RLS."
 blockers:
+  - "CI caught a source-inspection test pinning Stage.CANCELLED inside reject_command (tests/test_outreach_lifecycle.py:403) after the refactor was pushed without the full suite; the test now pins reject_command -> withdraw_command -> Stage.CANCELLED. Full backend suite afterwards: 5220 passed, 2 root-only failures."
   - "Deterministic, opening-words cue only (en/es). A correction phrased later in the sentence is missed and the request stays for a human to reject (the previous behaviour). The parser does not mark corrections; T05.13's eval set should include them."
   - "No real-PostgreSQL end-to-end test of the chat turn (unit-level with the real withdraw path covered by the existing reject tests)."
   - "The UI is not told separately; the model's reply says it, and the approval disappears from the queue."

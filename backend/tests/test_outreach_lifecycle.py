@@ -400,7 +400,9 @@ def test_approval_and_rejection_move_the_first_response():
     import commands_api as ca
 
     assert "Stage.APPROVED" in inspect.getsource(ca.release_command)
-    assert "Stage.CANCELLED" in inspect.getsource(ca.reject_command)
+    # Reject and a correction both cancel through withdraw_command (L05-07).
+    assert "withdraw_command" in inspect.getsource(ca.reject_command)
+    assert "Stage.CANCELLED" in inspect.getsource(ca.withdraw_command)
 
 
 # ── A reply is stamped on the first response (0158, L04-03) ─────────────────
