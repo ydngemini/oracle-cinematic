@@ -216,3 +216,63 @@ def test_an_agent_sees_whose_mailbox_sends_their_email(monkeypatch):
     shared = _snapshot_for(monkeypatch, [_cred_row("default")], Role.AGENT, "avery")
     assert shared["providers"]["smtp"]["own"] is False, "the brokerage default is not the agent's own"
     assert shared["providers"]["smtp"]["sending_as"] == "default@example.com"
+
+
+# ── T10.09 / AC10.05 / L10-11: the platform relay is Ready only after a send ─
+
+@pytest.mark.parametrize("outcome, ready, state", [
+    (None, False, "not_yet_verified"),
+    ({"last_ok_at": "2026-10-16T00:00:00Z", "consecutive_failures": 0}, True, "verified_by_send"),
+    ({"last_ok_at": "2026-10-15T00:00:00Z", "consecutive_failures": 2}, False, "failing"),
+    ({"last_ok_at": None, "consecutive_failures": 1}, False, "failing"),
+])
+def test_the_platform_relay_is_ready_only_after_a_real_send(monkeypatch, outcome, ready, state):
+    import provider_health
+
+    monkeypatch.setenv("ORACLE_SMTP_FROM_EMAIL", "relay@neoh.test")
+
+    async def last(provider):
+        assert provider == provider_health.PLATFORM_SMTP
+        return outcome
+
+    monkeypatch.setattr(provider_health, "last_outcome", last)
+    snap = _snapshot_for(monkeypatch, [], Role.AGENT, "avery")
+    assert snap["channels"]["email"] is ready
+    assert snap["platform_sender_state"] == state
+    assert snap["platform_sender"] == "relay@neoh.test"
+
+
+def test_no_relay_settings_is_not_set_up(monkeypatch):
+    monkeypatch.delenv("ORACLE_SMTP_FROM_EMAIL", raising=False)
+    monkeypatch.delenv("ORACLE_SMTP_USERNAME", raising=False)
+    snap = _snapshot_for(monkeypatch, [], Role.AGENT, "avery")
+    assert snap["channels"]["email"] is False and snap["platform_sender_state"] == "not_configured"
+
+
+def test_a_tenant_mail_server_never_vouches_for_the_platform_relay(monkeypatch):
+    import asyncio
+
+    import command_providers
+    import provider_health
+    import smtp_mailer
+
+    recorded = []
+
+    async def record(provider, kind):
+        recorded.append((provider, kind))
+
+    monkeypatch.setattr(provider_health, "record", record)
+    monkeypatch.setattr(smtp_mailer, "send", lambda **kw: "<id@relay>")
+    draft = {"target": {"email": "client@example.com"}, "subject": "Hi", "body": "Hello"}
+    asyncio.run(command_providers.send_smtp_email(draft, credentials={"host": "mail.brokerage.test"}))
+    assert recorded == []
+    asyncio.run(command_providers.send_smtp_email(draft, credentials=None))
+    assert recorded == [("platform_smtp", "ok")]
+
+    def refuse(**kw):
+        raise smtp_mailer.SmtpConfigurationError("bad password")
+
+    monkeypatch.setattr(smtp_mailer, "send", refuse)
+    with pytest.raises(command_providers.ProviderConfigurationError):
+        asyncio.run(command_providers.send_smtp_email(draft, credentials=None))
+    assert recorded[-1] == ("platform_smtp", "credential_rejected")

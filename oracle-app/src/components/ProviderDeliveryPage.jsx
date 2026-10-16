@@ -19,6 +19,7 @@ import EmailConnectPanel from './EmailConnectPanel';
 import { explainEmailError } from './emailPresets';
 import styles from './SalesWorkspace.module.css';
 import { friendlyError } from '../lib/errorMessages';
+import { emailLabel } from '../lib/emailChannel';
 
 /* One shared one-second clock for every component that needs to watch a
    deadline expire. Nothing subscribes when no lockout is on screen, so this
@@ -70,6 +71,7 @@ const PROVIDER_INTEGRATION = { google: 'calendar', smtp: 'email', twilio: 'phone
 // Names a person recognises — the credentials form is the one place the
 // vendor is named, because that is whose details they are typing in.
 const PROVIDER_NAMES = { google: 'Google', smtp: 'Your email server', twilio: 'Twilio' };
+
 const CAPABILITY_NAMES = { email: 'email', sms: 'text messages', ai_call: 'Neoh calls', agent_call: 'your calls', calendar: 'calendar', voice: 'calls' };
 const providerName = (provider) => PROVIDER_NAMES[provider] || 'This account';
 
@@ -88,6 +90,7 @@ function ProviderState({ provider }) {
 export default function ProviderDeliveryPage() {
   const [providers, setProviders] = useState([]);
   const [channels, setChannels] = useState({});
+  const [platformSenderState, setPlatformSenderState] = useState(null);
   const [route, setRoute] = useState(null);
   const [platformSender, setPlatformSender] = useState(null);
   const [twilio, setTwilio] = useState(EMPTY_TWILIO);
@@ -124,6 +127,7 @@ export default function ProviderDeliveryPage() {
       setChannels(response?.channels || {});
       setRoute(response?.route || null);
       setPlatformSender(response?.platform_sender || null);
+      setPlatformSenderState(response?.platform_sender_state || null);
       if (response?.route && Object.keys(response.route).length) {
         const current = response.route;
         setRouteForm((prior) => ({
@@ -460,7 +464,7 @@ export default function ProviderDeliveryPage() {
       {message ? <div className={styles.success} role="status"><CheckCircle2 aria-hidden="true" /> {message}</div> : null}
 
       <div className={styles.metricGrid}>
-        <div className={styles.metricCard}><span>Email</span><strong>{channels.email ? 'Ready' : 'Not set up'}</strong><small>your own email, or the brokerage’s</small></div>
+        <div className={styles.metricCard}><span>Email</span><strong>{emailLabel(channels.email, platformSenderState)}</strong><small>your own email, or the brokerage’s</small></div>
         <div className={styles.metricCard}><span>Text messages</span><strong>{channels.sms ? 'Ready' : 'Not set up'}</strong><small>registered text number</small></div>
         <div className={styles.metricCard}><span>Neoh calls</span><strong>{channels.ai_call ? 'Ready' : 'Not set up'}</strong><small>calls you approve</small></div>
         <div className={styles.metricCard}><span>Your calls</span><strong>{channels.agent_call ? 'Ready' : 'Not set up'}</strong><small>from your browser, verified caller ID</small></div>

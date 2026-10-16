@@ -42,7 +42,7 @@ Listed weakest to strongest:
 | 07 | AI gateway and governed tools | [07](07-ai-gateway-model-tool-governance.md) | `tests_pass` | local | `071d65d` (L07-01); L07-02 capability registry (local) | Playwright check owed (L07-01); owner: archive_client | T07.04 |
 | 08 | Durable missions and workflows | [08](08-durable-missions-workflow-orchestration.md) | `source_verified` | local | `745f2fa`; L08-02 deferral journal (0159, local) | Owner: does a mission's standing grant count as approval (C4.1)?; PR #11 needs a rebuild (L08-01 review) | Rebuild PR #11's internal tasks on current main after the owner answers |
 | 09 | Real-time voice | [09](09-realtime-voice-speech-latency.md) | `source_verified` | staging | `9c3463a`; L09-05 outbound spoken opt-out, L09-06 lead-only call notes (local) | Call-note broadcast (L09-03); phone check (L09-02) | L09-03 |
-| 10 | Communications and calendars | [10](10-communications-calendar-provider-integrations.md) | `source_verified` | staging | `75c6ba6` (local) | Google OAuth client; 10DLC; deploy approval; A07 fixed locally, 0136 + 0139 + 0145 undeployed (L10-06, L10-09, L10-10); owner: one-brand rule (L10-09) | L10-01 |
+| 10 | Communications and calendars | [10](10-communications-calendar-provider-integrations.md) | `source_verified` | staging | `75c6ba6` (local) | Google OAuth client; 10DLC; deploy approval; A07 fixed locally; L10-11 email Ready only after a send (0164, local); 0136 + 0139 + 0145 undeployed (L10-06, L10-09, L10-10); owner: one-brand rule (L10-09) | L10-01 deploy + real connect; T10.09 SMS/calls |
 | 11 | Property and market intelligence (non-MLS) | [11](11-property-market-intelligence.md) | `tests_pass` | staging (L11-01), local (L11-02, L11-03) | `90372f2`; `d934b2e` (L11-02); L11-03 on branch `worktree-agent-a59f5c8799a673f68` (base `2804f47`) | Deploy 0135; live-DB test owed; staging catalog empty; L11-03 not deployed | Apply 0135 on staging; push L11-03 with approval; then T11.02 provenance |
 | 12 | Neoh Space capture, 3D, tours | [12](12-neoh-space-browser-capture-reconstruction.md) | `source_verified` | local | `745f2fa`; L12-03 Capture Studio first slice + integration map (local, jsdom only) | A03; AC12.02 real-device protocol | Server upload sessions (T12.05) |
 | 13 | Deals, documents, compliance | [13](13-transactions-contract-vault-compliance.md) | `source_verified` | local | `745f2fa`; L13-02 no new MLS-sourced deals; L13-03 status trail 0163 + T13.14 verified (local) | Owner: e-sign, commissions, fallen-through contracts | T13.02 remainder; T13.11 |
@@ -1093,7 +1093,7 @@ authz_checked: n/a
 blockers: []
 audit_refs: []
 decision_refs: []
-next_task: "T10.09"
+next_task: "Fixed locally in L10-11 (2026-10-16)."
 updated: 2026-10-12
 ```
 
@@ -1143,6 +1143,30 @@ next_task: "With approval, deploy 0136 + 0139 + 0145 and the code together; then
 updated: 2026-10-14
 ```
 How it works (`messaging_data.assign_campaign_number`): under the brokerage's latest approved campaign row `FOR UPDATE` (serialises every broker owner), the ledger rows for this number + provider campaign id decide: `unknown` → 409 (operator), `intended` → 409 (in flight), `attached` → done (no provider call), `confirmed` → reused; otherwise an `intended` row is inserted (detail: campaign id + the brokerage's own business number, as kind `phone_number` already stores) and committed before the provider is asked once outside the transaction (`_ask_registration`: definite refusal = failed, anything else = unknown + 502). The route's campaign_id and the ledger's `attached` are written in one transaction. Before: every POST called Telnyx.
+
+#### L10-11 Email reads Ready only after a real send (0164; T10.09, AC10.05) — fixes L10-08
+```yaml
+id: L10-11
+status: tests_pass
+env: local
+evidence_shas: [0650144]
+files: [backend/db/migrations/0164_provider_health_platform_smtp.sql, backend/provider_health.py, backend/command_providers.py, backend/sales_api.py, backend/tests/test_sales_stack.py, oracle-app/src/components/ProviderDeliveryPage.jsx, oracle-app/src/lib/emailChannel.js, oracle-app/src/lib/emailChannel.test.js]
+tests_run:
+  - {cmd: "read sales_api._provider_snapshot and providers() at 0650144", result: "L10-08 still true: env SMTP settings alone made channels.email true; /api/sales/providers also never returned platform_sender, so the page's 'who sends' line was always empty", date: 2026-10-16}
+  - {cmd: "cd backend && python -m pytest tests/test_sales_stack.py with sales_api.py, command_providers.py and provider_health.py stashed, then restored", result: "before: 6 failed; after: 15 passed (env relay not Ready until a recorded successful send; failing after a failure; not_configured without settings; a tenant's own mail server never records for the platform relay; a configuration error records credential_rejected)", date: 2026-10-16}
+  - {cmd: "cd backend && pytest tests/test_command*.py tests/test_smtp*.py tests/test_provider*.py tests/test_component_health.py tests/test_avm*.py; live: test_component_health_live.py, test_migration_precheck.py", result: "80 passed, 2 skipped; 9 passed", date: 2026-10-16}
+  - {cmd: "cd oracle-app && npx vitest run && npx eslint . && npm run build && node scripts/check-bundle-budget.mjs", result: "922 passed (emailLabel: Ready / Not yet verified by a send / Last send failed / Not set up); eslint exit 0; within budget", date: 2026-10-16}
+authz_checked: "provider_health is platform-global (no tenant data: a provider name, timestamps, a failure kind, a counter). The relay outcome is written only for sends that used the platform relay (no tenant credential), so one tenant's mail server never vouches for it; an uncertain send records nothing."
+blockers:
+  - "Every staging/production tenant reads 'Not yet verified by a send' until the relay sends once after deploy; that is the honest state. An operator test send (L10-01) would verify it."
+  - "SMS and calls still read Ready from an env flag (ORACLE_TWILIO_CREDENTIALS_VALIDATED) plus route fields; the same send-proven rule for Twilio is the next part of T10.09."
+  - "No Playwright check of the delivery page (AC10.05 asks for one)."
+  - "Not deployed (C4.4): 0164 is local."
+audit_refs: []
+decision_refs: []
+next_task: "T10.09 remainder: SMS / call channels proven by a provider result, not an env flag."
+updated: 2026-10-16
+```
 
 ### L11
 Property and market intelligence from authorized non-MLS sources.

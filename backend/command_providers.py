@@ -136,9 +136,31 @@ async def send_smtp_email(
         except smtp_mailer.SmtpSendError as exc:
             raise ProviderRejectedError(str(exc)[:500]) from exc
 
-    reference = await asyncio.wait_for(asyncio.to_thread(_send), timeout=40.0)
+    import provider_health
+
+    # The platform relay's own outcome (0164, L10-11): only when this send
+    # used it (no tenant mail server), so a tenant's server never vouches for
+    # the platform's. An uncertain send records nothing — it may have landed.
+    platform = not credentials
+
+    async def _outcome(kind: str) -> None:
+        if platform:
+            await provider_health.record(provider_health.PLATFORM_SMTP, kind)
+
+    try:
+        reference = await asyncio.wait_for(asyncio.to_thread(_send), timeout=40.0)
+    except ProviderConfigurationError:
+        await _outcome("credential_rejected")
+        raise
+    except ProviderRejectedError:
+        await _outcome("unavailable")
+        raise
+    except asyncio.TimeoutError:
+        await _outcome("timeout")
+        raise
     if not reference:
         raise ProviderRequestError("SMTP did not return a message id")
+    await _outcome(provider_health.OK)
     return ProviderResult("smtp", reference, "submitted", {"recipient": recipient})
 
 

@@ -17,7 +17,10 @@ from typing import Optional
 
 logger = logging.getLogger("oracle.provider_health")
 
-PROVIDERS = ("rentcast", "attom")
+PROVIDERS = ("rentcast", "attom", "platform_smtp")
+#: The platform email relay (0164, L10-11): recorded by
+#: command_providers.send_smtp_email when a tenant has no mail server of its own.
+PLATFORM_SMTP = "platform_smtp"
 OK = "ok"
 FAILURE_KINDS = ("credential_rejected", "rate_limited", "http_error", "timeout", "unavailable", "bad_response")
 _TIMEOUT_S = 1.5
@@ -74,6 +77,34 @@ async def record(provider: str, kind: Optional[str]) -> None:
         await asyncio.wait_for(_write(provider, kind), timeout=_TIMEOUT_S)
     except Exception:  # noqa: BLE001 — a health signal must never fail a valuation
         logger.debug("provider outcome not recorded: %s %s", provider, kind, exc_info=True)
+
+
+_READ = "SELECT last_ok_at, last_failure_at, last_failure_kind, consecutive_failures FROM provider_health WHERE provider = $1"
+
+
+async def last_outcome(provider: str) -> Optional[dict]:
+    """The stored outcome row, or None when nothing was recorded or it could
+    not be read (the caller treats both as "not verified")."""
+    from db.connection import get_pool, tenant_tx
+    from tenancy import Role, TenantContext
+
+    if provider not in PROVIDERS or get_pool() is None:
+        return None
+    ctx = TenantContext(agent_id="provider-health", role=Role.PLATFORM_ADMIN,
+                        tenant_id=os.getenv("ORACLE_PLATFORM_TENANT_ID", _PLATFORM_TENANT))
+    try:
+        async with tenant_tx(ctx) as conn:
+            row = await asyncio.wait_for(conn.fetchrow(_READ, provider), timeout=_TIMEOUT_S)
+    except Exception:  # noqa: BLE001 — unread health is "not verified", never an error page
+        logger.debug("provider outcome not read: %s", provider, exc_info=True)
+        return None
+    return dict(row) if row else None
+
+
+def verified(outcome: Optional[dict]) -> bool:
+    """A provider is verified by its own last calls: at least one success and
+    no failure since (consecutive_failures resets on success)."""
+    return bool(outcome and outcome.get("last_ok_at") and not outcome.get("consecutive_failures"))
 
 
 async def _write(provider: str, kind: str) -> None:
