@@ -33,12 +33,12 @@ Listed weakest to strongest:
 
 | Cat | Category | Prompt | Rollup | Env high-water | Last evidence | Open blockers | Next task |
 |---|---|---|---|---|---|---|---|
-| 01 | Repository source audit | [01](01-repository-source-audit.md) | `not_inspected` | — | — | — | Run the 01 inventory |
+| 01 | Repository source audit | [01](01-repository-source-audit.md) | `tests_pass` | local | `3083abe` inventory (L01-01) | — | T01.11 A01–A10 re-check; T01.05 migration crosswalk |
 | 02 | All pages, routes, mobile UI | [02](02-all-pages-mobile-ui.md) | `source_verified` | staging | `90372f2` crawl | — | Per-page verdicts |
 | 03 | Brokerage tenancy and hybrid access | [03](03-brokerage-tenancy-hybrid-access.md) | `source_verified` | staging | 0131 (L03-02), 0134+0137 (L03-04), 0140 (L03-05), 0142 drafts (L03-06), 0143 leads (L03-07), 0145 live frames (L03-08) all on staging (0a76a72); 0151 lead children + lead frames (L03-09); 0155 deals with no client + every deal's offers/milestones/parties/checklist (L03-10) local only; policy v6 | Owner: team leads (L03-03); lead assignee / listings / marketplace / pipeline counts (L03-07) | Push 0155 with approval (L03-10); listings / marketplace once the owner answers (L03-07) |
 | 04 | CRM, contacts, leads, relationships | [04](04-crm-contact-leads-relationships.md) | `tests_pass` | local | `a8bff54` (L04-01); L04-02 carrier-failed texts, L04-03 replies (0158) (local) | Owner: meter lead_engaged at approval, delivery or first reply (prompt 04 §7) | T04.01 + T04.13 (entity map; every channel resolves to one contact) |
 | 05 | Semantic intent | [05](05-semantic-language-intent.md) | `tests_pass` | local | base `2fef2e5` (L05-01, L05-02); `7b198cf` (L05-03, merged `444efe0`); `012f655` (L05-04, English + Spanish; staging-checked after `12e4c34`); `f8142c1` (L05-05, Spanish success answers + fallback drafts + EN/ES voice; on staging after `45a031d`); L05-06 Spanish call-queue cards (local, branch `claude/continue-n7jgwq`, golden `ae16549`) | Owner: model-spend approval for a scored parser run per language (en / es / mixed; harness built, not run) and real parser latency; an independent Spanish held-out set. Call-queue cards now Spanish except record content and model-written suggestions/summaries (L05-06); Command Center screen and horizon labels English; real-phone voice check owed. Decided 2026-10-14: policy v7 §4 (`cb2aedd`), launch languages English + Spanish (L05-04) | Push L05-06 to main with approval; scored T05.13 run once spend is approved; T05.10 + F05.04 correction cancels a staged command |
-| 06 | Evidence retrieval and memory | [06](06-evidence-retrieval-memory.md) | `tests_pass` | local | `745f2fa`, `6c7133b`, `63ac40b` | A01, A02 | L06-01, L06-02, L06-03 |
+| 06 | Evidence retrieval and memory | [06](06-evidence-retrieval-memory.md) | `tests_pass` | local | `745f2fa`, `6c7133b`, `63ac40b` (L06-01..03) | A01, A02 | T06.03 context compiler |
 | 07 | AI gateway and governed tools | [07](07-ai-gateway-model-tool-governance.md) | `tests_pass` | local | `071d65d` (L07-01) | Playwright check owed (L07-01); owner: archive_client | T07.02 + AC07.01 |
 | 08 | Durable missions and workflows | [08](08-durable-missions-workflow-orchestration.md) | `source_verified` | local | `745f2fa`; L08-02 deferral journal (0159, local) | Owner: does a mission's standing grant count as approval (C4.1)?; PR #11 needs a rebuild (L08-01 review) | Rebuild PR #11's internal tasks on current main after the owner answers |
 | 09 | Real-time voice | [09](09-realtime-voice-speech-latency.md) | `source_verified` | staging | `9c3463a`; L09-05 outbound spoken opt-out, L09-06 lead-only call notes (local) | Call-note broadcast (L09-03); phone check (L09-02) | L09-03 |
@@ -61,7 +61,31 @@ Rollup is the weakest row. A category holding `external_configuration_required` 
 ## Categories and deliverables
 
 ### L01
-Repository source audit. Artifacts it will own: the file-level inventory (`docs/audit/repo-inventory-<sha>.csv`, proposed). No rows yet.
+Repository source audit. Artifacts: the file-level inventory [`docs/audit/repo-inventory-3083abe.csv`](../audit/repo-inventory-3083abe.csv), its generator and checker [`scripts/check-repo-inventory.py`](../../scripts/check-repo-inventory.py), and the lines-read record [`docs/audit/lines-read.csv`](../audit/lines-read.csv).
+
+#### L01-01 Reproducible file inventory with evidence-based classes and lines-read accounting (T01.01, T01.13, T01.15, AC01.01)
+```yaml
+id: L01-01
+status: tests_pass
+env: local
+evidence_shas: [3083abe]
+files: [scripts/check-repo-inventory.py, docs/audit/repo-inventory-3083abe.csv, docs/audit/lines-read.csv]
+tests_run:
+  - {cmd: "python3 scripts/check-repo-inventory.py generate --sha 3083abe", result: "1867 rows (= git ls-tree blobs at 3083abe). Classes: production_entry 9, runtime_dependency 894, test 431, infrastructure 103, documentation 120, optional_integration 85, archived_or_prototype 67, orphaned 158. Files listed 1867; files read 10; lines read 1570 of 404390", date: 2026-10-16}
+  - {cmd: "python3 scripts/check-repo-inventory.py check docs/audit/repo-inventory-3083abe.csv", result: "exit 0: reconciles with git ls-tree at 3083abe; every row has a class, evidence and an audit state; lines_read equals the recorded ranges", date: 2026-10-16}
+  - {cmd: "same check after deleting one row and inflating lines_read on every listed row", result: "exit 1: 3708 problems (the missing tracked file; lines_read without recorded ranges, F01.06)", date: 2026-10-16}
+authz_checked: "n/a: a read-only script over git objects; no runtime, data or access change."
+blockers:
+  - "Classes are evidence-based but still mechanical: the static import graph from the entries (backend/Dockerfile CMD server:app, which the app.yaml worker also boots; app.yaml migrate run_migrations.py; RunPod handler.py; oracle-app and observability-platform index.html -> src/main.jsx), every migration, oracle-app/public, CI/Dockerfile/app-spec/compose/package.json references, tools' own config names, quoted path literals in reachable code, a directory read by reachable code, and documentation mentions. A function-level dead-code pass is T01.02/T01.08; an import does not prove a route is used."
+  - "`orphaned` is a candidate list, never a deletion licence (F01.07). Notable at 3083abe: oracle-app/src/lib/propertyImagery.js (only named in a PanoViewer comment); backend/data_integrations/state_gis/** and county_assessor/__init__ (no reachable import); backend/data_integrations/scheduler.py; backend/backfill_owner_name_normalized.py; backend/scripts/{eval_floorplan,ignite_memory,onboard_ai_agent,setup_ai_agent_mission,train_point_segmenter}.py; backend/ml_forge/cot_synthesizer.py; data/raw_scrapes/** (100 files) and data/test_deals; training_data/*.jsonl (6); performance/{analyze,resilience,scenarios}; observability-platform .env.example, nginx.conf, package.json; scripts/{audit-agent-workspace,fetch_capture_dataset,golden_capture,serve-next-static,test-personal-ai-tab,test-reel-playwright,test-vite-reel-playwright}.py; root check_models.py."
+  - "oracle-app/src/components/MlsSearch.jsx is not reached from main.jsx (PropertiesTab no longer offers it, D-2026-10-12-01): consistent with the MLS gate; inventoried as legacy, not deleted."
+  - "Lines read: 1570 lines in 10 files, recorded only where read in this session at an unchanged file. Line-by-line review (T01.03-T01.05) has not started; the known-uninspected list is every row with audit_state=listed (1857 files)."
+  - "The generator takes ~2 minutes (it reads every blob); not wired into CI (a shallow checkout lacks the history last_revision walks)."
+audit_refs: []
+decision_refs: [D-2026-10-12-01]
+next_task: "T01.11 + AC01.06: re-check A01-A10 at a pinned SHA; then T01.05 migration crosswalk (CREATE FUNCTION vs GRANT EXECUTE)."
+updated: 2026-10-16
+```
 
 ### L02
 All pages, routes and mobile UI. Artifacts: [ALL-PAGES-MATRIX.md](ALL-PAGES-MATRIX.md) (generated, 52 pages) with its JSON twin [all-pages.json](all-pages.json) and hand-kept verdicts in [all-pages-verdicts.json](all-pages-verdicts.json).
