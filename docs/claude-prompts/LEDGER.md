@@ -35,7 +35,7 @@ Listed weakest to strongest:
 |---|---|---|---|---|---|---|---|
 | 01 | Repository source audit | [01](01-repository-source-audit.md) | `tests_pass` | local | `3083abe` inventory (L01-01) | — | T01.11 A01–A10 re-check; T01.05 migration crosswalk |
 | 02 | All pages, routes, mobile UI | [02](02-all-pages-mobile-ui.md) | `source_verified` | staging | `90372f2` crawl | — | Per-page verdicts |
-| 03 | Brokerage tenancy and hybrid access | [03](03-brokerage-tenancy-hybrid-access.md) | `source_verified` | staging | 0131 (L03-02), 0134+0137 (L03-04), 0140 (L03-05), 0142 drafts (L03-06), 0143 leads (L03-07), 0145 live frames (L03-08) all on staging (0a76a72); 0151 lead children + lead frames (L03-09); 0155 deals with no client + every deal's offers/milestones/parties/checklist (L03-10) local only; L03-11 suspension cancels queued spend (local); L03-12 Python mirrors held to the live policies (local); policy v6 | Owner: team leads (L03-03); lead assignee / listings / marketplace / pipeline counts (L03-07) | Push 0155 with approval (L03-10); listings / marketplace once the owner answers (L03-07) |
+| 03 | Brokerage tenancy and hybrid access | [03](03-brokerage-tenancy-hybrid-access.md) | `source_verified` | staging | 0131 (L03-02), 0134+0137 (L03-04), 0140 (L03-05), 0142 drafts (L03-06), 0143 leads (L03-07), 0145 live frames (L03-08) all on staging (0a76a72); 0151 lead children + lead frames (L03-09); 0155 deals with no client + every deal's offers/milestones/parties/checklist (L03-10) local only; L03-11 suspension cancels queued spend (local); L03-12 Python mirrors held to the live policies (local); L03-13 suspended agent's queued video cancelled (0166, local); policy v6 | Owner: team leads (L03-03); lead assignee / listings / marketplace / pipeline counts (L03-07) | Push 0155 with approval (L03-10); listings / marketplace once the owner answers (L03-07) |
 | 04 | CRM, contacts, leads, relationships | [04](04-crm-contact-leads-relationships.md) | `tests_pass` | local | `a8bff54` (L04-01); L04-02 carrier-failed texts, L04-03 replies (0158), L04-04 entity map + channel linking (local) | Owner: meter lead_engaged at approval, delivery or first reply (prompt 04 §7) | T04.03 dedup + AC04.02; remaining L04-04 gaps |
 | 05 | Semantic intent | [05](05-semantic-language-intent.md) | `tests_pass` | local | base `2fef2e5` (L05-01, L05-02); `7b198cf` (L05-03, merged `444efe0`); `012f655` (L05-04, English + Spanish; staging-checked after `12e4c34`); `f8142c1` (L05-05, Spanish success answers + fallback drafts + EN/ES voice; on staging after `45a031d`); L05-06 Spanish call-queue cards (local, branch `claude/continue-n7jgwq`, golden `ae16549`); L05-07 a correction withdraws the previous staged request (local) | Owner: model-spend approval for a scored parser run per language (en / es / mixed; harness built, not run) and real parser latency; an independent Spanish held-out set. Call-queue cards now Spanish except record content and model-written suggestions/summaries (L05-06); Command Center screen and horizon labels English; real-phone voice check owed. Decided 2026-10-14: policy v7 §4 (`cb2aedd`), launch languages English + Spanish (L05-04) | Merge PR #33 with approval; scored T05.13 run once spend is approved; T05.10 precise question |
 | 06 | Evidence retrieval and memory | [06](06-evidence-retrieval-memory.md) | `tests_pass` | local | `745f2fa`, `6c7133b`, `63ac40b` (L06-01..03) | A01, A02 | T06.03 context compiler |
@@ -461,7 +461,7 @@ tests_run:
   - {cmd: "test_privacy_lifecycle_live.py, test_access_review_live.py; unit test_privacy*.py, test_brokerage_onboarding*.py", result: "3 passed; 109 passed", date: 2026-10-16}
 authz_checked: "Runs inside suspend_member's transaction (broker-owner or platform admin), scoped to the tenant and lower(created_by) = the suspended agent."
 blockers:
-  - "video_studio_jobs records no requester: a suspended agent's queued video still runs (closure cancels it). Needs a created_by column (migration) if per-agent cancel is wanted."
+  - "video_studio_jobs records no requester: a suspended agent's queued video still runs (closure cancels it). Fixed locally in L03-13 (0166)."
   - "contact_nurture_jobs have no sender today; when one is built it must skip contacts whose owner is suspended."
   - "Not deployed (C4.4)."
 audit_refs: []
@@ -488,6 +488,29 @@ blockers:
   - "Not deployed (C4.4)."
 audit_refs: []
 decision_refs: [D-2026-10-12-01]
+next_task: "T03.03 + AC03.03 sharing primitive review; owner answers for L03-07 and T03.02."
+updated: 2026-10-16
+```
+
+#### L03-13 A suspended agent's queued studio video is cancelled too (0166; T03.16, AC03.06)
+```yaml
+id: L03-13
+status: tests_pass
+env: local
+evidence_shas: [1debee4]
+files: [backend/db/migrations/0166_video_studio_jobs_requester.sql, backend/video_studio_api.py, backend/privacy_lifecycle.py, backend/privacy_data_map.py, backend/tests/test_suspension_cancels_spend_live.py]
+tests_run:
+  - {cmd: "livetest.sh pytest tests/test_suspension_cancels_spend_live.py (extended) on 1debee4 code", result: "1 failed: video_studio_jobs has no created_by column, so neither the route nor suspension can know whose video it is (L03-11 blocker)", date: 2026-10-16}
+  - {cmd: "livetest.sh pytest tests/test_suspension_cancels_spend_live.py tests/test_lead_children_access_live.py tests/test_privacy_lifecycle_live.py tests/test_migration_precheck.py (real PostgreSQL 16, app login, real suspend and create routes)", result: "12 passed: the real create_video_job route stores the requesting login; suspension cancels that agent's queued videos (seeded and route-created) with the reason; a colleague's queued video and the agent's own generating video are untouched; reconstruction and voice jobs as in L03-11", date: 2026-10-16}
+  - {cmd: "cd backend && pytest tests/ (full unit suite)", result: "5235 passed, 74 skipped, 2 failed (the known root-only test_media_storage / test_object_storage cases of this container)", date: 2026-10-16}
+authz_checked: "created_by is written from the verified request context, never from the body. The cancel runs inside the suspend route's transaction under the broker owner's RLS like the other _PENDING rows. privacy_data_map notes the new personal field (the agent's sign-in email)."
+blockers:
+  - "Videos created before 0166 have no recorded requester and are not guessed: they are cancelled only when the brokerage closes."
+  - "A video already generating at the paid provider is not stopped by suspension (no provider cancel call); same rule as a running reconstruction."
+  - "contact_nurture_jobs still have no sender (L03-11)."
+  - "Not deployed (C4.4): 0166 is local."
+audit_refs: []
+decision_refs: []
 next_task: "T03.03 + AC03.03 sharing primitive review; owner answers for L03-07 and T03.02."
 updated: 2026-10-16
 ```

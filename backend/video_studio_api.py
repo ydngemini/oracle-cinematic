@@ -213,8 +213,8 @@ async def create_video_job(
         row = await conn.fetchrow(
             """
             INSERT INTO video_studio_jobs
-                (tenant_id, kind, source, size, script, status)
-            VALUES ($1, $2, $3::jsonb, $4, $5, 'queued')
+                (tenant_id, kind, source, size, script, status, created_by)
+            VALUES ($1, $2, $3::jsonb, $4, $5, 'queued', $6)
             RETURNING *
             """,
             ctx.tenant_id,
@@ -222,6 +222,8 @@ async def create_video_job(
             json.dumps(source, separators=(",", ":")),
             body.size,
             body.script or "",
+            # Who asked: suspension cancels their queued videos (0166, L03-13).
+            ctx.agent_id,
         )
 
     log.info(

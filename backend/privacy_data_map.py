@@ -190,7 +190,7 @@ TABLES: dict[str, TableEntry] = {
     "capture_sessions": TableEntry(C.SPATIAL_SOURCE, E, "no FK to tenants"),
     "reconstruction_jobs": TableEntry(C.SPATIAL_DERIVED, E),
     "spatial_tour_variants": TableEntry(C.SPATIAL_DERIVED, E),
-    "video_studio_jobs": TableEntry(C.MEDIA, E),
+    "video_studio_jobs": TableEntry(C.MEDIA, E, "created_by is the requesting agent's sign-in email since 0166 (L03-13)"),
     "voice_walkthrough_jobs": TableEntry(C.CALL_AUDIO, E),
     # ── audit / security ─────────────────────────────────────────────────
     "audit_ledger": TableEntry(C.AUDIT_SECURITY, R, "hash chain; expires by age, not by closure"),
