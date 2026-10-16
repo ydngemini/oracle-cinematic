@@ -178,7 +178,7 @@ def test_the_test_email_goes_only_to_the_connected_address(monkeypatch):
         assert exc.value.status_code == 403
 
 
-def _snapshot_for(monkeypatch, rows, role, agent_id):
+def _snapshot_for(monkeypatch, rows, role, agent_id, route=None):
     import asyncio
     import json as _json
     from contextlib import asynccontextmanager
@@ -188,7 +188,7 @@ def _snapshot_for(monkeypatch, rows, role, agent_id):
             return rows
 
         async def fetchrow(self, *_a):
-            return None
+            return route
 
     @asynccontextmanager
     async def tx(_ctx):
@@ -276,3 +276,133 @@ def test_a_tenant_mail_server_never_vouches_for_the_platform_relay(monkeypatch):
     with pytest.raises(command_providers.ProviderConfigurationError):
         asyncio.run(command_providers.send_smtp_email(draft, credentials=None))
     assert recorded[-1] == ("platform_smtp", "credential_rejected")
+
+
+# ── T10.09 / AC10.05: platform SMS and calls are Ready only after a send ────
+
+_ROUTE = {"sms_sender_e164": "+13025550100", "sms_sender_type": "twilio_registered",
+          "voice_caller_id_verified": False, "voice_caller_id_e164": None}
+
+
+def _platform_twilio(monkeypatch, outcomes):
+    import provider_health
+
+    monkeypatch.setenv("TWILIO_ACCOUNT_SID", "AC" + "0" * 32)
+    monkeypatch.setenv("TWILIO_AUTH_TOKEN", "t" * 32)
+    # The operator flag that used to make these Ready counts for nothing now.
+    monkeypatch.setenv("ORACLE_TWILIO_CREDENTIALS_VALIDATED", "true")
+
+    async def last(provider):
+        return outcomes.get(provider)
+
+    monkeypatch.setattr(provider_health, "last_outcome", last)
+
+
+@pytest.mark.parametrize("outcome, ready, state", [
+    (None, False, "not_yet_verified"),
+    ({"last_ok_at": "2026-10-16T00:00:00Z", "consecutive_failures": 0}, True, "verified_by_send"),
+    ({"last_ok_at": "2026-10-15T00:00:00Z", "consecutive_failures": 1}, False, "failing"),
+])
+def test_platform_sms_and_calls_are_ready_only_after_a_real_send(monkeypatch, outcome, ready, state):
+    import provider_health
+
+    _platform_twilio(monkeypatch, {provider_health.PLATFORM_TWILIO_SMS: outcome,
+                                   provider_health.PLATFORM_TWILIO_VOICE: outcome})
+    snap = _snapshot_for(monkeypatch, [], Role.AGENT, "avery", route=_ROUTE)
+    assert snap["channels"]["sms"] is ready
+    assert snap["channels"]["ai_call"] is ready
+    assert snap["platform_channel_states"] == {"sms": state, "ai_call": state}
+
+
+def test_a_proven_sms_account_does_not_vouch_for_calls(monkeypatch):
+    import provider_health
+
+    ok = {"last_ok_at": "2026-10-16T00:00:00Z", "consecutive_failures": 0}
+    _platform_twilio(monkeypatch, {provider_health.PLATFORM_TWILIO_SMS: ok})
+    snap = _snapshot_for(monkeypatch, [], Role.AGENT, "avery", route=_ROUTE)
+    assert snap["channels"]["sms"] is True and snap["channels"]["ai_call"] is False
+    # Without a registered sender on the route, a proven account still cannot text.
+    snap = _snapshot_for(monkeypatch, [], Role.AGENT, "avery", route=None)
+    assert snap["channels"]["sms"] is False
+
+
+def test_no_platform_twilio_is_not_set_up(monkeypatch):
+    for name in ("TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "TWILIO_API_KEY", "TWILIO_API_SECRET"):
+        monkeypatch.delenv(name, raising=False)
+    snap = _snapshot_for(monkeypatch, [], Role.AGENT, "avery", route=_ROUTE)
+    assert snap["channels"]["sms"] is False and snap["channels"]["ai_call"] is False
+    assert snap["platform_channel_states"] == {"sms": "not_configured", "ai_call": "not_configured"}
+
+
+class _TwilioRefusal(Exception):
+    def __init__(self, status, code):
+        super().__init__(f"HTTP {status}")
+        self.status, self.code = status, code
+
+
+def _fake_twilio(monkeypatch, behaviour):
+    import sys
+    import types
+
+    import command_providers
+
+    exceptions = types.ModuleType("twilio.base.exceptions")
+    exceptions.TwilioRestException = _TwilioRefusal
+    monkeypatch.setitem(sys.modules, "twilio", types.ModuleType("twilio"))
+    monkeypatch.setitem(sys.modules, "twilio.base", types.ModuleType("twilio.base"))
+    monkeypatch.setitem(sys.modules, "twilio.base.exceptions", exceptions)
+
+    def create(**_kw):
+        if isinstance(behaviour, Exception):
+            raise behaviour
+        return types.SimpleNamespace(sid=behaviour)
+
+    client = types.SimpleNamespace(messages=types.SimpleNamespace(create=create),
+                                   calls=types.SimpleNamespace(create=create))
+    monkeypatch.setattr(command_providers, "_twilio_client", lambda *a: client)
+
+
+@pytest.mark.parametrize("send, provider_name", [("sms", "platform_twilio_sms"), ("call", "platform_twilio_voice")])
+def test_only_the_platform_account_records_its_own_twilio_outcome(monkeypatch, send, provider_name):
+    import asyncio
+
+    import command_providers
+    import provider_health
+
+    recorded = []
+
+    async def record(provider, kind):
+        recorded.append((provider, kind))
+
+    monkeypatch.setattr(provider_health, "record", record)
+    monkeypatch.setenv("TWILIO_ACCOUNT_SID", "AC" + "1" * 32)
+    monkeypatch.setenv("TWILIO_AUTH_TOKEN", "t" * 32)
+    monkeypatch.setenv("TWILIO_FROM_NUMBER", "+13025550199")
+    monkeypatch.setenv("ORACLE_TWILIO_TWIML_URL", "https://neoh.test/twiml")
+    monkeypatch.delenv("ORACLE_TWILIO_ACCOUNT_TIER", raising=False)
+    draft = {"target": {"phone": "+13025550111"}, "body": "Hello"}
+    platform = {"sms_sender": "+13025550100", "sms_sender_type": "twilio_registered"} if send == "sms" else {}
+    tenant = {**platform, "account_sid": "AC" + "2" * 32, "auth_token": "u" * 32}
+
+    def go(credentials):
+        fn = command_providers.send_twilio_sms if send == "sms" else command_providers.place_twilio_call
+        return asyncio.run(fn(draft, credentials=credentials))
+
+    _fake_twilio(monkeypatch, "SM1")
+    go(tenant)
+    assert recorded == [], "a brokerage's own Twilio account never vouches for the platform's"
+    go(platform)
+    assert recorded == [(provider_name, "ok")]
+
+    _fake_twilio(monkeypatch, _TwilioRefusal(401, 20003))
+    with pytest.raises(command_providers.ProviderRejectedError):
+        go(platform)
+    assert recorded[-1] == (provider_name, "credential_rejected")
+
+    # A refusal about this recipient, or an answer Twilio may have acted on,
+    # says nothing about the platform account: nothing is recorded.
+    for refusal in (_TwilioRefusal(400, 21211), _TwilioRefusal(400, 21610), _TwilioRefusal(503, None)):
+        _fake_twilio(monkeypatch, refusal)
+        with pytest.raises(command_providers.ProviderRequestError):
+            go(platform)
+    assert len(recorded) == 2

@@ -20,7 +20,7 @@ def test_every_market_dataset_and_valuation_provider_is_catalogued():
     from provider_health import PROVIDERS
 
     assert {f"market_research_{s.key}" for s in _default_specs()} <= IDS
-    assert {f"{p}_avm" for p in PROVIDERS if p != "platform_smtp"} <= IDS
+    assert {f"{p}_avm" for p in PROVIDERS if not p.startswith("platform_")} <= IDS
 
 
 def test_entries_are_well_formed_and_unique():

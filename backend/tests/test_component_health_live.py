@@ -60,3 +60,33 @@ async def _scenario():
         await admin.execute("DELETE FROM tenants WHERE id=$1", tenant)
         await admin.close()
         await connection.close_pool()
+
+
+def test_the_platform_twilio_account_records_texts_and_calls_apart():
+    """0165 (L10-12): the platform Twilio outcomes land and read back through
+    the app login, texts and calls on separate rows."""
+    asyncio.run(_twilio_scenario())
+
+
+async def _twilio_scenario():
+    import asyncpg
+
+    import provider_health as ph
+    from db import connection
+
+    admin = await asyncpg.connect(DSN)
+    await connection.init_pool(min_size=1, max_size=2)
+    names = [ph.PLATFORM_TWILIO_SMS, ph.PLATFORM_TWILIO_VOICE]
+    try:
+        await admin.execute("DELETE FROM provider_health WHERE provider = ANY($1::text[])", names)
+        await ph.record(ph.PLATFORM_TWILIO_SMS, ph.OK)
+        await ph.record(ph.PLATFORM_TWILIO_VOICE, "credential_rejected")
+        sms = await ph.last_outcome(ph.PLATFORM_TWILIO_SMS)
+        voice = await ph.last_outcome(ph.PLATFORM_TWILIO_VOICE)
+        assert ph.state(True, sms) == "verified_by_send", sms
+        assert ph.state(True, voice) == "failing", voice
+        assert voice["last_failure_kind"] == "credential_rejected"
+    finally:
+        await admin.execute("DELETE FROM provider_health WHERE provider = ANY($1::text[])", names)
+        await admin.close()
+        await connection.close_pool()

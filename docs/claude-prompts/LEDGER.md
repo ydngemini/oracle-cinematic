@@ -42,7 +42,7 @@ Listed weakest to strongest:
 | 07 | AI gateway and governed tools | [07](07-ai-gateway-model-tool-governance.md) | `tests_pass` | local | `071d65d` (L07-01); L07-02 capability registry (local) | Playwright check owed (L07-01); owner: archive_client | T07.04 |
 | 08 | Durable missions and workflows | [08](08-durable-missions-workflow-orchestration.md) | `source_verified` | local | `745f2fa`; L08-02 deferral journal (0159), L08-03 feasible plans (local) | Owner: does a mission's standing grant count as approval (C4.1)?; PR #11 needs a rebuild (L08-01 review) | Rebuild PR #11's internal tasks on current main after the owner answers |
 | 09 | Real-time voice | [09](09-realtime-voice-speech-latency.md) | `source_verified` | staging | `9c3463a`; L09-05 outbound spoken opt-out, L09-06 lead-only call notes, L09-07 voice rules locked per path (local) | Phone check (L09-02); real call (T09.18) needs owner approval | T09.18; T09.10 |
-| 10 | Communications and calendars | [10](10-communications-calendar-provider-integrations.md) | `source_verified` | staging | `75c6ba6` (local) | Google OAuth client; 10DLC; deploy approval; A07 fixed locally; L10-11 email Ready only after a send (0164, local); 0136 + 0139 + 0145 undeployed (L10-06, L10-09, L10-10); owner: one-brand rule (L10-09) | L10-01 deploy + real connect; T10.09 SMS/calls |
+| 10 | Communications and calendars | [10](10-communications-calendar-provider-integrations.md) | `source_verified` | staging | `75c6ba6` (local) | Google OAuth client; 10DLC; deploy approval; A07 fixed locally; L10-11 email Ready only after a send (0164, local); L10-12 texts and calls likewise (0165, local); 0136 + 0139 + 0145 undeployed (L10-06, L10-09, L10-10); owner: one-brand rule (L10-09) | L10-01 deploy + real connect; T10.09 retry/circuit UI + Playwright |
 | 11 | Property and market intelligence (non-MLS) | [11](11-property-market-intelligence.md) | `tests_pass` | staging (L11-01), local (L11-02, L11-03) | `90372f2`; `d934b2e` (L11-02); L11-03 on branch `worktree-agent-a59f5c8799a673f68` (base `2804f47`); L11-04 source inventory (local) | Deploy 0135; live-DB test owed; staging catalog empty; L11-03 not deployed | Owner/legal: licences per source (L11-04); T11.03 |
 | 12 | Neoh Space capture, 3D, tours | [12](12-neoh-space-browser-capture-reconstruction.md) | `source_verified` | local | `745f2fa`; L12-03 Capture Studio first slice + integration map (local, jsdom only) | A03; AC12.02 real-device protocol | Server upload sessions (T12.05) |
 | 13 | Deals, documents, compliance | [13](13-transactions-contract-vault-compliance.md) | `source_verified` | local | `745f2fa`; L13-02 no new MLS-sourced deals; L13-03 status trail 0163 + T13.14 verified (local) | Owner: e-sign, commissions, fallen-through contracts | T13.02 remainder; T13.11 |
@@ -1271,12 +1271,36 @@ tests_run:
 authz_checked: "provider_health is platform-global (no tenant data: a provider name, timestamps, a failure kind, a counter). The relay outcome is written only for sends that used the platform relay (no tenant credential), so one tenant's mail server never vouches for it; an uncertain send records nothing."
 blockers:
   - "Every staging/production tenant reads 'Not yet verified by a send' until the relay sends once after deploy; that is the honest state. An operator test send (L10-01) would verify it."
-  - "SMS and calls still read Ready from an env flag (ORACLE_TWILIO_CREDENTIALS_VALIDATED) plus route fields; the same send-proven rule for Twilio is the next part of T10.09."
+  - "SMS and calls read Ready from an env flag (ORACLE_TWILIO_CREDENTIALS_VALIDATED); fixed locally in L10-12 (0165)."
   - "No Playwright check of the delivery page (AC10.05 asks for one)."
   - "Not deployed (C4.4): 0164 is local."
 audit_refs: []
 decision_refs: []
-next_task: "T10.09 remainder: SMS / call channels proven by a provider result, not an env flag."
+next_task: "SMS / calls done in L10-12; remaining T10.09: retries / circuit-breaker UI and a Playwright check of the delivery page."
+updated: 2026-10-16
+```
+
+#### L10-12 Platform texts and calls read Ready only after a real send (0165; T10.09, AC10.05)
+```yaml
+id: L10-12
+status: tests_pass
+env: local
+evidence_shas: [d15aacc]
+files: [backend/db/migrations/0165_provider_health_platform_twilio.sql, backend/provider_health.py, backend/command_providers.py, backend/sales_api.py, backend/tests/test_sales_stack.py, backend/tests/test_component_health_live.py, backend/tests/test_env_documentation.py, backend/tests/test_property_source_catalog.py, oracle-app/src/lib/emailChannel.js, oracle-app/src/lib/emailChannel.test.js, oracle-app/src/components/ProviderDeliveryPage.jsx]
+tests_run:
+  - {cmd: "read sales_api._provider_snapshot at d15aacc; git grep ORACLE_TWILIO_CREDENTIALS_VALIDATED", result: "channels.sms / ai_call / agent_call were true from env Twilio credentials plus ORACLE_TWILIO_CREDENTIALS_VALIDATED=true; nothing in the repository ever sets or checks that flag, so it was an operator's say-so", date: 2026-10-16}
+  - {cmd: "cd backend && pytest tests/test_sales_stack.py (new tests on d15aacc code, then with the change)", result: "before: 7 failed (Ready with no recorded send; no platform_channel_states; send_twilio_sms / place_twilio_call recorded nothing). after: 22 passed: not_yet_verified / verified_by_send / failing for texts and calls; a proven SMS account does not make calls Ready; a route without a registered sender still cannot text; a brokerage's own Twilio account never records for the platform; 401/20003 records credential_rejected; recipient refusals (21211, 21610) and a 503 record nothing", date: 2026-10-16}
+  - {cmd: "livetest.sh pytest tests/test_component_health_live.py tests/test_migration_precheck.py (real PostgreSQL 16, app login)", result: "10 passed; with the 0164 CHECK restored the new test fails (1 failed): the rows could not be written before 0165", date: 2026-10-16}
+  - {cmd: "cd backend && pytest tests/ (full unit suite)", result: "5234 passed, 73 skipped, 2 failed (the known root-only test_media_storage / test_object_storage cases of this container)", date: 2026-10-16}
+  - {cmd: "cd oracle-app && npx vitest run && npx eslint . && npm run build && node scripts/check-bundle-budget.mjs", result: "923 passed (channelLabel for the Text messages and Neoh calls cards); eslint exit 0; within budget", date: 2026-10-16}
+authz_checked: "provider_health is platform-global (a provider name, timestamps, a fixed failure kind, a counter; no number, body or error text). An outcome is written only when the request used the platform account (no tenant account_sid), so one brokerage's Twilio account never vouches for the platform's; agent_call additionally keeps its verified caller ID and TwiML app requirements."
+blockers:
+  - "Every tenant on the platform account reads 'Not yet verified by a send' for texts and calls until one approved text and one approved call go out after deploy; that is the honest state, and it needs a real send (T10.12 / T10.15-style operator test to the operator's own number)."
+  - "A successful outbound call proves the account and number, not the browser-calling TwiML app: agent_call still also needs TWILIO_TWIML_APP_SID and a verified caller ID; the browser-call path itself records no outcome."
+  - "Not deployed (C4.4): 0165 is local."
+audit_refs: []
+decision_refs: []
+next_task: "T10.09 remainder: retry / circuit-breaker UI; AC10.05 Playwright check of the delivery page."
 updated: 2026-10-16
 ```
 

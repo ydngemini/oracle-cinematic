@@ -19,7 +19,7 @@ import EmailConnectPanel from './EmailConnectPanel';
 import { explainEmailError } from './emailPresets';
 import styles from './SalesWorkspace.module.css';
 import { friendlyError } from '../lib/errorMessages';
-import { emailLabel } from '../lib/emailChannel';
+import { channelLabel, emailLabel } from '../lib/emailChannel';
 
 /* One shared one-second clock for every component that needs to watch a
    deadline expire. Nothing subscribes when no lockout is on screen, so this
@@ -91,6 +91,7 @@ export default function ProviderDeliveryPage() {
   const [providers, setProviders] = useState([]);
   const [channels, setChannels] = useState({});
   const [platformSenderState, setPlatformSenderState] = useState(null);
+  const [platformChannelStates, setPlatformChannelStates] = useState(null);
   const [route, setRoute] = useState(null);
   const [platformSender, setPlatformSender] = useState(null);
   const [twilio, setTwilio] = useState(EMPTY_TWILIO);
@@ -128,6 +129,7 @@ export default function ProviderDeliveryPage() {
       setRoute(response?.route || null);
       setPlatformSender(response?.platform_sender || null);
       setPlatformSenderState(response?.platform_sender_state || null);
+      setPlatformChannelStates(response?.platform_channel_states || null);
       if (response?.route && Object.keys(response.route).length) {
         const current = response.route;
         setRouteForm((prior) => ({
@@ -465,8 +467,8 @@ export default function ProviderDeliveryPage() {
 
       <div className={styles.metricGrid}>
         <div className={styles.metricCard}><span>Email</span><strong>{emailLabel(channels.email, platformSenderState)}</strong><small>your own email, or the brokerage’s</small></div>
-        <div className={styles.metricCard}><span>Text messages</span><strong>{channels.sms ? 'Ready' : 'Not set up'}</strong><small>registered text number</small></div>
-        <div className={styles.metricCard}><span>Neoh calls</span><strong>{channels.ai_call ? 'Ready' : 'Not set up'}</strong><small>calls you approve</small></div>
+        <div className={styles.metricCard}><span>Text messages</span><strong>{channelLabel(channels.sms, platformChannelStates?.sms)}</strong><small>registered text number</small></div>
+        <div className={styles.metricCard}><span>Neoh calls</span><strong>{channelLabel(channels.ai_call, platformChannelStates?.ai_call)}</strong><small>calls you approve</small></div>
         <div className={styles.metricCard}><span>Your calls</span><strong>{channels.agent_call ? 'Ready' : 'Not set up'}</strong><small>from your browser, verified caller ID</small></div>
       </div>
 

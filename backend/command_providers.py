@@ -210,6 +210,47 @@ def _twilio_client(account_sid: str, auth_token: str, api_key: str, api_secret: 
 TWILIO_HTTP_TIMEOUT_SECONDS = 20.0
 
 
+def _twilio_account_kind(exc: Exception) -> Optional[str]:
+    """What a Twilio refusal says about the account itself, for provider_health:
+    rejected credentials or a rate limit. A refusal about one recipient (bad
+    number, opted out) or an answer Twilio may have acted on says nothing."""
+    status = int(getattr(exc, "status", 0) or 0)
+    if status in (401, 403) or getattr(exc, "code", None) == 20003:
+        return "credential_rejected"
+    if status == 429:
+        return "rate_limited"
+    return None
+
+
+async def _record_platform_twilio(provider: str, platform: bool, kind: Optional[str]) -> None:
+    """Record the platform Twilio account's outcome (0165, L10-12) — only when
+    this request used it, so a brokerage's own account never vouches for it."""
+    import provider_health
+
+    if platform and kind:
+        await provider_health.record(provider, kind)
+
+
+async def _twilio_request(provider: str, platform: bool, request, timeout: float) -> str:
+    """Run one side-effecting Twilio request off the loop and record what it
+    proved about the platform account."""
+    from twilio.base.exceptions import TwilioRestException
+
+    try:
+        reference = await asyncio.wait_for(asyncio.to_thread(request), timeout=timeout)
+    except asyncio.TimeoutError:
+        await _record_platform_twilio(provider, platform, "timeout")
+        raise
+    except (ProviderRequestError, ProviderConfigurationError) as exc:
+        cause = exc.__cause__
+        await _record_platform_twilio(
+            provider, platform, _twilio_account_kind(cause) if isinstance(cause, TwilioRestException) else None)
+        raise
+    if reference:
+        await _record_platform_twilio(provider, platform, "ok")
+    return reference
+
+
 def twilio_failure(exc: Exception, what: str) -> Exception:
     """Classify a TwilioRestException for a side-effecting request.
 
@@ -282,7 +323,12 @@ async def send_twilio_sms(
             raise twilio_failure(exc, "SMS request") from exc
         return str(message.sid or "")
 
-    reference = await asyncio.wait_for(asyncio.to_thread(_send), timeout=25.0)
+    import provider_health
+
+    # The platform account is whatever the environment supplies when the
+    # caller passed no account of the tenant's own.
+    platform = not credentials.get("account_sid")
+    reference = await _twilio_request(provider_health.PLATFORM_TWILIO_SMS, platform, _send, 25.0)
     if not reference:
         raise ProviderRequestError("Twilio did not return a message SID")
     return ProviderResult("twilio_sms", reference, "queued", {"to": recipient})
@@ -395,7 +441,10 @@ async def place_twilio_call(
             raise twilio_failure(exc, "call request") from exc
         return call.sid
 
-    reference = await asyncio.wait_for(asyncio.to_thread(_call), timeout=25.0)
+    import provider_health
+
+    platform = not credentials.get("account_sid")
+    reference = await _twilio_request(provider_health.PLATFORM_TWILIO_VOICE, platform, _call, 25.0)
     if not reference:
         raise ProviderRequestError("Twilio did not return a call SID")
     return ProviderResult("twilio", reference, "queued", {"to": to_number, "from": from_number})

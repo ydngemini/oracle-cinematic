@@ -17,10 +17,15 @@ from typing import Optional
 
 logger = logging.getLogger("oracle.provider_health")
 
-PROVIDERS = ("rentcast", "attom", "platform_smtp")
+PROVIDERS = ("rentcast", "attom", "platform_smtp", "platform_twilio_sms", "platform_twilio_voice")
 #: The platform email relay (0164, L10-11): recorded by
 #: command_providers.send_smtp_email when a tenant has no mail server of its own.
 PLATFORM_SMTP = "platform_smtp"
+#: The platform Twilio account (0165, L10-12): recorded by send_twilio_sms and
+#: place_twilio_call when a tenant has no Twilio account of its own. Texts and
+#: calls are recorded apart — an account that can text may not be able to call.
+PLATFORM_TWILIO_SMS = "platform_twilio_sms"
+PLATFORM_TWILIO_VOICE = "platform_twilio_voice"
 OK = "ok"
 FAILURE_KINDS = ("credential_rejected", "rate_limited", "http_error", "timeout", "unavailable", "bad_response")
 _TIMEOUT_S = 1.5
@@ -99,6 +104,18 @@ async def last_outcome(provider: str) -> Optional[dict]:
         logger.debug("provider outcome not read: %s", provider, exc_info=True)
         return None
     return dict(row) if row else None
+
+
+def state(configured: bool, outcome: Optional[dict]) -> str:
+    """The delivery-page state of a platform sender: not_configured |
+    not_yet_verified | verified_by_send | failing."""
+    if not configured:
+        return "not_configured"
+    if verified(outcome):
+        return "verified_by_send"
+    if outcome and outcome.get("consecutive_failures"):
+        return "failing"
+    return "not_yet_verified"
 
 
 def verified(outcome: Optional[dict]) -> bool:
