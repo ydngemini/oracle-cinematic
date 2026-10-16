@@ -654,6 +654,24 @@ _AGENT_AVAILABLE_TOOLS = frozenset({
 } | _READ_TOOL_NAMES)
 
 
+#: Effectful tools that act without a selected record (they create one, or
+#: refuse/stage without touching an existing one). Every other non-read tool
+#: needs the record it changes to be the one the agent has open.
+CONTEXT_FREE_TOOLS: frozenset[str] = frozenset({
+    "codebase_summary",
+    "web_search",
+    "create_client",
+    "generate_contract",
+    "generate_assignment_agreement",
+    "publish_to_marketplace",
+})
+
+
+def needs_selected_record(tool_name: str) -> bool:
+    """Whether a tool may only act on the record the agent has open."""
+    return tool_name not in _READ_ONLY_TOOLS and tool_name not in CONTEXT_FREE_TOOLS
+
+
 def is_agent_tool_available(tool_name: str) -> bool:
     """Whether a tool is safe to advertise to a chat model in this release."""
     return tool_name in _AGENT_AVAILABLE_TOOLS
@@ -1268,17 +1286,7 @@ async def _execute_safe_tool(
     tool_input: dict, context_type: Optional[str], context_id: Optional[str],
     call_index: Optional[int] = None,
 ) -> dict:
-    needs_context = (
-        tool_name not in _READ_ONLY_TOOLS
-        and tool_name not in (
-            "codebase_summary",
-            "web_search",
-            "create_client",
-            "generate_contract",
-            "generate_assignment_agreement",
-            "publish_to_marketplace",
-        )
-    )
+    needs_context = needs_selected_record(tool_name)
     if needs_context and (not context_type or not context_id):
         return {"ok": False, "error": "Select the record you want me to update first."}
     key = tenant_key(ctx)
