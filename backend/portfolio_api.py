@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 from datetime import date, datetime, timezone
@@ -784,6 +785,53 @@ async def portfolio_summary(ctx: TenantContext = Depends(require_context)):
     }
 
 
+#: One page of deal ids, newest first (T16.05, L16-04). Ids first, then the
+#: per-row summary for that page only: the joins to clients and offers run for
+#: at most `limit` rows, never for every deal the filter matches. The keyset
+#: (updated_at, id) walks idx_transactions_page (0162); RLS applies inside, so
+#: a page holds only deals the caller may read, and paging never skips or
+#: repeats a deal when rows are added in between, as OFFSET did.
+_TRANSACTION_PAGE_SQL = """
+    SELECT t.id, t.updated_at
+      FROM transactions t
+     WHERE t.tenant_id=$1::uuid
+       AND ($2::text IS NULL OR t.status=$2)
+       AND ($3::text IS NULL OR t.property_source=$3)
+       AND ($4::uuid IS NULL OR t.client_id=$4::uuid)
+       AND ($6::timestamptz IS NULL OR (t.updated_at, t.id) < ($6::timestamptz, $7::uuid))
+     ORDER BY t.updated_at DESC, t.id DESC
+     LIMIT $5 OFFSET $8
+"""
+
+_TRANSACTION_ROWS_SQL = """
+    SELECT t.*,c.full_name AS client_name,
+           ao.amount AS accepted_offer_amount
+      FROM transactions t
+      LEFT JOIN clients c
+        ON c.tenant_id=t.tenant_id AND c.id=t.client_id
+      LEFT JOIN transaction_offers ao
+        ON ao.tenant_id=t.tenant_id AND ao.id=t.accepted_offer_id
+     WHERE t.id = ANY($1::uuid[])
+"""
+
+
+def _page_cursor(updated_at: datetime, row_id: Any) -> str:
+    raw = json.dumps([updated_at.isoformat(), str(row_id)]).encode()
+    return base64.urlsafe_b64encode(raw).decode().rstrip("=")
+
+
+def _read_page_cursor(cursor: str) -> tuple[datetime, UUID]:
+    try:
+        padded = cursor + "=" * (-len(cursor) % 4)
+        stamp, row_id = json.loads(base64.urlsafe_b64decode(padded.encode()))
+        parsed = datetime.fromisoformat(stamp)
+        if parsed.tzinfo is None:
+            raise ValueError("naive timestamp")
+        return parsed, UUID(row_id)
+    except Exception:  # noqa: BLE001 — any malformed cursor is the caller's error
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Invalid page cursor.") from None
+
+
 @router.get("/transactions")
 async def list_transactions(
     transaction_status: Optional[str] = Query(
@@ -797,9 +845,19 @@ async def list_transactions(
     client_id: Optional[UUID] = None,
     limit: int = Query(default=100, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
+    after: Optional[str] = Query(default=None, max_length=200,
+                                 description="next_cursor from the previous page"),
     ctx: TenantContext = Depends(require_context),
 ):
-    """List only the current tenant's transactions, including for admins."""
+    """List only the current tenant's transactions, including for admins.
+
+    Page with `after` (the previous page's `next_cursor`); `offset` still
+    works for older clients but is not combined with a cursor."""
+    if not isinstance(after, str):  # called directly, the Query() default arrives as is
+        after = None
+    after_stamp, after_id = _read_page_cursor(after) if after else (None, None)
+    if after and offset:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Use either after or offset, not both.")
     async with tenant_tx(ctx) as conn:
         total = await conn.fetchval(
             """
@@ -814,34 +872,23 @@ async def list_transactions(
             property_source,
             client_id,
         )
-        rows = await conn.fetch(
-            """
-            SELECT t.*,c.full_name AS client_name,
-                   ao.amount AS accepted_offer_amount
-              FROM transactions t
-              LEFT JOIN clients c
-                ON c.tenant_id=t.tenant_id AND c.id=t.client_id
-              LEFT JOIN transaction_offers ao
-                ON ao.tenant_id=t.tenant_id AND ao.id=t.accepted_offer_id
-             WHERE t.tenant_id=$1::uuid
-               AND ($2::text IS NULL OR t.status=$2)
-               AND ($3::text IS NULL OR t.property_source=$3)
-               AND ($4::uuid IS NULL OR t.client_id=$4::uuid)
-             ORDER BY t.updated_at DESC,t.id
-             LIMIT $5 OFFSET $6
-            """,
-            ctx.tenant_id,
-            transaction_status,
-            property_source,
-            client_id,
-            limit,
-            offset,
+        page = await conn.fetch(
+            _TRANSACTION_PAGE_SQL,
+            ctx.tenant_id, transaction_status, property_source, client_id,
+            limit + 1, after_stamp, after_id, offset,
         )
+        more = len(page) > limit
+        page = page[:limit]
+        ids = [r["id"] for r in page]
+        rows = await conn.fetch(_TRANSACTION_ROWS_SQL, ids) if ids else []
+    by_id = {r["id"]: r for r in rows}
+    ordered = [by_id[i] for i in ids if i in by_id]
     return {
-        "transactions": [_row(row) for row in rows],
+        "transactions": [_row(row) for row in ordered],
         "total": int(total or 0),
         "limit": limit,
         "offset": offset,
+        "next_cursor": _page_cursor(page[-1]["updated_at"], page[-1]["id"]) if more and page else None,
     }
 
 

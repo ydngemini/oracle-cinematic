@@ -290,8 +290,15 @@ def test_transaction_list_shape_and_filters_remain_explicitly_tenant_scoped(monk
             return 61
 
         async def fetch(self, query, *args):
-            assert "WHERE t.tenant_id=$1::uuid" in query
-            assert args == (TENANT_ID, "active", "pipeline", CLIENT_ID, 25, 50)
+            # Ids first (T16.05): the page query carries the tenant and the
+            # filters, asks one extra row to know whether there is a next page.
+            if "SELECT t.id, t.updated_at" in query:
+                assert "WHERE t.tenant_id=$1::uuid" in query
+                assert args == (TENANT_ID, "active", "pipeline", CLIENT_ID, 26, None, None, 50)
+                row = _transaction()
+                return [{"id": row["id"], "updated_at": row["updated_at"]}]
+            # ...then the summary for that page only.
+            assert "t.id = ANY($1::uuid[])" in query
             return [{**_transaction(), "client_name": "Casey Buyer"}]
 
     conn = _ListTransactionsConn()
@@ -312,6 +319,7 @@ def test_transaction_list_shape_and_filters_remain_explicitly_tenant_scoped(monk
     assert result["offset"] == 50
     assert result["transactions"][0]["client_name"] == "Casey Buyer"
     assert "total_count" not in result["transactions"][0]
+    assert result["next_cursor"] is None
 
 
 class _PatchConn:

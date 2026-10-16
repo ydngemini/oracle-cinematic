@@ -48,7 +48,7 @@ Listed weakest to strongest:
 | 13 | Deals, documents, compliance | [13](13-transactions-contract-vault-compliance.md) | `source_verified` | local | `745f2fa`; L13-02 no new MLS-sourced deals (local) | Owner: e-sign, commissions | L13-01 |
 | 14 | Sites, social, ads, client portal | [14](14-websites-social-ads-growth-client-portal.md) | `source_verified` | local | `745f2fa`; L14-03 honest website badge (local) | Owner: networks, listings on sites | L14-01 |
 | 15 | Neoh mascot animation | [15](15-neoh-avatar-skeletal-character-animation.md) | `source_verified` | local | truth slice (L15-02) + rig spec (L15-03) local, on `2fef2e5` | Owner: Rive vs 3D, rig author and licence (L15-03); no device measurements (AC15.07) | Owner decides L15-03; then T15.04 layers and the AC15.07 device protocol |
-| 16 | Performance, indexes, cache | [16](16-performance-indexes-mobile-cache.md) | `tests_pass` | staging | `745f2fa`; 0141 tenant wall (L16-01); 0113 predicates dropped + 0144 (L16-03); JIT off for request transactions (0e29f5a) — all on staging 0a76a72 | A10 capacity on production-shaped infra; no production target | T16.05 |
+| 16 | Performance, indexes, cache | [16](16-performance-indexes-mobile-cache.md) | `tests_pass` | staging | `745f2fa`; 0141 tenant wall (L16-01); 0113 predicates dropped + 0144 (L16-03); JIT off for request transactions (0e29f5a) — all on staging 0a76a72; L16-04 keyset deal list 0162 (local) | A10 capacity on production-shaped infra; no production target | T16.06 + AC16.04 |
 | 17 | Security, privacy, data lifecycle | [17](17-security-privacy-compliance-data-lifecycle.md) | `source_verified` | staging | `0739563`; ISO 27001 set (L17-06, v1.0 approved); L17-07..20 local 2026-10-14 (card redaction, unsubscribe 0146, alerts, HOOK-3, log-PII, audit drain 0148, access review, demo-login guard, hashing, dep audit, admin-read audit, DR drill in CI, two-step sign-in 0150, security.txt); L17-21 local (SMS/transcript/chat-turn sealing 0152, clients + leads design); L17-22 (email subject/body, interaction-log subject/text, AI tool receipts, belief quotes, profile summaries sealing 0154, on staging); L17-23 local (clients lookup hashes + name tokens kept current, 0156, not yet searched); L17-24 local (sealing batches bounded, 0157) | A01, A06; owner: security@/privacy@ mailboxes (L17-20); certification body, pentest, DPAs (L17-06) | Owner: name/email search semantics, then clients slice (b) (L17-23); scheduled off-host backups; log forwarding |
 | 18 | Billing, seats, analytics | [18](18-brokerage-billing-seat-plans-analytics.md) | `source_verified` | local | `a8bff54` (L18-02 `tests_pass`); L18-05 seat ceiling 0161 (local) | D-2026-10-12-02 (billable stage; seat number and who counts) | T18.05 + AC18.03 |
 | 19 | Production operations | [19](19-infrastructure-deploy-observability-recovery.md) | `source_verified` | staging | `745f2fa`; L19-04 property-data health, L19-05 valuation outcomes (0160) (local) | No production app; A04 | L19-03 |
@@ -1532,6 +1532,31 @@ audit_refs: []
 decision_refs: []
 next_task: "T16.06 permission-keyed caches; revisit the 24 h media max-age when per-agent access lands."
 updated: 2026-10-13
+```
+
+#### L16-04 The deal list pages authorized ids by key; the deal room says how much it shows (0162; T16.05, AC16.03)
+```yaml
+id: L16-04
+status: tests_pass
+env: local
+evidence_shas: [f991182]
+files: [backend/portfolio_api.py, backend/db/migrations/0162_transactions_page_index.sql, backend/tests/test_transaction_paging_live.py, backend/tests/test_transaction_workflow.py, oracle-app/src/components/DealBook.jsx, oracle-app/src/components/DealBook.test.jsx, .github/workflows/ci.yml]
+tests_run:
+  - {cmd: "read portfolio_api.list_transactions and DealBook.jsx at f991182", result: "LIMIT/OFFSET over the full join with clients and offers for every matching deal; DealBook fetched limit=100 and labelled the chip '{total} shown' and the metric 'Total' from the loaded rows, so a brokerage with more than 100 deals was told it saw them all, with no way to load the rest", date: 2026-10-16}
+  - {cmd: "cd backend && python -m pytest tests/test_transaction_paging_live.py with idx_transactions_page dropped, then re-created", result: "before: 1 failed (a 4000-deal brokerage sorts every deal for one page); after: 1 passed", date: 2026-10-16}
+  - {cmd: "test_transaction_paging_live.py (real PostgreSQL, request login)", result: "owner and agent page every readable deal exactly once in (updated_at, id) order, the agent without the colleague's private client's deals; a deal inserted between pages neither repeats nor shifts the next page; the page query is index-driven under the tenant wall for small and big brokerages, and the big one walks idx_transactions_page with no Sort; a malformed cursor is 422", date: 2026-10-16}
+  - {cmd: "cd oracle-app && npx vitest run src/components/DealBook.test.jsx with DealBook.jsx stashed, then restored", result: "before: 1 failed ('2 of 4 shown'); after: 2 passed (partial list says 'N of total' and '(of shown)', Show more loads by cursor and disappears at the end; a complete list says '1 shown')", date: 2026-10-16}
+  - {cmd: "cd backend && python -m pytest tests/test_transaction_workflow.py; cd oracle-app && npx vitest run && npx eslint . && npm run build && node scripts/check-bundle-budget.mjs", result: "13 passed (the list-shape test now pins the ids-first two-query shape); 920 passed; eslint exit 0; within budget", date: 2026-10-16}
+authz_checked: "Unchanged rules: both queries run in the caller's tenant_tx, so RLS decides the page (proven for an agent who cannot read a colleague's private client's deals). The explicit tenant predicate that narrows a platform admin to the context tenant is kept as before (it narrows, it does not restate)."
+blockers:
+  - "Keyset semantics: a deal updated while someone pages moves to the top and is not repeated further down; it appears on the next first-page refresh."
+  - "`total` is still a count(*) per request; fine at deal volumes, revisit with T16.10 measurements."
+  - "Other OFFSET lists remain: operator_api (admin-only), state_compliance/routes_mls and mls_portal (MLS, gated off, D-2026-10-12-01)."
+  - "Not deployed (C4.4): 0162 is local."
+audit_refs: [A10]
+decision_refs: []
+next_task: "T16.06 + T16.14 + AC16.04 permission-keyed caches (L16-02 next task)."
+updated: 2026-10-16
 ```
 
 ### L17
