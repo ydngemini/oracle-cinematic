@@ -72,3 +72,15 @@ describe('OurAITab website status (T14.16)', () => {
     expect(within(card).getByText('Live')).toBeTruthy();
   });
 });
+
+describe('OurAITab carries no legacy MLS/IDX (T14.02, AC14.02, D-2026-10-12-01)', () => {
+  it('never polls the MLS health endpoint and offers no IDX item', async () => {
+    serve({});
+    const { container } = render(<OurAITab />);
+    await waitFor(() => expect(api.crmGet).toHaveBeenCalled());
+    await screen.findByText(/\d+\/\d+ sources/);
+    const paths = api.crmGet.mock.calls.map(([path]) => String(path));
+    expect(paths.some((p) => /\/api\/mls\b|idx/i.test(p))).toBe(false);
+    expect(container.textContent).not.toMatch(/\bIDX\b|MLS \/ IDX|WordPress IDX/);
+  });
+});

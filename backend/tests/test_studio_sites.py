@@ -249,3 +249,44 @@ def test_migration_enforces_rls_budgets_and_all_contract_workflows():
     assert "FOREIGN KEY (tenant_id, approval_id)" in normalized
     assert "REFERENCES action_approvals(tenant_id, id)" in normalized
     assert "REVOKE DELETE, TRUNCATE" in sql
+
+
+# ── T14.02 / L14-04: no new MLS/IDX on sites while the MLS gate is off ───────
+
+_CONTENT = dict(
+    headline="Dover homes with local context",
+    description="Source-backed area information with a local agent for Dover buyers and sellers.",
+    seo_title="Dover homes and local real estate",
+    seo_description="Source-backed local information for Dover home buyers and sellers from a local agent.",
+)
+
+
+def _idx_source():
+    import sites_api
+    return sites_api.AuthorizedIdxSource(provider="Bright MLS", feed_id="feed-1", authorization_ref="contract-123")
+
+
+def test_a_new_site_or_revision_cannot_add_idx_sources(monkeypatch):
+    import pydantic
+    import sites_api
+
+    monkeypatch.delenv("ORACLE_MLS_ENABLED", raising=False)
+    with pytest.raises(pydantic.ValidationError, match="not offered"):
+        sites_api.SiteCreate(name="Main St Homes", slug="main-st-homes", authorized_idx_sources=[_idx_source()])
+    with pytest.raises(pydantic.ValidationError, match="not offered"):
+        sites_api.SiteRevisionCreate(brand_theme=sites_api.BrandTheme(), content=sites_api.SiteContent(**_CONTENT),
+                                     authorized_idx_sources=[_idx_source()])
+    with pytest.raises(pydantic.ValidationError, match="not offered"):
+        sites_api.SiteContent(**_CONTENT, idx_requested=True)
+    # Without IDX, nothing changes.
+    assert sites_api.SiteCreate(name="Main St Homes", slug="main-st-homes").authorized_idx_sources == []
+    assert sites_api.SiteContent(**_CONTENT).idx_requested is False
+
+
+def test_the_legacy_gate_still_decides_when_mls_is_switched_on(monkeypatch):
+    import sites_api
+
+    monkeypatch.setenv("ORACLE_MLS_ENABLED", "1")
+    assert sites_api.SiteContent(**_CONTENT, idx_requested=True).idx_requested is True
+    assert len(sites_api.SiteRevisionCreate(brand_theme=sites_api.BrandTheme(), content=sites_api.SiteContent(**_CONTENT),
+                                            authorized_idx_sources=[_idx_source()]).authorized_idx_sources) == 1

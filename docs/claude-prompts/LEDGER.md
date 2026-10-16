@@ -46,7 +46,7 @@ Listed weakest to strongest:
 | 11 | Property and market intelligence (non-MLS) | [11](11-property-market-intelligence.md) | `tests_pass` | staging (L11-01), local (L11-02, L11-03) | `90372f2`; `d934b2e` (L11-02); L11-03 on branch `worktree-agent-a59f5c8799a673f68` (base `2804f47`) | Deploy 0135; live-DB test owed; staging catalog empty; L11-03 not deployed | Apply 0135 on staging; push L11-03 with approval; then T11.02 provenance |
 | 12 | Neoh Space capture, 3D, tours | [12](12-neoh-space-browser-capture-reconstruction.md) | `source_verified` | local | `745f2fa`; L12-03 Capture Studio first slice + integration map (local, jsdom only) | A03; AC12.02 real-device protocol | Server upload sessions (T12.05) |
 | 13 | Deals, documents, compliance | [13](13-transactions-contract-vault-compliance.md) | `source_verified` | local | `745f2fa`; L13-02 no new MLS-sourced deals; L13-03 status trail 0163 + T13.14 verified (local) | Owner: e-sign, commissions, fallen-through contracts | T13.02 remainder; T13.11 |
-| 14 | Sites, social, ads, client portal | [14](14-websites-social-ads-growth-client-portal.md) | `source_verified` | local | `745f2fa`; L14-03 honest website badge (local) | Owner: networks, listings on sites | L14-01 |
+| 14 | Sites, social, ads, client portal | [14](14-websites-social-ads-growth-client-portal.md) | `source_verified` | local | `745f2fa`; L14-03 honest website badge; L14-04 no new IDX on sites (local) | Owner: networks, listings on sites | T14.04 + AC14.04 |
 | 15 | Neoh mascot animation | [15](15-neoh-avatar-skeletal-character-animation.md) | `source_verified` | local | truth slice (L15-02) + rig spec (L15-03) local, on `2fef2e5` | Owner: Rive vs 3D, rig author and licence (L15-03); no device measurements (AC15.07) | Owner decides L15-03; then T15.04 layers and the AC15.07 device protocol |
 | 16 | Performance, indexes, cache | [16](16-performance-indexes-mobile-cache.md) | `tests_pass` | staging | `745f2fa`; 0141 tenant wall (L16-01); 0113 predicates dropped + 0144 (L16-03); JIT off for request transactions (0e29f5a) — all on staging 0a76a72; L16-04 keyset deal list 0162 (local) | A10 capacity on production-shaped infra; no production target | T16.06 + AC16.04 |
 | 17 | Security, privacy, data lifecycle | [17](17-security-privacy-compliance-data-lifecycle.md) | `source_verified` | staging | `0739563`; ISO 27001 set (L17-06, v1.0 approved); L17-07..20 local 2026-10-14 (card redaction, unsubscribe 0146, alerts, HOOK-3, log-PII, audit drain 0148, access review, demo-login guard, hashing, dep audit, admin-read audit, DR drill in CI, two-step sign-in 0150, security.txt); L17-21 local (SMS/transcript/chat-turn sealing 0152, clients + leads design); L17-22 (email subject/body, interaction-log subject/text, AI tool receipts, belief quotes, profile summaries sealing 0154, on staging); L17-23 local (clients lookup hashes + name tokens kept current, 0156, not yet searched); L17-24 local (sealing batches bounded, 0157) | A01, A06; owner: security@/privacy@ mailboxes (L17-20); certification body, pentest, DPAs (L17-06) | Owner: name/email search semantics, then clients slice (b) (L17-23); scheduled off-host backups; log forwarding |
@@ -1406,6 +1406,27 @@ audit_refs: []
 decision_refs: []
 next_task: "T14.04 domain verification and rollback; T14.02 the other source badges."
 updated: 2026-10-15
+```
+
+#### L14-04 New sites and revisions cannot add MLS/IDX; stored revisions untouched (T14.02, AC14.02)
+```yaml
+id: L14-04
+status: tests_pass
+env: local
+evidence_shas: [fba5bbb]
+files: [backend/sites_api.py, backend/tests/test_studio_sites.py, oracle-app/src/components/OurAITab.test.jsx]
+tests_run:
+  - {cmd: "grep -n -i 'idx|mls/health' OurAITab.jsx StudioTab.jsx sites_api.py at fba5bbb", result: "UI already free of the IDX poll, items and wizard step (StudioTab.jsx:124 sends authorized_idx_sources: []); the API still accepted authorized_idx_sources on SiteCreate / SiteRevisionCreate and idx_requested=true in SiteContent, so any client could add IDX to a new revision", date: 2026-10-16}
+  - {cmd: "cd backend && python -m pytest tests/test_studio_sites.py with sites_api.py stashed, then restored", result: "before: 1 failed (IDX sources accepted); after: 15 passed with test_public_sites.py (refused with 422 'not offered' while ORACLE_MLS_ENABLED is off; the legacy gate still decides when switched on)", date: 2026-10-16}
+  - {cmd: "cd oracle-app && npx vitest run src/components/OurAITab.test.jsx", result: "5 passed: Our AI makes no /api/mls or idx request and shows no IDX item (guard for the earlier UI removal)", date: 2026-10-16}
+authz_checked: "No access change. The column and existing revisions are untouched (no migration, no data change); only new input is refused."
+blockers:
+  - "Row count of hyperlocal_site_revisions before/after (AC14.02) not taken on staging; no data is changed by this slice."
+  - "Not deployed (C4.4)."
+audit_refs: []
+decision_refs: [D-2026-10-12-01]
+next_task: "T14.04 + T14.05 + AC14.04 domain verification and rollback."
+updated: 2026-10-16
 ```
 
 ### L15
