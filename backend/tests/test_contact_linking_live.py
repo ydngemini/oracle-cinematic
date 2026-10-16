@@ -194,9 +194,18 @@ async def _manual_scenario():
         assert await admin.fetchval("SELECT contact_id FROM inbound_voice_calls WHERE id=$1", call) == contact_id
         assert await admin.fetchval("SELECT contact_id FROM sms_messages WHERE id=$1::uuid", stranger) is None
 
-        # A contact with no phone links nothing.
-        await contacts_api.create_contact(contacts_api.ContactCreate(full_name="No Phone"), ctx=agent)
+        # A contact with no phone links nothing...
+        bare = await contacts_api.create_contact(contacts_api.ContactCreate(full_name="No Phone"), ctx=agent)
         assert await admin.fetchval("SELECT contact_id FROM sms_messages WHERE id=$1::uuid", stranger) is None
+        # ...until a phone is added by editing it (L04-06): then that number's earlier text joins it.
+        await contacts_api.update_contact(
+            bare["contact"]["id"], contacts_api.ContactPatch(phone="302-555-0172"), ctx=agent)
+        assert await admin.fetchval("SELECT contact_id FROM sms_messages WHERE id=$1::uuid", stranger) == \
+            uuid.UUID(bare["contact"]["id"])
+        # Editing a contact never takes a text already linked to someone else.
+        await contacts_api.update_contact(
+            bare["contact"]["id"], contacts_api.ContactPatch(phone="(302) 555-0171"), ctx=agent)
+        assert await admin.fetchval("SELECT contact_id FROM sms_messages WHERE id=$1::uuid", early) == contact_id
     finally:
         await admin.execute("SET session_replication_role = replica")
         try:

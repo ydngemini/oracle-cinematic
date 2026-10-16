@@ -789,6 +789,18 @@ async def update_contact(
                     pii["email"],
                     pii["phone"],
                 )
+                if pii["phone"] and pii["phone"] != current_json["phone"]:
+                    # A new number's earlier unlinked texts and calls join the
+                    # contact, as on creation (L04-06).
+                    import contact_linking
+
+                    linked_client = await conn.fetchval(
+                        "SELECT id FROM clients WHERE contact_id=$1::uuid AND archived_at IS NULL "
+                        "ORDER BY created_at LIMIT 1", contact_id)
+                    await contact_linking.link_earlier(
+                        conn, tenant_id=ctx.tenant_id, contact_id=contact_id,
+                        client_id=str(linked_client) if linked_client else None,
+                        phone_e164=pii["phone"], phone_hash=lookup_hash(ctx.tenant_id, "phone", pii["phone"]))
             row = await conn.fetchrow(
                 _CONTACT_SELECT + " WHERE contact.id=$1::uuid",
                 contact_id,
