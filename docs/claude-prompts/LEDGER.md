@@ -50,7 +50,7 @@ Listed weakest to strongest:
 | 15 | Neoh mascot animation | [15](15-neoh-avatar-skeletal-character-animation.md) | `source_verified` | local | truth slice (L15-02) + rig spec (L15-03) local, on `2fef2e5` | Owner: Rive vs 3D, rig author and licence (L15-03); no device measurements (AC15.07) | Owner decides L15-03; then T15.04 layers and the AC15.07 device protocol |
 | 16 | Performance, indexes, cache | [16](16-performance-indexes-mobile-cache.md) | `tests_pass` | staging | `745f2fa`; 0141 tenant wall (L16-01); 0113 predicates dropped + 0144 (L16-03); JIT off for request transactions (0e29f5a) — all on staging 0a76a72 | A10 capacity on production-shaped infra; no production target | T16.05 |
 | 17 | Security, privacy, data lifecycle | [17](17-security-privacy-compliance-data-lifecycle.md) | `source_verified` | staging | `0739563`; ISO 27001 set (L17-06, v1.0 approved); L17-07..20 local 2026-10-14 (card redaction, unsubscribe 0146, alerts, HOOK-3, log-PII, audit drain 0148, access review, demo-login guard, hashing, dep audit, admin-read audit, DR drill in CI, two-step sign-in 0150, security.txt); L17-21 local (SMS/transcript/chat-turn sealing 0152, clients + leads design); L17-22 (email subject/body, interaction-log subject/text, AI tool receipts, belief quotes, profile summaries sealing 0154, on staging); L17-23 local (clients lookup hashes + name tokens kept current, 0156, not yet searched); L17-24 local (sealing batches bounded, 0157) | A01, A06; owner: security@/privacy@ mailboxes (L17-20); certification body, pentest, DPAs (L17-06) | Owner: name/email search semantics, then clients slice (b) (L17-23); scheduled off-host backups; log forwarding |
-| 18 | Billing, seats, analytics | [18](18-brokerage-billing-seat-plans-analytics.md) | `source_verified` | local | `a8bff54` (L18-02 `tests_pass`) | D-2026-10-12-02 (billable stage) | T18.04 + AC18.02 (seats) |
+| 18 | Billing, seats, analytics | [18](18-brokerage-billing-seat-plans-analytics.md) | `source_verified` | local | `a8bff54` (L18-02 `tests_pass`); L18-05 seat ceiling 0161 (local) | D-2026-10-12-02 (billable stage; seat number and who counts) | T18.05 + AC18.03 |
 | 19 | Production operations | [19](19-infrastructure-deploy-observability-recovery.md) | `source_verified` | staging | `745f2fa`; L19-04 property-data health, L19-05 valuation outcomes (0160) (local) | No production app; A04 | L19-03 |
 | 20 | 20-agent launch certification | [20](20-twenty-agent-full-feature-launch-e2e-evaluation.md) | `source_verified` | local | `745f2fa` | Every row above | Last |
 
@@ -2201,6 +2201,31 @@ audit_refs: []
 decision_refs: [D-2026-10-12-02]
 next_task: "Owner: set the Stripe test-mode secret key, Price id and webhook secret on the staging app; then run one test-mode checkout."
 updated: 2026-10-13
+```
+
+#### L18-05 A brokerage cannot hold more active seats than its plan (0161; T18.04, AC18.02)
+```yaml
+id: L18-05
+status: tests_pass
+env: local
+evidence_shas: [3bd704d]
+files: [backend/db/migrations/0161_seat_limit.sql, backend/seats.py, backend/auth.py, backend/brokerage_onboarding.py, backend/tests/test_seat_entitlements_live.py, .github/workflows/ci.yml]
+tests_run:
+  - {cmd: "grep -n -i seat over auth.accept_invite, brokerage_onboarding (invite, reinstate), signup at 3bd704d", result: "no seat ceiling anywhere; invitations check membership only; nothing serialised two acceptances", date: 2026-10-16}
+  - {cmd: "cd backend && python -m pytest tests/test_seat_entitlements_live.py with 0161's triggers dropped, then re-applied", result: "before: 1 failed (a second activation for the last seat did not wait and both committed: 21 seats); after: 1 passed", date: 2026-10-16}
+  - {cmd: "test_seat_entitlements_live.py (real PostgreSQL, application role)", result: "seat_limit 20 with 19 used: two racing activations commit exactly one (the second waits on the brokerage lock, then NSEAT); the 21st accept_invite answers 409 and the invitation stays pending; suspension frees a seat which an acceptance then takes; reinstating past the limit answers 409; a profile edit is never a new seat; no limit, no ceiling; a broker-owner's UPDATE of seat_limit is refused (42501) while a platform admin's applies", date: 2026-10-16}
+  - {cmd: "cd backend && python -m pytest tests/test_accept_invitation.py tests/test_brokerage_onboarding*.py tests/test_migration*.py tests/test_run_migrations*.py", result: "160 passed, 1 skipped", date: 2026-10-16}
+  - {cmd: "full CI live list (.github/workflows/ci.yml:257) against the local migrated database", result: "70 passed (after re-recording 0161 locally: it had been edited after a first local apply, which test_migration_precheck rightly refused)", date: 2026-10-16}
+authz_checked: "Database-level: users_seat_limit (SECURITY DEFINER, search_path pinned, REVOKE ALL FROM PUBLIC) counts only the written row's brokerage; tenants_seat_limit_guard refuses seat_limit changes on any application login (member of oracle_app, not superuser) unless app_is_platform_admin(). Proven under the application role."
+blockers:
+  - {type: owner, note: "seat_limit is NULL for every brokerage, so nothing is enforced until the plan is decided (D-2026-10-12-02, T18.02): the number, whether the broker-owner counts (today: every active non-platform-admin user counts, owner included) and who sets it (a platform admin, today by SQL; no route)."}
+  - "Lowering a limit below the active count removes no one; it blocks further activations until seats are freed."
+  - "Stripe seat quantity (proration, upgrade/downgrade) is not wired: T18.04's checkout half waits on the owner's plan contract (T18.02) and Stripe test mode."
+  - "Not deployed (C4.4): 0161 is local; staging needs the push."
+audit_refs: []
+decision_refs: [D-2026-10-12-02]
+next_task: "T18.05 Stripe event ordering and replay (AC18.03), test mode only; owner: plan contract (T18.02)."
+updated: 2026-10-16
 ```
 Owner-approved workaround (2026-10-13): a staging-only subscription row for the owner's own brokerage (`staging_comp_sub_2dd07d9c`, active to 2027-10-13), written the way the demo brokerage is entitled. It also opens the spend-gated routes for that tenant on staging.
 
