@@ -38,7 +38,7 @@ Listed weakest to strongest:
 | 03 | Brokerage tenancy and hybrid access | [03](03-brokerage-tenancy-hybrid-access.md) | `source_verified` | staging | 0131 (L03-02), 0134+0137 (L03-04), 0140 (L03-05), 0142 drafts (L03-06), 0143 leads (L03-07), 0145 live frames (L03-08) all on staging (0a76a72); 0151 lead children + lead frames (L03-09); 0155 deals with no client + every deal's offers/milestones/parties/checklist (L03-10) local only; policy v6 | Owner: team leads (L03-03); lead assignee / listings / marketplace / pipeline counts (L03-07) | Push 0155 with approval (L03-10); listings / marketplace once the owner answers (L03-07) |
 | 04 | CRM, contacts, leads, relationships | [04](04-crm-contact-leads-relationships.md) | `tests_pass` | local | `a8bff54` (L04-01); L04-02 carrier-failed texts, L04-03 replies (0158) (local) | Owner: meter lead_engaged at approval, delivery or first reply (prompt 04 §7) | T04.01 + T04.13 (entity map; every channel resolves to one contact) |
 | 05 | Semantic intent | [05](05-semantic-language-intent.md) | `tests_pass` | local | base `2fef2e5` (L05-01, L05-02); `7b198cf` (L05-03, merged `444efe0`); `012f655` (L05-04, English + Spanish; staging-checked after `12e4c34`); `f8142c1` (L05-05, Spanish success answers + fallback drafts + EN/ES voice; on staging after `45a031d`); L05-06 Spanish call-queue cards (local, branch `claude/continue-n7jgwq`, golden `ae16549`) | Owner: model-spend approval for a scored parser run per language (en / es / mixed; harness built, not run) and real parser latency; an independent Spanish held-out set. Call-queue cards now Spanish except record content and model-written suggestions/summaries (L05-06); Command Center screen and horizon labels English; real-phone voice check owed. Decided 2026-10-14: policy v7 §4 (`cb2aedd`), launch languages English + Spanish (L05-04) | Push L05-06 to main with approval; scored T05.13 run once spend is approved; T05.10 + F05.04 correction cancels a staged command |
-| 06 | Evidence retrieval and memory | [06](06-evidence-retrieval-memory.md) | `tests_pass` | local | `745f2fa`, `6c7133b` | A01, A02 | L06-01, L06-02 |
+| 06 | Evidence retrieval and memory | [06](06-evidence-retrieval-memory.md) | `tests_pass` | local | `745f2fa`, `6c7133b` | A01, A02 | L06-01, L06-02, L06-03 |
 | 07 | AI gateway and governed tools | [07](07-ai-gateway-model-tool-governance.md) | `tests_pass` | local | `071d65d` (L07-01) | Playwright check owed (L07-01); owner: archive_client | T07.02 + AC07.01 |
 | 08 | Durable missions and workflows | [08](08-durable-missions-workflow-orchestration.md) | `source_verified` | local | `745f2fa`; L08-02 deferral journal (0159, local) | Owner: does a mission's standing grant count as approval (C4.1)?; PR #11 needs a rebuild (L08-01 review) | Rebuild PR #11's internal tasks on current main after the owner answers |
 | 09 | Real-time voice | [09](09-realtime-voice-speech-latency.md) | `source_verified` | staging | `9c3463a`; L09-05 outbound spoken opt-out, L09-06 lead-only call notes (local) | Call-note broadcast (L09-03); phone check (L09-02) | L09-03 |
@@ -681,6 +681,30 @@ blockers:
 audit_refs: [A02]
 decision_refs: []
 next_task: "T06.02 + AC06.02 (typed EvidenceBundle with a schema version, built on this per-leg contract); 11 T11.10 reuses it for client automation."
+updated: 2026-10-16
+```
+
+#### L06-03 The evidence contract: versioned EvidenceFact and EvidenceBundle (T06.02, AC06.02; T06.04 beliefs adapter)
+```yaml
+id: L06-03
+status: tests_pass
+env: local
+evidence_shas: [d7e3ce6]
+files: [backend/evidence.py, backend/tests/test_evidence_bundle.py]
+tests_run:
+  - {cmd: "git grep -n 'EvidenceBundle\\|evidence_bundle\\|context_compiler' backend at d7e3ce6", result: "nothing: no evidence type existed; beliefs (belief_store) carried provenance, decay and disputes in their own shape, search legs their own C6 status", date: 2026-10-16}
+  - {cmd: "cd backend && python -m pytest tests/test_evidence_bundle.py", result: "20 passed (new file: every contract rule refused when broken, round trip, version refusal, beliefs adapter, failed read -> unknown)", date: 2026-10-16}
+  - {cmd: "bandit -q evidence.py", result: "no findings", date: 2026-10-16}
+  - {cmd: "cd backend && ORACLE_SKIP_DOTENV=1 python -m pytest -q tests/ (env -i)", result: "5159 passed, 66 skipped, 2 failed: the same root-only unwritable-mount cases as L06-02 (green in CI)", date: 2026-10-16}
+authz_checked: "No access change. evidence.py reads nothing itself; beliefs_bundle calls belief_store.beliefs_about under the caller's own RLS context and filters nothing (no duplicated RLS predicate, C3.3). `audience` names the record whose RLS decided visibility."
+blockers:
+  - "No consumer yet: nothing sends an EvidenceBundle to a model or a page. The context compiler (T06.03) is the first consumer; until then this is a contract with tests, not a shipped behaviour."
+  - "Mapping of belief grades to C6 classes is a judgement, recorded in evidence._BELIEF_CLASS: confirmed -> fact only with a citable ref and never from a model; reported -> provisional (said, not verified); inference -> inferred; hypothesis -> provisional. Nothing maps to `predicted` yet (no forecast store is adapted). Owner/05 to confirm."
+  - "Only the beliefs store is adapted. Search hits, intent_states (declared/observed) and outcome_memory still have their own shapes (T06.04 continues)."
+  - "Sensitivity reuses retention_policy.RetentionCategory; `authorized audience` is the RLS-deciding record, not a role list."
+audit_refs: [A02]
+decision_refs: []
+next_task: "T06.03 context compiler (first consumer of EvidenceBundle), then AC06.03 real-PostgreSQL test that no forbidden record reaches compiled context."
 updated: 2026-10-16
 ```
 
