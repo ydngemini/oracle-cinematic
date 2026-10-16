@@ -34,7 +34,7 @@ Normalization is shared: `contact_truth.normalize_email` / `normalize_phone` (E.
 ## Known gaps (open, in L04-04)
 
 1. Website forms never create or link a person (no public submit route; attribution `subject_id` is unvalidated text).
-2. Texts and calls still never create a contact on their own; they wait for intake or a manual entry. A contact created **manually** (`contacts_api.create_contact`) does not yet run the linking.
+2. Texts and calls still never create a contact on their own; they wait for intake or a manual entry. A contact created **manually** (`contacts_api.create_contact`) runs the same linking since L04-05; a phone added later by editing a contact does not yet.
 3. Match keys and tie-breaks differ: texts and calls by phone only (oldest / agent-first), the webhook by email or phone (newest).
 4. The call fallback's digit match compares E.164 digits (`1302…`) with raw `clients.phone` digits, so `(302) …` never matches.
 5. The webhook does not look at `clients` that have no contact (from `crm.create_client` or a house profile), so the same person can get a second client.

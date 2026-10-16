@@ -36,7 +36,7 @@ Listed weakest to strongest:
 | 01 | Repository source audit | [01](01-repository-source-audit.md) | `tests_pass` | local | `3083abe` inventory (L01-01) | — | T01.11 A01–A10 re-check; T01.05 migration crosswalk |
 | 02 | All pages, routes, mobile UI | [02](02-all-pages-mobile-ui.md) | `source_verified` | staging | `90372f2` crawl | — | Per-page verdicts |
 | 03 | Brokerage tenancy and hybrid access | [03](03-brokerage-tenancy-hybrid-access.md) | `source_verified` | staging | 0131 (L03-02), 0134+0137 (L03-04), 0140 (L03-05), 0142 drafts (L03-06), 0143 leads (L03-07), 0145 live frames (L03-08) all on staging (0a76a72); 0151 lead children + lead frames (L03-09); 0155 deals with no client + every deal's offers/milestones/parties/checklist (L03-10) local only; L03-11 suspension cancels queued spend (local); L03-12 Python mirrors held to the live policies (local); L03-13 suspended agent's queued video cancelled (0166, local); policy v6 | Owner: team leads (L03-03); lead assignee / listings / marketplace / pipeline counts (L03-07) | Push 0155 with approval (L03-10); listings / marketplace once the owner answers (L03-07) |
-| 04 | CRM, contacts, leads, relationships | [04](04-crm-contact-leads-relationships.md) | `tests_pass` | local | `a8bff54` (L04-01); L04-02 carrier-failed texts, L04-03 replies (0158), L04-04 entity map + channel linking (local) | Owner: meter lead_engaged at approval, delivery or first reply (prompt 04 §7) | T04.03 dedup + AC04.02; remaining L04-04 gaps |
+| 04 | CRM, contacts, leads, relationships | [04](04-crm-contact-leads-relationships.md) | `tests_pass` | local | `a8bff54` (L04-01); L04-02 carrier-failed texts, L04-03 replies (0158), L04-04 entity map + channel linking (local); L04-05 contacts added by hand link too (local) | Owner: meter lead_engaged at approval, delivery or first reply (prompt 04 §7) | T04.03 dedup + AC04.02; remaining L04-04 gaps |
 | 05 | Semantic intent | [05](05-semantic-language-intent.md) | `tests_pass` | local | base `2fef2e5` (L05-01, L05-02); `7b198cf` (L05-03, merged `444efe0`); `012f655` (L05-04, English + Spanish; staging-checked after `12e4c34`); `f8142c1` (L05-05, Spanish success answers + fallback drafts + EN/ES voice; on staging after `45a031d`); L05-06 Spanish call-queue cards (local, branch `claude/continue-n7jgwq`, golden `ae16549`); L05-07 a correction withdraws the previous staged request (local) | Owner: model-spend approval for a scored parser run per language (en / es / mixed; harness built, not run) and real parser latency; an independent Spanish held-out set. Call-queue cards now Spanish except record content and model-written suggestions/summaries (L05-06); Command Center screen and horizon labels English; real-phone voice check owed. Decided 2026-10-14: policy v7 §4 (`cb2aedd`), launch languages English + Spanish (L05-04) | Merge PR #33 with approval; scored T05.13 run once spend is approved; T05.10 precise question |
 | 06 | Evidence retrieval and memory | [06](06-evidence-retrieval-memory.md) | `tests_pass` | local | `745f2fa`, `6c7133b`, `63ac40b` (L06-01..03) | A01, A02 | T06.03 context compiler |
 | 07 | AI gateway and governed tools | [07](07-ai-gateway-model-tool-governance.md) | `tests_pass` | local | `071d65d` (L07-01); L07-02 capability registry (local) | Playwright check owed (L07-01); owner: archive_client | T07.04 |
@@ -605,7 +605,29 @@ blockers:
   - "Not deployed (C4.4)."
 audit_refs: []
 decision_refs: []
-next_task: "Run the linking on manual contact creation; one match key and tie-break for all channels; AC04.02 dedup under race (unique hash + merge review)."
+next_task: "Manual creation done in L04-05; one match key and tie-break for all channels; AC04.02 dedup under race (unique hash + merge review)."
+updated: 2026-10-16
+```
+
+#### L04-05 A contact added by hand collects the earlier texts and calls from its phone (T04.13, AC04.01)
+```yaml
+id: L04-05
+status: tests_pass
+env: local
+evidence_shas: [1debee4]
+files: [backend/contacts_api.py, backend/tests/test_contact_linking_live.py]
+tests_run:
+  - {cmd: "livetest.sh pytest tests/test_contact_linking_live.py (new manual-creation test on 1debee4 code)", result: "1 failed: an agent adds 'Riley Moss' with the phone that texted and called earlier; the text and the call stay linked to nobody (entity-map gap 3)", date: 2026-10-16}
+  - {cmd: "livetest.sh pytest tests/test_contact_linking_live.py tests/test_contact_access_matrix_live.py (real PostgreSQL 16, FORCE RLS, app login, real create_contact route as an agent)", result: "4 passed: the earlier text and call join the new contact (phone typed as '(302) 555-0171' still matches the stored E.164 and hash); another number's text is untouched; a contact with no phone links nothing; the L04-04 webhook case and the contact access matrix unchanged", date: 2026-10-16}
+  - {cmd: "cd backend && pytest tests/ (full unit suite)", result: "5235 passed, 75 skipped, 2 failed (the known root-only test_media_storage / test_object_storage cases of this container)", date: 2026-10-16}
+authz_checked: "Runs in create_contact's own tenant transaction as the caller, so RLS decides which unlinked rows can be updated; only rows with no contact are touched, within the 90-day window (contact_linking). An agent's new contact is in the pool unless assigned, as before."
+blockers:
+  - "A phone added later by editing a contact (PATCH) does not run the linking yet."
+  - "Entity-map gaps 1, 2, 4-6 remain (docs/crm-entity-map.md)."
+  - "Not deployed (C4.4)."
+audit_refs: []
+decision_refs: []
+next_task: "Run the linking on a contact phone edit; one match key and tie-break for all channels; AC04.02 dedup under race."
 updated: 2026-10-16
 ```
 

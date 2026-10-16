@@ -139,3 +139,72 @@ async def _scenario():  # noqa: C901 — one scenario, read top to bottom
             await admin.execute("SET session_replication_role = origin")
             await admin.close()
             await connection.close_pool()
+
+
+def test_a_contact_created_by_hand_collects_the_earlier_texts_and_calls(monkeypatch):
+    """L04-05: the same linking runs when an agent adds the contact by hand."""
+    monkeypatch.setenv("ORACLE_ENCRYPTION_MASTER_KEY", "live-test-linking-master-key-0123456789abcdef")
+    asyncio.run(_manual_scenario())
+
+
+async def _manual_scenario():
+    import asyncpg
+
+    import contact_truth
+    import contacts_api
+    import messaging_data
+    from db import connection
+    from tenancy import Role, TenantContext
+
+    admin = await asyncpg.connect(DSN)
+    await connection.init_pool(min_size=1, max_size=3)
+    tenant = str(uuid.uuid4())
+    tag = tenant[:8]
+    agent = TenantContext(agent_id=f"agent-{tag}@link.test", tenant_id=tenant, role=Role.AGENT)
+    phone, other = "+13025550171", "+13025550172"
+
+    async def text_in(from_phone):
+        return await messaging_data.record_inbound_message(
+            tenant_id=tenant, agent_id=agent.agent_id, provider="telnyx", provider_message_id=f"in-{uuid.uuid4()}",
+            from_e164=from_phone, to_e164="+13025550100", text="Saw your sign on Elm Street.", media=[],
+            opted_out=False)
+
+    try:
+        await admin.execute("INSERT INTO tenants (id, slug, name) VALUES ($1,$2,'Manual')",
+                            uuid.UUID(tenant), f"manual-{tag}")
+        await admin.execute("INSERT INTO users (tenant_id, agent_id, role, email) VALUES ($1,$2,'agent',$2)",
+                            uuid.UUID(tenant), agent.agent_id)
+        route = await admin.fetchval(
+            "INSERT INTO telephony_routes (tenant_id, agent_id, inbound_did, provider, provider_account_id, "
+            "forward_on_request, forward_when_ai_unavailable) VALUES ($1,$2,$3,'plivo','MAman',false,false) RETURNING id",
+            uuid.UUID(tenant), agent.agent_id, f"+1302555{uuid.uuid4().int % 10000:04d}")
+        call = uuid.uuid4()
+        await admin.execute(
+            "INSERT INTO inbound_voice_calls (id, tenant_id, route_id, provider_call_sid, provider_status, direction, "
+            "caller_phone_lookup_hash, intake_mode, caller_phone_ciphertext, disclosure_version, disclosed_at) "
+            "VALUES ($1,$2,$3,$4,'completed','inbound',$5,'auto','\\x00'::bytea,'v1',now())",
+            call, uuid.UUID(tenant), route, f"CA{uuid.uuid4().hex}", contact_truth.lookup_hash(tenant, "phone", phone))
+        early, stranger = await text_in(phone), await text_in(other)
+
+        # Typed the way a person types it: the stored E.164 still matches.
+        made = await contacts_api.create_contact(
+            contacts_api.ContactCreate(full_name="Riley Moss", phone="(302) 555-0171"), ctx=agent)
+        contact_id = uuid.UUID(made["contact"]["id"])
+        assert await admin.fetchval("SELECT contact_id FROM sms_messages WHERE id=$1::uuid", early) == contact_id
+        assert await admin.fetchval("SELECT contact_id FROM inbound_voice_calls WHERE id=$1", call) == contact_id
+        assert await admin.fetchval("SELECT contact_id FROM sms_messages WHERE id=$1::uuid", stranger) is None
+
+        # A contact with no phone links nothing.
+        await contacts_api.create_contact(contacts_api.ContactCreate(full_name="No Phone"), ctx=agent)
+        assert await admin.fetchval("SELECT contact_id FROM sms_messages WHERE id=$1::uuid", stranger) is None
+    finally:
+        await admin.execute("SET session_replication_role = replica")
+        try:
+            for table in ("client_activities", "sms_messages", "inbound_voice_calls", "agent_routing_state",
+                          "telephony_routes", "agent_contacts", "clients", "users"):
+                await admin.execute(f"DELETE FROM {table} WHERE tenant_id = $1::uuid", tenant)
+            await admin.execute("DELETE FROM tenants WHERE id = $1::uuid", tenant)
+        finally:
+            await admin.execute("SET session_replication_role = origin")
+            await admin.close()
+            await connection.close_pool()
