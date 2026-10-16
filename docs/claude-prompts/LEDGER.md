@@ -1689,6 +1689,7 @@ tests_run:
   - {cmd: "cd backend && python -m pytest tests/test_transaction_workflow.py; cd oracle-app && npx vitest run && npx eslint . && npm run build && node scripts/check-bundle-budget.mjs", result: "13 passed (the list-shape test now pins the ids-first two-query shape); 920 passed; eslint exit 0; within budget", date: 2026-10-16}
 authz_checked: "Unchanged rules: both queries run in the caller's tenant_tx, so RLS decides the page (proven for an agent who cannot read a colleague's private client's deals). The explicit tenant predicate that narrows a platform admin to the context tenant is kept as before (it narrows, it does not restate)."
 blockers:
+  - "Found by CI after push (run 38846725668, DealBook.test.jsx:42): `load` depended on the list length, so 'Show more' re-ran the mount effect and refetched page one, wiping the loaded pages (a real browser does it on the next frame). Fixed: `load` has a stable identity (refs), background refreshes skip while extra pages are open, Refresh starts from page one; the test now also dispatches a background refresh and passed 5 runs in a row; the old component fails it."
   - "Keyset semantics: a deal updated while someone pages moves to the top and is not repeated further down; it appears on the next first-page refresh."
   - "`total` is still a count(*) per request; fine at deal volumes, revisit with T16.10 measurements."
   - "Other OFFSET lists remain: operator_api (admin-only), state_compliance/routes_mls and mls_portal (MLS, gated off, D-2026-10-12-01)."

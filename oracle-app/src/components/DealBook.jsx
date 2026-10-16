@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { crmGet, crmPatch, crmPost } from '../state/useCrmApi';
 // Parties and milestones — both served by portfolio_api since the deal room was
 // built, and both unreachable until now.
@@ -105,11 +105,23 @@ export default function DealBook() {
   const [error, setError] = useState(null);
   const [expandedId, setExpandedId] = useState(null);
 
-  const load = useCallback(() => {
-    const setLoadingState = transactions.length === 0 ? setLoading : setLoadingQuietly;
+  // Read through refs so `load` keeps one identity: the mount effect below
+  // depends on it, and a `load` that changed with the list re-ran that effect
+  // and refetched page one the moment "Show more" appended page two (L16-04).
+  const hasDataRef = useRef(false);
+  const extraPagesRef = useRef(false);
+
+  // `background`: the timer and external-change refreshes. They skip while
+  // extra pages are open, so a refresh never collapses what the agent loaded;
+  // the Refresh button (not background) always starts again from page one.
+  const load = useCallback((background = false) => {
+    if (background && extraPagesRef.current) return Promise.resolve();
+    const setLoadingState = hasDataRef.current ? setLoadingQuietly : setLoading;
     setLoadingState(true);
     return crmGet('/api/portfolio/transactions?limit=100').then(
       (payload) => {
+        hasDataRef.current = true;
+        extraPagesRef.current = false;
         setTransactions(payload.transactions || []);
         setTotal(payload.total || 0);
         setNextCursor(payload.next_cursor || null);
@@ -123,7 +135,7 @@ export default function DealBook() {
         setLoadingQuietly(false);
       },
     );
-  }, [transactions.length]);
+  }, []);
 
   const refresh = useCallback(() => {
     load();
@@ -136,6 +148,7 @@ export default function DealBook() {
     setLoadingMore(true);
     crmGet(`/api/portfolio/transactions?limit=100&after=${encodeURIComponent(nextCursor)}`).then(
       (payload) => {
+        extraPagesRef.current = true;
         setTransactions((prev) => {
           const seen = new Set(prev.map((t) => t.id));
           return [...prev, ...(payload.transactions || []).filter((t) => !seen.has(t.id))];
@@ -152,9 +165,9 @@ export default function DealBook() {
 
   useEffect(() => {
     const initialFrame = window.requestAnimationFrame(() => { void load(); });
-    const timer = window.setInterval(load, 75_000);
+    const timer = window.setInterval(() => load(true), 75_000);
     const onExternal = () => {
-      load();
+      load(true);
     };
     window.addEventListener('neoh:transactions-changed', onExternal);
     return () => {

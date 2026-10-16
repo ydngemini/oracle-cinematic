@@ -41,6 +41,11 @@ describe('Deal room paging', () => {
     expect(crmGet).toHaveBeenCalledWith('/api/portfolio/transactions?limit=100&after=abc%3D');
     expect(screen.queryByRole('button', { name: /show more/i })).toBeNull();
     expect(screen.getByText('3 active')).toBeTruthy();
+    // Page two survives a background refresh (it used to snap back to page one).
+    window.dispatchEvent(new Event('neoh:transactions-changed'));
+    await new Promise((r) => setTimeout(r, 20));
+    expect(screen.getByText('4 shown')).toBeTruthy();
+    expect(crmGet.mock.calls.filter(([url]) => url === '/api/portfolio/transactions?limit=100').length).toBe(1);
   });
 
   it('a complete list is labelled as complete, with no Show more', async () => {
