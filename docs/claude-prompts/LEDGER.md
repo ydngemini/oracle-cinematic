@@ -48,7 +48,7 @@ Listed weakest to strongest:
 | 13 | Deals, documents, compliance | [13](13-transactions-contract-vault-compliance.md) | `source_verified` | local | `745f2fa`; L13-02 no new MLS-sourced deals; L13-03 status trail 0163 + T13.14 verified (local) | Owner: e-sign, commissions, fallen-through contracts | T13.02 remainder; T13.11 |
 | 14 | Sites, social, ads, client portal | [14](14-websites-social-ads-growth-client-portal.md) | `source_verified` | local | `745f2fa`; L14-03 honest website badge; L14-04 no new IDX on sites (local) | Owner: networks, listings on sites | T14.04 + AC14.04 |
 | 15 | Neoh mascot animation | [15](15-neoh-avatar-skeletal-character-animation.md) | `source_verified` | local | truth slice (L15-02) + rig spec (L15-03) local, on `2fef2e5` | Owner: Rive vs 3D, rig author and licence (L15-03); no device measurements (AC15.07) | Owner decides L15-03; then T15.04 layers and the AC15.07 device protocol |
-| 16 | Performance, indexes, cache | [16](16-performance-indexes-mobile-cache.md) | `tests_pass` | staging | `745f2fa`; 0141 tenant wall (L16-01); 0113 predicates dropped + 0144 (L16-03); JIT off for request transactions (0e29f5a) — all on staging 0a76a72; L16-04 keyset deal list 0162 (local) | A10 capacity on production-shaped infra; no production target | T16.06 + AC16.04 |
+| 16 | Performance, indexes, cache | [16](16-performance-indexes-mobile-cache.md) | `tests_pass` | staging | `745f2fa`; 0141 tenant wall (L16-01); 0113 predicates dropped + 0144 (L16-03); JIT off for request transactions (0e29f5a) — all on staging 0a76a72; L16-04 keyset deal list 0162 (local); L16-05 no ungated service-worker cache read (local) | A10 capacity on production-shaped infra; no production target | T16.06 + AC16.04 |
 | 17 | Security, privacy, data lifecycle | [17](17-security-privacy-compliance-data-lifecycle.md) | `source_verified` | staging | `0739563`; ISO 27001 set (L17-06, v1.0 approved); L17-07..20 local 2026-10-14 (card redaction, unsubscribe 0146, alerts, HOOK-3, log-PII, audit drain 0148, access review, demo-login guard, hashing, dep audit, admin-read audit, DR drill in CI, two-step sign-in 0150, security.txt); L17-21 local (SMS/transcript/chat-turn sealing 0152, clients + leads design); L17-22 (email subject/body, interaction-log subject/text, AI tool receipts, belief quotes, profile summaries sealing 0154, on staging); L17-23 local (clients lookup hashes + name tokens kept current, 0156, not yet searched); L17-24 local (sealing batches bounded, 0157) | A01, A06; owner: security@/privacy@ mailboxes (L17-20); certification body, pentest, DPAs (L17-06) | Owner: name/email search semantics, then clients slice (b) (L17-23); scheduled off-host backups; log forwarding |
 | 18 | Billing, seats, analytics | [18](18-brokerage-billing-seat-plans-analytics.md) | `source_verified` | local | `a8bff54` (L18-02 `tests_pass`); L18-05 seat ceiling 0161 (local) | D-2026-10-12-02 (billable stage; seat number and who counts) | T18.05 + AC18.03 |
 | 19 | Production operations | [19](19-infrastructure-deploy-observability-recovery.md) | `source_verified` | staging | `745f2fa`; L19-04 property-data health, L19-05 valuation outcomes (0160), L19-06 relay health + property-data runbook (local) | No production app; A04; owner: SLO targets, on-call | Owner SLOs; AC19.06 |
@@ -1808,7 +1808,29 @@ blockers:
   - "Not deployed (C4.4): 0162 is local."
 audit_refs: [A10]
 decision_refs: []
-next_task: "T16.06 + T16.14 + AC16.04 permission-keyed caches (L16-02 next task)."
+next_task: "T16.06 begun in L16-05; T16.06 remainder + AC16.04 Playwright triggers."
+updated: 2026-10-16
+```
+
+#### L16-05 Cached splats and legal payloads leave the service worker only through the rights check (T16.06, T16.14)
+```yaml
+id: L16-05
+status: tests_pass
+env: local
+evidence_shas: [228a1a7]
+files: [oracle-app/src/sw-oracle.js, oracle-app/src/swOracle.test.js]
+tests_run:
+  - {cmd: "read oracle-app/src/sw-oracle.js and lib/splatCacheGate.js at 228a1a7; grep the app for the service worker's message types", result: "T16.14 holds on the fetch path: /api/media/{id} is served from IndexedDB only after a conditional GET the server answers under RLS (401/403/404/410 purge the copy). But two message handlers, CACHE_RETRIEVE_SPLAT and CACHE_RETRIEVE_LEGAL, posted the cached splat blob / legal payload back to any page that asked, with no check; nothing in the app sends either message", date: 2026-10-16}
+  - {cmd: "cd oracle-app && npx vitest run src/swOracle.test.js (before / after)", result: "before: 2 failed (the retrieve messages exist; 4 splat-store reads). after: 2 passed: no message hands back cached bytes or payloads; the splat store is read only by the gate, the presence query and the prefetch dedupe", date: 2026-10-16}
+  - {cmd: "cd oracle-app && npx vitest run && npx eslint . && npm run build && node scripts/check-bundle-budget.mjs; grep -c CACHE_RETRIEVE dist/sw-oracle.js", result: "925 passed; eslint exit 0; within budget; 0 in the built service worker", date: 2026-10-16}
+authz_checked: "The removed handlers were the only way cached bytes left IndexedDB without the server's RLS-checked 304. Sign-out still deletes the whole store (clearPrivateCaches)."
+blockers:
+  - "Source-pinned test only: the service worker does not load in jsdom; AC16.04 asks for Playwright per trigger (role change, reassignment, revocation, logout), not yet written."
+  - "Reviewed, not changed: LeadMap's in-memory geocode cache is keyed by address (a later user hits it only for an address they already hold); the backend integration cache keys AVM answers by the property, not by a viewer. No AI context or page cache keyed by actor/permission revision exists yet to review."
+  - "Not deployed (C4.4)."
+audit_refs: []
+decision_refs: []
+next_task: "AC16.04 Playwright: a viewer who loses access (reassignment, revocation, role change) is refused the cached splat on the next view."
 updated: 2026-10-16
 ```
 
