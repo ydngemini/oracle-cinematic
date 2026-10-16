@@ -500,26 +500,36 @@ def _oauth_return_url(return_path: str, outcome: str) -> str:
     )
 
 
-async def _load_google_access_token(ctx: TenantContext, account_label: str) -> Optional[str]:
-    """Load an agent token, refreshing it before expiry without exposing either token."""
-    key = _provider_key(ctx.tenant_id)
-    async with tenant_tx(ctx) as conn:
-        row = await conn.fetchrow(
-            """
+_GOOGLE_ROW_SQL = """
             SELECT id,token_ciphertext,refresh_ciphertext,expires_at
               FROM provider_credentials
              WHERE tenant_id=$1::uuid AND provider='google'
                AND account_label=$2 AND disabled_at IS NULL
              ORDER BY updated_at DESC LIMIT 1
-            """,
-            ctx.tenant_id,
-            account_label,
-        )
+"""
+
+
+def _google_token_fresh(row: Any) -> bool:
+    return not row["expires_at"] or row["expires_at"] > datetime.now(timezone.utc) + timedelta(seconds=60)
+
+
+async def has_google_calendar(ctx: TenantContext, account_label: str) -> bool:
+    """Whether _load_google_access_token could hand out a token for this label:
+    a non-disabled row that is unexpired or refreshable. An access token that
+    has merely expired is not a disconnected calendar (channel_setup, L07-03)."""
+    async with tenant_tx(ctx) as conn:
+        row = await conn.fetchrow(_GOOGLE_ROW_SQL, ctx.tenant_id, account_label)
+    return row is not None and (_google_token_fresh(row) or bool(row["refresh_ciphertext"]))
+
+
+async def _load_google_access_token(ctx: TenantContext, account_label: str) -> Optional[str]:
+    """Load an agent token, refreshing it before expiry without exposing either token."""
+    key = _provider_key(ctx.tenant_id)
+    async with tenant_tx(ctx) as conn:
+        row = await conn.fetchrow(_GOOGLE_ROW_SQL, ctx.tenant_id, account_label)
         if row is None:
             return None
-        if not row["expires_at"] or row["expires_at"] > datetime.now(timezone.utc) + timedelta(
-            seconds=60
-        ):
+        if _google_token_fresh(row):
             return await decrypt_pii(conn, row["token_ciphertext"], key)
         if not row["refresh_ciphertext"]:
             return None
@@ -585,26 +595,7 @@ def _resolve_email_provider():
         ) from None
 
 
-async def _load_provider_credential(
-    ctx: TenantContext,
-    provider: str,
-    *,
-    account_label: Optional[str] = None,
-    exact: bool = False,
-) -> Any:
-    """Decrypt a tenant credential only inside the executing worker.
-
-    Preference order: the caller's own labelled row, then 'default', then
-    whichever active row is newest — so a broker who saved a credential under
-    a custom label (the account_label field on PUT /providers/{provider} is
-    free text) is still found even when the caller asked for a specific
-    agent's row that doesn't exist. Pass `exact=True` (validate/disable: the
-    caller named one specific row) to require that exact account_label match
-    rather than silently falling back to someone else's credential.
-    """
-    async with tenant_tx(ctx) as conn:
-        row = await conn.fetchrow(
-            """
+_PROVIDER_ROW_SQL = """
             SELECT token_ciphertext,expires_at FROM provider_credentials
              WHERE tenant_id=$1::uuid AND provider=$2 AND disabled_at IS NULL
                AND ($4 IS FALSE OR account_label=$3)
@@ -624,15 +615,44 @@ async def _load_provider_credential(
                       END,
                       updated_at DESC
              LIMIT 1
-            """,
-            ctx.tenant_id,
-            provider,
-            account_label,
-            exact,
-        )
-        if row is None:
-            return None
-        if row["expires_at"] and row["expires_at"] <= datetime.now(timezone.utc):
+"""
+
+
+def _credential_row_live(row: Any) -> bool:
+    return row is not None and not (row["expires_at"] and row["expires_at"] <= datetime.now(timezone.utc))
+
+
+async def has_provider_credential(
+    ctx: TenantContext, provider: str, *, account_label: Optional[str] = None,
+) -> bool:
+    """Whether _load_provider_credential would find a usable row for this
+    caller — the same selection and expiry rule, without decrypting anything
+    (channel_setup, T07.04, L07-03)."""
+    async with tenant_tx(ctx) as conn:
+        row = await conn.fetchrow(_PROVIDER_ROW_SQL, ctx.tenant_id, provider, account_label, False)
+    return _credential_row_live(row)
+
+
+async def _load_provider_credential(
+    ctx: TenantContext,
+    provider: str,
+    *,
+    account_label: Optional[str] = None,
+    exact: bool = False,
+) -> Any:
+    """Decrypt a tenant credential only inside the executing worker.
+
+    Preference order: the caller's own labelled row, then 'default', then
+    whichever active row is newest — so a broker who saved a credential under
+    a custom label (the account_label field on PUT /providers/{provider} is
+    free text) is still found even when the caller asked for a specific
+    agent's row that doesn't exist. Pass `exact=True` (validate/disable: the
+    caller named one specific row) to require that exact account_label match
+    rather than silently falling back to someone else's credential.
+    """
+    async with tenant_tx(ctx) as conn:
+        row = await conn.fetchrow(_PROVIDER_ROW_SQL, ctx.tenant_id, provider, account_label, exact)
+        if not _credential_row_live(row):
             return None
         return await decrypt_pii(conn, row["token_ciphertext"], _provider_key(ctx.tenant_id))
 

@@ -39,7 +39,9 @@ def test_an_agent_is_not_offered_the_owner_only_reads_and_is_told_why():
     assert offer.offered == release - OPS_ROLE_TOOLS
     assert offer.offered.isdisjoint(offer.withheld)
     for reason in offer.withheld.values():
-        assert "broker-owner" in reason and "agent" in reason
+        # What this session lacks — never who the person "is" (a job queued
+        # without a recorded role runs as an agent by default, not by proof).
+        assert "broker-owner" in reason and "signed in as" not in reason
 
 
 @pytest.mark.parametrize("ctx", [OWNER, ADMIN])
@@ -88,42 +90,42 @@ def test_the_refusal_carries_the_reason_or_the_old_wording_for_an_unknown_tool()
 
 # ── reading the channel state ────────────────────────────────────────────────
 
-def test_without_a_pool_the_channel_state_is_unknown_and_sales_api_is_never_asked(monkeypatch):
+def test_without_a_pool_the_channel_state_is_unknown_and_nothing_is_read(monkeypatch):
+    import channel_setup
     import db.connection as connection
-    import sales_api
 
     monkeypatch.setattr(connection, "get_pool", lambda: None)
 
     async def must_not_run(_ctx):
-        raise AssertionError("no pool, no snapshot")
+        raise AssertionError("no pool, no reads")
 
-    monkeypatch.setattr(sales_api, "channel_setup_gaps", must_not_run)
+    monkeypatch.setattr(channel_setup, "gaps", must_not_run)
     assert asyncio.run(tool_offer.channel_gaps(AGENT)) == {}
 
 
-def test_a_failing_or_slow_snapshot_is_unknown_not_missing(monkeypatch):
+def test_a_failing_or_slow_read_is_unknown_not_missing(monkeypatch):
+    import channel_setup
     import db.connection as connection
-    import sales_api
 
     monkeypatch.setattr(connection, "get_pool", lambda: object())
 
     async def boom(_ctx):
         raise RuntimeError("provider_credentials unreadable")
 
-    monkeypatch.setattr(sales_api, "channel_setup_gaps", boom)
+    monkeypatch.setattr(channel_setup, "gaps", boom)
     assert asyncio.run(tool_offer.channel_gaps(AGENT)) == {}
 
     async def slow(_ctx):
         await asyncio.sleep(30)
 
-    monkeypatch.setattr(sales_api, "channel_setup_gaps", slow)
+    monkeypatch.setattr(channel_setup, "gaps", slow)
     monkeypatch.setattr(tool_offer, "_GAPS_TIMEOUT_S", 0.01)
     assert asyncio.run(tool_offer.channel_gaps(AGENT)) == {}
 
     async def gaps(_ctx):
         return {"sms": SMS_GAP, "email": ""}
 
-    monkeypatch.setattr(sales_api, "channel_setup_gaps", gaps)
+    monkeypatch.setattr(channel_setup, "gaps", gaps)
     assert asyncio.run(tool_offer.channel_gaps(AGENT)) == {"sms": SMS_GAP}
 
 
@@ -273,22 +275,45 @@ def test_the_worker_role_follows_the_requester_but_never_the_platform(value, rol
     assert ai_chat_agent._worker_role(value) is role
 
 
-def test_the_job_carries_who_asked(monkeypatch):
+def test_the_job_carries_who_asked():
     src = inspect.getsource(ai_chat_api)
     call = src[src.index('job_type="ai_chat:response"'):]
     call = call[:call.index(")\n")]
     assert '"role": ctx.role.value' in call
 
+
+@pytest.mark.parametrize("live, recorded, role", [
+    (("ok", "broker_owner"), "agent", Role.BROKER_OWNER),      # promoted since: the live row wins
+    (("ok", "agent"), "broker_owner", Role.AGENT),             # demoted since: never the stale grant
+    (("ok", "platform_admin"), None, Role.BROKER_OWNER),       # never wider than the brokerage
+    (("missing", None), "broker_owner", Role.AGENT),           # no longer an active member here
+    (("unknown", None), "broker_owner", Role.BROKER_OWNER),    # unreadable: the recorded role stands
+    (("unknown", None), None, Role.AGENT),                     # a job queued before roles were recorded
+])
+def test_the_turn_runs_as_the_requesters_current_role(monkeypatch, live, recorded, role):
     seen = {}
+
+    async def live_role(requester):
+        seen["requester"] = requester
+        return live
 
     async def capture(ctx, assistant_id):
         seen["ctx"] = ctx
         return {"assistant": {"status": "completed"}}
 
+    monkeypatch.setattr(ai_chat_agent, "_live_role", live_role)
     monkeypatch.setattr(ai_chat_agent, "load_response_bundle", capture)
-    payload = {"tenant_id": TENANT, "user_id": "owner@tenant.test", "assistant_id": "a-1",
-               "request_id": "r-1", "role": "broker_owner"}
+    payload = {"tenant_id": TENANT, "user_id": "owner@tenant.test", "assistant_id": "a-1", "request_id": "r-1"}
+    if recorded is not None:
+        payload["role"] = recorded
     asyncio.run(ai_chat_agent.handle_ai_chat_job(payload, None))
-    assert seen["ctx"].role is Role.BROKER_OWNER and seen["ctx"].tenant_id == TENANT
-    asyncio.run(ai_chat_agent.handle_ai_chat_job({**payload, "role": None}, None))
-    assert seen["ctx"].role is Role.AGENT
+    assert seen["ctx"].role is role and seen["ctx"].tenant_id == TENANT
+    # The membership check itself runs as the least the person could be.
+    assert seen["requester"].role is Role.AGENT and seen["requester"].agent_id == "owner@tenant.test"
+
+
+def test_an_unreadable_membership_is_unknown_not_missing(monkeypatch):
+    import db.connection as connection
+
+    monkeypatch.setattr(connection, "get_pool", lambda: None)
+    assert asyncio.run(ai_chat_agent._live_role(OWNER)) == ("unknown", None)

@@ -1222,7 +1222,10 @@ async def _generate(ctx: TenantContext, bundle: dict, assistant_id: str) -> tupl
     offer_note = offer.prompt_note()
     if offer_note:
         system_prompt += "\n\n" + offer_note
-        runtime_context = (runtime_context + "\n\n" + offer_note).strip()
+        # Ahead of the memory block in Foundry's runtime context: _foundry_inputs
+        # keeps its first 12k characters, and a control note that is cut is a
+        # tool withheld with no reason given.
+        runtime_context = (offer_note + "\n\n" + runtime_context).strip()
     # Hosted chat runs through llm_gateway: one place that knows which
     # providers exist, one call counter, one deadline. The loop, the tool
     # execution and the receipts are unchanged — only the transport moved.
@@ -1405,12 +1408,44 @@ def _worker_role(value: object) -> Role:
     return Role.AGENT
 
 
+async def _live_role(requester: TenantContext) -> tuple[str, Optional[str]]:
+    """The requester's CURRENT membership here: ("ok", users.role) for an active
+    member, ("missing", None) when they are not one, ("unknown", None) when it
+    could not be read. Never raises."""
+    try:
+        import record_access
+        from db.connection import tenant_tx
+
+        async with tenant_tx(requester) as conn:
+            member = await record_access.find_member(conn, requester.tenant_id, requester.agent_id)
+    except Exception:  # noqa: BLE001 — not re-checked is not the same as absent
+        logger.debug("chat turn: live role not readable; the recorded role stands", exc_info=True)
+        return "unknown", None
+    return ("ok", str(member["role"])) if member else ("missing", None)
+
+
+async def _turn_role(requester: TenantContext, recorded: object) -> Role:
+    """The role a chat turn runs as. The job recorded the requester's role when
+    the session passed its account check; between enqueue and claim they may
+    have been demoted or removed, so the live users row wins when it can be
+    read: an active member runs as their current role, someone who is no
+    longer an active member runs as an agent, and only when the row cannot be
+    read does the recorded role stand — always narrowed by _worker_role."""
+    state, live = await _live_role(requester)
+    if state == "ok":
+        return _worker_role(live)
+    if state == "missing":
+        return Role.AGENT
+    return _worker_role(recorded)
+
+
 async def handle_ai_chat_job(payload: dict, reporter: JobReporter) -> dict:
     tenant_id = str(payload["tenant_id"])
     user_id = str(payload["user_id"])
     assistant_id = str(payload["assistant_id"])
     request_id = str(payload["request_id"])
-    ctx = TenantContext(agent_id=user_id, tenant_id=tenant_id, role=_worker_role(payload.get("role")))
+    requester = TenantContext(agent_id=user_id, tenant_id=tenant_id, role=Role.AGENT)
+    ctx = TenantContext(agent_id=user_id, tenant_id=tenant_id, role=await _turn_role(requester, payload.get("role")))
     bundle = await load_response_bundle(ctx, assistant_id)
     # A spoken turn's recognition language (L05-05): read by
     # semantic_turn.prepare_turn only when the words cannot tell.

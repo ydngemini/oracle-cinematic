@@ -16,8 +16,9 @@ Two kinds of reason, both read from where they are already decided:
                 handler's own role check stays as the second line.
   integration   draft_sms / draft_email / call_contact / schedule_event are not
                 offered while the brokerage has definitively not set up that
-                channel — sales_api.channel_setup_gaps, derived from the same
-                snapshot the delivery page shows, never re-decided here.
+                channel — channel_setup.gaps, which mirrors the preconditions
+                the approved command itself fails closed on, never re-decided
+                here.
 
 Unknown is not "missing" (C6): when the channel state cannot be read (no pool,
 a timeout, an error) nothing is withheld for it, and a staged request fails
@@ -35,7 +36,7 @@ from typing import Any, Mapping, Optional
 logger = logging.getLogger("oracle.tool_offer")
 
 #: Which offered tool each delivery channel stands behind. Keys are the
-#: channels sales_api.channel_setup_gaps reports.
+#: channels channel_setup.gaps reports.
 CHANNEL_TOOLS: dict[str, tuple[str, ...]] = {
     "sms": ("draft_sms",),
     "email": ("draft_email",),
@@ -97,10 +98,11 @@ def for_actor(ctx: Any, context_type: Optional[str],
     base = frozenset(ai_chat_agent.offered_tool_names(context_type))
     withheld: dict[str, str] = {}
     if not ops_role(ctx):
-        role = getattr(getattr(ctx, "role", None), "value", "agent")
+        # Says what this session lacks, never who the person "is": a job queued
+        # without a recorded role runs as an agent by default, not by proof.
         for tool in base & _owner_only_tools():
-            withheld[tool] = (f"limited to the broker-owner (it reports on the whole workspace); "
-                              f"the person you are helping is signed in as {role}.")
+            withheld[tool] = ("limited to the broker-owner (it reports on the whole workspace); "
+                              "this session does not carry the broker-owner role.")
     for channel, reason in (channel_gaps or {}).items():
         for tool in CHANNEL_TOOLS.get(channel, ()):
             if tool in base and reason:
@@ -116,9 +118,9 @@ async def channel_gaps(ctx: Any) -> dict[str, str]:
     if get_pool() is None:
         return {}
     try:
-        import sales_api
+        import channel_setup
 
-        gaps = await asyncio.wait_for(sales_api.channel_setup_gaps(ctx), timeout=_GAPS_TIMEOUT_S)
+        gaps = await asyncio.wait_for(channel_setup.gaps(ctx), timeout=_GAPS_TIMEOUT_S)
     except Exception:  # noqa: BLE001 — unknown setup state withholds nothing
         logger.debug("channel setup state unavailable for this turn", exc_info=True)
         return {}
