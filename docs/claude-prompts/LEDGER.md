@@ -41,7 +41,7 @@ Listed weakest to strongest:
 | 06 | Evidence retrieval and memory | [06](06-evidence-retrieval-memory.md) | `tests_pass` | local | `745f2fa`, `6c7133b`, `63ac40b` (L06-01..03) | A01, A02 | T06.03 context compiler |
 | 07 | AI gateway and governed tools | [07](07-ai-gateway-model-tool-governance.md) | `tests_pass` | local | `071d65d` (L07-01); L07-02 capability registry (local) | Playwright check owed (L07-01); owner: archive_client | T07.04 |
 | 08 | Durable missions and workflows | [08](08-durable-missions-workflow-orchestration.md) | `source_verified` | local | `745f2fa`; L08-02 deferral journal (0159, local) | Owner: does a mission's standing grant count as approval (C4.1)?; PR #11 needs a rebuild (L08-01 review) | Rebuild PR #11's internal tasks on current main after the owner answers |
-| 09 | Real-time voice | [09](09-realtime-voice-speech-latency.md) | `source_verified` | staging | `9c3463a`; L09-05 outbound spoken opt-out, L09-06 lead-only call notes (local) | Call-note broadcast (L09-03); phone check (L09-02) | L09-03 |
+| 09 | Real-time voice | [09](09-realtime-voice-speech-latency.md) | `source_verified` | staging | `9c3463a`; L09-05 outbound spoken opt-out, L09-06 lead-only call notes, L09-07 voice rules locked per path (local) | Phone check (L09-02); real call (T09.18) needs owner approval | T09.18; T09.10 |
 | 10 | Communications and calendars | [10](10-communications-calendar-provider-integrations.md) | `source_verified` | staging | `75c6ba6` (local) | Google OAuth client; 10DLC; deploy approval; A07 fixed locally; L10-11 email Ready only after a send (0164, local); 0136 + 0139 + 0145 undeployed (L10-06, L10-09, L10-10); owner: one-brand rule (L10-09) | L10-01 deploy + real connect; T10.09 SMS/calls |
 | 11 | Property and market intelligence (non-MLS) | [11](11-property-market-intelligence.md) | `tests_pass` | staging (L11-01), local (L11-02, L11-03) | `90372f2`; `d934b2e` (L11-02); L11-03 on branch `worktree-agent-a59f5c8799a673f68` (base `2804f47`) | Deploy 0135; live-DB test owed; staging catalog empty; L11-03 not deployed | Apply 0135 on staging; push L11-03 with approval; then T11.02 provenance |
 | 12 | Neoh Space capture, 3D, tours | [12](12-neoh-space-browser-capture-reconstruction.md) | `source_verified` | local | `745f2fa`; L12-03 Capture Studio first slice + integration map (local, jsdom only) | A03; AC12.02 real-device protocol | Server upload sessions (T12.05) |
@@ -879,10 +879,11 @@ tests_run:
   - {cmd: "pytest backend/tests/test_call_note_review.py backend/tests/test_elevenlabs_realtime.py", result: "pass: frame only to requester + assignee; no tenant-wide broadcast; AI readers filter review_state='approved'", date: 2026-10-13}
   - {cmd: "vitest src/components/ClientNotes.test.jsx", result: "pass: proposed badge + approve", date: 2026-10-13}
 authz_checked: frame recipients = requesting agent + client assignee; approve route runs under tenant RLS
-blockers: [{type: verification, note: "backend/tests/test_call_notes_live.py (real PostgreSQL) runs in CI only."}]
+  - {cmd: "full CI live list incl. tests/test_call_notes_live.py against local real PostgreSQL (2026-10-16, base b733048)", result: "passed (72 passed in the run that added L13-03)", date: 2026-10-16}
+blockers: [{type: owner, note: "Deploy approval (C4.4)."}]
 audit_refs: [A01]
 decision_refs: [D-2026-10-12-03]
-next_task: "CI live test, then deploy approval."
+next_task: "Deploy approval."
 updated: 2026-10-13
 ```
 
@@ -946,6 +947,28 @@ audit_refs: []
 decision_refs: ["D-2026-10-12-03 (review/direct note mode applies to house-lead notes as to client notes)"]
 next_task: "T09.18 with owner approval."
 updated: 2026-10-15
+```
+
+#### L09-07 The voice rules are locked on every carrier path and engine (T09.19, AC09.01)
+```yaml
+id: L09-07
+status: tests_pass
+env: local
+evidence_shas: [b733048]
+files: [backend/tests/test_voice_rules.py]
+tests_run:
+  - {cmd: "read voice_provider (Twilio, Plivo speak_and_stream_markup), commands_api.twilio_webhook, acs_call_handler (answer, outbound start, play-completed), qwen _system_instructions, elevenlabs outbound_instructions, inbound_voice intake at b733048", result: "every path already speaks AI_VOICE_DISCLOSURE before AI audio (ACS answers with an inactive stream and starts it on the greeting's PlayCompleted) and every prompt says never deny/hide automation; no single test held all paths", date: 2026-10-16}
+  - {cmd: "cd backend && python -m pytest tests/test_voice_rules.py", result: "8 passed: disclosure wording; Twilio and Plivo markup speak it before the stream; outbound Twilio webhook (Qwen and Gather) opens with it; ACS inbound and outbound play it as the greeting with streaming inactive; Qwen outbound, ElevenLabs outbound and inbound intake prompts forbid denying automation and name the recording", date: 2026-10-16}
+  - {cmd: "mutations: drop 'Never deny or obscure' from the Qwen prompt; drop the Plivo <Speak> before <Stream>", result: "each: 1 failed, 7 passed; source restored", date: 2026-10-16}
+authz_checked: "n/a: tests only."
+blockers:
+  - "The turn limit and the spoken opt-out on each engine are pinned in test_elevenlabs_realtime.py / test_outbound_voice_opt_out_live.py (L09-05); 'stores no outbound transcript without consent' is pinned by the note-consent tests (L09-05/06). ACS outbound opt-out remains open (L09-05)."
+  - "'Recorded line' truth per engine (T09.16) is an owner/counsel question; this test pins the wording, not its truth."
+  - "No real call (T09.18)."
+audit_refs: []
+decision_refs: []
+next_task: "T09.18 real consented call with owner approval; T09.10 per-agent / per-brokerage concurrency bounds."
+updated: 2026-10-16
 ```
 
 ### L10
