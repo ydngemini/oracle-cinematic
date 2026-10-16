@@ -52,7 +52,7 @@ Listed weakest to strongest:
 | 17 | Security, privacy, data lifecycle | [17](17-security-privacy-compliance-data-lifecycle.md) | `source_verified` | staging | `0739563`; ISO 27001 set (L17-06, v1.0 approved); L17-07..20 local 2026-10-14 (card redaction, unsubscribe 0146, alerts, HOOK-3, log-PII, audit drain 0148, access review, demo-login guard, hashing, dep audit, admin-read audit, DR drill in CI, two-step sign-in 0150, security.txt); L17-21 local (SMS/transcript/chat-turn sealing 0152, clients + leads design); L17-22 (email subject/body, interaction-log subject/text, AI tool receipts, belief quotes, profile summaries sealing 0154, on staging); L17-23 local (clients lookup hashes + name tokens kept current, 0156, not yet searched); L17-24 local (sealing batches bounded, 0157) | A01, A06; owner: security@/privacy@ mailboxes (L17-20); certification body, pentest, DPAs (L17-06) | Owner: name/email search semantics, then clients slice (b) (L17-23); scheduled off-host backups; log forwarding |
 | 18 | Billing, seats, analytics | [18](18-brokerage-billing-seat-plans-analytics.md) | `source_verified` | local | `a8bff54` (L18-02 `tests_pass`); L18-05 seat ceiling 0161 (local) | D-2026-10-12-02 (billable stage; seat number and who counts) | T18.05 + AC18.03 |
 | 19 | Production operations | [19](19-infrastructure-deploy-observability-recovery.md) | `source_verified` | staging | `745f2fa`; L19-04 property-data health, L19-05 valuation outcomes (0160), L19-06 relay health + property-data runbook (local) | No production app; A04; owner: SLO targets, on-call | Owner SLOs; AC19.06 |
-| 20 | 20-agent launch certification | [20](20-twenty-agent-full-feature-launch-e2e-evaluation.md) | `source_verified` | local | `745f2fa` | Every row above | Last |
+| 20 | 20-agent launch certification | [20](20-twenty-agent-full-feature-launch-e2e-evaluation.md) | `source_verified` | local | `745f2fa`; launch backlog generated from the ledger (local) | Every row above; owner launch scope (T20.03) | T20.03 owner scope |
 
 Rollup is the weakest row. A category holding `external_configuration_required` or `blocked` rows shows them under "Open blockers" instead of hiding them in an average (L09 and L10 also hold `tests_pass` rows; see below).
 
@@ -945,8 +945,8 @@ tests_run:
   - {cmd: "sed -n 2350,2358p backend/commands_api.py (at 745f2fa)", result: "CALL_NOTES with note text sent via tenant-wide ws_hub.broadcast", date: 2026-10-12}
   - {cmd: "pytest backend/tests/test_call_note_review.py backend/tests/test_elevenlabs_realtime.py", result: "pass: frame only to requester + assignee; no tenant-wide broadcast; AI readers filter review_state='approved'", date: 2026-10-13}
   - {cmd: "vitest src/components/ClientNotes.test.jsx", result: "pass: proposed badge + approve", date: 2026-10-13}
-authz_checked: frame recipients = requesting agent + client assignee; approve route runs under tenant RLS
   - {cmd: "full CI live list incl. tests/test_call_notes_live.py against local real PostgreSQL (2026-10-16, base b733048)", result: "passed (72 passed in the run that added L13-03)", date: 2026-10-16}
+authz_checked: frame recipients = requesting agent + client assignee; approve route runs under tenant RLS
 blockers: [{type: owner, note: "Deploy approval (C4.4)."}]
 audit_refs: [A01]
 decision_refs: [D-2026-10-12-03]
@@ -1866,6 +1866,8 @@ blockers:
 audit_refs: [A01, A04, A06]
 decision_refs: []
 next_task: "Code gaps in flight: L17-07 card-number redaction, L17-08 CAN-SPAM unsubscribe, L17-09..13 privileged-activity alerts / HOOK-3 / log-PII / audit fallback + verify_chain / access review, L17-14..18 demo-login boot guard / password hashing / dependency audit + Dependabot / admin read logging / DR drill in CI. Then: tenant-user MFA (owner decision), field encryption of remaining PII (A01), scheduled off-host backups, log forwarding."
+updated: 2026-10-14
+```
 
 #### L17-08 Commercial email: unsubscribe link, RFC 8058 one-click, postal address (crosswalk T-CS-1)
 ```yaml
@@ -2598,6 +2600,28 @@ audit_refs: []
 decision_refs: [D-2026-10-12-01]
 next_task: "Item 8 annotated as legacy in this change; replace with a property-sources check (11 T11.01)"
 updated: 2026-10-12
+```
+
+#### L20-02 One launch backlog, read from every ledger row (T20.02, AC20.02)
+Backlog: [LAUNCH-BACKLOG.md](LAUNCH-BACKLOG.md) (generated).
+```yaml
+id: L20-02
+status: tests_pass
+env: local
+evidence_shas: [c35af6c]
+files: [scripts/build-launch-backlog.py, docs/claude-prompts/LAUNCH-BACKLOG.md, backend/tests/test_launch_backlog.py, docs/claude-prompts/LEDGER.md]
+tests_run:
+  - {cmd: "python3 scripts/build-launch-backlog.py; --check", result: "111 ledger rows, all open (production_verified: 0), each once under the README build order with status, env, who unblocks it (owner 70, deploy 45, engineering 38, device 17; a row can need several) and next step; A01-A10 listed", date: 2026-10-16}
+  - {cmd: "found while building it", result: "two ledger defects fixed: L17-06's YAML block had no updated: line or closing fence, so L17-08 sat inside it (any reader of the ledger missed L17-08); L09-03 had a tests_run entry after authz_checked (invalid YAML), introduced earlier in this session", date: 2026-10-16}
+  - {cmd: "cd backend && python -m pytest tests/test_launch_backlog.py", result: "3 passed: every heading parses and appears once; nothing short of production_verified is closed; the committed backlog is current", date: 2026-10-16}
+authz_checked: "n/a: a generated reading aid; the ledger stays the only status record (C10)."
+blockers:
+  - "'Who unblocks' is read from each row's blockers and next step with keyword rules (owner / deploy / device / engineering); a row worded vaguely can be misfiled. The row itself is authoritative."
+  - {type: owner, note: "T20.03 + AC20.03: the owner's launch scope (which rows must be production_verified for the 20-agent launch)."}
+audit_refs: []
+decision_refs: [D-2026-10-12-01, D-2026-10-12-02]
+next_task: "Owner: launch scope (T20.03), read from LAUNCH-BACKLOG.md."
+updated: 2026-10-16
 ```
 
 ## Owner decisions
