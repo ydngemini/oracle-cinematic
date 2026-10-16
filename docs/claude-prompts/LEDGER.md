@@ -40,7 +40,7 @@ Listed weakest to strongest:
 | 05 | Semantic intent | [05](05-semantic-language-intent.md) | `tests_pass` | local | base `2fef2e5` (L05-01, L05-02); `7b198cf` (L05-03, merged `444efe0`); `012f655` (L05-04, English + Spanish; staging-checked after `12e4c34`); `f8142c1` (L05-05, Spanish success answers + fallback drafts + EN/ES voice; on staging after `45a031d`); L05-06 Spanish call-queue cards (local, branch `claude/continue-n7jgwq`, golden `ae16549`); L05-07 a correction withdraws the previous staged request (local) | Owner: model-spend approval for a scored parser run per language (en / es / mixed; harness built, not run) and real parser latency; an independent Spanish held-out set. Call-queue cards now Spanish except record content and model-written suggestions/summaries (L05-06); Command Center screen and horizon labels English; real-phone voice check owed. Decided 2026-10-14: policy v7 §4 (`cb2aedd`), launch languages English + Spanish (L05-04) | Merge PR #33 with approval; scored T05.13 run once spend is approved; T05.10 precise question |
 | 06 | Evidence retrieval and memory | [06](06-evidence-retrieval-memory.md) | `tests_pass` | local | `745f2fa`, `6c7133b`, `63ac40b` (L06-01..03) | A01, A02 | T06.03 context compiler |
 | 07 | AI gateway and governed tools | [07](07-ai-gateway-model-tool-governance.md) | `tests_pass` | local | `071d65d` (L07-01); L07-02 capability registry (local); L07-03 per-actor offer names what is withheld (local) | Playwright check owed (L07-01); owner: archive_client | T08.04 + per-actor capability block |
-| 08 | Durable missions and workflows | [08](08-durable-missions-workflow-orchestration.md) | `source_verified` | local | `745f2fa`; L08-02 deferral journal (0159), L08-03 feasible plans (local) | Owner: does a mission's standing grant count as approval (C4.1)?; PR #11 needs a rebuild (L08-01 review) | Rebuild PR #11's internal tasks on current main after the owner answers |
+| 08 | Durable missions and workflows | [08](08-durable-missions-workflow-orchestration.md) | `source_verified` | local | `745f2fa`; L08-02 deferral journal (0159), L08-03 feasible plans, L08-04 plans refuse unset channels by name (local) | Owner: does a mission's standing grant count as approval (C4.1)?; PR #11 needs a rebuild (L08-01 review) | T08.03 TaskGraph; rebuild PR #11's internal tasks after the owner answers |
 | 09 | Real-time voice | [09](09-realtime-voice-speech-latency.md) | `source_verified` | staging | `9c3463a`; L09-05 outbound spoken opt-out, L09-06 lead-only call notes, L09-07 voice rules locked per path (local) | Phone check (L09-02); real call (T09.18) needs owner approval | T09.18; T09.10 |
 | 10 | Communications and calendars | [10](10-communications-calendar-provider-integrations.md) | `source_verified` | staging | `75c6ba6` (local) | Google OAuth client; 10DLC; deploy approval; A07 fixed locally; L10-11 email Ready only after a send (0164, local); L10-12 texts and calls likewise (0165, local); 0136 + 0139 + 0145 undeployed (L10-06, L10-09, L10-10); owner: one-brand rule (L10-09) | L10-01 deploy + real connect; T10.09 retry/circuit UI + Playwright |
 | 11 | Property and market intelligence (non-MLS) | [11](11-property-market-intelligence.md) | `tests_pass` | staging (L11-01), local (L11-02, L11-03) | `90372f2`; `d934b2e` (L11-02); L11-03 on branch `worktree-agent-a59f5c8799a673f68` (base `2804f47`); L11-04 source inventory (local) | Deploy 0135; live-DB test owed; staging catalog empty; L11-03 not deployed | Owner/legal: licences per source (L11-04); T11.03 |
@@ -970,7 +970,7 @@ blockers:
   - "Not deployed (C4.4)."
 audit_refs: [A09]
 decision_refs: []
-next_task: "Read channel_setup_gaps in missions/planner.channel_feasibility so plans name the missing integration too (T08.04); one per-actor capability block (02)."
+next_task: "Plans read the same gaps since L08-04; one per-actor capability block (02); T07.07 budgets."
 updated: 2026-10-16
 ```
 
@@ -1034,7 +1034,30 @@ blockers:
   - "The registry maps a channel to the chat tool of the same effect (draft_email, draft_sms, call_contact); the executor stages its own commands. If a deployment disables one path but not the other, the mapping should move to an executor-side capability."
 audit_refs: []
 decision_refs: []
-next_task: "Owner: standing grant (L08-01); then rebuild PR #11's task steps, which makes `task` feasible."
+next_task: "Setup gaps done in L08-04. Owner: standing grant (L08-01); then rebuild PR #11's task steps, which makes `task` feasible."
+updated: 2026-10-16
+```
+
+#### L08-04 A plan refuses channels this brokerage has not set up, naming the missing integration (T08.04, AC08.02)
+```yaml
+id: L08-04
+status: tests_pass
+env: local
+evidence_shas: [56e0a77]
+files: [backend/missions/planner.py, backend/tests/test_missions_planner.py]
+tests_run:
+  - {cmd: "read missions/planner.channel_feasibility and propose_plan at 56e0a77", result: "L08-03 judged a channel by the release only (the tool exists and is offered); every brokerage on this release saw email / sms / voice as feasible whatever it had connected, so a plan could be told to text from a brokerage with no business number and fail at the first step", date: 2026-10-16}
+  - {cmd: "cd backend && git stash missions/planner.py; pytest tests/test_missions_planner.py -k TestSetupGaps", result: "3 failed, 1 passed (the one pinning that unknown state changes nothing passes by construction)", date: 2026-10-16}
+  - {cmd: "cd backend && pytest tests/ (full unit suite); livetest.sh pytest tests/test_mission_deferral_journal_live.py tests/test_tool_offer_live.py", result: "5280 passed, 76 skipped, 2 failed (the known root-only test_media_storage / test_object_storage cases of this container); 2 passed", date: 2026-10-16}
+  - {cmd: "cd backend && pytest tests/test_missions_planner.py tests/test_missions*.py tests/test_tool_offer.py", result: "169 passed: channel_feasibility(setup_gaps) names the gap after the release check ('sms steps cannot be carried out for this agent yet: texting isn't set up: connect and finish setting up text messages for your business number before sending.'); an empty gap and no gaps leave the release verdict; a step on an unset channel is dropped with that reason and the channel is not offered to the model; a mission whose only channel is unset is refused before any model call with the setup named in its reasoning; the brokerage's state is read for the mission's own agent (tool_offer.channel_gaps(ctx)); the zero-argument call and every L08-03 test are unchanged", date: 2026-10-16}
+authz_checked: "Read-only addition: the plan reads channel_setup through tool_offer.channel_gaps as the mission's agent (the same RLS the executor's step would run under). Refused steps and the whole-mission refusal already reach the mission_events journal (executor._journal 'planned': dropped reasons, reasoning)."
+blockers:
+  - "The reason reaches the user only through the mission journal; no mission UI surfaces 'dropped' yet (L08-03 blocker)."
+  - "Plans are judged at plan time; a channel set up or torn down afterwards is only caught when the step's command fails closed."
+  - "Not deployed (C4.4)."
+audit_refs: []
+decision_refs: []
+next_task: "T08.03 TaskGraph (typed steps with schema version); owner: standing grant (L08-01)."
 updated: 2026-10-16
 ```
 

@@ -57,8 +57,15 @@ CHANNEL_TOOLS: dict[str, Optional[str]] = {
 }
 
 
-def channel_feasibility() -> dict[str, Optional[str]]:
-    """channel -> None when executable, else the reason it is not."""
+def channel_feasibility(setup_gaps: Optional[dict[str, str]] = None) -> dict[str, Optional[str]]:
+    """channel -> None when executable, else the reason it is not.
+
+    Two reasons a channel cannot be carried out, in order: the release has no
+    tool for it (the registry), or this brokerage has not set it up —
+    `setup_gaps` is channel_setup.gaps for the mission's agent (L07-03,
+    L08-04), the same preconditions the approved command fails closed on, in
+    its own words. Without it only the release is judged (unknown is not a
+    gap, C6)."""
     import tool_capabilities
 
     registry = tool_capabilities.registry()
@@ -69,6 +76,8 @@ def channel_feasibility() -> dict[str, Optional[str]]:
             out[channel] = f"{channel} steps have no executable tool yet (no internal task surface)"
         elif tool not in registry or not registry[tool].offered:
             out[channel] = f"{channel} steps need the {tool} tool, which is not available on this release"
+        elif (setup_gaps or {}).get(channel):
+            out[channel] = f"{channel} steps cannot be carried out for this agent yet: {setup_gaps[channel]}"
         else:
             out[channel] = None
     return out
@@ -173,7 +182,11 @@ async def propose_plan(
     permitted = _allowed_channels(mission)
     if not permitted:
         return [], [], "This mission has no channels it is allowed to use."
-    feasibility = channel_feasibility()
+    # What this brokerage has actually set up, read the way the executor
+    # reads it (tool_offer.channel_gaps -> channel_setup; {} when unknown).
+    import tool_offer
+
+    feasibility = channel_feasibility(await tool_offer.channel_gaps(ctx))
     allowed = {c for c in permitted if feasibility.get(c) is None}
     if not allowed:
         reasons = "; ".join(sorted(str(feasibility[c]) for c in permitted))
