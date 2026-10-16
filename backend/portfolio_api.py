@@ -1208,6 +1208,31 @@ def lose_transition_allowed(current_status: Optional[str]) -> bool:
     return current_status in LOSABLE_STATES
 
 
+@router.get("/transactions/{transaction_id}/events")
+async def list_transaction_events(
+    transaction_id: UUID,
+    ctx: TenantContext = Depends(require_context),
+):
+    """The deal's status trail, oldest first (0163, T13.02, L13-03). Written
+    by the database on every status change; rows marked `backfill` state the
+    status a deal had when the trail began, not a reconstructed history."""
+    async with tenant_tx(ctx) as conn:
+        deal = await conn.fetchval(
+            "SELECT 1 FROM transactions WHERE id=$1 AND tenant_id=$2::uuid", transaction_id, ctx.tenant_id)
+        if not deal:
+            raise HTTPException(status_code=404, detail="Transaction not found.")
+        rows = await conn.fetch(
+            """
+            SELECT id, from_status, to_status, deal_version, actor, source, occurred_at
+              FROM transaction_status_events
+             WHERE transaction_id=$1
+             ORDER BY occurred_at, deal_version
+            """,
+            transaction_id,
+        )
+    return {"events": [_row(r) for r in rows]}
+
+
 @router.get("/transactions/{transaction_id}/offers")
 async def list_offers(
     transaction_id: UUID,

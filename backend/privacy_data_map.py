@@ -79,6 +79,7 @@ TABLES: dict[str, TableEntry] = {
     "listings": TableEntry(C.BUSINESS_CRM, E),
     "listing_grants": TableEntry(C.BUSINESS_CRM, VP, "grantor/grantee tenant columns; cascades from listings"),
     "transactions": TableEntry(C.BUSINESS_CRM, E),
+    "transaction_status_events": TableEntry(C.BUSINESS_CRM, E, "append-only deal status trail (0163); actor is an agent login id"),
     "transaction_offers": TableEntry(C.BUSINESS_CRM, E),
     "transaction_milestones": TableEntry(C.BUSINESS_CRM, E),
     "compliance_checklist_items": TableEntry(C.BUSINESS_CRM, E),

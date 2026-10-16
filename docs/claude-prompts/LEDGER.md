@@ -45,7 +45,7 @@ Listed weakest to strongest:
 | 10 | Communications and calendars | [10](10-communications-calendar-provider-integrations.md) | `source_verified` | staging | `75c6ba6` (local) | Google OAuth client; 10DLC; deploy approval; A07 fixed locally, 0136 + 0139 + 0145 undeployed (L10-06, L10-09, L10-10); owner: one-brand rule (L10-09) | L10-01 |
 | 11 | Property and market intelligence (non-MLS) | [11](11-property-market-intelligence.md) | `tests_pass` | staging (L11-01), local (L11-02, L11-03) | `90372f2`; `d934b2e` (L11-02); L11-03 on branch `worktree-agent-a59f5c8799a673f68` (base `2804f47`) | Deploy 0135; live-DB test owed; staging catalog empty; L11-03 not deployed | Apply 0135 on staging; push L11-03 with approval; then T11.02 provenance |
 | 12 | Neoh Space capture, 3D, tours | [12](12-neoh-space-browser-capture-reconstruction.md) | `source_verified` | local | `745f2fa`; L12-03 Capture Studio first slice + integration map (local, jsdom only) | A03; AC12.02 real-device protocol | Server upload sessions (T12.05) |
-| 13 | Deals, documents, compliance | [13](13-transactions-contract-vault-compliance.md) | `source_verified` | local | `745f2fa`; L13-02 no new MLS-sourced deals (local) | Owner: e-sign, commissions | L13-01 |
+| 13 | Deals, documents, compliance | [13](13-transactions-contract-vault-compliance.md) | `source_verified` | local | `745f2fa`; L13-02 no new MLS-sourced deals; L13-03 status trail 0163 + T13.14 verified (local) | Owner: e-sign, commissions, fallen-through contracts | T13.02 remainder; T13.11 |
 | 14 | Sites, social, ads, client portal | [14](14-websites-social-ads-growth-client-portal.md) | `source_verified` | local | `745f2fa`; L14-03 honest website badge (local) | Owner: networks, listings on sites | L14-01 |
 | 15 | Neoh mascot animation | [15](15-neoh-avatar-skeletal-character-animation.md) | `source_verified` | local | truth slice (L15-02) + rig spec (L15-03) local, on `2fef2e5` | Owner: Rive vs 3D, rig author and licence (L15-03); no device measurements (AC15.07) | Owner decides L15-03; then T15.04 layers and the AC15.07 device protocol |
 | 16 | Performance, indexes, cache | [16](16-performance-indexes-mobile-cache.md) | `tests_pass` | staging | `745f2fa`; 0141 tenant wall (L16-01); 0113 predicates dropped + 0144 (L16-03); JIT off for request transactions (0e29f5a) — all on staging 0a76a72; L16-04 keyset deal list 0162 (local) | A10 capacity on production-shaped infra; no production target | T16.06 + AC16.04 |
@@ -1320,6 +1320,32 @@ audit_refs: []
 decision_refs: [D-2026-10-12-01]
 next_task: "T13.02 lifecycle events (needs a migration and state machine); T13.14 tenant predicates vs RLS in portfolio_api."
 updated: 2026-10-15
+```
+
+#### L13-03 Deal status changes are an immutable, database-written trail; illegal moves are refused (0163; T13.02 first slice, AC13.01) — and T13.14 verified
+```yaml
+id: L13-03
+status: tests_pass
+env: local
+evidence_shas: [3e76d79]
+files: [backend/db/migrations/0163_transaction_status_events.sql, backend/portfolio_api.py, backend/privacy_data_map.py, backend/tests/test_transaction_events_live.py, .github/workflows/ci.yml]
+tests_run:
+  - {cmd: "read portfolio_api status writers (accept offer, close, lose, patch) and ai_chat_store deal note at 3e76d79", result: "status moved by plain UPDATEs with per-route from-state checks; no record of when, who or from what; any writer could set any status (CHECK only lists values)", date: 2026-10-16}
+  - {cmd: "cd backend && python -m pytest tests/test_transaction_events_live.py with 0163's triggers dropped, then re-applied", result: "before: 1 failed (no events written); after: 1 passed", date: 2026-10-16}
+  - {cmd: "test_transaction_events_live.py (real PostgreSQL, request login)", result: "create + active->under_contract->closed write exactly 3 events with from/to/version/actor (a notes edit writes none); closed->active|lost|under_contract and under_contract->active refused with 23514 and nothing written; the real lose route records active->lost; GET /transactions/{id}/events returns the trail; the application can neither INSERT, UPDATE nor DELETE an event (42501) and even the owner role's UPDATE is refused by trigger; an agent cannot read the trail of a colleague's private client's deal (and gets 404 from the route); a deleted deal takes its trail", date: 2026-10-16}
+  - {cmd: "full CI live list against the local migrated database", result: "72 passed (incl. privacy lifecycle erasure over the new table)", date: 2026-10-16}
+  - {cmd: "found while testing", result: "default privileges (0003) grant oracle_app INSERT/UPDATE/DELETE on every new table, so GRANT SELECT alone left the trail writable; 0163 revokes them explicitly", date: 2026-10-16}
+  - {cmd: "T13.14: read app_tenant_floor/ceiling (0141) and every `tenant_id=$n` in portfolio_api (39 sites)", result: "VERIFIED, no change: only a platform admin's wall spans brokerages, so for every agent, owner and brokerage-scope pipeline `tenant_id = ctx.tenant_id` equals the wall and hides no row; for a platform admin it narrows to the context brokerage, which list_transactions documents as intended. Removing it would widen platform-admin reads and writes in an agent-facing API: an owner/17 decision, not a cleanup", date: 2026-10-16}
+authz_checked: "transaction_status_events: tenant wall + RESTRICTIVE read following the deal (EXISTS under the caller's RLS), SELECT-only grant, UPDATE refused by trigger for everyone; writes only by the SECURITY DEFINER trigger for the row that changed. Erasure: mapped BUSINESS_CRM / erase (privacy_erase_tenant_batch runs as owner)."
+blockers:
+  - {type: owner, note: "Whether a contract that falls through reopens the same deal (under_contract -> active). Refused today; nothing in code does it."}
+  - "Only the five existing statuses: the canonical 12-stage lifecycle of T13.02 (offer presented, contingencies, inspection, appraisal, financing, closing scheduled, archived) and its legal audit state are not built."
+  - "Existing deals get one `backfill` event stating their status at migration time, labelled as such; their earlier history is unknown and not invented."
+  - "Not deployed (C4.4): 0163 is local."
+audit_refs: []
+decision_refs: [D-2026-10-12-01]
+next_task: "T13.02 remainder (lifecycle stages with contingencies, behind owner input); T13.11 with 11's gating slice."
+updated: 2026-10-16
 ```
 
 ### L14
