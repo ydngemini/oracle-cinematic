@@ -40,13 +40,15 @@ ROLE = {
     # Property data (L19-04, T19.07 / AC19.07): what the brokerage's property
     # and market answers are built from now that MLS is off (D-2026-10-12-01).
     "property_harvesters": "optional", "market_data": "optional", "valuation_providers": "optional",
+    # The platform email relay's own last sends (0164, L10-11 / L19-06).
+    "platform_email_relay": "optional",
 }
 
 #: The components read from Postgres in _db_components, in one place (the
 #: unknown/unavailable fallbacks used to repeat this list three times).
 _DB_KEYS: tuple[str, ...] = (
     "workers", "scheduler", "job_queue", "mls", "ai", "outbound_side_effects", "email_outbox",
-    "property_harvesters", "market_data", "valuation_providers",
+    "property_harvesters", "market_data", "valuation_providers", "platform_email_relay",
 )
 
 
@@ -206,6 +208,7 @@ async def _db_components() -> dict[str, dict]:
     out["property_harvesters"] = _property_harvesters(dict(harvest))
     out["market_data"] = _market_data(dict(market))
     out["valuation_providers"] = _valuation_providers(providers)
+    out["platform_email_relay"] = _platform_email_relay(providers)
     return out
 
 
@@ -275,6 +278,23 @@ def _valuation_providers(rows: Optional[list[dict]] = None) -> dict:
     return _c(HEALTHY, "valuation providers answering", **detail)
 
 
+def _platform_email_relay(rows: Optional[list[dict]] = None) -> dict:
+    """The platform SMTP relay, from the outcome of its own last sends
+    (provider_health 'platform_smtp', recorded by send_smtp_email; 0164).
+    Settings with no recorded send are UNKNOWN, never HEALTHY."""
+    if not (os.getenv("ORACLE_SMTP_FROM_EMAIL") or os.getenv("ORACLE_SMTP_USERNAME")):
+        return _c(NOT_CONFIGURED, "no platform email relay configured")
+    row = next((r for r in (rows or []) if r.get("provider") == "platform_smtp"), None)
+    if row is None:
+        return _c(UNKNOWN, "platform email relay configured; no send recorded yet")
+    failures = int(row.get("consecutive_failures") or 0)
+    if not failures:
+        return _c(HEALTHY, "platform email relay delivering to the mail server")
+    if row.get("last_failure_kind") == "credential_rejected":
+        return _c(AUTH_FAILED, "the platform email relay's login was refused", failing=failures)
+    return _c(DEGRADED, "platform email relay sends are failing", failing=failures)
+
+
 def _mls(rows: list[dict]) -> dict:
     import mls_health
     from mls_switch import mls_enabled
@@ -341,6 +361,7 @@ USER_MESSAGES = {
     "email_outbox": "Some emails are waiting to send.",
     "valkey": "Calling is temporarily unavailable.",
     "realtime_fanout": "Live updates may be delayed — refresh to see the latest.",
+    "platform_email_relay": "Some emails may not be sending right now.",
 }
 
 

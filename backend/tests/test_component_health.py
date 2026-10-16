@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
+
 import component_health as ch
 import ops_alerts
 
@@ -257,3 +259,28 @@ def test_recording_never_raises_without_a_database(monkeypatch):
     asyncio.run(ph.record("rentcast", ph.OK))
     asyncio.run(ph.record("rentcast", "credential_rejected"))
     asyncio.run(ph.record("unknown-provider", ph.OK))
+
+
+# ── L19-06: the platform email relay is judged by its own sends (0164) ──────
+
+@pytest.mark.parametrize("rows, state", [
+    ([], "UNKNOWN"),
+    ([{"provider": "platform_smtp", "consecutive_failures": 0, "last_failure_kind": None}], "HEALTHY"),
+    ([{"provider": "platform_smtp", "consecutive_failures": 2, "last_failure_kind": "credential_rejected"}], "AUTH_FAILED"),
+    ([{"provider": "platform_smtp", "consecutive_failures": 1, "last_failure_kind": "timeout"}], "DEGRADED"),
+    ([{"provider": "rentcast", "consecutive_failures": 0, "last_failure_kind": None}], "UNKNOWN"),
+])
+def test_the_platform_email_relay_reads_its_own_outcome(monkeypatch, rows, state):
+    import component_health as ch
+
+    monkeypatch.setenv("ORACLE_SMTP_FROM_EMAIL", "relay@neoh.test")
+    assert ch._platform_email_relay(rows)["state"] == state
+
+
+def test_no_relay_settings_is_not_configured(monkeypatch):
+    import component_health as ch
+
+    monkeypatch.delenv("ORACLE_SMTP_FROM_EMAIL", raising=False)
+    monkeypatch.delenv("ORACLE_SMTP_USERNAME", raising=False)
+    assert ch._platform_email_relay([{"provider": "platform_smtp", "consecutive_failures": 3}])["state"] == "NOT_CONFIGURED"
+    assert ch.ROLE["platform_email_relay"] == "optional" and "platform_email_relay" in ch._DB_KEYS

@@ -67,6 +67,7 @@ const COMPONENT_LABELS = {
   outbound_side_effects: 'Calls, texts & emails', email_outbox: 'Email outbox',
   property_harvesters: 'Public-record harvesters', market_data: 'Market statistics',
   valuation_providers: 'Valuation providers (RentCast, ATTOM)',
+  platform_email_relay: 'Platform email relay',
 };
 
 export function componentLabel(name) {

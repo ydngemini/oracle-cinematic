@@ -51,7 +51,7 @@ Listed weakest to strongest:
 | 16 | Performance, indexes, cache | [16](16-performance-indexes-mobile-cache.md) | `tests_pass` | staging | `745f2fa`; 0141 tenant wall (L16-01); 0113 predicates dropped + 0144 (L16-03); JIT off for request transactions (0e29f5a) — all on staging 0a76a72; L16-04 keyset deal list 0162 (local) | A10 capacity on production-shaped infra; no production target | T16.06 + AC16.04 |
 | 17 | Security, privacy, data lifecycle | [17](17-security-privacy-compliance-data-lifecycle.md) | `source_verified` | staging | `0739563`; ISO 27001 set (L17-06, v1.0 approved); L17-07..20 local 2026-10-14 (card redaction, unsubscribe 0146, alerts, HOOK-3, log-PII, audit drain 0148, access review, demo-login guard, hashing, dep audit, admin-read audit, DR drill in CI, two-step sign-in 0150, security.txt); L17-21 local (SMS/transcript/chat-turn sealing 0152, clients + leads design); L17-22 (email subject/body, interaction-log subject/text, AI tool receipts, belief quotes, profile summaries sealing 0154, on staging); L17-23 local (clients lookup hashes + name tokens kept current, 0156, not yet searched); L17-24 local (sealing batches bounded, 0157) | A01, A06; owner: security@/privacy@ mailboxes (L17-20); certification body, pentest, DPAs (L17-06) | Owner: name/email search semantics, then clients slice (b) (L17-23); scheduled off-host backups; log forwarding |
 | 18 | Billing, seats, analytics | [18](18-brokerage-billing-seat-plans-analytics.md) | `source_verified` | local | `a8bff54` (L18-02 `tests_pass`); L18-05 seat ceiling 0161 (local) | D-2026-10-12-02 (billable stage; seat number and who counts) | T18.05 + AC18.03 |
-| 19 | Production operations | [19](19-infrastructure-deploy-observability-recovery.md) | `source_verified` | staging | `745f2fa`; L19-04 property-data health, L19-05 valuation outcomes (0160) (local) | No production app; A04 | L19-03 |
+| 19 | Production operations | [19](19-infrastructure-deploy-observability-recovery.md) | `source_verified` | staging | `745f2fa`; L19-04 property-data health, L19-05 valuation outcomes (0160), L19-06 relay health + property-data runbook (local) | No production app; A04; owner: SLO targets, on-call | Owner SLOs; AC19.06 |
 | 20 | 20-agent launch certification | [20](20-twenty-agent-full-feature-launch-e2e-evaluation.md) | `source_verified` | local | `745f2fa` | Every row above | Last |
 
 Rollup is the weakest row. A category holding `external_configuration_required` or `blocked` rows shows them under "Open blockers" instead of hiding them in an average (L09 and L10 also hold `tests_pass` rows; see below).
@@ -2398,8 +2398,8 @@ authz_checked: n/a
 blockers: []
 audit_refs: []
 decision_refs: [D-2026-10-12-01]
-next_task: "T19.07"
-updated: 2026-10-12
+next_task: "Health done in L19-04/05; runbook done in L19-06."
+updated: 2026-10-16
 ```
 
 #### L19-04 Health reports the real property sources (T19.07 / AC19.07, part)
@@ -2445,6 +2445,27 @@ audit_refs: [A04, A02]
 decision_refs: []
 next_task: "Remaining T19.07 SLOs once the owner sets targets."
 updated: 2026-10-15
+```
+
+#### L19-06 Property-data runbook; the platform email relay in health (T19.07 part, AC19.07)
+```yaml
+id: L19-06
+status: tests_pass
+env: local
+evidence_shas: [f251145]
+files: [backend/component_health.py, backend/tests/test_component_health.py, oracle-app/src/components/admin/operatorModel.js, docs/runbooks/property-data-down.md, docs/runbooks/README.md, docs/runbooks/email-provider-down.md]
+tests_run:
+  - {cmd: "ls docs/runbooks; grep component_health for platform_smtp at f251145", result: "only the legacy MLS runbook covered property data (L19-03); the relay outcome recorded since L10-11 was not in health", date: 2026-10-16}
+  - {cmd: "cd backend && python -m pytest tests/test_component_health.py with component_health.py stashed, then restored; live test_component_health_live.py", result: "before: 6 failed; after: 22 passed (relay UNKNOWN with no send, HEALTHY after one, AUTH_FAILED on a refused login, DEGRADED on other failures, NOT_CONFIGURED without settings; a RentCast row never counts for it); live 1 passed", date: 2026-10-16}
+  - {cmd: "run the runbook's two SQL queries against the local migrated database", result: "both run (the first draft named columns that do not exist; corrected to harvest_sources' real ones)", date: 2026-10-16}
+authz_checked: "n/a: an optional health component reading the platform-global provider_health table; runbooks."
+blockers:
+  - "SLO targets, alert routing and the on-call owner (T19.07 rest, AC19.06) are owner decisions; nothing here pages anyone."
+  - "No failure-injection run on staging per provider (AC19.07 evidence)."
+audit_refs: [A04]
+decision_refs: [D-2026-10-12-01]
+next_task: "Owner: SLO targets + on-call owner; then AC19.06 test alert per SLO."
+updated: 2026-10-16
 ```
 
 ### L20
