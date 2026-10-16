@@ -19,7 +19,7 @@ import uuid
 import logging
 from datetime import datetime, timedelta, timezone
 from enum import Enum
-from typing import Any, Optional, TYPE_CHECKING
+from typing import Any, Mapping, Optional, TYPE_CHECKING
 
 import aiohttp
 from fastapi import (
@@ -2090,8 +2090,15 @@ async def reject_command(
     row = await _get_command(ctx, command_id)
     if not row:
         raise HTTPException(status_code=404, detail=_COMMAND_NOT_FOUND)
+    return await withdraw_command(ctx, row, reason=body.reason)
+
+
+async def withdraw_command(ctx: TenantContext, row: Mapping[str, Any], *, reason: str) -> dict:
+    """Reject a staged command's approval and cancel the command — the Reject
+    button, and a correction that supersedes it (correction.py, F05.04)."""
+    command_id = str(row["id"])
     approval = await decide_approval(
-        ctx, str(row["approval_id"]), decision="rejected", reason=body.reason
+        ctx, str(row["approval_id"]), decision="rejected", reason=reason
     )
     async with tenant_tx(ctx) as conn:
         updated = await conn.fetchrow(

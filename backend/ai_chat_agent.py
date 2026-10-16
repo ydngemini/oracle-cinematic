@@ -1132,10 +1132,15 @@ async def _generate(ctx: TenantContext, bundle: dict, assistant_id: str) -> tupl
         asyncio.ensure_future(semantic_turn.prepare_turn(ctx, bundle, assistant_id))
         if frame_constraints.enabled() else None
     )
+    # "Actually, the other Sarah": withdraw what the previous turn staged
+    # before this turn can stage the corrected one (F05.04, correction.py).
+    import correction
+
+    withdrawn = await correction.withdraw_superseded(ctx, bundle)
     memory = SessionManager(ctx)
     brokerage = await _resolve_brokerage_context(ctx)
     base = neoh_persona.build_system_prompt(brokerage=brokerage)
-    system_prompt = await memory.inject_jit_prompt(ctx.agent_id, base)
+    system_prompt = await memory.inject_jit_prompt(ctx.agent_id, base) + correction.prompt_note(withdrawn)
     # What this turn added on top of the persona. Foundry carries its own
     # compact copy of the persona in `instructions=`, so it must be handed only
     # the additions — previously computed by subtracting BASE_SYSTEM_PROMPT
