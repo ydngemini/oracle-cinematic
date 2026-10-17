@@ -1744,6 +1744,29 @@ next_task: "Say the producer's basis truthfully at the source (client_ai_automat
 updated: 2026-10-17
 ```
 
+#### L11-09 AI property tools: the exact public-record path can match, and a fuzzy subject is labelled a possible match in every answer (T11.03, F11.04)
+```yaml
+id: L11-09
+status: tests_pass
+env: local
+evidence_shas: [24a7b3c]
+files: [backend/ai_tools_read.py, backend/tests/test_ai_tools_read.py]
+tests_run:
+  - {cmd: "re-verify at 24a7b3c: ai_tools_read._resolve_subject, _get_listing_detail, estimate_rehab / estimate_arv / comps", result: "the state-stripping regex (IGNORECASE) cut '15 Main St, Dover, DE 19901' to '15 Ma', so the exact path never matched; every lookup fell to a substring search with no state filter ordered by recency; '15 Main St' parsed as state ST and '15 Main Ct' as CT; get_listing_detail attached the row as the listing's public_record with no label; estimate_rehab stated a pre-1978 lead-paint disclosure and its sqft basis from whatever row came back", date: 2026-10-17}
+  - {cmd: "red runs: pytest tests/test_ai_tools_read.py on the slice, then on the slice commit with the review tests", result: "16 failed / 64 passed (('DE', '15 Ma') != ('DE', '15 Main St'); a suffix read as a state; KeyError 'match'); then 22 new tests failed (space-stripped '12 1st St' == '1 21st St' called exact; rehab facts from a possible match; 'Apt 2B' read as the city; 'Oak Ct 19901' read as CT; a note claiming a city/ZIP disagreed when none was given; no test of the city/ZIP tie-break)", date: 2026-10-17}
+  - {cmd: "cd backend && pytest tests/test_ai_tools_read.py tests/test_ai_tool*.py", result: "185 passed: only a word-for-word street with an agreeing city or ZIP (and nothing contradicting) is exact_address, verified always false; the word-equal row is preferred before LIMIT 1 so '1 21ST ST' never hides '12 1ST ST'; unit segments stay in the street; a state needs a comma before it; the fallback stays in the parsed state; rehab, ARV and comps word a possible match's year and size as what that record says, naming it; notes name exactly what was missing or disagreed (a record with a city is never said to have none); mixed city-agrees / ZIP-disagrees is a possible match", date: 2026-10-17}
+  - {cmd: "scratch script against local PostgreSQL 16 in a rolled-back transaction (_resolve_subject with real SQL)", result: "'12 1st St, Anytown, IA 50001' returns 12 1ST ST (exact_address) although 1 21ST ST was refreshed later; '15 Main St, IA 19901' against a record with a city and no ZIP is a possible match whose note says the record has no ZIP", date: 2026-10-17}
+authz_checked: "Read-only tools in the caller's tenant transaction, unchanged; the change is the query's arguments, one ORDER BY term and the labels on what comes back."
+blockers:
+  - "A city with no comma before it ('15 Main St Dover, DE') stays part of the street; the exact path then misses and the answer is a labelled possible match (it never guesses)."
+  - "The fallback search term is still the whole free-text address; comma-bearing input rarely hits search_document."
+  - "AI tool payload strings are English (this module does not use semantic_language). Not deployed (C4.4)."
+audit_refs: []
+decision_refs: []
+next_task: "Feed the possible-match label into the chat answer itself (the model now receives it in the tool payload)."
+updated: 2026-10-17
+```
+
 ### L12
 Neoh Space capture, reconstruction and tours. Spec: [neoh-space-web-capture-claude.md](../neoh-space-web-capture-claude.md).
 

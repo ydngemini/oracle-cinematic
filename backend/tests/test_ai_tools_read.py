@@ -35,23 +35,25 @@ class _Conn:
     def __init__(self, *routes):
         self.routes = list(routes)
         self.queries: list[str] = []
+        self.args: list[tuple] = []
 
-    def _answer(self, query, default):
+    def _answer(self, query, args, default):
         normalised = " ".join(query.split())
         self.queries.append(normalised)
+        self.args.append(args)
         for fragment, value in self.routes:
             if fragment in normalised:
                 return value
         return default
 
     async def fetch(self, query, *args):
-        return self._answer(query, [])
+        return self._answer(query, args, [])
 
     async def fetchrow(self, query, *args):
-        return self._answer(query, None)
+        return self._answer(query, args, None)
 
     async def fetchval(self, query, *args):
-        return self._answer(query, None)
+        return self._answer(query, args, None)
 
 
 def _run(tool_name, conn, **tool_input):
@@ -187,6 +189,270 @@ def test_the_subject_lookup_falls_back_to_the_trigram_index_without_a_state():
     assert any("search_document ILIKE" in q for q in conn.queries)
 
 
+@pytest.mark.parametrize("address,street", [
+    ("15 Main St, Dover, DE 19901", "15 Main St"),
+    ("15 Main St, Dover DE 19901", "15 Main St"),
+    ("15 Main St, Dover DE", "15 Main St"),
+    ("15 Main St, DE 19901-1234", "15 Main St"),
+    ("15 Main St, Apt 2, Dover, DE 19901", "15 Main St, Apt 2"),
+])
+def test_the_exact_lookup_strips_only_the_city_state_and_zip(address, street):
+    """A case-insensitive strip once cut "15 Main St, Dover, DE 19901" to
+    "15 Ma" at the first two-letter word, so the exact path could never match
+    and every lookup fell through to a substring search across all states."""
+    conn = _Conn()
+    asyncio.run(tools._resolve_subject(conn, address))
+
+    assert conn.args[0][:2] == ("DE", street)
+    assert "search_document ILIKE" in conn.queries[1]
+    assert "AND state=$2" in conn.queries[1], "the fallback stays in the parsed state"
+    assert conn.args[1][1] == "DE"
+
+
+@pytest.mark.parametrize("address", ["15 Main St", "15 Main Ct", "15 Main St Dover DE"])
+def test_a_street_suffix_is_never_read_as_the_state(address):
+    """"St" is not a state and "Ct" is one; a two-letter tail with no ZIP and no
+    comma before it may be the street's own suffix, so neither the exact path
+    nor a state filter is applied on its strength."""
+    conn = _Conn()
+    asyncio.run(tools._resolve_subject(conn, address))
+
+    assert len(conn.queries) == 1
+    assert "search_document ILIKE" in conn.queries[0]
+    assert "state=" not in conn.queries[0]
+
+
+def test_a_substring_match_is_labelled_a_possible_match():
+    conn = _Conn(("search_document ILIKE", SUBJECT))
+    subject = asyncio.run(tools._resolve_subject(conn, "15 Main St, Dover, DE 19901"))
+
+    assert subject["match"]["basis"] == "text_contains"
+    assert subject["match"]["status"] == "possible_match"
+    assert subject["match"]["verified"] is False
+
+
+def test_an_exact_address_whose_city_agrees_is_exact_but_never_verified():
+    """No table records a person confirming a property match, so even the
+    strongest match the lookup can make is not called verified."""
+    conn = _Conn(("regexp_replace", SUBJECT))
+    subject = asyncio.run(tools._resolve_subject(conn, "15 Main St, Dover, DE 19901"))
+
+    assert subject["match"]["basis"] == "address_exact"
+    assert subject["match"]["status"] == "exact_address"
+    assert subject["match"]["verified"] is False
+
+
+def test_the_same_street_in_another_city_is_only_a_possible_match():
+    """Dropping the city is what lets the state-keyed index answer, so the city
+    and ZIP are checked afterwards: 15 Main St in Newark is not 15 Main St in
+    Dover."""
+    conn = _Conn(("regexp_replace", {**SUBJECT, "city": "Newark", "zip_code": "19711"}))
+    subject = asyncio.run(tools._resolve_subject(conn, "15 Main St, Dover, DE 19901"))
+
+    assert subject["match"]["basis"] == "address_exact"
+    assert subject["match"]["status"] == "possible_match"
+    assert subject["match"]["verified"] is False
+
+
+def test_an_exact_street_with_no_city_or_zip_to_check_is_only_possible():
+    conn = _Conn(("regexp_replace", SUBJECT))
+    subject = asyncio.run(tools._resolve_subject(conn, "15 Main St, DE"))
+
+    assert subject["match"]["basis"] == "address_exact"
+    assert subject["match"]["status"] == "possible_match"
+
+
+_EXACT_ORDER = (
+    "ORDER BY (btrim(regexp_replace(regexp_replace(lower(coalesce(address,'')),'[''’]','','g'), "
+    "'[^a-z0-9]+',' ','g')) = $5::text) DESC, "
+    "(regexp_replace(lower(city),'[^a-z0-9]','','g') = $3::text) IS TRUE DESC, "
+    "(left(zip_code, 5) = $4::text) IS TRUE DESC, "
+    "record_refreshed_at DESC NULLS LAST"
+)
+
+
+def test_the_exact_lookup_prefers_the_row_whose_city_then_zip_agree():
+    """The index holds every 15 Main St in the state; the city, normalised the
+    same way as the record's, and then the ZIP decide which one answers."""
+    conn = _Conn()
+    asyncio.run(tools._resolve_subject(conn, "15 Main St, St. Michaels, MD 21663"))
+
+    assert conn.args[0] == ("MD", "15 Main St", "stmichaels", "21663", "15 main st")
+    assert _EXACT_ORDER in conn.queries[0]
+
+
+@pytest.mark.parametrize("address,args,record,status", [
+    # Lower-case input still reads the state, and the city still compares.
+    ("15 main st, dover, de 19901", ("DE", "15 main st", "dover", "19901", "15 main st"),
+     {**SUBJECT, "city": "DOVER"}, "exact_address"),
+    # A ZIP alone, agreeing, is enough; a ZIP alone, disagreeing, is not.
+    ("15 Main St, DE 19901", ("DE", "15 Main St", None, "19901", "15 main st"),
+     SUBJECT, "exact_address"),
+    ("15 Main St, DE 19902", ("DE", "15 Main St", None, "19902", "15 main st"),
+     SUBJECT, "possible_match"),
+    # A record with no city and no ZIP corroborates nothing.
+    ("15 Main St, Dover, DE 19901", ("DE", "15 Main St", "dover", "19901", "15 main st"),
+     {**SUBJECT, "city": None, "zip_code": None}, "possible_match"),
+    # One agrees and the other contradicts: a contradiction is never outvoted
+    # (review L11-07: all() -> any() must fail).
+    ("15 Main St, Dover, DE 19901", ("DE", "15 Main St", "dover", "19901", "15 main st"),
+     {**SUBJECT, "city": "Dover", "zip_code": "19904"}, "possible_match"),
+    ("15 Main St, Dover, DE 19901", ("DE", "15 Main St", "dover", "19901", "15 main st"),
+     {**SUBJECT, "city": "Camden", "zip_code": "19901"}, "possible_match"),
+])
+def test_the_locality_check_on_an_exact_street(address, args, record, status):
+    conn = _Conn(("regexp_replace", record))
+    subject = asyncio.run(tools._resolve_subject(conn, address))
+
+    assert conn.args[0] == args
+    assert subject["match"]["basis"] == "address_exact"
+    assert subject["match"]["status"] == status
+    assert subject["match"]["verified"] is False
+
+
+@pytest.mark.parametrize("given,record_address", [
+    ("12 1st St", "1 21ST ST"),
+    ("12 3rd Ave", "1 23RD AVE"),
+    ("15-17 Main St", "1517 MAIN ST"),
+])
+def test_a_street_that_matches_only_without_spaces_is_not_an_exact_address(given, record_address):
+    """The index compares addresses with spaces removed, so "12 1st St" and
+    "1 21st St" are the same key. The words are compared again before anything
+    is called exact."""
+    record = {**SUBJECT, "address": record_address, "city": "Anytown",
+              "state": "IA", "zip_code": "50001"}
+    conn = _Conn(("regexp_replace", record))
+    subject = asyncio.run(tools._resolve_subject(conn, f"{given}, Anytown, IA 50001"))
+
+    assert subject["match"]["basis"] == "address_exact"
+    assert subject["match"]["status"] == "possible_match"
+    assert record_address in subject["match"]["note"]
+
+
+def test_case_and_punctuation_alone_do_not_demote_an_exact_street():
+    record = {**SUBJECT, "address": "15 MAIN ST."}
+    conn = _Conn(("regexp_replace", record))
+    subject = asyncio.run(tools._resolve_subject(conn, "15 Main St, Dover, DE 19901"))
+
+    assert subject["match"]["status"] == "exact_address"
+
+
+@pytest.mark.parametrize("unit", [
+    "Apt 2B", "Apt. 2B", "Unit 4", "Ste 100", "Suite 100", "#4", "# 4",
+    "Bldg C", "Fl 3", "Lot 12",
+])
+def test_a_unit_segment_stays_in_the_street_and_is_never_the_city(unit):
+    """"15 Main St, Apt 2B, DE 19901" once read "Apt 2B" as the city, so the
+    unit was dropped and the building's record could pass on its ZIP alone."""
+    address = f"15 Main St, {unit}, DE 19901"
+    assert tools._address_parts(address) == (f"15 Main St, {unit}", None, "DE", "19901")
+
+    building = {**SUBJECT, "address": "15 MAIN ST", "city": None, "zip_code": "19901"}
+    conn = _Conn(("regexp_replace", building))
+    subject = asyncio.run(tools._resolve_subject(conn, address))
+
+    assert conn.args[0][:3] == ("DE", f"15 Main St, {unit}", None)
+    assert subject["match"]["status"] == "possible_match"
+
+
+def test_a_town_that_starts_like_a_unit_is_still_the_city():
+    assert tools._address_parts("15 Main St, Ste. Genevieve, MO 63670") == (
+        "15 Main St", "Ste. Genevieve", "MO", "63670")
+
+
+def test_the_note_says_when_there_was_nothing_to_check_against():
+    """A note saying the city and ZIP "do not confirm it" told the reader they
+    disagreed when none had been given at all."""
+    none_given = asyncio.run(tools._resolve_subject(
+        _Conn(("regexp_replace", SUBJECT)), "15 Main St, DE"))["match"]["note"]
+    blank_record = asyncio.run(tools._resolve_subject(
+        _Conn(("regexp_replace", {**SUBJECT, "city": None, "zip_code": None})),
+        "15 Main St, Dover, DE 19901"))["match"]["note"]
+
+    assert "no city or ZIP was given to check it against" in none_given
+    assert "the record has no city or ZIP to check the one given against" in blank_record
+    for note in (none_given, blank_record):
+        assert "does not match" not in note
+        assert "do not confirm" not in note
+        assert "possible match" in note
+
+
+def test_the_note_says_when_the_city_or_zip_disagrees_and_what_the_record_says():
+    conn = _Conn(("regexp_replace", {**SUBJECT, "city": "Newark", "zip_code": "19711"}))
+    note = asyncio.run(tools._resolve_subject(
+        conn, "15 Main St, Dover, DE 19901"))["match"]["note"]
+
+    assert "does not match the record" in note
+    assert "Newark 19711" in note
+    assert "possible match" in note
+
+
+@pytest.mark.parametrize("address", ["15 Oak Ct 19901", "1500 Main St NE 20002",
+                                     "15 Oak Ct, 19901"])
+def test_a_suffix_or_directional_before_a_zip_is_not_a_state(address):
+    """With a ZIP after it, "Ct" was read as Connecticut and "NE" as Nebraska,
+    and the search then never left that state."""
+    assert tools._address_parts(address) == (address, None, None, None)
+    conn = _Conn()
+    asyncio.run(tools._resolve_subject(conn, address))
+
+    assert len(conn.queries) == 1
+    assert "search_document ILIKE" in conn.queries[0]
+    assert "state=" not in conn.queries[0]
+
+
+_LISTING_ID = "22222222-2222-2222-2222-222222222222"
+_LISTING_ROW = {
+    "id": _LISTING_ID, "address": "15 Main St, Dover, DE 19901", "price": 250000,
+    "status": "active", "is_shared_mls": False, "created_at": None,
+    "updated_at": None, "lead_id": None, "parcel_id": None, "state": "DE",
+    "beds": None, "baths": None, "sqft": None, "asking_price": None,
+    "motivation_score": None, "underwriting": None, "dossier_status": None,
+    "seller_client_id": None, "seller_name": None,
+}
+
+
+def test_listing_detail_labels_a_fuzzy_public_record_as_a_possible_match():
+    """F11.04: the record's beds, baths and zoning were attached to the listing
+    with nothing saying the row was found by a substring search."""
+    conn = _Conn(
+        ("FROM listings l", _LISTING_ROW),
+        ("AS media_count", {"media_count": 0, "showing_count": 0}),
+        ("search_document ILIKE", SUBJECT),
+    )
+    result = _run("get_listing_detail", conn, listing_id=_LISTING_ID)
+
+    assert result["ok"] is True
+    assert result["public_record"]["zoning_district"] == "R-1"
+    assert "match" not in result["public_record"]
+    assert result["public_record_match"]["status"] == "possible_match"
+    assert result["public_record_match"]["basis"] == "text_contains"
+    assert result["public_record_match"]["verified"] is False
+
+
+def test_listing_detail_without_a_public_record_has_no_match_label():
+    conn = _Conn(
+        ("FROM listings l", _LISTING_ROW),
+        ("AS media_count", {"media_count": 0, "showing_count": 0}),
+    )
+    result = _run("get_listing_detail", conn, listing_id=_LISTING_ID)
+
+    assert result["public_record"] is None
+    assert result["public_record_match"] is None
+
+
+def test_comparables_say_how_their_subject_was_matched():
+    conn = _Conn(
+        ("FROM public_property_records WHERE search_document ILIKE", SUBJECT),
+        ("count(*)::int FROM public_property_records", 312),
+    )
+    result = _run("list_comparable_sales", conn, address="15 Main St, Dover DE")
+
+    assert result["subject_match"]["status"] == "possible_match"
+    assert result["subject_match"]["verified"] is False
+    assert "match" not in result["subject"]
+
+
 # ---------------------------------------------------------------------------
 # ARV
 # ---------------------------------------------------------------------------
@@ -274,6 +540,19 @@ def test_rehab_flags_pre_1978_rather_than_pricing_it():
     assert any("lead-based paint" in flag for flag in result["risk_flags"])
 
 
+def test_arv_and_rehab_say_how_their_subject_was_matched(monkeypatch):
+    """Both multiply the subject's square footage, which is only as right as
+    the record it came from."""
+    arv = _run("estimate_arv", _arv_conn(monkeypatch, [_comp("c1", 300000, 1500)]),
+               address="15 Main St, Dover DE")
+    rehab = _run("estimate_rehab", _Conn(("FROM public_property_records", SUBJECT)),
+                 address="15 Main St", condition="light")
+
+    assert arv["subject_match"]["status"] == "possible_match"
+    assert rehab["subject_match"]["status"] == "possible_match"
+    assert rehab["subject_match"]["verified"] is False
+
+
 def test_rehab_refuses_without_a_square_footage():
     conn = _Conn(("FROM public_property_records",
                   {**SUBJECT, "building_area_sqft": None}))
@@ -281,6 +560,97 @@ def test_rehab_refuses_without_a_square_footage():
 
     assert result["ok"] is False
     assert "nothing to multiply" in result["error"]
+
+
+_OTHER_UNIT = {**SUBJECT, "address": "15 MAIN ST UNIT 9", "city": "Newark",
+               "zip_code": "19711", "year_built": 1942}
+_OTHER_UNIT_LABEL = "15 MAIN ST UNIT 9, Newark, DE 19711"
+
+
+def test_rehab_words_a_possible_matchs_year_and_area_as_that_records_not_the_propertys():
+    """"15 Main St" with no state is a substring search that also finds
+    "15 MAIN ST UNIT 9" in another town. Its year and area are what that record
+    says, not facts about the property asked about, and a disclosure duty is
+    not asserted on its strength."""
+    conn = _Conn(("search_document ILIKE", _OTHER_UNIT))
+    result = _run("estimate_rehab", conn, address="15 Main St", condition="light")
+
+    assert result["ok"] is True
+    assert result["subject_match"]["status"] == "possible_match"
+    lead, wiring = result["risk_flags"]
+    for flag in (lead, wiring):
+        assert not flag.startswith("Built before")
+        assert f"The possibly matching record ({_OTHER_UNIT_LABEL}) says it was built in 1942" in flag
+        assert "if that is this property" in flag
+    assert "lead-based paint disclosure applies" in lead
+    assert f"possibly matching record ({_OTHER_UNIT_LABEL})" in result["basis"]
+    assert "1,800 sqft" in result["basis"]
+    assert result["subject"]["year_built_source"] == "public_property_records.year_built"
+
+
+def test_rehab_states_a_year_the_caller_gave_as_given():
+    """The caller's own year is not the possible match's to qualify; only the
+    square footage still comes from that record."""
+    conn = _Conn(("search_document ILIKE", _OTHER_UNIT))
+    result = _run("estimate_rehab", conn, address="15 Main St", condition="light",
+                  year_built="1962")
+
+    assert result["risk_flags"] == [
+        "Built before 1978: federal lead-based paint disclosure applies and "
+        "abatement is not included in these bands."
+    ]
+    assert result["subject"]["year_built_source"] == "request"
+    assert f"possibly matching record ({_OTHER_UNIT_LABEL})" in result["basis"]
+
+
+def test_rehab_on_an_exact_address_keeps_the_plain_wording():
+    conn = _Conn(("regexp_replace", SUBJECT))
+    result = _run("estimate_rehab", conn, address="15 Main St, Dover, DE 19901",
+                  condition="light")
+
+    assert result["subject_match"]["status"] == "exact_address"
+    assert result["risk_flags"][0].startswith("Built before 1978: federal lead-based paint")
+    assert "possibly" not in result["basis"]
+    assert "times 1,800 sqft, plus" in result["basis"]
+
+
+def test_rehab_names_the_possible_match_that_has_no_building_area():
+    conn = _Conn(("search_document ILIKE", {**_OTHER_UNIT, "building_area_sqft": None}))
+    result = _run("estimate_rehab", conn, address="15 Main St", condition="light")
+
+    assert result["ok"] is False
+    assert f"possibly matching record for '15 Main St' ({_OTHER_UNIT_LABEL})" in result["error"]
+    assert "has no building area" in result["error"]
+    assert "nothing to multiply" in result["error"]
+
+
+def test_comps_name_the_possible_match_that_has_no_coordinate_or_zip():
+    """"The public record for '15 Main St'" called a substring hit the
+    property's own record."""
+    conn = _Conn(("search_document ILIKE",
+                  {**_OTHER_UNIT, "latitude": None, "longitude": None, "zip_code": None}))
+    result = _run("list_comparable_sales", conn, address="15 Main St")
+
+    assert result["ok"] is False
+    assert result["error"].startswith(
+        "The possibly matching record for '15 Main St' (15 MAIN ST UNIT 9, Newark, DE)")
+    assert "The public record for" not in result["error"]
+    assert "no neighbourhood to compare within" in result["error"]
+
+
+def test_arv_names_the_possible_match_that_has_no_square_footage(monkeypatch):
+    conn = _Conn(("search_document ILIKE", {**_OTHER_UNIT, "building_area_sqft": None}))
+
+    async def _fake(conn_, subject, *, radius_miles, limit, months):
+        return [_comp("c1", 300000, 1500)]
+
+    monkeypatch.setattr(tools, "_comps_near", _fake)
+    result = _run("estimate_arv", conn, address="15 Main St")
+
+    assert result["ok"] is False
+    assert f"possibly matching record for '15 Main St' ({_OTHER_UNIT_LABEL})" in result["error"]
+    assert "for this property" not in result["error"]
+    assert "Pass sqft to proceed" in result["error"]
 
 
 def test_mao_states_the_arithmetic_that_actually_ran():
@@ -799,3 +1169,18 @@ def test_the_health_check_says_which_services_it_did_not_contact():
         "payment_processor", "mls_feed", "inference_provider",
         "mail_transport", "cache"}
     assert "not whether the service is up now" in result["checks_not_performed_reason"]
+
+
+@pytest.mark.parametrize("address,record,missing", [
+    # A ZIP was given; the record has a city but no ZIP: it has a city.
+    ("15 Main St, DE 19901", {**SUBJECT, "city": "Dover", "zip_code": None}, "no ZIP"),
+    # A city was given; the record has a ZIP but no city.
+    ("15 Main St, Dover, DE", {**SUBJECT, "city": None, "zip_code": "19901"}, "no city"),
+    ("15 Main St, Dover, DE 19901", {**SUBJECT, "city": None, "zip_code": None}, "no city or ZIP"),
+])
+def test_the_blank_record_note_names_only_what_the_record_lacks(address, record, missing):
+    """Review L11-07: the note said "the record has no city or ZIP" about a
+    record that has a city."""
+    subject = asyncio.run(tools._resolve_subject(_Conn(("regexp_replace", record)), address))
+    assert subject["match"]["status"] == "possible_match"
+    assert f"the record has {missing} to check" in subject["match"]["note"]
