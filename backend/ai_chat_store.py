@@ -440,10 +440,29 @@ async def list_messages(
                 "model_id": row["model_id"],
                 "error_code": row["error_code"],
                 "actions": actions_by_message.get(str(row["id"]), []),
+                "choices": await _message_choices(conn, ctx, row),
                 "created_at": row["created_at"].isoformat(),
                 "updated_at": row["updated_at"].isoformat(),
             })
     return result
+
+
+async def _message_choices(conn, ctx: TenantContext, row) -> list[dict]:
+    """The records a turn's question offered (L05-09), labelled now, as the
+    caller: a record they can no longer open is simply not offered again."""
+    metadata = _json(row["metadata"], {}) if "metadata" in row.keys() else {}
+    refs = metadata.get("choices") if isinstance(metadata, dict) else None
+    out: list[dict] = []
+    for ref in refs or []:
+        if not isinstance(ref, dict) or not ref.get("type") or not ref.get("id"):
+            continue
+        try:
+            record = await resolve_record(conn, ctx, str(ref["type"]), str(ref["id"]))
+        except Exception:  # noqa: BLE001 — not visible any more: not offered
+            continue
+        if record.get("label"):
+            out.append({"type": str(ref["type"]), "id": str(ref["id"]), "label": str(record["label"])})
+    return out
 
 
 async def save_attachment(
@@ -578,16 +597,23 @@ async def load_response_bundle(ctx: TenantContext, assistant_id: str) -> dict:
 async def update_assistant(
     ctx: TenantContext, assistant_id: str, *, content: str, status_value: str,
     model_id: Optional[str] = None, error_code: Optional[str] = None,
+    choices: Optional[list[dict]] = None,
 ) -> None:
+    """`choices` (L05-09) are the records the turn's question offered, as
+    {type, id} only: metadata is plaintext, so no label is ever written there;
+    list_messages re-reads the labels as the caller."""
     key = tenant_key(ctx)
     content = pan_redaction.scrub(content, "ai_chat_assistant_message",
                                   tenant_id=ctx.tenant_id, target_id=assistant_id)
+    refs = json.dumps([{"type": str(c["type"]), "id": str(c["id"])} for c in choices]) if choices else None
     async with tenant_tx(ctx) as conn:
         ciphertext = await _encrypt_text(conn, content, key)
         await conn.execute(
-            """UPDATE ai_chat_messages SET content_ciphertext=$1,status=$2,model_id=$3,error_code=$4
+            """UPDATE ai_chat_messages SET content_ciphertext=$1,status=$2,model_id=$3,error_code=$4,
+                       metadata = CASE WHEN $8::jsonb IS NULL THEN metadata
+                                       ELSE metadata || jsonb_build_object('choices', $8::jsonb) END
                 WHERE id=$5::uuid AND tenant_id=$6::uuid AND user_id=$7""",
-            ciphertext, status_value, model_id, error_code, assistant_id, ctx.tenant_id, ctx.agent_id,
+            ciphertext, status_value, model_id, error_code, assistant_id, ctx.tenant_id, ctx.agent_id, refs,
         )
 
 

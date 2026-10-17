@@ -1226,6 +1226,8 @@ async def _generate(ctx: TenantContext, bundle: dict, assistant_id: str) -> tupl
         if question_block:
             system_prompt += "\n\n" + question_block
             runtime_context = (question_block + "\n\n" + runtime_context).strip()
+        # For handle_ai_chat_job: the choices reach the UI as buttons (L05-09).
+        bundle["question"] = turn.question
     # What this actor is offered this turn, and why the rest is not (T07.04,
     # L07-03): the broker-owner reads an agent may not use and the channels the
     # brokerage has not set up are withheld from every provider's tool list
@@ -1459,6 +1461,14 @@ async def _turn_role(requester: TenantContext, recorded: object) -> Role:
     return _worker_role(recorded)
 
 
+def _question_choices(bundle: dict) -> list[dict]:
+    """The turn's question as the UI shows it: one entry per record the
+    person may have meant, labelled as the parser saw it. [] without one."""
+    question = bundle.get("question") if isinstance(bundle, dict) else None
+    return [{"type": c.record_type, "id": str(c.id), "label": c.label}
+            for c in (getattr(question, "choices", None) or ())]
+
+
 async def handle_ai_chat_job(payload: dict, reporter: JobReporter) -> dict:
     tenant_id = str(payload["tenant_id"])
     user_id = str(payload["user_id"])
@@ -1506,14 +1516,21 @@ async def handle_ai_chat_job(payload: dict, reporter: JobReporter) -> dict:
         content, actions, model_id = await asyncio.wait_for(
             _generate(ctx, bundle, assistant_id), timeout=_TURN_DEADLINE_SECONDS)
         await _broadcast_chunks(ctx, assistant_id, request_id, content)
+        # The one precise question's choices (T05.10, L05-09): the row keeps
+        # the record ids only — labels are re-read as the caller when the
+        # thread is listed (list_messages) — and this frame carries the labels
+        # the turn already had, so the UI can offer them as buttons now.
+        choices = _question_choices(bundle)
         await update_assistant(
-            ctx, assistant_id, content=content, status_value="completed", model_id=model_id
+            ctx, assistant_id, content=content, status_value="completed", model_id=model_id,
+            choices=[{"type": c["type"], "id": c["id"]} for c in choices] if choices else None,
         )
         await SessionManager(ctx).record_interaction(user_id, "user", bundle["messages"][-1]["content"])
         await SessionManager(ctx).record_interaction(user_id, "assistant", content)
         await ws_hub.broadcast_user(tenant_id, user_id, {
             "type": "AI_CHAT_COMPLETE", "version": 1, "message_id": assistant_id,
             "request_id": request_id, "model_id": model_id, "actions": actions,
+            "choices": choices,
         })
         return {"message_id": assistant_id, "model_id": model_id, "action_count": len(actions)}
     except Exception as exc:  # noqa: BLE001

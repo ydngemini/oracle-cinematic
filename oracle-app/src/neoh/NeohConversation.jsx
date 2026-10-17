@@ -250,6 +250,7 @@ export function NeohConversation({ onNavigate, onOpenEntity }) {
           undoing={channel.undoing}
           receipts={receipts}
           onReview={() => onNavigate?.('automations')}
+          onChoose={(choice) => channel.send(choice.label, { type: choice.type, id: choice.id })}
         />
 
         {rendered && (

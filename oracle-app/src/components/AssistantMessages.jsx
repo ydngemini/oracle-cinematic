@@ -68,8 +68,33 @@ function CommandReceipt({ command, onReview }) {
   );
 }
 
+/**
+ * The records Neoh's one precise question offered (T05.10, L05-09). Picking
+ * one answers the question with that record as the next turn's context —
+ * the clarification amends the frame rather than opening a record sheet.
+ */
+function ChoiceButtons({ choices, onChoose }) {
+  if (!choices?.length) return null;
+  return (
+    <div className={styles.choices} role="group" aria-label="Which one did you mean?">
+      {choices.map((choice) => (
+        <button
+          key={`${choice.type}:${choice.id}`}
+          type="button"
+          onClick={() => onChoose?.(choice)}
+          disabled={!onChoose}
+        >
+          {choice.label}
+          <small>{choice.type}</small>
+        </button>
+      ))}
+    </div>
+  );
+}
+
+
 export function AssistantMessages({
-  messages, onUndo, undoing, receipts = null, onReview, variant = 'panel',
+  messages, onUndo, undoing, receipts = null, onReview, onChoose, variant = 'panel',
 }) {
   if (!messages.length) {
     return (
@@ -120,6 +145,7 @@ export function AssistantMessages({
                 </div>
               )}
             </div>
+            {message.role === 'assistant' && <ChoiceButtons choices={message.choices} onChoose={onChoose} />}
             {(message.actions || []).map((action, index) => (
               <ActionReceipt key={action.action_id || `${message.id}-a${index}`} action={action} onUndo={onUndo} undoing={undoing} />
             ))}
