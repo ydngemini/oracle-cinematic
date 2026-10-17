@@ -1622,9 +1622,11 @@ def generate_record(record_num: int) -> dict | None:
         city=city,
     )
 
+    model = PRIMARY_MODEL
     result = invoke_bedrock_model(PRIMARY_MODEL, prompt, max_tokens=2048)
 
     if not result:
+        model = SECONDARY_MODEL
         result = invoke_bedrock_model(SECONDARY_MODEL, prompt, max_tokens=2048)
 
     if not result:
@@ -1637,7 +1639,8 @@ def generate_record(record_num: int) -> dict | None:
             record = json.loads(result[json_start:json_end])
             record["_meta"] = {
                 "generated_at": datetime.utcnow().isoformat(),
-                "model": PRIMARY_MODEL,
+                "model": model,  # the one that answered, not always the primary
+                "synthetic": True,
                 "record_num": record_num,
             }
             return record

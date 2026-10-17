@@ -20,8 +20,10 @@ RAW_SCRAPES_DIR = os.path.join(BASE_DIR, "data", "raw_scrapes")
 OUTPUT_PATH = os.path.join(BASE_DIR, "training_data", "swarm_textbook.jsonl")
 ERROR_LOG_PATH = os.path.join(BASE_DIR, "training_data", "error_log.txt")
 
-# Delaware county-level ARV multipliers ($/sqft for retail-ready SFR)
-# Based on median sale prices for renovated properties in each county.
+# Delaware county-level ARV multipliers ($/sqft for retail-ready SFR).
+# Unsourced placeholder values: no sale-price source or date is recorded for
+# them, so every target computed from them is a heuristic (audit A08), and
+# each sample's _meta says so.
 COUNTY_ARV_PSF = {
     "New Castle": 195.0,
     "Kent": 155.0,
@@ -395,7 +397,9 @@ def build_training_sample(record: dict, filename: str) -> dict:
         "_meta": {
             "source_file": filename,
             "synthesized_at": datetime.now(tz=None).astimezone().isoformat(),
-            "model": "meta.llama3-3-70b-instruct-v1:0",
+            # Computed by the rules above, not written by a model.
+            "generator": "rules:cot_synthesizer",
+            "targets": "heuristic",
             "format": "chain-of-thought-v2-mao",
         },
     }

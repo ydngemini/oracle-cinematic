@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+import math
 import os
 import re
 from datetime import datetime
@@ -17,7 +18,7 @@ from approval_service import create_approval, decide_approval
 from automation_jobs import enqueue_job, register_handler
 from db.connection import tenant_tx
 from model_training import runpod_train
-from ml_forge.edge_forge.train_lora import redact_pii
+from ml_forge.edge_forge.train_lora import OBSERVED_TARGETS, redact_pii
 from platform_policy import ActionRisk, Feature, require_feature
 from tenancy import Role, TenantContext, require_context, require_role
 from billing import require_active_subscription
@@ -25,6 +26,12 @@ from billing import require_active_subscription
 router = APIRouter(prefix="/api/models", tags=["models"])
 
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+
+#: Model kinds whose output is a valuation: the state underwriter predicts ARV,
+#: rehab and an offer ceiling. A pass flag is not enough to promote one (audit
+#: A08): its targets must be observed transactions, and a passed, reviewed
+#: evaluation must publish per-region error and uncertainty.
+VALUATION_KINDS = frozenset({"state_lora"})
 
 
 def _json(value: Any) -> Any:
@@ -34,6 +41,38 @@ def _json(value: Any) -> Any:
         except ValueError:
             return value
     return value
+
+
+def _measured(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+
+
+def _per_region_published(metrics: Any) -> bool:
+    """At least one region, and every region with a sample count, an error
+    and an uncertainty that were actually measured."""
+    metrics = _json(metrics)
+    regions = metrics.get("per_region") if isinstance(metrics, dict) else None
+    if not isinstance(regions, dict) or not regions:
+        return False
+    return all(
+        isinstance(r, dict) and _measured(r.get("n")) and r["n"] > 0
+        and _measured(r.get("error")) and _measured(r.get("uncertainty"))
+        for r in regions.values()
+    )
+
+
+def valuation_promotion_problem(model_card: Any, evaluation_metrics: list[Any]) -> Optional[str]:
+    """Why a valuation model may not be activated, or None (audit A08). An
+    unrecorded provenance is not "observed": it is refused like a heuristic."""
+    card = _json(model_card)
+    targets = ((card.get("dataset") or {}).get("targets") or {}) if isinstance(card, dict) else {}
+    if not isinstance(targets, dict) or targets.get("provenance") != OBSERVED_TARGETS:
+        return ("This underwriting model was trained on heuristic or unrecorded targets, not observed "
+                "transactions, so it cannot be activated as a valuation.")
+    if not any(_per_region_published(m) for m in evaluation_metrics):
+        return ("Publish per-region error and uncertainty from a passed, reviewed evaluation before "
+                "activating this valuation model.")
+    return None
 
 
 def _row(row: Any) -> dict[str, Any]:
@@ -257,6 +296,20 @@ async def activate_model(
         )
         if not passed:
             raise HTTPException(status_code=409, detail="Required evaluation gate has not passed.")
+        if model["model_kind"] in VALUATION_KINDS:
+            evaluations = await conn.fetch(
+                """
+                SELECT metrics FROM model_evaluations
+                WHERE model_id=$1 AND passed=true AND leakage_reviewed=true
+                  AND geographic_bias_reviewed=true
+                """,
+                model_id,
+            )
+            problem = valuation_promotion_problem(
+                model.get("model_card"), [row["metrics"] for row in evaluations]
+            )
+            if problem:
+                raise HTTPException(status_code=409, detail=problem)
         old = await conn.fetchrow(
             """
             SELECT id FROM model_registry
