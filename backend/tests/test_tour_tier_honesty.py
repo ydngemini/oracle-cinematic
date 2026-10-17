@@ -204,7 +204,7 @@ def test_public_records_carry_the_tenants_lead_id():
         {"id": "r1", "parcel_id": "P-1", "state": "DE", "address": "1 Main St"},
         {"id": "r2", "parcel_id": "P-2", "state": "DE", "address": "2 Main St"},
     ]
-    lead_ids = {("P-1", "DE"): LEAD_ID}
+    lead_ids = {("P-1", "DE"): {"lead_id": LEAD_ID, "linked": False, "heads_by_record": {}}}
 
     first = mls_portal._public_record_json(rows[0], lead_ids)
     second = mls_portal._public_record_json(rows[1], lead_ids)
@@ -216,15 +216,26 @@ def test_public_records_carry_the_tenants_lead_id():
 
 
 def test_lead_lookup_is_one_query_for_the_whole_page():
-    """Per-row lookups would add a query per card on every search."""
+    """Per-row lookups would add a query per card on every search.
+
+    The same query carries whether the house is linked to a client and the
+    newest property-match decision per record (0168, T11.03): a correlated
+    subquery per lead, not a second round trip. RLS scopes both tables, so no
+    tenant predicate is written here.
+    """
+    import re
+
     import mls_portal
 
     calls = []
+    head = {"id": "h1", "record_id": "r1", "decision": "confirmed", "same_client": True,
+            "decided_at": "2026-10-17T16:00:00+00:00"}
 
     class _Conn:
         async def fetch(self, query, *args):
             calls.append((query, args))
-            return [{"parcel_id": "P-1", "state": "DE", "id": LEAD_ID}]
+            return [{"parcel_id": "P-1", "state": "DE", "id": LEAD_ID, "linked": True,
+                     "heads": [head]}]
 
     rows = [
         {"parcel_id": f"P-{i}", "state": "DE"} for i in range(20)
@@ -232,7 +243,12 @@ def test_lead_lookup_is_one_query_for_the_whole_page():
     result = asyncio.run(mls_portal._lead_ids_for_records(_Conn(), rows))
 
     assert len(calls) == 1, f"expected a single batched query, made {len(calls)}"
-    assert result == {("P-1", "DE"): LEAD_ID}
+    assert result == {("P-1", "DE"): {"lead_id": LEAD_ID, "linked": True, "heads_by_record": {"r1": head}}}
+    query = re.sub(r"\s+", " ", calls[0][0])
+    assert "seller_client_id IS NOT NULL AS linked" in query
+    assert "FROM property_match_decisions h WHERE h.lead_id = leads.id" in query
+    assert "NOT EXISTS (SELECT 1 FROM property_match_decisions n WHERE n.supersedes_id = h.id)" in query
+    assert "tenant_id" not in query
 
 
 def test_lead_lookup_skips_the_query_when_no_row_has_a_parcel():

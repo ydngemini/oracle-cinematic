@@ -570,6 +570,103 @@
   letter-spacing: var(--tracking-wide);
 }
 
+/* A person's decision on the house (T11.03): its own line, never the badge,
+   which keeps naming what the search matched. */
+.identityConfirmation {
+  margin-top: var(--space-2);
+  color: var(--oracle-text-dim);
+  font: 500 var(--text-xs)/1.4 var(--font-mono);
+  letter-spacing: var(--tracking-wide);
+}
+
+.identityConfirmation[data-state='confirmed'] {
+  color: var(--oracle-accent-ink);
+}
+
+.matchDecision {
+  display: grid;
+  gap: var(--space-3);
+  margin-top: var(--space-5);
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--oracle-border-bright);
+}
+
+.matchDecision h3 {
+  color: var(--oracle-text-heading);
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+
+.matchDecision p,
+.matchDecision small {
+  color: var(--oracle-text-dim);
+  font-size: var(--text-sm);
+  line-height: var(--leading-relaxed);
+}
+
+.matchActions,
+.matchForm > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.matchForm {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.matchForm fieldset {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: var(--space-1) var(--space-3);
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.matchForm legend,
+.matchForm > label {
+  margin-bottom: var(--space-1);
+  color: var(--oracle-text-dim);
+  font: 600 var(--text-xs)/1 var(--font-mono);
+  letter-spacing: var(--tracking-wider);
+  text-transform: uppercase;
+}
+
+.matchForm fieldset label {
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--oracle-text);
+  font-size: var(--text-sm);
+}
+
+.matchForm textarea {
+  width: 100%;
+  min-height: 76px;
+  padding: var(--space-3);
+  color: var(--oracle-text-heading);
+  background: var(--oracle-surface-sunken);
+  border: 1px solid var(--oracle-glass-edge);
+  border-radius: var(--radius-sm);
+  font: inherit;
+  resize: vertical;
+}
+
+.matchProblem {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  color: var(--oracle-text);
+  background: var(--oracle-surface-sunken);
+  border-left: 2px solid var(--oracle-red);
+  font-size: var(--text-sm);
+}
+
 .workspaceTitle {
   min-height: 134px;
   display: grid;
@@ -1048,7 +1145,8 @@
   .dialog,
   .searchField > div,
   .stateField select,
-  .manualForm input {
+  .manualForm input,
+  .matchForm textarea {
     border-color: var(--oracle-border-bright);
   }
 }

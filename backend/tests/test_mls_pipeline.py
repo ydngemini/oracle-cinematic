@@ -514,6 +514,139 @@ def test_property_detail_payload_reports_an_opened_record_as_unverified(monkeypa
     }
 
 
+# ── A person's decision on the house (T11.03, 0168) ──────────────────────────
+#
+# `verified` is True only while the newest decision on (this lead, THIS record)
+# is a confirmation for the client the house is still linked to. It never
+# changes what the search matched: status and basis stay the search's claim.
+
+_RECORD_ID = "11111111-1111-1111-1111-111111111111"
+_OTHER_RECORD_ID = "99999999-9999-9999-9999-999999999999"
+_LEAD_ID = "22222222-2222-4222-8222-222222222222"
+_HEAD_ID = "33333333-3333-4333-8333-333333333333"
+_DECIDED_AT = "2026-10-17T16:00:00+00:00"
+
+
+def _link(*heads, linked=True) -> dict:
+    """What _lead_ids_for_records returns for the row's parcel."""
+    return {("P-1", "DE"): {
+        "lead_id": _LEAD_ID,
+        "linked": linked,
+        "heads_by_record": {h["record_id"]: h for h in heads},
+    }}
+
+
+def _head(decision="confirmed", *, same_client=True, record_id=_RECORD_ID) -> dict:
+    return {"id": _HEAD_ID, "record_id": record_id, "decision": decision,
+            "same_client": same_client, "decided_at": _DECIDED_AT}
+
+
+def _decided_record(lead_ids, match_type="address_exact", *, can_decide=True) -> dict:
+    return mls_portal._public_record_json(
+        {"id": _RECORD_ID, "parcel_id": "P-1", "state": "DE", "match_type": match_type},
+        lead_ids, can_decide=can_decide,
+    )
+
+
+def test_a_current_confirmation_verifies_this_record_and_keeps_the_search_claim():
+    identity = _decided_record(_link(_head("confirmed")))["identity"]
+
+    assert identity == {
+        "status": "exact_address",
+        "basis": "address_exact",
+        "verified": True,
+        "confirmation": {"state": "confirmed", "head_id": _HEAD_ID, "decided_at": _DECIDED_AT},
+        "confirmable": True,
+    }
+
+
+def test_a_confirmed_possible_match_is_never_promoted():
+    """The decision is about the house, not about what the user typed: an
+    owner_partial hit stays a possible match (the L11-13 precedent)."""
+    identity = _decided_record(_link(_head("confirmed")), "owner_partial")["identity"]
+
+    assert (identity["status"], identity["basis"]) == ("possible_match", "owner_partial")
+    assert identity["verified"] is True
+
+
+def test_a_decision_on_another_record_of_the_same_parcel_says_nothing_about_this_one():
+    identity = _decided_record(_link(_head("confirmed", record_id=_OTHER_RECORD_ID)))["identity"]
+
+    assert identity["verified"] is False
+    assert identity["confirmation"] == {"state": "none", "head_id": None, "decided_at": None}
+
+
+def test_a_confirmation_for_the_houses_previous_client_is_out_of_date():
+    identity = _decided_record(_link(_head("confirmed", same_client=False)))["identity"]
+
+    assert identity["verified"] is False
+    assert identity["confirmation"]["state"] == "out_of_date"
+    assert identity["confirmation"]["head_id"] == _HEAD_ID
+
+
+def test_a_rejection_reads_rejected_and_never_verified():
+    identity = _decided_record(_link(_head("rejected")))["identity"]
+
+    assert identity["verified"] is False
+    assert identity["confirmation"]["state"] == "rejected"
+
+
+def test_a_withdrawn_decision_is_undecided_and_keeps_its_head():
+    """The next decision supersedes the withdrawal, so its id stays visible."""
+    identity = _decided_record(_link(_head("withdrawn")))["identity"]
+
+    assert identity["verified"] is False
+    assert identity["confirmation"] == {"state": "none", "head_id": _HEAD_ID, "decided_at": _DECIDED_AT}
+
+
+@pytest.mark.parametrize(("linked", "can_decide", "confirmable"),
+                         [(True, True, True), (True, False, False), (False, True, False)])
+def test_only_a_linked_house_is_confirmable_and_only_by_a_decider(linked, can_decide, confirmable):
+    identity = _decided_record(_link(linked=linked), can_decide=can_decide)["identity"]
+
+    assert identity["confirmable"] is confirmable
+    assert identity["verified"] is False
+
+
+def test_a_row_with_no_lead_keeps_exactly_the_search_claim():
+    identity = _decided_record({}, "parcel_exact")["identity"]
+
+    assert identity == {"status": "exact_parcel", "basis": "parcel_exact", "verified": False}
+
+
+@pytest.mark.parametrize(("role", "confirmable"), [(Role.BROKER_OWNER, True), (Role.AGENT, False)])
+def test_the_detail_route_reads_the_decision_through_the_lead_lookup(monkeypatch, role, confirmable):
+    """The Houses detail card, end to end: the one lead query carries the
+    head decisions (jsonb, as asyncpg returns it without a codec)."""
+    import json
+
+    ctx = TenantContext(agent_id="owner", tenant_id="00000000-0000-0000-0000-000000000000", role=role)
+    lead_queries = []
+
+    class _Conn:
+        async def fetchrow(self, query, *args):
+            return {"id": _RECORD_ID, "parcel_id": "P-1", "state": "DE", "source_key": "firehose:DE",
+                    "match_score": 0, "match_type": "record_id"}
+
+        async def fetch(self, query, *args):
+            lead_queries.append(query)
+            return [{"parcel_id": "P-1", "state": "DE", "id": _LEAD_ID, "linked": True,
+                     "heads": json.dumps([_head("confirmed")])}]
+
+    @asynccontextmanager
+    async def fake_tenant_tx(received_ctx):
+        yield _Conn()
+
+    monkeypatch.setattr(mls_portal, "tenant_tx", fake_tenant_tx)
+    detail = asyncio.run(mls_portal.mls_pipeline_listing(record_id=_RECORD_ID, ctx=ctx))
+
+    assert len(lead_queries) == 1
+    assert detail["lead_id"] == _LEAD_ID
+    assert detail["identity"]["status"] == "not_applicable"
+    assert detail["identity"]["verified"] is True
+    assert detail["identity"]["confirmable"] is confirmable
+
+
 class _FakeMatchConnection:
     """Returns one catalog row labelled the way the search SQL labelled it.
 

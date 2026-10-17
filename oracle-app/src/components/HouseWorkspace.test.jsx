@@ -10,8 +10,9 @@
  * and the button that opens it must not say otherwise.
  */
 
-import { cleanup, render, screen, within } from '@testing-library/react';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { useState } from 'react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // vitest.config.js does not set `globals: true`, so Testing Library never gets
 // to register its automatic afterEach cleanup. Without this every render stays
@@ -22,6 +23,8 @@ afterEach(cleanup);
 const useTour = vi.fn();
 vi.mock('../state/useTour', () => ({ useTour: (...args) => useTour(...args) }));
 vi.mock('./HouseLinkDialog', () => ({ default: () => null }));
+const crmPost = vi.fn();
+vi.mock('../state/useCrmApi', () => ({ crmPost: (...args) => crmPost(...args) }));
 
 const { default: HouseWorkspace } = await import('./HouseWorkspace');
 
@@ -164,5 +167,221 @@ describe('HouseWorkspace identity labels (AC11.04, F11.04)', () => {
 
     expect(screen.getByText('Public record')).toBeTruthy();
     expect(screen.queryByText(/possible match|not verified/i)).toBeNull();
+  });
+});
+
+// ── A broker owner's decision on the house (T11.03, 0168) ────────────────────
+//
+// Two facts on one card: what the search matched (never changed by a
+// decision) and whether a person confirmed this record is the linked client's
+// house. A confirmed possible match keeps its "Possible match" badge.
+
+const DECIDED_AT = '2026-10-17T16:00:00+00:00';
+const HEAD_ID = '33333333-3333-4333-8333-333333333333';
+const DATE = new Date(DECIDED_AT).toLocaleDateString();
+
+function decided(status, basis, state, { verified = state === 'confirmed', confirmable = false } = {}) {
+  return {
+    ...HOUSE,
+    parcel_id: 'P-1',
+    owner_name: 'Example Owner LLC',
+    match_type: basis,
+    identity: {
+      status,
+      basis,
+      verified,
+      confirmation: {
+        state,
+        head_id: state === 'none' ? null : HEAD_ID,
+        decided_at: state === 'none' ? null : DECIDED_AT,
+      },
+      confirmable,
+    },
+  };
+}
+
+describe('HouseWorkspace house confirmation labels', () => {
+  beforeEach(() => useTour.mockReturnValue({ tour: undefined }));
+
+  it('drops "not verified" from an exact match only once it is confirmed', () => {
+    render(<HouseWorkspace house={decided('exact_address', 'address_exact', 'confirmed')} />);
+
+    expect(screen.getByText('Address match')).toBeTruthy();
+    expect(screen.getByText(`Confirmed as the linked client's house · ${DATE}`)).toBeTruthy();
+    expect(screen.queryByText(/not verified/i)).toBeNull();
+  });
+
+  it('keeps a confirmed possible match labelled a possible match', () => {
+    render(<HouseWorkspace house={decided('possible_match', 'owner_partial', 'confirmed')} />);
+
+    // The search claim stays: the confirmation is a second fact, not a promotion.
+    expect(screen.getByText('Possible match')).toBeTruthy();
+    expect(screen.getByText(`Confirmed as the linked client's house · ${DATE}`)).toBeTruthy();
+    const ownerRow = screen.getByText('Owner of record').parentElement;
+    expect(within(ownerRow).queryByText(/possible match/i)).toBeNull();
+    expect(screen.queryByText('Possible match: confirm the parcel before linking.')).toBeNull();
+    const link = screen.getByRole('button', { name: 'Link to client' });
+    expect(link.getAttribute('aria-describedby')).toBeNull();
+  });
+
+  it('says an out-of-date decision is out of date and keeps the warning', () => {
+    render(<HouseWorkspace house={decided('possible_match', 'owner_partial', 'out_of_date')} />);
+
+    expect(screen.getByText("Decision out of date: the house's client link changed")).toBeTruthy();
+    expect(screen.queryByText(/Confirmed as/)).toBeNull();
+    const ownerRow = screen.getByText('Owner of record').parentElement;
+    expect(within(ownerRow).getByText(/possible match/i)).toBeTruthy();
+    const warning = document.getElementById('workspace-identity-warning');
+    expect(warning.textContent).toBe('Possible match: confirm the parcel before linking.');
+    const link = screen.getByRole('button', { name: 'Link to client' });
+    expect(link.getAttribute('aria-describedby')).toBe(warning.id);
+  });
+
+  it('names a rejection and adds it to the warning', () => {
+    render(<HouseWorkspace house={decided('possible_match', 'owner_partial', 'rejected')} />);
+
+    expect(screen.getByText(`Marked not the linked client's house · ${DATE}`)).toBeTruthy();
+    const warning = document.getElementById('workspace-identity-warning');
+    expect(warning.textContent).toMatch(/Possible match: confirm the parcel before linking\./);
+    expect(warning.textContent).toMatch(/This record was marked not the linked client's house\./);
+    const link = screen.getByRole('button', { name: 'Link to client' });
+    expect(link.getAttribute('aria-describedby')).toBe(warning.id);
+    const ownerRow = screen.getByText('Owner of record').parentElement;
+    expect(within(ownerRow).getByText(/possible match/i)).toBeTruthy();
+  });
+
+  it('warns about a rejected exact match too', () => {
+    render(<HouseWorkspace house={decided('exact_parcel', 'parcel_exact', 'rejected')} />);
+
+    expect(screen.getByText('Parcel number match · not verified')).toBeTruthy();
+    const warning = document.getElementById('workspace-identity-warning');
+    expect(warning.textContent).toBe("This record was marked not the linked client's house.");
+  });
+});
+
+describe('HouseWorkspace house decision form', () => {
+  beforeEach(() => {
+    useTour.mockReturnValue({ tour: undefined });
+    crmPost.mockReset();
+    sessionStorage.clear();
+  });
+
+  it('is not offered when the house is not confirmable', () => {
+    render(<HouseWorkspace house={decided('exact_address', 'address_exact', 'none')} />);
+
+    expect(screen.queryByRole('button', { name: 'Confirm parcel' })).toBeNull();
+    expect(screen.queryByRole('button', { name: "Not this client's house" })).toBeNull();
+  });
+
+  it('is never offered for a manual house', () => {
+    sessionStorage.setItem('oracle_role', 'broker_owner');
+    render(
+      <HouseWorkspace
+        house={{ id: 'manual:1 main st', address: '1 Main St', isManual: true, identity: { confirmable: true } }}
+      />,
+    );
+
+    expect(screen.queryByRole('button', { name: 'Confirm parcel' })).toBeNull();
+  });
+
+  it('refuses a reason under 8 characters without sending anything', () => {
+    render(<HouseWorkspace house={decided('exact_address', 'address_exact', 'none', { confirmable: true })} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm parcel' }));
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Parcel number checked' }));
+    fireEvent.change(screen.getByLabelText(/Reason/), { target: { value: 'ok fine' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save decision' }));
+
+    expect(screen.getByRole('alert').textContent).toMatch(/at least 8 characters/);
+    expect(crmPost).not.toHaveBeenCalled();
+  });
+
+  it('asks for evidence before a confirmation is sent', () => {
+    render(<HouseWorkspace house={decided('exact_address', 'address_exact', 'none', { confirmable: true })} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm parcel' }));
+    fireEvent.change(screen.getByLabelText(/Reason/), { target: { value: 'Deed names the client' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save decision' }));
+
+    expect(screen.getByRole('alert').textContent).toMatch(/at least one piece of evidence/);
+    expect(crmPost).not.toHaveBeenCalled();
+  });
+
+  it('posts exactly the decision against the head it showed and renders the result', async () => {
+    const reason = 'Deed and tax bill name the client';
+    const returned = {
+      verified: true,
+      confirmation: { state: 'confirmed', head_id: 'new-head', decided_at: DECIDED_AT },
+      confirmable: true,
+    };
+    crmPost.mockResolvedValue({
+      decision_id: 'new-head', decision: 'confirmed', decided_at: DECIDED_AT, identity: returned,
+    });
+    const start = decided('possible_match', 'owner_partial', 'out_of_date', { confirmable: true });
+
+    function Host() {
+      const [house, setHouse] = useState(start);
+      return <HouseWorkspace house={house} onHouseUpdate={(patch) => setHouse((h) => ({ ...h, ...patch }))} />;
+    }
+    render(<Host />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm parcel' }));
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Deed or title' }));
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Tax bill' }));
+    fireEvent.change(screen.getByLabelText(/Reason/), { target: { value: `  ${reason}  ` } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save decision' }));
+
+    await waitFor(() => expect(crmPost).toHaveBeenCalledTimes(1));
+    expect(crmPost).toHaveBeenCalledWith(`/api/crm/houses/${HOUSE.lead_id}/record-match`, {
+      public_record_id: 'r1',
+      decision: 'confirmed',
+      evidence: ['deed_or_title', 'tax_bill'],
+      reason,
+      supersedes_id: HEAD_ID,
+    });
+    expect(await screen.findByText(`Confirmed as the linked client's house · ${DATE}`)).toBeTruthy();
+    // The search's own claim is untouched by the decision.
+    expect(screen.getByText('Possible match')).toBeTruthy();
+    expect(screen.queryByText(/out of date/)).toBeNull();
+  });
+
+  it('keeps the previous badge and says why when someone else decided first', async () => {
+    const sentence = 'This record was decided by someone else since you opened it. Reload the house and decide again.';
+    crmPost.mockRejectedValue(Object.assign(new Error(sentence), { status: 409 }));
+    render(<HouseWorkspace house={decided('exact_address', 'address_exact', 'none', { confirmable: true })} />);
+
+    fireEvent.click(screen.getByRole('button', { name: "Not this client's house" }));
+    fireEvent.change(screen.getByLabelText(/Reason/), { target: { value: 'Different owner on the deed' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save decision' }));
+
+    expect((await screen.findByRole('alert')).textContent).toMatch(/decided by someone else.*Reload/);
+    expect(screen.getByText('Address match · not verified')).toBeTruthy();
+    expect(screen.queryByText(/Marked not/)).toBeNull();
+    // The sentence stays until dismissed.
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }));
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  it('offers to withdraw a current decision, with no evidence asked for', async () => {
+    crmPost.mockResolvedValue({
+      decision_id: 'w1',
+      decision: 'withdrawn',
+      decided_at: DECIDED_AT,
+      identity: {
+        verified: false,
+        confirmation: { state: 'none', head_id: 'w1', decided_at: DECIDED_AT },
+        confirmable: true,
+      },
+    });
+    render(<HouseWorkspace house={decided('exact_address', 'address_exact', 'confirmed', { confirmable: true })} />);
+
+    expect(screen.queryByRole('button', { name: 'Confirm parcel' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Withdraw decision' }));
+    expect(screen.queryByRole('checkbox')).toBeNull();
+    fireEvent.change(screen.getByLabelText(/Reason/), { target: { value: 'Confirmed against the wrong deed' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save decision' }));
+
+    await waitFor(() => expect(crmPost).toHaveBeenCalledTimes(1));
+    expect(crmPost.mock.calls[0][1]).toMatchObject({ decision: 'withdrawn', evidence: [], supersedes_id: HEAD_ID });
   });
 });

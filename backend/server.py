@@ -59,6 +59,7 @@ from disposition_enforcer import start_disposition_enforcer, stop_disposition_en
 from lead_dossier import router as lead_dossier_router
 from cma_generator import router as cma_router
 from crm import router as crm_router
+from property_match_api import router as property_match_router
 from contacts_api import router as contacts_router
 from client_enterprise import router as client_enterprise_router
 from record_access import router as record_access_router
@@ -456,6 +457,7 @@ app.include_router(agent_profile_router)
 app.include_router(lead_dossier_router)
 app.include_router(cma_router)
 app.include_router(crm_router)
+app.include_router(property_match_router)
 app.include_router(contacts_router)
 app.include_router(record_access_router)
 app.include_router(client_enterprise_router)

@@ -71,6 +71,11 @@ function RecordCard({ record, isSelected, onSelect }) {
         {record.identity?.status === 'possible_match' && (
           <span className={styles.recordFlag}>Possible match</span>
         )}
+        {/* A person's decision on the house (T11.03): its own flag, never a
+            replacement for what the search matched. */}
+        {record.identity?.verified === true && (
+          <span className={styles.recordFlag}>Confirmed house</span>
+        )}
         <small>{record.source || 'Source-backed'}</small>
       </span>
     </button>
@@ -156,10 +161,15 @@ export default function HouseSelection() {
   // record it itself — without this the agent links a house and the interior
   // affordances stay hidden until a full refetch happens to pick the lead up.
   // The record id is unchanged, so the keyed transition above does not remount.
+  // The same patch reaches the record's card, so its flags match the
+  // workspace and selecting it again does not bring back the stale row.
   const applyHouseUpdate = useCallback((patch) => {
-    if (!patch) return;
+    if (!patch || !selected) return;
     setSelected((current) => (current ? { ...current, ...patch } : current));
-  }, []);
+    if (!selected.isManual) {
+      setRecords((rows) => rows?.map((row) => (row.id === selected.id ? { ...row, ...patch } : row)) ?? rows);
+    }
+  }, [selected]);
 
   const selectManualHouse = useCallback((event) => {
     event.preventDefault();

@@ -62,6 +62,9 @@ TABLES: dict[str, TableEntry] = {
     "agent_contacts": TableEntry(C.CONTACT_PII, E,
                                  "PII encrypted; HMAC lookups; assigned_user_id (0134) = canonical assignee, no PII"),
     "leads": TableEntry(C.BUSINESS_CRM, E, "payload holds owner names"),
+    "property_match_decisions": TableEntry(C.BUSINESS_CRM, E, "append-only (0168, T11.03): reason sealed "
+                                           "(reason_ciphertext), no plaintext column; decided_by is a staff "
+                                           "login; ids, evidence kinds and timestamps only"),
     "transaction_parties": TableEntry(C.CONTACT_PII, E),
     "contact_property_relationships": TableEntry(C.CONTACT_PII, E),
     "buyer_profiles": TableEntry(C.CONTACT_PII, E),

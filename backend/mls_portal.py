@@ -28,6 +28,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from db.connection import tenant_tx
 from mls_switch import require_mls_enabled
+from property_match_api import can_decide as can_decide_record_match, confirmation_state
 from tenancy import TenantContext, require_context
 from marketplace_engine import rank_buyer_request
 from data_coverage import summary as data_coverage_summary
@@ -562,8 +563,9 @@ _PUBLIC_RECORD_SELECT = """
 """
 
 
-async def _lead_ids_for_records(conn, rows: list[dict]) -> dict[tuple[str, str], str]:
-    """Map (parcel_id, state) -> this tenant's lead id, for a page of records.
+async def _lead_ids_for_records(conn, rows: list[dict]) -> dict[tuple[str, str], dict[str, Any]]:
+    """Map (parcel_id, state) -> this tenant's lead, for a page of records:
+    {lead_id, linked, heads_by_record}.
 
     The public catalog is shared across tenants; a lead is the tenant's own row
     for the same parcel. Everything downstream of the property card is keyed on
@@ -574,6 +576,13 @@ async def _lead_ids_for_records(conn, rows: list[dict]) -> dict[tuple[str, str],
     One query per page, not per row. Called inside an existing tenant_tx, so RLS
     scopes the result to the caller's tenant with no predicate needed here.
     Matches the (parcel_id, state) lookup crm.link_client_house already relies on.
+
+    The same query says whether the lead is linked to a client, and carries the
+    newest property-match decision (0168, T11.03) per public record on that
+    lead: a correlated subquery, not a second round trip. Both tables are read
+    under the caller's RLS, so a house the caller cannot see brings no
+    decisions with it. `same_client` is whether the decision was made for the
+    client the house is linked to now.
     """
     keys = {
         (str(r["parcel_id"]), str(r["state"]))
@@ -587,7 +596,16 @@ async def _lead_ids_for_records(conn, rows: list[dict]) -> dict[tuple[str, str],
     states = [k[1] for k in keys]
     found = await conn.fetch(
         """
-        SELECT DISTINCT ON (parcel_id, state) parcel_id, state, id
+        SELECT DISTINCT ON (parcel_id, state) parcel_id, state, id,
+               seller_client_id IS NOT NULL AS linked,
+               (SELECT jsonb_agg(jsonb_build_object(
+                           'id', h.id, 'record_id', h.public_record_id, 'decision', h.decision,
+                           'same_client', COALESCE(h.client_id = leads.seller_client_id, false),
+                           'decided_at', h.decided_at))
+                  FROM property_match_decisions h
+                 WHERE h.lead_id = leads.id
+                   AND NOT EXISTS (SELECT 1 FROM property_match_decisions n
+                                    WHERE n.supersedes_id = h.id)) AS heads
           FROM leads
          WHERE (parcel_id, state) = ANY(
                    SELECT * FROM unnest($1::text[], $2::text[])
@@ -597,14 +615,29 @@ async def _lead_ids_for_records(conn, rows: list[dict]) -> dict[tuple[str, str],
         parcels,
         states,
     )
-    return {(str(r["parcel_id"]), str(r["state"])): str(r["id"]) for r in found}
+    leads: dict[tuple[str, str], dict[str, Any]] = {}
+    for r in found:
+        heads = r.get("heads")
+        if isinstance(heads, str):
+            heads = json.loads(heads)
+        leads[(str(r["parcel_id"]), str(r["state"]))] = {
+            "lead_id": str(r["id"]),
+            "linked": r.get("linked") is True,
+            "heads_by_record": {
+                str(h["record_id"]): h for h in (heads or []) if isinstance(h, dict) and h.get("record_id")
+            },
+        }
+    return leads
 
 
 # What the search actually matched, as a claim about identity (AC11.04). Only
 # an exact key is named as one; every partial or unrecognised match type is a
-# possible match. Nothing records a person confirming a parcel yet (T11.03),
-# so `verified` is False for all of them, exact keys included. A browse row
-# and a record opened by its id were compared with nothing the user typed.
+# possible match. A browse row and a record opened by its id were compared with
+# nothing the user typed. `verified` is a separate fact about the house (0168,
+# T11.03): True only while a person's newest decision on this lead and THIS
+# record is a confirmation for the client the house is linked to now. It never
+# changes the status or basis, so a confirmed possible match stays a possible
+# match, and a row with no lead is never verified.
 _EXACT_IDENTITY = {
     "parcel_exact": "exact_parcel",
     "address_exact": "exact_address",
@@ -622,12 +655,30 @@ _EXACT_MATCH_FIELDS = {
 }
 
 
-def _record_identity(match_type: str) -> dict[str, Any]:
+def _record_identity(
+    match_type: str,
+    lead: Optional[dict] = None,
+    *,
+    record_id: Any = None,
+    can_decide: bool = False,
+) -> dict[str, Any]:
+    """The search's claim, plus, for a record whose parcel has this tenant's
+    lead, the house decision (`confirmation`) and whether the caller may make
+    one (`confirmable`: the house is linked to a client and the caller is a
+    decider; the route is the gate)."""
     if match_type in _UNMATCHED_TYPES:
         status_name = "not_applicable"
     else:
         status_name = _EXACT_IDENTITY.get(match_type, "possible_match")
-    return {"status": status_name, "basis": match_type, "verified": False}
+    identity: dict[str, Any] = {"status": status_name, "basis": match_type, "verified": False}
+    if not lead:
+        return identity
+    head = (lead.get("heads_by_record") or {}).get(str(record_id))
+    confirmation = confirmation_state(head)
+    identity["verified"] = confirmation["state"] == "confirmed"
+    identity["confirmation"] = confirmation
+    identity["confirmable"] = bool(lead.get("linked")) and can_decide
+    return identity
 
 
 def _token_key(value: Any) -> str:
@@ -673,18 +724,20 @@ def _ambiguous_parcels(rows: list[dict]) -> frozenset:
     return frozenset(compact for compact, seen in forms.items() if len(seen) > 1)
 
 
-def _public_record_json(r: dict, lead_ids: Optional[dict] = None) -> dict:
+def _public_record_json(r: dict, lead_ids: Optional[dict] = None, *, can_decide: bool = False) -> dict:
     """Map one allow-listed catalog row to the existing property-card contract.
 
     `lead_ids` comes from _lead_ids_for_records. Absent (or no match) leaves
     lead_id None, which is correct: the tenant has no lead for this parcel, so
     there is nothing captured against it and the tour stays at exterior tier.
+    `can_decide` is whether the caller may record a house decision.
     """
     parcel_key = (str(r.get("parcel_id") or ""), str(r.get("state") or ""))
+    lead = (lead_ids or {}).get(parcel_key)
     record = {
         "id": r.get("id"),
         "public_record_id": r.get("public_record_id") or r.get("id"),
-        "lead_id": (lead_ids or {}).get(parcel_key),
+        "lead_id": lead["lead_id"] if lead else None,
         "mls_number": r.get("parcel_id") or "",
         "parcel_id": r.get("parcel_id") or "",
         "address": r.get("address") or "",
@@ -728,7 +781,9 @@ def _public_record_json(r: dict, lead_ids: Optional[dict] = None) -> dict:
         "match_type": r.get("match_type") or "browse",
         "match_score": int(r.get("match_score") or 0),
     }
-    record["identity"] = _record_identity(record["match_type"])
+    record["identity"] = _record_identity(
+        record["match_type"], lead, record_id=record["public_record_id"], can_decide=can_decide,
+    )
     required_facts = {
         "assessor_value": record["price"],
         "last_recorded_sale": record["last_sale_price"],
@@ -1157,8 +1212,11 @@ async def mls_pipeline_search(
 
     query_key = _token_key(q) if q and q.strip() else ""
     ambiguous = _ambiguous_parcels(rows)
+    can_decide = can_decide_record_match(ctx)
     listings = [
-        _public_record_json(_settle_exact_match(r, query_key, ambiguous_parcels=ambiguous), lead_ids)
+        _public_record_json(
+            _settle_exact_match(r, query_key, ambiguous_parcels=ambiguous), lead_ids, can_decide=can_decide,
+        )
         for r in rows
     ]
     notice = _public_coverage_json()["notice"]
@@ -1249,7 +1307,7 @@ async def mls_pipeline_listing(
     except Exception as exc:  # noqa: BLE001 — the record itself is still valid
         logger.warning("Lead resolution failed for public record %s: %s", record_id, exc)
 
-    detail = _public_record_json(row_dict, lead_ids)
+    detail = _public_record_json(row_dict, lead_ids, can_decide=can_decide_record_match(ctx))
     # Blank fields after a failed official-source lookup are "not checked",
     # not "not published" (audit A02). Empty when nothing failed.
     detail["enrichment"] = enrichment_failures
