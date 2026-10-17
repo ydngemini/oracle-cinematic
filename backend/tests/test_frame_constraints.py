@@ -760,7 +760,10 @@ def test_two_sarahs_are_asked_about_and_neither_is_texted(turn_env, chat, monkey
     assert row[4] == "draft_sms" and row[6] == "FRAME_CLARIFY"
     block = seen["system"].split("## ASK FIRST — ENFORCED BY THE SERVER", 1)[1]
     assert "2 records match “Sarah”" in block
-    assert "1) Sarah Chen (client)" in block and "2) Sarah Lee (client)" in block
+    assert '"name": "Sarah Chen"' in block and '"name": "Sarah Lee"' in block
+    # Review L05-11: the question reaches the turn end, which turns it into
+    # buttons (handle_ai_chat_job reads bundle["question"]).
+    assert [c.id for c in bundle["question"].choices] == [SARAH, SARAH_2]
     # The stored summary keeps the flag and the ids — never the names.
     stored = _stored(chat)
     assert stored["needs_clarification"] is True

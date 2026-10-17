@@ -461,7 +461,10 @@ async def _message_choices(conn, ctx: TenantContext, row) -> list[dict]:
         except Exception:  # noqa: BLE001 — not visible any more: not offered
             continue
         if record.get("label"):
-            out.append({"type": str(ref["type"]), "id": str(ref["id"]), "label": str(record["label"])})
+            from semantic_turn import record_detail
+
+            out.append({"type": str(ref["type"]), "id": str(ref["id"]), "label": str(record["label"]),
+                        "detail": record_detail(record)})
     return out
 
 
@@ -1932,8 +1935,8 @@ async def execute_safe_tool(
         ) if stated else None
         if refusal is None and pending is not None:
             # The turn is still asking which record the person meant (T05.10):
-            # acting on one of them, or creating a new one, would be the guess.
-            refusal = frame_constraints.check_pending(pending, tool_name, targets=targets, lang=lang)
+            # every action waits for the answer (L05-11: fail closed).
+            refusal = frame_constraints.check_pending(pending, tool_name, lang=lang)
         if refusal is not None:
             # The tool name and code only: the arguments can name a customer.
             logger.info("Tool %s refused by a stated constraint (%s)", tool_name, refusal.code)

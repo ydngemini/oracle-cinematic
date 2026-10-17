@@ -101,48 +101,91 @@ _TURN: contextvars.ContextVar[
 ] = contextvars.ContextVar("semantic_turn", default=None)
 
 
+#: Record types a choice can be picked as: the chat context a click carries
+#: (ai_chat_models.ChatContext). A contact-only person is still named in the
+#: question and still held, but cannot be a button yet (L05-11).
+CLICKABLE = frozenset({"client", "lead"})
+
+
 @dataclass(frozen=True)
 class Choice:
     """One record the person may have meant, named the way the parser saw it
-    (the known-record label). Lives for the turn; never stored (C5.4)."""
+    (the known-record label) with a detail that tells same-name records apart.
+    Lives for the turn; never stored (C5.4)."""
     record_type: str
     id: str
     label: str
+    detail: str = ""
+
+    @property
+    def clickable(self) -> bool:
+        return self.record_type in CLICKABLE
 
 
 @dataclass(frozen=True)
 class Question:
-    """The one precise question of a turn (T05.10): the mention as written and
-    the authorised records it could mean — none when nobody the caller can
-    open matched, which is still a question, never a guess."""
+    """The one precise question of a turn (T05.10), built only from what the
+    server decided (authorize_frame), never from the parser's own text.
+
+    `choices` are the authorised records the first ambiguous mention could
+    mean — none when nobody the caller can open matched, which is still a
+    question. `held` is every authorised choice of EVERY ambiguous mention:
+    the turn refuses acting on any of them until the person answers. `also`
+    names the other ambiguous mentions; `capped` says the lookup stopped at
+    its limit, so the count is "at least"."""
     text: str
     choices: tuple[Choice, ...] = ()
+    held: frozenset[str] = frozenset()
+    also: tuple[str, ...] = ()
+    capped: bool = False
 
     def pending(self) -> Optional[fc.Pending]:
-        if not self.choices:
-            return None
-        return fc.Pending(self.text, frozenset(c.id for c in self.choices))
+        return fc.Pending(self.held) if self.held else None
 
 
-def question_from(frame: Optional[sf.SemanticFrame], known: Sequence[sf.KnownRecord]) -> Optional[Question]:
-    """The first ambiguity authorize_frame left about a mention, with each
-    authorised choice labelled from the list the parser was shown. One
-    question per turn: the person answers it, the next turn re-parses."""
-    if frame is None:
+def question_from(
+    frame: Optional[sf.SemanticFrame], known: Sequence[sf.KnownRecord], *,
+    capped: frozenset[int] = frozenset(), lang: Optional[str] = None,
+) -> Optional[Question]:
+    """The turn's question, from the ambiguities authorize_frame built
+    (`server`) on an authorised frame. A parser-written ambiguity (choices
+    stripped, free text) never stands in for the server's (L05-11); an
+    ambiguity with choices outranks one without."""
+    if frame is None or not frame.authorized:
         return None
-    labels = {(k.record_type, str(k.id)): k.label for k in known}
-    for a in frame.ambiguities:
-        if a.mention is None or a.mention >= len(frame.mentions):
-            continue
-        text = frame.mentions[a.mention].text
-        choices = tuple(
-            Choice(c.record_type, str(c.id), labels.get((c.record_type, str(c.id)), lang_.t("choices.unnamed")))
-            for c in a.choices if c.access is not None
+    named = {(k.record_type, str(k.id)): k for k in known}
+
+    def choice(c: sf.Candidate) -> Choice:
+        k = named.get((c.record_type, str(c.id)))
+        label = k.label if k and k.label else lang_.t("choices.unnamed", lang)
+        return Choice(c.record_type, str(c.id), label, (k.detail if k else "") or "")
+
+    ours = [a for a in frame.ambiguities
+            if a.server and a.mention is not None and a.mention < len(frame.mentions)]
+    asking = [a for a in ours if len([c for c in a.choices if c.access is not None]) > 1]
+    if asking:
+        first = asking[0]
+        held = frozenset(str(c.id) for a in asking for c in a.choices if c.access is not None)
+        return Question(
+            text=frame.mentions[first.mention].text,
+            choices=tuple(choice(c) for c in first.choices if c.access is not None),
+            held=held,
+            also=tuple(dict.fromkeys(frame.mentions[a.mention].text for a in asking[1:])),
+            capped=first.mention in capped,
         )
-        if len(choices) == 1:
-            continue  # one authorised record is an answer, not a question
-        return Question(text, choices)
+    nobody = [a for a in ours if not a.choices]
+    if nobody:
+        return Question(text=frame.mentions[nobody[0].mention].text)
     return None
+
+
+def _fenced(choices: Sequence[Choice]) -> str:
+    """The choices as data: names and details are written by people, so they
+    are JSON inside a fence, '<' escaped so a name cannot close it (the same
+    rule as the SELECTED RECORD block)."""
+    rows = [{"n": i, "name": c.label[:120], "detail": c.detail[:160], "type": c.record_type}
+            for i, c in enumerate(choices, 1)]
+    return "<choices>" + json.dumps(rows, ensure_ascii=False).replace("<", "\\u003c") + "</choices>"
 
 
 @dataclass
@@ -166,19 +209,25 @@ class TurnFrame:
         return self.question.pending() if self.question else None
 
     def question_block(self) -> str:
-        """What the model is told to ask. The server enforces it (check_pending)."""
+        """What the model is told to ask. With choices the server enforces it
+        (check_pending holds every action); the 'nobody' question binds no
+        hold, so its heading claims no enforcement."""
         q = self.question
         if q is None:
             return ""
         if q.choices:
-            lines = [lang_.t("ask.which", self.lang, n=len(q.choices), text=q.text)]
-            lines += [f"  {i}) {c.label} ({c.record_type})" for i, c in enumerate(q.choices, 1)]
+            key = "ask.which_more" if q.capped else "ask.which"
+            lines = [lang_.t(key, self.lang, n=len(q.choices), text=q.text),
+                     lang_.t("ask.data", self.lang), _fenced(q.choices)]
+            if q.also:
+                lines.append(lang_.t("ask.also", self.lang, texts=", ".join(f"“{t}”" for t in q.also)))
             lines.append(lang_.t("ask.rules", self.lang))
+            heading = "## ASK FIRST — ENFORCED BY THE SERVER"
         else:
             lines = [lang_.t("ask.nobody", self.lang, text=q.text)]
+            heading = "## ASK FIRST"
         reply_in = lang_.t("prompt.reply_in", self.lang)
-        return ("## ASK FIRST — ENFORCED BY THE SERVER\n" + "\n".join(lines)
-                + (f"\n{reply_in}" if reply_in else ""))
+        return heading + "\n" + "\n".join(lines) + (f"\n{reply_in}" if reply_in else "")
 
     def summary(self) -> dict[str, Any]:
         """What is stored. Ids, labels, kinds and times — no words."""
@@ -306,6 +355,14 @@ def _last_user_text(bundle: dict) -> str:
     return ""
 
 
+def record_detail(row: Optional[dict]) -> str:
+    """What tells two same-name records apart in a question: a client's type,
+    stage and email (what the people search already shows the agent). Never
+    stored; used for the turn's question and its buttons only."""
+    row = row or {}
+    return " · ".join(str(row[k]) for k in ("client_type", "stage", "email") if row.get(k))
+
+
 async def _known_records(ctx: TenantContext, bundle: dict, refs: list[dict]) -> list[sf.KnownRecord]:
     """What the parser may refer to by number: the selected record, then the
     records the previous turn resolved (re-read as the caller, so a record
@@ -315,7 +372,7 @@ async def _known_records(ctx: TenantContext, bundle: dict, refs: list[dict]) -> 
     ctype, cid = assistant.get("context_type"), assistant.get("context_id")
     record = bundle.get("record") or {}
     if ctype in ("client", "lead") and cid and record.get("label"):
-        known.append(sf.KnownRecord(ctype, str(cid), str(record["label"])))
+        known.append(sf.KnownRecord(ctype, str(cid), str(record["label"]), record_detail(record)))
     wanted = []
     for r in refs:
         if r.get("type") in ("client", "lead") and r.get("id") and str(r["id"]) != str(cid):
@@ -334,7 +391,7 @@ async def _known_records(ctx: TenantContext, bundle: dict, refs: list[dict]) -> 
                 except Exception:  # noqa: BLE001 — not visible any more: not offered
                     continue
                 if row.get("label"):
-                    known.append(sf.KnownRecord(rtype, rid, str(row["label"])))
+                    known.append(sf.KnownRecord(rtype, rid, str(row["label"]), record_detail(row)))
     except Exception as exc:  # noqa: BLE001 — discourse is a help, not a dependency
         logger.info("semantic turn: previous records not re-read (%s)", type(exc).__name__)
     return known
@@ -375,29 +432,50 @@ def _searchable(text: str) -> bool:
             and not all(w.lower().strip(".¿?¡!") in _PRONOUNS for w in words))
 
 
+#: A hit becomes a candidate only for a strong name match: exact, prefix or a
+#: word that starts with what was said (search_api.score_match >= 0.7). A
+#: substring inside another name ("Bob" in "Bobby"), an email or a company is
+#: not the person the request named (L05-11).
+STRONG_MATCH = 0.7
+
+
+@dataclass
+class Lookup:
+    """What the people lookup added to a frame."""
+    frame: Optional[sf.SemanticFrame]
+    found: list[sf.KnownRecord] = field(default_factory=list)
+    #: Mention indices whose candidates came from the lookup, not the parser.
+    #: They never scope or lift a constraint (from_frame / lifts).
+    looked_up: frozenset[int] = frozenset()
+    #: Mention indices whose search stopped at its limit.
+    capped: frozenset[int] = frozenset()
+
+
 async def _lookup_people(
-    ctx: TenantContext, frame: Optional[sf.SemanticFrame],
-) -> tuple[Optional[sf.SemanticFrame], list[sf.KnownRecord]]:
+    ctx: TenantContext, frame: Optional[sf.SemanticFrame], *, lang: Optional[str] = None,
+) -> Lookup:
     """A person the parser named but could not place — the name is not among
     the records it was shown — is looked up as the caller, with the fast
-    path's own people search (T05.10, L05-10). The hits become the mention's
-    candidates for authorize_frame to keep or drop, so the turn resolves one
-    match or asks about several instead of leaving the model to guess.
+    path's own people search (T05.10, L05-10). Strong matches become the
+    mention's candidates for authorize_frame to keep or drop, so the turn
+    resolves one match or asks about several instead of leaving the model to
+    guess.
 
     Pronouns and texts with no letters are never searched. A search that
     fails, times out or did not run its people leg changes nothing (unknown
-    is not "nobody", C6). Returns the frame and the hits as known records,
-    so a question can name them."""
+    is not "nobody", C6)."""
     if frame is None:
-        return frame, []
+        return Lookup(frame)
     wanted = [i for i, m in enumerate(frame.mentions)
               if m.kind == "person" and not m.candidates and _searchable(m.text)]
     if not wanted:
-        return frame, []
+        return Lookup(frame)
     import search_api
     import source_status as ss
 
     found: list[sf.KnownRecord] = []
+    looked_up: set[int] = set()
+    capped: set[int] = set()
     mentions = list(frame.mentions)
     for index in wanted:
         text = mentions[index].text
@@ -409,12 +487,15 @@ async def _lookup_people(
             continue
         if ((out.get("source_status") or {}).get("people") or {}).get("status") != ss.CHECKED:
             continue
+        hits = out.get("results") or []
         candidates: list[sf.Candidate] = []
         seen: set[tuple[str, str]] = set()
-        for hit in out.get("results") or []:
+        for hit in hits:
             record = hit.get("record") or {}
             rtype, rid = record.get("type"), str(record.get("id") or "")
             if rtype not in ("client", "contact") or (rtype, rid) in seen:
+                continue
+            if float(hit.get("score") or 0) < STRONG_MATCH:
                 continue
             try:
                 as_uuid = uuid.UUID(rid)
@@ -422,17 +503,48 @@ async def _lookup_people(
                 continue
             seen.add((rtype, rid))
             candidates.append(sf.Candidate(record_type=rtype, id=as_uuid))
-            found.append(sf.KnownRecord(rtype, rid, str(hit.get("label") or lang_.t("choices.unnamed"))))
+            label = hit.get("label") or ""
+            if label in ("", "Unnamed"):
+                label = lang_.t("choices.unnamed", lang)
+            elif label == "Contact":
+                label = lang_.t("choices.contact", lang)
+            found.append(sf.KnownRecord(rtype, rid, str(label), str(hit.get("sublabel") or "")))
         if candidates:
             mentions[index] = mentions[index].model_copy(update={"candidates": candidates[:sf.MAX_CANDIDATES]})
-    return frame.model_copy(update={"mentions": mentions}), found
+            looked_up.add(index)
+            if len(hits) >= LOOKUP_LIMIT or len(candidates) > sf.MAX_CANDIDATES:
+                capped.add(index)
+    return Lookup(frame.model_copy(update={"mentions": mentions}), found,
+                  frozenset(looked_up), frozenset(capped))
+
+
+def _without_lookup(frame: Optional[sf.SemanticFrame], looked_up: frozenset[int]) -> Optional[sf.SemanticFrame]:
+    """The frame as the parser placed it: lookup-supplied candidates removed,
+    so a constraint on that mention stays unscoped (applies to everyone) and a
+    lift names nobody — a search hit never narrows or lifts a restriction."""
+    if frame is None or not looked_up:
+        return frame
+    mentions = [m.model_copy(update={"candidates": []}) if i in looked_up else m
+                for i, m in enumerate(frame.mentions)]
+    return frame.model_copy(update={"mentions": mentions})
+
+
+@dataclass
+class Parsed:
+    frame: Optional[sf.SemanticFrame]
+    status: str
+    reason: str
+    elapsed: int
+    lookup: Lookup
 
 
 async def _parse(
     ctx: TenantContext, text: str, *, known: Sequence[sf.KnownRecord], now: datetime,
-) -> tuple[Optional[sf.SemanticFrame], str, str, int, list[sf.KnownRecord]]:
-    """(authorised frame or None, status, reason, elapsed ms, people found by
-    lookup). Never raises."""
+    lookup: bool = True, lang: Optional[str] = None,
+) -> Parsed:
+    """The authorised frame (or None), how the parse ended and what the people
+    lookup added. Never raises. `lookup=False` for a mission objective: it has
+    no question step, so a search there could only narrow its constraints."""
     zone = default_timezone()
     started = time.perf_counter()
     frame: Optional[sf.SemanticFrame] = None
@@ -454,9 +566,11 @@ async def _parse(
     except Exception as exc:  # noqa: BLE001 — the parser never breaks the turn
         status, reason = "unavailable", type(exc).__name__
     elapsed = int((time.perf_counter() - started) * 1000)
-    found: list[sf.KnownRecord] = []
+    looked = Lookup(frame)
     if frame is not None:
-        frame, found = await _lookup_people(ctx, frame)
+        if lookup:
+            looked = await _lookup_people(ctx, frame, lang=lang)
+            frame = looked.frame
         try:
             frame = await sf.authorize_frame(ctx, frame)
         except Exception as exc:  # noqa: BLE001
@@ -465,7 +579,8 @@ async def _parse(
             reason = f"authorization_failed:{type(exc).__name__}"
     if status != "parsed":
         logger.info("semantic turn: parser %s (%s) in %d ms", status, reason or "-", elapsed)
-    return frame, status, reason, elapsed, found
+    looked.frame = frame
+    return Parsed(frame, status, reason, elapsed, looked)
 
 
 async def prepare_turn(
@@ -483,24 +598,35 @@ async def prepare_turn(
     standing, refs = standing_from_bundle(bundle)
     text = _last_user_text(bundle)
 
+    lang = lang_.reply_language(text, previous_language(bundle), bundle.get("lang_hint"))
+    # The frame constraints are read from: as the parser placed it, without
+    # candidates the people lookup supplied (L05-11).
+    constraint_frame: Optional[sf.SemanticFrame] = None
     if not text.strip():
         turn = TurnFrame(status="no_request")
     else:
         known = await _known_records(ctx, bundle, refs)
-        frame, status, reason, elapsed, found = await _parse(ctx, text, known=known, now=now)
-        turn = TurnFrame(status=status, reason=reason, frame=frame, extract_ms=elapsed,
-                         question=question_from(frame, [*known, *found]))
+        parsed = await _parse(ctx, text, known=known, now=now, lang=lang)
+        found = parsed.lookup
+        turn = TurnFrame(status=parsed.status, reason=parsed.reason, frame=parsed.frame,
+                         extract_ms=parsed.elapsed,
+                         question=question_from(parsed.frame, [*known, *found.found],
+                                                capped=found.capped, lang=lang))
         turn.detected = lang_.detect(text).lang
-    turn.lang = lang_.reply_language(text, previous_language(bundle), bundle.get("lang_hint"))
+        constraint_frame = _without_lookup(parsed.frame, found.looked_up)
+    turn.lang = lang
 
-    if turn.frame is not None:
-        turn.own = fc.from_frame(turn.frame, origin=str(assistant_id), stated_at=now)
+    if constraint_frame is not None:
+        turn.own = fc.from_frame(constraint_frame, origin=str(assistant_id), stated_at=now)
     turn.own, turn.backstop = apply_backstop(
         text, turn.frame, turn.own, detected=turn.detected,
         origin=str(assistant_id), now=now,
     )
-    # A turn that states a restriction is never also a lift of one.
-    lifted = fc.lifts(turn.frame) if not turn.backstop else None
+    # A turn that states a restriction is never also a lift of one, and a turn
+    # still asking who the person meant lifts nothing: "OK, text Sarah now"
+    # with two Sarahs must not undo a "don't contact" on either (L05-11).
+    lifted = (fc.lifts(constraint_frame)
+              if not turn.backstop and turn.question is None else None)
     turn.active = fc.merge(standing, turn.own, lifted_for=lifted, now=now)
 
     if turn.frame is not None or turn.active or standing:
@@ -555,7 +681,8 @@ async def mission_constraints(
     if not fc.enabled():
         return {}
     now = now or datetime.now(timezone.utc)
-    frame, status, reason, elapsed, _found = await _parse(ctx, objective_text, known=(), now=now)
+    parsed = await _parse(ctx, objective_text, known=(), now=now, lookup=False)
+    frame, status, reason, elapsed = parsed.frame, parsed.status, parsed.reason, parsed.elapsed
     own = fc.from_frame(frame, origin="mission", stated_at=now) if frame else []
     detected = lang_.detect(objective_text).lang
     own, backstop = apply_backstop(objective_text, frame, own, detected=detected,

@@ -431,14 +431,14 @@ def check_tool(
 
 @dataclass(frozen=True)
 class Pending:
-    """The one precise question this turn is still waiting on (T05.10): the
-    mention as the person wrote it and the authorised records it could mean."""
-    text: str
+    """The records this turn is still asking about (T05.10): every authorised
+    choice of every ambiguous mention, not only the one the question names."""
     records: frozenset[str]
 
 
-#: Creating a record while a person-question is open is the guess the
-#: question exists to prevent ("never fabricate a record to avoid asking").
+#: Creating a record while a question is open is the guess the question exists
+#: to prevent ("never fabricate a record to avoid asking"); it gets its own
+#: wording, which tells the person how to ask for someone new.
 _CREATES_A_PERSON = frozenset({"create_client"})
 
 
@@ -446,24 +446,21 @@ def check_pending(
     pending: Optional[Pending],
     tool_name: str,
     *,
-    targets: frozenset[str],
     lang: Optional[str] = None,
 ) -> Optional[Refusal]:
-    """None if the call may run. An effectful call anchored on, or naming, one
-    of the records the turn is still asking about is refused — picking one is
-    exactly what the question exists to prevent — and so is creating a new
-    person instead of asking. Reads run: the model may look at both to help
-    the person choose."""
-    if pending is None or tool_name in READ_ONLY_TOOLS:
+    """None if the call may run. While the turn is asking which record the
+    person meant, every effectful call is refused — whatever it targets: a
+    deal, a property, a note or a call with no recognisable target could each
+    be acting on the guessed record (fail closed, as applies_to does). Reads
+    run: the model may look at the records to help the person choose. The
+    message names nobody (it reaches logs and ledgers by code only)."""
+    if pending is None or not pending.records or tool_name in READ_ONLY_TOOLS:
         return None
     risk = TOOL_RISK.get(tool_name)
     if risk is None or risk is ActionRisk.READ_ONLY:
         return None
-    if tool_name in _CREATES_A_PERSON:
-        return Refusal("clarify", "FRAME_CLARIFY", lang_.t("refuse.clarify_create", lang, text=pending.text))
-    if not (targets & pending.records):
-        return None
-    return Refusal("clarify", "FRAME_CLARIFY", lang_.t("refuse.clarify", lang, text=pending.text))
+    key = "refuse.clarify_create" if tool_name in _CREATES_A_PERSON else "refuse.clarify"
+    return Refusal("clarify", "FRAME_CLARIFY", lang_.t(key, lang))
 
 
 # ---------------------------------------------------------------------------

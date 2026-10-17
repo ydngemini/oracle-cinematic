@@ -23,8 +23,13 @@ from tenancy import Role, TenantContext
 TENANT = "11111111-1111-1111-1111-111111111111"
 CTX = TenantContext(agent_id="a@t.test", tenant_id=TENANT, role=Role.AGENT)
 SARAH_A, SARAH_B = str(uuid.uuid4()), str(uuid.uuid4())
+CONTACT = str(uuid.uuid4())
 QUESTION = semantic_turn.Question("Sarah", (
-    semantic_turn.Choice("client", SARAH_A, "Sarah Chen"), semantic_turn.Choice("client", SARAH_B, "Sarah Lee")))
+    semantic_turn.Choice("client", SARAH_A, "Sarah Chen", "buyer · active"),
+    semantic_turn.Choice("client", SARAH_B, "Sarah Lee", "seller"),
+    # Named in the question and held, but a click cannot carry a contact yet.
+    semantic_turn.Choice("contact", CONTACT, "Sarah Park")),
+    held=frozenset({SARAH_A, SARAH_B, CONTACT}))
 
 
 class _Conn:
@@ -113,7 +118,8 @@ def test_the_turn_end_carries_the_labels_and_the_row_the_ids(monkeypatch):
     assert done[-1]["choices"] == [{"type": "client", "id": SARAH_A}, {"type": "client", "id": SARAH_B}]
     complete = [f for f in seen["frames"] if f["type"] == "AI_CHAT_COMPLETE"]
     assert complete[-1]["choices"] == [
-        {"type": "client", "id": SARAH_A, "label": "Sarah Chen"}, {"type": "client", "id": SARAH_B, "label": "Sarah Lee"}]
+        {"type": "client", "id": SARAH_A, "label": "Sarah Chen", "detail": "buyer · active"},
+        {"type": "client", "id": SARAH_B, "label": "Sarah Lee", "detail": "seller"}]
 
     async def no_question(_ctx, bundle, _assistant_id):
         return "Done.", [], "fake:model"
@@ -146,11 +152,12 @@ def test_listing_the_thread_relabels_the_choices_as_the_caller_and_drops_what_th
     async def resolve(_conn, _ctx, rtype, rid):
         if rid == SARAH_B:
             raise LookupError("no longer visible")
-        return {"id": rid, "label": "Sarah Chen"}
+        return {"id": rid, "label": "Sarah Chen", "client_type": "buyer", "stage": "active", "email": "s@x.test"}
 
     monkeypatch.setattr(ai_chat_store, "_decrypt_text", open_)
     monkeypatch.setattr(ai_chat_store, "resolve_record", resolve)
     out = asyncio.run(ai_chat_store.list_messages(CTX, limit=10))
     assistant = [m for m in out if m["role"] == "assistant"][0]
-    assert assistant["choices"] == [{"type": "client", "id": SARAH_A, "label": "Sarah Chen"}]
+    assert assistant["choices"] == [{"type": "client", "id": SARAH_A, "label": "Sarah Chen",
+                                     "detail": "buyer · active · s@x.test"}]
     assert [m for m in out if m["role"] == "user"][0]["choices"] == []

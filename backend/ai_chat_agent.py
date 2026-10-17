@@ -1036,8 +1036,13 @@ async def _local_fallback(
             ok = bool(isinstance(receipt, dict) and receipt.get("ok"))
             if ok and (receipt.get("command_id") or receipt.get("approval_id")):
                 staged_commands.append(str(receipt.get("command_id") or receipt.get("approval_id")))
-            logger.info("chat tool %s ok=%s%s", name, ok,
-                        "" if ok else f" error={str((receipt or {}).get('error') or '')[:160]!r}")
+            # The outcome by code only: a refusal's or a handler's error text
+            # can name a customer ("Sarah Chen has no email on record"), and
+            # this line reaches application logs (A06, L05-11).
+            outcome = "ok" if ok else (
+                f"refused:{receipt.get('constraint')}"
+                if isinstance(receipt, dict) and receipt.get("refused") else "failed")
+            logger.info("chat tool %s %s", name, outcome)
             call_index += 1
             messages.append(
                 {
@@ -1462,11 +1467,13 @@ async def _turn_role(requester: TenantContext, recorded: object) -> Role:
 
 
 def _question_choices(bundle: dict) -> list[dict]:
-    """The turn's question as the UI shows it: one entry per record the
-    person may have meant, labelled as the parser saw it. [] without one."""
+    """The turn's question as the UI shows it: one button per record the
+    person may have meant that a click can carry back as the chat context
+    (client, lead — semantic_turn.CLICKABLE), labelled as the parser saw it,
+    with what tells same-name records apart. [] without one."""
     question = bundle.get("question") if isinstance(bundle, dict) else None
-    return [{"type": c.record_type, "id": str(c.id), "label": c.label}
-            for c in (getattr(question, "choices", None) or ())]
+    return [{"type": c.record_type, "id": str(c.id), "label": c.label, "detail": c.detail}
+            for c in (getattr(question, "choices", None) or ()) if c.clickable]
 
 
 async def handle_ai_chat_job(payload: dict, reporter: JobReporter) -> dict:

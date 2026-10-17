@@ -85,7 +85,7 @@ function ChoiceButtons({ choices, onChoose }) {
           disabled={!onChoose}
         >
           {choice.label}
-          <small>{choice.type}</small>
+          <small>{choice.detail || choice.type}</small>
         </button>
       ))}
     </div>
