@@ -21,17 +21,26 @@ nothing else — is the only entry point that may fall back.
 Deadlines are the caller's. Voice replies carry an 8-second wall clock; a retry
 that consumed it would turn a late answer into no answer, so `timeout` bounds
 the whole call including any fallback, not each attempt.
+
+**Spend is checked before it happens** (T18.07). A caller spending on a
+brokerage's behalf sets `spend_scope` — each Neoh chat turn does
+(ai_budget.SpendScope). Every hosted call then takes a hold first, so a refusal
+raises SpendRefused before anything is sent and is never a fallback trigger,
+and settles the provider's reported usage after. With no scope set nothing
+changes.
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import threading
 import time
+from contextvars import ContextVar
 from dataclasses import dataclass, field
-from typing import Any, Optional, Sequence
+from typing import Any, Awaitable, Callable, Optional, Sequence
 
 logger = logging.getLogger("oracle.llm_gateway")
 
@@ -43,6 +52,176 @@ _COUNTER_RETENTION_SECONDS = 3600.0
 
 class LLMUnavailable(RuntimeError):
     """No configured provider could answer. Never raised for a refusal."""
+
+
+class SpendRefused(LLMUnavailable):
+    """A brokerage's spend controls refused a hosted call BEFORE it was sent
+    (T18.07, ai_budget). Nothing reached a provider.
+
+    A subclass of LLMUnavailable on purpose: every entry point below re-raises
+    LLMUnavailable rather than trying the next provider, so a refusal ends the
+    ladder instead of reading as one provider's outage. `state` is what refused
+    (exhausted, paused, platform_halted, unknown), `code` the chat error code,
+    `message` what the person is told. A caller that already applied writes
+    sets `applied` to their receipts (and `model_id` to its tier) before
+    re-raising.
+    """
+
+    def __init__(self, state: str, code: str, message: str) -> None:
+        super().__init__(message)
+        self.state = state
+        self.code = code
+        self.message = message
+        self.applied: list = []
+        self.model_id: Optional[str] = None
+
+
+class SpendUnavailable(SpendRefused):
+    """The budget could not be read, so the call was held, not sent. Retryable;
+    never a pass and never a lasting block."""
+
+
+#: The spend scope of the work in progress, or None. A caller that spends on a
+#: brokerage's behalf sets one (ai_chat_agent sets an ai_budget.SpendScope for
+#: each chat turn); with none set every entry point behaves exactly as before.
+#: A scope answers `before(lane, estimate)` with a hold or raises SpendRefused,
+#: `after(hold, response)` records the reported usage, and `release(hold)`
+#: drops a hold whose call failed. Neither of the last two may raise.
+spend_scope: ContextVar[Any] = ContextVar("llm_spend_scope", default=None)
+
+
+#: Characters per token in every estimate here. A conservative engineering
+#: constant, not a measurement.
+CHARS_PER_TOKEN = 3
+
+#: The hold for one image or document a call carries as bytes (raw, or a
+#: base64 data URL), in place of its encoded size. An engineering allowance,
+#: not a measurement: a provider prices an image by its pixels, not its bytes
+#: (one 3 MB photo held at its JSON size was over a million tokens), and a
+#: document by the text it extracts — a caller that knows that text holds the
+#: document by it instead (document_tokens). The reported usage replaces it
+#: when the call settles.
+ATTACHMENT_TOKENS = 8_000
+
+
+def document_tokens(text: Optional[str]) -> int:
+    """The hold for one document sent as bytes whose extracted text is known:
+    that text at CHARS_PER_TOKEN, never less than ATTACHMENT_TOKENS."""
+    return max(ATTACHMENT_TOKENS, -(-len(text or "") // CHARS_PER_TOKEN))
+
+
+def _without_payloads(value: Any, found: list) -> Any:
+    """`value` with each binary payload cut out and counted in `found`."""
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        found.append(1)
+        return ""
+    if isinstance(value, str):
+        if value.startswith("data:") and ";base64," in value[:200]:
+            found.append(1)
+            return ""
+        return value
+    if isinstance(value, dict):
+        return {key: _without_payloads(item, found) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_without_payloads(item, found) for item in value]
+    return value
+
+
+def estimate_tokens(*parts: Any, completion: int) -> int:
+    """A call's token estimate before it is sent: the JSON size of what it
+    carries over CHARS_PER_TOKEN, plus ATTACHMENT_TOKENS for each image or
+    document, plus its completion ceiling. A conservative engineering
+    constant, not a measurement — the provider's reported usage replaces it
+    when the call settles."""
+    payloads: list = []
+    size = len(json.dumps(_without_payloads(parts, payloads), default=str, ensure_ascii=False))
+    return -(-size // CHARS_PER_TOKEN) + len(payloads) * ATTACHMENT_TOKENS + max(0, int(completion))
+
+
+async def spend_guarded(lane: str, estimate: int, call: Callable[[], Awaitable[Any]]) -> Any:
+    """Run one hosted model call under the current spend scope, if there is one.
+
+    The hold is taken before the call (a refusal raises and nothing is sent),
+    settled with the response, and released when the call raises — or is cut
+    off by its caller (a deadline cancels it), like a call that timed out. For
+    an async call that cancelling really stops (ai_chat_agent's direct
+    Fireworks HTTP round); a call made in a worker thread goes through
+    spend_guarded_thread. The gateway hooks its own calls.
+    """
+    scope = spend_scope.get()
+    if scope is None:
+        return await call()
+    hold = await scope.before(lane, estimate)
+    try:
+        response = await call()
+    except BaseException:  # noqa: BLE001 — a cancelled call drops its hold too
+        await scope.release(hold)
+        raise
+    await scope.after(hold, response)
+    return response
+
+
+#: Thread-backed calls whose caller may have stopped waiting, kept referenced
+#: until they settle (spend_guarded_thread).
+_METERING: set = set()
+
+
+def _metered_done(task: "asyncio.Task") -> None:
+    _METERING.discard(task)
+    if not task.cancelled():
+        task.exception()    # retrieved: a caller that stopped waiting never will
+
+
+async def spend_guarded_thread(lane: str, estimate: int, fn: Callable[..., Any], *args: Any,
+                               timeout: Optional[float] = None) -> Any:
+    """spend_guarded for a call made in a worker thread (the Foundry SDK,
+    boto3's converse): `fn(*args)` runs in one, under the current spend scope.
+
+    A deadline that cancels the wait cannot stop the thread: the request is
+    still in flight and the provider bills it. So the hold stays until the
+    thread returns, then is settled with the reported usage (or released if
+    the call raised), whether or not anyone is still waiting for the answer.
+    `timeout` bounds the wait, not the call. If the event loop itself shuts
+    down first, the hold is left to lapse (ai_budget.HOLD_SECONDS), not dropped.
+    """
+    scope = spend_scope.get()
+    if scope is None:
+        return await asyncio.wait_for(asyncio.to_thread(fn, *args), timeout=timeout)
+    hold = await scope.before(lane, estimate)
+
+    async def metered() -> Any:
+        try:
+            response = await asyncio.to_thread(fn, *args)
+        except Exception:
+            await scope.release(hold)
+            raise
+        await scope.after(hold, response)
+        return response
+
+    task = asyncio.ensure_future(metered())
+    _METERING.add(task)
+    task.add_done_callback(_metered_done)
+    return await asyncio.wait_for(asyncio.shield(task), timeout=timeout)
+
+
+async def _hold(provider: "Provider", *parts: Any, completion: int) -> tuple[Any, Any]:
+    """(scope, hold) for a gateway call, or (None, None) when no scope applies.
+
+    The local llama server is not hosted spend and is never held."""
+    scope = spend_scope.get()
+    if scope is None or provider.name == "local":
+        return None, None
+    return scope, await scope.before(provider.name, estimate_tokens(*parts, completion=completion))
+
+
+async def _unhold(scope: Any, hold: Any) -> None:
+    if scope is not None:
+        await scope.release(hold)
+
+
+async def _settle(scope: Any, hold: Any, response: Any) -> None:
+    if scope is not None:
+        await scope.after(hold, response)
 
 
 # ---------------------------------------------------------------------------
@@ -327,8 +506,9 @@ def token_usage_of(response: Any) -> tuple[int, int]:
     Exists for the same reason as `_text_of`: three call paths reach three
     different APIs and none of them agrees on the field names. The Responses API
     says input_tokens/output_tokens, Chat Completions says
-    prompt_tokens/completion_tokens, and a local llama.cpp server may say
-    neither. A caller that guessed one shape would silently meter zero against
+    prompt_tokens/completion_tokens, Bedrock's Converse says
+    inputTokens/outputTokens, and a local llama.cpp server may say neither.
+    A caller that guessed one shape would silently meter zero against
     the others, which is worse than not metering at all — it would look like the
     spend was measured.
 
@@ -354,8 +534,8 @@ def token_usage_of(response: Any) -> tuple[int, int]:
         return 0
 
     return (
-        _field("prompt_tokens", "input_tokens"),
-        _field("completion_tokens", "output_tokens"),
+        _field("prompt_tokens", "input_tokens", "inputTokens"),
+        _field("completion_tokens", "output_tokens", "outputTokens"),
     )
 
 
@@ -438,6 +618,17 @@ async def complete(
         if remaining <= 0:
             logger.warning("llm_gateway: %s deadline exhausted before %s", task, provider.name)
             break
+        # Held before the call and outside its try (T18.07): a budget refusal
+        # raises SpendRefused here, nothing is sent, and no later provider is
+        # tried. Without a spend scope this is a no-op.
+        scope, hold = await _hold(provider, messages, completion=max_tokens)
+        if scope is not None:
+            # The hold was a database round trip; the deadline counts it.
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                await _unhold(scope, hold)
+                logger.warning("llm_gateway: %s deadline exhausted before %s", task, provider.name)
+                break
         try:
             # asyncio.wait_for, not just the SDK's own timeout parameter.
             # Measured: a voice turn with an 8s budget returned after 15.7s
@@ -457,13 +648,23 @@ async def complete(
                 ),
                 timeout=remaining,
             )
+        except asyncio.CancelledError:
+            # Cut off by the caller's own deadline (the request parser gives
+            # this call 3 s by default): its hold drops, as when it times out
+            # here. Neither is metered (ai_budget.NOT_COUNTED).
+            await _unhold(scope, hold)
+            raise
         except LLMUnavailable:
+            await _unhold(scope, hold)
             raise
         except Exception as exc:  # noqa: BLE001 - any provider error is a fallback trigger
+            await _unhold(scope, hold)
             counter.record(task, provider.name, ok=False, exc=exc)
             last_error = exc
             logger.warning("llm_gateway: %s/%s failed: %s", task, provider.name, exc)
             continue
+        # Settled whatever the content: an empty answer still spent tokens.
+        await _settle(scope, hold, response)
         text = _text_of(response)
         if not text:
             # A reasoning model that spent its whole budget before emitting
@@ -516,6 +717,15 @@ async def stream(
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             break
+        # Gated like every hosted call, but not metered: a stream reports no
+        # usage unless asked to, and nothing that runs under a spend scope
+        # streams today. The hold is dropped when the stream ends.
+        scope, hold = await _hold(provider, messages, completion=max_tokens)
+        if scope is not None:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                await _unhold(scope, hold)
+                break
         emitted = False
         try:
             response = await _litellm().acompletion(
@@ -535,8 +745,10 @@ async def stream(
                     emitted = True
                     yield delta
         except LLMUnavailable:
+            await _unhold(scope, hold)
             raise
         except Exception as exc:  # noqa: BLE001
+            await _unhold(scope, hold)
             counter.record(task, provider.name, ok=False, exc=exc)
             last_error = exc
             if emitted:
@@ -550,6 +762,7 @@ async def stream(
                 return
             logger.warning("llm_gateway: %s/%s stream failed: %s", task, provider.name, exc)
             continue
+        await _unhold(scope, hold)
         if emitted:
             counter.record(task, provider.name, ok=True)
             return
@@ -587,6 +800,9 @@ async def tool_call(
             raise LLMUnavailable(f"No provider is configured for {task!r}.")
         provider = providers[0]
     max_tokens = max(max_tokens, MIN_TOKENS)
+    # Held before the round and outside its try, as in complete(): a refusal
+    # raises SpendRefused and nothing is sent.
+    scope, hold = await _hold(provider, list(messages), list(tools), completion=max_tokens)
     try:
         # Same reason as complete(): the deadline is enforced here, not by the
         # provider SDK. A tool round that overruns still cannot be retried, so
@@ -603,11 +819,18 @@ async def tool_call(
             ),
             timeout=timeout,
         )
+    except asyncio.CancelledError:
+        # Cut off by the caller's deadline: released, as in complete().
+        await _unhold(scope, hold)
+        raise
     except LLMUnavailable:
+        await _unhold(scope, hold)
         raise
     except Exception as exc:  # noqa: BLE001
+        await _unhold(scope, hold)
         counter.record(task, provider.name, ok=False, exc=exc)
         raise LLMUnavailable(f"{provider.name} failed during a tool round: {exc}") from exc
+    await _settle(scope, hold, response)
     counter.record(task, provider.name, ok=True)
     return response
 

@@ -79,15 +79,18 @@ export function oracleReducer(state, action) {
         });
       });
       // Saved rows replace the live ones, but keep the local arrival time of
-      // the last frame each turn received (see observedAt).
+      // the last frame each turn received (see observedAt) and the turn's AI
+      // budget state (T18.07), which only the live frame carries.
       const seen = new Map();
       for (const message of state.aiChatMessages) {
-        if (typeof message.observed_at !== 'number') continue;
-        seen.set(`${message.request_id}:${message.role}`, message.observed_at);
+        const live = {};
+        if (typeof message.observed_at === 'number') live.observed_at = message.observed_at;
+        if (message.budget_state) live.budget_state = message.budget_state;
+        if (Object.keys(live).length) seen.set(`${message.request_id}:${message.role}`, live);
       }
       const saved = incoming.map((message) => {
-        const at = seen.get(`${message?.request_id}:${message?.role}`);
-        return at === undefined ? message : { ...message, observed_at: at };
+        const live = seen.get(`${message?.request_id}:${message?.role}`);
+        return live === undefined ? message : { ...message, ...live };
       });
       return { ...state, aiChatMessages: [...saved, ...pending] };
     }
@@ -147,6 +150,11 @@ export function oracleReducer(state, action) {
           // The one precise question's choices (L05-09): records the person may
           // have meant, offered as buttons under the answer.
           choices: action.payload.choices || [],
+          // The brokerage's AI budget as of the turn's last model call
+          // (T18.07); a turn the budget stopped after its writes applied also
+          // carries the stop's code.
+          budget_state: action.payload.budget_state ?? null,
+          ...(action.payload.code ? { error_code: action.payload.code } : {}),
           ...observedAt(action.payload),
         }),
       };
@@ -157,7 +165,8 @@ export function oracleReducer(state, action) {
         aiChatRevision: state.aiChatRevision + 1,
         aiChatMessages: upsertAssistant(state.aiChatMessages, action.payload, {
           status: 'failed', content: action.payload.message || 'The assistant is unavailable.',
-          error_code: action.payload.code, ...observedAt(action.payload),
+          error_code: action.payload.code, budget_state: action.payload.budget_state ?? null,
+          ...observedAt(action.payload),
         }),
       };
 

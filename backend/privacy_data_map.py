@@ -107,7 +107,10 @@ TABLES: dict[str, TableEntry] = {
     "hyperlocal_site_collaborators": TableEntry(C.BUSINESS_CRM, E),
     "hyperlocal_site_attribution_events": TableEntry(C.COMMUNICATION_METADATA, E),
     "studio_campaigns": TableEntry(C.BUSINESS_CRM, E),
-    "tenant_action_budgets": TableEntry(C.OPERATIONAL, E),
+    "tenant_action_budgets": TableEntry(C.OPERATIONAL, E, "missions cents cap and AI token budget (0170); "
+                                                         "updated_by is the setter's sign-in email"),
+    "ai_token_reservations": TableEntry(C.OPERATIONAL, E, "token estimates of model calls in flight (0170); "
+                                                         "lapse in minutes; no prompt or answer text"),
     "tenant_contract_template_registrations": TableEntry(C.BUSINESS_CRM, E),
     "lead_pipeline_counts": TableEntry(C.DERIVED, E),
     # ── communication ────────────────────────────────────────────────────
@@ -210,6 +213,8 @@ TABLES: dict[str, TableEntry] = {
     "ops_alerts": TableEntry(C.OPERATIONAL, G, "component incidents; no customer data"),
     "provider_health": TableEntry(C.OPERATIONAL, G, "last outcome per property-data provider (0160); "
                                                      "no tenant, no customer data"),
+    "platform_spend_controls": TableEntry(C.OPERATIONAL, G, "platform kill switch per spend channel (0170); "
+                                                             "no tenant; updated_by is a platform admin"),
     "operator_otp_challenges": TableEntry(C.SECRET, G, "operator, not customer"),
     "operator_totp_uses": TableEntry(C.SECRET, G, "operator, not customer"),
     # ── secrets & capability tokens ──────────────────────────────────────

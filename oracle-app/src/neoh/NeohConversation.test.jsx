@@ -298,6 +298,33 @@ describe('NeohConversation', () => {
     expect(onNavigate).toHaveBeenCalledWith('automations');
   });
 
+  it('says quietly when the brokerage is near its monthly AI budget (T18.07)', async () => {
+    setState({
+      aiChatMessages: [
+        { id: 'u1', request_id: 'r1', role: 'user', content: 'Who first?', status: 'completed' },
+        { id: ASSISTANT_ID, request_id: 'r1', role: 'assistant', content: 'Call Sarah.', status: 'completed', budget_state: 'warning' },
+      ],
+    });
+    renderTab();
+    const line = await screen.findByText(/close to this month.s Neoh AI budget/);
+    expect(line.getAttribute('role')).toBe('status');
+  });
+
+  it('shows no budget line unless the latest turn says so, and a refusal in the server\'s words', async () => {
+    setState({
+      aiChatMessages: [
+        { id: 'a1', request_id: 'r1', role: 'assistant', content: 'Earlier.', status: 'completed', budget_state: 'warning' },
+        {
+          id: 'a2', request_id: 'r2', role: 'assistant', status: 'failed', budget_state: 'exhausted',
+          error_code: 'AI_BUDGET_EXHAUSTED', content: 'Ask your broker to raise it; it renews on the 1st (UTC).',
+        },
+      ],
+    });
+    renderTab();
+    expect(await screen.findByText(/Ask your broker to raise it/)).toBeTruthy();
+    expect(screen.queryByText(/close to this month.s Neoh AI budget/)).toBeNull();
+  });
+
   it('says Neoh is unavailable in product language when the conversation is switched off', async () => {
     crmGet.mockImplementation((path) => (
       path === '/api/ai/chat/status' ? Promise.resolve({ enabled: false }) : Promise.resolve({})

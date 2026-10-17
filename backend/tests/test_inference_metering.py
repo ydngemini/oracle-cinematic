@@ -139,7 +139,13 @@ def test_the_idempotency_keys_differ_per_round(monkeypatch):
 
 def test_every_foundry_model_call_is_metered():
     """A path that forgets to meter is invisible, and invisible spend on a flat
-    plan is the whole problem. Pinned structurally rather than by hoping."""
+    plan is the whole problem. Pinned structurally rather than by hoping.
+
+    Since T18.07 each call runs in a worker thread through
+    llm_gateway.spend_guarded_thread, whose scope (ai_budget.SpendScope, set
+    for every chat turn) records the usage through record_inference when the
+    thread returns; tests/test_ai_budget.py pins the other hosted tiers the
+    same way."""
     import ast
     import inspect
 
@@ -150,14 +156,17 @@ def test_every_foundry_model_call_is_metered():
         node for node in ast.walk(tree)
         if isinstance(node, ast.AsyncFunctionDef) and node.name == "_foundry_generate"
     )
-    calls = [
-        ast.unparse(n.func)
-        for n in ast.walk(target)
-        if isinstance(n, ast.Call)
-    ]
-    model_calls = sum(1 for c in calls if "asyncio.to_thread" in c)
-    metered = sum(1 for c in calls if "record_inference" in c)
+    model_calls = sum(
+        1 for n in ast.walk(target) if isinstance(n, ast.Name) and n.id == "_foundry_response")
+    metered = sum(
+        1 for n in ast.walk(target)
+        if isinstance(n, ast.Call) and ast.unparse(n.func) == "spend_guarded_thread"
+        and any(isinstance(a, ast.Name) and a.id == "_foundry_response" for a in n.args)
+    )
 
-    assert metered == model_calls, (
+    assert model_calls and metered == model_calls, (
         f"{model_calls} model call(s) in _foundry_generate but {metered} metered"
     )
+    assert not any(
+        isinstance(n, ast.Call) and ast.unparse(n.func) == "asyncio.to_thread" for n in ast.walk(target)
+    ), "a thread call outside spend_guarded_thread is neither held nor metered"

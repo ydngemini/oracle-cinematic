@@ -62,3 +62,41 @@ describe('the one precise question (L05-09)', () => {
     expect(plain.aiChatMessages[0].choices).toEqual([]);
   });
 });
+
+describe('the AI budget state of a turn (T18.07)', () => {
+  it('keeps what the turn-end frame says, and carries it across the history re-fetch', () => {
+    const warned = run(base, { type: ACTIONS.AI_CHAT_COMPLETE, payload: {
+      request_id: 'r', message_id: 'm', budget_state: 'warning', observed_at: 300,
+    } });
+    expect(warned.aiChatMessages[0]).toMatchObject({ status: 'completed', budget_state: 'warning' });
+    const hydrated = run(warned, {
+      type: ACTIONS.AI_CHAT_HYDRATE,
+      payload: [{ id: 'm', request_id: 'r', role: 'assistant', status: 'completed' }],
+    });
+    expect(hydrated.aiChatMessages[0]).toMatchObject({ budget_state: 'warning', observed_at: 300 });
+  });
+
+  it('records a budget refusal with its code, its words and its state', () => {
+    const refused = run(base, { type: ACTIONS.AI_CHAT_ERROR, payload: {
+      request_id: 'r', message_id: 'm', code: 'AI_BUDGET_EXHAUSTED',
+      message: 'Ask your broker to raise it.', budget_state: 'exhausted',
+    } });
+    expect(refused.aiChatMessages[0]).toMatchObject({
+      status: 'failed', error_code: 'AI_BUDGET_EXHAUSTED', content: 'Ask your broker to raise it.',
+      budget_state: 'exhausted',
+    });
+  });
+
+  it('keeps the code of a turn the budget stopped after its writes applied', () => {
+    const degraded = run(base, { type: ACTIONS.AI_CHAT_COMPLETE, payload: {
+      request_id: 'r', message_id: 'm', actions: [{ ok: true, action_id: 'a' }],
+      budget_state: 'exhausted', code: 'AI_BUDGET_EXHAUSTED',
+    } });
+    expect(degraded.aiChatMessages[0]).toMatchObject({
+      status: 'completed', budget_state: 'exhausted', error_code: 'AI_BUDGET_EXHAUSTED',
+    });
+    const plain = run(base, { type: ACTIONS.AI_CHAT_COMPLETE, payload: { request_id: 'r', message_id: 'm' } });
+    expect(plain.aiChatMessages[0].budget_state).toBe(null);
+    expect('error_code' in plain.aiChatMessages[0]).toBe(false);
+  });
+});

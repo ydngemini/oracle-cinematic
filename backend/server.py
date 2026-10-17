@@ -34,6 +34,7 @@ from mfa_api import router as mfa_router
 from security_contact import router as security_contact_router
 from billing import router as billing_router
 from billing_usage import router as billing_usage_router
+from ai_budget_api import router as ai_budget_router
 from audit_ledger import router as audit_router, ledger, AuditCategory
 from audit_middleware import AuditMiddleware, audit_action, audit_now, drain_pending
 from tenancy import require_context, TenantContext, verify_session_current
@@ -442,6 +443,7 @@ app.include_router(mfa_router)
 app.include_router(security_contact_router)
 app.include_router(billing_router)
 app.include_router(billing_usage_router)
+app.include_router(ai_budget_router)
 app.include_router(audit_router)
 if os.environ.get("ORACLE_ENV", "").lower() in {"dev", "development", "local"}:
     app.include_router(admin_c2_router)

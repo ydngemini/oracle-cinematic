@@ -1,8 +1,8 @@
 {
   "// note": "Ceilings, not targets. Lower deliberately; raise only with a stated reason.",
-  "// largest": "src-DAsITw7y.js",
+  "// largest": "src-Br7Q3XlV.js",
   "largestChunkBytes": 2325752,
-  "largestChunkGzipBytes": 591587,
-  "totalBytes": 4252372,
-  "totalGzipBytes": 1210029
+  "largestChunkGzipBytes": 591589,
+  "totalBytes": 4259025,
+  "totalGzipBytes": 1212683
 }

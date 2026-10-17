@@ -289,15 +289,11 @@ def test_a_foundry_turn_omits_withheld_tools_and_keys_the_executor_on_the_turn(m
             seen["tools"].append({t["name"] for t in kw["tools"]})
             return responses.pop(0)
 
-    async def record_inference(*_a, **_k):
-        return None
-
     async def execute(ctx, user_id, message_id, tool_name, tool_input, context_type, context_id, call_index):
         seen["executed"].append((message_id, tool_name, context_type, context_id, call_index))
         return {"ok": True, "action_id": "act-1"}
 
     monkeypatch.setattr(ai_chat_agent, "_foundry_openai_client", lambda: SimpleNamespace(responses=Responses()))
-    monkeypatch.setattr(ai_chat_agent, "record_inference", record_inference)
     monkeypatch.setattr(ai_chat_agent, "execute_safe_tool", execute)
     offer = tool_offer.for_actor(AGENT, "client", {"sms": SMS_GAP})
     bundle = {"messages": [], "record": None, "attachments": [],

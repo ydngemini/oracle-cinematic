@@ -141,6 +141,10 @@ export function NeohConversation({ onNavigate, onOpenEntity }) {
 
   // Keep the newest turn in view, above the composer.
   const last = channel.messages[channel.messages.length - 1];
+  // The brokerage's AI budget as of Neoh's latest answer (T18.07): one quiet
+  // line near the cap. A stop is the turn's own message, in the server's words.
+  const latestReply = [...channel.messages].reverse().find((message) => message.role === 'assistant');
+  const nearBudget = latestReply?.budget_state === 'warning';
   const lastKey = `${channel.messages.length}:${last?.status || ''}:${(last?.content || '').length > 0}:${Boolean(rendered)}`;
   const firstScroll = useRef(true);
   useEffect(() => {
@@ -252,6 +256,12 @@ export function NeohConversation({ onNavigate, onOpenEntity }) {
           onReview={() => onNavigate?.('automations')}
           onChoose={(choice) => channel.send(choice.label, { type: choice.type, id: choice.id })}
         />
+
+        {nearBudget && (
+          <p className={styles.budgetNote} role="status">
+            Your brokerage is close to this month’s Neoh AI budget.
+          </p>
+        )}
 
         {rendered && (
           <div className={styles.answer}>
