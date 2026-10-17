@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from decimal import Decimal
 
 import portfolio_api
@@ -96,3 +96,51 @@ def test_summary_is_explicitly_tenant_scoped_for_platform_admin(monkeypatch):
         assert args == (TENANT_ID,)
     combined_sql = "\n".join(query for query, _ in conn.queries)
     assert "FROM leads" not in combined_sql
+
+
+class _TitleFlagConn(_SummaryConn):
+    """The summary with one title finding awaiting review."""
+
+    async def fetch(self, query, *args):
+        if "FROM title_findings" in query:
+            self._record(query, args)
+            return [{
+                "id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                "property_key": "DE-NCC-0142",
+                "finding_type": "lien",
+                "review_status": "required",
+                "match_status": "possible_match",
+                "record_id": "2024-001234",
+                "amount": Decimal("12500.00"),
+                "recorded_at": date(2024, 3, 1),
+                "released_at": None,
+            }]
+        return await super().fetch(query, *args)
+
+
+def test_a_title_flag_carries_what_a_reviewer_decides_on(monkeypatch):
+    """Confirm / Dismiss act on one finding by id (T11.03, F11.04), and the
+    reviewer sees the record's evidence and the submitter's match claim: a
+    confirmed possible match still reads "Possible match" to the homeowner."""
+    conn = _TitleFlagConn()
+    monkeypatch.setattr(portfolio_api, "tenant_tx", _fake_tenant_tx(conn))
+
+    result = asyncio.run(portfolio_api.portfolio_summary(CTX))
+
+    [flag] = [f for f in result["intelligence_flags"] if f["type"] == "TITLE"]
+    assert flag == {
+        "type": "TITLE",
+        "property_key": "DE-NCC-0142",
+        "label": "lien",
+        "review_status": "required",
+        "finding_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+        "match_status": "possible_match",
+        "record_id": "2024-001234",
+        "amount": 12500.0,
+        "recorded_at": "2024-03-01",
+        "released_at": None,
+    }
+    title_sql = next(q for q, _ in conn.queries if "FROM title_findings" in q)
+    # Only findings still awaiting a person's decision are listed; no notes.
+    assert "review_status='required'" in title_sql
+    assert "notes" not in title_sql

@@ -118,10 +118,11 @@ function humanize(text) {
 
 // A title finding's match_status is the submitter's claim about which property
 // the record belongs to (AC11.04); nothing checks it. `matched` and `released`
-// claim it is this one, and stay "Not verified" until a reviewer sets the
-// finding to `confirmed`, which no route does yet (T11.03). `possible_match`,
-// `unresolved` and any status this page does not know are a possible match.
-// Nothing on this page says verified.
+// claim it is this one, and stay "Not verified" until a broker owner sets the
+// finding to `confirmed` (POST /api/intelligence/title/findings/{id}/review,
+// T11.03). `possible_match`, `unresolved` and any status this page does not
+// know are a possible match, confirmed or not (PortfolioTab tells the reviewer
+// so). Nothing on this page says verified.
 const POSSIBLE_MATCH = 'Possible match';
 const NOT_VERIFIED = 'Not verified';
 const CLAIMED_TITLE_MATCH = new Set(['matched', 'released']);

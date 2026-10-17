@@ -172,7 +172,9 @@ TABLES: dict[str, TableEntry] = {
     "property_signals": TableEntry(C.DERIVED, E),
     "property_characteristic_inferences": TableEntry(C.DERIVED, E),
     "zoning_analyses": TableEntry(C.DERIVED, E),
-    "title_findings": TableEntry(C.DERIVED, E),
+    "title_findings": TableEntry(C.DERIVED, E, "notes plaintext (agent's working note); the reviewer's reason "
+                                               "(may name an owner) only sealed in review_reason_ciphertext "
+                                               "(0167, T11.03), no plaintext column; reviewed_by is an email"),
     "entity_nodes": TableEntry(C.DERIVED, E),
     "entity_links": TableEntry(C.DERIVED, E),
     # ── documents & media ────────────────────────────────────────────────

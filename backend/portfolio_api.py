@@ -640,7 +640,8 @@ async def portfolio_summary(ctx: TenantContext = Depends(require_context)):
             )
             title_risks = await conn.fetch(
                 """
-                SELECT property_key,finding_type,review_status
+                SELECT id,property_key,finding_type,review_status,match_status,
+                       record_id,amount,recorded_at,released_at
                   FROM title_findings
                  WHERE tenant_id=$1::uuid
                    AND review_status='required'
@@ -716,6 +717,17 @@ async def portfolio_summary(ctx: TenantContext = Depends(require_context)):
             "property_key": item["property_key"],
             "label": item["finding_type"],
             "review_status": item["review_status"],
+            # What a broker owner confirms or dismisses (POST
+            # /api/intelligence/title/findings/{id}/review, T11.03), and the
+            # evidence they decide on: the submitter's match claim (confirming
+            # a possible match leaves the homeowner's "Possible match" label)
+            # and the record. No notes: they are free text.
+            "finding_id": str(item["id"]),
+            "match_status": item["match_status"],
+            "record_id": item["record_id"],
+            "amount": float(item["amount"]) if item["amount"] is not None else None,
+            "recorded_at": item["recorded_at"].isoformat() if item["recorded_at"] else None,
+            "released_at": item["released_at"].isoformat() if item["released_at"] else None,
         }
         for item in title_risks
     ]

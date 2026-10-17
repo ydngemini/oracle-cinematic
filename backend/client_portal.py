@@ -832,8 +832,9 @@ async def read_scoped_dossier(authorization: Optional[str] = Header(default=None
         if scope.get("title_summary"):
             # The homeowner reads this as a list of claims against their house.
             # A finding a reviewer dismissed was judged not to apply, so it is
-            # not one (F11.04). No route dismisses a finding yet; the filter
-            # covers any row that is dismissed. Possible and unresolved matches stay, and carry
+            # not one (F11.04). A broker owner dismisses or confirms one through
+            # POST /api/intelligence/title/findings/{id}/review (T11.03); the
+            # filter covers any dismissed row. Possible and unresolved matches stay, and carry
             # their match_status and review_status so the page can say what they
             # are (AC11.04). Only what the page shows is sent: the agent's notes
             # (often a third party's court record) stay with the agent, and the

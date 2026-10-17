@@ -77,6 +77,9 @@ Counts are from the dev database. They show shape, not production volume.
 - `style_training_examples`: redacted.
 - Model registry, training runs and evaluations.
 
+**Derived intelligence** (property signals, scores, zoning and title analyses):
+- `title_findings`: `notes` is the agent's working note **in plaintext** (often a third party's court record) and never reaches the client portal. The reviewer's reason for confirming or dismissing a finding (T11.03) may name an owner, so it is stored only sealed in `review_reason_ciphertext` under the key of the finding's own tenant (0167); there is no plaintext column for it. `reviewed_by` is the reviewer's email. The reason never enters audit metadata; the brokerage export decrypts it, and erasure deletes it with the row.
+
 **Documents and media**:
 - Contracts, drafts and synthesis artifacts (encrypted content plus a vault object).
 - `ai_record_attachments` (encrypted bytes).
