@@ -17,12 +17,16 @@ import { CrmShell } from './CrmShell';
 const { pass } = vi.hoisted(() => ({ pass: ({ children }) => children }));
 // The gate reports whether it is locking the workspace; tests flip it.
 vi.mock('./BillingOverlay', () => ({
-  BillingOverlay: ({ onLockedChange }) => {
+  BillingOverlay: ({ onLockedChange, onOpenAccountData }) => {
     const locked = globalThis.__billingLocked ?? false;
     useEffect(() => { onLockedChange?.(locked); }, [locked, onLockedChange]);
+    if (globalThis.__billingLapsed) {
+      return <button type="button" onClick={onOpenAccountData}>Export your data</button>;
+    }
     return locked ? <div role="dialog" aria-label="Billing" /> : null;
   },
 }));
+vi.mock('./MyProfileTab', () => ({ default: () => <div data-testid="settings" /> }));
 vi.mock('./ServiceStatusBanner', () => ({ ServiceStatusBanner: () => null }));
 vi.mock('./OnboardingGate', () => ({ OnboardingGate: () => null }));
 vi.mock('./StateSelector', () => ({ StateSelector: () => null }));
@@ -55,6 +59,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   delete globalThis.__billingLocked;
+  delete globalThis.__billingLapsed;
   window.history.replaceState({}, '', '/');
 });
 
@@ -101,5 +106,14 @@ describe('CrmShell destinations', () => {
     globalThis.__billingLocked = false;
     await act(async () => { rerender(<CrmShell />); });
     expect(await screen.findByTestId('tour')).toBeTruthy();
+  });
+
+  it('a lapsed subscription\'s "Export your data" opens Settings, where the export is', async () => {
+    globalThis.__billingLapsed = true;
+    render(<CrmShell />);
+    await act(async () => { screen.getByRole('button', { name: 'Export your data' }).click(); });
+    const sheet = await screen.findByRole('dialog', { name: 'Settings' });
+    expect(sheet.id).toBe('agent-profile-sheet');
+    expect(await screen.findByTestId('settings')).toBeTruthy();
   });
 });

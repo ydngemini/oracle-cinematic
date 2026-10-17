@@ -598,6 +598,63 @@
   outline-offset: 3px;
 }
 
+/* ── Lapsed subscription: read and export stay open (AC18.07) ── */
+.lapsedActions {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+/* After "Continue to your records": a quiet notice in the shell's flow
+   below the fixed header (as ServiceStatusBanner), never over the records. */
+.lapsedNotice {
+  position: relative;
+  z-index: var(--z-above);
+  flex: 0 0 auto;
+  margin-top: calc(var(--crm-header-h) + var(--safe-top));
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-4);
+  padding: var(--space-2) var(--space-4);
+  border-bottom: 1px solid var(--oracle-border, rgba(255, 255, 255, 0.08));
+  font-size: var(--text-sm);
+  color: var(--oracle-text-dim);
+  background: var(--oracle-surface, transparent);
+}
+
+/* A service banner above already clears the header. */
+[data-service-banner] + .lapsedNotice {
+  margin-top: 0;
+}
+
+.lapsedNoticeText {
+  flex: 1 1 16rem;
+  min-width: 0;
+  margin: 0;
+  line-height: 1.5;
+}
+
+.noticeBtn {
+  min-height: 44px;
+  padding: 0.4rem 0.9rem;
+  border: 1px solid var(--oracle-border);
+  border-radius: 2px;
+  background: transparent;
+  color: var(--oracle-accent-ink);
+  font: inherit;
+  cursor: pointer;
+}
+
+.noticeBtn:hover {
+  border-color: rgba(255, 188, 31, 0.45);
+}
+
+.noticeBtn:focus-visible {
+  outline: 2px solid rgba(255, 188, 31, 0.95);
+  outline-offset: 2px;
+}
+
 /* ── Fine print ──────────────────────────────────────────────── */
 .fine {
   font-family: 'PP Neue Montreal', 'Inter', system-ui, sans-serif;

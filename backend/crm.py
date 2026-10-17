@@ -1392,8 +1392,10 @@ async def send_message(
 ):
     """Persist a comms entry without overstating delivery.
 
-    Email is queued in email_outbox. SMS is currently log-only because this
-    route has no SMS provider, and carries an explicit ``not_sent`` marker.
+    Email is queued in email_outbox, and only for a brokerage that may contact
+    clients (billing.entitlement_refusal: 402 lapsed, 423 closing).
+    SMS is currently log-only because this route has no SMS provider, and
+    carries an explicit ``not_sent`` marker.
     ``note``/legacy ``message`` entries are internal and have no direction.
     Threads continue the latest stored channel thread or start a fresh one.
     """
@@ -1411,8 +1413,19 @@ async def send_message(
     direction = None if is_internal else body.direction
     outbound = direction == "outbound"
     if stored_channel == "email" and outbound:
+        import billing
         import commercial_email
 
+        # The same reading as releasing a command's email (F18.07): a lapsed or
+        # closing brokerage emails nobody from the composer either. Only
+        # outbound email — logging what a client sent and internal notes stay
+        # open, and outbound SMS here is log-only (never sent). Not the route
+        # gate, which lets a platform admin through: email_outbox.deliver
+        # refuses for the tenant whoever queued it, so an admin would get a
+        # "queued" email that can never go out.
+        refusal = await billing.entitlement_refusal(ctx)
+        if refusal is not None:
+            raise HTTPException(status_code=refusal[0], detail=refusal[1])
         try:
             await commercial_email.require_postal_address(ctx.tenant_id)
         except commercial_email.PostalAddressRequired as exc:

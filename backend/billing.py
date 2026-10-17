@@ -137,16 +137,44 @@ async def require_active_subscription(
     creates a broker_owner with no payment — so an unpaid or cancelled tenant
     could buy phone numbers on the platform carrier account, register 10DLC
     brands, release outbound sends and queue GPU work (review BILL-2). Applied
-    to exactly those routes; reading and editing your own CRM is not gated.
+    to exactly those routes; reading, exporting and editing your own CRM is not
+    gated. Paths that send without this route gate (the CRM composer's email,
+    release_command, the send workers) ask entitlement_refusal directly, which
+    refuses a platform admin too: what it lets through, a worker will send.
     """
     if ctx.is_platform_admin:
         return ctx
+    refusal = await entitlement_refusal(ctx)
+    if refusal is not None:
+        raise HTTPException(status_code=refusal[0], detail=refusal[1])
+    return ctx
+
+
+class NotEntitled(RuntimeError):
+    """A worker refused to send for a tenant that is no longer entitled.
+
+    Terminal for the job, like recovery_mode.RecoveryModeBlocked: a retry would
+    make the refused send the moment the subscription came back — customer
+    contact that nobody re-approved."""
+
+    job_terminal = True
+    job_error_code = "NOT_ENTITLED"
+
+
+async def entitlement_refusal(ctx: TenantContext) -> Optional[tuple[int, str]]:
+    """(status code, reason) when ctx's tenant may not spend or contact anyone
+    right now, else None. The one reading behind require_active_subscription.
+
+    The send workers call it too, as the platform, at execution (CONTRACT
+    C3.4): an email or command queued while the brokerage was paying must not
+    go out after it lapsed (F18.07). It never short-circuits for a platform
+    admin; only the request gate does. A status it cannot read raises."""
     from db import connection as _dbc
 
     if _dbc.get_pool() is None:
         # No database (unit tests, degraded boot): nothing to read either gate from.
         if not billing_enforced():
-            return ctx
+            return None
         raise HTTPException(status_code=503, detail="Billing status is unavailable.")
     # Any entitled row, not the newest: a brokerage holding two subscriptions
     # (the checkout webhook flags that for a person) whose newer one was
@@ -161,18 +189,12 @@ async def require_active_subscription(
     # A brokerage that is closing (or suspended) spends nothing and contacts
     # nobody, paid or not — enforced even where billing enforcement is off.
     if row is not None and row["lifecycle"] not in (None, "active"):
-        raise HTTPException(
-            status_code=423,
-            detail="This brokerage is closing; outbound actions are disabled.",
-        )
+        return 423, "This brokerage is closing; outbound actions are disabled."
     if not billing_enforced():
-        return ctx
+        return None
     if row is None or not row["entitled"]:
-        raise HTTPException(
-            status_code=402,
-            detail="An active Neoh subscription is required for this action.",
-        )
-    return ctx
+        return 402, "An active Neoh subscription is required for this action."
+    return None
 
 
 def _webhook_secret_configured() -> bool:
@@ -222,6 +244,23 @@ class SubscriptionStatus(BaseModel):
     status: str
     plan: str
     current_period_end: str | None = None
+    # Whether ANY subscription of this brokerage got past checkout (see
+    # _ONCE_ENTITLED_STATUSES). The status above is the newest row only: a
+    # paid brokerage that checks out again by bank debit has a new
+    # 'incomplete' row (and 'incomplete_expired' if the debit fails) that
+    # alone reads like one that never paid. It has records to read and export
+    # (AC18.07, F18.07); the front-end gate tells the two apart with this.
+    ever_entitled: bool = False
+
+
+# Statuses a subscription reaches only once it was entitled, plus 'canceled',
+# which the front-end gate already treats as lapsed whatever came before:
+# counting it can at most open reads and the export of the brokerage's own
+# workspace, and the server gate refuses spend either way. Not
+# current_period_end: a customer.subscription.updated for an unpaid
+# 'incomplete' subscription carries a period too, and
+# _handle_subscription_updated stores it, so it is no evidence of a payment.
+_ONCE_ENTITLED_STATUSES = ("active", "trialing", "past_due", "unpaid", "paused", "canceled")
 
 
 # ---------------------------------------------------------------------------
@@ -329,7 +368,7 @@ async def create_checkout_session(
         if live:
             raise HTTPException(status_code=409,
                                 detail="This brokerage already has a plan whose payment is not settled. "
-                                       "Open Manage billing to update the card or review the invoice.")
+                                       "Open Manage billing to check the payment or change the payment method.")
         # The brokerage's open session, handed back until it completes or
         # expires. Ten minutes short of its expiry it is replaced instead, so
         # nobody is sent to a page that closes while they pay.
@@ -578,6 +617,11 @@ async def subscription_status(
             "ORDER BY status IN ('active', 'trialing', 'past_due') DESC, created_at DESC LIMIT 1",
             tenant_id,
         )
+        ever_entitled = row is not None and bool(await conn.fetchval(
+            "SELECT EXISTS (SELECT 1 FROM subscriptions WHERE tenant_id = $1 "
+            "AND status = ANY($2::text[]))",
+            tenant_id, list(_ONCE_ENTITLED_STATUSES),
+        ))
 
     if not row:
         return SubscriptionStatus(active=False, status="none", plan="none")
@@ -594,6 +638,7 @@ async def subscription_status(
         status=row["status"],
         plan=row["plan"],
         current_period_end=period_end,
+        ever_entitled=ever_entitled,
     )
 
 

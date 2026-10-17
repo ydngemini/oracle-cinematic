@@ -309,6 +309,8 @@ async def _stage(
 
 async def _release(ctx: TenantContext, staged: dict[str, Any]) -> bool:
     """Release through the same function a person's Approve click calls."""
+    from fastapi import HTTPException
+
     from commands_api import _get_command, release_command
 
     try:
@@ -317,6 +319,12 @@ async def _release(ctx: TenantContext, staged: dict[str, Any]) -> bool:
             return False
         await release_command(ctx, row, reason="released by mission grant")
         return True
+    except HTTPException as exc:
+        # A gate said no — e.g. the brokerage's subscription lapsed (402,
+        # F18.07). Expected, not a fault: the command stays staged for a person.
+        logger.info("mission: command %s not released (%s): %s",
+                    staged.get("id"), exc.status_code, exc.detail)
+        return False
     except Exception:  # noqa: BLE001
         logger.exception("mission: releasing command %s failed", staged.get("id"))
         return False

@@ -65,6 +65,7 @@ from platform_policy import (
     require_feature,
 )
 from tenancy import Role, TenantContext, require_context, require_role
+import billing
 from billing import require_active_subscription
 
 if TYPE_CHECKING:
@@ -2039,7 +2040,15 @@ async def release_command(
     trail the first path writes.
 
     `row` is a command_executions row already checked to be awaiting approval.
+
+    Entitlement is checked HERE, not only on the Approve route: a mission's
+    self-release calls this directly, and must not queue a send for a lapsed
+    or closing brokerage either (F18.07). Refused, the command stays awaiting
+    approval and nothing is queued.
     """
+    refusal = await billing.entitlement_refusal(ctx)
+    if refusal is not None:
+        raise HTTPException(status_code=refusal[0], detail=refusal[1])
     command_id = str(row["id"])
     approval = await decide_approval(
         ctx, str(row["approval_id"]), decision="approved", reason=reason
@@ -3013,6 +3022,12 @@ async def _execute_command_job(payload: dict[str, Any], reporter) -> dict[str, A
     await reporter.progress(15, "compliance check")
     submission_started = False
     try:
+        # Approved while the brokerage was entitled is not enough: a send
+        # queued (or scheduled) before the subscription lapsed must not go out
+        # after it (F18.07, C3.4). Terminal — see billing.NotEntitled.
+        refusal = await billing.entitlement_refusal(ctx)
+        if refusal is not None:
+            raise billing.NotEntitled(f"Not sent: {refusal[1]}")
         if not await _requester_may_contact(tenant_id, command):
             raise RuntimeError(
                 "Not sent: the person who asked for this can no longer contact this "
