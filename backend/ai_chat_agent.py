@@ -1213,11 +1213,19 @@ async def _generate(ctx: TenantContext, bundle: dict, assistant_id: str) -> tupl
     # lets the model explain — it is not the control.
     turn = await frame_task if frame_task is not None else None
     if turn is not None:
-        semantic_turn.bind(assistant_id, turn.active, turn.lang)
+        semantic_turn.bind(assistant_id, turn.active, turn.lang, pending=turn.pending())
         constraint_block = turn.prompt_block()
         if constraint_block:
             system_prompt += "\n\n" + constraint_block
             runtime_context = (runtime_context + "\n\n" + constraint_block).strip()
+        # The frame's one precise question (T05.10, L05-08): several records
+        # the person can open match a name, so the model asks and names them
+        # instead of picking one; execute_safe_tool refuses acting on any of
+        # them this turn (frame_constraints.check_pending).
+        question_block = turn.question_block()
+        if question_block:
+            system_prompt += "\n\n" + question_block
+            runtime_context = (question_block + "\n\n" + runtime_context).strip()
     # What this actor is offered this turn, and why the rest is not (T07.04,
     # L07-03): the broker-owner reads an agent may not use and the channels the
     # brokerage has not set up are withheld from every provider's tool list

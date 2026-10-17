@@ -712,3 +712,70 @@ class TestMissions:
         assert "subject_id=" in src
         defer_src = inspect.getsource(executor._defer)
         assert "state = 'planned'" in defer_src and "due_at" in defer_src
+
+
+# ── T05.10 / L05-08: the turn asks the frame's one precise question ─────────
+
+SARAH_2 = str(uuid.uuid4())
+TEXT_SARAH = "Text Sarah about the showing"
+TWO_SARAHS_ANSWER = _answer(
+    TEXT_SARAH,
+    goals=[{"label": "send_message", "negated": False, "evidence": _ev("Text Sarah")}],
+    mentions=[{"text": "Sarah", "kind": "person", "known": [1, 2], "evidence": _ev("Sarah")}],
+    effect="external_effect",
+)
+
+
+def test_two_sarahs_are_asked_about_and_neither_is_texted(turn_env, chat, monkeypatch):
+    """End to end: the previous turn resolved a second Sarah, the parser offers
+    both by number, the person says "Text Sarah". The model is told to ask and
+    name both; its attempt to text one of them is refused at the chokepoint
+    and ledgered; nothing is dispatched."""
+    import llm_gateway
+
+    seen = {}
+
+    async def capturing_round(messages, tools, **_kw):
+        seen.setdefault("system", messages[0]["content"])
+        return turn_env["script"].pop(0)
+
+    async def second_sarah(_conn, _ctx, rtype, rid):
+        assert (rtype, rid) == ("client", SARAH_2)
+        return {"label": "Sarah Lee", "full_name": "Sarah Lee"}
+
+    monkeypatch.setattr(llm_gateway, "tool_round", capturing_round)
+    monkeypatch.setattr(ai_chat_store, "resolve_record", second_sarah)
+    earlier = {"id": str(uuid.uuid4()), "role": "assistant", "content": "Noted.", "metadata": {
+        "semantic_frame": {"v": 1, "active": [], "lang": "en",
+                           "mentions": [{"kind": "person", "records": [{"type": "client", "id": SARAH_2, "access": "edit"}]}]}}}
+    turn_env["script"][:] = [_tool_call("draft_sms", {"client_id": SARAH, "body": "Showing at 4?"}), _final("Which Sarah?")]
+    semantic_turn.GATEWAY = FakeGateway(TWO_SARAHS_ANSWER)
+    bundle = _bundle(TEXT_SARAH, history=[earlier])
+    assistant = str(uuid.uuid4())
+    text_out, actions, _model = asyncio.run(turn_env["agent"]._generate(CTX, bundle, assistant))
+
+    assert turn_env["dispatched"] == [] and actions == []
+    assert text_out == "Which Sarah?"
+    (row,) = _ledger_refusals(chat)
+    assert row[4] == "draft_sms" and row[6] == "FRAME_CLARIFY"
+    block = seen["system"].split("## ASK FIRST — ENFORCED BY THE SERVER", 1)[1]
+    assert "2 records match “Sarah”" in block
+    assert "1) Sarah Chen (client)" in block and "2) Sarah Lee (client)" in block
+    # The stored summary keeps the flag and the ids — never the names.
+    stored = _stored(chat)
+    assert stored["needs_clarification"] is True
+    assert "Sarah" not in json.dumps(stored)
+
+
+def test_one_sarah_is_resolved_and_texting_her_proceeds(turn_env, chat):
+    """The same request with one record to mean: no question, no refusal."""
+    one_sarah = _answer(
+        TEXT_SARAH,
+        goals=[{"label": "send_message", "negated": False, "evidence": _ev("Text Sarah")}],
+        mentions=[{"text": "Sarah", "kind": "person", "known": [1], "evidence": _ev("Sarah")}],
+        effect="external_effect",
+    )
+    _run_turn(turn_env, TEXT_SARAH, one_sarah, "draft_sms", {"client_id": SARAH, "body": "Showing at 4?"})
+    assert turn_env["dispatched"] == ["draft_sms"]
+    assert _ledger_refusals(chat) == []
+    assert _stored(chat)["needs_clarification"] is False

@@ -1897,13 +1897,17 @@ async def execute_safe_tool(
     import semantic_turn
 
     stated = semantic_turn.constraints_for(message_id)
-    if stated:
+    pending = semantic_turn.pending_for(message_id)
+    if stated or pending is not None:
+        targets = frame_constraints.tool_targets(tool_input, context_type, context_id)
+        lang = semantic_turn.language_for(message_id)
         refusal = frame_constraints.check_tool(
-            stated, tool_name,
-            targets=frame_constraints.tool_targets(tool_input, context_type, context_id),
-            now=datetime.now(timezone.utc),
-            lang=semantic_turn.language_for(message_id),
-        )
+            stated, tool_name, targets=targets, now=datetime.now(timezone.utc), lang=lang,
+        ) if stated else None
+        if refusal is None and pending is not None:
+            # The turn is still asking which record the person meant (T05.10):
+            # acting on one of them, or creating a new one, would be the guess.
+            refusal = frame_constraints.check_pending(pending, tool_name, targets=targets, lang=lang)
         if refusal is not None:
             # The tool name and code only: the arguments can name a customer.
             logger.info("Tool %s refused by a stated constraint (%s)", tool_name, refusal.code)

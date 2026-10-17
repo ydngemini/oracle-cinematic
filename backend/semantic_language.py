@@ -450,6 +450,28 @@ MESSAGES: dict[str, dict[str, str]] = {
     "choices.deals": {"en": "{n} deals match “{query}”.", "es": "{n} tratos coinciden con “{query}”."},
     "choices.which": {"en": "Which one?", "es": "¿Cuál?"},
     "choices.which_deal": {"en": "Which deal?", "es": "¿Qué trato?"},
+    # semantic_turn.TurnFrame.question_block — the one precise question (T05.10)
+    "ask.which": {
+        "en": "{n} records match “{text}”. Ask which one, naming these choices exactly:",
+        "es": "{n} registros coinciden con “{text}”. Pregunta cuál, nombrando exactamente estas opciones:",
+    },
+    "ask.nobody": {
+        "en": "No record you can open matches “{text}”. Ask who they mean; do not guess, and never invent a record.",
+        "es": "Ningún registro que puedas abrir coincide con “{text}”. Pregunta a quién se refiere; no adivines y nunca inventes un registro.",
+    },
+    "ask.rules": {
+        "en": "Do not pick one and do not act on any of them until the person answers; the server refuses tool calls against them this turn.",
+        "es": "No elijas una ni actúes sobre ninguna hasta que la persona responda; el servidor rechaza las llamadas a herramientas sobre ellas en este turno.",
+    },
+    # frame_constraints.check_pending
+    "refuse.clarify": {
+        "en": "I asked which “{text}” you meant and have not had an answer yet, so I did not act on either record.",
+        "es": "Pregunté a qué “{text}” te referías y todavía no tengo respuesta, así que no actué sobre ningún registro.",
+    },
+    "refuse.clarify_create": {
+        "en": "I asked which “{text}” you meant; creating a new record instead would be a guess, so nothing was created.",
+        "es": "Pregunté a qué “{text}” te referías; crear un registro nuevo en su lugar sería adivinar, así que no se creó nada.",
+    },
     "deal.not_loaded": {"en": "That deal could not be loaded.", "es": "No se pudo cargar ese trato."},
     "person.contact_only": {
         "en": "{label} is in the contact book but has no client record yet, so there is nothing to read from.",

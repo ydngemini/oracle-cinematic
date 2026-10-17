@@ -429,6 +429,43 @@ def check_tool(
     return None
 
 
+@dataclass(frozen=True)
+class Pending:
+    """The one precise question this turn is still waiting on (T05.10): the
+    mention as the person wrote it and the authorised records it could mean."""
+    text: str
+    records: frozenset[str]
+
+
+#: Creating a record while a person-question is open is the guess the
+#: question exists to prevent ("never fabricate a record to avoid asking").
+_CREATES_A_PERSON = frozenset({"create_client"})
+
+
+def check_pending(
+    pending: Optional[Pending],
+    tool_name: str,
+    *,
+    targets: frozenset[str],
+    lang: Optional[str] = None,
+) -> Optional[Refusal]:
+    """None if the call may run. An effectful call anchored on, or naming, one
+    of the records the turn is still asking about is refused — picking one is
+    exactly what the question exists to prevent — and so is creating a new
+    person instead of asking. Reads run: the model may look at both to help
+    the person choose."""
+    if pending is None or tool_name in READ_ONLY_TOOLS:
+        return None
+    risk = TOOL_RISK.get(tool_name)
+    if risk is None or risk is ActionRisk.READ_ONLY:
+        return None
+    if tool_name in _CREATES_A_PERSON:
+        return Refusal("clarify", "FRAME_CLARIFY", lang_.t("refuse.clarify_create", lang, text=pending.text))
+    if not (targets & pending.records):
+        return None
+    return Refusal("clarify", "FRAME_CLARIFY", lang_.t("refuse.clarify", lang, text=pending.text))
+
+
 # ---------------------------------------------------------------------------
 # The mission step boundary (08)
 # ---------------------------------------------------------------------------

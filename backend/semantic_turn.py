@@ -92,12 +92,56 @@ def default_timezone() -> str:
 #: (tests/conftest.py installs one that has no model at all).
 GATEWAY: Any = None
 
-#: (assistant_id, constraints, reply language) for the turn running in this
-#: task. Keyed by the turn so a tool call from any other turn never reads
-#: these constraints.
-_TURN: contextvars.ContextVar[Optional[tuple[str, tuple[fc.ActiveConstraint, ...], str]]] = (
-    contextvars.ContextVar("semantic_turn", default=None)
-)
+#: (assistant_id, constraints, reply language, pending question) for the turn
+#: running in this task. Keyed by the turn so a tool call from any other turn
+#: never reads these.
+_TURN: contextvars.ContextVar[
+    Optional[tuple[str, tuple[fc.ActiveConstraint, ...], str, Optional[fc.Pending]]]
+] = contextvars.ContextVar("semantic_turn", default=None)
+
+
+@dataclass(frozen=True)
+class Choice:
+    """One record the person may have meant, named the way the parser saw it
+    (the known-record label). Lives for the turn; never stored (C5.4)."""
+    record_type: str
+    id: str
+    label: str
+
+
+@dataclass(frozen=True)
+class Question:
+    """The one precise question of a turn (T05.10): the mention as written and
+    the authorised records it could mean — none when nobody the caller can
+    open matched, which is still a question, never a guess."""
+    text: str
+    choices: tuple[Choice, ...] = ()
+
+    def pending(self) -> Optional[fc.Pending]:
+        if not self.choices:
+            return None
+        return fc.Pending(self.text, frozenset(c.id for c in self.choices))
+
+
+def question_from(frame: Optional[sf.SemanticFrame], known: Sequence[sf.KnownRecord]) -> Optional[Question]:
+    """The first ambiguity authorize_frame left about a mention, with each
+    authorised choice labelled from the list the parser was shown. One
+    question per turn: the person answers it, the next turn re-parses."""
+    if frame is None:
+        return None
+    labels = {(k.record_type, str(k.id)): k.label for k in known}
+    for a in frame.ambiguities:
+        if a.mention is None or a.mention >= len(frame.mentions):
+            continue
+        text = frame.mentions[a.mention].text
+        choices = tuple(
+            Choice(c.record_type, str(c.id), labels.get((c.record_type, str(c.id)), lang_.t("choices.unnamed")))
+            for c in a.choices if c.access is not None
+        )
+        if len(choices) == 1:
+            continue  # one authorised record is an answer, not a question
+        return Question(text, choices)
+    return None
 
 
 @dataclass
@@ -114,6 +158,26 @@ class TurnFrame:
     detected: str = "undetermined"
     #: Constraint kinds the deterministic backstop added (the frame lacked them).
     backstop: list[str] = field(default_factory=list)
+    #: The one precise question this turn must ask before acting (T05.10).
+    question: Optional[Question] = None
+
+    def pending(self) -> Optional[fc.Pending]:
+        return self.question.pending() if self.question else None
+
+    def question_block(self) -> str:
+        """What the model is told to ask. The server enforces it (check_pending)."""
+        q = self.question
+        if q is None:
+            return ""
+        if q.choices:
+            lines = [lang_.t("ask.which", self.lang, n=len(q.choices), text=q.text)]
+            lines += [f"  {i}) {c.label} ({c.record_type})" for i, c in enumerate(q.choices, 1)]
+            lines.append(lang_.t("ask.rules", self.lang))
+        else:
+            lines = [lang_.t("ask.nobody", self.lang, text=q.text)]
+        reply_in = lang_.t("prompt.reply_in", self.lang)
+        return ("## ASK FIRST — ENFORCED BY THE SERVER\n" + "\n".join(lines)
+                + (f"\n{reply_in}" if reply_in else ""))
 
     def summary(self) -> dict[str, Any]:
         """What is stored. Ids, labels, kinds and times — no words."""
@@ -151,14 +215,14 @@ class TurnFrame:
 # ---------------------------------------------------------------------------
 
 def bind(assistant_id: str, constraints: Sequence[fc.ActiveConstraint],
-         lang: str = lang_.DEFAULT_LANG) -> None:
+         lang: str = lang_.DEFAULT_LANG, pending: Optional[fc.Pending] = None) -> None:
     """Bind this turn's constraints (and the language its refusals are
-    written in) to the running task.
+    written in, and the question it is still asking) to the running task.
 
     `_generate` runs inside its own task (asyncio.wait_for), so the binding
     ends with the turn without a reset.
     """
-    _TURN.set((str(assistant_id), tuple(constraints), lang_.lang_or_default(lang)))
+    _TURN.set((str(assistant_id), tuple(constraints), lang_.lang_or_default(lang), pending))
 
 
 def constraints_for(message_id: str) -> tuple[fc.ActiveConstraint, ...]:
@@ -170,6 +234,17 @@ def constraints_for(message_id: str) -> tuple[fc.ActiveConstraint, ...]:
     if bound is None or bound[0] != str(message_id):
         return ()
     return bound[1]
+
+
+def pending_for(message_id: str) -> Optional[fc.Pending]:
+    """The question the turn `message_id` is still asking, or None (also None
+    when the switch is off, so the chokepoint behaves exactly as before)."""
+    if not fc.enabled():
+        return None
+    bound = _TURN.get()
+    if bound is None or bound[0] != str(message_id):
+        return None
+    return bound[3]
 
 
 def language_for(message_id: str) -> str:
@@ -339,7 +414,8 @@ async def prepare_turn(
     else:
         known = await _known_records(ctx, bundle, refs)
         frame, status, reason, elapsed = await _parse(ctx, text, known=known, now=now)
-        turn = TurnFrame(status=status, reason=reason, frame=frame, extract_ms=elapsed)
+        turn = TurnFrame(status=status, reason=reason, frame=frame, extract_ms=elapsed,
+                         question=question_from(frame, known))
         turn.detected = lang_.detect(text).lang
     turn.lang = lang_.reply_language(text, previous_language(bundle), bundle.get("lang_hint"))
 
