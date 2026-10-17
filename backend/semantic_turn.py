@@ -47,6 +47,7 @@ import json
 import logging
 import os
 import time
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Optional, Sequence
@@ -357,10 +358,81 @@ async def _persist(ctx: TenantContext, assistant_id: str, summary: dict) -> None
 # One parse, bounded
 # ---------------------------------------------------------------------------
 
+#: Words a mention can be that name nobody to search for.
+_PRONOUNS = frozenset({
+    "her", "him", "them", "she", "he", "they", "it", "me", "us", "you", "i", "we",
+    "ella", "él", "el", "ellos", "ellas", "le", "la", "lo", "les", "los", "las", "nos", "usted", "ustedes", "yo",
+})
+LOOKUP_LIMIT = 5
+#: Wall clock for one people lookup; a slow search leaves the mention as the
+#: parser left it rather than holding the turn.
+LOOKUP_BUDGET_S = 1.5
+
+
+def _searchable(text: str) -> bool:
+    words = [w for w in text.replace(",", " ").split() if w]
+    return (len(text.strip()) >= 2 and any(ch.isalpha() for ch in text)
+            and not all(w.lower().strip(".¿?¡!") in _PRONOUNS for w in words))
+
+
+async def _lookup_people(
+    ctx: TenantContext, frame: Optional[sf.SemanticFrame],
+) -> tuple[Optional[sf.SemanticFrame], list[sf.KnownRecord]]:
+    """A person the parser named but could not place — the name is not among
+    the records it was shown — is looked up as the caller, with the fast
+    path's own people search (T05.10, L05-10). The hits become the mention's
+    candidates for authorize_frame to keep or drop, so the turn resolves one
+    match or asks about several instead of leaving the model to guess.
+
+    Pronouns and texts with no letters are never searched. A search that
+    fails, times out or did not run its people leg changes nothing (unknown
+    is not "nobody", C6). Returns the frame and the hits as known records,
+    so a question can name them."""
+    if frame is None:
+        return frame, []
+    wanted = [i for i, m in enumerate(frame.mentions)
+              if m.kind == "person" and not m.candidates and _searchable(m.text)]
+    if not wanted:
+        return frame, []
+    import search_api
+    import source_status as ss
+
+    found: list[sf.KnownRecord] = []
+    mentions = list(frame.mentions)
+    for index in wanted:
+        text = mentions[index].text
+        try:
+            out = await asyncio.wait_for(
+                search_api.search(ctx, text, ["people"], LOOKUP_LIMIT), timeout=LOOKUP_BUDGET_S)
+        except Exception as exc:  # noqa: BLE001 — unknown is not nobody
+            logger.info("semantic turn: people lookup unavailable (%s)", type(exc).__name__)
+            continue
+        if ((out.get("source_status") or {}).get("people") or {}).get("status") != ss.CHECKED:
+            continue
+        candidates: list[sf.Candidate] = []
+        seen: set[tuple[str, str]] = set()
+        for hit in out.get("results") or []:
+            record = hit.get("record") or {}
+            rtype, rid = record.get("type"), str(record.get("id") or "")
+            if rtype not in ("client", "contact") or (rtype, rid) in seen:
+                continue
+            try:
+                as_uuid = uuid.UUID(rid)
+            except ValueError:
+                continue
+            seen.add((rtype, rid))
+            candidates.append(sf.Candidate(record_type=rtype, id=as_uuid))
+            found.append(sf.KnownRecord(rtype, rid, str(hit.get("label") or lang_.t("choices.unnamed"))))
+        if candidates:
+            mentions[index] = mentions[index].model_copy(update={"candidates": candidates[:sf.MAX_CANDIDATES]})
+    return frame.model_copy(update={"mentions": mentions}), found
+
+
 async def _parse(
     ctx: TenantContext, text: str, *, known: Sequence[sf.KnownRecord], now: datetime,
-) -> tuple[Optional[sf.SemanticFrame], str, str, int]:
-    """(authorised frame or None, status, reason, elapsed ms). Never raises."""
+) -> tuple[Optional[sf.SemanticFrame], str, str, int, list[sf.KnownRecord]]:
+    """(authorised frame or None, status, reason, elapsed ms, people found by
+    lookup). Never raises."""
     zone = default_timezone()
     started = time.perf_counter()
     frame: Optional[sf.SemanticFrame] = None
@@ -382,7 +454,9 @@ async def _parse(
     except Exception as exc:  # noqa: BLE001 — the parser never breaks the turn
         status, reason = "unavailable", type(exc).__name__
     elapsed = int((time.perf_counter() - started) * 1000)
+    found: list[sf.KnownRecord] = []
     if frame is not None:
+        frame, found = await _lookup_people(ctx, frame)
         try:
             frame = await sf.authorize_frame(ctx, frame)
         except Exception as exc:  # noqa: BLE001
@@ -391,7 +465,7 @@ async def _parse(
             reason = f"authorization_failed:{type(exc).__name__}"
     if status != "parsed":
         logger.info("semantic turn: parser %s (%s) in %d ms", status, reason or "-", elapsed)
-    return frame, status, reason, elapsed
+    return frame, status, reason, elapsed, found
 
 
 async def prepare_turn(
@@ -413,9 +487,9 @@ async def prepare_turn(
         turn = TurnFrame(status="no_request")
     else:
         known = await _known_records(ctx, bundle, refs)
-        frame, status, reason, elapsed = await _parse(ctx, text, known=known, now=now)
+        frame, status, reason, elapsed, found = await _parse(ctx, text, known=known, now=now)
         turn = TurnFrame(status=status, reason=reason, frame=frame, extract_ms=elapsed,
-                         question=question_from(frame, known))
+                         question=question_from(frame, [*known, *found]))
         turn.detected = lang_.detect(text).lang
     turn.lang = lang_.reply_language(text, previous_language(bundle), bundle.get("lang_hint"))
 
@@ -481,7 +555,7 @@ async def mission_constraints(
     if not fc.enabled():
         return {}
     now = now or datetime.now(timezone.utc)
-    frame, status, reason, elapsed = await _parse(ctx, objective_text, known=(), now=now)
+    frame, status, reason, elapsed, _found = await _parse(ctx, objective_text, known=(), now=now)
     own = fc.from_frame(frame, origin="mission", stated_at=now) if frame else []
     detected = lang_.detect(objective_text).lang
     own, backstop = apply_backstop(objective_text, frame, own, detected=detected,

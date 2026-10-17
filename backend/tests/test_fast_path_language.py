@@ -299,7 +299,7 @@ class TestLanguageHint:
         import semantic_turn
 
         async def no_parse(*_a, **_k):
-            return None, "no_provider", None, 0
+            return None, "no_provider", None, 0, []
 
         async def nothing_known(*_a, **_k):
             return []

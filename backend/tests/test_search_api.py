@@ -114,8 +114,50 @@ def test_an_address_shaped_query_reaches_public_records(monkeypatch):
 
 def test_every_hit_has_the_one_shape():
     hit = sa._hit("properties", 7, "155 Main St", "Wilmington, DE", "/property/7", 0.85)
-    assert set(hit) == {"kind", "id", "label", "sublabel", "href", "score"}
+    assert set(hit) == {"kind", "id", "label", "sublabel", "href", "score", "record"}
     assert hit["id"] == "7", "ids are strings so the renderer never branches on type"
+    assert hit["record"] is None, "a property hit is not a record a frame can hold"
+
+
+def test_a_people_hit_says_which_record_it_is(monkeypatch):
+    """semantic_turn (L05-10) acts on a hit rather than opening it, so a
+    person hit names its record: the client row, or the contact's legacy
+    client when it has one, else the contact itself."""
+    import uuid
+    from contextlib import asynccontextmanager
+
+    import contacts_api
+
+    client_id, legacy_id, contact_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+
+    class Conn:
+        async def fetch(self, *_a):
+            return [{"id": client_id, "full_name": "Sarah Chen", "email": None, "phone": None,
+                     "client_type": "buyer", "stage": "active"}]
+
+    @asynccontextmanager
+    async def tx(_ctx):
+        yield Conn()
+
+    async def budget(_conn):
+        return None
+
+    async def contact_rows(_conn, _ctx, *, query, limit):
+        return [{"id": "legacy"}, {"id": "bare"}], None
+
+    async def contact_json(_conn, _ctx, row):
+        if row["id"] == "legacy":
+            return {"id": str(uuid.uuid4()), "legacy_client_id": str(legacy_id), "full_name": "Sarah Lee", "email": None}
+        return {"id": str(contact_id), "legacy_client_id": None, "full_name": None, "email": "sarah@example.test"}
+
+    monkeypatch.setattr(sa, "tenant_tx", tx)
+    monkeypatch.setattr(sa, "_budget", budget)
+    monkeypatch.setattr(contacts_api, "search_contact_rows", contact_rows)
+    monkeypatch.setattr(contacts_api, "_contact_json", contact_json)
+    hits = _run(sa._people(CTX, "Sarah", 5))
+    assert [h["record"] for h in hits] == [
+        {"type": "client", "id": str(client_id)}, {"type": "client", "id": str(legacy_id)},
+        {"type": "contact", "id": str(contact_id)}]
 
 
 def test_no_leg_duplicates_the_rls_predicate():
@@ -168,7 +210,7 @@ def test_recent_endpoint_returns_results(monkeypatch):
 
     monkeypatch.setattr(sa, "_recent_rows", ok)
     res = _run(sa.recent_endpoint(limit=8, ctx=CTX))
-    assert res == {"results": [{"kind": "people", "id": "p1", "label": "Sarah Chen", "sublabel": "Buyer", "href": "/p/p1", "score": 0.0}], "degraded": False}
+    assert res == {"results": [{"kind": "people", "id": "p1", "label": "Sarah Chen", "sublabel": "Buyer", "href": "/p/p1", "score": 0.0, "record": None}], "degraded": False}
 
 
 def test_the_big_corpus_is_not_sorted_before_limit():

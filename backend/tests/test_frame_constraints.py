@@ -779,3 +779,43 @@ def test_one_sarah_is_resolved_and_texting_her_proceeds(turn_env, chat):
     assert turn_env["dispatched"] == ["draft_sms"]
     assert _ledger_refusals(chat) == []
     assert _stored(chat)["needs_clarification"] is False
+
+
+def test_a_sarah_nobody_mentioned_before_is_looked_up_and_asked_about(turn_env, chat, monkeypatch):
+    """L05-10: no second Sarah is on screen or in the discourse; the parser
+    places nobody, the people search (as the caller) finds two, and the turn
+    asks instead of letting the model guess."""
+    import search_api
+
+    seen = {}
+
+    async def people(ctx, q, kinds, limit):
+        seen["query"] = (q, tuple(kinds))
+        return {"results": [
+            {"kind": "people", "id": SARAH, "label": "Sarah Chen", "sublabel": None, "href": "/p/x", "score": 0.9,
+             "record": {"type": "client", "id": SARAH}},
+            {"kind": "people", "id": SARAH_2, "label": "Sarah Lee", "sublabel": None, "href": "/p/y", "score": 0.8,
+             "record": {"type": "client", "id": SARAH_2}},
+        ], "counts": {"people": 2}, "source_status": {"people": {"status": "checked", "reason": None}}}
+
+    monkeypatch.setattr(search_api, "search", people)
+    unplaced = _answer(
+        TEXT_SARAH,
+        goals=[{"label": "send_message", "negated": False, "evidence": _ev("Text Sarah")}],
+        mentions=[{"text": "Sarah", "kind": "person", "known": [], "evidence": _ev("Sarah")}],
+        effect="external_effect",
+    )
+    bundle = {**_bundle(TEXT_SARAH), "assistant": {"context_type": None, "context_id": None, "id": ASSISTANT},
+              "record": None}
+    turn_env["script"][:] = [_tool_call("draft_sms", {"client_id": SARAH_2, "body": "Showing at 4?"}), _final("Which Sarah?")]
+    semantic_turn.GATEWAY = FakeGateway(unplaced)
+    text_out, actions, _model = asyncio.run(turn_env["agent"]._generate(CTX, bundle, str(uuid.uuid4())))
+
+    assert turn_env["dispatched"] == [] and actions == [] and text_out == "Which Sarah?"
+    assert seen["query"] == ("Sarah", ("people",))
+    (row,) = _ledger_refusals(chat)
+    assert row[4] == "draft_sms" and row[6] == "FRAME_CLARIFY"
+    stored = _stored(chat)
+    assert stored["needs_clarification"] is True
+    assert {r["id"] for m in stored["mentions"] for r in m["records"]} == {SARAH, SARAH_2}
+    assert "Sarah" not in json.dumps(stored)

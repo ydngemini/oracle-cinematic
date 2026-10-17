@@ -89,7 +89,8 @@ async def _budget(conn: Any) -> None:
     await conn.execute(f"SET LOCAL statement_timeout = {int(LEG_TIMEOUT_MS)}")
 
 
-def _hit(kind: str, id_: Any, label: str, sublabel: Optional[str], href: str, score: float) -> dict[str, Any]:
+def _hit(kind: str, id_: Any, label: str, sublabel: Optional[str], href: str, score: float,
+         record: Optional[dict[str, str]] = None) -> dict[str, Any]:
     return {
         "kind": kind,
         "id": str(id_),
@@ -97,6 +98,10 @@ def _hit(kind: str, id_: Any, label: str, sublabel: Optional[str], href: str, sc
         "sublabel": sublabel,
         "href": href,
         "score": round(float(score), 3),
+        # Which record this hit IS ({type, id}: client | contact), for a caller
+        # that acts on it rather than opens it (semantic_turn, L05-10). None
+        # for legs whose hits are not records a frame can hold.
+        "record": record,
     }
 
 
@@ -173,6 +178,7 @@ async def _people(ctx: TenantContext, q: str, limit: int) -> list[dict[str, Any]
             " · ".join(p for p in (row["client_type"], row["stage"], row["email"]) if p) or None,
             f"/p/{row['id']}",
             score_match(q, row["full_name"], row["email"]),
+            record={"type": "client", "id": str(row["id"])},
         ))
     for row in contacts:
         legacy = row.get("legacy_client_id")
@@ -187,6 +193,9 @@ async def _people(ctx: TenantContext, q: str, limit: int) -> list[dict[str, Any]
             email if name else None,
             target,
             score_match(q, name, email) or 0.4,
+            # A contact that is also a client is that client: the record the
+            # frame authorises and the executor acts on.
+            record=({"type": "client", "id": str(legacy)} if legacy else {"type": "contact", "id": str(row["id"])}),
         ))
     return hits
 
