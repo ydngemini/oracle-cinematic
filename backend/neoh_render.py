@@ -296,6 +296,11 @@ def properties_found(matches: list[dict[str, Any]], query: str,
     )
 
 
+#: client_ai_automation.PROPERTY_CANDIDATE_LIMIT, mirrored so this module
+#: stays import-light (a test pins the two together).
+PRODUCER_CANDIDATE_LIMIT = 5
+
+
 def properties_for(
     name: str, candidates: list[dict[str, Any]], lookup: Optional[dict[str, Any]] = None,
     lang: Optional[str] = None,
@@ -326,11 +331,29 @@ def properties_for(
     if not candidates:
         return answer("properties_for", lang_.t("shortlist.empty", lang, name=name), [])
     shown = candidates[:MAX_COMPARISON]
+    # An owner-name hit in public records (client_ai_automation.
+    # _property_candidates) carries requires_review: no one has confirmed the
+    # record is this client's, so it is a possible match, never their
+    # shortlist (T11.03, F11.04). They are counted over every stored record,
+    # not only the ones shown, so the number said is the number on record.
+    # The producer stores at most PRODUCER_CANDIDATE_LIMIT, so that many is a
+    # floor ("at least 5"), never the number in public records.
+    possible = sum(1 for c in candidates if c.get("requires_review"))
+    possible_shown = sum(1 for c in shown if c.get("requires_review"))
+    spoken = []
+    if len(shown) > possible_shown:
+        spoken.append(lang_.t("shortlist.count", lang, n=len(shown) - possible_shown, name=name))
+    if possible:
+        key = ("one" if possible == 1 else "at_least" if possible >= PRODUCER_CANDIDATE_LIMIT else "many")
+        spoken.append(lang_.t("shortlist.possible_" + key, lang, n=possible, name=name))
+        if possible_shown < possible:
+            spoken.append(lang_.t("shortlist.possible_shown", lang, shown=possible_shown, n=possible))
+    title = "shortlist.possible_title" if possible_shown == len(shown) else "shortlist.title"
     return answer(
         "properties_for",
-        lang_.t("shortlist.count", lang, n=len(shown), name=name),
-        [block("comparison", title=lang_.t("shortlist.title", lang, name=name), options=[
-            {
+        " ".join(spoken),
+        [block("comparison", title=lang_.t(title, lang, name=name), options=[
+            _possible_option(c, lang) if c.get("requires_review") else {
                 "id": str(c.get("id") or c.get("property_id") or ""),
                 "label": c.get("address") or lang_.t("shortlist.no_address", lang),
                 "detail": _property_detail(c, lang),
@@ -477,3 +500,57 @@ def _property_detail(candidate: dict[str, Any], lang: Optional[str] = None) -> O
     if candidate.get("match_reason"):
         bits.append(str(candidate["match_reason"]))
     return " · ".join(bits) or None
+
+
+# client_ai_automation._property_candidates' own match_basis words; any other
+# basis is shown as recorded, and a missing one is not invented. The producer
+# calls its basis "exact", but it compares the name lower-cased with everything
+# outside a-z and 0-9 removed ("Ann Avery" finds "ANNA VERY", "Peña" loses its
+# "ñ"), so Neoh says what the comparison actually is.
+_MATCH_BASIS = {
+    "exact owner name": "shortlist.basis.owner",
+    "exact owner name and target ZIP": "shortlist.basis.owner_zip",
+}
+
+
+def _possible_option(candidate: dict[str, Any], lang: Optional[str] = None) -> dict[str, Any]:
+    """A public record nobody has confirmed is the client's.
+
+    Never linked, whatever ids a writer put on it: an unconfirmed record does
+    not open a property page. It carries the place and, with no street
+    address, the parcel, so the agent asked to check it can tell records apart.
+    """
+    parcel = candidate.get("parcel_id")
+    return {
+        "id": str(candidate.get("id") or candidate.get("property_id")
+                  or candidate.get("public_record_id") or ""),
+        "label": candidate.get("address") or (
+            lang_.t("shortlist.parcel", lang, parcel=parcel) if parcel
+            else lang_.t("shortlist.no_address", lang)
+        ),
+        # The parcel too when there is an address: two condo parcels on one
+        # street address in one city are otherwise identical rows.
+        "detail": " · ".join(
+            bit for bit in (
+                _place(candidate),
+                lang_.t("shortlist.parcel", lang, parcel=parcel) if parcel and candidate.get("address") else None,
+                _possible_detail(candidate, lang),
+            ) if bit
+        ),
+        "href": None,
+    }
+
+
+def _place(candidate: dict[str, Any]) -> Optional[str]:
+    """"Austin, TX 78701" from whichever of city, state and ZIP are recorded."""
+    region = " ".join(str(candidate[k]) for k in ("state", "zip_code") if candidate.get(k))
+    city = str(candidate["city"]) if candidate.get("city") else None
+    return ", ".join(bit for bit in (city, region) if bit) or None
+
+
+def _possible_detail(candidate: dict[str, Any], lang: Optional[str] = None) -> str:
+    basis = candidate.get("match_basis")
+    if not basis:
+        return lang_.t("shortlist.possible_detail_bare", lang)
+    key = _MATCH_BASIS.get(str(basis))
+    return lang_.t("shortlist.possible_detail", lang, basis=lang_.t(key, lang) if key else str(basis))

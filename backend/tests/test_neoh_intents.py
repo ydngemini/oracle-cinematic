@@ -204,6 +204,105 @@ class TestResolvers:
         assert out["source_status"]["people"]["status"] == ss.CHECKED
 
 
+class TestPossibleMatchesEndToEnd:
+    """T11.03 / F11.04: "find properties for Sarah" through the whole path.
+
+    The candidates come from the real client_ai_automation._property_candidates
+    (so they are the production shape: review-only owner-name hits), are stored
+    as reconcile_client stores them, and are read back by the real
+    _candidates_for; only the database is stubbed. The golden cases stub
+    _candidates_for itself with a confirmed-shortlist shape, so they cannot see
+    this path.
+    """
+
+    @staticmethod
+    def _stub(monkeypatch):
+        import json
+        from contextlib import asynccontextmanager
+        from datetime import datetime, timezone
+
+        import client_ai_automation
+        import db.connection
+        import search_api
+
+        refreshed = datetime(2026, 10, 1, tzinfo=timezone.utc)
+        rows = [
+            {"id": f"aaaaaaaa-0000-4000-8000-00000000000{n}", "parcel_id": f"P-{n}",
+             "address": f"{n} Elm St", "city": "Austin", "state": "TX", "zip_code": "78701",
+             "owner_name": "SARAH CHEN", "source_name": "county", "record_refreshed_at": refreshed,
+             "verification_required": True}
+            for n in range(1, 6)  # the producer's LIMIT 5
+        ]
+
+        class _Records:
+            async def fetch(self, _sql, *_args):
+                return rows
+
+        candidates = asyncio.run(
+            client_ai_automation._property_candidates(_Records(), "Sarah Chen", [], 0),
+        )
+        assert len(candidates) == 5 and all(c["requires_review"] for c in candidates)
+        state = {
+            "enabled": True, "status": "complete", "score_mode": "auto", "stage_mode": "auto",
+            "score_version": None, "score_breakdown": "[]", "normalized_preferences": "{}",
+            "summary": None, "next_actions": "[]", "data_gaps": "[]", "evidence": "[]",
+            "property_candidates": json.dumps(candidates), "model_id": None,
+            "last_evaluated_at": None, "last_error_code": None,
+            "source_status": json.dumps({client_ai_automation.PROPERTY_SOURCE: (
+                client_ai_automation.property_lookup_status(
+                    client_ai_automation.SOURCE_CHECKED, matched=len(candidates),
+                    checked_at="2026-10-01T00:00:00+00:00",
+                )
+            )}),
+        }
+
+        class _State:
+            async def fetchrow(self, sql, *_args):
+                assert "client_ai_state" in sql
+                return state
+
+        @asynccontextmanager
+        async def fake_tx(_ctx):
+            yield _State()
+
+        async def one_sarah(_ctx, _q, kinds, _limit):
+            return _found(kinds, [{"kind": "people", "id": "c1", "label": "Sarah Chen", "sublabel": "buyer"}])
+
+        monkeypatch.setattr(db.connection, "tenant_tx", fake_tx)
+        monkeypatch.setattr(search_api, "search", one_sarah)
+        return candidates
+
+    def test_review_only_hits_are_possible_matches_never_a_shortlist(self, monkeypatch):
+        candidates = self._stub(monkeypatch)
+        out = asyncio.run(intents.ask(CTX, "find properties for Sarah Chen"))
+        assert out["intent"] == "properties_for" and out["fallthrough"] is False
+        assert "shortlist" not in out["spoken"]
+        assert out["spoken"].startswith("At least 5 possible matches for Sarah Chen in public records")
+        assert "Showing 3 of 5 here." in out["spoken"]
+        block = out["blocks"][0]["props"]
+        assert block["title"] == "Possible matches for Sarah Chen"
+        assert [o["id"] for o in block["options"]] == [c["public_record_id"] for c in candidates[:3]]
+        for option, record in zip(block["options"], candidates):
+            assert option["href"] is None
+            assert option["detail"].startswith(
+                f"Austin, TX 78701 · Parcel {record['parcel_id']} · Possible match by owner name (ignoring")
+            assert "exact" not in option["detail"]
+
+    def test_and_in_spanish(self, monkeypatch):
+        self._stub(monkeypatch)
+        out = asyncio.run(intents.ask(CTX, "busca propiedades para Sarah Chen"))
+        assert out["intent"] == "properties_for" and out["fallthrough"] is False
+        assert out["spoken"].startswith("Al menos 5 posibles coincidencias para Sarah Chen")
+        assert "Aquí ves 3 de 5." in out["spoken"] and "lista" not in out["spoken"]
+        block = out["blocks"][0]["props"]
+        assert block["title"] == "Posibles coincidencias para Sarah Chen"
+        for option in block["options"]:
+            assert option["href"] is None
+            assert option["detail"].startswith("Austin, TX 78701 · Parcela ")
+            assert "Posible coincidencia por nombre del propietario" in option["detail"]
+            assert "exacto" not in option["detail"]
+
+
 class TestFailedLegsAreNotNoResults:
     """T05.11 / AC05.07: a search leg that raised is reported as a failure,
     in the C6 vocabulary, and never as "Nothing matches".

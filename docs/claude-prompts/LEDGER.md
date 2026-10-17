@@ -1722,6 +1722,28 @@ next_task: "Record a person's confirmation of a property match (schema + UI), so
 updated: 2026-10-17
 ```
 
+#### L11-08 Neoh "find properties for X": owner-name hits are possible matches, never the client's shortlist (T11.03, F11.04)
+```yaml
+id: L11-08
+status: tests_pass
+env: local
+evidence_shas: [24a7b3c]
+files: [backend/neoh_render.py, backend/semantic_language.py, backend/client_ai_automation.py, backend/tests/test_neoh_render.py, backend/tests/test_neoh_intents.py]
+tests_run:
+  - {cmd: "re-verify at 24a7b3c: neoh_render.properties_for, client_ai_automation._property_candidates, neoh_intents._candidates_for", result: "every candidate the automation stores is an owner-name hit in public records with requires_review: true and match_basis 'exact owner name', yet Neoh said '1 on Sarah Chen's shortlist.' ('1 en la lista de Sarah Chen.'), with an empty option id, no basis and no review flag; the 'exact' name match actually ignores case, spaces, punctuation and letters outside a-z; the count was of the 3 shown, not the up-to-5 stored", date: 2026-10-17}
+  - {cmd: "red runs: pytest tests/test_neoh_render.py -k Properties (slice); the review-fix tests on the slice commit", result: "4 failed / 2 passed ('possible match' not in \"1 on sarah chen's shortlist.\"; Spanish 'lista'; id None); then 9 failed / 41 passed (count capped at 3; 'exact' in the basis; href on a review-only record carrying an id; no city/state/ZIP; no intent-level case)", date: 2026-10-17}
+  - {cmd: "cd backend && pytest tests/test_neoh_render.py tests/test_neoh_intents*.py tests/test_fast_path_language.py tests/test_client_ai_automation.py tests/test_semantic_language.py", result: "1120 passed: review-only hits are spoken and titled as possible matches in English and Spanish, counted over every stored record ('Showing 3 of 4 here'), and at the producer's cap of 5 said as a floor ('At least 5 ... (the lookup stops at 5)'; the renderer's mirror of the cap is pinned to client_ai_automation.PROPERTY_CANDIDATE_LIMIT); the basis is described as an owner-name match ignoring case, spaces, punctuation and letters outside a-z, never 'exact'; an unconfirmed record is never linked whatever ids it carries; each option shows city, state, ZIP and parcel, so condo parcels at one street address differ; an intent-level test drives the real producer through neoh_intents; the English golden file is unchanged (it uses the confirmed-shortlist shape)", date: 2026-10-17}
+authz_checked: "Rendering only: the candidates are the ones the automation already stored for a client the caller can open; nothing new is read. No name reaches a log."
+blockers:
+  - "The producer's own match_basis string still says 'exact owner name' (client_ai_automation); ClientDetailDrawer shows it as stored. Only Neoh's words were corrected."
+  - "There is no confirm/link action from Neoh; review-only options stay unlinked until a confirmation record exists (L11-07 next_task)."
+  - "Not deployed (C4.4)."
+audit_refs: []
+decision_refs: []
+next_task: "Say the producer's basis truthfully at the source (client_ai_automation match_basis) and in ClientDetailDrawer."
+updated: 2026-10-17
+```
+
 ### L12
 Neoh Space capture, reconstruction and tours. Spec: [neoh-space-web-capture-claude.md](../neoh-space-web-capture-claude.md).
 

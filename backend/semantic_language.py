@@ -657,6 +657,42 @@ MESSAGES: dict[str, dict[str, str]] = {
     "shortlist.count": {"en": "{n} on {name}'s shortlist.", "es": "{n} en la lista de {name}."},
     "shortlist.title": {"en": "For {name}", "es": "Para {name}"},
     "shortlist.no_address": {"en": "Address unavailable", "es": "Dirección no disponible"},
+    # properties_for: public-record owner-name hits nobody has confirmed (requires_review)
+    "shortlist.possible_one": {
+        "en": "{n} possible match for {name} in public records — not confirmed as theirs; check it before linking.",
+        "es": ("{n} posible coincidencia para {name} en registros públicos; no está confirmado que sea suya, "
+               "revísala antes de vincularla."),
+    },
+    "shortlist.possible_many": {
+        "en": ("{n} possible matches for {name} in public records — not confirmed as theirs; "
+               "check them before linking."),
+        "es": ("{n} posibles coincidencias para {name} en registros públicos; no está confirmado que sean suyas, "
+               "revísalas antes de vincularlas."),
+    },
+    # More records on file than the panel shows ({shown} of {n})
+    # The lookup stores at most {n}: that many is a floor, not the count on record.
+    "shortlist.possible_at_least": {
+        "en": ("At least {n} possible matches for {name} in public records (the lookup stops at {n}) — "
+               "not confirmed as theirs; check them before linking."),
+        "es": ("Al menos {n} posibles coincidencias para {name} en registros públicos (la búsqueda se detiene en {n}); "
+               "no está confirmado que sean suyas, revísalas antes de vincularlas."),
+    },
+    "shortlist.possible_shown": {"en": "Showing {shown} of {n} here.", "es": "Aquí ves {shown} de {n}."},
+    "shortlist.possible_title": {"en": "Possible matches for {name}", "es": "Posibles coincidencias para {name}"},
+    "shortlist.possible_detail": {"en": "Possible match by {basis}", "es": "Posible coincidencia por {basis}"},
+    "shortlist.possible_detail_bare": {"en": "Possible match", "es": "Posible coincidencia"},
+    "shortlist.parcel": {"en": "Parcel {parcel}", "es": "Parcela {parcel}"},
+    # The producer's "exact owner name" compares the name lower-cased with
+    # everything outside a-z and 0-9 removed — said as what it is, not "exact".
+    "shortlist.basis.owner": {
+        "en": "owner name (ignoring case, spaces, punctuation and letters outside a–z)",
+        "es": "nombre del propietario (sin distinguir mayúsculas, espacios, signos ni letras fuera de la a–z)",
+    },
+    "shortlist.basis.owner_zip": {
+        "en": "owner name (ignoring case, spaces, punctuation and letters outside a–z) and target ZIP",
+        "es": ("nombre del propietario (sin distinguir mayúsculas, espacios, signos ni letras fuera de la a–z) "
+               "y código postal objetivo"),
+    },
     "detail.beds": {"en": "{n} beds", "es": "{n} hab."},
     "detail.baths": {"en": "{n} baths", "es": "{n} baños"},
     # deal_blocker: the headline and the open milestones
