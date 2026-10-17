@@ -580,6 +580,16 @@ def _tool_config(context_type: str | None) -> dict | None:
     return {"tools": tools} if tools else None
 
 
+def _offered_tool_config(context_type: str | None, withheld) -> dict | None:
+    """The Bedrock toolConfig for this turn: the release's offer for the record
+    minus what this actor is not offered (tool_offer). None when nothing is left."""
+    config = _tool_config(context_type)
+    if not config or not withheld:
+        return config
+    kept = [t for t in config["tools"] if t["toolSpec"]["name"] not in withheld]
+    return {"tools": kept} if kept else None
+
+
 def _foundry_inputs(bundle: dict, runtime_context: str = "") -> list[dict]:
     """Build stateless Responses API input without persisting Azure conversation state."""
     items: list[dict] = []
@@ -1315,10 +1325,7 @@ async def _generate(ctx: TenantContext, bundle: dict, assistant_id: str) -> tupl
     messages = _bedrock_messages(bundle)
     context_type = bundle["assistant"].get("context_type")
     context_id = str(bundle["assistant"].get("context_id") or "") or None
-    tool_config = _tool_config(context_type)
-    if tool_config and offer.withheld:
-        kept = [t for t in tool_config["tools"] if t["toolSpec"]["name"] not in offer.withheld]
-        tool_config = {"tools": kept} if kept else None
+    tool_config = _offered_tool_config(context_type, offer.withheld)
     actions: list[dict] = []
     try:
         response = await asyncio.to_thread(_converse, messages, system_prompt, tool_config)
@@ -1429,13 +1436,18 @@ async def _turn_role(requester: TenantContext, recorded: object) -> Role:
     the session passed its account check; between enqueue and claim they may
     have been demoted or removed, so the live users row wins when it can be
     read: an active member runs as their current role, someone who is no
-    longer an active member runs as an agent, and only when the row cannot be
-    read does the recorded role stand — always narrowed by _worker_role."""
+    longer an active member runs as an agent (a platform admin, who has no
+    row to lose, keeps owner-level), and only when the row cannot be read
+    does the recorded role stand — always narrowed by _worker_role."""
     state, live = await _live_role(requester)
     if state == "ok":
         return _worker_role(live)
     if state == "missing":
-        return Role.AGENT
+        # Not an active member here. A removed or deactivated member runs as
+        # an agent; a platform admin never was a member (their identity is the
+        # platform's, not a users row), so the role the API verified stands —
+        # narrowed to the brokerage's owner like every platform-admin turn.
+        return Role.BROKER_OWNER if recorded == Role.PLATFORM_ADMIN.value else Role.AGENT
     return _worker_role(recorded)
 
 

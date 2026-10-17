@@ -177,12 +177,15 @@ def test_a_remembered_offer_is_used_only_for_its_own_turn_and_record():
     assert tool_offer.current(other, "turn-2", "client").withheld == {}
 
 
-def test_remembered_turns_are_bounded(monkeypatch):
+def test_remembered_turns_are_bounded_oldest_first(monkeypatch):
+    from collections import OrderedDict
+
+    monkeypatch.setattr(tool_offer, "_TURNS", OrderedDict())
     monkeypatch.setattr(tool_offer, "_REMEMBERED_TURNS", 3)
     offer = tool_offer.for_actor(OWNER, None)
     for i in range(5):
         tool_offer.remember(OWNER, f"bounded-{i}", offer)
-    assert sum(1 for key in tool_offer._TURNS if key[1].startswith("bounded-")) == 3
+    assert [key[1] for key in tool_offer._TURNS] == ["bounded-2", "bounded-3", "bounded-4"]
 
 
 # ── every provider's tool list drops the withheld names ─────────────────────
@@ -221,6 +224,122 @@ def test_the_foundry_request_omits_withheld_tools(monkeypatch):
     # Nothing withheld: the release's list, exactly as before.
     ai_chat_agent._foundry_response([], "client")
     assert {t["name"] for t in seen["tools"]} == {t["name"] for t in ai_chat_agent._foundry_tools("client")}
+
+
+def test_the_bedrock_tool_config_omits_withheld_tools_and_is_none_when_nothing_is_left(monkeypatch):
+    withheld = frozenset({"draft_sms", "get_tenant_health"})
+    config = ai_chat_agent._offered_tool_config("client", withheld)
+    names = {t["toolSpec"]["name"] for t in config["tools"]}
+    assert names.isdisjoint(withheld) and "draft_email" in names
+    assert ai_chat_agent._offered_tool_config("client", frozenset()) == ai_chat_agent._tool_config("client")
+    monkeypatch.setattr(ai_chat_agent, "_tool_config", lambda _ct: {"tools": [{"toolSpec": {"name": "draft_sms"}}]})
+    assert ai_chat_agent._offered_tool_config("client", withheld) is None
+
+
+def test_a_bedrock_turn_sends_the_filtered_tool_config(monkeypatch):
+    seen = {}
+
+    async def fake_brokerage(_ctx):
+        return None
+
+    class FakeMemory:
+        def __init__(self, _ctx): pass
+        async def inject_jit_prompt(self, _agent, base): return base
+
+    def fake_converse(messages, system_prompt, tool_config):
+        seen["tool_config"], seen["prompt"] = tool_config, system_prompt
+        return {"output": {"message": {"content": [{"text": "Texting needs setup here."}]}}}
+
+    async def gaps(_ctx):
+        return {"sms": SMS_GAP}
+
+    monkeypatch.setattr(ai_chat_agent, "_resolve_brokerage_context", fake_brokerage)
+    monkeypatch.setattr(ai_chat_agent, "SessionManager", FakeMemory)
+    monkeypatch.setattr(ai_chat_agent, "_gateway_chat_providers", lambda *a, **k: [])
+    monkeypatch.setattr(ai_chat_agent, "FIREWORKS_ENABLED", False)
+    monkeypatch.setattr(ai_chat_agent, "AI_PROVIDER", "bedrock")
+    monkeypatch.setattr(ai_chat_agent, "_converse", fake_converse)
+    monkeypatch.setattr(tool_offer, "channel_gaps", gaps)
+    bundle = {"messages": [], "record": None, "attachments": [],
+              "assistant": {"context_type": "client", "context_id": "c-1"}}
+    text, actions, _model = asyncio.run(ai_chat_agent._generate(AGENT, bundle, "assistant-bedrock-1"))
+    assert text == "Texting needs setup here." and actions == []
+    names = {t["toolSpec"]["name"] for t in seen["tool_config"]["tools"]}
+    assert "draft_sms" not in names and "get_tenant_health" not in names and "draft_email" in names
+    assert f"- draft_sms: {SMS_GAP}" in seen["prompt"]
+
+
+def test_a_foundry_turn_omits_withheld_tools_and_keys_the_executor_on_the_turn(monkeypatch):
+    seen = {"tools": [], "executed": []}
+
+    class Call:
+        type = "function_call"
+        name, call_id, arguments = "add_client_note", "call-1", '{"note": "prefers mornings"}'
+
+        def model_dump(self, **_kw):
+            return {"type": "function_call", "name": self.name, "call_id": self.call_id, "arguments": self.arguments}
+
+    class Done:
+        output, output_text = [], "Saved the note."
+
+    responses = [SimpleNamespace(output=[Call()], output_text=""), Done()]
+
+    class Responses:
+        def create(self, **kw):
+            seen["tools"].append({t["name"] for t in kw["tools"]})
+            return responses.pop(0)
+
+    async def record_inference(*_a, **_k):
+        return None
+
+    async def execute(ctx, user_id, message_id, tool_name, tool_input, context_type, context_id, call_index):
+        seen["executed"].append((message_id, tool_name, context_type, context_id, call_index))
+        return {"ok": True, "action_id": "act-1"}
+
+    monkeypatch.setattr(ai_chat_agent, "_foundry_openai_client", lambda: SimpleNamespace(responses=Responses()))
+    monkeypatch.setattr(ai_chat_agent, "record_inference", record_inference)
+    monkeypatch.setattr(ai_chat_agent, "execute_safe_tool", execute)
+    offer = tool_offer.for_actor(AGENT, "client", {"sms": SMS_GAP})
+    bundle = {"messages": [], "record": None, "attachments": [],
+              "assistant": {"context_type": "client", "context_id": "c-1"}, "tool_offer": offer}
+    text, actions, _model = asyncio.run(ai_chat_agent._foundry_generate(AGENT, bundle, "assistant-foundry-1", ""))
+    assert text == "Saved the note." and len(actions) == 1
+    for names in seen["tools"]:
+        assert names.isdisjoint(offer.withheld) and "draft_email" in names
+    # The executor is keyed on the assistant turn id — the key _generate remembers the offer under.
+    assert seen["executed"] == [("assistant-foundry-1", "add_client_note", "client", "c-1", 0)]
+
+
+def test_the_note_leads_the_foundry_runtime_context(monkeypatch):
+    seen = {}
+
+    async def fake_brokerage(_ctx):
+        return None
+
+    class FakeMemory:
+        def __init__(self, _ctx): pass
+        async def inject_jit_prompt(self, _agent, base): return base + "\n\nOPERATOR MEMORY: prefers mornings."
+
+    async def fake_foundry(_ctx, _bundle, _assistant_id, runtime_context, applied=None):
+        seen["runtime_context"] = runtime_context
+        return ("ok", [], "azure-foundry:test")
+
+    async def gaps(_ctx):
+        return {"sms": SMS_GAP}
+
+    monkeypatch.setattr(ai_chat_agent, "_resolve_brokerage_context", fake_brokerage)
+    monkeypatch.setattr(ai_chat_agent, "SessionManager", FakeMemory)
+    monkeypatch.setattr(ai_chat_agent, "_gateway_chat_providers", lambda *a, **k: [])
+    monkeypatch.setattr(ai_chat_agent, "FIREWORKS_ENABLED", False)
+    monkeypatch.setattr(ai_chat_agent, "AI_PROVIDER", "azure-foundry")
+    monkeypatch.setattr(ai_chat_agent, "_foundry_generate", fake_foundry)
+    monkeypatch.setattr(tool_offer, "channel_gaps", gaps)
+    bundle = {"messages": [], "record": None, "attachments": [],
+              "assistant": {"context_type": "client", "context_id": "c-1"}}
+    asyncio.run(ai_chat_agent._generate(AGENT, bundle, "assistant-foundry-2"))
+    rc = seen["runtime_context"]
+    # Ahead of the memory block: _foundry_inputs keeps the first 12k characters.
+    assert rc.index(tool_offer.PROMPT_LEAD) < rc.index("OPERATOR MEMORY")
 
 
 def test_a_turn_names_the_gap_in_the_prompt_and_remembers_the_offer_for_the_executor(monkeypatch):
@@ -287,6 +406,7 @@ def test_the_job_carries_who_asked():
     (("ok", "agent"), "broker_owner", Role.AGENT),             # demoted since: never the stale grant
     (("ok", "platform_admin"), None, Role.BROKER_OWNER),       # never wider than the brokerage
     (("missing", None), "broker_owner", Role.AGENT),           # no longer an active member here
+    (("missing", None), "platform_admin", Role.BROKER_OWNER),  # never a member: the verified role stands, narrowed
     (("unknown", None), "broker_owner", Role.BROKER_OWNER),    # unreadable: the recorded role stands
     (("unknown", None), None, Role.AGENT),                     # a job queued before roles were recorded
 ])

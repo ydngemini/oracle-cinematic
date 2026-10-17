@@ -544,14 +544,35 @@ def test_an_agent_is_offered_none_of_the_owner_only_tools_and_the_owner_all_of_t
         assert all(agent_offer.withheld[name] for name in agent_offer.withheld)
 
 
-def test_the_three_providers_drop_exactly_the_same_withheld_names():
+def test_the_three_providers_drop_exactly_the_same_withheld_names(monkeypatch):
+    """Observed through the real seams each provider path uses, not a
+    re-implementation of the filter."""
+    from types import SimpleNamespace
+
     import tool_offer
 
     offer = tool_offer.for_actor(CTX, "client", {"sms": "texting isn't set up: no registered text number."})
     withheld = frozenset(offer.withheld)
-    bedrock = {t["toolSpec"]["name"] for t in ai_chat_agent._tool_config("client")["tools"]} - withheld
-    foundry = {t["name"] for t in ai_chat_agent._foundry_tools("client") if t["name"] not in withheld}
-    local = {t["function"]["name"] for t in ai_chat_agent._local_tools("client")
-             if t["function"]["name"] not in withheld}
-    assert bedrock == foundry == local == offer.offered
+    bedrock = {t["toolSpec"]["name"] for t in ai_chat_agent._offered_tool_config("client", withheld)["tools"]}
+
+    seen = {}
+
+    class Responses:
+        def create(self, **kw):
+            seen["foundry"] = {t["name"] for t in kw["tools"]}
+            return None
+
+    monkeypatch.setattr(ai_chat_agent, "_foundry_openai_client", lambda: SimpleNamespace(responses=Responses()))
+    ai_chat_agent._foundry_response([], "client", withheld)
+
+    async def fake_chat(payload, **_kw):
+        seen["local"] = {t["function"]["name"] for t in payload["tools"]}
+        return {"choices": [{"message": {"role": "assistant", "content": "ok"}}]}
+
+    monkeypatch.setattr(ai_chat_agent, "_local_chat", fake_chat)
+    bundle = {"attachments": [], "record": None, "messages": [{"role": "user", "content": "hi"}],
+              "assistant": {"context_type": "client", "context_id": "c-1"}, "tool_offer": offer}
+    asyncio.run(ai_chat_agent._local_fallback(SimpleNamespace(agent_id="a"), bundle, "system", "asst-1"))
+
+    assert bedrock == seen["foundry"] == seen["local"] == offer.offered
     assert "draft_sms" not in offer.offered and "draft_email" in offer.offered
