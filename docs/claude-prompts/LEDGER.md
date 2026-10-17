@@ -43,7 +43,7 @@ Listed weakest to strongest:
 | 08 | Durable missions and workflows | [08](08-durable-missions-workflow-orchestration.md) | `source_verified` | local | `745f2fa`; L08-02 deferral journal (0159), L08-03 feasible plans, L08-04 plans refuse unset channels by name (local) | Owner: does a mission's standing grant count as approval (C4.1)?; PR #11 needs a rebuild (L08-01 review) | T08.03 TaskGraph; rebuild PR #11's internal tasks after the owner answers |
 | 09 | Real-time voice | [09](09-realtime-voice-speech-latency.md) | `source_verified` | staging | `9c3463a`; L09-05 outbound spoken opt-out, L09-06 lead-only call notes, L09-07 voice rules locked per path (local) | Phone check (L09-02); real call (T09.18) needs owner approval | T09.18; T09.10 |
 | 10 | Communications and calendars | [10](10-communications-calendar-provider-integrations.md) | `source_verified` | staging | `75c6ba6` (local) | Google OAuth client; 10DLC; deploy approval; A07 fixed locally; L10-11 email Ready only after a send (0164, local); L10-12 texts and calls likewise (0165, local); 0136 + 0139 + 0145 undeployed (L10-06, L10-09, L10-10); owner: one-brand rule (L10-09) | L10-01 deploy + real connect; T10.09 retry/circuit UI + Playwright |
-| 11 | Property and market intelligence (non-MLS) | [11](11-property-market-intelligence.md) | `tests_pass` | staging (L11-01), local (L11-02, L11-03) | `90372f2`; `d934b2e` (L11-02); L11-03 on branch `worktree-agent-a59f5c8799a673f68` (base `2804f47`); L11-04 source inventory (local); L11-05 heuristic valuation targets labelled, underwriter promotion gated; L11-06 review fixes (local, A08); L11-07..L11-10 unverified property matches labelled possible matches in Houses, Neoh, the AI tools and contract drafts (local, T11.03 / F11.04) | Deploy 0135; live-DB test owed; staging catalog empty; L11-03 not deployed | Owner/legal: licences per source (L11-04); T11.03 |
+| 11 | Property and market intelligence (non-MLS) | [11](11-property-market-intelligence.md) | `tests_pass` | staging (L11-01), local (L11-02, L11-03) | `90372f2`; `d934b2e` (L11-02); L11-03 on branch `worktree-agent-a59f5c8799a673f68` (base `2804f47`); L11-04 source inventory (local); L11-05 heuristic valuation targets labelled, underwriter promotion gated; L11-06 review fixes (local, A08); L11-07..L11-12 unverified property matches labelled possible matches in Houses, Neoh, the AI tools, contract drafts, Property View and the client portal (local, T11.03 / F11.04) | Deploy 0135; live-DB test owed; staging catalog empty; L11-03 not deployed | Owner/legal: licences per source (L11-04); T11.03 |
 | 12 | Neoh Space capture, 3D, tours | [12](12-neoh-space-browser-capture-reconstruction.md) | `source_verified` | local | `745f2fa`; L12-03 Capture Studio first slice + integration map (local, jsdom only) | A03; AC12.02 real-device protocol | Server upload sessions (T12.05) |
 | 13 | Deals, documents, compliance | [13](13-transactions-contract-vault-compliance.md) | `source_verified` | local | `745f2fa`; L13-02 no new MLS-sourced deals; L13-03 status trail 0163 + T13.14 verified (local) | Owner: e-sign, commissions, fallen-through contracts | T13.02 remainder; T13.11 |
 | 14 | Sites, social, ads, client portal | [14](14-websites-social-ads-growth-client-portal.md) | `source_verified` | local | `745f2fa`; L14-03 honest website badge; L14-04 no new IDX on sites (local) | Owner: networks, listings on sites | T14.04 + AC14.04 |
@@ -1812,6 +1812,29 @@ blockers:
 audit_refs: []
 decision_refs: []
 next_task: "Show pv: keys as a Property View record, not a parcel (T11.02), and record a person's confirmation of a match (L11-07 next_task)."
+updated: 2026-10-17
+```
+
+#### L11-12 Client portal: the homeowner's title findings say "Possible match" / "Not verified", released liens say so, and dismissed findings and agent notes stay out (T11.03, F11.04)
+```yaml
+id: L11-12
+status: tests_pass
+env: local
+evidence_shas: [e83e4d6]
+files: [backend/client_portal.py, backend/tests/test_client_portal_title_summary.py, oracle-app/src/components/SecureDossierPage.jsx, oracle-app/src/components/SecureDossierPage.module.css, oracle-app/src/components/SecureDossierPage.test.jsx]
+tests_run:
+  - {cmd: "re-verify at e83e4d6 (workflow wf_ba5b6dda-f56: implementer -> reviewer -> fixer -> verifier)", result: "SecureDossierPage (read by the homeowner) showed every title finding as a bare type and amount ('Lien $45,000'): a possible_match or unresolved lien read as a fact about their house, a 'matched' status is only the submitter's claim (no route ever writes review_status 'confirmed'), a released lien read as outstanding, and client_portal included findings a reviewer dismissed and passed the agent's free-text notes and chain_gap to the homeowner's payload", date: 2026-10-17}
+  - {cmd: "red runs: pytest tests/test_client_portal_title_summary.py; npx vitest run src/components/SecureDossierPage.test.jsx (slice, then review fixes)", result: "1 failed / 3 passed (no dismissed filter; notes in the payload) and 3 failed / 3 passed ('Possible match' missing; matched read as fact; 'lienPossible match' glued); the lead's two added pins fail under their mutations (dropping timeZone 'UTC' shows the day before in America/Los_Angeles; a fail-open review check drops 'Not verified' for a missing or unknown review_status)", date: 2026-10-17}
+  - {cmd: "cd backend && pytest tests/test_client_portal_title_summary.py tests/test_client_portal_media.py tests/test_intelligence_platform.py", result: "34 passed: the portal query excludes dismissed findings, keeps RLS as the only tenant scope (no duplicated predicate), and returns only finding_type, amount, recorded_at, released_at, match_status and review_status, built key by key, so notes and chain_gap cannot ride along", date: 2026-10-17}
+  - {cmd: "cd oracle-app && npx vitest run src/components/SecureDossierPage.test.jsx", result: "8 passed: any status other than matched / released reads 'Possible match' (missing and unknown included); matched or released reads 'Not verified' unless review_status is exactly 'confirmed' (missing, null or unknown fail closed); a released lien says 'Released <date>' with the recorded calendar date in any time zone; a note explains possible matches only when one is listed; nothing says 'verified'", date: 2026-10-17}
+authz_checked: "The homeowner payload only shrinks: fewer columns and no dismissed rows; the dossier grant and RLS scoping are unchanged."
+blockers:
+  - "No route records a reviewer confirming or dismissing a title finding, so in practice every matched or released finding reads 'Not verified' and the dismissed filter guards rows written outside the app."
+  - "'Released' shows what the submitter's record says; the release itself is not verified (the generic 'Preliminary public-record findings' caveat covers it)."
+  - "No live-DB test of the new projection (plain columns from migration 0027, checked through the captured query). Not deployed (C4.4)."
+audit_refs: []
+decision_refs: []
+next_task: "A reviewer action that confirms or dismisses a title finding (writes review_status), with audit."
 updated: 2026-10-17
 ```
 
