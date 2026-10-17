@@ -1,7 +1,9 @@
 """
-CoT Synthesizer — transforms raw property scrapes into Chain-of-Thought training samples.
+CoT Synthesizer — turns synthetic assignment-contract records into Chain-of-Thought training samples.
 
-Reads all JSON files from Oracle/data/raw_scrapes/, generates multi-step reasoning
+Reads all JSON files from Oracle/data/raw_scrapes/ (despite the directory name,
+these are LLM-generated synthetic contracts from synthetic_lawyer.py, not
+scraped property data), generates multi-step reasoning
 blocks for each property record with ARV estimation, rehab cost analysis, and MAO
 calculation. Outputs to Oracle/training_data/swarm_textbook.jsonl.
 
@@ -30,7 +32,8 @@ COUNTY_ARV_PSF = {
     "Sussex": 210.0,
 }
 
-# Year-built brackets for rehab cost estimation ($/sqft)
+# Year-built brackets for rehab cost estimation ($/sqft). Unsourced heuristic
+# values, like the county table above (audit A08).
 REHAB_COST_BRACKETS = [
     (1900, 65.0),   # Pre-1920: gut rehab territory
     (1920, 55.0),   # 1920-1949: heavy rehab
@@ -40,7 +43,8 @@ REHAB_COST_BRACKETS = [
     (2005, 12.0),   # 2005+: cosmetic only
 ]
 
-# Condition modifiers based on property age relative to last likely reno
+# Condition modifiers based on property age relative to last likely reno.
+# Unsourced heuristic multipliers.
 CONDITION_LABELS = {
     "gut_rehab": {"label": "Gut Rehab", "multiplier": 1.3},
     "heavy": {"label": "Heavy Rehab", "multiplier": 1.1},
@@ -69,8 +73,8 @@ def estimate_arv(prop: dict) -> tuple[float, str]:
     arv = round(base_psf * sqft, -3)  # Round to nearest $1000
 
     rationale = (
-        f"County median ARV/sqft for renovated SFR in {county} County: "
-        f"${base_psf:.0f}/sqft. "
+        f"Heuristic placeholder ARV/sqft for renovated SFR in {county} County "
+        f"(unsourced, not a market median): ${base_psf:.0f}/sqft. "
         f"{sqft} sqft × ${base_psf:.0f} = ${arv:,.0f} estimated ARV."
     )
     return arv, rationale
@@ -242,8 +246,8 @@ def generate_cot_reasoning(record: dict) -> dict:
                 f"Subject property: {address}, {city}, {county} County, DE. "
                 f"Type: {metrics['property_type']} | {metrics['bedrooms']}BR/{metrics['bathrooms']}BA | "
                 f"{metrics['sqft']} sqft | Built {metrics['year_built']}. "
-                f"Located in {county} County — "
-                f"{'economic hub, highest median values in DE' if county == 'New Castle' else 'secondary market, moderate values' if county == 'Kent' else 'coastal/rural, seasonal demand premium'}."
+                f"Located in {county} County. No market data is sourced for this sample; "
+                f"every value below is a heuristic placeholder."
             ),
         },
         {
@@ -399,6 +403,7 @@ def build_training_sample(record: dict, filename: str) -> dict:
             "synthesized_at": datetime.now(tz=None).astimezone().isoformat(),
             # Computed by the rules above, not written by a model.
             "generator": "rules:cot_synthesizer",
+            "inputs": "synthetic",
             "targets": "heuristic",
             "format": "chain-of-thought-v2-mao",
         },
@@ -440,7 +445,7 @@ def main():
         sys.exit(1)
 
     print(f"{'='*70}")
-    print(f"  COT SYNTHESIZER v2 — MAO-Based Valuation Training Data")
+    print(f"  COT SYNTHESIZER v2 — heuristic MAO training data (synthetic inputs)")
     print(f"  Source: {RAW_SCRAPES_DIR} ({len(files)} files)")
     print(f"  Output: {OUTPUT_PATH}")
     print(f"  Verdict Logic: asking_price > MAO → REJECT")

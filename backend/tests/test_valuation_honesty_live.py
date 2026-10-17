@@ -70,6 +70,37 @@ async def _scenario():
         out = await models_api.activate_model(model_id=observed, body=decision, ctx=owner)
         assert out["model"]["status"] == "active"
         assert await admin.fetchval("SELECT status FROM model_registry WHERE id=$1", observed) == "active"
+
+        # Re-registering the active version with a heuristic artifact is
+        # refused; the active row keeps its artifact and card (L11-06).
+        swap = models_api.ModelRegister(
+            name="de-observed", version="1", model_kind="state_lora", scope_type="state", scope_key="DE",
+            base_model="base", artifact_uri="s3://b/heuristic", artifact_sha256="b" * 64,
+            model_card={"dataset": {"targets": {"provenance": "heuristic"}}})
+        with pytest.raises(HTTPException) as swapped:
+            await models_api.register_model(body=swap, ctx=owner)
+        assert swapped.value.status_code == 409 and "active" in swapped.value.detail
+        row = await admin.fetchrow("SELECT status, artifact_uri, model_card FROM model_registry WHERE id=$1", observed)
+        assert (row["status"], row["artifact_uri"]) == ("active", "s3://b/a")
+        assert json.loads(row["model_card"])["dataset"]["targets"]["provenance"] == "observed_transactions"
+
+        # A per-region report on an evaluation nobody reviewed for leakage and
+        # geographic bias does not count, even beside a reviewed pass.
+        unreviewed = uuid.uuid4()
+        await admin.execute(
+            """INSERT INTO model_registry (id, tenant_id, name, version, model_kind, scope_type, scope_key,
+                   base_model, artifact_uri, artifact_sha256, model_card, status, registered_by)
+               VALUES ($1,$2,'de-unreviewed','1','state_lora','state','DE','base','s3://b/c',$3,$4::jsonb,'validated','t')""",
+            unreviewed, tenant, "c" * 64, json.dumps({"dataset": {"targets": {"provenance": "observed_transactions"}}}))
+        await admin.execute(
+            """INSERT INTO model_evaluations (tenant_id, model_id, evaluation_set, metrics,
+                   leakage_reviewed, geographic_bias_reviewed, passed, evaluator)
+               VALUES ($1,$2,'holdout-a','{"accuracy": 0.9}'::jsonb,true,true,true,'t'),
+                      ($1,$2,'holdout-b',$3::jsonb,false,false,true,'t')""",
+            tenant, unreviewed, json.dumps(PER_REGION))
+        with pytest.raises(HTTPException) as unseen:
+            await models_api.activate_model(model_id=unreviewed, body=decision, ctx=owner)
+        assert unseen.value.status_code == 409 and "per-region error and uncertainty" in unseen.value.detail
     finally:
         await admin.execute("SET session_replication_role = replica")
         try:

@@ -1,8 +1,10 @@
 """
 Synthetic Lawyer — generates Delaware real estate assignment contract records as JSONL.
 
-Uses Bedrock (Llama 70B primary, DeepSeek v3.2 fallback) to produce
-legally-formatted wholesale assignment contracts for training data.
+Uses Bedrock (PRIMARY_MODEL, falling back to SECONDARY_MODEL; both are named
+below) to produce legally-formatted wholesale assignment contracts for training
+data. Every generated record is synthetic, and its _meta names the model that
+actually answered.
 """
 
 import json
