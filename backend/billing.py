@@ -1,8 +1,10 @@
+import hashlib
 import json
 import logging
 import os
 import re
 import recovery_mode
+import uuid
 from datetime import datetime, timezone
 import asyncio
 import time
@@ -111,6 +113,10 @@ elif STRIPE_SECRET_KEY:
     logger.info("Stripe test mode (sk_test_*) — no real charges.")
 
 _ENTITLED_STATUSES = ("active", "trialing", "past_due")
+# 'canceled' and 'incomplete_expired' are terminal: Stripe never revives a
+# deleted subscription, or one whose first payment never arrived, so no later
+# webhook event may move a row out of them (AC18.03). Every other status is a
+# plan that may still bill. The SQL below spells the pair out.
 
 
 def billing_enforced() -> bool:
@@ -142,12 +148,15 @@ async def require_active_subscription(
         if not billing_enforced():
             return ctx
         raise HTTPException(status_code=503, detail="Billing status is unavailable.")
+    # Any entitled row, not the newest: a brokerage holding two subscriptions
+    # (the checkout webhook flags that for a person) whose newer one was
+    # cancelled is still paying for the older one.
     async with tenant_tx(ctx) as conn:
         row = await conn.fetchrow(
-            "SELECT (SELECT status FROM subscriptions WHERE tenant_id = $1 "
-            "        ORDER BY created_at DESC LIMIT 1) AS status, "
+            "SELECT EXISTS (SELECT 1 FROM subscriptions WHERE tenant_id = $1 "
+            "               AND status = ANY($2::text[])) AS entitled, "
             "       (SELECT lifecycle_state FROM tenants WHERE id = $1) AS lifecycle",
-            ctx.tenant_id,
+            ctx.tenant_id, list(_ENTITLED_STATUSES),
         )
     # A brokerage that is closing (or suspended) spends nothing and contacts
     # nobody, paid or not — enforced even where billing enforcement is off.
@@ -158,8 +167,7 @@ async def require_active_subscription(
         )
     if not billing_enforced():
         return ctx
-    status_value = row["status"] if row is not None else None
-    if status_value not in _ENTITLED_STATUSES:
+    if row is None or not row["entitled"]:
         raise HTTPException(
             status_code=402,
             detail="An active Neoh subscription is required for this action.",
@@ -286,51 +294,117 @@ async def create_checkout_session(
         session_kwargs["custom_text"]["terms_of_service_acceptance"] = {
             "message": AUTO_RENEW_DISCLOSURE,
         }
-    # One paid plan per brokerage. A second checkout while one is live used to
-    # create a second subscription that billed alongside the first.
-    from db import connection as _dbc
-
-    live = None
-    if _dbc.get_pool() is not None:
-        async with tenant_tx(ctx) as conn:
-            live = await conn.fetchval(
-                "SELECT 1 FROM subscriptions WHERE tenant_id = $1 "
-                "AND status IN ('active','trialing','past_due') LIMIT 1", body.tenant_id)
-    if live:
-        raise HTTPException(status_code=409,
-                            detail="This brokerage already has an active plan. Manage it from Billing.")
-    # Same key for the same brokerage within ten minutes: a double click (or a
-    # retry after a timeout) returns the same session instead of a second one.
-    idem = f"checkout:{body.tenant_id}:{STRIPE_PRICE_ID}:{int(time.time() // 600)}"
-    try:
-        # Off the event loop and bounded: the SDK call is synchronous (80 s x 3
-        # attempts by default), and on the loop it froze every request.
-        session = await asyncio.wait_for(asyncio.to_thread(
-            lambda: stripe.checkout.Session.create(**session_kwargs, idempotency_key=idem)), timeout=45)
-    except asyncio.TimeoutError:
+    # One paid plan per brokerage, and one open checkout (T18.05, AC18.03).
+    # Both checks read the database: without it a second subscription could be
+    # sold, so checkout is refused rather than opened blind.
+    if not get_pool():
         raise HTTPException(status_code=503, detail="Checkout is temporarily unavailable. Please try again shortly.")
-    except stripe.error.InvalidRequestError as exc:
-        # Stripe's message names prices, tax registration and account state.
-        # That is operator detail: the request body here is only a tenant_id, so
-        # an InvalidRequestError is never the caller's fault, and returning it as
-        # a 400 with Stripe's text told the buyer otherwise.
-        logger.error("Stripe rejected the checkout session: %s", exc)
-        raise HTTPException(
-            status_code=502,
-            detail="Checkout could not be started. Please try again shortly.",
-        )
-    except stripe.error.AuthenticationError:
-        raise HTTPException(status_code=500, detail="Stripe authentication failed")
-    except stripe.error.StripeError as exc:
-        # Same reasoning as InvalidRequestError above: Stripe's text is operator
-        # detail, and this branch was leaking it too.
-        logger.error("Stripe failed to create the checkout session: %s", exc)
-        raise HTTPException(
-            status_code=502,
-            detail="Checkout could not be started. Please try again shortly.",
+    try:
+        tenant_id = str(uuid.UUID(body.tenant_id))
+    except ValueError:
+        raise HTTPException(status_code=422, detail="tenant_id is not a brokerage id.")
+
+    async with tenant_tx(ctx) as conn:
+        # One checkout at a time per brokerage: a double click, a second tab or
+        # a retry waits here, then finds the session the first one stored.
+        await conn.execute("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+                           f"billing-checkout:{tenant_id}")
+        if not await conn.fetchval("SELECT 1 FROM tenants WHERE id = $1", tenant_id):
+            raise HTTPException(status_code=404, detail="No such brokerage.")
+        # A plan that may still bill blocks a second one — including one whose
+        # first payment is pending ('incomplete'): it becomes 'active' or
+        # 'incomplete_expired' by itself, and buying again meanwhile was a
+        # second subscription.
+        live = await conn.fetchval(
+            "SELECT status FROM subscriptions WHERE tenant_id = $1 "
+            "AND status NOT IN ('canceled', 'incomplete_expired') "
+            "ORDER BY status IN ('active', 'trialing', 'past_due') DESC LIMIT 1", tenant_id)
+        if live in _ENTITLED_STATUSES:
+            raise HTTPException(status_code=409,
+                                detail="This brokerage already has an active plan. Open Manage billing to change it.")
+        # The locked billing overlay offers "Manage billing" (the Stripe portal,
+        # which opens this plan's customer) for these statuses and on any 409,
+        # so an owner refused here always has a way to settle the plan; there
+        # is no separate Billing page to send them to.
+        if live:
+            raise HTTPException(status_code=409,
+                                detail="This brokerage already has a plan whose payment is not settled. "
+                                       "Open Manage billing to update the card or review the invoice.")
+        # The brokerage's open session, handed back until it completes or
+        # expires. Ten minutes short of its expiry it is replaced instead, so
+        # nobody is sent to a page that closes while they pay.
+        stored = await conn.fetchrow(
+            "SELECT stripe_session_id, url, "
+            "       completed_at IS NULL AND expires_at > now() + interval '10 minutes' AS reusable "
+            "  FROM billing_checkout_sessions WHERE tenant_id = $1", tenant_id)
+        if stored and stored["reusable"]:
+            return CheckoutResponse(session_id=stored["stripe_session_id"], url=stored["url"])
+        # A returning brokerage pays as its existing Stripe customer, so every
+        # subscription and invoice it has sits on one customer and one portal.
+        # Stripe refuses tax and tax-id collection on an existing customer
+        # unless Checkout may save the address and name it collects to it.
+        customer = await conn.fetchval(
+            "SELECT stripe_customer_id FROM subscriptions WHERE tenant_id = $1 "
+            "AND stripe_customer_id IS NOT NULL ORDER BY created_at DESC LIMIT 1", tenant_id)
+        if customer:
+            session_kwargs["customer"] = customer
+            session_kwargs["customer_update"] = {"address": "auto", "name": "auto"}
+        idem = _checkout_idempotency_key(tenant_id, stored["stripe_session_id"] if stored else None,
+                                         session_kwargs)
+        try:
+            # Off the event loop and bounded: the SDK call is synchronous (80 s x 3
+            # attempts by default), and on the loop it froze every request.
+            session = await asyncio.wait_for(asyncio.to_thread(
+                lambda: stripe.checkout.Session.create(**session_kwargs, idempotency_key=idem)), timeout=45)
+        except asyncio.TimeoutError:
+            raise HTTPException(status_code=503, detail="Checkout is temporarily unavailable. Please try again shortly.")
+        except stripe.error.InvalidRequestError as exc:
+            # Stripe's message names prices, tax registration and account state.
+            # That is operator detail: the request body here is only a tenant_id, so
+            # an InvalidRequestError is never the caller's fault, and returning it as
+            # a 400 with Stripe's text told the buyer otherwise.
+            logger.error("Stripe rejected the checkout session: %s", exc)
+            raise HTTPException(
+                status_code=502,
+                detail="Checkout could not be started. Please try again shortly.",
+            )
+        except stripe.error.AuthenticationError:
+            raise HTTPException(status_code=500, detail="Stripe authentication failed")
+        except stripe.error.StripeError as exc:
+            # Same reasoning as InvalidRequestError above: Stripe's text is operator
+            # detail, and this branch was leaking it too.
+            logger.error("Stripe failed to create the checkout session: %s", exc)
+            raise HTTPException(
+                status_code=502,
+                detail="Checkout could not be started. Please try again shortly.",
+            )
+        # Stripe states the session's expiry; when an answer lacks it, its
+        # documented Checkout default (24 hours) is what applies.
+        await conn.execute(
+            """INSERT INTO billing_checkout_sessions (tenant_id, stripe_session_id, url, expires_at)
+               VALUES ($1, $2, $3, COALESCE(to_timestamp($4::bigint), now() + interval '24 hours'))
+               ON CONFLICT (tenant_id) DO UPDATE
+               SET stripe_session_id = EXCLUDED.stripe_session_id, url = EXCLUDED.url,
+                   expires_at = EXCLUDED.expires_at, completed_at = NULL, created_at = now()""",
+            tenant_id, session.id, session.url, getattr(session, "expires_at", None),
         )
 
     return CheckoutResponse(session_id=session.id, url=session.url)
+
+
+def _checkout_idempotency_key(tenant_id: str, replaces: Optional[str], session_kwargs: dict) -> str:
+    """Stripe's idempotency key for a new checkout: the brokerage and the
+    session it replaces, never the clock.
+
+    A retry after Stripe's answer was lost sends the same key, and Stripe hands
+    back the session it already made instead of a second one; once the stored
+    session has completed or expired, the key moves on with it. The request's
+    digest is part of the key because Stripe refuses a reused key whose
+    parameters differ (a new price, or a customer that appeared in between).
+    """
+    digest = hashlib.sha256(
+        json.dumps(session_kwargs, sort_keys=True, default=str).encode()).hexdigest()[:16]
+    return f"checkout:{tenant_id}:{replaces or 'first'}:{digest}"
 
 
 # ---------------------------------------------------------------------------
@@ -365,10 +439,13 @@ async def create_portal_session(
     if not pool:
         raise HTTPException(status_code=503, detail="DB unavailable")
 
+    # The customer of a plan that may still bill comes first: with two
+    # subscriptions the newest row can be the cancelled one, and the portal
+    # must open the plan that is still charging.
     async with tenant_tx(ctx) as conn:
         row = await conn.fetchrow(
             "SELECT stripe_customer_id FROM subscriptions WHERE tenant_id = $1 "
-            "ORDER BY created_at DESC LIMIT 1",
+            "ORDER BY status NOT IN ('canceled', 'incomplete_expired') DESC, created_at DESC LIMIT 1",
             body.tenant_id,
         )
 
@@ -491,10 +568,14 @@ async def subscription_status(
     if not pool:
         return SubscriptionStatus(active=False, status="no_db", plan="none")
 
+    # An entitled row first, as require_active_subscription reads it: the
+    # newest row alone said 'canceled' for a brokerage still paying for an
+    # older subscription.
     async with tenant_tx(ctx) as conn:
         row = await conn.fetchrow(
             "SELECT status, plan, current_period_end FROM subscriptions "
-            "WHERE tenant_id = $1 ORDER BY created_at DESC LIMIT 1",
+            "WHERE tenant_id = $1 "
+            "ORDER BY status IN ('active', 'trialing', 'past_due') DESC, created_at DESC LIMIT 1",
             tenant_id,
         )
 
@@ -598,8 +679,9 @@ async def stripe_webhook(request: Request):
             try:
                 await handler(conn, obj, event_created)
             except _SubscriptionNotYetKnown:
-                # Stripe does not guarantee order: invoice.paid or
-                # subscription.updated can arrive before checkout.session.completed.
+                # Stripe does not guarantee order: invoice.paid,
+                # subscription.updated or subscription.deleted can arrive
+                # before checkout.session.completed.
                 # Recording it as processed lost it for good. Roll back (the event
                 # id is not kept) and ask Stripe to redeliver later.
                 raise _RetryLater()
@@ -670,6 +752,15 @@ async def _handle_checkout_completed(conn, session, event_created: int = 0):
     subscription_id = session.get("subscription")
     customer_id = session.get("customer")
 
+    # Checkout never hands a completed session out again (0169).
+    session_id = session.get("id")
+    if session_id:
+        await conn.execute(
+            "UPDATE billing_checkout_sessions SET completed_at = now() "
+            "WHERE stripe_session_id = $1 AND completed_at IS NULL",
+            session_id,
+        )
+
     if not tenant_id or not subscription_id:
         logger.warning("[billing] checkout.completed missing tenant_id or subscription")
         return
@@ -680,6 +771,20 @@ async def _handle_checkout_completed(conn, session, event_created: int = 0):
     payment_status = session.get("payment_status")
     status = "active" if payment_status in (None, "paid", "no_payment_required") else "incomplete"
 
+    # This brokerage's checkout events one at a time, so two arriving together
+    # cannot each miss the other's subscription.
+    await conn.execute("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+                       f"billing-subscriptions:{tenant_id}")
+    rows = await conn.fetch(
+        "SELECT stripe_subscription_id FROM subscriptions WHERE tenant_id = $1 "
+        "AND (stripe_subscription_id = $2 OR status NOT IN ('canceled', 'incomplete_expired'))",
+        tenant_id, subscription_id,
+    )
+    known = any(r["stripe_subscription_id"] == subscription_id for r in rows)
+    others = sorted(r["stripe_subscription_id"] for r in rows if r["stripe_subscription_id"] != subscription_id)
+
+    # A cancelled (or expired) subscription is terminal: a checkout event for
+    # it, however late, does not reopen it.
     await conn.execute(
         """INSERT INTO subscriptions (tenant_id, stripe_customer_id, stripe_subscription_id,
                                       status, last_event_created)
@@ -688,11 +793,45 @@ async def _handle_checkout_completed(conn, session, event_created: int = 0):
            SET status = EXCLUDED.status, stripe_customer_id = EXCLUDED.stripe_customer_id,
                last_event_created = EXCLUDED.last_event_created, updated_at = now()
            WHERE subscriptions.last_event_created <= EXCLUDED.last_event_created
-             AND subscriptions.tenant_id = EXCLUDED.tenant_id""",
+             AND subscriptions.tenant_id = EXCLUDED.tenant_id
+             AND subscriptions.status NOT IN ('canceled', 'incomplete_expired')""",
         tenant_id, customer_id, subscription_id, status, event_created,
     )
+    if others and not known:
+        await _flag_second_live_subscription(conn, tenant_id, subscription_id, others, event_created)
 
     logger.info("[billing] checkout completed — tenant=%s sub=%s status=%s", tenant_id, subscription_id, status)
+
+
+async def _flag_second_live_subscription(conn, tenant_id: str, subscription_id: str,
+                                         others: list[str], event_created: int) -> None:
+    """The brokerage now holds two subscriptions that may both bill.
+
+    Both are real Stripe subscriptions, so both rows stay exactly as Stripe
+    reports them (entitlement reads any live row, so neither locks the
+    brokerage out). Which one to keep, and any refund, is a person's decision:
+    a webhook never cancels or refunds (CONTRACT C4). The alert lands in
+    audit_anomaly_alerts (the console's anomaly list, newest first); the
+    operator's billing exceptions list the brokerage from the subscriptions
+    themselves until one of the two is cancelled (operator_api).
+    """
+    evidence = {
+        "subscription": subscription_id,
+        "other_live_subscriptions": others,
+        "event_created": event_created,
+        "action": ("Two Stripe subscriptions may bill this brokerage. A person must decide which to keep, "
+                   "then cancel and refund the other in Stripe; nothing was cancelled or refunded "
+                   "automatically."),
+    }
+    fingerprint = hashlib.sha256(
+        f"second_live_subscription:{tenant_id}:{subscription_id}".encode()).hexdigest()
+    await conn.execute(
+        """INSERT INTO audit_anomaly_alerts (tenant_id, anomaly_type, severity, fingerprint, route, evidence)
+           VALUES ($1::uuid, 'second_live_subscription', 'high', $2, '/billing/webhook', $3::jsonb)""",
+        tenant_id, fingerprint, json.dumps(evidence, separators=(",", ":")),
+    )
+    logger.error("[billing] tenant=%s holds a second live subscription %s alongside %s; flagged for a "
+                 "person (nothing cancelled or refunded)", tenant_id, subscription_id, ", ".join(others))
 
 
 def _invoice_subscription_id(invoice) -> Optional[str]:
@@ -719,14 +858,22 @@ async def _handle_invoice_paid(conn, invoice, event_created: int = 0):
         logger.warning("[billing] invoice.paid has no period_end — sub=%s", subscription_id)
     period_end_dt = datetime.fromtimestamp(period_end, tz=timezone.utc) if period_end else None
 
-    # Not if a newer event (a cancellation, say) has already been applied.
+    # Not if a newer event has already been applied, and never on a cancelled
+    # subscription: dunning can cancel the plan and leave its invoice open, and
+    # paying that invoice later settles a debt — Stripe does not reopen the
+    # plan, and nothing would ever bill it again.
     status_line = await conn.execute(
         """UPDATE subscriptions SET status = 'active', current_period_end = $2,
                   last_event_created = $3, updated_at = now()
-           WHERE stripe_subscription_id = $1 AND last_event_created <= $3""",
+           WHERE stripe_subscription_id = $1 AND last_event_created <= $3
+             AND status NOT IN ('canceled', 'incomplete_expired')""",
         subscription_id, period_end_dt, event_created,
     )
     await _require_known(conn, status_line, subscription_id)
+    if str(status_line).endswith(" 0"):
+        # Kept in the event ledger: the row holds a newer event, or the plan has ended.
+        logger.info("[billing] invoice.paid not applied — sub=%s has a newer event or has ended", subscription_id)
+        return
 
     logger.info("[billing] invoice.paid — sub=%s period_end=%s", subscription_id, period_end_dt)
 
@@ -768,10 +915,13 @@ async def _handle_subscription_updated(conn, subscription, event_created: int = 
         period_end = max(ends) if ends else None
     period_end_dt = datetime.fromtimestamp(period_end, tz=timezone.utc) if period_end else None
 
+    # A snapshot from the same second as the deletion (or any later one) does
+    # not undo it: canceled and incomplete_expired are terminal.
     status_line = await conn.execute(
         """UPDATE subscriptions SET status = $2, current_period_end = $3,
                   last_event_created = $4, updated_at = now()
-           WHERE stripe_subscription_id = $1 AND last_event_created <= $4""",
+           WHERE stripe_subscription_id = $1 AND last_event_created <= $4
+             AND status NOT IN ('canceled', 'incomplete_expired')""",
         sub_id, status, period_end_dt, event_created,
     )
     await _require_known(conn, status_line, sub_id)
@@ -782,13 +932,17 @@ async def _handle_subscription_updated(conn, subscription, event_created: int = 
 async def _handle_subscription_deleted(conn, subscription, event_created: int = 0):
     sub_id = subscription.get("id")
 
-    # Deletion is terminal, so it applies even over a "newer" event; it still
-    # records its time so nothing older can resurrect the row afterwards.
-    await conn.execute(
+    # Deletion is terminal, so it applies even over a "newer" event; it records
+    # its time, and no handler writes a canceled row again.
+    status_line = await conn.execute(
         """UPDATE subscriptions SET status = 'canceled', updated_at = now(),
                   last_event_created = GREATEST(last_event_created, $2)
            WHERE stripe_subscription_id = $1""",
         sub_id, event_created,
     )
+    # Before its checkout has landed, a deletion recorded as processed was lost
+    # for good, and the late checkout then stored the plan as active. Roll back
+    # instead, so Stripe redelivers it once the row exists.
+    await _require_known(conn, status_line, sub_id)
 
     logger.info("[billing] subscription.deleted — sub=%s", sub_id)

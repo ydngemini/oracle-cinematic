@@ -151,6 +151,9 @@ TABLES: dict[str, TableEntry] = {
     "subscriptions": TableEntry(C.FINANCIAL_BILLING, R, "7 years; Stripe ids, no customer content"),
     "billing_usage_events": TableEntry(C.FINANCIAL_BILLING, R, "7 years"),
     "stripe_webhook_events": TableEntry(C.FINANCIAL_BILLING, G, "event ids only"),
+    "billing_checkout_sessions": TableEntry(C.CAPABILITY_TOKEN, E,
+                                            "0169 (T18.05): the open Stripe Checkout session id and its "
+                                            "payable url; no customer content"),
     # ── AI ───────────────────────────────────────────────────────────────
     "ai_chat_messages": TableEntry(C.AI_CHAT, E,
                                    "content encrypted; metadata.semantic_frame (05) = goal labels, "

@@ -187,6 +187,29 @@ describe('OperatorOverview', () => {
     expect(screen.getByText('off (history only)')).toBeTruthy();
   });
 
+  it('keeps a brokerage holding two live subscriptions on the billing card until one is cancelled', async () => {
+    // The webhook's alert went only to the security list, where routine
+    // access-denial alerts pushed it out of view while both plans billed.
+    respond({
+      '/api/admin/billing/exceptions': {
+        ...FIXTURES['/api/admin/billing/exceptions'],
+        no_subscription: [],
+        duplicate_subscriptions: [{
+          tenant_id: T1, name: 'Lockwood Realty', flagged_at: new Date().toISOString(),
+          subscriptions: [{ stripe_subscription_ref: 'sub_old', status: 'active', since: null },
+                          { stripe_subscription_ref: 'sub_new', status: 'past_due', since: null }],
+        }],
+      },
+    });
+    render(<OperatorOverview />);
+    const card = (await screen.findByRole('heading', { name: 'Billing exceptions' })).closest('section');
+    expect(await within(card).findByText('Two live subscriptions (1)')).toBeTruthy();
+    expect(within(card).getByText('Lockwood Realty')).toBeTruthy();
+    expect(within(card).getByText(/sub_old \(active\), sub_new \(past_due\)/)).toBeTruthy();
+    expect(within(card).getByText(/Nothing was cancelled or refunded automatically/)).toBeTruthy();
+    expect(within(card).queryByText('No billing exceptions.')).toBeNull();
+  });
+
   it('keeps pilot metrics small and labels attribution honestly', async () => {
     render(<OperatorOverview />);
     const card = (await screen.findByRole('heading', { name: /Pilot metrics/ })).closest('section');

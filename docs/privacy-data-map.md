@@ -93,7 +93,7 @@ Counts are from the dev database. They show shape, not production volume.
 
 **Secrets / capability tokens**: `provider_credentials` (encrypted Google/SMTP tokens), `lead_source_connectors` (encrypted webhook secret), `oauth_authorization_states`, `password_reset_tokens`, `client_portals`, `property_view_upload_links`, and invitations (all hashed tokens). Two-step sign-in (0150, L17-19): `user_mfa_factors.totp_secret_ciphertext` is the authenticator secret sealed with the brokerage key (pgcrypto, per-tenant HKDF, never plaintext); `user_mfa_recovery_codes.code_hash` is the SHA-256 of each one-time recovery code. Both tables admit only the platform context (RLS), are erased with the brokerage (and with the user, by cascade) and are never exported.
 
-**Billing** (Neoh is controller): `subscriptions` (Stripe ids), `billing_usage_events`, `stripe_webhook_events` (event ids only).
+**Billing** (Neoh is controller): `subscriptions` (Stripe ids), `billing_usage_events`, `stripe_webhook_events` (event ids only), `billing_checkout_sessions` (0169: the brokerage's open Stripe Checkout session id and payable link, erased with the brokerage).
 
 **Public / licensed / reference** (not brokerage data):
 - `public_property_records`: 9.8M rows of owner names from public records, with a trigram search index.

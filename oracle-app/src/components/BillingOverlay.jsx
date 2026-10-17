@@ -55,6 +55,9 @@ const BILLING_STATUS_ERROR =
   'We couldn\'t verify your license because the billing service is unavailable. Please try again.';
 const CHECKOUT_ERROR = 'We couldn\'t open secure checkout. Please try again.';
 const PORTAL_ERROR = 'We couldn\'t open the billing portal. Please try again.';
+// A plan that may still bill but is not paid up. Checkout refuses a second
+// plan while one exists (409), so the way forward is the billing portal.
+const UNSETTLED_STATUSES = new Set(['incomplete', 'unpaid', 'paused']);
 
 /**
  * @param {{ onLockedChange?: (locked: boolean) => void }} props
@@ -75,6 +78,10 @@ export function BillingOverlay({ onLockedChange } = {}) {
   const [checkoutLoading, setCheckoutLoading] = useState(false);
   const [portalLoading, setPortalLoading] = useState(false);
   const [actionError, setActionError] = useState(null);
+  // Checkout answered 409: this brokerage already holds a plan, which the
+  // status read may not have shown (it changed since, or Stripe reported a
+  // status this page does not know). The portal is where that plan is managed.
+  const [checkoutRefused, setCheckoutRefused] = useState(false);
   const dialogRef = useRef(null);
   const titleRef = useRef(null);
   const titleId = useId();
@@ -102,6 +109,8 @@ export function BillingOverlay({ onLockedChange } = {}) {
   // set up. A Stripe outage (reason 'lookup_failed') keeps the button.
   const notConfigured = plan?.reason === 'not_configured';
   const copy = dialogCopy(planName)[mode];
+  const unsettled = UNSETTLED_STATUSES.has(status);
+  const offerPortal = status === 'canceled' || unsettled || checkoutRefused;
 
   useEffect(() => { onLockedChange?.(isVisible); }, [isVisible, onLockedChange]);
 
@@ -119,6 +128,7 @@ export function BillingOverlay({ onLockedChange } = {}) {
       window.location.href = url;
     } catch (err) {
       const msg = err instanceof ApiError ? formatApiError(err) : CHECKOUT_ERROR;
+      if (err instanceof ApiError && err.status === 409) setCheckoutRefused(true);
       setActionError(msg);
       setCheckoutLoading(false);
     }
@@ -279,6 +289,11 @@ export function BillingOverlay({ onLockedChange } = {}) {
                   Checkout can&apos;t start until billing is connected on this deployment. Ask your Neoh administrator.
                 </p>
               ) : null}
+              {unsettled ? (
+                <p className={styles.fine}>
+                  This brokerage&apos;s plan payment isn&apos;t settled. Use Manage billing to update the card or review the invoice.
+                </p>
+              ) : null}
 
               <button
                 className={styles.cta}
@@ -297,14 +312,14 @@ export function BillingOverlay({ onLockedChange } = {}) {
                 )}
               </button>
 
-              {status === 'canceled' ? (
+              {offerPortal ? (
                 <button
                   className={styles.portalBtn}
                   type="button"
                   onClick={handleOpenPortal}
                   disabled={checkoutLoading || portalLoading}
                 >
-                  {portalLoading ? 'Opening portal…' : 'Reactivate via Portal'}
+                  {portalLoading ? 'Opening portal…' : status === 'canceled' ? 'Reactivate via Portal' : 'Manage billing'}
                 </button>
               ) : null}
 
