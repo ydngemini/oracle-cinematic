@@ -18,6 +18,17 @@ const PRICE_FORMAT = new Intl.NumberFormat('en-US', {
 });
 const NUMBER_FORMAT = new Intl.NumberFormat('en-US', { maximumFractionDigits: 1 });
 
+// The badge names what the search matched and no more (AC11.04). Nothing
+// records a person confirming a parcel yet (T11.03), so an exact key is still
+// "not verified" and a partial hit is only a possible match. A browsed record,
+// or one opened by its id, was not matched against anything, so it keeps the
+// plain badge.
+const IDENTITY_BADGE = {
+  exact_parcel: 'Parcel number match · not verified',
+  exact_address: 'Address match · not verified',
+  possible_match: 'Possible match',
+};
+
 function sourcedValue(value, formatter) {
   if (value === null || value === undefined || value === '') return 'Not published';
   return formatter ? formatter.format(Number(value)) : String(value);
@@ -78,12 +89,19 @@ export default function HouseWorkspace({ house, onHouseUpdate }) {
   const locality = [house.city, house.state, house.zip].filter(Boolean).join(', ');
   const hasAddress = Boolean(house.address);
   const factCoverage = house.fact_coverage;
+  const possibleMatch = !house.isManual && house.identity?.status === 'possible_match';
 
   return (
     <aside className={styles.workspace} aria-labelledby="workspace-title">
       <div className={styles.workspaceTopline}>
-        <span className={styles.sourceBadge} data-manual={house.isManual ? '' : undefined}>
-          {house.isManual ? 'CRM manual · unverified' : 'Public record'}
+        <span
+          className={styles.sourceBadge}
+          data-manual={house.isManual ? '' : undefined}
+          data-possible={possibleMatch ? '' : undefined}
+        >
+          {house.isManual
+            ? 'CRM manual · unverified'
+            : IDENTITY_BADGE[house.identity?.status] || 'Public record'}
         </span>
         {house.parcel_id && <span>Parcel {house.parcel_id}</span>}
       </div>
@@ -139,7 +157,13 @@ export default function HouseWorkspace({ house, onHouseUpdate }) {
         </div>
         <div>
           <dt>Owner of record</dt>
-          <dd>{sourcedValue(house.owner_name)}</dd>
+          <dd>
+            {sourcedValue(house.owner_name)}
+            {/* The owner of a candidate parcel is never shown as this house's owner. */}
+            {possibleMatch && house.owner_name && (
+              <small className={styles.factQualifier}>(possible match)</small>
+            )}
+          </dd>
         </div>
         <div>
           <dt>Sale date</dt>
@@ -177,6 +201,12 @@ export default function HouseWorkspace({ house, onHouseUpdate }) {
 
       {notice && <div className={styles.successState} role="status">{notice}</div>}
 
+      {possibleMatch && (
+        <p id="workspace-identity-warning" className={styles.identityWarning}>
+          Possible match: confirm the parcel before linking.
+        </p>
+      )}
+
       <div className={styles.workspaceActions}>
         <button
           ref={tourButtonRef}
@@ -203,6 +233,7 @@ export default function HouseWorkspace({ house, onHouseUpdate }) {
           className={styles.primaryButton}
           onClick={() => setLinkOpen(true)}
           disabled={!hasAddress}
+          aria-describedby={possibleMatch ? 'workspace-identity-warning' : undefined}
         >
           <Link2 aria-hidden="true" />
           Link to client

@@ -379,6 +379,10 @@
   color: var(--oracle-accent-ink);
 }
 
+.recordFlag {
+  color: var(--oracle-accent-ink);
+}
+
 .skeleton {
   min-height: 92px;
   background:
@@ -544,6 +548,26 @@
 .sourceBadge[data-manual] {
   color: var(--oracle-text-dim);
   border-color: var(--oracle-glass-edge);
+}
+
+/* A candidate parcel, not a confirmed one: the dashed edge reads as tentative. */
+.sourceBadge[data-possible] {
+  border-style: dashed;
+}
+
+.identityWarning {
+  margin-top: var(--space-3);
+  color: var(--oracle-accent-ink);
+  font-size: var(--text-sm);
+}
+
+/* Its own line, so a long owner name cannot ellipsize the qualifier away. */
+.factQualifier {
+  display: block;
+  margin-top: var(--space-1);
+  color: var(--oracle-accent-ink);
+  font: 500 var(--text-xs)/1 var(--font-mono);
+  letter-spacing: var(--tracking-wide);
 }
 
 .workspaceTitle {

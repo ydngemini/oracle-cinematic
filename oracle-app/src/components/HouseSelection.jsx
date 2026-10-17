@@ -67,6 +67,10 @@ function RecordCard({ record, isSelected, onSelect }) {
       </span>
       <span className={styles.recordMeta}>
         <span>{record.parcel_id ? `Parcel ${record.parcel_id}` : 'Public record'}</span>
+        {/* A partial hit can rank first; it is a candidate, not the house searched for. */}
+        {record.identity?.status === 'possible_match' && (
+          <span className={styles.recordFlag}>Possible match</span>
+        )}
         <small>{record.source || 'Source-backed'}</small>
       </span>
     </button>

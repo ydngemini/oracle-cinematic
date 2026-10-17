@@ -10,7 +10,7 @@
  * and the button that opens it must not say otherwise.
  */
 
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, render, screen, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 // vitest.config.js does not set `globals: true`, so Testing Library never gets
@@ -94,5 +94,75 @@ describe('HouseWorkspace interior affordances', () => {
 
     expect(useTour).toHaveBeenCalledWith({ leadId: null });
     expect(screen.queryByRole('button', { name: /step inside|not this home/i })).toBeNull();
+  });
+});
+
+describe('HouseWorkspace identity labels (AC11.04, F11.04)', () => {
+  // The top search hit opens here with its owner of record and a one-click
+  // "Link to client". A partial match is a candidate parcel, so it must never
+  // read as the property the agent asked for.
+  const POSSIBLE = {
+    ...HOUSE,
+    parcel_id: 'P-1',
+    owner_name: 'Example Owner LLC',
+    match_type: 'owner_partial',
+    identity: { status: 'possible_match', basis: 'owner_partial', verified: false },
+  };
+
+  it('labels a partial search hit a possible match, not a public record', () => {
+    useTour.mockReturnValue({ tour: undefined });
+
+    render(<HouseWorkspace house={POSSIBLE} />);
+
+    expect(screen.getByText('Possible match')).toBeTruthy();
+    expect(screen.queryByText('Public record')).toBeNull();
+    const warning = screen.getByText('Possible match: confirm the parcel before linking.');
+    // The link action carries the warning, so it is read with the button.
+    const link = screen.getByRole('button', { name: 'Link to client' });
+    expect(link.getAttribute('aria-describedby')).toBe(warning.id);
+  });
+
+  it('never shows the owner of record of a possible match on its own', () => {
+    useTour.mockReturnValue({ tour: undefined });
+
+    render(<HouseWorkspace house={POSSIBLE} />);
+
+    const ownerRow = screen.getByText('Owner of record').parentElement;
+    expect(within(ownerRow).getByText('Example Owner LLC')).toBeTruthy();
+    expect(within(ownerRow).getByText(/possible match/i)).toBeTruthy();
+  });
+
+  it('says an exact key match is still not verified', () => {
+    useTour.mockReturnValue({ tour: undefined });
+
+    render(
+      <HouseWorkspace
+        house={{
+          ...POSSIBLE,
+          match_type: 'parcel_exact',
+          identity: { status: 'exact_parcel', basis: 'parcel_exact', verified: false },
+        }}
+      />,
+    );
+
+    expect(screen.getByText('Parcel number match · not verified')).toBeTruthy();
+    expect(screen.queryByText(/possible match/i)).toBeNull();
+  });
+
+  it('keeps the plain public-record badge for a browsed record', () => {
+    useTour.mockReturnValue({ tour: undefined });
+
+    render(
+      <HouseWorkspace
+        house={{
+          ...POSSIBLE,
+          match_type: 'browse',
+          identity: { status: 'not_applicable', basis: 'browse', verified: false },
+        }}
+      />,
+    );
+
+    expect(screen.getByText('Public record')).toBeTruthy();
+    expect(screen.queryByText(/possible match|not verified/i)).toBeNull();
   });
 });

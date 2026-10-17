@@ -600,6 +600,79 @@ async def _lead_ids_for_records(conn, rows: list[dict]) -> dict[tuple[str, str],
     return {(str(r["parcel_id"]), str(r["state"])): str(r["id"]) for r in found}
 
 
+# What the search actually matched, as a claim about identity (AC11.04). Only
+# an exact key is named as one; every partial or unrecognised match type is a
+# possible match. Nothing records a person confirming a parcel yet (T11.03),
+# so `verified` is False for all of them, exact keys included. A browse row
+# and a record opened by its id were compared with nothing the user typed.
+_EXACT_IDENTITY = {
+    "parcel_exact": "exact_parcel",
+    "address_exact": "exact_address",
+}
+_UNMATCHED_TYPES = {"browse", "record_id"}
+
+# The search's exact branches compare compacted text: every space and
+# punctuation mark is removed on both sides. That also removes word
+# boundaries, so "15 1/2 MAIN ST" equals "1512 Main St" and parcel "123-45"
+# equals "12-345". Such a row stays in the results as a candidate, under its
+# own match type, which is a possible match.
+_EXACT_MATCH_FIELDS = {
+    "parcel_exact": ("parcel_id", "parcel_compact"),
+    "address_exact": ("address", "address_compact"),
+}
+
+
+def _record_identity(match_type: str) -> dict[str, Any]:
+    if match_type in _UNMATCHED_TYPES:
+        status_name = "not_applicable"
+    else:
+        status_name = _EXACT_IDENTITY.get(match_type, "possible_match")
+    return {"status": status_name, "basis": match_type, "verified": False}
+
+
+def _token_key(value: Any) -> str:
+    """Lower-case letter and digit runs in any script, one space apart. Unit
+    numbers stay, and "5 大街" keeps its street name (the SQL's compaction
+    drops it)."""
+    return " ".join(re.findall(r"[^\W_]+", str(value or "").lower()))
+
+
+def _settle_exact_match(row: dict, query_key: str, *, ambiguous_parcels: frozenset = frozenset()) -> dict:
+    """Keep an exact match type only if the words line up as well.
+
+    A blank query key or a blank parcel or address is never an exact match.
+    A parcel number written without separators on one side ("19142090130000"
+    for "19-14-209-013-0000") carries no boundaries to compare, so its digits
+    decide — unless the same digits are split differently on another row of
+    the results, which makes it ambiguous ("12345" for "12-345" and "123-45").
+    """
+    field_and_fallback = _EXACT_MATCH_FIELDS.get(row.get("match_type"))
+    if field_and_fallback is None:
+        return row
+    field, fallback = field_and_fallback
+    row_key = _token_key(row.get(field))
+    if query_key and row_key == query_key:
+        return row
+    if (
+        field == "parcel_id" and query_key and row_key
+        and (" " not in query_key or " " not in row_key)
+        and query_key.replace(" ", "") == row_key.replace(" ", "")
+        and row_key.replace(" ", "") not in ambiguous_parcels
+    ):
+        return row
+    return {**row, "match_type": fallback}
+
+
+def _ambiguous_parcels(rows: list[dict]) -> frozenset:
+    """Compact parcel numbers that appear split two different ways."""
+    forms: dict[str, set] = {}
+    for row in rows:
+        if row.get("match_type") == "parcel_exact":
+            key = _token_key(row.get("parcel_id"))
+            forms.setdefault(key.replace(" ", ""), set()).add(key)
+    return frozenset(compact for compact, seen in forms.items() if len(seen) > 1)
+
+
 def _public_record_json(r: dict, lead_ids: Optional[dict] = None) -> dict:
     """Map one allow-listed catalog row to the existing property-card contract.
 
@@ -655,6 +728,7 @@ def _public_record_json(r: dict, lead_ids: Optional[dict] = None) -> dict:
         "match_type": r.get("match_type") or "browse",
         "match_score": int(r.get("match_score") or 0),
     }
+    record["identity"] = _record_identity(record["match_type"])
     required_facts = {
         "assessor_value": record["price"],
         "last_recorded_sale": record["last_sale_price"],
@@ -917,6 +991,7 @@ async def mls_pipeline_search(
     """Accurate paged search over shared, allow-listed public property facts."""
     conditions: list[str] = []
     args: list[Any] = []
+    words_order_sql = words_text = ""
 
     def _arg(v: Any) -> str:
         args.append(v)
@@ -948,12 +1023,23 @@ async def mls_pipeline_search(
         # LIKE metacharacters in the user's text are literal (review DOS-2).
         escaped = query_text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
         contains_arg = _arg(f"%{escaped}%")
-        exact_arg = _arg(normalized_query)
-        conditions.append(
-            f"(search_document ILIKE {contains_arg} "
-            f"OR regexp_replace(lower(parcel_id), '[^a-z0-9]', '', 'g') = {exact_arg} "
-            f"OR regexp_replace(lower(COALESCE(address, '')), '[^a-z0-9]', '', 'g') = {exact_arg})"
-        )
+        # A query with no letters or digits ("#", "-", "ñ") compacts to "",
+        # which equals every blank parcel and address. It gets no exact branch.
+        exact_where_sql = exact_rank_sql = exact_type_sql = ""
+        if normalized_query:
+            exact_arg = _arg(normalized_query)
+            parcel_exact_sql = f"regexp_replace(lower(parcel_id), '[^a-z0-9]', '', 'g') = {exact_arg}"
+            address_exact_sql = (
+                f"regexp_replace(lower(COALESCE(address, '')), '[^a-z0-9]', '', 'g') = {exact_arg}"
+            )
+            exact_where_sql = f" OR {parcel_exact_sql} OR {address_exact_sql}"
+            exact_rank_sql = f"WHEN {parcel_exact_sql} THEN 100 WHEN {address_exact_sql} THEN 98 "
+            exact_type_sql = (
+                f"WHEN {parcel_exact_sql} THEN 'parcel_exact' "
+                f"WHEN {address_exact_sql} THEN 'address_exact' "
+            )
+            words_text = " ".join(re.findall(r"[a-z0-9]+", query_text.lower()))
+        conditions.append(f"(search_document ILIKE {contains_arg}{exact_where_sql})")
         conditions.append(
             "("
             "source_key <> 'chicago_building_violations' "
@@ -970,8 +1056,7 @@ async def mls_pipeline_search(
         )
         rank_sql = (
             f"CASE "
-            f"WHEN regexp_replace(lower(parcel_id), '[^a-z0-9]', '', 'g') = {exact_arg} THEN 100 "
-            f"WHEN regexp_replace(lower(COALESCE(address, '')), '[^a-z0-9]', '', 'g') = {exact_arg} THEN 98 "
+            f"{exact_rank_sql}"
             f"WHEN address ILIKE {contains_arg} THEN 85 "
             f"WHEN owner_name ILIKE {contains_arg} THEN 70 "
             f"WHEN city ILIKE {contains_arg} THEN 55 "
@@ -979,8 +1064,7 @@ async def mls_pipeline_search(
         )
         match_type_sql = (
             f"CASE "
-            f"WHEN regexp_replace(lower(parcel_id), '[^a-z0-9]', '', 'g') = {exact_arg} THEN 'parcel_exact' "
-            f"WHEN regexp_replace(lower(COALESCE(address, '')), '[^a-z0-9]', '', 'g') = {exact_arg} THEN 'address_exact' "
+            f"{exact_type_sql}"
             f"WHEN address ILIKE {contains_arg} THEN 'address_partial' "
             f"WHEN owner_name ILIKE {contains_arg} THEN 'owner_partial' "
             f"WHEN city ILIKE {contains_arg} THEN 'city_partial' "
@@ -992,6 +1076,16 @@ async def mls_pipeline_search(
     offset = (page - 1) * PAGE_SIZE
     count_args = list(args)
     count_q = f"SELECT COUNT(*) AS n FROM public_property_records WHERE {where}"
+    if words_text:
+        # Among equal scores, the row whose words line up with the query comes
+        # first, so "1512 MAIN ST" is opened before "15 1/2 MAIN ST" (both
+        # compact to the same text; _settle_exact_match labels the second a
+        # possible match). Ordering only: not an argument of the count.
+        words_arg = _arg(words_text)
+        words_order_sql = (
+            f"(btrim(regexp_replace(lower(COALESCE(address, '')), '[^a-z0-9]+', ' ', 'g')) = {words_arg} "
+            f"OR btrim(regexp_replace(lower(COALESCE(parcel_id, '')), '[^a-z0-9]+', ' ', 'g')) = {words_arg}) DESC, "
+        )
 
     # Fetch one row past the page so has_more never depends on `total` — that
     # keeps pagination correct even when total is an estimate (below).
@@ -999,7 +1093,7 @@ async def mls_pipeline_search(
         f"SELECT {_PUBLIC_RECORD_SELECT}, {rank_sql} AS match_score, "
         f"{match_type_sql} AS match_type "
         f"FROM public_property_records WHERE {where} "
-        f"ORDER BY match_score DESC, record_refreshed_at DESC, id ASC "
+        f"ORDER BY match_score DESC, {words_order_sql}record_refreshed_at DESC, id ASC "
         f"LIMIT {_arg(PAGE_SIZE + 1)} OFFSET {_arg(offset)}"
     )
 
@@ -1061,7 +1155,12 @@ async def mls_pipeline_search(
         logger.error("Public property record search failed: %s", exc)
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Memory Core offline.")
 
-    listings = [_public_record_json(r, lead_ids) for r in rows]
+    query_key = _token_key(q) if q and q.strip() else ""
+    ambiguous = _ambiguous_parcels(rows)
+    listings = [
+        _public_record_json(_settle_exact_match(r, query_key, ambiguous_parcels=ambiguous), lead_ids)
+        for r in rows
+    ]
     notice = _public_coverage_json()["notice"]
     if enrichment_failures:
         # The catalog itself was read; an official-source detail lookup for a
@@ -1108,7 +1207,7 @@ async def mls_pipeline_listing(
         async with tenant_tx(ctx) as conn:
             row = await conn.fetchrow(
                 f"SELECT {_PUBLIC_RECORD_SELECT}, 0 AS match_score, "
-                f"'record_id_exact' AS match_type "
+                f"'record_id' AS match_type "
                 f"FROM public_property_records WHERE id = $1::uuid",
                 record_id,
             )
@@ -1132,7 +1231,7 @@ async def mls_pipeline_listing(
             async with tenant_tx(ctx) as conn:
                 refreshed = await conn.fetchrow(
                     f"SELECT {_PUBLIC_RECORD_SELECT}, 0 AS match_score, "
-                    f"'record_id_exact' AS match_type "
+                    f"'record_id' AS match_type "
                     f"FROM public_property_records WHERE id = $1::uuid",
                     record_id,
                 )

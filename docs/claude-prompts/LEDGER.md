@@ -1697,6 +1697,31 @@ next_task: "T11.03 property identity with history: the F11.04 / AC11.04 slices s
 updated: 2026-10-17
 ```
 
+#### L11-07 Houses: a partial public-record match is labelled "Possible match"; an exact label needs the words to line up (T11.03, F11.04, AC11.04)
+```yaml
+id: L11-07
+status: tests_pass
+env: local
+evidence_shas: [24a7b3c]
+files: [backend/mls_portal.py, backend/tests/test_mls_pipeline.py, oracle-app/src/components/HouseWorkspace.jsx, oracle-app/src/components/HouseWorkspace.test.jsx, oracle-app/src/components/HouseSelection.jsx, oracle-app/src/components/HouseSelection.module.css, oracle-app/src/components/HouseSelection.test.jsx, oracle-app/bundle-budget.json]
+tests_run:
+  - {cmd: "scope workflow wf_c6d2a748-5d5 (three readers) + re-verify at 24a7b3c", result: "the /api/property-records payload carried match_type/match_score but no identity claim; HouseWorkspace showed every hit as 'Public record' with the owner of record as plain fact and a one-click 'Link to client'; HouseSelection auto-opened rows[0], often an owner_partial or address_partial hit; the exact branches compared text with every space and mark removed, so '15 1/2 MAIN ST' was an 'exact' address for '1512 Main St', parcel '123-45' an exact parcel for '12-345', and a query of '#' or 'ñ' made every address-less record an exact address; the detail route called any record opened by id 'record_id_exact'", date: 2026-10-17}
+  - {cmd: "red runs (before each fix): pytest tests/test_mls_pipeline.py; npx vitest run HouseWorkspace.test.jsx HouseSelection.test.jsx", result: "slice: 11 failed / 7 passed (KeyError 'identity') and 4 failed / 5 passed ('Unable to find ... Possible match'); review fixes: 13 failed / 23 passed (exact_address != possible_match for '15 1/2' vs '1512', '2 22ND' vs '22 2nd', '1 21ST' vs '12 1st', 'APT 1-2' vs 'Apt 12', parcel '123-45' vs '12-345'; the empty-query exact arg bound; record_id reported exact)", date: 2026-10-17}
+  - {cmd: "cd backend && pytest tests/test_mls_pipeline.py tests/test_tour_tier_honesty.py tests/test_mls_invariants.py tests/test_mls_overlay_indexable.py tests/test_mls_portal_serialization.py tests/test_mls_refresh_durability.py tests/test_mls_switch.py tests/test_property_lookup_status.py tests/test_search_api.py", result: "124 passed: identity {status, basis, verified:false} on every search and detail row; exact_parcel / exact_address only when the query's words line up with the record's (any script: '5 大街' is not '5'; 'Calle Ñ 5' is not 'CALLE 5'), a PIN typed with dashes still matches its bare-digit record exactly unless the same digits are split two ways in the results ('12345' vs '12-345' and '123-45': both possible); a blank query or blank address is never exact; a record opened by id is not_applicable; among equal scores the word-equal row sorts first (not an argument of the count query)", date: 2026-10-17}
+  - {cmd: "scratch script against local PostgreSQL 16 in a rolled-back transaction (mls_pipeline_search with real SQL)", result: "'1512 Main St' returns 1512 MAIN ST (exact_address) before the more recently refreshed 15 1/2 MAIN ST (possible_match); '12-345' exact, '123-45' possible; '12345' both possible; '19-14-209-013-0000' finds 19142090130000 as exact_parcel; '#' returns 0 rows", date: 2026-10-17}
+  - {cmd: "cd oracle-app && npx vitest run && npx eslint src && npm run build && npm run bundle:check", result: "934 passed; eslint clean; built; budget raised from 4134.6 KB to 4137.1 KB total JS (+2.5 KB; largest chunk unchanged): the possible-match labels, the not-verified badges and the confirm-before-linking note (AC11.04) on top of slack earlier slices had used", date: 2026-10-17}
+authz_checked: "No access change: the catalog is the shared allow-listed public-records table read in the caller's tenant transaction; the labels are derived from the match the search already made. Nothing is ever 'verified': no table records a person confirming a parcel match."
+blockers:
+  - "No confirmation record: verified is always false, exact matches read 'not verified'. Recording a person's confirmation (and what it was based on) needs new schema (T11.03)."
+  - "Exact keys compare street or parcel text only, with no city, state or county: one query can still return several exact hits from different jurisdictions."
+  - "Linking a possible match is warned about, not blocked; the link endpoint neither records nor checks the identity status. Strings are English-only like the rest of the Houses components."
+  - "Not deployed (C4.4)."
+audit_refs: []
+decision_refs: [D-2026-10-12-01]
+next_task: "Record a person's confirmation of a property match (schema + UI), so 'verified' can mean something."
+updated: 2026-10-17
+```
+
 ### L12
 Neoh Space capture, reconstruction and tours. Spec: [neoh-space-web-capture-claude.md](../neoh-space-web-capture-claude.md).
 
