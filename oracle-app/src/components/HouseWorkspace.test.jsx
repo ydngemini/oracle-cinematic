@@ -32,6 +32,13 @@ vi.mock('./HouseLinkDialog', () => ({
 }));
 const crmPost = vi.fn();
 vi.mock('../state/useCrmApi', () => ({ crmPost: (...args) => crmPost(...args) }));
+// The viewer needs WebGL; what this workspace hands it is what is under test.
+vi.mock('./TourViewer', () => ({
+  default: ({ splatLabel, splatCaveats }) => (
+    <div data-testid="tour-viewer" data-label={splatLabel ?? ''}
+      data-caveats={(splatCaveats || []).join('|')} />
+  ),
+}));
 
 const { default: HouseWorkspace } = await import('./HouseWorkspace');
 
@@ -93,6 +100,22 @@ describe('HouseWorkspace interior affordances', () => {
     // Still offered — the demo viewer is useful — but never as "step inside".
     expect(screen.getByRole('button', { name: /not this home/i })).toBeTruthy();
     expect(screen.queryByRole('button', { name: /^step inside/i })).toBeNull();
+  });
+
+  it('hands the viewer the quality label and caveats the server gave (T12.10)', async () => {
+    useTour.mockReturnValue({
+      tour: tourPayload({
+        splat_label: '3D walkthrough · quality not verified',
+        splat_caveats: ["It hasn't been tested on real phones yet"],
+      }),
+    });
+
+    render(<HouseWorkspace house={HOUSE} />);
+    fireEvent.click(screen.getByRole('button', { name: /step inside/i }));
+
+    const viewer = await screen.findByTestId('tour-viewer');
+    expect(viewer.dataset.label).toBe('3D walkthrough · quality not verified');
+    expect(viewer.dataset.caveats).toBe("It hasn't been tested on real phones yet");
   });
 
   it('hides the walkable affordance entirely when there is no lead', () => {

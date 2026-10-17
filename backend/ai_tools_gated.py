@@ -780,6 +780,10 @@ async def _share_property_tour(conn, ctx, *, tool_input, user_id) -> dict:
         return _err("A client link may last between 1 and 90 days.")
 
     label = (tool_input.get("issued_to_label") or "").strip()[:120]
+    # What the 3D space may honestly be called (T12.10). Whether an unverified
+    # space may be shared at all is the owner's call; until then the approver
+    # and the model both see its quality state rather than "the 3D tour".
+    quality_label = tour.get("splat_label") if tiers.get("splat") else None
 
     approval = await create_approval(
         ctx,
@@ -799,8 +803,10 @@ async def _share_property_tour(conn, ctx, *, tool_input, user_id) -> dict:
             # the scope, and so it cannot widen between request and mint.
             "asset_scope": {"summary": True, "media": True, "tour": True},
             "requested_by": user_id,
+            "quality_label": quality_label,
         },
     )
+    shows = f"the 3D tour ({quality_label})" if quality_label else "the 360° tour"
     return {
         "ok": True,
         "action_type": "share_property_tour",
@@ -808,11 +814,12 @@ async def _share_property_tour(conn, ctx, *, tool_input, user_id) -> dict:
         "target_id": anchor["id"],
         "link_created": False,
         "expiry_days": days,
+        "quality_label": quality_label,
         "detail": (
             f"A client tour link was requested for {days} days and is awaiting "
             "approval. No link exists yet and nothing has been sent. Approving "
             "it mints a revocable, expiring URL that shows the summary, photos "
-            "and the 3D tour."
+            f"and {shows}."
         ),
     }
 

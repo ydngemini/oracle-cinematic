@@ -40,7 +40,14 @@ vi.mock('./CaptureSessionPanel', () => ({ default: () => null }));
 // The viewer needs WebGL; what this page hands it is what is under test.
 vi.mock('./TourViewer', async () => {
   const { createElement } = await import('react');
-  return { default: ({ title }) => createElement('div', { 'data-testid': 'tour-viewer', 'data-title': title }) };
+  return {
+    default: ({ title, splatLabel, splatCaveats }) => createElement('div', {
+      'data-testid': 'tour-viewer',
+      'data-title': title,
+      'data-label': splatLabel ?? '',
+      'data-caveats': (splatCaveats || []).join('|'),
+    }),
+  };
 });
 
 const { default: PropertyViewTab } = await import('./PropertyViewTab');
@@ -103,6 +110,21 @@ describe('Property View offers the tour it can produce', () => {
     });
     await lookUpAProperty();
     expect(screen.getByRole('button', { name: /step inside/i })).toBeTruthy();
+  });
+
+  it('hands the viewer the quality label and caveats the server gave (T12.10)', async () => {
+    useTour.mockReturnValue({
+      tour: {
+        splat_url: '/public/splats/a.splat', is_this_property: true, pano_scene_count: 0,
+        splat_label: 'Partial 3D walkthrough',
+        splat_caveats: ["Parts of the capture couldn't be placed — some areas may be missing"],
+      },
+    });
+    await lookUpAProperty();
+    fireEvent.click(screen.getByRole('button', { name: /step inside/i }));
+    const viewer = await screen.findByTestId('tour-viewer');
+    expect(viewer.dataset.label).toBe('Partial 3D walkthrough');
+    expect(viewer.dataset.caveats).toMatch(/couldn't be placed/);
   });
 
   it('says a generated space is not this home', async () => {

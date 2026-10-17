@@ -2138,6 +2138,13 @@ async def _get_property_tour(conn, ctx: TenantContext, tool_input: dict) -> dict
             "provenance": asset.get("provenance"),
             "walkable": asset.get("walkable", False),
             "count": asset.get("count"),
+            # A 3D capture's certification (T12.09/T12.10), so the agent can
+            # say "not verified yet, because…" instead of inferring quality
+            # from the space existing.
+            **({"quality_state": asset.get("quality_state"),
+                "caveats": asset.get("caveats") or [],
+                "whole_home_verified": bool(asset.get("whole_home_verified"))}
+               if asset["kind"] == "splat" else {}),
         }
         for asset in tour["assets"]
     ]
@@ -2161,7 +2168,10 @@ async def _get_property_tour(conn, ctx: TenantContext, tool_input: dict) -> dict
             "These are everything this property has; they combine into one tour "
             "rather than replacing each other. `shows_this_property` false means "
             "the asset is a demo or generated space and must never be described "
-            "as this home."
+            "as this home. `walkable` means it can be navigated, not that its "
+            "quality was checked. Never call a 3D space verified, professional, "
+            "full, complete or photoreal unless its quality_state is verified; "
+            "otherwise say its quality has not been verified and give its caveats."
         ),
     }
 

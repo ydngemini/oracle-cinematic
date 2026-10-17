@@ -421,6 +421,9 @@ export function DossierPanel({ leadId, onClose, embedded = false, onOpenTour }) 
                 // The caveat has to survive into the viewer: once someone is
                 // walking around, the button that carried it is off screen.
                 isThisProperty={tour.is_this_property !== false}
+                // What the server may honestly call this space, and why (T12.10).
+                splatLabel={tour.splat_label}
+                splatCaveats={tour.splat_caveats || []}
                 onClose={() => setTourOpen(false)}
               />
             </Suspense>

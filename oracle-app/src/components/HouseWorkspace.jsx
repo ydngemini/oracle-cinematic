@@ -531,6 +531,9 @@ export default function HouseWorkspace({ house, onHouseUpdate }) {
             // that opened it — once someone is walking around, the entry point
             // is off screen and the space looks exactly like a real capture.
             isThisProperty={tour.is_this_property !== false}
+            // What the server may honestly call this space, and why (T12.10).
+            splatLabel={tour.splat_label}
+            splatCaveats={tour.splat_caveats || []}
             onClose={() => setWalkOpen(false)}
           />
         </Suspense>

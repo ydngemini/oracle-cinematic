@@ -8,10 +8,17 @@
  * says it was released.
  */
 
-import { cleanup, render, screen, within } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('./TourViewer', () => ({ default: () => null }));
+// What the page hands the viewer is what the tour test checks.
+const viewer = { props: null };
+vi.mock('./TourViewer', () => ({
+  default: (props) => {
+    viewer.props = props;
+    return null;
+  },
+}));
 
 const { default: SecureDossierPage } = await import('./SecureDossierPage');
 
@@ -178,5 +185,47 @@ describe('SecureDossierPage public records', () => {
     render(<SecureDossierPage />);
     await findingRows();
     expect(screen.getByText(/may belong to a different property/i)).toBeTruthy();
+  });
+});
+
+
+describe('SecureDossierPage 3D tour quality (T12.10)', () => {
+  it('tells the homeowner the quality state and hands the viewer its label and caveats', async () => {
+    viewer.props = null;
+    const dossier = {
+      read_only: true,
+      link_kind: 'seller',
+      asset_scope: { tour: true },
+      watermark_text: null,
+      assets: {
+        summary: { address: '1 Test Lane', state: 'DE' },
+        tour: {
+          splat_url: '/api/portal/media/s1',
+          splat_format: '.sog',
+          is_this_property: true,
+          splat_quality_state: 'pending',
+          splat_label: '3D walkthrough · quality not verified',
+          splat_caveats: ["It hasn't been tested on real phones yet"],
+        },
+      },
+    };
+    globalThis.fetch = vi.fn(async (url) => {
+      const path = String(url);
+      if (path.includes('/portal/session/')) return { ok: true, json: async () => ({ session_token: 'session-1' }) };
+      if (path.includes('/portal/media/')) {
+        return { ok: true, arrayBuffer: async () => new ArrayBuffer(4), headers: { get: () => null } };
+      }
+      return { ok: true, json: async () => dossier };
+    });
+    URL.createObjectURL = vi.fn(() => 'blob:https://neoh.test/1');
+    URL.revokeObjectURL = vi.fn();
+
+    render(<SecureDossierPage />);
+
+    expect(await screen.findByText('3D walkthrough · quality not verified')).toBeTruthy();
+    fireEvent.click(await screen.findByRole('button', { name: 'Step inside' }));
+    await waitFor(() => expect(viewer.props).toBeTruthy());
+    expect(viewer.props.splatLabel).toBe('3D walkthrough · quality not verified');
+    expect(viewer.props.splatCaveats).toEqual(["It hasn't been tested on real phones yet"]);
   });
 });

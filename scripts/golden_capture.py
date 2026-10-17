@@ -155,6 +155,22 @@ def poll(base: str, token: str, job_id: str, every: int = 20) -> dict:
         time.sleep(every)
 
 
+def closing_note(final: dict) -> list[str]:
+    """What to look for after a successful run. A build that succeeded is
+    ready to VIEW, not verified: the tour labels it by its certification
+    (backend/space_certification.py), and only `verified` is called "Full 3D",
+    which nothing stored today reaches. Printed here as the build reports it."""
+    if final.get("status") != "succeeded":
+        return []
+    cert = final.get("certification") or {}
+    lines = ["Open the property in Neoh: the tour should open the 3D walkthrough, "
+             "labelled with its quality state."]
+    if cert.get("label"):
+        lines.append(f"  quality: {cert['label']}")
+    lines += [f"    - {reason}" for reason in cert.get("reasons") or []]
+    return lines
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--photos", default="", help="directory of capture photos")
@@ -210,8 +226,9 @@ def main() -> None:
     final = poll(args.base, token, job_id)
     print(f"\n{'=' * 62}")
     print(f"FINAL: {final.get('status')}   media_id: {final.get('media_id') or '(none)'}")
-    if final.get("status") == "succeeded":
-        print("\nOpen the property in Neoh — the tour should offer 'Full 3D'.")
+    note = closing_note(final)
+    if note:
+        print("\n" + "\n".join(note))
     print(f"{'=' * 62}\n")
 
 

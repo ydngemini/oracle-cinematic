@@ -116,6 +116,29 @@
   color: #e8c98a;
 }
 
+/* The quality check, kept apart from "ready": viewable is not verified. */
+.certification {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.certification p {
+  margin: 0;
+  font-size: 0.82rem;
+  color: #e8c98a;
+}
+
+.certification[data-state='verified'] p { color: #8fe0b0; }
+
+.certification ul {
+  margin: 0;
+  padding-left: 1.1rem;
+  font-size: 0.8rem;
+  line-height: 1.45;
+  color: #c9d4e3;
+}
+
 .progressText {
   margin: 0;
   font-size: 0.8rem;

@@ -324,6 +324,11 @@ export default function SecureDossierPage() {
               This walkable space is a stand-in, not a capture of this address.
             </p>
           )}
+          {/* Said before anyone steps inside: being viewable is not the same
+              as its quality having been checked (T12.09). */}
+          {tour.is_this_property !== false && tour.splat_label && (
+            <p className={styles.readonly}>{tour.splat_label}</p>
+          )}
         </Section>
       )}
 
@@ -339,6 +344,9 @@ export default function SecureDossierPage() {
             address={summary?.address || ''}
             title={summary?.address || 'Property tour'}
             isThisProperty={tour.is_this_property !== false}
+            // What the space may honestly be called, and why (T12.10).
+            splatLabel={tour.splat_label}
+            splatCaveats={tour.splat_caveats || []}
             onClose={() => setTourOpen(false)}
           />
         </Suspense>

@@ -881,6 +881,9 @@ export default function PropertyViewTab() {
                 // walking around, the button that carried the caveat is off
                 // screen and a stand-in space looks like a real capture.
                 isThisProperty={tour.is_this_property !== false}
+                // What the server may honestly call this space, and why (T12.10).
+                splatLabel={tour.splat_label}
+                splatCaveats={tour.splat_caveats || []}
                 onClose={() => setWalkOpenFor(null)}
               />
             </Suspense>

@@ -377,6 +377,10 @@ def test_unreadable_files_are_reported_not_fatal(tmp_path):
     assert not verdict.refused
     assert verdict.dropped["unreadable"] == 1
     assert "unreadable" in verdict.warnings
+    # Which frame, so the build can say which capture it never used.
+    assert verdict.unreadable == [broken]
+    # The recorded verdict stays counts and ratios: no file paths.
+    assert str(broken) not in json.dumps(verdict.as_diagnostics(), default=str)
 
 
 # ── post-reconstruction quality gate ────────────────────────────────────────
@@ -481,3 +485,240 @@ def test_a_run_without_a_quality_report_is_marked_unverified(env):
     assert env.db.find("stage = 'ready'")
     summary = json.loads(env.db.find("'limitations'")[-1][2][2])
     assert "quality_unverified" in summary
+
+
+def test_the_build_records_which_media_it_was_built_from(env):
+    """Freshness is decided against this set (T12.09): a photo added after the
+    build is one the space was never checked against."""
+    images = _good_capture(env.tmp)
+    ids = ["aaaaaaaa-0000-4000-8000-000000000001", "aaaaaaaa-0000-4000-8000-000000000002"]
+
+    async def _gather(job, dest):
+        return images, {"photos": len(images), "videos": 0, "frames": 0,
+                        "input_media_ids": ids, "skipped_media_ids": ids[1:],
+                        "newest_input_at": "2026-10-17T09:00:00+00:00"}
+
+    env.mp.setattr(worker, "_gather_source_images", _gather)
+    _run(env, _Provider())
+    capture = [json.loads(a[2]) for _, s, a in env.db.calls
+               if "jsonb_build_object($2::text" in s and a[1] == "capture"]
+    assert capture, "the capture stage was never recorded"
+    assert capture[0]["input_media_ids"] == ids
+    assert capture[0]["skipped_media_ids"] == ids[1:]
+    assert capture[0]["newest_input_at"] == "2026-10-17T09:00:00+00:00"
+
+
+def _photo_rows(ids):
+    """property_media rows for photos with stored bytes, as the gather reads them."""
+    import datetime as dt
+
+    stamp = dt.datetime(2026, 10, 17, 9, 0, tzinfo=dt.timezone.utc)
+    return [{"id": mid, "kind": "photo", "s3_key": f"{mid}.jpg", "bytes": None,
+             "content_type": "image/jpeg", "created_at": stamp} for mid in ids]
+
+
+def _serve_capture(env, rows, blobs):
+    """The real gather reads these rows, and each row's bytes from `blobs`."""
+    original = _Conn.fetch
+
+    async def _fetch(self, sql, *args):
+        if "FROM property_media pm" in sql:
+            self.db.calls.append((self.tx_id, " ".join(sql.split()), args))
+            return rows
+        return await original(self, sql, *args)
+
+    async def _load(row):
+        return blobs[str(row["id"])]
+
+    env.mp.setattr(_Conn, "fetch", _fetch)
+    env.mp.setattr(worker.media_storage, "load_media_bytes", _load)
+
+
+def _stage_records(env, stage):
+    """The writes of one diagnostics stage that committed, in order."""
+    return [json.loads(a[2]) for _, s, a in env.db.calls
+            if "jsonb_build_object($2::text" in s and a[1] == stage]
+
+
+def _evidence_that_verifies(sc):
+    """Every other piece of evidence a space needs, all passing (the control)."""
+    media_id = "cccccccc-0000-4000-8000-000000000001"
+    runs = [{"platform": p, "real_device": True, "steady_fps": 40.0, "media_id": media_id}
+            for p in sc.DEVICE_PLATFORMS]
+    return dict(
+        job_found=True, job_status="succeeded", limitations=[], fresh=True,
+        media_id=media_id, device_runs=runs,
+        quality={"held_out_psnr": 28.8, "held_out_ssim": 0.89, "held_out_lpips": 0.086,
+                 "registration_ratio": 0.95, "mean_reprojection_error_px": 0.5,
+                 "input_images": 150,
+                 "room_graph": {"rooms": 1, "components": 1, "edges": 0, "verified_edges": 0,
+                                "expected_rooms": 1}})
+
+
+def _with_a_truncated_photo(env, prefix):
+    """12 good photos and one JPEG cut off mid-scan: it loads, but the capture
+    gate cannot decode it. Returns (every id, the truncated id)."""
+    good = _good_capture(env.tmp, n=12)
+    ids = [f"{prefix}-0000-4000-8000-{i:012d}" for i in range(13)]
+    truncated = ids[-1]
+    blobs = {mid: path.read_bytes() for mid, path in zip(ids, good)}
+    whole = good[0].read_bytes()
+    blobs[truncated] = whole[: len(whole) // 3]
+    _serve_capture(env, _photo_rows(ids), blobs)
+    return ids, truncated
+
+
+def test_a_photo_that_loads_but_cannot_be_decoded_is_recorded_as_unread(env):
+    """Bytes that load but do not decode reach the capture gate, which drops
+    them. The capture stage was written before the gate, so the build used to
+    list them as read: a space missing that photo read "every capture read"
+    and could be certified (T12.09, AC12.06)."""
+    import space_certification as sc
+
+    ids, truncated = _with_a_truncated_photo(env, "bbbbbbbb")
+    _run(env, _Provider())
+
+    gate = _stage_records(env, "quality_gate")
+    assert gate[-1]["dropped"]["unreadable"] == 1 and not gate[-1]["refused"]
+    final = _stage_records(env, "capture")[-1]
+    assert final["input_media_ids"] == sorted(ids)
+    assert final["skipped_media_ids"] == [truncated]
+    assert truncated not in json.dumps(gate), "the gate's record carries no media ids or paths"
+
+    # The tour counts the current capture rows the build listed as skipped
+    # (evidence_unread); the build view counts the list itself.
+    view = sc.from_job_row({"status": "succeeded", "diagnostics": {"capture": final}})
+    assert view.unread == 1 and "capture_unread" in view.reasons
+    everything_else_passed = _evidence_that_verifies(sc)
+    assert sc.certify(**everything_else_passed).state == sc.VERIFIED   # the control
+    cert = sc.certify(**everything_else_passed, unread=len(final["skipped_media_ids"]))
+    assert cert.state != sc.VERIFIED and "capture_unread" in cert.reasons
+
+
+@pytest.mark.parametrize("fail_from", [1, 2])
+def test_a_capture_record_the_database_refuses_never_says_an_undecodable_photo_was_read(
+        env, fail_from):
+    """The unread record and the build's success are one outcome (T12.09).
+
+    The capture stage used to be written twice: before the capture gate,
+    listing every row as read, then again, best-effort, with the rows the gate
+    could not decode. When the first write committed and the second failed,
+    the build published while its record said the undecodable photo was read,
+    so certification could count it read and fresh. `fail_from` is the first
+    capture-stage write the database refuses: 1, every one; 2, every one
+    after the first."""
+    ids, truncated = _with_a_truncated_photo(env, "dddddddd")
+    attempts = []
+    original = _Conn.execute
+
+    async def _execute(self, sql, *args):
+        if "jsonb_build_object($2::text" in sql and args[1] == "capture":
+            attempts.append(args)
+            if len(attempts) >= fail_from:
+                raise ConnectionError("the database went away")
+        return await original(self, sql, *args)
+
+    env.mp.setattr(_Conn, "execute", _execute)
+    provider = _Provider()
+    try:
+        _run(env, provider)
+    except ConnectionError:
+        pass
+
+    published = bool(env.db.find("stage = 'ready'"))
+    records = _stage_records(env, "capture")
+    for record in records:
+        read = set(record["input_media_ids"]) - set(record.get("skipped_media_ids") or [])
+        assert truncated not in read, "a committed record says the undecodable photo was read"
+    # One write, after the gate, carrying what it found. It commits, or the
+    # build stops before any GPU is rented and publishes nothing.
+    assert len(attempts) == 1
+    if fail_from == 1:
+        assert not records and not published and provider.calls == 0
+        assert env.db.find("SET status = $2")[-1][2][1] == "failed"
+    else:
+        assert published and records[-1]["skipped_media_ids"] == [truncated]
+
+
+def test_frames_outside_the_gates_sample_are_named_and_never_kept(tmp_path):
+    """The gate analyses at most MAX_ANALYSED frames, evenly spaced (the
+    sampling is unchanged). The frames it never looked at are named, so the
+    build can say which capture it never read, and stay out of its record."""
+    paths = [tmp_path / f"s{i:04d}.jpg" for i in range(capture_quality.MAX_ANALYSED + 5)]
+    seen = []
+
+    def _stats(path):
+        seen.append(path)
+        return capture_quality.FrameStats(path=path, width=960, height=720,
+                                          luma=120.0, sharpness=300.0)
+
+    verdict = capture_quality.assess(paths, analyse=_stats)
+    assert len(seen) == capture_quality.MAX_ANALYSED
+    assert verdict.unexamined == [p for p in paths if p not in set(seen)]
+    assert len(verdict.unexamined) == 5
+    assert not set(verdict.unexamined) & set(verdict.kept)
+    assert str(verdict.unexamined[0]) not in json.dumps(verdict.as_diagnostics(), default=str)
+    # Within the budget every frame is looked at.
+    assert capture_quality.assess(paths[:50], analyse=_stats).unexamined == []
+
+
+def test_a_media_row_is_read_when_any_of_its_files_was_analysed_and_decoded():
+    """Frames the gate could not decode and frames outside its sample are both
+    unread. A video with one analysed, decoded frame was read."""
+    video, broken_video, photo, read_photo = (
+        f"ffffffff-0000-4000-8000-{i:012d}" for i in range(4))
+    work = Path("/work/images")
+    images = [work / f"{video}_1.jpg", work / f"{video}_2.jpg",
+              work / f"{broken_video}_1.jpg", work / f"{broken_video}_2.jpg",
+              work / f"{photo}.jpg", work / f"{read_photo}.jpg"]
+    verdict = capture_quality.QualityVerdict(
+        refused=False, reason=None, kept=[images[0], images[5]],
+        unreadable=[images[2]], unexamined=[images[1], images[3], images[4]])
+    counts = {"input_media_ids": [video, broken_video, photo, read_photo]}
+    assert worker._unread_media(images, verdict, counts) == sorted([broken_video, photo])
+    # Only ids in the recorded input set count.
+    assert worker._unread_media(images, verdict, {"input_media_ids": [video]}) == []
+
+
+def test_a_photo_outside_the_capture_gates_sample_is_recorded_as_unread(env):
+    """A capture of more than MAX_ANALYSED frames: the gate analyses an evenly
+    spaced sample and keeps only what it analysed, so a photo outside the
+    sample is never decoded or reconstructed. It used to stay in the input set
+    as read, so a space built without it could be certified (T12.09,
+    AC12.06). It is now recorded as unread; the sampling is unchanged."""
+    import space_certification as sc
+
+    n = capture_quality.MAX_ANALYSED + 1
+    ids = [f"eeeeeeee-0000-4000-8000-{i:012d}" for i in range(n)]
+    jpeg = _good_capture(env.tmp, n=1)[0].read_bytes()
+    _serve_capture(env, _photo_rows(ids), {mid: jpeg for mid in ids})
+
+    # Pixel statistics stand in for decoding 901 JPEGs; the gather, the
+    # sampling, the selection and the build's record are the real ones.
+    analysed = []
+    real_assess = capture_quality.assess
+
+    def _stats(path):
+        analysed.append(path)
+        return capture_quality.FrameStats(path=path, width=960, height=720,
+                                          luma=120.0, sharpness=300.0)
+
+    env.mp.setattr(capture_quality, "assess",
+                   lambda images, **kw: real_assess(images, analyse=_stats, **kw))
+    _run(env, _Provider())
+
+    assert env.db.find("stage = 'ready'"), "a capture this size still builds"
+    never = sorted(set(ids) - {p.stem for p in analysed})
+    assert len(never) == 1, never      # one photo fell outside the sample
+    gate = _stage_records(env, "quality_gate")[-1]
+    assert (gate["submitted"], gate["analysed"]) == (n, capture_quality.MAX_ANALYSED)
+    final = _stage_records(env, "capture")[-1]
+    assert final["input_media_ids"] == sorted(ids)
+    assert final["skipped_media_ids"] == never
+
+    view = sc.from_job_row({"status": "succeeded", "diagnostics": {"capture": final}})
+    assert view.unread == 1 and "capture_unread" in view.reasons
+    everything_else_passed = _evidence_that_verifies(sc)
+    assert sc.certify(**everything_else_passed).state == sc.VERIFIED   # the control
+    cert = sc.certify(**everything_else_passed, unread=len(final["skipped_media_ids"]))
+    assert cert.state != sc.VERIFIED and "capture_unread" in cert.reasons

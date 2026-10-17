@@ -806,6 +806,13 @@ async def read_scoped_dossier(authorization: Optional[str] = Header(default=None
                 "disclosure": tour.get("disclosure"),
                 "is_this_property": tour.get("is_this_property"),
                 "floors": tour.get("floors"),
+                # What the space may honestly be called, and why (T12.10):
+                # without these the viewer said a bare "3D walkthrough" to the
+                # homeowner whatever its quality. Plain words only — the
+                # per-check numbers and the build stay with the brokerage.
+                "splat_quality_state": tour.get("splat_quality_state"),
+                "splat_label": tour.get("splat_label"),
+                "splat_caveats": tour.get("splat_caveats") or [],
             }
 
         if scope.get("milestones"):

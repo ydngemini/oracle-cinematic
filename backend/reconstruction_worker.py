@@ -310,7 +310,8 @@ def _provider_metrics(provider: Any, work: Path) -> dict[str, Any]:
 
 
 async def _record_stage(
-    ctx: TenantContext, job_id: str, stage: str, **metrics: Any
+    ctx: TenantContext, job_id: str, stage: str, *, required: bool = False,
+    **metrics: Any
 ) -> None:
     """Merge one stage's measurements into the job's diagnostics.
 
@@ -321,8 +322,12 @@ async def _record_stage(
     `error` string.
 
     Never raises: diagnostics that break a run would be worse than no
-    diagnostics. Never records image bytes or file contents; counts, sizes,
-    durations, tool names and exit statuses only.
+    diagnostics. The one exception is a `required` record, which is evidence
+    rather than a metric: the capture stage's input set, which certification
+    reads (T12.09). A build whose record of what it read was not written must
+    not publish as if it had been, so that write raises. Never records image
+    bytes or file contents; counts, sizes, durations, tool names and exit
+    statuses only.
     """
     payload = {k: v for k, v in metrics.items() if v is not None}
     payload["at"] = datetime.now(timezone.utc).isoformat()
@@ -337,6 +342,8 @@ async def _record_stage(
             )
     except Exception:  # noqa: BLE001 — never break a run to record a metric
         logger.exception("reconstruction %s: recording stage %s failed", job_id, stage)
+        if required:
+            raise
     logger.info("reconstruction %s stage=%s %s", job_id, stage, payload)
 
 
@@ -390,6 +397,35 @@ async def _extract_video_frames(video: Path, dest: Path, prefix: str) -> list[Pa
     return frames
 
 
+def capture_input_sql(alias: str) -> str:
+    """Which property_media rows a build reads as its capture: photos and
+    videos of the property itself (provenance 'captured', migration 0071),
+    approved for use (review_status, migration 0066), with stored bytes (an
+    object key, or a blob row).
+
+    One definition, shared with the tour's freshness check (tour_api), so
+    "built from every current capture" and "this was its input" cannot drift.
+    A generated listing reel (video_studio, 'ai_generated') or third-party
+    street imagery ('imported') is not a capture: reconstructing it would
+    present model output or someone else's frames as the actual home, and
+    counting it would mark a space stale when nobody captured anything.
+    A client-link upload is held 'pending' until an agent approves it, and may
+    be 'rejected': untrusted, possibly not this house, and not to appear on
+    anything public until approved. It is not capture input either, so it
+    neither reaches a build nor makes a published space stale. Approving it
+    makes it capture input, and the space it was not built from stale.
+    The blob test is an EXISTS rather than an inner join: photos uploaded on a
+    deployment with object storage carry an s3_key and no blob row, and an
+    inner join once returned zero images for them, so a build ran on nothing
+    and "succeeded" with no capture behind it.
+    """
+    return (f"{alias}.kind IN ('photo', 'video') "
+            f"AND COALESCE({alias}.provenance, 'captured') = 'captured' "
+            f"AND {alias}.review_status = 'approved' "
+            f"AND ({alias}.s3_key IS NOT NULL OR EXISTS ("
+            f"SELECT 1 FROM media_blobs mb_in WHERE mb_in.media_id = {alias}.id))")
+
+
 async def _gather_source_images(
     job: ReconstructionJob, dest: Path
 ) -> tuple[list[Path], dict]:
@@ -397,27 +433,31 @@ async def _gather_source_images(
     reconstruction input.
 
     Photos are used as-is; videos are sampled into stills. Returns the image
-    paths and a count of what went in, which the capture session records so
-    "which media produced this splat" stays answerable afterwards.
+    paths and a record of what went in: counts, which the capture session
+    keeps, and the id of every media row considered (`input_media_ids`;
+    unreadable ones, and videos that gave no frames, are included and also
+    listed as `skipped_media_ids`, which certification reads; the capture
+    gate later adds media it never read, _unread_media), so
+    "which media produced this space" stays answerable afterwards, and a photo
+    added later is recognisably one the space was never built from or checked
+    against (space_certification).
+
+    Each file is named after its media row: a photo `<id>.<ext>`, a video's
+    frames `<id>_<n>.jpg` (_source_media_id reads it back).
 
     Empty is fine for the stub provider, which captures nothing anyway.
     """
     dest.mkdir(parents=True, exist_ok=True)
     out: list[Path] = []
-    counts = {"photos": 0, "videos": 0, "frames": 0}
+    counts: dict[str, Any] = {"photos": 0, "videos": 0, "frames": 0}
     async with tenant_tx(job.ctx) as conn:
-        # LEFT JOIN, not JOIN: photos uploaded on a deployment with object
-        # storage carry an s3_key and no blob row. An inner join silently
-        # returned zero images for them, so the reconstruction ran on nothing
-        # and produced a "successful" job with no capture behind it.
         rows = await conn.fetch(
-            """
-            SELECT pm.id, pm.kind, pm.s3_key, mb.bytes,
+            f"""
+            SELECT pm.id, pm.kind, pm.s3_key, pm.created_at, mb.bytes,
                    COALESCE(pm.content_type, mb.content_type) AS content_type
               FROM property_media pm
               LEFT JOIN media_blobs mb ON mb.media_id = pm.id
-             WHERE pm.kind IN ('photo', 'video')
-               AND (pm.s3_key IS NOT NULL OR mb.media_id IS NOT NULL)
+             WHERE {capture_input_sql("pm")}
                AND (($1::uuid IS NOT NULL AND pm.lead_id = $1)
                  OR ($2::uuid IS NOT NULL AND pm.listing_id = $2))
              ORDER BY pm.sort_order ASC
@@ -425,13 +465,22 @@ async def _gather_source_images(
             UUID(job.lead_id) if job.lead_id else None,
             UUID(job.listing_id) if job.listing_id else None,
         )
+    stamps = [stamp for stamp in (_field(r, "created_at") for r in rows) if stamp is not None]
+    skipped: list[str] = []
+    counts.update({
+        "input_media_ids": sorted(str(r["id"]) for r in rows),
+        "skipped_media_ids": skipped,   # filled below, as rows fail to load
+        "newest_input_at": max(stamps).isoformat() if stamps else None,
+    })
     for r in rows:
         try:
             data = await media_storage.load_media_bytes(r)
         except Exception as exc:  # noqa: BLE001 — one unreadable item is not fatal
             logger.warning("Skipping unreadable source media %s: %s", r["id"], exc)
+            skipped.append(str(r["id"]))
             continue
         if data is None:
+            skipped.append(str(r["id"]))
             continue
 
         if r["kind"] == "video":
@@ -442,9 +491,13 @@ async def _gather_source_images(
             staged.write_bytes(data)
             try:
                 frames = await _extract_video_frames(staged, dest, str(r["id"]))
-                out.extend(frames)
-                counts["videos"] += 1
-                counts["frames"] += len(frames)
+                if not frames:
+                    # Decoded, but nothing usable came out: not part of the build.
+                    skipped.append(str(r["id"]))
+                else:
+                    out.extend(frames)
+                    counts["videos"] += 1
+                    counts["frames"] += len(frames)
             finally:
                 # The frames are the input; the video itself must not be handed
                 # to a provider expecting images.
@@ -457,11 +510,39 @@ async def _gather_source_images(
         out.append(p)
         counts["photos"] += 1
 
+    skipped.sort()
     logger.info(
         "Capture input for job %s: %d photo(s), %d video(s) -> %d frame(s), %d image(s) total",
         job.job_id, counts["photos"], counts["videos"], counts["frames"], len(out),
     )
     return out, counts
+
+
+def _source_media_id(image: Path) -> str:
+    """The media row a gathered file came from (see _gather_source_images'
+    naming). A UUID holds no underscore, so a frame's suffix splits off."""
+    return image.stem.split("_", 1)[0]
+
+
+def _unread_media(images: list[Path], verdict: capture_quality.QualityVerdict,
+                  counts: dict) -> list[str]:
+    """Input media ids none of whose gathered files the capture gate read:
+    each file either could not be decoded (bytes that loaded but are not an
+    image, `verdict.unreadable`) or fell outside the gate's MAX_ANALYSED
+    sample (`verdict.unexamined`). Only analysed frames can be kept, so the
+    build never used them.
+
+    Listed as read, a space built without them would say every capture was
+    read and could be certified (T12.09). A video with any analysed,
+    decodable frame was read. Only ids in the recorded input set count.
+    """
+    inputs = set(counts.get("input_media_ids") or [])
+    unread = {*verdict.unreadable, *verdict.unexamined}
+    files: dict[str, list[Path]] = {}
+    for image in images:
+        files.setdefault(_source_media_id(image), []).append(image)
+    return sorted(media_id for media_id, paths in files.items()
+                  if media_id in inputs and all(p in unread for p in paths))
 
 
 def _carry_companions(src: Path, out: Path) -> None:
@@ -1143,13 +1224,36 @@ async def _process(job: ReconstructionJob) -> None:
                                     raw_format=raw.suffix.lower(), raw_bytes=raw.stat().st_size)
             else:
                 images, counts = await _gather_source_images(job, work / "images")
+                # ── quality gate + frame selection (before any GPU) ──────
+                # Assessed before the capture stage is written, so its one
+                # write already lists every row the build never read. Written
+                # first and corrected after, a failed correction left a record
+                # saying an undecodable photo was read (T12.09).
+                # A synthetic provider (the dev stub) captures nothing, so only
+                # a real one is held to a real capture's minimum.
+                minimum = (capture_quality.MIN_USABLE_FRAMES
+                           if getattr(provider, "produces", "captured") == "captured" else 1)
+                verdict = await asyncio.to_thread(
+                    lambda: capture_quality.assess(images, minimum=minimum))
+                unread = _unread_media(images, verdict, counts)
+                if unread:
+                    # Never used, so never covered by this build's measurements.
+                    counts["skipped_media_ids"] = sorted(
+                        {*(counts.get("skipped_media_ids") or []), *unread})
                 # ── capture ──────────────────────────────────────────────
+                # Required: certification reads this input set, so a build
+                # whose record was not written stops here, before any GPU.
                 await _record_stage(
-                    job.ctx, job.job_id, "capture",
+                    job.ctx, job.job_id, "capture", required=True,
                     photos=counts.get("photos"), videos=counts.get("videos"),
                     extracted_frames=counts.get("frames"),
                     images_submitted=len(images),
                     dimensions=_image_dimensions(images),
+                    # The input set tour_api compares with the property's
+                    # current media to tell a stale proof from a current one.
+                    input_media_ids=counts.get("input_media_ids"),
+                    skipped_media_ids=counts.get("skipped_media_ids"),
+                    newest_input_at=counts.get("newest_input_at"),
                 )
                 if not images:
                     # A capture with nothing in it is not an outage. Marked as a
@@ -1166,13 +1270,6 @@ async def _process(job: ReconstructionJob) -> None:
                     raise QualityGateFailure(
                         "This property has no usable capture media yet.")
 
-                # ── quality gate + frame selection (before any GPU) ──────
-                # A synthetic provider (the dev stub) captures nothing, so only
-                # a real one is held to a real capture's minimum.
-                minimum = (capture_quality.MIN_USABLE_FRAMES
-                           if getattr(provider, "produces", "captured") == "captured" else 1)
-                verdict = await asyncio.to_thread(
-                    lambda: capture_quality.assess(images, minimum=minimum))
                 await _record_stage(job.ctx, job.job_id, "quality_gate",
                                     guidance=verdict.guidance, **verdict.as_diagnostics())
                 if verdict.refused:

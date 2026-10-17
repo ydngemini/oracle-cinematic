@@ -23,7 +23,9 @@ thumbnail — nothing about faces, documents or belongings is computed or kept.
 Counts and ratios are what leave this module.
 
 Cheap by construction: every image is decoded through Pillow's JPEG draft mode
-at <= 512 px, and at most MAX_ANALYSED frames are looked at.
+at <= 512 px, and at most MAX_ANALYSED frames are looked at. Only frames it
+looked at can be kept; the rest are named (`QualityVerdict.unexamined`) so the
+build can say which capture it never read.
 """
 from __future__ import annotations
 
@@ -126,6 +128,13 @@ class QualityVerdict:
     dropped: dict[str, int] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
     metrics: dict[str, Any] = field(default_factory=dict)
+    #: The frames that could not be decoded, so the caller can say which
+    #: capture the build never used. Paths stay in the process: never part of
+    #: as_diagnostics().
+    unreadable: list[Path] = field(default_factory=list)
+    #: The frames outside the MAX_ANALYSED sample: never decoded, so never
+    #: kept. Named for the same reason, and kept out of as_diagnostics() too.
+    unexamined: list[Path] = field(default_factory=list)
 
     @property
     def guidance(self) -> list[str]:
@@ -209,10 +218,16 @@ def assess(images: Sequence[Path], *, minimum: int = MIN_USABLE_FRAMES,
         # house as the beginning.
         step = len(frames) / MAX_ANALYSED
         frames = [frames[min(len(frames) - 1, int(i * step))] for i in range(MAX_ANALYSED)]
+    sampled = set(frames)
+    unexamined = [p for p in images if p not in sampled]
 
     stats = [analyse(p) for p in frames]
     readable = [s for s in stats if s.readable]
     unreadable = len(stats) - len(readable)
+
+    def verdict(**decided: Any) -> QualityVerdict:
+        return QualityVerdict(unreadable=[s.path for s in stats if not s.readable],
+                              unexamined=unexamined, **decided)
 
     metrics: dict[str, Any] = {
         "submitted": len(images),
@@ -225,9 +240,9 @@ def assess(images: Sequence[Path], *, minimum: int = MIN_USABLE_FRAMES,
         warnings.append("unreadable")
 
     if len(readable) < minimum:
-        return QualityVerdict(refused=True, reason="too_few_frames",
-                              kept=[s.path for s in readable], warnings=warnings,
-                              dropped={"unreadable": unreadable}, metrics=metrics)
+        return verdict(refused=True, reason="too_few_frames",
+                       kept=[s.path for s in readable], warnings=warnings,
+                       dropped={"unreadable": unreadable}, metrics=metrics)
 
     # ── resolution ──────────────────────────────────────────────────────
     short_edges = [min(s.width, s.height) for s in readable if s.width and s.height]
@@ -238,9 +253,9 @@ def assess(images: Sequence[Path], *, minimum: int = MIN_USABLE_FRAMES,
     metrics["portrait_frames"] = portrait
     metrics["landscape_frames"] = landscape
     if median_short and median_short < MIN_SHORT_EDGE:
-        return QualityVerdict(refused=True, reason="low_resolution",
-                              kept=[s.path for s in readable], warnings=warnings,
-                              metrics=metrics)
+        return verdict(refused=True, reason="low_resolution",
+                       kept=[s.path for s in readable], warnings=warnings,
+                       metrics=metrics)
     if median_short and median_short < SOFT_SHORT_EDGE:
         warnings.append("soft_resolution")
     if min(portrait, landscape) > 0.15 * len(readable):
@@ -252,8 +267,8 @@ def assess(images: Sequence[Path], *, minimum: int = MIN_USABLE_FRAMES,
     metrics["dark_frames"] = len(dark)
     metrics["median_luma"] = round(_median([s.luma for s in readable if s.luma is not None]), 1)
     if dark_share >= REFUSE_DARK_SHARE:
-        return QualityVerdict(refused=True, reason="dark", kept=[s.path for s in readable],
-                              warnings=warnings, metrics=metrics)
+        return verdict(refused=True, reason="dark", kept=[s.path for s in readable],
+                       warnings=warnings, metrics=metrics)
     if dark_share >= WARN_DARK_SHARE:
         warnings.append("dark")
 
@@ -273,9 +288,9 @@ def assess(images: Sequence[Path], *, minimum: int = MIN_USABLE_FRAMES,
     dup_share = len(duplicate_ids) / len(readable)
     metrics["duplicate_frames"] = len(duplicate_ids)
     if dup_share >= REFUSE_DUPLICATE_SHARE:
-        return QualityVerdict(refused=True, reason="duplicates",
-                              kept=[s.path for s in readable if id(s) not in duplicate_ids],
-                              warnings=warnings, metrics=metrics)
+        return verdict(refused=True, reason="duplicates",
+                       kept=[s.path for s in readable if id(s) not in duplicate_ids],
+                       warnings=warnings, metrics=metrics)
     if dup_share >= WARN_DUPLICATE_SHARE:
         warnings.append("duplicates")
 
@@ -289,9 +304,9 @@ def assess(images: Sequence[Path], *, minimum: int = MIN_USABLE_FRAMES,
     hopeless = [s for s in readable if s.sharpness is not None and s.sharpness < BLUR_ABSOLUTE]
     metrics["blurred_frames"] = len(blurred_ids)
     if len(hopeless) / len(readable) >= REFUSE_BLUR_SHARE:
-        return QualityVerdict(refused=True, reason="blurry",
-                              kept=[s.path for s in readable], warnings=warnings,
-                              metrics=metrics)
+        return verdict(refused=True, reason="blurry",
+                       kept=[s.path for s in readable], warnings=warnings,
+                       metrics=metrics)
     if len(blurred_ids) / len(readable) >= WARN_BLUR_SHARE:
         warnings.append("blurry")
 
@@ -313,5 +328,5 @@ def assess(images: Sequence[Path], *, minimum: int = MIN_USABLE_FRAMES,
     if len(kept) < THIN_CAPTURE_FRAMES:
         warnings.append("thin_capture")
     metrics["kept"] = len(kept)
-    return QualityVerdict(refused=False, reason=None, kept=kept, dropped=dropped,
-                          warnings=warnings, metrics=metrics)
+    return verdict(refused=False, reason=None, kept=kept, dropped=dropped,
+                   warnings=warnings, metrics=metrics)

@@ -82,6 +82,8 @@ const PanoViewer = lazy(() => import('./PanoViewer'));
 const ENGINE = (import.meta.env.VITE_TOUR_ENGINE || 'playcanvas').toLowerCase();
 
 const DEMO_PREFIX = 'This is a generated demo space, not a capture of this property.';
+// A captured space whose quality label never arrived (tour_api splat_label).
+const UNLABELLED_SPLAT = '3D walkthrough · quality not verified';
 
 const API_BASE = (import.meta.env.VITE_API_BASE || '').replace(/\/+$/, '');
 
@@ -258,7 +260,9 @@ export function TourViewer({
     if (splatUrl) {
       out.push({
         id: 'splat',
-        label: isThisProperty ? (splatLabel || '3D walkthrough') : 'Demo space',
+        // Fails closed: with no label from the server, the space is not
+        // called anything its certification has not earned (T12.10).
+        label: isThisProperty ? (splatLabel || UNLABELLED_SPLAT) : 'Demo space',
         isThisProperty,
       });
     }
