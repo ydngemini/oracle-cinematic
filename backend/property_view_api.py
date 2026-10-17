@@ -28,6 +28,7 @@ import asyncio
 import hashlib
 import logging
 import os
+import re
 import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
@@ -288,6 +289,64 @@ async def property_view(
     }
 
 
+# How a CRM record matched the address typed, as a claim about identity
+# (AC11.04), in the property-records vocabulary (mls_portal._record_identity).
+# The resolve is a substring search, so "12 Main St" also finds "112 Main St".
+# Only a record whose address has the same words as the typed one, where the
+# typed address names its town and a state the record does not contradict, is
+# an exact_address; everything else is a possible_match. No table records a
+# person confirming the property (T11.03), so `verified` is always False.
+_STATE_TAIL_RE = re.compile(
+    r",\s*([A-Z]{2})(?:\s+(\d{5})(?:-\d{4})?)?\s*(?:,\s*USA?)?\s*$", re.IGNORECASE,
+)
+
+
+def _address_words(value: Any) -> str:
+    """Lower-case letter and digit runs, one space apart: case, commas and
+    spacing are not words, but "15 1/2" and "151 2" stay different."""
+    return " ".join(re.findall(r"[^\W_]+", str(value or "").lower()))
+
+
+def _named_state(address: str) -> Optional[str]:
+    """The state in a trailing ", ST [ZIP]": the same reading as
+    PropertyViewTab's stateFrom, so both sides agree on what was typed."""
+    match = _STATE_TAIL_RE.search(address.strip())
+    return match.group(1).upper() if match else None
+
+
+def _names_its_town(address: str) -> bool:
+    """A ZIP after the state, or a city between the street and the state. A
+    state alone does not say which house: "100 Main St, DE" is in most of
+    Delaware's towns."""
+    text = address.strip()
+    match = _STATE_TAIL_RE.search(text)
+    if match is None:
+        return False
+    if match.group(2):
+        return True
+    return len([part for part in text[:match.start()].split(",") if _address_words(part)]) >= 2
+
+
+def _address_identity(typed: str, record_address: Any, record_state: Any = None,
+                      *, found_by: str = "address_contains") -> dict[str, Any]:
+    """`found_by` is the basis when the words differ: how the record was found.
+
+    A listing has no state column; its address, equal word for word, names
+    the same state as the typed one. A city is compared only as far as both
+    texts carry it."""
+    words = _address_words(typed)
+    same_words = bool(words) and words == _address_words(record_address)
+    named = _named_state(typed)
+    state_agrees = named is not None and (
+        record_state is None or str(record_state).strip().upper() == named)
+    exact = same_words and state_agrees and _names_its_town(typed)
+    return {
+        "status": "exact_address" if exact else "possible_match",
+        "basis": "address_exact" if same_words else found_by,
+        "verified": False,
+    }
+
+
 @router.get("/crm/property-view/resolve")
 async def resolve_subject(
     address: str = Query(min_length=3, max_length=300),
@@ -295,7 +354,11 @@ async def resolve_subject(
 ):
     """Find existing leads/listings for an address so media attaches to the
     right record. Media is always tied to a CRM record, never to a bare string —
-    otherwise photos orphan themselves the moment the deal progresses."""
+    otherwise photos orphan themselves the moment the deal progresses.
+
+    Each candidate carries `identity`: a substring hit can be another house,
+    so the client selects a record for the agent only when it is an
+    exact_address, and lists the rest as possible matches to confirm."""
     # Trigram-free prefix/substring match; the tenant's record count is small
     # enough that ILIKE is fine and avoids a pg_trgm dependency.
     #
@@ -312,7 +375,7 @@ async def resolve_subject(
     async with tenant_tx(ctx) as conn:
         leads = await conn.fetch(
             """
-            SELECT id, address, motivation_score, created_at
+            SELECT id, address, state, motivation_score, created_at
               FROM leads
              WHERE tenant_id = $2::uuid AND address ILIKE $1
              ORDER BY created_at DESC
@@ -331,9 +394,15 @@ async def resolve_subject(
             pattern, ctx.tenant_id,
         )
 
+    typed = address.strip()
     return {
         "leads": [
-            {"id": str(r["id"]), "address": r["address"], "motivation_score": r["motivation_score"]}
+            {
+                "id": str(r["id"]),
+                "address": r["address"],
+                "motivation_score": r["motivation_score"],
+                "identity": _address_identity(typed, r["address"], r["state"]),
+            }
             for r in leads
         ],
         "listings": [
@@ -342,6 +411,7 @@ async def resolve_subject(
                 "address": r["address"],
                 "price": float(r["price"]) if r["price"] is not None else None,
                 "status": r["status"],
+                "identity": _address_identity(typed, r["address"]),
             }
             for r in listings
         ],
@@ -368,19 +438,40 @@ async def create_subject(
     """Create a minimal lead so an address the tenant has never seen can still
     hold media. `parcel_id` is synthesised from the address because the real
     parcel is unknown until enrichment runs — the UNIQUE(tenant, parcel) upsert
-    key from 0018 still needs a deterministic value."""
-    address = body.address.strip()
-    parcel_id = f"pv:{hashlib.sha256(address.lower().encode()).hexdigest()[:32]}"
+    key from 0018 still needs a deterministic value.
 
+    That key is the address alone, so the same street text in another state
+    returned the other state's house. When the lead holding it is in another
+    state, this one takes a key that also hashes the state. New addresses keep
+    the address-only key: a row RLS hides (a colleague's client's house, 0143)
+    must still conflict on it rather than gain a duplicate pool lead.
+
+    A reused record carries `identity`, read from the row as the resolve reads
+    it, so a key hit is an exact_address only when the typed address names its
+    town and the record's state (F11.04)."""
+    address = body.address.strip()
+    lowered = address.lower()
+    parcel_id = f"pv:{hashlib.sha256(lowered.encode()).hexdigest()[:32]}"
+
+    def reused(row) -> dict[str, Any]:
+        return {
+            "lead_id": str(row["id"]),
+            "created": False,
+            "address": row["address"],
+            "identity": _address_identity(address, row["address"], row["state"], found_by="subject_key"),
+        }
+
+    # The (tenant_id, parcel_id) upsert key, not parcel_id alone: under the
+    # admin branch of RLS a bare parcel match could return — and attach media
+    # to — another brokerage's record for the same address.
+    lookup = "SELECT id, state, address FROM leads WHERE tenant_id = $2::uuid AND parcel_id = $1"
     async with tenant_tx(ctx) as conn:
-        # The (tenant_id, parcel_id) upsert key, not parcel_id alone: under the
-        # admin branch of RLS a bare parcel match could return — and attach
-        # media to — another brokerage's record for the same address.
-        existing = await conn.fetchval(
-            "SELECT id FROM leads WHERE tenant_id = $2::uuid AND parcel_id = $1", parcel_id, ctx.tenant_id,
-        )
+        existing = await conn.fetchrow(lookup, parcel_id, ctx.tenant_id)
+        if existing is not None and existing["state"] != body.state:
+            parcel_id = f"pv:{hashlib.sha256(f'{body.state}|{lowered}'.encode()).hexdigest()[:32]}"
+            existing = await conn.fetchrow(lookup, parcel_id, ctx.tenant_id)
         if existing is not None:
-            return {"lead_id": str(existing), "created": False}
+            return reused(existing)
 
         lead_id = await conn.fetchval(
             """
@@ -393,11 +484,9 @@ async def create_subject(
         )
         if lead_id is None:
             # A concurrent create of the same address wins the race.
-            existing = await conn.fetchval(
-                "SELECT id FROM leads WHERE tenant_id = $2::uuid AND parcel_id = $1", parcel_id, ctx.tenant_id,
-            )
+            existing = await conn.fetchrow(lookup, parcel_id, ctx.tenant_id)
             if existing is not None:
-                return {"lead_id": str(existing), "created": False}
+                return reused(existing)
     if lead_id is None:
         # The row exists but RLS hides it: the address is a colleague's
         # client's house (0143). Neither attach to it nor fail with a 500.

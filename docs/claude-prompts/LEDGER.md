@@ -1790,6 +1790,31 @@ next_task: "Audit lead importers for anything writing payload.seller_name from p
 updated: 2026-10-17
 ```
 
+#### L11-11 Property View: a substring address hit is a possible match, never the auto-selected subject media attaches to (T11.03, F11.04, AC11.04)
+```yaml
+id: L11-11
+status: tests_pass
+env: local
+evidence_shas: [e83e4d6]
+files: [backend/property_view_api.py, backend/tests/test_property_view_resolve_scope.py, backend/tests/test_lead_record_access_live.py, oracle-app/src/components/PropertyViewTab.jsx, oracle-app/src/components/PropertyViewTab.module.css, oracle-app/src/components/PropertyViewTab.test.jsx, oracle-app/bundle-budget.json]
+tests_run:
+  - {cmd: "re-verify at e83e4d6 (workflow wf_ba5b6dda-f56: worktree implementer -> reviewer -> fixer; the verifier hit the subagent session limit, so the lead verified the fix and ran the live test)", result: "/crm/property-view/resolve matched address ILIKE '%typed%' with no basis; PropertyViewTab auto-selected a single hit, so typing '12 Main St' attached uploads to the lead for '112 Main St'; a resolve failure read as 'No existing record matches'; create_subject keyed new houses on sha256(address) with no state, so the same street in another state returned the other house's lead as 'Matched an existing record'", date: 2026-10-17}
+  - {cmd: "red runs: pytest tests/test_property_view_resolve_scope.py; npx vitest run src/components/PropertyViewTab.test.jsx (slice, then review fixes)", result: "slice: 10 of 13 backend failed (KeyError 'identity'; a PA create reused the DE key; created True != False) and 6 of 26 frontend failed ('112 Main St' auto-selected; no 'attach media to a record' picker; resolve failure shown as no match); review fixes: '100 Main St, DE' (a state, no town) was still exact_address and auto-selected, and a picked possible match lost its label while the tour viewer was titled with the typed address (2 backend + 5 frontend failing first)", date: 2026-10-17}
+  - {cmd: "cd backend && pytest tests/test_property_view_resolve_scope.py tests/test_lead_dossier_address.py tests/test_security_launch_review.py tests/test_media_upload_offload.py tests/test_upload_decoders.py tests/test_video_mock_and_imagery.py tests/test_property_scan_ingest.py tests/test_no_blocking_io_in_async.py tests/test_client_portal*.py", result: "150 passed: every resolved lead and listing carries identity {status, basis, verified:false}; exact_address needs the same words, a town (a ZIP or a city segment) and a state the record does not contradict; everything else is a possible_match; a reused record returns its own address and identity; a key held by a visible lead in another state gets a state-qualified key, while new addresses keep the address-only key so a legacy row hidden by RLS still conflicts (409) instead of gaining a duplicate pool lead", date: 2026-10-17}
+  - {cmd: "livetest.sh pytest tests/test_lead_record_access_live.py (real PostgreSQL 16, FORCE RLS, app login)", result: "2 passed (not runnable inside the worktrees; run by the lead): the reuse response carries the row's address and exact_address identity; a PA create for the same street returns created=True with its own lead", date: 2026-10-17}
+  - {cmd: "cd oracle-app && npx vitest run && npx eslint src && npm run build && npm run bundle:check", result: "954 passed (auto-select only a single exact_address candidate; 'Possible match' and 'Address match · not verified' flags and a confirm-before-attaching note; a picked record keeps its address and flag on an 'Attaching media to' line with 'Change record'; the tour viewer is titled with the record's address; a resolve failure says records couldn't be checked); eslint exit 0; built; within budget after the slice re-pinned it (+1,424 B raw total JS, largest chunk unchanged)", date: 2026-10-17}
+authz_checked: "Unchanged scoping: resolve and create still read leads and listings in the caller's tenant transaction under RLS; the identity label is computed from the rows the caller can already see. Nothing is ever verified."
+blockers:
+  - "A legacy hidden row in another state still answers 409 'already a client's property': RLS hides its state, so the conflict cannot tell the two houses apart."
+  - "The resolve still takes the 10 newest substring hits; an exact record can be pushed out (auto-select then does not fire, which is the safe failure)."
+  - "The town rule is textual: '100 Main St, Apt 2, DE' counts 'Apt 2' as a town segment. DossierPanel still renders pv: keys as 'Parcel …' (T11.02). jsdom only; no real-phone check."
+  - "Not deployed (C4.4)."
+audit_refs: []
+decision_refs: []
+next_task: "Show pv: keys as a Property View record, not a parcel (T11.02), and record a person's confirmation of a match (L11-07 next_task)."
+updated: 2026-10-17
+```
+
 ### L12
 Neoh Space capture, reconstruction and tours. Spec: [neoh-space-web-capture-claude.md](../neoh-space-web-capture-claude.md).
 
