@@ -43,7 +43,7 @@ Listed weakest to strongest:
 | 08 | Durable missions and workflows | [08](08-durable-missions-workflow-orchestration.md) | `source_verified` | local | `745f2fa`; L08-02 deferral journal (0159), L08-03 feasible plans, L08-04 plans refuse unset channels by name (local) | Owner: does a mission's standing grant count as approval (C4.1)?; PR #11 needs a rebuild (L08-01 review) | T08.03 TaskGraph; rebuild PR #11's internal tasks after the owner answers |
 | 09 | Real-time voice | [09](09-realtime-voice-speech-latency.md) | `source_verified` | staging | `9c3463a`; L09-05 outbound spoken opt-out, L09-06 lead-only call notes, L09-07 voice rules locked per path (local) | Phone check (L09-02); real call (T09.18) needs owner approval | T09.18; T09.10 |
 | 10 | Communications and calendars | [10](10-communications-calendar-provider-integrations.md) | `source_verified` | staging | `75c6ba6` (local) | Google OAuth client; 10DLC; deploy approval; A07 fixed locally; L10-11 email Ready only after a send (0164, local); L10-12 texts and calls likewise (0165, local); 0136 + 0139 + 0145 undeployed (L10-06, L10-09, L10-10); owner: one-brand rule (L10-09) | L10-01 deploy + real connect; T10.09 retry/circuit UI + Playwright |
-| 11 | Property and market intelligence (non-MLS) | [11](11-property-market-intelligence.md) | `tests_pass` | staging (L11-01), local (L11-02, L11-03) | `90372f2`; `d934b2e` (L11-02); L11-03 on branch `worktree-agent-a59f5c8799a673f68` (base `2804f47`); L11-04 source inventory (local); L11-05 heuristic valuation targets labelled, underwriter promotion gated; L11-06 review fixes (local, A08) | Deploy 0135; live-DB test owed; staging catalog empty; L11-03 not deployed | Owner/legal: licences per source (L11-04); T11.03 |
+| 11 | Property and market intelligence (non-MLS) | [11](11-property-market-intelligence.md) | `tests_pass` | staging (L11-01), local (L11-02, L11-03) | `90372f2`; `d934b2e` (L11-02); L11-03 on branch `worktree-agent-a59f5c8799a673f68` (base `2804f47`); L11-04 source inventory (local); L11-05 heuristic valuation targets labelled, underwriter promotion gated; L11-06 review fixes (local, A08); L11-07..L11-10 unverified property matches labelled possible matches in Houses, Neoh, the AI tools and contract drafts (local, T11.03 / F11.04) | Deploy 0135; live-DB test owed; staging catalog empty; L11-03 not deployed | Owner/legal: licences per source (L11-04); T11.03 |
 | 12 | Neoh Space capture, 3D, tours | [12](12-neoh-space-browser-capture-reconstruction.md) | `source_verified` | local | `745f2fa`; L12-03 Capture Studio first slice + integration map (local, jsdom only) | A03; AC12.02 real-device protocol | Server upload sessions (T12.05) |
 | 13 | Deals, documents, compliance | [13](13-transactions-contract-vault-compliance.md) | `source_verified` | local | `745f2fa`; L13-02 no new MLS-sourced deals; L13-03 status trail 0163 + T13.14 verified (local) | Owner: e-sign, commissions, fallen-through contracts | T13.02 remainder; T13.11 |
 | 14 | Sites, social, ads, client portal | [14](14-websites-social-ads-growth-client-portal.md) | `source_verified` | local | `745f2fa`; L14-03 honest website badge; L14-04 no new IDX on sites (local) | Owner: networks, listings on sites | T14.04 + AC14.04 |
@@ -1764,6 +1764,29 @@ blockers:
 audit_refs: []
 decision_refs: []
 next_task: "Feed the possible-match label into the chat answer itself (the model now receives it in the tool payload)."
+updated: 2026-10-17
+```
+
+#### L11-10 Contracts: neither assignment-contract path names the public-record owner as the Seller (T11.03, F11.04)
+```yaml
+id: L11-10
+status: tests_pass
+env: local
+evidence_shas: [24a7b3c]
+files: [backend/ml_forge/synthetic_lawyer.py, backend/legal_agent.py, backend/workflow_engine.py, backend/tests/test_synthetic_lawyer.py, backend/tests/test_legal_agent_seller.py, backend/tests/test_contract_seller_live.py, .github/workflows/ci.yml]
+tests_run:
+  - {cmd: "re-verify at 24a7b3c: synthetic_lawyer.fetch_assignment_transaction_for_client / normalize_assignment_payload, legal_agent.generate_legal_package, workflow_engine / real_leads", result: "with no linked seller client the drafted Assignment Contract's Seller fell back to leads.payload.owner_name (crm.py copies the public record's owner there) in both the SQL COALESCE and normalize_assignment_payload; the live LegalMatrix 'Assignment Contract' panel (legal_agent, fed by workflow_engine from real leads) set contract_fields.seller from owner_name", date: 2026-10-17}
+  - {cmd: "red runs: pytest tests/test_synthetic_lawyer.py (slice), then the review tests on the slice commit", result: "2 failed / 19 passed ('Public Record Owner' is not None; \"payload->>'owner_name'\" in the seller COALESCE); then the legal_agent seller tests failed (contract_fields.seller == the owner of record) and a respelled owner fallback slipped past the string guard", date: 2026-10-17}
+  - {cmd: "cd backend && pytest tests/test_synthetic_lawyer.py tests/test_legal_agent_seller.py tests/test_contract_draft_workspace.py tests/test_contract_template_registry.py tests/test_contract_type_expansion.py tests/test_engine_start_does_not_block.py tests/test_intelligence_platform.py ...", result: "149 passed: with only an owner of record the draft refuses with seller_name missing and never contains the owner's name; a stated seller (linked client or payload.seller_name) still fills it; the legal package's seller is a visible '[SELLER — confirm; ...]' placeholder unless a seller is stated; the guard inspects the seller expression for any owner token and any public_property_records reference, whatever the spelling", date: 2026-10-17}
+  - {cmd: "livetest.sh pytest tests/test_contract_seller_live.py (real PostgreSQL 16, FORCE RLS, app login; now in the CI live list)", result: "passed: a lead whose payload carries an owner_name and no seller client yields a transaction with no seller name", date: 2026-10-17}
+authz_checked: "No access change: the same tenant-scoped reads; the owner of record is simply no longer used as a party."
+blockers:
+  - "The owner of record is not shown in the legal package at all (labelled or not); the UNCONFIRMED_SELLER placeholder is English like the rest of legal_agent."
+  - "leads.payload.seller_name is still trusted as a stated seller; no backend writer copying owner_name into it was found, but every importer was not audited."
+  - "Not deployed (C4.4)."
+audit_refs: []
+decision_refs: []
+next_task: "Audit lead importers for anything writing payload.seller_name from public records."
 updated: 2026-10-17
 ```
 
