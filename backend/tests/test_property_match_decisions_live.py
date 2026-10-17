@@ -81,6 +81,7 @@ async def _scenario(monkeypatch):  # noqa: C901 — one scenario, read top to bo
     from fastapi import HTTPException
 
     import mls_portal
+    import portfolio_api
     import property_match_api
     import sealed_text
     from db import connection
@@ -285,6 +286,12 @@ async def _scenario(monkeypatch):  # noqa: C901 — one scenario, read top to bo
         assert (await detail("owner"))["identity"]["verified"] is True
 
         # ── a platform admin decides another tenant's house ───────────────
+        # Their RLS spans every tenant, so Houses puts this tenant's lead on
+        # the operator's card; it never offers them the form on it. They
+        # decide by an explicit lead id.
+        operator_view = await detail("operator")
+        assert operator_view["lead_id"] == str(lead)
+        assert operator_view["identity"]["confirmable"] is False
         foreign = await property_match_api.decide_record_match(
             lead_id=lead, body=body("rejected", record_id=record_two, evidence=(), reason=OTHER_REASON),
             ctx=operator)
@@ -293,7 +300,8 @@ async def _scenario(monkeypatch):  # noqa: C901 — one scenario, read top to bo
         assert await opened(foreign_id, tenant) == OTHER_REASON
         assert (await detail("owner", record_two))["identity"]["confirmation"]["state"] == "rejected"
 
-        # The audit rows: ids and the decision, in the lead's tenant; never the reason.
+        # The audit rows: the decision's ids and the decision, in the lead's
+        # tenant; never the reason, nor anything that locates the house.
         audits = await admin.fetch(
             "SELECT action, user_id, target_id, metadata FROM audit_ledger "
             "WHERE tenant_id=$1 AND action LIKE 'property_match_%' ORDER BY created_at", tenant)
@@ -305,11 +313,31 @@ async def _scenario(monkeypatch):  # noqa: C901 — one scenario, read top to bo
         ]
         for audit in audits:
             metadata = json.loads(audit["metadata"]) if isinstance(audit["metadata"], str) else audit["metadata"]
-            assert set(metadata) == {"decision_id", "lead_id", "public_record_id", "client_id", "decision",
-                                     "supersedes_id"}
+            assert set(metadata) == {"decision_id", "decision", "supersedes_id"}
             assert REASON not in json.dumps(metadata) and OTHER_REASON not in json.dumps(metadata)
         assert await admin.fetchval(
             "SELECT count(*) FROM audit_ledger WHERE tenant_id=$1 AND action LIKE 'property_match_%'", other) == 0
+        # Agent B cannot see the house or its decisions, yet reads the tenant's
+        # ledger through the portfolio summary's activity pulse — including
+        # the HTTP audit middleware's row for the request, whose path and
+        # metadata name the lead (shaped as audit_middleware writes it).
+        from audit_ledger import AuditCategory, ledger
+        await ledger.record(
+            category=AuditCategory.USER_STATE_CHANGE, action=f"POST /api/crm/houses/{lead}/record-match",
+            tenant_id=str(tenant), user_id=agent["owner"],
+            metadata={"method": "POST", "path": f"/api/crm/houses/{lead}/record-match",
+                      "status_code": 201, "client_ip": "203.0.113.7"})
+        pulse = (await portfolio_api.portfolio_summary(ctx=ctx("b")))["activity_pulse"]
+        middleware = [e for e in pulse if str(e["action"]).startswith("POST /api/crm/houses/")]
+        assert [e["action"] for e in middleware] == ["POST /api/crm/houses/:id/record-match"]
+        assert "203.0.113.7" not in json.dumps(pulse, default=str)
+        for entry in pulse:
+            assert str(lead) not in json.dumps(entry, default=str)
+        pulse_matches = [e for e in pulse if str(e["action"]).startswith("property_match_")]
+        assert len(pulse_matches) == len(audits)
+        for entry in pulse_matches:
+            for located in (lead, record, record_two, client_a, client_x):
+                assert str(located) not in json.dumps(entry, default=str)
 
         # ── rows leave with their house or their client ───────────────────
         async with connection.tenant_tx(ctx("owner")) as conn:

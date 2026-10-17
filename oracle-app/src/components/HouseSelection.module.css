@@ -655,6 +655,12 @@
   resize: vertical;
 }
 
+/* iOS zooms a focused control under 16px. The shorthand above outranks
+   index.css's coarse-pointer rule for form controls, so restate it here. */
+@media (pointer: coarse) {
+  .matchForm textarea { font-size: var(--text-md); }
+}
+
 .matchProblem {
   display: flex;
   align-items: flex-start;

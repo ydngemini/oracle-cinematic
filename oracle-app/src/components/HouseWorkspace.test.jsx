@@ -10,7 +10,7 @@
  * and the button that opens it must not say otherwise.
  */
 
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { useState } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -22,7 +22,14 @@ afterEach(cleanup);
 
 const useTour = vi.fn();
 vi.mock('../state/useTour', () => ({ useTour: (...args) => useTour(...args) }));
-vi.mock('./HouseLinkDialog', () => ({ default: () => null }));
+// The link dialog's last props, so a test can play its onLinked.
+const linkDialog = { props: null };
+vi.mock('./HouseLinkDialog', () => ({
+  default: (props) => {
+    linkDialog.props = props;
+    return null;
+  },
+}));
 const crmPost = vi.fn();
 vi.mock('../state/useCrmApi', () => ({ crmPost: (...args) => crmPost(...args) }));
 
@@ -271,6 +278,26 @@ describe('HouseWorkspace house decision form', () => {
 
     expect(screen.queryByRole('button', { name: 'Confirm parcel' })).toBeNull();
     expect(screen.queryByRole('button', { name: "Not this client's house" })).toBeNull();
+  });
+
+  it.each([
+    ['broker_owner', true],
+    ['agent', false],
+    // A platform admin's link lands on the newest lead for the parcel in any
+    // brokerage, not one they chose: they decide by an explicit lead id.
+    ['platform_admin', false],
+  ])('after a link made here, is offered to a %s: %s', (role, offered) => {
+    sessionStorage.setItem('oracle_role', role);
+    render(<HouseWorkspace house={decided('exact_address', 'address_exact', 'none')} onHouseUpdate={() => {}} />);
+    expect(screen.queryByRole('button', { name: 'Confirm parcel' })).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Link to client' }));
+    act(() => linkDialog.props.onLinked(
+      { full_name: 'Example Client' },
+      { created: true, house: { lead_id: HOUSE.lead_id } },
+    ));
+
+    expect(Boolean(screen.queryByRole('button', { name: 'Confirm parcel' }))).toBe(offered);
   });
 
   it('is never offered for a manual house', () => {

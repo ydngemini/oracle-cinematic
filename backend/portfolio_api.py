@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import re
 from datetime import date, datetime, timezone
 from decimal import Decimal
 from typing import Any, Literal, Optional
@@ -19,6 +20,24 @@ from billing_usage import record_usage
 from db.connection import tenant_tx
 from tenancy import TenantContext, require_context
 from mls_health import visible_feed_predicate
+
+_PATH_ID_RE = re.compile(
+    r"(?<=/)(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|\d+)(?=/|$)", re.IGNORECASE,
+)
+
+
+def _pulse_action(action: Any) -> Any:
+    """A logged request ("POST /api/crm/houses/<id>/record-match") without
+    the ids in its path; a named action is returned as it is."""
+    return _PATH_ID_RE.sub(":id", action) if isinstance(action, str) else action
+
+
+def _pulse_entry(row: Any) -> dict[str, Any]:
+    """Built key by key, so no other ledger column can ride along."""
+    entry = _row({key: row[key] for key in ("event_id", "category", "action", "created_at")})
+    entry["action"] = _pulse_action(entry["action"])
+    return entry
+
 
 router = APIRouter(prefix="/api/portfolio", tags=["portfolio"])
 logger = logging.getLogger("oracle.portfolio")
@@ -675,9 +694,13 @@ async def portfolio_summary(ctx: TenantContext = Depends(require_context)):
                 """,
                 ctx.tenant_id,
             )
+            # Every agent of the tenant reads this pulse, including agents
+            # 0143 walls off from a record: only what the page shows leaves —
+            # never the ledger's metadata (request paths, client IPs, record
+            # ids) or target ids, and ids inside a logged path are masked.
             activity_rows = await conn.fetch(
                 """
-                SELECT event_id,category,action,target_id,metadata,created_at
+                SELECT event_id,category,action,created_at
                   FROM audit_ledger
                  WHERE tenant_id=$1::uuid
                  ORDER BY created_at DESC
@@ -791,7 +814,7 @@ async def portfolio_summary(ctx: TenantContext = Depends(require_context)):
             },
         },
         "intelligence_flags": title_flags + zoning_flags + pre_distress_flags,
-        "activity_pulse": [_row(row) for row in activity_rows],
+        "activity_pulse": [_pulse_entry(row) for row in activity_rows],
         "active_contract_records": [],
         "milestones": [],
     }

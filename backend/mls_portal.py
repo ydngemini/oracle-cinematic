@@ -576,6 +576,9 @@ async def _lead_ids_for_records(conn, rows: list[dict]) -> dict[tuple[str, str],
     One query per page, not per row. Called inside an existing tenant_tx, so RLS
     scopes the result to the caller's tenant with no predicate needed here.
     Matches the (parcel_id, state) lookup crm.link_client_house already relies on.
+    A platform admin's RLS spans every tenant, so their row is the newest lead
+    for the parcel in any brokerage: Houses never offers them the decision
+    form on it (property_match_api.can_decide).
 
     The same query says whether the lead is linked to a client, and carries the
     newest property-match decision (0168, T11.03) per public record on that

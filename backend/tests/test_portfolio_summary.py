@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
+import json
 from datetime import date, datetime, timezone
 from decimal import Decimal
 
@@ -144,3 +145,42 @@ def test_a_title_flag_carries_what_a_reviewer_decides_on(monkeypatch):
     # Only findings still awaiting a person's decision are listed; no notes.
     assert "review_status='required'" in title_sql
     assert "notes" not in title_sql
+
+
+class _PulseConn(_SummaryConn):
+    """The summary with a middleware audit row and a decision audit row."""
+
+    LEAD = "11111111-2222-4333-8444-555555555555"
+
+    async def fetch(self, query, *args):
+        if "FROM audit_ledger" in query:
+            self._record(query, args)
+            return [
+                {"event_id": "e1", "category": "USER_STATE_CHANGE",
+                 "action": f"POST /api/crm/houses/{self.LEAD}/record-match", "target_id": self.LEAD,
+                 "metadata": {"path": f"/api/crm/houses/{self.LEAD}/record-match", "client_ip": "203.0.113.7"},
+                 "created_at": datetime(2026, 10, 17, tzinfo=timezone.utc)},
+                {"event_id": "e2", "category": "user_state_change", "action": "property_match_confirmed",
+                 "target_id": "99999999-8888-4777-8666-555555555555", "metadata": {"decision": "confirmed"},
+                 "created_at": datetime(2026, 10, 17, tzinfo=timezone.utc)},
+            ]
+        return await super().fetch(query, *args)
+
+
+def test_the_activity_pulse_carries_only_what_the_page_shows(monkeypatch):
+    """Every agent of the tenant reads this pulse, including agents walled
+    off from a record by 0143; the ledger's metadata (paths, client IPs,
+    record ids) and target ids stay out, and ids inside a logged request
+    path are masked (review L11-15)."""
+    conn = _PulseConn()
+    monkeypatch.setattr(portfolio_api, "tenant_tx", _fake_tenant_tx(conn))
+
+    pulse = asyncio.run(portfolio_api.portfolio_summary(CTX))["activity_pulse"]
+
+    assert [set(entry) for entry in pulse] == [{"event_id", "category", "action", "created_at"}] * 2
+    assert pulse[0]["action"] == "POST /api/crm/houses/:id/record-match"
+    assert pulse[1]["action"] == "property_match_confirmed"
+    dumped = json.dumps(pulse, default=str)
+    assert _PulseConn.LEAD not in dumped and "203.0.113.7" not in dumped and "99999999" not in dumped
+    (sql,) = [q for q, _ in conn.queries if "FROM audit_ledger" in q]
+    assert "metadata" not in sql and "target_id" not in sql

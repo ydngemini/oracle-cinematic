@@ -163,11 +163,14 @@ export default function HouseSelection() {
   // The record id is unchanged, so the keyed transition above does not remount.
   // The same patch reaches the record's card, so its flags match the
   // workspace and selecting it again does not bring back the stale row.
+  // A request can resolve after another card is selected (the decision form
+  // is inline), so the patch lands only on the house it was made for.
   const applyHouseUpdate = useCallback((patch) => {
     if (!patch || !selected) return;
-    setSelected((current) => (current ? { ...current, ...patch } : current));
+    const targetId = selected.id;
+    setSelected((current) => (current?.id === targetId ? { ...current, ...patch } : current));
     if (!selected.isManual) {
-      setRecords((rows) => rows?.map((row) => (row.id === selected.id ? { ...row, ...patch } : row)) ?? rows);
+      setRecords((rows) => rows?.map((row) => (row.id === targetId ? { ...row, ...patch } : row)) ?? rows);
     }
   }, [selected]);
 

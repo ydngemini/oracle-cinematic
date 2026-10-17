@@ -197,6 +197,17 @@ def test_a_platform_admin_passes_the_gate(monkeypatch):
     result, _conn, _ledger = _decide(monkeypatch, ADMIN)
 
     assert result["decision"] == "confirmed"
+    # The identity is what Houses would show this caller: no form (below).
+    assert result["identity"]["confirmable"] is False
+
+
+@pytest.mark.parametrize(("ctx", "offered"), [(OWNER, True), (AGENT, False), (ADMIN, False)])
+def test_houses_offers_the_decision_form_to_a_broker_owner_only(ctx, offered):
+    """A platform admin's RLS spans every tenant, so the lead Houses puts on a
+    card is the newest one for that parcel in any brokerage, not one the
+    operator chose: Houses never offers them the form. They decide by an
+    explicit lead id, which the route still allows (above)."""
+    assert property_match_api.can_decide(ctx) is offered
 
 
 @pytest.mark.parametrize("reason", ["", "        ", "7 chars"])
@@ -381,7 +392,13 @@ def test_without_the_master_key_nothing_is_decided(monkeypatch):
     assert _inserts(conn) == [] and ledger.calls == []
 
 
-def test_the_audit_record_carries_ids_and_the_decision_only(monkeypatch, caplog):
+def test_the_audit_record_carries_decision_ids_and_the_decision_only(monkeypatch, caplog):
+    """The tenant's ledger is readable by every agent of the tenant (0005's
+    audit_ledger_select; the portfolio summary's activity pulse returns its
+    metadata), while 0168 hides a decision from an agent who cannot see the
+    house. So the entry names the decision and nothing that locates it: no
+    lead, no client, and no public record, whose id resolves to a street
+    address in the global catalog. The table row keeps those under RLS."""
     with caplog.at_level(logging.DEBUG):
         result, _conn, ledger = _decide(monkeypatch, OWNER)
 
@@ -391,10 +408,9 @@ def test_the_audit_record_carries_ids_and_the_decision_only(monkeypatch, caplog)
     assert call["tenant_id"] == TENANT_ID
     assert call["user_id"] == OWNER.agent_id
     assert call["target_id"] == str(DECISION)
-    assert call["metadata"] == {
-        "decision_id": str(DECISION), "lead_id": str(LEAD), "public_record_id": str(RECORD),
-        "client_id": str(CLIENT), "decision": "confirmed", "supersedes_id": None,
-    }
+    assert call["metadata"] == {"decision_id": str(DECISION), "decision": "confirmed", "supersedes_id": None}
+    for located in (str(LEAD), str(RECORD), str(CLIENT)):
+        assert located not in json.dumps(call, default=str)
     # Nothing a person typed, and no owner name, reaches the ledger, a log
     # line or the response.
     for blob in (json.dumps(call, default=str), caplog.text, json.dumps(result, default=str)):

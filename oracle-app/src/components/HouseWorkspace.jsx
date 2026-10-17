@@ -83,11 +83,12 @@ const MATCH_CHOICES = {
   out_of_date: ['confirmed', 'rejected', 'withdrawn'],
 };
 
-// A display hint only (the PortfolioTab pattern): the server is the gate.
+// A display hint only (the PortfolioTab pattern): the server is the gate. Not
+// offered to a platform admin, whose link lands on the newest lead for the
+// parcel in any brokerage, not one they chose (property_match_api.can_decide).
 function canDecideMatch() {
   try {
-    const role = sessionStorage.getItem('oracle_role');
-    return role === 'broker_owner' || role === 'platform_admin';
+    return sessionStorage.getItem('oracle_role') === 'broker_owner';
   } catch {
     return false;
   }

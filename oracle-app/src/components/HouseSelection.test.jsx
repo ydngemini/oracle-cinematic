@@ -5,7 +5,7 @@
  * card is what the agent clicks before the workspace opens.
  */
 
-import { act, cleanup, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 afterEach(cleanup);
@@ -81,5 +81,42 @@ describe('HouseSelection record cards', () => {
 
     expect(screen.getByRole('button', { name: /4 Ash Ct/ }).textContent).toMatch(/confirmed house/i);
     expect(workspace.props.house.identity.verified).toBe(true);
+  });
+
+  it('lands a decision that resolves after a switch on the house it was made for', async () => {
+    // The decision form is inline, so the cards stay clickable while the POST
+    // is in flight: the update arrives through the callback of the house it
+    // was made for, after another house is selected.
+    const identity = { status: 'exact_address', basis: 'address_exact', verified: false };
+    crmGet.mockResolvedValue({
+      listings: [record('5', '5 Birch Rd', identity), record('6', '6 Cedar Ln', identity)],
+      total: 2,
+    });
+
+    render(<HouseSelection />);
+
+    await screen.findByRole('button', { name: /5 Birch Rd/ });
+    expect(workspace.props.house.id).toBe('5');
+    const updateForFive = workspace.props.onHouseUpdate;
+    fireEvent.click(screen.getByRole('button', { name: /6 Cedar Ln/ }));
+    await waitFor(() => expect(workspace.props.house.id).toBe('6'));
+
+    const confirmed = {
+      ...identity,
+      verified: true,
+      confirmation: { state: 'confirmed', head_id: 'h5', decided_at: '2026-10-17T16:00:00+00:00' },
+      confirmable: true,
+    };
+    act(() => updateForFive({ identity: confirmed }));
+
+    // The selected house was never decided, and stays as the search sent it.
+    expect(workspace.props.house.id).toBe('6');
+    expect(workspace.props.house.identity).toEqual(identity);
+    expect(screen.getByRole('button', { name: /6 Cedar Ln/ }).textContent).not.toMatch(/confirmed house/i);
+    // The house it was made for carries it.
+    expect(screen.getByRole('button', { name: /5 Birch Rd/ }).textContent).toMatch(/confirmed house/i);
+    fireEvent.click(screen.getByRole('button', { name: /5 Birch Rd/ }));
+    await waitFor(() => expect(workspace.props.house.id).toBe('5'));
+    expect(workspace.props.house.identity).toEqual(confirmed);
   });
 });

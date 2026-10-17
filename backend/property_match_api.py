@@ -63,10 +63,13 @@ class RecordMatchDecision(BaseModel):
 
 
 def can_decide(ctx: TenantContext) -> bool:
-    """Who the route lets decide (require_role below): a broker owner, and a
-    platform admin implicitly. A display hint for the Houses read; the route
-    is the gate."""
-    return ctx.is_platform_admin or ctx.role == Role.BROKER_OWNER
+    """Whether Houses offers the decision form: to a broker owner. A display
+    hint only; the route is the gate (require_role below), and it also admits
+    a platform admin. Houses does not offer them the form: their RLS spans
+    every tenant, so the lead on a card is the newest one for that parcel in
+    any brokerage (mls_portal._lead_ids_for_records), not one the operator
+    chose. A platform admin decides by an explicit lead id."""
+    return ctx.is_broker_owner
 
 
 def _iso(value: Any) -> Optional[str]:
@@ -119,7 +122,7 @@ async def decide_record_match(
     The reason often names an owner, so it is stored only sealed (0168,
     CONTRACT C5.1), under the key of the lead's own tenant: a platform admin
     may decide another tenant's house, and that tenant's audit trail records
-    it. The audit record names ids and the decision only.
+    it. The audit record names the decision's own ids and the decision only.
     """
     require_role(ctx, Role.BROKER_OWNER)
     reason = validate_approval_reason(body.reason)
@@ -201,6 +204,14 @@ async def decide_record_match(
             # the read above and this write: uq_pmd_successor / uq_pmd_first.
             raise HTTPException(status_code=409, detail=_STALE) from None
     decision_id = str(row["id"])
+    # Every agent of the tenant may read its ledger (0005's
+    # audit_ledger_select), while 0168 hides this decision from an agent who
+    # cannot see the house. So the entry names the decision only: no lead,
+    # client or public record (whose id resolves to a street address in the
+    # global catalog). The row keeps those under RLS. The HTTP audit
+    # middleware's own row logs the request path, which holds the lead id;
+    # the portfolio pulse, the one page every agent reads it through, returns
+    # neither metadata nor target ids and masks ids in paths (L11-15).
     await ledger.record(
         category=AuditCategory.USER_STATE_CHANGE,
         action=f"property_match_{body.decision}",
@@ -209,9 +220,6 @@ async def decide_record_match(
         target_id=decision_id,
         metadata={
             "decision_id": decision_id,
-            "lead_id": str(lead_id),
-            "public_record_id": record_id,
-            "client_id": str(lead["seller_client_id"]),
             "decision": body.decision,
             "supersedes_id": head_id,
         },
@@ -231,6 +239,6 @@ async def decide_record_match(
         "identity": {
             "verified": confirmation["state"] == "confirmed",
             "confirmation": confirmation,
-            "confirmable": True,
+            "confirmable": can_decide(ctx),
         },
     }

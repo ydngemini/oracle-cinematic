@@ -614,10 +614,13 @@ def test_a_row_with_no_lead_keeps_exactly_the_search_claim():
     assert identity == {"status": "exact_parcel", "basis": "parcel_exact", "verified": False}
 
 
-@pytest.mark.parametrize(("role", "confirmable"), [(Role.BROKER_OWNER, True), (Role.AGENT, False)])
+@pytest.mark.parametrize(("role", "confirmable"),
+                         [(Role.BROKER_OWNER, True), (Role.AGENT, False), (Role.PLATFORM_ADMIN, False)])
 def test_the_detail_route_reads_the_decision_through_the_lead_lookup(monkeypatch, role, confirmable):
     """The Houses detail card, end to end: the one lead query carries the
-    head decisions (jsonb, as asyncpg returns it without a codec)."""
+    head decisions (jsonb, as asyncpg returns it without a codec). A platform
+    admin is not offered the form: their lead lookup spans every tenant, so
+    the card's lead is not one they chose."""
     import json
 
     ctx = TenantContext(agent_id="owner", tenant_id="00000000-0000-0000-0000-000000000000", role=role)
