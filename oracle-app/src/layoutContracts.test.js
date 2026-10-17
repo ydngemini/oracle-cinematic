@@ -111,3 +111,21 @@ describe('faint text still reads', () => {
     }
   });
 });
+
+describe('a phone does not zoom into the house decision form', () => {
+  it('keeps the reason field at 16px on a coarse pointer', () => {
+    // iOS Safari zooms a focused control under 16px. index.css pins controls
+    // to --text-md on a coarse pointer, but the textarea's `font` shorthand
+    // (class + element) outranks that rule and resets it to the body's 14px,
+    // so the module restates it after the shorthand.
+    expect(read('./index.css')).toMatch(
+      /@media \(pointer: coarse\) \{\s*input, textarea, select \{ font-size: var\(--text-md\); \}/,
+    );
+    const css = read('./components/HouseSelection.module.css');
+    const base = css.indexOf('.matchForm textarea {');
+    const coarse = css.indexOf('@media (pointer: coarse)', base);
+    expect(base).toBeGreaterThan(-1);
+    expect(coarse).toBeGreaterThan(base);
+    expect(block(css.slice(coarse), '.matchForm textarea {')).toMatch(/font-size:\s*var\(--text-md\)/);
+  });
+});

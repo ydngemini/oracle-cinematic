@@ -144,6 +144,9 @@ export function oracleReducer(state, action) {
         aiChatRevision: state.aiChatRevision + 1,
         aiChatMessages: upsertAssistant(state.aiChatMessages, action.payload, {
           status: 'completed', actions: action.payload.actions || [], model_id: action.payload.model_id,
+          // The one precise question's choices (L05-09): records the person may
+          // have meant, offered as buttons under the answer.
+          choices: action.payload.choices || [],
           ...observedAt(action.payload),
         }),
       };

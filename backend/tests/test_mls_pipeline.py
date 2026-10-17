@@ -6,6 +6,8 @@ import asyncio
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
+import pytest
+
 import mls_portal
 import harvesters.base
 import harvesters.fl_fdor
@@ -301,9 +303,12 @@ def test_public_catalog_search_normalizes_exact_address_and_ranks_matches(monkey
         "DE",
         "%15 Main St., Dover%",
         "15mainstdover",
+        "15 main st dover",
         mls_portal.PAGE_SIZE + 1,
         0,
     )
+    # Among equal scores the row whose words line up comes first (L11-07).
+    assert "ORDER BY match_score DESC, (btrim(regexp_replace(lower(COALESCE(address, ''))" in conn.data_query
     assert result["accuracy"]["ranked_exact_matches"] is True
     assert result["total_is_estimate"] is False
 
@@ -405,3 +410,381 @@ def test_completed_targeted_enrichment_does_not_repeat_network_join():
     )
 
     assert reconciled is False
+
+
+@pytest.mark.parametrize(
+    ("match_type", "status"),
+    [
+        ("parcel_exact", "exact_parcel"),
+        ("address_exact", "exact_address"),
+        # A record opened by its id was compared with nothing the user typed.
+        ("record_id", "not_applicable"),
+        # Equal only once every space and punctuation mark is removed.
+        ("address_compact", "possible_match"),
+        ("parcel_compact", "possible_match"),
+        ("address_partial", "possible_match"),
+        ("owner_partial", "possible_match"),
+        ("city_partial", "possible_match"),
+        ("text_partial", "possible_match"),
+        ("browse", "not_applicable"),
+        # A match type this serializer does not know is never promoted to an
+        # exact one.
+        ("unrecognised_matcher", "possible_match"),
+    ],
+)
+def test_public_record_identity_names_the_match_and_is_never_verified(match_type, status):
+    """A partial hit is a candidate, not this property (AC11.04, F11.04).
+
+    The Houses workspace opens the top search result and shows its owner of
+    record beside a one-click "Link to client". A search for "Smith" can rank
+    "John Smithers" first on owner_partial, so the payload has to say what
+    matched. Nothing records a person confirming a parcel yet (T11.03), so
+    even an exact key match is reported as not verified.
+    """
+    record = mls_portal._public_record_json({
+        "id": "r1",
+        "parcel_id": "P-1",
+        "state": "DE",
+        "owner_name": "Example Owner LLC",
+        "match_type": match_type,
+        "match_score": 85,
+    })
+
+    assert record["identity"] == {
+        "status": status,
+        "basis": match_type,
+        "verified": False,
+    }
+
+
+def test_public_record_without_a_match_type_is_a_browse_row():
+    record = mls_portal._public_record_json({"id": "r1", "parcel_id": "P-1", "state": "DE"})
+
+    assert record["identity"] == {
+        "status": "not_applicable",
+        "basis": "browse",
+        "verified": False,
+    }
+
+
+def test_property_detail_payload_reports_an_opened_record_as_unverified(monkeypatch):
+    """The API contract AC11.04 names: the detail payload carries it too.
+
+    Fetching a record by its id compares nothing with what the user meant,
+    just as a browse row does. Calling it an exact identity would turn the top
+    hit of an owner_partial search into an "exact" record for any client that
+    reads it back through the detail endpoint.
+    """
+    ctx = TenantContext(
+        agent_id="operator",
+        tenant_id="00000000-0000-0000-0000-000000000000",
+        role=Role.PLATFORM_ADMIN,
+    )
+    record_id = "11111111-1111-1111-1111-111111111111"
+
+    class _Conn:
+        async def fetchrow(self, query, *args):
+            assert "'record_id' AS match_type" in query
+            assert "record_id_exact" not in query
+            return {
+                "id": record_id,
+                "parcel_id": "safe-parcel",
+                "state": "DE",
+                "source_key": "firehose:DE",
+                "owner_name": "Example Owner LLC",
+                "match_score": 0,
+                "match_type": "record_id",
+            }
+
+        async def fetch(self, query, *args):
+            return []
+
+    @asynccontextmanager
+    async def fake_tenant_tx(received_ctx):
+        assert received_ctx == ctx
+        yield _Conn()
+
+    monkeypatch.setattr(mls_portal, "tenant_tx", fake_tenant_tx)
+    detail = asyncio.run(mls_portal.mls_pipeline_listing(record_id=record_id, ctx=ctx))
+
+    assert detail["identity"] == {
+        "status": "not_applicable",
+        "basis": "record_id",
+        "verified": False,
+    }
+
+
+# ── A person's decision on the house (T11.03, 0168) ──────────────────────────
+#
+# `verified` is True only while the newest decision on (this lead, THIS record)
+# is a confirmation for the client the house is still linked to. It never
+# changes what the search matched: status and basis stay the search's claim.
+
+_RECORD_ID = "11111111-1111-1111-1111-111111111111"
+_OTHER_RECORD_ID = "99999999-9999-9999-9999-999999999999"
+_LEAD_ID = "22222222-2222-4222-8222-222222222222"
+_HEAD_ID = "33333333-3333-4333-8333-333333333333"
+_DECIDED_AT = "2026-10-17T16:00:00+00:00"
+
+
+def _link(*heads, linked=True) -> dict:
+    """What _lead_ids_for_records returns for the row's parcel."""
+    return {("P-1", "DE"): {
+        "lead_id": _LEAD_ID,
+        "linked": linked,
+        "heads_by_record": {h["record_id"]: h for h in heads},
+    }}
+
+
+def _head(decision="confirmed", *, same_client=True, record_id=_RECORD_ID) -> dict:
+    return {"id": _HEAD_ID, "record_id": record_id, "decision": decision,
+            "same_client": same_client, "decided_at": _DECIDED_AT}
+
+
+def _decided_record(lead_ids, match_type="address_exact", *, can_decide=True) -> dict:
+    return mls_portal._public_record_json(
+        {"id": _RECORD_ID, "parcel_id": "P-1", "state": "DE", "match_type": match_type},
+        lead_ids, can_decide=can_decide,
+    )
+
+
+def test_a_current_confirmation_verifies_this_record_and_keeps_the_search_claim():
+    identity = _decided_record(_link(_head("confirmed")))["identity"]
+
+    assert identity == {
+        "status": "exact_address",
+        "basis": "address_exact",
+        "verified": True,
+        "confirmation": {"state": "confirmed", "head_id": _HEAD_ID, "decided_at": _DECIDED_AT},
+        "confirmable": True,
+    }
+
+
+def test_a_confirmed_possible_match_is_never_promoted():
+    """The decision is about the house, not about what the user typed: an
+    owner_partial hit stays a possible match (the L11-13 precedent)."""
+    identity = _decided_record(_link(_head("confirmed")), "owner_partial")["identity"]
+
+    assert (identity["status"], identity["basis"]) == ("possible_match", "owner_partial")
+    assert identity["verified"] is True
+
+
+def test_a_decision_on_another_record_of_the_same_parcel_says_nothing_about_this_one():
+    identity = _decided_record(_link(_head("confirmed", record_id=_OTHER_RECORD_ID)))["identity"]
+
+    assert identity["verified"] is False
+    assert identity["confirmation"] == {"state": "none", "head_id": None, "decided_at": None}
+
+
+def test_a_confirmation_for_the_houses_previous_client_is_out_of_date():
+    identity = _decided_record(_link(_head("confirmed", same_client=False)))["identity"]
+
+    assert identity["verified"] is False
+    assert identity["confirmation"]["state"] == "out_of_date"
+    assert identity["confirmation"]["head_id"] == _HEAD_ID
+
+
+def test_a_rejection_reads_rejected_and_never_verified():
+    identity = _decided_record(_link(_head("rejected")))["identity"]
+
+    assert identity["verified"] is False
+    assert identity["confirmation"]["state"] == "rejected"
+
+
+def test_a_withdrawn_decision_is_undecided_and_keeps_its_head():
+    """The next decision supersedes the withdrawal, so its id stays visible."""
+    identity = _decided_record(_link(_head("withdrawn")))["identity"]
+
+    assert identity["verified"] is False
+    assert identity["confirmation"] == {"state": "none", "head_id": _HEAD_ID, "decided_at": _DECIDED_AT}
+
+
+@pytest.mark.parametrize(("linked", "can_decide", "confirmable"),
+                         [(True, True, True), (True, False, False), (False, True, False)])
+def test_only_a_linked_house_is_confirmable_and_only_by_a_decider(linked, can_decide, confirmable):
+    identity = _decided_record(_link(linked=linked), can_decide=can_decide)["identity"]
+
+    assert identity["confirmable"] is confirmable
+    assert identity["verified"] is False
+
+
+def test_a_row_with_no_lead_keeps_exactly_the_search_claim():
+    identity = _decided_record({}, "parcel_exact")["identity"]
+
+    assert identity == {"status": "exact_parcel", "basis": "parcel_exact", "verified": False}
+
+
+@pytest.mark.parametrize(("role", "confirmable"),
+                         [(Role.BROKER_OWNER, True), (Role.AGENT, False), (Role.PLATFORM_ADMIN, False)])
+def test_the_detail_route_reads_the_decision_through_the_lead_lookup(monkeypatch, role, confirmable):
+    """The Houses detail card, end to end: the one lead query carries the
+    head decisions (jsonb, as asyncpg returns it without a codec). A platform
+    admin is not offered the form: their lead lookup spans every tenant, so
+    the card's lead is not one they chose."""
+    import json
+
+    ctx = TenantContext(agent_id="owner", tenant_id="00000000-0000-0000-0000-000000000000", role=role)
+    lead_queries = []
+
+    class _Conn:
+        async def fetchrow(self, query, *args):
+            return {"id": _RECORD_ID, "parcel_id": "P-1", "state": "DE", "source_key": "firehose:DE",
+                    "match_score": 0, "match_type": "record_id"}
+
+        async def fetch(self, query, *args):
+            lead_queries.append(query)
+            return [{"parcel_id": "P-1", "state": "DE", "id": _LEAD_ID, "linked": True,
+                     "heads": json.dumps([_head("confirmed")])}]
+
+    @asynccontextmanager
+    async def fake_tenant_tx(received_ctx):
+        yield _Conn()
+
+    monkeypatch.setattr(mls_portal, "tenant_tx", fake_tenant_tx)
+    detail = asyncio.run(mls_portal.mls_pipeline_listing(record_id=_RECORD_ID, ctx=ctx))
+
+    assert len(lead_queries) == 1
+    assert detail["lead_id"] == _LEAD_ID
+    assert detail["identity"]["status"] == "not_applicable"
+    assert detail["identity"]["verified"] is True
+    assert detail["identity"]["confirmable"] is confirmable
+
+
+class _FakeMatchConnection:
+    """Returns one catalog row labelled the way the search SQL labelled it.
+
+    The SQL's exact branches compare compacted text, so the label is set here
+    by hand; what is under test is what the payload then claims about it.
+    """
+
+    def __init__(self, row: dict, *more: dict) -> None:
+        self._row = row
+        self._more = more
+        self.count_query = ""
+        self.count_args: tuple = ()
+        self.data_query = ""
+        self.data_args: tuple = ()
+
+    async def fetchrow(self, query: str, *args):
+        self.count_query = query
+        self.count_args = args
+        return {"n": 1}
+
+    async def fetch(self, query: str, *args):
+        if " FROM leads\n" in query:
+            return []
+        self.data_query = query
+        self.data_args = args
+        return [dict(self._row), *(dict(r) for r in self._more)]
+
+
+def _match_row(**fields) -> dict:
+    row = {
+        "id": "11111111-1111-1111-1111-111111111111",
+        "parcel_id": "safe-parcel",
+        "state": "DE",
+        "source_key": "firehose:DE",
+        "owner_name": "Example Owner LLC",
+        "address": "",
+        "match_score": 98,
+    }
+    row.update(fields)
+    return row
+
+
+def _search_ctx() -> TenantContext:
+    return TenantContext(
+        agent_id="operator",
+        tenant_id="00000000-0000-0000-0000-000000000000",
+        role=Role.PLATFORM_ADMIN,
+    )
+
+
+@pytest.mark.parametrize(
+    ("query", "field", "value", "sql_match_type", "status", "basis"),
+    [
+        # Removing every space and slash makes a different house equal the
+        # query: 15 1/2 Main St and 1512 Main St are two parcels.
+        ("1512 Main St", "address", "15 1/2 MAIN ST", "address_exact", "possible_match", "address_compact"),
+        ("22 2nd St", "address", "2 22ND ST", "address_exact", "possible_match", "address_compact"),
+        ("12 1st St", "address", "1 21ST ST", "address_exact", "possible_match", "address_compact"),
+        # Unit numbers are kept, so a unit split differently is not the one asked for.
+        ("10 Elm St Apt 12", "address", "10 ELM ST APT 1-2", "address_exact", "possible_match", "address_compact"),
+        # Case and punctuation runs still do not matter when the tokens agree.
+        ("1512 Main St.", "address", "1512 MAIN ST", "address_exact", "exact_address", "address_exact"),
+        ("10 Elm St, Apt 12", "address", "10 ELM ST APT 12", "address_exact", "exact_address", "address_exact"),
+        ("10 Elm St #12", "address", "10 ELM ST 12", "address_exact", "exact_address", "address_exact"),
+        # Parcel numbers: the same digits split differently are another parcel.
+        ("12-345", "parcel_id", "123-45", "parcel_exact", "possible_match", "parcel_compact"),
+        ("12-345", "parcel_id", "12-345", "parcel_exact", "exact_parcel", "parcel_exact"),
+        ("12 345", "parcel_id", "12-345", "parcel_exact", "exact_parcel", "parcel_exact"),
+        # A PIN printed with dashes and stored as bare digits (or the reverse)
+        # has no boundaries to compare on one side: the digits decide.
+        ("19-14-209-013-0000", "parcel_id", "19142090130000", "parcel_exact", "exact_parcel", "parcel_exact"),
+        ("19142090130000", "parcel_id", "19-14-209-013-0000", "parcel_exact", "exact_parcel", "parcel_exact"),
+        # A street name in another script is a word too; the SQL's compaction
+        # drops it, the check does not.
+        ("5 大街", "address", "5", "address_exact", "possible_match", "address_compact"),
+        ("Calle Ñ 5", "address", "CALLE 5", "address_exact", "possible_match", "address_compact"),
+        ("Calle Ñ 5", "address", "CALLE Ñ 5", "address_exact", "exact_address", "address_exact"),
+    ],
+)
+def test_exact_match_requires_the_same_token_boundaries(
+    monkeypatch, query, field, value, sql_match_type, status, basis,
+):
+    """An exact address or parcel claim needs the words to line up (AC11.04).
+
+    HouseSelection opens the top hit. If "15 1/2 MAIN ST" is reported as an
+    exact address for "1512 Main St", the workspace shows another parcel's
+    owner as an address match, without the possible-match warning, beside a
+    one-click "Link to client".
+    """
+    conn = _FakeMatchConnection(_match_row(**{field: value, "match_type": sql_match_type}))
+
+    result = _run_search_with_conn(monkeypatch, _search_ctx(), conn, q=query)
+
+    listing = result["listings"][0]
+    assert listing["identity"] == {"status": status, "basis": basis, "verified": False}
+    assert listing["match_type"] == basis
+
+
+@pytest.mark.parametrize("query", ["#", "-", " / ", "ñ", "大街"])
+def test_query_with_no_letters_or_digits_never_matches_exactly(monkeypatch, query):
+    """An empty compact query equals every blank address and parcel.
+
+    The search must not add the exact branches for it at all; otherwise every
+    record without an address ranks 98 as an "Address match" above every real
+    partial hit.
+    """
+    # What the old SQL returned for such a query: a record with no address,
+    # labelled address_exact.
+    conn = _FakeMatchConnection(_match_row(address=None, match_type="address_exact"))
+
+    result = _run_search_with_conn(monkeypatch, _search_ctx(), conn, q=query)
+
+    assert "" not in conn.count_args
+    assert "" not in conn.data_args
+    assert "regexp_replace(lower(COALESCE(address" not in conn.count_query
+    assert "'address_exact'" not in conn.data_query
+    assert "'parcel_exact'" not in conn.data_query
+    assert result["listings"][0]["identity"]["status"] == "possible_match"
+
+
+def test_record_with_a_blank_address_is_never_an_exact_address(monkeypatch):
+    conn = _FakeMatchConnection(_match_row(address="  ", match_type="address_exact"))
+
+    result = _run_search_with_conn(monkeypatch, _search_ctx(), conn, q="15 Main St")
+
+    assert result["listings"][0]["identity"]["status"] == "possible_match"
+
+
+def test_unseparated_digits_split_two_ways_in_the_results_are_both_possible(monkeypatch):
+    """'12345' typed bare matches parcel 12-345 and parcel 123-45: the digits
+    alone cannot say which, so neither is an exact parcel (L11-07)."""
+    conn = _FakeMatchConnection(
+        _match_row(parcel_id="12-345", match_type="parcel_exact", match_score=100),
+        _match_row(id="22222222-2222-2222-2222-222222222222", parcel_id="123-45",
+                   match_type="parcel_exact", match_score=100),
+    )
+    result = _run_search_with_conn(monkeypatch, _search_ctx(), conn, q="12345")
+    assert [l["identity"]["status"] for l in result["listings"]] == ["possible_match", "possible_match"]

@@ -40,11 +40,13 @@ Counts are from the dev database. They show shape, not production volume.
 
 **Contact PII**:
 - `clients` holds name, email, phone and notes **in plaintext**. Its `encrypted_contact` column exists but is unused.
+- `client_contact_index` (0156) holds, per client, HMAC-SHA-256 lookup hashes of the normalised email and phone and keyed word-prefix name tokens, under the tenant key (the `agent_contacts` scheme). No plaintext; not reversible without the master key. Filled by `client_contact_index.py` (periodic, internal-only); goes with its client. Nothing searches it yet (L17-23).
 - `agent_contacts` keeps PII encrypted with pgcrypto under a per-tenant key, with HMAC lookup hashes. `assigned_user_id` (0134) is the canonical assignee (a `users.id`, no PII); who may read a contact follows it, the brokerage pool and `record_shares` rows of kind `contact` (D-2026-10-13-01).
 - `leads` has 10.4M rows in dev. `payload` holds owner names **in plaintext**, and `encrypted_payload` is unused.
 - Also in this category: `transaction_parties` (encrypted), `contact_property_relationships`, `buyer_profiles` and `lead_intake_events` (encrypted payload).
 
 **Business CRM**: notes (`client_notes.body` is communication content — AI call notes are what a customer said on a call; since 0132 every app write seals it in `body_ciphertext` under the tenant key, and pre-0132 rows stay plaintext until `backend/backfill_client_notes.py` runs), tasks, activities, tags, segments, showings, listings, transactions, offers, milestones, checklists, buyer requests, marketplace, smart plans (revisions immutable), missions, hyperlocal sites, studio campaigns.
+- `property_match_decisions` (0168, T11.03): the append-only record of a broker owner confirming, rejecting or withdrawing that a public property record is a linked client's house — ids, the decision, evidence kinds and timestamps. The decider's reason may name an owner, so it is stored only sealed in `reason_ciphertext` under the key of the lead's own tenant; there is no plaintext column for it and no fingerprint of the record's address or owner. `decided_by` is the decider's login (an email), stamped by trigger from the session. The reason never enters audit metadata; the brokerage export decrypts it, and the rows go with their lead, client or tenant.
 
 **Communication content**:
 - `sms_messages`: numbers **in plaintext**. Since 0152 (L17-21) every app write seals the body in `body_ciphertext` under the tenant key and leaves `body` NULL; pre-0152 bodies stay plaintext until `backend/backfill_sealed_text.py` runs.
@@ -75,6 +77,9 @@ Counts are from the dev database. They show shape, not production volume.
 - `beliefs.source_quote` (sealed in `source_quote_ciphertext` for every app write since 0154; pre-0154 quotes plaintext until the backfill), `client_ai_state` (summaries), `agent_decisions`, `ai_decision_traces`.
 - `style_training_examples`: redacted.
 - Model registry, training runs and evaluations.
+
+**Derived intelligence** (property signals, scores, zoning and title analyses):
+- `title_findings`: `notes` is the agent's working note **in plaintext** (often a third party's court record) and never reaches the client portal. The reviewer's reason for confirming or dismissing a finding (T11.03) may name an owner, so it is stored only sealed in `review_reason_ciphertext` under the key of the finding's own tenant (0167); there is no plaintext column for it. `reviewed_by` is the reviewer's email. The reason never enters audit metadata; the brokerage export decrypts it, and erasure deletes it with the row.
 
 **Documents and media**:
 - Contracts, drafts and synthesis artifacts (encrypted content plus a vault object).
@@ -142,7 +147,7 @@ Spaces versioning is off, so a deleted object is gone.
 
 | Gap | Risk | Status |
 |---|---|---|
-| `clients` name/email/phone and `leads.payload` plaintext | DB read access exposes contacts | open — designed in L17-21 (blind index for clients; batched backfill plan for leads), not built |
+| `clients` name/email/phone and `leads.payload` plaintext | DB read access exposes contacts | open — designed in L17-21; clients slice (a) built in L17-23 (0156: hashes and tokens kept current, not yet searched); plaintext not yet sealed; leads not started |
 | `sms_messages.body`, `negotiation_events.transcript_excerpt`, `user_interactions.content` plaintext | DB read access exposes what people wrote and said | new writes sealed since 0152 (L17-21, local); old rows plaintext until `backfill_sealed_text.py` runs in each environment; refusing plaintext is a later contract migration |
 | `email_outbox` subject/body, `interaction_logs` subject/text, `ai_tool_operations.result`, `beliefs.source_quote`, `user_profiles.profile_summary` plaintext | DB read access exposes what people wrote, what the AI returned and what it remembers | new writes sealed since 0154 (L17-22, local); old rows plaintext until `backfill_sealed_text.py` / `sealed_text_seal` runs in each environment; refusing plaintext is a later contract migration |
 | `client_notes.body` (AI call notes) plaintext | DB read access exposes what customers said | new writes sealed since 0132 (L17-03); old rows plaintext until `backfill_client_notes.py` runs in each environment |

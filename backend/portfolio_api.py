@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
+import re
 from datetime import date, datetime, timezone
 from decimal import Decimal
 from typing import Any, Literal, Optional
@@ -18,6 +20,24 @@ from billing_usage import record_usage
 from db.connection import tenant_tx
 from tenancy import TenantContext, require_context
 from mls_health import visible_feed_predicate
+
+_PATH_ID_RE = re.compile(
+    r"(?<=/)(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|\d+)(?=/|$)", re.IGNORECASE,
+)
+
+
+def _pulse_action(action: Any) -> Any:
+    """A logged request ("POST /api/crm/houses/<id>/record-match") without
+    the ids in its path; a named action is returned as it is."""
+    return _PATH_ID_RE.sub(":id", action) if isinstance(action, str) else action
+
+
+def _pulse_entry(row: Any) -> dict[str, Any]:
+    """Built key by key, so no other ledger column can ride along."""
+    entry = _row({key: row[key] for key in ("event_id", "category", "action", "created_at")})
+    entry["action"] = _pulse_action(entry["action"])
+    return entry
+
 
 router = APIRouter(prefix="/api/portfolio", tags=["portfolio"])
 logger = logging.getLogger("oracle.portfolio")
@@ -117,7 +137,16 @@ async def _property_anchor(
     Pipeline lookup is both RLS-bound and explicitly tenant-filtered. Normalized
     MLS rows are shared reference data, so they have no tenant predicate. This
     function intentionally never consults showings or client history.
+
+    A new deal on an MLS listing is refused while legacy MLS is switched off
+    (owner decision D-2026-10-12-01, mls_switch; L13-02): the same 404 every
+    MLS route gives. Existing MLS-sourced deals stay readable — nothing is
+    deleted.
     """
+    if property_source == "mls":
+        from mls_switch import require_mls_enabled
+
+        await require_mls_enabled()
     if property_source == "pipeline":
         row = await conn.fetchrow(
             """
@@ -630,7 +659,8 @@ async def portfolio_summary(ctx: TenantContext = Depends(require_context)):
             )
             title_risks = await conn.fetch(
                 """
-                SELECT property_key,finding_type,review_status
+                SELECT id,property_key,finding_type,review_status,match_status,
+                       record_id,amount,recorded_at,released_at
                   FROM title_findings
                  WHERE tenant_id=$1::uuid
                    AND review_status='required'
@@ -664,9 +694,13 @@ async def portfolio_summary(ctx: TenantContext = Depends(require_context)):
                 """,
                 ctx.tenant_id,
             )
+            # Every agent of the tenant reads this pulse, including agents
+            # 0143 walls off from a record: only what the page shows leaves —
+            # never the ledger's metadata (request paths, client IPs, record
+            # ids) or target ids, and ids inside a logged path are masked.
             activity_rows = await conn.fetch(
                 """
-                SELECT event_id,category,action,target_id,metadata,created_at
+                SELECT event_id,category,action,created_at
                   FROM audit_ledger
                  WHERE tenant_id=$1::uuid
                  ORDER BY created_at DESC
@@ -706,6 +740,17 @@ async def portfolio_summary(ctx: TenantContext = Depends(require_context)):
             "property_key": item["property_key"],
             "label": item["finding_type"],
             "review_status": item["review_status"],
+            # What a broker owner confirms or dismisses (POST
+            # /api/intelligence/title/findings/{id}/review, T11.03), and the
+            # evidence they decide on: the submitter's match claim (confirming
+            # a possible match leaves the homeowner's "Possible match" label)
+            # and the record. No notes: they are free text.
+            "finding_id": str(item["id"]),
+            "match_status": item["match_status"],
+            "record_id": item["record_id"],
+            "amount": float(item["amount"]) if item["amount"] is not None else None,
+            "recorded_at": item["recorded_at"].isoformat() if item["recorded_at"] else None,
+            "released_at": item["released_at"].isoformat() if item["released_at"] else None,
         }
         for item in title_risks
     ]
@@ -769,10 +814,57 @@ async def portfolio_summary(ctx: TenantContext = Depends(require_context)):
             },
         },
         "intelligence_flags": title_flags + zoning_flags + pre_distress_flags,
-        "activity_pulse": [_row(row) for row in activity_rows],
+        "activity_pulse": [_pulse_entry(row) for row in activity_rows],
         "active_contract_records": [],
         "milestones": [],
     }
+
+
+#: One page of deal ids, newest first (T16.05, L16-04). Ids first, then the
+#: per-row summary for that page only: the joins to clients and offers run for
+#: at most `limit` rows, never for every deal the filter matches. The keyset
+#: (updated_at, id) walks idx_transactions_page (0162); RLS applies inside, so
+#: a page holds only deals the caller may read, and paging never skips or
+#: repeats a deal when rows are added in between, as OFFSET did.
+_TRANSACTION_PAGE_SQL = """
+    SELECT t.id, t.updated_at
+      FROM transactions t
+     WHERE t.tenant_id=$1::uuid
+       AND ($2::text IS NULL OR t.status=$2)
+       AND ($3::text IS NULL OR t.property_source=$3)
+       AND ($4::uuid IS NULL OR t.client_id=$4::uuid)
+       AND ($6::timestamptz IS NULL OR (t.updated_at, t.id) < ($6::timestamptz, $7::uuid))
+     ORDER BY t.updated_at DESC, t.id DESC
+     LIMIT $5 OFFSET $8
+"""
+
+_TRANSACTION_ROWS_SQL = """
+    SELECT t.*,c.full_name AS client_name,
+           ao.amount AS accepted_offer_amount
+      FROM transactions t
+      LEFT JOIN clients c
+        ON c.tenant_id=t.tenant_id AND c.id=t.client_id
+      LEFT JOIN transaction_offers ao
+        ON ao.tenant_id=t.tenant_id AND ao.id=t.accepted_offer_id
+     WHERE t.id = ANY($1::uuid[])
+"""
+
+
+def _page_cursor(updated_at: datetime, row_id: Any) -> str:
+    raw = json.dumps([updated_at.isoformat(), str(row_id)]).encode()
+    return base64.urlsafe_b64encode(raw).decode().rstrip("=")
+
+
+def _read_page_cursor(cursor: str) -> tuple[datetime, UUID]:
+    try:
+        padded = cursor + "=" * (-len(cursor) % 4)
+        stamp, row_id = json.loads(base64.urlsafe_b64decode(padded.encode()))
+        parsed = datetime.fromisoformat(stamp)
+        if parsed.tzinfo is None:
+            raise ValueError("naive timestamp")
+        return parsed, UUID(row_id)
+    except Exception:  # noqa: BLE001 — any malformed cursor is the caller's error
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Invalid page cursor.") from None
 
 
 @router.get("/transactions")
@@ -788,9 +880,19 @@ async def list_transactions(
     client_id: Optional[UUID] = None,
     limit: int = Query(default=100, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
+    after: Optional[str] = Query(default=None, max_length=200,
+                                 description="next_cursor from the previous page"),
     ctx: TenantContext = Depends(require_context),
 ):
-    """List only the current tenant's transactions, including for admins."""
+    """List only the current tenant's transactions, including for admins.
+
+    Page with `after` (the previous page's `next_cursor`); `offset` still
+    works for older clients but is not combined with a cursor."""
+    if not isinstance(after, str):  # called directly, the Query() default arrives as is
+        after = None
+    after_stamp, after_id = _read_page_cursor(after) if after else (None, None)
+    if after and offset:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Use either after or offset, not both.")
     async with tenant_tx(ctx) as conn:
         total = await conn.fetchval(
             """
@@ -805,34 +907,23 @@ async def list_transactions(
             property_source,
             client_id,
         )
-        rows = await conn.fetch(
-            """
-            SELECT t.*,c.full_name AS client_name,
-                   ao.amount AS accepted_offer_amount
-              FROM transactions t
-              LEFT JOIN clients c
-                ON c.tenant_id=t.tenant_id AND c.id=t.client_id
-              LEFT JOIN transaction_offers ao
-                ON ao.tenant_id=t.tenant_id AND ao.id=t.accepted_offer_id
-             WHERE t.tenant_id=$1::uuid
-               AND ($2::text IS NULL OR t.status=$2)
-               AND ($3::text IS NULL OR t.property_source=$3)
-               AND ($4::uuid IS NULL OR t.client_id=$4::uuid)
-             ORDER BY t.updated_at DESC,t.id
-             LIMIT $5 OFFSET $6
-            """,
-            ctx.tenant_id,
-            transaction_status,
-            property_source,
-            client_id,
-            limit,
-            offset,
+        page = await conn.fetch(
+            _TRANSACTION_PAGE_SQL,
+            ctx.tenant_id, transaction_status, property_source, client_id,
+            limit + 1, after_stamp, after_id, offset,
         )
+        more = len(page) > limit
+        page = page[:limit]
+        ids = [r["id"] for r in page]
+        rows = await conn.fetch(_TRANSACTION_ROWS_SQL, ids) if ids else []
+    by_id = {r["id"]: r for r in rows}
+    ordered = [by_id[i] for i in ids if i in by_id]
     return {
-        "transactions": [_row(row) for row in rows],
+        "transactions": [_row(row) for row in ordered],
         "total": int(total or 0),
         "limit": limit,
         "offset": offset,
+        "next_cursor": _page_cursor(page[-1]["updated_at"], page[-1]["id"]) if more and page else None,
     }
 
 
@@ -1150,6 +1241,31 @@ async def lose_transaction(
 def lose_transition_allowed(current_status: Optional[str]) -> bool:
     """Whether a deal in this state can be recorded as lost."""
     return current_status in LOSABLE_STATES
+
+
+@router.get("/transactions/{transaction_id}/events")
+async def list_transaction_events(
+    transaction_id: UUID,
+    ctx: TenantContext = Depends(require_context),
+):
+    """The deal's status trail, oldest first (0163, T13.02, L13-03). Written
+    by the database on every status change; rows marked `backfill` state the
+    status a deal had when the trail began, not a reconstructed history."""
+    async with tenant_tx(ctx) as conn:
+        deal = await conn.fetchval(
+            "SELECT 1 FROM transactions WHERE id=$1 AND tenant_id=$2::uuid", transaction_id, ctx.tenant_id)
+        if not deal:
+            raise HTTPException(status_code=404, detail="Transaction not found.")
+        rows = await conn.fetch(
+            """
+            SELECT id, from_status, to_status, deal_version, actor, source, occurred_at
+              FROM transaction_status_events
+             WHERE transaction_id=$1
+             ORDER BY occurred_at, deal_version
+            """,
+            transaction_id,
+        )
+    return {"events": [_row(r) for r in rows]}
 
 
 @router.get("/transactions/{transaction_id}/offers")

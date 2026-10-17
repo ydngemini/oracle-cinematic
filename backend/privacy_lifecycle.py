@@ -132,12 +132,19 @@ _PENDING: tuple[_Pending, ...] = (
              "consumed_at=now()", "consumed_at=now()"),
     _Pending("contact_nurture_jobs", None, "state='scheduled'",
              "", "state='cancelled', last_error_code='account_closed', updated_at=now()"),
-    _Pending("video_studio_jobs", None, "status='queued'",
-             "", "status='cancelled', error=left($2,500), updated_at=now()"),
-    _Pending("voice_walkthrough_jobs", None, "status='queued'",
-             "", "status='failed', audio=NULL, error=left($2,500), updated_at=now()"),
-    _Pending("reconstruction_jobs", None, "status='queued'",
-             "", "status='failed', error=left($2,500), updated_at=now()"),
+    # A suspended agent's queued GPU reconstruction, voice walkthrough or
+    # studio video is spend on their behalf: cancelled with them, not only at
+    # tenant closure (T03.16, L03-11, L03-13). Videos created before 0166
+    # have no requester and are cancelled only when the brokerage closes.
+    _Pending("video_studio_jobs", "created_by", "status='queued'",
+             "status='cancelled', error=left($2,500), updated_at=now()",
+             "status='cancelled', error=left($2,500), updated_at=now()"),
+    _Pending("voice_walkthrough_jobs", "created_by", "status='queued'",
+             "status='failed', audio=NULL, error=left($2,500), updated_at=now()",
+             "status='failed', audio=NULL, error=left($2,500), updated_at=now()"),
+    _Pending("reconstruction_jobs", "created_by", "status='queued'",
+             "status='failed', error=left($2,500), updated_at=now()",
+             "status='failed', error=left($2,500), updated_at=now()"),
 )
 
 

@@ -440,10 +440,32 @@ async def list_messages(
                 "model_id": row["model_id"],
                 "error_code": row["error_code"],
                 "actions": actions_by_message.get(str(row["id"]), []),
+                "choices": await _message_choices(conn, ctx, row),
                 "created_at": row["created_at"].isoformat(),
                 "updated_at": row["updated_at"].isoformat(),
             })
     return result
+
+
+async def _message_choices(conn, ctx: TenantContext, row) -> list[dict]:
+    """The records a turn's question offered (L05-09), labelled now, as the
+    caller: a record they can no longer open is simply not offered again."""
+    metadata = _json(row["metadata"], {}) if "metadata" in row.keys() else {}
+    refs = metadata.get("choices") if isinstance(metadata, dict) else None
+    out: list[dict] = []
+    for ref in refs or []:
+        if not isinstance(ref, dict) or not ref.get("type") or not ref.get("id"):
+            continue
+        try:
+            record = await resolve_record(conn, ctx, str(ref["type"]), str(ref["id"]))
+        except Exception:  # noqa: BLE001 — not visible any more: not offered
+            continue
+        if record.get("label"):
+            from semantic_turn import record_detail
+
+            out.append({"type": str(ref["type"]), "id": str(ref["id"]), "label": str(record["label"]),
+                        "detail": record_detail(record)})
+    return out
 
 
 async def save_attachment(
@@ -578,16 +600,23 @@ async def load_response_bundle(ctx: TenantContext, assistant_id: str) -> dict:
 async def update_assistant(
     ctx: TenantContext, assistant_id: str, *, content: str, status_value: str,
     model_id: Optional[str] = None, error_code: Optional[str] = None,
+    choices: Optional[list[dict]] = None,
 ) -> None:
+    """`choices` (L05-09) are the records the turn's question offered, as
+    {type, id} only: metadata is plaintext, so no label is ever written there;
+    list_messages re-reads the labels as the caller."""
     key = tenant_key(ctx)
     content = pan_redaction.scrub(content, "ai_chat_assistant_message",
                                   tenant_id=ctx.tenant_id, target_id=assistant_id)
+    refs = json.dumps([{"type": str(c["type"]), "id": str(c["id"])} for c in choices]) if choices else None
     async with tenant_tx(ctx) as conn:
         ciphertext = await _encrypt_text(conn, content, key)
         await conn.execute(
-            """UPDATE ai_chat_messages SET content_ciphertext=$1,status=$2,model_id=$3,error_code=$4
+            """UPDATE ai_chat_messages SET content_ciphertext=$1,status=$2,model_id=$3,error_code=$4,
+                       metadata = CASE WHEN $8::jsonb IS NULL THEN metadata
+                                       ELSE metadata || jsonb_build_object('choices', $8::jsonb) END
                 WHERE id=$5::uuid AND tenant_id=$6::uuid AND user_id=$7""",
-            ciphertext, status_value, model_id, error_code, assistant_id, ctx.tenant_id, ctx.agent_id,
+            ciphertext, status_value, model_id, error_code, assistant_id, ctx.tenant_id, ctx.agent_id, refs,
         )
 
 
@@ -652,6 +681,24 @@ _AGENT_AVAILABLE_TOOLS = frozenset({
     "schedule_event",
     "publish_to_marketplace",
 } | _READ_TOOL_NAMES)
+
+
+#: Effectful tools that act without a selected record (they create one, or
+#: refuse/stage without touching an existing one). Every other non-read tool
+#: needs the record it changes to be the one the agent has open.
+CONTEXT_FREE_TOOLS: frozenset[str] = frozenset({
+    "codebase_summary",
+    "web_search",
+    "create_client",
+    "generate_contract",
+    "generate_assignment_agreement",
+    "publish_to_marketplace",
+})
+
+
+def needs_selected_record(tool_name: str) -> bool:
+    """Whether a tool may only act on the record the agent has open."""
+    return tool_name not in _READ_ONLY_TOOLS and tool_name not in CONTEXT_FREE_TOOLS
 
 
 def is_agent_tool_available(tool_name: str) -> bool:
@@ -1268,17 +1315,7 @@ async def _execute_safe_tool(
     tool_input: dict, context_type: Optional[str], context_id: Optional[str],
     call_index: Optional[int] = None,
 ) -> dict:
-    needs_context = (
-        tool_name not in _READ_ONLY_TOOLS
-        and tool_name not in (
-            "codebase_summary",
-            "web_search",
-            "create_client",
-            "generate_contract",
-            "generate_assignment_agreement",
-            "publish_to_marketplace",
-        )
-    )
+    needs_context = needs_selected_record(tool_name)
     if needs_context and (not context_type or not context_id):
         return {"ok": False, "error": "Select the record you want me to update first."}
     key = tenant_key(ctx)
@@ -1861,10 +1898,14 @@ async def execute_safe_tool(
     # The offered list is the authorization boundary for the model, not a hint:
     # a name the model was never shown for this context (it can still emit
     # one) used to dispatch anyway (review AI-5).
-    from ai_chat_agent import offered_tool_names
+    # What this actor was offered for this turn, with the reason for anything
+    # withheld — the role-limited reads, a channel the brokerage has not set up
+    # (tool_offer, T07.04, L07-03) — answered the way the prompt named it.
+    import tool_offer
 
-    if tool_name not in offered_tool_names(context_type):
-        return {"ok": False, "error": f"{tool_name} is not available for this conversation."}
+    refused = tool_offer.current(ctx, message_id, context_type).refusal(tool_name)
+    if refused:
+        return {"ok": False, "error": refused}
     ledgered = call_index is not None and tool_name not in _READ_ONLY_TOOLS
     arguments_hash = (
         _canonical_arguments_hash(tool_name, tool_input) if ledgered else ""
@@ -1885,13 +1926,17 @@ async def execute_safe_tool(
     import semantic_turn
 
     stated = semantic_turn.constraints_for(message_id)
-    if stated:
+    pending = semantic_turn.pending_for(message_id)
+    if stated or pending is not None:
+        targets = frame_constraints.tool_targets(tool_input, context_type, context_id)
+        lang = semantic_turn.language_for(message_id)
         refusal = frame_constraints.check_tool(
-            stated, tool_name,
-            targets=frame_constraints.tool_targets(tool_input, context_type, context_id),
-            now=datetime.now(timezone.utc),
-            lang=semantic_turn.language_for(message_id),
-        )
+            stated, tool_name, targets=targets, now=datetime.now(timezone.utc), lang=lang,
+        ) if stated else None
+        if refusal is None and pending is not None:
+            # The turn is still asking which record the person meant (T05.10):
+            # every action waits for the answer (L05-11: fail closed).
+            refusal = frame_constraints.check_pending(pending, tool_name, lang=lang)
         if refusal is not None:
             # The tool name and code only: the arguments can name a customer.
             logger.info("Tool %s refused by a stated constraint (%s)", tool_name, refusal.code)

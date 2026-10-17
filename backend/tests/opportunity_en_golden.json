@@ -1,0 +1,446 @@
+{
+ "_contract_deadline_opportunities": [
+  {
+   "action_type": "review",
+   "confidence": 0.95,
+   "deadline": "2026-10-16T15:00:00+00:00",
+   "evidence": [
+    {
+     "as_of": null,
+     "label": "Contract expiry",
+     "source": "leads.contract_expires_at",
+     "value": "2026-10-16"
+    }
+   ],
+   "headline": "Contract expires in 1 day",
+   "kind": "contract_deadline",
+   "recommended_action": "Confirm the closing timeline with all parties today.",
+   "safe_to_automate": false,
+   "score": 0.95,
+   "subject": "Sarah Johnson",
+   "subject_id": "c-1",
+   "subject_type": "client",
+   "value_signal": null,
+   "why": "12 Oak St has a contract expiring 2026-10-16 and its status is under_contract."
+  },
+  {
+   "action_type": "review",
+   "confidence": 0.8,
+   "deadline": "2026-10-25T15:00:00+00:00",
+   "evidence": [
+    {
+     "as_of": null,
+     "label": "Contract expiry",
+     "source": "leads.contract_expires_at",
+     "value": "2026-10-25"
+    }
+   ],
+   "headline": "Contract expires in 10 days",
+   "kind": "contract_deadline",
+   "recommended_action": "Confirm the closing timeline with all parties today.",
+   "safe_to_automate": false,
+   "score": 0.8,
+   "subject": "40 Elm Ave",
+   "subject_id": "l-2",
+   "subject_type": "lead",
+   "value_signal": null,
+   "why": "40 Elm Ave has a contract expiring 2026-10-25 and its status is unset."
+  },
+  {
+   "action_type": "review",
+   "confidence": 0.95,
+   "deadline": "2026-10-15T15:00:00+00:00",
+   "evidence": [
+    {
+     "as_of": null,
+     "label": "Contract expiry",
+     "source": "leads.contract_expires_at",
+     "value": "2026-10-15"
+    }
+   ],
+   "headline": "Contract expires in 0 days",
+   "kind": "contract_deadline",
+   "recommended_action": "Confirm the closing timeline with all parties today.",
+   "safe_to_automate": false,
+   "score": 0.95,
+   "subject": "Unnamed record",
+   "subject_id": "l-3",
+   "subject_type": "lead",
+   "value_signal": null,
+   "why": "This property has a contract expiring 2026-10-15 and its status is draft."
+  }
+ ],
+ "_distress_opportunities": [
+  {
+   "action_type": "call",
+   "confidence": 0.75,
+   "deadline": null,
+   "evidence": [
+    {
+     "as_of": null,
+     "label": "Motivation score",
+     "source": "leads.motivation_score",
+     "value": "91"
+    },
+    {
+     "as_of": null,
+     "label": "Last updated",
+     "source": "leads.updated_at",
+     "value": "2026-09-15"
+    }
+   ],
+   "headline": "Motivation score 91 — untouched",
+   "kind": "distress_signal",
+   "recommended_action": "Review the dossier and decide whether to source it.",
+   "safe_to_automate": false,
+   "score": 0.75,
+   "subject": "5 Pine St, NJ",
+   "subject_id": "l-9",
+   "subject_type": "lead",
+   "value_signal": null,
+   "why": "This record scores 91/100 on the public-record motivation model and is still marked 'draft'. Nobody has worked it."
+  },
+  {
+   "action_type": "call",
+   "confidence": 0.75,
+   "deadline": null,
+   "evidence": [
+    {
+     "as_of": null,
+     "label": "Motivation score",
+     "source": "leads.motivation_score",
+     "value": "84"
+    },
+    {
+     "as_of": null,
+     "label": "Last updated",
+     "source": "leads.updated_at",
+     "value": "unknown"
+    }
+   ],
+   "headline": "Motivation score 84 — untouched",
+   "kind": "distress_signal",
+   "recommended_action": "Review the dossier and decide whether to source it.",
+   "safe_to_automate": false,
+   "score": 0.75,
+   "subject": "77 Bay Rd, MD",
+   "subject_id": "l-8",
+   "subject_type": "lead",
+   "value_signal": null,
+   "why": "This record scores 84/100 on the public-record motivation model and is still marked 'new'. Nobody has worked it."
+  }
+ ],
+ "_intent_model_opportunities": [
+  {
+   "action_type": "call",
+   "confidence": 0.7,
+   "deadline": null,
+   "evidence": [
+    {
+     "as_of": null,
+     "label": "Lead score",
+     "source": "clients.lead_score",
+     "value": "72"
+    },
+    {
+     "as_of": null,
+     "label": "Not known",
+     "source": "client_ai_state.data_gaps",
+     "value": "No verified contact method"
+    },
+    {
+     "as_of": null,
+     "label": "Not known",
+     "source": "client_ai_state.data_gaps",
+     "value": "Lead source not recorded"
+    }
+   ],
+   "headline": "Verify contact information",
+   "kind": "next_best_action",
+   "recommended_action": "Verify contact information",
+   "safe_to_automate": false,
+   "score": 0.7,
+   "subject": "Sarah Johnson",
+   "subject_id": "c-1",
+   "subject_type": "client",
+   "value_signal": null,
+   "why": "The maintained intent model for this client recommends this as the next step."
+  },
+  {
+   "action_type": "call",
+   "confidence": 0.6,
+   "deadline": null,
+   "evidence": [
+    {
+     "as_of": null,
+     "label": "Lead score",
+     "source": "clients.lead_score",
+     "value": "unscored"
+    },
+    {
+     "as_of": null,
+     "label": "Not known",
+     "source": "client_ai_state.data_gaps",
+     "value": "No verified seller property"
+    },
+    {
+     "as_of": null,
+     "label": "Not known",
+     "source": "client_ai_state.data_gaps",
+     "value": "No recorded contact"
+    },
+    {
+     "as_of": null,
+     "label": "Not known",
+     "source": "client_ai_state.data_gaps",
+     "value": "Public-record property lookup timed out — not checked this pass"
+    }
+   ],
+   "headline": "Confirm seller property address or parcel",
+   "kind": "next_best_action",
+   "recommended_action": "Confirm seller property address or parcel",
+   "safe_to_automate": false,
+   "score": 0.6,
+   "subject": "Luis Ortega",
+   "subject_id": "c-2",
+   "subject_type": "client",
+   "value_signal": null,
+   "why": "The maintained intent model for this client recommends this as the next step."
+  },
+  {
+   "action_type": "call",
+   "confidence": 0.8,
+   "deadline": null,
+   "evidence": [
+    {
+     "as_of": null,
+     "label": "Lead score",
+     "source": "clients.lead_score",
+     "value": "55"
+    },
+    {
+     "as_of": null,
+     "label": "Model summary",
+     "source": "client_ai_state.summary",
+     "value": "Asked twice about schools near the lake."
+    },
+    {
+     "as_of": null,
+     "label": "Not known",
+     "source": "client_ai_state.data_gaps",
+     "value": "Public-record property lookup unavailable — not checked this pass"
+    }
+   ],
+   "headline": "Review public-record property candidates",
+   "kind": "next_best_action",
+   "recommended_action": "Review public-record property candidates",
+   "safe_to_automate": false,
+   "score": 0.8,
+   "subject": "Client",
+   "subject_id": "c-3",
+   "subject_type": "client",
+   "value_signal": null,
+   "why": "Asked twice about schools near the lake."
+  },
+  {
+   "action_type": "call",
+   "confidence": 0.9,
+   "deadline": null,
+   "evidence": [
+    {
+     "as_of": null,
+     "label": "Lead score",
+     "source": "clients.lead_score",
+     "value": "80"
+    },
+    {
+     "as_of": null,
+     "label": "Model summary",
+     "source": "client_ai_state.summary",
+     "value": "Pre-approved; wants to see the lake house again."
+    }
+   ],
+   "headline": "Book a second showing at 9 Lake Rd",
+   "kind": "next_best_action",
+   "recommended_action": "Book a second showing at 9 Lake Rd",
+   "safe_to_automate": false,
+   "score": 0.9,
+   "subject": "Ana Ruiz",
+   "subject_id": "c-4",
+   "subject_type": "client",
+   "value_signal": null,
+   "why": "Pre-approved; wants to see the lake house again."
+  },
+  {
+   "action_type": "call",
+   "confidence": 0.8,
+   "deadline": null,
+   "evidence": [
+    {
+     "as_of": null,
+     "label": "Lead score",
+     "source": "clients.lead_score",
+     "value": "40"
+    },
+    {
+     "as_of": null,
+     "label": "Not known",
+     "source": "client_ai_state.data_gaps",
+     "value": "unlabelled"
+    }
+   ],
+   "headline": "Recommended follow-up",
+   "kind": "next_best_action",
+   "recommended_action": "Follow up",
+   "safe_to_automate": false,
+   "score": 0.8,
+   "subject": "Ben Cole",
+   "subject_id": "c-5",
+   "subject_type": "client",
+   "value_signal": null,
+   "why": "The maintained intent model for this client recommends this as the next step."
+  },
+  {
+   "action_type": "call",
+   "confidence": 0.9,
+   "deadline": null,
+   "evidence": [
+    {
+     "as_of": null,
+     "label": "Lead score",
+     "source": "clients.lead_score",
+     "value": "40"
+    }
+   ],
+   "headline": "Call her back",
+   "kind": "next_best_action",
+   "recommended_action": "Call her back",
+   "safe_to_automate": false,
+   "score": 0.9,
+   "subject": "Cara Diaz",
+   "subject_id": "c-6",
+   "subject_type": "client",
+   "value_signal": null,
+   "why": "The maintained intent model for this client recommends this as the next step."
+  }
+ ],
+ "_listing_buyer_opportunities": [
+  {
+   "action_type": "call",
+   "confidence": 0.75,
+   "deadline": null,
+   "evidence": [
+    {
+     "as_of": null,
+     "label": "Fits",
+     "source": "clients.preferences",
+     "value": "looking in 19901"
+    },
+    {
+     "as_of": null,
+     "label": "Fits",
+     "source": "clients.preferences",
+     "value": "budget up to $450,000"
+    },
+    {
+     "as_of": null,
+     "label": "Fits",
+     "source": "clients.preferences",
+     "value": "wants 3+ bedrooms, this has 3"
+    },
+    {
+     "as_of": null,
+     "label": "Wants",
+     "source": "clients.preferences",
+     "value": "a yard for the dog"
+    },
+    {
+     "as_of": null,
+     "label": "Wants",
+     "source": "clients.preferences",
+     "value": "near good schools"
+    },
+    {
+     "as_of": "2026-10-01",
+     "label": "Was shown",
+     "source": "showings",
+     "value": "12 Oak St — liked"
+    },
+    {
+     "as_of": "2026-09-20",
+     "label": "Was shown",
+     "source": "showings",
+     "value": "40 Elm Ave"
+    }
+   ],
+   "headline": "May fit Sarah Johnson",
+   "kind": "listing_buyer_match",
+   "recommended_action": "Ask Neoh about Sarah and this home, then reach out.",
+   "safe_to_automate": false,
+   "score": 0.75,
+   "subject": "9 Lake Rd, Dover",
+   "subject_id": "l-20",
+   "subject_type": "lead",
+   "value_signal": null,
+   "why": "Sarah Johnson's recorded criteria agree on 3 of 4: looking in 19901; budget up to $450,000; wants 3+ bedrooms, this has 3."
+  },
+  {
+   "action_type": "call",
+   "confidence": 0.55,
+   "deadline": null,
+   "evidence": [
+    {
+     "as_of": null,
+     "label": "Fits",
+     "source": "clients.preferences",
+     "value": "budget up to $300,000"
+    },
+    {
+     "as_of": null,
+     "label": "Fits",
+     "source": "clients.preferences",
+     "value": "wants condo"
+    }
+   ],
+   "headline": "May fit Luis Ortega",
+   "kind": "listing_buyer_match",
+   "recommended_action": "Ask Neoh about Luis and this home, then reach out.",
+   "safe_to_automate": false,
+   "score": 0.55,
+   "subject": "unparseable",
+   "subject_id": "l-21",
+   "subject_type": "lead",
+   "value_signal": null,
+   "why": "Luis Ortega's recorded criteria agree on 2 of 4: budget up to $300,000; wants condo. 1 other buyer also fit."
+  },
+  {
+   "action_type": "call",
+   "confidence": 0.55,
+   "deadline": null,
+   "evidence": [
+    {
+     "as_of": null,
+     "label": "Fits",
+     "source": "clients.preferences",
+     "value": "looking in 19958"
+    },
+    {
+     "as_of": null,
+     "label": "Fits",
+     "source": "clients.preferences",
+     "value": "wants 2+ bedrooms, this has 4"
+    }
+   ],
+   "headline": "May fit ",
+   "kind": "listing_buyer_match",
+   "recommended_action": "Ask Neoh about the and this home, then reach out.",
+   "safe_to_automate": false,
+   "score": 0.55,
+   "subject": "1 Bay Ct, Lewes",
+   "subject_id": "l-22",
+   "subject_type": "lead",
+   "value_signal": null,
+   "why": "'s recorded criteria agree on 2 of 4: looking in 19958; wants 2+ bedrooms, this has 4. 2 other buyers also fit."
+  }
+ ]
+}

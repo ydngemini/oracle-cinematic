@@ -1,0 +1,168 @@
+/* Capture Studio on Property View. Matches CaptureSessionPanel; CSS Modules only. */
+
+.studio {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  padding: 1rem 1.1rem 1.15rem;
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.head h3,
+.staged h4 {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.staged h4 {
+  font-size: 0.9rem;
+}
+
+.tips {
+  margin: 0;
+  padding-left: 1.1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  font-size: 0.82rem;
+  line-height: 1.45;
+  color: #b9c6d8;
+}
+
+.preview {
+  position: relative;
+  border-radius: 12px;
+  overflow: hidden;
+  background: #05080d;
+  aspect-ratio: 3 / 4;
+  max-height: 60vh;
+}
+
+.video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.hint {
+  position: absolute;
+  left: 0.6rem;
+  right: 0.6rem;
+  bottom: 0.6rem;
+  margin: 0;
+  padding: 0.45rem 0.65rem;
+  border-radius: 10px;
+  background: rgba(10, 14, 22, 0.78);
+  color: #ffd27a;
+  font-size: 0.85rem;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.primary,
+.secondary {
+  font: inherit;
+  font-size: 0.88rem;
+  min-height: 44px;
+  padding: 0.55rem 1rem;
+  border-radius: 10px;
+  cursor: pointer;
+}
+
+.primary {
+  border: none;
+  background: #2f7de1;
+  color: #fff;
+}
+
+.secondary {
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: transparent;
+  color: inherit;
+}
+
+.primary:disabled,
+.secondary:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.link {
+  font: inherit;
+  font-size: 0.82rem;
+  color: #7cc4ff;
+  background: none;
+  border: none;
+  padding: 0.25rem 0;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.fallback {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  font-size: 0.88rem;
+}
+
+.fallback p {
+  margin: 0;
+}
+
+.staged ul {
+  list-style: none;
+  margin: 0.4rem 0 0.6rem;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  font-size: 0.82rem;
+}
+
+.staged li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.staged li > span:first-child {
+  overflow-wrap: anywhere;
+}
+
+.small {
+  margin: 0;
+  font-size: 0.78rem;
+  color: #8fa3bd;
+}
+
+.note {
+  margin: 0;
+  font-size: 0.85rem;
+}
+
+.srOnly {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}

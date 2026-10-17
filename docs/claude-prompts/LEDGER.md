@@ -33,26 +33,26 @@ Listed weakest to strongest:
 
 | Cat | Category | Prompt | Rollup | Env high-water | Last evidence | Open blockers | Next task |
 |---|---|---|---|---|---|---|---|
-| 01 | Repository source audit | [01](01-repository-source-audit.md) | `not_inspected` | — | — | — | Run the 01 inventory |
+| 01 | Repository source audit | [01](01-repository-source-audit.md) | `tests_pass` | local | `3083abe` inventory (L01-01) | — | T01.11 A01–A10 re-check; T01.05 migration crosswalk |
 | 02 | All pages, routes, mobile UI | [02](02-all-pages-mobile-ui.md) | `source_verified` | staging | `90372f2` crawl | — | Per-page verdicts |
-| 03 | Brokerage tenancy and hybrid access | [03](03-brokerage-tenancy-hybrid-access.md) | `source_verified` | staging | 0131 (L03-02), 0134+0137 (L03-04), 0140 (L03-05), 0142 drafts (L03-06), 0143 leads (L03-07), 0145 live frames (L03-08) all on staging (0a76a72); 0151 lead children + lead frames (L03-09) local only; policy v6 | Owner: team leads (L03-03); lead assignee / listings / marketplace / pipeline counts (L03-07) | Transactions with no client follow the lead (L03-03) |
-| 04 | CRM, contacts, leads, relationships | [04](04-crm-contact-leads-relationships.md) | `tests_pass` | local | `a8bff54` (L04-01) | — | T04.01 + T04.13 (L04-01 next) |
-| 05 | Semantic intent | [05](05-semantic-language-intent.md) | `tests_pass` | local | base `2fef2e5` (L05-01, L05-02); `7b198cf` (L05-03, merged `444efe0`); `012f655` (L05-04, English + Spanish; staging-checked after `12e4c34`); `f8142c1` (L05-05, Spanish success answers + fallback drafts + EN/ES voice, local, unpushed) | Owner: model-spend approval for a scored parser run per language (en / es / mixed; harness built, not run) and real parser latency; an independent Spanish held-out set. Spanish call-queue card text still English (L05-05); real-phone voice check owed. Decided 2026-10-14: policy v7 §4 (`cb2aedd`), launch languages English + Spanish (L05-04) | Spanish call-queue cards (L05-05 next); scored T05.13 run once spend is approved; T05.10 + F05.04 correction cancels a staged command |
-| 06 | Evidence retrieval and memory | [06](06-evidence-retrieval-memory.md) | `source_verified` | local | `745f2fa` | A01, A02 | L06-01 |
-| 07 | AI gateway and governed tools | [07](07-ai-gateway-model-tool-governance.md) | `tests_pass` | local | `071d65d` (L07-01) | Playwright check owed (L07-01); owner: archive_client | T07.02 + AC07.01 |
-| 08 | Durable missions and workflows | [08](08-durable-missions-workflow-orchestration.md) | `source_verified` | local | `745f2fa` | PR #11 review; grant-release decision | L08-01 |
-| 09 | Real-time voice | [09](09-realtime-voice-speech-latency.md) | `source_verified` | staging | `9c3463a` | Call-note broadcast (L09-03); phone check (L09-02) | L09-03 |
-| 10 | Communications and calendars | [10](10-communications-calendar-provider-integrations.md) | `source_verified` | staging | `75c6ba6` (local) | Google OAuth client; 10DLC; deploy approval; A07 fixed locally, 0136 + 0139 + 0145 undeployed (L10-06, L10-09, L10-10); owner: one-brand rule (L10-09) | L10-01 |
-| 11 | Property and market intelligence (non-MLS) | [11](11-property-market-intelligence.md) | `tests_pass` | staging (L11-01), local (L11-02, L11-03) | `90372f2`; `d934b2e` (L11-02); L11-03 on branch `worktree-agent-a59f5c8799a673f68` (base `2804f47`) | Deploy 0135; live-DB test owed; staging catalog empty; L11-03 not deployed | Apply 0135 on staging; push L11-03 with approval; then T11.02 provenance |
-| 12 | Neoh Space capture, 3D, tours | [12](12-neoh-space-browser-capture-reconstruction.md) | `source_verified` | local | `745f2fa` | A03 | Capture Studio first slice |
-| 13 | Deals, documents, compliance | [13](13-transactions-contract-vault-compliance.md) | `source_verified` | local | `745f2fa` | Owner: e-sign, commissions | L13-01 |
-| 14 | Sites, social, ads, client portal | [14](14-websites-social-ads-growth-client-portal.md) | `source_verified` | local | `745f2fa` | Owner: networks, listings on sites | L14-01 |
+| 03 | Brokerage tenancy and hybrid access | [03](03-brokerage-tenancy-hybrid-access.md) | `source_verified` | staging | 0131 (L03-02), 0134+0137 (L03-04), 0140 (L03-05), 0142 drafts (L03-06), 0143 leads (L03-07), 0145 live frames (L03-08) all on staging (0a76a72); 0151 lead children + lead frames (L03-09); 0155 deals with no client + every deal's offers/milestones/parties/checklist (L03-10) local only; L03-11 suspension cancels queued spend (local); L03-12 Python mirrors held to the live policies (local); L03-13 suspended agent's queued video cancelled (0166, local); policy v6 | Owner: team leads (L03-03); lead assignee / listings / marketplace / pipeline counts (L03-07) | Push 0155 with approval (L03-10); listings / marketplace once the owner answers (L03-07) |
+| 04 | CRM, contacts, leads, relationships | [04](04-crm-contact-leads-relationships.md) | `tests_pass` | local | `a8bff54` (L04-01); L04-02 carrier-failed texts, L04-03 replies (0158), L04-04 entity map + channel linking (local); L04-05/06 contacts added or edited by hand link too (local) | Owner: meter lead_engaged at approval, delivery or first reply (prompt 04 §7) | T04.03 dedup + AC04.02; remaining L04-04 gaps |
+| 05 | Semantic intent | [05](05-semantic-language-intent.md) | `tests_pass` | local | base `2fef2e5` (L05-01, L05-02); `7b198cf` (L05-03, merged `444efe0`); `012f655` (L05-04, English + Spanish; staging-checked after `12e4c34`); `f8142c1` (L05-05, Spanish success answers + fallback drafts + EN/ES voice; on staging after `45a031d`); L05-06 Spanish call-queue cards (local, branch `claude/continue-n7jgwq`, golden `ae16549`); L05-07 a correction withdraws the previous staged request (local); L05-08 the chat turn asks the one precise question and cannot pick; L05-09 the UI offers the choices and a click answers; L05-10 an unplaced name is looked up as the caller; L05-11 review fixes (every ambiguous record held, the server's question cannot be hidden, a lookup never narrows or lifts a restriction, names kept out of logs) (local) | Owner: model-spend approval for a scored parser run per language (en / es / mixed; harness built, not run) and real parser latency; an independent Spanish held-out set. Call-queue cards now Spanish except record content and model-written suggestions/summaries (L05-06); Command Center screen and horizon labels English; real-phone voice check owed. Decided 2026-10-14: policy v7 §4 (`cb2aedd`), launch languages English + Spanish (L05-04) | Merge PR #33 with approval; scored T05.13 run once spend is approved; properties and deals looked up like people; contact as a chat context (L05-11 next) |
+| 06 | Evidence retrieval and memory | [06](06-evidence-retrieval-memory.md) | `tests_pass` | local | `745f2fa`, `6c7133b`, `63ac40b` (L06-01..03) | A01, A02 | T06.03 context compiler |
+| 07 | AI gateway and governed tools | [07](07-ai-gateway-model-tool-governance.md) | `tests_pass` | local | `071d65d` (L07-01); L07-02 capability registry (local); L07-03 per-actor offer names what is withheld (local) | Playwright check owed (L07-01); owner: archive_client | T08.04 + per-actor capability block |
+| 08 | Durable missions and workflows | [08](08-durable-missions-workflow-orchestration.md) | `source_verified` | local | `745f2fa`; L08-02 deferral journal (0159), L08-03 feasible plans, L08-04 plans refuse unset channels by name (local) | Owner: does a mission's standing grant count as approval (C4.1)?; PR #11 needs a rebuild (L08-01 review) | T08.03 TaskGraph; rebuild PR #11's internal tasks after the owner answers |
+| 09 | Real-time voice | [09](09-realtime-voice-speech-latency.md) | `source_verified` | staging | `9c3463a`; L09-05 outbound spoken opt-out, L09-06 lead-only call notes, L09-07 voice rules locked per path (local) | Phone check (L09-02); real call (T09.18) needs owner approval | T09.18; T09.10 |
+| 10 | Communications and calendars | [10](10-communications-calendar-provider-integrations.md) | `source_verified` | staging | `75c6ba6` (local) | Google OAuth client; 10DLC; deploy approval; A07 fixed locally; L10-11 email Ready only after a send (0164, local); L10-12 texts and calls likewise (0165, local); 0136 + 0139 + 0145 undeployed (L10-06, L10-09, L10-10); owner: one-brand rule (L10-09) | L10-01 deploy + real connect; T10.09 retry/circuit UI + Playwright |
+| 11 | Property and market intelligence (non-MLS) | [11](11-property-market-intelligence.md) | `tests_pass` | staging (L11-01), local (L11-02, L11-03) | `90372f2`; `d934b2e` (L11-02); L11-03 on branch `worktree-agent-a59f5c8799a673f68` (base `2804f47`); L11-04 source inventory (local); L11-05 heuristic valuation targets labelled, underwriter promotion gated; L11-06 review fixes (local, A08); L11-07..L11-12 unverified property matches labelled possible matches in Houses, Neoh, the AI tools, contract drafts, Property View and the client portal; L11-13 a broker owner confirms or dismisses a title finding; L11-14 a broker owner confirms a linked client's house, read by Houses; L11-15 its review fixes (local, T11.03 / F11.04) | Deploy 0135; live-DB test owed; staging catalog empty; L11-03 not deployed | Owner/legal: licences per source (L11-04); T11.03 |
+| 12 | Neoh Space capture, 3D, tours | [12](12-neoh-space-browser-capture-reconstruction.md) | `source_verified` | local | `745f2fa`; L12-03 Capture Studio first slice + integration map (local, jsdom only) | A03; AC12.02 real-device protocol | Server upload sessions (T12.05) |
+| 13 | Deals, documents, compliance | [13](13-transactions-contract-vault-compliance.md) | `source_verified` | local | `745f2fa`; L13-02 no new MLS-sourced deals; L13-03 status trail 0163 + T13.14 verified (local) | Owner: e-sign, commissions, fallen-through contracts | T13.02 remainder; T13.11 |
+| 14 | Sites, social, ads, client portal | [14](14-websites-social-ads-growth-client-portal.md) | `source_verified` | local | `745f2fa`; L14-03 honest website badge; L14-04 no new IDX on sites (local) | Owner: networks, listings on sites | T14.04 + AC14.04 |
 | 15 | Neoh mascot animation | [15](15-neoh-avatar-skeletal-character-animation.md) | `source_verified` | local | truth slice (L15-02) + rig spec (L15-03) local, on `2fef2e5` | Owner: Rive vs 3D, rig author and licence (L15-03); no device measurements (AC15.07) | Owner decides L15-03; then T15.04 layers and the AC15.07 device protocol |
-| 16 | Performance, indexes, cache | [16](16-performance-indexes-mobile-cache.md) | `tests_pass` | staging | `745f2fa`; 0141 tenant wall (L16-01); 0113 predicates dropped + 0144 (L16-03); JIT off for request transactions (0e29f5a) — all on staging 0a76a72 | A10 capacity on production-shaped infra; no production target | T16.05 |
-| 17 | Security, privacy, data lifecycle | [17](17-security-privacy-compliance-data-lifecycle.md) | `source_verified` | staging | `0739563`; ISO 27001 set (L17-06, v1.0 approved); L17-07..20 local 2026-10-14 (card redaction, unsubscribe 0146, alerts, HOOK-3, log-PII, audit drain 0148, access review, demo-login guard, hashing, dep audit, admin-read audit, DR drill in CI, two-step sign-in 0150, security.txt); L17-21 local (SMS/transcript/chat-turn sealing 0152, clients + leads design); L17-22 local (email subject/body, interaction-log subject/text, AI tool receipts, belief quotes, profile summaries sealing 0154) | A01, A06; owner: security@/privacy@ mailboxes (L17-20); certification body, pentest, DPAs (L17-06) | Field encryption of remaining PII (A01); scheduled off-host backups; log forwarding |
-| 18 | Billing, seats, analytics | [18](18-brokerage-billing-seat-plans-analytics.md) | `source_verified` | local | `a8bff54` (L18-02 `tests_pass`) | D-2026-10-12-02 (billable stage) | T18.04 + AC18.02 (seats) |
-| 19 | Production operations | [19](19-infrastructure-deploy-observability-recovery.md) | `source_verified` | staging | `745f2fa` | No production app; A04 | L19-03 |
-| 20 | 20-agent launch certification | [20](20-twenty-agent-full-feature-launch-e2e-evaluation.md) | `source_verified` | local | `745f2fa` | Every row above | Last |
+| 16 | Performance, indexes, cache | [16](16-performance-indexes-mobile-cache.md) | `tests_pass` | staging | `745f2fa`; 0141 tenant wall (L16-01); 0113 predicates dropped + 0144 (L16-03); JIT off for request transactions (0e29f5a) — all on staging 0a76a72; L16-04 keyset deal list 0162 (local); L16-05 no ungated service-worker cache read (local) | A10 capacity on production-shaped infra; no production target | T16.06 + AC16.04 |
+| 17 | Security, privacy, data lifecycle | [17](17-security-privacy-compliance-data-lifecycle.md) | `source_verified` | staging | `0739563`; ISO 27001 set (L17-06, v1.0 approved); L17-07..20 local 2026-10-14 (card redaction, unsubscribe 0146, alerts, HOOK-3, log-PII, audit drain 0148, access review, demo-login guard, hashing, dep audit, admin-read audit, DR drill in CI, two-step sign-in 0150, security.txt); L17-21 local (SMS/transcript/chat-turn sealing 0152, clients + leads design); L17-22 (email subject/body, interaction-log subject/text, AI tool receipts, belief quotes, profile summaries sealing 0154, on staging); L17-23 local (clients lookup hashes + name tokens kept current, 0156, not yet searched); L17-24 local (sealing batches bounded, 0157) | A01, A06; owner: security@/privacy@ mailboxes (L17-20); certification body, pentest, DPAs (L17-06) | Owner: name/email search semantics, then clients slice (b) (L17-23); scheduled off-host backups; log forwarding |
+| 18 | Billing, seats, analytics | [18](18-brokerage-billing-seat-plans-analytics.md) | `source_verified` | local | `a8bff54` (L18-02 `tests_pass`); L18-05 seat ceiling 0161 (local) | D-2026-10-12-02 (billable stage; seat number and who counts) | T18.05 + AC18.03 |
+| 19 | Production operations | [19](19-infrastructure-deploy-observability-recovery.md) | `source_verified` | staging | `745f2fa`; L19-04 property-data health, L19-05 valuation outcomes (0160), L19-06 relay health + property-data runbook (local) | No production app; A04; owner: SLO targets, on-call | Owner SLOs; AC19.06 |
+| 20 | 20-agent launch certification | [20](20-twenty-agent-full-feature-launch-e2e-evaluation.md) | `source_verified` | local | `745f2fa`; launch backlog generated from the ledger (local) | Every row above; owner launch scope (T20.03) | T20.03 owner scope |
 
 Rollup is the weakest row. A category holding `external_configuration_required` or `blocked` rows shows them under "Open blockers" instead of hiding them in an average (L09 and L10 also hold `tests_pass` rows; see below).
 
@@ -61,7 +61,31 @@ Rollup is the weakest row. A category holding `external_configuration_required` 
 ## Categories and deliverables
 
 ### L01
-Repository source audit. Artifacts it will own: the file-level inventory (`docs/audit/repo-inventory-<sha>.csv`, proposed). No rows yet.
+Repository source audit. Artifacts: the file-level inventory [`docs/audit/repo-inventory-3083abe.csv`](../audit/repo-inventory-3083abe.csv), its generator and checker [`scripts/check-repo-inventory.py`](../../scripts/check-repo-inventory.py), and the lines-read record [`docs/audit/lines-read.csv`](../audit/lines-read.csv).
+
+#### L01-01 Reproducible file inventory with evidence-based classes and lines-read accounting (T01.01, T01.13, T01.15, AC01.01)
+```yaml
+id: L01-01
+status: tests_pass
+env: local
+evidence_shas: [3083abe]
+files: [scripts/check-repo-inventory.py, docs/audit/repo-inventory-3083abe.csv, docs/audit/lines-read.csv]
+tests_run:
+  - {cmd: "python3 scripts/check-repo-inventory.py generate --sha 3083abe", result: "1867 rows (= git ls-tree blobs at 3083abe). Classes: production_entry 9, runtime_dependency 894, test 431, infrastructure 103, documentation 120, optional_integration 85, archived_or_prototype 67, orphaned 158. Files listed 1867; files read 10; lines read 1570 of 404390", date: 2026-10-16}
+  - {cmd: "python3 scripts/check-repo-inventory.py check docs/audit/repo-inventory-3083abe.csv", result: "exit 0: reconciles with git ls-tree at 3083abe; every row has a class, evidence and an audit state; lines_read equals the recorded ranges", date: 2026-10-16}
+  - {cmd: "same check after deleting one row and inflating lines_read on every listed row", result: "exit 1: 3708 problems (the missing tracked file; lines_read without recorded ranges, F01.06)", date: 2026-10-16}
+authz_checked: "n/a: a read-only script over git objects; no runtime, data or access change."
+blockers:
+  - "Classes are evidence-based but still mechanical: the static import graph from the entries (backend/Dockerfile CMD server:app, which the app.yaml worker also boots; app.yaml migrate run_migrations.py; RunPod handler.py; oracle-app and observability-platform index.html -> src/main.jsx), every migration, oracle-app/public, CI/Dockerfile/app-spec/compose/package.json references, tools' own config names, quoted path literals in reachable code, a directory read by reachable code, and documentation mentions. A function-level dead-code pass is T01.02/T01.08; an import does not prove a route is used."
+  - "`orphaned` is a candidate list, never a deletion licence (F01.07). Notable at 3083abe: oracle-app/src/lib/propertyImagery.js (only named in a PanoViewer comment); backend/data_integrations/state_gis/** and county_assessor/__init__ (no reachable import); backend/data_integrations/scheduler.py; backend/backfill_owner_name_normalized.py; backend/scripts/{eval_floorplan,ignite_memory,onboard_ai_agent,setup_ai_agent_mission,train_point_segmenter}.py; backend/ml_forge/cot_synthesizer.py; data/raw_scrapes/** (100 files) and data/test_deals; training_data/*.jsonl (6); performance/{analyze,resilience,scenarios}; observability-platform .env.example, nginx.conf, package.json; scripts/{audit-agent-workspace,fetch_capture_dataset,golden_capture,serve-next-static,test-personal-ai-tab,test-reel-playwright,test-vite-reel-playwright}.py; root check_models.py."
+  - "oracle-app/src/components/MlsSearch.jsx is not reached from main.jsx (PropertiesTab no longer offers it, D-2026-10-12-01): consistent with the MLS gate; inventoried as legacy, not deleted."
+  - "Lines read: 1570 lines in 10 files, recorded only where read in this session at an unchanged file. Line-by-line review (T01.03-T01.05) has not started; the known-uninspected list is every row with audit_state=listed (1857 files)."
+  - "The generator takes ~2 minutes (it reads every blob); not wired into CI (a shallow checkout lacks the history last_revision walks)."
+audit_refs: []
+decision_refs: [D-2026-10-12-01]
+next_task: "T01.11 + AC01.06: re-check A01-A10 at a pinned SHA; then T01.05 migration crosswalk (CREATE FUNCTION vs GRANT EXECUTE)."
+updated: 2026-10-16
+```
 
 ### L02
 All pages, routes and mobile UI. Artifacts: [ALL-PAGES-MATRIX.md](ALL-PAGES-MATRIX.md) (generated, 52 pages) with its JSON twin [all-pages.json](all-pages.json) and hand-kept verdicts in [all-pages-verdicts.json](all-pages-verdicts.json).
@@ -154,8 +178,8 @@ blockers:
   - {type: data, note: "Staging has no state_advertising_rules dataset loaded: the Forms view now says so instead of implying none apply."}
 audit_refs: []
 decision_refs: [D-2026-10-12-01]
-next_task: "Per-page verdicts in all-pages-verdicts.json."
-updated: 2026-10-13
+next_task: "Per-page verdicts in all-pages-verdicts.json: AC02.09 asks for a signed reviewer per page, so the owner (or a named reviewer) signs them; the crawl (all-pages-crawl.json) is render evidence, not a verdict (build-all-pages-matrix.mjs:34). A fresh crawl after this branch's UI changes (Capture Studio, DealBook paging, Email card) is owed on staging once PR #33 is merged (2026-10-16: not run locally; the demo seed makes a read-only Plivo call and targets staging)."
+updated: 2026-10-16
 ```
 Findings fixed from this crawl:
 - AI hub, for agents: owner-only lead-routing metrics answered 403 on every visit, and the page showed "Lead routing is temporarily unavailable". A 403 source is now "not available to your role" and leaves the outage banner and the source count (`OurAITab.jsx`).
@@ -222,7 +246,7 @@ authz_checked: n/a
 blockers:
   - {type: design, note: "Communications tables feed consent, opt-out and frequency checks, which must stay brokerage-wide; scoping them needs a split between 'see the message' and 'check compliance'. 0134 adds the pattern: a function that sets app.record_scope='brokerage' for its own duration and returns no PII (app_client_contact_place, app_open_contact_counts)."}
   - {type: owner, note: "Team leads (T03.02): multiple teams per agent? edit or read-only on team records?"}
-next_task: "Transactions with no client (and their offers, parties, milestones) follow their lead; then listings and marketplace publications once the owner answers (L03-07). Team leads (T03.02) wait for the owner."
+next_task: "Done in L03-10 (0155): transactions with no client follow their lead, and every deal's offers, milestones, parties and checklist follow the deal. Listings and marketplace publications wait for the owner (L03-07); team leads (T03.02) wait for the owner."
 updated: 2026-10-14
 ```
 
@@ -391,10 +415,105 @@ blockers:
   - {type: decided, note: "Platform Use Policy v6 s2 already says a client's property record 'follows that client together with its photos and activity: you see it only while you can see the client, and changing it needs edit access'; POLICY_COVERAGE row added for 0151 on that phrase, no version bump. Optional clearer wording drafted for the owner in the session report (names tours, floor plans, videos, documents and client links)."}
 audit_refs: [A01]
 decision_refs: [D-2026-10-13-01]
-next_task: "Owner: listings / marketplace question (L03-07); transactions with no client (L03-03)."
+next_task: "Owner: listings / marketplace question (L03-07); transactions with no client done in L03-10."
 updated: 2026-10-14
 ```
 How it works: 0143's lead rule, one level down. Each table gets `<t>_lead_read/_insert/_update/_delete` RESTRICTIVE policies, inline: read = `lead_id IS NULL OR EXISTS (SELECT 1 FROM leads l WHERE l.id = <t>.lead_id)` (the EXISTS runs under leads' own RLS, so 0143 decides); write = the lead's seller client editable (`app_client_access(…, true)`), or no client; platform admin, broker owner and brokerage-scope pipelines short-circuit. `video_studio_jobs` reads its lead from `source->>'lead_id'` (a non-uuid value counts as no lead); `property_floorplan_revisions` follows its floor plan; `live_call_sessions` is narrowed only when it has no client and no contact; `negotiation_events`' write checks ask about the call's client, else its lead's. The API never restates the rule: `record_access._LINKED` gained the tables (read-back of `app_linked_access`), and `require_lead_edit` / `require_linked_edit` answer 404/403 before any side effect in portal create/revoke/tour-link decision, contract draft/edit, floor-plan save, upload-link revoke, 3D build enqueue/retry, scene override, tour variant, video create/script/cancel/delete, walkthrough upload and lead-only voice sessions. Cost guards (3D and walkthrough backlog, video daily quota) count the whole brokerage through `record_access.pipeline_count` / a quota pipeline, not only the rows the caller may read. Lead frames (VOICE_NOTE_LOGGED, DOSSIER_MOVED, CONTRACT_EXPIRED/DANGER, SPLAT_READY, VIDEO_READY) go through `ws_hub.broadcast_record(lead_id=…)` → `app_record_audience(lead's seller client)`; a prospect's or a listing's still reaches everyone, and a client's house still names no address (a pool client's frame is brokerage-wide). Found and fixed on the way: (1) the signed 3D-asset stream and (2) the video worker ran as an agent identity with no user, so since 0143 a client's house's space would not stream and its finished video could not be stored (after generation was paid for) — both now brokerage-scope pipelines; (3) `log_walkthrough` queued a note on any lead id without checking it; (4) the 3D backlog, walkthrough backlog and video quota would have shrunk to the caller's own rows under the new policies.
+
+#### L03-10 A deal with no client follows its lead; a deal's offers, milestones, parties and checklist follow the deal (D-2026-10-13-01)
+```yaml
+id: L03-10
+status: tests_pass
+env: local
+evidence_shas: [20855af]
+files: [backend/db/migrations/0155_transactions_follow_the_lead.sql, backend/tests/test_deal_record_access_live.py, backend/tests/test_brokerage_access_matrix_live.py, .github/workflows/ci.yml]
+tests_run:
+  - {cmd: "local PostgreSQL 16.15 built by run_migrations.py from every migration through 0154 (CI's rls-job recipe); pg_policies on transactions, transaction_offers, transaction_milestones, compliance_checklist_items, transaction_parties", result: "BEFORE: transactions had 0131's client policies only (a deal with no client was brokerage-wide); transaction_offers, transaction_milestones and compliance_checklist_items had only their tenant wall (every deal, including a colleague's private client's); transaction_parties narrowed only a party that is a client", date: 2026-10-15}
+  - {cmd: "pytest -q -p no:cacheprovider tests/test_deal_record_access_live.py (real PostgreSQL, FORCE RLS, app role; 0155 NOT applied)", result: "2 failed: agent A read B's no-client deal on B's private client's house; composition found no 0155 policies", date: 2026-10-15}
+  - {cmd: "python run_migrations.py (0155 applied) + the same test", result: "2 passed: 7 deals x 7 actors — A sees its own client's house, the pool's, a prospect's, the bare deal and the deal A opened on B's house; B and C (view share) see B's; owner, platform admin and a brokerage-scope pipeline see all; another brokerage none; each deal's offer, milestone, party and checklist item exactly as its deal. transaction_detail / list_offers 404 for A on B's deal. C changes nothing (UPDATE 0 / DELETE 0 on the deal and its 4 children); A and B update theirs; inserts on a deal the caller cannot edit raise 42501 (InsufficientPrivilegeError, mapped to 403 by server.py), including portfolio_api.add_milestone and opening a deal on B's house", date: 2026-10-15}
+  - {cmd: "psql -f tests/rls_security_review.sql, rls_brokerage.sql, platform_rls_test.sql, privacy_lifecycle.sql, rls_tenant_wall.sql", result: "all exit 0 (rls_tenant_wall E: transactions identical with and without the twin in 7 contexts)", date: 2026-10-15}
+  - {cmd: "cd backend && pytest -q tests compliance_engine/tests (clean env, after the L03-10 commit)", result: "test_migration_ledger failed: 0155 declared no object run_migrations --reconcile can probe (every policy was inside the DO block). Fixed in the next commit: transactions_lead_read written out as plain SQL (the 0151 pattern; same text). Re-applied locally: the deal test, the access matrix and test_migration_ledger + test_run_migrations pass (26)", date: 2026-10-15}
+  - {cmd: "pytest -q -p no:cacheprovider <every live test the CI rls job runs> tests/test_deal_record_access_live.py", result: "63 passed after test_brokerage_access_matrix_live's composition list gained transactions_lead_* and transaction_parties_deal_*. A first run also failed test_audit_fallback_drain_live once (audit chain; touches no deal table); it passed alone and in the full rerun", date: 2026-10-15}
+authz_checked: "Owner, platform admin and brokerage-scope pipelines short-circuit as since 0131. Background readers checked: client_portal milestones run as a brokerage-scope pipeline; privacy_lifecycle's milestone reassignment runs as the owner; every API read of a child goes through the deal first (portfolio_api, ai_tools_read, ai_tools_gated, routes_compliance, neoh_intents). The creator arm of 0131 is kept on both levels."
+blockers:
+  - "Not deployed: pushing to main deploys staging (CONTRACT C4.4); owner approval owed."
+  - "Not measured on production-sized data: the local database has no deals. The policies are primary-key probes (deal -> lead -> client), like 0151, whose before/after is in L03-09."
+  - "Pre-existing, unchanged: portfolio_api.patch_transaction answers a view-only share with the version-conflict 409 it has used since 0131, not a 403 (the UPDATE touches 0 rows); record_access has no deal entry yet."
+  - "Not narrowed by their transaction_id: contract_documents (follows its lead, 0151) and marketplace_publications (listings owner question, L03-07). A deal with no client and no lead stays the brokerage pool."
+audit_refs: [A01]
+decision_refs: [D-2026-10-13-01]
+next_task: "Push 0155 with approval and re-run this test in CI; then a record_access deal entry so a view-only deal edit answers 403 before any write."
+updated: 2026-10-15
+```
+
+How it works: `transactions_lead_read/_insert/_update/_delete` (RESTRICTIVE) leave a deal with a client to 0131 and a deal with no lead as it was; a deal with no client but a lead is visible when the lead is (an EXISTS on leads under the caller's RLS, so 0143 decides) or to the agent who opened it, and writable when the lead's seller client is editable (or it has none) or by its opener. `<t>_deal_read/_insert/_update/_delete` on transaction_offers, transaction_milestones, compliance_checklist_items and transaction_parties: read = the deal is visible (an EXISTS on transactions under the caller's RLS); write = the deal is editable (opener, editable client, or — no client — editable lead client). Inline, no function (0131). Rollback is in the migration header.
+
+#### L03-11 Suspension cancels the agent's queued spend; what it cancels, verified (T03.16)
+```yaml
+id: L03-11
+status: tests_pass
+env: local
+evidence_shas: [b8cd33d]
+files: [backend/privacy_lifecycle.py, backend/tests/test_suspension_cancels_spend_live.py, .github/workflows/ci.yml]
+tests_run:
+  - {cmd: "read privacy_lifecycle._PENDING / cancel_pending_side_effects and brokerage_onboarding.suspend_member at b8cd33d", result: "VERIFIED: suspension already cancels the agent's queued commands, pending approvals, automation jobs, call intents, outbox emails and OAuth states and pauses their missions and smart plans; NOT cancelled per agent: queued GPU reconstructions and voice walkthroughs (cancelled only at tenant closure although created_by records the agent), video studio jobs (no requester column), contact nurture jobs (no sender reads them yet: latent)", date: 2026-10-16}
+  - {cmd: "cd backend && python -m pytest tests/test_suspension_cancels_spend_live.py with privacy_lifecycle.py stashed, then restored", result: "before: 1 failed (reconstruction stayed queued); after: 1 passed (the suspended agent's queued reconstruction and voice walkthrough fail with the reason; a colleague's queued jobs and the agent's running job are untouched)", date: 2026-10-16}
+  - {cmd: "test_privacy_lifecycle_live.py, test_access_review_live.py; unit test_privacy*.py, test_brokerage_onboarding*.py", result: "3 passed; 109 passed", date: 2026-10-16}
+authz_checked: "Runs inside suspend_member's transaction (broker-owner or platform admin), scoped to the tenant and lower(created_by) = the suspended agent."
+blockers:
+  - "video_studio_jobs records no requester: a suspended agent's queued video still runs (closure cancels it). Fixed locally in L03-13 (0166)."
+  - "contact_nurture_jobs have no sender today; when one is built it must skip contacts whose owner is suspended."
+  - "Not deployed (C4.4)."
+audit_refs: []
+decision_refs: []
+next_task: "T03.15 done in L03-12; owner answers for L03-07 (listings / marketplace) and team leads (T03.02)."
+updated: 2026-10-16
+```
+
+#### L03-12 The Python visibility mirrors are held to the live policies (T03.15, AC03.02)
+```yaml
+id: L03-12
+status: tests_pass
+env: local
+evidence_shas: [dd798b9]
+files: [backend/tenancy.py, backend/tests/test_tenancy.py, backend/tests/test_tenancy_mirrors_live.py, .github/workflows/ci.yml]
+tests_run:
+  - {cmd: "read tenancy.py:118-216 and pg_policies for clients / leads / listings at dd798b9; git grep the mirrors' callers", result: "client_access / contact_access are already compared with app_client_access / app_contact_access by the access-matrix live tests. can_read_private said 'clients / leads — the tenant wall' with no lead rule, but leads_linked_* (0143) narrow leads to the seller client's audience; can_write said 'any mutation (clients, leads, listings)' — true only for listings. No production decision used the drifted mirrors (only _record_access, for the wall step), so this was a drift in the stated contract, not a live leak", date: 2026-10-16}
+  - {cmd: "livetest.sh pytest tests/test_tenancy_mirrors_live.py with lead_access = the old documented rule (tenant wall => edit)", result: "1 failed, 5 mismatches: agent A reads and edits B's client's lead (the database refuses both); agent C, holding a VIEW share of B's client, would edit B's lead (the database lets C read, not write)", date: 2026-10-16}
+  - {cmd: "livetest.sh pytest tests/test_tenancy_mirrors_live.py (6 actors x 4 leads, 2 clients, 4 listings; read via SELECT and write via UPDATE as the app login)", result: "1 passed: can_read_private never admits a row the database hides; lead_access matches leads_linked_read/_update for every actor and lead; can_read_listing matches listings_read (own, private, shared pool, co-broke grant); can_write matches listings_write", date: 2026-10-16}
+  - {cmd: "cd backend && pytest tests/test_tenancy.py", result: "16 passed (lead_access unit cases)", date: 2026-10-16}
+authz_checked: "Read-only for production paths: lead_access is a new mirror for tests and future callers; no route changed. Every comparison runs as the app login through tenant_tx, so FORCE RLS decides the database side."
+blockers:
+  - "listings_read still admits any tenant's is_shared_mls rows (the legacy MLS pool). MLS is out of scope (D-2026-10-12-01) and category 11 gates its code; changing the policy is an owner decision (L03-07 listings / marketplace), so the mirror matches the policy as it is."
+  - "Not deployed (C4.4)."
+audit_refs: []
+decision_refs: [D-2026-10-12-01]
+next_task: "T03.03 + AC03.03 sharing primitive review; owner answers for L03-07 and T03.02."
+updated: 2026-10-16
+```
+
+#### L03-13 A suspended agent's queued studio video is cancelled too (0166; T03.16, AC03.06)
+```yaml
+id: L03-13
+status: tests_pass
+env: local
+evidence_shas: [1debee4]
+files: [backend/db/migrations/0166_video_studio_jobs_requester.sql, backend/video_studio_api.py, backend/privacy_lifecycle.py, backend/privacy_data_map.py, backend/tests/test_suspension_cancels_spend_live.py]
+tests_run:
+  - {cmd: "livetest.sh pytest tests/test_suspension_cancels_spend_live.py (extended) on 1debee4 code", result: "1 failed: video_studio_jobs has no created_by column, so neither the route nor suspension can know whose video it is (L03-11 blocker)", date: 2026-10-16}
+  - {cmd: "livetest.sh pytest tests/test_suspension_cancels_spend_live.py tests/test_lead_children_access_live.py tests/test_privacy_lifecycle_live.py tests/test_migration_precheck.py (real PostgreSQL 16, app login, real suspend and create routes)", result: "12 passed: the real create_video_job route stores the requesting login; suspension cancels that agent's queued videos (seeded and route-created) with the reason; a colleague's queued video and the agent's own generating video are untouched; reconstruction and voice jobs as in L03-11", date: 2026-10-16}
+  - {cmd: "cd backend && pytest tests/ (full unit suite)", result: "5235 passed, 74 skipped, 2 failed (the known root-only test_media_storage / test_object_storage cases of this container)", date: 2026-10-16}
+authz_checked: "created_by is written from the verified request context, never from the body. The cancel runs inside the suspend route's transaction under the broker owner's RLS like the other _PENDING rows. privacy_data_map notes the new personal field (the agent's sign-in email)."
+blockers:
+  - "Videos created before 0166 have no recorded requester and are not guessed: they are cancelled only when the brokerage closes."
+  - "A video already generating at the paid provider is not stopped by suspension (no provider cancel call); same rule as a running reconstruction."
+  - "contact_nurture_jobs still have no sender (L03-11)."
+  - "Not deployed (C4.4): 0166 is local."
+audit_refs: []
+decision_refs: []
+next_task: "T03.03 + AC03.03 sharing primitive review; owner answers for L03-07 and T03.02."
+updated: 2026-10-16
+```
 
 ### L04
 CRM, contacts, leads and relationships.
@@ -414,10 +533,124 @@ authz_checked: "live test reads the metrics as the broker owner under FORCE RLS 
 blockers: []
 audit_refs: [A05]
 decision_refs: [D-2026-10-12-02]
-next_task: "Track 'responded' (inbound reply linked to the first response); mark a carrier-failed text as failed in the ledger; then T04.01 + T04.13."
+next_task: "Track 'responded' (inbound reply linked to the first response); then T04.01 + T04.13. (A carrier-failed text is now marked failed: L04-02.)"
 updated: 2026-10-13
 ```
 One vocabulary for every outbound store: `backend/outreach_lifecycle.py` (`Stage`, and maps for `command_executions.state`, `email_outbox.status`, `sms_messages.status`, carrier call statuses and `lead_response_events.disposition`; tests prove each map covers its CHECK). The first-response ledger now moves staged → approved (`commands_api.release_command`) → accepted (`_record_send_bookkeeping`, was `'sent'`) → delivered (Telnyx receipt in `messaging_data.record_delivery_update`, answered call in `commands_api.record_call_outcome`); a rejected draft becomes `cancelled`. Accepted and delivered are recorded only for a command whose state is `succeeded`. `routing_metrics` (`lead_routing_api.py:545`) no longer counts a staged draft as a response: it reports staged/approved/accepted/delivered/cancelled separately and measures p50/p90/under-90s to `accepted_at` (`latency_measured_to: "accepted"`); the `responded` key is gone (no caller). Not done: `responded` (a reply) is not tracked; a carrier-failed text stays `accepted`; email (SMTP) and Twilio texts never reach `delivered` (no receipt exists).
+
+#### L04-02 A text the carrier failed is a failed first response, not an accepted one
+```yaml
+id: L04-02
+status: tests_pass
+env: local
+evidence_shas: [6ca87c2]
+files: [backend/outreach_lifecycle.py, backend/messaging_data.py, backend/tests/test_outreach_lifecycle.py, backend/tests/test_engagement_lifecycle_live.py]
+tests_run:
+  - {cmd: "read messaging_data.record_delivery_update, outreach_lifecycle (at e725553)", result: "a carrier 'failed' / 'undelivered' receipt updated sms_messages only; the first-response ledger kept 'accepted' (L04-01 'Not done'), so routing_metrics counted a text the lead never received as an accepted response and inside the speed-to-lead percentiles. The 0133 CHECK already allows disposition 'failed' and routing_metrics already counts it; nothing wrote it for a text", date: 2026-10-15}
+  - {cmd: "cd backend && pytest -q tests/test_outreach_lifecycle.py tests/test_speed_to_lead.py", result: "52 passed: a failure receipt moves accepted -> failed, never meters, is terminal (a duplicate or a late 'delivered' moves nothing); it never undoes a delivery and never touches a command the provider did not take; a failure receipt that beat the acceptance is applied at acceptance (reconcile_command_delivery); FAILED moves only from approved/accepted/sent", date: 2026-10-15}
+  - {cmd: "pytest -q tests/test_engagement_lifecycle_live.py (real PostgreSQL) with the code change stashed, then applied", result: "before: failed (AssertionError: 'accepted' == 'failed'); after: 1 passed — the carrier-failed text is 'failed', a late 'delivered' receipt does not revive it, routing metrics report accepted 4 (was 5), delivered 4, cancelled 1, failed 1", date: 2026-10-15}
+  - {cmd: "every CI rls-job live test; cd backend && pytest -q tests compliance_engine/tests (clean env); bandit", result: "65 passed; unit 5196 passed, 62 skipped, 2 failed (test_media_storage + test_object_storage: container runs as root, identical without the change); bandit exit 0", date: 2026-10-15}
+authz_checked: "No access change: the receipt path runs in the platform webhook context as before; the ledger write is the same RLS-scoped UPDATE with the same 'command succeeded' guard as delivered."
+blockers:
+  - "Metric change to note: a carrier-failed text leaves the 'accepted' count and the p50/p90/under-90s latency (it reached the provider, not the lead) and is counted under 'failed'."
+  - "Email (SMTP) and Twilio texts still have no receipt, so they never reach delivered or failed (L04-01). Calls: a failed call already maps to FAILED in call_status_stage; record_call_outcome was not changed here."
+  - "Not deployed (C4.4)."
+audit_refs: [A05]
+decision_refs: [D-2026-10-12-02]
+next_task: "Done in L04-03 (replies). Then T04.01 + T04.13."
+updated: 2026-10-15
+```
+
+#### L04-03 The lead's reply is recorded on its first response (T04.07 "responded")
+```yaml
+id: L04-03
+status: tests_pass
+env: local
+evidence_shas: [9b851e8]
+files: [backend/db/migrations/0158_first_response_replied.sql, backend/outreach_lifecycle.py, backend/messaging_data.py, backend/lead_routing_api.py, backend/tests/test_outreach_lifecycle.py, backend/tests/test_first_response_reply_live.py, .github/workflows/ci.yml]
+tests_run:
+  - {cmd: "read outreach_lifecycle, messaging_data.record_inbound_message, lead_routing_api.routing_metrics, \\d lead_response_events (at d7ace66)", result: "Stage.RESPONDED existed in PROGRESSION but nothing stored a reply; the old `responded` metric (drafts) was removed in 0133; an inbound text was stored and logged on the client's timeline only. No frontend reads first_response metrics (grep oracle-app/src)", date: 2026-10-15}
+  - {cmd: "pytest -q tests/test_first_response_reply_live.py (real PostgreSQL, FORCE RLS, app role) with the code stashed (0158 applied), then with it", result: "before: failed (replied_at None); after: 1 passed — an inbound text from the client stamps replied_at and the message id on their delivered first response; disposition stays delivered; lead_engaged not metered again; a second text leaves the first stamp; an opt-out, a reply to a carrier-failed text, a reply 8 days after acceptance and a stranger's text stamp nothing; routing_metrics: replied 1, failed 1, delivered 2, no `responded` key", date: 2026-10-15}
+  - {cmd: "cd backend && pytest -q tests/test_outreach_lifecycle.py", result: "37 passed (new: no client/contact = no database call; the reply statement picks one row by a scalar subquery, never changes the disposition, only from accepted/sent/delivered; the inbound path stamps in its own platform transaction after the insert commits and skips opt-outs)", date: 2026-10-15}
+  - {cmd: "every CI rls-job live test + this one; SQL proofs; cd backend && pytest -q tests compliance_engine/tests (clean env); bandit", result: "66 passed; SQL proofs exit 0; unit 5199 passed, 63 skipped, 2 failed (test_media_storage + test_object_storage: container runs as root, identical without the change); bandit exit 0", date: 2026-10-15}
+authz_checked: "The stamp runs in the platform context (like delivery receipts) because the number's agent need not be the one who may edit the lead's record; it changes only replied_at / reply_sms_message_id / updated_at on one row of the message's own tenant, chosen by that tenant's client/contact ids. Who may read a row is unchanged."
+blockers:
+  - {type: owner, note: "Prompt 04 §7: should lead_engaged be metered at approval, at delivery or at the first reply? Unchanged: metered at delivery; a reply never meters."}
+  - {type: scope, note: "Only texts: email (no inbox reader, L10-07) and inbound calls are not linked yet. The window is 7 days (outreach_lifecycle.REPLY_WINDOW_DAYS), a product choice to confirm."}
+  - "Not deployed (C4.4)."
+audit_refs: [A05]
+decision_refs: [D-2026-10-12-02]
+next_task: "T04.01 + T04.13: the entity map and 'every channel resolves to one contact' (AC04.01)."
+updated: 2026-10-15
+```
+Stored as `replied_at` + `reply_sms_message_id` (0158), not a disposition, so a reply rides on top of the delivery: delivered counts and metering (which re-reads disposition = 'delivered') are unchanged. `outreach_lifecycle.record_reply` stamps the newest first response for the same client or contact whose disposition is accepted/sent/delivered and whose acceptance (or delivery) is within 7 days before the text, once. `routing_metrics.first_response` gains `replied` and `replied_measured_as`.
+
+#### L04-04 Entity map; texts and calls that came before the contact join it at intake (T04.01, T04.13, AC04.01 part)
+Map: [docs/crm-entity-map.md](../crm-entity-map.md).
+```yaml
+id: L04-04
+status: tests_pass
+env: local
+evidence_shas: [845bbd2]
+files: [docs/crm-entity-map.md, backend/contact_linking.py, backend/lead_routing_api.py, backend/tests/test_contact_linking_live.py, .github/workflows/ci.yml]
+tests_run:
+  - {cmd: "read-only trace of every intake channel (Explore) + spot checks of inbound_voice.py:290/:351, messaging_data._match_contact, lead_routing_api.receive_lead, sites_api.py:755, contacts_api.py:543, crm.py:846 at 845bbd2", result: "only the lead webhook creates a contact; texts and calls only link to an existing one, so a person who texted or called first kept those rows linked to nobody after the webhook created them; no public web-form route; differing match keys and tie-breaks (map committed)", date: 2026-10-16}
+  - {cmd: "cd backend && python -m pytest tests/test_contact_linking_live.py with lead_routing_api.py stashed, then restored", result: "before: 1 failed (the earlier text stayed contact_id NULL); after: 1 passed", date: 2026-10-16}
+  - {cmd: "test_contact_linking_live.py (real PostgreSQL; real messaging_data inbound path and a real signed receive_lead)", result: "text + call, then webhook: exactly 1 client and 1 new contact, and the earlier text and call carry its contact and client; a text from another number, a call already linked to someone else and another brokerage's text are untouched; a later text links on arrival; a replayed webhook creates nothing", date: 2026-10-16}
+  - {cmd: "cd backend && pytest tests/test_lead_routing*.py", result: "6 passed", date: 2026-10-16}
+authz_checked: "Linking runs inside the intake's own transaction after it switched to the resolved tenant (FORCE RLS), updates only rows with no contact, in that tenant, within 90 days; nothing logged but counts."
+blockers:
+  - "Gaps 1-6 in docs/crm-entity-map.md remain: no public web-form intake; texts/calls never create a contact; manual contact creation does not run the linking; differing match keys/tie-breaks; the call fallback's digit match; the webhook ignores contact-less clients; no unique hash constraint (AC04.02)."
+  - "Linked texts do not get back-filled client_activities timeline rows; the message itself is linked."
+  - "Not deployed (C4.4)."
+audit_refs: []
+decision_refs: []
+next_task: "Manual creation done in L04-05; one match key and tie-break for all channels; AC04.02 dedup under race (unique hash + merge review)."
+updated: 2026-10-16
+```
+
+#### L04-05 A contact added by hand collects the earlier texts and calls from its phone (T04.13, AC04.01)
+```yaml
+id: L04-05
+status: tests_pass
+env: local
+evidence_shas: [1debee4]
+files: [backend/contacts_api.py, backend/tests/test_contact_linking_live.py]
+tests_run:
+  - {cmd: "livetest.sh pytest tests/test_contact_linking_live.py (new manual-creation test on 1debee4 code)", result: "1 failed: an agent adds 'Riley Moss' with the phone that texted and called earlier; the text and the call stay linked to nobody (entity-map gap 3)", date: 2026-10-16}
+  - {cmd: "livetest.sh pytest tests/test_contact_linking_live.py tests/test_contact_access_matrix_live.py (real PostgreSQL 16, FORCE RLS, app login, real create_contact route as an agent)", result: "4 passed: the earlier text and call join the new contact (phone typed as '(302) 555-0171' still matches the stored E.164 and hash); another number's text is untouched; a contact with no phone links nothing; the L04-04 webhook case and the contact access matrix unchanged", date: 2026-10-16}
+  - {cmd: "cd backend && pytest tests/ (full unit suite)", result: "5235 passed, 75 skipped, 2 failed (the known root-only test_media_storage / test_object_storage cases of this container)", date: 2026-10-16}
+authz_checked: "Runs in create_contact's own tenant transaction as the caller, so RLS decides which unlinked rows can be updated; only rows with no contact are touched, within the 90-day window (contact_linking). An agent's new contact is in the pool unless assigned, as before."
+blockers:
+  - "A phone added later by editing a contact (PATCH) does not run the linking yet. Fixed locally in L04-06."
+  - "Entity-map gaps 1, 2, 4-6 remain (docs/crm-entity-map.md)."
+  - "Not deployed (C4.4)."
+audit_refs: []
+decision_refs: []
+next_task: "Phone edit done in L04-06; one match key and tie-break for all channels; AC04.02 dedup under race."
+updated: 2026-10-16
+```
+
+#### L04-06 A phone added to a contact later collects that number's earlier texts and calls (T04.13, AC04.01)
+```yaml
+id: L04-06
+status: tests_pass
+env: local
+evidence_shas: [6b38f0d]
+files: [backend/contacts_api.py, backend/tests/test_contact_linking_live.py]
+tests_run:
+  - {cmd: "livetest.sh pytest tests/test_contact_linking_live.py (extended) on 6b38f0d code", result: "1 failed: a contact created with no phone is edited to add the number that texted earlier; the text stays linked to nobody", date: 2026-10-16}
+  - {cmd: "livetest.sh pytest tests/test_contact_linking_live.py tests/test_contact_access_matrix_live.py (real PostgreSQL 16, FORCE RLS, real update_contact route as an agent)", result: "4 passed: the new number's earlier text joins the edited contact; editing a second contact to a number whose text already belongs to someone else leaves that text where it is", date: 2026-10-16}
+  - {cmd: "cd backend && pytest tests/ (full unit suite)", result: "5235 passed, 75 skipped, 2 failed (the known root-only cases of this container)", date: 2026-10-16}
+authz_checked: "Same as L04-05: update_contact's own tenant transaction, the caller's RLS, only rows with no contact, 90-day window. Runs only when the phone actually changed."
+blockers:
+  - "Entity-map gaps 1, 2, 4-6 remain (docs/crm-entity-map.md); two contacts may now share a phone (no unique hash, AC04.02)."
+  - "Not deployed (C4.4)."
+audit_refs: []
+decision_refs: []
+next_task: "One match key and tie-break for all channels; AC04.02 dedup under race (unique hash + merge review)."
+updated: 2026-10-16
+```
 
 ### L05
 Semantic intent.
@@ -484,7 +717,7 @@ authz_checked: "authorize_frame and the discourse re-read (resolve_record) run i
 blockers: [{type: decided, note: "Owner 2026-10-14: Platform Use Policy v7 §4 sentence approved (cb2aedd)"}, {type: decided, note: "Owner 2026-10-14: launch languages English + Spanish (L05-04)"}, "a measured real-model parser latency needs model-spend approval"]
 audit_refs: []
 decision_refs: [D-2026-10-13-01]
-next_task: "T05.10 + T05.04 remainder: answer the frame's one precise question (2 Sarahs) in the fast path and cancel a staged command a correction supersedes (F05.04); then T05.13 eval suite"
+next_task: "T05.10 asked in the chat turn since L05-08 (the fast path already asks via person_choices); F05.04 done in L05-07; then T05.13 eval suite"
 updated: 2026-10-14
 ```
 AC05.04 evidence (local). **Switch:** `ORACLE_SEMANTIC_FRAME_ENABLED`, **ON by default** (owner, 2026-10-14): unset = on; `0`/`false`/`off`/`no` = off, which is exactly the previous behaviour (no parser call, nothing stored, nothing enforced; tested). **Routing (T05.05):** the ⌘K fast path (`neoh_intents`, `/api/neoh/ask`) is unchanged and makes no model call; on a miss the text becomes a chat turn, and `ai_chat_agent._generate` (`:1131`) starts `semantic_turn.prepare_turn` (`:277`) first, concurrently with the turn's grounding reads: one `fast` structured call bounded by `ORACLE_SEMANTIC_FRAME_TIMEOUT_SECONDS` (default 3 s wall clock, retries included, capped at 8), then `authorize_frame` as the caller. No provider, a timeout or an unusable answer leaves a frame-less turn (tested with the real gateway and nothing configured, and in `ORACLE_RECOVERY_MODE=1`). Real-model latency is a target (≤ the 3 s budget), not a measurement. **Discourse (T05.04, partial):** the turn's summary (goal labels, authorised record ids, constraint kinds and times, never words) is stored on its own assistant row `ai_chat_messages.metadata.semantic_frame`; the next turn reads it from the 24 messages it already loads, re-reads earlier records as the caller to offer them to the parser by number, and keeps constraints for 30 minutes. An explicit later request to reach out ("OK, text her now") lifts the no_send / draft_only / do_not_contact it contradicts; approval_required and not_before only expire. If constraints are in force and cannot be stored, the turn fails honestly. **Enforcement (T05.07)**, one table in `frame_constraints.py` for both boundaries: `check_tool` (`:324`) at `ai_chat_store.execute_safe_tool` (`:1875`, every provider loop) and `check_mission_step` (`:384`) at `missions.policy.evaluate_action` (`:251`). no_send / do_not_contact refuse every tool that contacts a person (draft_email, draft_sms, call_contact, schedule_event, share_property_tour) and withhold mission email/sms/voice steps; draft_only allows drafts (email, text, contract) and refuses other gated requests, and a mission stages drafts but never self-releases (`:334`) or stages a call; approval_required refuses direct CRM edits and blocks mission self-release; not_before refuses effectful tools before the time and moves a mission step's due_at to it (`executor._work_one :152`, journalled once as `action_deferred`). Fail closed: a person nobody could resolve, or an unknown tool target, counts as everyone; an unreadable stored list becomes no_send + approval_required. A refusal returns `{ok:false, refused:true, constraint, error}` to the model and is written to `ai_tool_operations` (status `failed`, error_code `FRAME_<KIND>`) when the call has a call_index. Missions: `missions_api.create_mission` (`:93`) parses the objective once as its creator into the existing `missions.constraints` column (no migration); the mission JSON shows `stated_constraints`. Not done: the Bedrock loop calls the chokepoint without a call_index, so its refusals are enforced but not ledgered; a correction does not cancel a command already staged (F05.04 half); a do_not_contact in a mission objective names nobody the parser can resolve (no records are offered), so it holds every outbound step; no per-agent time zone (deployment default `ORACLE_SEMANTIC_FRAME_TIMEZONE`, America/New_York); manager-routed approval for "after the manager signs off" is not built (any approver can approve the staged request).
@@ -510,7 +743,7 @@ authz_checked: "no access change: the backstop only ADDS restrictions (unscoped;
 blockers: ["owner: model-spend approval to score the parser per language (scripts/eval_semantic_frame.py --approve-spend) and to measure real parser latency in Spanish", "owner/linguist: an independent Spanish (and mixed) held-out set; the current one is author-written"]
 audit_refs: []
 decision_refs: ["owner 2026-10-14: English + Spanish at launch (L07-01 decided note)", D-2026-10-13-01]
-next_task: "Owner-approved scored run of the T05.13 harness (en/es/mixed); then T05.10 + F05.04 (L05-03 next)"
+next_task: "Owner-approved scored run of the T05.13 harness (en/es/mixed); T05.10 done in L05-08"
 updated: 2026-10-14
 ```
 **What changed.** *Parser* (`semantic_frame.py`): the system prompt (`:571`) says requests may be English, Spanish or mixed, gives the Spanish phrasing of each constraint kind, and forbids translating a quote. Evidence is compared after NFC + casefold + typographic-quote folding (`_canon :597`, `_grounded :608`), so a decomposed "todavía" or a phone's ’ still matches; an accent-stripped, translated or paraphrased quote is still `ungrounded_evidence`. *Backstop* (`semantic_language.py`): a deterministic bilingual lexicon (`_LEXICON :242`, `cues :316`) reads the five owner examples and their English twins, with verbatim spans; a "don't send" qualified in the same clause by a time or an approval becomes that qualifier ("no le mandes nada hasta el lunes" = not_before), and a draft request with a "don't send" is draft_only. `frame_constraints.reinforce` (`:300`) adds a cue's restriction only when the parser's frame lacks it (or the parser failed); a not_before cue with no trusted time becomes the strict pair (`strict :291`). `semantic_turn.apply_backstop` (`:366`) runs it in every chat turn (`prepare_turn :348`) and mission objective. **English behaviour change:** before, a parser failure on "Don't message her yet" left a frame-less turn; now the backstop enforces no_send (the two L05-03 tests that pinned the old behaviour were changed to a neutral sentence plus a new backstop test). *Fail closed:* a request `detect` (`:162`) classes as another language (Portuguese, French, German, Italian, non-Latin script) still goes to the parser and its frame stands; with no usable frame the turn takes no_send + approval_required. *Fast path:* each of the five `INTENTS` patterns has a Spanish twin (`neoh_intents.py:233-299`, accents optional), resolved in the twin's language (`:335`); `commands_api` `/classify` (`_classify_explicit :1370`) and `_parse_intent` read Spanish channel verbs (correo / texto, mensaje de texto / llama, telefonea / agenda, programa una cita), with a Spanish "el texto de" noun guard (`:863`), "de acuerdo" not an agreement, and an accent-keeping name hint (`_name_hint_es :949`); a bare "mensaje" names no channel, like "message her". *Language of answers:* no locale field exists anywhere in the schema, so the request decides (`reply_language :190`; a too-short turn keeps the conversation's stored language; default English). Refusals (`check_tool :389`, via `ai_chat_store.py:1881`), mission step reasons (`check_mission_step :445`, via `missions/policy.py:374`), `neoh_render.sources_failed` (`:80`), verified misses (`no_match :123`), person/deal choices, the public-record shortlist failures and the empty call queue come from one en/es catalogue (`MESSAGES :362`; a test holds every key to both languages with the same slots). Machine codes (`FRAME_*`) are identical in both. The frame summary stores `lang`, `detected` and `backstop` (codes only, no words). *Harness* (`semantic_eval.py`, `scripts/eval_semantic_frame.py`): T05.13 metrics (parse/abstention, intent, constraint exact/precision/recall, preservation, over-restriction, clarification, entity, unauthorized actions, latency) reported `by_lang` en / es / mixed and overall; `--backstop-only` is free; the model run refuses without `--approve-spend`. Dataset `eval_data/semantic_frames_v1.jsonl`: 65 es, 33 mixed, 31 en (dev 99, held_out 30). **Not done:** the model parser has not been scored in any language (spend not approved); the fixture set is author-written, not independent; ~~voice input is still recognised as `en-US` (`useSpeechInput.js:89`), so spoken Spanish reaches the parser as an English transcript; success answers of the fast path (person card summary, deal headline, shortlist count) and command fallback drafts (`_fallback_draft`) are still English~~ (both closed locally by L05-05, 2026-10-15; the call-queue card text from `opportunity_engine` is still English, see L05-05); Spanish time words in `not_before` are read by the backstop only as a cue (no time is computed deterministically; it falls back to the strict pair); no languages beyond en/es are detected as such except to fail closed. Policy v7 §4 unchanged (no bump).
@@ -542,6 +775,155 @@ updated: 2026-10-15
 ```
 **What changed.** *Fast-path success answers* (`neoh_render.py`): every product sentence of a successful answer now comes from the en/es catalogue (`semantic_language.MESSAGES`, new keys from `:502`): the call-queue spoken line (`:157`) and metric label; the person card's name fallback, subtitle enums (`_enum_word :210`; client_type / stage, stored values in English), its reading (`_intent_summary :218`, re-rendered in Spanish from the verdict and the two scores via `intent_states.reconcile_summary :271`) and its dispute questions (`_dispute_label :233`, via `belief_store.dispute_question :319`); "Unnamed"; the shortlist count, title, "Address unavailable" and beds/baths (`:331`); the deal headline in all three cases and its fallbacks (`deal_blocker :344`, "este trato" inside a Spanish sentence); the portfolio caveat (`_portfolio_caveat :436`, re-rendered from its counts via `expected_value.portfolio_caveat :277`). Timeline rows without a subject show the interaction type's Spanish name (`neoh_intents._interaction_word :355`). English: `intent_states._reconcile`, `belief_store._dispute_question` and `expected_value.portfolio` now read their English from the same catalogue; what they store and what the Command Center shows is unchanged. *Never translated:* names, addresses, milestone titles and types (free text on the row), timeline subjects, recorded belief values, match reasons, the predicate / source machine names. *Fallback drafts* (`commands_api._fallback_draft :1000`): written in the command's language (`reply_language(raw_text) :1012`); with no client name Spanish uses a bare greeting ("Hola:"). *Voice:* `useSpeechInput` takes `lang` and sets `SpeechRecognition.lang` before `start()` (`:96`), reporting the tag with the utterance (`:114`); `speechLanguage.js` picks the default (Spanish when `navigator.language` starts with "es", keeping its region, else en-US; manual Spanish = es-US), remembers the choice per device in localStorage (wrapped in try/catch) and makes the hint; `VoiceLanguageSwitch` (`NeohComposer.jsx:60`) is a two-letter toggle beside the mic with a label saying the current language and what pressing does, hidden where SpeechRecognition is missing (the disabled mic fallback is unchanged). No server-side user setting. *Hint:* only a SPOKEN turn sends `lang` (typed turns send exactly what they did): `/api/neoh/ask` accepts it (`intelligence_os_api.py:72`) but the matched pattern's language still decides there; the chat frame carries it (`ai_chat_models.py:30`, normalised) into the job payload (`ai_chat_api.py:325`) and the bundle (`ai_chat_agent.py:1367`), where `reply_language` (`:205`) uses it only when the words are not conclusive (too short, another language, an even mix), ahead of the conversation's previous language. **Defects found on the way:** (1) "contrato de cesión" drafted a seller_purchase, because only the English "assign" was checked; fixed (`_assignment_requested :994`). (2) Not fixed, English unchanged on purpose: the calendar fallback draft with no client reads "Follow-up with there"; the ⌘K metric reads `portfolio.total` while `expected_value.portfolio` returns `total_expected_value`, so the "Expected value of acting on all of it" figure is always empty on the fast path. **Other hard-coded 'en-US' in oracle-app/src:** none for speech or TTS (no speechSynthesis anywhere; the legacy useJarvisVoice no longer exists); the remaining 31 are Intl number / date formatting in 16 files (RehabEditorDrawer 7, MarketDataPanels 4, ...), out of scope. Policy v7 unchanged.
 
+#### L05-06 The call queue's cards in Spanish (opportunity_engine)
+```yaml
+id: L05-06
+status: tests_pass
+env: local
+evidence_shas: [ae16549]
+files: [backend/opportunity_engine.py, backend/command_center.py, backend/neoh_intents.py, backend/buyer_matching.py, backend/semantic_language.py, backend/tests/opportunity_language_cases.py, backend/tests/opportunity_en_golden.json, backend/tests/test_opportunity_language.py, backend/tests/test_opportunity_engine.py]
+tests_run:
+  - {cmd: "cd backend && python -m tests.opportunity_language_cases at 26e06e1 (before any change)", result: "14 English cards frozen in tests/opportunity_en_golden.json: 3 contract-deadline, 6 next-best-action (every fixed client_ai_automation title, a model suggestion, a legacy string, an untitled action, a missing name and summary), 3 listing-buyer (0, 1 and 2 other buyers, an unparseable address, a blank name), 2 distress. Committed alone as ae16549", date: 2026-10-15}
+  - {cmd: "cd backend && ORACLE_SKIP_DOTENV=1 python -m pytest -q -p no:cacheprovider tests/test_opportunity_language.py tests/test_opportunity_engine.py tests/test_buyer_matching.py tests/test_fast_path_language.py tests/test_semantic_language.py", result: "all passed (test_opportunity_language: 20); English (lang None, en, fr, zz) byte-identical to the golden file; every Spanish card free of the English card words; same cards, order, confidence, ids, deadlines and evidence sources in both languages", date: 2026-10-15}
+  - {cmd: "cd backend && ORACLE_SKIP_DOTENV=1 python -m pytest -q -p no:cacheprovider tests compliance_engine/tests (Python 3.13 + audioop-lts; CI uses 3.12)", result: "5187 passed, 58 skipped, 2 failed: test_media_storage::test_a_named_but_unwritable_mount_is_not_configured and test_object_storage::test_is_configured_reports_whether_a_write_could_succeed[env0-False] fail identically with the change stashed (the container runs as root, so the 'unwritable' path is writable); live-DB tests skipped (no ORACLE_LIVE_DB_ADMIN_DSN; no migration in this slice)", date: 2026-10-15}
+  - {cmd: "cd backend && bandit -q -r . -x ./tests,./venv,./ml_forge,./node_modules,./scripts --severity-level medium --confidence-level medium -b .bandit-baseline.json", result: "exit 0", date: 2026-10-15}
+authz_checked: "no access change: only sentences change language. The same detectors run the same tenant-scoped queries; lang is the fast path's matched-pattern language (en|es), never an authorisation, ranking or routing input. No migration, no grant, no RLS change. buyer_matching's property_buyer_matches response gains a matched_detail list (key + values of the notes it already returned)."
+blockers:
+  - "Record content stays as written in Spanish: client names, addresses, the intent model's own suggestion title (client_ai_automation 'model-suggestion') and its summary (model text, English today), stated needs, showing outcomes, and a recorded property type ('condo')."
+  - "The Command Center screen calls briefing() without a language and stays English, as do its horizon labels (Now, Today, ...): there is no frontend i18n and no per-user language setting."
+  - "Not deployed: pushing to main deploys staging (CONTRACT C4.4); owner approval owed."
+audit_refs: []
+decision_refs: ["owner 2026-10-14: English + Spanish at launch", "Platform Use Policy v7 §4 covers this; no policy change"]
+next_task: "Push to main with approval and check a Spanish 'who should I call' on staging; then the L05-04 next task (scored T05.13 run once spend is approved)"
+updated: 2026-10-15
+```
+**What changed.** `opportunity_engine.scan(ctx, lang=None)` hands the language to every detector (`detector(conn, ctx, lang)`); `command_center.briefing(ctx, lang=None)` passes it on; `neoh_intents._who_to_call` sends the request's language (it used to call `briefing(ctx)`). Every card sentence comes from the en/es catalogue (`semantic_language.MESSAGES`, keys `opp.*`, `fit.*`, `nba.*`, `gap.*`, `dossier.*`): the contract-deadline headline (singular/plural), why, fallback subject and address, unset status and action; the next-best-action fallbacks, evidence labels and "unscored"; the listing-match headline, why, the "N other buyers" tail, the action and evidence labels; the distress headline, why, action and evidence labels. `leads.dossier_status` values (0007 CHECK plus 'new') are named in Spanish. **Producer text, by exact match only** (`_known`): client_ai_automation's three fixed next_actions titles are translated by their code, and its five data_gaps labels (two for the property lookup) by code, but only when the stored text is exactly the catalogue's English; an edited title or a model suggestion is shown as stored. A test reads client_ai_automation's source to keep that English in step. **Matched criteria** are said from their values, not translated: buyer_matching's match Signals now carry `key` + `params` beside the English note (the English note is unchanged and a test checks each key's English template reproduces it), `property_buyer_matches` returns them as `matched_detail`, and `_fit_notes` renders Spanish from them; a note without them stays as written. buyer_matching's own "Unnamed contact" fallback reads "Contacto sin nombre". English is byte-identical for `lang` None, en and any unsupported code. **Defects found, English unchanged on purpose:** a blank buyer name gives "May fit " and "Ask Neoh about the and this home" (unreachable today: buyer_matching substitutes "Unnamed contact", which in turn gives "Ask Neoh about Unnamed and this home"); the Spanish path says "el comprador" in both cases.
+
+#### L05-07 A correction withdraws what the previous turn staged (F05.04; T05.04 remainder)
+```yaml
+id: L05-07
+status: tests_pass
+env: local
+evidence_shas: [78ccb77]
+files: [backend/correction.py, backend/commands_api.py, backend/ai_chat_agent.py, backend/tests/test_correction.py]
+tests_run:
+  - {cmd: "read semantic_frame / semantic_turn / frame_constraints and commands_api.reject_command at 78ccb77", result: "no correction concept anywhere: 'actually, the other Sarah' left the first Sarah's staged text awaiting approval (L05-03 'Not done')", date: 2026-10-16}
+  - {cmd: "cd backend && python -m pytest tests/test_correction.py", result: "24 passed: 13 English/Spanish corrections recognised, 8 ordinary requests not (incl. 'What did Sarah actually say?', 'Send the other listing', 'Mejor precio...'); only the previous turn's still-awaiting-approval requests created by this agent are withdrawn (not sent ones, not a colleague's, not a reused existing request); the model is told to say so; a DB failure never breaks the turn", date: 2026-10-16}
+  - {cmd: "cd backend && pytest tests/test_command*.py tests/test_ai_chat*.py tests/test_semantic*.py tests/test_frame*.py tests/test_approval*.py", result: "1253 passed, 4 skipped (reject route refactored into commands_api.withdraw_command, same behaviour)", date: 2026-10-16}
+authz_checked: "Withdrawal runs as the agent, through the same path as their Reject button (decide_approval + cancel + first-response ledger), only for commands whose created_by is that agent and still awaiting_approval; receipts are read through the sealed-result reader under the agent's RLS."
+blockers:
+  - "CI caught a source-inspection test pinning Stage.CANCELLED inside reject_command (tests/test_outreach_lifecycle.py:403) after the refactor was pushed without the full suite; the test now pins reject_command -> withdraw_command -> Stage.CANCELLED. Full backend suite afterwards: 5220 passed, 2 root-only failures."
+  - "Deterministic, opening-words cue only (en/es). A correction phrased later in the sentence is missed and the request stays for a human to reject (the previous behaviour). The parser does not mark corrections; T05.13's eval set should include them."
+  - "No real-PostgreSQL end-to-end test of the chat turn (unit-level with the real withdraw path covered by the existing reject tests)."
+  - "The UI is not told separately; the model's reply says it, and the approval disappears from the queue."
+audit_refs: []
+decision_refs: []
+next_task: "T05.10 done in L05-08 (chat turn asks and the chokepoint refuses picking); owner-approved T05.13 scored run."
+updated: 2026-10-16
+```
+
+#### L05-08 The chat turn asks the frame's one precise question and cannot pick a record instead (T05.10, AC05.03)
+```yaml
+id: L05-08
+status: tests_pass
+env: local
+evidence_shas: [c7c3249]
+files: [backend/semantic_turn.py, backend/frame_constraints.py, backend/semantic_language.py, backend/ai_chat_agent.py, backend/ai_chat_store.py, backend/tests/test_precise_question.py, backend/tests/test_frame_constraints.py]
+tests_run:
+  - {cmd: "read semantic_frame.authorize_frame, semantic_turn.prepare_turn/TurnFrame/bind, ai_chat_agent._generate and ai_chat_store.execute_safe_tool at c7c3249 (three parallel readers; a fourth hit the subagent session limit)", result: "authorize_frame already built the one precise question (an Ambiguity with the authorised choices; L05-02) and the stored summary kept needs_clarification, but nothing in production read it: _generate used only the turn's constraints, so the model was free to pick one of two Sarahs and the chokepoint let it; the fast path (neoh_intents) asks via person_choices, the chat turn did not. Voice has no speech output in the frontend (spoken is rendered as text)", date: 2026-10-17}
+  - {cmd: "cd backend && git stash the implementation, keep the tests; pytest tests/test_frame_constraints.py -k 'sarahs or one_sarah'", result: "1 failed, 2 passed: 'Text Sarah about the showing' with two Sarahs the agent can open dispatched draft_sms to one of them (['draft_sms'] == []); the one-Sarah control passed before and after", date: 2026-10-17}
+  - {cmd: "cd backend && pytest tests/test_precise_question.py tests/test_frame_constraints.py tests/test_semantic_frame.py tests/test_semantic_language.py tests/test_ai_tool_operations.py tests/test_tool_offer.py tests/test_ai_chat.py tests/test_correction.py", result: "1323 passed: two authorised records become one Question with each choice labelled from the parser's known list; one record is an answer, not a question; nobody-you-can-open is still a question with no choices and names none of the dropped; the ASK FIRST block names the choices and the rule in English and Spanish and tells the model the server refuses picking; check_pending refuses contacting or editing a record still in question and creating a new person (FRAME_CLARIFY, bilingual, naming no id), lets reads and other records through; execute_safe_tool refuses from the bound question before the dispatcher and ledgers the attempt, and behaves as before for another turn or with the switch off; end to end, a previous turn's second Sarah is offered to the parser, the model is told to ask and name both, its draft_sms to one is refused and ledgered, nothing is dispatched, and the stored summary keeps the flag and ids but no name", date: 2026-10-17}
+  - {cmd: "cd backend && pytest tests/ (full unit suite); livetest.sh pytest tests/test_frame_constraints_live.py tests/test_semantic_frame_access_live.py tests/test_tool_offer_live.py", result: "5299 passed, 76 skipped, 2 failed (the known root-only test_media_storage / test_object_storage cases of this container); 3 passed", date: 2026-10-17}
+authz_checked: "The question is built only from candidates authorize_frame kept as the caller (dropped ones stay a count); labels come from the known-record list the parser was already shown and live for the turn only — the stored summary is unchanged (ids, kinds, the needs_clarification flag; no words, C5.4). The refusal names the mention as the person wrote it and never a record id. Pending is bound per turn (ContextVar keyed by the assistant id) and is None with the switch off."
+blockers:
+  - "The model asks in prose; the UI has no structured quick-reply for the choices and no frame field to carry the chosen record back (ChatSendFrame has text + context only). The next turn re-parses the person's answer against the same known list, which is how the question gets answered today. (Buttons added in L05-09.)"
+  - "Review L05-11 fixed four defects in this slice: a question the parser wrote could hide the server's; only the first ambiguous mention was held; check_pending let non-person actions through while asking; the refusal and the tool log line could carry a name."
+  - "Voice: no speech output exists in the frontend; 'name the choices in voice' has no seam beyond the fast path's spoken sentence."
+  - "Contacts and deals are never offered to the parser as known records (semantic_turn._known_records filters to client/lead), so a person who exists only as a contact cannot be a choice."
+  - "A name not in the known list (not selected, not resolved by an earlier turn) yields no candidates and no question; the model falls back to tools (search_clients), which can ask on its own but is not enforced. (Looked up since L05-10.)"
+  - "Not deployed (C4.4)."
+audit_refs: []
+decision_refs: []
+next_task: "Choice block done in L05-09; offer contacts as known records; owner-approved T05.13 scored run."
+updated: 2026-10-17
+```
+
+#### L05-09 The chat UI offers the question's choices as buttons; picking one answers with that record (T05.10, T05.04)
+```yaml
+id: L05-09
+status: tests_pass
+env: local
+evidence_shas: [a1ecb4a]
+files: [backend/ai_chat_agent.py, backend/ai_chat_store.py, backend/tests/test_chat_choices.py, oracle-app/src/components/AssistantMessages.jsx, oracle-app/src/components/AssistantShell.module.css, oracle-app/src/state/oracleReducer.js, oracle-app/src/neoh/NeohConversation.jsx, oracle-app/src/neoh/NeohSurfacePanel.jsx, oracle-app/src/components/AssistantMessages.test.jsx, oracle-app/src/state/oracleReducer.aiChat.test.js]
+tests_run:
+  - {cmd: "read ai_chat_store.list_messages / update_assistant, handle_ai_chat_job's AI_CHAT_COMPLETE frame, AssistantMessages.jsx, oracleReducer.js and useNeohChannel.send at a1ecb4a", result: "an assistant message was plain text: no field carried the question's choices and nothing in the UI could send a chosen record back (ChatSendFrame has text + context only); the fast path's comparison block only navigates", date: 2026-10-17}
+  - {cmd: "git stash the implementation, keep the tests; cd backend && pytest tests/test_chat_choices.py; cd oracle-app && npx vitest run src/components/AssistantMessages.test.jsx src/state/oracleReducer.aiChat.test.js", result: "3 failed; 2 failed (16 passed)", date: 2026-10-17}
+  - {cmd: "cd backend && pytest tests/test_chat_choices.py tests/test_frame_constraints.py tests/test_ai_chat.py tests/test_pan_redaction_paths.py tests/test_tool_offer.py tests/test_ai_chat_interrupted_turn.py tests/test_precise_question.py", result: "287 passed: update_assistant writes the choices as {type, id} into metadata (no name reaches plaintext) and leaves metadata alone without choices; the turn end puts the ids on the row and the labels on AI_CHAT_COMPLETE, [] / None without a question; list_messages re-reads each choice's label as the caller and drops one they can no longer open", date: 2026-10-17}
+  - {cmd: "cd backend && pytest tests/ (full unit suite); livetest.sh pytest tests/test_frame_constraints_live.py tests/test_reconciliation_live.py tests/test_sealed_text_two_live.py tests/test_tool_offer_live.py", result: "5302 passed, 76 skipped, 2 failed (the known root-only test_media_storage / test_object_storage cases of this container); 4 passed", date: 2026-10-17}
+  - {cmd: "cd oracle-app && npx vitest run && npx eslint . && npm run build && node scripts/check-bundle-budget.mjs", result: "928 passed (the group 'Which one did you mean?' offers each record as a button; a click calls onChoose with the choice; nothing for a turn without a question and never on the person's own message; the reducer keeps the frame's choices); eslint exit 0; within budget. NeohConversation and NeohSurfacePanel send the label with {type, id} as the next turn's context", date: 2026-10-17}
+authz_checked: "The row stores record ids only (metadata is plaintext jsonb; A01). Labels are read twice as the caller: at turn end from the parser's own known list, and on listing through resolve_record under RLS, so a record the person can no longer open is not offered again. A click sends the ordinary AI_CHAT_SEND with the chosen record as context; the next turn's parser resolves the mention against it (T05.04: the clarification amends the frame)."
+blockers:
+  - "The click sends the choice's label as the person's message text so the transcript reads naturally; the model answers the original request only if it reads it from history (no re-run of the original intent)."
+  - "No Playwright check of the buttons (jsdom only)."
+  - "Contacts are named in the question and held, but are not buttons (ChatContext and wireContext carry client / lead / listing / contract only); a person who exists only as a contact is answered in words (L05-11)."
+  - "Not deployed (C4.4)."
+audit_refs: []
+decision_refs: []
+next_task: "Lookup of an unplaced name done in L05-10 (contacts included as candidates); owner-approved T05.13 scored run."
+updated: 2026-10-17
+```
+
+#### L05-10 A name the parser could not place is looked up as the caller, so the turn resolves it or asks (T05.10, AC05.03)
+```yaml
+id: L05-10
+status: tests_pass
+env: local
+evidence_shas: [1012b33]
+files: [backend/semantic_turn.py, backend/search_api.py, backend/tests/test_person_lookup.py, backend/tests/test_person_lookup_live.py, backend/tests/test_frame_constraints.py, backend/tests/test_search_api.py, backend/tests/test_fast_path_language.py, .github/workflows/ci.yml]
+tests_run:
+  - {cmd: "read semantic_turn._known_records / _parse and semantic_frame.authorize_frame at 1012b33", result: "the parser may only refer to records it was shown (the selected record and up to 5 the previous turn resolved, clients and leads only). 'Text Sarah' with no Sarah on screen left a person mention with no candidates: authorize_frame asks only when a mention HAS candidates, so there was no question and the model searched and picked on its own", date: 2026-10-17}
+  - {cmd: "git stash search_api.py semantic_turn.py, keep the tests; pytest tests/test_frame_constraints.py -k nobody_mentioned; livetest.sh pytest tests/test_person_lookup_live.py", result: "before: the turn dispatched draft_sms to a Sarah the model chose (['draft_sms'] == []); live, agent A's 'Sarah' had no candidates ([] == [A's Sarah]); 16 unit tests failed in all", date: 2026-10-17}
+  - {cmd: "cd backend && pytest tests/test_person_lookup.py tests/test_search_api.py tests/test_frame_constraints.py tests/test_precise_question.py tests/test_semantic_frame.py tests/test_semantic_language.py tests/test_fast_path_language.py tests/test_neoh_intents*.py tests/test_chat_choices.py tests/test_missions*.py tests/test_client_ai_automation.py", result: "1485 passed: an unplaced person mention runs the fast path's own people search as the caller; each hit names its record (client, a contact's legacy client, or the contact) and becomes a candidate for authorize_frame, deduplicated, non-person hits and bad ids skipped; pronouns (en/es) and non-names are never searched; a placed mention is not searched; a failed, slow (1.5 s budget) or unchecked people leg changes nothing; two hits the caller can open become the turn's question with their labels, one becomes the answer and the other is a dropped count, never named; end to end, a Sarah nobody mentioned before is looked up and asked about, the model's draft_sms is refused (FRAME_CLARIFY) and nothing is dispatched. Two existing pins updated for the new shapes (the hit's 'record' key, _parse's fifth value)", date: 2026-10-17}
+  - {cmd: "livetest.sh pytest tests/test_person_lookup_live.py tests/test_semantic_frame_access_live.py tests/test_frame_constraints_live.py (real PostgreSQL 16, FORCE RLS, app login, real search_api)", result: "3 passed: two clients named Sarah, agent A's and agent B's; agent A's 'Text Sarah' finds only A's Sarah, resolves to her without asking, and B's Sarah is not a candidate, not a dropped count, not in the summary; the owner, who can open both, gets one question naming both; the stored summary carries ids, never a name", date: 2026-10-17}
+  - {cmd: "cd backend && pytest tests/ (full unit suite); cd oracle-app && npx vitest run", result: "5317 passed, 77 skipped, 2 failed (the known root-only test_media_storage / test_object_storage cases of this container); 928 passed", date: 2026-10-17}
+authz_checked: "The search runs in the caller's own tenant transaction (search_api legs never duplicate an RLS predicate), so a record they cannot open is never found, never a candidate and never counted; authorize_frame still re-reads every hit's access as the caller before it can resolve or be offered. Labels live for the turn; the stored summary keeps ids and kinds only (C5.4)."
+blockers:
+  - "Each unplaced person mention adds one people search (up to 1.5 s, outside the parser's own 3 s budget) to the turn's preparation; nothing measures that latency on real traffic yet."
+  - "Only person mentions are looked up; a property or deal named but not on screen is still left to the model's tools."
+  - "The search is a substring match (clients ILIKE + contacts' blind index). Since L05-11 only hits scoring at least 0.7 (exact, prefix or word-start) become candidates, and at the 5-hit cap the question says 'at least 5' and names the strongest five, not every match."
+  - "A lookup that finds nobody the caller can open asks nothing (so 'create a client named Sarah Moss' still works); the model is left to its tools for that name, as before L05-10."
+  - "Not deployed (C4.4)."
+audit_refs: []
+decision_refs: []
+next_task: "Owner-approved T05.13 scored run (en/es/mixed); look up properties and deals named but not on screen the same way."
+updated: 2026-10-17
+```
+
+#### L05-11 Review fixes: the server's question cannot be hidden, every ambiguous record is held, a lookup never narrows or lifts a restriction, nobody is named in logs (T05.10, AC05.03)
+```yaml
+id: L05-11
+status: tests_pass
+env: local
+evidence_shas: [505d846]
+files: [backend/semantic_turn.py, backend/semantic_frame.py, backend/frame_constraints.py, backend/semantic_language.py, backend/ai_chat_agent.py, backend/ai_chat_store.py, oracle-app/src/components/AssistantMessages.jsx, backend/tests/test_precise_question.py, backend/tests/test_person_lookup.py, backend/tests/test_chat_choices.py, backend/tests/test_frame_constraints.py, backend/tests/test_fast_path_language.py, oracle-app/src/neoh/NeohConversation.test.jsx]
+tests_run:
+  - {cmd: "adversarial review workflow wf_c4a15c04-be5 over L05-08..L05-10 at 505d846 (readers + verifiers)", result: "confirmed: (1) question_from took the first ambiguity, so one the parser wrote (choices stripped) hid the server's; (2) only the first ambiguous mention was held, so 'text Sarah and call Mike' let the call through; (3) the FRAME_CLARIFY refusal quoted the mention and the 'chat tool ... error=' log line carried exception text, so a name could reach logs; (4) lookup candidates scoped a do-not-contact to the hits and could lift one while still asking. Also reported and fixed here: check_pending let non-person actions and create_client through; weak substring hits became candidates; labels went into the prompt unfenced; same-name choices were identical; the 'nobody' block claimed server enforcement; English placeholders in Spanish turns; a capped search was counted as exact; contact choices rendered as dead buttons", date: 2026-10-17}
+  - {cmd: "git stash the implementation, keep the tests; cd backend && pytest tests/test_person_lookup.py tests/test_precise_question.py tests/test_chat_choices.py; cd oracle-app && npx vitest run src/neoh/NeohConversation.test.jsx", result: "test_person_lookup 17 failed, 1 passed: a do-not-contact on an unplaced Sarah was scoped to the lookup's one hit ((CHEN,) is not None), a turn still asking lifted the standing do-not-contact on Chen, and a mission objective ran a people search (1 query != []); the rest fail on the new Lookup / lang shapes. test_precise_question and test_chat_choices fail at collection on the old Pending / Choice signatures. Frontend: 1 failed (the choice button showed the type, not 'buyer · active')", date: 2026-10-17}
+  - {cmd: "cd backend && pytest tests/test_precise_question.py tests/test_person_lookup.py tests/test_chat_choices.py tests/test_frame_constraints.py tests/test_semantic_frame.py tests/test_semantic_language.py tests/test_fast_path_language.py tests/test_ai_chat.py tests/test_killer_demo_paths.py tests/test_missions*.py", result: "1515 passed: the question is built only from ambiguities authorize_frame marked server (the flag is stripped from parser output); a parser question never hides the server's; every ambiguous mention's authorised records are held and the others are named as 'also unclear'; while choices are pending every effectful tool is refused (FRAME_CLARIFY; create_client with its own guidance) and reads run; the refusal names nobody, in English and Spanish; choices go to the model as fenced JSON data ('<' escaped) with a type / stage / email detail; a capped search says 'at least'; placeholders are localised; only hits scoring >= 0.7 are candidates; constraints and lifts are computed without lookup candidates and nothing lifts while asking; missions never search; the tool log line is 'chat tool <name> ok|refused:<code>|failed' with no error text; AI_CHAT_COMPLETE carries only clickable (client / lead) choices with their detail", date: 2026-10-17}
+  - {cmd: "cd backend && pytest tests/ --deselect tests/test_media_storage.py --deselect tests/test_object_storage.py; livetest.sh pytest tests/test_person_lookup_live.py tests/test_frame_constraints_live.py tests/test_semantic_frame_access_live.py tests/test_tool_offer_live.py", result: "5289 passed, 77 skipped, 45 deselected (the container's root-only storage cases); 4 passed", date: 2026-10-17}
+  - {cmd: "cd oracle-app && npx vitest run && npx eslint src && npm run build && npm run bundle:check", result: "929 passed (new: clicking a choice sends AI_CHAT_SEND with the label as content and {type: client, id} as context, and the button shows the detail); eslint clean; built; within budget", date: 2026-10-17}
+authz_checked: "Unchanged boundaries: candidates are still kept or dropped by authorize_frame as the caller, the lookup still runs in the caller's tenant transaction, and the stored summary still holds ids and kinds only. New: the hold covers every authorised record of every ambiguous mention and fails closed for any effectful tool, not just person-targeted ones; refusals and the tool log line carry a code, never a mention or exception text (A01)."
+blockers:
+  - "Contacts are named and held but are not buttons: ChatContext / wireContext / resolve_record accept no contact type, so supporting one needs an ai_chat_messages.context_type CHECK migration and a contact resolver."
+  - "Holding every action while asking also holds an unrelated action in the same turn (e.g. a task about someone else) until the person answers; the refusal says why. Chosen deliberately (fail closed)."
+  - "The STRONG_MATCH threshold (0.7) and the 5-hit cap are judgement calls, not measured on real books."
+  - "No Playwright check of the buttons (jsdom only). Not deployed (C4.4)."
+audit_refs: [A01]
+decision_refs: []
+next_task: "Owner-approved T05.13 scored run; contact as a chat context (migration + resolver); look up properties and deals named but not on screen."
+updated: 2026-10-17
+```
+
 ### L06
 Evidence retrieval and memory.
 
@@ -560,6 +942,54 @@ audit_refs: [A01, A02]
 decision_refs: []
 next_task: "T06.06 + AC06.01"
 updated: 2026-10-12
+```
+
+#### L06-02 Search legs: elapsed time, a wall-clock bound and a bundle verdict (T06.06, AC06.01)
+```yaml
+id: L06-02
+status: tests_pass
+env: local
+evidence_shas: [aefac40, 6c7133b]
+files: [backend/search_api.py, backend/tests/test_search_api.py, oracle-app/src/neoh/searchModel.js, oracle-app/src/neoh/searchModel.test.js, oracle-app/src/neoh/UniversalWorkspace.jsx, oracle-app/bundle-budget.json]
+tests_run:
+  - {cmd: "read search_api.search at aefac40", result: "per-leg C6 source_status already existed (L05, T05.11) but no elapsed time; a leg was bounded only by SET LOCAL statement_timeout, so a stuck pool acquire or the comms rollup (no SQL budget) could hold the box open and never report timed_out; no bundle-level verdict; the Work box read only the bare `degraded` list, so a leg with no recognisable status showed as 'Nothing matches'", date: 2026-10-16}
+  - {cmd: "cd backend && python -m pytest tests/test_search_api.py with search_api.py stashed, then restored", result: "before: 2 failed (the AC06.01 bundle test and the clean/not_applicable test); after: 16 passed", date: 2026-10-16}
+  - {cmd: "cd backend && ORACLE_SKIP_DOTENV=1 python -m pytest -q tests/ (env -i)", result: "5139 passed, 66 skipped, 2 failed: test_media_storage / test_object_storage unwritable-mount cases, which fail only as root in this container (same as every earlier slice; green in CI)", date: 2026-10-16}
+  - {cmd: "cd oracle-app && npx vitest run && npx eslint . && npm run build && node scripts/check-bundle-budget.mjs", result: "896 passed; eslint exit 0; build ok; budget re-pinned (+0.1 KB for failedKinds on top of growth earlier slices had already spent from the 2 KB tolerance: 4121.4 KB raw total, largest chunk unchanged at 2271.2 KB)", date: 2026-10-16}
+authz_checked: "No access change. Every leg still runs in the caller's own tenant_tx (RLS decides); the status carries stable reason codes only, never exception text or the query."
+blockers:
+  - "Legs named in T06.06 that do not exist yet: property sources (11), deal timeline, calls, files. Not added here: each needs its own RLS-checked query; the five existing legs (people, properties, deals, conversations, records) carry the full contract."
+  - "`degraded` (the bare list) is kept one release so a client from the previous release still shows its banner; drop it once the new client is deployed."
+  - "Freshness is checked_at only: every leg reads live tables in the request, nothing is cached. When T06.08 adds caches, an entry must carry the cache's own age."
+  - "Not checked in a real browser (jsdom only). Not deployed (C4.4)."
+audit_refs: [A02]
+decision_refs: []
+next_task: "T06.02 + AC06.02 (typed EvidenceBundle with a schema version, built on this per-leg contract); 11 T11.10 reuses it for client automation."
+updated: 2026-10-16
+```
+
+#### L06-03 The evidence contract: versioned EvidenceFact and EvidenceBundle (T06.02, AC06.02; T06.04 beliefs adapter)
+```yaml
+id: L06-03
+status: tests_pass
+env: local
+evidence_shas: [d7e3ce6, 63ac40b]
+files: [backend/evidence.py, backend/tests/test_evidence_bundle.py]
+tests_run:
+  - {cmd: "git grep -n 'EvidenceBundle\\|evidence_bundle\\|context_compiler' backend at d7e3ce6", result: "nothing: no evidence type existed; beliefs (belief_store) carried provenance, decay and disputes in their own shape, search legs their own C6 status", date: 2026-10-16}
+  - {cmd: "cd backend && python -m pytest tests/test_evidence_bundle.py", result: "20 passed (new file: every contract rule refused when broken, round trip, version refusal, beliefs adapter, failed read -> unknown)", date: 2026-10-16}
+  - {cmd: "bandit -q evidence.py", result: "no findings", date: 2026-10-16}
+  - {cmd: "cd backend && ORACLE_SKIP_DOTENV=1 python -m pytest -q tests/ (env -i)", result: "5159 passed, 66 skipped, 2 failed: the same root-only unwritable-mount cases as L06-02 (green in CI)", date: 2026-10-16}
+authz_checked: "No access change. evidence.py reads nothing itself; beliefs_bundle calls belief_store.beliefs_about under the caller's own RLS context and filters nothing (no duplicated RLS predicate, C3.3). `audience` names the record whose RLS decided visibility."
+blockers:
+  - "No consumer yet: nothing sends an EvidenceBundle to a model or a page. The context compiler (T06.03) is the first consumer; until then this is a contract with tests, not a shipped behaviour."
+  - "Mapping of belief grades to C6 classes is a judgement, recorded in evidence._BELIEF_CLASS: confirmed -> fact only with a citable ref and never from a model; reported -> provisional (said, not verified); inference -> inferred; hypothesis -> provisional. Nothing maps to `predicted` yet (no forecast store is adapted). Owner/05 to confirm."
+  - "Only the beliefs store is adapted. Search hits, intent_states (declared/observed) and outcome_memory still have their own shapes (T06.04 continues)."
+  - "Sensitivity reuses retention_policy.RetentionCategory; `authorized audience` is the RLS-deciding record, not a role list."
+audit_refs: [A02]
+decision_refs: []
+next_task: "T06.03 context compiler (first consumer of EvidenceBundle), then AC06.03 real-PostgreSQL test that no forbidden record reaches compiled context."
+updated: 2026-10-16
 ```
 
 ### L07
@@ -586,9 +1016,65 @@ blockers:
   - {type: owner, note: "archive_client: the persona said 'Never delete or archive data' while archive_client was an offered, undoable edit. Resolved toward the tool surface ('Never delete data. Archive a client only when explicitly asked'); two tests that pinned the old sentence now pin the new one. Owner to confirm, or say to take archive_client off the offer instead."}
 audit_refs: [A09]
 decision_refs: [D-2026-10-12-01]
-next_task: "T07.02 + AC07.01 (ToolCapability registry per tool, built on ai_capabilities); T07.04: stop offering the nine owner-only tools to agents rather than refusing them at execution."
+next_task: "T07.02 done in L07-02; T07.04 done in L07-03 (the nine owner-only tools are no longer offered to agents); owner: archive_client."
 notes: "Over-claims found at 3bcab84 and fixed: (1) backend/NEOH_SYSTEM_KNOWLEDGE.md (in every long system prompt) claimed MLS 'via real-time feed' and MLS-sourced listing search, CourtListener, Census, Regrid, county assessor, GovInfo, BatchLeads/PropStream firehose, state underwriting models, owner history/tax records, 'PII columns encrypted via pgcrypto AES-256' (false per A01), SES/Twilio/Google delivery; rewritten as a page guide that claims no capability. (2) neoh_persona AUTHORITY 'Never delete or archive data' contradicted offered archive_client. (3) ai_chat_agent._VOICE_PROMPT told the phone model to promise lookups and 'Let me connect you … [CONNECT]' / '[END]'; nothing parses either marker and the voice path has no tools. (4) ai_chat_agent._CODEBASE_MAP (codebase_summary) presented MLS and migrations '0001-0041'. (5) 36 offered tool descriptions/schemas claimed more than their handlers: get_tenant_health (API latency, pool, cache), list_integration_status (MLS/SES/Stripe/Foundry/Regrid health), list_providers ('connected'), get_team_pipeline ('all agents'), search_listings + get_days_on_market (MLS), search_clients (stage), update_client (email/phone always refused), score_client_lead (reason ignored), estimate_arv (beds/baths ignored), list_contract_templates (filters ignored), get_audit_trail (limit ignored), get_deal_detail (contract, notes), track_deadlines (assignment), get_agent_performance (margin), check_contract_deadlines (contingencies), get_client_contact_history (meeting notes), create_deal_note (deal_id is a transaction id), calculate_mao (holding costs, floor), list_closing_checklist, get_transaction_workflow, get_job_queue, list_property_photos, suggest_client_matches; owner-only tools never said so; selected-record-only edits did not say so. (6) UI: OurAITab chat chips asked for things no tool does (approval-queue summary, multi-lead outreach sequences, cross-thread conversation review, equity reviews, public-property evidence, automation gaps) — now honest prompts or navigation; 'Social Ads … dynamic MLS'; 'record-changing actions still require review' (they apply with Undo); ProductTour 'MLS listings', 'authorized IDX sources', 'Everything Neoh can do'; PersonalAITab showed 'Public-record research: Enabled' / 'Draft preparation: Enabled' for preferences nothing reads, 'Research … can run autonomously', 'Accounts connected' for saved credentials. Guard: tests/test_ai_capabilities.py (unbacked_claims over persona layers, product knowledge, phone prompt, codebase map, every offered tool's description and parameters, usable area summaries; registry = allowlist; API per role; snapshot current) and oracle-app/src/lib/assistantCapabilities.test.js (every OurAITab chat chip, assistant copy files, MLS/IDX/RESO in ProductTour and OurAITab). Swept and NOT changed (other owners): SitePreview.jsx:212 IDX intake copy and BrokerageSetupPanel MLS setup row (14 / 11); CommsTab.jsx:307 'Queued — AI sends' for a human-composed email (10); AssistantMessages 'Anything that reaches a client waits for your approval' and OurAITab hero vs mission autopilot that releases its own approvals (missions/executor.py _release; 08); BrokerageOnboardingPanel autonomy toggles still offered though unused (03/08). Risk: test_compact_is_substantially_smaller now passes by ~20 characters (compact 3769 vs full/3 3790); a longer capability block will trip it."
 updated: 2026-10-13
+```
+
+#### L07-02 Versioned ToolCapability registry, derived not restated (T07.02, AC07.01)
+```yaml
+id: L07-02
+status: tests_pass
+env: local
+evidence_shas: [42f0c0a]
+files: [backend/tool_capabilities.py, backend/ai_chat_store.py, backend/tests/test_tool_capabilities.py]
+tests_run:
+  - {cmd: "read ai_tool_policy.TOOL_RISK, ai_chat_agent.TOOLS/_tool, ai_chat_store._execute_safe_tool, ai_capabilities.tool_state at 42f0c0a", result: "each property a capability needs already had one deciding source, but no per-tool record joined them; the selected-record rule lived as an inline tuple inside _execute_safe_tool", date: 2026-10-16}
+  - {cmd: "cd backend && python -m pytest tests/test_tool_capabilities.py tests/test_ai_tool_policy.py tests/test_ai_capabilities.py tests/test_ai_chat.py tests/test_ai_tools_read.py", result: "254 passed (9 new: one entry per catalog tool = TOOL_RISK; purpose and schema hash from the catalog; effect/confirmation/idempotency follow the risk class; offer, owner-only and selected-record match the runtime; every tool in one area; unmeasured fields are None; version moves with any entry)", date: 2026-10-16}
+authz_checked: "No access change. needs_selected_record() is the same rule _execute_safe_tool applied inline (moved, not changed); the registry reads the allowlist and owner-only set, it does not decide them."
+blockers:
+  - "126 tools: 102 read, 13 internal edits (undoable receipt), 11 external effects (approval); 57 offered. Latency, cost, per-tool timeout and verifier are None and listed in `unmeasured`: nothing measures them per tool yet (T07.07 budgets, T07.10 verifiers)."
+  - "No endpoint exposes it. Consumed since L07-03 (tool_offer reads owner_only per turn) and L08-03/L08-04 (missions.planner.channel_feasibility reads offered); the planner is its first consumer, the chat offer its second."
+  - "Record types per tool are not in the entry: the catalog does not declare them; the `area` (ai_capabilities) is the nearest derived grouping."
+audit_refs: [A09]
+decision_refs: []
+next_task: "T07.04 done in L07-03; owner: archive_client (L07-01)."
+updated: 2026-10-16
+```
+
+#### L07-03 The model is offered only what this actor can use, and is told why the rest is not (T07.04, AC07.01)
+```yaml
+id: L07-03
+status: tests_pass
+env: local
+evidence_shas: [893c587]
+files: [backend/tool_offer.py, backend/channel_setup.py, backend/commands_api.py, backend/ai_chat_agent.py, backend/ai_chat_store.py, backend/ai_chat_api.py, backend/ai_tools_read.py, backend/tests/test_tool_offer.py, backend/tests/test_tool_offer_live.py, backend/tests/test_channel_setup.py, backend/tests/test_ai_tool_policy.py, backend/tests/test_security_launch_review.py, .github/workflows/ci.yml]
+tests_run:
+  - {cmd: "read ai_chat_agent offered_tool_names/_tool_config/_foundry_tools/_local_tools, ai_chat_store.execute_safe_tool, ai_tools_read.OPS_ROLE_TOOLS, handle_ai_chat_job and ai_chat_api's enqueue at 893c587 (five parallel readers, file:line evidence)", result: "the offer was role-blind and channel-blind: an agent was shown the nine broker-owner reads and refused at the handler; draft_sms / draft_email / call_contact / schedule_event were offered whatever the brokerage had connected. The chat worker ran every turn as Role.AGENT (ai_chat_agent.py:1368; the job payload carried no role), so a broker-owner asking for their own workspace report was told 'your role is agent' while /api/ai/chat/capabilities told the same owner it was available", date: 2026-10-16}
+  - {cmd: "cd backend && git stash the implementation, keep the tests; pytest tests/test_tool_offer.py tests/test_tool_offer_live.py tests/test_sales_stack.py tests/test_ai_tool_policy.py -k <new tests>", result: "before: test_tool_offer.py fails to collect (no tool_offer); 6 failed (4 channel-gap tests, 2 per-actor offer tests); live test ModuleNotFoundError", date: 2026-10-16}
+  - {cmd: "cd backend && pytest tests/test_tool_offer.py tests/test_sales_stack.py tests/test_ai_tool_policy.py tests/test_ai_chat.py tests/test_ai_capabilities.py tests/test_tool_capabilities.py tests/test_ai_tools_read.py tests/test_frame_constraints.py tests/test_semantic_language.py tests/test_neoh_persona.py tests/test_killer_demo_paths.py tests/test_llm_gateway.py tests/test_interactive_job_queue.py tests/test_ai_chat_interrupted_turn.py tests/test_missions_planner.py", result: "1595 passed: an agent's offer = the release offer minus the nine owner-only reads, each with a reason; owner and platform admin unchanged; a channel gap withholds that channel's tool only where the record unlocks it; unknown state ({} / no pool / snapshot error / 3 s timeout) withholds nothing; the prompt note lists every withheld tool and reason; execute_safe_tool refuses a withheld tool with the reason before the dispatcher; the local/gateway payload, the Foundry request and the Bedrock toolConfig drop exactly the withheld names; _generate end to end puts the note in the prompt and remembers the offer for the executor; _worker_role maps broker_owner->broker_owner, platform_admin->broker_owner, agent/None/garbage->agent; the job payload carries ctx.role.value. The 126 / 57 counts, the UI snapshot and the registry version are unchanged", date: 2026-10-16}
+  - {cmd: "livetest.sh pytest tests/test_tool_offer_live.py tests/test_frame_constraints_live.py tests/test_migration_precheck.py (real PostgreSQL 16, FORCE RLS, app login)", result: "10 passed: a fresh brokerage withholds texting / email / Neoh calls / scheduling with the setup each needs and the owner reads for an agent (not for the owner); the executor refuses draft_sms with 'no registered text number' and command_executions stays empty; a registered text number + a Twilio row validated for sms brings draft_sms back while call_contact stays withheld for voice; a valid Google row brings schedule_event back", date: 2026-10-16}
+  - {cmd: "cd backend && pytest tests/ (full unit suite)", result: "5265 passed, 76 skipped, 2 failed (the known root-only test_media_storage / test_object_storage cases of this container)", date: 2026-10-16}
+  - {cmd: "cd oracle-app && npx vitest run && npx eslint . (frontend unchanged)", result: "925 passed; eslint exit 0", date: 2026-10-16}
+  - {cmd: "adversarial review of the pushed diff (3bd0b2f): five finders, each finding then judged by two refuters (workflow wf_17a771ee-c82)", result: "three HIGH findings confirmed by reading the executor: the first gap check mirrored the delivery page's Twilio-centric snapshot, not the command paths. (1) SMS: the default rail is Telnyx (messaging_provider.py), whose send needs an active hosted order on a voice-verified business number, never telephony_routes.sms_sender_e164. (2) Voice: the call path fails closed only on a missing verified caller ID, then follows the route's rail — Plivo (the default voice provider; env-only, provider_credentials admits no plivo row) or Twilio with the custom-call fallback. (3) Calendar: the OAuth flow labels the Google row with the connecting user's agent_id, which the owner-view snapshot never reads; and an expired access token with a refresh token is not a disconnected calendar. Also: the email reason claimed 'no mail server' for saved-but-unvalidated rows; the Foundry runtime context cut (12k) could drop the note; the worker trusted the role recorded at enqueue; the prompt asserted 'signed in as agent' for jobs without a recorded role", date: 2026-10-16}
+  - {cmd: "livetest.sh python probe at 3bd0b2f (implementation stashed): a Telnyx-ready agent (verified number on Plivo, hosted order active) and an owner with a Google row under their own label", result: "sales_api.channel_setup_gaps at 3bd0b2f returned sms 'no registered text number', voice 'no Twilio voice account' and calendar 'isn't connected' for both — false on a working deployment. Fixed: channel_setup.py mirrors the executor (same reads: get_messaging_route / get_public_business_number / get_verified_caller_id / get_telephony_route, the credential loaders' own row selection via has_provider_credential / has_google_calendar without decrypting, the same env fallbacks); the reasons use the executor's words", date: 2026-10-16}
+  - {cmd: "cd backend && pytest tests/test_channel_setup.py tests/test_tool_offer.py tests/test_security_launch_review.py + the suites above", result: "1607 passed, 2 skipped: every channel names what it needs; Telnyx needs an active hosted order on a verified number ('still being set up (processing)' while pending); Twilio SMS needs an account somewhere; calls need a verified caller ID then the route's own rail (Plivo env, Twilio row/env or the custom call URL); email: this agent's credential (own, default, shared) or the platform relay; the calendar gap follows the row the command loads, whoever asks; a failing read leaves that channel out; the loaders and the readers share one SQL each. The turn's role: an active member's live users.role wins (promotion and demotion both), a removed member runs as agent, an unreadable row leaves the recorded role (narrowed); the reason never asserts who the person is", date: 2026-10-16}
+  - {cmd: "livetest.sh pytest tests/test_tool_offer_live.py tests/test_frame_constraints_live.py tests/test_command_drafts_access_live.py tests/test_migration_precheck.py", result: "12 passed: nothing connected withholds all four channels + the owner reads for an agent; the executor refuses draft_sms with 'business number' and command_executions stays empty; a verified Plivo number with a 'processing' hosted order says so, 'active' brings draft_sms back; call_contact needs the platform Plivo env; a saved unvalidated SMTP row closes the email gap; a Google row under the owner's label closes the owner's calendar gap and not the agent's", date: 2026-10-16}
+  - {cmd: "cd backend && pytest tests/ (full unit suite, after the review fixes)", result: "5275 passed, 76 skipped, 3 failed: the 2 known root-only cases and test_security_launch_review's pin on the credential-fallback predicate, which moved into the shared _PROVIDER_ROW_SQL; the pin now checks that SQL and that both readers use it (63 passed on re-run)", date: 2026-10-16}
+  - {cmd: "the review's unverified test-adequacy claims (its verify agents hit the session limit), checked by hand and answered with tests", result: "each provider path is now observed through its real seam: the Bedrock toolConfig (_offered_tool_config, incl. nothing-left -> None, and a full _generate turn with _converse captured), a _foundry_generate turn (tools filtered on every round; the executor keyed on the assistant turn id), the local/gateway payload, and the note leading Foundry's runtime context ahead of the memory block; the eviction test now starts from an empty store and pins oldest-first; test_ai_tool_policy's three-provider test calls the real seams instead of re-implementing the filter. One claim was a defect, fixed: a platform admin has no users row, so the 'missing member -> agent' rule demoted them; the recorded platform_admin role now stands, narrowed to broker_owner", date: 2026-10-17}
+authz_checked: "The release offer and the handler role check are untouched; tool_offer only subtracts. The chat turn runs as the requester's CURRENT users.role (record_access.find_member, read as an agent), falling back to the role the API recorded at enqueue only when the row cannot be read, and never wider than broker_owner so the tool loop never reads across tenants under RLS. Channel truth mirrors the executor's own preconditions per actor (this agent's routes and the credential loaders' own row selection, without decrypting). Reason strings carry no number, address or secret. The remembered offer is keyed by (tenant_id, assistant turn id); a turn id is a UUID never reused."
+blockers:
+  - "The persona's capability block (ai_capabilities.prompt_block) is still the owner view baked at import; an agent's prompt now says the owner reads are withheld later in the same prompt. One per-actor block would be cleaner (prompt 02's one-vocabulary ask)."
+  - "channel_setup.gaps costs up to 7 small reads per chat turn (one tenant transaction each); nothing caches it across turns."
+  - "A member deactivated or removed between enqueue and claim still gets their turn, as an agent (the pre-existing behaviour); refusing it outright is a product decision."
+  - "The review's verify phase had not finished when this was pushed (two CPUs: two agents at a time); its remaining verdicts are the next check-in's work."
+  - "No Playwright or real-model run shows the model actually answering 'texting needs setup' from the note; the evidence is the prompt text and the executor refusal."
+  - "Mission plans (L08-03) still judge channels by the static registry, not by this per-brokerage gap check."
+  - "Not deployed (C4.4)."
+audit_refs: [A09]
+decision_refs: []
+next_task: "Plans read the same gaps since L08-04; one per-actor capability block (02); T07.07 budgets."
+updated: 2026-10-16
 ```
 
 ### L08
@@ -603,14 +1089,79 @@ evidence_shas: [745f2fa]
 files: [backend/missions/executor.py, backend/missions/planner.py, backend/missions/policy.py, backend/missions_api.py, backend/db/migrations/0100_missions.sql]
 tests_run:
   - {cmd: "sed -n 142,205p backend/missions/executor.py; grep -rn cancelled backend/missions backend/missions_api.py", result: "task actions are skipped; nothing writes cancelled; a standing grant can release a mission's own approval (policy.py:257-264)", date: 2026-10-12}
+  - {cmd: "T08.01 review of PR #11 (draft, head 0b52fbf, base d9add31) against current code and a database built from every migration (2026-10-15)", result: "Not mergeable as is: (1) its 0129 migration re-creates mission_events_kind_check WITHOUT 'action_deferred' (written since L05-03), so it would re-break deferral journalling (L08-02); (2) it picks the client with lower(cl.assignee_id)=lower(m.created_by), which predates 0131 / D-2026-10-13-01: pool clients (no assignee) and edit-shared clients are refused, and the access rule is restated instead of left to RLS (C3.3); (3) under 0131 an INSERT into client_tasks for a client the owner can only view raises 42501, which _create_internal_task does not catch, so the tick errors instead of blocking the action; (4) it executes a task whenever verdict.may_release, which a standing grant can produce — the open owner question; (5) numbered 0129 although main is at 0159 (migrations README: next number above the max). Sound and worth keeping: the tenant-bound FK + partial unique index for retry safety, FOR UPDATE OF the action, the receipt read-back, no outbound command for a task", date: 2026-10-15}
 authz_checked: n/a
 blockers: 
   - {type: review, note: "PR #11 (55ac99c, 0b52fbf) is open, not merged."}
   - {type: owner, note: "Does a mission's standing grant count as current human approval (CONTRACT C4.1)?"}
 audit_refs: []
 decision_refs: []
-next_task: "T08.01: review PR #11"
-updated: 2026-10-12
+next_task: "Owner answers the grant question; then rebuild PR #11 on current main per the review below (new migration number, includes action_deferred, RLS decides the client, 42501 -> blocked)."
+updated: 2026-10-15
+```
+
+#### L08-02 A deferred mission step's journal row was refused by the database
+```yaml
+id: L08-02
+status: tests_pass
+env: local
+evidence_shas: [33e80e0]
+files: [backend/db/migrations/0159_mission_events_action_deferred.sql, backend/tests/test_mission_event_kinds.py, backend/tests/test_mission_deferral_journal_live.py, .github/workflows/ci.yml]
+tests_run:
+  - {cmd: "pg_get_constraintdef(mission_events_kind_check) on a database built from every migration; grep of the kinds missions_api.py and missions/*.py write", result: "the CHECK (0100) lists 19 kinds without 'action_deferred'; executor._work_one journals 'action_deferred' since L05-03; _journal logs and swallows a refused insert, so the step's due_at moved but its journal row was never stored. Every other written kind is allowed", date: 2026-10-15}
+  - {cmd: "pytest -q tests/test_mission_event_kinds.py with 0159 moved aside, then restored", result: "before: failed ('journalled but refused by mission_events_kind_check: [action_deferred]'); after: passed. The test compares every kind the code writes with the newest migration that defines the CHECK", date: 2026-10-15}
+  - {cmd: "pytest -q tests/test_mission_deferral_journal_live.py with the pre-0159 constraint restored, then 0159 re-applied", result: "before: failed (journal [] — the row was silently lost); after: 1 passed (['action_deferred'])", date: 2026-10-15}
+  - {cmd: "cd backend && pytest -q tests/test_mission_event_kinds.py tests/test_migration_ledger.py tests/test_run_migrations.py tests/test_mission*.py", result: "157 passed", date: 2026-10-15}
+authz_checked: "No access change: one CHECK constraint gains one allowed value."
+blockers:
+  - "Not deployed (C4.4). Deferral journal rows written before 0159 were never stored; they cannot be recovered (the due_at moves themselves happened)."
+audit_refs: []
+decision_refs: []
+next_task: "See L08-01."
+updated: 2026-10-15
+```
+
+#### L08-03 Plans are feasible or refused against the tool registry (T08.04, AC08.02)
+```yaml
+id: L08-03
+status: tests_pass
+env: local
+evidence_shas: [6c44cbe]
+files: [backend/missions/planner.py, backend/tests/test_missions_planner.py]
+tests_run:
+  - {cmd: "read missions/planner.py CHANNELS and missions/executor.py:178 at 6c44cbe", result: "the planner offered task alongside email/sms/voice; the executor skips every task step ('no internal task surface'), so a plan could look feasible and then do less", date: 2026-10-16}
+  - {cmd: "cd backend && python -m pytest tests/test_missions_planner.py with missions/planner.py stashed, then restored; + tests/test_mission*.py", result: "before: 4 failed; after: 135 passed, 1 skipped (each channel maps to its registry tool or a reason; a task step is dropped at plan time with that reason and task is not offered to the model; a task-only mission is told why and never asks; a tool missing from the release makes its channel infeasible)", date: 2026-10-16}
+authz_checked: "No access change: the planner reads the registry (offered tools); approval and execution paths are unchanged."
+blockers:
+  - {type: owner, note: "Task steps stay infeasible until PR #11's internal tasks are rebuilt, which waits on the owner's answer about a mission's standing grant (L08-01)."}
+  - "The registry maps a channel to the chat tool of the same effect (draft_email, draft_sms, call_contact); the executor stages its own commands. If a deployment disables one path but not the other, the mapping should move to an executor-side capability."
+audit_refs: []
+decision_refs: []
+next_task: "Setup gaps done in L08-04. Owner: standing grant (L08-01); then rebuild PR #11's task steps, which makes `task` feasible."
+updated: 2026-10-16
+```
+
+#### L08-04 A plan refuses channels this brokerage has not set up, naming the missing integration (T08.04, AC08.02)
+```yaml
+id: L08-04
+status: tests_pass
+env: local
+evidence_shas: [56e0a77]
+files: [backend/missions/planner.py, backend/tests/test_missions_planner.py]
+tests_run:
+  - {cmd: "read missions/planner.channel_feasibility and propose_plan at 56e0a77", result: "L08-03 judged a channel by the release only (the tool exists and is offered); every brokerage on this release saw email / sms / voice as feasible whatever it had connected, so a plan could be told to text from a brokerage with no business number and fail at the first step", date: 2026-10-16}
+  - {cmd: "cd backend && git stash missions/planner.py; pytest tests/test_missions_planner.py -k TestSetupGaps", result: "3 failed, 1 passed (the one pinning that unknown state changes nothing passes by construction)", date: 2026-10-16}
+  - {cmd: "cd backend && pytest tests/ (full unit suite); livetest.sh pytest tests/test_mission_deferral_journal_live.py tests/test_tool_offer_live.py", result: "5280 passed, 76 skipped, 2 failed (the known root-only test_media_storage / test_object_storage cases of this container); 2 passed", date: 2026-10-16}
+  - {cmd: "cd backend && pytest tests/test_missions_planner.py tests/test_missions*.py tests/test_tool_offer.py", result: "169 passed: channel_feasibility(setup_gaps) names the gap after the release check ('sms steps cannot be carried out for this agent yet: texting isn't set up: connect and finish setting up text messages for your business number before sending.'); an empty gap and no gaps leave the release verdict; a step on an unset channel is dropped with that reason and the channel is not offered to the model; a mission whose only channel is unset is refused before any model call with the setup named in its reasoning; the brokerage's state is read for the mission's own agent (tool_offer.channel_gaps(ctx)); the zero-argument call and every L08-03 test are unchanged", date: 2026-10-16}
+authz_checked: "Read-only addition: the plan reads channel_setup through tool_offer.channel_gaps as the mission's agent (the same RLS the executor's step would run under). Refused steps and the whole-mission refusal already reach the mission_events journal (executor._journal 'planned': dropped reasons, reasoning)."
+blockers:
+  - "The reason reaches the user only through the mission journal; no mission UI surfaces 'dropped' yet (L08-03 blocker)."
+  - "Plans are judged at plan time; a channel set up or torn down afterwards is only caught when the step's command fails closed."
+  - "Not deployed (C4.4)."
+audit_refs: []
+decision_refs: []
+next_task: "T08.03 TaskGraph (typed steps with schema version); owner: standing grant (L08-01)."
+updated: 2026-10-16
 ```
 
 ### L09
@@ -665,11 +1216,12 @@ tests_run:
   - {cmd: "sed -n 2350,2358p backend/commands_api.py (at 745f2fa)", result: "CALL_NOTES with note text sent via tenant-wide ws_hub.broadcast", date: 2026-10-12}
   - {cmd: "pytest backend/tests/test_call_note_review.py backend/tests/test_elevenlabs_realtime.py", result: "pass: frame only to requester + assignee; no tenant-wide broadcast; AI readers filter review_state='approved'", date: 2026-10-13}
   - {cmd: "vitest src/components/ClientNotes.test.jsx", result: "pass: proposed badge + approve", date: 2026-10-13}
+  - {cmd: "full CI live list incl. tests/test_call_notes_live.py against local real PostgreSQL (2026-10-16, base b733048)", result: "passed (72 passed in the run that added L13-03)", date: 2026-10-16}
 authz_checked: frame recipients = requesting agent + client assignee; approve route runs under tenant RLS
-blockers: [{type: verification, note: "backend/tests/test_call_notes_live.py (real PostgreSQL) runs in CI only."}]
+blockers: [{type: owner, note: "Deploy approval (C4.4)."}]
 audit_refs: [A01]
 decision_refs: [D-2026-10-12-03]
-next_task: "CI live test, then deploy approval."
+next_task: "Deploy approval."
 updated: 2026-10-13
 ```
 
@@ -686,8 +1238,75 @@ authz_checked: n/a
 blockers: []
 audit_refs: []
 decision_refs: []
-next_task: "T09.15"
-updated: 2026-10-12
+next_task: "Done in L09-05 (Twilio + Plivo, Qwen + ElevenLabs). ACS outbound and a real-phone check remain."
+updated: 2026-10-15
+```
+
+#### L09-05 A spoken "stop" on an outbound AI call is honoured (T09.15, AC09.05)
+```yaml
+id: L09-05
+status: tests_pass
+env: local
+evidence_shas: [c7b2a6e]
+files: [backend/voice_opt_out.py, backend/elevenlabs_realtime.py, backend/qwen_omni_realtime.py, backend/commands_api.py, backend/tests/test_elevenlabs_realtime.py, backend/tests/test_outbound_voice_opt_out_live.py, .github/workflows/ci.yml]
+tests_run:
+  - {cmd: "read elevenlabs_realtime._on_transcript, qwen_omni_realtime.QwenOmniRealtimeBridge._on_transcript_completed, commands_api Plivo/Twilio media handlers, plivo/twilio_call_handler outbound state (at 90a29c6)", result: "confirmed L09-04: outbound caller turns were counted for the turn limit only; nothing matched an opt-out or wrote a suppression, while the disclosure promises 'say stop and I'll end the call and won't contact you again'. Outbound call state carries tenant_id and callee on both carriers; the handlers hang up on the bridges' turn-limit exceptions", date: 2026-10-15}
+  - {cmd: "cd backend && pytest -q tests/test_elevenlabs_realtime.py tests/test_voice_opt_out.py tests/*qwen* tests/*plivo*", result: "162 passed (new: through the real ElevenLabs bridge with fake sockets, 'I'm not interested, stop.' records the suppression for the call's state and raises ElevenLabsCallOptOut, a ElevenLabsCallLimitReached the Plivo handler already hangs up on; 'stop by the house on Tuesday' does nothing and nothing said is kept; an inbound 'stop' is left to the inbound finalizer; a failed suppression still ends the call; the shared Qwen hook (Twilio + Plivo bridges) does the same and skips inbound and ACS)", date: 2026-10-15}
+  - {cmd: "pytest -q tests/test_outbound_voice_opt_out_live.py (real PostgreSQL, app role)", result: "1 passed: one outreach_suppression row (channel '*', reason stop_keyword, fixed source text, no words); idempotent; the outreach gate (ConsentLedger.gather_state) then reports suppressed for voice, SMS and email in that brokerage and not in another; a call state without a callee raises OptOutNotRecorded", date: 2026-10-15}
+  - {cmd: "every CI rls-job live test; cd backend && pytest -q tests compliance_engine/tests (clean env); bandit", result: "68 passed; unit 5206 passed, 65 skipped, 2 failed (test_media_storage + test_object_storage: container runs as root, identical without the change); bandit exit 0", date: 2026-10-15}
+authz_checked: "The suppression is written in the platform context of the call's own tenant (as the inbound path does) and only for the number the call dialled; it narrows contact, never widens access."
+blockers:
+  - "Not proven on a real phone call (T09.18 needs owner approval for a consented call). Speech-to-text quality decides what the matcher sees."
+  - "ACS (Azure) bridges carry no call state on QwenOmniRealtimeBridge, so an ACS outbound 'stop' is not handled here; ACS is not the live carrier (L09-01: Plivo)."
+  - "The call ends immediately on the opt-out (hang-up); the agent does not speak a goodbye first. The wording 'recorded line' is T09.16 (owner and counsel)."
+  - "Not deployed (C4.4)."
+audit_refs: []
+decision_refs: []
+next_task: "T09.17 done in L09-06. Then the owner-approved real-call check (T09.18)."
+updated: 2026-10-15
+```
+
+#### L09-06 Notes from a lead-only AI call are kept or the agent is told (T09.17)
+```yaml
+id: L09-06
+status: tests_pass
+env: local
+evidence_shas: [73acd60]
+files: [backend/commands_api.py, backend/tests/test_call_notes_live.py]
+tests_run:
+  - {cmd: "read commands_api.deliver_call_notes (at 3969b18)", result: "a consented call with no client_id (chk_call_anchor allows a lead-only call) logged 'call notes not attached — lead-only call' and returned None: the notes the callee agreed to share were dropped and nobody was told", date: 2026-10-15}
+  - {cmd: "pytest -q tests/test_call_notes_live.py (real PostgreSQL) with the change stashed, then applied", result: "before: failed ('a lead-only call on a client's house dropped its notes'); after: 1 passed — a lead-only call on a lead whose seller_client_id is a client puts the sealed note on that client (once); a call on a prospect with no client keeps no note and creates one task for the requesting agent ('Call notes were not kept: this lead has no client record', no note content), once across retries", date: 2026-10-15}
+  - {cmd: "every CI rls-job live test; cd backend && pytest -q tests compliance_engine/tests (clean env); bandit", result: "68 passed; unit 5206 passed, 65 skipped, 2 failed (test_media_storage + test_object_storage: container runs as root, identical without the change); bandit exit 0", date: 2026-10-15}
+authz_checked: "Runs in the same platform context as before for the call's own tenant. A house lead's notes reach its seller client, whose audience 0143 already defines (requester + assignee who may still read it, broadcast_record); the not-kept task carries no customer content."
+blockers:
+  - "Not proven on a real call (T09.18, owner approval)."
+  - "Not deployed (C4.4)."
+audit_refs: []
+decision_refs: ["D-2026-10-12-03 (review/direct note mode applies to house-lead notes as to client notes)"]
+next_task: "T09.18 with owner approval."
+updated: 2026-10-15
+```
+
+#### L09-07 The voice rules are locked on every carrier path and engine (T09.19, AC09.01)
+```yaml
+id: L09-07
+status: tests_pass
+env: local
+evidence_shas: [b733048]
+files: [backend/tests/test_voice_rules.py]
+tests_run:
+  - {cmd: "read voice_provider (Twilio, Plivo speak_and_stream_markup), commands_api.twilio_webhook, acs_call_handler (answer, outbound start, play-completed), qwen _system_instructions, elevenlabs outbound_instructions, inbound_voice intake at b733048", result: "every path already speaks AI_VOICE_DISCLOSURE before AI audio (ACS answers with an inactive stream and starts it on the greeting's PlayCompleted) and every prompt says never deny/hide automation; no single test held all paths", date: 2026-10-16}
+  - {cmd: "cd backend && python -m pytest tests/test_voice_rules.py", result: "8 passed: disclosure wording; Twilio and Plivo markup speak it before the stream; outbound Twilio webhook (Qwen and Gather) opens with it; ACS inbound and outbound play it as the greeting with streaming inactive; Qwen outbound, ElevenLabs outbound and inbound intake prompts forbid denying automation and name the recording", date: 2026-10-16}
+  - {cmd: "mutations: drop 'Never deny or obscure' from the Qwen prompt; drop the Plivo <Speak> before <Stream>", result: "each: 1 failed, 7 passed; source restored", date: 2026-10-16}
+authz_checked: "n/a: tests only."
+blockers:
+  - "The turn limit and the spoken opt-out on each engine are pinned in test_elevenlabs_realtime.py / test_outbound_voice_opt_out_live.py (L09-05); 'stores no outbound transcript without consent' is pinned by the note-consent tests (L09-05/06). ACS outbound opt-out remains open (L09-05)."
+  - "'Recorded line' truth per engine (T09.16) is an owner/counsel question; this test pins the wording, not its truth."
+  - "No real call (T09.18)."
+audit_refs: []
+decision_refs: []
+next_task: "T09.18 real consented call with owner approval; T09.10 per-agent / per-brokerage concurrency bounds."
+updated: 2026-10-16
 ```
 
 ### L10
@@ -835,7 +1454,7 @@ authz_checked: n/a
 blockers: []
 audit_refs: []
 decision_refs: []
-next_task: "T10.09"
+next_task: "Fixed locally in L10-11 (2026-10-16)."
 updated: 2026-10-12
 ```
 
@@ -885,6 +1504,54 @@ next_task: "With approval, deploy 0136 + 0139 + 0145 and the code together; then
 updated: 2026-10-14
 ```
 How it works (`messaging_data.assign_campaign_number`): under the brokerage's latest approved campaign row `FOR UPDATE` (serialises every broker owner), the ledger rows for this number + provider campaign id decide: `unknown` → 409 (operator), `intended` → 409 (in flight), `attached` → done (no provider call), `confirmed` → reused; otherwise an `intended` row is inserted (detail: campaign id + the brokerage's own business number, as kind `phone_number` already stores) and committed before the provider is asked once outside the transaction (`_ask_registration`: definite refusal = failed, anything else = unknown + 502). The route's campaign_id and the ledger's `attached` are written in one transaction. Before: every POST called Telnyx.
+
+#### L10-11 Email reads Ready only after a real send (0164; T10.09, AC10.05) — fixes L10-08
+```yaml
+id: L10-11
+status: tests_pass
+env: local
+evidence_shas: [0650144]
+files: [backend/db/migrations/0164_provider_health_platform_smtp.sql, backend/provider_health.py, backend/command_providers.py, backend/sales_api.py, backend/tests/test_sales_stack.py, oracle-app/src/components/ProviderDeliveryPage.jsx, oracle-app/src/lib/emailChannel.js, oracle-app/src/lib/emailChannel.test.js]
+tests_run:
+  - {cmd: "read sales_api._provider_snapshot and providers() at 0650144", result: "L10-08 still true: env SMTP settings alone made channels.email true; /api/sales/providers also never returned platform_sender, so the page's 'who sends' line was always empty", date: 2026-10-16}
+  - {cmd: "cd backend && python -m pytest tests/test_sales_stack.py with sales_api.py, command_providers.py and provider_health.py stashed, then restored", result: "before: 6 failed; after: 15 passed (env relay not Ready until a recorded successful send; failing after a failure; not_configured without settings; a tenant's own mail server never records for the platform relay; a configuration error records credential_rejected)", date: 2026-10-16}
+  - {cmd: "cd backend && pytest tests/test_command*.py tests/test_smtp*.py tests/test_provider*.py tests/test_component_health.py tests/test_avm*.py; live: test_component_health_live.py, test_migration_precheck.py", result: "80 passed, 2 skipped; 9 passed", date: 2026-10-16}
+  - {cmd: "cd oracle-app && npx vitest run && npx eslint . && npm run build && node scripts/check-bundle-budget.mjs", result: "922 passed (emailLabel: Ready / Not yet verified by a send / Last send failed / Not set up); eslint exit 0; within budget", date: 2026-10-16}
+authz_checked: "provider_health is platform-global (no tenant data: a provider name, timestamps, a failure kind, a counter). The relay outcome is written only for sends that used the platform relay (no tenant credential), so one tenant's mail server never vouches for it; an uncertain send records nothing."
+blockers:
+  - "Every staging/production tenant reads 'Not yet verified by a send' until the relay sends once after deploy; that is the honest state. An operator test send (L10-01) would verify it."
+  - "SMS and calls read Ready from an env flag (ORACLE_TWILIO_CREDENTIALS_VALIDATED); fixed locally in L10-12 (0165)."
+  - "No Playwright check of the delivery page (AC10.05 asks for one)."
+  - "Not deployed (C4.4): 0164 is local."
+audit_refs: []
+decision_refs: []
+next_task: "SMS / calls done in L10-12; remaining T10.09: retries / circuit-breaker UI and a Playwright check of the delivery page."
+updated: 2026-10-16
+```
+
+#### L10-12 Platform texts and calls read Ready only after a real send (0165; T10.09, AC10.05)
+```yaml
+id: L10-12
+status: tests_pass
+env: local
+evidence_shas: [d15aacc]
+files: [backend/db/migrations/0165_provider_health_platform_twilio.sql, backend/provider_health.py, backend/command_providers.py, backend/sales_api.py, backend/tests/test_sales_stack.py, backend/tests/test_component_health_live.py, backend/tests/test_env_documentation.py, backend/tests/test_property_source_catalog.py, oracle-app/src/lib/emailChannel.js, oracle-app/src/lib/emailChannel.test.js, oracle-app/src/components/ProviderDeliveryPage.jsx]
+tests_run:
+  - {cmd: "read sales_api._provider_snapshot at d15aacc; git grep ORACLE_TWILIO_CREDENTIALS_VALIDATED", result: "channels.sms / ai_call / agent_call were true from env Twilio credentials plus ORACLE_TWILIO_CREDENTIALS_VALIDATED=true; nothing in the repository ever sets or checks that flag, so it was an operator's say-so", date: 2026-10-16}
+  - {cmd: "cd backend && pytest tests/test_sales_stack.py (new tests on d15aacc code, then with the change)", result: "before: 7 failed (Ready with no recorded send; no platform_channel_states; send_twilio_sms / place_twilio_call recorded nothing). after: 22 passed: not_yet_verified / verified_by_send / failing for texts and calls; a proven SMS account does not make calls Ready; a route without a registered sender still cannot text; a brokerage's own Twilio account never records for the platform; 401/20003 records credential_rejected; recipient refusals (21211, 21610) and a 503 record nothing", date: 2026-10-16}
+  - {cmd: "livetest.sh pytest tests/test_component_health_live.py tests/test_migration_precheck.py (real PostgreSQL 16, app login)", result: "10 passed; with the 0164 CHECK restored the new test fails (1 failed): the rows could not be written before 0165", date: 2026-10-16}
+  - {cmd: "cd backend && pytest tests/ (full unit suite)", result: "5234 passed, 73 skipped, 2 failed (the known root-only test_media_storage / test_object_storage cases of this container)", date: 2026-10-16}
+  - {cmd: "cd oracle-app && npx vitest run && npx eslint . && npm run build && node scripts/check-bundle-budget.mjs", result: "923 passed (channelLabel for the Text messages and Neoh calls cards); eslint exit 0; within budget", date: 2026-10-16}
+authz_checked: "provider_health is platform-global (a provider name, timestamps, a fixed failure kind, a counter; no number, body or error text). An outcome is written only when the request used the platform account (no tenant account_sid), so one brokerage's Twilio account never vouches for the platform's; agent_call additionally keeps its verified caller ID and TwiML app requirements."
+blockers:
+  - "Every tenant on the platform account reads 'Not yet verified by a send' for texts and calls until one approved text and one approved call go out after deploy; that is the honest state, and it needs a real send (T10.12 / T10.15-style operator test to the operator's own number)."
+  - "A successful outbound call proves the account and number, not the browser-calling TwiML app: agent_call still also needs TWILIO_TWIML_APP_SID and a verified caller ID; the browser-call path itself records no outcome."
+  - "Not deployed (C4.4): 0165 is local."
+audit_refs: []
+decision_refs: []
+next_task: "T10.09 remainder: retry / circuit-breaker UI; AC10.05 Playwright check of the delivery page."
+updated: 2026-10-16
+```
 
 ### L11
 Property and market intelligence from authorized non-MLS sources.
@@ -957,6 +1624,291 @@ notes: "Shared vocabulary backend/source_status.py (C6 statuses + stable reason 
 updated: 2026-10-13
 ```
 
+#### L11-04 Source inventory with code-backed licences and distinct identifiers (T11.02)
+Inventory: [docs/property-source-inventory.md](../property-source-inventory.md) (generated).
+```yaml
+id: L11-04
+status: tests_pass
+env: local
+evidence_shas: [e8c98bb]
+files: [backend/property_source_catalog.py, backend/tests/test_property_source_catalog.py, docs/property-source-inventory.md]
+tests_run:
+  - {cmd: "read-only sweep of every non-MLS property/market source (Explore) + spot checks of harvesters/base.py:1180-1196, market_research_agent.py:432, data_coverage.py:69/131/155 at e8c98bb", result: "no single registry: 51 parcel harvesters (firehose.REGISTRY), 2 violation feeds, county assessor (off), RentCast/ATTOM, FRED/BLS/Treasury, 5 market-research datasets, geocoders, Census, Overpass/FEMA/Walk Score, OpenFEMA, EPA, FBI, Eviction Lab, CourtListener, Regrid, footprints, NCES, imagery, broker listings and media", date: 2026-10-16}
+  - {cmd: "cd backend && python -m pytest tests/test_property_source_catalog.py", result: "6 passed: every REGISTRY harvester, market dataset and valuation provider is catalogued; ids unique, kinds and statuses valid; a stated licence cites where; base-default harvesters are default_unverified and attribution strings are never a licence; no MLS/IDX/RESO source; the committed doc equals the generator", date: 2026-10-16}
+authz_checked: "n/a: an inventory module and doc; nothing runtime reads it yet."
+blockers:
+  - {type: owner, note: "68 of 82 sources have no verified licence/terms in the repo: 54 harvesters rely on the code's unverified 'municipal-open-data' default (outreach use already off); 14 others have nothing recorded, incl. the 5 market-research files (published research CSVs, not page scraping) and FRED/BLS/Overpass/FEMA NFHL/Walk Score. Owner/legal to supply per source (T11.04 depends on it)."}
+  - "Freshness is the configured cadence/TTL from code, not observed age; observed freshness per source is health (L19-04/05)."
+  - "Read-only tables with no writer found (fema_flood_zones, county_market_stats, parcel_zoning, school_districts) are read by routes_market.py: a T11.04/F11.03 follow-up."
+audit_refs: [A02]
+decision_refs: [D-2026-10-12-01]
+next_task: "Owner/legal: licences per source; then T11.03 property identity with history."
+updated: 2026-10-16
+```
+
+#### L11-05 Heuristic valuation targets are labelled as such and cannot be promoted as a valuation (T11.07, audit A08)
+```yaml
+id: L11-05
+status: tests_pass
+env: local
+evidence_shas: [1a8a7e3]
+files: [backend/ml_forge/edge_forge/train_lora.py, backend/ml_forge/cot_synthesizer.py, backend/ml_forge/synthetic_lawyer.py, backend/models_api.py, backend/tests/test_valuation_honesty.py, backend/tests/test_valuation_honesty_live.py, backend/tests/test_model_registry_lifecycle.py, .github/workflows/ci.yml]
+tests_run:
+  - {cmd: "re-verify A08 at 1a8a7e3: read train_lora.py, cot_synthesizer.py, synthetic_lawyer.py, local_vllm_adapter.py, models_api.py, model_training.py, PersonalAITab.jsx; grep every caller of EdgeUnderwriter / train_lora / the county constants", result: "A08 still open and wider than the audit said. train_lora.py:207/209 still compute ARV from a fixed county $/sqft table and the 70% rule on synthetic contracts, and main() labelled that dataset kind 'licensed_state_underwriting' with a model card whose intended use was 'tone and formatting preferences only'. cot_synthesizer.py:23-29 called its own county table 'based on median sale prices' (no source) and stamped every rule-computed sample _meta.model 'meta.llama3-3-70b-instruct-v1:0'; synthetic_lawyer.py recorded the primary model even when the fallback wrote the record. models_api.activate_model promoted a state_lora underwriter on a self-attested pass flag with no per-region error and no target provenance. EdgeUnderwriter has no production caller and no inference path reads model_registry yet (test_model_registry_lifecycle pins that), so nothing serves these numbers today; the Personal AI tab can activate a model and shows a 409 detail as written (errorMessages.js:109)", date: 2026-10-17}
+  - {cmd: "cd backend && pytest tests/test_valuation_honesty.py (implementation not yet written); git stash models_api.py && livetest.sh pytest tests/test_valuation_honesty_live.py", result: "19 failed, 1 passed (test_a_style_adapter_is_not_held_to_the_valuation_gate; corrected by the L11-06 review): no target label, no per-kind card, the CoT sample claimed a model, and a state underwriter with heuristic, missing or non-JSON provenance, or with no / partial / non-numeric per-region metrics, activated. Live: a heuristic DE underwriter activated (DID NOT RAISE)", date: 2026-10-17}
+  - {cmd: "cd backend && pytest tests/test_valuation_honesty.py tests/test_model_registry_lifecycle.py tests/test_synthetic_lawyer.py tests/test_platform_completion.py", result: "57 passed: the underwriting manifest is kind synthetic_heuristic_underwriting with targets.provenance heuristic, validated_against_transactions false and the exact constants (recomputing one target from the manifest's own numbers matches _underwrite); its card says 'not a valuation', forbids presenting ARV / rehab / MAO / verdict as an appraisal, automated valuation, market value or verified deal price, and says no per-region error has been measured; the style card is unchanged; CoT samples say generator rules:cot_synthesizer, targets heuristic, no model; activation of a state_lora is refused (409) unless its card's targets are observed_transactions AND a passed, reviewed evaluation publishes per-region n, error and uncertainty (finite numbers, n > 0, every region); a style adapter is not held to it. The lifecycle fixture now carries an observed card and per-region metrics so its gate tests still exercise the same behaviour", date: 2026-10-17}
+  - {cmd: "livetest.sh pytest tests/test_valuation_honesty_live.py (real PostgreSQL 16, FORCE RLS, app login, real jsonb)", result: "1 passed: of two validated DE underwriters with the same passed per-region evaluation, the heuristic one is refused and stays validated; the observed one activates", date: 2026-10-17}
+  - {cmd: "cd backend && pytest tests/ --deselect tests/test_media_storage.py --deselect tests/test_object_storage.py", result: "5309 passed, 78 skipped, 45 deselected (the container's root-only storage cases)", date: 2026-10-17}
+authz_checked: "Unchanged: activation still requires BROKER_OWNER, the LOCAL_MODELS feature and the existing passed + leakage + geographic-bias gate, all in the caller's tenant transaction. The new check only adds refusals."
+blockers:
+  - "Provenance and per-region metrics are declared, not verified: a broker owner registering a model or recording an evaluation can still assert observed_transactions and invent numbers. Verifying them needs licensed, time-bounded transaction data and an evaluation run the platform performs itself (T11.07)."
+  - "Only state_lora is treated as a valuation model; the scoring and forecast kinds have no evidence of producing valuations today and are not gated."
+  - "The heuristic constants still exist (they are the only targets the trainer has); they are labelled, not replaced. No observed-transaction training set exists."
+  - "Other ARV paths (distress_valuation, intelligence_engine comps, cma_generator, agent_analyst) are comp- or input-driven and were not part of A08; their UX wording is T11.07 / T11.08 work."
+  - "Not deployed (C4.4)."
+audit_refs: [A08]
+decision_refs: []
+next_task: "Review fixes in L11-06; then T11.03 property identity with history."
+updated: 2026-10-17
+```
+
+#### L11-06 Review fixes for L11-05: a decided version cannot be swapped, heuristic state adapters are never served, the trained text claims no market source (T11.07, audit A08)
+```yaml
+id: L11-06
+status: tests_pass
+env: local
+evidence_shas: [657777f]
+files: [backend/models_api.py, backend/ml_forge/edge_forge/train_lora.py, backend/ml_forge/edge_forge/local_vllm_adapter.py, backend/ml_forge/cot_synthesizer.py, backend/ml_forge/synthetic_lawyer.py, training_data/README.md, backend/tests/test_valuation_honesty.py, backend/tests/test_valuation_honesty_live.py, backend/tests/test_platform_completion.py]
+tests_run:
+  - {cmd: "adversarial review workflow wf_c6d2a748-5d5 over 657777f (a bypass reviewer and a truth reviewer; one skeptic per top-4 finding; the other 14 checked by hand against the code)", result: "confirmed: (1) register_model's and _training_job's ON CONFLICT upserts replaced the artifact and card of a validated, active or fallback state_lora without resetting status or re-running the gate (an active observed underwriter could become a heuristic artifact in place; a heuristic one could inherit an evaluation it never had); (2) cot_synthesizer still wrote 'County median ARV/sqft' and county market characterisations into the completion a model learns; (3) the A08 row overstated the fix — the six tracked training_data/*.jsonl files predate it and still say 'County median' (all 600 rows) and swarm_textbook.jsonl still names a model that never wrote its rows. Refuted: rollback_model re-activating a heuristic predecessor (its target is only ever the model activate_model just demoted). Also real, fixed here: underwriting_targets omitted the age thresholds, reference year and the default age; --data with pre-built chat rows was labelled with this trainer's rules; the per-region check took negative errors, fractional or overflowing counts, and a malformed card raised 500 instead of 409; the gate keyed on model_kind only, so the heuristic card activated as 'forecast'; EdgeUnderwriter auto-mounted whatever adapter train_lora left in adapters/<state> as that state's underwriter; the reviewed-evaluation predicate and the every-region rule had no test that would fail without them; synthetic_lawyer's docstring named a fallback model it does not use; the L11-05 red-run survivor was mislabelled", date: 2026-10-17}
+  - {cmd: "git stash the implementation, keep the tests; cd backend && pytest tests/test_valuation_honesty.py tests/test_platform_completion.py; livetest.sh pytest tests/test_valuation_honesty_live.py", result: "22 failed, 36 passed: re-registering a validated / canary / active / fallback / retired version succeeded; a training run with a fixed version overwrote a decided row; negative / fractional / overflowing per-region values and string or list datasets were not refused with a 409; a heuristic card activated as forecast, scoring or base; the default age and pre-built rows were misdescribed; the CoT text said 'County median'; EdgeUnderwriter mounted a state adapter with no, heuristic, unrecorded or unreadable card. Live: re-registering the active version with a heuristic artifact DID NOT RAISE. The passes are pins of behaviour L11-05 already had (every-region all(), the fallback model name, the style-card gate)", date: 2026-10-17}
+  - {cmd: "cd backend && pytest tests/test_valuation_honesty.py tests/test_model_registry_lifecycle.py tests/test_synthetic_lawyer.py tests/test_platform_completion.py", result: "88 passed: an upsert only rewrites a candidate or rejected version (409 'register the new artifact or card as a new version' otherwise; a training run that hits a decided version fails and records why, success stays one transaction); the gate applies to state_lora and to any card that declares training targets; per-region needs every region with a whole n >= 1 and non-negative finite error and uncertainty, and a malformed card or metrics is a 409 with the reason; the fake only returns metrics to a query asking for passed AND both reviews, so dropping either predicate fails the test; the manifest reports the reference year, both age thresholds and the default age, and labels pre-built chat rows 'unrecorded'; CoT samples say 'unsourced, not a market median', drop the county market lines and mark inputs synthetic; EdgeUnderwriter mounts a state adapter only with a model-card.json declaring observed_transactions (skipped and named in skipped_adapters otherwise; an explicit register raises UnverifiedTargetsError), and train_lora writes that card into the adapter directory", date: 2026-10-17}
+  - {cmd: "livetest.sh pytest tests/test_valuation_honesty_live.py (real PostgreSQL 16, FORCE RLS, app login)", result: "1 passed: heuristic underwriter refused, observed one active; re-registering the active version with a heuristic artifact is a 409 and the row keeps its status, artifact and card; a per-region report on a passed but unreviewed evaluation does not count beside a reviewed pass without one", date: 2026-10-17}
+  - {cmd: "cd backend && pytest tests/ --deselect tests/test_media_storage.py --deselect tests/test_object_storage.py", result: "5340 passed, 78 skipped, 45 deselected (the container's root-only storage cases)", date: 2026-10-17}
+authz_checked: "Unchanged roles and tenancy: register / evaluate / activate still require BROKER_OWNER and LOCAL_MODELS inside the caller's tenant transaction. The new checks only refuse; nothing new is readable."
+blockers:
+  - "The six tracked training_data/*.jsonl files are unchanged: they still carry 'County median' and (swarm_textbook.jsonl) a wrong model name. training_data/README.md says so; deleting or regenerating them is an owner decision (scripts/forge_model.py still points at the Bedrock copy in S3)."
+  - "Evaluations are bound to a model_id, not an artifact checksum; the version guard makes that sufficient for now (a decided version can no longer change artifact), but binding model_evaluations to artifact_sha256 needs a migration on an append-only table."
+  - "Provenance and per-region numbers remain self-declared (see L11-05)."
+  - "Not deployed (C4.4)."
+audit_refs: [A08]
+decision_refs: []
+next_task: "T11.03 property identity with history: the F11.04 / AC11.04 slices scoped in wf_c6d2a748-5d5 (AI subject resolution, possible-match labels, Property View auto-attach)."
+updated: 2026-10-17
+```
+
+#### L11-07 Houses: a partial public-record match is labelled "Possible match"; an exact label needs the words to line up (T11.03, F11.04, AC11.04)
+```yaml
+id: L11-07
+status: tests_pass
+env: local
+evidence_shas: [24a7b3c]
+files: [backend/mls_portal.py, backend/tests/test_mls_pipeline.py, oracle-app/src/components/HouseWorkspace.jsx, oracle-app/src/components/HouseWorkspace.test.jsx, oracle-app/src/components/HouseSelection.jsx, oracle-app/src/components/HouseSelection.module.css, oracle-app/src/components/HouseSelection.test.jsx, oracle-app/bundle-budget.json]
+tests_run:
+  - {cmd: "scope workflow wf_c6d2a748-5d5 (three readers) + re-verify at 24a7b3c", result: "the /api/property-records payload carried match_type/match_score but no identity claim; HouseWorkspace showed every hit as 'Public record' with the owner of record as plain fact and a one-click 'Link to client'; HouseSelection auto-opened rows[0], often an owner_partial or address_partial hit; the exact branches compared text with every space and mark removed, so '15 1/2 MAIN ST' was an 'exact' address for '1512 Main St', parcel '123-45' an exact parcel for '12-345', and a query of '#' or 'ñ' made every address-less record an exact address; the detail route called any record opened by id 'record_id_exact'", date: 2026-10-17}
+  - {cmd: "red runs (before each fix): pytest tests/test_mls_pipeline.py; npx vitest run HouseWorkspace.test.jsx HouseSelection.test.jsx", result: "slice: 11 failed / 7 passed (KeyError 'identity') and 4 failed / 5 passed ('Unable to find ... Possible match'); review fixes: 13 failed / 23 passed (exact_address != possible_match for '15 1/2' vs '1512', '2 22ND' vs '22 2nd', '1 21ST' vs '12 1st', 'APT 1-2' vs 'Apt 12', parcel '123-45' vs '12-345'; the empty-query exact arg bound; record_id reported exact)", date: 2026-10-17}
+  - {cmd: "cd backend && pytest tests/test_mls_pipeline.py tests/test_tour_tier_honesty.py tests/test_mls_invariants.py tests/test_mls_overlay_indexable.py tests/test_mls_portal_serialization.py tests/test_mls_refresh_durability.py tests/test_mls_switch.py tests/test_property_lookup_status.py tests/test_search_api.py", result: "124 passed: identity {status, basis, verified:false} on every search and detail row; exact_parcel / exact_address only when the query's words line up with the record's (any script: '5 大街' is not '5'; 'Calle Ñ 5' is not 'CALLE 5'), a PIN typed with dashes still matches its bare-digit record exactly unless the same digits are split two ways in the results ('12345' vs '12-345' and '123-45': both possible); a blank query or blank address is never exact; a record opened by id is not_applicable; among equal scores the word-equal row sorts first (not an argument of the count query)", date: 2026-10-17}
+  - {cmd: "scratch script against local PostgreSQL 16 in a rolled-back transaction (mls_pipeline_search with real SQL)", result: "'1512 Main St' returns 1512 MAIN ST (exact_address) before the more recently refreshed 15 1/2 MAIN ST (possible_match); '12-345' exact, '123-45' possible; '12345' both possible; '19-14-209-013-0000' finds 19142090130000 as exact_parcel; '#' returns 0 rows", date: 2026-10-17}
+  - {cmd: "cd oracle-app && npx vitest run && npx eslint src && npm run build && npm run bundle:check", result: "934 passed; eslint clean; built; budget raised from 4134.6 KB to 4137.1 KB total JS (+2.5 KB; largest chunk unchanged): the possible-match labels, the not-verified badges and the confirm-before-linking note (AC11.04) on top of slack earlier slices had used", date: 2026-10-17}
+authz_checked: "No access change: the catalog is the shared allow-listed public-records table read in the caller's tenant transaction; the labels are derived from the match the search already made. Nothing is ever 'verified': no table records a person confirming a parcel match."
+blockers:
+  - "No confirmation record: verified is always false, exact matches read 'not verified'. Recording a person's confirmation (and what it was based on) needs new schema (T11.03)."
+  - "Exact keys compare street or parcel text only, with no city, state or county: one query can still return several exact hits from different jurisdictions."
+  - "Linking a possible match is warned about, not blocked; the link endpoint neither records nor checks the identity status. Strings are English-only like the rest of the Houses components."
+  - "Not deployed (C4.4)."
+audit_refs: []
+decision_refs: [D-2026-10-12-01]
+next_task: "Record a person's confirmation of a property match (schema + UI), so 'verified' can mean something."
+updated: 2026-10-17
+```
+
+#### L11-08 Neoh "find properties for X": owner-name hits are possible matches, never the client's shortlist (T11.03, F11.04)
+```yaml
+id: L11-08
+status: tests_pass
+env: local
+evidence_shas: [24a7b3c]
+files: [backend/neoh_render.py, backend/semantic_language.py, backend/client_ai_automation.py, backend/tests/test_neoh_render.py, backend/tests/test_neoh_intents.py]
+tests_run:
+  - {cmd: "re-verify at 24a7b3c: neoh_render.properties_for, client_ai_automation._property_candidates, neoh_intents._candidates_for", result: "every candidate the automation stores is an owner-name hit in public records with requires_review: true and match_basis 'exact owner name', yet Neoh said '1 on Sarah Chen's shortlist.' ('1 en la lista de Sarah Chen.'), with an empty option id, no basis and no review flag; the 'exact' name match actually ignores case, spaces, punctuation and letters outside a-z; the count was of the 3 shown, not the up-to-5 stored", date: 2026-10-17}
+  - {cmd: "red runs: pytest tests/test_neoh_render.py -k Properties (slice); the review-fix tests on the slice commit", result: "4 failed / 2 passed ('possible match' not in \"1 on sarah chen's shortlist.\"; Spanish 'lista'; id None); then 9 failed / 41 passed (count capped at 3; 'exact' in the basis; href on a review-only record carrying an id; no city/state/ZIP; no intent-level case)", date: 2026-10-17}
+  - {cmd: "cd backend && pytest tests/test_neoh_render.py tests/test_neoh_intents*.py tests/test_fast_path_language.py tests/test_client_ai_automation.py tests/test_semantic_language.py", result: "1120 passed: review-only hits are spoken and titled as possible matches in English and Spanish, counted over every stored record ('Showing 3 of 4 here'), and at the producer's cap of 5 said as a floor ('At least 5 ... (the lookup stops at 5)'; the renderer's mirror of the cap is pinned to client_ai_automation.PROPERTY_CANDIDATE_LIMIT); the basis is described as an owner-name match ignoring case, spaces, punctuation and letters outside a-z, never 'exact'; an unconfirmed record is never linked whatever ids it carries; each option shows city, state, ZIP and parcel, so condo parcels at one street address differ; an intent-level test drives the real producer through neoh_intents; the English golden file is unchanged (it uses the confirmed-shortlist shape)", date: 2026-10-17}
+authz_checked: "Rendering only: the candidates are the ones the automation already stored for a client the caller can open; nothing new is read. No name reaches a log."
+blockers:
+  - "The producer's own match_basis string still says 'exact owner name' (client_ai_automation); ClientDetailDrawer shows it as stored. Only Neoh's words were corrected."
+  - "There is no confirm/link action from Neoh; review-only options stay unlinked until a confirmation record exists (L11-07 next_task)."
+  - "Not deployed (C4.4)."
+audit_refs: []
+decision_refs: []
+next_task: "Say the producer's basis truthfully at the source (client_ai_automation match_basis) and in ClientDetailDrawer."
+updated: 2026-10-17
+```
+
+#### L11-09 AI property tools: the exact public-record path can match, and a fuzzy subject is labelled a possible match in every answer (T11.03, F11.04)
+```yaml
+id: L11-09
+status: tests_pass
+env: local
+evidence_shas: [24a7b3c]
+files: [backend/ai_tools_read.py, backend/tests/test_ai_tools_read.py]
+tests_run:
+  - {cmd: "re-verify at 24a7b3c: ai_tools_read._resolve_subject, _get_listing_detail, estimate_rehab / estimate_arv / comps", result: "the state-stripping regex (IGNORECASE) cut '15 Main St, Dover, DE 19901' to '15 Ma', so the exact path never matched; every lookup fell to a substring search with no state filter ordered by recency; '15 Main St' parsed as state ST and '15 Main Ct' as CT; get_listing_detail attached the row as the listing's public_record with no label; estimate_rehab stated a pre-1978 lead-paint disclosure and its sqft basis from whatever row came back", date: 2026-10-17}
+  - {cmd: "red runs: pytest tests/test_ai_tools_read.py on the slice, then on the slice commit with the review tests", result: "16 failed / 64 passed (('DE', '15 Ma') != ('DE', '15 Main St'); a suffix read as a state; KeyError 'match'); then 22 new tests failed (space-stripped '12 1st St' == '1 21st St' called exact; rehab facts from a possible match; 'Apt 2B' read as the city; 'Oak Ct 19901' read as CT; a note claiming a city/ZIP disagreed when none was given; no test of the city/ZIP tie-break)", date: 2026-10-17}
+  - {cmd: "cd backend && pytest tests/test_ai_tools_read.py tests/test_ai_tool*.py", result: "185 passed: only a word-for-word street with an agreeing city or ZIP (and nothing contradicting) is exact_address, verified always false; the word-equal row is preferred before LIMIT 1 so '1 21ST ST' never hides '12 1ST ST'; unit segments stay in the street; a state needs a comma before it; the fallback stays in the parsed state; rehab, ARV and comps word a possible match's year and size as what that record says, naming it; notes name exactly what was missing or disagreed (a record with a city is never said to have none); mixed city-agrees / ZIP-disagrees is a possible match", date: 2026-10-17}
+  - {cmd: "scratch script against local PostgreSQL 16 in a rolled-back transaction (_resolve_subject with real SQL)", result: "'12 1st St, Anytown, IA 50001' returns 12 1ST ST (exact_address) although 1 21ST ST was refreshed later; '15 Main St, IA 19901' against a record with a city and no ZIP is a possible match whose note says the record has no ZIP", date: 2026-10-17}
+authz_checked: "Read-only tools in the caller's tenant transaction, unchanged; the change is the query's arguments, one ORDER BY term and the labels on what comes back."
+blockers:
+  - "A city with no comma before it ('15 Main St Dover, DE') stays part of the street; the exact path then misses and the answer is a labelled possible match (it never guesses)."
+  - "The fallback search term is still the whole free-text address; comma-bearing input rarely hits search_document."
+  - "AI tool payload strings are English (this module does not use semantic_language). Not deployed (C4.4)."
+audit_refs: []
+decision_refs: []
+next_task: "Feed the possible-match label into the chat answer itself (the model now receives it in the tool payload)."
+updated: 2026-10-17
+```
+
+#### L11-10 Contracts: neither assignment-contract path names the public-record owner as the Seller (T11.03, F11.04)
+```yaml
+id: L11-10
+status: tests_pass
+env: local
+evidence_shas: [24a7b3c]
+files: [backend/ml_forge/synthetic_lawyer.py, backend/legal_agent.py, backend/workflow_engine.py, backend/tests/test_synthetic_lawyer.py, backend/tests/test_legal_agent_seller.py, backend/tests/test_contract_seller_live.py, .github/workflows/ci.yml]
+tests_run:
+  - {cmd: "re-verify at 24a7b3c: synthetic_lawyer.fetch_assignment_transaction_for_client / normalize_assignment_payload, legal_agent.generate_legal_package, workflow_engine / real_leads", result: "with no linked seller client the drafted Assignment Contract's Seller fell back to leads.payload.owner_name (crm.py copies the public record's owner there) in both the SQL COALESCE and normalize_assignment_payload; the live LegalMatrix 'Assignment Contract' panel (legal_agent, fed by workflow_engine from real leads) set contract_fields.seller from owner_name", date: 2026-10-17}
+  - {cmd: "red runs: pytest tests/test_synthetic_lawyer.py (slice), then the review tests on the slice commit", result: "2 failed / 19 passed ('Public Record Owner' is not None; \"payload->>'owner_name'\" in the seller COALESCE); then the legal_agent seller tests failed (contract_fields.seller == the owner of record) and a respelled owner fallback slipped past the string guard", date: 2026-10-17}
+  - {cmd: "cd backend && pytest tests/test_synthetic_lawyer.py tests/test_legal_agent_seller.py tests/test_contract_draft_workspace.py tests/test_contract_template_registry.py tests/test_contract_type_expansion.py tests/test_engine_start_does_not_block.py tests/test_intelligence_platform.py ...", result: "149 passed: with only an owner of record the draft refuses with seller_name missing and never contains the owner's name; a stated seller (linked client or payload.seller_name) still fills it; the legal package's seller is a visible '[SELLER — confirm; ...]' placeholder unless a seller is stated; the guard inspects the seller expression for any owner token and any public_property_records reference, whatever the spelling", date: 2026-10-17}
+  - {cmd: "livetest.sh pytest tests/test_contract_seller_live.py (real PostgreSQL 16, FORCE RLS, app login; now in the CI live list)", result: "passed: a lead whose payload carries an owner_name and no seller client yields a transaction with no seller name", date: 2026-10-17}
+authz_checked: "No access change: the same tenant-scoped reads; the owner of record is simply no longer used as a party."
+blockers:
+  - "The owner of record is not shown in the legal package at all (labelled or not); the UNCONFIRMED_SELLER placeholder is English like the rest of legal_agent."
+  - "leads.payload.seller_name is still trusted as a stated seller; no backend writer copying owner_name into it was found, but every importer was not audited."
+  - "Not deployed (C4.4)."
+audit_refs: []
+decision_refs: []
+next_task: "Audit lead importers for anything writing payload.seller_name from public records."
+updated: 2026-10-17
+```
+
+#### L11-11 Property View: a substring address hit is a possible match, never the auto-selected subject media attaches to (T11.03, F11.04, AC11.04)
+```yaml
+id: L11-11
+status: tests_pass
+env: local
+evidence_shas: [e83e4d6]
+files: [backend/property_view_api.py, backend/tests/test_property_view_resolve_scope.py, backend/tests/test_lead_record_access_live.py, oracle-app/src/components/PropertyViewTab.jsx, oracle-app/src/components/PropertyViewTab.module.css, oracle-app/src/components/PropertyViewTab.test.jsx, oracle-app/bundle-budget.json]
+tests_run:
+  - {cmd: "re-verify at e83e4d6 (workflow wf_ba5b6dda-f56: worktree implementer -> reviewer -> fixer; the verifier hit the subagent session limit, so the lead verified the fix and ran the live test)", result: "/crm/property-view/resolve matched address ILIKE '%typed%' with no basis; PropertyViewTab auto-selected a single hit, so typing '12 Main St' attached uploads to the lead for '112 Main St'; a resolve failure read as 'No existing record matches'; create_subject keyed new houses on sha256(address) with no state, so the same street in another state returned the other house's lead as 'Matched an existing record'", date: 2026-10-17}
+  - {cmd: "red runs: pytest tests/test_property_view_resolve_scope.py; npx vitest run src/components/PropertyViewTab.test.jsx (slice, then review fixes)", result: "slice: 10 of 13 backend failed (KeyError 'identity'; a PA create reused the DE key; created True != False) and 6 of 26 frontend failed ('112 Main St' auto-selected; no 'attach media to a record' picker; resolve failure shown as no match); review fixes: '100 Main St, DE' (a state, no town) was still exact_address and auto-selected, and a picked possible match lost its label while the tour viewer was titled with the typed address (2 backend + 5 frontend failing first)", date: 2026-10-17}
+  - {cmd: "cd backend && pytest tests/test_property_view_resolve_scope.py tests/test_lead_dossier_address.py tests/test_security_launch_review.py tests/test_media_upload_offload.py tests/test_upload_decoders.py tests/test_video_mock_and_imagery.py tests/test_property_scan_ingest.py tests/test_no_blocking_io_in_async.py tests/test_client_portal*.py", result: "150 passed: every resolved lead and listing carries identity {status, basis, verified:false}; exact_address needs the same words, a town (a ZIP or a city segment) and a state the record does not contradict; everything else is a possible_match; a reused record returns its own address and identity; a key held by a visible lead in another state gets a state-qualified key, while new addresses keep the address-only key so a legacy row hidden by RLS still conflicts (409) instead of gaining a duplicate pool lead", date: 2026-10-17}
+  - {cmd: "livetest.sh pytest tests/test_lead_record_access_live.py (real PostgreSQL 16, FORCE RLS, app login)", result: "2 passed (not runnable inside the worktrees; run by the lead): the reuse response carries the row's address and exact_address identity; a PA create for the same street returns created=True with its own lead", date: 2026-10-17}
+  - {cmd: "cd oracle-app && npx vitest run && npx eslint src && npm run build && npm run bundle:check", result: "954 passed (auto-select only a single exact_address candidate; 'Possible match' and 'Address match · not verified' flags and a confirm-before-attaching note; a picked record keeps its address and flag on an 'Attaching media to' line with 'Change record'; the tour viewer is titled with the record's address; a resolve failure says records couldn't be checked); eslint exit 0; built; within budget after the slice re-pinned it (+1,424 B raw total JS, largest chunk unchanged)", date: 2026-10-17}
+authz_checked: "Unchanged scoping: resolve and create still read leads and listings in the caller's tenant transaction under RLS; the identity label is computed from the rows the caller can already see. Nothing is ever verified."
+blockers:
+  - "A legacy hidden row in another state still answers 409 'already a client's property': RLS hides its state, so the conflict cannot tell the two houses apart."
+  - "The resolve still takes the 10 newest substring hits; an exact record can be pushed out (auto-select then does not fire, which is the safe failure)."
+  - "The town rule is textual: '100 Main St, Apt 2, DE' counts 'Apt 2' as a town segment. DossierPanel still renders pv: keys as 'Parcel …' (T11.02). jsdom only; no real-phone check."
+  - "Not deployed (C4.4)."
+audit_refs: []
+decision_refs: []
+next_task: "Show pv: keys as a Property View record, not a parcel (T11.02), and record a person's confirmation of a match (L11-07 next_task)."
+updated: 2026-10-17
+```
+
+#### L11-12 Client portal: the homeowner's title findings say "Possible match" / "Not verified", released liens say so, and dismissed findings and agent notes stay out (T11.03, F11.04)
+```yaml
+id: L11-12
+status: tests_pass
+env: local
+evidence_shas: [e83e4d6]
+files: [backend/client_portal.py, backend/tests/test_client_portal_title_summary.py, oracle-app/src/components/SecureDossierPage.jsx, oracle-app/src/components/SecureDossierPage.module.css, oracle-app/src/components/SecureDossierPage.test.jsx]
+tests_run:
+  - {cmd: "re-verify at e83e4d6 (workflow wf_ba5b6dda-f56: implementer -> reviewer -> fixer -> verifier)", result: "SecureDossierPage (read by the homeowner) showed every title finding as a bare type and amount ('Lien $45,000'): a possible_match or unresolved lien read as a fact about their house, a 'matched' status is only the submitter's claim (no route ever writes review_status 'confirmed'), a released lien read as outstanding, and client_portal included findings a reviewer dismissed and passed the agent's free-text notes and chain_gap to the homeowner's payload", date: 2026-10-17}
+  - {cmd: "red runs: pytest tests/test_client_portal_title_summary.py; npx vitest run src/components/SecureDossierPage.test.jsx (slice, then review fixes)", result: "1 failed / 3 passed (no dismissed filter; notes in the payload) and 3 failed / 3 passed ('Possible match' missing; matched read as fact; 'lienPossible match' glued); the lead's two added pins fail under their mutations (dropping timeZone 'UTC' shows the day before in America/Los_Angeles; a fail-open review check drops 'Not verified' for a missing or unknown review_status)", date: 2026-10-17}
+  - {cmd: "cd backend && pytest tests/test_client_portal_title_summary.py tests/test_client_portal_media.py tests/test_intelligence_platform.py", result: "34 passed: the portal query excludes dismissed findings, keeps RLS as the only tenant scope (no duplicated predicate), and returns only finding_type, amount, recorded_at, released_at, match_status and review_status, built key by key, so notes and chain_gap cannot ride along", date: 2026-10-17}
+  - {cmd: "cd oracle-app && npx vitest run src/components/SecureDossierPage.test.jsx", result: "8 passed: any status other than matched / released reads 'Possible match' (missing and unknown included); matched or released reads 'Not verified' unless review_status is exactly 'confirmed' (missing, null or unknown fail closed); a released lien says 'Released <date>' with the recorded calendar date in any time zone; a note explains possible matches only when one is listed; nothing says 'verified'", date: 2026-10-17}
+authz_checked: "The homeowner payload only shrinks: fewer columns and no dismissed rows; the dossier grant and RLS scoping are unchanged."
+blockers:
+  - "No route records a reviewer confirming or dismissing a title finding, so in practice every matched or released finding reads 'Not verified' and the dismissed filter guards rows written outside the app."
+  - "'Released' shows what the submitter's record says; the release itself is not verified (the generic 'Preliminary public-record findings' caveat covers it)."
+  - "No live-DB test of the new projection (plain columns from migration 0027, checked through the captured query). Not deployed (C4.4)."
+audit_refs: []
+decision_refs: []
+next_task: "A reviewer action that confirms or dismisses a title finding (writes review_status), with audit."
+updated: 2026-10-17
+```
+
+#### L11-13 A broker owner confirms or dismisses one title finding, with a sealed reason and an audit record (T11.03, F11.04)
+```yaml
+id: L11-13
+status: tests_pass
+env: local
+evidence_shas: [27475c2]
+files: [backend/intelligence_api.py, backend/db/migrations/0167_title_finding_review_reason_sealed.sql, backend/portfolio_api.py, backend/client_portal.py, backend/privacy_data_map.py, backend/privacy_export.py, docs/privacy-data-map.md, backend/tests/test_title_finding_review.py, backend/tests/test_title_finding_review_live.py, backend/tests/test_portfolio_summary.py, oracle-app/src/components/PortfolioTab.jsx, oracle-app/src/components/PortfolioTab.module.css, oracle-app/src/components/PortfolioTab.test.jsx, oracle-app/src/components/SecureDossierPage.jsx, oracle-app/bundle-budget.json, .github/workflows/ci.yml]
+tests_run:
+  - {cmd: "re-verify at 27475c2 (workflow wf_0181441d-ced: implementer -> reviewer -> fixer -> verifier)", result: "title_findings has carried review_status / reviewed_by / reviewed_at since 0027 and the application role may UPDATE it, but no route wrote them: every matched or released finding read 'Not verified' to the homeowner (L11-12) and the portal's dismissed filter only guarded rows written outside the app", date: 2026-10-17}
+  - {cmd: "red runs: pytest tests/test_title_finding_review.py tests/test_portfolio_summary.py; livetest.sh pytest tests/test_title_finding_review_live.py; npx vitest run PortfolioTab.test.jsx (slice, then review fixes)", result: "14 failed (no route), 1 failed (flags carried no finding id), the live test failed on the missing route after its app-login no-bypass check passed, 4 failed (no Confirm / Dismiss); review fixes: the reason was a new plaintext column not in the privacy map, reviewers decided without the evidence (no match status, record or amount on the flag), a platform admin's decision was audited in the admin's tenant, and the 409/404 sentence vanished on reload", date: 2026-10-17}
+  - {cmd: "cd backend && pytest tests/test_title_finding_review.py tests/test_portfolio_summary.py tests/test_client_portal_title_summary.py tests/test_migration_ledger.py tests/test_migration_safety.py tests/test_migrations_managed_postgres.py tests/test_privacy_data_map.py tests/test_run_migrations.py tests/test_release_immutability.py tests/test_ci_security_gates.py tests/test_sealed_text.py tests/test_ci_deploy_wiring.py tests/test_spec_drift.py", result: "240 passed: POST /api/intelligence/title/findings/{id}/review takes {decision confirmed|dismissed, reason 8-500}; BROKER_OWNER only (platform admin implicit; an agent gets 403 and nothing is written); one guarded UPDATE ... WHERE id=$1 AND review_status='required' (RLS scopes it, no duplicated tenant predicate), so a second or concurrent decision is a 409 naming the status and an invisible finding a 404; the reason is stored only sealed in review_reason_ciphertext under the finding's own tenant key and the brokerage export opens it; the audit record (USER_STATE_CHANGE, in the finding's tenant) carries only the finding id and the decision; portfolio flags carry the finding id, match status, record and amount", date: 2026-10-17}
+  - {cmd: "livetest.sh pytest tests/test_title_finding_review_live.py tests/test_migration_precheck.py (real PostgreSQL 16, FORCE RLS, app login; added to the CI live list)", result: "9 passed: the owner confirms a finding in their tenant; another tenant's finding is a 404 and untouched; a second decision is a 409; through the real read_scoped_dossier path the dismissed finding is gone and the confirmed one reads review_status 'confirmed'; the reason opens only with the finding tenant's key and title_findings has no plaintext reason column; an operator's decision on another tenant is sealed and audited there", date: 2026-10-17}
+  - {cmd: "cd oracle-app && npx vitest run && npx eslint src && npm run build && npm run bundle:check; Chromium layout probe of the title row at 320 / 375 / 1024 px", result: "962 passed; eslint exit 0; built; budget re-pinned (+3.5 KB total JS for the review form and its copy; largest chunk unchanged). PortfolioTab shows each title flag's evidence and review state, and Confirm / Dismiss with a reason form (what the decision does to the homeowner's dossier) to a broker owner only; on a phone the actions wrap under the finding (evidence column 231 px at 320 px, was 31 px and clipped)", date: 2026-10-17}
+authz_checked: "BROKER_OWNER decides (the codebase's convention for brokerage-level evidence review: contract templates, model activation); RLS alone scopes the finding; a platform admin's cross-tenant decision is sealed with and audited in the finding's tenant. The homeowner payload is unchanged except that confirmed findings lose 'Not verified' and dismissed ones disappear."
+blockers:
+  - "Confirming a possible_match does not change its match_status, so the homeowner still sees 'Possible match' (the form says so). Whether a review may change match_status is an owner decision."
+  - "No separation of duties (title_findings has no creator column) and no reopen / undo of a decision."
+  - "Migration 0167 is new and unapplied outside the local database; not deployed (C4.4)."
+audit_refs: [A01]
+decision_refs: []
+next_task: "Record a person's confirmation of a property match (leads / public records), using this review shape (L11-07 next_task)."
+updated: 2026-10-17
+```
+
+#### L11-14 A broker owner confirms, rejects or withdraws that a public record is a linked client's house; Houses reads it as verified (T11.03, F11.04, AC11.04)
+```yaml
+id: L11-14
+status: tests_pass
+env: local
+evidence_shas: [4d72b3c]
+files: [backend/db/migrations/0168_property_match_decisions.sql, backend/property_match_api.py, backend/mls_portal.py, backend/server.py, backend/privacy_data_map.py, backend/privacy_export.py, docs/privacy-data-map.md, backend/tests/test_property_match_decision.py, backend/tests/test_property_match_decisions_live.py, backend/tests/test_mls_pipeline.py, backend/tests/test_tour_tier_honesty.py, oracle-app/src/components/HouseWorkspace.jsx, oracle-app/src/components/HouseWorkspace.test.jsx, oracle-app/src/components/HouseSelection.jsx, oracle-app/src/components/HouseSelection.module.css, oracle-app/src/components/HouseSelection.test.jsx, oracle-app/bundle-budget.json, .github/workflows/ci.yml]
+tests_run:
+  - {cmd: "design workflow wf_057b333d-6d3 at 4d72b3c (three read-only scouts, two independent designs, a judge)", result: "nothing recorded that a person judged a public record to BE a client's house: the only tie is leads/listings.seller_client_id, written by link_client_house for any client type with no basis, evidence or confirmer, no unlink, and audit only as a mutable client_activities row; Property View's pick is browser state; 'verified' was false everywhere (L11-07..L11-13). Chosen design: an append-only decision chain on the pair (lead L, public record R) paired by exact parcel key, broker owner decides, verified only while the newest decision is confirmed for the client L is still linked to", date: 2026-10-17}
+  - {cmd: "red runs (implementer, workflow wf_08575fb7-b90): pytest tests/test_property_match_decision.py tests/test_mls_pipeline.py tests/test_tour_tier_honesty.py tests/test_privacy_data_map.py; npx vitest run HouseWorkspace.test.jsx HouseSelection.test.jsx", result: "collection failed (no property_match_api); 14 failed / 65 passed (_public_record_json had no confirmation input; the lookup returned a bare lead id); the classification guard failed on 0168 alone until the privacy map entry landed; 11 failed / 11 passed (no confirmation line, no decision form, no 'Confirmed house' flag)", date: 2026-10-17}
+  - {cmd: "cd backend && pytest tests/ --deselect tests/test_media_storage.py --deselect tests/test_object_storage.py", result: "5547 passed, 82 skipped, 45 deselected (the container's root-only storage cases)", date: 2026-10-17}
+  - {cmd: "migration 0168 applied to local PostgreSQL 16; livetest.sh pytest tests/test_property_match_decisions_live.py tests/test_migration_precheck.py (FORCE RLS, app login; run by the lead, the implementer's sandbox could not start PostgreSQL; added to the CI live list)", result: "10 passed: append-only (UPDATE refused by trigger, app role has SELECT and INSERT only), one first decision per pair and one successor per decision, the decider and time stamped from the session, RLS with the tenant wall plus restrictive read (lead visible) and insert (lead's client editable) rules, the reason opening only with the lead tenant's key", date: 2026-10-17}
+  - {cmd: "cd oracle-app && npx vitest run && npx eslint src && npm run build && npm run bundle:check", result: "976 passed; eslint exit 0; built; within budget after the slice re-pinned it (+4.6 KB total JS for the decision form and its copy; largest chunk unchanged)", date: 2026-10-17}
+authz_checked: "BROKER_OWNER decides (platform admin implicit), as in L11-13; RLS alone scopes the lead and the decision rows (no duplicated tenant predicate), with a restrictive insert floor of 'can edit the lead's client'; tenant_id and client_id come from the lead, never from the request; the reason is sealed under the lead tenant's key and never logged, audited or returned; the audit record carries ids and the decision only."
+blockers:
+  - "Reviewed after this commit (workflow wf_80899eb2-f4d); four findings and the verifier's leftover fixed in L11-15."
+  - "Owner decisions, defaults taken: broker owner only (vs any client editor, a route-only change); a change of address/owner under the same record id does not reopen a confirmation; the evidence vocabulary; 'rejected' does not unlink and linking is not blocked by an unconfirmed record; pool leads cannot be decided; agents do not see who decided."
+  - "Only Houses reads the decision; Property View, Neoh, the AI tools, the client portal and the contract Seller fallback still report verified false. Strings English only."
+  - "The per-lead head subquery's cost under FORCE RLS is unmeasured (at most 24 leads per page). Migration 0168 is unapplied outside the local database; not deployed (C4.4)."
+audit_refs: []
+decision_refs: []
+next_task: "Review fixes landed in L11-15; then let Property View, Neoh and the AI tools read a confirmed decision."
+updated: 2026-10-17
+```
+
+#### L11-15 Review fixes for L11-14: a late decision never lands on another house, operators get no decision form, and the activity pulse leaks no record ids (T11.03, F11.04)
+```yaml
+id: L11-15
+status: tests_pass
+env: local
+evidence_shas: [d551666]
+files: [backend/property_match_api.py, backend/mls_portal.py, backend/portfolio_api.py, backend/tests/test_property_match_decision.py, backend/tests/test_property_match_decisions_live.py, backend/tests/test_mls_pipeline.py, backend/tests/test_portfolio_summary.py, oracle-app/src/components/HouseSelection.jsx, oracle-app/src/components/HouseSelection.module.css, oracle-app/src/components/HouseSelection.test.jsx, oracle-app/src/components/HouseWorkspace.jsx, oracle-app/src/components/HouseWorkspace.test.jsx, oracle-app/src/layoutContracts.test.js]
+tests_run:
+  - {cmd: "review workflow wf_80899eb2-f4d over L11-14 (a security / tenancy reviewer and a correctness / UI reviewer, a fixer, a verifier)", result: "confirmed: (1) a decision that resolved after the user switched houses patched the newly selected house, so the workspace read 'Confirmed as the linked client's house' on a house nobody decided; (2) the decision's audit metadata (lead, client, public record) reached every agent through the portfolio summary's activity pulse, past the 0143 wall that hides the decision; (3) for a platform admin Houses attached the newest lead on the parcel across all tenants and offered the decision form, so a confirmation could land in a brokerage the operator never chose; (4) the reason textarea's font reset beat the 16 px rule, so iOS zoomed on focus. The verifier then found the HTTP audit middleware's own row still naming the lead in its request path (and every staff member's client IP in metadata) on the same pulse", date: 2026-10-17}
+  - {cmd: "red runs: HouseSelection / HouseWorkspace / layoutContracts vitests; pytest tests/test_property_match_decision.py tests/test_portfolio_summary.py; livetest.sh pytest tests/test_property_match_decisions_live.py (each before its fix)", result: "a captured onHouseUpdate applied after selecting house 6 gave house 6 verified true and head_id h5; the live pulse carried lead_id and public_record_id; an operator's detail view showed another tenant's lead with confirmable true; the textarea computed 14 px; the pulse returned metadata and target_id, and the middleware-shaped action read 'POST /api/crm/houses/<lead uuid>/record-match'", date: 2026-10-17}
+  - {cmd: "cd backend && pytest tests/test_property_match_decision.py tests/test_mls_pipeline.py tests/test_tour_tier_honesty.py tests/test_portfolio_summary.py; livetest.sh pytest tests/test_property_match_decisions_live.py", result: "unit suites pass and the live test 2 passed: the decision's audit metadata is decision_id, decision and supersedes_id only; can_decide is broker owner only, so an operator sees decisions but gets no form (the route still admits one acting on an explicit lead); the activity pulse returns event_id, category, action and created_at only, built key by key, with UUIDs and numeric ids in a logged path masked ('POST /api/crm/houses/:id/record-match'), and no client IP", date: 2026-10-17}
+  - {cmd: "cd backend && pytest tests/ --deselect tests/test_media_storage.py --deselect tests/test_object_storage.py; cd oracle-app && npx vitest run && npx eslint src && npm run build && npm run bundle:check", result: "5552 passed, 82 skipped, 45 deselected (the container's root-only storage cases); 981 passed; eslint exit 0; built; within budget", date: 2026-10-17}
+authz_checked: "Narrower than L11-14: the pulse now returns less to every agent (no metadata, no target ids, no ids in paths), the decision form is offered to broker owners only, and a late patch only touches the house it was made for. Route authorisation, RLS and sealing are unchanged."
+blockers:
+  - "Operators still see, read-only, the newest lead on a parcel across tenants in Houses (the pre-existing lead pick in _lead_ids_for_records); preferring the operator's tenant or labelling the lead's tenant is not done."
+  - "Other pages that read audit_ledger metadata were not re-audited in this slice; the pulse was the one page every agent reads it through. The 16 px fix is pinned in jsdom, not checked on a real iPhone. Not deployed (C4.4)."
+audit_refs: [A01]
+decision_refs: []
+next_task: "Let Property View, Neoh and the AI tools read a confirmed decision; owner decisions listed in L11-14."
+updated: 2026-10-17
+```
+
 ### L12
 Neoh Space capture, reconstruction and tours. Spec: [neoh-space-web-capture-claude.md](../neoh-space-web-capture-claude.md).
 
@@ -996,6 +1948,32 @@ next_task: "T12.09 certification state; owner question on publishing unverified 
 updated: 2026-10-13
 ```
 
+#### L12-03 Capture Studio first slice: camera, live hints off the main thread, on-device staging until acknowledged (T12.01, T12.03, T12.05 part)
+Integration map: [docs/neoh-space-integration-map.md](../neoh-space-integration-map.md).
+```yaml
+id: L12-03
+status: tests_pass
+env: local
+evidence_shas: [42f0c0a]
+files: [docs/neoh-space-integration-map.md, oracle-app/src/lib/clearPrivateCaches.js, oracle-app/src/lib/clearPrivateCaches.test.js, oracle-app/src/components/CaptureStudio.jsx, oracle-app/src/components/CaptureStudio.module.css, oracle-app/src/components/CaptureStudio.test.jsx, oracle-app/src/components/PropertyViewTab.jsx, oracle-app/src/components/PropertyViewTab.test.jsx, oracle-app/src/lib/capture/frameQuality.js, oracle-app/src/lib/capture/hintScheduler.js, oracle-app/src/lib/capture/qualityWorker.js, oracle-app/src/lib/capture/createQualityWorker.js, oracle-app/src/lib/capture/cameraSupport.js, oracle-app/src/lib/capture/captureStore.js, oracle-app/src/lib/capture/capture.test.js, oracle-app/bundle-budget.json]
+tests_run:
+  - {cmd: "read-only trace of capture entry, link, camera, upload, storage, worker, publish (spatial-stack-scout) + spot checks of property_view_api.py:918, reconstruction_worker.py:136/:1029, media_storage.py:45 at 42f0c0a", result: "no in-app camera, no live quality check, no resumable or offline upload: a reload lost every capture not yet uploaded; server gate, build, publish and viewer are real (map committed)", date: 2026-10-16}
+  - {cmd: "cd oracle-app && npx vitest run src/lib/capture src/components/CaptureStudio.test.jsx src/components/PropertyViewTab.test.jsx", result: "12 + 7 + 20 passed: gate thresholds mirrored (512 / 22 / 12 / 1.6); scheduler drops, never queues, and adapts to measured cost; camera errors -> state + sentence (no raw text); unsupported/denied -> 'Choose files instead'; recording staged on device, removed only on acknowledgement; failed upload keeps it and a later visit lists it; no-room -> 'in this page only'; no % and no 'verified'; launched from Property View, not for 360", date: 2026-10-16}
+  - {cmd: "cd oracle-app && npx vitest run && npx eslint . && npm run build && node scripts/check-bundle-budget.mjs", result: "917 passed; eslint exit 0; build ok, CaptureStudio (12 KB) and qualityWorker are separate lazy chunks (main chunk unchanged at 2271.2 KB); total budget re-pinned (+12.7 KB raw for the new lazy chunks)", date: 2026-10-16}
+  - {cmd: "inspect dist/assets after the first build", result: "caught: the worker had been inlined as a data: URL with its import unresolved (would fail, and CSP worker-src blocks data:) because it was constructed through a variable; fixed with createQualityWorker (the literal new Worker(new URL(...)) form); rebuilt: qualityWorker-*.js emitted same-origin with frameQuality bundled", date: 2026-10-16}
+authz_checked: "No server change. Uploads go through the existing POST /api/crm/property-view/media under the agent's own session and RLS. Staged originals stay in this browser's IndexedDB for this origin, keyed by the property, until acknowledged or discarded by the agent."
+blockers:
+  - "No real device has run this (AC12.02 open): iPhone Safari and Android Chrome, three connected rooms, scripted interruptions (tab switch, network loss, low storage). jsdom has no camera, MediaRecorder or canvas; the camera and recorder are faked in tests."
+  - "Hint parity with the server gate is by construction (same kernel, edge and thresholds), not measured on real frames; luma rounding and thumbnail resampling differ slightly (stated in frameQuality.js)."
+  - "Upload is still whole-file per request: no chunking, byte-acknowledged progress, hashes, receipts or duplicate detection (T12.05 remainder needs a server upload-session API). A staged file whose upload is interrupted mid-request is retried whole."
+  - "Sign-out now deletes the staged-capture database with the service-worker cache (lib/clearPrivateCaches.js; test fails before, passes after); the studio says signing out discards anything not uploaded. Owner may prefer a warning before sign-out when captures are waiting."
+  - "Room segments and doorway marks (T12.06) not started; owner question on publishing unverified spaces (L12-01) still open."
+audit_refs: [A03]
+decision_refs: [D-2026-10-08-01, D-2026-10-08-02]
+next_task: "Server upload sessions (chunked, hashed, idempotent receipts, byte progress); then the AC12.02 real-device protocol; then T12.09/T12.10 (A03)."
+updated: 2026-10-16
+```
+
 ### L13
 Deals, documents and compliance.
 
@@ -1015,6 +1993,53 @@ audit_refs: []
 decision_refs: [D-2026-10-12-01]
 next_task: "T13.02 + T13.14"
 updated: 2026-10-12
+```
+
+#### L13-02 A new deal cannot be opened on an MLS listing while MLS is off (D-2026-10-12-01)
+```yaml
+id: L13-02
+status: tests_pass
+env: local
+evidence_shas: [0d5ce47]
+files: [backend/portfolio_api.py, backend/tests/test_transaction_workflow.py]
+tests_run:
+  - {cmd: "read portfolio_api._property_anchor and create_transaction; grep oracle-app/src for property_source (at 95c4ce5)", result: "POST /transactions accepted property_source='mls' and read oracle_mls_listings to anchor a new deal regardless of mls_switch (L13-01 finding); the only UI caller sends 'pipeline' (DossierPanel)", date: 2026-10-15}
+  - {cmd: "cd backend && pytest -q tests/test_transaction_workflow.py with portfolio_api.py stashed, then restored; + tests/test_mls_switch.py", result: "before: 1 failed (an MLS-sourced deal was created with the switch off); after: 18 passed — with ORACLE_MLS_ENABLED unset the create answers 404 mls_switch.NOT_OFFERED and touches neither oracle_mls_listings nor transactions; with it on the existing MLS path is unchanged", date: 2026-10-15}
+  - {cmd: "every CI rls-job live test; cd backend && pytest -q tests compliance_engine/tests (clean env); bandit", result: "68 passed; unit 5207 passed, 65 skipped, 2 failed (test_media_storage + test_object_storage: container runs as root, identical without the change); bandit exit 0", date: 2026-10-15}
+authz_checked: "No access change; one more route honours the MLS switch."
+blockers:
+  - "Existing MLS-sourced deals stay readable and filterable (property_source=mls on the list) — nothing is deleted (D-2026-10-12-01)."
+  - "Not deployed (C4.4)."
+audit_refs: []
+decision_refs: [D-2026-10-12-01]
+next_task: "T13.02 lifecycle events (needs a migration and state machine); T13.14 tenant predicates vs RLS in portfolio_api."
+updated: 2026-10-15
+```
+
+#### L13-03 Deal status changes are an immutable, database-written trail; illegal moves are refused (0163; T13.02 first slice, AC13.01) — and T13.14 verified
+```yaml
+id: L13-03
+status: tests_pass
+env: local
+evidence_shas: [3e76d79]
+files: [backend/db/migrations/0163_transaction_status_events.sql, backend/portfolio_api.py, backend/privacy_data_map.py, backend/tests/test_transaction_events_live.py, .github/workflows/ci.yml]
+tests_run:
+  - {cmd: "read portfolio_api status writers (accept offer, close, lose, patch) and ai_chat_store deal note at 3e76d79", result: "status moved by plain UPDATEs with per-route from-state checks; no record of when, who or from what; any writer could set any status (CHECK only lists values)", date: 2026-10-16}
+  - {cmd: "cd backend && python -m pytest tests/test_transaction_events_live.py with 0163's triggers dropped, then re-applied", result: "before: 1 failed (no events written); after: 1 passed", date: 2026-10-16}
+  - {cmd: "test_transaction_events_live.py (real PostgreSQL, request login)", result: "create + active->under_contract->closed write exactly 3 events with from/to/version/actor (a notes edit writes none); closed->active|lost|under_contract and under_contract->active refused with 23514 and nothing written; the real lose route records active->lost; GET /transactions/{id}/events returns the trail; the application can neither INSERT, UPDATE nor DELETE an event (42501) and even the owner role's UPDATE is refused by trigger; an agent cannot read the trail of a colleague's private client's deal (and gets 404 from the route); a deleted deal takes its trail", date: 2026-10-16}
+  - {cmd: "full CI live list against the local migrated database", result: "72 passed (incl. privacy lifecycle erasure over the new table)", date: 2026-10-16}
+  - {cmd: "found while testing", result: "default privileges (0003) grant oracle_app INSERT/UPDATE/DELETE on every new table, so GRANT SELECT alone left the trail writable; 0163 revokes them explicitly", date: 2026-10-16}
+  - {cmd: "T13.14: read app_tenant_floor/ceiling (0141) and every `tenant_id=$n` in portfolio_api (39 sites)", result: "VERIFIED, no change: only a platform admin's wall spans brokerages, so for every agent, owner and brokerage-scope pipeline `tenant_id = ctx.tenant_id` equals the wall and hides no row; for a platform admin it narrows to the context brokerage, which list_transactions documents as intended. Removing it would widen platform-admin reads and writes in an agent-facing API: an owner/17 decision, not a cleanup", date: 2026-10-16}
+authz_checked: "transaction_status_events: tenant wall + RESTRICTIVE read following the deal (EXISTS under the caller's RLS), SELECT-only grant, UPDATE refused by trigger for everyone; writes only by the SECURITY DEFINER trigger for the row that changed. Erasure: mapped BUSINESS_CRM / erase (privacy_erase_tenant_batch runs as owner)."
+blockers:
+  - {type: owner, note: "Whether a contract that falls through reopens the same deal (under_contract -> active). Refused today; nothing in code does it."}
+  - "Only the five existing statuses: the canonical 12-stage lifecycle of T13.02 (offer presented, contingencies, inspection, appraisal, financing, closing scheduled, archived) and its legal audit state are not built."
+  - "Existing deals get one `backfill` event stating their status at migration time, labelled as such; their earlier history is unknown and not invented."
+  - "Not deployed (C4.4): 0163 is local."
+audit_refs: []
+decision_refs: [D-2026-10-12-01]
+next_task: "T13.02 remainder (lifecycle stages with contingencies, behind owner input); T13.11 with 11's gating slice."
+updated: 2026-10-16
 ```
 
 ### L14
@@ -1054,6 +2079,48 @@ audit_refs: []
 decision_refs: [D-2026-10-12-01]
 next_task: "T14.04 domain verification and rollback; T14.02 + T14.16 honest badges."
 updated: 2026-10-13
+```
+
+#### L14-03 "Live" for websites means a published site (T14.16)
+```yaml
+id: L14-03
+status: tests_pass
+env: local
+evidence_shas: [9ac4bdb]
+files: [oracle-app/src/components/OurAITab.jsx, oracle-app/src/components/OurAITab.test.jsx]
+tests_run:
+  - {cmd: "read OurAITab.jsx sourceState (at 13bf381)", result: "sourceState(sourceId) returns 'Live' whenever the endpoint answered; the 'Hyperlocal Website' card called it with no condition, so a brokerage with only draft sites (or none) saw 'Live' (L14-01 finding, OurAITab.jsx:338)", date: 2026-10-15}
+  - {cmd: "cd oracle-app && npx vitest run src/components/OurAITab.test.jsx with OurAITab.jsx stashed, then restored", result: "before: 1 failed ('is not Live just because the sites endpoint answered'); after: 4 passed — draft-only sites show 'Setup required', a published site shows 'Live'", date: 2026-10-15}
+  - {cmd: "cd oracle-app && npx vitest run && npm run lint && npm run build && npm run bundle:check", result: "892 passed; eslint exit 0; build ok; within budget", date: 2026-10-15}
+authz_checked: "No access change: a label."
+blockers:
+  - "'Website Design' still reads Live when the endpoint answers: it describes the builder, which works without a published site. Not checked in a real browser (jsdom only)."
+  - "Not deployed (C4.4)."
+audit_refs: []
+decision_refs: []
+next_task: "T14.04 domain verification and rollback; T14.02 the other source badges."
+updated: 2026-10-15
+```
+
+#### L14-04 New sites and revisions cannot add MLS/IDX; stored revisions untouched (T14.02, AC14.02)
+```yaml
+id: L14-04
+status: tests_pass
+env: local
+evidence_shas: [fba5bbb]
+files: [backend/sites_api.py, backend/tests/test_studio_sites.py, oracle-app/src/components/OurAITab.test.jsx]
+tests_run:
+  - {cmd: "grep -n -i 'idx|mls/health' OurAITab.jsx StudioTab.jsx sites_api.py at fba5bbb", result: "UI already free of the IDX poll, items and wizard step (StudioTab.jsx:124 sends authorized_idx_sources: []); the API still accepted authorized_idx_sources on SiteCreate / SiteRevisionCreate and idx_requested=true in SiteContent, so any client could add IDX to a new revision", date: 2026-10-16}
+  - {cmd: "cd backend && python -m pytest tests/test_studio_sites.py with sites_api.py stashed, then restored", result: "before: 1 failed (IDX sources accepted); after: 15 passed with test_public_sites.py (refused with 422 'not offered' while ORACLE_MLS_ENABLED is off; the legacy gate still decides when switched on)", date: 2026-10-16}
+  - {cmd: "cd oracle-app && npx vitest run src/components/OurAITab.test.jsx", result: "5 passed: Our AI makes no /api/mls or idx request and shows no IDX item (guard for the earlier UI removal)", date: 2026-10-16}
+authz_checked: "No access change. The column and existing revisions are untouched (no migration, no data change); only new input is refused."
+blockers:
+  - "Row count of hyperlocal_site_revisions before/after (AC14.02) not taken on staging; no data is changed by this slice."
+  - "Not deployed (C4.4)."
+audit_refs: []
+decision_refs: [D-2026-10-12-01]
+next_task: "T14.04 + T14.05 + AC14.04 domain verification and rollback."
+updated: 2026-10-16
 ```
 
 ### L15
@@ -1208,6 +2275,54 @@ next_task: "T16.06 permission-keyed caches; revisit the 24 h media max-age when 
 updated: 2026-10-13
 ```
 
+#### L16-04 The deal list pages authorized ids by key; the deal room says how much it shows (0162; T16.05, AC16.03)
+```yaml
+id: L16-04
+status: tests_pass
+env: local
+evidence_shas: [f991182]
+files: [backend/portfolio_api.py, backend/db/migrations/0162_transactions_page_index.sql, backend/tests/test_transaction_paging_live.py, backend/tests/test_transaction_workflow.py, oracle-app/src/components/DealBook.jsx, oracle-app/src/components/DealBook.test.jsx, .github/workflows/ci.yml]
+tests_run:
+  - {cmd: "read portfolio_api.list_transactions and DealBook.jsx at f991182", result: "LIMIT/OFFSET over the full join with clients and offers for every matching deal; DealBook fetched limit=100 and labelled the chip '{total} shown' and the metric 'Total' from the loaded rows, so a brokerage with more than 100 deals was told it saw them all, with no way to load the rest", date: 2026-10-16}
+  - {cmd: "cd backend && python -m pytest tests/test_transaction_paging_live.py with idx_transactions_page dropped, then re-created", result: "before: 1 failed (a 4000-deal brokerage sorts every deal for one page); after: 1 passed", date: 2026-10-16}
+  - {cmd: "test_transaction_paging_live.py (real PostgreSQL, request login)", result: "owner and agent page every readable deal exactly once in (updated_at, id) order, the agent without the colleague's private client's deals; a deal inserted between pages neither repeats nor shifts the next page; the page query is index-driven under the tenant wall for small and big brokerages, and the big one walks idx_transactions_page with no Sort; a malformed cursor is 422", date: 2026-10-16}
+  - {cmd: "cd oracle-app && npx vitest run src/components/DealBook.test.jsx with DealBook.jsx stashed, then restored", result: "before: 1 failed ('2 of 4 shown'); after: 2 passed (partial list says 'N of total' and '(of shown)', Show more loads by cursor and disappears at the end; a complete list says '1 shown')", date: 2026-10-16}
+  - {cmd: "cd backend && python -m pytest tests/test_transaction_workflow.py; cd oracle-app && npx vitest run && npx eslint . && npm run build && node scripts/check-bundle-budget.mjs", result: "13 passed (the list-shape test now pins the ids-first two-query shape); 920 passed; eslint exit 0; within budget", date: 2026-10-16}
+authz_checked: "Unchanged rules: both queries run in the caller's tenant_tx, so RLS decides the page (proven for an agent who cannot read a colleague's private client's deals). The explicit tenant predicate that narrows a platform admin to the context tenant is kept as before (it narrows, it does not restate)."
+blockers:
+  - "Found by CI after push (run 38846725668, DealBook.test.jsx:42): `load` depended on the list length, so 'Show more' re-ran the mount effect and refetched page one, wiping the loaded pages (a real browser does it on the next frame). Fixed: `load` has a stable identity (refs), background refreshes skip while extra pages are open, Refresh starts from page one; the test now also dispatches a background refresh and passed 5 runs in a row; the old component fails it."
+  - "Keyset semantics: a deal updated while someone pages moves to the top and is not repeated further down; it appears on the next first-page refresh."
+  - "`total` is still a count(*) per request; fine at deal volumes, revisit with T16.10 measurements."
+  - "Other OFFSET lists remain: operator_api (admin-only), state_compliance/routes_mls and mls_portal (MLS, gated off, D-2026-10-12-01)."
+  - "Not deployed (C4.4): 0162 is local."
+audit_refs: [A10]
+decision_refs: []
+next_task: "T16.06 begun in L16-05; T16.06 remainder + AC16.04 Playwright triggers."
+updated: 2026-10-16
+```
+
+#### L16-05 Cached splats and legal payloads leave the service worker only through the rights check (T16.06, T16.14)
+```yaml
+id: L16-05
+status: tests_pass
+env: local
+evidence_shas: [228a1a7]
+files: [oracle-app/src/sw-oracle.js, oracle-app/src/swOracle.test.js]
+tests_run:
+  - {cmd: "read oracle-app/src/sw-oracle.js and lib/splatCacheGate.js at 228a1a7; grep the app for the service worker's message types", result: "T16.14 holds on the fetch path: /api/media/{id} is served from IndexedDB only after a conditional GET the server answers under RLS (401/403/404/410 purge the copy). But two message handlers, CACHE_RETRIEVE_SPLAT and CACHE_RETRIEVE_LEGAL, posted the cached splat blob / legal payload back to any page that asked, with no check; nothing in the app sends either message", date: 2026-10-16}
+  - {cmd: "cd oracle-app && npx vitest run src/swOracle.test.js (before / after)", result: "before: 2 failed (the retrieve messages exist; 4 splat-store reads). after: 2 passed: no message hands back cached bytes or payloads; the splat store is read only by the gate, the presence query and the prefetch dedupe", date: 2026-10-16}
+  - {cmd: "cd oracle-app && npx vitest run && npx eslint . && npm run build && node scripts/check-bundle-budget.mjs; grep -c CACHE_RETRIEVE dist/sw-oracle.js", result: "925 passed; eslint exit 0; within budget; 0 in the built service worker", date: 2026-10-16}
+authz_checked: "The removed handlers were the only way cached bytes left IndexedDB without the server's RLS-checked 304. Sign-out still deletes the whole store (clearPrivateCaches)."
+blockers:
+  - "Source-pinned test only: the service worker does not load in jsdom; AC16.04 asks for Playwright per trigger (role change, reassignment, revocation, logout), not yet written."
+  - "Reviewed, not changed: LeadMap's in-memory geocode cache is keyed by address (a later user hits it only for an address they already hold); the backend integration cache keys AVM answers by the property, not by a viewer. No AI context or page cache keyed by actor/permission revision exists yet to review."
+  - "Not deployed (C4.4)."
+audit_refs: []
+decision_refs: []
+next_task: "AC16.04 Playwright: a viewer who loses access (reassignment, revocation, role change) is refused the cached splat on the next view."
+updated: 2026-10-16
+```
+
 ### L17
 Security, privacy and data lifecycle.
 
@@ -1331,6 +2446,8 @@ blockers:
 audit_refs: [A01, A04, A06]
 decision_refs: []
 next_task: "Code gaps in flight: L17-07 card-number redaction, L17-08 CAN-SPAM unsubscribe, L17-09..13 privileged-activity alerts / HOOK-3 / log-PII / audit fallback + verify_chain / access review, L17-14..18 demo-login boot guard / password hashing / dependency audit + Dependabot / admin read logging / DR drill in CI. Then: tenant-user MFA (owner decision), field encryption of remaining PII (A01), scheduled off-host backups, log forwarding."
+updated: 2026-10-14
+```
 
 #### L17-08 Commercial email: unsubscribe link, RFC 8058 one-click, postal address (crosswalk T-CS-1)
 ```yaml
@@ -1738,13 +2855,86 @@ blockers:
   - {type: scope, note: "Expand step only. The DB does not yet refuse plaintext in these columns; the contract migration comes after the code has served everywhere and the backfill reports 0 remaining. Rollback to a pre-0154 release after sealing needs --unseal first."}
   - {type: scope, note: "Not sealed, by design: email_outbox.to_email (matched by lower(to_email) in the privacy request; needs a keyed lookup hash, the clients design in L17-21 §2); interaction_logs behavioural payload keys (counted and filtered); email_outbox.body_html (no writer; a sealed row must keep it NULL); interaction_logs.payload.source_filename (voice-note upload name, left plaintext — owner question below)."}
   - {type: defect, note: "Pre-existing, not fixed here: SessionManager.summarize_rolling_memory can never commit as the app role — it DELETEs the archived user_interactions rows and 0009 grants oracle_app only SELECT/INSERT, so the whole roll-up (including the profile summary upsert) rolls back. It has no caller in the app today (grep), so profile_summary has no live writer; its sealed writer is store_profile_summary (live-tested directly). Fix needs a decision: a SECURITY DEFINER archive function, or DELETE for oracle_app (ends the append-only property 0152 relies on)."}
-  - {type: defect, note: "Pre-existing, not fixed here: crm.comms_threads scans the materialized touches CTE once per client (2 CTE scans x 200 loops); 194 ms for 200 clients x 5,000 touches on the bench, quadratic in brokerage size. A per-client index-backed lateral would fix it (category 04/16)."}
+  - {type: defect, note: "Pre-existing: crm.comms_threads scanned the materialized touches CTE once per client (2 CTE scans x 200 loops), quadratic in brokerage size. Fixed in L17-25 (one grouped pass)."}
 audit_refs: [A01]
 decision_refs: []
 next_task: "Owner/engineering: the roll-up's DELETE grant (defect above); whether voice-note source_filename should be sealed too. Then: deploy with approval; let sealed_text_seal (or the operator script) report 0 remaining for all eight fields; one contract migration for 0152 + 0154 fields; clients slice 1 (L17-21 §2)."
 updated: 2026-10-15
 ```
 Base `da163ba` (staging at migration head 0153). Same scheme and rollout as L17-21 (pgp_sym_encrypt under `crypto.derive_tenant_key`, `s2k-mode=1` per 0153; expand → backfill → contract). New in this slice: `interaction_logs.payload` mixes content with behavioural keys, so only the text keys (`body`, `text`, `transcript`, `summary`, `extraction`) move into `content_ciphertext` as one JSON object (`sealed_text.split_json` at write, merged back by `open_rows`), and the keys that counts and filters read stay in `payload`. A writer needs the master key only when there is text to seal (`sealed_text.key_if_needed`), so a portal view or a metadata-only row still writes without one. The email send worker opens the subject and body inside its claim transaction, so a row it cannot open is never left `sending`. Policy: no wording change (encryption does not change who sees data, how people are contacted or what the AI does).
+
+#### L17-23 Clients: keyed lookup hashes and name tokens kept current (A01, L17-21 design §2 slice a)
+```yaml
+id: L17-23
+status: tests_pass
+env: local
+evidence_shas: [7574a2c]
+files: [backend/db/migrations/0156_client_contact_index.sql, backend/client_contact_index.py, backend/data_integrations/periodic.py, backend/privacy_data_map.py, backend/tests/test_client_contact_index.py, backend/tests/test_client_contact_index_live.py, backend/tests/test_periodic_recovery_mode.py, .github/workflows/ci.yml, .env.example, docs/privacy-data-map.md, docs/operator-scripts.md]
+tests_run:
+  - {cmd: "\\d clients, \\d agent_contacts on a local PostgreSQL 16.15 built from every migration", result: "clients has trg_clients_updated (BEFORE UPDATE, set_updated_at) on every update, so index columns ON clients would bump updated_at for every client when filled (CRM list order; client_ai_automation abandons a pass when updated_at moves). agent_contacts' scheme: char(64) email/phone lookup hashes, text[] name tokens with format CHECKs, partial btree + GIN indexes. Chosen: a side table with the same columns", date: 2026-10-15}
+  - {cmd: "cd backend && pytest -q tests/test_client_contact_index.py tests/test_periodic_recovery_mode.py tests/test_privacy_data_map.py tests/test_env_documentation.py", result: "42 passed: values equal contact_truth's for agent_contacts (a 'sar joh' prefix query is answerable); no plaintext in any value; tenant-separated; unnormalisable email/phone flagged, never hashed; no key fails closed; the periodic task skips without a key; the internal-only task list is now audit_chain_verify, client_contact_index, client_note_seal, sealed_text_seal", date: 2026-10-15}
+  - {cmd: "pytest -q tests/test_client_contact_index_live.py (real PostgreSQL, FORCE RLS, app role)", result: "before 0156: fails (relation does not exist). After: 1 passed — every inserted client gets a stale row; fill writes contact_truth's values and leaves clients.updated_at unchanged; an edit of notes/stage or a same-value email does not mark stale, a new email does, the next fill uses it; a fill racing an uncommitted phone edit skips that client (SKIP LOCKED) and the committed edit's stale mark stands; agent A reads index rows only of clients A can see (not B's), cannot update/delete any (0 rows) or insert (42501); an agent's own edit still marks stale (SECURITY DEFINER trigger); the row goes with its client", date: 2026-10-15}
+  - {cmd: "bench: 20,000 synthetic clients in a scratch tenant, local PostgreSQL 16 (deleted after), twice", result: "bulk INSERT of 20,000: 0.70-0.74 s with both index triggers disabled, 1.42-1.79 s enabled (a first row-level INSERT trigger measured 2.33 s and was replaced by one statement-level trigger). fill: 20,000 clients in 12.5-13.0 s (~1,550/s, 500 per batch). EXPLAIN ANALYZE: email-hash lookup Index Scan on idx_client_contact_index_email 0.038 ms; two-word name-prefix lookup Bitmap Index Scan on the GIN 1.1 ms (111 rows); today's lower(email) exact match on clients 8.7 ms (filters all 20,000 rows of the tenant)", date: 2026-10-15}
+  - {cmd: "psql -f tests/rls_*.sql, platform_rls_test.sql, privacy_lifecycle.sql; every live test the CI rls job runs + this one", result: "SQL proofs exit 0. Live: 63 passed, 1 failed — test_client_note_sealing_live, only when it runs after this test (alone and in CI's order it passes). Root cause is pre-existing, not in this slice: the sealing batches' `WHERE id IN (SELECT ... LIMIT n FOR UPDATE SKIP LOCKED)` is planned as a nested-loop semi join on small tables and the locking subquery re-runs per outer row, so a batch of 1 sealed 3 (EXPLAIN in L17-24). Fixed in L17-24", date: 2026-10-15}
+  - {cmd: "cd backend && pytest -q tests compliance_engine/tests (clean env); bandit -b .bandit-baseline.json", result: "5192 passed, 61 skipped, 3 failed: test_media_storage + test_object_storage (fail identically without the change: the container runs as root) and test_migration_ledger for 0155 (fixed in the L03-10 follow-up commit). Bandit exit 0", date: 2026-10-15}
+authz_checked: "Values are computed in the app under each row's own tenant key (contact_truth); the filler runs in the platform context of that tenant. Agents read index rows only of clients they can see (RLS EXISTS on clients) and cannot write any; the staleness triggers are SECURITY DEFINER, touch only the inserted/edited clients' own rows and write only `stale`. Who may read a client is unchanged."
+blockers:
+  - {type: owner, note: "Slice (b) moves the searches onto this index and changes behaviour: word-prefix name search ('smi' finds Smith, not Goldsmith) and exact-only email search; and name ordering needs a decision (L17-21 design). Not started without that answer."}
+  - {type: operator, note: "Not deployed: pushing to main deploys staging (C4.4). After deploy the periodic task fills existing clients (5,000 per 15-minute run by default) or client_contact_index.py fills them at once."}
+  - {type: scope, note: "The plaintext is not sealed yet (slices c-e). company is not indexed (agent_contacts has no equivalent)."}
+audit_refs: [A01]
+decision_refs: ["owner 2026-10-14: recovery mode runs internal-only periodic tasks that read and write only this database — client_contact_index is one (review point: test_periodic_recovery_mode)"]
+next_task: "Owner: search semantics for slice (b). L17-24 (bounded sealing batches) done."
+updated: 2026-10-15
+```
+Why a side table: see the first tests_run entry. Freshness: the index may be missing (stale) but never wrong — a new client's row is created stale by a statement-level AFTER INSERT trigger, an UPDATE OF full_name/email/phone that changes a value marks it stale (row-level), and the filler reads its batch `FOR SHARE OF c SKIP LOCKED`, so an edit of the same client waits for the fill to commit and then re-marks it. The filler is `backend/client_contact_index.py` (periodic task `client_contact_index`, internal-only, `ORACLE_CLIENT_CONTACT_INDEX_*`; operator use in docs/operator-scripts.md). Erasure: rows go with their client (FK cascade) and their brokerage (privacy_data_map: erase).
+
+#### L17-24 Sealing batches really are bounded (A01 follow-up)
+```yaml
+id: L17-24
+status: tests_pass
+env: local
+evidence_shas: [0944dc4]
+files: [backend/db/migrations/0157_sealing_batches_bounded.sql, backend/backfill_client_notes.py, backend/backfill_sealed_text.py, backend/tests/test_sealing_batches_bounded_live.py, .github/workflows/ci.yml]
+tests_run:
+  - {cmd: "every CI rls-job live test after L17-23 (local PostgreSQL 16)", result: "test_client_note_sealing_live failed twice in a row, only after test_client_contact_index_live: seal_pending(batch_size=1, max_rows=2) sealed 3 notes in ONE batch (log: 'sealed 3 note(s)'); alone it passes", date: 2026-10-15}
+  - {cmd: "EXPLAIN of backfill_client_notes._SEAL on that database", result: "Update -> Nested Loop Semi Join: outer Seq Scan on client_notes, inner Subquery Scan -> Limit -> LockRows -> Sort. The locking subquery re-runs per outer row; rows this statement already updated are skipped by LockRows, so each re-run returns the next ones and the LIMIT bounds each run, not the statement. Whether it happens depends on table statistics and scan order", date: 2026-10-15}
+  - {cmd: "grep of WHERE ... IN (SELECT ... LIMIT ... FOR UPDATE SKIP LOCKED) over backend/*.py and pg_proc", result: "backfill_client_notes (2 statements), backfill_sealed_text (10), and the SECURITY DEFINER seal_negotiation_transcripts, seal_user_interactions (0153) and seal_interaction_logs (0154), whose 'at most 5,000 rows a call' bound is a stated safety property. reconciliation.py's LIMIT subqueries take no lock (a re-run reads the same snapshot), unchanged", date: 2026-10-15}
+  - {cmd: "pytest -q tests/test_sealing_batches_bounded_live.py (nested loop forced: enable_hashjoin/mergejoin/material off) BEFORE 0157", result: "failed: seal_user_interactions(tenant, key, 2) changed 12 rows (all of them); the fixed Python statements already changed exactly 2", date: 2026-10-15}
+  - {cmd: "run_migrations.py (0157) + the same test; information_schema.routine_privileges", result: "1 passed: every batch changes exactly its limit (client notes seal/unseal; seal_user_interactions and seal_interaction_logs, seal and unseal); every direct statement in backfill_sealed_text picks in a MATERIALIZED CTE with one SKIP LOCKED; EXECUTE grants unchanged (oracle_app). The old-shape control is reported, not asserted: it over-runs only when the outer scan meets rows in id order", date: 2026-10-15}
+  - {cmd: "every CI rls-job live test (3 runs); SQL proofs; cd backend && pytest -q tests compliance_engine/tests (clean env); bandit", result: "65 passed x3 (test_client_note_sealing_live passes after test_client_contact_index_live); SQL proofs exit 0; unit 5193 passed, 62 skipped, 2 failed (test_media_storage + test_object_storage: the container runs as root, identical without the change); bandit exit 0", date: 2026-10-15}
+authz_checked: "No access change. The three functions keep their signatures, SECURITY DEFINER, search_path, tenant check and 1..5000 limit check; bodies differ only in picking the batch in a MATERIALIZED CTE."
+blockers:
+  - "Not deployed: pushing to main deploys staging (C4.4). On staging the periodic sealers have already sealed everything (L17-22 counts), so the over-run had no data effect there; the fix restores the bound for future backlogs."
+  - "Not run: scripts/rehearse-migrations-nosuperuser.sh (needs the owner's docker setup). 0157 only replaces three functions the same owner already owns."
+audit_refs: [A01]
+decision_refs: []
+next_task: "Deploy with approval together with 0155-0156."
+updated: 2026-10-15
+```
+
+#### L17-25 The comms rollup is one pass over the touches (L17-22 defect)
+```yaml
+id: L17-25
+status: tests_pass
+env: local
+evidence_shas: [6380735]
+files: [backend/crm.py, backend/tests/test_comms_threads_live.py, backend/tests/test_crm_workflows.py, .github/workflows/ci.yml]
+tests_run:
+  - {cmd: "read crm.comms_threads at 6380735", result: "two correlated LATERAL scans of the whole touches CTE per client (newest touch, count): quadratic in brokerage size (L17-22 defect)", date: 2026-10-16}
+  - {cmd: "cd backend && python -m pytest tests/test_comms_threads_live.py (real PostgreSQL, request login; 300 clients x 6,000 touches, 40 clients also reached through a house-lead) with crm.py stashed, then restored, then 3 more runs", result: "before: 1 failed (new ~= old: 230 vs 255 ms); after: passed every run, old control 229-257 ms vs new 39-42 ms, and identical clients, order, counts and newest touch", date: 2026-10-16}
+  - {cmd: "cd backend && pytest tests/test_crm_workflows.py and the other comms_threads unit tests + test_search_api.py", result: "27 passed (the shape test now pins the grouped LEFT JOIN that keeps untouched clients)", date: 2026-10-16}
+authz_checked: "No access change: same tables, same caller tenant_tx; sealed columns are still read only for the newest touch of the <=200 returned clients and opened by sealed_text.open_fields."
+blockers:
+  - "The timing is a local bench (C9.3 conditions: dev PostgreSQL 16, one connection, warm cache), not a staging measurement."
+  - "The rollup still groups every touch of the brokerage each call (linear now); a summary table or keyset paging is the next step if brokerages grow far past this bench."
+  - "Not deployed (C4.4)."
+audit_refs: [A01, A10]
+decision_refs: []
+next_task: "Owner: client search semantics (L17-23 slice b); the roll-up DELETE grant decision (L17-22)."
+updated: 2026-10-16
+```
+Effect of the defect: a periodic or operator sealing pass could change more rows per statement than its batch size (up to the whole tenant's backlog in one transaction), breaking the per-run bound and holding row locks longer — never a wrong value. Fix: `WITH picked AS MATERIALIZED (SELECT id ... ORDER BY id LIMIT n FOR UPDATE SKIP LOCKED) UPDATE ... WHERE id IN (SELECT id FROM picked)`; a CTE with a locking clause runs exactly once.
 
 ### L18
 Billing, seats and analytics.
@@ -1825,6 +3015,31 @@ decision_refs: [D-2026-10-12-02]
 next_task: "Owner: set the Stripe test-mode secret key, Price id and webhook secret on the staging app; then run one test-mode checkout."
 updated: 2026-10-13
 ```
+
+#### L18-05 A brokerage cannot hold more active seats than its plan (0161; T18.04, AC18.02)
+```yaml
+id: L18-05
+status: tests_pass
+env: local
+evidence_shas: [3bd704d]
+files: [backend/db/migrations/0161_seat_limit.sql, backend/seats.py, backend/auth.py, backend/brokerage_onboarding.py, backend/tests/test_seat_entitlements_live.py, .github/workflows/ci.yml]
+tests_run:
+  - {cmd: "grep -n -i seat over auth.accept_invite, brokerage_onboarding (invite, reinstate), signup at 3bd704d", result: "no seat ceiling anywhere; invitations check membership only; nothing serialised two acceptances", date: 2026-10-16}
+  - {cmd: "cd backend && python -m pytest tests/test_seat_entitlements_live.py with 0161's triggers dropped, then re-applied", result: "before: 1 failed (a second activation for the last seat did not wait and both committed: 21 seats); after: 1 passed", date: 2026-10-16}
+  - {cmd: "test_seat_entitlements_live.py (real PostgreSQL, application role)", result: "seat_limit 20 with 19 used: two racing activations commit exactly one (the second waits on the brokerage lock, then NSEAT); the 21st accept_invite answers 409 and the invitation stays pending; suspension frees a seat which an acceptance then takes; reinstating past the limit answers 409; a profile edit is never a new seat; no limit, no ceiling; a broker-owner's UPDATE of seat_limit is refused (42501) while a platform admin's applies", date: 2026-10-16}
+  - {cmd: "cd backend && python -m pytest tests/test_accept_invitation.py tests/test_brokerage_onboarding*.py tests/test_migration*.py tests/test_run_migrations*.py", result: "160 passed, 1 skipped", date: 2026-10-16}
+  - {cmd: "full CI live list (.github/workflows/ci.yml:257) against the local migrated database", result: "70 passed (after re-recording 0161 locally: it had been edited after a first local apply, which test_migration_precheck rightly refused)", date: 2026-10-16}
+authz_checked: "Database-level: users_seat_limit (SECURITY DEFINER, search_path pinned, REVOKE ALL FROM PUBLIC) counts only the written row's brokerage; tenants_seat_limit_guard refuses seat_limit changes on any application login (member of oracle_app, not superuser) unless app_is_platform_admin(). Proven under the application role."
+blockers:
+  - {type: owner, note: "seat_limit is NULL for every brokerage, so nothing is enforced until the plan is decided (D-2026-10-12-02, T18.02): the number, whether the broker-owner counts (today: every active non-platform-admin user counts, owner included) and who sets it (a platform admin, today by SQL; no route)."}
+  - "Lowering a limit below the active count removes no one; it blocks further activations until seats are freed."
+  - "Stripe seat quantity (proration, upgrade/downgrade) is not wired: T18.04's checkout half waits on the owner's plan contract (T18.02) and Stripe test mode."
+  - "Not deployed (C4.4): 0161 is local; staging needs the push."
+audit_refs: []
+decision_refs: [D-2026-10-12-02]
+next_task: "T18.05 Stripe event ordering and replay (AC18.03), test mode only; owner: plan contract (T18.02)."
+updated: 2026-10-16
+```
 Owner-approved workaround (2026-10-13): a staging-only subscription row for the owner's own brokerage (`staging_comp_sub_2dd07d9c`, active to 2027-10-13), written the way the demo brokerage is entitled. It also opens the spend-gated routes for that tenant on staging.
 
 ### L19
@@ -1877,8 +3092,74 @@ authz_checked: n/a
 blockers: []
 audit_refs: []
 decision_refs: [D-2026-10-12-01]
-next_task: "T19.07"
-updated: 2026-10-12
+next_task: "Health done in L19-04/05; runbook done in L19-06."
+updated: 2026-10-16
+```
+
+#### L19-04 Health reports the real property sources (T19.07 / AC19.07, part)
+```yaml
+id: L19-04
+status: tests_pass
+env: local
+evidence_shas: [8339a3b]
+files: [backend/component_health.py, backend/tests/test_component_health.py, backend/tests/test_component_health_live.py, oracle-app/src/components/admin/operatorModel.js, .github/workflows/ci.yml]
+tests_run:
+  - {cmd: "read component_health.py; \\d harvest_sources, state_market_stats; grep avm_client for RentCast/ATTOM (at c2eae55)", result: "health had a legacy MLS component (NOT_CONFIGURED since MLS is off) and nothing for the sources property answers come from (L19-03). harvest_sources records enabled, schedule, last success, failures and circuit state; state_market_stats carries updated_at (market_research task, daily by default); RentCast/ATTOM call outcomes are recorded nowhere", date: 2026-10-15}
+  - {cmd: "cd backend && pytest -q tests/test_component_health.py tests/test_health_readiness.py", result: "16 passed: harvesters — none enabled NOT_CONFIGURED, open circuit DEGRADED, overdue (> 2x schedule + 1 h) STALE; market data — none NOT_CONFIGURED, older than 3 refresh intervals STALE; in recovery mode overdue/stale report 'paused (recovery mode)' as NOT_CONFIGURED (no page) but a tripped circuit stays DEGRADED; a valuation key alone is UNKNOWN, never HEALTHY, counts only; an UNKNOWN optional component does not degrade the overall state, a STALE one does; no database -> UNKNOWN", date: 2026-10-15}
+  - {cmd: "pytest -q tests/test_component_health_live.py (real PostgreSQL, platform role)", result: "1 passed: the new queries run on the real schema; an enabled source with an open circuit makes property_harvesters DEGRADED", date: 2026-10-15}
+  - {cmd: "every CI rls-job live test; cd backend && pytest -q tests compliance_engine/tests (clean env); bandit; cd oracle-app && npx vitest run src/components/admin && npm run lint", result: "69 passed; unit 5213 passed, 66 skipped, 2 failed (test_media_storage + test_object_storage: container runs as root, identical without the change); bandit exit 0; admin vitest 12 passed; eslint exit 0", date: 2026-10-15}
+authz_checked: "Aggregates only (counts and ages) in the platform health context, as the other components; no source names, error text or customer data in the detail."
+blockers:
+  - "AC19.07 is not met for RentCast/ATTOM: their 401/503 outcomes are not recorded, so health says UNKNOWN; recording provider outcomes (and a failure-injection test per provider) is the next step."
+  - "AC19.06 (an alert per SLO that reaches a named person) is not done: these components page through the existing ops_alerts path only when STALE/DEGRADED; SLO targets are an owner decision."
+  - "Not deployed (C4.4)."
+audit_refs: [A04]
+decision_refs: [D-2026-10-12-01]
+next_task: "Done in L19-05 (valuation outcomes recorded). Then the remaining T19.07 SLOs with owner targets."
+updated: 2026-10-15
+```
+
+#### L19-05 RentCast / ATTOM outcomes are recorded, so health observes them (AC19.07 for valuation)
+```yaml
+id: L19-05
+status: tests_pass
+env: local
+evidence_shas: [685228b]
+files: [backend/db/migrations/0160_provider_health.sql, backend/provider_health.py, backend/avm_client.py, backend/component_health.py, backend/privacy_data_map.py, backend/tests/test_component_health.py, backend/tests/test_component_health_live.py, backend/tests/test_avm_credential_cooldown.py]
+tests_run:
+  - {cmd: "cd backend && pytest -q tests/test_avm_credential_cooldown.py tests/test_component_health.py tests/test_health_readiness.py", result: "15 + 29 passed. Failure injection per provider through the real _value_property_uncached with a fake HTTP session: RentCast 401 -> recorded credential_rejected -> health AUTH_FAILED; RentCast 429 -> rate_limited -> RATE_LIMITED; RentCast 503 -> http_error -> HEALTHY after one, DEGRADED after three in a row; ATTOM 401 and 503 the same; an unconfigured provider records nothing. Mapping from every avm source_status entry; recording never raises without a database", date: 2026-10-15}
+  - {cmd: "run_migrations.py (0160) + pytest -q tests/test_component_health_live.py (real PostgreSQL)", result: "1 passed: two credential_rejected records -> consecutive_failures 2 -> valuation_providers AUTH_FAILED; one ok -> 0, last_ok_at set -> HEALTHY", date: 2026-10-15}
+  - {cmd: "every CI rls-job live test; SQL proofs; cd backend && pytest -q tests compliance_engine/tests (clean env); bandit", result: "69 passed; SQL proofs exit 0; unit: first run failed test_privacy_data_map (provider_health unclassified) — classified OPERATIONAL/global; then 44 passed for the map + migration ledger and test_privacy_lifecycle_live passed; remaining unit failures only test_media_storage + test_object_storage (container runs as root); bandit exit 0", date: 2026-10-15}
+authz_checked: "provider_health is platform reference data: a provider name, timestamps, a fixed failure kind, a counter — no tenant, address or error text (privacy_data_map: OPERATIONAL, global). Written in the platform context; oracle_app may SELECT/INSERT/UPDATE it."
+blockers:
+  - "Outcomes are recorded only for valuation calls made through avm_client._value_property_uncached (the only RentCast/ATTOM caller found). Harvester outcomes come from harvest_sources (L19-04)."
+  - "AC19.06 (each SLO alert reaching a named person) still needs owner targets and an on-call owner."
+  - "Not deployed (C4.4)."
+audit_refs: [A04, A02]
+decision_refs: []
+next_task: "Remaining T19.07 SLOs once the owner sets targets."
+updated: 2026-10-15
+```
+
+#### L19-06 Property-data runbook; the platform email relay in health (T19.07 part, AC19.07)
+```yaml
+id: L19-06
+status: tests_pass
+env: local
+evidence_shas: [f251145]
+files: [backend/component_health.py, backend/tests/test_component_health.py, oracle-app/src/components/admin/operatorModel.js, docs/runbooks/property-data-down.md, docs/runbooks/README.md, docs/runbooks/email-provider-down.md]
+tests_run:
+  - {cmd: "ls docs/runbooks; grep component_health for platform_smtp at f251145", result: "only the legacy MLS runbook covered property data (L19-03); the relay outcome recorded since L10-11 was not in health", date: 2026-10-16}
+  - {cmd: "cd backend && python -m pytest tests/test_component_health.py with component_health.py stashed, then restored; live test_component_health_live.py", result: "before: 6 failed; after: 22 passed (relay UNKNOWN with no send, HEALTHY after one, AUTH_FAILED on a refused login, DEGRADED on other failures, NOT_CONFIGURED without settings; a RentCast row never counts for it); live 1 passed", date: 2026-10-16}
+  - {cmd: "run the runbook's two SQL queries against the local migrated database", result: "both run (the first draft named columns that do not exist; corrected to harvest_sources' real ones)", date: 2026-10-16}
+authz_checked: "n/a: an optional health component reading the platform-global provider_health table; runbooks."
+blockers:
+  - "SLO targets, alert routing and the on-call owner (T19.07 rest, AC19.06) are owner decisions; nothing here pages anyone."
+  - "No failure-injection run on staging per provider (AC19.07 evidence)."
+audit_refs: [A04]
+decision_refs: [D-2026-10-12-01]
+next_task: "Owner: SLO targets + on-call owner; then AC19.06 test alert per SLO."
+updated: 2026-10-16
 ```
 
 ### L20
@@ -1899,6 +3180,28 @@ audit_refs: []
 decision_refs: [D-2026-10-12-01]
 next_task: "Item 8 annotated as legacy in this change; replace with a property-sources check (11 T11.01)"
 updated: 2026-10-12
+```
+
+#### L20-02 One launch backlog, read from every ledger row (T20.02, AC20.02)
+Backlog: [LAUNCH-BACKLOG.md](LAUNCH-BACKLOG.md) (generated).
+```yaml
+id: L20-02
+status: tests_pass
+env: local
+evidence_shas: [c35af6c]
+files: [scripts/build-launch-backlog.py, docs/claude-prompts/LAUNCH-BACKLOG.md, backend/tests/test_launch_backlog.py, docs/claude-prompts/LEDGER.md]
+tests_run:
+  - {cmd: "python3 scripts/build-launch-backlog.py; --check", result: "111 ledger rows, all open (production_verified: 0), each once under the README build order with status, env, who unblocks it (owner 70, deploy 45, engineering 38, device 17; a row can need several) and next step; A01-A10 listed", date: 2026-10-16}
+  - {cmd: "found while building it", result: "two ledger defects fixed: L17-06's YAML block had no updated: line or closing fence, so L17-08 sat inside it (any reader of the ledger missed L17-08); L09-03 had a tests_run entry after authz_checked (invalid YAML), introduced earlier in this session", date: 2026-10-16}
+  - {cmd: "cd backend && python -m pytest tests/test_launch_backlog.py", result: "3 passed: every heading parses and appears once; nothing short of production_verified is closed; the committed backlog is current", date: 2026-10-16}
+authz_checked: "n/a: a generated reading aid; the ledger stays the only status record (C10)."
+blockers:
+  - "'Who unblocks' is read from each row's blockers and next step with keyword rules (owner / deploy / device / engineering); a row worded vaguely can be misfiled. The row itself is authoritative."
+  - {type: owner, note: "T20.03 + AC20.03: the owner's launch scope (which rows must be production_verified for the 20-agent launch)."}
+audit_refs: []
+decision_refs: [D-2026-10-12-01, D-2026-10-12-02]
+next_task: "Owner: launch scope (T20.03), read from LAUNCH-BACKLOG.md."
+updated: 2026-10-16
 ```
 
 ## Owner decisions
@@ -1927,6 +3230,6 @@ From [neoh-full-platform-source-audit-2026-10-08.md](../neoh-full-platform-sourc
 | A05 | Usage event counted before approved/delivered outreach | P1 | fixed in code (`a8bff54`), `tests_pass` local (2026-10-13), not deployed: metered only at delivered (0133); owner to confirm the billable stage | was `backend/speed_to_lead.py:387-389`; now `backend/outreach_lifecycle.py` (`BILLABLE_ENGAGEMENT_STAGE`), `backend/billing_usage.py` (`record_lead_engagement`, `BILLABLE_PREDICATE`) | 18 | L18-02, L04-01 |
 | A06 | Customer names in failure logs | P1 | open. 2026-10-13: fixed with a source guard, local (L17-04); addresses added 2026-10-14; agent emails (actor_ref) and exception text (handler scrub) added 2026-10-14, local (L17-11) | `backend/client_ai_automation.py:701-703` logs `full_name` | 17 | L17-04 |
 | A07 | Concurrent messaging route initialization | P1 | fixed in code at `c52b4dc`, local real-PostgreSQL race test only (2026-10-13, L10-06); not deployed, migration 0136 unapplied outside the local dev DB; 10DLC brand/campaign re-submission fixed in code at `00f94f8`, local real-PostgreSQL race test only (L10-09, 0139 unapplied outside the local dev DB); campaign number assignment fixed in code, local real-PostgreSQL race test only (L10-10, 0145 unapplied outside the local dev DB) | was `backend/messaging_data.py:108` (`ON CONFLICT … DO UPDATE SET provider_account_id`); now `ON CONFLICT … DO NOTHING` + re-read, and the hosted order goes through `provider_purchases` (`_claim_hosted_order`) | 10 | L10-06 |
-| A08 | Heuristic valuation targets in model training | P1 | open in code | `backend/ml_forge/edge_forge/train_lora.py:207` (`_COUNTY_PPSF`), `:209` (`_MAO_RULE = 0.70`) | 11 | — |
+| A08 | Heuristic valuation targets in model training | P1 | open in code. 2026-10-17: labelled and gated, `tests_pass` local (L11-05, review fixes L11-06): the trainer, its manifest and model card and the CoT generator say the targets are heuristic (the false "licensed" kind and the generator's model claim are gone), a state underwriter is activated only with observed-transaction targets and published per-region error and uncertainty, a decided version cannot be swapped, and EdgeUnderwriter serves no state adapter without an observed-targets card. The constants remain, provenance is self-declared, and the six tracked training_data/*.jsonl files predate the fix (README added) | `backend/ml_forge/edge_forge/train_lora.py:211` (`_COUNTY_PPSF`), `:213` (`_MAO_RULE = 0.70`); gate in `backend/models_api.py:81` (`valuation_promotion_problem`); serving guard in `backend/ml_forge/edge_forge/local_vllm_adapter.py` (`_require_observed_targets`) | 11 | L11-05, L11-06 |
 | A09 | AI capability descriptions exceed executable tooling | P1 | allowlist re-verified; UI and persona wording not re-verified. **2026-10-13 (base `3bcab84`): fixed locally, `tests_pass` (L07-01)** — one registry derived from the allowlist drives the persona, the API and the Personal AI page; a guard test fails on any unbacked claim. Playwright check still owed | allowlist at `backend/ai_chat_store.py:605`, `:646`; 126 catalogued vs 57 allowlisted tools (L07-01); registry `backend/ai_capabilities.py`, guard `backend/tests/test_ai_capabilities.py` | 07 | L07-01 |
 | A10 | Local capacity test is not target-production evidence | P1 | open. 2026-10-13: the tenant-isolation policies are now index conditions (0141, `tests_pass` local, L16-01; undeployed) — that removes a platform-sized scan from ordinary requests but is not capacity evidence; nothing is measured on production-shaped infrastructure | `docs/capacity-plan.md:129` (nothing measured on DigitalOcean); `backend/db/migrations/0141_indexable_tenant_wall.sql` | 16 | L16-01, L16-03, L19-02 |

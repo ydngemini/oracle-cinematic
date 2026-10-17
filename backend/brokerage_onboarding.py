@@ -996,6 +996,19 @@ async def reinstate_member(
     """Give a suspended member their account back. They sign in again: the
     sessions that suspension ended stay ended."""
     require_role(ctx, Role.BROKER_OWNER, Role.PLATFORM_ADMIN)
+    import asyncpg
+
+    import seats
+
+    try:
+        return await _reinstate(ctx, user_id, body)
+    except asyncpg.PostgresError as exc:
+        if seats.is_seat_limit(exc):
+            raise seats.seat_limit_http(exc) from None
+        raise
+
+
+async def _reinstate(ctx: TenantContext, user_id: str, body: Any) -> dict[str, Any]:
     async with tenant_tx(ctx) as conn:
         row = await conn.fetchrow(
             "UPDATE users SET is_active = true, updated_at = now() "

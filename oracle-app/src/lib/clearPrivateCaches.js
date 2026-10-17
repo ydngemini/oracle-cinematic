@@ -5,6 +5,11 @@
 // cached media (security review WEB-10). Called on every sign-out and session
 // expiry; best-effort by design — a failure here must never block sign-out.
 const SW_DB = 'oracle-predictive-cache';
+// Capture Studio stages un-uploaded capture originals here (captureStore.js,
+// L12-03): a walkthrough of a client's home is theirs, not the next user's.
+// Signing out discards what was not uploaded; the studio says so.
+const CAPTURE_DB = 'neoh-capture';
+const PRIVATE_DBS = [SW_DB, CAPTURE_DB];
 
 // localStorage keys that identify the person or hold their working data. The
 // sign-in email and tenant id outlived sign-out, so a shared computer showed
@@ -19,12 +24,14 @@ export async function clearPrivateCaches() {
   try {
     navigator.serviceWorker?.controller?.postMessage({ type: 'CLEAR_PRIVATE_CACHE' });
   } catch { /* no service worker */ }
-  try {
-    await new Promise((resolve) => {
-      const req = indexedDB.deleteDatabase(SW_DB);
-      req.onsuccess = req.onerror = req.onblocked = () => resolve();
-    });
-  } catch { /* no IndexedDB */ }
+  for (const name of PRIVATE_DBS) {
+    try {
+      await new Promise((resolve) => {
+        const req = indexedDB.deleteDatabase(name);
+        req.onsuccess = req.onerror = req.onblocked = () => resolve();
+      });
+    } catch { /* no IndexedDB */ }
+  }
   try {
     if (typeof caches !== 'undefined') {
       const names = await caches.keys();

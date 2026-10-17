@@ -28,6 +28,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from db.connection import tenant_tx
 from mls_switch import require_mls_enabled
+from property_match_api import can_decide as can_decide_record_match, confirmation_state
 from tenancy import TenantContext, require_context
 from marketplace_engine import rank_buyer_request
 from data_coverage import summary as data_coverage_summary
@@ -562,8 +563,9 @@ _PUBLIC_RECORD_SELECT = """
 """
 
 
-async def _lead_ids_for_records(conn, rows: list[dict]) -> dict[tuple[str, str], str]:
-    """Map (parcel_id, state) -> this tenant's lead id, for a page of records.
+async def _lead_ids_for_records(conn, rows: list[dict]) -> dict[tuple[str, str], dict[str, Any]]:
+    """Map (parcel_id, state) -> this tenant's lead, for a page of records:
+    {lead_id, linked, heads_by_record}.
 
     The public catalog is shared across tenants; a lead is the tenant's own row
     for the same parcel. Everything downstream of the property card is keyed on
@@ -574,6 +576,16 @@ async def _lead_ids_for_records(conn, rows: list[dict]) -> dict[tuple[str, str],
     One query per page, not per row. Called inside an existing tenant_tx, so RLS
     scopes the result to the caller's tenant with no predicate needed here.
     Matches the (parcel_id, state) lookup crm.link_client_house already relies on.
+    A platform admin's RLS spans every tenant, so their row is the newest lead
+    for the parcel in any brokerage: Houses never offers them the decision
+    form on it (property_match_api.can_decide).
+
+    The same query says whether the lead is linked to a client, and carries the
+    newest property-match decision (0168, T11.03) per public record on that
+    lead: a correlated subquery, not a second round trip. Both tables are read
+    under the caller's RLS, so a house the caller cannot see brings no
+    decisions with it. `same_client` is whether the decision was made for the
+    client the house is linked to now.
     """
     keys = {
         (str(r["parcel_id"]), str(r["state"]))
@@ -587,7 +599,16 @@ async def _lead_ids_for_records(conn, rows: list[dict]) -> dict[tuple[str, str],
     states = [k[1] for k in keys]
     found = await conn.fetch(
         """
-        SELECT DISTINCT ON (parcel_id, state) parcel_id, state, id
+        SELECT DISTINCT ON (parcel_id, state) parcel_id, state, id,
+               seller_client_id IS NOT NULL AS linked,
+               (SELECT jsonb_agg(jsonb_build_object(
+                           'id', h.id, 'record_id', h.public_record_id, 'decision', h.decision,
+                           'same_client', COALESCE(h.client_id = leads.seller_client_id, false),
+                           'decided_at', h.decided_at))
+                  FROM property_match_decisions h
+                 WHERE h.lead_id = leads.id
+                   AND NOT EXISTS (SELECT 1 FROM property_match_decisions n
+                                    WHERE n.supersedes_id = h.id)) AS heads
           FROM leads
          WHERE (parcel_id, state) = ANY(
                    SELECT * FROM unnest($1::text[], $2::text[])
@@ -597,21 +618,129 @@ async def _lead_ids_for_records(conn, rows: list[dict]) -> dict[tuple[str, str],
         parcels,
         states,
     )
-    return {(str(r["parcel_id"]), str(r["state"])): str(r["id"]) for r in found}
+    leads: dict[tuple[str, str], dict[str, Any]] = {}
+    for r in found:
+        heads = r.get("heads")
+        if isinstance(heads, str):
+            heads = json.loads(heads)
+        leads[(str(r["parcel_id"]), str(r["state"]))] = {
+            "lead_id": str(r["id"]),
+            "linked": r.get("linked") is True,
+            "heads_by_record": {
+                str(h["record_id"]): h for h in (heads or []) if isinstance(h, dict) and h.get("record_id")
+            },
+        }
+    return leads
 
 
-def _public_record_json(r: dict, lead_ids: Optional[dict] = None) -> dict:
+# What the search actually matched, as a claim about identity (AC11.04). Only
+# an exact key is named as one; every partial or unrecognised match type is a
+# possible match. A browse row and a record opened by its id were compared with
+# nothing the user typed. `verified` is a separate fact about the house (0168,
+# T11.03): True only while a person's newest decision on this lead and THIS
+# record is a confirmation for the client the house is linked to now. It never
+# changes the status or basis, so a confirmed possible match stays a possible
+# match, and a row with no lead is never verified.
+_EXACT_IDENTITY = {
+    "parcel_exact": "exact_parcel",
+    "address_exact": "exact_address",
+}
+_UNMATCHED_TYPES = {"browse", "record_id"}
+
+# The search's exact branches compare compacted text: every space and
+# punctuation mark is removed on both sides. That also removes word
+# boundaries, so "15 1/2 MAIN ST" equals "1512 Main St" and parcel "123-45"
+# equals "12-345". Such a row stays in the results as a candidate, under its
+# own match type, which is a possible match.
+_EXACT_MATCH_FIELDS = {
+    "parcel_exact": ("parcel_id", "parcel_compact"),
+    "address_exact": ("address", "address_compact"),
+}
+
+
+def _record_identity(
+    match_type: str,
+    lead: Optional[dict] = None,
+    *,
+    record_id: Any = None,
+    can_decide: bool = False,
+) -> dict[str, Any]:
+    """The search's claim, plus, for a record whose parcel has this tenant's
+    lead, the house decision (`confirmation`) and whether the caller may make
+    one (`confirmable`: the house is linked to a client and the caller is a
+    decider; the route is the gate)."""
+    if match_type in _UNMATCHED_TYPES:
+        status_name = "not_applicable"
+    else:
+        status_name = _EXACT_IDENTITY.get(match_type, "possible_match")
+    identity: dict[str, Any] = {"status": status_name, "basis": match_type, "verified": False}
+    if not lead:
+        return identity
+    head = (lead.get("heads_by_record") or {}).get(str(record_id))
+    confirmation = confirmation_state(head)
+    identity["verified"] = confirmation["state"] == "confirmed"
+    identity["confirmation"] = confirmation
+    identity["confirmable"] = bool(lead.get("linked")) and can_decide
+    return identity
+
+
+def _token_key(value: Any) -> str:
+    """Lower-case letter and digit runs in any script, one space apart. Unit
+    numbers stay, and "5 大街" keeps its street name (the SQL's compaction
+    drops it)."""
+    return " ".join(re.findall(r"[^\W_]+", str(value or "").lower()))
+
+
+def _settle_exact_match(row: dict, query_key: str, *, ambiguous_parcels: frozenset = frozenset()) -> dict:
+    """Keep an exact match type only if the words line up as well.
+
+    A blank query key or a blank parcel or address is never an exact match.
+    A parcel number written without separators on one side ("19142090130000"
+    for "19-14-209-013-0000") carries no boundaries to compare, so its digits
+    decide — unless the same digits are split differently on another row of
+    the results, which makes it ambiguous ("12345" for "12-345" and "123-45").
+    """
+    field_and_fallback = _EXACT_MATCH_FIELDS.get(row.get("match_type"))
+    if field_and_fallback is None:
+        return row
+    field, fallback = field_and_fallback
+    row_key = _token_key(row.get(field))
+    if query_key and row_key == query_key:
+        return row
+    if (
+        field == "parcel_id" and query_key and row_key
+        and (" " not in query_key or " " not in row_key)
+        and query_key.replace(" ", "") == row_key.replace(" ", "")
+        and row_key.replace(" ", "") not in ambiguous_parcels
+    ):
+        return row
+    return {**row, "match_type": fallback}
+
+
+def _ambiguous_parcels(rows: list[dict]) -> frozenset:
+    """Compact parcel numbers that appear split two different ways."""
+    forms: dict[str, set] = {}
+    for row in rows:
+        if row.get("match_type") == "parcel_exact":
+            key = _token_key(row.get("parcel_id"))
+            forms.setdefault(key.replace(" ", ""), set()).add(key)
+    return frozenset(compact for compact, seen in forms.items() if len(seen) > 1)
+
+
+def _public_record_json(r: dict, lead_ids: Optional[dict] = None, *, can_decide: bool = False) -> dict:
     """Map one allow-listed catalog row to the existing property-card contract.
 
     `lead_ids` comes from _lead_ids_for_records. Absent (or no match) leaves
     lead_id None, which is correct: the tenant has no lead for this parcel, so
     there is nothing captured against it and the tour stays at exterior tier.
+    `can_decide` is whether the caller may record a house decision.
     """
     parcel_key = (str(r.get("parcel_id") or ""), str(r.get("state") or ""))
+    lead = (lead_ids or {}).get(parcel_key)
     record = {
         "id": r.get("id"),
         "public_record_id": r.get("public_record_id") or r.get("id"),
-        "lead_id": (lead_ids or {}).get(parcel_key),
+        "lead_id": lead["lead_id"] if lead else None,
         "mls_number": r.get("parcel_id") or "",
         "parcel_id": r.get("parcel_id") or "",
         "address": r.get("address") or "",
@@ -655,6 +784,9 @@ def _public_record_json(r: dict, lead_ids: Optional[dict] = None) -> dict:
         "match_type": r.get("match_type") or "browse",
         "match_score": int(r.get("match_score") or 0),
     }
+    record["identity"] = _record_identity(
+        record["match_type"], lead, record_id=record["public_record_id"], can_decide=can_decide,
+    )
     required_facts = {
         "assessor_value": record["price"],
         "last_recorded_sale": record["last_sale_price"],
@@ -917,6 +1049,7 @@ async def mls_pipeline_search(
     """Accurate paged search over shared, allow-listed public property facts."""
     conditions: list[str] = []
     args: list[Any] = []
+    words_order_sql = words_text = ""
 
     def _arg(v: Any) -> str:
         args.append(v)
@@ -948,12 +1081,23 @@ async def mls_pipeline_search(
         # LIKE metacharacters in the user's text are literal (review DOS-2).
         escaped = query_text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
         contains_arg = _arg(f"%{escaped}%")
-        exact_arg = _arg(normalized_query)
-        conditions.append(
-            f"(search_document ILIKE {contains_arg} "
-            f"OR regexp_replace(lower(parcel_id), '[^a-z0-9]', '', 'g') = {exact_arg} "
-            f"OR regexp_replace(lower(COALESCE(address, '')), '[^a-z0-9]', '', 'g') = {exact_arg})"
-        )
+        # A query with no letters or digits ("#", "-", "ñ") compacts to "",
+        # which equals every blank parcel and address. It gets no exact branch.
+        exact_where_sql = exact_rank_sql = exact_type_sql = ""
+        if normalized_query:
+            exact_arg = _arg(normalized_query)
+            parcel_exact_sql = f"regexp_replace(lower(parcel_id), '[^a-z0-9]', '', 'g') = {exact_arg}"
+            address_exact_sql = (
+                f"regexp_replace(lower(COALESCE(address, '')), '[^a-z0-9]', '', 'g') = {exact_arg}"
+            )
+            exact_where_sql = f" OR {parcel_exact_sql} OR {address_exact_sql}"
+            exact_rank_sql = f"WHEN {parcel_exact_sql} THEN 100 WHEN {address_exact_sql} THEN 98 "
+            exact_type_sql = (
+                f"WHEN {parcel_exact_sql} THEN 'parcel_exact' "
+                f"WHEN {address_exact_sql} THEN 'address_exact' "
+            )
+            words_text = " ".join(re.findall(r"[a-z0-9]+", query_text.lower()))
+        conditions.append(f"(search_document ILIKE {contains_arg}{exact_where_sql})")
         conditions.append(
             "("
             "source_key <> 'chicago_building_violations' "
@@ -970,8 +1114,7 @@ async def mls_pipeline_search(
         )
         rank_sql = (
             f"CASE "
-            f"WHEN regexp_replace(lower(parcel_id), '[^a-z0-9]', '', 'g') = {exact_arg} THEN 100 "
-            f"WHEN regexp_replace(lower(COALESCE(address, '')), '[^a-z0-9]', '', 'g') = {exact_arg} THEN 98 "
+            f"{exact_rank_sql}"
             f"WHEN address ILIKE {contains_arg} THEN 85 "
             f"WHEN owner_name ILIKE {contains_arg} THEN 70 "
             f"WHEN city ILIKE {contains_arg} THEN 55 "
@@ -979,8 +1122,7 @@ async def mls_pipeline_search(
         )
         match_type_sql = (
             f"CASE "
-            f"WHEN regexp_replace(lower(parcel_id), '[^a-z0-9]', '', 'g') = {exact_arg} THEN 'parcel_exact' "
-            f"WHEN regexp_replace(lower(COALESCE(address, '')), '[^a-z0-9]', '', 'g') = {exact_arg} THEN 'address_exact' "
+            f"{exact_type_sql}"
             f"WHEN address ILIKE {contains_arg} THEN 'address_partial' "
             f"WHEN owner_name ILIKE {contains_arg} THEN 'owner_partial' "
             f"WHEN city ILIKE {contains_arg} THEN 'city_partial' "
@@ -992,6 +1134,16 @@ async def mls_pipeline_search(
     offset = (page - 1) * PAGE_SIZE
     count_args = list(args)
     count_q = f"SELECT COUNT(*) AS n FROM public_property_records WHERE {where}"
+    if words_text:
+        # Among equal scores, the row whose words line up with the query comes
+        # first, so "1512 MAIN ST" is opened before "15 1/2 MAIN ST" (both
+        # compact to the same text; _settle_exact_match labels the second a
+        # possible match). Ordering only: not an argument of the count.
+        words_arg = _arg(words_text)
+        words_order_sql = (
+            f"(btrim(regexp_replace(lower(COALESCE(address, '')), '[^a-z0-9]+', ' ', 'g')) = {words_arg} "
+            f"OR btrim(regexp_replace(lower(COALESCE(parcel_id, '')), '[^a-z0-9]+', ' ', 'g')) = {words_arg}) DESC, "
+        )
 
     # Fetch one row past the page so has_more never depends on `total` — that
     # keeps pagination correct even when total is an estimate (below).
@@ -999,7 +1151,7 @@ async def mls_pipeline_search(
         f"SELECT {_PUBLIC_RECORD_SELECT}, {rank_sql} AS match_score, "
         f"{match_type_sql} AS match_type "
         f"FROM public_property_records WHERE {where} "
-        f"ORDER BY match_score DESC, record_refreshed_at DESC, id ASC "
+        f"ORDER BY match_score DESC, {words_order_sql}record_refreshed_at DESC, id ASC "
         f"LIMIT {_arg(PAGE_SIZE + 1)} OFFSET {_arg(offset)}"
     )
 
@@ -1061,7 +1213,15 @@ async def mls_pipeline_search(
         logger.error("Public property record search failed: %s", exc)
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Memory Core offline.")
 
-    listings = [_public_record_json(r, lead_ids) for r in rows]
+    query_key = _token_key(q) if q and q.strip() else ""
+    ambiguous = _ambiguous_parcels(rows)
+    can_decide = can_decide_record_match(ctx)
+    listings = [
+        _public_record_json(
+            _settle_exact_match(r, query_key, ambiguous_parcels=ambiguous), lead_ids, can_decide=can_decide,
+        )
+        for r in rows
+    ]
     notice = _public_coverage_json()["notice"]
     if enrichment_failures:
         # The catalog itself was read; an official-source detail lookup for a
@@ -1108,7 +1268,7 @@ async def mls_pipeline_listing(
         async with tenant_tx(ctx) as conn:
             row = await conn.fetchrow(
                 f"SELECT {_PUBLIC_RECORD_SELECT}, 0 AS match_score, "
-                f"'record_id_exact' AS match_type "
+                f"'record_id' AS match_type "
                 f"FROM public_property_records WHERE id = $1::uuid",
                 record_id,
             )
@@ -1132,7 +1292,7 @@ async def mls_pipeline_listing(
             async with tenant_tx(ctx) as conn:
                 refreshed = await conn.fetchrow(
                     f"SELECT {_PUBLIC_RECORD_SELECT}, 0 AS match_score, "
-                    f"'record_id_exact' AS match_type "
+                    f"'record_id' AS match_type "
                     f"FROM public_property_records WHERE id = $1::uuid",
                     record_id,
                 )
@@ -1150,7 +1310,7 @@ async def mls_pipeline_listing(
     except Exception as exc:  # noqa: BLE001 — the record itself is still valid
         logger.warning("Lead resolution failed for public record %s: %s", record_id, exc)
 
-    detail = _public_record_json(row_dict, lead_ids)
+    detail = _public_record_json(row_dict, lead_ids, can_decide=can_decide_record_match(ctx))
     # Blank fields after a failed official-source lookup are "not checked",
     # not "not published" (audit A02). Empty when nothing failed.
     detail["enrichment"] = enrichment_failures

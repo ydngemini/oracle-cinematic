@@ -22,3 +22,4 @@ ba967f98d8ff90142bf81245ff278aa71525273f:backend/ai_chat_agent.py:generic-api-ke
 5bc449416b171ba3b67757e4b0b9e7cae1df7340:backend/tests/test_config_demo_logins.py:generic-api-key:49
 5bc449416b171ba3b67757e4b0b9e7cae1df7340:backend/tests/test_password_hashing.py:generic-api-key:195
 90b3b0efe9d87aefca1da96c4d004d1699d1d9eb:backend/tests/test_webhook_auth.py:generic-api-key:18
+f991182869862468484953bc4a9d40a678ece0c2:backend/tests/test_seat_entitlements_live.py:generic-api-key:111

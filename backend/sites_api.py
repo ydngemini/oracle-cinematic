@@ -210,10 +210,32 @@ class SiteContent(BaseModel):
     @model_validator(mode="after")
     def validate_public_content(self) -> "SiteContent":
         enforce_public_property_data(self.model_dump(mode="json"))
+        if self.idx_requested:
+            _refuse_idx()
         return self
 
 
-class SiteCreate(BaseModel):
+IDX_NOT_OFFERED = "MLS/IDX listings are not offered on sites (D-2026-10-12-01)."
+
+
+def _refuse_idx() -> None:
+    """New site content may not ask for MLS/IDX while the legacy MLS gate is
+    off (T14.02, L14-04). Stored revisions keep whatever they hold."""
+    from mls_switch import mls_enabled
+
+    if not mls_enabled():
+        raise ValueError(IDX_NOT_OFFERED)
+
+
+class _NoNewIdxSources(BaseModel):
+    @model_validator(mode="after")
+    def refuse_idx_sources(self):
+        if getattr(self, "authorized_idx_sources", None):
+            _refuse_idx()
+        return self
+
+
+class SiteCreate(_NoNewIdxSources):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     name: str = Field(min_length=2, max_length=120)
     slug: str = Field(pattern=_SLUG_RE.pattern)
@@ -225,7 +247,7 @@ class SiteCreate(BaseModel):
     authorized_idx_sources: list[AuthorizedIdxSource] = Field(default_factory=list, max_length=20)
 
 
-class SiteRevisionCreate(BaseModel):
+class SiteRevisionCreate(_NoNewIdxSources):
     model_config = ConfigDict(extra="forbid")
     brand_theme: BrandTheme
     content: SiteContent

@@ -230,6 +230,25 @@ describe('NeohConversation', () => {
     expect(field.value).toBe('');
   });
 
+  it('picking one of the question\'s records answers with that record as the context', async () => {
+    setState({
+      aiChatMessages: [{
+        id: ASSISTANT_ID, request_id: 'r1', role: 'assistant', content: 'Which Sarah?', status: 'completed',
+        choices: [
+          { type: 'client', id: CLIENT_ID, label: 'Sarah Chen', detail: 'buyer · active' },
+          { type: 'lead', id: ASSISTANT_ID, label: 'Sarah Lee', detail: 'seller' },
+        ],
+      }],
+    });
+    renderTab();
+    const group = await screen.findByRole('group', { name: 'Which one did you mean?' });
+    expect(group.textContent).toContain('buyer · active');
+    fireEvent.click(screen.getByRole('button', { name: /Sarah Chen/ }));
+    await waitFor(() => expect(globalThis.__oracle.socket.send).toHaveBeenCalled());
+    const frame = JSON.parse(globalThis.__oracle.socket.send.mock.calls[0][0]);
+    expect(frame).toMatchObject({ type: 'AI_CHAT_SEND', content: 'Sarah Chen', context: { type: 'client', id: CLIENT_ID } });
+  });
+
   it('Shift+Enter is a newline, not a send', async () => {
     renderTab();
     const field = await screen.findByRole('textbox', { name: 'Message Neoh' });

@@ -580,6 +580,16 @@ def _tool_config(context_type: str | None) -> dict | None:
     return {"tools": tools} if tools else None
 
 
+def _offered_tool_config(context_type: str | None, withheld) -> dict | None:
+    """The Bedrock toolConfig for this turn: the release's offer for the record
+    minus what this actor is not offered (tool_offer). None when nothing is left."""
+    config = _tool_config(context_type)
+    if not config or not withheld:
+        return config
+    kept = [t for t in config["tools"] if t["toolSpec"]["name"] not in withheld]
+    return {"tools": kept} if kept else None
+
+
 def _foundry_inputs(bundle: dict, runtime_context: str = "") -> list[dict]:
     """Build stateless Responses API input without persisting Azure conversation state."""
     items: list[dict] = []
@@ -684,14 +694,21 @@ def _foundry_tools(context_type: str | None) -> list[dict]:
 _FOUNDRY_INSTRUCTIONS = neoh_persona.build_system_prompt(compact=True)
 
 
-def _foundry_response(input_items: list[dict], context_type: str | None):
+def _foundry_response(input_items: list[dict], context_type: str | None,
+                      withheld: frozenset[str] = frozenset()):
     return _foundry_openai_client().responses.create(
         model=_FOUNDRY_MODEL,
         input=input_items,
-        tools=_foundry_tools(context_type),
+        tools=[t for t in _foundry_tools(context_type) if t.get("name") not in withheld],
         instructions=_FOUNDRY_INSTRUCTIONS,
         store=False,
     )
+
+
+def _withheld(bundle: dict) -> frozenset[str]:
+    """The tools this turn's actor is not offered (tool_offer, set by _generate)."""
+    offer = bundle.get("tool_offer") if isinstance(bundle, dict) else None
+    return frozenset(getattr(offer, "withheld", None) or ())
 
 
 async def _foundry_generate(
@@ -712,9 +729,11 @@ async def _foundry_generate(
     input_items = _foundry_inputs(bundle, runtime_context)
     context_type = bundle["assistant"].get("context_type")
     context_id = str(bundle["assistant"].get("context_id") or "") or None
+    withheld = _withheld(bundle)
     # Bounded: the SDK's own default is 600 s x 3 attempts per call.
     response = await asyncio.wait_for(
-        asyncio.to_thread(_foundry_response, input_items, context_type), timeout=_FOUNDRY_ROUND_SECONDS)
+        asyncio.to_thread(_foundry_response, input_items, context_type, withheld),
+        timeout=_FOUNDRY_ROUND_SECONDS)
     # Metered at every model call, not once per turn: a turn that runs tools
     # calls the model again for each round, and those rounds carry the whole
     # conversation plus every tool receipt so far. They are the expensive half.
@@ -755,7 +774,7 @@ async def _foundry_generate(
             item.model_dump(mode="json", exclude_none=True) for item in response.output
         ]
         response = await asyncio.wait_for(asyncio.to_thread(
-            _foundry_response, input_items + prior_output + tool_outputs, context_type
+            _foundry_response, input_items + prior_output + tool_outputs, context_type, withheld
         ), timeout=_FOUNDRY_ROUND_SECONDS)
         await record_inference(
             ctx, response, idempotency_key=f"chat:{assistant_id}:foundry:{round_index + 1}"
@@ -908,7 +927,9 @@ async def _local_fallback(
 
     context_type = bundle["assistant"].get("context_type")
     context_id = str(bundle["assistant"].get("context_id") or "") or None
-    tools = _local_tools(context_type) if ctx is not None else []
+    withheld = _withheld(bundle)
+    tools = [t for t in _local_tools(context_type)
+             if (t.get("function") or {}).get("name") not in withheld] if ctx is not None else []
     actions: list[dict] = applied if applied is not None else []
 
     payload: dict[str, Any] = {
@@ -1015,8 +1036,13 @@ async def _local_fallback(
             ok = bool(isinstance(receipt, dict) and receipt.get("ok"))
             if ok and (receipt.get("command_id") or receipt.get("approval_id")):
                 staged_commands.append(str(receipt.get("command_id") or receipt.get("approval_id")))
-            logger.info("chat tool %s ok=%s%s", name, ok,
-                        "" if ok else f" error={str((receipt or {}).get('error') or '')[:160]!r}")
+            # The outcome by code only: a refusal's or a handler's error text
+            # can name a customer ("Sarah Chen has no email on record"), and
+            # this line reaches application logs (A06, L05-11).
+            outcome = "ok" if ok else (
+                f"refused:{receipt.get('constraint')}"
+                if isinstance(receipt, dict) and receipt.get("refused") else "failed")
+            logger.info("chat tool %s %s", name, outcome)
             call_index += 1
             messages.append(
                 {
@@ -1132,10 +1158,15 @@ async def _generate(ctx: TenantContext, bundle: dict, assistant_id: str) -> tupl
         asyncio.ensure_future(semantic_turn.prepare_turn(ctx, bundle, assistant_id))
         if frame_constraints.enabled() else None
     )
+    # "Actually, the other Sarah": withdraw what the previous turn staged
+    # before this turn can stage the corrected one (F05.04, correction.py).
+    import correction
+
+    withdrawn = await correction.withdraw_superseded(ctx, bundle)
     memory = SessionManager(ctx)
     brokerage = await _resolve_brokerage_context(ctx)
     base = neoh_persona.build_system_prompt(brokerage=brokerage)
-    system_prompt = await memory.inject_jit_prompt(ctx.agent_id, base)
+    system_prompt = await memory.inject_jit_prompt(ctx.agent_id, base) + correction.prompt_note(withdrawn)
     # What this turn added on top of the persona. Foundry carries its own
     # compact copy of the persona in `instructions=`, so it must be handed only
     # the additions — previously computed by subtracting BASE_SYSTEM_PROMPT
@@ -1187,11 +1218,39 @@ async def _generate(ctx: TenantContext, bundle: dict, assistant_id: str) -> tupl
     # lets the model explain — it is not the control.
     turn = await frame_task if frame_task is not None else None
     if turn is not None:
-        semantic_turn.bind(assistant_id, turn.active, turn.lang)
+        semantic_turn.bind(assistant_id, turn.active, turn.lang, pending=turn.pending())
         constraint_block = turn.prompt_block()
         if constraint_block:
             system_prompt += "\n\n" + constraint_block
             runtime_context = (runtime_context + "\n\n" + constraint_block).strip()
+        # The frame's one precise question (T05.10, L05-08): several records
+        # the person can open match a name, so the model asks and names them
+        # instead of picking one; execute_safe_tool refuses acting on any of
+        # them this turn (frame_constraints.check_pending).
+        question_block = turn.question_block()
+        if question_block:
+            system_prompt += "\n\n" + question_block
+            runtime_context = (question_block + "\n\n" + runtime_context).strip()
+        # For handle_ai_chat_job: the choices reach the UI as buttons (L05-09).
+        bundle["question"] = turn.question
+    # What this actor is offered this turn, and why the rest is not (T07.04,
+    # L07-03): the broker-owner reads an agent may not use and the channels the
+    # brokerage has not set up are withheld from every provider's tool list
+    # below and named here, so the model says "texting needs setup" instead of
+    # staging a text that can go nowhere. execute_safe_tool refuses the same
+    # names with the same reason (tool_offer.current).
+    import tool_offer
+
+    offer = await tool_offer.for_turn(ctx, bundle["assistant"].get("context_type"))
+    bundle["tool_offer"] = offer
+    tool_offer.remember(ctx, assistant_id, offer)
+    offer_note = offer.prompt_note()
+    if offer_note:
+        system_prompt += "\n\n" + offer_note
+        # Ahead of the memory block in Foundry's runtime context: _foundry_inputs
+        # keeps its first 12k characters, and a control note that is cut is a
+        # tool withheld with no reason given.
+        runtime_context = (offer_note + "\n\n" + runtime_context).strip()
     # Hosted chat runs through llm_gateway: one place that knows which
     # providers exist, one call counter, one deadline. The loop, the tool
     # execution and the receipts are unchanged — only the transport moved.
@@ -1281,7 +1340,7 @@ async def _generate(ctx: TenantContext, bundle: dict, assistant_id: str) -> tupl
     messages = _bedrock_messages(bundle)
     context_type = bundle["assistant"].get("context_type")
     context_id = str(bundle["assistant"].get("context_id") or "") or None
-    tool_config = _tool_config(context_type)
+    tool_config = _offered_tool_config(context_type, offer.withheld)
     actions: list[dict] = []
     try:
         response = await asyncio.to_thread(_converse, messages, system_prompt, tool_config)
@@ -1355,12 +1414,75 @@ async def _broadcast_chunks(ctx: TenantContext, assistant_id: str, request_id: s
         await asyncio.sleep(0)
 
 
+def _worker_role(value: object) -> Role:
+    """The role the chat turn runs as (T07.04, L07-03).
+
+    The turn used to run as Role.AGENT whoever asked, so a broker-owner was
+    refused their own workspace reports with "your role is agent" and the
+    offer could not name the real permission. The API now records the
+    requester's role in the job; a job without one (queued before this
+    release, or unreadable) still runs as an agent — the least the person
+    could be. A platform admin runs as the brokerage's owner: the tool loop
+    reads under RLS, and a platform-admin session there would see every
+    tenant's rows, which no chat turn should."""
+    if value == Role.BROKER_OWNER.value or value == Role.PLATFORM_ADMIN.value:
+        return Role.BROKER_OWNER
+    return Role.AGENT
+
+
+async def _live_role(requester: TenantContext) -> tuple[str, Optional[str]]:
+    """The requester's CURRENT membership here: ("ok", users.role) for an active
+    member, ("missing", None) when they are not one, ("unknown", None) when it
+    could not be read. Never raises."""
+    try:
+        import record_access
+        from db.connection import tenant_tx
+
+        async with tenant_tx(requester) as conn:
+            member = await record_access.find_member(conn, requester.tenant_id, requester.agent_id)
+    except Exception:  # noqa: BLE001 — not re-checked is not the same as absent
+        logger.debug("chat turn: live role not readable; the recorded role stands", exc_info=True)
+        return "unknown", None
+    return ("ok", str(member["role"])) if member else ("missing", None)
+
+
+async def _turn_role(requester: TenantContext, recorded: object) -> Role:
+    """The role a chat turn runs as. The job recorded the requester's role when
+    the session passed its account check; between enqueue and claim they may
+    have been demoted or removed, so the live users row wins when it can be
+    read: an active member runs as their current role, someone who is no
+    longer an active member runs as an agent (a platform admin, who has no
+    row to lose, keeps owner-level), and only when the row cannot be read
+    does the recorded role stand — always narrowed by _worker_role."""
+    state, live = await _live_role(requester)
+    if state == "ok":
+        return _worker_role(live)
+    if state == "missing":
+        # Not an active member here. A removed or deactivated member runs as
+        # an agent; a platform admin never was a member (their identity is the
+        # platform's, not a users row), so the role the API verified stands —
+        # narrowed to the brokerage's owner like every platform-admin turn.
+        return Role.BROKER_OWNER if recorded == Role.PLATFORM_ADMIN.value else Role.AGENT
+    return _worker_role(recorded)
+
+
+def _question_choices(bundle: dict) -> list[dict]:
+    """The turn's question as the UI shows it: one button per record the
+    person may have meant that a click can carry back as the chat context
+    (client, lead — semantic_turn.CLICKABLE), labelled as the parser saw it,
+    with what tells same-name records apart. [] without one."""
+    question = bundle.get("question") if isinstance(bundle, dict) else None
+    return [{"type": c.record_type, "id": str(c.id), "label": c.label, "detail": c.detail}
+            for c in (getattr(question, "choices", None) or ()) if c.clickable]
+
+
 async def handle_ai_chat_job(payload: dict, reporter: JobReporter) -> dict:
     tenant_id = str(payload["tenant_id"])
     user_id = str(payload["user_id"])
     assistant_id = str(payload["assistant_id"])
     request_id = str(payload["request_id"])
-    ctx = TenantContext(agent_id=user_id, tenant_id=tenant_id, role=Role.AGENT)
+    requester = TenantContext(agent_id=user_id, tenant_id=tenant_id, role=Role.AGENT)
+    ctx = TenantContext(agent_id=user_id, tenant_id=tenant_id, role=await _turn_role(requester, payload.get("role")))
     bundle = await load_response_bundle(ctx, assistant_id)
     # A spoken turn's recognition language (L05-05): read by
     # semantic_turn.prepare_turn only when the words cannot tell.
@@ -1401,14 +1523,21 @@ async def handle_ai_chat_job(payload: dict, reporter: JobReporter) -> dict:
         content, actions, model_id = await asyncio.wait_for(
             _generate(ctx, bundle, assistant_id), timeout=_TURN_DEADLINE_SECONDS)
         await _broadcast_chunks(ctx, assistant_id, request_id, content)
+        # The one precise question's choices (T05.10, L05-09): the row keeps
+        # the record ids only — labels are re-read as the caller when the
+        # thread is listed (list_messages) — and this frame carries the labels
+        # the turn already had, so the UI can offer them as buttons now.
+        choices = _question_choices(bundle)
         await update_assistant(
-            ctx, assistant_id, content=content, status_value="completed", model_id=model_id
+            ctx, assistant_id, content=content, status_value="completed", model_id=model_id,
+            choices=[{"type": c["type"], "id": c["id"]} for c in choices] if choices else None,
         )
         await SessionManager(ctx).record_interaction(user_id, "user", bundle["messages"][-1]["content"])
         await SessionManager(ctx).record_interaction(user_id, "assistant", content)
         await ws_hub.broadcast_user(tenant_id, user_id, {
             "type": "AI_CHAT_COMPLETE", "version": 1, "message_id": assistant_id,
             "request_id": request_id, "model_id": model_id, "actions": actions,
+            "choices": choices,
         })
         return {"message_id": assistant_id, "model_id": model_id, "action_count": len(actions)}
     except Exception as exc:  # noqa: BLE001

@@ -49,3 +49,16 @@ describe('oracleReducer chat arrival stamps', () => {
     expect(rejected.aiChatMessages[1]).toMatchObject({ status: 'failed', error_code: 'AI_CHAT_REJECTED', observed_at: 60 });
   });
 });
+
+describe('the one precise question (L05-09)', () => {
+  it('keeps the choices the turn-end frame carries, and none when it carries none', () => {
+    const start = { aiChatMessages: [], aiChatRevision: 0 };
+    const asked = oracleReducer(start, { type: ACTIONS.AI_CHAT_COMPLETE, payload: {
+      message_id: 'm1', request_id: 'r1', model_id: 'm',
+      choices: [{ type: 'client', id: 'c1', label: 'Sarah Chen' }],
+    } });
+    expect(asked.aiChatMessages[0].choices).toEqual([{ type: 'client', id: 'c1', label: 'Sarah Chen' }]);
+    const plain = oracleReducer(start, { type: ACTIONS.AI_CHAT_COMPLETE, payload: { message_id: 'm2', request_id: 'r2' } });
+    expect(plain.aiChatMessages[0].choices).toEqual([]);
+  });
+});

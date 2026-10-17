@@ -305,7 +305,13 @@ async def _scenario(frames: list[dict]):  # noqa: C901 — one scenario, read to
             await property_view_api.create_subject(subject, ctx=ctx("a"))
         assert e.value.status_code == 409, e.value.detail
         assert await property_view_api.create_subject(subject, ctx=ctx("b")) == {
-            "lead_id": str(lead["b"]), "created": False}
+            "lead_id": str(lead["b"]), "created": False, "address": address_b,
+            "identity": {"status": "exact_address", "basis": "address_exact", "verified": False}}
+        # The same street text for a house in another state is that house's own
+        # record, never lead b (F11.04).
+        elsewhere = await property_view_api.create_subject(
+            property_view_api.CreateSubject(address=address_b, state="PA"), ctx=ctx("b"))
+        assert elsewhere["created"] is True and elsewhere["lead_id"] != str(lead["b"])
     finally:
         await admin.execute("SET session_replication_role = replica")
         try:

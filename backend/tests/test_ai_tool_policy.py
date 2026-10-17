@@ -523,3 +523,56 @@ def test_a_staged_outreach_request_is_not_broadcast_as_an_applied_change():
 
     applied = {"ok": True, "action_id": "act-1", "undoable": True}
     assert agent._is_record_change("set_client_stage", applied) is True
+
+
+# ---------------------------------------------------------------------------
+# 8. The per-actor offer is a subset of the release offer, and says why
+#    (T07.04, AC07.01; L07-03)
+# ---------------------------------------------------------------------------
+
+def test_an_agent_is_offered_none_of_the_owner_only_tools_and_the_owner_all_of_them():
+    import tool_offer
+
+    owner = TenantContext(agent_id="owner@tenant.test", tenant_id=CTX.tenant_id, role=Role.BROKER_OWNER)
+    for context in (None, "client", "listing", "lead"):
+        release = ai_chat_agent.offered_tool_names(context)
+        agent_offer, owner_offer = tool_offer.for_actor(CTX, context), tool_offer.for_actor(owner, context)
+        assert owner_offer.offered == release
+        assert agent_offer.offered == release - ai_tools_read.OPS_ROLE_TOOLS
+        assert set(agent_offer.withheld) == release & ai_tools_read.OPS_ROLE_TOOLS
+        # Nothing is withheld silently: every name the agent is not offered has a reason.
+        assert all(agent_offer.withheld[name] for name in agent_offer.withheld)
+
+
+def test_the_three_providers_drop_exactly_the_same_withheld_names(monkeypatch):
+    """Observed through the real seams each provider path uses, not a
+    re-implementation of the filter."""
+    from types import SimpleNamespace
+
+    import tool_offer
+
+    offer = tool_offer.for_actor(CTX, "client", {"sms": "texting isn't set up: no registered text number."})
+    withheld = frozenset(offer.withheld)
+    bedrock = {t["toolSpec"]["name"] for t in ai_chat_agent._offered_tool_config("client", withheld)["tools"]}
+
+    seen = {}
+
+    class Responses:
+        def create(self, **kw):
+            seen["foundry"] = {t["name"] for t in kw["tools"]}
+            return None
+
+    monkeypatch.setattr(ai_chat_agent, "_foundry_openai_client", lambda: SimpleNamespace(responses=Responses()))
+    ai_chat_agent._foundry_response([], "client", withheld)
+
+    async def fake_chat(payload, **_kw):
+        seen["local"] = {t["function"]["name"] for t in payload["tools"]}
+        return {"choices": [{"message": {"role": "assistant", "content": "ok"}}]}
+
+    monkeypatch.setattr(ai_chat_agent, "_local_chat", fake_chat)
+    bundle = {"attachments": [], "record": None, "messages": [{"role": "user", "content": "hi"}],
+              "assistant": {"context_type": "client", "context_id": "c-1"}, "tool_offer": offer}
+    asyncio.run(ai_chat_agent._local_fallback(SimpleNamespace(agent_id="a"), bundle, "system", "asst-1"))
+
+    assert bedrock == seen["foundry"] == seen["local"] == offer.offered
+    assert "draft_sms" not in offer.offered and "draft_email" in offer.offered

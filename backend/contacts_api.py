@@ -621,6 +621,15 @@ async def create_contact(
                     body.phone,
                     body.client_id,
                 )
+            if body.phone:
+                # Texts and calls from this phone that came before anyone added
+                # the contact join it now, as they do for lead intake (L04-04,
+                # L04-05). Same transaction, so RLS decides what is touched.
+                import contact_linking
+
+                await contact_linking.link_earlier(
+                    conn, tenant_id=ctx.tenant_id, contact_id=str(_row_get(row, "id")),
+                    client_id=body.client_id, phone_e164=body.phone, phone_hash=phone_hash)
             contact = await _contact_json(conn, ctx, row)
     except ContactTruthConfigError:
         raise _contact_service_unavailable()
@@ -780,6 +789,18 @@ async def update_contact(
                     pii["email"],
                     pii["phone"],
                 )
+                if pii["phone"] and pii["phone"] != current_json["phone"]:
+                    # A new number's earlier unlinked texts and calls join the
+                    # contact, as on creation (L04-06).
+                    import contact_linking
+
+                    linked_client = await conn.fetchval(
+                        "SELECT id FROM clients WHERE contact_id=$1::uuid AND archived_at IS NULL "
+                        "ORDER BY created_at LIMIT 1", contact_id)
+                    await contact_linking.link_earlier(
+                        conn, tenant_id=ctx.tenant_id, contact_id=contact_id,
+                        client_id=str(linked_client) if linked_client else None,
+                        phone_e164=pii["phone"], phone_hash=lookup_hash(ctx.tenant_id, "phone", pii["phone"]))
             row = await conn.fetchrow(
                 _CONTACT_SELECT + " WHERE contact.id=$1::uuid",
                 contact_id,

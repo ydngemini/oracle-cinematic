@@ -19,7 +19,7 @@ import uuid
 import logging
 from datetime import datetime, timedelta, timezone
 from enum import Enum
-from typing import Any, Optional, TYPE_CHECKING
+from typing import Any, Mapping, Optional, TYPE_CHECKING
 
 import aiohttp
 from fastapi import (
@@ -500,26 +500,36 @@ def _oauth_return_url(return_path: str, outcome: str) -> str:
     )
 
 
-async def _load_google_access_token(ctx: TenantContext, account_label: str) -> Optional[str]:
-    """Load an agent token, refreshing it before expiry without exposing either token."""
-    key = _provider_key(ctx.tenant_id)
-    async with tenant_tx(ctx) as conn:
-        row = await conn.fetchrow(
-            """
+_GOOGLE_ROW_SQL = """
             SELECT id,token_ciphertext,refresh_ciphertext,expires_at
               FROM provider_credentials
              WHERE tenant_id=$1::uuid AND provider='google'
                AND account_label=$2 AND disabled_at IS NULL
              ORDER BY updated_at DESC LIMIT 1
-            """,
-            ctx.tenant_id,
-            account_label,
-        )
+"""
+
+
+def _google_token_fresh(row: Any) -> bool:
+    return not row["expires_at"] or row["expires_at"] > datetime.now(timezone.utc) + timedelta(seconds=60)
+
+
+async def has_google_calendar(ctx: TenantContext, account_label: str) -> bool:
+    """Whether _load_google_access_token could hand out a token for this label:
+    a non-disabled row that is unexpired or refreshable. An access token that
+    has merely expired is not a disconnected calendar (channel_setup, L07-03)."""
+    async with tenant_tx(ctx) as conn:
+        row = await conn.fetchrow(_GOOGLE_ROW_SQL, ctx.tenant_id, account_label)
+    return row is not None and (_google_token_fresh(row) or bool(row["refresh_ciphertext"]))
+
+
+async def _load_google_access_token(ctx: TenantContext, account_label: str) -> Optional[str]:
+    """Load an agent token, refreshing it before expiry without exposing either token."""
+    key = _provider_key(ctx.tenant_id)
+    async with tenant_tx(ctx) as conn:
+        row = await conn.fetchrow(_GOOGLE_ROW_SQL, ctx.tenant_id, account_label)
         if row is None:
             return None
-        if not row["expires_at"] or row["expires_at"] > datetime.now(timezone.utc) + timedelta(
-            seconds=60
-        ):
+        if _google_token_fresh(row):
             return await decrypt_pii(conn, row["token_ciphertext"], key)
         if not row["refresh_ciphertext"]:
             return None
@@ -585,26 +595,7 @@ def _resolve_email_provider():
         ) from None
 
 
-async def _load_provider_credential(
-    ctx: TenantContext,
-    provider: str,
-    *,
-    account_label: Optional[str] = None,
-    exact: bool = False,
-) -> Any:
-    """Decrypt a tenant credential only inside the executing worker.
-
-    Preference order: the caller's own labelled row, then 'default', then
-    whichever active row is newest — so a broker who saved a credential under
-    a custom label (the account_label field on PUT /providers/{provider} is
-    free text) is still found even when the caller asked for a specific
-    agent's row that doesn't exist. Pass `exact=True` (validate/disable: the
-    caller named one specific row) to require that exact account_label match
-    rather than silently falling back to someone else's credential.
-    """
-    async with tenant_tx(ctx) as conn:
-        row = await conn.fetchrow(
-            """
+_PROVIDER_ROW_SQL = """
             SELECT token_ciphertext,expires_at FROM provider_credentials
              WHERE tenant_id=$1::uuid AND provider=$2 AND disabled_at IS NULL
                AND ($4 IS FALSE OR account_label=$3)
@@ -624,15 +615,44 @@ async def _load_provider_credential(
                       END,
                       updated_at DESC
              LIMIT 1
-            """,
-            ctx.tenant_id,
-            provider,
-            account_label,
-            exact,
-        )
-        if row is None:
-            return None
-        if row["expires_at"] and row["expires_at"] <= datetime.now(timezone.utc):
+"""
+
+
+def _credential_row_live(row: Any) -> bool:
+    return row is not None and not (row["expires_at"] and row["expires_at"] <= datetime.now(timezone.utc))
+
+
+async def has_provider_credential(
+    ctx: TenantContext, provider: str, *, account_label: Optional[str] = None,
+) -> bool:
+    """Whether _load_provider_credential would find a usable row for this
+    caller — the same selection and expiry rule, without decrypting anything
+    (channel_setup, T07.04, L07-03)."""
+    async with tenant_tx(ctx) as conn:
+        row = await conn.fetchrow(_PROVIDER_ROW_SQL, ctx.tenant_id, provider, account_label, False)
+    return _credential_row_live(row)
+
+
+async def _load_provider_credential(
+    ctx: TenantContext,
+    provider: str,
+    *,
+    account_label: Optional[str] = None,
+    exact: bool = False,
+) -> Any:
+    """Decrypt a tenant credential only inside the executing worker.
+
+    Preference order: the caller's own labelled row, then 'default', then
+    whichever active row is newest — so a broker who saved a credential under
+    a custom label (the account_label field on PUT /providers/{provider} is
+    free text) is still found even when the caller asked for a specific
+    agent's row that doesn't exist. Pass `exact=True` (validate/disable: the
+    caller named one specific row) to require that exact account_label match
+    rather than silently falling back to someone else's credential.
+    """
+    async with tenant_tx(ctx) as conn:
+        row = await conn.fetchrow(_PROVIDER_ROW_SQL, ctx.tenant_id, provider, account_label, exact)
+        if not _credential_row_live(row):
             return None
         return await decrypt_pii(conn, row["token_ciphertext"], _provider_key(ctx.tenant_id))
 
@@ -2090,8 +2110,15 @@ async def reject_command(
     row = await _get_command(ctx, command_id)
     if not row:
         raise HTTPException(status_code=404, detail=_COMMAND_NOT_FOUND)
+    return await withdraw_command(ctx, row, reason=body.reason)
+
+
+async def withdraw_command(ctx: TenantContext, row: Mapping[str, Any], *, reason: str) -> dict:
+    """Reject a staged command's approval and cancel the command — the Reject
+    button, and a correction that supersedes it (correction.py, F05.04)."""
+    command_id = str(row["id"])
     approval = await decide_approval(
-        ctx, str(row["approval_id"]), decision="rejected", reason=body.reason
+        ctx, str(row["approval_id"]), decision="rejected", reason=reason
     )
     async with tenant_tx(ctx) as conn:
         updated = await conn.fetchrow(
@@ -2602,19 +2629,28 @@ async def deliver_call_notes(provider_call_id: str, notes: list[str],
             return None
         await conn.execute(
             "UPDATE live_call_sessions SET transcript_status='complete' WHERE id=$1", session["id"])
-        if session["client_id"] is None:
-            # chk_call_anchor allows a lead-only call; leads have no notes table.
-            logger.warning("call notes not attached — lead-only call: %s", provider_call_id)
+        client_id = session["client_id"]
+        requester = str(session["command_created_by"] or session["created_by"] or "").strip()
+        if client_id is None and session["lead_id"] is not None:
+            # A lead-only call (chk_call_anchor allows it; leads have no notes
+            # table). A lead that is a client's own house follows that client
+            # (0143), so its notes do too (L09-06, T09.17).
+            client_id = await conn.fetchval(
+                "SELECT seller_client_id FROM leads WHERE id=$1", session["lead_id"])
+        if client_id is None:
+            # A prospect with no client record: there is nowhere the agent can
+            # review a note, so nothing the callee said is kept — and the agent
+            # is told so, once, instead of the notes vanishing into a log line.
+            await _tell_requester_notes_not_kept(conn, session, requester, provider_call_id, len(clean))
             return None
         if await conn.fetchval(
             """SELECT 1 FROM client_activities
                 WHERE client_id=$1 AND meta->>'provider_call_id'=$2 AND meta->>'source'='ai_call_notes'""",
-            session["client_id"], provider_call_id,
+            client_id, provider_call_id,
         ):
             return None
-        requester = str(session["command_created_by"] or session["created_by"] or "").strip()
         assignee = await conn.fetchval(
-            "SELECT assignee_id FROM clients WHERE id=$1", session["client_id"])
+            "SELECT assignee_id FROM clients WHERE id=$1", client_id)
         mode = await call_note_settings.read_mode(conn, session["tenant_id"], requester)
         review_state = "proposed" if mode == "review" else "approved"
         # What the customer said is sealed at rest under the brokerage's key,
@@ -2625,7 +2661,7 @@ async def deliver_call_notes(provider_call_id: str, notes: list[str],
             """INSERT INTO client_notes (tenant_id, client_id, body, body_ciphertext, author_id,
                                          pinned, review_state)
                VALUES ($1, $2, '', $3, $4, false, $5) RETURNING id""",
-            session["tenant_id"], session["client_id"], sealed, AI_CALL_NOTE_AUTHOR, review_state,
+            session["tenant_id"], client_id, sealed, AI_CALL_NOTE_AUTHOR, review_state,
         )
         summary = f"Call notes from Neoh ({len(clean)})"
         if review_state == "proposed":
@@ -2633,7 +2669,7 @@ async def deliver_call_notes(provider_call_id: str, notes: list[str],
         await conn.execute(
             """INSERT INTO client_activities (tenant_id, client_id, kind, summary, meta, actor)
                VALUES ($1, $2, 'note', $3, $4::jsonb, $5)""",
-            session["tenant_id"], session["client_id"], summary,
+            session["tenant_id"], client_id, summary,
             json.dumps({
                 "source": "ai_call_notes", "note_id": str(note["id"]),
                 "provider_call_id": provider_call_id,
@@ -2646,7 +2682,7 @@ async def deliver_call_notes(provider_call_id: str, notes: list[str],
         )
     frame = {
         "type": "CALL_NOTES", "version": 1,
-        "client_id": str(session["client_id"]),
+        "client_id": str(client_id),
         "command_id": str(session["command_id"]) if session["command_id"] else None,
         "note_id": str(note["id"]), "notes": clean, "review_state": review_state,
     }
@@ -2654,12 +2690,39 @@ async def deliver_call_notes(provider_call_id: str, notes: list[str],
     # client (a revoked share, a reassignment) — C3.4/C3.6, 0145.
     try:
         await ws_hub.broadcast_record(
-            str(session["tenant_id"]), frame, client_id=session["client_id"],
+            str(session["tenant_id"]), frame, client_id=client_id,
             contact_id=session["contact_id"], only=call_note_recipients(requester, assignee),
             mirror=False)  # private to its recipients, as broadcast_user was
     except Exception:  # noqa: BLE001 — the note is saved; the live frame is extra
         logger.warning("CALL_NOTES frame not sent: %s", provider_call_id, exc_info=True)
     return str(note["id"])
+
+
+async def _tell_requester_notes_not_kept(conn: Any, session: Any, requester: str,
+                                         provider_call_id: str, count: int) -> None:
+    """A task for the agent who asked for the call: notes were taken but not
+    kept, because the call was about a lead with no client record. Carries no
+    note content. Idempotent per call."""
+    marker = f"Call {provider_call_id}"
+    if not requester or await conn.fetchval(
+        """SELECT 1 FROM client_tasks
+            WHERE tenant_id=$1 AND created_by=$2 AND details LIKE $3""",
+        session["tenant_id"], AI_CALL_NOTE_AUTHOR, f"%{marker}%",
+    ):
+        return
+    await conn.execute(
+        """INSERT INTO client_tasks (tenant_id, client_id, title, details, status, priority,
+                                     assignee_id, created_by)
+           VALUES ($1, NULL, $2, $3, 'open', 'normal', $4, $5)""",
+        session["tenant_id"],
+        "Call notes were not kept: this lead has no client record",
+        (f"Neoh took {count} note(s) with the callee's consent on a call about a lead "
+         f"(lead {session['lead_id']}), but the lead is not linked to a client, so there "
+         f"is nowhere to keep them for your review and nothing was saved. Add the person "
+         f"as a client before the next call to keep its notes. {marker}."),
+        requester, AI_CALL_NOTE_AUTHOR,
+    )
+    logger.info("call notes not kept — lead with no client; requester told: %s", provider_call_id)
 
 
 def call_note_recipients(requester: Optional[str], assignee: Optional[str]) -> list[str]:
@@ -3701,8 +3764,10 @@ async def plivo_qwen_media(websocket: WebSocket):
         await bridge.run()
     except WebSocketDisconnect:
         logger.info("Plivo media socket disconnected: uuid=%s", call_uuid)
-    except (QwenCallLimitReached, ElevenLabsCallLimitReached):
-        logger.info("Qwen realtime turn limit reached: uuid=%s", call_uuid)
+    except (QwenCallLimitReached, ElevenLabsCallLimitReached) as exc:
+        # A spoken opt-out (L09-05) is a limit subclass: same hang-up.
+        logger.info("Realtime call ended (%s): uuid=%s",
+                    "callee opted out" if "opt" in type(exc).__name__.lower() else "turn limit", call_uuid)
         from voice_provider import get_voice_provider
 
         await get_voice_provider("plivo").abort_call(call_uuid)

@@ -642,6 +642,11 @@ async def _load_bundle(conn: Any, client_id: str) -> Optional[dict[str, Any]]:
     }
 
 
+#: At most this many owner-name candidates are stored per client, newest
+#: first; neoh_render says "at least" when a lookup returns this many.
+PROPERTY_CANDIDATE_LIMIT = 5
+
+
 async def _property_candidates(
     conn: Any, full_name: str, target_zips: list[str], linked_count: int,
 ) -> list[dict[str, Any]]:
@@ -658,13 +663,13 @@ async def _property_candidates(
     # compares with texteq, which IS leakproof, so the matching plain btree
     # index (idx_public_property_owner_lookup) is used as expected.
     rows = await conn.fetch(
-        """
+        f"""
         SELECT id,parcel_id,address,city,state,zip_code,owner_name,source_name,
                record_refreshed_at,verification_required
           FROM public_property_records
          WHERE owner_name_normalized=$1
            AND (cardinality($2::text[])=0 OR zip_code=ANY($2::text[]))
-         ORDER BY record_refreshed_at DESC LIMIT 5
+         ORDER BY record_refreshed_at DESC LIMIT {PROPERTY_CANDIDATE_LIMIT}
         """,
         normalized_name,
         target_zips,

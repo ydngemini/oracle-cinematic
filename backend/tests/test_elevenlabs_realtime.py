@@ -308,3 +308,87 @@ def test_the_approved_call_carries_its_reason_as_the_briefing():
     src = inspect.getsource(commands_api)
     at = src.index("await initialize_outbound_plivo_call_state(")
     assert 'briefing=str(draft.get("reason") or "")' in src[at:at + 400]
+
+
+# ── A spoken "stop" on an outbound call (L09-05, AC09.05) ───────────────────
+
+def _said(text):
+    return {"type": "user_transcript", "user_transcription_event": {"user_transcript": text}}
+
+
+@pytest.fixture
+def recorded(monkeypatch):
+    import voice_opt_out
+
+    calls = []
+
+    async def record(state):
+        calls.append(dict(state))
+
+    monkeypatch.setattr(voice_opt_out, "record_outbound_opt_out", record)
+    return calls
+
+
+def test_an_outbound_stop_suppresses_the_number_and_ends_the_call(monkeypatch, recorded):
+    state = {"direction": "outbound", "tenant_id": "t-1", "callee": "+13025550101"}
+    with pytest.raises(el.ElevenLabsCallOptOut) as ended:
+        _run(monkeypatch, [], [_said("Who is this?"), _said("I'm not interested, stop.")], state=state)
+    # A limit subclass: the Plivo handler already hangs up on it.
+    assert isinstance(ended.value, el.ElevenLabsCallLimitReached)
+    assert recorded == [state]
+
+
+def test_stop_as_an_ordinary_verb_does_not_end_the_call(monkeypatch, recorded):
+    state = {"direction": "outbound", "tenant_id": "t-1", "callee": "+13025550101"}
+    _, _, _, bridge = _run(monkeypatch, [], [_said("Can you stop by the house on Tuesday?")], state=state)
+    assert recorded == [] and bridge._transcript == [], "and still nothing said is kept"
+
+
+def test_an_inbound_stop_is_left_to_the_inbound_finalizer(monkeypatch, recorded):
+    import inbound_voice
+
+    async def finalize(*_a, **_k):
+        return None
+
+    monkeypatch.setattr(inbound_voice, "finalize_inbound_voice_call", finalize)
+    monkeypatch.setattr(inbound_voice, "mark_inbound_streaming", finalize)
+    _run(monkeypatch, [], [_said("stop")], state={"direction": "inbound", "tenant_id": "t-1"})
+    assert recorded == []
+
+
+def test_a_failed_suppression_still_ends_the_call(monkeypatch):
+    import voice_opt_out
+
+    async def broken(state):
+        raise voice_opt_out.OptOutNotRecorded("database down")
+
+    monkeypatch.setattr(voice_opt_out, "record_outbound_opt_out", broken)
+    with pytest.raises(el.ElevenLabsCallOptOut):
+        _run(monkeypatch, [], [_said("Take me off your list.")],
+             state={"direction": "outbound", "tenant_id": "t-1", "callee": "+13025550101"})
+
+
+def test_the_qwen_bridges_honour_an_outbound_stop_too(monkeypatch, recorded):
+    """One hook in QwenOmniRealtimeBridge serves the Twilio and Plivo bridges."""
+    import types
+
+    import qwen_omni_realtime as q
+
+    bridge = types.SimpleNamespace(_call_state={"direction": "outbound", "tenant_id": "t-1",
+                                                "callee": "+13025550101"},
+                                   call_connection_id="call-1", _turns=0, _max_turns=20)
+    with pytest.raises(q.QwenCallOptOut) as ended:
+        asyncio.run(q.QwenOmniRealtimeBridge._on_transcript_completed(bridge, "caller", "Do not call me again."))
+    assert isinstance(ended.value, q.QwenCallLimitReached) and len(recorded) == 1
+    bridge._call_state["direction"] = "inbound"
+    asyncio.run(q.QwenOmniRealtimeBridge._on_transcript_completed(bridge, "caller", "stop"))
+    no_state = types.SimpleNamespace(call_connection_id="acs-1", _turns=0, _max_turns=20)
+    asyncio.run(q.QwenOmniRealtimeBridge._on_transcript_completed(no_state, "caller", "stop"))
+    assert len(recorded) == 1, "inbound and ACS (no call state) are not handled here"
+
+
+def test_the_record_stores_no_words():
+    import voice_opt_out
+
+    assert voice_opt_out.SOURCE_TEXT == "outbound AI call: callee asked not to be contacted"
+    assert voice_opt_out.spoken_opt_out("") is False

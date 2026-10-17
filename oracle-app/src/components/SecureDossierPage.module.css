@@ -196,6 +196,15 @@
   text-transform: capitalize;
 }
 
+/* A label, not a finding type: it keeps its own casing. A space precedes it
+   in the markup, so the margin only tops that up. */
+.findingFlag {
+  margin-left: 0.25rem;
+  font-size: 0.8125rem;
+  color: var(--accent);
+  text-transform: none;
+}
+
 .caveat {
   margin: 1rem 0 0;
   font-size: 0.8125rem;

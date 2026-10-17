@@ -1097,6 +1097,7 @@ async def record_inbound_message(
             return str(existing["id"]) if existing else ""
 
         message_id = str(row["id"])
+        replied = not opted_out and bool(client_id or contact_id)
         if client_id and row["activity_id"] is None:
             summary = "Opted out via text message" if opted_out else "Text message received"
             activity = await conn.fetchrow(
@@ -1117,7 +1118,24 @@ async def record_inbound_message(
                 message_id,
                 activity["id"],
             )
-        return message_id
+    if replied:
+        # The lead answered (0158, L04-03): stamp their newest first response.
+        # After the commit, because the reply's evidence references this
+        # message; in the platform context, because the number's agent need
+        # not be the one who may edit the lead's record. An opt-out is not a
+        # reply. Never fails the webhook.
+        import outreach_lifecycle
+
+        try:
+            async with tenant_tx(_platform_context()) as conn:
+                await outreach_lifecycle.record_reply(
+                    conn, tenant_id=tenant_id, sms_message_id=message_id,
+                    client_id=client_id, contact_id=contact_id,
+                    received_at=datetime.now(timezone.utc),
+                )
+        except Exception:  # noqa: BLE001
+            logger.warning("reply bookkeeping failed for message %s", message_id, exc_info=True)
+    return message_id
 
 
 def _json_media(media: Sequence[Mapping[str, str]]) -> str:
@@ -1223,6 +1241,12 @@ async def record_delivery_update(*, provider: str, provider_message_id: str, sta
             # idempotent and a redelivery heals a first attempt that failed.
             # SAVEPOINTed inside; it cannot fail this status update.
             await outreach_lifecycle.record_sms_delivered(
+                conn, provider=provider, provider_message_id=provider_message_id,
+            )
+        elif outreach_lifecycle.SMS_STATUS_STAGE.get(status) is outreach_lifecycle.Stage.FAILED:
+            # A carrier failure: the first response reached the provider, not
+            # the lead. Idempotent and SAVEPOINTed, like the delivered path.
+            await outreach_lifecycle.record_sms_failed(
                 conn, provider=provider, provider_message_id=provider_message_id,
             )
         if str(result).endswith(" 0"):

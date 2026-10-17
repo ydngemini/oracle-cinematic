@@ -26,9 +26,10 @@ import styles from './UniversalWorkspace.module.css';
  * and typing uses replaceState so a query typed one letter at a time does
  * not leave twenty history entries behind.
  *
- * A failed search leg is shown, not hidden. The API names it in `degraded`,
- * and that survives all the way to a sentence above the results — because a
- * partial answer that looks complete is worse than an empty one.
+ * A failed search leg is shown, not hidden. The API gives each leg a C6
+ * status (`source_status`, read by searchModel.failedKinds), and that
+ * survives all the way to a sentence above the results — because a partial
+ * answer that looks complete is worse than an empty one.
  */
 
 const PeopleTab = lazy(() => import('../components/PeopleTab'));
