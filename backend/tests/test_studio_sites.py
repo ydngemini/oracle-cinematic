@@ -290,3 +290,89 @@ def test_the_legacy_gate_still_decides_when_mls_is_switched_on(monkeypatch):
     assert sites_api.SiteContent(**_CONTENT, idx_requested=True).idx_requested is True
     assert len(sites_api.SiteRevisionCreate(brand_theme=sites_api.BrandTheme(), content=sites_api.SiteContent(**_CONTENT),
                                             authorized_idx_sources=[_idx_source()]).authorized_idx_sources) == 1
+
+
+# ── T14.04: a hostname belongs to one claim ──────────────────────────────────
+
+class _TakenHostnameConn(_PublishConn):
+    """Everything about the publish is in order, but another site (of this or
+    another brokerage) already claims the hostname: the global UNIQUE (hostname)."""
+
+    def __init__(self):
+        super().__init__(approved_hash="")
+
+    async def execute(self, query, *args):
+        return "SELECT 1"
+
+    async def fetchval(self, query, *args):
+        return "northstar"
+
+    async def fetchrow(self, query, *args):
+        if "UPDATE hyperlocal_sites" in query:
+            return {"id": self.site_id, "slug": "dover-homes", "status": "published"}
+        if "INSERT INTO hyperlocal_site_domains" in query:
+            import asyncpg
+
+            exc = asyncpg.UniqueViolationError("duplicate key value violates unique constraint")
+            exc.constraint_name = "hyperlocal_site_domains_hostname_key"
+            raise exc
+        return await super().fetchrow(query, *args)
+
+
+def test_a_hostname_claimed_elsewhere_is_409_and_never_says_by_whom(monkeypatch):
+    from automation_jobs import payload_hash
+
+    conn = _TakenHostnameConn()
+    monkeypatch.setattr(sites_api, "tenant_tx", _fake_tenant_tx(conn))
+    monkeypatch.setattr(sites_api.ledger, "record", _ignore_audit)
+    body = SitePublishFinalize(revision_id=conn.revision_id, approval_id=uuid.uuid4(), hostname="homes.example.com")
+    conn.approved_hash = payload_hash(
+        sites_api._publish_payload(conn.site_id, {"id": conn.revision_id, "content_sha256": "a" * 64},
+                                   "homes.example.com"))
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(publish_site(conn.site_id, body, CTX))
+    assert exc.value.status_code == 409
+    assert exc.value.detail == "This hostname is not available."
+
+
+class _RepublishConn(_TakenHostnameConn):
+    """A (re)publish whose hostname claim already has a state of its own: the
+    upsert leaves that state alone (0173), so the claim may be anything."""
+
+    def __init__(self, claim_status):
+        super().__init__()
+        self.claim_status = claim_status
+
+    async def fetchrow(self, query, *args):
+        if "INSERT INTO hyperlocal_site_domains" in query:
+            return {"id": uuid.uuid4(), "tenant_id": TENANT_ID, "site_id": self.site_id, "hostname": args[2],
+                    "status": self.claim_status, "challenge_token": "ab" * 32}
+        return await super().fetchrow(query, *args)
+
+
+@pytest.mark.parametrize("hostname, claim_status", [
+    ("homes.example.com", "pending"), ("homes.example.com", "verified"), ("homes.example.com", "active"),
+    ("homes.example.com", "failed"), (None, None),
+])
+def test_the_publish_audit_entry_names_the_claims_real_state(monkeypatch, hostname, claim_status):
+    from automation_jobs import payload_hash
+
+    conn = _RepublishConn(claim_status)
+    audited: list[dict] = []
+
+    async def record(**kwargs):
+        audited.append(kwargs)
+
+    monkeypatch.setattr(sites_api, "tenant_tx", _fake_tenant_tx(conn))
+    monkeypatch.setattr(sites_api.ledger, "record", record)
+    body = SitePublishFinalize(revision_id=conn.revision_id, approval_id=uuid.uuid4(), hostname=hostname)
+    conn.approved_hash = payload_hash(
+        sites_api._publish_payload(conn.site_id, {"id": conn.revision_id, "content_sha256": "a" * 64}, hostname))
+    result = asyncio.run(publish_site(conn.site_id, body, CTX))
+    (entry,) = [a for a in audited if a["action"] == "studio_site_published"]
+    assert entry["metadata"]["custom_domain_status"] == claim_status
+    assert "custom_domain_pending" not in entry["metadata"]       # it said pending for a verified claim
+    assert "homes.example.com" not in repr(entry)
+    assert result["custom_domain_status"] == (
+        "not_requested" if hostname is None else "pending_verification" if claim_status == "pending"
+        else claim_status)

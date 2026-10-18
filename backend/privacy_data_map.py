@@ -106,6 +106,8 @@ TABLES: dict[str, TableEntry] = {
     "hyperlocal_site_domains": TableEntry(C.BUSINESS_CRM, E),
     "hyperlocal_site_collaborators": TableEntry(C.BUSINESS_CRM, E),
     "hyperlocal_site_attribution_events": TableEntry(C.COMMUNICATION_METADATA, E),
+    "hyperlocal_site_events": TableEntry(
+        C.BUSINESS_CRM, E, "append-only site/domain trail (0173); actor is an agent login id"),
     "studio_campaigns": TableEntry(C.BUSINESS_CRM, E),
     "tenant_action_budgets": TableEntry(C.OPERATIONAL, E, "missions cents cap and AI token budget (0170); "
                                                          "updated_by is the setter's sign-in email"),

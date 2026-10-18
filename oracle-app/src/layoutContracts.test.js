@@ -93,6 +93,20 @@ describe('Deals, Property View and the composer fit a phone', () => {
   });
 });
 
+describe('the Studio domain list keeps Check DNS on a phone', () => {
+  it('outranks the later phone rules for .siteList rows instead of tying with them', () => {
+    // The domain <ul> is both .siteList and .domainList. At 760px and below,
+    // `.siteList li` (three tracks) and `.siteList li > button` (column 2 / -1)
+    // come later with the same specificity as `.domainList li`, so they won:
+    // the TXT value took an `auto` track and pushed the button past the
+    // clipped edge (375px: tracks 287px 0px 0px). The compound selector wins.
+    const css = read('./components/StudioTab.module.css');
+    expect(css).not.toMatch(/\n\.domainList li \{/);
+    expect(block(css, '.siteList.domainList li {')).toMatch(/grid-template-columns:\s*minmax\(0, 1fr\) auto/);
+    expect(block(css, '.siteList.domainList li > button {')).toMatch(/grid-column:\s*auto/);
+  });
+});
+
 describe('the Neoh bar never covers a sheet', () => {
   it('sits one step below the overlay tier that sheets and dialogs use', () => {
     for (const [file, selector] of [['./neoh/NeohSurface.module.css', '.surface {'], ['./neoh/NeohConversation.module.css', '.dock {']]) {

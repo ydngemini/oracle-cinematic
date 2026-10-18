@@ -63,7 +63,8 @@ async def _scenario():
     finally:
         await admin.execute("SET session_replication_role = replica")
         try:
-            for table in ("hyperlocal_site_revisions", "hyperlocal_sites"):
+            # Replica mode skips the FK cascade, so the 0173 trail goes by name.
+            for table in ("hyperlocal_site_events", "hyperlocal_site_revisions", "hyperlocal_sites"):
                 await admin.execute(f"DELETE FROM {table} WHERE tenant_id=$1", uuid.UUID(tenant))
             await admin.execute("DELETE FROM tenants WHERE id=$1", uuid.UUID(tenant))
         finally:
