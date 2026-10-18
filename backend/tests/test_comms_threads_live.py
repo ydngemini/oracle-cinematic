@@ -86,13 +86,30 @@ async def _scenario():
             [(r[0], r[1], r[2], r[3], rng.randrange(1_000_000)) for r in rows])
         await admin.execute("ANALYZE clients; ANALYZE interaction_logs; ANALYZE leads")
 
-        async with connection.tenant_tx(owner) as conn:
-            started = time.perf_counter()
-            old = await conn.fetch(OLD_SQL)
-            old_ms = (time.perf_counter() - started) * 1000
-        started = time.perf_counter()
-        new = (await crm.comms_threads(ctx=owner))["threads"]
-        new_ms = (time.perf_counter() - started) * 1000
+        # Timed the same way on both sides: each through its own
+        # transaction, after a warm-up, best of three. Timing the old query
+        # inside an already-open transaction against one cold call of the
+        # route charged the route alone for the pool acquire and the RLS
+        # context, and a busy CI runner failed the 2x margin on that
+        # overhead (146 ms vs 250 ms there; ~5x here).
+        async def old_query():
+            async with connection.tenant_tx(owner) as conn:
+                return await conn.fetch(OLD_SQL)
+
+        async def new_route():
+            return (await crm.comms_threads(ctx=owner))["threads"]
+
+        async def best_of_three(run):
+            result = await run()   # warm-up: plan and buffer cache
+            times = []
+            for _ in range(3):
+                started = time.perf_counter()
+                result = await run()
+                times.append((time.perf_counter() - started) * 1000)
+            return result, min(times)
+
+        old, old_ms = await best_of_three(old_query)
+        new, new_ms = await best_of_three(new_route)
         print(f"comms rollup, {CLIENTS} clients x {TOUCHES} touches: old {old_ms:.1f} ms, new {new_ms:.1f} ms")
 
         assert [str(r["id"]) for r in old] == [t["client"]["id"] for t in new]

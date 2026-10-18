@@ -3015,6 +3015,7 @@ tests_run:
   - {cmd: "read crm.comms_threads at 6380735", result: "two correlated LATERAL scans of the whole touches CTE per client (newest touch, count): quadratic in brokerage size (L17-22 defect)", date: 2026-10-16}
   - {cmd: "cd backend && python -m pytest tests/test_comms_threads_live.py (real PostgreSQL, request login; 300 clients x 6,000 touches, 40 clients also reached through a house-lead) with crm.py stashed, then restored, then 3 more runs", result: "before: 1 failed (new ~= old: 230 vs 255 ms); after: passed every run, old control 229-257 ms vs new 39-42 ms, and identical clients, order, counts and newest touch", date: 2026-10-16}
   - {cmd: "cd backend && pytest tests/test_crm_workflows.py and the other comms_threads unit tests + test_search_api.py", result: "27 passed (the shape test now pins the grouped LEFT JOIN that keeps untouched clients)", date: 2026-10-16}
+  - {cmd: "CI database-security job at 6b069e5 (run 39095490497); then tests/test_comms_threads_live.py x3 locally after the test fix", result: "CI failed the 2x timing assertion (route 146 ms vs old query 250 ms): the old query was timed inside an already-open transaction and the route once, cold, including its own pool acquire and RLS context, so a busy runner's fixed overhead ate the margin; the rollup code was unchanged since e8c98bb. Both sides are now timed through their own transaction after a warm-up, best of three (24-29 ms vs 151-163 ms locally, ~6x); the 2x requirement is unchanged, so the quadratic query still fails it", date: 2026-10-18}
 authz_checked: "No access change: same tables, same caller tenant_tx; sealed columns are still read only for the newest touch of the <=200 returned clients and opened by sealed_text.open_fields."
 blockers:
   - "The timing is a local bench (C9.3 conditions: dev PostgreSQL 16, one connection, warm cache), not a staging measurement."
@@ -3023,7 +3024,7 @@ blockers:
 audit_refs: [A01, A10]
 decision_refs: []
 next_task: "Owner: client search semantics (L17-23 slice b); the roll-up DELETE grant decision (L17-22)."
-updated: 2026-10-16
+updated: 2026-10-18
 ```
 Effect of the defect: a periodic or operator sealing pass could change more rows per statement than its batch size (up to the whole tenant's backlog in one transaction), breaking the per-run bound and holding row locks longer — never a wrong value. Fix: `WITH picked AS MATERIALIZED (SELECT id ... ORDER BY id LIMIT n FOR UPDATE SKIP LOCKED) UPDATE ... WHERE id IN (SELECT id FROM picked)`; a CTE with a locking clause runs exactly once.
 
