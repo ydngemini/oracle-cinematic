@@ -33,6 +33,7 @@ from typing import Any, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from llm_gateway import SpendRefused
 from tenancy import TenantContext
 
 logger = logging.getLogger(__name__)
@@ -312,6 +313,11 @@ async def _ask(gateway, prompt: str) -> MissionPlan:
                 max_tokens=PLAN_TOKEN_BUDGET,
                 temperature=0.2,
             )
+        except SpendRefused:
+            # The brokerage's AI budget refused before anything was sent
+            # (T18.07). Not a provider's coin flip: asking again would only be
+            # refused again, so it is raised for the tick to record.
+            raise
         except Exception as exc:  # noqa: BLE001 — including LLMUnavailable
             last_error = str(exc)[:500]
             logger.warning("mission planner: attempt %d gateway failure: %s", attempt, last_error)

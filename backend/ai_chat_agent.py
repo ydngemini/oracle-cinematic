@@ -30,6 +30,7 @@ from llm_gateway import (
     ATTACHMENT_TOKENS,
     MIN_TOKENS,
     SpendRefused,
+    SpendUnavailable,
     document_tokens,
     estimate_tokens,
     spend_guarded,
@@ -1873,9 +1874,17 @@ NEOH REPLIES:"""
 
 
 _VOICE_STALL_LINE = "One moment please — I need a second to think about that."
+#: What a caller hears when the brokerage's AI budget (or the platform switch)
+#: stops a reply, or the call's brokerage is not known (T18.07): said, then the
+#: call ends. Never the stall line — "one moment" would promise an answer that
+#: is not coming — and never budget detail, which is the brokerage's business.
+VOICE_REFUSED_LINE = ("I'm sorry, I can't answer questions on this line right now. "
+                      "Please contact the brokerage directly. Goodbye.")
+#: Who a phone-call reply is spent as: the call's brokerage, as a service actor.
+_VOICE_ACTOR = "voice-reply"
 
 
-async def _generate_voice_reply(caller_id: str, speech_text: str) -> str:
+async def _generate_voice_reply(caller_id: str, speech_text: str, *, tenant_id: str) -> str:
     """Compose the spoken reply for a live phone turn, through the gateway.
 
     The ladder this replaces was the same shape the gateway already implements:
@@ -1895,31 +1904,63 @@ async def _generate_voice_reply(caller_id: str, speech_text: str) -> str:
 
     A card number the caller reads out never reaches the model provider: it is
     removed here, before either path (pan_redaction, PCI DSS SAQ A).
+
+    Spent for the call's brokerage (`tenant_id`, T18.07): every hosted call
+    here is held against its AI token budget before it is sent and metered
+    after, in a scope of its own (ai_budget.spending — the key is random, never
+    the caller's number). A refusal is raised (SpendRefused), never turned into
+    the stall line: the webhook says VOICE_REFUSED_LINE and ends the call. With
+    no brokerage to hold against, nothing is sent.
+
+    The budget's database work never holds the caller past the live-call
+    budget: each settle (and a dropped hold's release) runs in the background,
+    and the gateway call is bounded by the budget with its hold included — a
+    hold that cannot be read in that time is an unreadable budget, refused
+    like any other (SpendUnavailable), never passed and never the stall line.
     """
     speech_text = _scrub_pan(speech_text, "voice_call_speech")
-    if not _gateway_chat_providers():
-        # No gateway on this deployment: the original ladder still answers
-        # callers rather than leaving them with a stall line on every turn.
-        return await _voice_reply_direct(caller_id, speech_text)
+    if not tenant_id:
+        raise SpendUnavailable("unknown", ai_budget.CODES["unknown"],
+                               "This call's brokerage is not known, so no model was asked.")
+    ctx = TenantContext(agent_id=_VOICE_ACTOR, tenant_id=str(tenant_id), role=Role.AGENT)
+    async with ai_budget.spending(ctx, "voice", settles_in_background=True):
+        if not _gateway_chat_providers():
+            # No gateway on this deployment: the original ladder still answers
+            # callers rather than leaving them with a stall line on every turn.
+            return await _voice_reply_direct(caller_id, speech_text)
 
-    import llm_gateway
+        import llm_gateway
 
-    prompt = _VOICE_PROMPT.format(text=speech_text[:500])
-    try:
-        reply = await llm_gateway.complete(
-            speech_text[:500],
-            task="fast",
-            system=prompt,
-            max_tokens=FIREWORKS_MAX_TOKENS,
-            temperature=0.3,
-            timeout=VOICE_REPLY_BUDGET_SECONDS,
-        )
-    except Exception as exc:  # noqa: BLE001 — a live call never gets a traceback
-        logger.warning(
-            "Voice reply unavailable within the %.1fs live-call budget: %s",
-            VOICE_REPLY_BUDGET_SECONDS, exc,
-        )
-        return _VOICE_STALL_LINE
+        prompt = _VOICE_PROMPT.format(text=speech_text[:500])
+        try:
+            # complete() bounds the provider calls by `timeout`, but not the
+            # hold in front of them (a pool acquire of up to 10 s, then its
+            # statements): this bounds the whole reply. Cut off inside a hold,
+            # the budget could not be read in the caller's time and no model
+            # was asked for that call: SpendUnavailable, not the stall line.
+            reply = await ai_budget.wait_for(
+                llm_gateway.complete(
+                    speech_text[:500],
+                    task="fast",
+                    system=prompt,
+                    max_tokens=FIREWORKS_MAX_TOKENS,
+                    temperature=0.3,
+                    timeout=VOICE_REPLY_BUDGET_SECONDS,
+                ),
+                VOICE_REPLY_BUDGET_SECONDS,
+            )
+        except SpendRefused:
+            raise
+        except asyncio.TimeoutError:
+            logger.warning("Voice reply unavailable within the %.1fs live-call budget",
+                           VOICE_REPLY_BUDGET_SECONDS)
+            return _VOICE_STALL_LINE
+        except Exception as exc:  # noqa: BLE001 — a live call never gets a traceback
+            logger.warning(
+                "Voice reply unavailable within the %.1fs live-call budget: %s",
+                VOICE_REPLY_BUDGET_SECONDS, exc,
+            )
+            return _VOICE_STALL_LINE
     # 300 characters is roughly 20 seconds of speech; past that the caller is
     # listening to a monologue rather than a conversation.
     return reply.strip()[:300] or _VOICE_STALL_LINE
@@ -1939,6 +1980,14 @@ async def _voice_reply_direct(caller_id: str, speech_text: str) -> str:
     then this coroutine's own error handling is moot — the call is already gone.
     A stall line delivered on time beats a perfect answer delivered after the
     caller has been hung up on.
+
+    Each hosted tier is held under the caller's spend scope before it is sent
+    (the hold's round trip counts against the same deadline) and metered after,
+    in the background (the reply does not wait for it); a refusal raises and
+    ends the ladder — it is never a reason to try Foundry. A hold that cannot
+    be read before the deadline is an unreadable budget (SpendUnavailable, the
+    webhook's refusal line), as on the gateway path: no model was asked, so
+    it is never the stall line.
     """
     prompt = _VOICE_PROMPT.format(text=speech_text[:500])
     loop = asyncio.get_running_loop()
@@ -1948,31 +1997,38 @@ async def _voice_reply_direct(caller_id: str, speech_text: str) -> str:
         return deadline - loop.time()
 
     if FIREWORKS_ENABLED:
+        payload = {
+            "model": FIREWORKS_MODEL,
+            "messages": [
+                {"role": "system", "content": prompt},
+                {"role": "user", "content": speech_text[:500]},
+            ],
+            "temperature": 0.3,
+            # A caller is waiting on the line, but a reasoning model
+            # emits nothing at all if the budget only covers reasoning.
+            "max_tokens": FIREWORKS_MAX_TOKENS,
+        }
         try:
-            data = await asyncio.wait_for(
-                _local_chat(
-                    {
-                        "model": FIREWORKS_MODEL,
-                        "messages": [
-                            {"role": "system", "content": prompt},
-                            {"role": "user", "content": speech_text[:500]},
-                        ],
-                        "temperature": 0.3,
-                        # A caller is waiting on the line, but a reasoning model
-                        # emits nothing at all if the budget only covers reasoning.
-                        "max_tokens": FIREWORKS_MAX_TOKENS,
-                    },
-                    url=FIREWORKS_URL,
-                    api_key=FIREWORKS_API_KEY,
-                    timeout=min(FIREWORKS_TIMEOUT, max(_remaining(), 0.1)),
+            data = await ai_budget.wait_for(
+                spend_guarded(
+                    "fireworks",
+                    estimate_tokens(payload["messages"], completion=FIREWORKS_MAX_TOKENS),
+                    lambda: _local_chat(
+                        payload,
+                        url=FIREWORKS_URL,
+                        api_key=FIREWORKS_API_KEY,
+                        timeout=min(FIREWORKS_TIMEOUT, max(_remaining(), 0.1)),
+                    ),
                 ),
-                timeout=max(_remaining(), 0.1),
+                max(_remaining(), 0.1),
             )
             message = (data.get("choices") or [{}])[0].get("message") or {}
             reply = str(message.get("content") or "").strip()
             if reply:
                 return reply[:300]
             logger.warning("Fireworks voice reply was empty; trying Foundry")
+        except SpendRefused:
+            raise
         except asyncio.TimeoutError:
             logger.warning(
                 "Fireworks voice reply exceeded the %.1fs live-call budget", VOICE_REPLY_BUDGET_SECONDS
@@ -1989,13 +2045,17 @@ async def _voice_reply_direct(caller_id: str, speech_text: str) -> str:
         {"role": "user", "content": speech_text[:500]},
     ]
     try:
-        # wait_for stops us waiting, but cannot cancel the worker thread — the
-        # orphan finishes into a discarded future, which is harmless here.
-        response = await asyncio.wait_for(
-            asyncio.to_thread(_foundry_response, input_items, None),
-            timeout=_remaining(),
+        # wait_for stops us waiting, but cannot cancel the worker thread: the
+        # request stays held until the thread returns and is then metered
+        # (spend_guarded_thread); _foundry_response bounds it, with no retry.
+        response = await ai_budget.wait_for(
+            spend_guarded_thread("foundry", _foundry_estimate(input_items, None),
+                                 _foundry_response, input_items, None),
+            _remaining(),
         )
         reply = response.output_text.strip()
         return reply[:300] if reply else "I'm sorry, could you say that differently?"
+    except SpendRefused:
+        raise
     except Exception:
         return _VOICE_STALL_LINE

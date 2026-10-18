@@ -112,7 +112,10 @@ TABLES: dict[str, TableEntry] = {
     "tenant_action_budgets": TableEntry(C.OPERATIONAL, E, "missions cents cap and AI token budget (0170); "
                                                          "updated_by is the setter's sign-in email"),
     "ai_token_reservations": TableEntry(C.OPERATIONAL, E, "token estimates of model calls in flight (0170); "
-                                                         "lapse in minutes; no prompt or answer text"),
+                                                         "lapse in minutes; no prompt or answer text; "
+                                                         "call key = feature kind + chat message id or "
+                                                         "random id + provider + number, never a phone "
+                                                         "number or call id"),
     "tenant_contract_template_registrations": TableEntry(C.BUSINESS_CRM, E),
     "lead_pipeline_counts": TableEntry(C.DERIVED, E),
     # ── communication ────────────────────────────────────────────────────

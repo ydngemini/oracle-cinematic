@@ -35,6 +35,7 @@ from fastapi import (
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from starlette.responses import RedirectResponse, Response
 
+import ai_budget
 import pan_redaction
 import record_access
 import sealed_text
@@ -57,6 +58,7 @@ from command_providers import (
 from crypto import decrypt_pii, derive_tenant_key, encrypt_pii
 from db.connection import tenant_tx
 from intelligence_engine import negotiation_guidance
+from llm_gateway import SpendRefused, SpendUnavailable
 from outreach_compliance import Channel, guard_outreach
 from platform_policy import (
     ActionRisk,
@@ -1202,13 +1204,21 @@ async def parse_personal_command(
     else:
         generated = None
         if _mind_service is not None:
-            generated = await _mind_service.generate_command_draft(
-                raw_text=body.raw_text,
-                intent=intent.value,
-                profile=profile,
-                client=client,
-                property_context=property_context,
-            )
+            # The draft's hosted step is spent from the brokerage's AI budget
+            # (T18.07): held before it is sent, metered after. A refusal is
+            # answered as one (402/503 with its code) — never the deterministic
+            # draft dressed up as the assistant's, and nothing is staged.
+            try:
+                async with ai_budget.spending(ctx, "parse"):
+                    generated = await _mind_service.generate_command_draft(
+                        raw_text=body.raw_text,
+                        intent=intent.value,
+                        profile=profile,
+                        client=client,
+                        property_context=property_context,
+                    )
+            except SpendRefused as refused:
+                raise ai_budget.http_refusal(refused) from None
         draft_payload = (
             generated.get("draft_payload")
             if isinstance(generated, dict) and isinstance(generated.get("draft_payload"), dict)
@@ -2345,9 +2355,104 @@ async def acs_webhook(request: Request):
     return {"accepted": True}
 
 
+#: How long a realtime phone bridge waits for its brokerage's AI budget to be
+#: read before the call is refused as unreadable (T18.07): the caller is on
+#: the line, and a read that stalls is never a pass.
+_REALTIME_ADMISSION_SECONDS = 5.0
+#: Who a realtime call's admission is read as: the call's brokerage, as a
+#: service actor (as a phone-call reply is, ai_chat_agent._VOICE_ACTOR).
+_REALTIME_ACTOR = "voice-realtime"
+
+
+async def _realtime_refusal(tenant_id: Optional[str]) -> Optional[SpendRefused]:
+    """None when a realtime phone bridge may open for the call's brokerage,
+    or the refusal that stops it (T18.07).
+
+    The bridges (qwen_omni_realtime, elevenlabs_realtime) run a hosted
+    realtime model billed to the brokerage for the whole call. They report no
+    per-call token usage here, so nothing holds or meters them (a stated
+    limit, ai_budget.NOT_COUNTED). What they do honour is admission, read as
+    a chat turn's is (ai_budget.admission): the deploy-time halt, the
+    platform switch, the brokerage's pause and a cap already used up. A call
+    with no brokerage, or whose budget cannot be read in time, is refused as
+    unknown — never a pass."""
+    if not tenant_id:
+        return SpendUnavailable("unknown", ai_budget.CODES["unknown"],
+                                "This call's brokerage is not known, so no model was asked.")
+    ctx = TenantContext(agent_id=_REALTIME_ACTOR, tenant_id=str(tenant_id), role=Role.AGENT)
+    try:
+        await asyncio.wait_for(ai_budget.admission(ctx), timeout=_REALTIME_ADMISSION_SECONDS)
+    except SpendRefused as refused:
+        return refused
+    except asyncio.TimeoutError:
+        logger.warning("Realtime call held: the AI budget could not be read within %.1fs",
+                       _REALTIME_ADMISSION_SECONDS)
+        return ai_budget.refusal("unknown", ctx)
+    return None
+
+
+async def _state_tenant(load: Any, call_id: str) -> Optional[str]:
+    """The brokerage a provider call's state names, or None when there is no
+    state, it names none, or it cannot be read (unknown, not a pass)."""
+    try:
+        state = await load(call_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("realtime call state unreadable for its AI budget (%s)", type(exc).__name__)
+        return None
+    return str((state or {}).get("tenant_id") or "") or None
+
+
+def _log_realtime_refused(provider_name: str, call_id: str, refused: SpendRefused) -> None:
+    # The provider's call id and the code: never the caller's number.
+    logger.info("Realtime bridge not opened: provider=%s call=%s code=%s",
+                provider_name, call_id, refused.code)
+
+
+async def _say_refused_and_end(provider_name: str, call_id: str) -> None:
+    """Move a call whose realtime bridge was not opened to the refusal
+    document (voice_refused_markup): the caller hears VOICE_REFUSED_LINE in
+    the provider's own speech, then the call hangs up. No model and no
+    text-to-speech is bought for it. If the call cannot be moved (no public
+    base URL, the provider's API failing), the socket still closes and the
+    stream markup's own goodbye line ends the call."""
+    from voice_provider import get_voice_provider
+
+    base = os.getenv("ORACLE_PUBLIC_BASE_URL", "").strip().rstrip("/")
+    parsed = urllib.parse.urlsplit(base)
+    try:
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise RuntimeError("ORACLE_PUBLIC_BASE_URL is not an absolute HTTP(S) URL")
+        await get_voice_provider(provider_name).transfer_call(
+            call_id, redirect_url=f"{base}/api/commands/webhooks/{provider_name}/refused")
+    except Exception as exc:  # noqa: BLE001 — the call still ends with its stream
+        logger.warning("Realtime refusal line not said on %s (%s); the stream's goodbye ends the call",
+                       provider_name, type(exc).__name__)
+
+
+@router.post("/webhooks/{provider_name}/refused", include_in_schema=False)
+async def voice_refused_markup(provider_name: str):
+    """The refusal line, then a hang-up, for a call whose realtime bridge was
+    not opened (T18.07, _say_refused_and_end).
+
+    Unauthenticated, like twilio_tts_audio, and safe for the same reason: it
+    reads nothing from the request and returns one fixed document to anyone —
+    the sentence every refused caller hears, and <Hangup/>. It names no
+    brokerage, call or number, and does nothing."""
+    from ai_chat_agent import VOICE_REFUSED_LINE
+    from voice_provider import get_voice_provider
+
+    if provider_name not in {"twilio", "plivo"}:
+        raise HTTPException(status_code=404, detail="Not found.")
+    return Response(content=get_voice_provider(provider_name).safe_hangup_markup(VOICE_REFUSED_LINE),
+                    media_type="application/xml")
+
+
 @router.websocket("/media/acs")
 async def acs_qwen_media(websocket: WebSocket):
-    """Authenticated bidirectional ACS PCM stream bridged to Qwen Omni."""
+    """Authenticated bidirectional ACS PCM stream bridged to Qwen Omni.
+
+    Admitted for the call's brokerage before the bridge opens (T18.07): a
+    call it cannot spend on hears the refusal line and ends."""
     from qwen_omni_realtime import (
         QwenCallLimitReached,
         QwenOmniRealtimeBridge,
@@ -2369,10 +2474,21 @@ async def acs_qwen_media(websocket: WebSocket):
     if not call_connection_id:
         await websocket.close(code=4400)
         return
-    from acs_call_handler import authorize_qwen_media_call
+    from acs_call_handler import authorize_qwen_media_call, call_tenant, refuse_qwen_media
 
     if not await authorize_qwen_media_call(call_connection_id):
         await websocket.close(code=4403)
+        return
+
+    refused = await _realtime_refusal(await call_tenant(call_connection_id))
+    if refused is not None:
+        _log_realtime_refused("acs", call_connection_id, refused)
+        try:
+            await refuse_qwen_media(call_connection_id)
+        except Exception as exc:  # noqa: BLE001 — the bridge stays closed either way
+            logger.warning("ACS refused call could not be ended (%s): cid=%s",
+                           type(exc).__name__, call_connection_id)
+        await websocket.close(code=1000)
         return
 
     await websocket.accept()
@@ -3622,6 +3738,7 @@ async def twilio_qwen_media(websocket: WebSocket):
     )
     from twilio_call_handler import (
         authorize_twilio_media,
+        load_twilio_call_state,
         mark_twilio_streaming,
         verify_twilio_websocket_signature,
     )
@@ -3676,6 +3793,14 @@ async def twilio_qwen_media(websocket: WebSocket):
         await websocket.close(code=4403)
         return
 
+    # Admitted for the call's brokerage before the model opens (T18.07).
+    refused = await _realtime_refusal(await _state_tenant(load_twilio_call_state, call_sid))
+    if refused is not None:
+        _log_realtime_refused("twilio", call_sid, refused)
+        await _say_refused_and_end("twilio", call_sid)
+        await websocket.close(code=1000)
+        return
+
     try:
         bridge = TwilioQwenRealtimeBridge(
             websocket,
@@ -3720,7 +3845,7 @@ async def plivo_qwen_media(websocket: WebSocket):
         QwenCallLimitReached,
         QwenRealtimeError,
     )
-    from plivo_call_handler import authorize_plivo_media, mark_plivo_streaming
+    from plivo_call_handler import authorize_plivo_media, load_plivo_call_state, mark_plivo_streaming
 
     bridge_token = websocket.query_params.get("bridge_token", "")
     if not bridge_token:
@@ -3758,6 +3883,14 @@ async def plivo_qwen_media(websocket: WebSocket):
     call_uuid = str(start.get("callId") or "")
     if not await authorize_plivo_media(call_uuid, bridge_token):
         await websocket.close(code=4403)
+        return
+
+    # Admitted for the call's brokerage before either model opens (T18.07).
+    refused = await _realtime_refusal(await _state_tenant(load_plivo_call_state, call_uuid))
+    if refused is not None:
+        _log_realtime_refused("plivo", call_uuid, refused)
+        await _say_refused_and_end("plivo", call_uuid)
+        await websocket.close(code=1000)
         return
 
     from elevenlabs_realtime import (
@@ -3821,10 +3954,30 @@ async def twilio_speech(request: Request):
 </Response>"""
         return Response(content=twiml, media_type="application/xml")
 
+    from ai_chat_agent import _generate_voice_reply
+    from twilio_call_handler import load_twilio_call_state
+
+    # Whose AI budget this reply is spent from (T18.07): the brokerage the
+    # call's state names. A turn that cannot be attributed — no state, a state
+    # with no brokerage, or a state that cannot be read (unknown is not "no
+    # brokerage") — is not answered by a model: spend no brokerage can be held
+    # for is never a pass.
+    try:
+        state = await load_twilio_call_state(call_sid)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("twilio speech webhook: call state unreadable (%s)", type(exc).__name__)
+        state = None
+    tenant_id = str((state or {}).get("tenant_id") or "")
+    if not tenant_id:
+        logger.info("twilio speech webhook: call_sid=%s has no brokerage; ending the call", call_sid)
+        return _voice_refused_twiml()
+
     ai_reply = "I'm sorry, I'm having trouble processing that. Could you try again?"
     try:
-        from ai_chat_agent import _generate_voice_reply
-        ai_reply = await _generate_voice_reply(call_sid, speech_text)
+        ai_reply = await _generate_voice_reply(call_sid, speech_text, tenant_id=tenant_id)
+    except SpendRefused as refused:
+        logger.info("twilio speech webhook: call_sid=%s stopped by the AI budget (%s)", call_sid, refused.code)
+        return _voice_refused_twiml()
     except Exception:
         import logging
         logging.getLogger("oracle.twilio").exception("Twilio AI reply failed")
@@ -3847,6 +4000,42 @@ async def twilio_speech(request: Request):
     </Gather>
 </Response>"""
     return Response(content=twiml, media_type="application/xml")
+
+
+def _voice_refused_twiml() -> Response:
+    """The line a caller hears when a reply cannot be spent for them (T18.07),
+    then the call ends. Said with <Say>, not voice_tts: no text-to-speech is
+    bought to say it."""
+    from ai_chat_agent import VOICE_REFUSED_LINE
+
+    twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+    <Say voice="Polly.Joanna">{_xml_escape(VOICE_REFUSED_LINE)}</Say>
+    <Hangup/>
+</Response>"""
+    return Response(content=twiml, media_type="application/xml")
+
+
+async def _call_session_tenant(provider_call_id: str) -> Optional[str]:
+    """The brokerage a provider call belongs to (live_call_sessions), read as
+    the platform exactly as _update_call_session_async reads it. None when no
+    session names the call or it cannot be read — either way no brokerage's
+    budget can hold the reply."""
+    platform_ctx = TenantContext(
+        agent_id="custom-call-webhook",
+        tenant_id=os.getenv("ORACLE_PLATFORM_TENANT_ID", "00000000-0000-0000-0000-000000000000"),
+        role=Role.PLATFORM_ADMIN,
+    )
+    try:
+        async with tenant_tx(platform_ctx) as conn:
+            value = await conn.fetchval(
+                "SELECT tenant_id FROM live_call_sessions WHERE provider_call_id=$1 LIMIT 1",
+                provider_call_id,
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("custom-call webhook: call session unreadable (%s)", type(exc).__name__)
+        return None
+    return str(value) if value else None
 
 
 @router.post("/webhooks/custom-call", include_in_schema=False)
@@ -3907,10 +4096,24 @@ async def custom_call_webhook(request: Request):
     if not speech:
         return {"accepted": True}
 
-    try:
-        from ai_chat_agent import _generate_voice_reply
+    from ai_chat_agent import VOICE_REFUSED_LINE, _generate_voice_reply
 
-        ai_reply = await _generate_voice_reply(from_number, speech)
+    def _refused(code: str) -> dict:
+        # Said, then the call ends (T18.07): never silence, never the stall line.
+        return {"call_id": call_id, "event": "reply", "text": VOICE_REFUSED_LINE,
+                "tts": True, "end_call": True, "code": code}
+
+    # The reply is spent from the brokerage the call session belongs to; a call
+    # no session names cannot be held against any budget, so no model is asked.
+    tenant_id = await _call_session_tenant(call_id) if call_id else None
+    if not tenant_id:
+        logger.info("custom-call webhook: call_id=%s has no brokerage; ending the call", call_id)
+        return _refused("CALL_NOT_ATTRIBUTED")
+    try:
+        ai_reply = await _generate_voice_reply(from_number, speech, tenant_id=tenant_id)
+    except SpendRefused as refused:
+        logger.info("custom-call webhook: call_id=%s stopped by the AI budget (%s)", call_id, refused.code)
+        return _refused(refused.code)
     except Exception:
         logger.exception("Custom call AI reply failed for %s", call_id)
         ai_reply = "I'm sorry, I couldn't process that. Could you try again?"

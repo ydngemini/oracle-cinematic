@@ -29,6 +29,8 @@ from typing import Any, AsyncIterator, Mapping, Optional
 
 from cryptography.fernet import Fernet, InvalidToken
 
+from llm_gateway import SpendRefused
+
 logger = logging.getLogger("oracle.acs_inbound")
 
 _MAX_TURNS = 20
@@ -551,7 +553,24 @@ async def handle_speech_recognized(
             await _save_call_state(call_connection_id, state)
             return
 
-        response_text = await _generate_voice_response(speech_text, state)
+        try:
+            response_text = await _generate_voice_response(speech_text, state)
+        except SpendRefused as refused:
+            # The call's AI budget stopped the reply (T18.07): say so and end
+            # the call, as the turn limit does — not the stall line, not silence.
+            from ai_chat_agent import VOICE_REFUSED_LINE
+
+            logger.info("ACS reply stopped by the AI budget: cid=%s code=%s",
+                        call_connection_id, refused.code)
+            await _play_text(
+                call_connection_id,
+                VOICE_REFUSED_LINE,
+                operation_context="farewell",
+                state=state,
+            )
+            state["stage"] = "ending"
+            await _save_call_state(call_connection_id, state)
+            return
         await _play_text(
             call_connection_id,
             response_text,
@@ -709,6 +728,60 @@ async def end_qwen_call(call_connection_id: str) -> None:
         await _save_call_state(call_connection_id, state)
 
 
+async def call_tenant(call_connection_id: str) -> Optional[str]:
+    """The brokerage a live call is spent for (its state's tenant_id; an
+    inbound call answered with no brokerage carries the platform tenant), or
+    None when its state is missing or cannot be read (T18.07)."""
+    try:
+        state = await _load_call_state(call_connection_id)
+    except Exception as exc:  # noqa: BLE001 — unreadable is not "no brokerage", and not a pass
+        logger.warning("ACS call state unreadable for its AI budget (%s): cid=%s",
+                       type(exc).__name__, call_connection_id)
+        return None
+    return str((state or {}).get("tenant_id") or "") or None
+
+
+async def refuse_qwen_media(call_connection_id: str) -> None:
+    """End a call whose realtime bridge was not opened: its brokerage's AI
+    budget, its owner's pause or the platform's AI switch stopped it, or the
+    budget could not be read (T18.07). The media stream is stopped, the caller
+    hears VOICE_REFUSED_LINE as the farewell (its PlayCompleted hangs up), as
+    a refused reply on the recognition path is said — never the recognition
+    fallback, whose model replies the same budget stops."""
+    from ai_chat_agent import VOICE_REFUSED_LINE
+
+    async with _call_lock(call_connection_id):
+        state = await _load_call_state(call_connection_id)
+        if state is None:
+            return
+
+        def _stop() -> None:
+            connection = _get_client(state).get_call_connection(call_connection_id)
+            connection.stop_media_streaming(operation_context="ai-budget-refused")
+
+        try:
+            await asyncio.to_thread(_stop)
+        except Exception:
+            logger.debug(
+                "ACS media stop failed for a refused realtime call: cid=%s",
+                call_connection_id,
+                exc_info=True,
+            )
+        try:
+            await _play_text(
+                call_connection_id,
+                VOICE_REFUSED_LINE,
+                operation_context="farewell",
+                state=state,
+            )
+        except Exception as exc:  # noqa: BLE001 — the call still ends
+            logger.warning("ACS refusal line not played (%s); hanging up: cid=%s",
+                           type(exc).__name__, call_connection_id)
+            await _hangup(call_connection_id, state)
+        state["stage"] = "ending"
+        await _save_call_state(call_connection_id, state)
+
+
 async def cleanup_call(call_connection_id: str) -> None:
     try:
         redis = await _get_redis()
@@ -800,12 +873,19 @@ async def _generate_voice_response(
     speech_text: str,
     state: dict[str, Any],
 ) -> str:
-    """Generate a spoken response without exposing tenant credentials."""
+    """Generate a spoken response without exposing tenant credentials.
+
+    Spent from the call's brokerage's AI budget (T18.07); an inbound call
+    answered with no brokerage carries the platform tenant and is metered to
+    it. A budget refusal is raised for handle_speech_recognized to say."""
     caller = state.get("caller", "Unknown")
     try:
         from ai_chat_agent import _generate_voice_reply
 
-        return await _generate_voice_reply(caller, speech_text)
+        return await _generate_voice_reply(caller, speech_text,
+                                           tenant_id=str(state.get("tenant_id") or ""))
+    except SpendRefused:
+        raise
     except Exception:
         logger.exception(
             "Voice response generation failed for tenant=%s",

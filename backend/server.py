@@ -793,7 +793,18 @@ async def api_generate_tour(
     body = await request.json()
     if not body.get("address") and not body.get("description"):
         return JSONResponse({"error": "address or description required"}, status_code=400)
-    result = await generate_tour(body)
+    # Spent from the brokerage's AI budget (T18.07): held before each call is
+    # sent, metered after. A refusal is answered as one, with its code.
+    import ai_budget
+    from llm_gateway import SpendRefused
+
+    try:
+        async with ai_budget.spending(ctx, "tour"):
+            result = await generate_tour(body)
+    except SpendRefused as refused:
+        exc = ai_budget.http_refusal(refused)
+        return JSONResponse({"error": refused.message, **exc.detail},
+                            status_code=exc.status_code, headers=exc.headers)
     if result is None:
         return JSONResponse({"error": "tour generation failed"}, status_code=502)
     return JSONResponse(result)

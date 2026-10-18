@@ -24,7 +24,9 @@ the whole call including any fallback, not each attempt.
 
 **Spend is checked before it happens** (T18.07). A caller spending on a
 brokerage's behalf sets `spend_scope` — each Neoh chat turn does
-(ai_budget.SpendScope). Every hosted call then takes a hold first, so a refusal
+(ai_budget.SpendScope), and every other unit of work billed to a brokerage
+(a phone-call reply, a mission tick, a client reconciliation, the routes and
+workers that draft for one) through ai_budget.spending. Every hosted call then takes a hold first, so a refusal
 raises SpendRefused before anything is sent and is never a fallback trigger,
 and settles the provider's reported usage after. With no scope set nothing
 changes.
@@ -67,6 +69,12 @@ class SpendRefused(LLMUnavailable):
     re-raising.
     """
 
+    #: A job that raises a refusal is dead-lettered under its code, not
+    #: retried (automation_jobs, as billing.NotEntitled): a retry would only be
+    #: refused again, or make the call the moment the cap is raised — work
+    #: nobody asked for again.
+    job_terminal = True
+
     def __init__(self, state: str, code: str, message: str) -> None:
         super().__init__(message)
         self.state = state
@@ -75,18 +83,28 @@ class SpendRefused(LLMUnavailable):
         self.applied: list = []
         self.model_id: Optional[str] = None
 
+    @property
+    def job_error_code(self) -> str:
+        return self.code
+
 
 class SpendUnavailable(SpendRefused):
     """The budget could not be read, so the call was held, not sent. Retryable;
     never a pass and never a lasting block."""
 
+    #: Unreadable is not refused: a job that raises this is retried.
+    job_terminal = False
+
 
 #: The spend scope of the work in progress, or None. A caller that spends on a
 #: brokerage's behalf sets one (ai_chat_agent sets an ai_budget.SpendScope for
-#: each chat turn); with none set every entry point behaves exactly as before.
+#: each chat turn; ai_budget.spending sets one for any other unit of work);
+#: with none set every entry point behaves exactly as before.
 #: A scope answers `before(lane, estimate)` with a hold or raises SpendRefused,
 #: `after(hold, response)` records the reported usage, and `release(hold)`
 #: drops a hold whose call failed. Neither of the last two may raise.
+#: A scope whose `settles_in_background` is true (a live phone call's) is not
+#: waited for on either: its caller is on the line (_settle_answered).
 spend_scope: ContextVar[Any] = ContextVar("llm_spend_scope", default=None)
 
 
@@ -155,14 +173,15 @@ async def spend_guarded(lane: str, estimate: int, call: Callable[[], Awaitable[A
     try:
         response = await call()
     except BaseException:  # noqa: BLE001 — a cancelled call drops its hold too
-        await scope.release(hold)
+        await _drop(scope, hold)
         raise
-    await scope.after(hold, response)
+    await _settle_answered(scope, hold, response)
     return response
 
 
-#: Thread-backed calls whose caller may have stopped waiting, kept referenced
-#: until they settle (spend_guarded_thread).
+#: Work whose caller may stop waiting, kept referenced until it ends: thread-
+#: backed calls (spend_guarded_thread) and the settle of every answered call
+#: (_settle_answered).
 _METERING: set = set()
 
 
@@ -170,6 +189,46 @@ def _metered_done(task: "asyncio.Task") -> None:
     _METERING.discard(task)
     if not task.cancelled():
         task.exception()    # retrieved: a caller that stopped waiting never will
+
+
+def _kept(work: Awaitable[Any]) -> "asyncio.Task":
+    """`work` as a task held in _METERING until it ends, so a caller that
+    stops waiting cannot stop it."""
+    task = asyncio.ensure_future(work)
+    _METERING.add(task)
+    task.add_done_callback(_metered_done)
+    return task
+
+
+def _in_background(scope: Any) -> bool:
+    return bool(getattr(scope, "settles_in_background", False))
+
+
+async def _settle_answered(scope: Any, hold: Any, response: Any) -> None:
+    """Record an answered call's usage and drop its hold, whatever happens to
+    its caller (T18.07).
+
+    The provider has billed the call by now. Awaited in the caller's own task,
+    a caller deadline that fired during the settle (a phone turn's 8 s, the
+    comms draft's 20 s, the request parse's 3 s) cancelled it mid-transaction:
+    the usage row rolled back and the hold was left to lapse, so billed tokens
+    were never counted. The settle runs as a referenced task and is awaited
+    shielded: a cancelled caller stops waiting, the settle still commits. A
+    scope that settles in the background (a live phone call's) is not waited
+    for at all — the caller is on the line, and the next reservation counts
+    the hold until the settle replaces it."""
+    task = _kept(scope.after(hold, response))
+    if not _in_background(scope):
+        await asyncio.shield(task)
+
+
+async def _drop(scope: Any, hold: Any) -> None:
+    """Release the hold of a call that raised or was cut off; in the
+    background for a scope that settles there."""
+    if _in_background(scope):
+        _kept(scope.release(hold))
+    else:
+        await scope.release(hold)
 
 
 async def spend_guarded_thread(lane: str, estimate: int, fn: Callable[..., Any], *args: Any,
@@ -193,15 +252,12 @@ async def spend_guarded_thread(lane: str, estimate: int, fn: Callable[..., Any],
         try:
             response = await asyncio.to_thread(fn, *args)
         except Exception:
-            await scope.release(hold)
+            await _drop(scope, hold)
             raise
-        await scope.after(hold, response)
+        await _settle_answered(scope, hold, response)
         return response
 
-    task = asyncio.ensure_future(metered())
-    _METERING.add(task)
-    task.add_done_callback(_metered_done)
-    return await asyncio.wait_for(asyncio.shield(task), timeout=timeout)
+    return await asyncio.wait_for(asyncio.shield(_kept(metered())), timeout=timeout)
 
 
 async def _hold(provider: "Provider", *parts: Any, completion: int) -> tuple[Any, Any]:
@@ -216,12 +272,12 @@ async def _hold(provider: "Provider", *parts: Any, completion: int) -> tuple[Any
 
 async def _unhold(scope: Any, hold: Any) -> None:
     if scope is not None:
-        await scope.release(hold)
+        await _drop(scope, hold)
 
 
 async def _settle(scope: Any, hold: Any, response: Any) -> None:
     if scope is not None:
-        await scope.after(hold, response)
+        await _settle_answered(scope, hold, response)
 
 
 # ---------------------------------------------------------------------------
@@ -880,7 +936,17 @@ def complete_sync(
 
     Returns None rather than raising, which is the contract
     ``invoke_bedrock_model`` established and its seven callers branch on.
+
+    Never under a spend scope (T18.07): a scoped call holds and settles in the
+    caller's own event loop, so it is awaited (ml_forge.bedrock_client.
+    invoke_async), never made from a nested loop on a worker thread, where a
+    refusal would read as "no answer" and send the caller to an unmetered path.
     """
+    if spend_scope.get() is not None:
+        raise RuntimeError(
+            "complete_sync() was called under a spend scope; await complete() "
+            "(or bedrock_client.invoke_async) so the call is held and metered."
+        )
     try:
         asyncio.get_running_loop()
     except RuntimeError:

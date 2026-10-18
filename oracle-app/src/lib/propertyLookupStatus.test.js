@@ -57,4 +57,10 @@ describe('degradedLabel', () => {
     }))).toBe('Lookup failed');
     expect(degradedLabel({})).toBe('Partial');
   });
+
+  it('names a pass the AI budget stopped, not a model failure or a bare "Partial"', () => {
+    for (const code of ['AI_BUDGET_EXHAUSTED', 'AI_BUDGET_INSUFFICIENT', 'AI_SPEND_PAUSED', 'AI_SPEND_HALTED']) {
+      expect(degradedLabel({ last_error_code: code })).toBe('Rules only: AI budget');
+    }
+  });
 });

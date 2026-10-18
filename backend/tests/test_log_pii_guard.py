@@ -166,6 +166,33 @@ def test_failed_incoming_call_logs_no_caller_number(caplog, monkeypatch):
     assert "3025550199" not in caplog.text
 
 
+def test_a_generated_tour_logs_no_address_and_no_model_text(caplog, monkeypatch):
+    """POST /api/generate-tour logged the street address on every success and
+    up to 200 characters of model output (which echoes the property) on a
+    parse failure. It logs counts, the style and a length."""
+    import json
+
+    import tour_generator
+
+    address = "41 Wren Hollow Lane"
+    replies = [
+        json.dumps({"footprint": {"width": 10, "depth": 8}, "waypoints": [{"id": "porch"}],
+                    "tour_order": ["porch"], "echo": address}),
+        f"Here is a lovely tour of {address}, but no JSON.",
+    ]
+
+    async def invoke(_model_id, _prompt, _max_tokens=2048, *, system=""):
+        return replies.pop(0)
+
+    monkeypatch.setattr(tour_generator, "invoke_async", invoke)
+    monkeypatch.setattr(tour_generator, "_validate_tour_data", lambda _data: (True, "ok"))
+    with caplog.at_level(logging.INFO, logger="oracle.tour_generator"):
+        assert asyncio.run(tour_generator.generate_tour({"address": address, "sqft": 1500})) is not None
+        assert asyncio.run(tour_generator.generate_tour({"address": address, "sqft": 1500})) is None
+    assert "Generated tour: 1 waypoints" in caplog.text and "Failed to parse JSON" in caplog.text
+    assert "Wren Hollow" not in caplog.text and "lovely tour" not in caplog.text
+
+
 # ── account ids and exception text (L17-11) ─────────────────────────────
 
 def test_account_ids_are_logged_as_a_pseudonym():

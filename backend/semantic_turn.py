@@ -53,9 +53,11 @@ from datetime import datetime, timezone
 from typing import Any, Optional, Sequence
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+import ai_budget
 import frame_constraints as fc
 import semantic_frame as sf
 import semantic_language as lang_
+from llm_gateway import SpendRefused
 from tenancy import TenantContext
 
 logger = logging.getLogger(__name__)
@@ -550,17 +552,26 @@ async def _parse(
     frame: Optional[sf.SemanticFrame] = None
     status, reason = "parsed", ""
     try:
-        frame = await asyncio.wait_for(
+        # A deadline that fires while the AI budget is being read is the
+        # budget's (SpendUnavailable), not the parser's timeout (T18.07).
+        frame = await ai_budget.wait_for(
             sf.extract_frame(
                 text, now=now.astimezone(ZoneInfo(zone)), timezone=zone,
                 known=known, gateway=GATEWAY,
             ),
-            timeout=FRAME_BUDGET_S,
+            FRAME_BUDGET_S,
         )
+    except SpendRefused as refused:
+        status, reason = "unavailable", refused.code
     except asyncio.TimeoutError:
         status = "timed_out"
-    except sf.FrameUnavailable:
+    except sf.FrameUnavailable as exc:
         status = "unavailable"
+        # A brokerage AI budget refusal (T18.07) is named by its code, so the
+        # record says why the parse did not run rather than only that it did not.
+        refused = exc.__cause__
+        if isinstance(refused, SpendRefused):
+            reason = refused.code
     except sf.FrameRejected as exc:
         status, reason = "rejected", exc.reason
     except Exception as exc:  # noqa: BLE001 — the parser never breaks the turn

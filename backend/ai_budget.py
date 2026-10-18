@@ -1,11 +1,14 @@
 """A brokerage's monthly budget for hosted model tokens (prompt 18, T18.07;
 prompt 07, T07.07; migration 0170).
 
-One channel, end to end: the hosted model calls a Neoh chat turn makes. A turn
-could make up to seven of them (six tool rounds and a forced answer, each
-carrying up to ~40k characters of history, record and persona) plus its
+One channel, end to end: the hosted model calls made for a brokerage. A Neoh
+chat turn could make up to seven of them (six tool rounds and a forced answer,
+each carrying up to ~40k characters of history, record and persona) plus its
 semantic-frame call, and nothing capped a brokerage's total. Admission limits
-are per agent and count messages, not spend.
+are per agent and count messages, not spend. The same budget holds every other
+hosted call a brokerage pays for (spending(): phone-call replies, missions,
+client reconciliation, and the routes and workers that draft, parse or extract
+for one).
 
 The unit is tokens as the provider reports them (prompt + completion), not
 money: there is no per-token price table and prices are an owner decision
@@ -35,17 +38,25 @@ cancelled by any switch.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
+import uuid
+from contextlib import asynccontextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any, AsyncIterator, Awaitable, Optional, TypeVar
+
+from fastapi import HTTPException, status
 
 import billing_usage
 from db.connection import tenant_tx
-from llm_gateway import SpendRefused, SpendUnavailable
+from llm_gateway import SpendRefused, SpendUnavailable, spend_scope
 from tenancy import Role, TenantContext
 
 logger = logging.getLogger("oracle.ai_budget")
+
+T = TypeVar("T")
 
 CHANNEL = "ai_tokens"
 #: How long a call's estimate is held without a settle. A turn has a 90 s
@@ -66,15 +77,27 @@ CODES = {
 }
 
 #: What "used" is, and what it is not — returned beside the number.
-COUNTS = ("Hosted model calls made by Neoh chat turns (including each turn's request "
-          "parsing), in tokens as the provider reported them.")
+COUNTS = ("Hosted model calls made for your brokerage, in tokens as the provider reported "
+          "them: Neoh chat turns (including each turn's request parsing), phone-call "
+          "replies, missions (objective parsing, planning and drafting), client "
+          "reconciliation, command parsing, comms drafts, CMAs, tour generation, video "
+          "scripts, walkthrough extraction, disposition marketing and the ops copilot.")
 NOT_COUNTED = (
     "local-model calls",
     "calls whose provider reported no usage",
     "calls cut off before they answered (a provider timeout, or a request parse past its time limit)",
-    "phone-call voice replies",
-    "mission drafting and planning",
-    "client automation, CMA, comms-draft and command-parse routes",
+    # A stated gap, not an exclusion (T18.07): the realtime bridges
+    # (qwen_omni_realtime, elevenlabs_realtime) are hosted models a brokerage's
+    # calls run on. A call is admitted before its bridge opens
+    # (commands_api._realtime_refusal), but the bridges report no per-call
+    # usage here, so nothing holds or meters the conversation itself.
+    "live phone conversations on a real-time voice model: its provider bills them (the Qwen "
+    "realtime model in tokens). A call is not connected to it while your AI is paused, this "
+    "month's budget is used up, the platform's AI is paused or the budget cannot be checked, "
+    "but a connected call is not yet held or counted here",
+    "text-to-speech and video generation (not model tokens)",
+    "phone calls answered on the platform's own number (counted to the platform, not a brokerage)",
+    "platform tools that serve no brokerage (training-data synthesis, dataset planning, evaluations)",
 )
 
 _OWNER_MESSAGES = {
@@ -416,19 +439,23 @@ async def set_platform_halt(ctx: TenantContext, *, halted: bool, reason: Optiona
 
 
 class SpendScope:
-    """One chat turn's spend: what ai_chat_agent sets in llm_gateway.spend_scope.
+    """One unit of work's spend: what ai_chat_agent sets in
+    llm_gateway.spend_scope for a chat turn, and spending() for anything else.
 
-    Each lane (provider) numbers its own calls, so every call in the turn has
-    its own key — chat:{assistant id}:{lane}:{n} — which is both its hold and
-    its usage idempotency key. `state` is the last reservation's state, for
+    Each lane (provider) numbers its own calls, so every call in the unit has
+    its own key — chat:{assistant id}:{lane}:{n}, or {kind}:{random}:{lane}:{n}
+    — which is both its hold and its usage idempotency key. `state` is the last reservation's state, for
     the turn's AI_CHAT_COMPLETE frame. `calls_made` counts the calls admitted
     so far (each may have reached its provider): once there is one, a
-    refusal no longer says that no model was asked.
+    refusal no longer says that no model was asked. `settles_in_background`:
+    the gateway does not wait for this unit's settles and releases (a live
+    phone call, whose caller is on the line); each still commits.
     """
 
-    def __init__(self, ctx: TenantContext, turn_key: str) -> None:
+    def __init__(self, ctx: TenantContext, turn_key: str, *, settles_in_background: bool = False) -> None:
         self.ctx = ctx
         self.turn_key = turn_key
+        self.settles_in_background = settles_in_background
         self.state: Optional[str] = None
         self.calls_made = 0
         self._calls: dict[str, int] = {}
@@ -443,6 +470,13 @@ class SpendScope:
             if not self.calls_made:
                 raise
             raise refusal(refused.state, self.ctx, after_calls=True) from refused
+        except asyncio.CancelledError:
+            # Cut off while the budget was being read: if a caller's deadline
+            # (wait_for) did it, nothing was sent for this call and the
+            # budget is unreadable in that caller's time.
+            for deadline in _deadlines.get():
+                deadline.held_up = self
+            raise
         self.calls_made += 1
         self.state = hold.state
         if hold.state == "warning" and not self._warned:
@@ -455,3 +489,83 @@ class SpendScope:
 
     async def release(self, hold: Hold) -> None:
         await release_hold(self.ctx, hold)
+
+
+class _Deadline:
+    """One wait_for's deadline: the scope whose hold it cut off, if any."""
+
+    __slots__ = ("held_up",)
+
+    def __init__(self) -> None:
+        self.held_up: Optional[SpendScope] = None
+
+
+#: The caller deadlines (wait_for) the work in progress runs under.
+_deadlines: ContextVar[tuple] = ContextVar("ai_budget_deadlines", default=())
+
+
+async def wait_for(work: Awaitable[T], timeout: float) -> T:
+    """asyncio.wait_for for work that spends under a scope (T18.07).
+
+    A deadline that fires while a hold is being read — before that call was
+    sent — is an unreadable budget: SpendUnavailable (AI_BUDGET_UNAVAILABLE),
+    which each caller already handles as one (a route's 503 with
+    Retry-After, a job's retry, a parse's reason). Never the caller's own
+    timeout, which reads as the model failing and lets a template, the rules
+    or a stall line answer though no model was asked. A deadline that fires
+    anywhere else (a provider slow to answer) is the caller's TimeoutError,
+    as before."""
+    deadline = _Deadline()
+
+    async def bounded() -> T:
+        token = _deadlines.set((*_deadlines.get(), deadline))
+        try:
+            return await work
+        finally:
+            _deadlines.reset(token)
+
+    try:
+        return await asyncio.wait_for(bounded(), timeout)
+    except asyncio.TimeoutError:
+        scope = deadline.held_up
+        if scope is None:
+            raise
+        logger.warning("ai budget: unreadable within the caller's %.1fs, call held", timeout)
+        raise refusal("unknown", scope.ctx, after_calls=bool(scope.calls_made)) from None
+
+
+@asynccontextmanager
+async def spending(ctx: TenantContext, kind: str, *,
+                   settles_in_background: bool = False) -> AsyncIterator[SpendScope]:
+    """Run one unit of work that is not a chat turn — a phone-call reply, a
+    mission tick, a client reconciliation, one route request — under its
+    brokerage's budget: every hosted call inside is held before it is sent and
+    metered after, exactly as in a chat turn.
+
+    The key is `kind` and a fresh random id per unit, never derived from a
+    phone number, a call id or a retriable job id: it is stored (the hold and
+    the usage row) and it is an idempotency key, so a reused one would drop a
+    second real call's hold and its usage silently. `kind` is what tells the
+    features apart in billing_usage_events, which has no source column.
+    `settles_in_background`: see SpendScope (a live phone call's reply)."""
+    scope = SpendScope(ctx, f"{kind}:{uuid.uuid4().hex}", settles_in_background=settles_in_background)
+    token = spend_scope.set(scope)
+    try:
+        yield scope
+    finally:
+        spend_scope.reset(token)
+
+
+def http_refusal(refused: SpendRefused) -> HTTPException:
+    """A route's answer to a budget refusal: what the chat says, as HTTP.
+
+    402 when the brokerage's own budget stopped it (exhausted, insufficient,
+    paused) — something its owner can change; 503 when the platform is halted
+    or the budget could not be read, with Retry-After for the latter. Never a
+    fallback: nothing else is asked and nothing is staged."""
+    unavailable = refused.state in ("platform_halted", "unknown")
+    return HTTPException(
+        status.HTTP_503_SERVICE_UNAVAILABLE if unavailable else status.HTTP_402_PAYMENT_REQUIRED,
+        detail={"code": refused.code, "message": refused.message, "state": refused.state},
+        headers={"Retry-After": "30"} if refused.state == "unknown" else None,
+    )

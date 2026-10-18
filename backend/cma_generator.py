@@ -11,13 +11,14 @@ into the client portal, and a PDF pipeline can consume it later without this
 endpoint changing.
 """
 
-import asyncio
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
-from ml_forge.bedrock_client import invoke_bedrock_model, PRIMARY_MODEL, SECONDARY_MODEL
+import ai_budget
+from llm_gateway import SpendRefused
+from ml_forge.bedrock_client import invoke_async, PRIMARY_MODEL, SECONDARY_MODEL
 from tenancy import TenantContext, require_context
 
 logger = logging.getLogger("oracle.cma")
@@ -64,17 +65,23 @@ async def generate_listing_presentation(
         arv=body.arv_estimate,
     )
 
-    raw = await asyncio.to_thread(invoke_bedrock_model, PRIMARY_MODEL, prompt, 3000)
-    if not raw:
-        raw = await asyncio.to_thread(invoke_bedrock_model, SECONDARY_MODEL, prompt, 3000)
+    # Spent from the brokerage's AI budget (T18.07): each call is held before
+    # it is sent and metered after. A refusal is answered as one (402/503 with
+    # its code); SECONDARY is asked only when PRIMARY gave no answer, never
+    # after a refusal.
+    try:
+        async with ai_budget.spending(ctx, "cma"):
+            raw = await invoke_async(PRIMARY_MODEL, prompt, 3000)
+            if not raw:
+                raw = await invoke_async(SECONDARY_MODEL, prompt, 3000)
+    except SpendRefused as refused:
+        raise ai_budget.http_refusal(refused) from None
     if not raw:
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE,
             "CMA generation unavailable — both Bedrock models failed",
         )
 
-    logger.info(
-        "CMA generated for %r (tenant=%s, %d chars)",
-        body.property_address, ctx.tenant_id, len(raw),
-    )
+    # The tenant and the size only: an address is personal data (C5.4).
+    logger.info("CMA generated (tenant=%s, %d chars)", ctx.tenant_id, len(raw))
     return {"status": "success", "cma_markdown": raw}

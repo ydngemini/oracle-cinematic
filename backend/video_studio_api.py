@@ -28,8 +28,10 @@ from typing import Any, Literal, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+import ai_budget
 from audit_ledger import AuditCategory, ledger
 from db.connection import tenant_tx
+from llm_gateway import SpendRefused
 import record_access
 from tenancy import Role, TenantContext, brokerage_scope, require_context
 from billing import require_active_subscription
@@ -233,6 +235,18 @@ async def create_video_job(
     return _row_dict(row)
 
 
+async def _scripted(ctx: TenantContext, property_info: dict) -> str:
+    """A script drafted for this brokerage, spent from its AI budget
+    (T18.07): the Foundry call is held before it is sent and metered after.
+    A refusal is answered as one (402/503 with its code), never as the
+    template."""
+    try:
+        async with ai_budget.spending(ctx, "video_script"):
+            return await asyncio.wait_for(studio.draft_script_async(property_info), timeout=90)
+    except SpendRefused as refused:
+        raise ai_budget.http_refusal(refused) from None
+
+
 @router.post("/script")
 async def draft_script_for_property(
     body: VideoJobScriptRequest,
@@ -240,9 +254,7 @@ async def draft_script_for_property(
 ):
     """Draft a reel script from property data before creating a job, so the
     operator can review/edit it ahead of generation."""
-    # draft_script is synchronous (a Foundry call): awaiting its str raised
-    # TypeError on every request; and on the loop it blocked every request.
-    script = await asyncio.wait_for(asyncio.to_thread(studio.draft_script, body.property or {}), timeout=90)
+    script = await _scripted(ctx, body.property or {})
     await ledger.record(
         category=AuditCategory.VIDEO_STUDIO,
         action="video-studio script draft",
@@ -312,9 +324,7 @@ async def regenerate_script(
             status.HTTP_409_CONFLICT,
             "script can only be regenerated while the job is queued, failed, or cancelled.",
         )
-    # draft_script is synchronous (a Foundry call): awaiting its str raised
-    # TypeError on every request; and on the loop it blocked every request.
-    script = await asyncio.wait_for(asyncio.to_thread(studio.draft_script, body.property or {}), timeout=90)
+    script = await _scripted(ctx, body.property or {})
     async with tenant_tx(ctx) as conn:
         await conn.execute(
             "UPDATE video_studio_jobs SET script = $1 WHERE id = $2::uuid",

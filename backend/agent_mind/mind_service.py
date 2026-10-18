@@ -251,6 +251,23 @@ class MindService:
         if bedrock is None:
             return None
 
+        import llm_gateway
+
+        if llm_gateway.spend_scope.get() is not None:
+            # Spent for a brokerage (POST /api/commands/parse, T18.07): held
+            # before it is sent and metered by its reported usage. A stream
+            # reports none, so the scoped call is a plain completion. A budget
+            # refusal is raised, never read as "no draft".
+            try:
+                text = await bedrock.invoke_async(
+                    bedrock.SECONDARY_MODEL, user_text, COMMAND_MAX_TOKENS, system=system_text,
+                )
+            except llm_gateway.SpendRefused:
+                raise
+            except Exception:
+                return None
+            return self._json_object(text or "")
+
         def _run() -> str:
             return "".join(
                 bedrock.stream_converse(

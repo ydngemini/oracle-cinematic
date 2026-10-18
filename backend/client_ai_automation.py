@@ -20,8 +20,10 @@ from typing import Any, Literal, Optional
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+import ai_budget
 from automation_jobs import JobReporter, enqueue_job, register_handler
 from db.connection import tenant_tx
+from llm_gateway import SpendRefused, SpendUnavailable
 from platform_policy import ActionRisk, enforce_public_property_data
 from tenancy import Role, TenantContext, brokerage_scope, require_context
 
@@ -406,6 +408,10 @@ async def _request_model_signals(
             max_tokens=700,
             timeout=half,
         )
+    except llm_gateway.SpendRefused:
+        # The brokerage's AI budget refused (T18.07): not "no schema-capable
+        # provider answered", so no second, plain pass is asked for.
+        raise
     except llm_gateway.LLMUnavailable:
         text = await llm_gateway.complete(
             prompt,
@@ -429,6 +435,13 @@ def _json_object(text: Optional[str]) -> str:
         return "{}"
     start, end = text.find("{"), text.rfind("}")
     return text[start : end + 1] if start != -1 and end > start else "{}"
+
+
+def _model_timeouts() -> tuple[int, int]:
+    """(each provider's timeout, the whole AI step's deadline — its holds
+    included), from ORACLE_CLIENT_AI_TIMEOUT_SECONDS."""
+    seconds = max(5, min(60, int(os.getenv("ORACLE_CLIENT_AI_TIMEOUT_SECONDS", "25"))))
+    return seconds, seconds + 5
 
 
 async def _extract_signals(facts: list[dict[str, str]]) -> tuple[ModelSignals, str, Optional[str]]:
@@ -456,13 +469,25 @@ async def _extract_signals(facts: list[dict[str, str]]) -> tuple[ModelSignals, s
     )
     if not facts or os.getenv("ORACLE_CLIENT_AI_MODEL_ENABLED", "1") != "1":
         return fallback, "deterministic-rules", None
-    timeout_seconds = max(5, min(60, int(os.getenv("ORACLE_CLIENT_AI_TIMEOUT_SECONDS", "25"))))
+    timeout_seconds, deadline_seconds = _model_timeouts()
     try:
-        signals, model_id = await asyncio.wait_for(
+        # A deadline that fires while the AI budget is being read is the
+        # budget's (SpendUnavailable), never the model failing (T18.07).
+        signals, model_id = await ai_budget.wait_for(
             _request_model_signals(facts, timeout=timeout_seconds),
-            timeout=timeout_seconds + 5,
+            deadline_seconds,
         )
         return signals, model_id, None
+    except SpendUnavailable:
+        # The budget could not be read (T18.07): unknown is not refused, so the
+        # pass fails and the job is retried rather than settling for rules.
+        raise
+    except SpendRefused as refused:
+        # The brokerage's AI budget stopped the AI step before anything was
+        # sent. The pass still reconciles recorded facts, and says so with the
+        # budget's code (status degraded; no beliefs are asserted).
+        logger.info("Client AI extraction stopped by the AI budget: %s", refused.code)
+        return fallback, "deterministic-budget", refused.code
     except Exception as exc:  # noqa: BLE001 - safe deterministic fallback is required
         logger.warning("Client AI extraction degraded to deterministic rules: %s", type(exc).__name__)
         return fallback, "deterministic-fallback", "MODEL_UNAVAILABLE_OR_INVALID"
@@ -895,6 +920,9 @@ async def reconcile_client(
         # next pass retries the lookup instead of re-serving the failure for
         # 24 hours (audit A02).
         and prior_lookup.get("status") in (SOURCE_CHECKED, SOURCE_NOT_APPLICABLE)
+        # Nor is a pass whose AI step the budget stopped (T18.07): it is
+        # retried once there is budget, not re-served until tomorrow.
+        and state_row["last_error_code"] not in _BUDGET_CODES
     ):
         async with tenant_tx(ctx) as conn:
             row = await conn.fetchrow(
@@ -908,7 +936,10 @@ async def reconcile_client(
             )
         return {"client_id": client_id, "unchanged": True, "automation": automation_state_json(row)}
 
-    signals, model_id, model_error = await _extract_signals(facts)
+    # The AI step is spent from the brokerage's AI budget (T18.07): held before
+    # it is sent and metered after, in this pass's own scope.
+    async with ai_budget.spending(ctx, "client_ai"):
+        signals, model_id, model_error = await _extract_signals(facts)
     if signals.budget_max is not None and budget is None and signals.evidence_refs:
         preferences["budget_max"] = signals.budget_max
         preferences.setdefault("budget", signals.budget_max)
@@ -1147,12 +1178,9 @@ async def reconcile_client(
                 "property_lookup": property_lookup["status"],
             }),
             # The timeline uses the UI's words (C6): a pass whose public-record
-            # lookup did not run is not reported as a plain "completed".
-            (
-                "AI client reconciliation completed; public-record lookup not checked"
-                if lookup_failed
-                else "AI client reconciliation completed"
-            ),
+            # lookup did not run, or whose AI step the budget stopped, is not
+            # reported as a plain "completed".
+            _timeline_summary(budget_stopped=model_error in _BUDGET_CODES, lookup_failed=lookup_failed),
         )
 
     # Feed the Relationship Memory layer. Only model-extracted signals that
@@ -1171,6 +1199,20 @@ async def reconcile_client(
     }
 
 
+#: last_error_code values that mean the brokerage's AI budget stopped the AI
+#: step (ai_budget.CODES), not that the model failed.
+_BUDGET_CODES = frozenset(ai_budget.CODES.values())
+
+
+def _timeline_summary(*, budget_stopped: bool, lookup_failed: bool) -> str:
+    if budget_stopped:
+        summary = ("Client reconciliation used recorded facts only; "
+                   "the brokerage's AI budget stopped the AI step")
+    else:
+        summary = "AI client reconciliation completed"
+    return summary + ("; public-record lookup not checked" if lookup_failed else "")
+
+
 async def handle_client_reconcile_job(payload: dict[str, Any], reporter: JobReporter) -> dict[str, Any]:
     tenant_id = str(payload.get("tenant_id") or "")
     client_id = str(payload.get("client_id") or "")
@@ -1182,21 +1224,25 @@ async def handle_client_reconcile_job(payload: dict[str, Any], reporter: JobRepo
     await reporter.progress(10, "Loading verified CRM facts")
     try:
         result = await reconcile_client(ctx, client_id, force=bool(payload.get("force")))
-    except Exception:
+    except Exception as exc:
         # Keep the user-visible state truthful even when the durable job is
-        # retried later. Store only a stable code, never exception or CRM text.
+        # retried later. Store only a stable code, never exception or CRM text:
+        # an unreadable AI budget (T18.07) is stored as its own code, and the
+        # job retries it (SpendUnavailable is not job_terminal).
+        error_code = exc.code if isinstance(exc, SpendRefused) else "RECONCILIATION_FAILED"
         logger.exception("Client reconciliation failed: client=%s", client_id)
         async with tenant_tx(ctx) as conn:
             await conn.execute(
                 """
                 INSERT INTO client_ai_state
                     (client_id,tenant_id,status,last_error_code)
-                VALUES ($1::uuid,$2::uuid,'failed','RECONCILIATION_FAILED')
+                VALUES ($1::uuid,$2::uuid,'failed',$3)
                 ON CONFLICT (client_id) DO UPDATE SET
-                    status='failed',last_error_code='RECONCILIATION_FAILED'
+                    status='failed',last_error_code=EXCLUDED.last_error_code
                 """,
                 client_id,
                 tenant_id,
+                error_code,
             )
         raise
     await reporter.progress(95, "Persisting evidence-backed client state")

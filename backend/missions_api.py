@@ -88,9 +88,15 @@ async def create_mission(
     # the Hendersons", "not before Monday"), parsed once as the person creating
     # it and checked at every step (missions.policy). {} when
     # ORACLE_SEMANTIC_FRAME_ENABLED is off — the column's own default.
+    import ai_budget
     import semantic_turn
 
-    stated = await semantic_turn.mission_constraints(ctx, body.objective_text.strip())
+    # The parse is a hosted call spent from the brokerage's AI budget
+    # (T18.07). A refused parse is recorded on the mission as 'unavailable'
+    # with the budget code (semantic_turn._parse), and the mission keeps every
+    # gate — the documented contract for any parser failure.
+    async with ai_budget.spending(ctx, "mission_objective"):
+        stated = await semantic_turn.mission_constraints(ctx, body.objective_text.strip())
     async with tenant_tx(ctx) as conn:
         row = await conn.fetchrow(
             """INSERT INTO missions
