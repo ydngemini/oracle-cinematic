@@ -14,10 +14,21 @@ and never more; that claim is not changed here. This records a separate fact
 about the house, which mls_portal reads as `identity.verified` only while the
 newest decision on (lead, this record) is a confirmation for the client the
 house is still linked to (`confirmation_state`).
+
+Neoh's "find properties for X" reads the same fact about X's linked houses
+(neoh_intents._linked_houses_for) through the same head subquery
+(`current_heads_sql`) and the same states (`linked_house_confirmation`).
+Surfaces that ask a different question keep `verified: false`: Property View
+and the AI address lookup ask whether a record is the address that was typed,
+the contract Seller fallback asks who the seller party is (0168 does not
+claim the relationship kind), and the client portal shows the homeowner the
+lead itself, with no public record to verify.
 """
 
 from __future__ import annotations
 
+import json
+import re
 from typing import Any, Literal, Optional
 from uuid import UUID
 
@@ -97,6 +108,73 @@ def confirmation_state(head: Optional[dict]) -> dict[str, Any]:
     else:
         state = "out_of_date"
     return {"state": state, "head_id": str(head["id"]), "decided_at": _iso(head.get("decided_at"))}
+
+
+# An alias the subquery's own `h` and `n` would shadow is refused too: the
+# head would be compared with itself.
+_LEAD_ALIAS = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+
+def current_heads_sql(lead_alias: str) -> str:
+    """The newest decision per public record on one lead, as a correlated
+    subquery returning a jsonb array (or NULL), for a SELECT over `leads`
+    aliased `lead_alias`.
+
+    `same_client` is whether the decision was made for the client the house
+    is linked to now. Read under the caller's RLS: a house the caller cannot
+    see brings no decisions with it, and no tenant predicate is written. Who
+    decided, the evidence and the sealed reason are never read. Houses
+    (mls_portal._lead_ids_for_records) and Neoh (neoh_intents.
+    _linked_houses_for) both read heads through this text."""
+    if not isinstance(lead_alias, str) or not _LEAD_ALIAS.fullmatch(lead_alias) or lead_alias in ("h", "n"):
+        raise ValueError("the lead alias must be a plain SQL identifier other than h or n")
+    return f"""(SELECT jsonb_agg(jsonb_build_object(
+                           'id', h.id, 'record_id', h.public_record_id, 'decision', h.decision,
+                           'same_client', COALESCE(h.client_id = {lead_alias}.seller_client_id, false),
+                           'decided_at', h.decided_at))
+                  FROM property_match_decisions h
+                 WHERE h.lead_id = {lead_alias}.id
+                   AND NOT EXISTS (SELECT 1 FROM property_match_decisions n
+                                    WHERE n.supersedes_id = h.id))"""
+
+
+def heads_by_record(raw: Any) -> dict[str, dict]:
+    """`current_heads_sql`'s value (jsonb text, a list, or NULL) keyed by
+    public record id."""
+    heads = json.loads(raw) if isinstance(raw, str) else raw
+    if not isinstance(heads, (list, tuple)):
+        return {}
+    return {str(h["record_id"]): h for h in heads if isinstance(h, dict) and h.get("record_id")}
+
+
+# Which decision a house shows when several records on its parcel have one.
+_SHOWN_FIRST = {"confirmed": 3, "rejected": 2, "out_of_date": 1, "none": 0}
+
+
+def linked_house_confirmation(heads: Optional[dict], on_parcel_ids: set[str]) -> dict[str, Any]:
+    """A linked house's decision, from its heads (`heads_by_record`).
+
+    Only a head whose record still sits on the house's own parcel counts
+    (`on_parcel_ids`): a record re-keyed or purged no longer reaches the
+    house, as in Houses, which pairs them by that key. Each counts through
+    `confirmation_state`, so `verified` is True only while one is a
+    confirmation for the client the house is linked to now. Shown: a
+    confirmation over a rejection over an out-of-date decision over none (the
+    newest of equals). No decision id and nothing about who decided.
+
+    A shown `rejected` is one record's ("R is not C's house", 0168), not
+    the house's: another record on the parcel may be undecided, and only
+    decided records reach here. Say it of the record (neoh_render)."""
+    shown = {"state": "none", "decided_at": None}
+    for record_id, head in (heads or {}).items():
+        if str(record_id) not in on_parcel_ids:
+            continue
+        state = confirmation_state(head)
+        candidate = {"state": state["state"], "decided_at": state["decided_at"]}
+        rank, best = _SHOWN_FIRST[candidate["state"]], _SHOWN_FIRST[shown["state"]]
+        if rank > best or (rank == best and (candidate["decided_at"] or "") > (shown["decided_at"] or "")):
+            shown = candidate
+    return {"verified": shown["state"] == "confirmed", "confirmation": shown}
 
 
 @router.post("/houses/{lead_id}/record-match", status_code=status.HTTP_201_CREATED)

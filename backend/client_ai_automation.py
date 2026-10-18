@@ -265,7 +265,10 @@ def _score(
         add("two_way_action", "Documented actionable response", 10, "interaction:explicit_action")
 
     if properties:
-        add("verified_property", "Verified linked property", 15, "property:linked")
+        # A CRM link, not a check that the public record is their house (a
+        # broker owner's property_match_decisions entry, which this score
+        # does not read), so the label never says verified (F11.04).
+        add("verified_property", "Linked property", 15, "property:linked")
         if budget is not None and any(
             property_row.get("price") is not None and float(property_row["price"]) <= budget
             for property_row in properties

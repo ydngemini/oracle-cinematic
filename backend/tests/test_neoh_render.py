@@ -316,6 +316,183 @@ class TestProperties:
         assert es["label"] == "Parcela 12-345-678"
 
 
+class TestLinkedHouses:
+    """T11.03 / F11.04: the houses linked to the client, with the broker
+    owner's decision read as Houses reads it (neoh_intents._linked_houses_for).
+
+    A linked client has no stored candidates (the producer stores [] with
+    status not_applicable once a house is linked), so Neoh used to answer
+    "Nothing is on {name}'s shortlist yet" about a client whose house is on
+    record. Only a current confirmation reads verified; who decided is never
+    shown."""
+
+    AT = "2026-10-17T16:00:00+00:00"
+
+    @classmethod
+    def _house(cls, n, state="none", *, verified=None, kind="lead", **over):
+        lead = f"lead-{n}" if kind == "lead" else None
+        return {
+            "kind": kind, "id": lead or f"listing-{n}", "lead_id": lead,
+            "address": f"{n} Elm St", "parcel_id": f"P-{n}" if kind == "lead" else None,
+            "state": "TX" if kind == "lead" else None,
+            "verified": (state == "confirmed") if verified is None else verified,
+            "confirmation": {"state": state, "decided_at": None if state == "none" else cls.AT},
+            **over,
+        }
+
+    def _ask(self, houses, *, total=None, candidates=(), lookup=None, lang=None):
+        return render.properties_for(
+            "Sarah Chen", list(candidates), lookup if lookup is not None else {"status": "not_applicable"},
+            lang, linked=houses, linked_total=len(houses) if total is None else total)
+
+    def test_a_confirmed_linked_house_reads_verified(self):
+        out = self._ask([self._house(1, "confirmed")])
+        assert out["intent"] == "properties_for"
+        assert out["spoken"] == "1 house is linked to Sarah Chen. It is confirmed as theirs."
+        block = out["blocks"][0]["props"]
+        assert block["title"] == "Houses linked to Sarah Chen"
+        assert block["options"] == [{
+            "id": "lead-1", "label": "1 Elm St",
+            "detail": "Parcel P-1 · Confirmed as Sarah Chen's house · 2026-10-17",
+            "href": "/property/lead-1", "kind": "linked_house", "verified": True,
+            "confirmation": {"state": "confirmed", "decided_at": self.AT},
+        }]
+
+    @pytest.mark.parametrize("state,detail,spoken", [
+        ("none", "Linked to Sarah Chen · not confirmed as theirs", "It is not confirmed as theirs."),
+        ("out_of_date", "Linked to Sarah Chen · not confirmed as theirs", "It is not confirmed as theirs."),
+        ("rejected", "Linked to Sarah Chen · not confirmed as theirs · a public record on its parcel was "
+                     "marked not their house",
+         "It is not confirmed as theirs, and a public record on its parcel was marked not their house."),
+    ])
+    def test_anything_but_a_current_confirmation_is_not_verified(self, state, detail, spoken):
+        out = self._ask([self._house(1, state)])
+        assert out["spoken"] == f"1 house is linked to Sarah Chen. {spoken}"
+        option = out["blocks"][0]["props"]["options"][0]
+        assert option["verified"] is False
+        assert option["confirmation"]["state"] == state
+        assert option["detail"] == f"Parcel P-1 · {detail}"
+        assert "Confirmed" not in option["detail"]
+        # Still the brokerage's own lead: it opens, it is just not confirmed.
+        assert option["href"] == "/property/lead-1"
+
+    def test_verified_is_never_read_from_a_state_that_is_not_confirmed(self):
+        option = self._ask([self._house(1, "rejected", verified=True)])["blocks"][0]["props"]["options"][0]
+        assert option["verified"] is False and "Confirmed" not in option["detail"]
+
+    def test_a_linked_house_is_never_called_a_shortlist_or_nothing(self):
+        for state in ("confirmed", "rejected", "none"):
+            spoken = self._ask([self._house(1, state)])["spoken"]
+            assert "shortlist" not in spoken and "Nothing" not in spoken and "possible" not in spoken
+
+    def test_every_linked_house_is_counted_and_the_confirmed_ones_among_those_shown(self):
+        houses = [self._house(1, "confirmed"), self._house(2, "rejected"), self._house(3, "out_of_date")]
+        out = self._ask(houses, total=5)
+        assert out["spoken"] == ("5 houses are linked to Sarah Chen. Showing 3 of 5 here. "
+                                 "1 of 3 confirmed as theirs. 1 of 3 have a public record marked not their house.")
+        options = out["blocks"][0]["props"]["options"]
+        assert [o["id"] for o in options] == ["lead-1", "lead-2", "lead-3"]
+        assert [o["verified"] for o in options] == [True, False, False]
+
+    def test_a_rejection_is_said_of_the_record_never_of_the_linked_house(self):
+        """0168's rejection claims only "R is not C's house", for one record.
+        Several public records can sit on one parcel (the catalog dedupes by
+        source), and Neoh reads only the decided ones: r1 rejected beside an
+        undecided r2 reaches the renderer as a rejected house. The house the
+        brokerage linked is never said to be not the client's; Houses says it
+        of r1's card alone."""
+        for houses in ([self._house(1, "rejected")],
+                       [self._house(1, "rejected"), self._house(2, "rejected")]):
+            out = self._ask(houses)
+            for text in (out["spoken"], *(o["detail"] for o in out["blocks"][0]["props"]["options"])):
+                assert "a public record" in text, text
+                for whole_house in ("It is marked not", "but marked not", "of 2 marked not"):
+                    assert whole_house not in text, text
+        two = self._ask([self._house(1, "rejected"), self._house(2)])
+        assert two["spoken"] == ("2 houses are linked to Sarah Chen. 0 of 2 confirmed as theirs. "
+                                 "1 of 2 have a public record marked not their house.")
+        assert [o["verified"] for o in two["blocks"][0]["props"]["options"]] == [False, False]
+
+    def test_none_confirmed_is_said_as_a_count(self):
+        out = self._ask([self._house(1), self._house(2, "out_of_date")])
+        assert out["spoken"] == "2 houses are linked to Sarah Chen. 0 of 2 confirmed as theirs."
+
+    def test_more_houses_than_the_panel_holds_are_capped(self):
+        houses = [self._house(n, "confirmed") for n in range(1, 6)]
+        out = self._ask(houses)
+        assert len(out["blocks"][0]["props"]["options"]) == render.MAX_COMPARISON
+        assert "Showing 3 of 5 here." in out["spoken"] and "3 of 3 confirmed as theirs." in out["spoken"]
+
+    def test_a_manual_listing_is_linked_never_verified_and_opens_nothing(self):
+        """A manual house is a listings row with no parcel: no decision can be
+        made on it, and /property/ opens a lead's sheet, not a listing."""
+        option = self._ask([self._house(1, kind="listing")])["blocks"][0]["props"]["options"][0]
+        assert option == {
+            "id": "listing-1", "label": "1 Elm St", "detail": "Linked to Sarah Chen · not confirmed as theirs",
+            "href": None, "kind": "linked_house", "verified": False,
+            "confirmation": {"state": "none", "decided_at": None},
+        }
+
+    def test_a_house_with_no_street_address_is_labelled_by_its_parcel(self):
+        options = self._ask([self._house(1, address=None), self._house(2, address=None, parcel_id=None)])[
+            "blocks"][0]["props"]["options"]
+        assert options[0]["label"] == "Parcel P-1"
+        assert options[0]["detail"] == "Linked to Sarah Chen · not confirmed as theirs"
+        assert options[1]["label"] == "Address unavailable"
+
+    def test_candidates_stored_before_the_link_are_not_said_beside_it(self):
+        """The producer keeps no owner-name candidates for a linked client,
+        and linking queues the reconcile that clears them. A leftover can be
+        the very record just confirmed: it is never said as a possible match
+        next to "confirmed as theirs"."""
+        same_record = {"public_record_id": "r1", "parcel_id": "P-1", "address": "1 Elm St",
+                       "match_basis": "exact owner name", "requires_review": True}
+        out = self._ask([self._house(1, "confirmed")], candidates=[same_record], lookup={"status": "checked"})
+        assert out["spoken"] == "1 house is linked to Sarah Chen. It is confirmed as theirs."
+        block = out["blocks"][0]["props"]
+        assert block["title"] == "Houses linked to Sarah Chen"
+        assert [o["id"] for o in block["options"]] == ["lead-1"]
+
+    def test_a_stale_lookup_failure_is_not_read_over_a_linked_house(self):
+        """The owner-name lookup does not run for a linked client; an old
+        failure says nothing about the house on record."""
+        out = self._ask([self._house(1, "confirmed")], lookup={"status": "timed_out"})
+        assert out["spoken"] == "1 house is linked to Sarah Chen. It is confirmed as theirs."
+
+    def test_in_spanish(self):
+        houses = [self._house(1, "confirmed"), self._house(2, "rejected"), self._house(3)]
+        out = self._ask(houses, total=4, lang="es")
+        assert out["spoken"] == ("4 casas están vinculadas a Sarah Chen. Aquí ves 3 de 4. "
+                                 "1 de 3 confirmadas como suyas. "
+                                 "1 de 3 tienen un registro público marcado como que no es su casa.")
+        block = out["blocks"][0]["props"]
+        assert block["title"] == "Casas vinculadas a Sarah Chen"
+        assert [o["detail"] for o in block["options"]] == [
+            "Parcela P-1 · Confirmada como la casa de Sarah Chen · 2026-10-17",
+            "Parcela P-2 · Vinculada a Sarah Chen · no confirmada como suya · un registro público de esa "
+            "parcela se marcó como que no es su casa",
+            "Parcela P-3 · Vinculada a Sarah Chen · no confirmada como suya",
+        ]
+        one = self._ask([self._house(1, "confirmed")], lang="es")["spoken"]
+        assert one == "1 casa está vinculada a Sarah Chen. Está confirmada como suya."
+        for state, said in (("rejected", "No está confirmada como suya, y un registro público de esa parcela "
+                                         "se marcó como que no es su casa."),
+                            ("none", "No está confirmada como suya.")):
+            assert self._ask([self._house(1, state)], lang="es")["spoken"].endswith(said)
+        for text in (out["spoken"], one, block["title"], *(o["detail"] for o in block["options"])):
+            assert "lista" not in text and "house" not in text and "linked" not in text
+
+    @pytest.mark.parametrize("candidates,lookup", [
+        ([], None), ([], {"status": "not_applicable"}), ([], {"status": "timed_out"}),
+        ([{"id": "p1", "address": "12 Oak St"}], {"status": "checked"}),
+        ([TestProperties.REVIEW_ONLY], {"status": "checked"}),
+    ])
+    def test_no_linked_house_leaves_the_answer_exactly_as_it_was(self, candidates, lookup):
+        before = render.properties_for("Sarah", candidates, lookup)
+        assert render.properties_for("Sarah", candidates, lookup, linked=None) == before
+        assert render.properties_for("Sarah", candidates, lookup, linked=[], linked_total=0) == before
+
+
 class TestFallthrough:
     def test_a_miss_is_a_fallthrough_never_an_empty_panel(self):
         out = render.fallthrough("no pattern matched")

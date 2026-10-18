@@ -448,3 +448,99 @@ def test_0168_keeps_the_reason_sealed_and_no_address_fingerprint():
     for fingerprint in (r"\baddress\b", r"\bowner_name\b", r"\bzip(_code)?\b", r"\bcity\b",
                         r"\bsha256\b", r"\bdigest\s*\(", r"\bmd5\s*\(", r"\bhmac\s*\("):
         assert not re.search(fingerprint, body), fingerprint
+
+
+# ── the head read Houses and Neoh share (T11.03) ─────────────────────────────
+# Houses (mls_portal._lead_ids_for_records) and Neoh's linked houses
+# (neoh_intents._linked_houses_for) read one head per (lead, record) through
+# the same subquery text, and turn it into `verified` through the same
+# confirmation_state, so the two never disagree on what "confirmed" means.
+
+def _collapsed(sql: str) -> str:
+    return re.sub(r"\s+", " ", sql).strip()
+
+
+def test_the_shared_head_subquery_is_the_one_houses_pins():
+    sql = _collapsed(property_match_api.current_heads_sql("leads"))
+    assert "FROM property_match_decisions h WHERE h.lead_id = leads.id" in sql
+    assert "NOT EXISTS (SELECT 1 FROM property_match_decisions n WHERE n.supersedes_id = h.id)" in sql
+    assert "COALESCE(h.client_id = leads.seller_client_id, false)" in sql
+    # RLS scopes it; who decided, the evidence and the sealed reason are never read.
+    for absent in ("tenant_id", "decided_by", "decided_role", "evidence", "reason"):
+        assert absent not in sql, absent
+    aliased = _collapsed(property_match_api.current_heads_sql("l"))
+    assert "WHERE h.lead_id = l.id" in aliased and "h.client_id = l.seller_client_id" in aliased
+
+
+@pytest.mark.parametrize("alias", ["l; DROP TABLE leads", "l.id", "", "1l", "h", "n", None])
+def test_the_head_subquery_takes_only_a_plain_alias(alias):
+    """The alias is interpolated into SQL text; the subquery's own `h` and
+    `n` would shadow it and compare a decision with itself."""
+    with pytest.raises(ValueError):
+        property_match_api.current_heads_sql(alias)
+
+
+def test_heads_are_keyed_by_record_from_text_or_a_list():
+    head = {"id": "h1", "record_id": "r1", "decision": "confirmed", "same_client": True}
+    assert property_match_api.heads_by_record(json.dumps([head])) == {"r1": head}
+    assert property_match_api.heads_by_record([head, "junk", {"id": "h2"}, {"record_id": None}]) == {"r1": head}
+    for nothing in (None, "null", [], {}):
+        assert property_match_api.heads_by_record(nothing) == {}
+
+
+def _h(decision, *, same_client=True, record="r1", at="2026-10-17T16:00:00+00:00"):
+    return {"id": f"h-{record}-{decision}", "record_id": record, "decision": decision,
+            "same_client": same_client, "decided_at": at}
+
+
+@pytest.mark.parametrize("heads,on_parcel,verified,state", [
+    ({"r1": _h("confirmed")}, {"r1"}, True, "confirmed"),
+    # Re-keyed or purged: the record no longer reaches the house's parcel.
+    ({"r1": _h("confirmed")}, set(), False, "none"),
+    ({"r1": _h("rejected")}, {"r1"}, False, "rejected"),
+    ({"r1": _h("withdrawn")}, {"r1"}, False, "none"),
+    # Decided for a client the house is no longer linked to.
+    ({"r1": _h("confirmed", same_client=False)}, {"r1"}, False, "out_of_date"),
+    ({"r1": _h("rejected", same_client=False)}, {"r1"}, False, "out_of_date"),
+    # One record of the house confirmed, another on its parcel rejected.
+    ({"r1": _h("confirmed"), "r2": _h("rejected", record="r2")}, {"r1", "r2"}, True, "confirmed"),
+    ({"r1": _h("rejected"), "r2": _h("confirmed", same_client=False, record="r2")}, {"r1", "r2"},
+     False, "rejected"),
+    ({}, set(), False, "none"),
+    (None, set(), False, "none"),
+])
+def test_a_linked_house_is_verified_only_by_a_current_confirmation_on_its_parcel(heads, on_parcel, verified, state):
+    out = property_match_api.linked_house_confirmation(heads, on_parcel)
+    assert out["verified"] is verified
+    assert out["confirmation"]["state"] == state
+    # Who decided, which decision row, and on what evidence are not shown.
+    assert set(out) == {"verified", "confirmation"}
+    assert set(out["confirmation"]) == {"state", "decided_at"}
+
+
+def test_the_confirmation_date_is_the_shown_decisions():
+    old, new = "2026-10-01T09:00:00+00:00", "2026-10-17T16:00:00+00:00"
+    heads = {"r1": _h("confirmed", at=old), "r2": _h("confirmed", record="r2", at=new),
+             "r3": _h("rejected", record="r3", at="2026-10-20T09:00:00+00:00")}
+    out = property_match_api.linked_house_confirmation(heads, {"r1", "r2", "r3"})
+    assert out == {"verified": True, "confirmation": {"state": "confirmed", "decided_at": new}}
+    assert property_match_api.linked_house_confirmation({}, set())["confirmation"] == {
+        "state": "none", "decided_at": None}
+
+
+@pytest.mark.parametrize("head", [
+    _h("confirmed"), _h("rejected"), _h("withdrawn"), _h("confirmed", same_client=False),
+    _h("rejected", same_client=False), None,
+])
+def test_neoh_and_houses_read_one_head_the_same_way(head):
+    """For a record that reaches the house, Neoh's verified and state are
+    exactly Houses' (mls_portal._record_identity)."""
+    import mls_portal
+
+    heads = {"r1": head} if head else {}
+    houses = mls_portal._record_identity(
+        "parcel_exact", {"lead_id": "L", "linked": True, "heads_by_record": heads}, record_id="r1")
+    neoh = property_match_api.linked_house_confirmation(heads, {"r1"})
+    assert neoh["verified"] is houses["verified"]
+    assert neoh["confirmation"]["state"] == houses["confirmation"]["state"]
+    assert neoh["confirmation"]["decided_at"] == houses["confirmation"]["decided_at"]

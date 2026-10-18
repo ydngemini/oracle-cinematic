@@ -378,6 +378,10 @@ async def _contract_inputs(conn, ctx: TenantContext, deal_id: str,
             transaction["id"], ctx.tenant_id,
         )
         parties = {row["party_role"]: row["display_name"] for row in rows}
+    # The linked client stands in only when no seller party is named. A
+    # property-match decision (0168, T11.03) does not change this: it says a
+    # public record is the house this lead refers to, not who the seller party
+    # is, and 0168 does not claim the relationship kind.
     seller_fallback = None
     if lead and lead["seller_client_id"]:
         seller_fallback = await conn.fetchval(

@@ -43,7 +43,7 @@ Listed weakest to strongest:
 | 08 | Durable missions and workflows | [08](08-durable-missions-workflow-orchestration.md) | `source_verified` | local | `745f2fa`; L08-02 deferral journal (0159), L08-03 feasible plans, L08-04 plans refuse unset channels by name (local) | Owner: does a mission's standing grant count as approval (C4.1)?; PR #11 needs a rebuild (L08-01 review) | T08.03 TaskGraph; rebuild PR #11's internal tasks after the owner answers |
 | 09 | Real-time voice | [09](09-realtime-voice-speech-latency.md) | `source_verified` | staging | `9c3463a`; L09-05 outbound spoken opt-out, L09-06 lead-only call notes, L09-07 voice rules locked per path (local) | Phone check (L09-02); real call (T09.18) needs owner approval | T09.18; T09.10 |
 | 10 | Communications and calendars | [10](10-communications-calendar-provider-integrations.md) | `source_verified` | staging | `75c6ba6` (local) | Google OAuth client; 10DLC; deploy approval; A07 fixed locally; L10-11 email Ready only after a send (0164, local); L10-12 texts and calls likewise (0165, local); 0136 + 0139 + 0145 undeployed (L10-06, L10-09, L10-10); owner: one-brand rule (L10-09) | L10-01 deploy + real connect; T10.09 retry/circuit UI + Playwright |
-| 11 | Property and market intelligence (non-MLS) | [11](11-property-market-intelligence.md) | `tests_pass` | staging (L11-01), local (L11-02, L11-03) | `90372f2`; `d934b2e` (L11-02); L11-03 on branch `worktree-agent-a59f5c8799a673f68` (base `2804f47`); L11-04 source inventory (local); L11-05 heuristic valuation targets labelled, underwriter promotion gated; L11-06 review fixes (local, A08); L11-07..L11-12 unverified property matches labelled possible matches in Houses, Neoh, the AI tools, contract drafts, Property View and the client portal; L11-13 a broker owner confirms or dismisses a title finding; L11-14 a broker owner confirms a linked client's house, read by Houses; L11-15 its review fixes (local, T11.03 / F11.04) | Deploy 0135; live-DB test owed; staging catalog empty; L11-03 not deployed | Owner/legal: licences per source (L11-04); T11.03 |
+| 11 | Property and market intelligence (non-MLS) | [11](11-property-market-intelligence.md) | `tests_pass` | staging (L11-01), local (L11-02, L11-03) | `90372f2`; `d934b2e` (L11-02); L11-03 on branch `worktree-agent-a59f5c8799a673f68` (base `2804f47`); L11-04 source inventory (local); L11-05 heuristic valuation targets labelled, underwriter promotion gated; L11-06 review fixes (local, A08); L11-07..L11-12 unverified property matches labelled possible matches in Houses, Neoh, the AI tools, contract drafts, Property View and the client portal; L11-13 a broker owner confirms or dismisses a title finding; L11-14 a broker owner confirms a linked client's house, read by Houses; L11-15 its review fixes; L11-16 Neoh reads it too (local, T11.03 / F11.04) | Deploy 0135; live-DB test owed; staging catalog empty; L11-03 not deployed | Owner/legal: licences per source (L11-04); T11.03 |
 | 12 | Neoh Space capture, 3D, tours | [12](12-neoh-space-browser-capture-reconstruction.md) | `source_verified` | local | `745f2fa`; L12-03 Capture Studio first slice + integration map (local, jsdom only); L12-04 certification state derived from fresh evidence, every label bound (local) | A03 positive certification (T12.06, T12.04); AC12.02 real-device protocol | Server upload sessions (T12.05); T12.06 room graph |
 | 13 | Deals, documents, compliance | [13](13-transactions-contract-vault-compliance.md) | `source_verified` | local | `745f2fa`; L13-02 no new MLS-sourced deals; L13-03 status trail 0163 + T13.14 verified (local) | Owner: e-sign, commissions, fallen-through contracts | T13.02 remainder; T13.11 |
 | 14 | Sites, social, ads, client portal | [14](14-websites-social-ads-growth-client-portal.md) | `source_verified` | local | `745f2fa`; L14-03 honest website badge; L14-04 no new IDX on sites (local) | Owner: networks, listings on sites | T14.04 + AC14.04 |
@@ -1879,11 +1879,11 @@ authz_checked: "BROKER_OWNER decides (platform admin implicit), as in L11-13; RL
 blockers:
   - "Reviewed after this commit (workflow wf_80899eb2-f4d); four findings and the verifier's leftover fixed in L11-15."
   - "Owner decisions, defaults taken: broker owner only (vs any client editor, a route-only change); a change of address/owner under the same record id does not reopen a confirmation; the evidence vocabulary; 'rejected' does not unlink and linking is not blocked by an unconfirmed record; pool leads cannot be decided; agents do not see who decided."
-  - "Only Houses reads the decision; Property View, Neoh, the AI tools, the client portal and the contract Seller fallback still report verified false. Strings English only."
+  - "Houses and, since L11-16, Neoh's linked-house answer read the decision; Property View, the AI address lookup, the client portal and the contract Seller fallback ask other questions and stay verified false (reasons in L11-16). Houses strings English only."
   - "The per-lead head subquery's cost under FORCE RLS is unmeasured (at most 24 leads per page). Migration 0168 is unapplied outside the local database; not deployed (C4.4)."
 audit_refs: []
 decision_refs: []
-next_task: "Review fixes landed in L11-15; then let Property View, Neoh and the AI tools read a confirmed decision."
+next_task: "Review fixes landed in L11-15; Neoh reads the decision since L11-16."
 updated: 2026-10-17
 ```
 
@@ -1905,8 +1905,31 @@ blockers:
   - "Other pages that read audit_ledger metadata were not re-audited in this slice; the pulse was the one page every agent reads it through. The 16 px fix is pinned in jsdom, not checked on a real iPhone. Not deployed (C4.4)."
 audit_refs: [A01]
 decision_refs: []
-next_task: "Let Property View, Neoh and the AI tools read a confirmed decision; owner decisions listed in L11-14."
+next_task: "Neoh reads it since L11-16; owner decisions listed in L11-14."
 updated: 2026-10-17
+```
+
+#### L11-16 Neoh's "find properties for X" names a client's linked houses and reads a broker owner's decision as Houses does; the client score stops calling a link verified (T11.03, F11.04, AC11.04)
+```yaml
+id: L11-16
+status: tests_pass
+env: local
+evidence_shas: [11f37b2]
+files: [backend/property_match_api.py, backend/mls_portal.py, backend/neoh_intents.py, backend/neoh_render.py, backend/semantic_language.py, backend/property_view_api.py, backend/ai_tools_gated.py, backend/client_ai_automation.py, backend/tests/test_property_match_decision.py, backend/tests/test_neoh_render.py, backend/tests/test_neoh_intents.py, backend/tests/fast_path_language_cases.py, backend/tests/test_property_match_decisions_live.py, backend/tests/test_client_ai_automation.py]
+tests_run:
+  - {cmd: "scout at 11f37b2 (workflow wf_392a6899-4b3: scout -> implementer -> reviewer -> fixer -> verifier)", result: "Neoh had no read of a client's linked houses: once a lead or listing is linked the producer stores no candidates (client_ai_automation.py:654, :758-762), so 'find properties for X' answered 'Nothing is on X's shortlist yet' about a client whose house is on record, and the L11-14 decision reached Houses only. Property View and the AI address lookup ask whether a record is the address typed, the contract Seller fallback asks who the seller party is (0168 does not claim the relationship kind), and the client portal shows the homeowner the lead itself with no public record: none asks whether R is this client's house, so they stay verified false, now with the reason in code. The client score's factor read 'Verified linked property' for any linked house, decision or not", date: 2026-10-18}
+  - {cmd: "red runs at 11f37b2 and before each fix: pytest tests/test_property_match_decision.py tests/test_neoh_render.py tests/test_neoh_intents.py tests/test_fast_path_language.py tests/test_client_ai_automation.py; livetest tests/test_property_match_decisions_live.py", result: "84 failed / 132 passed (no shared head helper, no linked read, 10 end-to-end linked-client cases rendering the empty shortlist); live 1 failed (no _linked_houses_for). Review: a rejection of one record on a parcel was told as the whole house 'marked not their house' while an undecided sibling record sat beside it (6 unit and 1 live failure with the fix reverted). Lead: the score factor label contained 'verified' (1 failed)", date: 2026-10-18}
+  - {cmd: "livetest pytest tests/test_property_match_decisions_live.py (real PostgreSQL 16, app login, FORCE RLS; already in the CI live list)", result: "3 passed: each step checked against Houses on the same data: a confirmation reads verified for the owner and an agent; another agent of the brokerage and another brokerage see no decision; a record re-keyed off the parcel, a withdrawal, a rejection with an undecided sibling, a sibling confirmation and a re-link to another client (out_of_date) all read not verified; who decided is never returned", date: 2026-10-18}
+  - {cmd: "cd backend && pytest tests/ --deselect tests/test_media_storage.py --deselect tests/test_object_storage.py", result: "5872 passed, 108 skipped; no frontend change", date: 2026-10-18}
+authz_checked: "One shared head-decision rule (property_match_api.current_heads_sql / heads_by_record / linked_house_confirmation): Houses' statement is byte-identical after whitespace collapse, and Neoh reads the client's own leads under RLS only, no tenant predicate, never selecting decided_by, decided_role, evidence or the sealed reason. A record counts only while its (parcel_id, state) equals the lead's own; a manual listing is shown as linked but can never verify."
+blockers:
+  - "Neoh reads the client's own leads while Houses picks the newest visible lead per parcel; they differ only if leads_tenant_parcel_key is missing or for a platform admin. Listings stay brokerage-wide (0143), so a direct call for a client the caller cannot see returns that client's listings, never its leads or decisions; Neoh reaches it only after search resolves the client under RLS (pinned live)."
+  - "Showings are not counted as linked houses (a buyer linked only by a showing still hears the empty shortlist). The score factor's stored label changes on the client's next reconcile; its code stays verified_property. Query cost at scale unmeasured (local catalog empty)."
+  - {type: owner, note: "Owner decisions from L11-14 still open (who may decide, whether a changed address or owner reopens a confirmation, whether rejection unlinks). Not deployed (C4.4)."}
+audit_refs: []
+decision_refs: []
+next_task: "Owner decisions in L11-14; then T11.04 freshness and permitted use per source (reaching comps, Neoh and Houses)."
+updated: 2026-10-18
 ```
 
 ### L12

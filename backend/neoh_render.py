@@ -303,7 +303,8 @@ PRODUCER_CANDIDATE_LIMIT = 5
 
 def properties_for(
     name: str, candidates: list[dict[str, Any]], lookup: Optional[dict[str, Any]] = None,
-    lang: Optional[str] = None,
+    lang: Optional[str] = None, *, linked: Optional[list[dict[str, Any]]] = None,
+    linked_total: Optional[int] = None,
 ) -> dict[str, Any]:
     """Candidates the automation already maintains — not a new matcher.
 
@@ -314,7 +315,15 @@ def properties_for(
     (client_ai_state.source_status, migration 0135). An empty shortlist after
     a lookup that timed out, failed or never ran is not "nothing matched", and
     is never said as if it were (audit A02).
+
+    `linked` are the houses linked to the client (neoh_intents.
+    _linked_houses_for, newest first, at most MAX_COMPARISON) and
+    `linked_total` how many there are. With none, the answer is exactly what
+    it was before linked houses were read.
     """
+    houses = [h for h in (linked or ()) if isinstance(h, dict)]
+    if houses:
+        return _linked_answer(name, houses, linked_total, lang)
     # No lookup passed: a caller with no source status (the legacy shape).
     status = lookup.get("status") if lookup is not None else "checked"
     if not candidates and status in ("timed_out", "unavailable"):
@@ -362,6 +371,85 @@ def properties_for(
             for c in shown
         ])],
     )
+
+
+def _linked_answer(
+    name: str, houses: list[dict[str, Any]], total: Optional[int], lang: Optional[str],
+) -> dict[str, Any]:
+    """The houses linked to the client, and what a broker owner decided
+    about each lead's public record.
+
+    The owner-name candidates and their lookup are not said here: the
+    producer does not look up or keep candidates for a client with a linked
+    lead or listing (client_ai_automation._property_candidates_bounded,
+    not_applicable), and linking queues a reconcile that clears any stored
+    before the link. Such a leftover could even be the record just confirmed
+    for this house, said as a possible match beside it.
+
+    Counts are exact: every linked house (`total`), and the confirmed and
+    rejected ones among those shown, never guessed for the rest. Only a
+    current confirmation (verified) is said as confirmed; who decided is not
+    shown (L11-14). A rejection is said of a public record on the house's
+    parcel, never of the house: 0168 claims only "R is not C's house", and
+    other records on the parcel may be undecided (only decided ones are
+    read)."""
+    shown = houses[:MAX_COMPARISON]
+    n = max(int(total or 0), len(houses))
+    options = [_linked_option(h, name, lang) for h in shown]
+    confirmed = sum(1 for o in options if o["verified"])
+    rejected = sum(1 for o in options if o["confirmation"]["state"] == "rejected")
+    spoken = [lang_.t("linked.one" if n == 1 else "linked.many", lang, n=n, name=name)]
+    if len(shown) < n:
+        spoken.append(lang_.t("linked.shown", lang, shown=len(shown), n=n))
+    if len(shown) == 1:
+        key = "confirmed_it" if confirmed else "rejected_it" if rejected else "unconfirmed_it"
+        spoken.append(lang_.t("linked." + key, lang))
+    else:
+        spoken.append(lang_.t("linked.confirmed_count", lang, c=confirmed, shown=len(shown)))
+        if rejected:
+            spoken.append(lang_.t("linked.rejected_count", lang, r=rejected, shown=len(shown)))
+    return answer(
+        "properties_for",
+        " ".join(spoken),
+        [block("comparison", title=lang_.t("linked.title", lang, name=name), options=options)],
+    )
+
+
+def _linked_option(house: dict[str, Any], name: str, lang: Optional[str] = None) -> dict[str, Any]:
+    """One linked house. It opens the brokerage's own lead (a manual house is
+    a listing, with no lead sheet to open). Verified only for a current
+    confirmation of a record on its parcel (property_match_api.
+    linked_house_confirmation); every other state reads not confirmed."""
+    confirmation = house.get("confirmation") if isinstance(house.get("confirmation"), dict) else {}
+    state = confirmation.get("state") or "none"
+    decided_at = confirmation.get("decided_at")
+    verified = house.get("verified") is True and state == "confirmed"
+    parcel = house.get("parcel_id")
+    address = house.get("address")
+    if verified:
+        line = [lang_.t("linked.detail_confirmed", lang, name=name), str(decided_at)[:10] if decided_at else None]
+    elif state == "rejected":
+        line = [lang_.t("linked.detail_rejected", lang, name=name)]
+    else:
+        line = [lang_.t("linked.detail_unconfirmed", lang, name=name)]
+    lead_id = house.get("lead_id")
+    return {
+        "id": str(house.get("id") or lead_id or ""),
+        "label": address or (
+            lang_.t("shortlist.parcel", lang, parcel=parcel) if parcel
+            else lang_.t("shortlist.no_address", lang)
+        ),
+        "detail": " · ".join(
+            bit for bit in (
+                lang_.t("shortlist.parcel", lang, parcel=parcel) if parcel and address else None,
+                *line,
+            ) if bit
+        ),
+        "href": f"/property/{lead_id}" if lead_id else None,
+        "kind": "linked_house",
+        "verified": verified,
+        "confirmation": {"state": state, "decided_at": decided_at},
+    }
 
 
 def deal_blocker(transaction: dict[str, Any], milestones: list[dict[str, Any]],

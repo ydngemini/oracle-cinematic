@@ -693,6 +693,35 @@ MESSAGES: dict[str, dict[str, str]] = {
         "es": ("nombre del propietario (sin distinguir mayúsculas, espacios, signos ni letras fuera de la a–z) "
                "y código postal objetivo"),
     },
+    # properties_for: the houses linked to the client (leads/listings.seller_client_id),
+    # with a broker owner's decision on the house's public record (0168, T11.03)
+    "linked.title": {"en": "Houses linked to {name}", "es": "Casas vinculadas a {name}"},
+    "linked.one": {"en": "{n} house is linked to {name}.", "es": "{n} casa está vinculada a {name}."},
+    "linked.many": {"en": "{n} houses are linked to {name}.", "es": "{n} casas están vinculadas a {name}."},
+    "linked.shown": {"en": "Showing {shown} of {n} here.", "es": "Aquí ves {shown} de {n}."},
+    "linked.confirmed_it": {"en": "It is confirmed as theirs.", "es": "Está confirmada como suya."},
+    # A rejection is of one public record ("R is not C's house", 0168), never
+    # of the house linked to the client: other records on its parcel may be
+    # undecided, and Neoh reads only the decided ones
+    "linked.rejected_it": {
+        "en": "It is not confirmed as theirs, and a public record on its parcel was marked not their house.",
+        "es": ("No está confirmada como suya, y un registro público de esa parcela se marcó como que no es "
+               "su casa."),
+    },
+    "linked.unconfirmed_it": {"en": "It is not confirmed as theirs.", "es": "No está confirmada como suya."},
+    # Counted over the houses shown ({shown}), never guessed for the rest
+    "linked.confirmed_count": {"en": "{c} of {shown} confirmed as theirs.",
+                               "es": "{c} de {shown} confirmadas como suyas."},
+    "linked.rejected_count": {"en": "{r} of {shown} have a public record marked not their house.",
+                              "es": "{r} de {shown} tienen un registro público marcado como que no es su casa."},
+    "linked.detail_confirmed": {"en": "Confirmed as {name}'s house", "es": "Confirmada como la casa de {name}"},
+    "linked.detail_rejected": {
+        "en": "Linked to {name} · not confirmed as theirs · a public record on its parcel was marked not their house",
+        "es": ("Vinculada a {name} · no confirmada como suya · un registro público de esa parcela se marcó como "
+               "que no es su casa"),
+    },
+    "linked.detail_unconfirmed": {"en": "Linked to {name} · not confirmed as theirs",
+                                  "es": "Vinculada a {name} · no confirmada como suya"},
     "detail.beds": {"en": "{n} beds", "es": "{n} hab."},
     "detail.baths": {"en": "{n} baths", "es": "{n} baños"},
     # deal_blocker: the headline and the open milestones

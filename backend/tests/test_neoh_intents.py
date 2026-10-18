@@ -9,6 +9,8 @@ from __future__ import annotations
 import asyncio
 import inspect
 
+import pytest
+
 import neoh_intents as intents
 import neoh_render as render
 import source_status as ss
@@ -261,6 +263,11 @@ class TestPossibleMatchesEndToEnd:
                 assert "client_ai_state" in sql
                 return state
 
+            async def fetch(self, sql, *_args):
+                # The linked-house read: this client has no house linked.
+                assert "FROM leads l" in sql
+                return []
+
         @asynccontextmanager
         async def fake_tx(_ctx):
             yield _State()
@@ -301,6 +308,188 @@ class TestPossibleMatchesEndToEnd:
             assert option["detail"].startswith("Austin, TX 78701 · Parcela ")
             assert "Posible coincidencia por nombre del propietario" in option["detail"]
             assert "exacto" not in option["detail"]
+
+
+class TestLinkedHousesEndToEnd:
+    """T11.03 / F11.04: "find properties for Sarah" for a client whose house
+    is linked, through the real _properties_for, _candidates_for and
+    _linked_houses_for; only the database is stubbed.
+
+    The producer stores [] with status not_applicable once a house is linked
+    (client_ai_automation._property_candidates_bounded), so the answer comes
+    from the linked read: the client's leads with the newest decision per
+    record (property_match_api.current_heads_sql, as Houses reads it), then a
+    primary-key read of those records to check each still sits on the
+    house's parcel. Verified only for a current confirmation.
+    """
+
+    CLIENT = "c1"
+    LEAD = "aaaaaaaa-0000-4000-8000-000000000001"
+    RECORD = "bbbbbbbb-0000-4000-8000-000000000001"
+    AT = "2026-10-17T16:00:00+00:00"
+
+    def _stub(self, monkeypatch, *, heads=(), records=None, listing=False, fail=False):
+        import json
+        from contextlib import asynccontextmanager
+
+        import client_ai_automation
+        import db.connection
+        import search_api
+
+        state = {
+            "enabled": True, "status": "complete", "score_mode": "auto", "stage_mode": "auto",
+            "score_version": None, "score_breakdown": "[]", "normalized_preferences": "{}",
+            "summary": None, "next_actions": "[]", "data_gaps": "[]", "evidence": "[]",
+            "property_candidates": "[]", "model_id": None, "last_evaluated_at": None, "last_error_code": None,
+            "source_status": json.dumps({client_ai_automation.PROPERTY_SOURCE: (
+                client_ai_automation.property_lookup_status(
+                    client_ai_automation.SOURCE_NOT_APPLICABLE, reason="client already has a linked property"))}),
+        }
+        rows = [{"kind": "lead", "id": self.LEAD, "lead_id": self.LEAD, "address": "1 Elm St",
+                 "parcel_id": "P-1", "state": "TX", "heads": json.dumps(list(heads)) if heads else None,
+                 "total": 2 if listing else 1}]
+        if listing:
+            rows.append({"kind": "listing", "id": "cccccccc-0000-4000-8000-000000000001", "lead_id": None,
+                         "address": "7 Manual Rd", "parcel_id": None, "state": None, "heads": None, "total": 2})
+        on_file = [{"id": self.RECORD, "parcel_id": "P-1", "state": "TX"}] if records is None else records
+        queries: list[tuple[str, tuple]] = []
+
+        class _Conn:
+            async def fetchrow(self, sql, *_args):
+                assert "client_ai_state" in sql
+                return state
+
+            async def fetch(self, sql, *args):
+                queries.append((sql, args))
+                if fail:
+                    raise RuntimeError("leads table on fire")
+                if "FROM leads l" in sql:
+                    return rows
+                if "FROM public_property_records" in sql:
+                    return [r for r in on_file if r["id"] in args[0]]
+                raise AssertionError(sql)
+
+        @asynccontextmanager
+        async def fake_tx(_ctx):
+            yield _Conn()
+
+        async def one_sarah(_ctx, _q, kinds, _limit):
+            return _found(kinds, [{"kind": "people", "id": self.CLIENT, "label": "Sarah Chen", "sublabel": "seller"}])
+
+        monkeypatch.setattr(db.connection, "tenant_tx", fake_tx)
+        monkeypatch.setattr(search_api, "search", one_sarah)
+        return queries
+
+    def _head(self, decision, *, same_client=True, record=None):
+        return {"id": "h1", "record_id": record or self.RECORD, "decision": decision,
+                "same_client": same_client, "decided_at": self.AT}
+
+    def _option(self, monkeypatch, lang="en", **stub):
+        queries = self._stub(monkeypatch, **stub)
+        out = asyncio.run(intents.ask(CTX, "busca propiedades para Sarah Chen" if lang == "es"
+                                      else "find properties for Sarah Chen"))
+        assert out["intent"] == "properties_for" and out["fallthrough"] is False
+        return out, out["blocks"][0]["props"]["options"][0], queries
+
+    def test_a_confirmed_house_still_on_its_parcel_reads_verified(self, monkeypatch):
+        out, option, queries = self._option(monkeypatch, heads=[self._head("confirmed")])
+        assert out["spoken"] == "1 house is linked to Sarah Chen. It is confirmed as theirs."
+        assert "shortlist" not in out["spoken"]
+        assert option["verified"] is True
+        assert option["confirmation"] == {"state": "confirmed", "decided_at": self.AT}
+        assert option["href"] == f"/property/{self.LEAD}"
+        assert option["detail"] == "Parcel P-1 · Confirmed as Sarah Chen's house · 2026-10-17"
+        # The read: this client's houses, by RLS alone, the heads as Houses reads them.
+        leads_sql, leads_args = queries[0]
+        import re
+
+        import property_match_api
+
+        collapsed = re.sub(r"\s+", " ", leads_sql)
+        assert leads_args == (self.CLIENT,)
+        assert "WHERE l.seller_client_id = $1::uuid" in collapsed
+        assert re.sub(r"\s+", " ", property_match_api.current_heads_sql("l")).strip() in collapsed
+        assert f"LIMIT {render.MAX_COMPARISON}" in collapsed and "count(*) OVER ()" in collapsed
+        for absent in ("tenant_id", "decided_by", "decided_role", "evidence", "reason"):
+            assert absent not in collapsed, absent
+        # Then the records by primary key: no parcel join on the public catalog.
+        records_sql, records_args = queries[1]
+        assert re.sub(r"\s+", " ", records_sql).strip() == (
+            "SELECT id::text AS id, parcel_id, state FROM public_property_records WHERE id = ANY($1::uuid[])")
+        assert records_args == ([self.RECORD],)
+        assert len(queries) == 2
+
+    def test_and_in_spanish(self, monkeypatch):
+        out, option, _ = self._option(monkeypatch, "es", heads=[self._head("confirmed")])
+        assert out["spoken"] == "1 casa está vinculada a Sarah Chen. Está confirmada como suya."
+        assert out["blocks"][0]["props"]["title"] == "Casas vinculadas a Sarah Chen"
+        assert option["detail"] == "Parcela P-1 · Confirmada como la casa de Sarah Chen · 2026-10-17"
+
+    def test_a_record_re_keyed_to_another_parcel_is_not_verified(self, monkeypatch):
+        _, option, _ = self._option(monkeypatch, heads=[self._head("confirmed")],
+                                    records=[{"id": self.RECORD, "parcel_id": "P-9", "state": "TX"}])
+        assert option["verified"] is False and option["confirmation"]["state"] == "none"
+        assert option["detail"] == "Parcel P-1 · Linked to Sarah Chen · not confirmed as theirs"
+
+    def test_a_record_in_another_state_is_not_verified(self, monkeypatch):
+        _, option, _ = self._option(monkeypatch, heads=[self._head("confirmed")],
+                                    records=[{"id": self.RECORD, "parcel_id": "P-1", "state": "DE"}])
+        assert option["verified"] is False
+
+    def test_a_purged_record_is_not_verified(self, monkeypatch):
+        _, option, _ = self._option(monkeypatch, heads=[self._head("confirmed")], records=[])
+        assert option["verified"] is False and option["confirmation"]["state"] == "none"
+
+    @pytest.mark.parametrize("head,state,spoken", [
+        ({"decision": "rejected"}, "rejected",
+         "It is not confirmed as theirs, and a public record on its parcel was marked not their house."),
+        ({"decision": "withdrawn"}, "none", "It is not confirmed as theirs."),
+        ({"decision": "confirmed", "same_client": False}, "out_of_date", "It is not confirmed as theirs."),
+    ])
+    def test_anything_else_is_not_verified(self, monkeypatch, head, state, spoken):
+        out, option, _ = self._option(
+            monkeypatch, heads=[self._head(head["decision"], same_client=head.get("same_client", True))])
+        assert out["spoken"] == f"1 house is linked to Sarah Chen. {spoken}"
+        assert option["verified"] is False and option["confirmation"]["state"] == state
+
+    def test_one_rejected_record_beside_an_undecided_sibling_is_said_of_the_record(self, monkeypatch):
+        """r1 rejected and r2, on the same parcel, never decided: Neoh reads
+        only r1's head and says that a record on the house's parcel was
+        rejected, never that the linked house is not the client's (0168: "R is
+        not C's house")."""
+        sibling = "bbbbbbbb-0000-4000-8000-000000000002"
+        out, option, queries = self._option(
+            monkeypatch, heads=[self._head("rejected")],
+            records=[{"id": self.RECORD, "parcel_id": "P-1", "state": "TX"},
+                     {"id": sibling, "parcel_id": "P-1", "state": "TX"}])
+        assert queries[1][1] == ([self.RECORD],), "only the decided record is read"
+        assert option["verified"] is False and option["confirmation"]["state"] == "rejected"
+        assert out["spoken"] == ("1 house is linked to Sarah Chen. It is not confirmed as theirs, and a public "
+                                 "record on its parcel was marked not their house.")
+        assert option["detail"] == ("Parcel P-1 · Linked to Sarah Chen · not confirmed as theirs · a public record "
+                                    "on its parcel was marked not their house")
+
+    def test_a_house_with_no_decision_reads_no_records(self, monkeypatch):
+        out, option, queries = self._option(monkeypatch)
+        assert option["verified"] is False and option["confirmation"] == {"state": "none", "decided_at": None}
+        assert len(queries) == 1
+        assert out["spoken"] == "1 house is linked to Sarah Chen. It is not confirmed as theirs."
+
+    def test_a_manual_house_is_counted_beside_the_lead(self, monkeypatch):
+        out, _, _ = self._option(monkeypatch, heads=[self._head("confirmed")], listing=True)
+        assert out["spoken"] == "2 houses are linked to Sarah Chen. 1 of 2 confirmed as theirs."
+        options = out["blocks"][0]["props"]["options"]
+        assert [(o["label"], o["verified"], o["href"]) for o in options] == [
+            ("1 Elm St", True, f"/property/{self.LEAD}"), ("7 Manual Rd", False, None)]
+
+    def test_a_failed_linked_read_goes_to_chat_never_to_nothing_linked(self, monkeypatch):
+        self._stub(monkeypatch, fail=True)
+        out = asyncio.run(intents.ask(CTX, "find properties for Sarah Chen"))
+        assert out["fallthrough"] is True
+        assert "on fire" not in str(out)
+
+    def test_no_client_reads_nothing(self):
+        assert asyncio.run(intents._linked_houses_for(CTX, None)) == ([], 0)
 
 
 class TestFailedLegsAreNotNoResults:

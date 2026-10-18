@@ -46,6 +46,10 @@ def test_the_table_carries_only_the_wall_and_the_lead_rule():
     asyncio.run(_policies())
 
 
+def test_neoh_reads_a_linked_houses_decision_as_houses_does(monkeypatch):
+    asyncio.run(_neoh_scenario(monkeypatch))
+
+
 async def _policies():
     """One permissive tenant wall, a restrictive lead-follow read and a
     restrictive client-edit insert; no UPDATE or DELETE policy, and the
@@ -358,6 +362,209 @@ async def _scenario(monkeypatch):  # noqa: C901 — one scenario, read top to bo
                 await admin.execute("DELETE FROM tenants WHERE id = $1", tid)
             await admin.execute("DELETE FROM public_property_records WHERE id = ANY($1::uuid[])",
                                 [record, record_two, record_far])
+        finally:
+            await admin.execute("SET session_replication_role = origin")
+            await admin.close()
+            await connection.close_pool()
+
+
+async def _neoh_scenario(monkeypatch):  # noqa: C901 — one scenario, read top to bottom
+    """Neoh's "find properties for X" reads a linked house's decision exactly
+    as Houses does (neoh_intents._linked_houses_for, through the shared
+    property_match_api.current_heads_sql): verified only while the newest
+    decision on (lead, record) is a confirmation for the client the house is
+    still linked to, and the record still sits on the house's parcel. Who
+    decided is never read. The application login, under FORCE RLS."""
+    import asyncpg
+
+    import mls_portal
+    import neoh_intents
+    import neoh_render
+    import property_match_api
+    from db import connection
+    from tenancy import Role, TenantContext
+
+    monkeypatch.setenv("ORACLE_ENCRYPTION_MASTER_KEY", MASTER)
+    admin = await asyncpg.connect(DSN)
+    await connection.init_pool(min_size=1, max_size=3)
+    tenant, other = uuid.uuid4(), uuid.uuid4()
+    tag = uuid.uuid4().hex[:8]
+    users = {k: uuid.uuid4() for k in ("owner", "a", "b", "d")}
+    agent = {k: f"neoh-{k}-{tag}@match.test" for k in users}
+    client_a, client_x = uuid.uuid4(), uuid.uuid4()
+    contact_a, contact_x = uuid.uuid4(), uuid.uuid4()
+    lead = uuid.uuid4()
+    manual, promoted = uuid.uuid4(), uuid.uuid4()
+    record, record_two = uuid.uuid4(), uuid.uuid4()
+    parcel = f"NEOH-{tag}"
+    street = f"{tag} Neoh Street"
+    refreshed = datetime(2026, 10, 1, 9, 0, tzinfo=timezone.utc)
+
+    def ctx(who: str) -> TenantContext:
+        role = Role.BROKER_OWNER if who in ("owner", "d") else Role.AGENT
+        return TenantContext(agent_id=agent[who], tenant_id=str(other if who == "d" else tenant), role=role)
+
+    def body(decision, *, record_id=record, supersedes=None):
+        return property_match_api.RecordMatchDecision(
+            public_record_id=str(record_id), decision=decision,
+            evidence=["parcel_number_checked"] if decision == "confirmed" else [],
+            reason=REASON if decision != "rejected" else OTHER_REASON,
+            supersedes_id=str(supersedes) if supersedes else None)
+
+    async def decide(decision, supersedes=None, record_id=record):
+        out = await property_match_api.decide_record_match(
+            lead_id=lead, body=body(decision, record_id=record_id, supersedes=supersedes), ctx=ctx("owner"))
+        return out["decision_id"]
+
+    async def linked(who, client=client_a):
+        return await neoh_intents._linked_houses_for(ctx(who), str(client))
+
+    async def the_lead(who, client=client_a):
+        houses, _total = await linked(who, client)
+        found = [h for h in houses if h["kind"] == "lead"]
+        assert len(found) <= 1
+        return found[0] if found else None
+
+    async def houses_identity(record_id=record):
+        view = await mls_portal.mls_pipeline_listing(record_id=str(record_id), ctx=ctx("owner"))
+        return view["identity"]
+
+    try:
+        # ── fixtures (superuser, outside RLS) ──────────────────────────────
+        for tid, slug in ((tenant, "neoh-match"), (other, "neoh-match-other")):
+            await admin.execute("INSERT INTO tenants (id, slug, name) VALUES ($1,$2,'Neoh record match')",
+                                tid, f"{slug}-{tag}")
+        for who, uid in users.items():
+            await admin.execute(
+                "INSERT INTO users (id, tenant_id, agent_id, role, email, password_hash, full_name, is_active) "
+                "VALUES ($1,$2,$3,$4,$3,'scrypt$x$y',$5,true)",
+                uid, other if who == "d" else tenant, agent[who],
+                "broker_owner" if who in ("owner", "d") else "agent", f"Agent {who.upper()}")
+        for client, contact, name in ((client_a, contact_a, "Neoh A"), (client_x, contact_x, "Neoh X")):
+            await admin.execute(
+                "INSERT INTO agent_contacts (id, tenant_id, assigned_agent_id, source, data_state) "
+                "VALUES ($1,$2,$3,'matrix','pending_encryption')", contact, tenant, agent["a"])
+            await admin.execute(
+                "INSERT INTO clients (id, tenant_id, full_name, assignee_id, contact_id) VALUES ($1,$2,$3,$4,$5)",
+                client, tenant, name, agent["a"], contact)
+        for rid, source_record in ((record, "1"), (record_two, "2")):
+            await admin.execute(
+                "INSERT INTO public_property_records (id, source_key, source_record_id, parcel_id, state, "
+                "address, source_name, coverage_scope, record_refreshed_at) "
+                "VALUES ($1,$2,$3,$4,'DE',$5,'Live test parcels','county:test',$6)",
+                rid, f"neoh-live-{tag}", source_record, parcel, street, refreshed)
+        await admin.execute(
+            "INSERT INTO leads (id, tenant_id, parcel_id, state, motivation_score, seller_client_id, address) "
+            "VALUES ($1,$2,$3,'DE',50,$4,$5)", lead, tenant, parcel, client_a, street)
+        # A manual house (link_client_house's draft listing, no parcel), and
+        # the lead's own listing, which is the same house as the lead.
+        await admin.execute(
+            "INSERT INTO listings (id, tenant_id, address, status, seller_client_id) VALUES ($1,$2,$3,'draft',$4)",
+            manual, tenant, f"{tag} Manual Road", client_a)
+        await admin.execute(
+            "INSERT INTO listings (id, tenant_id, address, status, seller_client_id, lead_id) "
+            "VALUES ($1,$2,$3,'draft',$4,$5)", promoted, tenant, street, client_a, lead)
+
+        # ── no decision: linked, not confirmed ─────────────────────────────
+        houses, total = await linked("owner")
+        assert total == 2, "the lead and the manual house; the lead's own listing is the lead"
+        assert {(h["kind"], h["id"]) for h in houses} == {("lead", str(lead)), ("listing", str(manual))}
+        lead_row = await the_lead("owner")
+        assert (lead_row["lead_id"], lead_row["parcel_id"], lead_row["state"]) == (str(lead), parcel, "DE")
+        assert lead_row["verified"] is False
+        assert lead_row["confirmation"] == {"state": "none", "decided_at": None}
+        # Who decided, and the reason, are never part of the read.
+        assert set(lead_row) == {"kind", "id", "lead_id", "address", "parcel_id", "state", "verified",
+                                 "confirmation"}
+
+        # ── the owner confirms: verified, as in Houses ─────────────────────
+        first = await decide("confirmed")
+        for who in ("owner", "a"):
+            row = await the_lead(who)
+            assert row["verified"] is True, who
+            assert row["confirmation"]["state"] == "confirmed" and row["confirmation"]["decided_at"]
+        assert (await houses_identity())["verified"] is True
+        houses, total = await linked("owner")
+        answer = neoh_render.properties_for("Neoh A", [], {"status": "not_applicable"},
+                                            linked=houses, linked_total=total)
+        assert answer["spoken"] == "2 houses are linked to Neoh A. 1 of 2 confirmed as theirs."
+        assert "decided_by" not in json.dumps(answer) and agent["owner"] not in json.dumps(answer)
+
+        # Agent B cannot see A's client: the house and its decision stay hidden
+        # (0143, 0168). Listings stay brokerage-wide (0143), so the manual one
+        # is not hidden from them; search never resolves A's client for B.
+        houses_b, _ = await linked("b")
+        assert [h for h in houses_b if h["kind"] == "lead"] == []
+        assert await linked("d") == ([], 0)
+
+        # ── the record re-keyed off the house's parcel: not verified ──────
+        await admin.execute("UPDATE public_property_records SET parcel_id = $2 WHERE id = $1",
+                            record, f"{parcel}-REKEYED")
+        rekeyed = await the_lead("owner")
+        assert (rekeyed["verified"], rekeyed["confirmation"]["state"]) == (False, "none")
+        assert (await houses_identity())["verified"] is False
+        await admin.execute("UPDATE public_property_records SET parcel_id = $2 WHERE id = $1", record, parcel)
+        assert (await the_lead("owner"))["verified"] is True
+
+        # ── withdrawn, rejected, confirmed again ─────────────────────────
+        withdrawn = await decide("withdrawn", first)
+        row = await the_lead("owner")
+        assert (row["verified"], row["confirmation"]["state"]) == (False, "none")
+        assert (await houses_identity())["confirmation"]["state"] == "none"
+        rejected = await decide("rejected", withdrawn)
+        row = await the_lead("owner")
+        assert (row["verified"], row["confirmation"]["state"]) == (False, "rejected")
+        assert (await houses_identity())["confirmation"]["state"] == "rejected"
+        # The sibling record on the same parcel is still undecided, in Houses
+        # too: the rejection is said of a record on the house's parcel, never
+        # of the house the brokerage linked to A (0168: "R is not C's house").
+        assert (await houses_identity(record_two))["confirmation"]["state"] == "none"
+        houses, total = await linked("owner")
+        answer = neoh_render.properties_for("Neoh A", [], {"status": "not_applicable"},
+                                            linked=houses, linked_total=total)
+        assert answer["spoken"] == ("2 houses are linked to Neoh A. 0 of 2 confirmed as theirs. "
+                                    "1 of 2 have a public record marked not their house.")
+        lead_option = next(o for o in answer["blocks"][0]["props"]["options"] if o["id"] == str(lead))
+        assert lead_option["verified"] is False
+        assert lead_option["detail"] == (f"Parcel {parcel} · Linked to Neoh A · not confirmed as theirs · "
+                                         "a public record on its parcel was marked not their house")
+        # A sibling record on the same parcel confirmed: the house is confirmed
+        # through that record, while the rejected one stays rejected in Houses.
+        sibling = await decide("confirmed", record_id=record_two)
+        row = await the_lead("owner")
+        assert (row["verified"], row["confirmation"]["state"]) == (True, "confirmed")
+        assert (await houses_identity(record_two))["verified"] is True
+        assert (await houses_identity())["confirmation"]["state"] == "rejected"
+        await property_match_api.decide_record_match(
+            lead_id=lead, body=body("withdrawn", record_id=record_two, supersedes=sibling), ctx=ctx("owner"))
+        current = await decide("confirmed", rejected)
+        assert (await the_lead("owner"))["verified"] is True
+
+        # ── re-linked to another client ───────────────────────────────────
+        await admin.execute("UPDATE leads SET seller_client_id=$2 WHERE id=$1", lead, client_x)
+        # A's answer no longer holds the house; the lead's listing still names
+        # A as its seller, so it is now A's own linked listing, never verified.
+        houses_a, total_a = await linked("owner", client_a)
+        assert total_a == 2 and {(h["kind"], h["id"]) for h in houses_a} == {
+            ("listing", str(manual)), ("listing", str(promoted))}
+        assert not any(h["verified"] for h in houses_a)
+        # X's house carries A's confirmation: out of date, as Houses reads it.
+        row = await the_lead("owner", client_x)
+        assert (row["verified"], row["confirmation"]["state"]) == (False, "out_of_date")
+        assert (await houses_identity())["confirmation"]["state"] == "out_of_date"
+        await decide("confirmed", current)
+        assert (await the_lead("owner", client_x))["verified"] is True
+        assert (await houses_identity())["verified"] is True
+    finally:
+        await admin.execute("SET session_replication_role = replica")
+        try:
+            for tid in (tenant, other):
+                for table in ("property_match_decisions", "listings", "leads", "clients", "agent_contacts",
+                              "users"):
+                    await admin.execute(f"DELETE FROM {table} WHERE tenant_id = $1", tid)
+                await admin.execute("DELETE FROM tenants WHERE id = $1", tid)
+            await admin.execute("DELETE FROM public_property_records WHERE id = ANY($1::uuid[])",
+                                [record, record_two])
         finally:
             await admin.execute("SET session_replication_role = origin")
             await admin.close()

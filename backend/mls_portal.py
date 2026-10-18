@@ -28,7 +28,12 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from db.connection import tenant_tx
 from mls_switch import require_mls_enabled
-from property_match_api import can_decide as can_decide_record_match, confirmation_state
+from property_match_api import (
+    can_decide as can_decide_record_match,
+    confirmation_state,
+    current_heads_sql,
+    heads_by_record,
+)
 from tenancy import TenantContext, require_context
 from marketplace_engine import rank_buyer_request
 from data_coverage import summary as data_coverage_summary
@@ -598,17 +603,10 @@ async def _lead_ids_for_records(conn, rows: list[dict]) -> dict[tuple[str, str],
     parcels = [k[0] for k in keys]
     states = [k[1] for k in keys]
     found = await conn.fetch(
-        """
+        f"""
         SELECT DISTINCT ON (parcel_id, state) parcel_id, state, id,
                seller_client_id IS NOT NULL AS linked,
-               (SELECT jsonb_agg(jsonb_build_object(
-                           'id', h.id, 'record_id', h.public_record_id, 'decision', h.decision,
-                           'same_client', COALESCE(h.client_id = leads.seller_client_id, false),
-                           'decided_at', h.decided_at))
-                  FROM property_match_decisions h
-                 WHERE h.lead_id = leads.id
-                   AND NOT EXISTS (SELECT 1 FROM property_match_decisions n
-                                    WHERE n.supersedes_id = h.id)) AS heads
+               {current_heads_sql("leads")} AS heads
           FROM leads
          WHERE (parcel_id, state) = ANY(
                    SELECT * FROM unnest($1::text[], $2::text[])
@@ -620,15 +618,10 @@ async def _lead_ids_for_records(conn, rows: list[dict]) -> dict[tuple[str, str],
     )
     leads: dict[tuple[str, str], dict[str, Any]] = {}
     for r in found:
-        heads = r.get("heads")
-        if isinstance(heads, str):
-            heads = json.loads(heads)
         leads[(str(r["parcel_id"]), str(r["state"]))] = {
             "lead_id": str(r["id"]),
             "linked": r.get("linked") is True,
-            "heads_by_record": {
-                str(h["record_id"]): h for h in (heads or []) if isinstance(h, dict) and h.get("record_id")
-            },
+            "heads_by_record": heads_by_record(r.get("heads")),
         }
     return leads
 

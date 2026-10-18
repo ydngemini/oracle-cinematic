@@ -294,8 +294,9 @@ async def property_view(
 # The resolve is a substring search, so "12 Main St" also finds "112 Main St".
 # Only a record whose address has the same words as the typed one, where the
 # typed address names its town and a state the record does not contradict, is
-# an exact_address; everything else is a possible_match. No table records a
-# person confirming the property (T11.03), so `verified` is always False.
+# an exact_address; everything else is a possible_match. `verified` is always
+# False: a broker owner's decision (0168, T11.03) says whether a public record
+# is a linked client's house, not whether a record is the address typed here.
 _STATE_TAIL_RE = re.compile(
     r",\s*([A-Z]{2})(?:\s+(\d{5})(?:-\d{4})?)?\s*(?:,\s*USA?)?\s*$", re.IGNORECASE,
 )
