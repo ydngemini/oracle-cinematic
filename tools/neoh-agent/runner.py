@@ -31,7 +31,7 @@ def prompt_path(category: str) -> Path:
     return matches[0]
 
 
-def preflight(mode: str, category: str) -> str:
+def preflight(mode: str, category: str, allow_dirty: bool = False) -> str:
     for path in [
         ROOT / "CLAUDE.md", PROMPTS / "README.md",
         PROMPTS / "CONTRACT.md", PROMPTS / "LEDGER.md",
@@ -44,7 +44,7 @@ def preflight(mode: str, category: str) -> str:
         branch = git("branch", "--show-current")
         if not branch or branch in {"main", "master"}:
             raise ValueError("Build requires a named feature branch, not main.")
-        if git("status", "--porcelain", "--untracked-files=all"):
+        if not allow_dirty and git("status", "--porcelain", "--untracked-files=all"):
             raise ValueError("Build requires a clean working tree.")
     return sha
 
@@ -117,7 +117,7 @@ def engineering_prompt(args, sha: str, path: Path) -> str:
         prompt += (
             "Implement ONE narrowly scoped change and add regression tests. "
             "Update that category's ledger rows with an honest "
-            "implemented_untested state, since you cannot run tests. "
+            "implemented_untested state, since you cannot run tests directly. "
             "Never modify production deployment or CI configuration. "
         )
     return prompt + "\n\nTask: " + task
@@ -128,7 +128,7 @@ async def run(args) -> int:
         AgentDefinition, AssistantMessage, ClaudeAgentOptions, HookMatcher,
         ResultMessage, TextBlock, ToolUseBlock, query,
     )
-    sha = preflight(args.mode, args.category)
+    sha = preflight(args.mode, args.category, allow_dirty=args.allow_dirty)
     agents = {
         name: AgentDefinition(
             description=desc,
@@ -199,7 +199,8 @@ async def run(args) -> int:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Neoh Claude Agent SDK development runner")
-    parser.add_argument("--mode", choices=["audit", "build"], default="audit")
+    parser.add_argument("--mode", choices=["audit", "build"], default="build")
+    parser.add_argument("--allow-dirty", action="store_true", help="Internal repair-round continuation; only use within controlled autobuild.")
     parser.add_argument("--category", default="02")
     parser.add_argument("--task", default="")
     parser.add_argument("--model", default="sonnet")
