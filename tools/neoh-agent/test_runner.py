@@ -25,6 +25,33 @@ class NeohAgentGuardTests(unittest.TestCase):
             with self.subTest(path=path):
                 self.assertFalse(runner.source_path_allowed(path))
 
+    def test_governance_is_readable_but_not_writable(self):
+        self.assertTrue(runner.source_path_allowed("CLAUDE.md"))
+        for path in ["CLAUDE.md", "docs/claude-prompts/CONTRACT.md",
+                     "docs/claude-prompts/README.md",
+                     "tools/neoh-agent/runner.py", ".claude/agents"]:
+            with self.subTest(path=path):
+                self.assertFalse(runner.write_path_allowed(path))
+        self.assertTrue(runner.write_path_allowed(
+            "docs/claude-prompts/LEDGER.md"
+        ))
+        self.assertTrue(runner.write_path_allowed("oracle-app/src/App.jsx"))
+
+    def test_hook_denies_sensitive_write(self):
+        import asyncio
+        result = asyncio.run(runner.file_guard({
+            "tool_name": "Write",
+            "tool_input": {"file_path": "CLAUDE.md"}
+        }, None, None))
+        self.assertEqual(
+            result["hookSpecificOutput"]["permissionDecision"], "deny"
+        )
+        result = asyncio.run(runner.file_guard({
+            "tool_name": "Read",
+            "tool_input": {"file_path": "CLAUDE.md"}
+        }, None, None))
+        self.assertEqual(result, {})
+
     def test_mode_prompt(self):
         from argparse import Namespace
         category = runner.prompt_path("02")
